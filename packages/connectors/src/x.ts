@@ -18,7 +18,9 @@
  * Feeds:
  *   - tweets:   search by query or track a handle (API v2 or extension search)
  *   - home_feed: your personalized x.com home timeline (extension only — there
- *                is no public API for the "For you" / "Following" timeline)
+ *                is no public API for the "For you" / "Following" timeline;
+ *                read via content-script scrape because CDP network capture
+ *                blocks the feed from rendering, same as LinkedIn home_feed)
  */
 
 import {
@@ -28,6 +30,7 @@ import {
 	calculateEngagementScore,
 	createHttpClient,
 	type EventEnvelope,
+	extensionDomScrape,
 	extensionNetworkSync,
 	type HttpClient,
 	paginateByCursor,
@@ -95,6 +98,105 @@ interface XApiListResponse {
 
 /** x.com origins the dispatched chrome actions are allowed to touch. */
 const X_ALLOWED_ORIGINS = ["x.com", "*.x.com", "twitter.com", "*.twitter.com"];
+
+// ── Home-feed content-script scrape contract ────────────────────
+//
+// The personalized home timeline is the ONE feed that can't be read via
+// network capture: attaching the CDP debugger stops the feed from rendering,
+// so the GraphQL responses never arrive. Instead we drive the extension's
+// `cs_scrape` op (a content script, no debugger) with a declarative selector
+// config defined here.
+
+/** A row produced by the extension's cs_scrape from HOME_FEED_SCRAPE_CONFIG. */
+interface HomeFeedRow {
+	id?: string;
+	body?: string;
+	author?: string;
+	status_path?: string;
+	published_at?: string;
+}
+
+/**
+ * Selectors for the virtualized x.com/home DOM. These live here, not in the
+ * extension — the scrape engine is site-agnostic.
+ */
+const HOME_FEED_SCRAPE_CONFIG = {
+	scroll: { max: 8, stall: 3, waitMs: 1500 },
+	loggedOutWhen: { pathRegex: "/(login|i/flow/login)\\b" },
+	rowSelector: 'article[data-testid="tweet"]',
+	id: {
+		source: "field",
+		field: "status_path",
+		regex: "/status/(\\d+)",
+		group: 1,
+	},
+	requireFields: ["body", "status_path"],
+	fields: {
+		body: { selector: '[data-testid="tweetText"]', take: "text" },
+		author: {
+			selector: '[data-testid="User-Name"]',
+			take: "text",
+			firstLine: true,
+		},
+		status_path: {
+			selector: 'a[href*="/status/"]',
+			take: "attr",
+			attr: "href",
+		},
+		published_at: {
+			selector: "time[datetime]",
+			take: "attr",
+			attr: "datetime",
+		},
+	},
+} as const;
+
+/** Pull @handle from a status permalink like `/alice/status/123`. */
+export function parseUsernameFromStatusPath(statusPath: string): string {
+	if (!statusPath) return "";
+	const match = statusPath.match(/\/([^/]+)\/status\//);
+	return match?.[1] ?? "";
+}
+
+/**
+ * The home feed mixes in ads and suggestion noise. Drop them before emitting.
+ */
+export function isHomeFeedNoise(body: string): boolean {
+	if (!body || body.trim().length < 5) return true;
+	if (/\bPromoted\b/i.test(body.slice(0, 80))) return true;
+	return false;
+}
+
+/** Map cs_scrape home-feed rows to XTweet objects for finalizeSyncResult. */
+export function buildHomeFeedTweets(rows: HomeFeedRow[]): XTweet[] {
+	const seen = new Set<string>();
+	const tweets: XTweet[] = [];
+	for (const row of rows) {
+		if (!row?.id || !row.body || seen.has(row.id)) continue;
+		if (isHomeFeedNoise(row.body)) continue;
+		seen.add(row.id);
+		const username =
+			parseUsernameFromStatusPath(row.status_path ?? "") ||
+			(row.author ?? "").replace(/^@+/, "").trim();
+		const publishedAt = row.published_at
+			? new Date(row.published_at)
+			: new Date();
+		tweets.push({
+			id: row.id,
+			text: row.body,
+			username,
+			likes: 0,
+			retweets: 0,
+			replies: 0,
+			quotes: 0,
+			publishedAt,
+			isRetweet: false,
+			isReply: false,
+			isQuote: false,
+		});
+	}
+	return tweets;
+}
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -254,7 +356,10 @@ export function extractTweetsFromInstructions(instructions: any[]): XTweet[] {
 }
 
 /** Parse x.com GraphQL SearchTimeline responses. */
-export function parseBrowserSearchResponse(_url: string, json: unknown): XTweet[] {
+export function parseBrowserSearchResponse(
+	_url: string,
+	json: unknown,
+): XTweet[] {
 	const data = json as any;
 	const instructions =
 		data?.data?.search_by_raw_query?.search_timeline?.timeline?.instructions ??
@@ -267,7 +372,10 @@ export function parseBrowserSearchResponse(_url: string, json: unknown): XTweet[
  * HomeLatestTimeline = "Following"). Both nest under
  * `data.home.home_timeline_urt.instructions`.
  */
-export function parseBrowserTimelineResponse(_url: string, json: unknown): XTweet[] {
+export function parseBrowserTimelineResponse(
+	_url: string,
+	json: unknown,
+): XTweet[] {
 	const data = json as any;
 	const instructions = data?.data?.home?.home_timeline_urt?.instructions ?? [];
 	return extractTweetsFromInstructions(instructions);
@@ -545,25 +653,41 @@ async function syncSearchViaExtension(
 	});
 }
 
-async function syncTimelineViaExtension(
+/**
+ * Personalized home timeline via the extension's content-script scrape.
+ * Network capture can't read it (the CDP debugger stops the feed rendering).
+ */
+async function syncHomeFeedViaDomScrape(
 	ctx: SyncContext,
 	config: Record<string, unknown>,
 	checkpoint: XCheckpoint,
 ): Promise<SyncResult> {
-	const maxScrolls = (config.max_scrolls as number) ?? 10;
-	// x.com/home defaults to "For you"; /home#/following is the chronological
-	// "Following" tab. We land on the plain home timeline and capture both
-	// HomeTimeline (For you) and HomeLatestTimeline (Following) responses.
-	return syncViaExtension({
-		ctx,
+	const maxScrolls = Math.max(
+		1,
+		Math.min(30, Number(config.max_scrolls ?? 10) || 10),
+	);
+	const { items: rows, loggedIn } = await extensionDomScrape<HomeFeedRow>({
+		dispatcher: requireExtensionDispatcher(ctx),
 		url: "https://x.com/home",
-		interceptPatterns: [
-			{ regex: "/i/api/graphql/\\w+/(HomeTimeline|HomeLatestTimeline)" },
-		],
-		parseResponse: parseBrowserTimelineResponse,
-		maxScrolls,
-		checkpoint,
-		metadata: { timeline: "home" },
+		config: {
+			...HOME_FEED_SCRAPE_CONFIG,
+			scroll: { ...HOME_FEED_SCRAPE_CONFIG.scroll, max: maxScrolls },
+		},
+		parseRows: (raw) => raw as HomeFeedRow[],
+		allowedOrigins: X_ALLOWED_ORIGINS,
+	});
+
+	if (!loggedIn) {
+		throw new Error(
+			"Not logged into X. The home timeline could not be read — sign in to x.com in the focused Owletto window, then re-run the sync.",
+		);
+	}
+
+	const tweets = buildHomeFeedTweets(rows);
+	return finalizeSyncResult(tweets, checkpoint, {
+		backend: "extension-cs-scrape",
+		items_scraped: rows.length,
+		timeline: "home",
 	});
 }
 
@@ -712,7 +836,7 @@ export default class XConnector extends ConnectorRuntime {
 				key: "home_feed",
 				name: "Home Timeline",
 				description:
-					"Your personalized x.com home timeline (For you + Following). Extension-only — there is no public API for the home timeline.",
+					"Your personalized x.com home timeline (For you + Following). Extension-only via content-script scrape — there is no public API for the home timeline.",
 				configSchema: homeFeedConfigSchema,
 				eventKinds: {
 					tweet: {
@@ -732,7 +856,7 @@ export default class XConnector extends ConnectorRuntime {
 		// The home timeline has no public API — it is always served by the
 		// extension, regardless of whether an OAuth token is present.
 		if (feedKey === "home_feed") {
-			return syncTimelineViaExtension(ctx, config, checkpoint);
+			return syncHomeFeedViaDomScrape(ctx, config, checkpoint);
 		}
 
 		// `tweets` feed: prefer the official API when we have a token, fall back

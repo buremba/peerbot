@@ -58,7 +58,7 @@ function markIngested(account: AuthAccountSummary): void {
 	recentIngest.set(account.id, { scope: account.scope ?? "", at: Date.now() });
 }
 
-interface ResolvedTenantMember {
+export interface ResolvedTenantMember {
 	tenantOrganizationId: string;
 	memberEntityId: number;
 }
@@ -68,7 +68,7 @@ interface ResolvedTenantMember {
  * personal-org provisioning hasn't yet completed for this user — ingest
  * will be retried on the next account refresh.
  */
-async function resolveTenantMember(
+export async function resolveTenantMember(
 	userId: string,
 ): Promise<ResolvedTenantMember | null> {
 	const sql = getDb();

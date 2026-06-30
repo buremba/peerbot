@@ -60,6 +60,7 @@ import {
 	scheduleIdentityIngest,
 	scheduleIdentityTombstoneOnAccountDelete,
 } from "../identity/auth-hook";
+import { persistLoginSlackIdentity } from "./subject-identities";
 
 function gravatarUrl(email: string): string {
 	const hash = createHash("md5")
@@ -95,7 +96,7 @@ export function clearAuthCacheForTests(): void {
 // a clean (Docker) install layout and trips TS2742 during `tsc --noEmit`.
 export async function createAuth(
 	env: Env,
-	request?: Request
+	request?: Request,
 ): Promise<ReturnType<typeof betterAuth>> {
 	const organizationId = (await resolveRequestOrganizationId(request)) ?? null;
 	const cacheKey = organizationId ?? "__system__";
@@ -833,6 +834,9 @@ export async function createAuth(
 							scope: (account as Record<string, unknown>).scope as
 								| string
 								| null,
+							accountId: (account as Record<string, unknown>).accountId as
+								| string
+								| null,
 						};
 						try {
 							const { provisionConnectorFromSocialLogin } = await import(
@@ -851,6 +855,9 @@ export async function createAuth(
 						}
 						// Identity engine ingest. Fire-and-forget; sign-in never blocks.
 						scheduleIdentityIngest(accountSummary);
+						// Slack sign-in: collapse the workspace member onto this $member by
+						// stamping their team-scoped slack_user_id. Fire-and-forget.
+						void persistLoginSlackIdentity(accountSummary);
 					},
 				},
 				update: {
@@ -863,6 +870,9 @@ export async function createAuth(
 								| string
 								| null,
 							scope: (account as Record<string, unknown>).scope as
+								| string
+								| null,
+							accountId: (account as Record<string, unknown>).accountId as
 								| string
 								| null,
 						};
@@ -882,6 +892,8 @@ export async function createAuth(
 							);
 						}
 						scheduleIdentityIngest(accountSummary);
+						// Slack re-link / token refresh: keep the slack_user_id stamped.
+						void persistLoginSlackIdentity(accountSummary);
 					},
 				},
 				delete: {

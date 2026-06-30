@@ -75,7 +75,6 @@ export class LobuRestClient {
     const queue: Array<LobuSseEvent<TData>> = [];
     let done = options.signal?.aborted === true;
     let pumpDone = false;
-    let stoppedByCaller = done;
     let pumpError: unknown;
     let wake: (() => void) | undefined;
 
@@ -85,7 +84,14 @@ export class LobuRestClient {
     };
     const abort = () => {
       done = true;
-      stoppedByCaller = true;
+      // Cancel the in-flight SSE request immediately — without this, a caller
+      // aborting their external signal only breaks the local loop while the
+      // underlying fetch + the generated client's reconnect loop keep running.
+      try {
+        controller.abort();
+      } catch {
+        // Bun can throw from stream cancellation during abort propagation.
+      }
       wakeReader();
     };
     options.signal?.addEventListener("abort", abort, { once: true });
@@ -155,7 +161,12 @@ export class LobuRestClient {
       }
       if (pumpError) throw pumpError;
     } finally {
-      if (!stoppedByCaller || pumpDone) {
+      // Abort whenever the generator exits before the pump finished — a caller
+      // `break`, an external-signal abort, or a throw all land here with the
+      // underlying SSE request still open. Only skip when pumpDone (the stream
+      // already ended on its own). The prior guard skipped the abort exactly on
+      // a caller-initiated stop, leaking the fetch and the client's reconnect loop.
+      if (!pumpDone) {
         try {
           controller.abort();
         } catch {

@@ -633,6 +633,8 @@ export function buildDeploymentWorkerToken(args: {
   runtimeProviderId?: string;
   environmentId?: string;
   runtimeExplicit?: boolean;
+  /** Resolved egress allowlist for a remote runtime sandbox (signed claim). */
+  allowedDomains?: string[];
 }): string {
   return generateWorkerToken(
     args.userId,
@@ -1515,6 +1517,9 @@ export class DeploymentManager {
       runtimeProviderId: runtimeSelection.runtimeProviderId,
       environmentId: runtimeSelection.environmentId,
       runtimeExplicit: runtimeSelection.explicit,
+      // Same allowlist synced to the grant store / JUST_BASH_ALLOWED_DOMAINS — so
+      // the runtime route reads it off the signed token, not the worker's body.
+      allowedDomains: messageData?.networkConfig?.allowedDomains,
     });
 
     const dispatcherHost = this.getDispatcherHost();

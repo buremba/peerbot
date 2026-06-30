@@ -15,7 +15,9 @@ type ExecRequest = {
   workspaceDir?: unknown;
   env?: unknown;
   timeoutMs?: unknown;
-  allowedDomains?: unknown;
+  // NOTE: no `allowedDomains` here — the egress allowlist is NOT trusted from the
+  // request body (the worker is the sandbox-ee). It's read from the signed worker
+  // token claim below, same as `runtimeProviderId`.
 };
 
 /**
@@ -93,7 +95,9 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
         cwd: body.cwd,
         env: commandEnv(body.env),
         timeoutMs,
-        allowedDomains: body.allowedDomains,
+        // Authoritative egress allowlist from the SIGNED token, never the body —
+        // a compromised worker cannot widen its own sandbox network policy.
+        allowedDomains: worker.allowedDomains,
       });
 
       return c.json({

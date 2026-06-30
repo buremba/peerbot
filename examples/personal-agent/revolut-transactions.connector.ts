@@ -73,6 +73,19 @@ export interface RevolutTransaction {
   type?: string;
   /** Revolut state, e.g. COMPLETED, PENDING. */
   state?: string;
+  // ── Rich fields the retail API carries (a statement export does not) ──
+  /** Revolut's own spend category, e.g. "shopping", "groceries", "transport". */
+  category?: string;
+  /** Merchant category code (ISO 18245), e.g. "5734". */
+  mcc?: string;
+  /** ISO country where the transaction occurred, e.g. "US". */
+  countryCode?: string;
+  /** ISO country of the merchant, e.g. "US". */
+  merchantCountry?: string;
+  /** Transaction fee in major units (0 when none). */
+  fee?: number;
+  /** FX rate applied (1 when same-currency). */
+  fxRate?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,8 +126,21 @@ interface RawRevolutTxn {
   amount?: unknown;
   balance?: unknown;
   description?: unknown;
-  merchant?: { name?: unknown } | null;
-  counterpart?: { amount?: unknown; currency?: unknown } | null;
+  category?: unknown;
+  countryCode?: unknown;
+  fee?: unknown;
+  rate?: unknown;
+  merchant?: {
+    name?: unknown;
+    mcc?: unknown;
+    category?: unknown;
+    country?: unknown;
+  } | null;
+}
+
+/** Read a string field, returning undefined for anything else. */
+function str(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
 
 /**
@@ -182,6 +208,19 @@ export function parseTransactionsResponse(json: unknown): RevolutTransaction[] {
       occurredAt,
       ...(typeof raw.type === "string" ? { type: raw.type } : {}),
       ...(typeof raw.state === "string" ? { state: raw.state } : {}),
+      // Rich fields (statement exports lack these).
+      ...(str(raw.category) ? { category: str(raw.category) } : {}),
+      ...(str(raw.merchant?.mcc) ? { mcc: str(raw.merchant?.mcc) } : {}),
+      ...(str(raw.countryCode) ? { countryCode: str(raw.countryCode) } : {}),
+      ...(str(raw.merchant?.country)
+        ? { merchantCountry: str(raw.merchant?.country) }
+        : {}),
+      ...(typeof raw.fee === "number" && Number.isFinite(raw.fee)
+        ? { fee: minorToMajor(raw.fee, currency) }
+        : {}),
+      ...(typeof raw.rate === "number" && Number.isFinite(raw.rate)
+        ? { fxRate: raw.rate }
+        : {}),
     });
   }
   return out;
@@ -254,6 +293,12 @@ export function transactionToEvent(t: RevolutTransaction): EventEnvelope {
       currency: t.currency,
       ...(t.type ? { transaction_type: t.type } : {}),
       ...(t.state ? { state: t.state } : {}),
+      ...(t.category ? { category: t.category } : {}),
+      ...(t.mcc ? { mcc: t.mcc } : {}),
+      ...(t.countryCode ? { country_code: t.countryCode } : {}),
+      ...(t.merchantCountry ? { merchant_country: t.merchantCountry } : {}),
+      ...(t.fee !== undefined ? { fee: t.fee } : {}),
+      ...(t.fxRate !== undefined ? { fx_rate: t.fxRate } : {}),
     },
   };
 }
@@ -329,6 +374,18 @@ const TRANSACTIONS_LAST_PATTERN = "api/retail/user/current/transactions/last";
 
 const REVOLUT_ALLOWED_ORIGINS = ["revolut.com", "*.revolut.com"];
 
+// Generic "retry the crawl while it returns no data" mechanism. The blocking
+// reason is connector-specific (for Revolut it's the passcode/sign-in wall);
+// the wait/retry itself is not. This wants lifting into the SDK
+// (`extensionNetworkSync` gaining a `retryWhileEmptyMs`/`onEmptyRetry` option)
+// so any connector can reuse it — kept connector-local for now because the
+// runtime-provided SDK would need a release before a new option takes effect.
+const EMPTY_RETRY_POLL_MS = 10_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const configSchema = {
   type: "object",
   properties: {
@@ -357,6 +414,14 @@ const configSchema = {
       description:
         "One-time historical backfill: ignore the checkpoint and re-emit EVERY fetched transaction (the gateway dedups by id, so re-emitting is safe). Pair with a high max_scrolls to re-ingest years of history with correct amounts, then set back to false for normal incremental syncs.",
     },
+    wait_for_data_seconds: {
+      type: "integer",
+      minimum: 0,
+      maximum: 600,
+      default: 180,
+      description:
+        "If the crawl returns no data, keep retrying every 10s for this many seconds before failing. For Revolut the empty result means the passcode/sign-in wall (the sign-in notification fires once), so a run triggered before sign-in still completes once you authenticate. 0 = fail fast.",
+    },
   },
 };
 
@@ -371,6 +436,12 @@ const transactionMetadataSchema = {
     currency: { type: "string" },
     transaction_type: { type: "string" },
     state: { type: "string" },
+    category: { type: "string" },
+    mcc: { type: "string" },
+    country_code: { type: "string" },
+    merchant_country: { type: "string" },
+    fee: { type: "number" },
+    fx_rate: { type: "number" },
   },
 };
 
@@ -380,7 +451,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     name: "Revolut",
     description:
       "Syncs Revolut account transactions by intercepting the retail API JSON the Revolut web app fetches (no public API), through your paired Owletto Chrome session — no separate login, exact amounts (no DOM parsing).",
-    version: "4.0.0",
+    version: "4.2.0",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —
@@ -431,48 +502,67 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     // checkpoint are re-ingested with correct amounts.
     const backfill = config.backfill === true;
 
-    // Intercept the retail API the SPA fetches on scroll. The helper opens an
-    // about:blank tab, starts the Network listener BEFORE navigating (so the
-    // initial render's XHRs aren't missed), then scroll-paginates and drains.
-    const result = await extensionNetworkSync<RevolutTransaction>({
-      dispatcher,
-      url: startUrl,
-      config: {
-        interceptPatterns: [{ regex: TRANSACTIONS_LAST_PATTERN }],
-        allowedOrigins: REVOLUT_ALLOWED_ORIGINS,
-        maxScrolls,
-        scrollDelayMs: 2500,
-        responseTimeoutMs: 8000,
-      },
-      parseResponse: (_url, json) => parseTransactionsResponse(json),
-      // Revolut's transaction list is an inner virtualized scroll container, so
-      // scrolling the window alone may not page it. Scroll the deepest
-      // scrollable element (the list), then nudge the window as a fallback, and
-      // dispatch an `End` key to trigger lazy-load either way.
-      triggerNextPage: async (tabId, d) => {
-        await d.dispatch("evaluate", {
-          tab_id: tabId,
-          expression: `(() => {
-            const els = [...document.querySelectorAll('*')].filter((e) => {
-              const s = getComputedStyle(e);
-              return /(auto|scroll)/.test(s.overflowY) && e.scrollHeight > e.clientHeight + 40;
-            });
-            els.sort((a, b) => b.scrollHeight - a.scrollHeight);
-            const target = els[0];
-            if (target) target.scrollTo(0, target.scrollHeight);
-            window.scrollTo(0, document.documentElement.scrollHeight);
-            return 1;
-          })()`,
-          allowed_origins: REVOLUT_ALLOWED_ORIGINS,
-        });
-      },
-    });
+    // How long to wait for the user to enter their passcode before giving up.
+    // Revolut's rwa session is short-lived, so rather than failing the instant
+    // we hit the auth wall, we fire the sign-in notification and keep retrying
+    // the crawl every `EMPTY_RETRY_POLL_MS` — the moment the user signs in, the next
+    // attempt succeeds and proceeds straight into the backfill within the fresh
+    // session window. 0 disables the wait (fail fast).
+    const dataWaitMs =
+      Math.max(0, Math.min(600, Number(config.wait_for_data_seconds ?? 180))) *
+      1000;
 
-    // Fail closed. Zero intercepted transactions means the retail API returned
-    // nothing parseable — almost always the passcode/SSO wall (401 `{code:9001}`
-    // body, an sso.revolut.com redirect, or skeleton rows that never fire the
-    // fetch), not a genuinely empty account. Notify + raise the typed auth-wall
-    // error (leaves the checkpoint untouched) instead of a silent empty sync.
+    // One crawl attempt: intercept the retail API the SPA fetches on scroll.
+    // The helper opens an about:blank tab, starts the Network listener BEFORE
+    // navigating (so the initial render's XHRs aren't missed), then
+    // scroll-paginates with the real CDP wheel and drains.
+    const runCrawl = () =>
+      extensionNetworkSync<RevolutTransaction>({
+        dispatcher,
+        url: startUrl,
+        config: {
+          interceptPatterns: [{ regex: TRANSACTIONS_LAST_PATTERN }],
+          allowedOrigins: REVOLUT_ALLOWED_ORIGINS,
+          maxScrolls,
+          scrollDelayMs: 2500,
+          responseTimeoutMs: 8000,
+        },
+        parseResponse: (_url, json) => parseTransactionsResponse(json),
+        // Revolut's transaction list is virtualized with NO scrollable overflow
+        // container (document height == viewport), so `scrollTo` is a no-op and
+        // DOM-synthesized wheel events (isTrusted=false) are ignored — the list
+        // only fetches older `?to=` pages on a REAL scroll. We use the
+        // extension's `scroll` op (CDP Input.dispatchMouseEvent type:mouseWheel),
+        // a trusted wheel the page honours, firing several ticks over the list.
+        triggerNextPage: async (tabId, d) => {
+          await d.dispatch("scroll", {
+            tab_id: tabId,
+            delta_y: 1500,
+            steps: 6,
+            step_delay_ms: 250,
+            allowed_origins: REVOLUT_ALLOWED_ORIGINS,
+          });
+        },
+      });
+
+    let result = await runCrawl();
+
+    // Auth-wait poll. Zero intercepted transactions means the passcode/SSO wall
+    // (401 `{code:9001}`, an sso.revolut.com redirect, or skeleton rows that
+    // never fire the fetch). Notify once, then re-run the crawl every
+    // EMPTY_RETRY_POLL_MS until the user signs in or the wait window elapses, so a run
+    // triggered before sign-in still completes once they authenticate.
+    if (result.items.length === 0 && dataWaitMs > 0) {
+      await notifyRevolutAuthWall(dispatcher, startUrl);
+      const deadline = Date.now() + dataWaitMs;
+      while (result.items.length === 0 && Date.now() < deadline) {
+        await sleep(EMPTY_RETRY_POLL_MS);
+        result = await runCrawl();
+      }
+    }
+
+    // Fail closed: still nothing after the wait → leave the checkpoint untouched
+    // and surface the typed auth-wall error (don't report a silent empty sync).
     if (result.items.length === 0) {
       await notifyRevolutAuthWall(dispatcher, startUrl);
       throw new RevolutAuthWallError(startUrl);

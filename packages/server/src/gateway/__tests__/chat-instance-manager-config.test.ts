@@ -334,6 +334,49 @@ describe("ChatInstanceManager — Telegram webhook secret (finding #2)", () => {
     // Two row-locked backfills serialize on the connection row; allow headroom
     // over the 5s default for CI's slower Postgres.
   }, 15000);
+
+  test("a chat connection id is globally unique — a second org cannot claim the same slug", async () => {
+    // The retired agent_connections.id was a GLOBAL primary key, and orgless
+    // runtime paths (the webhook URL, restart, claims) resolve a connection by
+    // id alone. `connections_chat_slug_unique` restores that invariant: a live
+    // chat slug is unique across ALL orgs, so a second org claiming the same
+    // runtime id is rejected (rather than creating an ambiguous duplicate an
+    // orgless lookup could route to the wrong tenant).
+    const orgA = "org-tg-iso-a";
+    const orgB = "org-tg-iso-b";
+    const agentA = "agent-tg-iso-a";
+    const agentB = "agent-tg-iso-b";
+    const sharedId = "conn-shared-tg";
+    const { connectionStore, orgContext } = await buildManager(orgA, agentA);
+    await seedAgentRow(agentB, { organizationId: orgB });
+
+    const make = (org: string, agent: string) => ({
+      id: sharedId,
+      platform: "telegram",
+      agentId: agent,
+      organizationId: org,
+      config: { platform: "telegram", botToken: "123456:fake" },
+      settings: { allowGroups: true },
+      metadata: {},
+      status: "active" as const,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    await orgContext.run({ organizationId: orgA }, () =>
+      connectionStore.saveConnection(make(orgA, agentA))
+    );
+    // orgB claiming the same runtime id (→ same slug) is rejected.
+    await expect(
+      orgContext.run({ organizationId: orgB }, () =>
+        connectionStore.saveConnection(make(orgB, agentB))
+      )
+    ).rejects.toThrow();
+
+    // So an orgless lookup by that id is unambiguous: exactly one live row.
+    const orglessHit = await connectionStore.getConnection(sharedId);
+    expect(orglessHit?.organizationId).toBe(orgA);
+  });
 });
 
 describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () => {

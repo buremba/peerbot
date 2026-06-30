@@ -2,7 +2,7 @@
  * ChatInstanceManager — manages Chat SDK instances for API-driven platform
  * connections. Owns Chat lifecycle and webhook dispatch.
  *
- * Persistence uses `agent_connections` (via AgentConnectionStore) as the
+ * Persistence uses `connections` (via AgentConnectionStore) as the
  * single source of truth — one row per connection, no separate
  * `chat_connections` table. Secret fields in the row's `config` JSON are
  * stored as `secret://...` refs that route through `SecretStoreRegistry`
@@ -272,7 +272,7 @@ const EXCLUSIVE_FAILURE_MAX_BACKOFF_MS = 10 * 60_000;
  * Platforms that are valid to declare on an agent but have no chat adapter to
  * run. `rest` is the HTTP Agent API (`POST /lobu/api/v1/agents/:id/messages`),
  * which is registered unconditionally in gateway/routes/public/agent.ts —
- * declaring it just persists the `agent_connections` row so `lobu apply`
+ * declaring it just persists the `connections` row so `lobu apply`
  * converges; there is no instance to start/stop/restart and no webhook to
  * route. `webhook` is the inbound push-source primitive (#1235): deliveries
  * are handled per-request by `handleIngestWebhook` below, which reads the
@@ -300,7 +300,7 @@ interface ManagedInstance {
    */
   messageBridge: MessageHandlerBridge;
   /**
-   * `agent_connections.updated_at` of the row this instance was hydrated
+   * `connections.updated_at` of the row this instance was hydrated
    * from. A pod-local instance is a pure memo of the row: when the stored
    * row is newer (config edited on any replica), the next use re-hydrates,
    * so replicas converge without cross-pod restart fan-out.
@@ -549,7 +549,7 @@ export class ChatInstanceManager {
     await this.connectionStore.deleteConnection(id);
 
     // Drop any lease row for this connection. `connection_claims` has no FK
-    // cascade onto agent_connections, so without this an exclusive connection's
+    // cascade onto connections, so without this an exclusive connection's
     // claim leaks if the owner pod crashes before its next tick. Delete by
     // connection_id only (NOT podId-scoped): removeConnection can run on a
     // non-owner replica, which must still be able to clear the dead owner's row.
@@ -561,7 +561,7 @@ export class ChatInstanceManager {
   /**
    * Revoke a MANAGED connection (a Lobu-hosted OAuth install, e.g. an "Add to
    * Slack" workspace). Unlike `removeConnection` (which drops a BYO
-   * `agent_connections` row), a managed install lives in `app_installations`
+   * `connections` chat row), a managed install originates in `app_installations`
    * with its bot token in the secret store — so revoke purges the install + its
    * token via the provider store, then soft-deletes the unified `connections`
    * projection so it disappears from the UI. The connection id from the UI is
@@ -1089,9 +1089,10 @@ export class ChatInstanceManager {
     // fail, and a stray error row should not silently drop deliveries.
     const stored = await this.connectionStore.getConnection(connectionId);
     if (!stored || stored.platform !== "webhook" || stored.status === "stopped") {
-      // Two-table bridge: an `agent_connections` miss may still be a CONNECTOR
-      // connection (`connections` table) that registered a provider webhook at
-      // connect time. Resolve that row, build a synthetic webhook config from
+      // A chat-connection miss may still be a CONNECTOR connection (a data
+      // connector row in `connections`, credential_mode NULL) that registered a
+      // provider webhook at connect time. Resolve that row, build a synthetic
+      // webhook config from
       // its stored scheme + secret, and run the SAME ingest handler — so HMAC
       // verification, size cap, rate limits, and dedupe all apply unchanged.
       const bridged = await this.resolveConnectorWebhookConnection(connectionId);
@@ -1130,12 +1131,13 @@ export class ChatInstanceManager {
   }
 
   /**
-   * Two-table bridge for connector-owned webhooks. The ingest URL
-   * `/api/v1/webhooks/:connectionId` carries a CONNECTOR connection id
-   * (`connections` table) when the connector registered a provider webhook at
-   * connect time — but that table is distinct from `agent_connections` (the
-   * chat/webhook-ingest rows). When the `agent_connections` lookup misses, this
-   * resolves the connector row, validates it actually registered a webhook
+   * Connector-owned webhook resolution. The ingest URL
+   * `/api/v1/webhooks/:connectionId` carries a CONNECTOR connection id (a data
+   * connector row in `connections`, credential_mode NULL) when the connector
+   * registered a provider webhook at connect time — distinct from the chat rows
+   * (credential_mode set) the store resolves. When the chat-connection lookup
+   * misses, this resolves the connector row, validates it actually registered a
+   * webhook
    * (scheme + secret stamped onto its config), and returns a synthetic
    * `StoredConnection` shaped for `handleWebhookIngest`. The id is preserved so
    * the landed event's `connector_key = webhook:<connId>` still hits the
@@ -1192,7 +1194,7 @@ export class ChatInstanceManager {
     // Multi-replica: hydration is per-request and row-versioned. Any replica
     // can receive any connection's webhook (the LB sprays platform deliveries
     // across pods), so the instance is treated as a memo of the
-    // `agent_connections` row: fresh memo → serve, stale/missing → re-hydrate
+    // `connections` row: fresh memo → serve, stale/missing → re-hydrate
     // from the row, gone/stopped row → 404. The coordinator's `/api/v1/app-webhooks/slack`
     // pre-call goes through the same check and stays harmless. Mirrors
     // `postMessageToChannel`.
@@ -1361,7 +1363,7 @@ export class ChatInstanceManager {
       // Resolve any `secret://` refs in the connection config to plaintext
       // values for the Chat SDK adapter. This is idempotent — addConnection
       // calls us with plaintext (the caller-supplied values), and reload /
-      // restart paths call us with refs read from agent_connections; the
+      // restart paths call us with refs read from connections; the
       // resolver leaves non-ref values alone.
       connection.config = await this.resolveConfigForRuntime(
         connection.id,
@@ -1614,7 +1616,7 @@ export class ChatInstanceManager {
 
   /**
    * Resolve the `StoredConnection` for `id` from the right source. Most ids are
-   * `agent_connections` rows; ids in the Slack-installation namespace
+   * BYO `connections` chat rows; ids in the Slack-installation namespace
    * (`slackinst-…`) are OAuth workspace installs stored as `app_installations`
    * rows (provider=slack), surfaced as agentless connection-shaped rows so the
    * existing hydration / instance-memo / webhook machinery runs them unchanged
@@ -1624,12 +1626,30 @@ export class ChatInstanceManager {
    * install projection over the generic store rather than the bigint PK.
    */
   private async resolveStored(id: string): Promise<StoredConnection | null> {
+    // Read cutover (connections-unify Stage 2a): prefer the unified `connections`
+    // projection. The connection store resolves BOTH BYO (slug
+    // `agentconn-<id>`) AND managed Slack installs (slug = the `slackinst-…` id)
+    // from `connections` by slug — the sole source of truth — so a single store
+    // read covers both.
+    if (this.connectionStore) {
+      const fromConnections = await this.connectionStore.getConnection(id);
+      if (fromConnections) return fromConnections;
+    }
+
+    // Legacy fallback for a managed install not yet projected into `connections`
+    // (created before this deploy, or a crash between the app_installations
+    // upsert and its projection write). Maps the app_installations row to the
+    // agentless connection shape the runtime expects.
     if (id.startsWith(SLACK_INSTALLATION_ID_PREFIX)) {
       const inst = await getSlackInstallById(
         this.services.getAppInstallationStore(),
         id
       );
       if (!inst) return null;
+      logger.info(
+        { id },
+        "connections projection miss; resolved Slack install from app_installations"
+      );
       return {
         id: inst.id,
         platform: "slack",
@@ -1647,13 +1667,12 @@ export class ChatInstanceManager {
         updatedAt: inst.updatedAt,
       };
     }
-    if (!this.connectionStore) return null;
-    return this.connectionStore.getConnection(id);
+    return null;
   }
 
   /**
    * Make sure this replica serves the CURRENT row for `id`. The local
-   * instance is a memo keyed on `agent_connections.updated_at`: a fresh memo
+   * instance is a memo keyed on `connections.updated_at`: a fresh memo
    * is served as-is (one PK read), a stale or missing one is re-hydrated
    * from the row, and a deleted/stopped row tears the local instance down.
    * This is the single convergence point that lets any replica handle any
@@ -1772,8 +1791,9 @@ export class ChatInstanceManager {
     ) {
       return;
     }
-    // OAuth workspace installs live in `app_installations` (provider=slack), not
-    // `agent_connections`; their runtime status isn't tracked there (token-health
+    // OAuth workspace installs are backed by `app_installations` (provider=slack),
+    // not a BYO `connections` chat row; their runtime status isn't tracked there
+    // (token-health
     // is a deferred concern). Log and skip — the hydration error is already logged.
     if (row.id.startsWith(SLACK_INSTALLATION_ID_PREFIX)) {
       logger.warn(

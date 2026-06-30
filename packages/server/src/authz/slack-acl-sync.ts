@@ -31,6 +31,10 @@ import {
 import { createSlackWebApi, type SlackWebApi } from '../gateway/connections/slack-web.js';
 import { resolveSecretValue } from '../gateway/secrets/index.js';
 import type { CoreServices } from '../gateway/services/core-services.js';
+import {
+  legacyIdToSlug,
+  slugToLegacyId,
+} from '../lobu/stores/connections-projection.js';
 import { getSlackInstallByTeamId } from '../lobu/stores/slack-installations.js';
 import { orgContext } from '../lobu/stores/org-context.js';
 import { buildSlackChannelGraph, type SlackChannelInput } from './slack-channel-graph.js';
@@ -104,9 +108,12 @@ export async function syncSlackConnectionAcl(
   // A preview connection (no teamId, the hosted-bot invariant) serves cross-org
   // bindings by design, so it stays unscoped.
   const [conn] = await sql<{ team_id: string | null }>`
-		SELECT metadata->>'teamId' AS team_id
-		FROM agent_connections
-		WHERE id = ${connectionId} AND organization_id = ${organizationId}
+		SELECT COALESCE(external_tenant_id, config->'chatMetadata'->>'teamId') AS team_id
+		FROM connections
+		WHERE slug = ${legacyIdToSlug(connectionId)}
+		  AND organization_id = ${organizationId}
+		  AND credential_mode IS NOT NULL
+		  AND deleted_at IS NULL
 		LIMIT 1
 	`;
   const connTeamId = conn?.team_id ?? null;
@@ -210,11 +217,18 @@ export async function syncSlackConnectionAcl(
  */
 export async function runSlackAclSyncTick(coreServices: CoreServices): Promise<void> {
   const sql = getDb();
-  const connections = await sql<{ id: string; organization_id: string }>`
-		SELECT id, organization_id
-		FROM agent_connections
-		WHERE platform = 'slack' AND status = 'active'
+  const connRows = await sql<{ slug: string; organization_id: string }>`
+		SELECT slug, organization_id
+		FROM connections
+		WHERE connector_key = 'slack'
+		  AND status = 'active'
+		  AND credential_mode IS NOT NULL
+		  AND deleted_at IS NULL
 	`;
+  const connections = connRows.map((r) => ({
+    id: slugToLegacyId(r.slug),
+    organization_id: r.organization_id,
+  }));
   if (connections.length === 0) return;
 
   const installStore = coreServices.getAppInstallationStore();

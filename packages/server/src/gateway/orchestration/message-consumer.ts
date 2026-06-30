@@ -144,6 +144,8 @@ export function buildRunJobToken(args: {
   runtimeProviderId?: string;
   environmentId?: string;
   runtimeExplicit?: boolean;
+  /** Resolved egress allowlist for a remote runtime sandbox (signed claim). */
+  allowedDomains?: string[];
 }): string | undefined {
   if (args.runId === undefined) return undefined;
   return generateWorkerToken(
@@ -378,6 +380,9 @@ export class MessageConsumer {
         runtimeProviderId: runtimeSelection.runtimeProviderId,
         environmentId: runtimeSelection.environmentId,
         runtimeExplicit: runtimeSelection.explicit,
+        // Egress allowlist as a signed claim (kept in lockstep with the
+        // deployment-token mint) — the runtime route reads it, never the body.
+        allowedDomains: data.networkConfig?.allowedDomains,
       });
 
       logger.info(

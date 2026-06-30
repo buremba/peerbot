@@ -21,6 +21,7 @@ import {
   createTestEntity,
   createTestOrganization,
   createTestUser,
+  insertChatConnectionRow,
 } from '../../setup/test-fixtures';
 
 const TEAM = 'T01ACME';
@@ -61,10 +62,13 @@ async function setupWorkspace() {
     ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
     DO NOTHING
   `;
-  await sql`
-    INSERT INTO agent_connections (id, agent_id, platform, organization_id, status)
-    VALUES (${CONN}, ${agent.agentId}, 'slack', ${org.id}, 'active')
-  `;
+  await insertChatConnectionRow({
+    id: CONN,
+    agentId: agent.agentId,
+    platform: 'slack',
+    organizationId: org.id,
+    status: 'active',
+  });
   for (const channelId of ['C01ENG', 'C01SEC']) {
     await sql`
       INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id)

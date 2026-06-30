@@ -133,6 +133,43 @@ describe("manage_connections channel-binding actions", () => {
     expect(Array.isArray(res.audiences)).toBe(true);
   });
 
+  it("get_channel_audience by connection_id tags each channel with its agent", async () => {
+    const connId = await makeManagedSlackConnection({
+      orgId,
+      slug: "slackinst-aud",
+      teamId: TEAM,
+    });
+    await workspace.owner.connections.manage({
+      action: "bind_channel",
+      agent_id: agentId,
+      platform: "slack",
+      channel_id: "slack:CAUD",
+      team_id: TEAM,
+    });
+
+    const res = (await workspace.owner.connections.manage({
+      action: "get_channel_audience",
+      connection_id: connId,
+    })) as {
+      connection_id?: number;
+      audiences?: Array<{ channelId: string; agentId?: string | null }>;
+      error?: string;
+    };
+    expect(res.error).toBeUndefined();
+    expect(res.connection_id).toBe(connId);
+    const channel = res.audiences?.find((a) => a.channelId === "slack:CAUD");
+    expect(channel).toBeDefined();
+    // The connection-centric view tags the channel with the binding's agent.
+    expect(channel?.agentId).toBe(agentId);
+  });
+
+  it("get_channel_audience requires exactly one of agent_id / connection_id", async () => {
+    const res = (await workspace.owner.connections.manage({
+      action: "get_channel_audience",
+    })) as { error?: string };
+    expect(res.error).toMatch(/exactly one/);
+  });
+
   it("fences cross-org: an agent in another org is not reachable", async () => {
     const otherOrg = await createTestOrganization({ name: "Other Org" });
     const { agentId: foreignAgent } = await createTestAgent({

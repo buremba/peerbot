@@ -357,9 +357,18 @@ export const UnbindChannelAction = Type.Object({
 
 export const GetChannelAudienceAction = Type.Object({
 	action: Type.Literal("get_channel_audience"),
-	agent_id: Type.String({
-		description: "Agent whose bound channels' recall audience to read.",
-	}),
+	agent_id: Type.Optional(
+		Type.String({
+			description:
+				"Agent whose bound channels' recall audience to read (per-agent view).",
+		}),
+	),
+	connection_id: Type.Optional(
+		Type.Number({
+			description:
+				"Connection whose channels' recall audience to read (connection-centric view, across every agent that bound a channel through it). Each audience carries the binding's agent. Provide exactly one of agent_id / connection_id.",
+		}),
+	),
 });
 
 export const ConnectChannelDmAction = Type.Object({
@@ -495,7 +504,8 @@ export type ManageConnectionsResult =
 	| { action: "unbind_channel"; success: true }
 	| {
 			action: "get_channel_audience";
-			agent_id: string;
+			agent_id?: string;
+			connection_id?: number;
 			audiences: ChannelAudience[];
 	  }
 	| {

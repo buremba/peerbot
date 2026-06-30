@@ -28,6 +28,7 @@ import { createPostgresAppInstallationStore } from "../../../../lobu/stores/app-
 import { orgContext } from "../../../../lobu/stores/org-context";
 import { PostgresSecretStore } from "../../../../lobu/stores/postgres-secret-store";
 import { canonicalSlackChannelId } from "../../../../preview/slack";
+import { getWorkspaceRole } from "../../../../utils/organization-access";
 import type { ToolContext } from "../../../registry";
 import type { ConnectionsArgs, ManageConnectionsResult } from "../schemas";
 
@@ -180,10 +181,54 @@ export async function handleGetChannelAudience(
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
 	const { organizationId, userId } = ctx;
+	const sql = getDb();
+
+	// Connection-centric view: every channel bound through this connection, each
+	// audience carrying the binding's agent — the connections surface's channel
+	// list. Fenced by connection visibility (a connection in another org / a
+	// private connection the caller can't see returns nothing).
+	if (args.connection_id != null) {
+		const rows = await resolveConnectionChannelRows(
+			sql,
+			organizationId,
+			userId,
+			args.connection_id,
+		);
+		const audiences = await getChannelAudiences(sql, {
+			organizationId,
+			userId: userId ?? null,
+			rows: rows.map((r) => ({
+				id: r.id,
+				platform: r.platform,
+				channel_id: r.channel_id,
+				team_id: r.team_id,
+				created_at: r.created_at,
+			})),
+		});
+		const agentByKey = new Map(
+			rows.map((r) => [
+				`${r.channel_id}|${r.team_id ?? ""}`,
+				{ agentId: r.agent_id, agentName: r.agent_name },
+			]),
+		);
+		const enriched = audiences.map((a) => ({
+			...a,
+			...(agentByKey.get(`${a.channelId}|${a.teamId ?? ""}`) ?? {}),
+		}));
+		return {
+			action: "get_channel_audience",
+			connection_id: args.connection_id,
+			audiences: enriched,
+		};
+	}
+
+	// Per-agent view (legacy/agent-scoped).
+	if (!args.agent_id) {
+		return { error: "Provide exactly one of agent_id / connection_id" };
+	}
 	if (!(await assertAgentInOrg(organizationId, args.agent_id))) {
 		return { error: "Agent not found" };
 	}
-	const sql = getDb();
 	const rows = await resolveBoundChannelRows(sql, {
 		organizationId,
 		agentId: args.agent_id,
@@ -194,6 +239,66 @@ export async function handleGetChannelAudience(
 		rows,
 	});
 	return { action: "get_channel_audience", agent_id: args.agent_id, audiences };
+}
+
+interface ConnectionChannelRow {
+	id: string;
+	platform: string;
+	channel_id: string;
+	team_id: string | null;
+	created_at: Date;
+	agent_id: string;
+	agent_name: string | null;
+}
+
+/**
+ * Channels bound through ONE connection (by numeric connection id), each with
+ * the binding's agent. Mirrors branch (A) of resolveBoundChannelRows — a binding
+ * matches its connection by the unified connection_id link, falling back to the
+ * legacy (org, agent, platform) tuple — but scoped to a single connection and
+ * with the agent joined. Visibility-gated (mirrors read_channel_feed): anonymous
+ * sees org-visible connections only; a non-admin member sees org + own; owners /
+ * admins see all.
+ */
+async function resolveConnectionChannelRows(
+	sql: ReturnType<typeof getDb>,
+	organizationId: string,
+	userId: string | null,
+	connectionId: number,
+): Promise<ConnectionChannelRow[]> {
+	let visibilityFilter = sql``;
+	if (!userId) {
+		visibilityFilter = sql`AND c.visibility = 'org'`;
+	} else {
+		const role = await getWorkspaceRole(sql, organizationId, userId);
+		if (role !== "owner" && role !== "admin") {
+			visibilityFilter = sql`AND (c.visibility = 'org' OR c.created_by = ${userId})`;
+		}
+	}
+	return (await sql`
+		SELECT
+			CASE WHEN c.slug LIKE 'agentconn-%'
+				THEN substring(c.slug from 11) ELSE c.slug END AS id,
+			c.connector_key AS platform,
+			b.channel_id, b.team_id, b.created_at,
+			b.agent_id, a.name AS agent_name
+		FROM connections c
+		JOIN agent_channel_bindings b
+			ON (
+				b.connection_id = c.id
+				OR (b.connection_id IS NULL
+					AND b.organization_id = c.organization_id
+					AND b.agent_id = c.agent_id
+					AND b.platform = c.connector_key)
+			)
+		LEFT JOIN agents a
+			ON a.organization_id = b.organization_id AND a.id = b.agent_id
+		WHERE c.id = ${connectionId}
+			AND c.organization_id = ${organizationId}
+			AND c.deleted_at IS NULL
+			${visibilityFilter}
+		ORDER BY b.created_at ASC
+	`) as ConnectionChannelRow[];
 }
 
 /** Open + bind the caller's Slack DM with a managed install's bot to an agent

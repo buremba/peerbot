@@ -3,7 +3,6 @@ import { createGenericRuntimeBashOps } from "../embedded/runtime/generic-runtime
 import { getWorkerRuntimeProvider } from "../embedded/runtime/index";
 
 const originalEnv = {
-  JUST_BASH_ALLOWED_DOMAINS: process.env.JUST_BASH_ALLOWED_DOMAINS,
   LOBU_RUNTIME_PROVIDER: process.env.LOBU_RUNTIME_PROVIDER,
 };
 const originalFetch = globalThis.fetch;
@@ -18,7 +17,6 @@ function restoreEnv(name: keyof typeof originalEnv): void {
 }
 
 afterEach(() => {
-  restoreEnv("JUST_BASH_ALLOWED_DOMAINS");
   restoreEnv("LOBU_RUNTIME_PROVIDER");
   globalThis.fetch = originalFetch;
   mock.restore();
@@ -36,12 +34,6 @@ describe("worker runtime registry", () => {
 
 describe("createGenericRuntimeBashOps", () => {
   test("posts bash execution to the generic runtime route without naming a provider", async () => {
-    process.env.JUST_BASH_ALLOWED_DOMAINS = JSON.stringify([
-      "github.com",
-      ".npmjs.org",
-      "bad domain",
-    ]);
-
     const fetchMock = mock(async () =>
       Response.json({ stdout: "ok\n", stderr: "", exitCode: 0 })
     );
@@ -87,6 +79,9 @@ describe("createGenericRuntimeBashOps", () => {
     const body = JSON.parse(String(init.body));
     // The worker never selects a provider — the gateway derives it from the token.
     expect(body).not.toHaveProperty("provider");
+    // …and never supplies the egress allowlist: the gateway reads it from the
+    // signed token so a worker can't widen its own sandbox network policy.
+    expect(body).not.toHaveProperty("allowedDomains");
     expect(body).toEqual({
       command: "echo ok",
       cwd: "/subdir",
@@ -102,7 +97,6 @@ describe("createGenericRuntimeBashOps", () => {
         TEMP: "/vercel/sandbox/.tmp",
         XDG_CACHE_HOME: "/vercel/sandbox/.cache",
       },
-      allowedDomains: ["github.com", ".npmjs.org"],
     });
   });
 

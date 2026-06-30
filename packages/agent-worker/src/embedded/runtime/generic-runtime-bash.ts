@@ -11,8 +11,6 @@ type RuntimeExecResponse = {
   error?: unknown;
 };
 
-const DOMAIN_PATTERN = /^[A-Za-z0-9.*_-]+(?::\d+)?$/;
-
 /**
  * The worker egresses through a local gateway HTTP proxy (`HTTP_PROXY=…:8118`),
  * which is meaningless inside a remote sandbox — the sandbox enforces egress
@@ -29,21 +27,6 @@ const REMOTE_UNSUPPORTED_ENV_KEYS = [
   "http_proxy",
   "no_proxy",
 ] as const;
-
-function parseAllowedDomains(): string[] {
-  const raw = process.env.JUST_BASH_ALLOWED_DOMAINS;
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((entry): entry is string => typeof entry === "string")
-      .map((entry) => entry.trim())
-      .filter((entry) => entry === "*" || DOMAIN_PATTERN.test(entry));
-  } catch {
-    return [];
-  }
-}
 
 function commandEnv(
   env: NodeJS.ProcessEnv | undefined,
@@ -84,7 +67,9 @@ export function createGenericRuntimeBashOps(
           workspaceDir: params.gw.workspaceDir,
           timeoutMs,
           env: commandEnv(env, provider.remoteEnv),
-          allowedDomains: parseAllowedDomains(),
+          // NOTE: the egress allowlist is NOT sent here — the gateway reads it
+          // from the signed worker token (the worker is the sandbox-ee and must
+          // not be able to widen its own sandbox network policy).
         }),
         signal,
       });

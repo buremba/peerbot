@@ -85,6 +85,15 @@ export interface WorkerTokenData {
    * credential from system env only. Set together with `runtimeProviderId`.
    */
   environmentId?: string;
+  /**
+   * Egress allowlist (the agent's resolved `networkConfig.allowedDomains`) for a
+   * remote runtime sandbox. Carried as a SIGNED claim — set gateway-side at mint
+   * from the agent's network config — because the generic `/internal/runtime/exec`
+   * route must NOT trust a worker-supplied list: the worker is the sandbox-ee, so
+   * a compromised one could send `["*"]` and get an allow-all sandbox, bypassing
+   * egress policy. Absent/empty → the sandbox is `deny-all` (fail closed).
+   */
+  allowedDomains?: string[];
 }
 
 export function generateWorkerToken(
@@ -124,6 +133,8 @@ export function generateWorkerToken(
     runtimeProviderId?: string;
     /** Selected environment id backing the runtime credential. See WorkerTokenData.environmentId. */
     environmentId?: string;
+    /** Resolved egress allowlist for a remote runtime sandbox. See WorkerTokenData.allowedDomains. */
+    allowedDomains?: string[];
   }
 ): string {
   if (!options.channelId) {
@@ -150,6 +161,7 @@ export function generateWorkerToken(
     adminTools: options.adminTools,
     runtimeProviderId: options.runtimeProviderId,
     environmentId: options.environmentId,
+    allowedDomains: options.allowedDomains,
   };
 
   return encrypt(JSON.stringify(payload));

@@ -190,30 +190,40 @@ function passesCreateWhen(predicate: EntityLinkPredicate | undefined, item: Batc
  * flat alias array the metric compiler resolves event fields against
  * (`metadata->'aliases'`). entity_identities serves recall/authz; aliases serve
  * metrics; both must carry a contact's identifiers or its per-entity metrics
- * silently drop. Read-modify-write, only writing when something is missing, so
- * repeat messages from a known sender (no new identifier) cost nothing.
+ * silently drop.
+ *
+ * Done as ONE atomic UPDATE that unions the row's existing aliases with the new
+ * identifiers in SQL — a JS read-modify-write would let concurrent ingests on
+ * the same entity clobber each other's additions. The `@>` guard means the write
+ * is skipped (0 rows) when every identifier is already present, so repeat
+ * messages from a known, fully-aliased sender cost only a PK lookup. Passing the
+ * entity's full identifier set (not just freshly-inserted ones) also repairs a
+ * legacy entity whose `entity_identities` predate aliases-on-create.
  */
 async function ensureAliases(
   sql: DbClient,
   params: { orgId: string; entityId: number; identifiers: string[] }
 ): Promise<void> {
   if (params.identifiers.length === 0) return;
-  const rows = await sql<{ metadata: Record<string, unknown> | null }>`
-    SELECT metadata FROM entities
-    WHERE id = ${params.entityId} AND organization_id = ${params.orgId} AND deleted_at IS NULL
-    LIMIT 1
-  `;
-  if (rows.length === 0) return;
-  const current = rows[0].metadata ?? {};
-  const existing = Array.isArray(current.aliases) ? (current.aliases as unknown[]).map(String) : [];
-  const merged = new Set(existing);
-  for (const id of params.identifiers) merged.add(id);
-  if (merged.size === existing.length) return; // nothing new
-  const next = { ...current, aliases: [...merged] };
   await sql`
     UPDATE entities
-    SET metadata = ${sql.json(next)}, updated_at = current_timestamp
-    WHERE id = ${params.entityId} AND organization_id = ${params.orgId} AND deleted_at IS NULL
+    SET metadata = jsonb_set(
+          COALESCE(metadata, '{}'::jsonb),
+          '{aliases}',
+          (
+            SELECT to_jsonb(array_agg(DISTINCT a))
+            FROM (
+              SELECT jsonb_array_elements_text(COALESCE(metadata->'aliases', '[]'::jsonb)) AS a
+              UNION
+              SELECT unnest(${pgTextArray(params.identifiers)}::text[]) AS a
+            ) u
+          )
+        ),
+        updated_at = current_timestamp
+    WHERE id = ${params.entityId}
+      AND organization_id = ${params.orgId}
+      AND deleted_at IS NULL
+      AND NOT (COALESCE(metadata->'aliases', '[]'::jsonb) @> ${sql.json(params.identifiers)}::jsonb)
   `;
 }
 
@@ -685,16 +695,16 @@ async function resolveLinksByKind(
           identities: link.identities.filter((i) => !i.matchOnly),
         });
         attached = [...fresh];
-        // Mirror only genuinely-new identifiers into metadata.aliases for metric
-        // resolution. A re-insert that ON CONFLICT-skipped returns nothing, so a
-        // repeat message from a known sender does no alias write at all.
-        if (fresh.length > 0) {
-          await ensureAliases(sql, {
-            orgId: params.orgId,
-            entityId,
-            identifiers: fresh.map((a) => a.identifier),
-          });
-        }
+        // Mirror this link's non-matchOnly identifiers into metadata.aliases for
+        // metric resolution. Passing the full set (not just `fresh`) repairs a
+        // legacy entity whose identities predate aliases-on-create; ensureAliases'
+        // `@>` guard makes it a no-op write once the aliases are complete, so a
+        // repeat message from a known sender stays cheap.
+        await ensureAliases(sql, {
+          orgId: params.orgId,
+          entityId,
+          identifiers: link.identities.filter((i) => !i.matchOnly).map((i) => i.identifier),
+        });
         // The matched identifiers themselves are this entity's even if a
         // re-insert was a no-op (they were how we found it), so claim them too.
         for (const id of link.identities) {

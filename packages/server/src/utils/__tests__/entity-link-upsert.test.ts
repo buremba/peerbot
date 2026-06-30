@@ -562,6 +562,62 @@ describe('applyEntityLinks', () => {
     ]);
   });
 
+  it('backfills metadata.aliases on a normal match for a legacy entity that has none', async () => {
+    const { org, user } = await setupOrg('aliases-backfill org');
+    const sql = getTestDb();
+
+    // Legacy entity: has the identity row but NO aliases key in metadata (created
+    // by the pre-aliases path). A plain matching message must repair it.
+    const [{ id: entityId }] = await sql<{ id: number | string }[]>`
+      INSERT INTO entities (organization_id, entity_type_id, name, slug, metadata, created_by)
+      VALUES (
+        ${org.id},
+        (SELECT id FROM entity_types WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL),
+        'Rob', 'member-legacy', '{"push_name":"Rob"}'::jsonb, ${user.id}
+      )
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
+      VALUES (${org.id}, ${Number(entityId)}, 'wa_jid', '14155551234@s.whatsapp.net', 'seed')
+    `;
+
+    await installRule(org.id, 'whatsapp', 'message', {
+      entityType: '$member',
+      autoCreate: true,
+      createWhen: { path: 'metadata.is_group', equals: false },
+      identities: [
+        { namespace: 'wa_jid', eventPath: 'metadata.sender_jid' },
+        { namespace: 'phone', eventPath: 'metadata.sender_phone' },
+      ],
+    });
+
+    await applyEntityLinks({
+      connectorKey: 'whatsapp',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [
+        {
+          origin_type: 'message',
+          metadata: {
+            sender_jid: '14155551234@s.whatsapp.net',
+            sender_phone: '14155551234',
+            is_group: false,
+          },
+        },
+      ],
+    });
+
+    const rows = await sql<{ metadata: { aliases?: string[] } }[]>`
+      SELECT metadata FROM entities WHERE id = ${Number(entityId)}
+    `;
+    // The matched-on wa_jid AND the newly-accreted phone are both repaired in.
+    expect([...(rows[0].metadata.aliases ?? [])].sort()).toEqual([
+      '14155551234',
+      '14155551234@s.whatsapp.net',
+    ]);
+  });
+
   it('resolveEntityLinksForItems writes through the passed transaction handle', async () => {
     const { org } = await setupOrg('tx-threaded org');
     const sql = getTestDb();

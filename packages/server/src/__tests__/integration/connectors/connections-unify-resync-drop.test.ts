@@ -73,6 +73,7 @@ interface Captured {
 	managed: { status: string } | null;
 	byoTc: { status: string } | null;
 	bindingLinked: boolean;
+	webhook: { connectorKey: string; credentialMode: string | null } | null;
 	tableDropped: boolean;
 }
 
@@ -98,6 +99,7 @@ describe("connections-unify resync + DROP migration", () => {
 			managed: null,
 			byoTc: null,
 			bindingLinked: false,
+			webhook: null,
 			tableDropped: false,
 		};
 
@@ -150,6 +152,14 @@ describe("connections-unify resync + DROP migration", () => {
 					INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id)
 					VALUES (${orgId}, ${agentId}, 'telegram', 'telegram:chat-1', NULL)
 				`;
+				// G: a #1235 ingest-only `platform='webhook'` row — excluded by the
+				//    Stage-1 chat allowlist, so it must be migrated here (not dropped).
+				await tx`
+					INSERT INTO agent_connections (id, organization_id, agent_id, platform, config, settings, metadata, status)
+					VALUES ('rs-webhook', ${orgId}, ${agentId}, 'webhook',
+					        ${tx.json({ platform: "webhook", signatureSecret: "secret://wh" })},
+					        ${tx.json({})}, ${tx.json({})}, 'active')
+				`;
 
 				// ── run the migration's up-section verbatim ──────────────────────
 				await tx.unsafe(upSection);
@@ -190,6 +200,14 @@ describe("connections-unify resync + DROP migration", () => {
 					WHERE organization_id = ${orgId} AND channel_id = 'telegram:chat-1'
 				`;
 				result.bindingLinked = bind?.connection_id != null;
+
+				const [wh] = await tx`
+					SELECT connector_key, credential_mode FROM connections
+					WHERE organization_id = ${orgId} AND slug = 'agentconn-rs-webhook' AND deleted_at IS NULL
+				`;
+				result.webhook = wh
+					? { connectorKey: wh.connector_key, credentialMode: wh.credential_mode }
+					: null;
 
 				const [{ exists: tableExists }] = await tx`
 					SELECT EXISTS (
@@ -233,6 +251,11 @@ describe("connections-unify resync + DROP migration", () => {
 
 	it("E. links a previously-unlinked binding to its connection", () => {
 		expect(captured.bindingLinked).toBe(true);
+	});
+
+	it("G. migrates a platform=webhook (#1235) row instead of dropping it", () => {
+		expect(captured.webhook?.connectorKey).toBe("webhook");
+		expect(captured.webhook?.credentialMode).toBe("byo");
 	});
 
 	it("F. drops the legacy agent_connections table", () => {

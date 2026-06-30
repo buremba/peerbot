@@ -40,12 +40,18 @@ WHERE c.credential_mode = 'managed'
         AND ac.status = 'active'
   );
 
--- ── Step 2: upsert every BYO chat connection from the frozen legacy snapshot ──
+-- ── Step 2: upsert EVERY agent_connections row from the frozen legacy snapshot ──
 -- slug = 'agentconn-'||id keys the projection 1:1 to its agent_connections row.
--- ON CONFLICT updates config/status/agent_id/metadata so any drift since the
--- Stage-1 backfill (token rotations, settings edits, status changes) converges.
--- Status maps stopped/* → paused, error → error, active → active (Step 1 already
--- cleared the only contention).
+-- NO platform filter: agent_connections only ever held chat-store connections
+-- (the AgentConnectionStore's rows), and ALL of them — including the #1235
+-- `platform='webhook'` ingest connections and any `api` rows — are resolved at
+-- runtime via getConnection (credential_mode IS NOT NULL). The Stage-1 backfill's
+-- chat-only allowlist EXCLUDED webhook/api, which the Stage-2a legacy-read
+-- fallback masked; with the fallback and the table both gone, those rows must be
+-- projected here or they would vanish on the drop. ON CONFLICT updates
+-- config/status/agent_id/metadata so any drift since Stage-1 converges. Status
+-- maps stopped/* → paused, error → error, active → active (Step 1 already cleared
+-- the only contention).
 INSERT INTO public.connections (
     organization_id, connector_key, external_tenant_id, agent_id, display_name,
     status, config, credential_mode, slug, visibility, error_message,
@@ -71,7 +77,6 @@ SELECT
     ac.created_at,
     ac.updated_at
 FROM public.agent_connections ac
-WHERE ac.platform IN ('slack', 'telegram', 'discord', 'whatsapp', 'teams', 'gchat')
 ON CONFLICT (organization_id, slug) WHERE deleted_at IS NULL DO UPDATE SET
     connector_key = EXCLUDED.connector_key,
     external_tenant_id = EXCLUDED.external_tenant_id,

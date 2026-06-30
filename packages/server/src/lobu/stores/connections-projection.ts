@@ -19,7 +19,7 @@
 
 import type { StoredConnection } from "@lobu/core";
 import { createLogger } from "@lobu/core";
-import { tsTime } from "../../db/client";
+import { getDb, tsTime } from "../../db/client";
 
 const logger = createLogger("connections-projection");
 
@@ -55,6 +55,36 @@ export function slugToLegacyId(slug: string): string {
   return slug.startsWith(BYO_SLUG_PREFIX)
     ? slug.slice(BYO_SLUG_PREFIX.length)
     : slug;
+}
+
+/**
+ * Mirror a single `config` field into the `connections` projection for a legacy
+ * runtime id, inside the caller's transaction.
+ *
+ * The Stage-2a dual-write store keeps the projection complete for normal
+ * connection writes, but a few paths patch `agent_connections.config` directly
+ * under a row lock (e.g. the Telegram webhook-secret backfill, which must
+ * `SELECT … FOR UPDATE` for multi-replica convergence) and so bypass the store.
+ * Without this, projection-first reads (`getConnection`) see a stale row.
+ *
+ * Idempotent: only writes — and bumps `updated_at`, which keys the per-pod
+ * instance memo — when the projected value actually differs, so hot paths that
+ * re-check an already-synced field don't churn live chat instances.
+ */
+export async function syncProjectionConfigField(
+  tx: ReturnType<typeof getDb>,
+  legacyId: string,
+  field: string,
+  value: string
+): Promise<void> {
+  await tx`
+    UPDATE connections
+    SET config = COALESCE(config, '{}'::jsonb)
+                 || jsonb_build_object(${field}::text, ${value}::text),
+        updated_at = now()
+    WHERE slug = ${legacyIdToSlug(legacyId)}
+      AND COALESCE(config ->> ${field}, '') <> ${value}
+  `;
 }
 
 /**

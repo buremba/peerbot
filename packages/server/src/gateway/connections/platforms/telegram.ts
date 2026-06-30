@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { createLogger, isSecretRef } from "@lobu/core";
 import { getDb } from "../../../db/client.js";
+import { syncProjectionConfigField } from "../../../lobu/stores/connections-projection.js";
 import { isCloudMode } from "../../../utils/cloud-mode.js";
 import type { IFileHandler } from "../../platform/file-handler.js";
 import { persistSecretValue, resolveSecretValue } from "../../secrets/index.js";
@@ -112,6 +113,15 @@ async function ensureTelegramWebhookSecret(
     const storedConfig = (row.config ?? {}) as Record<string, unknown>;
     const existingRef = storedConfig.secretToken;
     if (typeof existingRef === "string" && existingRef.length > 0) {
+      // A token persisted to agent_connections by a pre-projection backfill (or
+      // any path that bypassed the dual-write store) leaves projection-first
+      // reads stale — reconcile it in the same locked transaction.
+      await syncProjectionConfigField(
+        tx,
+        connection.id,
+        "secretToken",
+        existingRef
+      );
       return existingRef;
     }
     const ref = await persistSecretValue(
@@ -130,6 +140,13 @@ async function ensureTelegramWebhookSecret(
           updated_at = now()
       WHERE id = ${connection.id}
     `;
+    // Mirror the freshly-persisted token into the projection in the same
+    // transaction so projection-first reads (getConnection) see it. `ref` is
+    // only absent when there is no secret store to persist into — nothing to
+    // mirror in that degraded case.
+    if (typeof ref === "string") {
+      await syncProjectionConfigField(tx, connection.id, "secretToken", ref);
+    }
     generated = true;
     return ref;
   });

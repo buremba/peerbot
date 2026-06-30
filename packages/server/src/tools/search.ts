@@ -224,6 +224,9 @@ interface ConversationSnippet {
   channel_id: string;
   thread_id: string | null;
   author_name: string | null;
+  /** The sender's resolved person/$member entity id (store-only attribution),
+   * or null when unattributed (bot post / no team / unresolved). */
+  author_entity_id: number | null;
   text: string;
   occurred_at: string | null;
 }
@@ -409,7 +412,8 @@ async function fetchConversationSnippets(
   });
 
   const rows = (await sql`
-    SELECT cm.platform, cm.channel_id, cm.thread_id, cm.author_name, cm.text, cm.occurred_at
+    SELECT cm.platform, cm.channel_id, cm.thread_id, cm.author_name,
+           cm.author_entity_id, cm.text, cm.occurred_at
     FROM channel_messages cm
     WHERE cm.organization_id = ${gate.organizationId}
       AND (${pairFilter})
@@ -421,6 +425,7 @@ async function fetchConversationSnippets(
     channel_id: string;
     thread_id: string | null;
     author_name: string | null;
+    author_entity_id: number | string | null;
     text: string;
     occurred_at: Date | null;
   }>;
@@ -430,6 +435,7 @@ async function fetchConversationSnippets(
     channel_id: r.channel_id,
     thread_id: r.thread_id,
     author_name: r.author_name,
+    author_entity_id: r.author_entity_id == null ? null : Number(r.author_entity_id),
     text: r.text.length > 500 ? `${r.text.slice(0, 500)}...` : r.text,
     occurred_at: r.occurred_at ? new Date(r.occurred_at).toISOString() : null,
   }));

@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { createLogger, isSecretRef } from "@lobu/core";
 import { getDb } from "../../../db/client.js";
-import { syncProjectionConfigField } from "../../../lobu/stores/connections-projection.js";
+import { legacyIdToSlug } from "../../../lobu/stores/connections-projection.js";
 import { isCloudMode } from "../../../utils/cloud-mode.js";
 import type { IFileHandler } from "../../platform/file-handler.js";
 import { persistSecretValue, resolveSecretValue } from "../../secrets/index.js";
@@ -100,10 +100,11 @@ async function ensureTelegramWebhookSecret(
   // same transaction. Concurrent replicas serialize on the row lock, so only
   // the first writer generates and the rest read its ref. Returns the
   // effective `secret://` ref, or null when there is no stored row to lock.
+  const slug = legacyIdToSlug(connection.id);
   const tokenRef = await getDb().begin(async (tx) => {
     const rows = await tx<{ config: Record<string, unknown> | null }>`
-      SELECT config FROM agent_connections
-      WHERE id = ${connection.id}
+      SELECT config FROM connections
+      WHERE slug = ${slug}
       FOR UPDATE
     `;
     const row = rows[0];
@@ -113,15 +114,6 @@ async function ensureTelegramWebhookSecret(
     const storedConfig = (row.config ?? {}) as Record<string, unknown>;
     const existingRef = storedConfig.secretToken;
     if (typeof existingRef === "string" && existingRef.length > 0) {
-      // A token persisted to agent_connections by a pre-projection backfill (or
-      // any path that bypassed the dual-write store) leaves projection-first
-      // reads stale — reconcile it in the same locked transaction.
-      await syncProjectionConfigField(
-        tx,
-        connection.id,
-        "secretToken",
-        existingRef
-      );
       return existingRef;
     }
     const ref = await persistSecretValue(
@@ -129,25 +121,18 @@ async function ensureTelegramWebhookSecret(
       secretName,
       generateTelegramSecretToken()
     );
-    await tx`
-      UPDATE agent_connections
-      SET config = jsonb_set(
-            COALESCE(config, '{}'::jsonb),
-            '{secretToken}',
-            to_jsonb(${ref}::text),
-            true
-          ),
-          updated_at = now()
-      WHERE id = ${connection.id}
-    `;
-    // Mirror the freshly-persisted token into the projection in the same
-    // transaction so projection-first reads (getConnection) see it. `ref` is
-    // only absent when there is no secret store to persist into — nothing to
-    // mirror in that degraded case.
+    // `ref` is only absent when there is no secret store to persist into —
+    // nothing to write in that degraded case.
     if (typeof ref === "string") {
-      await syncProjectionConfigField(tx, connection.id, "secretToken", ref);
+      await tx`
+        UPDATE connections
+        SET config = COALESCE(config, '{}'::jsonb)
+                     || jsonb_build_object('secretToken', ${ref}::text),
+            updated_at = now()
+        WHERE slug = ${slug}
+      `;
+      generated = true;
     }
-    generated = true;
     return ref;
   });
 

@@ -19,8 +19,8 @@
  *   5. dedupe key: configured header value, else sha256(raw body)
  *   6. synchronous event insert                        → 202 {"ok":true,"id":<eventId>}
  *
- * Idempotency: `events.connection_id` is a bigint FK to connector
- * `connections` (NOT `agent_connections`) and `events.origin_id` is only
+ * Idempotency: `events.connection_id` is a bigint FK to the connector
+ * `connections` row and `events.origin_id` is only
  * indexed, not unique — so redelivery dedupe rides the partial unique index
  * `events_webhook_ingest_dedupe` on `(organization_id, connector_key,
  * origin_id) WHERE connector_key LIKE 'webhook:%'` (see

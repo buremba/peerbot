@@ -937,9 +937,10 @@ routes.delete('/:agentId/channel-bindings', async (c) => {
 // ============================================================
 // Platform routes (nested under /:agentId/platforms)
 //
-// Storage internals still live in the `agent_connections` table — the rename
-// is user-facing only. ChatInstanceManager and the connection store keep
-// their existing names because they're used by other (chat-side) callers.
+// Storage lives in the unified `connections` table (chat rows carry a non-null
+// credential_mode); the `platforms` route naming is user-facing only.
+// ChatInstanceManager and the connection store keep their existing names
+// because they're used by other (chat-side) callers.
 // ============================================================
 
 // ── List platforms ───────────────────────────────────────────────────────────

@@ -159,7 +159,11 @@ export function buildMessagePayload(params: {
   userId: string;
   botId: string;
   conversationId: string;
-  teamId: string;
+  // Optional to match the wire `MessagePayload` (the worker reads
+  // `payload.teamId ?? platformMetadata.teamId`). Slack always supplies it;
+  // teamless platforms (Telegram) and synthetic scheduled wakes omit it
+  // rather than stamping a placeholder.
+  teamId?: string;
   agentId: string;
   organizationId?: string;
   messageId: string;

@@ -24,6 +24,7 @@ import {
   createScheduledJob,
   deleteScheduledJob,
   getScheduledJob,
+  isDeliverableChatPlatform,
   listScheduledJobs,
   pauseScheduledJob,
   type ScheduledDeliveryContext,
@@ -231,7 +232,10 @@ function actionArgsForPayload(
 function sourceToDeliveryContext(
   source: ToolSourceContext | null | undefined
 ): ScheduledDeliveryContext | null {
-  if (!source?.platform || source.platform === 'api') return null;
+  // Only platforms the fire-time dispatch can actually deliver into; an
+  // unsupported source platform stores no delivery_context (api fallback)
+  // rather than a dead one that silently never posts.
+  if (!source?.platform || !isDeliverableChatPlatform(source.platform)) return null;
   if (!source.connectionId || !source.channelId || !source.conversationId) return null;
   return {
     platform: source.platform,

@@ -18,6 +18,7 @@ import { runConnectorHealthCheck } from '../connectors/connector-health';
 import { runClassificationReconciliation } from './classification-reconciliation';
 import { refreshConnectorDefinitions } from './refresh-connector-definitions';
 import {
+  isDeliverableChatPlatform,
   registerScheduledJobsTicker,
   type ScheduledDeliveryContext,
 } from './scheduled-jobs-service';
@@ -431,7 +432,7 @@ function registerMaintenanceTasks(
     const delivery = asDeliveryContext(p.__delivery_context);
     if (
       delivery &&
-      (delivery.platform === 'slack' || delivery.platform === 'telegram') &&
+      isDeliverableChatPlatform(delivery.platform) &&
       (await deliveryContextStillAuthorized({
         organizationId: orgId,
         agentId: p.agent_id,
@@ -444,7 +445,7 @@ function registerMaintenanceTasks(
           userId: delivery.userId || p.__created_by_user || 'scheduled',
           botId: delivery.platform,
           conversationId: delivery.conversationId,
-          teamId: delivery.teamId || delivery.platform,
+          teamId: delivery.teamId ?? undefined,
           agentId: p.agent_id,
           organizationId: orgId,
           messageId: `wake_${p.__scheduled_job_id ?? p.agent_id}_${Date.now()}`,

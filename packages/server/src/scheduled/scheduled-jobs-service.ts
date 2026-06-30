@@ -31,6 +31,19 @@ export interface ScheduledDeliveryContext {
   userId?: string | null;
 }
 
+/**
+ * Chat platforms a scheduled wake can post its reply back into. Single source
+ * of truth shared by the create-time gate (`manage_schedules`) and the
+ * fire-time dispatch (`scheduled/jobs.ts`) so the two can never drift — a
+ * platform accepted at creation but unhandled at execution would store a dead
+ * `delivery_context` and silently fall back to the api path.
+ */
+export const DELIVERABLE_CHAT_PLATFORMS = ['slack', 'telegram'] as const;
+
+export function isDeliverableChatPlatform(platform: string): boolean {
+  return (DELIVERABLE_CHAT_PLATFORMS as readonly string[]).includes(platform);
+}
+
 export interface ScheduledJobRow {
   id: string;
   organization_id: string;

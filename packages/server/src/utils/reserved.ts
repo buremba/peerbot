@@ -12,6 +12,14 @@ const OWNER_ROUTE_SEGMENTS = [
   'settings',
 ] as const;
 
+/** Legacy page slugs removed from the UI router. */
+const REMOVED_OWNER_SEGMENTS = [
+  'events',
+  'watchers',
+  'connections',
+  'sources',
+] as const;
+
 /**
  * Reserved owner-slug names. Combines:
  * - System-level route prefixes (not under /$owner) — `auth`, `api`, …
@@ -27,6 +35,7 @@ const OWNER_ROUTE_SEGMENTS = [
  */
 export const RESERVED_PATHS = [
   ...OWNER_ROUTE_SEGMENTS,
+  ...REMOVED_OWNER_SEGMENTS,
   'auth',
   'api',
   'inbox',
@@ -39,7 +48,6 @@ export const RESERVED_PATHS = [
   'logout',
   'signup',
   'register',
-  'sources',
   'contents',
   'entity-types',
   'www',
@@ -61,6 +69,7 @@ export const RESERVED_PATHS_SET: ReadonlySet<string> = new Set(RESERVED_PATHS);
  */
 export const RESERVED_ENTITY_TYPES = [
   ...OWNER_ROUTE_SEGMENTS,
+  ...REMOVED_OWNER_SEGMENTS,
   'organization',
   'user',
   'watcher',

@@ -39,7 +39,6 @@ import {
   createDeclaredAppWebhookProvider,
   createDefaultAppWebhookSecretResolver,
 } from "../routes/public/app-webhooks.js";
-import { createChannelBindingRoutes } from "../routes/public/channels.js";
 import { createConnectAuthRoutes } from "../routes/public/connect-auth.js";
 import {
   createConnectionCrudRoutes,
@@ -656,20 +655,12 @@ export function createGatewayApp(
       );
     }
 
+    // Channel management is no longer a bespoke HTTP island — it lives on the
+    // connections surface as manage_connections actions (list_channel_bindings,
+    // bind_channel, unbind_channel, get_channel_audience, connect_channel_dm).
+    // ChannelBindingService stays: agent routes + recall + streaming-feed
+    // materialization still depend on it.
     const channelBindingService = coreServices.getChannelBindingService();
-    if (channelBindingService) {
-      const channelBindingRouter = createChannelBindingRoutes({
-        channelBindingService,
-        userAgentsStore: coreServices.getUserAgentsStore(),
-        agentMetadataStore: coreServices.getAgentMetadataStore(),
-        appInstallationStore: createPostgresAppInstallationStore(),
-        secretStore: coreServices.getSecretStore(),
-      });
-      app.route("/api/v1/agents/:agentId/channels", channelBindingRouter);
-      logger.debug(
-				"Channel binding routes enabled at :8080/api/v1/agents/{agentId}/channels/*",
-      );
-    }
 
     {
       const userAgentsStore = coreServices.getUserAgentsStore();

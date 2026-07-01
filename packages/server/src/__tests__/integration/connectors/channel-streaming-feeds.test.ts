@@ -218,6 +218,79 @@ describe("channel streaming feeds", () => {
     expect(result.messages[1]).toMatchObject({ user: "assistant", text: "hi Alice", isBot: true });
   });
 
+  it("trigger_feed rejects a streaming feed (only collected feeds sync)", async () => {
+    const conn = await makeChatConnection({ orgId, teamId: "TACME" });
+    const feedId = await ensureStreamingChannelFeed({
+      connectionId: conn.id,
+      organizationId: orgId,
+      channelKey: "slack:C600",
+    });
+
+    const res = (await workspace.owner.feeds.manage({
+      action: "trigger_feed",
+      feed_id: feedId,
+    })) as { triggered?: boolean; run_id?: string; error?: string };
+
+    // A streaming feed has no connector fetch for its feed_key — triggering a
+    // sync would spawn a run against nothing. Reject before createSyncRun.
+    expect(res.triggered).toBeUndefined();
+    expect(res.run_id).toBeUndefined();
+    expect(res.error).toContain("only collected feeds");
+  });
+
+  it("read_channel_feed rejects a non-streaming (collected) feed id", async () => {
+    // A plain connection with the default kind='collected' feed.
+    const conn = await createTestConnection({
+      organization_id: orgId,
+      connector_key: "slack",
+      display_name: "Collected Slack",
+    });
+    const sql = getTestDb();
+    const feedRow = (await sql`
+      SELECT id, kind FROM feeds WHERE connection_id = ${conn.id} AND deleted_at IS NULL
+    `) as Array<{ id: number; kind: string }>;
+    expect(feedRow[0]?.kind).toBe("collected");
+
+    // read_channel_feed only reads streaming channel feeds; a collected feed id
+    // must not resolve to a transcript.
+    const res = (await workspace.owner.feeds.manage({
+      action: "read_channel_feed",
+      feed_id: feedRow[0].id,
+    })) as { messages?: unknown[]; error?: string };
+    expect(res.messages).toBeUndefined();
+    expect(res.error).toBe("Feed not found");
+  });
+
+  it("deleteAllBindings soft-deletes each unbound channel's streaming feed", async () => {
+    const conn = await makeChatConnection({ orgId, teamId: "TACME" });
+    const svc = new ChannelBindingService();
+    const { agentId } = await createTestAgent({ organizationId: orgId });
+
+    await svc.createBinding(agentId, "slack", "slack:C700", "TACME", {
+      organizationId: orgId,
+    });
+    await svc.createBinding(agentId, "slack", "slack:C701", "TACME", {
+      organizationId: orgId,
+    });
+
+    const sql = getDb();
+    const before = await sql`
+      SELECT COUNT(*)::int AS n FROM feeds
+      WHERE organization_id = ${orgId} AND kind = 'streaming' AND deleted_at IS NULL
+    `;
+    expect(Number(before[0]?.n)).toBe(2);
+
+    const removed = await svc.deleteAllBindings(agentId, orgId);
+    expect(removed).toBe(2);
+
+    // Both streaming feeds are retired — no live orphan feed left behind.
+    const after = await sql`
+      SELECT COUNT(*)::int AS n FROM feeds
+      WHERE organization_id = ${orgId} AND kind = 'streaming' AND deleted_at IS NULL
+    `;
+    expect(Number(after[0]?.n)).toBe(0);
+  });
+
   it("a chat-only connection with streaming feeds is not labeled a data connection", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
     await ensureStreamingChannelFeed({

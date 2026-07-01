@@ -283,6 +283,7 @@ async function handleReadChannelFeed(
     JOIN connections c ON c.id = f.connection_id
     WHERE f.id = ${args.feed_id}
       AND f.organization_id = ${organizationId}
+      AND f.kind = 'streaming'
       AND f.deleted_at IS NULL
       AND c.deleted_at IS NULL
       ${visibilityFilter}
@@ -581,7 +582,7 @@ async function handleTriggerFeed(
   const { organizationId } = ctx;
 
   const feedRows = await sql`
-    SELECT f.id, f.status, f.connection_id, c.connector_key
+    SELECT f.id, f.status, f.kind, f.connection_id, c.connector_key
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     WHERE f.id = ${args.feed_id} AND f.organization_id = ${organizationId} AND c.deleted_at IS NULL AND f.deleted_at IS NULL
@@ -592,6 +593,12 @@ async function handleTriggerFeed(
   }
 
   const feed = feedRows[0] as any;
+  // Only collected feeds run a connector sync. Streaming feeds (chat channels)
+  // are fed by inbound webhooks/capture, not a sync run — triggering one would
+  // spawn a run against a connector that has no fetch for this feed.
+  if (feed.kind !== 'collected') {
+    return { error: `Feed is ${feed.kind}, only collected feeds can be triggered` };
+  }
   if (feed.status !== 'active') {
     return { error: `Feed is ${feed.status}, must be active to trigger sync` };
   }

@@ -15,13 +15,14 @@ import {
   checkToolAccess,
   extractAuthContext,
 } from '../../tools/execute';
-import { getTool, type ToolContext } from '../../tools/registry';
+import { getAllTools, getTool, type ToolContext } from '../../tools/registry';
 import {
   getRequiredAccessLevel,
   hasRequiredMcpScope,
   isPublicReadable,
   requiresMemberWrite,
   requiresOwnerAdmin,
+  resolveMaxAccessLevel,
   SCOPE_CHECK_NOT_APPLICABLE,
 } from '../tool-access';
 
@@ -509,18 +510,6 @@ describe('checkToolAccess', () => {
     ).not.toThrow();
   });
 
-  it.each(['list_watchers', 'get_watcher', 'read_knowledge'])(
-    'exposes %s uniformly on MCP and REST (read-tier)',
-    (toolName) => {
-      expect(() =>
-        checkToolAccess(toolName, {}, { ...baseAuth, memberRole: 'owner' })
-      ).not.toThrow();
-      expect(() =>
-        checkToolAccess(toolName, {}, { ...baseAuth, memberRole: 'member' })
-      ).not.toThrow();
-    }
-  );
-
   it('builder adminTools allowlist limits ADMIN-tier actions to listed tools only', () => {
     const builderAuth = {
       ...baseAuth,
@@ -680,3 +669,77 @@ describe('first-party tool-name coverage', () => {
     }
   });
 });
+
+const ACCESS_SURFACE = `
+search_memory: read+public ?=read+public
+save_memory: write ?=write
+list_organizations: read ?=read
+search_sdk: read+public ?=read+public
+query_sdk: read ?=read
+list_metrics: read ?=read
+query_metric: read ?=read
+query_sql: read ?=read
+metric_series: read ?=read
+run_sdk: write ?=write
+manage_entity: create=write update=write list=read+public get=read+public delete=admin link=write unlink=write update_link=write list_links=read+public ?=read
+manage_entity_schema: list=read+public get=read+public create=admin update=admin delete=admin audit=read+public add_rule=admin remove_rule=admin list_rules=read+public ?=read
+manage_connections: list_connector_groups=read+public list=read+public get=read+public create=write connect=admin update=write delete=admin reauthenticate=write test=admin install_connector=admin uninstall_connector=admin toggle_connector_login=admin update_connector_auth=admin update_connector_default_config=admin update_connector_default_repair_agent=admin set_connector_entity_link_overrides=admin list_channel_bindings=read+public bind_channel=admin unbind_channel=admin get_channel_audience=read+public connect_channel_dm=admin ?=read
+manage_catalog: list_catalog=read+public list_installed=read+public ?=read
+manage_agents: list=admin get=admin create=admin update=admin delete=admin set_system_agent=admin ?=read
+manage_feeds: list_feeds=read+public read_feed=read+public create_feed=admin update_feed=admin delete_feed=admin trigger_feed=admin ?=read
+manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=admin test_auth_profile=admin create_auth_profile=write update_auth_profile=write delete_auth_profile=admin set_default_auth_profile=admin ?=read
+manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public approve=admin reject=admin ?=read
+notify: send=admin ?=admin
+manage_schedules: create=admin list=admin update=admin pause=admin cancel=admin ?=admin
+manage_watchers: create=admin update=admin create_version=admin complete_window=write trigger=admin delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read
+list_watchers: read+public ?=read+public
+get_watcher: read+public ?=read+public
+read_knowledge: read+public ?=read+public
+manage_classifiers: create=admin list=read+public generate_embeddings=admin delete=admin classify=admin ?=read
+manage_view_templates: set=admin get=read+public rollback=admin remove_tab=admin clear=admin ?=read
+resolve_path: read+public ?=read+public
+`.trim();
+
+describe('pinned access matrix', () => {
+  // One line per tool: every action's tier (+public readability) plus the `?`
+  // unknown-action probe (pins the fallback branch). A diff here is an
+  // access-control change — review it as one; regenerate lines from the
+  // failure diff. Captured before the internal-flag removal and identical
+  // after it: visibility changed, the access matrix did not.
+  function actionsOf(schema: any): string[] | null {
+    const action = schema?.properties?.action;
+    if (Array.isArray(action?.enum)) return action.enum.map(String);
+    if (typeof action?.const === 'string') return [action.const];
+    // Flat tools keep `action` as a TypeBox union → anyOf-of-const.
+    if (Array.isArray(action?.anyOf)) {
+      const consts = action.anyOf
+        .map((v: any) => v?.const)
+        .filter((v: unknown): v is string => typeof v === 'string');
+      return consts.length > 0 ? consts : null;
+    }
+    return null;
+  }
+
+  it('matches the fixture for every registered tool and action', () => {
+    const lines = getAllTools({ publicOnly: false, maxAccessLevel: 'admin' }).map((tool) => {
+      const readOnly = tool.annotations?.readOnlyHint === true;
+      const parts = [...(actionsOf(tool.inputSchema) ?? ['-']), '?'].map((action) => {
+        const args = action === '-' ? {} : { action };
+        const tier = getRequiredAccessLevel(tool.name, args, readOnly);
+        const pub = isPublicReadable(tool.name, args) ? '+public' : '';
+        return `${action === '-' ? '' : `${action}=`}${tier}${pub}`;
+      });
+      return `${tool.name}: ${parts.join(' ')}`;
+    });
+    expect(lines.join('\n')).toBe(ACCESS_SURFACE);
+  });
+
+  it('resolveMaxAccessLevel is the min of role and scope tiers', () => {
+    expect(resolveMaxAccessLevel('owner', ['mcp:admin'])).toBe('admin');
+    expect(resolveMaxAccessLevel('owner', ['mcp:write'])).toBe('write');
+    expect(resolveMaxAccessLevel('member', ['mcp:admin'])).toBe('write');
+    expect(resolveMaxAccessLevel(null, ['mcp:admin'])).toBe('read');
+    expect(resolveMaxAccessLevel('owner', null)).toBe('admin');
+  });
+});
+

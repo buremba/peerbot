@@ -15,9 +15,9 @@ import { post } from '../../setup/test-helpers';
 
 // Marker in the stub bundle so we can assert the served HTML is ours.
 const STUB_HTML =
-  '<!doctype html><html><body data-test="mcp-app-approve-stub">approve</body></html>';
+  '<!doctype html><html><body data-test="mcp-app-interaction-stub">interaction</body></html>';
 
-describe('MCP App resources — ui:// serving + _meta on pending approval', () => {
+describe('MCP App resources — ui:// serving (host-authored view)', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
   let owner: Awaited<ReturnType<typeof createTestUser>>;
   let client: Awaited<ReturnType<typeof createTestOAuthClient>>;
@@ -28,15 +28,15 @@ describe('MCP App resources — ui:// serving + _meta on pending approval', () =
   beforeAll(async () => {
     // Serve a stub bundle from a temp dir so resources/read needs no real owletto
     // build. The resolver's first candidate is
-    // `join(WEB_DIST_DIR, '..', 'dist-mcp-apps/approval/index.html')`, so point
+    // `join(WEB_DIST_DIR, '..', 'dist-mcp-apps/interaction/index.html')`, so point
     // WEB_DIST_DIR at `<tmp>/dist` and write the stub under `<tmp>/dist-mcp-apps`.
     // `<tmp>/dist/index.html` deliberately does NOT exist, so the SPA dist
     // resolver in index.ts skips this WEB_DIST_DIR and is unaffected. Set this
     // BEFORE any resources/read — the bundle resolver caches misses per process.
     tmpRoot = mkdtempSync(join(tmpdir(), 'lobu-mcp-app-'));
-    mkdirSync(join(tmpRoot, 'dist-mcp-apps', 'approval'), { recursive: true });
+    mkdirSync(join(tmpRoot, 'dist-mcp-apps', 'interaction'), { recursive: true });
     writeFileSync(
-      join(tmpRoot, 'dist-mcp-apps', 'approval', 'index.html'),
+      join(tmpRoot, 'dist-mcp-apps', 'interaction', 'index.html'),
       STUB_HTML
     );
     process.env.WEB_DIST_DIR = join(tmpRoot, 'dist');
@@ -84,14 +84,14 @@ describe('MCP App resources — ui:// serving + _meta on pending approval', () =
     return sessionId!;
   }
 
-  it('serves the ui://lobu/approve bundle over resources/read', async () => {
+  it('serves the ui://lobu/interaction bundle over resources/read', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
         id: 1,
         method: 'resources/read',
-        params: { uri: 'ui://lobu/approve' },
+        params: { uri: 'ui://lobu/interaction' },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -100,12 +100,12 @@ describe('MCP App resources — ui:// serving + _meta on pending approval', () =
     expect(response.status).toBe(200);
     const body = await response.json();
     const content = body.result?.contents?.[0];
-    expect(content?.uri).toBe('ui://lobu/approve');
+    expect(content?.uri).toBe('ui://lobu/interaction');
     expect(content?.mimeType).toBe('text/html');
-    expect(content?.text).toContain('mcp-app-approve-stub');
+    expect(content?.text).toContain('mcp-app-interaction-stub');
   });
 
-  it('attaches _meta.ui + structuredContent to a pending manage_agents approval', async () => {
+  it('returns a pending manage_agents approval as plain text, without tool-result _meta', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: {
@@ -128,11 +128,14 @@ describe('MCP App resources — ui:// serving + _meta on pending approval', () =
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.result?.isError).not.toBe(true);
-    // The pending approval carries the MCP App UI pointer + the proposal, so a
-    // host renders the ApprovalCard with the create diff.
-    expect(body.result?._meta?.ui?.resourceUri).toBe('ui://lobu/approve');
-    expect(body.result?.structuredContent?.action).toBe('create');
-    expect(typeof body.result?.structuredContent?.runId).toBe('number');
-    expect(body.result?.structuredContent?.current).toBeNull();
+    // The pending approval still returns its text result, but the tool result no
+    // longer carries an MCP App UI pointer: our own SPA builds the interaction
+    // view CLIENT-side from the SSE card payload, and external-host rendering
+    // (which needs the SERVER to author that view) is a deliberate follow-up.
+    // Assert the pointer is absent so we don't silently re-introduce a `_meta`
+    // that points a host at a bundle it can't feed from raw data.
+    expect(body.result?._meta?.ui).toBeUndefined();
+    expect(body.result?.structuredContent).toBeUndefined();
+    expect(typeof body.result?.content?.[0]?.text).toBe('string');
   });
 });

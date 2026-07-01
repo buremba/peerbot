@@ -9,7 +9,8 @@
  *      with next_run_at in the past — kind is the discriminator.
  *   3. ChannelBindingService.createBinding materializes the channel's feed under
  *      the bound connection; deleteBinding soft-deletes it.
- *   4. manage_feeds read_channel_feed returns the channel transcript.
+ *   4. manage_feeds read_feed dispatches on kind: a streaming feed returns its
+ *      channel transcript, a collected feed returns metadata + recent runs.
  *   5. facet derivation: a chat-only connection whose channels are streaming
  *      feeds is NOT mislabeled a data connection.
  */
@@ -175,7 +176,7 @@ describe("channel streaming feeds", () => {
     expect(Number(after[0]?.n)).toBe(0);
   });
 
-  it("read_channel_feed returns the channel transcript", async () => {
+  it("read_feed returns a streaming feed's transcript (kind dispatch)", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
     const feedId = await ensureStreamingChannelFeed({
       connectionId: conn.id,
@@ -209,10 +210,14 @@ describe("channel streaming feeds", () => {
     }
 
     const result = (await workspace.owner.feeds.manage({
-      action: "read_channel_feed",
+      action: "read_feed",
       feed_id: feedId,
-    })) as { messages: Array<{ user: string; text: string; isBot: boolean }> };
+    })) as {
+      kind: string;
+      messages: Array<{ user: string; text: string; isBot: boolean }>;
+    };
 
+    expect(result.kind).toBe("streaming");
     expect(result.messages.length).toBe(2);
     expect(result.messages[0]).toMatchObject({ user: "Alice", text: "hello team", isBot: false });
     expect(result.messages[1]).toMatchObject({ user: "assistant", text: "hi Alice", isBot: true });
@@ -238,7 +243,7 @@ describe("channel streaming feeds", () => {
     expect(res.error).toContain("only collected feeds");
   });
 
-  it("read_channel_feed rejects a non-streaming (collected) feed id", async () => {
+  it("read_feed on a collected feed returns runs, not a transcript", async () => {
     // A plain connection with the default kind='collected' feed.
     const conn = await createTestConnection({
       organization_id: orgId,
@@ -251,14 +256,23 @@ describe("channel streaming feeds", () => {
     `) as Array<{ id: number; kind: string }>;
     expect(feedRow[0]?.kind).toBe("collected");
 
-    // read_channel_feed only reads streaming channel feeds; a collected feed id
-    // must not resolve to a transcript.
+    // read_feed dispatches on kind: a collected feed resolves to its metadata +
+    // recent sync runs, NEVER a channel_messages transcript.
     const res = (await workspace.owner.feeds.manage({
-      action: "read_channel_feed",
+      action: "read_feed",
       feed_id: feedRow[0].id,
-    })) as { messages?: unknown[]; error?: string };
+    })) as {
+      kind?: string;
+      feed?: { id: number };
+      recent_runs?: unknown[];
+      messages?: unknown[];
+      error?: string;
+    };
+    expect(res.error).toBeUndefined();
+    expect(res.kind).toBe("collected");
     expect(res.messages).toBeUndefined();
-    expect(res.error).toBe("Feed not found");
+    expect(Array.isArray(res.recent_runs)).toBe(true);
+    expect(res.feed?.id).toBe(feedRow[0].id);
   });
 
   it("deleteAllBindings soft-deletes each unbound channel's streaming feed", async () => {
@@ -350,7 +364,7 @@ describe("channel streaming feeds", () => {
 
     // Owner (creator) CAN read it.
     const ownerRes = (await workspace.owner.feeds.manage({
-      action: "read_channel_feed",
+      action: "read_feed",
       feed_id: feedId,
     })) as { messages?: unknown[]; error?: string };
     expect(ownerRes.messages?.length).toBe(1);
@@ -358,7 +372,7 @@ describe("channel streaming feeds", () => {
     // Anonymous reader of the public org must NOT — the gate hides the private
     // connection's feed, so the transcript is never resolved.
     const anonRes = (await workspace.asAnonymous().feeds.manage({
-      action: "read_channel_feed",
+      action: "read_feed",
       feed_id: feedId,
     })) as { messages?: unknown[]; error?: string };
     expect(anonRes.messages).toBeUndefined();

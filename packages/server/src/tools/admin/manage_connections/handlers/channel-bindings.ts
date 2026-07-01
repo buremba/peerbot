@@ -257,7 +257,7 @@ interface ConnectionChannelRow {
  * the binding's agent. Mirrors branch (A) of resolveBoundChannelRows — a binding
  * matches its connection by the unified connection_id link, falling back to the
  * legacy (org, agent, platform) tuple — but scoped to a single connection and
- * with the agent joined. Visibility-gated (mirrors read_channel_feed): anonymous
+ * with the agent joined. Visibility-gated (mirrors read_feed): anonymous
  * sees org-visible connections only; a non-admin member sees org + own; owners /
  * admins see all.
  */

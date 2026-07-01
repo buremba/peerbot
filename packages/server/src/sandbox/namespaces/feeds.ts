@@ -45,7 +45,7 @@ export function buildFeedsNamespace(
 	return {
 		manage,
 		list: (input) => action("list_feeds", input),
-		get: (feed_id) => action("get_feed", { feed_id }),
+		get: (feed_id) => action("read_feed", { feed_id }),
 		create: (input) => action("create_feed", input),
 		update: (input) => action("update_feed", input),
 		delete: (feed_id) => action("delete_feed", { feed_id }),

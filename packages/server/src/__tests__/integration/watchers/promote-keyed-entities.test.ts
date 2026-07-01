@@ -499,6 +499,155 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(resolved.approval_status).toBe('approved');
   });
 
+  it('list_promoted returns the watcher promoted entities with field ownership + provenance', async () => {
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, watcherId } = ctx;
+
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+    const windowId = await ctx.api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: token,
+      run_metadata: { watcher_run_id: runId },
+      extracted_data: {
+        problems: [
+          { category: 'Stability', name: 'App Crashes', severity: 'low' },
+          { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+        ],
+      },
+    });
+
+    // A human owns `severity` on one of the two promoted entities.
+    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const [created] = await sql`
+      SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
+      WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
+    `;
+    const entityId = Number(created.id);
+    await workspace.owner.entities.update({
+      entity_id: entityId,
+      metadata: { severity: 'high' },
+      field_note: 'confirmed critical with eng',
+    });
+
+    const res = (await workspace.owner.watchers.manage({
+      action: 'list_promoted',
+      watcher_id: String(watcherId),
+    })) as {
+      action: string;
+      entities: Array<{
+        id: number;
+        name: string;
+        entity_type: string;
+        metadata: Record<string, unknown>;
+        field_controls: Record<string, { set_by?: string; note?: string }>;
+        window_id: number | null;
+        stable_key: string | null;
+      }>;
+    };
+
+    expect(res.action).toBe('list_promoted');
+    expect(res.entities.length).toBe(2);
+    const appCrashes = res.entities.find((e) => e.stable_key === 'stability::app-crashes');
+    const slowLoading = res.entities.find((e) => e.stable_key === 'performance::slow-loading');
+    expect(appCrashes).toBeDefined();
+    expect(slowLoading).toBeDefined();
+
+    // The owned entity carries its human ownership marker + the corrected value…
+    expect(appCrashes?.id).toBe(entityId);
+    expect(appCrashes?.entity_type).toBe('topic');
+    expect(appCrashes?.metadata.severity).toBe('high');
+    expect(appCrashes?.field_controls.severity?.set_by).toBe(workspace.users.owner.id);
+    expect(appCrashes?.window_id).toBe((windowId as { window_id: number }).window_id);
+    // …while the untouched entity has no owned fields.
+    expect(slowLoading?.field_controls).toEqual({});
+  });
+
+  it('approve (affirm_fields) locks a value as-is so a later watcher change is blocked', async () => {
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, watcherId } = ctx;
+
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    // Run 1 seeds `severity: 'low'` (watcher-owned, no field_controls yet).
+    await ctx.api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: token,
+      run_metadata: { watcher_run_id: runId },
+      extracted_data: {
+        problems: [
+          { category: 'Stability', name: 'App Crashes', severity: 'low' },
+          { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+        ],
+      },
+    });
+    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const [created] = await sql`
+      SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
+      WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
+    `;
+    const entityId = Number(created.id);
+
+    // The human APPROVES the current value as-is (no value change) — the recap's
+    // "approve" affordance. This must claim ownership (not the pre-fix no-op).
+    await workspace.owner.entities.update({
+      entity_id: entityId,
+      affirm_fields: ['severity'],
+      field_note: 'looks right',
+    });
+    const [afterApprove] = await sql`
+      SELECT metadata, field_controls FROM entities WHERE id = ${entityId}
+    `;
+    expect((afterApprove.metadata as Record<string, unknown>).severity).toBe('low'); // unchanged
+    const sevControl = (
+      afterApprove.field_controls as Record<string, { set_by?: string; note?: string }>
+    ).severity;
+    expect(sevControl?.set_by).toBe(workspace.users.owner.id); // now human-owned
+    expect(sevControl?.note).toBe('looks right');
+
+    // Run 2 proposes a different severity for the SAME key. Because the human
+    // affirmed the field, the watcher must be BLOCKED and queue an approval —
+    // proving the affirm actually locked the value.
+    await ctx.api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: token,
+      run_metadata: { watcher_run_id: runId },
+      extracted_data: {
+        problems: [
+          { category: 'Stability', name: 'App Crashes', severity: 'critical' },
+          { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+        ],
+      },
+    });
+
+    const [afterRerun] = await sql`SELECT metadata FROM entities WHERE id = ${entityId}`;
+    expect((afterRerun.metadata as Record<string, unknown>).severity).toBe('low'); // affirm held
+
+    const pending = await sql`
+      SELECT action_input FROM runs
+      WHERE organization_id = ${workspace.org.id}
+        AND action_key = 'entity_field_change'
+        AND approval_status = 'pending'
+    `;
+    expect(pending.length).toBe(1);
+    const proposal = pending[0].action_input as { entity_id: number; fields: Record<string, unknown> };
+    expect(proposal.entity_id).toBe(entityId);
+    expect(proposal.fields.severity).toBe('critical');
+  });
+
   it('disambiguates a slug that collides with a pre-existing sibling — window is NOT poison-pilled', async () => {
     const ctx = await setupKeyedWatcher();
     const { sql, workspace, parentEntityId } = ctx;

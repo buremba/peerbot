@@ -105,6 +105,12 @@ export interface EntityData {
   // the UI) can show WHY the value was set. Ignored for agent/system writes.
   field_note?: string | null;
 
+  // Approve/affirm: field names whose CURRENT value the human endorses as-is.
+  // No value change, but ownership is claimed so a watcher can't later overwrite
+  // them without an approval. This is the "approve" half of the recap feedback
+  // loop; "correct" is a normal metadata update. Ignored for agent/system writes.
+  affirm_fields?: string[] | null;
+
   // Convenience fields - will be merged into metadata
   domain?: string | null;
   category?: string | null;
@@ -370,6 +376,7 @@ export async function updateEntity(
 
   const metadataUpdates = mergeConvenienceFields(data, data.metadata ?? {}, 'update');
   const hasMetadataUpdates = Object.keys(metadataUpdates).length > 0;
+  const affirmFields = Array.isArray(data.affirm_fields) ? data.affirm_fields : [];
 
   const hasContent = data.content !== undefined;
   const contentValue = data.content?.trim() || null;
@@ -381,6 +388,9 @@ export async function updateEntity(
   // the existing plain-merge behavior; watcher ownership-aware writes go through
   // mergeEntityFields at the promotion call site.
   const isHumanEdit = !!ctx.userId && !ctx.agentId;
+  // An affirm-only edit (approve a value as-is) has no metadata delta but still
+  // must run the merge so it can claim field ownership.
+  const hasAffirm = isHumanEdit && affirmFields.length > 0;
 
   // Lock the entity row, merge metadata, and write in ONE transaction: concurrent
   // updates to the same entity serialize on the row lock, fixing the pre-existing
@@ -397,7 +407,7 @@ export async function updateEntity(
 
     let mergedMetadata: Record<string, unknown> | null = null;
     let mergedControls: Record<string, unknown> | null = null;
-    if (hasMetadataUpdates) {
+    if (hasMetadataUpdates || hasAffirm) {
       const existing = (
         typeof current[0].metadata === 'string'
           ? JSON.parse(current[0].metadata as string)
@@ -417,6 +427,7 @@ export async function updateEntity(
           actorId: ctx.userId,
           note: data.field_note ?? null,
           nowIso: new Date().toISOString(),
+          affirm: affirmFields,
         });
         mergedMetadata = merge.nextMetadata;
         mergedControls = merge.nextControls;

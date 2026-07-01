@@ -137,6 +137,14 @@ export const ManageEntitySchema = Type.Object({
     })
   ),
 
+  // Approve/affirm: claim ownership of a field's current value without changing it
+  affirm_fields: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        "[update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so a watcher can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.",
+    })
+  ),
+
   // List/pagination
   search: Type.Optional(Type.String({ description: '[list] Search by name' })),
   limit: Type.Optional(
@@ -597,6 +605,9 @@ async function handleUpdate(
   // Human-correction note: annotates the field_controls marker for the fields
   // this edit claims (why the human set/overrode the value).
   if (args.field_note !== undefined) updateData.field_note = args.field_note;
+
+  // Approve/affirm: claim ownership of these fields' current values as-is.
+  if (args.affirm_fields !== undefined) updateData.affirm_fields = args.affirm_fields;
 
   const updatedEntity = await updateEntity(entityId, updateData, env, ctx);
   const entityDetails = (await getEntity(updatedEntity.id, env, ctx)) ?? updatedEntity;

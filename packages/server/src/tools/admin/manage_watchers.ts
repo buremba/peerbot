@@ -40,7 +40,11 @@ import { handleCreate, handleUpdate, handleDelete, handleCreateFromVersion } fro
 import { handleCreateVersion, handleGetVersions, handleGetVersionDetails } from './manage_watchers/version-actions';
 import { handleCompleteWindow } from './manage_watchers/complete-window';
 import { handleTrigger, handleSetReactionScript } from './manage_watchers/trigger';
-import { handleSubmitFeedback, handleGetFeedback } from './manage_watchers/feedback';
+import {
+  handleSubmitFeedback,
+  handleGetFeedback,
+  handleListPromoted,
+} from './manage_watchers/feedback';
 import { handleGetComponentReference } from './manage_watchers/reference';
 import { handleList, type ListWatchersArgs, type ListWatchersResult } from './manage_watchers/list';
 
@@ -73,6 +77,7 @@ export const ManageWatchersSchema = Type.Object({
       Type.Literal('get_component_reference'),
       Type.Literal('submit_feedback'),
       Type.Literal('get_feedback'),
+      Type.Literal('list_promoted'),
       Type.Literal('create_from_version'),
     ],
     { description: 'Action to perform' }
@@ -410,6 +415,19 @@ export type ManageWatchersResult =
       }>;
     }
   | {
+      action: 'list_promoted';
+      watcher_id: string;
+      entities: Array<{
+        id: number;
+        name: string;
+        entity_type: string;
+        metadata: Record<string, unknown>;
+        field_controls: Record<string, unknown>;
+        window_id: number | null;
+        stable_key: string | null;
+      }>;
+    }
+  | {
       action: 'create_from_version';
       created: Array<{ watcher_id: string; entity_id: number; name: string }>;
     };
@@ -502,6 +520,8 @@ async function manageWatchersImpl(
     await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
   } else if (args.action === 'get_feedback' && args.watcher_id) {
     await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'read');
+  } else if (args.action === 'list_promoted' && args.watcher_id) {
+    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'read');
   } else if (args.action === 'get_versions' && args.watcher_id) {
     await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'read');
   } else if (args.action === 'get_version_details' && args.watcher_id) {
@@ -530,6 +550,7 @@ const runManageWatchers = defineFlatActionTool<ManageWatchersArgs, ManageWatcher
     get_component_reference: flatAction(() => Promise.resolve(handleGetComponentReference())),
     submit_feedback: flatAction(handleSubmitFeedback),
     get_feedback: flatAction(handleGetFeedback),
+    list_promoted: flatAction(handleListPromoted),
     create_from_version: flatAction((args, ctx, env) => handleCreateFromVersion(args, env, ctx)),
   }
 );

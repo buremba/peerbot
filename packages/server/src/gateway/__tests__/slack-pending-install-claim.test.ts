@@ -11,154 +11,190 @@
  * null installer, no DM is sent — the row is still parked.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	mock,
+	spyOn,
+	test,
+} from "bun:test";
 import { __resetPublicOriginCachesForTests } from "../../utils/public-origin.js";
+import * as appInstallCredentials from "../installation/app-install-credentials.js";
 
 // --- Stub the pending-install store: capture inputs, never touch Postgres. ---
 const writeCalls: Array<Record<string, unknown>> = [];
 mock.module("../../lobu/stores/slack-installations.js", () => ({
-  writeSlackPendingInstall: mock(async (input: Record<string, unknown>) => {
-    writeCalls.push(input);
-    return { id: "1" };
-  }),
-  // Also imported by the coordinator module (webhook routing); unused here.
-  getSlackInstallByTeamId: mock(async () => null),
-  resolveSlackPendingByTenant: mock(async () => null),
-  upsertSlackInstallByTeam: mock(async () => ({ id: "slackinst-x" })),
+	writeSlackPendingInstall: mock(async (input: Record<string, unknown>) => {
+		writeCalls.push(input);
+		return { id: "1" };
+	}),
+	// Also imported by the coordinator module (webhook routing); unused here.
+	getSlackInstallByTeamId: mock(async () => null),
+	resolveSlackPendingByTenant: mock(async () => null),
+	upsertSlackInstallByTeam: mock(async () => ({ id: "slackinst-x" })),
 }));
 
 // --- Hosted app credentials are configured (so the exchange path runs). ---
-mock.module("../installation/app-install-credentials.js", () => ({
-  getPrimedBundledMethod: () => ({}),
-  resolveAppInstallCredentials: () => ({
-    clientId: "client-id",
-    clientSecret: "client-secret",
-  }),
-}));
+// Use `spyOn` (restored in afterAll) rather than `mock.module`: this suite shares a
+// process with every other gateway suite, and bun's `mock.module` is process-global
+// and CANNOT be un-done by `mock.restore()`. A whole-module stub also drops the
+// module's OTHER exports (e.g. `renderAppInstallUrl`), breaking co-running suites
+// that import them. Spying only these two functions keeps the rest of the module
+// real and lets afterAll restore the originals so nothing leaks — a prior whole-
+// module stub returning a hardcoded `client-id` clobbered slack-routes.test.ts's
+// own `SLACK_CLIENT_ID` ("client-123") in the shared process.
 
 // --- Stub the Slack Web API surface the coordinator uses. ---
 const exchangeOAuthCode = mock(
-  async (): Promise<{
-    botToken: string;
-    teamId: string;
-    teamName: string | null;
-    botUserId: string | null;
-    authedUserId: string | null;
-    isEnterpriseInstall: boolean;
-  }> => ({
-    botToken: "xoxb-installer-token",
-    teamId: "T-CLAIM",
-    teamName: "Acme",
-    botUserId: "B123",
-    authedUserId: "U-INSTALLER",
-    isEnterpriseInstall: false,
-  }),
+	async (): Promise<{
+		botToken: string;
+		teamId: string;
+		teamName: string | null;
+		botUserId: string | null;
+		authedUserId: string | null;
+		isEnterpriseInstall: boolean;
+	}> => ({
+		botToken: "xoxb-installer-token",
+		teamId: "T-CLAIM",
+		teamName: "Acme",
+		botUserId: "B123",
+		authedUserId: "U-INSTALLER",
+		isEnterpriseInstall: false,
+	}),
 );
 const openDm = mock(async () => "D-INSTALLER");
 const postMessage = mock(async () => undefined);
 mock.module("../connections/slack-web.js", () => ({
-  createSlackWebApi: () => ({ exchangeOAuthCode, openDm, postMessage }),
+	createSlackWebApi: () => ({ exchangeOAuthCode, openDm, postMessage }),
 }));
 
 async function loadCoordinator() {
-  const mod = await import("../connections/slack-connection-coordinator.js");
-  return mod.completeSlackPendingInstall;
+	const mod = await import("../connections/slack-connection-coordinator.js");
+	return mod.completeSlackPendingInstall;
 }
 
 function callbackRequest(): Request {
-  return new Request(
-    "https://gateway.example.com/slack/oauth_callback?code=the-code",
-    { method: "GET" },
-  );
+	return new Request(
+		"https://gateway.example.com/slack/oauth_callback?code=the-code",
+		{ method: "GET" },
+	);
 }
 
 describe("completeSlackPendingInstall — installer claim DM", () => {
-  let savedWebUrl: string | undefined;
+	let savedWebUrl: string | undefined;
 
-  beforeEach(() => {
-    writeCalls.length = 0;
-    exchangeOAuthCode.mockClear();
-    openDm.mockClear();
-    postMessage.mockClear();
-    savedWebUrl = process.env.PUBLIC_WEB_URL;
-    process.env.PUBLIC_WEB_URL = "https://app.lobu.ai";
-    __resetPublicOriginCachesForTests();
-  });
+	beforeAll(() => {
+		// Hosted app credentials are "configured" so `completeSlackPendingInstall`'s
+		// exchange path runs (a truthy primed method + non-empty client id/secret).
+		spyOn(appInstallCredentials, "getPrimedBundledMethod").mockReturnValue({
+			clientIdKey: "SLACK_CLIENT_ID",
+			clientSecretKey: "SLACK_CLIENT_SECRET",
+		} as unknown as ReturnType<
+			typeof appInstallCredentials.getPrimedBundledMethod
+		>);
+		spyOn(
+			appInstallCredentials,
+			"resolveAppInstallCredentials",
+		).mockReturnValue({
+			clientId: "client-id",
+			clientSecret: "client-secret",
+		});
+	});
 
-  afterEach(() => {
-    if (savedWebUrl === undefined) delete process.env.PUBLIC_WEB_URL;
-    else process.env.PUBLIC_WEB_URL = savedWebUrl;
-    __resetPublicOriginCachesForTests();
-  });
+	afterAll(() => {
+		// Restore the real credential functions so the shared test process hands the
+		// real module (env-driven) to every other gateway suite.
+		mock.restore();
+	});
 
-  test("DMs the installer a connect link with the team id (no secret token)", async () => {
-    const completeSlackPendingInstall = await loadCoordinator();
+	beforeEach(() => {
+		writeCalls.length = 0;
+		exchangeOAuthCode.mockClear();
+		openDm.mockClear();
+		postMessage.mockClear();
+		savedWebUrl = process.env.PUBLIC_WEB_URL;
+		process.env.PUBLIC_WEB_URL = "https://app.lobu.ai";
+		__resetPublicOriginCachesForTests();
+	});
 
-    const result = await completeSlackPendingInstall(
-      callbackRequest(),
-      "https://gateway.example.com/slack/oauth_callback",
-    );
+	afterEach(() => {
+		if (savedWebUrl === undefined) delete process.env.PUBLIC_WEB_URL;
+		else process.env.PUBLIC_WEB_URL = savedWebUrl;
+		__resetPublicOriginCachesForTests();
+	});
 
-    expect(result).toEqual({
-      teamId: "T-CLAIM",
-      teamName: "Acme",
-      installerUserId: "U-INSTALLER",
-    });
+	test("DMs the installer a connect link with the team id (no secret token)", async () => {
+		const completeSlackPendingInstall = await loadCoordinator();
 
-    // The DM is opened with the installer and the message is posted into it.
-    expect(openDm).toHaveBeenCalledTimes(1);
-    expect(openDm).toHaveBeenCalledWith("xoxb-installer-token", "U-INSTALLER");
-    expect(postMessage).toHaveBeenCalledTimes(1);
-    const [botToken, channel, text] = postMessage.mock.calls[0] as [
-      string,
-      string,
-      string,
-    ];
-    expect(botToken).toBe("xoxb-installer-token");
-    expect(channel).toBe("D-INSTALLER");
+		const result = await completeSlackPendingInstall(
+			callbackRequest(),
+			"https://gateway.example.com/slack/oauth_callback",
+		);
 
-    // The posted text embeds the connect URL with the team id — no secret token
-    // (authority is the Slack workspace-admin check at claim time).
-    const match = text.match(
-      /https:\/\/app\.lobu\.ai\/slack\/claim\?team=([^&\s]+)/,
-    );
-    expect(match).not.toBeNull();
-    const [, teamParam] = match as RegExpMatchArray;
-    expect(decodeURIComponent(teamParam)).toBe("T-CLAIM");
-    expect(text).not.toContain("&t=");
+		expect(result).toEqual({
+			teamId: "T-CLAIM",
+			teamName: "Acme",
+			installerUserId: "U-INSTALLER",
+		});
 
-    // The pending row is parked with the installer id and no token material.
-    expect(writeCalls).toHaveLength(1);
-    const parked = writeCalls[0]!;
-    expect(parked.installerUserId).toBe("U-INSTALLER");
-  });
+		// The DM is opened with the installer and the message is posted into it.
+		expect(openDm).toHaveBeenCalledTimes(1);
+		expect(openDm).toHaveBeenCalledWith("xoxb-installer-token", "U-INSTALLER");
+		expect(postMessage).toHaveBeenCalledTimes(1);
+		const [botToken, channel, text] = postMessage.mock.calls[0] as [
+			string,
+			string,
+			string,
+		];
+		expect(botToken).toBe("xoxb-installer-token");
+		expect(channel).toBe("D-INSTALLER");
 
-  test("skips the DM when there is no installer, but still parks the pending row", async () => {
-    exchangeOAuthCode.mockResolvedValueOnce({
-      botToken: "xoxb-installer-token",
-      teamId: "T-NOINSTALLER",
-      teamName: null,
-      botUserId: null,
-      authedUserId: null,
-      isEnterpriseInstall: false,
-    });
-    const completeSlackPendingInstall = await loadCoordinator();
+		// The posted text embeds the connect URL with the team id — no secret token
+		// (authority is the Slack workspace-admin check at claim time).
+		const match = text.match(
+			/https:\/\/app\.lobu\.ai\/slack\/claim\?team=([^&\s]+)/,
+		);
+		expect(match).not.toBeNull();
+		const [, teamParam] = match as RegExpMatchArray;
+		expect(decodeURIComponent(teamParam)).toBe("T-CLAIM");
+		expect(text).not.toContain("&t=");
 
-    const result = await completeSlackPendingInstall(
-      callbackRequest(),
-      "https://gateway.example.com/slack/oauth_callback",
-    );
+		// The pending row is parked with the installer id and no token material.
+		expect(writeCalls).toHaveLength(1);
+		const parked = writeCalls[0]!;
+		expect(parked.installerUserId).toBe("U-INSTALLER");
+	});
 
-    expect(result).toEqual({
-      teamId: "T-NOINSTALLER",
-      teamName: null,
-      installerUserId: null,
-    });
-    // No DM without an installer to send it to.
-    expect(openDm).not.toHaveBeenCalled();
-    expect(postMessage).not.toHaveBeenCalled();
-    // The row is still parked (no installer to DM).
-    expect(writeCalls).toHaveLength(1);
-    expect(writeCalls[0]!.installerUserId).toBeNull();
-  });
+	test("skips the DM when there is no installer, but still parks the pending row", async () => {
+		exchangeOAuthCode.mockResolvedValueOnce({
+			botToken: "xoxb-installer-token",
+			teamId: "T-NOINSTALLER",
+			teamName: null,
+			botUserId: null,
+			authedUserId: null,
+			isEnterpriseInstall: false,
+		});
+		const completeSlackPendingInstall = await loadCoordinator();
+
+		const result = await completeSlackPendingInstall(
+			callbackRequest(),
+			"https://gateway.example.com/slack/oauth_callback",
+		);
+
+		expect(result).toEqual({
+			teamId: "T-NOINSTALLER",
+			teamName: null,
+			installerUserId: null,
+		});
+		// No DM without an installer to send it to.
+		expect(openDm).not.toHaveBeenCalled();
+		expect(postMessage).not.toHaveBeenCalled();
+		// The row is still parked (no installer to DM).
+		expect(writeCalls).toHaveLength(1);
+		expect(writeCalls[0]!.installerUserId).toBeNull();
+	});
 });

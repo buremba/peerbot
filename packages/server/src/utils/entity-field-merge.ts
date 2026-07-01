@@ -48,6 +48,9 @@ export interface FieldMergeResult {
   /** Fields skipped because the live value drifted from the proposal's snapshot
    *  (a human re-edited the field after the proposal was queued). NOT written. */
   stale: Record<string, StaleChange>;
+  /** Fields whose CURRENT value a human affirmed — value unchanged, but ownership
+   *  is now claimed so a watcher can't silently overwrite it. */
+  affirmed: string[];
   nextMetadata: Record<string, unknown>;
   nextControls: Record<string, FieldControl>;
   changed: boolean;
@@ -86,13 +89,21 @@ export function computeFieldMerge(args: {
    *  A drifted field is skipped (`stale`) so a stale approval can't clobber a value
    *  the human moved after the proposal was queued. */
   expectedCurrent?: Record<string, unknown> | null;
+  /** Fields (source='human' only) whose CURRENT value the human approves as-is:
+   *  no value change, but ownership is claimed so a watcher can't later overwrite
+   *  it without an approval. This is the "approve" half of the per-item recap
+   *  feedback loop — affirming a value is NOT a no-op the way re-setting an
+   *  unchanged value is. */
+  affirm?: string[];
 }): FieldMergeResult {
-  const { metadata, controls, fields, source, actorId, note, nowIso, expectedCurrent } = args;
+  const { metadata, controls, fields, source, actorId, note, nowIso, expectedCurrent, affirm } =
+    args;
   const nextMetadata: Record<string, unknown> = { ...metadata };
   const nextControls: Record<string, FieldControl> = { ...controls };
   const applied: Record<string, AppliedChange> = {};
   const blocked: Record<string, BlockedChange> = {};
   const stale: Record<string, StaleChange> = {};
+  const affirmed: string[] = [];
 
   for (const [field, value] of Object.entries(fields)) {
     const current = metadata[field];
@@ -125,13 +136,27 @@ export function computeFieldMerge(args: {
     }
   }
 
+  // Approve/affirm: claim ownership of a field's current value without changing
+  // it. Only humans can affirm; a field already written above is skipped (the
+  // set already claimed it). Marking an owned-but-unchanged field is idempotent
+  // (it refreshes set_by/set_at/note), so re-approving is safe.
+  if (source === 'human' && affirm) {
+    for (const field of affirm) {
+      if (Object.hasOwn(applied, field)) continue;
+      if (!Object.hasOwn(metadata, field)) continue;
+      nextControls[field] = { note, set_by: actorId, set_at: nowIso };
+      affirmed.push(field);
+    }
+  }
+
   return {
     applied,
     blocked,
     stale,
+    affirmed,
     nextMetadata,
     nextControls,
-    changed: Object.keys(applied).length > 0,
+    changed: Object.keys(applied).length > 0 || affirmed.length > 0,
   };
 }
 
@@ -150,6 +175,9 @@ export async function mergeEntityFields(params: {
   note?: string | null;
   /** Snapshot the proposal was built on (deferred-apply staleness guard). */
   expectedCurrent?: Record<string, unknown> | null;
+  /** Fields (human source) whose current value is approved as-is, claiming
+   *  ownership without a value change. */
+  affirm?: string[];
 }): Promise<FieldMergeResult> {
   const { tx, entityId, fields, source, actorId } = params;
 
@@ -174,6 +202,7 @@ export async function mergeEntityFields(params: {
     note: params.note ?? null,
     nowIso: new Date().toISOString(),
     expectedCurrent: params.expectedCurrent ?? null,
+    affirm: params.affirm,
   });
 
   if (merge.changed) {

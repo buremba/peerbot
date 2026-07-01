@@ -5,7 +5,9 @@
  *
  * Actions:
  * - list_feeds: List feeds with optional filters
- * - get_feed: Get a specific feed by ID
+ * - read_feed: Read one feed by id, dispatching on kind — a collected/virtual
+ *   feed returns its metadata + recent sync runs; a streaming (chat-channel)
+ *   feed returns its live transcript from channel_messages.
  * - create_feed: Create a new feed for a connection
  * - update_feed: Update feed settings
  * - delete_feed: Delete a feed
@@ -15,6 +17,7 @@
 import { getErrorMessage, parseJsonObject } from '@lobu/core';
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb, pgBigintArray } from '../../db/client';
+import { filterChannelsForRequester } from '../../authz/channel-visibility';
 import { readChannelTranscript } from '../../gateway/connections/channel-transcript';
 import type { Env } from '../../index';
 import { getAuthProfileById } from '../../utils/auth-profiles';
@@ -47,9 +50,17 @@ const ListFeedsAction = Type.Object({
   ...PaginationFields,
 });
 
-const GetFeedAction = Type.Object({
-  action: Type.Literal('get_feed'),
+// One read action for any feed kind. A collected/virtual feed returns its
+// metadata + recent sync runs; a streaming (chat-channel) feed has no sync runs
+// — its content is the live transcript in `channel_messages` — so it returns
+// that instead, read through the same primitive read_conversation uses. The
+// caller never has to know the kind up front; the response carries it.
+const ReadFeedAction = Type.Object({
+  action: Type.Literal('read_feed'),
   feed_id: Type.Number({ description: 'Feed ID' }),
+  limit: Type.Optional(
+    Type.Number({ description: 'Max transcript messages for a streaming feed (default 50)' })
+  ),
 });
 
 const CreateFeedAction = Type.Object({
@@ -100,16 +111,6 @@ const TriggerFeedAction = Type.Object({
   feed_id: Type.Number({ description: 'Feed ID to trigger sync for' }),
 });
 
-// A streaming (chat-channel) feed has no sync runs — its content is the live
-// transcript in `channel_messages`, not embedded `events`. This reads that
-// transcript through the same primitive read_conversation uses, so the feed
-// detail can render the conversation instead of a runs table.
-const ReadChannelFeedAction = Type.Object({
-  action: Type.Literal('read_channel_feed'),
-  feed_id: Type.Number({ description: 'Streaming chat-channel feed ID' }),
-  limit: Type.Optional(Type.Number({ description: 'Max messages (default 50)' })),
-});
-
 // ============================================
 // Result Types
 // ============================================
@@ -117,21 +118,23 @@ const ReadChannelFeedAction = Type.Object({
 type ManageFeedsResult =
   | { error: string }
   | { action: 'list_feeds'; feeds: any[]; total: number; limit: number; offset: number }
-  | { action: 'get_feed'; feed: any; recent_runs: any[] }
-  | { action: 'create_feed'; feed: any }
-  | { action: 'update_feed'; feed: any }
-  | { action: 'delete_feed'; deleted: true; feed_id: number }
-  | { action: 'trigger_feed'; triggered: true; run_id: number; feed_id: number }
-  | { action: 'trigger_feed'; message: string }
+  | { action: 'read_feed'; kind: string; feed: any; recent_runs: any[] }
   | {
-      action: 'read_channel_feed';
+      action: 'read_feed';
+      kind: 'streaming';
+      feed: any;
       messages: Array<{
         timestamp: string;
         user: string;
         text: string;
         isBot: boolean;
       }>;
-    };
+    }
+  | { action: 'create_feed'; feed: any }
+  | { action: 'update_feed'; feed: any }
+  | { action: 'delete_feed'; deleted: true; feed_id: number }
+  | { action: 'trigger_feed'; triggered: true; run_id: number; feed_id: number }
+  | { action: 'trigger_feed'; message: string };
 
 // ============================================
 // Main Function (Action Router)
@@ -139,12 +142,11 @@ type ManageFeedsResult =
 
 const manageFeedsTool = defineActionTool('manage_feeds', {
   list_feeds: action(ListFeedsAction, handleListFeeds),
-  get_feed: action(GetFeedAction, handleGetFeed),
+  read_feed: action(ReadFeedAction, handleReadFeed),
   create_feed: action(CreateFeedAction, handleCreateFeed),
   update_feed: action(UpdateFeedAction, handleUpdateFeed),
   delete_feed: action(DeleteFeedAction, handleDeleteFeed),
   trigger_feed: action(TriggerFeedAction, handleTriggerFeed),
-  read_channel_feed: action(ReadChannelFeedAction, handleReadChannelFeed),
 });
 
 export const ManageFeedsSchema = manageFeedsTool.schema;
@@ -253,16 +255,16 @@ async function handleListFeeds(
   return { action: 'list_feeds', feeds: rows, total: rows.length, limit, offset };
 }
 
-async function handleReadChannelFeed(
-  args: Static<typeof ReadChannelFeedAction>,
+async function handleReadFeed(
+  args: Static<typeof ReadFeedAction>,
   ctx: ToolContext
 ): Promise<ManageFeedsResult> {
   const sql = getDb();
   const { organizationId, userId } = ctx;
   // Connection-visibility gate (mirrors manage_connections crud handleList/Get):
-  // read_channel_feed is in PUBLIC_READ_ACTIONS, so a transcript is content an
-  // anonymous caller could otherwise pull by guessing a feed_id. Anonymous sees
-  // org-visible connections only; a non-admin member sees org + their own
+  // read_feed is in PUBLIC_READ_ACTIONS, so a feed's config/transcript is content
+  // an anonymous caller could otherwise pull by guessing a feed_id. Anonymous
+  // sees org-visible connections only; a non-admin member sees org + their own
   // private connections; owners/admins see all.
   let visibilityFilter = sql``;
   if (!userId) {
@@ -273,45 +275,12 @@ async function handleReadChannelFeed(
       visibilityFilter = sql`AND (c.visibility = 'org' OR c.created_by = ${userId})`;
     }
   }
-  // Resolve the feed's connection slug + channel key, then map to the runtime
-  // ids channel_messages is keyed by: the BYO namespace is stripped off the
-  // slug (mirror of resolveBoundChannelRows), and the platform prefix
-  // (`slack:`) is stripped off feed_key to the bare channel id capture stores.
+
   const rows = (await sql`
-    SELECT f.feed_key, c.slug
-    FROM feeds f
-    JOIN connections c ON c.id = f.connection_id
-    WHERE f.id = ${args.feed_id}
-      AND f.organization_id = ${organizationId}
-      AND f.deleted_at IS NULL
-      AND c.deleted_at IS NULL
-      ${visibilityFilter}
-  `) as Array<{ feed_key: string; slug: string }>;
-  if (rows.length === 0) return { error: 'Feed not found' };
-  const { feed_key, slug } = rows[0];
-  const connectionId = slug.startsWith('agentconn-') ? slug.slice(10) : slug;
-  const channelId = feed_key.includes(':')
-    ? feed_key.slice(feed_key.indexOf(':') + 1)
-    : feed_key;
-  const messages = await readChannelTranscript(
-    organizationId,
-    connectionId,
-    channelId,
-    args.limit ?? 50
-  );
-  return { action: 'read_channel_feed', messages };
-}
-
-async function handleGetFeed(
-  args: Static<typeof GetFeedAction>,
-  ctx: ToolContext
-): Promise<ManageFeedsResult> {
-  const sql = getDb();
-  const { organizationId } = ctx;
-
-  const rows = await sql`
     SELECT f.*,
+           c.slug,
            c.connector_key,
+           c.external_tenant_id,
            c.display_name AS connection_name,
            (
              SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)
@@ -320,11 +289,54 @@ async function handleGetFeed(
            ) AS entity_names
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
-    WHERE f.id = ${args.feed_id} AND f.organization_id = ${organizationId} AND c.deleted_at IS NULL AND f.deleted_at IS NULL
-  `;
+    WHERE f.id = ${args.feed_id}
+      AND f.organization_id = ${organizationId}
+      AND c.deleted_at IS NULL
+      AND f.deleted_at IS NULL
+      ${visibilityFilter}
+  `) as Array<Record<string, any>>;
+  if (rows.length === 0) return { error: 'Feed not found' };
+  const feed = rows[0];
 
-  if (rows.length === 0) {
-    return { error: 'Feed not found' };
+  // A streaming (chat-channel) feed has no sync runs — its content is the live
+  // transcript in `channel_messages`. Map the connection slug + feed_key to the
+  // runtime ids channel_messages is keyed by: the BYO namespace is stripped off
+  // the slug (mirror of resolveBoundChannelRows), and the platform prefix
+  // (`slack:`) is stripped off feed_key to the bare channel id capture stores.
+  if (feed.kind === 'streaming') {
+    const slug = String(feed.slug);
+    const feedKey = String(feed.feed_key);
+    const connectionId = slug.startsWith('agentconn-') ? slug.slice(10) : slug;
+    const channelId = feedKey.includes(':')
+      ? feedKey.slice(feedKey.indexOf(':') + 1)
+      : feedKey;
+    // The connection-visibility gate above only decides who can see the
+    // CONNECTION. For an ACL-enforced Slack channel the transcript is further
+    // gated to channel members — a user who can see the connection but isn't in
+    // the channel must NOT read its messages. Non-enforced channels pass through
+    // (same posture as search_memory). Fail-closed: a dropped row → no transcript.
+    const visible = await filterChannelsForRequester(sql, {
+      organizationId,
+      userId: userId ?? null,
+      rows: [
+        {
+          id: connectionId,
+          platform: String(feed.connector_key ?? 'slack'),
+          channel_id: channelId,
+          team_id: (feed.external_tenant_id as string | null) ?? null,
+        },
+      ],
+    });
+    if (visible.length === 0) {
+      return { action: 'read_feed', kind: 'streaming', feed, messages: [] };
+    }
+    const messages = await readChannelTranscript(
+      organizationId,
+      connectionId,
+      channelId,
+      args.limit ?? 50
+    );
+    return { action: 'read_feed', kind: 'streaming', feed, messages };
   }
 
   const runs = await sql`
@@ -335,7 +347,7 @@ async function handleGetFeed(
     LIMIT 10
   `;
 
-  return { action: 'get_feed', feed: rows[0], recent_runs: runs };
+  return { action: 'read_feed', kind: String(feed.kind), feed, recent_runs: runs };
 }
 
 async function handleCreateFeed(
@@ -581,7 +593,7 @@ async function handleTriggerFeed(
   const { organizationId } = ctx;
 
   const feedRows = await sql`
-    SELECT f.id, f.status, f.connection_id, c.connector_key
+    SELECT f.id, f.status, f.kind, f.connection_id, c.connector_key
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     WHERE f.id = ${args.feed_id} AND f.organization_id = ${organizationId} AND c.deleted_at IS NULL AND f.deleted_at IS NULL
@@ -592,6 +604,12 @@ async function handleTriggerFeed(
   }
 
   const feed = feedRows[0] as any;
+  // Only collected feeds run a connector sync. Streaming feeds (chat channels)
+  // are fed by inbound webhooks/capture, not a sync run — triggering one would
+  // spawn a run against a connector that has no fetch for this feed.
+  if (feed.kind !== 'collected') {
+    return { error: `Feed is ${feed.kind}, only collected feeds can be triggered` };
+  }
   if (feed.status !== 'active') {
     return { error: `Feed is ${feed.status}, must be active to trigger sync` };
   }

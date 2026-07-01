@@ -29,8 +29,12 @@ function bundleCandidates(appDir: string): string[] {
 }
 
 // Cache the resolved HTML per app dir — the bundle is immutable at runtime, so
-// don't hit disk on every `resources/read`. `null` caches a confirmed miss.
-const bundleCache = new Map<string, string | null>();
+// don't hit disk on every `resources/read`. Only successful reads are cached: a
+// miss is NOT memoized, so a bundle built after the first request (e.g. a dev
+// server that hasn't run `build:mcp-apps` yet) recovers on the next request
+// instead of serving 404 until the pod restarts. Every interactive interaction
+// now depends on this one bundle, so a sticky miss would break all of them.
+const bundleCache = new Map<string, string>();
 
 /** Read a built MCP App bundle's HTML. Returns null when no build is present. */
 export async function readMcpAppBundle(appDir: string): Promise<string | null> {
@@ -46,6 +50,5 @@ export async function readMcpAppBundle(appDir: string): Promise<string | null> {
       // candidate absent — try the next
     }
   }
-  bundleCache.set(appDir, null);
   return null;
 }

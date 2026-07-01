@@ -118,10 +118,12 @@ const formatRef = { rawJson: false };
 /**
  * MCP Apps UI resources (interactive iframe payloads a host renders in a
  * sandboxed iframe). Keyed by `ui://` uri → the built bundle's app dir under
- * owletto's `dist-mcp-apps/`. A tool result that references one of these uris in
- * `_meta.ui.resourceUri` makes the host fetch + render it (see the pending
- * `manage_agents` approval below). Adding an app = one entry + its owletto
- * `src/mcp-apps/<dir>` build — no gateway change.
+ * owletto's `dist-mcp-apps/`. Served over `resources/read` + the asset route;
+ * our own SPA fetches the one bundle and streams it a `{title, blocks, actions}`
+ * view it builds CLIENT-side. (Pointing an external MCP host at a bundle via a
+ * tool result's `_meta.ui.resourceUri` needs the SERVER to author that view —
+ * a deliberate follow-up, so we don't stamp it today.) Adding an app = one
+ * entry + its owletto `src/mcp-apps/<dir>` build — no gateway change.
  */
 const MCP_APP_RESOURCES: Record<string, { name: string; appDir: string }> = {
   'ui://lobu/interaction': { name: 'Interaction', appDir: 'interaction' },

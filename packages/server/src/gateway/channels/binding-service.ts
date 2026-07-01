@@ -27,10 +27,6 @@ interface ChannelBinding {
    * Set once the binding is linked; used to materialize / soft-delete the
    * channel's streaming feed. */
   connectionId?: string;
-  /** Response disposition. 'silent' ingests the channel into memory but never
-   * replies (not even to an @mention); 'reply' (the default; NULL in the DB)
-   * responds when mentioned / DMed. */
-  disposition: "reply" | "silent";
   createdAt: number;
 }
 
@@ -42,7 +38,6 @@ function rowToBinding(row: Record<string, any>): ChannelBinding {
     agentId: row.agent_id,
     organizationId: row.organization_id ?? undefined,
     connectionId: row.connection_id != null ? String(row.connection_id) : undefined,
-    disposition: row.disposition === "silent" ? "silent" : "reply",
     createdAt:
       tsTime(row.created_at),
   };
@@ -303,42 +298,6 @@ export class ChannelBindingService {
       });
     }
     return true;
-  }
-
-  /** Set a binding's response disposition (the Listen behavior's edit action).
-   * Ownership + org scoped like {@link deleteBinding}. Returns false when no
-   * matching binding is owned by this agent. */
-  async updateBindingDisposition(
-    agentId: string,
-    platform: string,
-    channelId: string,
-    disposition: "reply" | "silent",
-    teamId?: string,
-    organizationId?: string
-  ): Promise<boolean> {
-    const sql = getDb();
-    const orgId = resolveOrgId(organizationId);
-    const existing = await this.getBinding(platform, channelId, teamId, orgId ?? undefined);
-    if (!existing || existing.agentId !== agentId) {
-      logger.warn(`No owned binding to update for ${platform}/${channelId}`);
-      return false;
-    }
-    const teamClause = teamId
-      ? sql`team_id = ${teamId}`
-      : sql`team_id IS NULL`;
-    const orgClause = orgId
-      ? sql`organization_id = ${orgId} AND `
-      : sql``;
-    const rows = await sql`
-      UPDATE agent_channel_bindings
-      SET disposition = ${disposition}
-      WHERE ${orgClause}platform = ${platform} AND channel_id = ${channelId} AND ${teamClause}
-      RETURNING agent_id
-    `;
-    logger.info(
-      `Updated binding disposition: ${platform}/${channelId} → ${disposition}`
-    );
-    return rows.length > 0;
   }
 
   async listBindings(

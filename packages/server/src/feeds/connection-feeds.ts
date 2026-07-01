@@ -1,4 +1,5 @@
 import { getDb } from "../db/client.js";
+import { runtimeConnectionIdToSlug } from "../lobu/stores/connections-projection.js";
 import type { FeedKind, FeedSpec, FeedStatus } from "./types.js";
 
 interface FeedRow {
@@ -18,12 +19,18 @@ interface FeedRow {
  * connection_id)` so it never scans globally. A streaming (chat) feed is
  * decorated with the agent bound to its channel via `agent_channel_bindings`
  * (channel_id = feed_key).
+ *
+ * `connectionId` is the RUNTIME connection id (e.g. a BYO uuid or a managed
+ * `slackinst-…` id), not the numeric `connections.id` that `feeds.connection_id`
+ * stores. We resolve it through `connections.slug` — never cast it to bigint,
+ * which throws for every non-numeric (managed / slug-shaped) id.
  */
 export async function listConnectionFeeds(
 	organizationId: string,
 	connectionId: string,
 ): Promise<FeedSpec[]> {
 	const sql = getDb();
+	const slug = runtimeConnectionIdToSlug(connectionId);
 	const rows = await sql<FeedRow>`
 		SELECT
 			f.id::text                            AS id,
@@ -44,7 +51,11 @@ export async function listConnectionFeeds(
 			)                                     AS target_agent_id
 		FROM feeds f
 		WHERE f.organization_id = ${organizationId}
-			AND f.connection_id   = ${connectionId}::bigint
+			AND f.connection_id = (
+				SELECT c.id FROM connections c
+				WHERE c.organization_id = ${organizationId}
+					AND c.slug = ${slug}
+			)
 			AND f.deleted_at IS NULL
 		ORDER BY COALESCE(f.last_sync_at, f.updated_at) DESC
 	`;

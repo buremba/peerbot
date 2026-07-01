@@ -114,58 +114,6 @@ describe("manage_connections channel-binding actions", () => {
     expect(after.bindings).toHaveLength(0);
   });
 
-  it("update_channel_binding flips a binding's disposition reply ↔ silent", async () => {
-    await makeManagedSlackConnection({ orgId, slug: "slackinst-disp", teamId: TEAM });
-
-    await workspace.owner.connections.manage({
-      action: "bind_channel",
-      agent_id: agentId,
-      platform: "slack",
-      channel_id: "slack:C222",
-      team_id: TEAM,
-    });
-
-    // Fresh binding defaults to 'reply'.
-    const initial = (await workspace.owner.connections.manage({
-      action: "list_channel_bindings",
-      agent_id: agentId,
-    })) as { bindings: Array<{ channelId: string; disposition: string }> };
-    expect(initial.bindings[0]?.disposition).toBe("reply");
-
-    // Flip to silent.
-    const updated = (await workspace.owner.connections.manage({
-      action: "update_channel_binding",
-      agent_id: agentId,
-      platform: "slack",
-      channel_id: "slack:C222",
-      team_id: TEAM,
-      disposition: "silent",
-    })) as { success?: boolean; disposition?: string };
-    expect(updated.success).toBe(true);
-    expect(updated.disposition).toBe("silent");
-
-    const afterSilent = (await workspace.owner.connections.manage({
-      action: "list_channel_bindings",
-      agent_id: agentId,
-    })) as { bindings: Array<{ disposition: string }> };
-    expect(afterSilent.bindings[0]?.disposition).toBe("silent");
-
-    // And back to reply.
-    await workspace.owner.connections.manage({
-      action: "update_channel_binding",
-      agent_id: agentId,
-      platform: "slack",
-      channel_id: "slack:C222",
-      team_id: TEAM,
-      disposition: "reply",
-    });
-    const afterReply = (await workspace.owner.connections.manage({
-      action: "list_channel_bindings",
-      agent_id: agentId,
-    })) as { bindings: Array<{ disposition: string }> };
-    expect(afterReply.bindings[0]?.disposition).toBe("reply");
-  });
-
   it("rejects bind_channel for an invalid platform format", async () => {
     const res = (await workspace.owner.connections.manage({
       action: "bind_channel",

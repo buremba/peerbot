@@ -53,6 +53,9 @@ describe("listConnectionFeeds", () => {
 	let orgId: string;
 	let agentId: string;
 	let connectionId: number;
+	// A managed-install slug: the runtime id is non-numeric and equals the slug.
+	// This is the case the route hits — casting it to bigint (the old bug) throws.
+	const runtimeConnId = "slackinst-feedsconn";
 
 	beforeAll(async () => {
 		await cleanupTestDatabase();
@@ -66,7 +69,7 @@ describe("listConnectionFeeds", () => {
 		connectionId = await seedConnection({
 			orgId,
 			userId: user.id,
-			slug: "feeds-conn",
+			slug: runtimeConnId,
 		});
 
 		await seedFeed({
@@ -106,8 +109,8 @@ describe("listConnectionFeeds", () => {
 		await cleanupTestDatabase();
 	});
 
-	it("projects the connection's feeds, excludes soft-deleted, and decorates the streaming feed with its bound agent", async () => {
-		const feeds = await listConnectionFeeds(orgId, String(connectionId));
+	it("resolves a non-numeric runtime id via slug, excludes soft-deleted, and decorates the streaming feed with its bound agent", async () => {
+		const feeds = await listConnectionFeeds(orgId, runtimeConnId);
 
 		expect(feeds).toHaveLength(2);
 		const byKind = Object.fromEntries(feeds.map((f) => [f.kind, f]));
@@ -124,10 +127,7 @@ describe("listConnectionFeeds", () => {
 	});
 
 	it("returns nothing for a connection in a different org scope", async () => {
-		const feeds = await listConnectionFeeds(
-			"org-does-not-exist",
-			String(connectionId),
-		);
+		const feeds = await listConnectionFeeds("org-does-not-exist", runtimeConnId);
 		expect(feeds).toHaveLength(0);
 	});
 });

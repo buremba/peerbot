@@ -119,8 +119,8 @@ function numericRef(value: string): number | null {
 
 async function resolveFeedIds(sql: DbClient, organizationId: string, value: string): Promise<number[]> {
   const id = numericRef(value);
-  const rows = await sql<{ id: number | string }>`
-    SELECT id
+  const rows = await sql<{ id: number | string; kind: string | null }>`
+    SELECT id, kind
     FROM feeds
     WHERE organization_id = ${organizationId}
       AND deleted_at IS NULL
@@ -132,8 +132,24 @@ async function resolveFeedIds(sql: DbClient, organizationId: string, value: stri
     ORDER BY id
     LIMIT 100
   `;
-  const ids = rows.map((r) => Number(r.id)).filter((n) => Number.isSafeInteger(n) && n > 0);
-  if (ids.length === 0) throw new Error(`@feed:${value} did not match any feed`);
+  // `@feed` sources compile to a SELECT over `events`, so only events-backed
+  // (`collected`) feeds can back one. A `streaming` feed's rows live in
+  // `channel_messages` and a `virtual` feed is an external live query — either
+  // would validate here and then read empty. Reject them with a clear error
+  // (loud, not silent) rather than compiling to a query that returns nothing.
+  const collected = rows.filter((r) => (r.kind ?? 'collected') === 'collected');
+  const ids = collected
+    .map((r) => Number(r.id))
+    .filter((n) => Number.isSafeInteger(n) && n > 0);
+  if (ids.length === 0) {
+    const other = rows.find((r) => (r.kind ?? 'collected') !== 'collected');
+    if (other) {
+      throw new Error(
+        `@feed:${value} is a ${other.kind} feed; only collected (events-backed) feeds can be an @feed source`
+      );
+    }
+    throw new Error(`@feed:${value} did not match any feed`);
+  }
   return ids;
 }
 

@@ -14,10 +14,15 @@ import type { KeyingConfig, UnprocessedRange, WatcherSource } from '../../types/
 import { parseDateAlias, toEndOfDay } from '../../utils/date-aliases';
 import { type DataSourceContext, executeDataSources } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
+import { runMetric } from '../../metrics/run-metric';
 import { getRecentFeedbackSummary } from '../../utils/watcher-feedback';
 import { getAvailableOperations, getPastReactionsSummary } from '../../utils/watcher-reactions';
 import { deriveWatcherExtractionSchema } from '../../utils/watcher-extraction-schema';
 import { computePendingWindow, foldUnprocessedRanges } from '../../utils/window-utils';
+import {
+  type NormalizedWatcherSource,
+  normalizeWatcherSources,
+} from '../../watchers/source-refs';
 import type { GetContentArgs } from './schema';
 import type { ClassifierConfig, GetContentResult } from './types';
 import { parseJson, parseRecordArray } from './types';
@@ -40,6 +45,14 @@ interface ContentQueryParams {
   };
 }
 
+function isMetricSource(
+  source: NormalizedWatcherSource
+): source is NormalizedWatcherSource & {
+  ref: { type: 'metric'; entityType: string; measure: string };
+} {
+  return source.kind === 'metric' && source.ref?.type === 'metric';
+}
+
 async function queryContentData(
   sql: DbClient,
   params: ContentQueryParams
@@ -55,10 +68,23 @@ async function queryContentData(
     windowStart: params.window_start,
     windowEnd: params.window_end,
   };
-  const results = await executeDataSources(params.sources, queryContext, sql, {
+  const normalizedSources = await normalizeWatcherSources(
+    sql,
+    params.organizationId,
+    params.sources
+  );
+  const eventSourceNames = new Set(
+    normalizedSources.filter((source) => source.kind === 'event').map((source) => source.name)
+  );
+  const sqlSources = normalizedSources
+    .filter((source) => source.kind !== 'metric')
+    .map(({ name, query }) => ({ name, query }));
+  const metricSources = normalizedSources.filter(isMetricSource);
+
+  const results = await executeDataSources(sqlSources, queryContext, sql, {
     wrapQuery: page
       ? (scopedQuery, queryParams, sourceName) => {
-          if (sourceName !== page.sourceName) return scopedQuery;
+          if (sourceName !== page.sourceName || !eventSourceNames.has(sourceName)) return scopedQuery;
 
           const nextParams = [...queryParams];
           const where: string[] = [
@@ -90,6 +116,27 @@ async function queryContentData(
         }
       : undefined,
   });
+  await Promise.all(
+    metricSources.map(async (source) => {
+      try {
+        results[source.name] = await runMetric({
+          organizationId: params.organizationId,
+          entityType: source.ref.entityType,
+          measure: source.ref.measure,
+          userId: null,
+        });
+      } catch (err) {
+        logger.warn(
+          {
+            error: err instanceof Error ? err.message : String(err),
+            dataSource: source.name,
+          },
+          'Metric source execution failed'
+        );
+        results[source.name] = [];
+      }
+    })
+  );
 
   let pageResult: { has_more: boolean; next_cursor?: { occurred_at: string; id: number } } | undefined;
   if (page) {
@@ -116,7 +163,8 @@ async function queryContentData(
   const seen = new Set<number>();
   const allContent: unknown[] = [];
 
-  for (const rows of Object.values(results)) {
+  for (const [sourceName, rows] of Object.entries(results)) {
+    if (!eventSourceNames.has(sourceName)) continue;
     for (const row of rows) {
       const rec = row as Record<string, unknown>;
       const id = typeof rec.id === 'number' ? rec.id : Number(rec.id);

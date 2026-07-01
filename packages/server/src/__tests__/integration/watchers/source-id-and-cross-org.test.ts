@@ -12,11 +12,15 @@
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
+import type { Env } from "../../../index";
+import { verifyWindowToken } from "../../../utils/jwt";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
 	createTestAgent,
+	createTestConnection,
 	createTestEntity,
+	createTestEvent,
 	createTestOrganization,
 	createTestUser,
 } from "../../setup/test-fixtures";
@@ -100,6 +104,66 @@ describe("manage_watchers source-id + cross-org guards", () => {
 			],
 		})) as { watcher_id?: string };
 		expect(created.watcher_id).toBeDefined();
+	});
+
+	it("resolves source refs and only signs event-backed content ids", async () => {
+		const sql = getTestDb();
+		const connection = await createTestConnection({
+			organization_id: ownerOrgId,
+			connector_key: "test.connector",
+			display_name: "Watcher Source Ref Connection",
+			slug: "watcher-source-ref-connection",
+		});
+		const [feed] = await sql<{ id: number | string }[]>`
+      SELECT id FROM feeds WHERE connection_id = ${connection.id} AND feed_key = 'default'
+    `;
+		const event = await createTestEvent({
+			entity_id: inOrgEntityId,
+			organization_id: ownerOrgId,
+			connection_id: connection.id,
+			feed_id: Number(feed.id),
+			content: "Feedback from the default feed.",
+			occurred_at: new Date(),
+		});
+		const customer = await createTestEntity({
+			name: "Source Ref Customer",
+			entity_type: "customer",
+			organization_id: ownerOrgId,
+		});
+
+		const created = (await owner.watchers.create({
+			entity_id: inOrgEntityId,
+			slug: "source-ref-context",
+			name: "Source Ref Context",
+			prompt: "Track {{content}} with customer context.",
+			agent_id: agentId,
+			sources: [
+				{ name: "content", query: "@feed:default" },
+				{ name: "customers", query: "@entity:customer" },
+			],
+		})) as { watcher_id: string };
+
+		const result = (await owner.knowledge.read({
+			watcher_id: created.watcher_id,
+			since: "today",
+			until: "today",
+		})) as {
+			content: Array<{ id: number }>;
+			total: number;
+			window_token: string;
+			sources: Record<string, Array<{ id: number | string }>>;
+		};
+
+		expect(result.total).toBe(1);
+		expect(result.content.map((row) => Number(row.id))).toEqual([event.id]);
+		expect(result.sources.content.map((row) => Number(row.id))).toContain(event.id);
+		expect(result.sources.customers.map((row) => Number(row.id))).toContain(customer.id);
+
+		const token = await verifyWindowToken(result.window_token, {
+			JWT_SECRET: "test-jwt-secret-for-testing-only",
+		} as Env);
+		expect(token.content_ids).toEqual([event.id]);
+		expect(token.content_ids).not.toContain(customer.id);
 	});
 
 	it("rejects create_version when a source query omits id", async () => {

@@ -13,6 +13,7 @@ import {
 } from '../../../utils/organization-access';
 import { validateTemplate } from '../../../watchers/renderer';
 import { queryProjectsIdColumn } from '../../../utils/execute-data-sources';
+import { validateWatcherSourceRef } from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
 
 // ============================================
@@ -179,6 +180,14 @@ function validateWatcherConfig(input: {
 
   if (input.sources) {
     for (const source of input.sources) {
+      let refKind: ReturnType<typeof validateWatcherSourceRef>;
+      try {
+        refKind = validateWatcherSourceRef(source.name, source.query);
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+      if (refKind) continue;
+
       const trimmed = source.query.trim().toUpperCase();
       if (!trimmed.startsWith('SELECT') && !trimmed.startsWith('WITH')) {
         return `source "${source.name}": query must be a SELECT statement (read-only)`;

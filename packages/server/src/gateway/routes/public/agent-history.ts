@@ -12,6 +12,7 @@ import { createLogger, entryToMessage, parseSessionEntries } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
+import { buildApiConversationId } from "../../services/api-conversation-id.js";
 import type { ArtifactStore } from "../../files/artifact-store.js";
 import { resolveOrgId } from "../../../lobu/stores/org-context.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
@@ -395,7 +396,53 @@ export function createAgentHistoryRoutes(deps: {
 					: message,
 			);
 		}
-		return c.json(data);
+
+		// Replay durable interaction cards the transcript doesn't carry (today the
+		// builder's manage_agents write-gate approval). Reconstruct the session
+		// conversationId the worker stamped (same parts), then read the still-
+		// pending approval events. Self-cleaning: a resolved approval is
+		// superseded out of current_event_records. Without this the interactive
+		// approval card is lost on reload — only the model's text + link survive.
+		let interactions: Array<{
+			type: "tool-approval";
+			runId: number;
+			action: string | null;
+			proposal: Record<string, unknown> | null;
+			current: Record<string, unknown> | null;
+		}> = [];
+		if (scope.organizationId) {
+			const conversationId = buildApiConversationId({
+				agentId: scope.agentId,
+				userId: scope.userId,
+				organizationId: scope.organizationId,
+				threadId,
+			});
+			const rows = await getDb()<{
+				run_id: number;
+				action: string | null;
+				proposal: Record<string, unknown> | null;
+				current: Record<string, unknown> | null;
+			}>`
+				SELECT run_id,
+				       metadata->>'action' AS action,
+				       metadata->'proposal' AS proposal,
+				       metadata->'current' AS current
+				FROM current_event_records
+				WHERE organization_id = ${scope.organizationId}
+				  AND interaction_type = 'approval'
+				  AND interaction_status = 'pending'
+				  AND metadata->>'conversationId' = ${conversationId}
+				ORDER BY run_id
+			`;
+			interactions = rows.map((r) => ({
+				type: "tool-approval" as const,
+				runId: Number(r.run_id),
+				action: r.action,
+				proposal: r.proposal ?? null,
+				current: r.current ?? null,
+			}));
+		}
+		return c.json({ ...data, interactions });
 	});
 
 	// Read a PLATFORM conversation (e.g. `slack:{channel}:{ts}`) read-only by its

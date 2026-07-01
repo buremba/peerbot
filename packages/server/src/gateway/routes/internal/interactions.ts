@@ -5,6 +5,7 @@ import {
 	getErrorMessage,
 } from "@lobu/core";
 import { Hono } from "hono";
+import { getDb } from "../../../db/client.js";
 import type { InteractionService } from "../../interactions.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
@@ -88,6 +89,21 @@ export function createInteractionRoutes(
             (body.current ?? null) as Record<string, unknown> | null,
             source
           );
+          // The live approval card is a one-shot SSE push, and the transcript
+          // doesn't carry interaction parts — so on reload the card is lost.
+          // Stamp the conversation onto the durable approval event (manage_agents
+          // created it WITHOUT one — the tool ctx has no conversationId; the
+          // worker does) so the history endpoint can replay it. Routing-metadata
+          // only; `events` is append-only for DELETE, and once the approval is
+          // resolved the superseding event drops it from current_event_records.
+          await getDb()`
+            UPDATE events
+            SET metadata = coalesce(metadata, '{}'::jsonb)
+              || jsonb_build_object('conversationId', ${conversationId}::text)
+            WHERE run_id = ${Number(body.runId)}
+              AND interaction_type = 'approval'
+              AND interaction_status = 'pending'
+          `;
           return c.json({ id: posted.id, status: "posted" });
         }
 

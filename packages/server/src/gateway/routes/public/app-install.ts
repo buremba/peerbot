@@ -42,6 +42,7 @@ import {
 } from "@lobu/core";
 import type { ConnectorAuthAppInstallation } from "@lobu/connector-sdk";
 import { getDb } from "../../../db/client.js";
+import { getConfiguredPublicOrigin } from "../../../utils/public-origin.js";
 import {
 	ConnectionSlugConflictError,
 	insertConnectionWithSlug,
@@ -876,6 +877,17 @@ export interface AppInstallRouterDeps {
 	/** Resolve the active org for the request (session-bound + single-tenant). */
 	resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
 	/**
+	 * Authorize install COMPLETION against the org the install was started for
+	 * (carried in the signed state): true iff the completing request's user is a
+	 * member of `organizationId` (self-host: iff it is the sole tenant). Replaces
+	 * the fragile "callback active-org === state org" comparison, which rejected
+	 * legitimate installs whenever the active org drifted from the UI-selected org.
+	 */
+	verifyInstallOrgAccess(
+		c: import("hono").Context,
+		organizationId: string,
+	): Promise<boolean>;
+	/**
 	 * The public gateway base URL (e.g. `https://app.lobu.ai`) used to build the
 	 * OAuth `redirect_uri`, which must equal the App's registered Callback URL.
 	 * Undefined falls back to the request origin (self-host single-origin).
@@ -1370,17 +1382,22 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		// send the genuine github.com/apps/<slug>/installations/new?state=S to a
 		// victim, the victim installs the App on THEIR org V and passes the ownership
 		// check (they own V) — and V's installation lands in the attacker's org A.
-		// Require the completing session's org to equal the state's org (mirrors
-		// slack.ts). The legit admin completes in the same session (A === A).
-		const callbackOrgId = await deps.resolveInstallOrgId(c);
-		if (!callbackOrgId || callbackOrgId !== installState.organizationId) {
+		// Require the completing session's USER to be a member of the state's org.
+		// Membership — not "ambient active org === state org" — is the real
+		// authorization: it still blocks the CSRF (a victim who doesn't belong to
+		// the attacker's org A can't complete an A-bound link) while allowing a
+		// legit admin whose active org drifted from the org they launched from.
+		const callbackAuthorized = await deps.verifyInstallOrgAccess(
+			c,
+			installState.organizationId,
+		);
+		if (!callbackAuthorized) {
 			logger.warn(
 				{
 					state_org: installState.organizationId,
-					callback_org: callbackOrgId ?? null,
 					installation_id: installationIdRaw,
 				},
-				"Rejecting GitHub install callback: completing session org does not match install state",
+				"Rejecting GitHub install callback: completing user is not a member of install state's org",
 			);
 			return c.html(
 				renderOAuthErrorPage(
@@ -1390,7 +1407,7 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				403,
 			);
 		}
-		// Bind to the org encoded in the verified state (== callbackOrgId).
+		// Bind to the org encoded in the verified state (membership-authorized above).
 		const orgId = installState.organizationId;
 
 		// Resolve App credentials from THIS org's connector declaration — only now,
@@ -1745,6 +1762,22 @@ type CompleteOAuthInstall = (
 ) => Promise<{ teamId: string; teamName?: string; installationId: string }>;
 
 /**
+ * Complete a Slack-INITIATED (marketplace) install that arrives with a `code`
+ * but no Lobu-minted state: park it as a pending, unclaimed install (org-less)
+ * and return its identity so the callback can prompt the user to claim it.
+ * Returns `null` when it can't run (hosted creds unset) → caller falls through.
+ */
+type CompletePendingOAuthInstall = (
+	provider: string,
+	request: Request,
+	redirectUri: string,
+) => Promise<{
+	teamId: string;
+	teamName: string | null;
+	installerUserId: string | null;
+} | null>;
+
+/**
  * Mount the start + callback routes for ONE oauth-code-exchange connector onto
  * `router`, at the connector's `/{provider}/install` + `/{provider}/oauth_callback`
  * paths. `authorizeUrl` is the provider's declared OAuth authorize endpoint; the
@@ -1758,8 +1791,13 @@ function mountOAuthCodeExchangeRoutes(
 		provider: string;
 		authorizeUrl: string;
 		resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
+		verifyInstallOrgAccess(
+			c: import("hono").Context,
+			organizationId: string,
+		): Promise<boolean>;
 		getPublicGatewayUrl?(): string | undefined;
 		complete: CompleteOAuthInstall;
+		completePendingInstall?: CompletePendingOAuthInstall;
 	},
 ): void {
 	const { connectorKey, provider, authorizeUrl } = params;
@@ -1834,11 +1872,11 @@ function mountOAuthCodeExchangeRoutes(
 	router.get(`/${provider}/oauth_callback`, async (c) => {
 		const state = c.req.query("state");
 		const code = c.req.query("code");
-		if (!state || !code) {
+		if (!code) {
 			return c.html(
 				renderOAuthErrorPage(
 					"invalid_request",
-					`The ${display} OAuth callback is missing the required state or code parameter.`,
+					`The ${display} OAuth callback is missing the required code parameter.`,
 				),
 				400,
 			);
@@ -1847,8 +1885,57 @@ function mountOAuthCodeExchangeRoutes(
 		const stateStore = oauthInstallStateStore(provider);
 		// Peek (non-destructive) before validating side-channel context so a
 		// cross-org or unauthenticated hit doesn't burn the install link.
-		const oauthState = await stateStore.peek(state);
+		const oauthState = state ? await stateStore.peek(state) : null;
 		if (!oauthState) {
+			// No Lobu-minted state → this is a Slack-INITIATED install (marketplace /
+			// "Add to Slack"), NOT one we started, so there's no org to bind to. Park
+			// it as a pending, unclaimed install and tell the user to finish by
+			// claiming it (the installer gets DMed the claim link). Only fall through
+			// to the invalid-state error when there's no pending handler or it can't
+			// run (e.g. hosted app creds unset).
+			if (params.completePendingInstall) {
+				try {
+					const pendingRedirectUri = resolveOAuthInstallCallbackUrl(
+						params.getPublicGatewayUrl?.(),
+						c.req.url,
+						provider,
+					);
+					const pending = await params.completePendingInstall(
+						provider,
+						c.req.raw,
+						pendingRedirectUri,
+					);
+					if (pending) {
+						return c.html(
+							renderOAuthSuccessPage(
+								pending.teamName || pending.teamId,
+								undefined,
+								{
+									title: `${display} added`,
+									description:
+										"Almost done — check your Slack DMs to connect this workspace to your Lobu account.",
+									details:
+										"We sent the person who installed the app a link to finish setup.",
+								},
+							),
+						);
+					}
+				} catch (error) {
+					oauthInstallLogger.error(
+						{ provider, error: String(error) },
+						"Slack-initiated (marketplace) install failed to park as pending",
+					);
+					return c.html(
+						renderOAuthErrorPage(
+							`${provider}_install_failed`,
+							error instanceof Error
+								? error.message
+								: `${display} install failed.`,
+						),
+						500,
+					);
+				}
+			}
 			return c.html(
 				renderOAuthErrorPage(
 					"invalid_state",
@@ -1858,17 +1945,23 @@ function mountOAuthCodeExchangeRoutes(
 			);
 		}
 
-		// Reject the callback if the session that's completing the install belongs
-		// to a different org than the one that started it.
-		const callbackOrgId = await params.resolveInstallOrgId(c);
-		if (!callbackOrgId || callbackOrgId !== oauthState.organizationId) {
+		// Reject the callback unless the completing session's USER is a member of
+		// the org the install was started for. Membership authorizes completion —
+		// not "ambient active org === state org", which rejected legitimate installs
+		// whenever the active org drifted from the UI-selected org threaded via
+		// `?org=`. The CSRF guarantee holds: a user not in the state's org can't
+		// complete its link.
+		const callbackAuthorized = await params.verifyInstallOrgAccess(
+			c,
+			oauthState.organizationId,
+		);
+		if (!callbackAuthorized) {
 			oauthInstallLogger.warn(
 				{
 					provider,
 					stateOrg: oauthState.organizationId,
-					callbackOrg: callbackOrgId ?? null,
 				},
-				"Rejecting OAuth install callback: session org does not match install state",
+				"Rejecting OAuth install callback: completing user is not a member of install state's org",
 			);
 			return c.html(
 				renderOAuthErrorPage(
@@ -1879,8 +1972,10 @@ function mountOAuthCodeExchangeRoutes(
 			);
 		}
 
-		// Org check passed — atomically consume the nonce so the link can't be replayed.
-		const consumed = await stateStore.consume(state);
+		// Org check passed — atomically consume the nonce so the link can't be
+		// replayed. `oauthState` being truthy means `state` was a non-empty string
+		// (peek only ran when it was present), so the assertion is sound.
+		const consumed = await stateStore.consume(state as string);
 		if (!consumed) {
 			return c.html(
 				renderOAuthErrorPage(
@@ -1903,7 +1998,19 @@ function mountOAuthCodeExchangeRoutes(
 			// a "Connect my DM" action, replacing the legacy "run /lobu link <code>"
 			// page. Falls back to the success page when the web origin or org slug
 			// can't be resolved (e.g. a headless/self-host install with no slug).
-			const webBase = params.getPublicGatewayUrl?.()?.replace(/\/+$/, "");
+			//
+			// Use the WEB origin (app.lobu.ai), NOT the gateway base
+			// (getPublicGatewayUrl → app.lobu.ai/lobu): web-app routes live at
+			// `<origin>/<orgSlug>/agents`, so a `/lobu`-prefixed base yields
+			// `/lobu/<slug>/agents`, which the SPA can't resolve ("Not Found").
+			// Fall back to stripping a trailing `/lobu` off the gateway base when
+			// the origin env isn't set (single-origin self-host).
+			const webBase =
+				getConfiguredPublicOrigin()?.replace(/\/+$/, "") ??
+				params
+					.getPublicGatewayUrl?.()
+					?.replace(/\/+$/, "")
+					.replace(/\/lobu$/, "");
 			let orgSlug: string | null = null;
 			try {
 				const rows = (await getDb()`
@@ -1975,6 +2082,11 @@ export interface InstallEngineDeps {
 	installationStore: AppInstallationStore;
 	/** Resolve the active org for the request (session-bound + single-tenant). */
 	resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
+	/** Authorize install completion by membership in the state's org. */
+	verifyInstallOrgAccess(
+		c: import("hono").Context,
+		organizationId: string,
+	): Promise<boolean>;
 	/** The public gateway base URL used to build OAuth `redirect_uri`s. */
 	getPublicGatewayUrl?(): string | undefined;
 	/** The bundled integration connectors to mount install routes for. */
@@ -1986,6 +2098,12 @@ export interface InstallEngineDeps {
 	 * registered; omit on deployments with none.
 	 */
 	completeChatInstall?: CompleteOAuthInstall;
+	/**
+	 * Park a Slack-initiated (marketplace) install — a callback with a `code` but
+	 * no Lobu-minted state — as a pending, unclaimed install. Omit on deployments
+	 * that don't support marketplace/Slack-side installs.
+	 */
+	completeChatPendingInstall?: CompletePendingOAuthInstall;
 }
 
 /**
@@ -2009,6 +2127,7 @@ export function createInstallRoutes(deps: InstallEngineDeps): Hono {
 				createAppInstallRoutes({
 					installationStore: deps.installationStore,
 					resolveInstallOrgId: deps.resolveInstallOrgId,
+					verifyInstallOrgAccess: deps.verifyInstallOrgAccess,
 					getPublicGatewayUrl: deps.getPublicGatewayUrl,
 				}),
 			);
@@ -2040,8 +2159,10 @@ export function createInstallRoutes(deps: InstallEngineDeps): Hono {
 			provider: integration.provider,
 			authorizeUrl,
 			resolveInstallOrgId: deps.resolveInstallOrgId,
+			verifyInstallOrgAccess: deps.verifyInstallOrgAccess,
 			getPublicGatewayUrl: deps.getPublicGatewayUrl,
 			complete: deps.completeChatInstall,
+			completePendingInstall: deps.completeChatPendingInstall,
 		});
 	}
 

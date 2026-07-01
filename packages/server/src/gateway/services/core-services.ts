@@ -747,7 +747,6 @@ export class CoreServices {
 		// connector-backed operations; the worker only receives lobu-memory.
 		this.mcpConfigService = new McpConfigService({
 			lobuMemory: {
-				publicBaseUrl: this.config.lobuMemory.publicBaseUrl,
 				resolveOrgSlug: async (agentId: string) => {
 					const rows = await getDb()`
             SELECT o.slug

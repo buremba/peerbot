@@ -39,6 +39,7 @@ import {
 import { failTurnsForDeployment } from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { resolveAgentRuntimeSelection } from "../../lobu/stores/environment-store.js";
+import { getInternalGatewayUrl } from "../config/index.js";
 
 const logger = createLogger("orchestrator");
 
@@ -877,8 +878,7 @@ export class DeploymentManager {
    * mounted URL or it would 404 on every dispatch and provider-proxy call.
    */
   protected getDispatcherUrl(): string {
-    const port = process.env.PORT || process.env.GATEWAY_PORT || "8787";
-    return `http://${this.getDispatcherHost()}:${port}/lobu`;
+    return getInternalGatewayUrl();
   }
 
   /**

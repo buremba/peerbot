@@ -2,7 +2,7 @@
 process.env.ENCRYPTION_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
 import { McpConfigService } from "../auth/mcp/config-service.js";
 
@@ -14,7 +14,21 @@ function makeToken(agentId = "agent1") {
 }
 
 const WORKER_MCP_URL = "http://localhost:8080/mcp";
-const PUBLIC_BASE_URL = "https://app.example.com";
+const ORIGINAL_PORT = process.env.PORT;
+const ORIGINAL_DISPATCHER_URL = process.env.DISPATCHER_URL;
+
+afterEach(() => {
+  if (ORIGINAL_PORT === undefined) {
+    delete process.env.PORT;
+  } else {
+    process.env.PORT = ORIGINAL_PORT;
+  }
+  if (ORIGINAL_DISPATCHER_URL === undefined) {
+    delete process.env.DISPATCHER_URL;
+  } else {
+    process.env.DISPATCHER_URL = ORIGINAL_DISPATCHER_URL;
+  }
+});
 
 describe("McpConfigService", () => {
   test("returns no MCPs when lobu-memory cannot be derived", async () => {
@@ -31,10 +45,11 @@ describe("McpConfigService", () => {
   });
 
   test("derives only the system lobu-memory MCP for workers", async () => {
+    delete process.env.DISPATCHER_URL;
+    process.env.PORT = "8787";
     const token = makeToken();
     const service = new McpConfigService({
       lobuMemory: {
-        publicBaseUrl: PUBLIC_BASE_URL,
         resolveOrgSlug: async (agentId) =>
           agentId === "agent1" ? "acme" : null,
       },
@@ -48,7 +63,7 @@ describe("McpConfigService", () => {
     expect(Object.keys(config.mcpServers)).toEqual(["lobu-memory"]);
     expect(config.mcpServers["lobu-memory"]).toEqual({
       url: WORKER_MCP_URL,
-      originalUrl: "https://app.example.com/mcp/acme",
+      originalUrl: "http://127.0.0.1:8787/mcp/acme",
       type: "sse",
       internal: true,
       perAgent: true,
@@ -60,9 +75,10 @@ describe("McpConfigService", () => {
   });
 
   test("exposes lobu-memory proxy metadata and status", async () => {
+    delete process.env.DISPATCHER_URL;
+    process.env.PORT = "8787";
     const service = new McpConfigService({
       lobuMemory: {
-        publicBaseUrl: `${PUBLIC_BASE_URL}/`,
         resolveOrgSlug: async () => "acme",
       },
     });
@@ -78,7 +94,7 @@ describe("McpConfigService", () => {
 
     await expect(service.getHttpServer("lobu-memory", "agent1")).resolves.toEqual({
       id: "lobu-memory",
-      upstreamUrl: "https://app.example.com/mcp/acme",
+      upstreamUrl: "http://127.0.0.1:8787/mcp/acme",
       internal: true,
     });
 
@@ -89,7 +105,6 @@ describe("McpConfigService", () => {
   test("rejects invalid worker tokens", async () => {
     const service = new McpConfigService({
       lobuMemory: {
-        publicBaseUrl: PUBLIC_BASE_URL,
         resolveOrgSlug: async () => "acme",
       },
     });

@@ -20,7 +20,11 @@ import {
 	primeAppInstallationMethods,
 	primeBundledIntegrationConnectors,
 } from "../gateway/installation/app-install-credentials";
-import { buildGatewayConfig } from "../gateway/config/index";
+import {
+	buildGatewayConfig,
+	resolveEmbeddedPublicGatewayUrl,
+	resolveEmbeddedPublicWebOrigin,
+} from "../gateway/config/index";
 import { ChatInstanceManager } from "../gateway/connections/chat-instance-manager";
 import { ChatResponseBridge } from "../gateway/connections/chat-response-bridge";
 import { Gateway } from "../gateway/gateway-main";
@@ -33,7 +37,7 @@ import {
 import { SecretStoreRegistry } from "../gateway/secrets/index";
 import type { Env } from "../index";
 import logger from "../utils/logger";
-import { getConfiguredPublicOrigin } from "../utils/public-origin";
+
 import {
 	getCachedMembershipRole,
 	getCachedOrgBySlug,
@@ -333,21 +337,15 @@ export async function initLobuGateway(): Promise<Hono | null> {
 	ensureEmbeddedGatewaySecrets();
 	ensureEmbeddedWorkerLauncher();
 	try {
-		const publicWebUrl =
-			getConfiguredPublicOrigin() ||
-			`http://localhost:${process.env.PORT || "8787"}`;
-		const publicUrl = new URL("/lobu/", publicWebUrl)
-			.toString()
-			.replace(/\/$/, "");
+		const publicWebUrl = resolveEmbeddedPublicWebOrigin();
 		const env = process.env as unknown as Env;
 
 		// Embedded gateway shares the process with the app's OIDC provider — pass
 		// that issuer explicitly instead of overloading MEMORY_URL. LOBU memory MCP
 		// endpoints are resolved separately per organization/agent.
 		const gatewayConfig = buildGatewayConfig({
-			mcp: { publicGatewayUrl: publicUrl },
+			mcp: { publicGatewayUrl: resolveEmbeddedPublicGatewayUrl() },
 			auth: { issuerUrl: publicWebUrl },
-			lobuMemory: { publicBaseUrl: publicWebUrl },
 		});
 
 		await startFilteringProxy();

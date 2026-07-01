@@ -8,6 +8,7 @@ import { materializeDueItems } from '../scheduled/due-materializer';
 import { markStaleRunsAsTimeout } from '../scheduled/stale-run-sweeper';
 import { incrementCounter, setGauge } from '../gateway/metrics/prometheus';
 import type { Env } from '../index';
+import { getInternalGatewayUrl } from '../gateway/config/index';
 import { isLobuGatewayRunning } from '../lobu/gateway';
 import { getLobuServiceToken } from '../lobu/service-token';
 import logger from '../utils/logger';
@@ -783,7 +784,6 @@ const LOBU_MEMORY_MCP_ID = 'lobu-memory';
 const WATCHER_REQUIRED_TOOLS = ['read_knowledge', 'manage_watchers'];
 
 async function preflightWatcherMemoryTools(params: {
-  port: string;
   organizationId: string;
   agentId: string;
   runId: number;
@@ -796,7 +796,7 @@ async function preflightWatcherMemoryTools(params: {
     platform: 'api',
     sessionKey: `watcher_${params.runId}`,
   });
-  const url = `http://127.0.0.1:${params.port}/lobu/mcp/${LOBU_MEMORY_MCP_ID}/tools`;
+  const url = `${getInternalGatewayUrl()}/mcp/${LOBU_MEMORY_MCP_ID}/tools`;
 
   try {
     const response = await fetch(url, {
@@ -873,9 +873,7 @@ async function dispatchWatcherRun(
     return 'failed';
   }
 
-  const port = process.env.PORT || '8787';
   const preflight = await preflightWatcherMemoryTools({
-    port,
     organizationId: run.organization_id,
     agentId: payload.agent_id,
     runId: run.id,
@@ -885,7 +883,7 @@ async function dispatchWatcherRun(
     return 'failed';
   }
 
-  const baseUrl = `http://127.0.0.1:${port}/lobu/api/v1/agents`;
+  const baseUrl = `${getInternalGatewayUrl()}/api/v1/agents`;
   const headers = {
     Authorization: `Bearer ${serviceToken}`,
     'Content-Type': 'application/json',

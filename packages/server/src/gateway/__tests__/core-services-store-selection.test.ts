@@ -55,7 +55,7 @@ function createGatewayConfig(
       publicGatewayUrl: "http://localhost:8080",
     },
     auth: {},
-    lobuMemory: {},
+
     secrets: {
       aws: {},
     },

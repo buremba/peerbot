@@ -1,4 +1,5 @@
 import { createLogger, verifyWorkerToken } from "@lobu/core";
+import { getLobuMemoryUpstreamOrigin } from "../../config/index.js";
 import { getRevokedTokenStore } from "../revoked-token-store.js";
 
 const logger = createLogger("mcp-config-service");
@@ -27,7 +28,6 @@ interface McpStatus {
 }
 
 interface LobuMemoryConfigOptions {
-  publicBaseUrl?: string;
   resolveOrgSlug?: (agentId: string) => Promise<string | null>;
 }
 
@@ -157,18 +157,9 @@ export class McpConfigService {
       if (!orgSlug) {
         return null;
       }
-      const publicBaseUrl = (this.lobuMemory?.publicBaseUrl || "").replace(
-        /\/+$/,
-        ""
-      );
-      if (!publicBaseUrl) {
-        logger.warn(
-          `Cannot derive ${LOBU_MEMORY_MCP_ID} MCP for ${agentId}: public base URL is not configured`
-        );
-        return null;
-      }
+      const upstreamOrigin = getLobuMemoryUpstreamOrigin();
       return {
-        url: buildLobuMemoryScopedMcpUrl(publicBaseUrl, orgSlug),
+        url: buildLobuMemoryScopedMcpUrl(upstreamOrigin, orgSlug),
         type: "streamable-http",
         internal: true,
       };

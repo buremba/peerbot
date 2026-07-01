@@ -80,7 +80,7 @@ function minimalGatewayConfig(): GatewayConfig {
     },
     mcp: { publicGatewayUrl: 'http://localhost:8080' },
     auth: {},
-    lobuMemory: {},
+
     secrets: { aws: {} },
   } as GatewayConfig;
 }

@@ -22,8 +22,8 @@
  */
 import { readFile } from "node:fs/promises";
 import { getDb } from "../db/client";
+import { resolveEmbeddedPublicGatewayUrl } from "../gateway/config/index";
 import { getLobuCoreServices } from "../lobu/gateway";
-import { getConfiguredPublicOrigin } from "./public-origin";
 import { insertEvent } from "./insert-event";
 import logger from "./logger";
 
@@ -71,10 +71,7 @@ interface AudioTranscriptionPending {
 }
 
 function publicGatewayUrl(): string {
-  const origin =
-    getConfiguredPublicOrigin() ||
-    `http://localhost:${process.env.PORT || "8787"}`;
-  return new URL("/lobu/", origin).toString().replace(/\/$/, "");
+  return resolveEmbeddedPublicGatewayUrl();
 }
 
 /**

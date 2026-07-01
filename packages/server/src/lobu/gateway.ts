@@ -55,7 +55,9 @@ const defaultOrgCache = new Map<
 	{ orgId: string | null; expiresAt: number }
 >();
 
-async function resolveDefaultOrgId(userId: string): Promise<string | null> {
+export async function resolveDefaultOrgId(
+	userId: string,
+): Promise<string | null> {
 	const cached = defaultOrgCache.get(userId);
 	if (cached && cached.expiresAt > Date.now()) return cached.orgId;
 

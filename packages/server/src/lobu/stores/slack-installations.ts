@@ -402,6 +402,12 @@ export interface SlackPendingInstall {
   /** Decrypted bot token. */
   botToken: string;
   isEnterpriseInstall: boolean;
+  /**
+   * `sha256(claimToken)` (hex) of the single-use token DMed to the installer,
+   * or null when no claim link was minted (no installer to DM). The claim route
+   * validates the presented token against this hash before binding.
+   */
+  claimTokenHash: string | null;
 }
 
 /** Park (or refresh) the single pending install for a Slack workspace. */
@@ -478,5 +484,51 @@ export async function resolveSlackPendingByTenant(
         : null,
     botToken: decrypt(enc),
     isEnterpriseInstall: row.metadata.is_enterprise_install === true,
+    claimTokenHash:
+      typeof row.metadata.claim_token_hash === "string"
+        ? row.metadata.claim_token_hash
+        : null,
   };
+}
+
+/**
+ * Claim a pending (unclaimed) Slack workspace into an org: BIND the install
+ * (persist the bot token to the org-scoped secret store + create the active,
+ * org-owned `app_installations` + `connections` rows via
+ * {@link upsertSlackInstallByTeam}), then DELETE the org-less pending row so the
+ * workspace can't be double-claimed. Caller is responsible for authorizing the
+ * claim (token-hash match + workspace-admin check) BEFORE invoking this.
+ *
+ * The bind commits first; the pending delete is a best-effort follow-up on the
+ * same team so a crash between them leaves the workspace claimed (active row
+ * wins routing) with a harmless leftover pending row that the next claim
+ * replaces. Returns the stable `slackinst-<uuid>` install id.
+ */
+export async function claimSlackPendingInstall(
+  store: AppInstallationStore,
+  secretStore: WritableSecretStore,
+  pending: SlackPendingInstall,
+  organizationId: string
+): Promise<{ installationId: string }> {
+  const row = await upsertSlackInstallByTeam(
+    store,
+    secretStore,
+    organizationId,
+    pending.teamId,
+    {
+      teamName: pending.teamName ?? undefined,
+      botUserId: pending.botUserId ?? undefined,
+      botToken: pending.botToken,
+    }
+  );
+  // Retire the org-less pending row now that an active, org-owned install owns
+  // the workspace. Team-scoped: at most one pending row per team.
+  await getDb()`
+    DELETE FROM app_installations
+    WHERE provider = ${SLACK_PROVIDER}
+      AND provider_app_id = ${SLACK_PROVIDER_APP_ID}
+      AND external_tenant_id = ${pending.teamId}
+      AND status = 'pending'
+  `;
+  return { installationId: row.id };
 }

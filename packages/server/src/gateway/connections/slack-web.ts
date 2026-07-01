@@ -34,6 +34,16 @@ export interface SlackWebApi {
     channelId: string
   ): Promise<{ name: string | null; isPrivate: boolean }>;
   /**
+   * `users.info` → the workspace-admin flags for one user. Used by the
+   * marketplace-claim flow to verify the claiming user is a workspace admin or
+   * owner before binding the pending install to their org. Throws on a
+   * Slack-level error (the caller treats a throw as a failed claim).
+   */
+  usersInfo(
+    botToken: string,
+    userId: string
+  ): Promise<{ isAdmin: boolean; isOwner: boolean }>;
+  /**
    * `oauth.v2.access` — exchange an OAuth `code` for the workspace bot token +
    * tenant/installer identity. Unlike the other methods this authenticates with
    * the app's client id/secret (not a bot token), so it lives outside
@@ -143,6 +153,16 @@ export function createSlackWebApi(): SlackWebApi {
       return {
         name: typeof ch?.name === "string" ? ch.name : null,
         isPrivate: ch?.is_private === true,
+      };
+    },
+    async usersInfo(botToken, userId) {
+      const json = await slackPost(botToken, "users.info", { user: userId });
+      const user = json.user as
+        | { is_admin?: boolean; is_owner?: boolean }
+        | undefined;
+      return {
+        isAdmin: user?.is_admin === true,
+        isOwner: user?.is_owner === true,
       };
     },
     async exchangeOAuthCode({ clientId, clientSecret, code, redirectUri }) {

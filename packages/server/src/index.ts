@@ -33,6 +33,8 @@ import { getDb } from "./db/client";
 import * as invalidationEmitter from "./events/emitter";
 import { streamInvalidationEvents } from "./events/sse";
 import { invalidationSseAuth } from "./events/sse-invalidation-auth";
+import { claimSlackWorkspace } from "./gateway/connections/slack-claim";
+import { createSlackWebApi } from "./gateway/connections/slack-web";
 import {
 	getMaxReservedLocks,
 	getReservedLockCount,
@@ -42,7 +44,15 @@ import { isShuttingDown } from "./lifecycle-state";
 import { agentRoutes } from "./lobu/agent-routes";
 import { environmentRoutes } from "./lobu/environment-routes";
 import { clientRoutes, platformSchemaRoutes } from "./lobu/client-routes";
-import { isLobuGatewayRunning } from "./lobu/gateway";
+import {
+	getLobuCoreServices,
+	isLobuGatewayRunning,
+	resolveDefaultOrgId,
+} from "./lobu/gateway";
+import {
+	claimSlackPendingInstall,
+	resolveSlackPendingByTenant,
+} from "./lobu/stores/slack-installations";
 import { handleMcp } from "./mcp-handler";
 import {
 	restDeleteNotification,
@@ -1394,6 +1404,133 @@ app.post("/api/:orgSlug/join", async (c) => {
 		organizationId: result.organizationId,
 		role: result.role,
 	});
+});
+
+/**
+ * Resolve the signed-in user's team-scoped `slack_user_id` (`T…:U…`) for a Slack
+ * workspace, returning the bare `U…` id or null when they never signed in with
+ * Slack for that team. Reuses the canonical `entity_identities` shape the authz
+ * layer writes on Slack sign-in (namespace `slack_user_id`, identifier stored
+ * uppercased as `T…:U…` on the user's `$member`), joined to the user's memberships
+ * via the guarded `auth_user_id`/`auth:signup` claim so a user-supplied identity
+ * row can't hijack the lookup. Org-agnostic (the identity may live in any org the
+ * user belongs to), so it runs BEFORE we resolve the org to bind into.
+ */
+async function resolveClaimingUserSlackId(
+	userId: string,
+	teamId: string,
+): Promise<string | null> {
+	const sql = getDb();
+	const rows = (await sql`
+		SELECT DISTINCT ei.identifier
+		FROM "member" m
+		JOIN entity_identities auth_ei
+		  ON auth_ei.organization_id = m."organizationId"
+		 AND auth_ei.namespace = 'auth_user_id'
+		 AND auth_ei.identifier = m."userId"
+		 AND auth_ei.source_connector = 'auth:signup'
+		 AND auth_ei.deleted_at IS NULL
+		JOIN entity_identities ei
+		  ON ei.organization_id = auth_ei.organization_id
+		 AND ei.entity_id = auth_ei.entity_id
+		 AND ei.namespace = 'slack_user_id'
+		 AND ei.deleted_at IS NULL
+		WHERE m."userId" = ${userId}
+	`) as Array<{ identifier: string }>;
+	const teamPrefix = `${teamId.toUpperCase()}:`;
+	const combined = rows
+		.map((r) => String(r.identifier))
+		.find((id) => id.startsWith(teamPrefix));
+	return combined ? combined.slice(teamPrefix.length) : null;
+}
+
+/**
+ * POST /api/slack/claim — claim a marketplace / Slack-initiated (pending) Slack
+ * workspace into the signed-in user's org.
+ *
+ * Body: `{ team: string, token: string }` — the workspace id and the single-use
+ * claim token from the installer's DM'd link. Binds the parked pending install
+ * (see `writeSlackPendingInstall`) to the user's default org after proving the
+ * caller (a) holds the single-use token, (b) signed in with Slack for this
+ * workspace, and (c) is a workspace admin/owner. Neither the bot token nor the
+ * plaintext claim token is ever logged or returned.
+ *
+ * Registered before the `/api/:orgSlug/:toolName` proxy so `slack`/`claim`
+ * doesn't get swallowed as an org tool call.
+ */
+app.post("/api/slack/claim", async (c) => {
+	// The main app doesn't run the Lobu auth bridge, so resolve the session here
+	// (same pattern as /api/:orgSlug/join). Cookie or Better-Auth bearer.
+	let userId: string | null = null;
+	try {
+		const auth = await createAuth(c.env);
+		const session = await auth.api.getSession({ headers: c.req.raw.headers });
+		userId = session?.user?.id ?? null;
+	} catch {
+		userId = null;
+	}
+
+	let body: { team?: unknown; token?: unknown };
+	try {
+		body = (await c.req.json()) as { team?: unknown; token?: unknown };
+	} catch {
+		body = {};
+	}
+	const team = typeof body.team === "string" ? body.team.trim() : "";
+	const token = typeof body.token === "string" ? body.token : "";
+
+	// All branching lives in the injectable `claimSlackWorkspace` so it stays
+	// unit-testable; the route only wires real deps + maps outcomes to HTTP.
+	const result = await claimSlackWorkspace(
+		{
+			resolvePending: (t) => resolveSlackPendingByTenant(t),
+			resolveClaimerSlackId: resolveClaimingUserSlackId,
+			usersInfo: (botToken, uid) => createSlackWebApi().usersInfo(botToken, uid),
+			resolveDefaultOrgId: (uid) => resolveDefaultOrgId(uid),
+			claim: (pending, organizationId) => {
+				const core = getLobuCoreServices();
+				if (!core) throw new Error("Lobu core services unavailable");
+				return claimSlackPendingInstall(
+					core.getAppInstallationStore(),
+					core.getSecretStore(),
+					pending,
+					organizationId,
+				);
+			},
+			resolveOrgSlug: async (organizationId) => {
+				const orgRows = (await getDb()`
+					SELECT slug FROM "organization" WHERE id = ${organizationId} LIMIT 1
+				`) as Array<{ slug: string }>;
+				return orgRows[0]?.slug ?? null;
+			},
+		},
+		{ userId, team, token },
+	);
+
+	switch (result.status) {
+		case "ok":
+			return c.json({ ok: true, orgSlug: result.orgSlug, provider: "slack" });
+		case "unauthenticated":
+			return c.json({ error: "unauthenticated" }, 401);
+		case "invalid_request":
+			return c.json({ error: "invalid_request" }, 400);
+		case "no_pending_install":
+			return c.json({ error: "no_pending_install" }, 404);
+		case "invalid_token":
+			return c.json({ error: "invalid_token" }, 403);
+		case "slack_signin_required":
+			return c.json({ error: "slack_signin_required" }, 403);
+		case "not_admin":
+			return c.json({ error: "not_admin" }, 403);
+		case "no_org":
+			return c.json({ error: "no_org" }, 409);
+		case "claim_failed":
+			logger.error(
+				{ team, err: result.message },
+				"Slack workspace claim failed",
+			);
+			return c.json({ error: "claim_failed", message: result.message }, 500);
+	}
 });
 
 /**

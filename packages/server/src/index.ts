@@ -1701,11 +1701,11 @@ app.all("/mcp/:orgSlug/", handleMcp);
 
 // MCP App bundle — asset-only static delivery (NOT an approval endpoint). Serves
 // the self-contained `ui://` iframe payload built by owletto `build:mcp-apps`
-// (e.g. dist-mcp-apps/approval/index.html) so our own SPA can host the same
-// approval card external MCP hosts render, in a sandboxed iframe. There is no
-// approval logic here — Approve/Reject rides the existing `manage_operations`
-// tool via the SPA host bridge. The same `readMcpAppBundle` resolver backs the
-// MCP `resources/read` path for external hosts.
+// (dist-mcp-apps/interaction/index.html) so our own SPA can host every
+// interactive interaction (approval, question, tool grant, link) in a sandboxed
+// iframe. There is no action logic here — each action rides an MCP `tools/call`
+// brokered by the SPA host bridge. The same `readMcpAppBundle` resolver backs
+// the MCP `resources/read` path for external hosts.
 app.get("/mcp-apps/:app/index.html", async (c) => {
 	const app_ = c.req.param("app");
 	// Only serve a bundle the MCP App registry declares — never an arbitrary

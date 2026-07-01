@@ -384,13 +384,6 @@ export interface SlackPendingInstallInput {
   /** The Slack user who clicked Allow (`authed_user.id`); the DM/claim target. */
   installerUserId: string | null;
   isEnterpriseInstall: boolean;
-  /**
-   * `sha256(claimToken)` (hex) of the single-use token DMed to the installer.
-   * Only the HASH is persisted — the plaintext token exists solely in the claim
-   * link, so a leaked pending row can't be replayed to claim the workspace. Null
-   * when there is no installer to DM (no claim link was minted).
-   */
-  claimTokenHash: string | null;
 }
 
 export interface SlackPendingInstall {
@@ -402,12 +395,6 @@ export interface SlackPendingInstall {
   /** Decrypted bot token. */
   botToken: string;
   isEnterpriseInstall: boolean;
-  /**
-   * `sha256(claimToken)` (hex) of the single-use token DMed to the installer,
-   * or null when no claim link was minted (no installer to DM). The claim route
-   * validates the presented token against this hash before binding.
-   */
-  claimTokenHash: string | null;
 }
 
 /** Park (or refresh) the single pending install for a Slack workspace. */
@@ -421,7 +408,6 @@ export async function writeSlackPendingInstall(
     installer_user_id: install.installerUserId,
     is_enterprise_install: install.isEnterpriseInstall,
     bot_token_enc: encrypt(install.botToken),
-    claim_token_hash: install.claimTokenHash,
   };
   // Refresh: at most one pending row per team (a re-install replaces it).
   await sql`
@@ -484,10 +470,6 @@ export async function resolveSlackPendingByTenant(
         : null,
     botToken: decrypt(enc),
     isEnterpriseInstall: row.metadata.is_enterprise_install === true,
-    claimTokenHash:
-      typeof row.metadata.claim_token_hash === "string"
-        ? row.metadata.claim_token_hash
-        : null,
   };
 }
 

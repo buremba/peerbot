@@ -1,17 +1,16 @@
 /**
  * Phase 2 of the Slack marketplace "claim" flow: after a Slack-initiated
  * (marketplace) install is parked as a pending, unclaimed row,
- * `completeSlackPendingInstall` DMs the INSTALLER a single-use claim link.
+ * `completeSlackPendingInstall` DMs the INSTALLER their connect link.
  *
  * This unit test stubs the Slack Web API (no HTTP), the pending-install store
  * (no DB), and the hosted-app credentials so the DM behaviour is exercised in
  * isolation. It proves: (1) with an installer id, `openDm` + `postMessage` are
- * called and the posted text carries the claim URL with the team + a token whose
- * sha256 matches the hash persisted on the pending row; (2) with a null
- * installer, no DM is sent and no claim hash is stored — the row is still parked.
+ * called and the posted text carries the connect URL with the team id (no secret
+ * token — authority is the Slack workspace-admin check at claim time); (2) with a
+ * null installer, no DM is sent — the row is still parked.
  */
 
-import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { __resetPublicOriginCachesForTests } from "../../utils/public-origin.js";
 
@@ -24,6 +23,7 @@ mock.module("../../lobu/stores/slack-installations.js", () => ({
   }),
   // Also imported by the coordinator module (webhook routing); unused here.
   getSlackInstallByTeamId: mock(async () => null),
+  resolveSlackPendingByTenant: mock(async () => null),
   upsertSlackInstallByTeam: mock(async () => ({ id: "slackinst-x" })),
 }));
 
@@ -91,7 +91,7 @@ describe("completeSlackPendingInstall — installer claim DM", () => {
     __resetPublicOriginCachesForTests();
   });
 
-  test("DMs the installer a claim link carrying the team + token, and stores only the hash", async () => {
+  test("DMs the installer a connect link with the team id (no secret token)", async () => {
     const completeSlackPendingInstall = await loadCoordinator();
 
     const result = await completeSlackPendingInstall(
@@ -117,25 +117,20 @@ describe("completeSlackPendingInstall — installer claim DM", () => {
     expect(botToken).toBe("xoxb-installer-token");
     expect(channel).toBe("D-INSTALLER");
 
-    // The posted text embeds the claim URL with the team id and a token.
+    // The posted text embeds the connect URL with the team id — no secret token
+    // (authority is the Slack workspace-admin check at claim time).
     const match = text.match(
-      /https:\/\/app\.lobu\.ai\/slack\/claim\?team=([^&\s]+)&t=([^\s]+)/,
+      /https:\/\/app\.lobu\.ai\/slack\/claim\?team=([^&\s]+)/,
     );
     expect(match).not.toBeNull();
-    const [, teamParam, tokenParam] = match as RegExpMatchArray;
+    const [, teamParam] = match as RegExpMatchArray;
     expect(decodeURIComponent(teamParam)).toBe("T-CLAIM");
-    expect(tokenParam.length).toBeGreaterThan(0);
+    expect(text).not.toContain("&t=");
 
-    // Only the sha256 hash of the token is persisted on the pending row — never
-    // the plaintext token itself.
+    // The pending row is parked with the installer id and no token material.
     expect(writeCalls).toHaveLength(1);
     const parked = writeCalls[0]!;
     expect(parked.installerUserId).toBe("U-INSTALLER");
-    const expectedHash = createHash("sha256")
-      .update(tokenParam)
-      .digest("hex");
-    expect(parked.claimTokenHash).toBe(expectedHash);
-    expect(JSON.stringify(parked)).not.toContain(tokenParam);
   });
 
   test("skips the DM when there is no installer, but still parks the pending row", async () => {
@@ -162,9 +157,8 @@ describe("completeSlackPendingInstall — installer claim DM", () => {
     // No DM without an installer to send it to.
     expect(openDm).not.toHaveBeenCalled();
     expect(postMessage).not.toHaveBeenCalled();
-    // The row is still parked, with no claim token minted.
+    // The row is still parked (no installer to DM).
     expect(writeCalls).toHaveLength(1);
     expect(writeCalls[0]!.installerUserId).toBeNull();
-    expect(writeCalls[0]!.claimTokenHash).toBeNull();
   });
 });

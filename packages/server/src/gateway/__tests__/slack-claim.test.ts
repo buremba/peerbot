@@ -30,7 +30,6 @@ function pendingInstall(
     installerUserId: "U-INSTALLER",
     botToken: "xoxb-workspace-token",
     isEnterpriseInstall: false,
-    claimTokenHash: null,
     ...overrides,
   };
 }

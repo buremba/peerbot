@@ -670,6 +670,7 @@ export function buildScopedQuery(
       idx++;
       params.push(scope.principal);
       const cmPrincipal = `$${idx}::text`;
+      // security-allowed: see block comment above the for-loop
       cmCte +=
         ` AND EXISTS (SELECT 1 FROM public.connections cc ` +
         `WHERE cc.organization_id = ${orgP} AND cc.deleted_at IS NULL ` +

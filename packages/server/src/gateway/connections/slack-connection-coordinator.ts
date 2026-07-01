@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { createLogger } from "@lobu/core";
 import { Chat } from "chat";
 import type { AppInstallationStore } from "../../lobu/stores/app-installation-store.js";
@@ -6,7 +7,8 @@ import {
   upsertSlackInstallByTeam,
   writeSlackPendingInstall,
 } from "../../lobu/stores/slack-installations.js";
-import { createSlackWebApi } from "./slack-web.js";
+import { getConfiguredPublicOrigin } from "../../utils/public-origin.js";
+import { createSlackWebApi, type SlackWebApi } from "./slack-web.js";
 import type { WritableSecretStore } from "../secrets/index.js";
 import {
   getPrimedBundledMethod,
@@ -56,6 +58,16 @@ export async function completeSlackPendingInstall(
     code,
     redirectUri,
   });
+
+  // Mint a single-use claim token ONLY when there's an installer to DM it to. We
+  // persist only its sha256 hash on the pending row — the plaintext lives solely
+  // in the DM'd claim link, so a leaked pending row can't be replayed to claim
+  // the workspace.
+  const claimToken = result.authedUserId ? randomUUID() : null;
+  const claimTokenHash = claimToken
+    ? createHash("sha256").update(claimToken).digest("hex")
+    : null;
+
   await writeSlackPendingInstall({
     teamId: result.teamId,
     teamName: result.teamName,
@@ -63,6 +75,7 @@ export async function completeSlackPendingInstall(
     botToken: result.botToken,
     installerUserId: result.authedUserId,
     isEnterpriseInstall: result.isEnterpriseInstall,
+    claimTokenHash,
   });
   logger.info(
     {
@@ -72,11 +85,65 @@ export async function completeSlackPendingInstall(
     },
     "Slack pending-install parked (unclaimed) — awaiting claim",
   );
+
+  // Best-effort: DM the installer their claim link. The pending row is already
+  // parked; a DM failure (installer un-DMable, un-configured web base, …) must
+  // never fail the install — the workspace can still be claimed via the app.
+  if (result.authedUserId && claimToken) {
+    await dmSlackClaimLink(
+      web,
+      result.botToken,
+      result.authedUserId,
+      result.teamId,
+      claimToken,
+    );
+  } else {
+    logger.info(
+      { teamId: result.teamId },
+      "Slack pending-install: no installer id — skipping claim DM",
+    );
+  }
+
   return {
     teamId: result.teamId,
     teamName: result.teamName,
     installerUserId: result.authedUserId,
   };
+}
+
+/**
+ * DM the installer a single-use claim link so they can connect the freshly
+ * parked (pending) workspace to their Lobu account. Best-effort: any failure is
+ * logged and swallowed — the install stays parked and claimable via the app.
+ */
+async function dmSlackClaimLink(
+  web: SlackWebApi,
+  botToken: string,
+  installerUserId: string,
+  teamId: string,
+  claimToken: string,
+): Promise<void> {
+  const webBase = getConfiguredPublicOrigin()?.replace(/\/+$/, "");
+  if (!webBase) {
+    logger.warn(
+      { teamId, installerUserId },
+      "Slack pending-install: no public web base configured — skipping claim DM",
+    );
+    return;
+  }
+  const claimUrl = `${webBase}/slack/claim?team=${encodeURIComponent(
+    teamId,
+  )}&t=${claimToken}`;
+  const text = `👋 Thanks for adding Lobu to your workspace! Connect it to your Lobu account to finish setup: ${claimUrl}`;
+  try {
+    const dm = await web.openDm(botToken, installerUserId);
+    await web.postMessage(botToken, dm, text);
+  } catch (error) {
+    logger.warn(
+      { teamId, installerUserId, error: String(error) },
+      "Slack pending-install: failed to DM the installer their claim link",
+    );
+  }
 }
 
 type SlackInstallation = {

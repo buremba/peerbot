@@ -154,7 +154,7 @@ async function dmSlackClaimLink(
  * bot's own messages, message edits/subtypes, channel chatter, url_verification
  * challenges, or non-JSON (interactivity/slash) payloads.
  */
-function parseSlackUserMessageEvent(
+export function parseSlackUserMessageEvent(
   body: string,
   contentType: string,
 ): { channel: string; user: string } | null {

@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Workflows &amp; WAIT — brainstorm</title>
+<style>
+  :root{
+    --bg:#0b0b0d;--panel:#151517;--panel2:#1b1b20;--panel3:#212127;
+    --border:#2a2a31;--border2:#34343d;--text:#ececed;--muted:#8b8b95;--muted2:#6b6b74;
+    --accent:#e07b3c;--accent-soft:rgba(224,123,60,.14);
+    --blue:#5b9bd5;--blue-soft:rgba(91,155,213,.14);
+    --purple:#a382e0;--purple-soft:rgba(163,130,224,.14);
+    --green:#48b866;--green-soft:rgba(72,184,102,.14);
+    --amber:#e0a13c;--amber-soft:rgba(224,161,60,.13);--red:#e5686b;--radius:12px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:34px 30px 80px}
+  .hd{border-bottom:1px solid var(--border);padding-bottom:20px;margin-bottom:26px}
+  .hd .tag{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:26px;margin:6px 0 8px}
+  .hd p{color:var(--muted);margin:0;max-width:760px}
+  h2{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted2);margin:34px 0 14px;border-top:1px solid var(--border);padding-top:22px}
+  .lead{font-size:15px;color:var(--text);margin:0 0 16px;max-width:820px}
+  .lead b{color:var(--accent)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px}
+  .card h3{margin:0 0 4px;font-size:14px}
+  .card p{margin:0;color:var(--muted);font-size:12.5px}
+  .card .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted2)}
+  .pill{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 9px;border-radius:20px}
+  .pill.say{background:var(--accent-soft);color:var(--accent)}
+  .pill.do{background:var(--panel3);color:var(--muted);border:1px solid var(--border2)}
+  .pill.wait{background:var(--amber-soft);color:var(--amber)}
+  .pill.new{background:var(--green-soft);color:var(--green)}
+
+  /* vertical flow */
+  .flow{position:relative;margin:6px 0 6px 6px;padding-left:34px}
+  .flow::before{content:"";position:absolute;left:13px;top:8px;bottom:8px;width:2px;background:var(--border2)}
+  .node{position:relative;margin-bottom:14px}
+  .node .dot{position:absolute;left:-34px;top:16px;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-size:13px;background:var(--panel3);border:2px solid var(--border2);z-index:1}
+  .node.t .dot{border-color:var(--purple);color:var(--purple)}
+  .node.say .dot{border-color:var(--accent);color:var(--accent)}
+  .node.do .dot{border-color:var(--green);color:var(--green)}
+  .node.wait .dot{border-color:var(--amber);color:var(--amber)}
+  .ncard{background:var(--panel);border:1px solid var(--border);border-radius:11px;padding:13px 15px}
+  .node.wait .ncard{border-style:dashed;border-color:#5a4a1e;background:var(--amber-soft)}
+  .ncard .top{display:flex;align-items:center;gap:9px}
+  .ncard .ttl{font-weight:600;font-size:14px}
+  .ncard .desc{color:var(--muted);font-size:12.5px;margin-top:4px}
+  .collect{margin-top:11px;background:#12100a;border:1px solid #3a3016;border-radius:9px;padding:11px 12px}
+  .collect .bar{height:7px;border-radius:20px;background:#2a2416;overflow:hidden;margin:8px 0 6px}
+  .collect .bar i{display:block;height:100%;width:44%;background:var(--amber)}
+  .collect .rows{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .who{font-size:11px;padding:2px 8px;border-radius:20px;background:var(--panel3);border:1px solid var(--border2);color:var(--muted)}
+  .who.in{border-color:rgba(72,184,102,.4);color:var(--green)}
+  .who.pend{border-style:dashed;color:var(--muted2)}
+  .small{font-size:11.5px;color:var(--muted2)}
+
+  .note{background:var(--accent-soft);border:1px solid rgba(224,123,60,.5);border-radius:10px;padding:12px 14px;font-size:13px;color:#f0c39a;margin:14px 0}
+  .note b{color:var(--accent)}
+  .amber-note{background:var(--amber-soft);border:1px solid #5a4a1e;border-radius:10px;padding:12px 14px;font-size:13px;color:#e6c98f;margin:14px 0}
+  .amber-note b{color:var(--amber)}
+
+  table.map{width:100%;border-collapse:separate;border-spacing:0;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+  table.map th,table.map td{text-align:left;padding:11px 15px;font-size:13px;border-bottom:1px solid var(--border);vertical-align:top}
+  table.map th{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted2);font-weight:500}
+  table.map tr:last-child td{border-bottom:0}
+  table.map td b{font-weight:600}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--blue)}
+
+  .opt{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
+  .opt .h{font-weight:600;font-size:13.5px;margin-bottom:6px;display:flex;gap:8px;align-items:center}
+  .opt .pro{color:var(--green);font-size:12px;margin-top:8px}
+  .opt .con{color:var(--red);font-size:12px;margin-top:3px}
+  .opt.pick{border-color:rgba(72,184,102,.45);background:linear-gradient(180deg,var(--green-soft),transparent)}
+  .rec{font-size:10px;font-weight:700;color:var(--green);border:1px solid rgba(72,184,102,.4);border-radius:20px;padding:1px 8px}
+
+  .q{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;padding:12px 15px;margin-bottom:10px}
+  .q .qt{font-weight:600;font-size:13.5px}
+  .q .qd{color:var(--muted);font-size:12.5px;margin-top:3px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hd">
+    <div class="tag">Design brainstorm</div>
+    <h1>Workflows &amp; the WAIT primitive</h1>
+    <p>A Behavior fires once. A Workflow needs to <b style="color:var(--text)">do → wait → do</b>. The only genuinely-new piece is <b style="color:var(--amber)">WAIT</b> — and it turns out approval is a wait too. Everything else rides behaviors + events + a scheduler you already have.</p>
+  </div>
+
+  <!-- 1. the idea -->
+  <h2>1 · The one new primitive</h2>
+  <p class="lead">A Workflow = <b>a Behavior whose action is a sequence with WAIT steps</b> — not a new engine, just a richer body. Simple behavior = one step. Workflow = steps + waits. The list still shows one sentence; you expand to see the flow.</p>
+  <div class="grid3">
+    <div class="card"><div class="k">Behavior (today)</div><h3 style="margin-top:6px">When X → do Y</h3><p>One event, one action. Fires and finishes.</p></div>
+    <div class="card"><div class="k">The gap</div><h3 style="margin-top:6px">…then wait…</h3><p>Suspend until a deadline / a count / an event / a human. Collect while waiting.</p></div>
+    <div class="card" style="border-color:rgba(72,184,102,.4)"><div class="k">Workflow</div><h3 style="margin-top:6px">do → <span style="color:var(--amber)">wait</span> → do</h3><p>A behavior with a multi-step body. WAIT is the only new node.</p></div>
+  </div>
+
+  <!-- 2. the concrete flow -->
+  <h2>2 · Concrete: the lunch-order workflow</h2>
+  <div class="flow">
+    <div class="node t"><div class="dot">⏱</div><div class="ncard"><div class="top"><span class="pill do">Trigger</span><span class="ttl">Every weekday at 11:30</span></div><div class="desc">Schedule kind — starts the workflow.</div></div></div>
+    <div class="node say"><div class="dot">1</div><div class="ncard"><div class="top"><span class="pill say">Say</span><span class="ttl">Post the lunch poll to #team</span></div><div class="desc">"What's everyone having? Reply with your order 🍜"</div></div></div>
+    <div class="node wait"><div class="dot">⏸</div><div class="ncard">
+      <div class="top"><span class="pill wait">Wait</span><span class="ttl">until everyone replies, or 20 minutes</span></div>
+      <div class="desc">Collect replies into the run's state. Resume on whichever comes first.</div>
+      <div class="collect">
+        <div class="small">Collecting · <b style="color:var(--amber)">3 of 8 replied</b> · 14 min left</div>
+        <div class="bar"><i></i></div>
+        <div class="rows"><span class="who in">burak ✓</span><span class="who in">jess ✓</span><span class="who in">tom ✓</span><span class="who pend">sam</span><span class="who pend">mei</span><span class="who pend">alex</span><span class="who pend">+2</span></div>
+      </div>
+    </div></div>
+    <div class="node do"><div class="dot">2</div><div class="ncard"><div class="top"><span class="pill do">Do</span><span class="ttl">Tally + place the order</span></div><div class="desc">Reads the collected replies, dedupes, submits to the food connector. On empty → skips + posts "no orders today".</div></div></div>
+  </div>
+  <div class="note">The list row stays one sentence: <b>"Every weekday 11:30, Ada runs the lunch order"</b> with a <span class="pill new" style="margin:0 2px">workflow</span> tag. You expand for the flow above. Simplicity preserved; power on demand.</div>
+
+  <!-- 3. taxonomy -->
+  <h2>3 · Four kinds of WAIT (one primitive, four conditions)</h2>
+  <div class="grid2">
+    <div class="card"><div class="top" style="display:flex;gap:8px;align-items:center"><span class="pill wait">Wait</span><h3 style="margin:0">Duration / deadline</h3></div><p style="margin-top:7px">"20 minutes" · "until 12:00". Backed by a scheduler row that resumes the run.</p></div>
+    <div class="card"><div class="top" style="display:flex;gap:8px;align-items:center"><span class="pill wait">Wait</span><h3 style="margin:0">Count / threshold</h3></div><p style="margin-top:7px">"until 5 replies" · "until quorum". A cheap check on the accumulating state each time an event lands.</p></div>
+    <div class="card"><div class="top" style="display:flex;gap:8px;align-items:center"><span class="pill wait">Wait</span><h3 style="margin:0">A specific event</h3></div><p style="margin-top:7px">"until the PR merges" · "until payment clears". Correlate an inbound event to the run.</p></div>
+    <div class="card" style="border-color:rgba(72,184,102,.4)"><div class="top" style="display:flex;gap:8px;align-items:center"><span class="pill wait">Wait</span><h3 style="margin:0">A human</h3><span class="pill new">= approval</span></div><p style="margin-top:7px">"until I approve". <b style="color:var(--green)">This is the approval gate</b> — same primitive, human as the resume condition.</p></div>
+  </div>
+  <div class="amber-note"><b>The unlock:</b> approval isn't a separate feature — it's <b>Wait-for-human</b>. So the WAIT primitive we build for workflows and the "needs approval" governance step are <b>one mechanism</b>: suspend the run, park state, resume on a signal (a clock, a count, an event, or a person clicking approve).</div>
+
+  <!-- 4. backend map -->
+  <h2>4 · How it rides the substrate (no new engine)</h2>
+  <table class="map">
+    <thead><tr><th style="width:150px">Piece</th><th>Maps to what exists</th></tr></thead>
+    <tbody>
+      <tr><td><b>Workflow def</b></td><td>An ordered list of steps + waits, stored on the behavior. (Behavior body = array instead of a single action.)</td></tr>
+      <tr><td><b>Run state</b></td><td>A <span class="mono">workflow_run</span> row (or a keyed Surface via <span class="mono">supersedes_event_id</span>) holding: current step, accumulated events, resume condition.</td></tr>
+      <tr><td><b>Collect</b></td><td>Inbound events (replies) correlated to the run and appended — the same event ingest you already have, tagged with <span class="mono">run_id</span>.</td></tr>
+      <tr><td><b>The wait itself</b></td><td>A <span class="mono">scheduled_jobs</span> row for the deadline (<span class="mono">wake_agent</span>, <b>exists + grantable today</b>) + a cheap threshold/event check on each new correlated event. Whichever fires first resumes.</td></tr>
+      <tr><td><b>Resume</b></td><td>The resume signal wakes the run and invokes the agent for the next step, with the collected state in context.</td></tr>
+      <tr><td><b>Approval</b></td><td>Same as any wait — the resume signal is a human clicking approve in the inbox (the governance gate).</td></tr>
+    </tbody>
+  </table>
+  <p class="small" style="margin-top:10px">Only genuinely-new state: a <b>suspended run</b> that holds partial state and a resume condition. Everything else — events, scheduler, surfaces, agent turns — already exists.</p>
+
+  <!-- 5. representation options -->
+  <h2>5 · How to represent a workflow — brainstorm the shape</h2>
+  <div class="grid3">
+    <div class="opt pick">
+      <div class="h">A · Multi-step Behavior <span class="rec">lean</span></div>
+      <p class="small">A behavior can have a multi-step body (do/wait/do). Simple ones stay one step. Same tab, same list, expand to edit the flow.</p>
+      <div class="pro">+ One model, no new tab; simple stays simple</div>
+      <div class="con">– Editor must handle both simple + flow modes</div>
+    </div>
+    <div class="opt">
+      <div class="h">B · Dedicated Workflow builder</div>
+      <p class="small">A separate "Workflows" surface with a visual flow canvas (nodes + branches).</p>
+      <div class="pro">+ Room for branching / complex flows</div>
+      <div class="con">– New tab, new metaphor; Zapier-drawer risk; overkill for do→wait→do</div>
+    </div>
+    <div class="opt">
+      <div class="h">C · Chained behaviors</div>
+      <p class="small">Behavior A completes → emits an event → Behavior B listens for it. No explicit workflow object.</p>
+      <div class="pro">+ Zero new concepts</div>
+      <div class="con">– State + wait scattered across behaviors; no single thing to debug/toggle</div>
+    </div>
+  </div>
+  <div class="note"><b>✓ LOCKED: Option A</b> — a workflow is a Behavior with a longer body + WAIT nodes. One sentence, expand for detail; no second builder. Reach for B only if real branching shows up. <b>Time‑waits work today</b> (`manage_schedules(wake_agent)` is grantable, enabled by default for workflow agents). <b>Event‑waits</b> ride the Watch detector via a resume‑subscription (§below). Watch is near‑real‑time (cron + incremental + skip‑if‑empty batching) — real‑time reserved for chat.</div>
+
+  <!-- 6. open questions -->
+  <h2>6 · Open questions to brainstorm</h2>
+  <div class="q"><div class="qt">Where does partial state show while suspended?</div><div class="qd">In Runs as a <b>"waiting"</b> row (like approval), expandable to the live collection? Or as a temporary Surface? Probably: Runs row for status + the run holds the state.</div></div>
+  <div class="q"><div class="qt">Timeouts &amp; the empty case</div><div class="qd">Every wait needs a max (a deadline is built-in; a pure count-wait needs a fallback timeout). On resume with empty collection → step decides (skip / post "nothing"). Never hang forever.</div></div>
+  <div class="q"><div class="qt">Cancellation &amp; re-entrancy</div><div class="qd">Can you cancel a suspended run? What if the trigger fires again while one is still waiting (two lunch polls)? Likely: one active run per workflow, new fire is skipped or queued.</div></div>
+  <div class="q"><div class="qt">Is "collect" its own step, or a property of WAIT?</div><div class="qd">Lean: a property of WAIT ("wait, and while waiting accumulate matching events into state"). Keeps the primitive count low.</div></div>
+  <div class="q"><div class="qt">Multi-replica safety</div><div class="qd">The suspended run + resume must be claimable by exactly one replica (the scheduler already does this for scheduled_jobs — reuse that leasing).</div></div>
+</div>
+</body>
+</html>

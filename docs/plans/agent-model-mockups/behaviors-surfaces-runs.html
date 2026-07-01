@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Lobu · Agent model (final)</title>
+<style>
+  :root{
+    --bg:#0b0b0d;--panel:#151517;--panel2:#1b1b20;--panel3:#212127;
+    --border:#2a2a31;--border2:#34343d;--text:#ececed;--muted:#8b8b95;--muted2:#6b6b74;
+    --accent:#e07b3c;--accent-soft:rgba(224,123,60,.14);--accent-line:rgba(224,123,60,.5);
+    --blue:#5b9bd5;--blue-soft:rgba(91,155,213,.14);
+    --purple:#a382e0;--purple-soft:rgba(163,130,224,.14);
+    --green:#48b866;--green-soft:rgba(72,184,102,.14);
+    --amber:#e0a13c;--red:#e5686b;--radius:12px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+  .app{display:flex;min-height:100vh}
+  .rail{width:236px;flex:0 0 236px;border-right:1px solid var(--border);padding:18px 12px;position:sticky;top:0;height:100vh;overflow:auto;background:#0d0d10}
+  .rail h1{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted2);margin:6px 8px 14px}
+  .rail .grp{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted2);margin:16px 8px 6px}
+  .rail button{display:block;width:100%;text-align:left;background:none;border:0;color:var(--muted);padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13px}
+  .rail button:hover{background:var(--panel);color:var(--text)}
+  .rail button.active{background:var(--accent-soft);color:var(--accent)}
+  .rail .tag{font-size:10px;color:var(--muted2);display:block;margin-top:1px}
+  .stage{flex:1;min-width:0;padding-bottom:60px}
+  .topbar{display:flex;align-items:center;gap:22px;padding:16px 34px;border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(11,11,13,.86);backdrop-filter:blur(8px);z-index:5}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:600}
+  .brand .dot{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,var(--accent),#c25f28)}
+  .agent{color:var(--muted);font-weight:500}.agent b{color:var(--text)}
+  .nav{display:flex;gap:2px;margin-left:auto}
+  .nav a{color:var(--muted);padding:7px 11px;font-size:13.5px}
+  .nav a:hover{color:var(--text)}
+  .nav a.on{color:var(--text);border-bottom:2px solid var(--accent);padding-bottom:5px}
+  .wrap{max-width:980px;margin:0 auto;padding:30px 34px}
+  .screen{display:none}.screen.on{display:block}
+  h2{font-size:22px;margin:0}
+  .sub{color:var(--muted);margin:5px 0 22px;font-size:14px;max-width:760px}
+  .h{display:flex;align-items:flex-start;gap:14px}
+  .h .back{color:var(--muted);cursor:pointer;font-size:18px;padding-top:4px}
+  .rowline{display:flex;align-items:center;justify-content:space-between;margin:24px 0 12px}
+  .rowline h3{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0}
+  .btn{background:var(--accent);color:#1a0f06;border:0;padding:9px 15px;border-radius:9px;font-weight:600;font-size:13px;cursor:pointer}
+  .btn.ghost{background:var(--panel2);color:var(--text);border:1px solid var(--border2)}
+  .btn.sm{padding:6px 11px;font-size:12px}
+
+  /* kind badges */
+  .kind{font-size:10.5px;font-weight:700;padding:2px 9px;border-radius:20px;white-space:nowrap;letter-spacing:.03em}
+  .kind.listen{background:var(--accent-soft);color:var(--accent)}
+  .kind.watch{background:var(--blue-soft);color:var(--blue)}
+  .kind.schedule{background:var(--purple-soft);color:var(--purple)}
+  /* attribute chips */
+  .attr{font-size:11px;padding:2px 9px;border-radius:6px;background:var(--panel3);border:1px solid var(--border2);color:var(--muted);white-space:nowrap}
+  .attr.warn{border-color:#5a4a1e;color:var(--amber);background:#241f13}
+  .attr.surface{border-color:rgba(72,184,102,.35);color:var(--green);background:var(--green-soft)}
+
+  /* behavior list */
+  .facets{display:flex;gap:8px;align-items:center;margin:8px 0 14px;flex-wrap:wrap}
+  .facet{display:inline-flex;background:var(--panel3);border:1px solid var(--border);border-radius:8px;padding:3px;gap:2px}
+  .facet span{padding:5px 11px;border-radius:6px;font-size:12px;color:var(--muted);cursor:pointer}
+  .facet span.on{background:var(--panel);color:var(--text);font-weight:600}
+  .blist{display:flex;flex-direction:column;gap:9px}
+  .beh{display:flex;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:13px 15px;cursor:pointer;flex-wrap:wrap}
+  .beh:hover{border-color:var(--border2);background:var(--panel2)}
+  .beh .txt{flex:1;min-width:280px;font-size:14.5px}
+  .beh .txt .when{color:var(--muted)}.beh .txt b{font-weight:600}
+  .beh .chips{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .toggle{width:38px;height:22px;border-radius:20px;background:var(--green);position:relative;flex:0 0 38px}
+  .toggle.off{background:#3a3a42}
+  .toggle::after{content:"";position:absolute;width:16px;height:16px;border-radius:50%;background:#fff;top:3px;right:3px}
+  .toggle.off::after{right:auto;left:3px}
+
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:14px}
+  .card h4{margin:0 0 3px;font-size:14px}.card .cap{color:var(--muted2);font-size:12px;margin:0 0 14px}
+  .field{margin:13px 0}.field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .seg{display:inline-flex;background:var(--panel3);border:1px solid var(--border);border-radius:9px;padding:3px;gap:2px;flex-wrap:wrap}
+  .seg span{padding:6px 12px;border-radius:6px;font-size:12.5px;color:var(--muted);cursor:pointer}
+  .seg span.on{background:var(--accent);color:#1a0f06;font-weight:600}
+  input.tin,textarea.tin,select.tin{width:100%;background:var(--panel3);border:1px solid var(--border2);border-radius:9px;color:var(--text);padding:10px 12px;font:inherit;font-size:13px}
+  textarea.tin{min-height:90px;resize:vertical;line-height:1.55}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .hint{color:var(--muted2);font-size:11.5px;margin-top:6px}
+  .note{background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:10px;padding:11px 13px;font-size:12.5px;color:#f0c39a;margin:12px 0}
+  .note b{color:var(--accent)}
+  .flowbox{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:10px;margin:8px 0}
+  .fb{background:var(--panel3);border:1px solid var(--border2);border-radius:10px;padding:12px}
+  .fb .t{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted2)}
+  .fb .v{font-size:13.5px;font-weight:600;margin-top:3px}.fb .s{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .fbsep{display:grid;place-items:center;color:var(--muted2);font-size:18px}
+  .slider{display:flex;gap:0;border:1px solid var(--border2);border-radius:9px;overflow:hidden}
+  .slider span{flex:1;text-align:center;padding:9px;font-size:12.5px;color:var(--muted);cursor:pointer;border-right:1px solid var(--border)}
+  .slider span:last-child{border-right:0}
+  .slider span.on{background:var(--accent);color:#1a0f06;font-weight:600}
+
+  /* surfaces gallery */
+  .sgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .scard{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:15px 16px;cursor:pointer}
+  .scard:hover{border-color:var(--border2)}
+  .scard .st{display:flex;align-items:center;gap:8px}
+  .scard .st .nm{font-weight:600;font-size:14.5px}
+  .scard .live{margin-left:auto;font-size:11px;color:var(--green);display:inline-flex;gap:5px;align-items:center}
+  .scard .live .d{width:7px;height:7px;border-radius:50%;background:var(--green)}
+  .scard .pv{display:flex;gap:16px;margin-top:12px}
+  .scard .pv .n{font-size:20px;font-weight:700}.scard .pv .n.red{color:var(--red)}.scard .pv .n.amber{color:var(--amber)}
+  .scard .pv .l{font-size:10.5px;color:var(--muted2);text-transform:uppercase}
+  .scard .by{margin-top:11px;font-size:11px;color:var(--muted2)}
+
+  /* board */
+  .board{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+  .bh{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border)}
+  .bh .nm{font-weight:600;font-size:15px}.bh .live{margin-left:auto;font-size:11px;color:var(--green)}
+  .bb{padding:18px}
+  .stat3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+  .stat{background:var(--panel3);border:1px solid var(--border);border-radius:10px;padding:14px}
+  .stat .k{color:var(--muted2);font-size:11px;text-transform:uppercase}.stat .v{font-size:24px;font-weight:700;margin-top:4px}
+  .stat .v.red{color:var(--red)}.stat .v.amber{color:var(--amber)}
+  .clist{border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  .crow{display:flex;gap:12px;align-items:center;padding:11px 14px;border-bottom:1px solid var(--border);font-size:13px}
+  .crow:last-child{border-bottom:0}
+  .sev{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px}.sev.p0{background:#3a1a1c;color:var(--red)}.sev.p1{background:#3a2c19;color:var(--amber)}
+  .crow .cm{flex:1}.crow .cs{color:var(--muted2);font-size:11.5px}.crow .cw{color:var(--muted2);font-size:11.5px}
+
+  /* runs feed */
+  .rfeed{display:flex;flex-direction:column}
+  .rf{display:flex;gap:12px;align-items:flex-start;padding:12px 4px;border-bottom:1px solid var(--border)}
+  .rf:last-child{border-bottom:0}
+  .rf .d{width:9px;height:9px;border-radius:50%;margin-top:5px;flex:0 0 9px}
+  .rf .d.ok{background:var(--green)}.rf .d.silent{background:var(--muted2)}.rf .d.fail{background:var(--red)}.rf .d.wait{background:var(--amber)}
+  .rf .m{flex:1}.rf .l{font-size:13.5px}.rf .l b{font-weight:600}.rf .s{color:var(--muted2);font-size:12px;margin-top:2px}
+  .rf .w{color:var(--muted2);font-size:11.5px;white-space:nowrap;text-align:right}
+  .fbk{display:flex;gap:5px;margin-top:6px}
+  .fbk button{background:var(--panel3);border:1px solid var(--border2);color:var(--muted);border-radius:7px;padding:3px 9px;font-size:12px;cursor:pointer}
+  .fbk button:hover{color:var(--text);border-color:var(--muted2)}
+  .fbk button.up.on{background:var(--green-soft);border-color:rgba(72,184,102,.4);color:var(--green)}
+  .fbk button.down.on{background:rgba(229,104,107,.13);border-color:rgba(229,104,107,.4);color:var(--red)}
+  /* advanced / versions */
+  .adv{border:1px solid var(--border);border-radius:11px;background:var(--panel3);padding:0;overflow:hidden;margin-top:6px}
+  .adv .ah{display:flex;align-items:center;gap:8px;padding:11px 14px;cursor:pointer;font-size:13px;font-weight:600}
+  .adv .ah .cx{margin-left:auto;color:var(--muted2)}
+  .adv .ab{padding:0 14px 14px;border-top:1px solid var(--border)}
+  .ver{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);background:var(--panel);border:1px solid var(--border2);border-radius:20px;padding:3px 11px}
+  .ver b{color:var(--text)}
+  .secnum{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:6px;background:var(--panel3);border:1px solid var(--border2);font-size:11px;color:var(--muted);margin-right:8px}
+  .rehome{background:var(--blue-soft);border:1px solid rgba(91,155,213,.4);border-radius:10px;padding:11px 13px;font-size:12.5px;color:#bcd6ef;margin:12px 0}
+  .rehome b{color:var(--blue)}
+
+  .soon{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px}
+  .soonc{flex:1;min-width:220px;background:var(--panel);border:1px dashed var(--border2);border-radius:11px;padding:14px}
+  .soonc .n{font-weight:600;font-size:13.5px;color:var(--muted)}
+  .soonc .d{color:var(--muted2);font-size:12px;margin-top:4px}
+  .badge-soon{font-size:9.5px;font-weight:700;color:var(--muted2);border:1px solid var(--border2);border-radius:20px;padding:1px 7px;margin-left:6px}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail">
+    <h1>Agent model · final</h1>
+    <div class="grp">Operate</div>
+    <button data-s="behaviors" class="active">Behaviors<span class="tag">the main page</span></button>
+    <button data-s="new">New behavior<span class="tag">kind → source → output</span></button>
+    <button data-s="surfaces">Surfaces<span class="tag">durable boards</span></button>
+    <button data-s="runs">Runs<span class="tag">audit / did it work</span></button>
+    <div class="grp">Detail examples</div>
+    <button data-s="d-proactive">Behavior · proactive reply<span class="tag">Listen + output attrs</span></button>
+    <button data-s="d-approval">Behavior · needs approval<span class="tag">governance gate</span></button>
+    <button data-s="d-watch">Behavior · Watch editor<span class="tag">the watcher builder, re-homed</span></button>
+    <button data-s="board">Surface · Errors board<span class="tag">upsert / maintained</span></button>
+    <div class="grp">Shape</div>
+    <button data-s="persona">Persona<span class="tag">soul + proactivity</span></button>
+    <button data-s="connections">Connections<span class="tag">feeds + who reacts</span></button>
+  </nav>
+
+  <main class="stage">
+    <div class="topbar">
+      <div class="brand"><span class="dot"></span> Lobu</div>
+      <span class="agent">Agent · <b>Ada</b></span>
+      <div class="nav">
+        <a href="#">Chat</a>
+        <a href="#" class="on">Behaviors</a>
+        <a href="#">Surfaces</a>
+        <a href="#">Persona</a>
+        <a href="#">Connections</a>
+        <a href="#">Skills</a>
+        <a href="#">Guardrails</a>
+      </div>
+    </div>
+
+    <!-- BEHAVIORS -->
+    <section class="screen on" id="behaviors">
+      <div class="wrap">
+        <h2>Behaviors</h2>
+        <p class="sub">How Ada acts. Each behavior is one sentence — <b style="color:var(--text)">when something happens, Ada does something</b>. One list, three kinds: <span class="kind listen">Listen</span> (chat), <span class="kind watch">Watch</span> (data), <span class="kind schedule">Schedule</span> (clock). Reach, Watchers and Schedules folded in.</p>
+
+        <div class="facets">
+          <div class="facet"><span class="on">All</span><span>Listen</span><span>Watch</span><span>Schedule</span></div>
+          <div class="facet"><span class="on">Any output</span><span>Reply</span><span>Post</span><span>Surface</span><span>Silent</span></div>
+          <div class="facet"><span class="on">Active</span><span>Needs approval</span><span>Failing</span></div>
+        </div>
+        <div class="rowline"><h3>6 behaviors · 5 on</h3><button class="btn" data-go="new">+ New behavior</button></div>
+
+        <div class="blist">
+          <div class="beh" data-go="d-proactive">
+            <span class="kind listen">Listen</span>
+            <div class="txt"><span class="when">When</span> <b>@mentioned in #support</b>, Ada <b>replies in the thread</b>.</div>
+            <div class="chips"><span class="attr">→ thread</span><span class="attr">on-mention</span></div>
+            <div class="toggle"></div>
+          </div>
+          <div class="beh" data-go="d-proactive">
+            <span class="kind listen">Listen</span>
+            <div class="txt"><span class="when">When</span> <b>anyone posts in #sales</b> and she can help, Ada <b>replies</b>.</div>
+            <div class="chips"><span class="attr">→ thread</span><span class="attr">when-confident</span></div>
+            <div class="toggle"></div>
+          </div>
+          <div class="beh" data-go="d-approval">
+            <span class="kind watch">Watch</span>
+            <div class="txt"><span class="when">When</span> <b>an expense over $500 is filed</b>, Ada <b>drafts an approval</b>.</div>
+            <div class="chips"><span class="attr">→ inbox</span><span class="attr warn">needs approval</span></div>
+            <div class="toggle"></div>
+          </div>
+          <div class="beh">
+            <span class="kind watch">Watch</span>
+            <div class="txt"><span class="when">When</span> <b>a P0 issue opens on GitHub</b>, Ada <b>posts to #eng</b>.</div>
+            <div class="chips"><span class="attr">→ channel</span><span class="attr">auto</span></div>
+            <div class="toggle"></div>
+          </div>
+          <div class="beh" data-go="board">
+            <span class="kind watch">Watch</span>
+            <div class="txt"><span class="when">When</span> <b>Sentry errors change</b>, Ada <b>maintains the Errors board</b>.</div>
+            <div class="chips"><span class="attr surface">→ surface · maintain</span></div>
+            <div class="toggle"></div>
+          </div>
+          <div class="beh">
+            <span class="kind schedule">Schedule</span>
+            <div class="txt"><span class="when">Every</span> <b>weekday at 09:00</b>, Ada <b>posts a standup digest to #ops</b>.</div>
+            <div class="chips"><span class="attr">→ channel</span></div>
+            <div class="toggle off"></div>
+          </div>
+        </div>
+
+        <div class="rowline"><h3>Also</h3></div>
+        <div class="soon">
+          <div class="soonc"><div class="n">Workflows = a behavior that waits<span class="badge-soon">Phase 6</span></div><div class="d">A Behavior can have a multi-step body: do → wait → do (post a poll, collect 20 min, then order). Same list, expand to edit. Supported — just the last phase.</div></div>
+          <div class="soonc"><div class="n">Goals = a Watch + a Surface</div><div class="d">Track "MRR toward $50k" = a Watch that maintains a progress Surface. No separate "Goals" feature. Autonomous pursuit is out of scope.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- NEW BEHAVIOR -->
+    <section class="screen" id="new">
+      <div class="wrap">
+        <div class="h"><span class="back" data-go="behaviors">←</span><div><h2>New behavior</h2><p class="sub" style="margin-top:6px">Pick the kind, the source, and what the output is.</p></div></div>
+        <div class="rowline"><h3>1 · Kind</h3></div>
+        <div class="sgrid" style="grid-template-columns:1fr 1fr 1fr">
+          <div class="card" style="margin:0;border-color:var(--accent-line);background:var(--accent-soft)"><div class="st"><span class="kind listen">Listen</span></div><h4 style="margin-top:9px">A chat channel</h4><p class="cap" style="margin:4px 0 0">Real-time. She replies in Slack/Telegram. (was Reach)</p></div>
+          <div class="card" style="margin:0"><div class="st"><span class="kind watch">Watch</span></div><h4 style="margin-top:9px">A data feed</h4><p class="cap" style="margin:4px 0 0">New items match a rule — incrementally. (was Watchers)</p></div>
+          <div class="card" style="margin:0"><div class="st"><span class="kind schedule">Schedule</span></div><h4 style="margin-top:9px">A clock</h4><p class="cap" style="margin:4px 0 0">A cron cadence. (was Schedules)</p></div>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <h4>2 · Source</h4><p class="cap">Which channel she listens to.</p>
+          <div class="split"><div class="field"><label>Connection</label><select class="tin"><option>Org Slack (managed)</option></select></div><div class="field"><label>Channel</label><select class="tin"><option>#support</option><option>#sales</option></select></div></div>
+        </div>
+        <div class="card">
+          <h4>3 · Output</h4><p class="cap">Attributes, in plain words — not a rigid verb.</p>
+          <div class="field"><label>Destination</label><div class="seg"><span class="on">Reply in thread</span><span>Post to channel</span><span>Update a surface</span><span>Send to inbox</span><span>Run silently</span></div></div>
+          <div class="split">
+            <div class="field"><label>Keeps a result?</label><div class="seg"><span class="on">No — ephemeral</span><span>Yes — maintain a board</span></div></div>
+            <div class="field"><label>Governance</label><div class="seg"><span class="on">Act automatically</span><span>Needs approval</span></div></div>
+          </div>
+          <div class="field"><label>Proactivity <span class="hint" style="display:inline">(overrides Persona default)</span></label><div class="seg"><span>Always</span><span class="on">On-mention</span><span>When confident</span><span>Stay silent</span></div></div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px"><button class="btn ghost" data-go="behaviors">Cancel</button><button class="btn">Create behavior</button></div>
+      </div>
+    </section>
+
+    <!-- SURFACES -->
+    <section class="screen" id="surfaces">
+      <div class="wrap">
+        <h2>Surfaces</h2>
+        <p class="sub">Durable boards Ada keeps current — dashboards, digests, reports. Unlike Runs (a stream that scrolls), a surface is <b style="color:var(--text)">spatial</b>: it updates in place and you return to it.</p>
+        <div class="rowline"><h3>2 surfaces</h3><button class="btn sm">+ New surface</button></div>
+        <div class="sgrid">
+          <div class="scard" data-go="board">
+            <div class="st"><span class="kind watch">Watch</span><span class="nm">Errors</span><span class="live"><span class="d"></span>9m ago</span></div>
+            <div class="pv"><div><div class="n red">7</div><div class="l">new</div></div><div><div class="n amber">2</div><div class="l">regress</div></div><div><div class="n">14</div><div class="l">resolved</div></div></div>
+            <div class="by">maintained by · "When Sentry errors change"</div>
+          </div>
+          <div class="scard">
+            <div class="st"><span class="kind schedule">Schedule</span><span class="nm">Weekly metrics</span><span class="live" style="color:var(--muted2)">3d ago</span></div>
+            <div class="pv"><div><div class="n">$41k</div><div class="l">MRR</div></div><div><div class="n amber">2.8%</div><div class="l">churn</div></div><div><div class="n">312</div><div class="l">signups</div></div></div>
+            <div class="by">maintained by · "Every Monday 08:00"</div>
+          </div>
+        </div>
+        <div class="note"><b>Incremental in, upsert out:</b> the Watch reads only new events (window cursor), then <b>supersedes</b> the board with the current picture — one maintained artifact, not an append feed.</div>
+      </div>
+    </section>
+
+    <!-- RUNS -->
+    <section class="screen" id="runs">
+      <div class="wrap">
+        <h2>Runs</h2>
+        <p class="sub">What actually happened — the audit trail. Not a headline you curate; it's exhaust you check when something looks off. A behavior that stops firing shows here, not in the list.</p>
+        <div class="facets"><div class="facet"><span class="on">All</span><span>Replies</span><span>Posts</span><span>Surfaces</span><span>Failed</span><span>Silent</span></div></div>
+        <div class="rfeed">
+          <div class="rf"><span class="d ok"></span><div class="m"><div class="l"><b>Reply in #support</b> → replied to @jess</div><div class="s">"Yes — 20% for registered nonprofits…"</div></div><div class="w">4m ago</div></div>
+          <div class="rf"><span class="d silent"></span><div class="m"><div class="l"><b>Chime in #sales</b> → stayed silent</div><div class="s">@tom "lol nice weekend 🎉" — nothing to add (proactivity: when-confident)</div></div><div class="w">14m ago</div></div>
+          <div class="rf"><span class="d wait"></span><div class="m"><div class="l"><b>Expense over $500</b> → waiting on approval</div><div class="s">drafted reimbursement for @sam · $640 — needs your OK</div></div><div class="w">20m ago</div></div>
+          <div class="rf"><span class="d ok"></span><div class="m"><div class="l"><b>P0 GitHub issue</b> → posted to #eng</div><div class="s">TypeError in checkout · tagged @platform</div><div class="fbk"><button class="up">👍 good</button><button class="down">👎 off</button></div></div><div class="w">22m ago</div></div>
+          <div class="rf"><span class="d ok"></span><div class="m"><div class="l"><b>Sentry errors change</b> → updated Errors board</div><div class="s">superseded: +3 new, 1 regression</div></div><div class="w">9m ago</div></div>
+          <div class="rf"><span class="d fail"></span><div class="m"><div class="l"><b>Standup digest</b> → failed</div><div class="s">bot not in #ops. Retrying 09:05.</div></div><div class="w">09:00</div></div>
+        </div>
+        <div class="note">The <b>silent</b>, <b>waiting</b> and <b>failed</b> rows are the point — the behaviors list can't show "looked and chose not to reply", "held for approval", or "broken since 09:00". Runs can.</div>
+      </div>
+    </section>
+
+    <!-- DETAIL: proactive -->
+    <section class="screen" id="d-proactive">
+      <div class="wrap">
+        <div class="h"><span class="back" data-go="behaviors">←</span><div><h2>Chime in on #sales when I can help</h2><p class="sub" style="margin-top:6px"><span class="kind listen">Listen</span> · Org Slack · real-time</p></div></div>
+        <div class="flowbox">
+          <div class="fb"><div class="t">When</div><div class="v">Any message in #sales</div><div class="s">real-time</div></div>
+          <div class="fbsep">→</div>
+          <div class="fb"><div class="t">Proactivity</div><div class="v">When confident</div><div class="s">may stay silent</div></div>
+          <div class="fbsep">→</div>
+          <div class="fb"><div class="t">Output</div><div class="v">Reply in thread</div><div class="s">ephemeral</div></div>
+        </div>
+        <div class="card">
+          <h4>Proactivity</h4><p class="cap">How forward Ada is here — overrides her Persona default (Balanced).</p>
+          <div class="seg"><span>Always reply</span><span>On-mention</span><span class="on">When confident</span><span>Stay silent</span></div>
+          <div class="field"><label>When to speak (guidance)</label><textarea class="tin">Reply only if you can materially help or save time. Stay silent for banter or when a teammate is handling it.</textarea></div>
+          <div class="hint">She decides on her own turn — no separate judge model. "Stayed silent" is a real, logged outcome (see Runs).</div>
+        </div>
+        <div class="card">
+          <h4>Output</h4>
+          <div class="split"><div class="field"><label>Destination</label><div class="seg"><span class="on">Reply in thread</span><span>Post</span><span>Surface</span></div></div><div class="field"><label>Governance</label><div class="seg"><span class="on">Auto</span><span>Needs approval</span></div></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DETAIL: approval -->
+    <section class="screen" id="d-approval">
+      <div class="wrap">
+        <div class="h"><span class="back" data-go="behaviors">←</span><div><h2>Draft approval for expenses over $500</h2><p class="sub" style="margin-top:6px"><span class="kind watch">Watch</span> · Expenses feed · governance gate</p></div></div>
+        <div class="flowbox">
+          <div class="fb"><div class="t">When</div><div class="v">Expense > $500 filed</div><div class="s">incremental</div></div>
+          <div class="fbsep">→</div>
+          <div class="fb"><div class="t">Governance</div><div class="v">Needs approval</div><div class="s">first-class gate</div></div>
+          <div class="fbsep">→</div>
+          <div class="fb"><div class="t">Output</div><div class="v">Inbox → you</div><div class="s">resume on OK</div></div>
+        </div>
+        <div class="card">
+          <h4>Governance</h4><p class="cap">Because this writes to the world, approval is a first-class step — not a footnote.</p>
+          <div class="seg"><span>Act automatically</span><span class="on">Draft, then require my approval</span></div>
+          <div class="note">Ada drafts, parks it in your inbox as a pending action, and only acts when you approve. Shows in Runs as <b>"waiting on approval"</b>.</div>
+        </div>
+        <div class="card"><h4>Output on approve</h4><div class="field"><label>Destination</label><div class="seg"><span>Reply</span><span class="on">Submit reimbursement (external)</span></div></div></div>
+      </div>
+    </section>
+
+    <!-- WATCH EDITOR (watcher builder re-homed) -->
+    <section class="screen" id="d-watch">
+      <div class="wrap">
+        <div class="h"><span class="back" data-go="behaviors">←</span><div><h2>Triage new P0 GitHub issues</h2><p class="sub" style="margin-top:6px"><span class="kind watch">Watch</span> · GitHub · lobu</p></div></div>
+        <div class="rehome">This <b>is the old Watchers builder</b> — now the edit view of a Watch behavior. The list shows the one sentence; open it and you get the full builder as structured sections. Nothing lost.</div>
+
+        <div class="card">
+          <h4><span class="secnum">1</span>When it fires</h4><p class="cap">Pick a feed and a filter — no SQL. Only new items since the last run (incremental window).</p>
+          <div class="split">
+            <div class="field"><label>Connection</label><select class="tin"><option>GitHub · lobu</option></select></div>
+            <div class="field"><label>Feed</label><select class="tin"><option>issues (collected)</option></select></div>
+          </div>
+          <div class="field"><label>Filter</label><div style="display:flex;gap:8px"><select class="tin" style="flex:0 0 100px"><option>label</option><option>author</option></select><select class="tin" style="flex:0 0 80px"><option>is</option><option>is not</option></select><input class="tin" value="P0"></div><div class="hint">The old <b>@feed / @channel</b> source picker (#1655) lives here. <a style="color:var(--accent)">Advanced (SQL) ⌄</a> for power users.</div></div>
+          <div class="field"><label>Cadence</label><div class="seg blue" style="background:var(--panel3)"><span class="on">Every 5 min</span><span>Hourly</span><span>Daily</span><span>On arrival</span></div></div>
+        </div>
+
+        <div class="card">
+          <h4><span class="secnum">2</span>What Ada does</h4><p class="cap">The reaction — was the watcher's reaction_script.</p>
+          <textarea class="tin">Assess severity from the stack + affected users, tag the owning team, and draft a one-line triage summary with a suggested owner.</textarea>
+        </div>
+
+        <div class="card">
+          <h4><span class="secnum">3</span>Output</h4><p class="cap">notification_channel + priority + cooldown → plain attributes.</p>
+          <div class="field"><label>Destination</label><div class="seg"><span>Reply</span><span class="on">Post to #eng</span><span>Surface</span><span>Canvas</span><span>Notify</span></div></div>
+          <div class="split">
+            <div class="field"><label>Governance</label><div class="seg"><span class="on">Auto</span><span>Needs approval</span></div></div>
+            <div class="field"><label>Priority · cooldown</label><div style="display:flex;gap:8px"><select class="tin"><option>High priority</option><option>Normal</option></select><input class="tin" value="5 min cooldown"></div></div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:0;background:transparent;border:0;margin-bottom:14px">
+          <div class="adv">
+            <div class="ah">Advanced <span class="cx">keying · model · versions ⌄</span></div>
+            <div class="ab">
+              <div class="field"><label>Keying (dedupe · promote to entities)</label><div class="seg" style="background:var(--panel)"><span class="on">Dedupe by issue id</span><span>+ promote to entities</span><span>off</span></div></div>
+              <div class="field"><label>Model</label><select class="tin"><option>Default (org)</option></select></div>
+              <div class="field"><label>Versions &amp; tuning</label>
+                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="ver">Current · <b>v3</b></span><span class="hint" style="margin:0">trained by 12 👍/👎 signals · <a style="color:var(--accent)">history</a></span></div>
+                <div class="hint">The watcher's version + feedback loop lives here — and you give the feedback on <b>Runs</b> (below).</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="rowline"><h3>Recent firings — rate to tune</h3></div>
+        <div class="rfeed">
+          <div class="rf"><span class="d ok"></span><div class="m"><div class="l"><b>P0 GitHub issue</b> → posted to #eng</div><div class="s">TypeError in checkout · tagged @platform · "likely the #1641 null-guard"</div><div class="fbk"><button class="up on">👍 good</button><button class="down">👎 off</button></div></div><div class="w">22m ago</div></div>
+          <div class="rf"><span class="d ok"></span><div class="m"><div class="l"><b>P0 GitHub issue</b> → posted to #eng</div><div class="s">Rate-limit 429 spike · tagged @gateway</div><div class="fbk"><button class="up">👍 good</button><button class="down on">👎 not P0</button></div></div><div class="w">3h ago</div></div>
+        </div>
+        <div class="rehome" style="background:var(--green-soft);border-color:rgba(72,184,102,.4);color:#bfe6cd"><b style="color:var(--green)">Feedback → tuning:</b> 👎 on a firing feeds the Watch behavior's next version — the old submit_feedback loop, now where you actually see the output.</div>
+      </div>
+    </section>
+
+    <!-- SURFACE BOARD -->
+    <section class="screen" id="board">
+      <div class="wrap">
+        <div class="h"><span class="back" data-go="surfaces">←</span><div><h2>Errors</h2><p class="sub" style="margin-top:6px">A Surface — Ada keeps it current. Maintained by the behavior "When Sentry errors change".</p></div></div>
+        <div class="board">
+          <div class="bh"><span class="kind watch">Watch</span><span class="nm">Sentry — last 24h</span><span class="live">● superseded 9m ago</span></div>
+          <div class="bb">
+            <div class="stat3"><div class="stat"><div class="k">New</div><div class="v red">7</div></div><div class="stat"><div class="k">Regressions</div><div class="v amber">2</div></div><div class="stat"><div class="k">Resolved</div><div class="v">14</div></div></div>
+            <div class="clist">
+              <div class="crow"><span class="sev p0">P0</span><div class="cm">TypeError: cannot read 'id' of undefined<div class="cs">checkout · 141 events · 12 users</div></div><span class="cw">18m ago</span></div>
+              <div class="crow"><span class="sev p1">P1</span><div class="cm">Timeout posting to /lobu/slack/events<div class="cs">gateway · 63 events</div></div><span class="cw">41m ago</span></div>
+              <div class="crow"><span class="sev p1">P1</span><div class="cm">pgvector distance NaN on empty embedding<div class="cs">embeddings · 22 events</div></div><span class="cw">2h ago</span></div>
+            </div>
+            <p class="hint" style="margin-top:12px">Ada's read: checkout P0 is the priority — spiked after 13.4, correlates with the null-guard removed in #1641. Suggest rollback.</p>
+          </div>
+        </div>
+        <div class="note"><b>Not a feed.</b> Each Sentry change makes Ada read only the new events (incremental) and rewrite this board (upsert / supersede) — so it's always the current picture, not a scroll of alerts.</div>
+      </div>
+    </section>
+
+    <!-- PERSONA -->
+    <section class="screen" id="persona">
+      <div class="wrap">
+        <h2>Persona</h2>
+        <p class="sub">Who Ada is — separate from what she does (Behaviors). Pulling the "soul" out here is what lets "Behaviors" mean actions unambiguously.</p>
+        <div class="card">
+          <h4>Soul &amp; standing instructions</h4><p class="cap">Voice, values, how she thinks. Applies to everything she does.</p>
+          <textarea class="tin" style="min-height:120px">You are Ada, the team's ops copilot. Concise, warm, never fluffy. Prefer one good answer over three options. Cite sources. When unsure, say so and ask. Protect people's time — signal over noise.</textarea>
+        </div>
+        <div class="card">
+          <h4>Default proactivity</h4><p class="cap">Her baseline forwardness. Each Behavior can override it.</p>
+          <div class="slider"><span>Reserved<br><span style="font-size:11px;color:var(--muted2)">only when asked</span></span><span class="on">Balanced<br><span style="font-size:11px;color:var(--muted2)">helps when clearly useful</span></span><span>Proactive<br><span style="font-size:11px;color:var(--muted2)">jumps in</span></span></div>
+          <div class="hint">This is a real, structured control — not buried in prose — because it drives reply-vs-silence and needs to be per-context (a Behavior can set its own).</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CONNECTIONS -->
+    <section class="screen" id="connections">
+      <div class="wrap">
+        <h2>Connections</h2>
+        <p class="sub">What Ada can see — sources and their feeds. Behaviors reference these; feeds are created/deleted here.</p>
+        <div class="card" style="display:flex;align-items:center;gap:14px">
+          <div style="width:40px;height:40px;border-radius:10px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-size:19px">#</div>
+          <div style="flex:1"><div style="font-weight:600;font-size:16px">Org Slack <span class="attr" style="margin-left:6px">managed</span></div><div style="color:var(--muted);font-size:12.5px;margin-top:2px"><span style="color:var(--green)">● active</span> · slack · workspace T0ABCDEF</div></div>
+          <button class="btn ghost sm">Reauth</button>
+        </div>
+        <div class="rowline"><h3>Feeds (4)</h3><button class="btn sm">+ Add feed</button></div>
+        <div class="card" style="padding:0">
+          <div class="crow" style="padding:12px 16px"><div class="cm"><b>#general</b></div><span class="kind listen">streaming</span><span class="cw" style="min-width:130px;text-align:right">reacts: 2 behaviors</span></div>
+          <div class="crow" style="padding:12px 16px"><div class="cm"><b>#support</b></div><span class="kind listen">streaming</span><span class="cw" style="min-width:130px;text-align:right">reacts: 1 behavior</span></div>
+          <div class="crow" style="padding:12px 16px"><div class="cm"><b>issues</b></div><span class="kind watch">collected</span><span class="cw" style="min-width:130px;text-align:right">reacts: 1 behavior</span></div>
+          <div class="crow" style="padding:12px 16px;border-bottom:0"><div class="cm"><b>DM · @burak</b></div><span class="kind listen">streaming</span><span class="cw" style="min-width:130px;text-align:right;color:var(--muted2)">no behavior</span></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+<script>
+  const screens=document.querySelectorAll('.screen'),btns=document.querySelectorAll('.rail button');
+  function show(id){screens.forEach(s=>s.classList.toggle('on',s.id===id));btns.forEach(b=>b.classList.toggle('active',b.dataset.s===id));window.scrollTo({top:0});}
+  btns.forEach(b=>b.addEventListener('click',()=>show(b.dataset.s)));
+  document.querySelectorAll('[data-go]').forEach(el=>el.addEventListener('click',e=>{e.stopPropagation();show(el.dataset.go);}));
+  document.querySelectorAll('.toggle').forEach(t=>t.addEventListener('click',e=>{e.stopPropagation();t.classList.toggle('off');}));
+  document.querySelectorAll('.facet span,.seg span,.slider span').forEach(s=>s.addEventListener('click',function(){[...this.parentNode.children].forEach(x=>x.classList.remove('on'));this.classList.add('on');}));
+</script>
+</body>
+</html>

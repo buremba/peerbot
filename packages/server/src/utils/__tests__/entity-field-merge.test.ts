@@ -132,4 +132,75 @@ describe('computeFieldMerge', () => {
     expect(r.stale).toEqual({});
     expect(r.nextMetadata.status).toBe('critical');
   });
+
+  it('approve: affirming an unchanged value claims ownership (NOT a no-op)', () => {
+    const r = computeFieldMerge({
+      metadata: { severity: 'high', title: 'Outage' },
+      controls: {},
+      fields: {}, // no value change
+      source: 'human',
+      actorId: 'usr_1',
+      note: 'confirmed by on-call',
+      nowIso: NOW,
+      affirm: ['severity'],
+    });
+    expect(r.changed).toBe(true); // ownership changed even though metadata didn't
+    expect(r.applied).toEqual({});
+    expect(r.affirmed).toEqual(['severity']);
+    expect(r.nextMetadata).toEqual({ severity: 'high', title: 'Outage' }); // value untouched
+    expect(r.nextControls.severity).toEqual({
+      note: 'confirmed by on-call',
+      set_by: 'usr_1',
+      set_at: NOW,
+    });
+    expect(r.nextControls.title).toBeUndefined(); // only the affirmed field is claimed
+  });
+
+  it('approve: a field being SET is not double-counted as affirmed', () => {
+    const r = computeFieldMerge({
+      metadata: { severity: 'low' },
+      controls: {},
+      fields: { severity: 'high' }, // correction
+      source: 'human',
+      actorId: 'usr_1',
+      note: null,
+      nowIso: NOW,
+      affirm: ['severity'], // also listed to affirm — the set already claims it
+    });
+    expect(r.applied).toEqual({ severity: { old: 'low', new: 'high' } });
+    expect(r.affirmed).toEqual([]); // the set won; no separate affirm
+    expect(r.nextControls.severity).toEqual({ note: null, set_by: 'usr_1', set_at: NOW });
+  });
+
+  it('approve: affirming a field absent from metadata is ignored', () => {
+    const r = computeFieldMerge({
+      metadata: { severity: 'high' },
+      controls: {},
+      fields: {},
+      source: 'human',
+      actorId: 'usr_1',
+      note: null,
+      nowIso: NOW,
+      affirm: ['nonexistent'],
+    });
+    expect(r.changed).toBe(false);
+    expect(r.affirmed).toEqual([]);
+    expect(r.nextControls).toEqual({});
+  });
+
+  it('approve: a watcher cannot affirm (only humans claim ownership)', () => {
+    const r = computeFieldMerge({
+      metadata: { severity: 'high' },
+      controls: {},
+      fields: {},
+      source: 'watcher',
+      actorId: null,
+      note: null,
+      nowIso: NOW,
+      affirm: ['severity'],
+    });
+    expect(r.changed).toBe(false);
+    expect(r.affirmed).toEqual([]);
+    expect(r.nextControls).toEqual({});
+  });
 });

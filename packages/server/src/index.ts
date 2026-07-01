@@ -34,6 +34,13 @@ import * as invalidationEmitter from "./events/emitter";
 import { streamInvalidationEvents } from "./events/sse";
 import { invalidationSseAuth } from "./events/sse-invalidation-auth";
 import {
+	type ClaimEligibleOrg,
+	type SlackClaimDeps,
+	claimSlackWorkspace,
+	resolveSlackClaimContext,
+} from "./gateway/connections/slack-claim";
+import { createSlackWebApi } from "./gateway/connections/slack-web";
+import {
 	getMaxReservedLocks,
 	getReservedLockCount,
 } from "./gateway/orchestration/deployment-manager";
@@ -42,7 +49,15 @@ import { isShuttingDown } from "./lifecycle-state";
 import { agentRoutes } from "./lobu/agent-routes";
 import { environmentRoutes } from "./lobu/environment-routes";
 import { clientRoutes, platformSchemaRoutes } from "./lobu/client-routes";
-import { isLobuGatewayRunning } from "./lobu/gateway";
+import {
+	getLobuCoreServices,
+	isLobuGatewayRunning,
+	resolveDefaultOrgId,
+} from "./lobu/gateway";
+import {
+	claimSlackPendingInstall,
+	resolveSlackPendingByTenant,
+} from "./lobu/stores/slack-installations";
 import { handleMcp } from "./mcp-handler";
 import {
 	restDeleteNotification,
@@ -1394,6 +1409,211 @@ app.post("/api/:orgSlug/join", async (c) => {
 		organizationId: result.organizationId,
 		role: result.role,
 	});
+});
+
+/**
+ * Resolve the signed-in user's team-scoped `slack_user_id` (`T…:U…`) for a Slack
+ * workspace, returning the bare `U…` id or null when they never signed in with
+ * Slack for that team. Reuses the canonical `entity_identities` shape the authz
+ * layer writes on Slack sign-in (namespace `slack_user_id`, identifier stored
+ * uppercased as `T…:U…` on the user's `$member`), joined to the user's memberships
+ * via the guarded `auth_user_id`/`auth:signup` claim so a user-supplied identity
+ * row can't hijack the lookup. Org-agnostic (the identity may live in any org the
+ * user belongs to), so it runs BEFORE we resolve the org to bind into.
+ */
+async function resolveClaimingUserSlackId(
+	userId: string,
+	teamId: string,
+): Promise<string | null> {
+	const sql = getDb();
+	const rows = (await sql`
+		SELECT DISTINCT ei.identifier
+		FROM "member" m
+		JOIN entity_identities auth_ei
+		  ON auth_ei.organization_id = m."organizationId"
+		 AND auth_ei.namespace = 'auth_user_id'
+		 AND auth_ei.identifier = m."userId"
+		 AND auth_ei.source_connector = 'auth:signup'
+		 AND auth_ei.deleted_at IS NULL
+		JOIN entity_identities ei
+		  ON ei.organization_id = auth_ei.organization_id
+		 AND ei.entity_id = auth_ei.entity_id
+		 AND ei.namespace = 'slack_user_id'
+		 AND ei.deleted_at IS NULL
+		WHERE m."userId" = ${userId}
+	`) as Array<{ identifier: string }>;
+	const teamPrefix = `${teamId.toUpperCase()}:`;
+	const combined = rows
+		.map((r) => String(r.identifier))
+		.find((id) => id.startsWith(teamPrefix));
+	return combined ? combined.slice(teamPrefix.length) : null;
+}
+
+/**
+ * POST /api/slack/claim — claim a marketplace / Slack-initiated (pending) Slack
+ * workspace into the signed-in user's org.
+ *
+ * Body: `{ team: string, token: string }` — the workspace id and the single-use
+ * claim token from the installer's DM'd link. Binds the parked pending install
+ * (see `writeSlackPendingInstall`) to the user's default org after proving the
+ * caller (a) holds the single-use token, (b) signed in with Slack for this
+ * workspace, and (c) is a workspace admin/owner. Neither the bot token nor the
+ * plaintext claim token is ever logged or returned.
+ *
+ * Registered before the `/api/:orgSlug/:toolName` proxy so `slack`/`claim`
+ * doesn't get swallowed as an org tool call.
+ */
+// The main app doesn't run the Lobu auth bridge, so resolve the session here
+// (same pattern as /api/:orgSlug/join). Cookie or Better-Auth bearer.
+async function resolveClaimSessionUser(env: Env, req: Request): Promise<string | null> {
+	try {
+		const auth = await createAuth(env);
+		const session = await auth.api.getSession({ headers: req.headers });
+		return session?.user?.id ?? null;
+	} catch {
+		return null;
+	}
+}
+
+// Wire the real stores/APIs behind the injectable SlackClaimDeps (shared by the
+// context + claim routes).
+function slackClaimDeps(): SlackClaimDeps {
+	return {
+		resolvePending: (t) => resolveSlackPendingByTenant(t),
+		resolveActiveOrgSlug: async (team) => {
+			const rows = (await getDb()`
+				SELECT o.slug
+				FROM app_installations ai
+				JOIN "organization" o ON o.id = ai.organization_id
+				WHERE ai.provider = 'slack'
+					AND ai.external_tenant_id = ${team}
+					AND ai.status = 'active'
+				LIMIT 1
+			`) as Array<{ slug: string }>;
+			return rows[0]?.slug ?? null;
+		},
+		resolveClaimerSlackId: resolveClaimingUserSlackId,
+		usersInfo: (botToken, uid) => createSlackWebApi().usersInfo(botToken, uid),
+		resolveMemberOrgs: async (userId) =>
+			(await getDb()`
+				SELECT o.id, o.slug, o.name
+				FROM "member" m JOIN "organization" o ON o.id = m."organizationId"
+				WHERE m."userId" = ${userId}
+				ORDER BY o.name
+			`) as ClaimEligibleOrg[],
+		resolveOrgIfMember: async (userId, orgSlugOrId) => {
+			const rows = (await getDb()`
+				SELECT o.id
+				FROM "organization" o
+				JOIN "member" m ON m."organizationId" = o.id AND m."userId" = ${userId}
+				WHERE o.slug = ${orgSlugOrId} OR o.id = ${orgSlugOrId}
+				LIMIT 1
+			`) as Array<{ id: string }>;
+			return rows[0]?.id ?? null;
+		},
+		resolveDefaultOrgId: (uid) => resolveDefaultOrgId(uid),
+		claim: (pending, organizationId) => {
+			const core = getLobuCoreServices();
+			if (!core) throw new Error("Lobu core services unavailable");
+			return claimSlackPendingInstall(
+				core.getAppInstallationStore(),
+				core.getSecretStore(),
+				pending,
+				organizationId,
+			);
+		},
+		resolveOrgSlug: async (organizationId) => {
+			const orgRows = (await getDb()`
+				SELECT slug FROM "organization" WHERE id = ${organizationId} LIMIT 1
+			`) as Array<{ slug: string }>;
+			return orgRows[0]?.slug ?? null;
+		},
+	};
+}
+
+/** Map a claim/context status to its HTTP code (shared by both routes). */
+function slackClaimHttpStatus(status: string): 400 | 401 | 403 | 404 | 409 | 500 {
+	switch (status) {
+		case "unauthenticated":
+			return 401;
+		case "invalid_request":
+			return 400;
+		case "no_pending_install":
+			return 404;
+		case "slack_signin_required":
+		case "not_admin":
+		case "not_member_of_org":
+			return 403;
+		case "no_org":
+			return 409;
+		default:
+			return 500;
+	}
+}
+
+// GET /api/slack/claim/context — the confirm step's data. Runs the guards
+// (Slack workspace-admin) with NO write and returns the workspace name + the
+// claimer's orgs, so /slack/claim can render "Connect <workspace> to <org>"
+// before binding. Surfaces `already_connected` for a workspace already bound, so
+// the UI links to it instead of erroring on a re-visited/spent link.
+app.get("/api/slack/claim/context", async (c) => {
+	const userId = await resolveClaimSessionUser(c.env, c.req.raw);
+	const team = (c.req.query("team") ?? "").trim();
+	const ctx = await resolveSlackClaimContext(slackClaimDeps(), {
+		userId,
+		team,
+	});
+	if (ctx.status === "ready") {
+		return c.json({ ok: true, workspaceName: ctx.workspaceName, orgs: ctx.orgs });
+	}
+	if (ctx.status === "already_connected") {
+		return c.json({ ok: true, alreadyConnected: true, orgSlug: ctx.orgSlug });
+	}
+	return c.json({ error: ctx.status }, slackClaimHttpStatus(ctx.status));
+});
+
+app.post("/api/slack/claim", async (c) => {
+	const userId = await resolveClaimSessionUser(c.env, c.req.raw);
+
+	let body: { team?: unknown; org?: unknown };
+	try {
+		body = (await c.req.json()) as {
+			team?: unknown;
+			org?: unknown;
+		};
+	} catch {
+		body = {};
+	}
+	const team = typeof body.team === "string" ? body.team.trim() : "";
+	// The org the user CONFIRMED on the /slack/claim page (slug or id). Optional
+	// for programmatic callers, who then fall back to the default org.
+	const organizationId =
+		typeof body.org === "string" && body.org.trim() ? body.org.trim() : undefined;
+
+	// All branching lives in the injectable `claimSlackWorkspace` so it stays
+	// unit-testable; the route only wires real deps + maps outcomes to HTTP.
+	const result = await claimSlackWorkspace(slackClaimDeps(), {
+		userId,
+		team,
+		organizationId,
+	});
+
+	if (result.status === "ok") {
+		return c.json({
+			ok: true,
+			orgSlug: result.orgSlug,
+			provider: "slack",
+			alreadyConnected: result.alreadyConnected ?? false,
+		});
+	}
+	if (result.status === "claim_failed") {
+		logger.error({ team, err: result.message }, "Slack workspace claim failed");
+		return c.json(
+			{ error: "claim_failed", message: result.message },
+			500,
+		);
+	}
+	return c.json({ error: result.status }, slackClaimHttpStatus(result.status));
 });
 
 /**

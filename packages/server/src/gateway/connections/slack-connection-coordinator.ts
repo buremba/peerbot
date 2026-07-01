@@ -3,8 +3,12 @@ import { Chat } from "chat";
 import type { AppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import {
   getSlackInstallByTeamId,
+  resolveSlackPendingByTenant,
   upsertSlackInstallByTeam,
+  writeSlackPendingInstall,
 } from "../../lobu/stores/slack-installations.js";
+import { getConfiguredPublicOrigin } from "../../utils/public-origin.js";
+import { createSlackWebApi, type SlackWebApi } from "./slack-web.js";
 import type { WritableSecretStore } from "../secrets/index.js";
 import {
   getPrimedBundledMethod,
@@ -18,6 +22,151 @@ import {
 } from "./slack-platform-bridge.js";
 
 const logger = createLogger("slack-connection-coordinator");
+
+/**
+ * Complete a Slack-initiated (marketplace) install: the callback got a `code`
+ * but no Lobu-minted state, so there's no org to bind to. Exchange the code for
+ * the bot token + installer identity via `oauth.v2.access`, and park it as an
+ * UNCLAIMED `pending` install (org-less). The installer later claims the
+ * workspace by signing in with Slack. Returns the parked install's identity, or
+ * `null` when the hosted app credentials aren't configured (so the caller can
+ * fall through to the normal invalid-state rejection).
+ */
+export async function completeSlackPendingInstall(
+  request: Request,
+  redirectUri: string,
+): Promise<{
+  teamId: string;
+  teamName: string | null;
+  installerUserId: string | null;
+} | null> {
+  const method = getPrimedBundledMethod("slack", "slack");
+  const creds = method ? resolveAppInstallCredentials(method) : null;
+  if (!creds?.clientId || !creds?.clientSecret) {
+    logger.warn(
+      "Slack pending-install: hosted app credentials not configured; cannot exchange code",
+    );
+    return null;
+  }
+  const code = new URL(request.url).searchParams.get("code");
+  if (!code) return null;
+
+  const web = createSlackWebApi();
+  const result = await web.exchangeOAuthCode({
+    clientId: creds.clientId,
+    clientSecret: creds.clientSecret,
+    code,
+    redirectUri,
+  });
+
+  await writeSlackPendingInstall({
+    teamId: result.teamId,
+    teamName: result.teamName,
+    botUserId: result.botUserId,
+    botToken: result.botToken,
+    installerUserId: result.authedUserId,
+    isEnterpriseInstall: result.isEnterpriseInstall,
+  });
+  logger.info(
+    {
+      teamId: result.teamId,
+      installerUserId: result.authedUserId,
+      enterprise: result.isEnterpriseInstall,
+    },
+    "Slack pending-install parked (unclaimed) — awaiting claim",
+  );
+
+  // Best-effort: DM the installer their connect link. The pending row is already
+  // parked; a DM failure (installer un-DMable, un-configured web base, …) must
+  // never fail the install — the workspace can still be connected via the app.
+  if (result.authedUserId) {
+    await dmSlackClaimLink(web, result.botToken, result.authedUserId, result.teamId);
+  } else {
+    logger.info(
+      { teamId: result.teamId },
+      "Slack pending-install: no installer id — skipping connect DM",
+    );
+  }
+
+  return {
+    teamId: result.teamId,
+    teamName: result.teamName,
+    installerUserId: result.authedUserId,
+  };
+}
+
+/**
+ * DM the installer a single-use claim link so they can connect the freshly
+ * parked (pending) workspace to their Lobu account. Best-effort: any failure is
+ * logged and swallowed — the install stays parked and claimable via the app.
+ */
+async function dmSlackClaimLink(
+  web: SlackWebApi,
+  botToken: string,
+  installerUserId: string,
+  teamId: string,
+): Promise<void> {
+  const webBase = getConfiguredPublicOrigin()?.replace(/\/+$/, "");
+  if (!webBase) {
+    logger.warn(
+      { teamId, installerUserId },
+      "Slack pending-install: no public web base configured — skipping connect DM",
+    );
+    return;
+  }
+  const claimUrl = `${webBase}/slack/claim?team=${encodeURIComponent(teamId)}`;
+  const text = `👋 Thanks for adding Lobu to your workspace! Connect it to your Lobu account to finish setup: ${claimUrl}`;
+  try {
+    const dm = await web.openDm(botToken, installerUserId);
+    await web.postMessage(botToken, dm, text);
+  } catch (error) {
+    logger.warn(
+      { teamId, installerUserId, error: String(error) },
+      "Slack pending-install: failed to DM the installer their claim link",
+    );
+  }
+}
+
+/**
+ * Parse an Events API webhook body into a user-facing message we should reply
+ * to when the workspace is unclaimed: an `app_mention`, or a direct message
+ * (`message` with channel_type `im`). Returns null for everything else — the
+ * bot's own messages, message edits/subtypes, channel chatter, url_verification
+ * challenges, or non-JSON (interactivity/slash) payloads.
+ */
+export function parseSlackUserMessageEvent(
+  body: string,
+  contentType: string,
+): { channel: string; user: string } | null {
+  // Events API always posts application/json; form bodies are slash/interactivity.
+  if (contentType.includes("application/x-www-form-urlencoded")) return null;
+  let payload: {
+    type?: string;
+    event?: {
+      type?: string;
+      channel?: string;
+      user?: string;
+      bot_id?: string;
+      subtype?: string;
+      channel_type?: string;
+    };
+  };
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (payload.type !== "event_callback") return null;
+  const event = payload.event;
+  if (!event || !event.channel || !event.user || event.bot_id) return null;
+  const isMention = event.type === "app_mention";
+  const isDirectMessage =
+    event.type === "message" &&
+    event.channel_type === "im" &&
+    !event.subtype;
+  if (!isMention && !isDirectMessage) return null;
+  return { channel: event.channel, user: event.user };
+}
 
 type SlackInstallation = {
   botToken: string;
@@ -282,6 +431,20 @@ export class SlackConnectionCoordinator {
         }
         return response;
       }
+
+      // 3) A workspace that installed Lobu but hasn't been CLAIMED into a Lobu
+      //    org yet (a `pending` install). Don't silently drop their messages —
+      //    reply with the connect link so a workspace admin can finish setup.
+      const pending = await resolveSlackPendingByTenant(teamId);
+      if (pending) {
+        return await this.replyUnclaimedWorkspace(
+          pending.botToken,
+          teamId,
+          body,
+          contentType,
+          request.headers.get("x-slack-retry-num") !== null,
+        );
+      }
     }
 
     const fallbackConnection = await this.getDefaultConnection();
@@ -371,6 +534,38 @@ export class SlackConnectionCoordinator {
       ...(installationKeyPrefix ? { installationKeyPrefix } : {}),
       ...(userName ? { userName } : {}),
     };
+  }
+
+  /**
+   * Reply to a user in an unclaimed workspace with the connect link, using the
+   * pending install's bot token. Only responds to a real @mention or DM — never
+   * to challenges, retries, or the bot's own messages — and always acks 200 so
+   * Slack doesn't retry (and so we never double-post).
+   */
+  private async replyUnclaimedWorkspace(
+    botToken: string,
+    teamId: string,
+    body: string,
+    contentType: string,
+    isRetry: boolean,
+  ): Promise<Response> {
+    const ack = new Response("", { status: 200 });
+    if (isRetry) return ack;
+    const event = parseSlackUserMessageEvent(body, contentType);
+    if (!event) return ack;
+    const webBase = getConfiguredPublicOrigin()?.replace(/\/+$/, "");
+    if (!webBase) return ack;
+    const claimUrl = `${webBase}/slack/claim?team=${encodeURIComponent(teamId)}`;
+    const text = `👋 This Slack workspace isn't connected to Lobu yet. A workspace admin can connect it here: ${claimUrl}`;
+    try {
+      await createSlackWebApi().postMessage(botToken, event.channel, text);
+    } catch (error) {
+      logger.warn(
+        { teamId, error: String(error) },
+        "Slack unclaimed-workspace connect reply failed",
+      );
+    }
+    return ack;
   }
 
   extractTeamId(body: string, contentType: string): string | null {

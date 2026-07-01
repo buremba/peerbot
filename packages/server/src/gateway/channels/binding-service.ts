@@ -327,14 +327,26 @@ export class ChannelBindingService {
       ? await sql`
           DELETE FROM agent_channel_bindings
           WHERE agent_id = ${agentId} AND organization_id = ${orgId}
-          RETURNING platform, channel_id, team_id
+          RETURNING platform, channel_id, team_id, connection_id
         `
       : await sql`
           DELETE FROM agent_channel_bindings
           WHERE agent_id = ${agentId}
-          RETURNING platform, channel_id, team_id
+          RETURNING platform, channel_id, team_id, connection_id
         `;
     logger.info(`Deleted ${rows.length} bindings for agent ${agentId}`);
+    // Each unbound channel's streaming feed is now orphaned; retire it. Same
+    // best-effort contract as deleteBinding — the binding is already gone, a
+    // lingering feed row never blocks the delete. Keyed by the connection the
+    // binding routed through + the channel id (= feed_key).
+    for (const row of rows) {
+      if (row.connection_id != null) {
+        await softDeleteStreamingChannelFeed({
+          connectionId: String(row.connection_id),
+          channelKey: row.channel_id,
+        });
+      }
+    }
     return rows.length;
   }
 }

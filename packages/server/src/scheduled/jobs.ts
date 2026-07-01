@@ -26,6 +26,7 @@ import {
 import { TaskScheduler } from './task-scheduler';
 import { triggerEmbedBackfill } from './trigger-embed-backfill';
 import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
+import { runReapExpiredPendingSlackInstalls } from './reap-expired-pending-installs';
 import { getDb, pgTextArray } from '../db/client';
 import { createNotificationForUsers } from '../notifications/service';
 import {
@@ -258,6 +259,21 @@ function registerMaintenanceTasks(
       await runReapStaleDeviceWorkers();
     },
     { cron: '0 3 * * *' },
+  );
+
+  // Expired unclaimed-Slack-install reaper — deletes org-less `pending`
+  // app_installations rows older than 7 days (a marketplace / "Add to Slack"
+  // install the installer never claimed) after best-effort revoking the bot
+  // token, so an abandoned workspace doesn't leave a live credential lying
+  // around. Tightly scoped to pending slack rows; never touches active/claimed
+  // installs. Single-claimant per tick; pure Postgres (multi-replica safe).
+  // Daily, off-peak, distinct minute from the device-worker reaper.
+  scheduler.register(
+    'reap-expired-pending-installs',
+    async () => {
+      await runReapExpiredPendingSlackInstalls();
+    },
+    { cron: '17 3 * * *' },
   );
 
   // Watcher automation: reconcile in-flight runs, materialize newly-due runs,

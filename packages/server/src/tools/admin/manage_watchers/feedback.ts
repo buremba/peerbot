@@ -1,9 +1,10 @@
 /**
  * Feedback action handlers for manage_watchers:
- *   submit_feedback, get_feedback
+ *   submit_feedback, get_feedback, list_promoted
  */
 
 import { getDb } from '../../../db/client';
+import { parseJsonObject } from '@lobu/core';
 import type { ToolContext } from '../../registry';
 import type { ManageWatchersArgs, ManageWatchersResult } from '../manage_watchers';
 
@@ -173,5 +174,64 @@ export async function handleGetFeedback(
       window_start: row.window_start ? (row.window_start as Date).toISOString() : undefined,
       window_end: row.window_end ? (row.window_end as Date).toISOString() : undefined,
     })),
+  };
+}
+
+// ============================================
+// handleListPromoted
+// ============================================
+
+/**
+ * List the entities a watcher promoted (its keyed children). These are the
+ * durable, per-item correctable units of the recap: each row carries the
+ * entity's metadata (the extracted field values) plus `field_controls` (which
+ * fields a human already owns), so the recap can render approve/correct
+ * affordances keyed on (entity_id, field). Promoted children stamp
+ * `metadata.watcher_id` / `source='watcher_promotion'` at promotion time.
+ *
+ * Org-scoped so a member of org A can't enumerate org B's promoted entities by
+ * passing a watcher_id (auth also gates on requireWatcherAccess 'read').
+ */
+export async function handleListPromoted(
+  args: ManageWatchersArgs,
+  ctx: ToolContext
+): Promise<ManageWatchersResult> {
+  if (!args.watcher_id) throw new Error('watcher_id is required');
+
+  const sql = getDb();
+  const watcherId = String(Number(args.watcher_id));
+  const limit = args.limit ?? 200;
+
+  const rows = await sql`
+    SELECT e.id, e.name, et.slug AS entity_type, e.metadata, e.field_controls
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE e.organization_id = ${ctx.organizationId}
+      AND e.deleted_at IS NULL
+      AND e.metadata->>'source' = 'watcher_promotion'
+      AND e.metadata->>'watcher_id' = ${watcherId}
+    ORDER BY e.name
+    LIMIT ${limit}
+  `;
+
+  return {
+    action: 'list_promoted',
+    watcher_id: args.watcher_id,
+    entities: rows.map((row) => {
+      const metadata = parseJsonObject(row.metadata);
+      const fieldControls = parseJsonObject(row.field_controls);
+      const windowIdRaw = metadata.window_id;
+      const stableKeyRaw = metadata.stable_key;
+      return {
+        id: Number(row.id),
+        name: row.name as string,
+        entity_type: row.entity_type as string,
+        metadata,
+        field_controls: fieldControls,
+        window_id:
+          windowIdRaw == null || windowIdRaw === '' ? null : Number(windowIdRaw),
+        stable_key: stableKeyRaw == null ? null : String(stableKeyRaw),
+      };
+    }),
   };
 }

@@ -47,7 +47,7 @@ async function findStreamingFeedId(
  * Idempotently ensure the streaming feed for a bound channel, returning its id.
  * `channelKey` is the channel id exactly as stored on the binding (may be
  * platform-prefixed, e.g. `slack:C…`) — the feed_key mirrors it so the read path
- * (`read_channel_feed`) maps back to the same `channel_messages` rows.
+ * (`read_feed`) maps back to the same `channel_messages` rows.
  */
 export async function ensureStreamingChannelFeed(opts: {
   connectionId: string | number;

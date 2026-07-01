@@ -9,12 +9,14 @@
  *      with next_run_at in the past — kind is the discriminator.
  *   3. ChannelBindingService.createBinding materializes the channel's feed under
  *      the bound connection; deleteBinding soft-deletes it.
- *   4. manage_feeds read_channel_feed returns the channel transcript.
+ *   4. manage_feeds read_feed dispatches on kind: a streaming feed returns its
+ *      channel transcript, a collected feed returns metadata + recent runs.
  *   5. facet derivation: a chat-only connection whose channels are streaming
  *      feeds is NOT mislabeled a data connection.
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { buildSlackChannelGraph } from "../../../authz/slack-channel-graph";
 import { getDb } from "../../../db/client";
 import { ChannelBindingService } from "../../../gateway/channels/binding-service";
 import {
@@ -22,7 +24,9 @@ import {
   softDeleteStreamingChannelFeed,
 } from "../../../gateway/channels/channel-feed";
 import type { Env } from "../../../index";
+import { slugToRuntimeConnectionId } from "../../../lobu/stores/connections-projection";
 import { materializeDueFeeds } from "../../../scheduled/check-due-feeds";
+import { ensureMemberEntity } from "../../../utils/member-entity";
 import { getTestDb } from "../../setup/test-db";
 import { createTestAgent, createTestConnection } from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
@@ -71,6 +75,17 @@ describe("channel streaming feeds", () => {
     await sql`DELETE FROM agent_channel_bindings WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM feeds WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM connections WHERE organization_id = ${orgId}`;
+    // ACL/graph state the membership-gate test materializes.
+    await sql`DELETE FROM authz_source_acl_state WHERE organization_id = ${orgId}`;
+    await sql`DELETE FROM entity_relationships WHERE organization_id = ${orgId}`;
+    await sql`DELETE FROM entity_identities WHERE organization_id = ${orgId}`;
+    await sql`
+      DELETE FROM entities
+      WHERE organization_id = ${orgId}
+        AND entity_type_id IN (
+          SELECT id FROM entity_types WHERE organization_id = ${orgId} AND slug IN ('channel', '$member')
+        )
+    `;
   });
 
   it("materializes a streaming feed with the scheduler guards + idempotency", async () => {
@@ -175,7 +190,7 @@ describe("channel streaming feeds", () => {
     expect(Number(after[0]?.n)).toBe(0);
   });
 
-  it("read_channel_feed returns the channel transcript", async () => {
+  it("read_feed returns a streaming feed's transcript (kind dispatch)", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
     const feedId = await ensureStreamingChannelFeed({
       connectionId: conn.id,
@@ -209,13 +224,99 @@ describe("channel streaming feeds", () => {
     }
 
     const result = (await workspace.owner.feeds.manage({
-      action: "read_channel_feed",
+      action: "read_feed",
       feed_id: feedId,
-    })) as { messages: Array<{ user: string; text: string; isBot: boolean }> };
+    })) as {
+      kind: string;
+      messages: Array<{ user: string; text: string; isBot: boolean }>;
+    };
 
+    expect(result.kind).toBe("streaming");
     expect(result.messages.length).toBe(2);
     expect(result.messages[0]).toMatchObject({ user: "Alice", text: "hello team", isBot: false });
     expect(result.messages[1]).toMatchObject({ user: "assistant", text: "hi Alice", isBot: true });
+  });
+
+  it("trigger_feed rejects a streaming feed (only collected feeds sync)", async () => {
+    const conn = await makeChatConnection({ orgId, teamId: "TACME" });
+    const feedId = await ensureStreamingChannelFeed({
+      connectionId: conn.id,
+      organizationId: orgId,
+      channelKey: "slack:C600",
+    });
+
+    const res = (await workspace.owner.feeds.manage({
+      action: "trigger_feed",
+      feed_id: feedId,
+    })) as { triggered?: boolean; run_id?: string; error?: string };
+
+    // A streaming feed has no connector fetch for its feed_key — triggering a
+    // sync would spawn a run against nothing. Reject before createSyncRun.
+    expect(res.triggered).toBeUndefined();
+    expect(res.run_id).toBeUndefined();
+    expect(res.error).toContain("only collected feeds");
+  });
+
+  it("read_feed on a collected feed returns runs, not a transcript", async () => {
+    // A plain connection with the default kind='collected' feed.
+    const conn = await createTestConnection({
+      organization_id: orgId,
+      connector_key: "slack",
+      display_name: "Collected Slack",
+    });
+    const sql = getTestDb();
+    const feedRow = (await sql`
+      SELECT id, kind FROM feeds WHERE connection_id = ${conn.id} AND deleted_at IS NULL
+    `) as Array<{ id: number; kind: string }>;
+    expect(feedRow[0]?.kind).toBe("collected");
+
+    // read_feed dispatches on kind: a collected feed resolves to its metadata +
+    // recent sync runs, NEVER a channel_messages transcript.
+    const res = (await workspace.owner.feeds.manage({
+      action: "read_feed",
+      feed_id: feedRow[0].id,
+    })) as {
+      kind?: string;
+      feed?: { id: number };
+      recent_runs?: unknown[];
+      messages?: unknown[];
+      error?: string;
+    };
+    expect(res.error).toBeUndefined();
+    expect(res.kind).toBe("collected");
+    expect(res.messages).toBeUndefined();
+    expect(Array.isArray(res.recent_runs)).toBe(true);
+    expect(res.feed?.id).toBe(feedRow[0].id);
+  });
+
+  it("deleteAllBindings soft-deletes each unbound channel's streaming feed", async () => {
+    const conn = await makeChatConnection({ orgId, teamId: "TACME" });
+    const svc = new ChannelBindingService();
+    const { agentId } = await createTestAgent({ organizationId: orgId });
+
+    await svc.createBinding(agentId, "slack", "slack:C700", "TACME", {
+      organizationId: orgId,
+    });
+    await svc.createBinding(agentId, "slack", "slack:C701", "TACME", {
+      organizationId: orgId,
+    });
+
+    const sql = getDb();
+    const before = await sql`
+      SELECT COUNT(*)::int AS n FROM feeds
+      WHERE organization_id = ${orgId} AND kind = 'streaming' AND deleted_at IS NULL
+    `;
+    expect(Number(before[0]?.n)).toBe(2);
+
+    const removed = await svc.deleteAllBindings(agentId, orgId);
+    expect(removed).toBe(2);
+
+    // Both streaming feeds are retired — no live orphan feed left behind.
+    const after = await sql`
+      SELECT COUNT(*)::int AS n FROM feeds
+      WHERE organization_id = ${orgId} AND kind = 'streaming' AND deleted_at IS NULL
+    `;
+    expect(Number(after[0]?.n)).toBe(0);
   });
 
   it("a chat-only connection with streaming feeds is not labeled a data connection", async () => {
@@ -237,6 +338,83 @@ describe("channel streaming feeds", () => {
     // …but it does NOT make the connection claim the data facet.
     expect(result.connection.facets.data).toBe(false);
     expect(result.connection.facets.chat).toBe(true);
+  });
+
+  it("read_feed gates an ACL-enforced channel by membership, not just connection visibility", async () => {
+    // The owner can SEE any connection (no visibility filter), but must not read
+    // an enforced Slack channel's transcript unless they're a channel member.
+    const conn = await makeChatConnection({ orgId, teamId: "TENF" });
+    const feedId = await ensureStreamingChannelFeed({
+      connectionId: conn.id,
+      organizationId: orgId,
+      channelKey: "slack:CENF",
+    });
+    const runtimeConnId = slugToRuntimeConnectionId(conn.slug);
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO channel_messages (
+        organization_id, connection_id, platform, channel_id,
+        platform_message_id, author_name, is_bot, text, occurred_at
+      ) VALUES (
+        ${orgId}, ${runtimeConnId}, 'slack', 'CENF',
+        'me1', 'Insider', false, 'enforced channel secret', NOW()
+      )
+    `;
+
+    // Not enforced yet → owner reads it.
+    const before = (await workspace.owner.feeds.manage({
+      action: "read_feed",
+      feed_id: feedId,
+    })) as { messages?: unknown[] };
+    expect(before.messages?.length).toBe(1);
+
+    // Enforce the connection's ACL; owner is NOT a channel member.
+    const graph = await buildSlackChannelGraph({
+      organizationId: orgId,
+      connectionId: runtimeConnId,
+      teamId: "TENF",
+      channels: [{ channelId: "CENF", name: "secret", memberSlackUserIds: [] }],
+    });
+
+    const blocked = (await workspace.owner.feeds.manage({
+      action: "read_feed",
+      feed_id: feedId,
+    })) as { messages?: unknown[] };
+    expect(blocked.messages?.length).toBe(0); // membership gate fires
+
+    // Make the owner a channel member → they can read it again.
+    const channelEntityId = graph.channelEntityIds.CENF;
+    await ensureMemberEntity({
+      organizationId: orgId,
+      userId: workspace.users.owner.id,
+      name: "Owner",
+      email: `owner-${workspace.users.owner.id}@example.com`,
+    });
+    const [member] = await sql`
+      SELECT e.id FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id AND et.slug = '$member'
+      JOIN entity_identities ei ON ei.entity_id = e.id
+        AND ei.namespace = 'auth_user_id' AND ei.identifier = ${workspace.users.owner.id}
+        AND ei.source_connector = 'auth:signup'
+      WHERE e.organization_id = ${orgId} AND e.deleted_at IS NULL
+      LIMIT 1
+    `;
+    const [mot] = await sql`
+      SELECT id FROM entity_relationship_types
+      WHERE organization_id = ${orgId} AND slug = 'member_of' AND status = 'active'
+      LIMIT 1
+    `;
+    await sql`
+      INSERT INTO entity_relationships (
+        organization_id, from_entity_id, to_entity_id, relationship_type_id, created_at, updated_at
+      ) VALUES (${orgId}, ${member.id}, ${channelEntityId}, ${mot.id}, NOW(), NOW())
+    `;
+
+    const allowed = (await workspace.owner.feeds.manage({
+      action: "read_feed",
+      feed_id: feedId,
+    })) as { messages?: unknown[] };
+    expect(allowed.messages?.length).toBe(1);
   });
 
   it("does not leak a PRIVATE connection's transcript to an anonymous caller", async () => {
@@ -277,7 +455,7 @@ describe("channel streaming feeds", () => {
 
     // Owner (creator) CAN read it.
     const ownerRes = (await workspace.owner.feeds.manage({
-      action: "read_channel_feed",
+      action: "read_feed",
       feed_id: feedId,
     })) as { messages?: unknown[]; error?: string };
     expect(ownerRes.messages?.length).toBe(1);
@@ -285,7 +463,7 @@ describe("channel streaming feeds", () => {
     // Anonymous reader of the public org must NOT — the gate hides the private
     // connection's feed, so the transcript is never resolved.
     const anonRes = (await workspace.asAnonymous().feeds.manage({
-      action: "read_channel_feed",
+      action: "read_feed",
       feed_id: feedId,
     })) as { messages?: unknown[]; error?: string };
     expect(anonRes.messages).toBeUndefined();

@@ -9,6 +9,7 @@ import {
 import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
+import { insertEvent } from "../../utils/insert-event.js";
 import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
@@ -99,6 +100,87 @@ describe("agent history routes", () => {
 		);
 		return app;
 	}
+
+	test("replays pending manage_agents approvals as interactions on reload", async () => {
+		setAuthProvider(() => ({
+			userId: USER_ID,
+			platform: "external",
+			exp: Date.now() + 60_000,
+		}));
+
+		const agentId = "agent-1";
+		const threadId = "thread-appr";
+		const conversationId = buildApiConversationId({
+			agentId,
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			threadId,
+		});
+
+		// A pending builder approval, stamped with the conversationId the way the
+		// internal interactions route does, so the history endpoint replays it —
+		// the transcript itself carries no interaction parts.
+		const runId = await insertRun({
+			organizationId: ORG_ID,
+			agentId,
+			conversationId,
+			runType: "internal",
+			status: "pending",
+		});
+		const proposal = {
+			action: "update",
+			agent_id: "weekly-digest",
+			name: "Weekly Digest",
+		};
+		const current = { id: "weekly-digest", name: "Old Name" };
+		await orgContext.run({ organizationId: ORG_ID }, () =>
+			insertEvent({
+				entityIds: [],
+				organizationId: ORG_ID,
+				originId: `run_${runId}_pending`,
+				title: "update weekly-digest — pending approval",
+				content: "Builder requested a change",
+				semanticType: "operation",
+				runId,
+				interactionType: "approval",
+				interactionStatus: "pending",
+				interactionInput: proposal,
+				metadata: {
+					conversationId,
+					action: "update",
+					proposal,
+					current,
+					status: "pending_approval",
+					run_id: runId,
+				},
+			}),
+		);
+
+		const res = await orgContext.run({ organizationId: ORG_ID }, () =>
+			createApp().request(
+				`/api/v1/agents/${agentId}/history/threads/${threadId}/messages`,
+				{ method: "GET", headers: { host: "localhost" } },
+			),
+		);
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			interactions?: Array<{
+				type: string;
+				runId: number;
+				action: string | null;
+				proposal: Record<string, unknown> | null;
+				current: Record<string, unknown> | null;
+			}>;
+		};
+		expect(body.interactions).toHaveLength(1);
+		const card = body.interactions?.[0];
+		expect(card?.type).toBe("tool-approval");
+		expect(card?.runId).toBe(runId);
+		expect(card?.action).toBe("update");
+		expect(card?.proposal).toMatchObject({ agent_id: "weekly-digest" });
+		expect(card?.current).toMatchObject({ id: "weekly-digest" });
+	});
 
 	test("rejects sessions that do not own the requested agent", async () => {
 		setAuthProvider(() => ({

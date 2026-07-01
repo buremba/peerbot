@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createLogger } from "@lobu/core";
+import { createLogger, decrypt, encrypt } from "@lobu/core";
 import type { StoredConnection } from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import type { WritableSecretStore } from "../../gateway/secrets/index.js";
@@ -361,4 +361,156 @@ export async function deleteSlackInstall(
   } else {
     await purge();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace / Slack-initiated installs — the UNCLAIMED (pending) path.
+//
+// These arrive at the callback with a bot token but no Lobu org. Park them as a
+// `pending`, org-less `app_installations` row until an admin claims the
+// workspace by signing in with Slack. The org-scoped secret store can't hold an
+// org-less token, so the bot token is stored ENCRYPTED in metadata (same
+// ENCRYPTION_KEY as the secret store); on claim it's decrypted and re-persisted
+// via {@link upsertSlackInstallByTeam}. Routing ignores non-active rows, so the
+// bot is inert until claimed.
+// ---------------------------------------------------------------------------
+
+export interface SlackPendingInstallInput {
+  teamId: string;
+  teamName: string | null;
+  botUserId: string | null;
+  /** Plaintext bot token — stored encrypted, never in the clear. */
+  botToken: string;
+  /** The Slack user who clicked Allow (`authed_user.id`); the DM/claim target. */
+  installerUserId: string | null;
+  isEnterpriseInstall: boolean;
+}
+
+export interface SlackPendingInstall {
+  id: string;
+  teamId: string;
+  teamName: string | null;
+  botUserId: string | null;
+  installerUserId: string | null;
+  /** Decrypted bot token. */
+  botToken: string;
+  isEnterpriseInstall: boolean;
+}
+
+/** Park (or refresh) the single pending install for a Slack workspace. */
+export async function writeSlackPendingInstall(
+  install: SlackPendingInstallInput
+): Promise<{ id: string }> {
+  const sql = getDb();
+  const metadata = {
+    team_name: install.teamName,
+    bot_user_id: install.botUserId,
+    installer_user_id: install.installerUserId,
+    is_enterprise_install: install.isEnterpriseInstall,
+    bot_token_enc: encrypt(install.botToken),
+  };
+  // Refresh: at most one pending row per team (a re-install replaces it).
+  await sql`
+    DELETE FROM app_installations
+    WHERE provider = ${SLACK_PROVIDER}
+      AND provider_app_id = ${SLACK_PROVIDER_APP_ID}
+      AND external_tenant_id = ${install.teamId}
+      AND status = 'pending'
+  `;
+  const rows = (await sql`
+    INSERT INTO app_installations
+      (organization_id, provider, provider_instance, provider_app_id,
+       external_tenant_id, status, metadata)
+    VALUES
+      (NULL, ${SLACK_PROVIDER}, ${SLACK_PROVIDER_INSTANCE},
+       ${SLACK_PROVIDER_APP_ID}, ${install.teamId}, 'pending',
+       ${sql.json(metadata)})
+    RETURNING id
+  `) as Array<{ id: number | string }>;
+  return { id: String(rows[0]!.id) };
+}
+
+/** Resolve the pending (unclaimed) install for a Slack workspace, if any. */
+export async function resolveSlackPendingByTenant(
+  teamId: string
+): Promise<SlackPendingInstall | null> {
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT id, external_tenant_id, metadata
+    FROM app_installations
+    WHERE provider = ${SLACK_PROVIDER}
+      AND provider_app_id = ${SLACK_PROVIDER_APP_ID}
+      AND external_tenant_id = ${teamId}
+      AND status = 'pending'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `) as Array<{
+    id: number | string;
+    external_tenant_id: string;
+    metadata: Record<string, unknown>;
+  }>;
+  const row = rows[0];
+  if (!row) return null;
+  const enc = row.metadata.bot_token_enc;
+  if (typeof enc !== "string" || !enc) return null;
+  return {
+    id: String(row.id),
+    teamId: row.external_tenant_id,
+    teamName:
+      typeof row.metadata.team_name === "string"
+        ? row.metadata.team_name
+        : null,
+    botUserId:
+      typeof row.metadata.bot_user_id === "string"
+        ? row.metadata.bot_user_id
+        : null,
+    installerUserId:
+      typeof row.metadata.installer_user_id === "string"
+        ? row.metadata.installer_user_id
+        : null,
+    botToken: decrypt(enc),
+    isEnterpriseInstall: row.metadata.is_enterprise_install === true,
+  };
+}
+
+/**
+ * Claim a pending (unclaimed) Slack workspace into an org: BIND the install
+ * (persist the bot token to the org-scoped secret store + create the active,
+ * org-owned `app_installations` + `connections` rows via
+ * {@link upsertSlackInstallByTeam}), then DELETE the org-less pending row so the
+ * workspace can't be double-claimed. Caller is responsible for authorizing the
+ * claim (token-hash match + workspace-admin check) BEFORE invoking this.
+ *
+ * The bind commits first; the pending delete is a best-effort follow-up on the
+ * same team so a crash between them leaves the workspace claimed (active row
+ * wins routing) with a harmless leftover pending row that the next claim
+ * replaces. Returns the stable `slackinst-<uuid>` install id.
+ */
+export async function claimSlackPendingInstall(
+  store: AppInstallationStore,
+  secretStore: WritableSecretStore,
+  pending: SlackPendingInstall,
+  organizationId: string
+): Promise<{ installationId: string }> {
+  const row = await upsertSlackInstallByTeam(
+    store,
+    secretStore,
+    organizationId,
+    pending.teamId,
+    {
+      teamName: pending.teamName ?? undefined,
+      botUserId: pending.botUserId ?? undefined,
+      botToken: pending.botToken,
+    }
+  );
+  // Retire the org-less pending row now that an active, org-owned install owns
+  // the workspace. Team-scoped: at most one pending row per team.
+  await getDb()`
+    DELETE FROM app_installations
+    WHERE provider = ${SLACK_PROVIDER}
+      AND provider_app_id = ${SLACK_PROVIDER_APP_ID}
+      AND external_tenant_id = ${pending.teamId}
+      AND status = 'pending'
+  `;
+  return { installationId: row.id };
 }

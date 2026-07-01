@@ -312,6 +312,32 @@ export const QUERYABLE_SCHEMA = {
         'kind'
       ),
     },
+    // channel_messages — chat-channel transcripts (streaming feeds). Content is
+    // membership-gated per row by the channel_messages CTE in execute-data-sources
+    // (compileChannelMessagesVisibility): a row on an ACL-enforced Slack
+    // connection is visible only to a channel member; a headless reader (null
+    // principal) sees only non-enforced channels. Without that gate this table is
+    // NOT safe to expose, which is why it was previously absent from the allowlist.
+    {
+      name: 'channel_messages',
+      columns: cols(
+        'id',
+        'organization_id',
+        'connection_id',
+        'platform',
+        'channel_id',
+        'thread_id',
+        'platform_message_id',
+        'author_id',
+        'author_name',
+        'author_entity_id',
+        'team_id',
+        'is_bot',
+        'text',
+        'occurred_at',
+        'created_at'
+      ),
+    },
     // connector_definitions (excludes: large *_config JSONB blobs)
     {
       name: 'connector_definitions',

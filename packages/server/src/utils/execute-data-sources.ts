@@ -22,6 +22,7 @@ import {
   compileConnectionFkVisibility,
   compileConnectionRowVisibility,
 } from '../authz/connection-visibility';
+import { compileChannelMessagesVisibility } from '../authz/channel-messages-visibility';
 import { compileResourceVisibility } from '../authz/resource-visibility';
 import type { AuthzScope } from '../authz/scope';
 import {
@@ -429,6 +430,18 @@ export function buildScopedQuery(
     return ` ${vis.sql}`;
   };
 
+  // Per-channel membership gate for the `channel_messages` table (alias has
+  // `connection_id` + `channel_id`): on an ACL-enforced Slack connection, restrict
+  // to channels the requester is `member_of`. A headless/null principal sees only
+  // non-enforced channels — this is what keeps a watcher's streaming @feed source
+  // from leaking enforced-channel content into the shared recap.
+  const channelMessagesVisibility = (alias: string): string => {
+    const vis = compileChannelMessagesVisibility(scope, idx + 1, alias);
+    params.push(...vis.params);
+    idx += vis.params.length;
+    return ` ${vis.sql}`;
+  };
+
   // For the `connections` table itself: the row is visible when org-shared or
   // owned by the requesting user (mirrors manage_connections CRUD).
   const connectionRowVisibility = (alias: string): string => {
@@ -639,6 +652,42 @@ export function buildScopedQuery(
           eventConnVisibility('fd') +
           ')'
       );
+    } else if (table === 'channel_messages') {
+      // Chat transcript rows. `text` is verbatim channel content, so the CTE
+      // stacks the SAME gates the events CTE applies, adapted to channel_messages:
+      //   1. connection visibility — a PRIVATE connection's transcript is visible
+      //      only to its creator (org-visible connections to everyone). Resolved
+      //      by slug because channel_messages.connection_id is the runtime id, not
+      //      connections.id. A null principal (headless watcher) → org-only.
+      //   2. time window (incremental mode) — only rows inside the watcher window,
+      //      so a channel @feed reads its window, not the whole history.
+      //   3. per-channel membership (channelMessagesVisibility) — ACL-enforced
+      //      channels require member_of; stale/enforced fail closed.
+      // security-allowed: see block comment above the for-loop
+      let cmCte =
+        `"${safeName}" AS (SELECT ${sel(table, 'cm')} FROM public.channel_messages cm ` +
+        `WHERE cm.organization_id = ${orgP}`;
+      idx++;
+      params.push(scope.principal);
+      const cmPrincipal = `$${idx}::text`;
+      // security-allowed: see block comment above the for-loop
+      cmCte +=
+        ` AND EXISTS (SELECT 1 FROM public.connections cc ` +
+        `WHERE cc.organization_id = ${orgP} AND cc.deleted_at IS NULL ` +
+        `AND cc.slug IN (cm.connection_id, 'agentconn-' || cm.connection_id) ` +
+        `AND (cc.visibility = 'org' OR cc.created_by = ${cmPrincipal}))`;
+      if (context.windowStart && context.windowEnd) {
+        idx++;
+        params.push(context.windowStart);
+        const cmWindowStart = `$${idx}`;
+        idx++;
+        params.push(context.windowEnd);
+        const cmWindowEnd = `$${idx}`;
+        cmCte += ` AND cm.occurred_at >= ${cmWindowStart}::timestamptz AND cm.occurred_at < ${cmWindowEnd}::timestamptz`;
+      }
+      cmCte += channelMessagesVisibility('cm');
+      cmCte += ')';
+      ctes.push(cmCte);
     } else if (table === 'connector_definitions') {
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table)} FROM public.connector_definitions WHERE organization_id = ${orgP})`

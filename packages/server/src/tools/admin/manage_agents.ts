@@ -104,7 +104,6 @@ export type ManageAgentsResult =
       action: 'create' | 'update' | 'delete';
       run_id: number;
       event_id?: number;
-      approval_url?: string;
       status: 'pending_approval';
       message: string;
       // The proposed change + current agent row, so the worker can forward an
@@ -487,9 +486,12 @@ async function queueWriteForApproval(
     action: proposal.action,
     run_id: runId,
     event_id: eventId,
-    approval_url: approvalUrl,
     status: 'pending_approval',
-    message: `${label} requires approval. Approve or reject the card to apply it.`,
+    // An interactive approval card (change details + Approve/Reject buttons) is
+    // rendered into the chat from this result — so instruct the model to stay
+    // terse and NOT restate the change or paste a link. Narrating a Markdown
+    // "Approval Link" duplicates the card and leaves a dead link once resolved.
+    message: `${label} is queued for approval. A confirmation card with the change details and Approve/Reject buttons is now shown to the user in the chat — reply with at most one short sentence and do NOT restate the change or include an approval link.`,
     proposal,
     current,
   };

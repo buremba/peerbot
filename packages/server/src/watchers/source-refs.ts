@@ -1,7 +1,12 @@
 import type { DbClient } from '../db/client';
+import { slugToRuntimeConnectionId } from '../lobu/stores/connections-projection';
 import type { WatcherSource } from '../types/watchers';
 
-export type WatcherSourceKind = 'event' | 'entity' | 'metric';
+// 'channel' is a chat-transcript source (streaming feed → channel_messages). It
+// is prompt CONTEXT, not events: its rows must never be signed as event
+// content_ids (channel_messages.id is not an events.id — complete_window links
+// content_ids into watcher_window_events.event_id, an FK to events).
+export type WatcherSourceKind = 'event' | 'entity' | 'metric' | 'channel';
 
 export type WatcherSourceRef =
   | { type: 'feed'; value: string }
@@ -117,40 +122,76 @@ function numericRef(value: string): number | null {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
-async function resolveFeedIds(sql: DbClient, organizationId: string, value: string): Promise<number[]> {
+interface ResolvedFeed {
+  id: number;
+  kind: string;
+  /** `connections.slug` of the feed's connection (for the channel-messages path). */
+  connectionSlug: string;
+  feedKey: string;
+}
+
+async function resolveFeeds(
+  sql: DbClient,
+  organizationId: string,
+  value: string
+): Promise<ResolvedFeed[]> {
   const id = numericRef(value);
-  const rows = await sql<{ id: number | string; kind: string | null }>`
-    SELECT id, kind
-    FROM feeds
-    WHERE organization_id = ${organizationId}
-      AND deleted_at IS NULL
+  const rows = await sql<{
+    id: number | string;
+    kind: string | null;
+    feed_key: string;
+    connection_slug: string;
+  }>`
+    SELECT f.id, f.kind, f.feed_key, c.slug AS connection_slug
+    FROM feeds f
+    JOIN connections c ON c.id = f.connection_id
+    WHERE f.organization_id = ${organizationId}
+      AND f.deleted_at IS NULL
+      AND c.deleted_at IS NULL
       AND (
-        ${id}::bigint IS NOT NULL AND id = ${id}::bigint
-        OR feed_key = ${value}
-        OR display_name = ${value}
+        ${id}::bigint IS NOT NULL AND f.id = ${id}::bigint
+        OR f.feed_key = ${value}
+        OR f.display_name = ${value}
       )
-    ORDER BY id
+    ORDER BY f.id
     LIMIT 100
   `;
-  // `@feed` sources compile to a SELECT over `events`, so only events-backed
-  // (`collected`) feeds can back one. A `streaming` feed's rows live in
-  // `channel_messages` and a `virtual` feed is an external live query — either
-  // would validate here and then read empty. Reject them with a clear error
-  // (loud, not silent) rather than compiling to a query that returns nothing.
-  const collected = rows.filter((r) => (r.kind ?? 'collected') === 'collected');
-  const ids = collected
-    .map((r) => Number(r.id))
-    .filter((n) => Number.isSafeInteger(n) && n > 0);
-  if (ids.length === 0) {
-    const other = rows.find((r) => (r.kind ?? 'collected') !== 'collected');
-    if (other) {
-      throw new Error(
-        `@feed:${value} is a ${other.kind} feed; only collected (events-backed) feeds can be an @feed source`
-      );
-    }
-    throw new Error(`@feed:${value} did not match any feed`);
-  }
-  return ids;
+  return rows
+    .map((r) => ({
+      id: Number(r.id),
+      kind: r.kind ?? 'collected',
+      connectionSlug: String(r.connection_slug),
+      feedKey: String(r.feed_key),
+    }))
+    .filter((r) => Number.isSafeInteger(r.id) && r.id > 0);
+}
+
+/** Strip a `platform:` prefix off a streaming feed_key to the bare channel id
+ *  that `channel_messages.channel_id` stores (mirror of read_feed). */
+function bareChannelId(feedKey: string): string {
+  return feedKey.includes(':') ? feedKey.slice(feedKey.indexOf(':') + 1) : feedKey;
+}
+
+/** Compile a set of streaming (chat-channel) feeds to a read over
+ *  `channel_messages`. The rows are membership-gated by the channel_messages CTE
+ *  in execute-data-sources — a headless watcher run reads only non-enforced
+ *  channels, so enforced-channel content never reaches the shared recap. */
+function channelMessagesSelect(feeds: ResolvedFeed[]): string {
+  const tuples = feeds
+    .map(
+      (f) =>
+        `(${sqlString(slugToRuntimeConnectionId(f.connectionSlug))}, ${sqlString(
+          bareChannelId(f.feedKey)
+        )})`
+    )
+    .join(', ');
+  return (
+    'SELECT id, organization_id, connection_id, platform, channel_id, thread_id, ' +
+    'platform_message_id, author_id, author_name, author_entity_id, is_bot, text, ' +
+    'occurred_at, created_at ' +
+    `FROM channel_messages WHERE (connection_id, channel_id) IN (${tuples}) ` +
+    'ORDER BY occurred_at DESC'
+  );
 }
 
 async function resolveConnectionId(
@@ -181,45 +222,75 @@ async function compileRefToQuery(
   sql: DbClient,
   organizationId: string,
   ref: WatcherSourceRef
-): Promise<string | null> {
+): Promise<{ query: string | null; kind: WatcherSourceKind }> {
   switch (ref.type) {
     case 'feed': {
-      const ids = await resolveFeedIds(sql, organizationId, ref.value);
-      return eventSelect(`feed_id IN (${ids.join(',')})`);
+      const feeds = await resolveFeeds(sql, organizationId, ref.value);
+      if (feeds.length === 0) throw new Error(`@feed:${ref.value} did not match any feed`);
+      const collected = feeds.filter((f) => f.kind === 'collected');
+      const streaming = feeds.filter((f) => f.kind === 'streaming');
+      // A `virtual` feed is an external live query with no stored rows — it has no
+      // read seam here, so reject it (loud) rather than compile to empty.
+      const other = feeds.find((f) => f.kind !== 'collected' && f.kind !== 'streaming');
+      if (collected.length === 0 && streaming.length === 0 && other) {
+        throw new Error(
+          `@feed:${ref.value} is a ${other.kind} feed; only collected or streaming feeds can be an @feed source`
+        );
+      }
+      // Don't mix data planes in one source — a collected feed reads `events`, a
+      // streaming feed reads `channel_messages`; a single SELECT can't span both.
+      if (collected.length > 0 && streaming.length > 0) {
+        throw new Error(
+          `@feed:${ref.value} matched both collected and streaming feeds; reference one kind`
+        );
+      }
+      if (streaming.length > 0) {
+        // 'channel' kind → prompt context only, NOT event-id-signed (see the type).
+        return { query: channelMessagesSelect(streaming), kind: 'channel' };
+      }
+      return {
+        query: eventSelect(`feed_id IN (${collected.map((f) => f.id).join(',')})`),
+        kind: 'event',
+      };
     }
     case 'connection': {
       const id = await resolveConnectionId(sql, organizationId, ref.value);
-      return eventSelect(`connection_id = ${id}`);
+      return { query: eventSelect(`connection_id = ${id}`), kind: 'event' };
     }
     case 'connector': {
       if (!SAFE_CONNECTOR_RE.test(ref.value)) {
         throw new Error('@connector refs must be plain connector keys');
       }
-      return eventSelect(`connector_key = ${sqlString(ref.value)}`);
+      return { query: eventSelect(`connector_key = ${sqlString(ref.value)}`), kind: 'event' };
     }
     case 'channel': {
       const raw = ref.value.startsWith('#') ? ref.value.slice(1) : ref.value;
       const channel = sqlString(raw);
       const hashChannel = sqlString(`#${raw}`);
-      return eventSelect(
-        [
-          `metadata->>'channel' IN (${channel}, ${hashChannel})`,
-          `metadata->>'channel_name' IN (${channel}, ${hashChannel})`,
-          `metadata->>'channel_id' = ${raw ? channel : "''"}`,
-          `payload_data->>'channel' IN (${channel}, ${hashChannel})`,
-          `payload_data->>'channel_name' IN (${channel}, ${hashChannel})`,
-          `payload_data->>'channel_id' = ${raw ? channel : "''"}`,
-        ].join(' OR ')
-      );
+      return {
+        query: eventSelect(
+          [
+            `metadata->>'channel' IN (${channel}, ${hashChannel})`,
+            `metadata->>'channel_name' IN (${channel}, ${hashChannel})`,
+            `metadata->>'channel_id' = ${raw ? channel : "''"}`,
+            `payload_data->>'channel' IN (${channel}, ${hashChannel})`,
+            `payload_data->>'channel_name' IN (${channel}, ${hashChannel})`,
+            `payload_data->>'channel_id' = ${raw ? channel : "''"}`,
+          ].join(' OR ')
+        ),
+        kind: 'event',
+      };
     }
     case 'entity':
-      return (
-        'SELECT id, entity_type, entity_type_id, parent_id, name, slug, metadata, created_at, updated_at ' +
-        `FROM entities WHERE entity_type = ${sqlString(ref.value)} AND deleted_at IS NULL ` +
-        'ORDER BY updated_at DESC'
-      );
+      return {
+        query:
+          'SELECT id, entity_type, entity_type_id, parent_id, name, slug, metadata, created_at, updated_at ' +
+          `FROM entities WHERE entity_type = ${sqlString(ref.value)} AND deleted_at IS NULL ` +
+          'ORDER BY updated_at DESC',
+        kind: 'entity',
+      };
     case 'metric':
-      return null;
+      return { query: null, kind: 'metric' };
   }
 }
 
@@ -316,8 +387,7 @@ export async function normalizeWatcherSources(
       normalized.push({ ...source, kind: 'event' });
       continue;
     }
-    const kind = watcherSourceKindForRef(ref);
-    const query = await compileRefToQuery(sql, organizationId, ref);
+    const { query, kind } = await compileRefToQuery(sql, organizationId, ref);
     normalized.push({
       name: source.name,
       query: query ?? source.query,

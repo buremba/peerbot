@@ -102,21 +102,6 @@ const config: KnipConfig = {
         "@vitest/coverage-v8",
       ],
     },
-    "packages/landing": {
-      entry: [
-        // Cloudflare Pages functions — file-based routing (every file under
-        // functions/ is a route entry, not an imported module).
-        "functions/**/*.ts",
-        // Starlight customCss — referenced from astro.config.mjs.
-        "src/styles/starlight-shared.css",
-        "src/styles/starlight-theme.css",
-      ],
-      ignoreDependencies: [
-        "@preact/signals",
-        // Resolved via Astro alias (`@providers-config`).
-        "@providers-config",
-      ],
-    },
     "packages/cli": {
       entry: [
         // Tests run via `bun test packages/cli` in CI (nested __tests__ dirs).

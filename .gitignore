@@ -76,7 +76,6 @@ packages/server/src/gateway/routes/public/agents-page-bundle.ts
 packages/server/src/gateway/routes/public/agents-page-bundle.raw.js
 
 # Astro build artifacts
-packages/landing/.astro/
 packages/.astro/
 
 # Pi / local agent artifacts

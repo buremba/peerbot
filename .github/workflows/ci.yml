@@ -478,9 +478,8 @@ jobs:
         # Root tsconfig excludes these packages, so `bun run typecheck`
         # above never sees them. Run each package's own tsc here so a
         # type error can't reach main and break the npm publish at
-        # release time. connectors and landing are intentionally
-        # left out — they need preconditions (DOM lib, `astro sync`)
-        # that belong to their own build pipelines.
+        # release time. connectors is intentionally left out — it needs
+        # preconditions (DOM lib) that belong to its own build pipeline.
         run: |
           set -euo pipefail
           for pkg in server connector-worker connector-sdk openclaw-plugin embeddings cli; do

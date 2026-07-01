@@ -5,7 +5,6 @@
 <!-- Check only what you actually ran. See AGENTS.md → "Validation after code changes". -->
 - [ ] `bun run check:fix` clean
 - [ ] `bun run typecheck` passes (or `make build-packages` if TS packages changed)
-- [ ] Package-specific validation (landing: `cd packages/landing && bun run build`)
 - [ ] If bot behavior: ran `./scripts/test-bot.sh` or relevant eval
 
 ## Notes

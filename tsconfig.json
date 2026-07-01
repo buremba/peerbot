@@ -49,7 +49,6 @@
     "packages/*/src/__tests__/**/*",
     "packages/cli/**/*",
     "packages/client/**/*",
-    "packages/landing/**/*",
     "packages/server/**/*",
     "packages/connector-sdk/**/*",
     "packages/openclaw-plugin/**/*",

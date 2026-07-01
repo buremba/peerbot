@@ -38,7 +38,6 @@
       "!**/scripts/lobu/**",
       "!**/benchmarks/**",
       "!**/skills/**",
-      "!**/packages/landing/public/**",
       "!**/docs/plans/**/*.html"
     ]
   },

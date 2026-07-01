@@ -56,7 +56,7 @@ echo "[check-security-patterns] scanning…"
 echo "  -> window.confirm / window.alert / window.prompt"
 HITS=$(
   git grep -nE 'window\.(confirm|alert|prompt)\(' -- \
-    'packages/owletto/' 'packages/landing/' \
+    'packages/owletto/' \
     2>/dev/null | grep -E '\.tsx?:' | filter_allowlist
 )
 if [ -n "$HITS" ]; then

@@ -27,7 +27,6 @@ Prerequisites: Bun, Node 22.x–24.x, and a reachable Postgres (with pgvector) v
 
 | Change | Command |
 | --- | --- |
-| `packages/landing/*` | `cd packages/landing && bun run build` |
 | `packages/{core,server,agent-worker,cli}/*` | `make build-packages` |
 | Broad TS check | `bun run typecheck` |
 | Any package source | `bun test packages/<pkg>/src` |

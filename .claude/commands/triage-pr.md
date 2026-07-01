@@ -128,8 +128,6 @@ Upsert the marker comment (Phase E) with classification + reasons + links to the
 
    ```bash
    bun run check:fix                                # always
-   # touched packages/landing/* ?
-   (cd packages/landing && bun run build)
    # touched packages/{core,gateway,worker,cli}/* ?
    make build-packages
    # always — root catches drift the package-local checks miss:

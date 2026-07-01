@@ -17,6 +17,7 @@
 import { getErrorMessage, parseJsonObject } from '@lobu/core';
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb, pgBigintArray } from '../../db/client';
+import { filterChannelsForRequester } from '../../authz/channel-visibility';
 import { readChannelTranscript } from '../../gateway/connections/channel-transcript';
 import type { Env } from '../../index';
 import { getAuthProfileById } from '../../utils/auth-profiles';
@@ -279,6 +280,7 @@ async function handleReadFeed(
     SELECT f.*,
            c.slug,
            c.connector_key,
+           c.external_tenant_id,
            c.display_name AS connection_name,
            (
              SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)
@@ -308,6 +310,26 @@ async function handleReadFeed(
     const channelId = feedKey.includes(':')
       ? feedKey.slice(feedKey.indexOf(':') + 1)
       : feedKey;
+    // The connection-visibility gate above only decides who can see the
+    // CONNECTION. For an ACL-enforced Slack channel the transcript is further
+    // gated to channel members — a user who can see the connection but isn't in
+    // the channel must NOT read its messages. Non-enforced channels pass through
+    // (same posture as search_memory). Fail-closed: a dropped row → no transcript.
+    const visible = await filterChannelsForRequester(sql, {
+      organizationId,
+      userId: userId ?? null,
+      rows: [
+        {
+          id: connectionId,
+          platform: String(feed.connector_key ?? 'slack'),
+          channel_id: channelId,
+          team_id: (feed.external_tenant_id as string | null) ?? null,
+        },
+      ],
+    });
+    if (visible.length === 0) {
+      return { action: 'read_feed', kind: 'streaming', feed, messages: [] };
+    }
     const messages = await readChannelTranscript(
       organizationId,
       connectionId,

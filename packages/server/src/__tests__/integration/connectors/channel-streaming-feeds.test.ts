@@ -16,6 +16,7 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { buildSlackChannelGraph } from "../../../authz/slack-channel-graph";
 import { getDb } from "../../../db/client";
 import { ChannelBindingService } from "../../../gateway/channels/binding-service";
 import {
@@ -23,7 +24,9 @@ import {
   softDeleteStreamingChannelFeed,
 } from "../../../gateway/channels/channel-feed";
 import type { Env } from "../../../index";
+import { slugToRuntimeConnectionId } from "../../../lobu/stores/connections-projection";
 import { materializeDueFeeds } from "../../../scheduled/check-due-feeds";
+import { ensureMemberEntity } from "../../../utils/member-entity";
 import { getTestDb } from "../../setup/test-db";
 import { createTestAgent, createTestConnection } from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
@@ -72,6 +75,17 @@ describe("channel streaming feeds", () => {
     await sql`DELETE FROM agent_channel_bindings WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM feeds WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM connections WHERE organization_id = ${orgId}`;
+    // ACL/graph state the membership-gate test materializes.
+    await sql`DELETE FROM authz_source_acl_state WHERE organization_id = ${orgId}`;
+    await sql`DELETE FROM entity_relationships WHERE organization_id = ${orgId}`;
+    await sql`DELETE FROM entity_identities WHERE organization_id = ${orgId}`;
+    await sql`
+      DELETE FROM entities
+      WHERE organization_id = ${orgId}
+        AND entity_type_id IN (
+          SELECT id FROM entity_types WHERE organization_id = ${orgId} AND slug IN ('channel', '$member')
+        )
+    `;
   });
 
   it("materializes a streaming feed with the scheduler guards + idempotency", async () => {
@@ -324,6 +338,83 @@ describe("channel streaming feeds", () => {
     // …but it does NOT make the connection claim the data facet.
     expect(result.connection.facets.data).toBe(false);
     expect(result.connection.facets.chat).toBe(true);
+  });
+
+  it("read_feed gates an ACL-enforced channel by membership, not just connection visibility", async () => {
+    // The owner can SEE any connection (no visibility filter), but must not read
+    // an enforced Slack channel's transcript unless they're a channel member.
+    const conn = await makeChatConnection({ orgId, teamId: "TENF" });
+    const feedId = await ensureStreamingChannelFeed({
+      connectionId: conn.id,
+      organizationId: orgId,
+      channelKey: "slack:CENF",
+    });
+    const runtimeConnId = slugToRuntimeConnectionId(conn.slug);
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO channel_messages (
+        organization_id, connection_id, platform, channel_id,
+        platform_message_id, author_name, is_bot, text, occurred_at
+      ) VALUES (
+        ${orgId}, ${runtimeConnId}, 'slack', 'CENF',
+        'me1', 'Insider', false, 'enforced channel secret', NOW()
+      )
+    `;
+
+    // Not enforced yet → owner reads it.
+    const before = (await workspace.owner.feeds.manage({
+      action: "read_feed",
+      feed_id: feedId,
+    })) as { messages?: unknown[] };
+    expect(before.messages?.length).toBe(1);
+
+    // Enforce the connection's ACL; owner is NOT a channel member.
+    const graph = await buildSlackChannelGraph({
+      organizationId: orgId,
+      connectionId: runtimeConnId,
+      teamId: "TENF",
+      channels: [{ channelId: "CENF", name: "secret", memberSlackUserIds: [] }],
+    });
+
+    const blocked = (await workspace.owner.feeds.manage({
+      action: "read_feed",
+      feed_id: feedId,
+    })) as { messages?: unknown[] };
+    expect(blocked.messages?.length).toBe(0); // membership gate fires
+
+    // Make the owner a channel member → they can read it again.
+    const channelEntityId = graph.channelEntityIds.CENF;
+    await ensureMemberEntity({
+      organizationId: orgId,
+      userId: workspace.users.owner.id,
+      name: "Owner",
+      email: `owner-${workspace.users.owner.id}@example.com`,
+    });
+    const [member] = await sql`
+      SELECT e.id FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id AND et.slug = '$member'
+      JOIN entity_identities ei ON ei.entity_id = e.id
+        AND ei.namespace = 'auth_user_id' AND ei.identifier = ${workspace.users.owner.id}
+        AND ei.source_connector = 'auth:signup'
+      WHERE e.organization_id = ${orgId} AND e.deleted_at IS NULL
+      LIMIT 1
+    `;
+    const [mot] = await sql`
+      SELECT id FROM entity_relationship_types
+      WHERE organization_id = ${orgId} AND slug = 'member_of' AND status = 'active'
+      LIMIT 1
+    `;
+    await sql`
+      INSERT INTO entity_relationships (
+        organization_id, from_entity_id, to_entity_id, relationship_type_id, created_at, updated_at
+      ) VALUES (${orgId}, ${member.id}, ${channelEntityId}, ${mot.id}, NOW(), NOW())
+    `;
+
+    const allowed = (await workspace.owner.feeds.manage({
+      action: "read_feed",
+      feed_id: feedId,
+    })) as { messages?: unknown[] };
+    expect(allowed.messages?.length).toBe(1);
   });
 
   it("does not leak a PRIVATE connection's transcript to an anonymous caller", async () => {

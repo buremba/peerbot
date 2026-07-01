@@ -11,6 +11,7 @@ export interface ChannelBindingDto {
 	platform: string;
 	channelId: string;
 	teamId?: string;
+	disposition: "reply" | "silent";
 	createdAt: number;
 }
 
@@ -339,12 +340,30 @@ export const ListChannelBindingsAction = Type.Object({
 	}),
 });
 
+/** Response disposition of a Listen behavior. 'silent' ingests the channel into
+ *  memory but never replies (not even to an @mention); 'reply' (default)
+ *  responds when mentioned / DMed. */
+const DispositionSchema = Type.Union([
+	Type.Literal("reply"),
+	Type.Literal("silent"),
+]);
+
 export const BindChannelAction = Type.Object({
 	action: Type.Literal("bind_channel"),
 	agent_id: Type.String({ description: "Agent to bind the channel to." }),
 	platform: Type.String({ description: PLATFORM_DESC }),
 	channel_id: Type.String({ description: CHANNEL_ID_DESC }),
 	team_id: Type.Optional(Type.String({ description: TEAM_ID_DESC })),
+	disposition: Type.Optional(DispositionSchema),
+});
+
+export const UpdateChannelBindingAction = Type.Object({
+	action: Type.Literal("update_channel_binding"),
+	agent_id: Type.String({ description: "Agent that owns the binding." }),
+	platform: Type.String({ description: PLATFORM_DESC }),
+	channel_id: Type.String({ description: CHANNEL_ID_DESC }),
+	team_id: Type.Optional(Type.String({ description: TEAM_ID_DESC })),
+	disposition: DispositionSchema,
 });
 
 export const UnbindChannelAction = Type.Object({
@@ -503,6 +522,15 @@ export type ManageConnectionsResult =
 	  }
 	| { action: "unbind_channel"; success: true }
 	| {
+			action: "update_channel_binding";
+			success: true;
+			agent_id: string;
+			platform: string;
+			channel_id: string;
+			team_id?: string;
+			disposition: "reply" | "silent";
+	  }
+	| {
 			action: "get_channel_audience";
 			agent_id?: string;
 			connection_id?: number;
@@ -540,6 +568,7 @@ export type ConnectionsArgs =
 	| Static<typeof SetConnectorEntityLinkOverridesAction>
 	| Static<typeof ListChannelBindingsAction>
 	| Static<typeof BindChannelAction>
+	| Static<typeof UpdateChannelBindingAction>
 	| Static<typeof UnbindChannelAction>
 	| Static<typeof GetChannelAudienceAction>
 	| Static<typeof ConnectChannelDmAction>;

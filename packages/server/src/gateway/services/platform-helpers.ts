@@ -225,6 +225,9 @@ export async function resolveAgentId(params: {
   agentId: string;
   source: "binding" | "connection";
   organizationId?: string;
+  /** Response disposition of the matched binding ('reply' when routed via the
+   * connection's owning agent, which has no per-channel disposition). */
+  disposition: "reply" | "silent";
 } | null> {
   const {
     platform,
@@ -264,6 +267,7 @@ export async function resolveAgentId(params: {
         agentId: binding.agentId,
         source: "binding",
         organizationId: binding.organizationId,
+        disposition: binding.disposition,
       };
     }
   }
@@ -273,7 +277,7 @@ export async function resolveAgentId(params: {
       { agentId, platform, channelId },
       "Routing to connection's owning agent"
     );
-    return { agentId, source: "connection", organizationId };
+    return { agentId, source: "connection", organizationId, disposition: "reply" };
   }
 
   return null;

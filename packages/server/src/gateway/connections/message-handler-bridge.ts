@@ -422,6 +422,18 @@ export class MessageHandlerBridge {
       });
     }
 
+    // Silent Listen behavior: the channel binding is 'silent', so the message is
+    // ingested into memory (captured above) but the agent never replies — not
+    // even to an @mention or DM. This is the per-binding disposition, distinct
+    // from the connection-wide whole-channel capture below.
+    if (resolved.disposition === "silent") {
+      logger.info(
+        { agentId, platform, channelId },
+        "Silent binding — message ingested, no agent turn"
+      );
+      return;
+    }
+
     // Whole-channel capture mode: a subscribed (non-mention) channel message is
     // now recorded above, but should NOT trigger an agent turn — the bot mirrors
     // the channel without responding to everything. Mentions/DMs still respond.

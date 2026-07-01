@@ -27,6 +27,7 @@ import {
 } from "./manage_connections/handlers/auth-actions";
 import {
 	handleBindChannel,
+	handleUpdateChannelBinding,
 	handleConnectChannelDm,
 	handleGetChannelAudience,
 	handleListChannelBindings,
@@ -52,6 +53,7 @@ import {
 } from "./manage_connections/handlers/crud";
 import {
 	BindChannelAction,
+	UpdateChannelBindingAction,
 	ConnectAction,
 	ConnectChannelDmAction,
 	CreateAction,
@@ -121,6 +123,10 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 		handleListChannelBindings,
 	),
 	bind_channel: action(BindChannelAction, handleBindChannel),
+	update_channel_binding: action(
+		UpdateChannelBindingAction,
+		handleUpdateChannelBinding,
+	),
 	unbind_channel: action(UnbindChannelAction, handleUnbindChannel),
 	get_channel_audience: action(
 		GetChannelAudienceAction,

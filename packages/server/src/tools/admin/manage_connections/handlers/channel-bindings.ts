@@ -112,6 +112,7 @@ export async function handleListChannelBindings(
 			platform: b.platform,
 			channelId: b.channelId,
 			teamId: b.teamId,
+			disposition: b.disposition,
 			createdAt: b.createdAt,
 		})),
 	};
@@ -139,6 +140,18 @@ export async function handleBindChannel(
 		configuredBy: userId ?? undefined,
 		organizationId,
 	});
+	// A fresh binding defaults to 'reply' (NULL). Apply a non-default disposition
+	// in a follow-up write so the create upsert stays untouched.
+	if (args.disposition === "silent") {
+		await svc.updateBindingDisposition(
+			args.agent_id,
+			args.platform,
+			channelId,
+			"silent",
+			teamId,
+			organizationId,
+		);
+	}
 	logger.info(`Bound ${args.platform}/${channelId} → ${args.agent_id}`);
 	return {
 		action: "bind_channel",
@@ -147,6 +160,44 @@ export async function handleBindChannel(
 		platform: args.platform,
 		channel_id: channelId,
 		team_id: teamId,
+	};
+}
+
+/** Update a channel binding's response disposition (the Listen behavior's edit
+ *  action; owner/admin tier). */
+export async function handleUpdateChannelBinding(
+	args: Extract<ConnectionsArgs, { action: "update_channel_binding" }>,
+	ctx: ToolContext,
+): Promise<ManageConnectionsResult> {
+	const { organizationId } = ctx;
+	if (!(await assertAgentInOrg(organizationId, args.agent_id))) {
+		return { error: "Agent not found" };
+	}
+	if (!PLATFORM_RE.test(args.platform)) {
+		return { error: "Invalid platform format. Must be lowercase alphanumeric." };
+	}
+	const channelId = args.channel_id.trim();
+	if (!channelId) return { error: "Invalid channel_id" };
+	const teamId = args.team_id?.trim() || undefined;
+
+	const svc = new ChannelBindingService();
+	const ok = await svc.updateBindingDisposition(
+		args.agent_id,
+		args.platform,
+		channelId,
+		args.disposition,
+		teamId,
+		organizationId,
+	);
+	if (!ok) return { error: "Binding not found for this agent." };
+	return {
+		action: "update_channel_binding",
+		success: true,
+		agent_id: args.agent_id,
+		platform: args.platform,
+		channel_id: channelId,
+		team_id: teamId,
+		disposition: args.disposition,
 	};
 }
 

@@ -75,6 +75,7 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		// get_channel_audience are read-tier (PUBLIC_READ_ACTIONS). Each handler
 		// also fences on agent-in-org.
 		"bind_channel",
+		"update_channel_binding",
 		"unbind_channel",
 		"connect_channel_dm",
 	]),

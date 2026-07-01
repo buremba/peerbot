@@ -27,6 +27,7 @@ import { registerAutoOpenApiRoutes } from "../routes/openapi-auto.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
+import { completeSlackPendingInstall } from "../connections/slack-connection-coordinator.js";
 import { createAgentRoutes } from "../routes/public/agents.js";
 import {
   createInstallRoutes,
@@ -778,6 +779,12 @@ export function createGatewayApp(
             redirectUri,
             orgId,
           ),
+        // Marketplace / Slack-initiated installs (code, no Lobu state) → park as
+        // pending, unclaimed. Slack-only today; other providers dispatch here later.
+        completeChatPendingInstall: (provider, req, redirectUri) =>
+          provider === "slack"
+            ? completeSlackPendingInstall(req, redirectUri)
+            : Promise.resolve(null),
       }),
     );
     app.route(

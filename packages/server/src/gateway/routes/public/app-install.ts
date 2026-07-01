@@ -1762,6 +1762,22 @@ type CompleteOAuthInstall = (
 ) => Promise<{ teamId: string; teamName?: string; installationId: string }>;
 
 /**
+ * Complete a Slack-INITIATED (marketplace) install that arrives with a `code`
+ * but no Lobu-minted state: park it as a pending, unclaimed install (org-less)
+ * and return its identity so the callback can prompt the user to claim it.
+ * Returns `null` when it can't run (hosted creds unset) → caller falls through.
+ */
+type CompletePendingOAuthInstall = (
+	provider: string,
+	request: Request,
+	redirectUri: string,
+) => Promise<{
+	teamId: string;
+	teamName: string | null;
+	installerUserId: string | null;
+} | null>;
+
+/**
  * Mount the start + callback routes for ONE oauth-code-exchange connector onto
  * `router`, at the connector's `/{provider}/install` + `/{provider}/oauth_callback`
  * paths. `authorizeUrl` is the provider's declared OAuth authorize endpoint; the
@@ -1781,6 +1797,7 @@ function mountOAuthCodeExchangeRoutes(
 		): Promise<boolean>;
 		getPublicGatewayUrl?(): string | undefined;
 		complete: CompleteOAuthInstall;
+		completePendingInstall?: CompletePendingOAuthInstall;
 	},
 ): void {
 	const { connectorKey, provider, authorizeUrl } = params;
@@ -1855,11 +1872,11 @@ function mountOAuthCodeExchangeRoutes(
 	router.get(`/${provider}/oauth_callback`, async (c) => {
 		const state = c.req.query("state");
 		const code = c.req.query("code");
-		if (!state || !code) {
+		if (!code) {
 			return c.html(
 				renderOAuthErrorPage(
 					"invalid_request",
-					`The ${display} OAuth callback is missing the required state or code parameter.`,
+					`The ${display} OAuth callback is missing the required code parameter.`,
 				),
 				400,
 			);
@@ -1868,8 +1885,57 @@ function mountOAuthCodeExchangeRoutes(
 		const stateStore = oauthInstallStateStore(provider);
 		// Peek (non-destructive) before validating side-channel context so a
 		// cross-org or unauthenticated hit doesn't burn the install link.
-		const oauthState = await stateStore.peek(state);
+		const oauthState = state ? await stateStore.peek(state) : null;
 		if (!oauthState) {
+			// No Lobu-minted state → this is a Slack-INITIATED install (marketplace /
+			// "Add to Slack"), NOT one we started, so there's no org to bind to. Park
+			// it as a pending, unclaimed install and tell the user to finish by
+			// claiming it (the installer gets DMed the claim link). Only fall through
+			// to the invalid-state error when there's no pending handler or it can't
+			// run (e.g. hosted app creds unset).
+			if (params.completePendingInstall) {
+				try {
+					const pendingRedirectUri = resolveOAuthInstallCallbackUrl(
+						params.getPublicGatewayUrl?.(),
+						c.req.url,
+						provider,
+					);
+					const pending = await params.completePendingInstall(
+						provider,
+						c.req.raw,
+						pendingRedirectUri,
+					);
+					if (pending) {
+						return c.html(
+							renderOAuthSuccessPage(
+								pending.teamName || pending.teamId,
+								undefined,
+								{
+									title: `${display} added`,
+									description:
+										"Almost done — check your Slack DMs to connect this workspace to your Lobu account.",
+									details:
+										"We sent the person who installed the app a link to finish setup.",
+								},
+							),
+						);
+					}
+				} catch (error) {
+					oauthInstallLogger.error(
+						{ provider, error: String(error) },
+						"Slack-initiated (marketplace) install failed to park as pending",
+					);
+					return c.html(
+						renderOAuthErrorPage(
+							`${provider}_install_failed`,
+							error instanceof Error
+								? error.message
+								: `${display} install failed.`,
+						),
+						500,
+					);
+				}
+			}
 			return c.html(
 				renderOAuthErrorPage(
 					"invalid_state",
@@ -1906,8 +1972,10 @@ function mountOAuthCodeExchangeRoutes(
 			);
 		}
 
-		// Org check passed — atomically consume the nonce so the link can't be replayed.
-		const consumed = await stateStore.consume(state);
+		// Org check passed — atomically consume the nonce so the link can't be
+		// replayed. `oauthState` being truthy means `state` was a non-empty string
+		// (peek only ran when it was present), so the assertion is sound.
+		const consumed = await stateStore.consume(state as string);
 		if (!consumed) {
 			return c.html(
 				renderOAuthErrorPage(
@@ -2030,6 +2098,12 @@ export interface InstallEngineDeps {
 	 * registered; omit on deployments with none.
 	 */
 	completeChatInstall?: CompleteOAuthInstall;
+	/**
+	 * Park a Slack-initiated (marketplace) install — a callback with a `code` but
+	 * no Lobu-minted state — as a pending, unclaimed install. Omit on deployments
+	 * that don't support marketplace/Slack-side installs.
+	 */
+	completeChatPendingInstall?: CompletePendingOAuthInstall;
 }
 
 /**
@@ -2088,6 +2162,7 @@ export function createInstallRoutes(deps: InstallEngineDeps): Hono {
 			verifyInstallOrgAccess: deps.verifyInstallOrgAccess,
 			getPublicGatewayUrl: deps.getPublicGatewayUrl,
 			complete: deps.completeChatInstall,
+			completePendingInstall: deps.completeChatPendingInstall,
 		});
 	}
 

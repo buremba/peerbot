@@ -33,6 +33,28 @@ export interface SlackWebApi {
     botToken: string,
     channelId: string
   ): Promise<{ name: string | null; isPrivate: boolean }>;
+  /**
+   * `oauth.v2.access` — exchange an OAuth `code` for the workspace bot token +
+   * tenant/installer identity. Unlike the other methods this authenticates with
+   * the app's client id/secret (not a bot token), so it lives outside
+   * {@link slackPost}. Used by the marketplace / Slack-initiated install path,
+   * which lands at the callback with a `code` but no Lobu-minted state — we need
+   * the raw response (`authed_user`, `team`, `bot_user_id`) to park a pending
+   * install and DM the installer to claim it.
+   */
+  exchangeOAuthCode(params: {
+    clientId: string;
+    clientSecret: string;
+    code: string;
+    redirectUri: string;
+  }): Promise<{
+    botToken: string;
+    teamId: string;
+    teamName: string | null;
+    botUserId: string | null;
+    authedUserId: string | null;
+    isEnterpriseInstall: boolean;
+  }>;
 }
 
 async function slackPost(
@@ -121,6 +143,47 @@ export function createSlackWebApi(): SlackWebApi {
       return {
         name: typeof ch?.name === "string" ? ch.name : null,
         isPrivate: ch?.is_private === true,
+      };
+    },
+    async exchangeOAuthCode({ clientId, clientSecret, code, redirectUri }) {
+      const form = new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+        redirect_uri: redirectUri,
+      });
+      const res = await fetch("https://slack.com/api/oauth.v2.access", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+        },
+        body: form.toString(),
+      });
+      const json = (await res.json()) as Record<string, unknown>;
+      if (json.ok !== true) {
+        throw new Error(
+          `Slack oauth.v2.access failed: ${String(json.error ?? res.status)}`
+        );
+      }
+      const team = json.team as { id?: string; name?: string } | undefined;
+      const authedUser = json.authed_user as { id?: string } | undefined;
+      const botToken = json.access_token;
+      const teamId = team?.id;
+      if (typeof botToken !== "string" || !botToken) {
+        throw new Error("Slack oauth.v2.access returned no access_token");
+      }
+      if (typeof teamId !== "string" || !teamId) {
+        throw new Error("Slack oauth.v2.access returned no team id");
+      }
+      return {
+        botToken,
+        teamId,
+        teamName: typeof team?.name === "string" ? team.name : null,
+        botUserId:
+          typeof json.bot_user_id === "string" ? json.bot_user_id : null,
+        authedUserId:
+          typeof authedUser?.id === "string" ? authedUser.id : null,
+        isEnterpriseInstall: json.is_enterprise_install === true,
       };
     },
   };

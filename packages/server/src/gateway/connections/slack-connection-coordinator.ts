@@ -4,7 +4,9 @@ import type { AppInstallationStore } from "../../lobu/stores/app-installation-st
 import {
   getSlackInstallByTeamId,
   upsertSlackInstallByTeam,
+  writeSlackPendingInstall,
 } from "../../lobu/stores/slack-installations.js";
+import { createSlackWebApi } from "./slack-web.js";
 import type { WritableSecretStore } from "../secrets/index.js";
 import {
   getPrimedBundledMethod,
@@ -18,6 +20,64 @@ import {
 } from "./slack-platform-bridge.js";
 
 const logger = createLogger("slack-connection-coordinator");
+
+/**
+ * Complete a Slack-initiated (marketplace) install: the callback got a `code`
+ * but no Lobu-minted state, so there's no org to bind to. Exchange the code for
+ * the bot token + installer identity via `oauth.v2.access`, and park it as an
+ * UNCLAIMED `pending` install (org-less). The installer later claims the
+ * workspace by signing in with Slack. Returns the parked install's identity, or
+ * `null` when the hosted app credentials aren't configured (so the caller can
+ * fall through to the normal invalid-state rejection).
+ */
+export async function completeSlackPendingInstall(
+  request: Request,
+  redirectUri: string,
+): Promise<{
+  teamId: string;
+  teamName: string | null;
+  installerUserId: string | null;
+} | null> {
+  const method = getPrimedBundledMethod("slack", "slack");
+  const creds = method ? resolveAppInstallCredentials(method) : null;
+  if (!creds?.clientId || !creds?.clientSecret) {
+    logger.warn(
+      "Slack pending-install: hosted app credentials not configured; cannot exchange code",
+    );
+    return null;
+  }
+  const code = new URL(request.url).searchParams.get("code");
+  if (!code) return null;
+
+  const web = createSlackWebApi();
+  const result = await web.exchangeOAuthCode({
+    clientId: creds.clientId,
+    clientSecret: creds.clientSecret,
+    code,
+    redirectUri,
+  });
+  await writeSlackPendingInstall({
+    teamId: result.teamId,
+    teamName: result.teamName,
+    botUserId: result.botUserId,
+    botToken: result.botToken,
+    installerUserId: result.authedUserId,
+    isEnterpriseInstall: result.isEnterpriseInstall,
+  });
+  logger.info(
+    {
+      teamId: result.teamId,
+      installerUserId: result.authedUserId,
+      enterprise: result.isEnterpriseInstall,
+    },
+    "Slack pending-install parked (unclaimed) — awaiting claim",
+  );
+  return {
+    teamId: result.teamId,
+    teamName: result.teamName,
+    installerUserId: result.authedUserId,
+  };
+}
 
 type SlackInstallation = {
   botToken: string;

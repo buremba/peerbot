@@ -114,6 +114,26 @@ describe("streaming feed as a watcher @feed source", () => {
     return out.chat ?? [];
   }
 
+  it("a streaming @feed compiles to kind 'channel' (prompt context, not event-signed)", async () => {
+    // Regression for the complete_window FK: a channel source's rows carry
+    // channel_messages.id, which is NOT an events.id. If the source were kind
+    // 'event' its ids would be signed into the window_token content_ids and
+    // complete_window would insert them into watcher_window_events.event_id (FK
+    // to events) → break. kind 'channel' keeps them out of eventSourceNames.
+    const conn = await makeChatConnection();
+    await ensureStreamingChannelFeed({
+      connectionId: conn.id,
+      organizationId: orgId,
+      channelKey: FEED_KEY,
+    });
+    const sql = getTestDb();
+    const normalized = await normalizeWatcherSources(sql as unknown as DbClient, orgId, [
+      { name: "chat", query: `@feed:${FEED_KEY}` },
+    ]);
+    expect(normalized[0].kind).toBe("channel");
+    expect(normalized[0].query).toContain("channel_messages");
+  });
+
   it("a headless watcher reads a NON-enforced channel's transcript", async () => {
     const conn = await makeChatConnection();
     await ensureStreamingChannelFeed({

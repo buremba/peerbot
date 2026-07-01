@@ -2,7 +2,11 @@ import type { DbClient } from '../db/client';
 import { slugToRuntimeConnectionId } from '../lobu/stores/connections-projection';
 import type { WatcherSource } from '../types/watchers';
 
-export type WatcherSourceKind = 'event' | 'entity' | 'metric';
+// 'channel' is a chat-transcript source (streaming feed → channel_messages). It
+// is prompt CONTEXT, not events: its rows must never be signed as event
+// content_ids (channel_messages.id is not an events.id — complete_window links
+// content_ids into watcher_window_events.event_id, an FK to events).
+export type WatcherSourceKind = 'event' | 'entity' | 'metric' | 'channel';
 
 export type WatcherSourceRef =
   | { type: 'feed'; value: string }
@@ -218,7 +222,7 @@ async function compileRefToQuery(
   sql: DbClient,
   organizationId: string,
   ref: WatcherSourceRef
-): Promise<string | null> {
+): Promise<{ query: string | null; kind: WatcherSourceKind }> {
   switch (ref.type) {
     case 'feed': {
       const feeds = await resolveFeeds(sql, organizationId, ref.value);
@@ -241,43 +245,52 @@ async function compileRefToQuery(
         );
       }
       if (streaming.length > 0) {
-        return channelMessagesSelect(streaming);
+        // 'channel' kind → prompt context only, NOT event-id-signed (see the type).
+        return { query: channelMessagesSelect(streaming), kind: 'channel' };
       }
-      return eventSelect(`feed_id IN (${collected.map((f) => f.id).join(',')})`);
+      return {
+        query: eventSelect(`feed_id IN (${collected.map((f) => f.id).join(',')})`),
+        kind: 'event',
+      };
     }
     case 'connection': {
       const id = await resolveConnectionId(sql, organizationId, ref.value);
-      return eventSelect(`connection_id = ${id}`);
+      return { query: eventSelect(`connection_id = ${id}`), kind: 'event' };
     }
     case 'connector': {
       if (!SAFE_CONNECTOR_RE.test(ref.value)) {
         throw new Error('@connector refs must be plain connector keys');
       }
-      return eventSelect(`connector_key = ${sqlString(ref.value)}`);
+      return { query: eventSelect(`connector_key = ${sqlString(ref.value)}`), kind: 'event' };
     }
     case 'channel': {
       const raw = ref.value.startsWith('#') ? ref.value.slice(1) : ref.value;
       const channel = sqlString(raw);
       const hashChannel = sqlString(`#${raw}`);
-      return eventSelect(
-        [
-          `metadata->>'channel' IN (${channel}, ${hashChannel})`,
-          `metadata->>'channel_name' IN (${channel}, ${hashChannel})`,
-          `metadata->>'channel_id' = ${raw ? channel : "''"}`,
-          `payload_data->>'channel' IN (${channel}, ${hashChannel})`,
-          `payload_data->>'channel_name' IN (${channel}, ${hashChannel})`,
-          `payload_data->>'channel_id' = ${raw ? channel : "''"}`,
-        ].join(' OR ')
-      );
+      return {
+        query: eventSelect(
+          [
+            `metadata->>'channel' IN (${channel}, ${hashChannel})`,
+            `metadata->>'channel_name' IN (${channel}, ${hashChannel})`,
+            `metadata->>'channel_id' = ${raw ? channel : "''"}`,
+            `payload_data->>'channel' IN (${channel}, ${hashChannel})`,
+            `payload_data->>'channel_name' IN (${channel}, ${hashChannel})`,
+            `payload_data->>'channel_id' = ${raw ? channel : "''"}`,
+          ].join(' OR ')
+        ),
+        kind: 'event',
+      };
     }
     case 'entity':
-      return (
-        'SELECT id, entity_type, entity_type_id, parent_id, name, slug, metadata, created_at, updated_at ' +
-        `FROM entities WHERE entity_type = ${sqlString(ref.value)} AND deleted_at IS NULL ` +
-        'ORDER BY updated_at DESC'
-      );
+      return {
+        query:
+          'SELECT id, entity_type, entity_type_id, parent_id, name, slug, metadata, created_at, updated_at ' +
+          `FROM entities WHERE entity_type = ${sqlString(ref.value)} AND deleted_at IS NULL ` +
+          'ORDER BY updated_at DESC',
+        kind: 'entity',
+      };
     case 'metric':
-      return null;
+      return { query: null, kind: 'metric' };
   }
 }
 
@@ -374,8 +387,7 @@ export async function normalizeWatcherSources(
       normalized.push({ ...source, kind: 'event' });
       continue;
     }
-    const kind = watcherSourceKindForRef(ref);
-    const query = await compileRefToQuery(sql, organizationId, ref);
+    const { query, kind } = await compileRefToQuery(sql, organizationId, ref);
     normalized.push({
       name: source.name,
       query: query ?? source.query,

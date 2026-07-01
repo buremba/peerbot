@@ -70,6 +70,13 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"update_connector_default_config",
 		"update_connector_default_repair_agent",
 		"set_connector_entity_link_overrides",
+		// Channel management (folded from the retired /channels routes): mutating
+		// a binding / wiring a DM is administration. list_channel_bindings +
+		// get_channel_audience are read-tier (PUBLIC_READ_ACTIONS). Each handler
+		// also fences on agent-in-org.
+		"bind_channel",
+		"unbind_channel",
+		"connect_channel_dm",
 	]),
 	manage_feeds: new Set([
 		"create_feed",
@@ -128,9 +135,15 @@ const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	list_watchers: null,
 	manage_entity: new Set(["list", "get", "list_links"]),
 	manage_entity_schema: new Set(["list", "get", "audit", "list_rules"]),
-	manage_connections: new Set(["list", "list_connector_groups", "get"]),
+	manage_connections: new Set([
+		"list",
+		"list_connector_groups",
+		"get",
+		"list_channel_bindings",
+		"get_channel_audience",
+	]),
 	manage_catalog: new Set(["list_catalog", "list_installed"]),
-	manage_feeds: new Set(["list_feeds", "get_feed"]),
+	manage_feeds: new Set(["list_feeds", "get_feed", "read_channel_feed"]),
 	manage_auth_profiles: new Set(["list_auth_profiles"]),
 	manage_operations: new Set(["list_available", "list_runs", "get_run"]),
 	manage_watchers: new Set([

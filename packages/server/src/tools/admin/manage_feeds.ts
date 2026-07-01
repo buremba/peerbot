@@ -15,9 +15,11 @@
 import { getErrorMessage, parseJsonObject } from '@lobu/core';
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb, pgBigintArray } from '../../db/client';
+import { readChannelTranscript } from '../../gateway/connections/channel-transcript';
 import type { Env } from '../../index';
 import { getAuthProfileById } from '../../utils/auth-profiles';
 import { nextRunAt, validateSchedule } from '../../utils/cron';
+import { getWorkspaceRole } from '../../utils/organization-access';
 import { recordChangeEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../../utils/oauth-connection-state';
@@ -98,6 +100,16 @@ const TriggerFeedAction = Type.Object({
   feed_id: Type.Number({ description: 'Feed ID to trigger sync for' }),
 });
 
+// A streaming (chat-channel) feed has no sync runs — its content is the live
+// transcript in `channel_messages`, not embedded `events`. This reads that
+// transcript through the same primitive read_conversation uses, so the feed
+// detail can render the conversation instead of a runs table.
+const ReadChannelFeedAction = Type.Object({
+  action: Type.Literal('read_channel_feed'),
+  feed_id: Type.Number({ description: 'Streaming chat-channel feed ID' }),
+  limit: Type.Optional(Type.Number({ description: 'Max messages (default 50)' })),
+});
+
 // ============================================
 // Result Types
 // ============================================
@@ -110,7 +122,16 @@ type ManageFeedsResult =
   | { action: 'update_feed'; feed: any }
   | { action: 'delete_feed'; deleted: true; feed_id: number }
   | { action: 'trigger_feed'; triggered: true; run_id: number; feed_id: number }
-  | { action: 'trigger_feed'; message: string };
+  | { action: 'trigger_feed'; message: string }
+  | {
+      action: 'read_channel_feed';
+      messages: Array<{
+        timestamp: string;
+        user: string;
+        text: string;
+        isBot: boolean;
+      }>;
+    };
 
 // ============================================
 // Main Function (Action Router)
@@ -123,6 +144,7 @@ const manageFeedsTool = defineActionTool('manage_feeds', {
   update_feed: action(UpdateFeedAction, handleUpdateFeed),
   delete_feed: action(DeleteFeedAction, handleDeleteFeed),
   trigger_feed: action(TriggerFeedAction, handleTriggerFeed),
+  read_channel_feed: action(ReadChannelFeedAction, handleReadChannelFeed),
 });
 
 export const ManageFeedsSchema = manageFeedsTool.schema;
@@ -229,6 +251,55 @@ async function handleListFeeds(
 
   const rows = await query;
   return { action: 'list_feeds', feeds: rows, total: rows.length, limit, offset };
+}
+
+async function handleReadChannelFeed(
+  args: Static<typeof ReadChannelFeedAction>,
+  ctx: ToolContext
+): Promise<ManageFeedsResult> {
+  const sql = getDb();
+  const { organizationId, userId } = ctx;
+  // Connection-visibility gate (mirrors manage_connections crud handleList/Get):
+  // read_channel_feed is in PUBLIC_READ_ACTIONS, so a transcript is content an
+  // anonymous caller could otherwise pull by guessing a feed_id. Anonymous sees
+  // org-visible connections only; a non-admin member sees org + their own
+  // private connections; owners/admins see all.
+  let visibilityFilter = sql``;
+  if (!userId) {
+    visibilityFilter = sql`AND c.visibility = 'org'`;
+  } else {
+    const role = await getWorkspaceRole(sql, organizationId, userId);
+    if (role !== 'owner' && role !== 'admin') {
+      visibilityFilter = sql`AND (c.visibility = 'org' OR c.created_by = ${userId})`;
+    }
+  }
+  // Resolve the feed's connection slug + channel key, then map to the runtime
+  // ids channel_messages is keyed by: the BYO namespace is stripped off the
+  // slug (mirror of resolveBoundChannelRows), and the platform prefix
+  // (`slack:`) is stripped off feed_key to the bare channel id capture stores.
+  const rows = (await sql`
+    SELECT f.feed_key, c.slug
+    FROM feeds f
+    JOIN connections c ON c.id = f.connection_id
+    WHERE f.id = ${args.feed_id}
+      AND f.organization_id = ${organizationId}
+      AND f.deleted_at IS NULL
+      AND c.deleted_at IS NULL
+      ${visibilityFilter}
+  `) as Array<{ feed_key: string; slug: string }>;
+  if (rows.length === 0) return { error: 'Feed not found' };
+  const { feed_key, slug } = rows[0];
+  const connectionId = slug.startsWith('agentconn-') ? slug.slice(10) : slug;
+  const channelId = feed_key.includes(':')
+    ? feed_key.slice(feed_key.indexOf(':') + 1)
+    : feed_key;
+  const messages = await readChannelTranscript(
+    organizationId,
+    connectionId,
+    channelId,
+    args.limit ?? 50
+  );
+  return { action: 'read_channel_feed', messages };
 }
 
 async function handleGetFeed(

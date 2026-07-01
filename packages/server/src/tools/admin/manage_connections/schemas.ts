@@ -3,7 +3,16 @@
  */
 
 import { type Static, Type } from "@sinclair/typebox";
+import type { ChannelAudience } from "../../../authz/audience";
 import { PaginationFields } from "../schemas/common-fields";
+
+/** A channel binding as returned by list_channel_bindings. */
+export interface ChannelBindingDto {
+	platform: string;
+	channelId: string;
+	teamId?: string;
+	createdAt: number;
+}
 
 // ============================================
 // Schema
@@ -310,6 +319,68 @@ export const UpdateConnectorDefaultRepairAgentAction = Type.Object({
 });
 
 // ============================================
+// Channel-binding actions (folded from the retired /channels HTTP routes).
+// A chat channel is bound to an agent through its connection; these actions
+// live under manage_connections so channel management lives on the connections
+// surface, not a bespoke channel island.
+// ============================================
+
+const PLATFORM_DESC =
+	"Chat platform key (lowercase, e.g. 'slack', 'telegram').";
+const CHANNEL_ID_DESC =
+	"Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').";
+const TEAM_ID_DESC =
+	"Provider tenant id (Slack team_id, …); omit for tenantless platforms.";
+
+export const ListChannelBindingsAction = Type.Object({
+	action: Type.Literal("list_channel_bindings"),
+	agent_id: Type.String({
+		description: "Agent whose channel bindings to list.",
+	}),
+});
+
+export const BindChannelAction = Type.Object({
+	action: Type.Literal("bind_channel"),
+	agent_id: Type.String({ description: "Agent to bind the channel to." }),
+	platform: Type.String({ description: PLATFORM_DESC }),
+	channel_id: Type.String({ description: CHANNEL_ID_DESC }),
+	team_id: Type.Optional(Type.String({ description: TEAM_ID_DESC })),
+});
+
+export const UnbindChannelAction = Type.Object({
+	action: Type.Literal("unbind_channel"),
+	agent_id: Type.String({ description: "Agent to unbind the channel from." }),
+	platform: Type.String({ description: PLATFORM_DESC }),
+	channel_id: Type.String({ description: CHANNEL_ID_DESC }),
+	team_id: Type.Optional(Type.String({ description: TEAM_ID_DESC })),
+});
+
+export const GetChannelAudienceAction = Type.Object({
+	action: Type.Literal("get_channel_audience"),
+	agent_id: Type.Optional(
+		Type.String({
+			description:
+				"Agent whose bound channels' recall audience to read (per-agent view).",
+		}),
+	),
+	connection_id: Type.Optional(
+		Type.Number({
+			description:
+				"Connection whose channels' recall audience to read (connection-centric view, across every agent that bound a channel through it). Each audience carries the binding's agent. Provide exactly one of agent_id / connection_id.",
+		}),
+	),
+});
+
+export const ConnectChannelDmAction = Type.Object({
+	action: Type.Literal("connect_channel_dm"),
+	agent_id: Type.String({ description: "Agent to wire the caller's DM to." }),
+	external_id: Type.String({
+		description:
+			"Managed Slack install external id (the slackinst-… handle) to open a DM through.",
+	}),
+});
+
+// ============================================
 // Result Types
 // ============================================
 
@@ -416,7 +487,34 @@ export type ManageConnectionsResult =
 	| ConnectorActionOk<
 			"set_connector_entity_link_overrides",
 			{ overrides: Record<string, unknown> | null }
-	  >;
+	  >
+	| {
+			action: "list_channel_bindings";
+			agent_id: string;
+			bindings: ChannelBindingDto[];
+	  }
+	| {
+			action: "bind_channel";
+			success: true;
+			agent_id: string;
+			platform: string;
+			channel_id: string;
+			team_id?: string;
+	  }
+	| { action: "unbind_channel"; success: true }
+	| {
+			action: "get_channel_audience";
+			agent_id?: string;
+			connection_id?: number;
+			audiences: ChannelAudience[];
+	  }
+	| {
+			action: "connect_channel_dm";
+			success: true;
+			platform: "slack";
+			channel_id: string;
+			team_id: string | null;
+	  };
 
 /**
  * Union of all action variants. Defined from the variants directly (rather
@@ -439,4 +537,9 @@ export type ConnectionsArgs =
 	| Static<typeof UpdateConnectorAuthAction>
 	| Static<typeof UpdateConnectorDefaultConfigAction>
 	| Static<typeof UpdateConnectorDefaultRepairAgentAction>
-	| Static<typeof SetConnectorEntityLinkOverridesAction>;
+	| Static<typeof SetConnectorEntityLinkOverridesAction>
+	| Static<typeof ListChannelBindingsAction>
+	| Static<typeof BindChannelAction>
+	| Static<typeof UnbindChannelAction>
+	| Static<typeof GetChannelAudienceAction>
+	| Static<typeof ConnectChannelDmAction>;

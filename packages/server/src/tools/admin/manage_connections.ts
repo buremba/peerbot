@@ -25,6 +25,13 @@ import {
 	handleReauthenticate,
 	handleTest,
 } from "./manage_connections/handlers/auth-actions";
+import {
+	handleBindChannel,
+	handleConnectChannelDm,
+	handleGetChannelAudience,
+	handleListChannelBindings,
+	handleUnbindChannel,
+} from "./manage_connections/handlers/channel-bindings";
 import { handleConnect } from "./manage_connections/handlers/connect";
 import {
 	handleInstallConnector,
@@ -44,17 +51,22 @@ import {
 	handleUpdate,
 } from "./manage_connections/handlers/crud";
 import {
+	BindChannelAction,
 	ConnectAction,
+	ConnectChannelDmAction,
 	CreateAction,
 	DeleteAction,
 	GetAction,
+	GetChannelAudienceAction,
 	InstallConnectorAction,
 	ListConnectorGroupsAction,
 	ListAction,
+	ListChannelBindingsAction,
 	ReauthenticateAction,
 	SetConnectorEntityLinkOverridesAction,
 	TestAction,
 	ToggleConnectorLoginAction,
+	UnbindChannelAction,
 	UninstallConnectorAction,
 	UpdateAction,
 	UpdateConnectorAuthAction,
@@ -104,6 +116,17 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 		SetConnectorEntityLinkOverridesAction,
 		handleSetConnectorEntityLinkOverrides,
 	),
+	list_channel_bindings: action(
+		ListChannelBindingsAction,
+		handleListChannelBindings,
+	),
+	bind_channel: action(BindChannelAction, handleBindChannel),
+	unbind_channel: action(UnbindChannelAction, handleUnbindChannel),
+	get_channel_audience: action(
+		GetChannelAudienceAction,
+		handleGetChannelAudience,
+	),
+	connect_channel_dm: action(ConnectChannelDmAction, handleConnectChannelDm),
 });
 
 export const ManageConnectionsSchema = manageConnectionsTool.schema;

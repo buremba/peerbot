@@ -53,7 +53,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -97,6 +97,14 @@ jobs:
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d lobu_test \
             -c "CREATE EXTENSION IF NOT EXISTS vector"
 
+      - name: Raise maintenance_work_mem for ivfflat index builds
+        # The baseline idx_events_embedding ivfflat index (lists=1000) needs
+        # ~150MB to build; default 64MB fails. Service containers can't override
+        # the postgres command, so set it system-wide + reload.
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres \
+            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()"
+
       - name: core security tests (encryption, worker-auth)
         run: |
           bun test \
@@ -127,7 +135,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -181,6 +189,14 @@ jobs:
           done
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d lobu_test \
             -c "CREATE EXTENSION IF NOT EXISTS vector"
+
+      - name: Raise maintenance_work_mem for ivfflat index builds
+        # The baseline idx_events_embedding ivfflat index (lists=1000) needs
+        # ~150MB to build; default 64MB fails. Service containers can't override
+        # the postgres command, so set it system-wide + reload.
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres \
+            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()"
 
       - name: webhook-signatures (WS1)
         working-directory: packages/server

@@ -267,7 +267,7 @@ jobs:
     timeout-minutes: 25
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -344,6 +344,16 @@ jobs:
           done
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d lobu_test \
             -c "CREATE EXTENSION IF NOT EXISTS vector"
+
+      - name: Raise maintenance_work_mem for ivfflat index builds
+        # The baseline idx_events_embedding ivfflat index (lists=1000) needs
+        # ~150MB to build; the default 64MB fails with "memory required is
+        # 150 MB". Service containers can't override the postgres command, so
+        # set it at the system level + reload (reload-context GUC, so fresh
+        # sessions pick it up).
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres \
+            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()"
 
       - name: server integration suite (vitest under Node)
         working-directory: packages/server
@@ -496,7 +506,7 @@ jobs:
     timeout-minutes: 10
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -600,6 +610,21 @@ jobs:
           curl -fsSL -o /usr/local/bin/dbmate \
             https://github.com/amacneil/dbmate/releases/download/v2.21.0/dbmate-linux-amd64
           chmod +x /usr/local/bin/dbmate
+
+      - name: Raise maintenance_work_mem for ivfflat index builds
+        # The baseline idx_events_embedding ivfflat index (lists=1000) needs
+        # ~150MB to build; the default 64MB fails with "memory required is
+        # 150 MB". Service containers can't override the postgres command, so
+        # set it at the system level + reload (reload-context GUC, so dbmate's
+        # fresh sessions pick it up). Wait for readiness first (this job has no
+        # health-wait step of its own).
+        run: |
+          for i in {1..20}; do
+            if pg_isready -h 127.0.0.1 -p 5432 -U postgres; then break; fi
+            sleep 1
+          done
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5432 -U postgres \
+            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()"
 
       - name: Apply all migrations against an empty Postgres
         env:

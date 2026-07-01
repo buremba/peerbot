@@ -44,6 +44,12 @@ export interface AudienceMember {
 
 export interface ChannelAudience {
   connectionId: string;
+  /** The agent that bound this channel + its display name. Populated by the
+   *  connection-centric audience view (manage_connections.get_channel_audience
+   *  with connection_id) so the connections surface can tag each channel with
+   *  the agent that bound it. Null/absent in the per-agent view. */
+  agentId?: string | null;
+  agentName?: string | null;
   platform: string;
   /** As stored on the binding (may be platform-prefixed, e.g. `slack:C…`). */
   channelId: string;

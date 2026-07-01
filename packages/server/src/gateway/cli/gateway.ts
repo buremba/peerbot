@@ -45,7 +45,10 @@ import {
   createConnectionWebhookRoutes,
 } from "../routes/public/connections.js";
 import { createPublicFileRoutes } from "../routes/public/files.js";
-import { resolveInstallOrgId } from "../routes/public/install-org.js";
+import {
+  resolveInstallOrgId,
+  verifyInstallOrgAccess,
+} from "../routes/public/install-org.js";
 import { createLandingRoutes } from "../routes/public/landing.js";
 import {
   type AuthProvider,
@@ -760,6 +763,7 @@ export function createGatewayApp(
       createInstallRoutes({
         installationStore: createPostgresAppInstallationStore(),
         resolveInstallOrgId,
+        verifyInstallOrgAccess,
         getPublicGatewayUrl: () => coreServices.getPublicGatewayUrl(),
         integrations: (bundledIntegrationConnectors ?? []).map((integration) => ({
           connectorKey: integration.connectorKey,

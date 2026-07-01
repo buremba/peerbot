@@ -121,6 +121,12 @@ describe("slack OAuth install routes", () => {
         const fromCtx = c.get("organizationId" as never) as string | null | undefined;
         return typeof fromCtx === "string" && fromCtx.length > 0 ? fromCtx : null;
       },
+      // Membership stand-in: the completing user is a member of the target org
+      // iff their session-context org equals it. Drives the cross-org 403 test.
+      verifyInstallOrgAccess: async (c, organizationId) => {
+        const fromCtx = c.get("organizationId" as never) as string | null | undefined;
+        return typeof fromCtx === "string" && fromCtx === organizationId;
+      },
       getPublicGatewayUrl: () => "https://gateway.example.com",
       // The generic engine mounts /slack/install + /slack/oauth_callback from
       // this declared oauth-code-exchange integration; completion is dispatched

@@ -55,6 +55,11 @@ export async function listConnectionFeeds(
 				SELECT c.id FROM connections c
 				WHERE c.organization_id = ${organizationId}
 					AND c.slug = ${slug}
+					-- Only the LIVE row: a slug is unique per org among non-deleted
+					-- connections (connections_org_slug_unique), but a soft-deleted
+					-- row keeps the slug — without this the scalar subquery could
+					-- match several rows and error (500).
+					AND c.deleted_at IS NULL
 			)
 			AND f.deleted_at IS NULL
 		ORDER BY COALESCE(f.last_sync_at, f.updated_at) DESC

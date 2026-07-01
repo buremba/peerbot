@@ -12,15 +12,16 @@ async function seedConnection(opts: {
 	orgId: string;
 	userId: string;
 	slug: string;
+	deletedAt?: Date | null;
 }): Promise<number> {
 	const sql = getTestDb();
 	const [row] = await sql`
 		INSERT INTO connections (
 			organization_id, connector_key, slug, display_name, status,
-			created_by, visibility, created_at, updated_at
+			created_by, visibility, created_at, updated_at, deleted_at
 		) VALUES (
 			${opts.orgId}, 'slack', ${opts.slug}, ${`Conn ${opts.slug}`}, 'active',
-			${opts.userId}, 'org', NOW(), NOW()
+			${opts.userId}, 'org', NOW(), NOW(), ${opts.deletedAt ?? null}
 		)
 		RETURNING id
 	`;
@@ -129,5 +130,21 @@ describe("listConnectionFeeds", () => {
 	it("returns nothing for a connection in a different org scope", async () => {
 		const feeds = await listConnectionFeeds("org-does-not-exist", runtimeConnId);
 		expect(feeds).toHaveLength(0);
+	});
+
+	it("resolves the live connection when a soft-deleted row shares its slug", async () => {
+		// A soft-deleted connection keeps its slug (the unique index only covers
+		// live rows), so the slug resolver could match both and error. It must
+		// still resolve the single live row's feeds.
+		const user = await createTestUser({ email: "feeds-dup@test.com" });
+		await seedConnection({
+			orgId,
+			userId: user.id,
+			slug: runtimeConnId,
+			deletedAt: new Date(),
+		});
+
+		const feeds = await listConnectionFeeds(orgId, runtimeConnId);
+		expect(feeds).toHaveLength(2);
 	});
 });

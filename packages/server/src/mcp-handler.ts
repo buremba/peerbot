@@ -124,10 +124,7 @@ const formatRef = { rawJson: false };
  * `src/mcp-apps/<dir>` build — no gateway change.
  */
 const MCP_APP_RESOURCES: Record<string, { name: string; appDir: string }> = {
-  'ui://lobu/approve': { name: 'Approve agent change', appDir: 'approval' },
-  'ui://lobu/question': { name: 'Answer question', appDir: 'question' },
-  'ui://lobu/grant': { name: 'Approve tool', appDir: 'grant' },
-  'ui://lobu/link': { name: 'Open link', appDir: 'link-button' },
+  'ui://lobu/interaction': { name: 'Interaction', appDir: 'interaction' },
 };
 
 /**
@@ -254,32 +251,13 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
       const text = formatRef.rawJson
         ? JSON.stringify(result)
         : formatToolResult(name, result, { includeRawJson: false });
-      // A pending agent-change approval carries an MCP App UI: point the host at
-      // the `ui://lobu/approve` resource and hand it the proposal, so it renders
-      // the same ApprovalCard shown in our chat, with Approve/Reject brokered
-      // back as a `manage_operations` tools/call (host consent-gated).
-      const pending =
-        result != null &&
-        typeof result === 'object' &&
-        (result as { status?: unknown }).status === 'pending_approval';
-      if (pending) {
-        const r = result as {
-          run_id?: number;
-          action?: string | null;
-          proposal?: unknown;
-          current?: unknown;
-        };
-        return {
-          content: [{ type: 'text' as const, text }],
-          _meta: { ui: { resourceUri: 'ui://lobu/approve' } },
-          structuredContent: {
-            runId: r.run_id,
-            action: r.action ?? null,
-            proposal: r.proposal ?? null,
-            current: r.current ?? null,
-          },
-        };
-      }
+      // NOTE: our own SPA renders interactions (incl. the pending agent-change
+      // approval) through the `ui://lobu/interaction` MCP App, but it builds the
+      // `{title, blocks, actions}` view CLIENT-side from the SSE card payload —
+      // it does not consume this tool result's `_meta`. Rendering for EXTERNAL
+      // MCP hosts (Slack/Claude) needs the SERVER to author that view and stamp
+      // it here; that is a deliberate follow-up. Until then we return plain text
+      // rather than pointing an external host at a bundle it can't feed.
       return { content: [{ type: 'text' as const, text }] };
     } catch (error: any) {
       return {

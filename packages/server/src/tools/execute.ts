@@ -62,6 +62,12 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     : c.var.session?.userId ? 'session'
     : 'anonymous';
   const scopedToOrg = !!c.req.param('orgSlug');
+  // Blanket internal-tool access: the REST proxy (non-`/mcp`) and the worker
+  // memory-direct-auth path. Computed here because `adminTools` below must NOT
+  // narrow a caller that already has it (see the note there).
+  const allowInternalTools =
+    !pathname.startsWith('/mcp') ||
+    c.req.header('x-lobu-memory-direct-auth') === '1';
 
   return {
     organizationId: c.var.organizationId,
@@ -89,12 +95,29 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     baseUrl: getConfiguredPublicOrigin() ?? '',
     scopedToOrg,
     allowCrossOrg: tokenType === 'oauth' && !scopedToOrg,
-    allowInternalTools:
-      !pathname.startsWith('/mcp') || c.req.header('x-lobu-memory-direct-auth') === '1',
-    // Builder admin-tool grant: carried from the verified worker token through
-    // mcpAuthInfo (see multi-tenant worker direct-auth). Lets the system agent
-    // call its allowlisted internal tools even on the /mcp path.
-    adminTools: mcpAuthInfo?.adminTools ?? null,
+    allowInternalTools,
+    // Builder admin-tool grant. Verified-worker first:
+    //   1. the verified worker token's per-turn allowlist (the builder/system
+    //      agent run), carried through mcpAuthInfo — its narrow list wins; else
+    //   2. an external MCP caller (Slackbot/Claude/PAT) whose token holds the
+    //      `mcp:admin` scope — surface the builder tools so an approved admin
+    //      can drive agent management + approvals over MCP (e.g. the in-Slack
+    //      "@lobu build an agent" flow and its approval callback).
+    // Check `mcpAuthInfo.scopes` (real grants), NOT `scopes` above: session/
+    // anonymous callers carry the `*` sentinel, which would bypass the scope
+    // check. CRITICAL: only derive this list when `allowInternalTools` is FALSE
+    // (the external `/mcp` path). A non-empty allowlist is the LIMIT in
+    // `checkToolAccess`, so deriving it for a caller that ALREADY has blanket
+    // internal-tool access (worker direct-auth, admin REST proxy — both
+    // `allowInternalTools === true`) would NARROW them to just these two tools,
+    // not widen. The owner/admin-role + `mcp:admin` gate still fires underneath.
+    adminTools:
+      mcpAuthInfo?.adminTools ??
+      (!allowInternalTools &&
+      mcpAuthInfo != null &&
+      hasRequiredMcpScope('admin', mcpAuthInfo.scopes ?? [])
+        ? ['manage_agents', 'manage_operations']
+        : null),
   };
 }
 

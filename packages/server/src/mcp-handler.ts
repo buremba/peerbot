@@ -15,7 +15,12 @@ import { randomUUID } from 'node:crypto';
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import type { Context } from 'hono';
 import { bindRequestAbortToStream, type AbortableStream } from './events/sse-abort-bridge';
 import { OAuthClientsStore } from './auth/oauth/clients';
@@ -23,6 +28,7 @@ import { isPublicReadable } from './auth/tool-access';
 import { createDbClientFromEnv } from './db/client';
 import type { Env } from './index';
 import { agentExistsInOrganization, isValidAgentId, touchAgentLastUsed } from './lobu/stores/postgres-stores';
+import { readMcpAppBundle } from './utils/mcp-app-bundle';
 import { McpSessionStore, type PersistedMcpSession } from './mcp-session-store';
 import {
   clearInMemoryMcpSessionsForTests as clearInMemoryMcpSessionsForTestsShared,
@@ -109,11 +115,35 @@ export async function revokeInMemoryMcpSessionsForClient(
 /** Shared mutable ref so handleMcp can signal the format to tool handlers. */
 const formatRef = { rawJson: false };
 
+/**
+ * MCP Apps UI resources (interactive iframe payloads a host renders in a
+ * sandboxed iframe). Keyed by `ui://` uri → the built bundle's app dir under
+ * owletto's `dist-mcp-apps/`. Served over `resources/read` + the asset route;
+ * our own SPA fetches the one bundle and streams it a `{title, blocks, actions}`
+ * view it builds CLIENT-side. (Pointing an external MCP host at a bundle via a
+ * tool result's `_meta.ui.resourceUri` needs the SERVER to author that view —
+ * a deliberate follow-up, so we don't stamp it today.) Adding an app = one
+ * entry + its owletto `src/mcp-apps/<dir>` build — no gateway change.
+ */
+const MCP_APP_RESOURCES: Record<string, { name: string; appDir: string }> = {
+  'ui://lobu/interaction': { name: 'Interaction', appDir: 'interaction' },
+};
+
+/**
+ * Built MCP App dirs, derived from the registry above. The asset route
+ * (`/mcp-apps/:app/index.html`) validates its path param against this set so it
+ * only ever serves a registered bundle — an untrusted `:app` can't be used to
+ * probe the filesystem.
+ */
+export const MCP_APP_DIRS: ReadonlySet<string> = new Set(
+  Object.values(MCP_APP_RESOURCES).map((r) => r.appDir)
+);
+
 function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
   const server = new Server(
     { name: 'lobu-mcp', version: '0.2.0' },
     {
-      capabilities: { tools: {} },
+      capabilities: { tools: {}, resources: {} },
       ...(authCtx.instructions && { instructions: authCtx.instructions }),
     }
   );
@@ -182,6 +212,32 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
     return { tools: allTools };
   });
 
+  // resources/list — advertise the MCP App UI resources (interactive iframe
+  // surfaces a host renders in place of flat text; see MCP Apps).
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: Object.entries(MCP_APP_RESOURCES).map(([uri, meta]) => ({
+      uri,
+      name: meta.name,
+      mimeType: 'text/html',
+    })),
+  }));
+
+  // resources/read — return the built bundle HTML for a `ui://` app resource.
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const uri = request.params.uri;
+    const app = MCP_APP_RESOURCES[uri];
+    if (!app) throw new Error(`Unknown resource: ${uri}`);
+    const html = await readMcpAppBundle(app.appDir);
+    if (html == null) {
+      throw new Error(
+        `MCP App bundle not built for ${uri} (run owletto build:mcp-apps)`
+      );
+    }
+    return {
+      contents: [{ uri, mimeType: 'text/html', text: html }],
+    };
+  });
+
   // tools/call — access control + execution + formatting
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -197,6 +253,13 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
       const text = formatRef.rawJson
         ? JSON.stringify(result)
         : formatToolResult(name, result, { includeRawJson: false });
+      // NOTE: our own SPA renders interactions (incl. the pending agent-change
+      // approval) through the `ui://lobu/interaction` MCP App, but it builds the
+      // `{title, blocks, actions}` view CLIENT-side from the SSE card payload —
+      // it does not consume this tool result's `_meta`. Rendering for EXTERNAL
+      // MCP hosts (Slack/Claude) needs the SERVER to author that view and stamp
+      // it here; that is a deliberate follow-up. Until then we return plain text
+      // rather than pointing an external host at a bundle it can't feed.
       return { content: [{ type: 'text' as const, text }] };
     } catch (error: any) {
       return {

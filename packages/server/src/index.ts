@@ -58,7 +58,7 @@ import {
 	claimSlackPendingInstall,
 	resolveSlackPendingByTenant,
 } from "./lobu/stores/slack-installations";
-import { handleMcp } from "./mcp-handler";
+import { handleMcp, MCP_APP_DIRS } from "./mcp-handler";
 import {
 	restDeleteNotification,
 	restGetUnreadCount,
@@ -96,6 +96,7 @@ import { entityLinkMatchSql } from "./utils/content-search";
 import { isValidFrameAncestor } from "./utils/csp";
 import { errorMessage } from "./utils/errors";
 import logger from "./utils/logger";
+import { readMcpAppBundle } from "./utils/mcp-app-bundle";
 import { generateOpenAPISpec } from "./utils/openapi-generator";
 import {
 	extractSubdomainOrg,
@@ -1697,6 +1698,25 @@ app.all("/mcp", handleMcp);
 app.all("/mcp/", handleMcp);
 app.all("/mcp/:orgSlug", handleMcp);
 app.all("/mcp/:orgSlug/", handleMcp);
+
+// MCP App bundle — asset-only static delivery (NOT an approval endpoint). Serves
+// the self-contained `ui://` iframe payload built by owletto `build:mcp-apps`
+// (dist-mcp-apps/interaction/index.html) so our own SPA can host every
+// interactive interaction (approval, question, tool grant, link) in a sandboxed
+// iframe. There is no action logic here — each action rides an MCP `tools/call`
+// brokered by the SPA host bridge. The same `readMcpAppBundle` resolver backs
+// the MCP `resources/read` path for external hosts.
+app.get("/mcp-apps/:app/index.html", async (c) => {
+	const app_ = c.req.param("app");
+	// Only serve a bundle the MCP App registry declares — never an arbitrary
+	// path param.
+	if (!MCP_APP_DIRS.has(app_)) return c.notFound();
+	const html = await readMcpAppBundle(app_);
+	if (html == null) return c.notFound();
+	c.header("Content-Type", "text/html; charset=utf-8");
+	c.header("Cache-Control", "no-cache");
+	return c.body(html);
+});
 
 /**
  * Catch-all route

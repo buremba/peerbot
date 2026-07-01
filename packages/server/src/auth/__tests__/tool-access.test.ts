@@ -218,6 +218,77 @@ describe('extractAuthContext scopes (F8 source side)', () => {
   });
 });
 
+describe('extractAuthContext adminTools — builder-tool grant must only widen', () => {
+  // A non-empty `adminTools` is the LIMIT in checkToolAccess (it overrides
+  // `allowInternalTools`). So the scope-derived builder-tool allowlist may only
+  // be handed to a caller that does NOT already have blanket internal access —
+  // otherwise it NARROWS them (regression: worker direct-auth + admin REST
+  // proxy both carry `mcp:admin` AND `allowInternalTools === true`).
+  function ctxFor(opts: {
+    scopes?: string[];
+    adminTools?: string[] | null;
+    url?: string;
+    directAuth?: boolean;
+  }) {
+    const fake = {
+      req: {
+        url: opts.url ?? 'http://localhost/mcp/acme',
+        param: (_k: string) => undefined,
+        header: (k: string) =>
+          k === 'x-lobu-memory-direct-auth' && opts.directAuth ? '1' : undefined,
+      },
+      var: {
+        mcpAuthInfo: {
+          userId: 'u1',
+          scopes: opts.scopes,
+          adminTools: opts.adminTools ?? null,
+        },
+        mcpIsAuthenticated: true,
+        organizationId: 'org_1',
+      },
+    } as unknown as Parameters<typeof extractAuthContext>[0];
+    return extractAuthContext(fake);
+  }
+
+  it('surfaces the two builder tools to an external /mcp admin caller (widens)', () => {
+    const ctx = ctxFor({ scopes: ['mcp:admin'] });
+    expect(ctx.allowInternalTools).toBe(false);
+    expect(ctx.adminTools).toEqual(['manage_agents', 'manage_operations']);
+  });
+
+  it('does NOT derive an allowlist for a worker direct-auth admin caller (would narrow)', () => {
+    const ctx = ctxFor({
+      scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+      directAuth: true,
+    });
+    expect(ctx.allowInternalTools).toBe(true);
+    expect(ctx.adminTools).toBeNull();
+  });
+
+  it('does NOT derive an allowlist for an admin caller on the REST proxy (would narrow)', () => {
+    const ctx = ctxFor({
+      scopes: ['mcp:admin'],
+      url: 'http://localhost/api/v1/tools/manage_watchers',
+    });
+    expect(ctx.allowInternalTools).toBe(true);
+    expect(ctx.adminTools).toBeNull();
+  });
+
+  it('carries a builder worker per-run allowlist through unchanged', () => {
+    const ctx = ctxFor({
+      scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+      adminTools: ['manage_agents'],
+      directAuth: true,
+    });
+    expect(ctx.adminTools).toEqual(['manage_agents']);
+  });
+
+  it('leaves adminTools null for a non-admin /mcp caller', () => {
+    const ctx = ctxFor({ scopes: ['mcp:read', 'mcp:write'] });
+    expect(ctx.adminTools).toBeNull();
+  });
+});
+
 describe('hasRequiredMcpScope — fail closed on null (F8)', () => {
   // SECURITY INVARIANT: a null/undefined scope set is an under-specified
   // caller, NOT a grant of full access. Before the fix this returned `true`,

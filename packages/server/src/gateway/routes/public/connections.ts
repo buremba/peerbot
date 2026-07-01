@@ -25,7 +25,7 @@ import {
   ErrorResponseSchema,
   errorResponses,
 } from "../shared/openapi-responses.js";
-import { listConversationFeeds } from "../../../feeds/conversation-feeds.js";
+import { listConnectionFeeds } from "../../../feeds/connection-feeds.js";
 
 const logger = createLogger("connection-routes");
 const TAG = "Connections";
@@ -166,13 +166,15 @@ const GetConnectionRoute = createRoute({
 
 const FeedSpecSchema = z.object({
   id: z.string(),
-  sourceKind: z.enum(["chat-channel", "virtual-live-dataset", "collected"]),
+  feedKey: z.string(),
+  kind: z.enum(["collected", "streaming", "virtual"]),
   connectionId: z.string(),
   label: z.string(),
   status: z.enum(["active", "paused", "error"]),
-  lastActivityAt: z.string().nullable(),
+  virtual: z.boolean(),
+  lastSyncAt: z.string().nullable(),
+  itemsCollected: z.number(),
   targetAgentId: z.string().nullable().optional(),
-  itemCount: z.number().optional(),
 });
 
 const ListConnectionFeedsRoute = createRoute({
@@ -181,7 +183,7 @@ const ListConnectionFeedsRoute = createRoute({
   tags: [TAG],
   summary: "List a connection's feeds",
   description:
-    "Lists the feeds under a connection. For a chat connection these are conversation feeds — one per channel/DM, projected on the fly from the message transcript (no feeds-table row).",
+    "Lists every feed under a connection, read from the feeds table: collected (synced data feeds), streaming (bound chat channels), and virtual (live-query datasets).",
   request: {
     params: ConnectionIdParamsSchema,
   },
@@ -410,8 +412,8 @@ export function createConnectionCrudRoutes(
       return c.json({ error: "Connection not found" }, 404);
     }
     // Same ACL as GetConnection: a bound connection is owner-gated; an unbound
-    // (shared-install) connection is admin-only. Conversation feeds expose
-    // channel ids + routed agents + activity, so reuse the connection's gate.
+    // (shared-install) connection is admin-only. A feed list exposes feed keys
+    // (channel ids for streaming) + routed agents, so reuse the connection gate.
     if (connection.agentId) {
       const access = await verifyOwnedAgentAccess(
         session,
@@ -428,7 +430,7 @@ export function createConnectionCrudRoutes(
     if (!connection.organizationId) {
       return c.json({ feeds: [] });
     }
-    const feeds = await listConversationFeeds(connection.organizationId, id);
+    const feeds = await listConnectionFeeds(connection.organizationId, id);
     return c.json({ feeds });
   });
 

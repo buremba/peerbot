@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Trigger flows — what happens by kind</title>
+<style>
+  :root{--bg:#0b0b0d;--panel:#151517;--panel3:#212127;--border:#2a2a31;--border2:#34343d;
+    --text:#ececed;--muted:#8b8b95;--muted2:#6b6b74;
+    --accent:#e07b3c;--accent-soft:rgba(224,123,60,.14);--blue:#5b9bd5;--blue-soft:rgba(91,155,213,.14);
+    --purple:#a382e0;--purple-soft:rgba(163,130,224,.14);--amber:#e0a13c;--amber-soft:rgba(224,161,60,.13);
+    --green:#48b866;--green-soft:rgba(72,184,102,.14);--red:#e5686b;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:30px 26px 70px}
+  h1{font-size:23px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 8px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin:12px 0 22px;font-size:12px;color:var(--muted2)}
+  .legend b{color:var(--muted)}
+  .lg{display:inline-flex;gap:6px;align-items:center}
+  .sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+  .sw.rt{background:var(--muted2)}.sw.ag{background:var(--green)}.sw.out{background:var(--accent)}.sw.au{background:var(--purple)}
+
+  .flow{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin-bottom:16px}
+  .fh{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .kind{font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px}
+  .kind.listen{background:var(--accent-soft);color:var(--accent)}
+  .kind.watch{background:var(--blue-soft);color:var(--blue)}
+  .kind.schedule{background:var(--purple-soft);color:var(--purple)}
+  .kind.workflow{background:var(--amber-soft);color:var(--amber)}
+  .fh .t{font-weight:600;font-size:15px}
+  .fh .m{color:var(--muted2);font-size:12px;margin-left:auto}
+
+  .row{display:flex;align-items:stretch;gap:0;flex-wrap:wrap}
+  .n{position:relative;background:var(--panel3);border:1px solid var(--border2);border-radius:10px;padding:9px 11px;min-width:120px;max-width:190px}
+  .n .lab{font-size:12.5px;font-weight:600;line-height:1.35}
+  .n .own{font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;margin-top:5px;display:inline-block;padding:1px 6px;border-radius:4px}
+  .own.rt{background:rgba(107,107,116,.2);color:var(--muted)}
+  .own.ag{background:var(--green-soft);color:var(--green)}
+  .own.out{background:var(--accent-soft);color:var(--accent)}
+  .own.au{background:var(--purple-soft);color:var(--purple)}
+  .n.wait{border-style:dashed;border-color:#5a4a1e;background:var(--amber-soft)}
+  .n.sil{border-color:var(--border2);background:transparent}
+  .arr{display:flex;align-items:center;color:var(--muted2);font-size:17px;padding:0 7px}
+  .brk{align-self:center;color:var(--amber);font-size:12px;padding:0 8px;text-align:center;max-width:96px;line-height:1.25}
+  .stop{align-self:center;color:var(--red);font-size:11.5px;padding:0 8px;text-align:center;max-width:90px}
+  .split{display:flex;flex-direction:column;gap:7px;justify-content:center}
+  .note{margin-top:12px;font-size:12px;color:var(--muted);background:var(--panel3);border-left:3px solid var(--border2);border-radius:6px;padding:8px 11px}
+  .note.a{border-left-color:var(--accent)}.note.b{border-left-color:var(--blue)}.note.p{border-left-color:var(--purple)}.note.w{border-left-color:var(--amber)}
+  .note b{color:var(--text)}
+</style></head>
+<body><div class="wrap">
+  <h1>What happens when a behavior fires — by kind</h1>
+  <p class="sub">Same list, three runtimes. A <b>runtime detects</b>, the <b>agent reacts</b>, the <b>output</b> lands, and it's recorded in <b>Runs</b>.</p>
+  <div class="legend">
+    <span class="lg"><span class="sw rt"></span><b>Runtime</b> (detector)</span>
+    <span class="lg"><span class="sw ag"></span><b>Agent</b> (reacts)</span>
+    <span class="lg"><span class="sw out"></span><b>Output</b></span>
+    <span class="lg"><span class="sw au"></span>Runs (audit)</span>
+  </div>
+
+  <!-- LISTEN -->
+  <div class="flow">
+    <div class="fh"><span class="kind listen">Listen</span><span class="t">Chat — real-time</span><span class="m">"reply in #support / chime in on #sales"</span></div>
+    <div class="row">
+      <div class="n"><div class="lab">Message in #support</div><div class="own rt">source</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Chat handler detects</div><div class="own rt">runtime · instant</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Addressing gate<br>mention · DM · proactive?</div><div class="own rt">runtime</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Agent turn<br>(+ proactivity policy)</div><div class="own ag">agent</div></div>
+      <div class="arr">→</div>
+      <div class="split">
+        <div class="n"><div class="lab">Reply in thread</div><div class="own out">output</div></div>
+        <div class="n sil"><div class="lab" style="color:var(--muted)">…or stay silent</div><div class="own au">logged</div></div>
+      </div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Runs</div><div class="own au">audit</div></div>
+    </div>
+    <div class="note a">Non‑mention messages only wake the agent if the channel is <b>proactive</b>; a mention/DM always does. <b>Silence is a first‑class, logged outcome</b> — not an error.</div>
+  </div>
+
+  <!-- WATCH -->
+  <div class="flow">
+    <div class="fh"><span class="kind watch">Watch</span><span class="t">Data — near‑real‑time + batch</span><span class="m">"triage new P0 issues"</span></div>
+    <div class="row">
+      <div class="n"><div class="lab">Cron tick (~5 min)</div><div class="own rt">runtime</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Skip‑if‑empty<br>run filter over window</div><div class="own rt">runtime · cheap query</div></div>
+      <div class="split">
+        <div class="brk">new data ↓</div>
+        <div class="stop">empty → stop<br>(no agent)</div>
+      </div>
+      <div class="n"><div class="lab">Materialize run<br>batches N new items</div><div class="own rt">runtime</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Agent reaction</div><div class="own ag">agent</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Post · Surface · Notify</div><div class="own out">output</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Runs</div><div class="own au">audit</div></div>
+    </div>
+    <div class="note b">The <b>skip‑if‑empty</b> gate runs a cheap query first — no agent call on empty windows. 5 issues in one window → <b>one batched reaction</b>, not 5. Real‑time is chat‑only.</div>
+  </div>
+
+  <!-- SCHEDULE -->
+  <div class="flow">
+    <div class="fh"><span class="kind schedule">Schedule</span><span class="t">Clock</span><span class="m">"post a standup digest at 09:00"</span></div>
+    <div class="row">
+      <div class="n"><div class="lab">Cron tick (due)</div><div class="own rt">runtime</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Always run<br>(no data check)</div><div class="own rt">runtime</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Agent run</div><div class="own ag">agent</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Post · canvas · notify</div><div class="own out">output</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Runs</div><div class="own au">audit</div></div>
+    </div>
+    <div class="note p">Unlike Watch, a Schedule <b>always fires</b> when due — a digest runs even on a quiet day. (Same cron scanner, no skip‑if‑empty.)</div>
+  </div>
+
+  <!-- WORKFLOW -->
+  <div class="flow">
+    <div class="fh"><span class="kind workflow">Workflow</span><span class="t">A behavior that waits (multi‑step)</span><span class="m">"lunch: poll → collect → order"</span></div>
+    <div class="row">
+      <div class="n"><div class="lab">Trigger (any kind)</div><div class="own rt">runtime</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Step: do<br>post the poll</div><div class="own ag">agent</div></div>
+      <div class="arr">→</div>
+      <div class="n wait"><div class="lab">WAIT ⏸<br>time → wake_agent<br>event → resume‑sub</div><div class="own rt">suspend · turn ends</div></div>
+      <div class="brk">deadline<br>or event ↓</div>
+      <div class="n"><div class="lab">Resume<br>(one replica, leased)</div><div class="own rt">runtime</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Step: do<br>tally + order<br>(idempotent)</div><div class="own ag">agent</div></div>
+      <div class="arr">→</div>
+      <div class="n"><div class="lab">Runs</div><div class="own au">audit</div></div>
+    </div>
+    <div class="note w">The agent <b>ends its turn</b> at the WAIT — no long‑lived process. <b>Time‑waits</b> self‑schedule <code>wake_agent</code>; <b>event‑waits</b> resume via the Watch detector. <b>Approval = wait‑for‑human.</b> Terminal actions must be idempotent (a re‑wake can't double‑order).</div>
+  </div>
+
+</div></body></html>

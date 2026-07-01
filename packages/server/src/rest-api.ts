@@ -8,7 +8,10 @@
 import { toJsonSafe } from "@lobu/core";
 import * as Sentry from "@sentry/node";
 import type { Context } from "hono";
-import { SCOPE_CHECK_NOT_APPLICABLE } from "./auth/tool-access";
+import {
+	resolveMaxAccessLevel,
+	SCOPE_CHECK_NOT_APPLICABLE,
+} from "./auth/tool-access";
 import { listOrgInstalled } from "./catalog/installed";
 import { getDb } from "./db/client";
 import { streamInvalidationEvents } from "./events/sse";
@@ -302,25 +305,10 @@ export async function restListTools(c: Context<{ Bindings: Env }>) {
 				401,
 			);
 		}
-		const roleAccessLevel = !authCtx.memberRole
-			? "read"
-			: authCtx.memberRole === "owner" || authCtx.memberRole === "admin"
-				? "admin"
-				: "write";
-		const scopes = authCtx.scopes ?? SCOPE_CHECK_NOT_APPLICABLE;
-		const scopeAccessLevel = scopes.includes("*")
-			? "admin"
-			: scopes.includes("mcp:admin")
-				? "admin"
-				: scopes.includes("mcp:write")
-					? "write"
-					: "read";
-		const maxAccessLevel =
-			roleAccessLevel === "read" || scopeAccessLevel === "read"
-				? "read"
-				: roleAccessLevel === "write" || scopeAccessLevel === "write"
-					? "write"
-					: "admin";
+		const maxAccessLevel = resolveMaxAccessLevel(
+			authCtx.memberRole,
+			authCtx.scopes,
+		);
 		const tools = getAllTools({
 			publicOnly: false,
 			maxAccessLevel,

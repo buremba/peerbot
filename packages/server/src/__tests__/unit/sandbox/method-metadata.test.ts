@@ -45,6 +45,18 @@ describe("method-metadata", () => {
     expect(missing).toEqual([]);
   });
 
+  it("has a runtime method for every namespace metadata entry (no phantom docs)", () => {
+    // The reverse direction: a METHOD_METADATA key without a runtime method is
+    // dead documentation that search_sdk advertises but the sandbox rejects
+    // (e.g. the retired `watchers.upgrade`).
+    const { namespaceMethods, topLevelMethods } = enumerateSdkMethods();
+    const runtime = new Set([...namespaceMethods, ...topLevelMethods]);
+    const phantom = Object.keys(METHOD_METADATA).filter(
+      (path) => !runtime.has(path)
+    );
+    expect(phantom).toEqual([]);
+  });
+
   it("has entries for top-level methods", () => {
     const { topLevelMethods } = enumerateSdkMethods();
     for (const m of topLevelMethods) {

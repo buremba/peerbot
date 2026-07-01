@@ -1,15 +1,13 @@
 /**
- * ClientSDK `watchers` namespace TYPES + contract-generated runtime.
+ * ClientSDK `watchers` namespace. Thin, action-complete wrapper over
+ * `manageWatchers` + `listWatchers` + `getWatcher`.
  *
- * The runtime methods (names, action routing, input glue) are GENERATED from
- * `tools/contracts/watchers.ts` — edit the contract, not this file, to change
- * behavior. This module contributes the typed facade (`WatchersNamespace` and
- * its input types) and binds the heavy handler imports the pure contract
- * cannot hold.
+ * Keep this surface in sync with `ManageWatchersSchema`: every
+ * `manage_watchers.action` should either have a named SDK method below or be
+ * reachable via `watchers.manage({ action, ... })`.
  */
 
 import type { Env } from "../../index";
-import { buildContractNamespace, watchersCapability } from "../../tools/contracts";
 import {
 	listWatchers,
 	type ManageWatchersArgs,
@@ -17,6 +15,7 @@ import {
 } from "../../tools/admin/manage_watchers";
 import { getWatcher } from "../../tools/get_watchers";
 import type { ToolContext } from "../../tools/registry";
+import { createActionCaller } from "./action-call";
 
 type WatcherId = string | number;
 type Source = { name: string; query: string };
@@ -158,18 +157,71 @@ export interface WatchersNamespace {
 	createFromVersion(input: WatcherCreateFromVersionInput): Promise<unknown>;
 }
 
+function asWatcherIdString(v: WatcherId): string {
+	return typeof v === "number" ? String(v) : v;
+}
+
+function normalizeWatcherId<T extends { watcher_id?: WatcherId }>(
+	input: T,
+): Omit<T, "watcher_id"> & { watcher_id?: string } {
+	return {
+		...input,
+		...(input.watcher_id !== undefined
+			? { watcher_id: asWatcherIdString(input.watcher_id) }
+			: {}),
+	};
+}
+
+function normalizeVersionDetailsInput(
+	input: WatcherId | WatcherVersionDetailsInput,
+): { watcher_id: string; version?: number } {
+	if (typeof input === "string" || typeof input === "number") {
+		return { watcher_id: asWatcherIdString(input) };
+	}
+	return normalizeWatcherId(input) as { watcher_id: string; version?: number };
+}
+
 export function buildWatchersNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): WatchersNamespace {
-	return buildContractNamespace(
-		watchersCapability,
-		{
-			manage_watchers: manageWatchers,
-			list_watchers: listWatchers,
-			get_watcher: getWatcher,
+	const { manage, action } = createActionCaller(manageWatchers, env, ctx);
+
+	return {
+		manage: (input) => manage(input as Record<string, unknown>),
+		list: (filter) =>
+			listWatchers((filter ?? {}) as never, env, ctx) as Promise<unknown>,
+		get(watcher_id) {
+			return getWatcher(
+				{ watcher_id: asWatcherIdString(watcher_id) } as never,
+				env,
+				ctx,
+			) as Promise<unknown>;
 		},
-		env,
-		ctx,
-	) as unknown as WatchersNamespace;
+		create: (input) => action("create", input),
+		update: (input) => action("update", normalizeWatcherId(input)),
+		createVersion: (input) =>
+			action("create_version", normalizeWatcherId(input)),
+		completeWindow: (input) =>
+			action("complete_window", normalizeWatcherId(input)),
+		trigger: (watcher_id) =>
+			action("trigger", { watcher_id: asWatcherIdString(watcher_id) }),
+		delete(watcher_id) {
+			const watcher_ids = Array.isArray(watcher_id)
+				? watcher_id.map(asWatcherIdString)
+				: [asWatcherIdString(watcher_id)];
+			return action("delete", { watcher_ids });
+		},
+		setReactionScript: (input) =>
+			action("set_reaction_script", normalizeWatcherId(input)),
+		getVersions: (watcher_id) =>
+			action("get_versions", { watcher_id: asWatcherIdString(watcher_id) }),
+		getVersionDetails: (input) =>
+			action("get_version_details", normalizeVersionDetailsInput(input)),
+		getComponentReference: () => action("get_component_reference"),
+		submitFeedback: (input) =>
+			action("submit_feedback", normalizeWatcherId(input)),
+		getFeedback: (input) => action("get_feedback", normalizeWatcherId(input)),
+		createFromVersion: (input) => action("create_from_version", input),
+	};
 }

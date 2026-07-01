@@ -24,7 +24,7 @@ import {
 import type { Context } from 'hono';
 import { bindRequestAbortToStream, type AbortableStream } from './events/sse-abort-bridge';
 import { OAuthClientsStore } from './auth/oauth/clients';
-import { isPublicReadable } from './auth/tool-access';
+import { isPublicReadable, resolveMaxAccessLevel } from './auth/tool-access';
 import { createDbClientFromEnv } from './db/client';
 import type { Env } from './index';
 import { agentExistsInOrganization, isValidAgentId, touchAgentLastUsed } from './lobu/stores/postgres-stores';
@@ -156,24 +156,7 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
     const adminAllowlist = authCtx.adminTools ?? null;
     const hasAdminAllowlist = !!adminAllowlist && adminAllowlist.length > 0;
     const publicOnly = !!authCtx.organizationId && !authCtx.memberRole;
-    const roleAccessLevel = !authCtx.memberRole
-      ? 'read'
-      : authCtx.memberRole === 'owner' || authCtx.memberRole === 'admin'
-        ? 'admin'
-        : 'write';
-    const scopeAccessLevel = !authCtx.scopes
-      ? 'admin'
-      : authCtx.scopes.includes('mcp:admin')
-        ? 'admin'
-        : authCtx.scopes.includes('mcp:write')
-          ? 'write'
-          : 'read';
-    const maxAccessLevel =
-      roleAccessLevel === 'read' || scopeAccessLevel === 'read'
-        ? 'read'
-        : roleAccessLevel === 'write' || scopeAccessLevel === 'write'
-          ? 'write'
-          : 'admin';
+    const maxAccessLevel = resolveMaxAccessLevel(authCtx.memberRole, authCtx.scopes);
     const staticTools = getAllTools({
       publicOnly,
       maxAccessLevel,

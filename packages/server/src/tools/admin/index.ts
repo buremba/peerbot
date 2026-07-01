@@ -1,25 +1,14 @@
 /**
  * Admin tool surface (manage_*, watcher reads, knowledge reads, notify).
  *
- * These tools are exposed uniformly on every surface — MCP `tools/list`,
- * `POST /api/:orgSlug/:toolName`, the ClientSDK namespaces, and the CLI.
- * There is no visibility flag: what a caller can see and do is decided purely
- * by per-action access tier × member role × `mcp:*` scope
- * (see `auth/tool-access.ts` and the contracts in `tools/contracts/`).
- *
- * Capabilities migrated to `tools/contracts/*` contribute their
- * name/description/annotations through `contractToolEntry` — the schema and
- * handler stay bound here (contracts are pure modules and cannot import
- * them). The literal entries are the not-yet-migrated tools.
+ * Exposed uniformly on every surface — MCP `tools/list`, the REST proxy
+ * (`POST /api/:orgSlug/:toolName`), the ClientSDK namespaces, and the CLI.
+ * There is no visibility flag: reach is decided purely by per-action access
+ * tier x member role x `mcp:*` scope (see `auth/tool-access.ts`).
  */
 
 import type { TSchema } from "@sinclair/typebox";
 import type { Env } from "../../index";
-import {
-	contractToolEntry,
-	schedulesCapability,
-	watchersCapability,
-} from "../contracts";
 import { GetContentSchema, getContent } from "../get_content";
 import { GetWatcherSchema, getWatcher } from "../get_watchers";
 import type { ToolAnnotations, ToolContext, ToolDefinition } from "../registry";
@@ -131,30 +120,35 @@ const ENTRIES: AdminToolEntry[] = [
 		handler: notify,
 		annotations: { destructiveHint: false },
 	},
-	contractToolEntry(
-		schedulesCapability,
-		"manage_schedules",
-		ManageSchedulesSchema,
-		manageSchedules,
-	),
-	contractToolEntry(
-		watchersCapability,
-		"manage_watchers",
-		ManageWatchersSchema,
-		manageWatchers,
-	),
-	contractToolEntry(
-		watchersCapability,
-		"list_watchers",
-		ListWatchersSchema,
-		listWatchers,
-	),
-	contractToolEntry(
-		watchersCapability,
-		"get_watcher",
-		GetWatcherSchema,
-		getWatcher,
-	),
+	{
+		name: "manage_schedules",
+		description:
+			"Create / list / pause / cancel recurring or one-shot scheduled jobs. Supports send_notification and wake_agent action types. Per-row attribution lets you trace what scheduled it and from where.",
+		schema: ManageSchedulesSchema,
+		handler: manageSchedules,
+		annotations: { destructiveHint: false },
+	},
+	{
+		name: "manage_watchers",
+		description: "Watcher management. SDK alternative: client.watchers.",
+		schema: ManageWatchersSchema,
+		handler: manageWatchers,
+	},
+	{
+		name: "list_watchers",
+		description: "List watchers. SDK alternative: client.watchers.list.",
+		schema: ListWatchersSchema,
+		handler: listWatchers,
+		annotations: READ_ONLY,
+	},
+	{
+		name: "get_watcher",
+		description:
+			"Watcher detail + windows. SDK alternative: client.watchers.get.",
+		schema: GetWatcherSchema,
+		handler: getWatcher,
+		annotations: READ_ONLY,
+	},
 	{
 		name: "read_knowledge",
 		description:

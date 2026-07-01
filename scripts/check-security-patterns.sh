@@ -56,10 +56,8 @@ echo "[check-security-patterns] scanning…"
 echo "  -> window.confirm / window.alert / window.prompt"
 HITS=$(
   git grep -nE 'window\.(confirm|alert|prompt)\(' -- \
-    'packages/owletto/*.ts' 'packages/owletto/*.tsx' \
-    'packages/owletto/**/*.ts' 'packages/owletto/**/*.tsx' \
-    'packages/landing/**/*.ts' 'packages/landing/**/*.tsx' \
-    2>/dev/null | filter_allowlist
+    'packages/owletto/' 'packages/landing/' \
+    2>/dev/null | grep -E '\.tsx?:' | filter_allowlist
 )
 if [ -n "$HITS" ]; then
   echo "::error::Banned modal confirmation primitives:"
@@ -71,11 +69,16 @@ fi
 # Matches:   "SELECT ..." + foo    OR    + "...WHERE..."
 # Allows the postgres.js tagged-template + `.unsafe(query, params)` shapes
 # (those are parameterized and safe).
+# NOTE: no `\b` word-boundary in the pattern — git's -E engine interprets `\b`
+# differently across builds (macOS-bundled git silently drops the match; Linux
+# CI git keeps it), which used to make this check pass locally but fail in CI.
+# The `["`][^"`]*` string-literal anchors already scope the match tightly.
 echo "  -> SQL string-concat onto literal fragments"
 HITS=$(
-  git grep -nE '["`][^"`]*\bSELECT\b[^"`]*["`][[:space:]]*\+|\+[[:space:]]*["`][^"`]*\bWHERE\b' -- \
-    'packages/**/*.ts' \
+  git grep -nE '["`][^"`]*SELECT[^"`]*["`][[:space:]]*\+|\+[[:space:]]*["`][^"`]*WHERE' -- \
+    'packages/' \
     2>/dev/null \
+    | grep -E '\.tsx?:' \
     | grep -v '/__tests__/' \
     | grep -v '/dist/' \
     | filter_allowlist
@@ -93,8 +96,8 @@ fi
 echo "  -> loose Nix charset regex in orchestration/"
 HITS=$(
   git grep -nE '\[A-Za-z0-9\\?\._-\]\+' -- \
-    'packages/server/src/gateway/orchestration/**/*.ts' \
-    2>/dev/null | filter_allowlist
+    'packages/server/src/gateway/orchestration/' \
+    2>/dev/null | grep -E '\.tsx?:' | filter_allowlist
 )
 if [ -n "$HITS" ]; then
   echo "::error::Loose Nix package charset re-introduced — use isValidNixAttrRef() instead:"

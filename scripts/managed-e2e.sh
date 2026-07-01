@@ -355,7 +355,7 @@ api manage_feeds "{\"action\":\"trigger_feed\",\"feed_id\":$FEED_ID}" > "$RUN_DI
 
 SYNC_OK=""; RUN_ITEMS=0; LAST_STATUS=none
 for _ in $(seq 1 90); do
-  api manage_feeds "{\"action\":\"get_feed\",\"feed_id\":$FEED_ID}" > "$RUN_DIR/get-feed.json" 2>/dev/null || { sleep 1; continue; }
+  api manage_feeds "{\"action\":\"read_feed\",\"feed_id\":$FEED_ID}" > "$RUN_DIR/get-feed.json" 2>/dev/null || { sleep 1; continue; }
   RUN_STATUS="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch{process.stdout.write("none");return}const r=(j.recent_runs||[])[0]||{};process.stdout.write(String(r.status||"none"))})' < "$RUN_DIR/get-feed.json" || echo none)"
   RUN_ITEMS="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch{process.stdout.write("0");return}const r=(j.recent_runs||[])[0]||{};process.stdout.write(String(r.items_collected??0))})' < "$RUN_DIR/get-feed.json" || echo 0)"
   LAST_STATUS="$RUN_STATUS"

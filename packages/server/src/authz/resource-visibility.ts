@@ -4,25 +4,36 @@
  * `./channel-visibility` gates Slack chat by channel membership, but at the
  * `events` read seam and for ANY resource type at once.
  *
- * Rule, composed AFTER the per-connection visibility gate (they AND together):
- *   - an event on a connection that is NOT ACL-enforced is unconstrained here
- *     (the per-connection gate already decided it);
- *   - an event on an ACL-enforced connection is visible ONLY when the requester
- *     is `member_of` one of the RESOURCE entities the event is linked to
- *     (`events.entity_ids`), where "resource" = an entity whose type is a
- *     registered ACL resource (`RESOURCE_TYPE_SLUGS`: repo, channel, …). This is
- *     deliberately scoped to resource types so the coarse person→`company` (org)
- *     `member_of` edge never satisfies it — org membership must NOT grant
- *     repo-level read.
+ * Rule, composed AFTER the per-connection visibility gate (they AND together),
+ * mirroring the three-state enforcement split `getConnectionEnforcement` /
+ * `./channel-visibility` apply so the two gates can never drift:
+ *   - an event on a connection that was NEVER graphed (no `authz_source_acl_state`
+ *     row) is unconstrained here — the per-connection gate already decided it and
+ *     an absent graph must never silently hide data;
+ *   - an event on an ENFORCED connection (`acl_support='full'`,
+ *     `freshness_state='fresh'`, synced within the freshness window) is visible
+ *     ONLY when the requester is `member_of` one of the RESOURCE entities the
+ *     event is linked to (`events.entity_ids`), where "resource" = an entity whose
+ *     type is a registered ACL resource (`RESOURCE_TYPE_SLUGS`: repo, channel, …).
+ *     This is deliberately scoped to resource types so the coarse person→`company`
+ *     (org) `member_of` edge never satisfies it — org membership must NOT grant
+ *     repo-level read;
+ *   - an event on an onboarded-but-STALE connection (a row exists but is
+ *     partial/failed/stale/aged-out — i.e. NOT in the enforced set) FAILS CLOSED:
+ *     neither the not-graphed passthrough nor the enforced membership branch
+ *     matches, so its resource-linked events are dropped rather than served on
+ *     stale membership. Once a connection is graphed, it never falls back to the
+ *     legacy per-connection fence — a stalled sync hides data, it does not leak it.
  *
- * Fail-closed: a headless/null principal, or an enforced-connection event linked
- * to no resource the requester belongs to, is dropped. Generic across sources —
- * GitHub repos and Linear teams gate identically; a new source needs only a
- * registry entry (`./sources`) plus its connector stamping the resource identity
- * on its events so they link to the resource entity.
+ * Fail-closed: a headless/null principal, an enforced-connection event linked to
+ * no resource the requester belongs to, or any event on a stale connection is
+ * dropped. Generic across sources — GitHub repos and Linear teams gate
+ * identically; a new source needs only a registry entry (`./sources`) plus its
+ * connector stamping the resource identity on its events so they link to the
+ * resource entity.
  */
 
-import { enforcedConnectionsSelectSql } from './acl-state.js';
+import { aclStateExistsSelectSql, enforcedConnectionsSelectSql } from './acl-state.js';
 import type { AuthzScope } from './scope.js';
 import { RESOURCE_TYPE_SLUGS } from './sources.js';
 
@@ -51,13 +62,25 @@ export function compileResourceVisibility(
     return { sql: '', params: [] };
   }
 
-  // `events.connection_id` is bigint, but `authz_source_acl_state.connection_id`
-  // is text (it also keys text `agent_connections.id` for Slack). Cast to text so
-  // the comparison is well-typed across both connection-id spaces.
+  // `events.connection_id` is the bigint `connections.id`, but
+  // `authz_source_acl_state.connection_id` is text — the ACL sync stamps it as
+  // `String(connections.id)` (see `github-acl-sync` → `buildAccessGraph`). Cast
+  // `events.connection_id::text` so BOTH the "is this connection graphed?" check
+  // and the "is it enforced?" check compare on the SAME key.
+  //
+  // Three-state split (mirrors `getConnectionEnforcement`), NOT a bare
+  // `NOT IN (enforced)`:
+  //   1. no ACL row for the connection → passthrough (never graphed → legacy fence);
+  //   2. row is enforced (in the fresh-enforced set) → require the member_of EXISTS;
+  //   3. row exists but is NOT enforced (stale/partial/failed/aged-out) → neither
+  //      branch matches → FAIL CLOSED. A bare `NOT IN (enforced)` would make (3)
+  //      true and leak stale-connection events to non-members — the hole this fix
+  //      closes, matching the channel gate.
   const sql = `AND (
       ${tableAlias}.connection_id IS NULL
-      OR ${tableAlias}.connection_id::text NOT IN (${enforcedConnectionsSelectSql(orgParam)})
-      OR EXISTS (
+      OR ${tableAlias}.connection_id::text NOT IN (${aclStateExistsSelectSql(orgParam)})
+      OR (${tableAlias}.connection_id::text IN (${enforcedConnectionsSelectSql(orgParam)})
+      AND EXISTS (
         SELECT 1
         FROM public.entity_relationships rr
         JOIN public.entity_relationship_types rt
@@ -93,7 +116,7 @@ export function compileResourceVisibility(
               AND mei.deleted_at IS NULL
             LIMIT 1
           )
-      )
+      ))
     )`;
   return { sql, params: [scope.organizationId, scope.principal] };
 }

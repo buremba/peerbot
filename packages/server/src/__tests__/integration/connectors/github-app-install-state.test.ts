@@ -161,6 +161,10 @@ function buildRouter(
 	const deps: AppInstallRouterDeps = {
 		installationStore: createPostgresAppInstallationStore(),
 		resolveInstallOrgId: async () => installOrgId,
+		// The completing user is a member of the org they resolve to; the CSRF
+		// fixation test drives a state org ≠ installOrgId → not a member → reject.
+		verifyInstallOrgAccess: async (_c, organizationId) =>
+			organizationId === installOrgId,
 		getPublicGatewayUrl: () =>
 			opts.publicGatewayUrl === undefined
 				? PUBLIC_GATEWAY_URL

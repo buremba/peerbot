@@ -42,6 +42,7 @@ import {
 } from "@lobu/core";
 import type { ConnectorAuthAppInstallation } from "@lobu/connector-sdk";
 import { getDb } from "../../../db/client.js";
+import { getConfiguredPublicOrigin } from "../../../utils/public-origin.js";
 import {
 	ConnectionSlugConflictError,
 	insertConnectionWithSlug,
@@ -876,6 +877,17 @@ export interface AppInstallRouterDeps {
 	/** Resolve the active org for the request (session-bound + single-tenant). */
 	resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
 	/**
+	 * Authorize install COMPLETION against the org the install was started for
+	 * (carried in the signed state): true iff the completing request's user is a
+	 * member of `organizationId` (self-host: iff it is the sole tenant). Replaces
+	 * the fragile "callback active-org === state org" comparison, which rejected
+	 * legitimate installs whenever the active org drifted from the UI-selected org.
+	 */
+	verifyInstallOrgAccess(
+		c: import("hono").Context,
+		organizationId: string,
+	): Promise<boolean>;
+	/**
 	 * The public gateway base URL (e.g. `https://app.lobu.ai`) used to build the
 	 * OAuth `redirect_uri`, which must equal the App's registered Callback URL.
 	 * Undefined falls back to the request origin (self-host single-origin).
@@ -1370,17 +1382,22 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		// send the genuine github.com/apps/<slug>/installations/new?state=S to a
 		// victim, the victim installs the App on THEIR org V and passes the ownership
 		// check (they own V) — and V's installation lands in the attacker's org A.
-		// Require the completing session's org to equal the state's org (mirrors
-		// slack.ts). The legit admin completes in the same session (A === A).
-		const callbackOrgId = await deps.resolveInstallOrgId(c);
-		if (!callbackOrgId || callbackOrgId !== installState.organizationId) {
+		// Require the completing session's USER to be a member of the state's org.
+		// Membership — not "ambient active org === state org" — is the real
+		// authorization: it still blocks the CSRF (a victim who doesn't belong to
+		// the attacker's org A can't complete an A-bound link) while allowing a
+		// legit admin whose active org drifted from the org they launched from.
+		const callbackAuthorized = await deps.verifyInstallOrgAccess(
+			c,
+			installState.organizationId,
+		);
+		if (!callbackAuthorized) {
 			logger.warn(
 				{
 					state_org: installState.organizationId,
-					callback_org: callbackOrgId ?? null,
 					installation_id: installationIdRaw,
 				},
-				"Rejecting GitHub install callback: completing session org does not match install state",
+				"Rejecting GitHub install callback: completing user is not a member of install state's org",
 			);
 			return c.html(
 				renderOAuthErrorPage(
@@ -1390,7 +1407,7 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				403,
 			);
 		}
-		// Bind to the org encoded in the verified state (== callbackOrgId).
+		// Bind to the org encoded in the verified state (membership-authorized above).
 		const orgId = installState.organizationId;
 
 		// Resolve App credentials from THIS org's connector declaration — only now,
@@ -1758,6 +1775,10 @@ function mountOAuthCodeExchangeRoutes(
 		provider: string;
 		authorizeUrl: string;
 		resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
+		verifyInstallOrgAccess(
+			c: import("hono").Context,
+			organizationId: string,
+		): Promise<boolean>;
 		getPublicGatewayUrl?(): string | undefined;
 		complete: CompleteOAuthInstall;
 	},
@@ -1858,17 +1879,23 @@ function mountOAuthCodeExchangeRoutes(
 			);
 		}
 
-		// Reject the callback if the session that's completing the install belongs
-		// to a different org than the one that started it.
-		const callbackOrgId = await params.resolveInstallOrgId(c);
-		if (!callbackOrgId || callbackOrgId !== oauthState.organizationId) {
+		// Reject the callback unless the completing session's USER is a member of
+		// the org the install was started for. Membership authorizes completion —
+		// not "ambient active org === state org", which rejected legitimate installs
+		// whenever the active org drifted from the UI-selected org threaded via
+		// `?org=`. The CSRF guarantee holds: a user not in the state's org can't
+		// complete its link.
+		const callbackAuthorized = await params.verifyInstallOrgAccess(
+			c,
+			oauthState.organizationId,
+		);
+		if (!callbackAuthorized) {
 			oauthInstallLogger.warn(
 				{
 					provider,
 					stateOrg: oauthState.organizationId,
-					callbackOrg: callbackOrgId ?? null,
 				},
-				"Rejecting OAuth install callback: session org does not match install state",
+				"Rejecting OAuth install callback: completing user is not a member of install state's org",
 			);
 			return c.html(
 				renderOAuthErrorPage(
@@ -1903,7 +1930,19 @@ function mountOAuthCodeExchangeRoutes(
 			// a "Connect my DM" action, replacing the legacy "run /lobu link <code>"
 			// page. Falls back to the success page when the web origin or org slug
 			// can't be resolved (e.g. a headless/self-host install with no slug).
-			const webBase = params.getPublicGatewayUrl?.()?.replace(/\/+$/, "");
+			//
+			// Use the WEB origin (app.lobu.ai), NOT the gateway base
+			// (getPublicGatewayUrl → app.lobu.ai/lobu): web-app routes live at
+			// `<origin>/<orgSlug>/agents`, so a `/lobu`-prefixed base yields
+			// `/lobu/<slug>/agents`, which the SPA can't resolve ("Not Found").
+			// Fall back to stripping a trailing `/lobu` off the gateway base when
+			// the origin env isn't set (single-origin self-host).
+			const webBase =
+				getConfiguredPublicOrigin()?.replace(/\/+$/, "") ??
+				params
+					.getPublicGatewayUrl?.()
+					?.replace(/\/+$/, "")
+					.replace(/\/lobu$/, "");
 			let orgSlug: string | null = null;
 			try {
 				const rows = (await getDb()`
@@ -1975,6 +2014,11 @@ export interface InstallEngineDeps {
 	installationStore: AppInstallationStore;
 	/** Resolve the active org for the request (session-bound + single-tenant). */
 	resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
+	/** Authorize install completion by membership in the state's org. */
+	verifyInstallOrgAccess(
+		c: import("hono").Context,
+		organizationId: string,
+	): Promise<boolean>;
 	/** The public gateway base URL used to build OAuth `redirect_uri`s. */
 	getPublicGatewayUrl?(): string | undefined;
 	/** The bundled integration connectors to mount install routes for. */
@@ -2009,6 +2053,7 @@ export function createInstallRoutes(deps: InstallEngineDeps): Hono {
 				createAppInstallRoutes({
 					installationStore: deps.installationStore,
 					resolveInstallOrgId: deps.resolveInstallOrgId,
+					verifyInstallOrgAccess: deps.verifyInstallOrgAccess,
 					getPublicGatewayUrl: deps.getPublicGatewayUrl,
 				}),
 			);
@@ -2040,6 +2085,7 @@ export function createInstallRoutes(deps: InstallEngineDeps): Hono {
 			provider: integration.provider,
 			authorizeUrl,
 			resolveInstallOrgId: deps.resolveInstallOrgId,
+			verifyInstallOrgAccess: deps.verifyInstallOrgAccess,
 			getPublicGatewayUrl: deps.getPublicGatewayUrl,
 			complete: deps.completeChatInstall,
 		});

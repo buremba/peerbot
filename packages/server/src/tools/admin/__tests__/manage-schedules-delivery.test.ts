@@ -227,4 +227,38 @@ describe("manage_schedules wake_agent chat delivery", () => {
     const rows = await getDb()`SELECT delivery_context FROM scheduled_jobs ORDER BY created_at DESC LIMIT 1`;
     expect(rows[0].delivery_context.connectionId).toBe("slackinst-real");
   });
+
+  test("update rejects an empty cron but still clears the cadence on null", async () => {
+    const created = await manageSchedules(
+      {
+        action: "create",
+        description: "recurring digest",
+        run_at: new Date(Date.now() + 60_000).toISOString(),
+        cron: "0 9 * * 1-5",
+        payload: { type: "wake_agent", agent_id: AGENT, prompt: "digest" },
+      } as any,
+      {} as any,
+      ctx()
+    );
+    const id = (created as { schedule?: { id: string } }).schedule?.id;
+    expect(id).toBeTruthy();
+
+    // "" is not a valid cron — it must be rejected, not persisted.
+    const empty = await manageSchedules(
+      { action: "update", id, cron: "" } as any,
+      {} as any,
+      ctx()
+    );
+    expect(empty.error).toMatch(/cron/i);
+
+    // null clears the cadence (recurring → one-shot).
+    const cleared = await manageSchedules(
+      { action: "update", id, cron: null } as any,
+      {} as any,
+      ctx()
+    );
+    expect(cleared.error).toBeUndefined();
+    const rows = await getDb()`SELECT cron FROM scheduled_jobs WHERE id = ${id}`;
+    expect(rows[0].cron).toBeNull();
+  });
 });

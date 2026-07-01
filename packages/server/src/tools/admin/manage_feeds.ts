@@ -212,6 +212,7 @@ async function handleListFeeds(
     )
     SELECT p.*, c.connector_key, c.display_name AS connection_name,
            c.status AS connection_status,
+           c.external_tenant_id AS external_tenant_id,
            c.device_worker_id,
            dw.label AS device_label,
            dw.platform AS device_platform,

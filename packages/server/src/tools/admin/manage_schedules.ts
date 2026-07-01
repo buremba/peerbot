@@ -218,7 +218,14 @@ async function handleUpdate(
       return { error: `run_at is not a valid ISO timestamp: ${args.run_at}` };
     }
   }
-  if (args.cron) {
+  // A string cron is validated (empty string rejected); explicit null clears
+  // the cadence (recurring → one-shot); omitted leaves it unchanged.
+  if (typeof args.cron === 'string') {
+    if (args.cron.trim() === '') {
+      return {
+        error: 'cron must be a non-empty expression, or null to clear the cadence.',
+      };
+    }
     try {
       nextCronTickAt(args.cron);
     } catch (err) {

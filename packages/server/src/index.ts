@@ -33,7 +33,12 @@ import { getDb } from "./db/client";
 import * as invalidationEmitter from "./events/emitter";
 import { streamInvalidationEvents } from "./events/sse";
 import { invalidationSseAuth } from "./events/sse-invalidation-auth";
-import { claimSlackWorkspace } from "./gateway/connections/slack-claim";
+import {
+	type ClaimEligibleOrg,
+	type SlackClaimDeps,
+	claimSlackWorkspace,
+	resolveSlackClaimContext,
+} from "./gateway/connections/slack-claim";
 import { createSlackWebApi } from "./gateway/connections/slack-web";
 import {
 	getMaxReservedLocks,
@@ -1458,79 +1463,141 @@ async function resolveClaimingUserSlackId(
  * Registered before the `/api/:orgSlug/:toolName` proxy so `slack`/`claim`
  * doesn't get swallowed as an org tool call.
  */
-app.post("/api/slack/claim", async (c) => {
-	// The main app doesn't run the Lobu auth bridge, so resolve the session here
-	// (same pattern as /api/:orgSlug/join). Cookie or Better-Auth bearer.
-	let userId: string | null = null;
+// The main app doesn't run the Lobu auth bridge, so resolve the session here
+// (same pattern as /api/:orgSlug/join). Cookie or Better-Auth bearer.
+async function resolveClaimSessionUser(env: Env, req: Request): Promise<string | null> {
 	try {
-		const auth = await createAuth(c.env);
-		const session = await auth.api.getSession({ headers: c.req.raw.headers });
-		userId = session?.user?.id ?? null;
+		const auth = await createAuth(env);
+		const session = await auth.api.getSession({ headers: req.headers });
+		return session?.user?.id ?? null;
 	} catch {
-		userId = null;
+		return null;
 	}
+}
 
-	let body: { team?: unknown; token?: unknown };
+// Wire the real stores/APIs behind the injectable SlackClaimDeps (shared by the
+// context + claim routes).
+function slackClaimDeps(): SlackClaimDeps {
+	return {
+		resolvePending: (t) => resolveSlackPendingByTenant(t),
+		resolveClaimerSlackId: resolveClaimingUserSlackId,
+		usersInfo: (botToken, uid) => createSlackWebApi().usersInfo(botToken, uid),
+		resolveMemberOrgs: async (userId) =>
+			(await getDb()`
+				SELECT o.id, o.slug, o.name
+				FROM "member" m JOIN "organization" o ON o.id = m."organizationId"
+				WHERE m."userId" = ${userId}
+				ORDER BY o.name
+			`) as ClaimEligibleOrg[],
+		resolveOrgIfMember: async (userId, orgSlugOrId) => {
+			const rows = (await getDb()`
+				SELECT o.id
+				FROM "organization" o
+				JOIN "member" m ON m."organizationId" = o.id AND m."userId" = ${userId}
+				WHERE o.slug = ${orgSlugOrId} OR o.id = ${orgSlugOrId}
+				LIMIT 1
+			`) as Array<{ id: string }>;
+			return rows[0]?.id ?? null;
+		},
+		resolveDefaultOrgId: (uid) => resolveDefaultOrgId(uid),
+		claim: (pending, organizationId) => {
+			const core = getLobuCoreServices();
+			if (!core) throw new Error("Lobu core services unavailable");
+			return claimSlackPendingInstall(
+				core.getAppInstallationStore(),
+				core.getSecretStore(),
+				pending,
+				organizationId,
+			);
+		},
+		resolveOrgSlug: async (organizationId) => {
+			const orgRows = (await getDb()`
+				SELECT slug FROM "organization" WHERE id = ${organizationId} LIMIT 1
+			`) as Array<{ slug: string }>;
+			return orgRows[0]?.slug ?? null;
+		},
+	};
+}
+
+/** Map a claim/context status to its HTTP code (shared by both routes). */
+function slackClaimHttpStatus(status: string): 400 | 401 | 403 | 404 | 409 | 500 {
+	switch (status) {
+		case "unauthenticated":
+			return 401;
+		case "invalid_request":
+			return 400;
+		case "no_pending_install":
+			return 404;
+		case "invalid_token":
+		case "slack_signin_required":
+		case "not_admin":
+		case "not_member_of_org":
+			return 403;
+		case "no_org":
+			return 409;
+		default:
+			return 500;
+	}
+}
+
+// GET /api/slack/claim/context — the confirm step's data. Runs the guards (token
+// + Slack-admin) with NO write and returns the workspace name + the claimer's
+// orgs, so /slack/claim can render "Connect <workspace> to <org>" before binding.
+app.get("/api/slack/claim/context", async (c) => {
+	const userId = await resolveClaimSessionUser(c.env, c.req.raw);
+	const team = (c.req.query("team") ?? "").trim();
+	const token = c.req.query("t") ?? "";
+	const ctx = await resolveSlackClaimContext(slackClaimDeps(), {
+		userId,
+		team,
+		token,
+	});
+	if (ctx.status === "ready") {
+		return c.json({ ok: true, workspaceName: ctx.workspaceName, orgs: ctx.orgs });
+	}
+	return c.json({ error: ctx.status }, slackClaimHttpStatus(ctx.status));
+});
+
+app.post("/api/slack/claim", async (c) => {
+	const userId = await resolveClaimSessionUser(c.env, c.req.raw);
+
+	let body: { team?: unknown; token?: unknown; org?: unknown };
 	try {
-		body = (await c.req.json()) as { team?: unknown; token?: unknown };
+		body = (await c.req.json()) as {
+			team?: unknown;
+			token?: unknown;
+			org?: unknown;
+		};
 	} catch {
 		body = {};
 	}
 	const team = typeof body.team === "string" ? body.team.trim() : "";
 	const token = typeof body.token === "string" ? body.token : "";
+	// The org the user CONFIRMED on the /slack/claim page (slug or id). Optional
+	// for programmatic callers, who then fall back to the default org.
+	const organizationId =
+		typeof body.org === "string" && body.org.trim() ? body.org.trim() : undefined;
 
 	// All branching lives in the injectable `claimSlackWorkspace` so it stays
 	// unit-testable; the route only wires real deps + maps outcomes to HTTP.
-	const result = await claimSlackWorkspace(
-		{
-			resolvePending: (t) => resolveSlackPendingByTenant(t),
-			resolveClaimerSlackId: resolveClaimingUserSlackId,
-			usersInfo: (botToken, uid) => createSlackWebApi().usersInfo(botToken, uid),
-			resolveDefaultOrgId: (uid) => resolveDefaultOrgId(uid),
-			claim: (pending, organizationId) => {
-				const core = getLobuCoreServices();
-				if (!core) throw new Error("Lobu core services unavailable");
-				return claimSlackPendingInstall(
-					core.getAppInstallationStore(),
-					core.getSecretStore(),
-					pending,
-					organizationId,
-				);
-			},
-			resolveOrgSlug: async (organizationId) => {
-				const orgRows = (await getDb()`
-					SELECT slug FROM "organization" WHERE id = ${organizationId} LIMIT 1
-				`) as Array<{ slug: string }>;
-				return orgRows[0]?.slug ?? null;
-			},
-		},
-		{ userId, team, token },
-	);
+	const result = await claimSlackWorkspace(slackClaimDeps(), {
+		userId,
+		team,
+		token,
+		organizationId,
+	});
 
-	switch (result.status) {
-		case "ok":
-			return c.json({ ok: true, orgSlug: result.orgSlug, provider: "slack" });
-		case "unauthenticated":
-			return c.json({ error: "unauthenticated" }, 401);
-		case "invalid_request":
-			return c.json({ error: "invalid_request" }, 400);
-		case "no_pending_install":
-			return c.json({ error: "no_pending_install" }, 404);
-		case "invalid_token":
-			return c.json({ error: "invalid_token" }, 403);
-		case "slack_signin_required":
-			return c.json({ error: "slack_signin_required" }, 403);
-		case "not_admin":
-			return c.json({ error: "not_admin" }, 403);
-		case "no_org":
-			return c.json({ error: "no_org" }, 409);
-		case "claim_failed":
-			logger.error(
-				{ team, err: result.message },
-				"Slack workspace claim failed",
-			);
-			return c.json({ error: "claim_failed", message: result.message }, 500);
+	if (result.status === "ok") {
+		return c.json({ ok: true, orgSlug: result.orgSlug, provider: "slack" });
 	}
+	if (result.status === "claim_failed") {
+		logger.error({ team, err: result.message }, "Slack workspace claim failed");
+		return c.json(
+			{ error: "claim_failed", message: result.message },
+			500,
+		);
+	}
+	return c.json({ error: result.status }, slackClaimHttpStatus(result.status));
 });
 
 /**
@@ -1562,6 +1629,7 @@ app.get("/slack/claim", (c) => {
   var p=new URLSearchParams(location.search),team=p.get("team"),token=p.get("t");
   var statusEl=document.getElementById("status"),actionEl=document.getElementById("action");
   function setStatus(m){statusEl.textContent=m}
+  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML}
   function showSignIn(){
     actionEl.innerHTML='<button id="si">Sign in with Slack</button>';
     document.getElementById("si").onclick=signIn;
@@ -1572,20 +1640,49 @@ app.get("/slack/claim", (c) => {
     var d=await r.json().catch(function(){return{}});
     if(d.url){location.href=d.url}else{setStatus("Could not start Slack sign-in.")}
   }
-  async function claim(){
-    if(!team||!token){setStatus("This claim link is missing its parameters.");return}
-    setStatus("Connecting your workspace…");
-    var r=await fetch("/api/slack/claim",{method:"POST",headers:{"content-type":"application/json"},credentials:"include",body:JSON.stringify({team:team,token:token})});
-    var d=await r.json().catch(function(){return{}});
-    if(d.ok){setStatus("Connected! Redirecting…");location.href=d.orgSlug?"/"+d.orgSlug+"/agents?connected=slack":"/";return}
-    if(d.error==="unauthenticated"||d.error==="slack_signin_required"){setStatus("Sign in with Slack to verify you are an admin of this workspace.");showSignIn();return}
-    if(d.error==="not_admin"){setStatus("You must be a workspace admin or owner to connect this workspace.");return}
-    if(d.error==="invalid_token"){setStatus("This claim link is invalid or has already been used.");return}
-    if(d.error==="no_pending_install"){setStatus("This workspace install was not found — it may have expired or already been connected.");return}
-    if(d.error==="no_org"){setStatus("Your account has no organization to connect this workspace to.");return}
+  function handleError(err){
+    if(err==="unauthenticated"||err==="slack_signin_required"){setStatus("Sign in with Slack to verify you are an admin of this workspace.");showSignIn();return}
+    if(err==="not_admin"){setStatus("You must be a workspace admin or owner to connect this workspace.");return}
+    if(err==="not_member_of_org"){setStatus("You are not a member of the selected organization.");return}
+    if(err==="invalid_token"){setStatus("This claim link is invalid or has already been used.");return}
+    if(err==="no_pending_install"){setStatus("This workspace install was not found — it may have expired or already been connected.");return}
+    if(err==="no_org"){setStatus("Your account has no Lobu organization to connect this workspace to.");return}
     setStatus("Something went wrong connecting this workspace.");
   }
-  claim();
+  // CONFIRM step: user explicitly accepts connecting the workspace to a chosen org.
+  function showConfirm(workspaceName, orgs){
+    var name=workspaceName||"this Slack workspace";
+    setStatus("You're an admin of "+name+". Choose the Lobu organization to connect it to:");
+    var picker;
+    if(orgs.length>1){
+      picker='<select id="org" style="width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:15px;margin:6px 0 16px">'+
+        orgs.map(function(o){return '<option value="'+esc(o.slug)+'">'+esc(o.name)+'</option>'}).join('')+'</select>';
+    } else {
+      picker='<div style="margin:6px 0 16px;font-weight:600">'+esc(orgs[0].name)+'</div>';
+    }
+    actionEl.innerHTML=picker+'<button id="connect">Connect '+esc(name)+'</button>';
+    document.getElementById("connect").onclick=function(){
+      var org=orgs.length>1?document.getElementById("org").value:orgs[0].slug;
+      doClaim(org);
+    };
+  }
+  async function doClaim(org){
+    actionEl.innerHTML="";
+    setStatus("Connecting "+ (org||"") +"…");
+    var r=await fetch("/api/slack/claim",{method:"POST",headers:{"content-type":"application/json"},credentials:"include",body:JSON.stringify({team:team,token:token,org:org})});
+    var d=await r.json().catch(function(){return{}});
+    if(d.ok){setStatus("Connected! Redirecting…");location.href=d.orgSlug?"/"+d.orgSlug+"/agents?connected=slack":"/";return}
+    handleError(d.error);
+  }
+  async function loadContext(){
+    if(!team||!token){setStatus("This claim link is missing its parameters.");return}
+    setStatus("Checking your access…");
+    var r=await fetch("/api/slack/claim/context?team="+encodeURIComponent(team)+"&t="+encodeURIComponent(token),{credentials:"include"});
+    var d=await r.json().catch(function(){return{}});
+    if(d.ok){showConfirm(d.workspaceName,d.orgs||[]);return}
+    handleError(d.error);
+  }
+  loadContext();
 </script>
 </body></html>`;
 	return c.html(html);

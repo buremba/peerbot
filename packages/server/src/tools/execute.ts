@@ -44,17 +44,16 @@ export interface AuthContext {
   scopedToOrg: boolean;
   allowCrossOrg: boolean;
   instructions?: string;
-  allowInternalTools?: boolean;
   /**
-   * Per-turn allowlist of internal admin tool names this request may call even
-   * on the worker (/mcp) path. Carried on the builder/system agent's per-run
-   * worker token (see WorkerTokenData.adminTools); empty/null for everyone else.
+   * Per-turn LIMIT on which tools may execute admin-tier actions. Carried on
+   * the builder/system agent's per-run worker token (see
+   * WorkerTokenData.adminTools); empty/null for everyone else (no limit —
+   * role × scope decide). Non-admin-tier actions are unaffected.
    */
   adminTools?: string[] | null;
 }
 
 export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
-  const pathname = new URL(c.req.url).pathname;
   const mcpAuthInfo = c.var.mcpAuthInfo ?? null;
   const tokenType: TokenType =
     mcpAuthInfo?.tokenType === 'pat' ? 'pat'
@@ -62,12 +61,6 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     : c.var.session?.userId ? 'session'
     : 'anonymous';
   const scopedToOrg = !!c.req.param('orgSlug');
-  // Blanket internal-tool access: the REST proxy (non-`/mcp`) and the worker
-  // memory-direct-auth path. Computed here because `adminTools` below must NOT
-  // narrow a caller that already has it (see the note there).
-  const allowInternalTools =
-    !pathname.startsWith('/mcp') ||
-    c.req.header('x-lobu-memory-direct-auth') === '1';
 
   return {
     organizationId: c.var.organizationId,
@@ -95,29 +88,11 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     baseUrl: getConfiguredPublicOrigin() ?? '',
     scopedToOrg,
     allowCrossOrg: tokenType === 'oauth' && !scopedToOrg,
-    allowInternalTools,
-    // Builder admin-tool grant. Verified-worker first:
-    //   1. the verified worker token's per-turn allowlist (the builder/system
-    //      agent run), carried through mcpAuthInfo — its narrow list wins; else
-    //   2. an external MCP caller (Slackbot/Claude/PAT) whose token holds the
-    //      `mcp:admin` scope — surface the builder tools so an approved admin
-    //      can drive agent management + approvals over MCP (e.g. the in-Slack
-    //      "@lobu build an agent" flow and its approval callback).
-    // Check `mcpAuthInfo.scopes` (real grants), NOT `scopes` above: session/
-    // anonymous callers carry the `*` sentinel, which would bypass the scope
-    // check. CRITICAL: only derive this list when `allowInternalTools` is FALSE
-    // (the external `/mcp` path). A non-empty allowlist is the LIMIT in
-    // `checkToolAccess`, so deriving it for a caller that ALREADY has blanket
-    // internal-tool access (worker direct-auth, admin REST proxy — both
-    // `allowInternalTools === true`) would NARROW them to just these two tools,
-    // not widen. The owner/admin-role + `mcp:admin` gate still fires underneath.
-    adminTools:
-      mcpAuthInfo?.adminTools ??
-      (!allowInternalTools &&
-      mcpAuthInfo != null &&
-      hasRequiredMcpScope('admin', mcpAuthInfo.scopes ?? [])
-        ? ['manage_agents', 'manage_operations']
-        : null),
+    // Builder admin-tool LIMIT: only the verified worker token's per-turn
+    // allowlist (the builder/system agent run) carries this. External
+    // `mcp:admin` callers need no grant — every tool is reachable uniformly
+    // and role × scope decide, so the old two-tool external allowlist is gone.
+    adminTools: mcpAuthInfo?.adminTools ?? null,
   };
 }
 
@@ -147,31 +122,29 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
 
   const tool = getTool(toolName);
   // Genuinely unregistered → typed error so the REST proxy can fire a Sentry
-  // alert (registry/frontend drift). Internal-tool hidden from MCP → plain
-  // Error to avoid leaking the existence of internal handlers.
+  // alert (registry/frontend drift).
   if (!tool) {
     throw new ToolNotRegisteredError(toolName);
-  }
-  if (tool.internal) {
-    const adminAllowlist = authCtx.adminTools;
-    if (adminAllowlist && adminAllowlist.length > 0) {
-      // System-agent (builder) run: the per-turn allowlist is the LIMIT, not an
-      // addition. It OVERRIDES the blanket `allowInternalTools` so the builder
-      // can only reach its designated admin tools (manage_agents, …) — never
-      // every internal tool — even though its worker traverses the direct-auth
-      // path that would otherwise enable all of them. Other callers (no
-      // allowlist) keep the existing `allowInternalTools` behavior unchanged.
-      if (!adminAllowlist.includes(toolName)) {
-        throw new Error(`Tool not found: ${toolName}`);
-      }
-    } else if (!authCtx.allowInternalTools) {
-      throw new Error(`Tool not found: ${toolName}`);
-    }
   }
 
   const isReadOnly = tool.annotations?.readOnlyHint === true;
   const { memberRole: role } = authCtx;
   const requiredAccess = getRequiredAccessLevel(toolName, args, isReadOnly);
+
+  // System-agent (builder) run: the per-turn allowlist is a LIMIT on which
+  // tools may exercise ADMIN-tier actions. Read/write-tier actions follow the
+  // uniform role × scope model like every other caller.
+  const adminAllowlist = authCtx.adminTools;
+  if (
+    requiredAccess === 'admin' &&
+    adminAllowlist &&
+    adminAllowlist.length > 0 &&
+    !adminAllowlist.includes(toolName)
+  ) {
+    throw new Error(
+      `This agent run may not perform admin actions with ${toolName}. Allowed admin tools: ${adminAllowlist.join(', ')}.`
+    );
+  }
 
   if (!role && !isPublicReadable(toolName, args)) {
     if (authCtx.userId) {

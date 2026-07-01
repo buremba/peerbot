@@ -1,17 +1,25 @@
 /**
- * Internal REST/CLI tool surface.
+ * Admin tool surface (manage_*, watcher reads, knowledge reads, notify).
  *
- * External MCP clients see the small `search_sdk`/`query_sdk`/`run_sdk`/`save_memory`/...
- * surface from `registry.ts`. The frontend, lobu-cli, and other REST/session
- * callers reach the named handlers below by `name` via `POST /api/:orgSlug/:toolName`.
+ * These tools are exposed uniformly on every surface — MCP `tools/list`,
+ * `POST /api/:orgSlug/:toolName`, the ClientSDK namespaces, and the CLI.
+ * There is no visibility flag: what a caller can see and do is decided purely
+ * by per-action access tier × member role × `mcp:*` scope
+ * (see `auth/tool-access.ts` and the contracts in `tools/contracts/`).
  *
- * `restToolProxy` sets `allowInternalTools=true` (since the request didn't come
- * in over `/mcp`), so `internal: true` tools are reachable by REST but hidden
- * from MCP `tools/list`.
+ * Capabilities migrated to `tools/contracts/*` contribute their
+ * name/description/annotations through `contractToolEntry` — the schema and
+ * handler stay bound here (contracts are pure modules and cannot import
+ * them). The literal entries are the not-yet-migrated tools.
  */
 
 import type { TSchema } from "@sinclair/typebox";
 import type { Env } from "../../index";
+import {
+	contractToolEntry,
+	schedulesCapability,
+	watchersCapability,
+} from "../contracts";
 import { GetContentSchema, getContent } from "../get_content";
 import { GetWatcherSchema, getWatcher } from "../get_watchers";
 import type { ToolAnnotations, ToolContext, ToolDefinition } from "../registry";
@@ -49,24 +57,19 @@ import {
 } from "./manage_watchers";
 import { NotifySchema, notify } from "./notify";
 
-interface InternalToolEntry {
+interface AdminToolEntry {
 	name: string;
 	description: string;
 	schema: TSchema;
 	handler: (args: any, env: Env, ctx: ToolContext) => Promise<unknown>;
 	/** Defaults to `{ destructiveHint: false }`. */
 	annotations?: ToolAnnotations;
-	/**
-	 * `true` (default) hides from MCP `tools/list` — REST/session callers can
-	 * still reach it. `false` keeps it on the public MCP surface.
-	 */
-	internal?: boolean;
 }
 
 const READ_ONLY: ToolAnnotations = { readOnlyHint: true, idempotentHint: true };
 const WRITE: ToolAnnotations = { destructiveHint: false };
 
-const ENTRIES: InternalToolEntry[] = [
+const ENTRIES: AdminToolEntry[] = [
 	{
 		name: "manage_entity",
 		description: "Entity management. SDK alternative: client.entities.",
@@ -128,35 +131,30 @@ const ENTRIES: InternalToolEntry[] = [
 		handler: notify,
 		annotations: { destructiveHint: false },
 	},
-	{
-		name: "manage_schedules",
-		description:
-			"Create / list / pause / cancel recurring or one-shot scheduled jobs. Supports send_notification and wake_agent action types. Per-row attribution lets you trace what scheduled it and from where.",
-		schema: ManageSchedulesSchema,
-		handler: manageSchedules,
-		annotations: { destructiveHint: false },
-	},
-	{
-		name: "manage_watchers",
-		description: "Watcher management. SDK alternative: client.watchers.",
-		schema: ManageWatchersSchema,
-		handler: manageWatchers,
-	},
-	{
-		name: "list_watchers",
-		description: "List watchers. SDK alternative: client.watchers.list.",
-		schema: ListWatchersSchema,
-		handler: listWatchers,
-		annotations: READ_ONLY,
-	},
-	{
-		name: "get_watcher",
-		description:
-			"Watcher detail + windows. SDK alternative: client.watchers.get.",
-		schema: GetWatcherSchema,
-		handler: getWatcher,
-		annotations: READ_ONLY,
-	},
+	contractToolEntry(
+		schedulesCapability,
+		"manage_schedules",
+		ManageSchedulesSchema,
+		manageSchedules,
+	),
+	contractToolEntry(
+		watchersCapability,
+		"manage_watchers",
+		ManageWatchersSchema,
+		manageWatchers,
+	),
+	contractToolEntry(
+		watchersCapability,
+		"list_watchers",
+		ListWatchersSchema,
+		listWatchers,
+	),
+	contractToolEntry(
+		watchersCapability,
+		"get_watcher",
+		GetWatcherSchema,
+		getWatcher,
+	),
 	{
 		name: "read_knowledge",
 		description:
@@ -180,11 +178,10 @@ const ENTRIES: InternalToolEntry[] = [
 	},
 ];
 
-export const INTERNAL_REST_TOOLS: ToolDefinition[] = ENTRIES.map((entry) => ({
+export const ADMIN_TOOLS: ToolDefinition[] = ENTRIES.map((entry) => ({
 	name: entry.name,
 	description: entry.description,
 	inputSchema: entry.schema,
 	annotations: entry.annotations ?? WRITE,
-	internal: entry.internal ?? true,
 	handler: entry.handler,
 }));

@@ -218,24 +218,21 @@ describe('extractAuthContext scopes (F8 source side)', () => {
   });
 });
 
-describe('extractAuthContext adminTools — builder-tool grant must only widen', () => {
-  // A non-empty `adminTools` is the LIMIT in checkToolAccess (it overrides
-  // `allowInternalTools`). So the scope-derived builder-tool allowlist may only
-  // be handed to a caller that does NOT already have blanket internal access —
-  // otherwise it NARROWS them (regression: worker direct-auth + admin REST
-  // proxy both carry `mcp:admin` AND `allowInternalTools === true`).
+describe('extractAuthContext adminTools — only the verified worker allowlist rides through', () => {
+  // `adminTools` is a LIMIT in checkToolAccess on ADMIN-tier actions. Under
+  // the uniform surface model (no internal-tool axis) no allowlist is ever
+  // DERIVED for external admin callers — role x scope already grant them every
+  // tool. Only the builder worker token's per-run allowlist is carried.
   function ctxFor(opts: {
     scopes?: string[];
     adminTools?: string[] | null;
     url?: string;
-    directAuth?: boolean;
   }) {
     const fake = {
       req: {
         url: opts.url ?? 'http://localhost/mcp/acme',
         param: (_k: string) => undefined,
-        header: (k: string) =>
-          k === 'x-lobu-memory-direct-auth' && opts.directAuth ? '1' : undefined,
+        header: (_k: string) => undefined,
       },
       var: {
         mcpAuthInfo: {
@@ -250,27 +247,16 @@ describe('extractAuthContext adminTools — builder-tool grant must only widen',
     return extractAuthContext(fake);
   }
 
-  it('surfaces the two builder tools to an external /mcp admin caller (widens)', () => {
+  it('does NOT derive an allowlist for an external /mcp admin caller (uniform surface)', () => {
     const ctx = ctxFor({ scopes: ['mcp:admin'] });
-    expect(ctx.allowInternalTools).toBe(false);
-    expect(ctx.adminTools).toEqual(['manage_agents', 'manage_operations']);
-  });
-
-  it('does NOT derive an allowlist for a worker direct-auth admin caller (would narrow)', () => {
-    const ctx = ctxFor({
-      scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
-      directAuth: true,
-    });
-    expect(ctx.allowInternalTools).toBe(true);
     expect(ctx.adminTools).toBeNull();
   });
 
-  it('does NOT derive an allowlist for an admin caller on the REST proxy (would narrow)', () => {
+  it('does NOT derive an allowlist for an admin caller on the REST proxy', () => {
     const ctx = ctxFor({
       scopes: ['mcp:admin'],
       url: 'http://localhost/api/v1/tools/manage_watchers',
     });
-    expect(ctx.allowInternalTools).toBe(true);
     expect(ctx.adminTools).toBeNull();
   });
 
@@ -278,7 +264,6 @@ describe('extractAuthContext adminTools — builder-tool grant must only widen',
     const ctx = ctxFor({
       scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
       adminTools: ['manage_agents'],
-      directAuth: true,
     });
     expect(ctx.adminTools).toEqual(['manage_agents']);
   });
@@ -502,10 +487,10 @@ describe('checkToolAccess', () => {
     ).not.toThrow();
   });
 
-  it('hides internal tools from external MCP calls even when the name is known', () => {
+  it('exposes admin tools on external MCP uniformly (no internal-tool hiding)', () => {
     expect(() =>
       checkToolAccess('manage_entity', { action: 'list' }, { ...baseAuth, memberRole: 'owner' })
-    ).toThrow('Tool not found: manage_entity');
+    ).not.toThrow();
   });
 
   it('throws ToolNotRegisteredError for genuinely unregistered names so REST proxy can alert', () => {
@@ -514,35 +499,48 @@ describe('checkToolAccess', () => {
     ).toThrow(ToolNotRegisteredError);
   });
 
-  it('allows REST compatibility paths to reach internal tools subject to access', () => {
+  it('allows admin tools on any surface subject to role x scope (uniform model)', () => {
     expect(() =>
       checkToolAccess('manage_entity', { action: 'create' }, {
         ...baseAuth,
         memberRole: 'member',
         scopes: ['mcp:write'],
-        allowInternalTools: true,
       })
     ).not.toThrow();
   });
 
   it.each(['list_watchers', 'get_watcher', 'read_knowledge'])(
-    'hides %s from external MCP but keeps it reachable via REST',
+    'exposes %s uniformly on MCP and REST (read-tier)',
     (toolName) => {
-      // External MCP — must look like an unknown tool to the caller.
       expect(() =>
         checkToolAccess(toolName, {}, { ...baseAuth, memberRole: 'owner' })
-      ).toThrow(`Tool not found: ${toolName}`);
-
-      // REST proxy — frontend reaches the same handler.
+      ).not.toThrow();
       expect(() =>
-        checkToolAccess(
-          toolName,
-          {},
-          { ...baseAuth, memberRole: 'member', allowInternalTools: true }
-        )
+        checkToolAccess(toolName, {}, { ...baseAuth, memberRole: 'member' })
       ).not.toThrow();
     }
   );
+
+  it('builder adminTools allowlist limits ADMIN-tier actions to listed tools only', () => {
+    const builderAuth = {
+      ...baseAuth,
+      memberRole: 'owner',
+      scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+      adminTools: ['manage_agents'],
+    };
+    // Admin-tier action on a listed tool — allowed.
+    expect(() =>
+      checkToolAccess('manage_agents', { action: 'update' }, builderAuth)
+    ).not.toThrow();
+    // Admin-tier action on an unlisted tool — blocked by the allowlist.
+    expect(() =>
+      checkToolAccess('manage_classifiers', { action: 'delete' }, builderAuth)
+    ).toThrow(/may not perform admin actions/);
+    // Read/write-tier actions on unlisted tools follow the uniform model.
+    expect(() =>
+      checkToolAccess('manage_classifiers', { action: 'list' }, builderAuth)
+    ).not.toThrow();
+  });
 
   it('lets members run query_sql (read-tier; auth/identity tables gated per-query, not at the tool gate)', () => {
     expect(() =>
@@ -563,10 +561,8 @@ describe('checkToolAccess', () => {
 
 describe('first-party tool-name coverage', () => {
   // Both surfaces share the same dispatch (`POST /api/:orgSlug/:toolName` →
-  // `restToolProxy` → `executeTool` → `getTool(name)`), but the CLI's
-  // browser-auth flow goes through MCP RPC and needs its tools to *also* be
-  // visible on `tools/list` (i.e. NOT `internal: true`). These tests pin both
-  // invariants.
+  // `restToolProxy` → `executeTool` → `getTool(name)`); tools are listed
+  // uniformly on MCP `tools/list` as well. These tests pin registration.
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const webSrcRoot = join(__dirname, '..', '..', '..', '..', 'web', 'src');
   // The standalone lobu-cli package was merged into @lobu/cli's `memory`
@@ -656,20 +652,15 @@ describe('first-party tool-name coverage', () => {
   });
 
   // CLI bootstrap tools that the `lobu memory browser-auth` flow drives via the
-  // REST proxy (`POST /api/{slug}/{toolName}`). They must be registered AND
-  // `internal: true` so they stay off the external MCP surface — no external
-  // MCP client should see CLI bootstrap tools in `tools/list`.
+  // REST proxy (`POST /api/{slug}/{toolName}`). Under the uniform surface
+  // model they are ordinary registered tools — visible everywhere, gated by
+  // per-action tier x role x scope like everything else.
   const CLI_REST_BOOTSTRAP_TOOLS = ['manage_catalog', 'manage_auth_profiles'] as const;
 
   it.each(CLI_REST_BOOTSTRAP_TOOLS)(
-    'CLI bootstrap tool %s is registered and hidden from external MCP tools/list',
+    'CLI bootstrap tool %s is registered',
     (name) => {
-      const tool = getTool(name);
-      expect(tool).toBeDefined();
-      // `internal: true` keeps these tools reachable via the REST proxy
-      // (`allowInternalTools=true` for non-`/mcp` paths) while hiding them
-      // from external MCP clients like Claude Desktop or Cursor.
-      expect(tool?.internal).toBe(true);
+      expect(getTool(name)).toBeDefined();
     }
   );
 

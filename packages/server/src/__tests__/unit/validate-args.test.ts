@@ -158,7 +158,7 @@ describe("registry completeness", () => {
     // `list_organizations` is a throw-stub in the registry: executeTool
     // special-cases it and calls the (wrapped) listOrganizations directly.
     const exempt = new Set(["list_organizations"]);
-    const unwrapped = getAllTools({ includeInternalTools: true })
+    const unwrapped = getAllTools()
       .map((t) => t.name)
       .filter((name) => !exempt.has(name))
       .filter((name) => brandedName(getTool(name)?.handler) !== name);

@@ -19,7 +19,7 @@
 
 import { getPublicReadableActions, getRequiredAccessLevel } from '../auth/tool-access';
 import type { Env } from '../index';
-import { INTERNAL_REST_TOOLS } from './admin';
+import { ADMIN_TOOLS } from './admin';
 import { ListMetricsSchema, listMetrics } from './admin/list_metrics';
 import { MetricSeriesSchema, metricSeries } from './admin/metric_series';
 import { QueryMetricSchema, queryMetric } from './admin/query_metric';
@@ -110,8 +110,6 @@ export interface ToolDefinition<T = any> {
   description: string;
   inputSchema: any; // JSON Schema
   annotations?: ToolAnnotations;
-  /** Internal tools are excluded from external MCP clients (only available to the frontend) */
-  internal?: boolean;
   handler: (args: T, env: Env, ctx: ToolContext) => Promise<any>;
 }
 
@@ -193,7 +191,6 @@ const TOOLS: ToolDefinition[] = [
       'Run a read-only time-series SQL for dashboard sparklines. Caller passes a single SELECT returning a bucket column + N numeric stat columns; the same validator/auto-scoper that powers `query_sql` injects `$1 = organization_id`. Returns `{ columns, rows }` for direct frontend consumption.',
     inputSchema: MetricSeriesSchema,
     annotations: READ_ONLY,
-    internal: true,
     handler: metricSeries,
   },
   {
@@ -204,8 +201,8 @@ const TOOLS: ToolDefinition[] = [
     annotations: { destructiveHint: true },
     handler: runSdkScript,
   },
-  // ─── REST/session/CLI surface (manage_*, list_watchers, get_watcher, ...) ─
-  ...INTERNAL_REST_TOOLS,
+  // ─── Admin surface (manage_*, list_watchers, get_watcher, ...) ────────────
+  ...ADMIN_TOOLS,
   // ─── Path resolution (frontend internal) ──────────────────────────────────
   {
     name: 'resolve_path',
@@ -213,7 +210,6 @@ const TOOLS: ToolDefinition[] = [
       'Resolve a namespace-based URL path like /acme/entity-type/entity-slug into namespace and entity details. Returns template_data with executed data source query results when templates define data_sources.',
     inputSchema: ResolvePathSchema,
     annotations: READ_ONLY,
-    internal: true,
     handler: resolvePath,
   },
 ];
@@ -328,36 +324,36 @@ function filterSchemaForAccessLevel(
 }
 
 // The tool registry + its schemas are static after module load, so the
-// computed tool list depends only on the three options. Memoize per option
+// computed tool list depends only on the two options. Memoize per option
 // tuple (a handful of distinct values in practice).
 const allToolsCache = new Map<string, ReturnType<typeof computeAllTools>>();
 
 /**
- * Get all tool definitions for MCP tools/list
+ * Get all tool definitions for MCP tools/list.
+ *
+ * Every registered tool is listed on every surface; the only filters are the
+ * caller's access level (role × scope) and public-workspace readability.
  */
 export function getAllTools(options?: {
-  includeInternalTools?: boolean;
   publicOnly?: boolean;
   maxAccessLevel?: 'read' | 'write' | 'admin';
 }) {
-  const includeInternalTools = options?.includeInternalTools ?? true;
   const publicOnly = options?.publicOnly ?? false;
   const maxAccessLevel = options?.maxAccessLevel ?? 'admin';
-  const cacheKey = `${includeInternalTools ? 1 : 0}:${publicOnly ? 1 : 0}:${maxAccessLevel}`;
+  const cacheKey = `${publicOnly ? 1 : 0}:${maxAccessLevel}`;
   let cached = allToolsCache.get(cacheKey);
   if (!cached) {
-    cached = computeAllTools(includeInternalTools, publicOnly, maxAccessLevel);
+    cached = computeAllTools(publicOnly, maxAccessLevel);
     allToolsCache.set(cacheKey, cached);
   }
   return cached;
 }
 
 function computeAllTools(
-  includeInternalTools: boolean,
   publicOnly: boolean,
   maxAccessLevel: 'read' | 'write' | 'admin'
 ) {
-  return TOOLS.filter((tool) => includeInternalTools || !tool.internal)
+  return TOOLS
     .filter((tool) => !publicOnly || getPublicReadableActions(tool.name) !== undefined)
     .map((tool) => {
       let inputSchema = tool.inputSchema;

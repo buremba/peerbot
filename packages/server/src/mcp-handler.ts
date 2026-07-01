@@ -150,15 +150,11 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
 
   // tools/list — return our TypeBox JSON Schemas
   // Read auth state dynamically so the list updates after auth upgrades.
+  // Every registered tool is listed uniformly; the caller's access level
+  // (role × scope) and public-workspace readability are the only filters.
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    // System-agent (builder) runs carry a per-turn internal-tool allowlist.
-    // Surface exactly those internal tools (and no other), so the model
-    // discovers only what the execute gate will actually permit — not every
-    // internal tool the direct-auth path would otherwise expose.
     const adminAllowlist = authCtx.adminTools ?? null;
     const hasAdminAllowlist = !!adminAllowlist && adminAllowlist.length > 0;
-    const includeInternalTools =
-      authCtx.allowInternalTools === true || hasAdminAllowlist;
     const publicOnly = !!authCtx.organizationId && !authCtx.memberRole;
     const roleAccessLevel = !authCtx.memberRole
       ? 'read'
@@ -179,28 +175,26 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
           ? 'write'
           : 'admin';
     const staticTools = getAllTools({
-      includeInternalTools,
       publicOnly,
       maxAccessLevel,
     });
-    // On a system-agent run, drop any internal tool outside the allowlist so the
-    // listing matches the execute gate (no "Tool not found" surprises). The
-    // returned shape omits `internal`, so derive the non-internal set from a
-    // second pass with internal tools excluded; a tool is visible if it's
-    // non-internal OR explicitly allowlisted.
+    // System-agent (builder) run: the per-turn allowlist LIMITS which tools may
+    // exercise admin-tier actions (see checkToolAccess). Mirror that here so
+    // the listing matches the execute gate: non-allowlisted tools are shown at
+    // write-tier (their admin-only action variants filtered out; tools with
+    // nothing left below admin disappear).
     let visibleTools = staticTools;
-    if (hasAdminAllowlist) {
+    if (hasAdminAllowlist && maxAccessLevel === 'admin') {
       const allowed = new Set(adminAllowlist);
-      const nonInternal = new Set(
-        getAllTools({
-          includeInternalTools: false,
-          publicOnly,
-          maxAccessLevel,
-        }).map((t) => t.name)
+      const writeTier = new Map(
+        getAllTools({ publicOnly, maxAccessLevel: 'write' }).map((t) => [
+          t.name,
+          t,
+        ])
       );
-      visibleTools = staticTools.filter(
-        (t) => nonInternal.has(t.name) || allowed.has(t.name)
-      );
+      visibleTools = staticTools
+        .map((t) => (allowed.has(t.name) ? t : writeTier.get(t.name)))
+        .filter((t): t is NonNullable<typeof t> => t !== undefined);
     }
     const allTools = visibleTools.map((t) => ({
       name: t.name,

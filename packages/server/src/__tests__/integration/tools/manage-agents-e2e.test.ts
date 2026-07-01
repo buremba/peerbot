@@ -82,7 +82,6 @@ describe("manage_agents — builder gate e2e", () => {
 		baseUrl: "",
 		scopedToOrg: true,
 		allowCrossOrg: false,
-		allowInternalTools: true,
 	});
 
 	beforeAll(async () => {

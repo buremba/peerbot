@@ -10,9 +10,19 @@
  * SDK so it falls through to the default read-tier check.
  */
 
+import {
+	CONTRACT_MEMBER_WRITE_ACTIONS,
+	CONTRACT_OWNER_ADMIN_ACTIONS,
+	CONTRACT_PUBLIC_READ_ACTIONS,
+} from "../tools/contracts";
+
 export type ToolAccessLevel = "read" | "write" | "admin";
 
+// Capabilities migrated to `tools/contracts/*` contribute their rows via the
+// CONTRACT_* spreads — one colocated source of truth per capability. The
+// literal entries that remain below are the not-yet-migrated tools.
 const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
+	...CONTRACT_MEMBER_WRITE_ACTIONS,
 	save_memory: null,
 	// `run_sdk` reaches admin handlers inside the script; per-call gates fire
 	// on each SDK method, so the entry-point check is just write-tier.
@@ -37,16 +47,10 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 		"test_auth_profile",
 		"get_auth_profile",
 	]),
-	// `complete_window` is how watcher AGENTS report results — server-side
-	// agent workers and device CLI runs (the Owletto Mac dispatcher wires the
-	// gateway MCP into the spawned CLI; device tokens carry mcp:write, not
-	// admin). The handler still enforces org/entity write access via
-	// requireWatcherAccess; watcher ADMINISTRATION (create/update/delete/…)
-	// stays admin-tier below.
-	manage_watchers: new Set(["complete_window"]),
 };
 
 const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
+	...CONTRACT_OWNER_ADMIN_ACTIONS,
 	manage_entity: new Set(["delete"]),
 	manage_entity_schema: new Set([
 		"create",
@@ -94,18 +98,6 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"set_default_auth_profile",
 	]),
 	manage_operations: new Set(["execute", "approve", "reject"]),
-	manage_watchers: new Set([
-		// `complete_window` is in MEMBER_WRITE_ACTIONS — it's the agent result
-		// path (server workers + device CLI over MCP), not administration.
-		"create",
-		"update",
-		"create_version",
-		"trigger",
-		"delete",
-		"set_reaction_script",
-		"submit_feedback",
-		"create_from_version",
-	]),
 	manage_agents: new Set([
 		"list",
 		"get",
@@ -124,6 +116,7 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 };
 
 const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
+	...CONTRACT_PUBLIC_READ_ACTIONS,
 	resolve_path: null,
 	search_memory: null,
 	// SDK method discovery — safe to expose; surfaces no data.
@@ -131,8 +124,6 @@ const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	// Internal read-paths — kept for tests that exercise public-readability
 	// semantics; legitimate external access is via `query_sdk` / `run_sdk`.
 	read_knowledge: null,
-	get_watcher: null,
-	list_watchers: null,
 	manage_entity: new Set(["list", "get", "list_links"]),
 	manage_entity_schema: new Set(["list", "get", "audit", "list_rules"]),
 	manage_connections: new Set([
@@ -146,12 +137,6 @@ const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	manage_feeds: new Set(["list_feeds", "read_feed"]),
 	manage_auth_profiles: new Set(["list_auth_profiles"]),
 	manage_operations: new Set(["list_available", "list_runs", "get_run"]),
-	manage_watchers: new Set([
-		"get_versions",
-		"get_version_details",
-		"get_component_reference",
-		"get_feedback",
-	]),
 	manage_classifiers: new Set(["list"]),
 	manage_view_templates: new Set(["get"]),
 };

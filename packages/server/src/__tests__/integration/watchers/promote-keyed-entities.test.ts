@@ -80,7 +80,6 @@ function ownerAuthCtx(orgId: string, userId: string): AuthContext {
     baseUrl: '',
     scopedToOrg: true,
     allowCrossOrg: false,
-    allowInternalTools: true,
   };
 }
 

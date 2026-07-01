@@ -1,7 +1,14 @@
 /**
  * ClientSDK method metadata, keyed by dotted path. Drives the `search_sdk` MCP
  * tool, the read-only SDK filter (`access`), and the BANNED_PATHS guard.
+ *
+ * Capabilities migrated to `tools/contracts/*` contribute their entries via
+ * the CONTRACT_SDK_DOCS spread (pure modules — this file must stay light for
+ * the run-script-runtime CI guard); the literal entries are the
+ * not-yet-migrated namespaces.
  */
+
+import { CONTRACT_SDK_DOCS } from "../tools/contracts";
 
 export type MethodAccess = "read" | "write" | "external";
 
@@ -229,119 +236,8 @@ export default async (ctx, client) => {
 };`,
 	},
 
-	// watchers
-	"watchers.manage": {
-		summary:
-			"Raw manage_watchers action wrapper. Prefer named methods such as watchers.trigger or watchers.createVersion.",
-		access: "external",
-		example:
-			"await client.watchers.manage({ action: 'trigger', watcher_id: '42' });",
-	},
-	"watchers.list": {
-		summary:
-			"List watchers, optionally filtered by entity. Returns `{ watchers: [...] }`.",
-		access: "read",
-		example:
-			"const { watchers } = await client.watchers.list({ entity_id: 42 });",
-		usageExample: `export default async (_ctx, client) => {
-  const { watchers } = await client.watchers.list({ entity_id: 42 });
-  return watchers;
-};`,
-	},
-	"watchers.get": {
-		summary: "Fetch a watcher by id.",
-		access: "read",
-		throws: ["WatcherNotFound"],
-	},
-	"watchers.create": {
-		summary:
-			"Create a watcher. REQUIRES slug, prompt, and agent_id (the executing agent — a watcher without one is a zombie row). The output contract is not authored here: set keying_config.entity_type so extraction derives from that entity type's metadata_schema, or omit it for a free-form summary watcher. Each sources[].query must be a read-only SELECT/WITH projecting an `id` column (it runs against org-scoped virtual tables, NOT a URL). entity_id is optional (omit for an org-scoped watcher).",
-		access: "write",
-		throws: ["EntityNotFound"],
-		example:
-			"await client.watchers.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records from {{content}}.', keying_config: { entity_type: 'price', entity_path: 'prices', key_fields: ['sku'], key_output_field: 'price_key' }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
-		usageExample: `// Stand up a watcher that extracts pricing entities from recent events.
-// The output contract is derived from the \`price\` entity type metadata_schema;
-// sources[].query is a read-only SELECT projecting \`id\` (a URL here would be rejected).
-export default async (_ctx, client) => {
-  return client.watchers.create({
-    slug: 'pricing-watcher',
-    agent_id: 'agt_123', // the agent that executes this watcher (required)
-    prompt: 'Extract current pricing records from {{content}}.',
-    keying_config: {
-      entity_type: 'price',
-      entity_path: 'prices',
-      key_fields: ['sku'],
-      key_output_field: 'price_key',
-    },
-    sources: [
-      { name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' },
-    ],
-  });
-};`,
-	},
-	"watchers.update": {
-		summary: "Update watcher config (schedule, agent, model, sources).",
-		access: "write",
-	},
-	"watchers.createVersion": {
-		summary: "Create a new watcher template version.",
-		access: "write",
-	},
-	"watchers.upgrade": {
-		summary: "Move a watcher to another template version.",
-		access: "write",
-	},
-	"watchers.trigger": {
-		summary:
-			"Trigger an immediate watcher run and dispatch it to its assigned agent.",
-		access: "external",
-		example: "await client.watchers.trigger(42);",
-		usageExample: `export default async (_ctx, client) => {
-  return client.watchers.trigger(42);
-};`,
-	},
-	"watchers.delete": {
-		summary: "Delete one or more watchers.",
-		access: "write",
-	},
-	"watchers.setReactionScript": {
-		summary:
-			"Attach a raw TS reaction script (fires on window completion). Empty string removes it.",
-		access: "write",
-		throws: ["CompileError"],
-	},
-	"watchers.completeWindow": {
-		summary:
-			"Submit LLM-extracted data for a watcher window. Requires a signed window_token.",
-		access: "write",
-	},
-	"watchers.getVersions": {
-		summary: "List template versions for a watcher.",
-		access: "read",
-	},
-	"watchers.getVersionDetails": {
-		summary: "Fetch a specific watcher template version.",
-		access: "read",
-	},
-	"watchers.getComponentReference": {
-		summary: "Return watcher UI/component reference documentation.",
-		access: "read",
-	},
-	"watchers.submitFeedback": {
-		summary: "Submit field-level corrections for a watcher window.",
-		access: "write",
-	},
-	"watchers.getFeedback": {
-		summary:
-			"Read field-level feedback for a watcher, optionally scoped to a window.",
-		access: "read",
-	},
-	"watchers.createFromVersion": {
-		summary:
-			"Create watchers for multiple entities from an existing watcher version.",
-		access: "write",
-	},
+	// watchers — migrated to tools/contracts/watchers.ts; entries arrive via
+	// the CONTRACT_SDK_DOCS spread at the bottom of this record.
 
 	// connections
 	"connections.manage": {
@@ -575,6 +471,8 @@ export default async (_ctx, client) => {
 		access: "read",
 		cost: "cheap",
 	},
+
+	...CONTRACT_SDK_DOCS,
 };
 
 /** Paths that must never appear as SDK methods. Enforced by the coverage test. */

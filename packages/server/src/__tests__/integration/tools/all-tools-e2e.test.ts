@@ -267,7 +267,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 		agentId = agent.agentId;
 
 		// Owner auth context that mirrors the REST proxy: full scopes + internal
-		// tools enabled (metric_series / resolve_path are internal: true).
+		// tools enabled (incl. metric_series / resolve_path).
 		authCtx = {
 			organizationId: org.id,
 			tokenOrganizationId: org.id,
@@ -283,7 +283,6 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			baseUrl: "",
 			scopedToOrg: true,
 			allowCrossOrg: false,
-			allowInternalTools: true,
 		};
 
 		// Create the entity types this org needs via the real tool path. This also
@@ -350,7 +349,6 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 
 	it("covers every registry tool in the args fixture (catches new uncovered tools)", () => {
 		const registryToolNames = getAllTools({
-			includeInternalTools: true,
 			maxAccessLevel: "admin",
 		}).map((t) => t.name);
 		const planned = new Set(Object.keys(toolPlan()));

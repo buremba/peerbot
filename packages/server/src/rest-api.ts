@@ -287,13 +287,8 @@ export async function restToolProxy(
 
 /**
  * GET /api/:orgSlug/tools
- * List the admin REST tool surface available to the caller.
- *
- * Mirrors the access-level / scope filter that `mcp-handler.ts` applies to
- * `tools/list`, but always returns the REST-internal surface (`/api/:orgSlug/*`
- * is never the public MCP path, so `allowInternalTools` is true here). The
- * `internal` flag is preserved on each row so CLI clients can mark tools that
- * external MCP clients don't see.
+ * List the tool surface available to the caller — the same uniform set MCP
+ * `tools/list` returns, filtered by the caller's access level (role × scope).
  */
 export async function restListTools(c: Context<{ Bindings: Env }>) {
 	try {
@@ -327,24 +322,17 @@ export async function restListTools(c: Context<{ Bindings: Env }>) {
 					? "write"
 					: "admin";
 		const tools = getAllTools({
-			includeInternalTools: true,
 			publicOnly: false,
 			maxAccessLevel,
 		});
-		// Re-attach the `internal` flag from the source registry (getAllTools
-		// strips it) so callers can distinguish UI-only handlers from public MCP
-		// tools.
-		const withInternalFlag = tools.map((tool) => {
-			const source = getTool(tool.name);
-			return {
+		return c.json({
+			tools: tools.map((tool) => ({
 				name: tool.name,
 				description: tool.description,
 				inputSchema: tool.inputSchema,
 				...(tool.annotations && { annotations: tool.annotations }),
-				internal: source?.internal === true,
-			};
+			})),
 		});
-		return c.json({ tools: withInternalFlag });
 	} catch (error) {
 		return c.json({ error: errorMessage(error) }, 400);
 	}

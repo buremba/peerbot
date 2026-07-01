@@ -125,7 +125,20 @@ const formatRef = { rawJson: false };
  */
 const MCP_APP_RESOURCES: Record<string, { name: string; appDir: string }> = {
   'ui://lobu/approve': { name: 'Approve agent change', appDir: 'approval' },
+  'ui://lobu/question': { name: 'Answer question', appDir: 'question' },
+  'ui://lobu/grant': { name: 'Approve tool', appDir: 'grant' },
+  'ui://lobu/link': { name: 'Open link', appDir: 'link-button' },
 };
+
+/**
+ * Built MCP App dirs, derived from the registry above. The asset route
+ * (`/mcp-apps/:app/index.html`) validates its path param against this set so it
+ * only ever serves a registered bundle — an untrusted `:app` can't be used to
+ * probe the filesystem.
+ */
+export const MCP_APP_DIRS: ReadonlySet<string> = new Set(
+  Object.values(MCP_APP_RESOURCES).map((r) => r.appDir)
+);
 
 function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
   const server = new Server(

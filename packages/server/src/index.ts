@@ -58,7 +58,7 @@ import {
 	claimSlackPendingInstall,
 	resolveSlackPendingByTenant,
 } from "./lobu/stores/slack-installations";
-import { handleMcp } from "./mcp-handler";
+import { handleMcp, MCP_APP_DIRS } from "./mcp-handler";
 import {
 	restDeleteNotification,
 	restGetUnreadCount,
@@ -1707,7 +1707,11 @@ app.all("/mcp/:orgSlug/", handleMcp);
 // tool via the SPA host bridge. The same `readMcpAppBundle` resolver backs the
 // MCP `resources/read` path for external hosts.
 app.get("/mcp-apps/:app/index.html", async (c) => {
-	const html = await readMcpAppBundle(c.req.param("app"));
+	const app_ = c.req.param("app");
+	// Only serve a bundle the MCP App registry declares — never an arbitrary
+	// path param.
+	if (!MCP_APP_DIRS.has(app_)) return c.notFound();
+	const html = await readMcpAppBundle(app_);
 	if (html == null) return c.notFound();
 	c.header("Content-Type", "text/html; charset=utf-8");
 	c.header("Cache-Control", "no-cache");

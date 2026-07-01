@@ -1534,6 +1534,64 @@ app.post("/api/slack/claim", async (c) => {
 });
 
 /**
+ * GET /slack/claim — the page the marketplace-install claim DM links to. A thin
+ * shell: it POSTs to /api/slack/claim (above) with the team + single-use token,
+ * and on `slack_signin_required` walks the user through Sign in with Slack (so we
+ * can verify they are a workspace admin) before retrying. Server-rendered so the
+ * whole marketplace flow stays provider-generic and needs no SPA route.
+ */
+app.get("/slack/claim", (c) => {
+	const html = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect Slack to Lobu</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b1220;color:#e6e9ef;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  .card{background:#fff;color:#0b1220;max-width:420px;width:90%;padding:40px 32px;border-radius:14px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.35)}
+  h1{font-size:20px;margin:16px 0 8px}
+  #status{color:#4b5565;margin:8px 0 20px}
+  button{background:#611f69;color:#fff;border:0;border-radius:8px;padding:12px 18px;font-size:15px;font-weight:600;cursor:pointer}
+  button:hover{opacity:.92}
+</style></head>
+<body><div class="card">
+  <div style="font-size:40px">🔗</div>
+  <h1>Connect this Slack workspace to Lobu</h1>
+  <div id="status">Connecting your workspace…</div>
+  <div id="action"></div>
+</div>
+<script>
+  var p=new URLSearchParams(location.search),team=p.get("team"),token=p.get("t");
+  var statusEl=document.getElementById("status"),actionEl=document.getElementById("action");
+  function setStatus(m){statusEl.textContent=m}
+  function showSignIn(){
+    actionEl.innerHTML='<button id="si">Sign in with Slack</button>';
+    document.getElementById("si").onclick=signIn;
+  }
+  async function signIn(){
+    setStatus("Redirecting to Slack…");
+    var r=await fetch("/api/auth/sign-in/social",{method:"POST",headers:{"content-type":"application/json"},credentials:"include",body:JSON.stringify({provider:"slack",callbackURL:location.href})});
+    var d=await r.json().catch(function(){return{}});
+    if(d.url){location.href=d.url}else{setStatus("Could not start Slack sign-in.")}
+  }
+  async function claim(){
+    if(!team||!token){setStatus("This claim link is missing its parameters.");return}
+    setStatus("Connecting your workspace…");
+    var r=await fetch("/api/slack/claim",{method:"POST",headers:{"content-type":"application/json"},credentials:"include",body:JSON.stringify({team:team,token:token})});
+    var d=await r.json().catch(function(){return{}});
+    if(d.ok){setStatus("Connected! Redirecting…");location.href=d.orgSlug?"/"+d.orgSlug+"/agents?connected=slack":"/";return}
+    if(d.error==="unauthenticated"||d.error==="slack_signin_required"){setStatus("Sign in with Slack to verify you are an admin of this workspace.");showSignIn();return}
+    if(d.error==="not_admin"){setStatus("You must be a workspace admin or owner to connect this workspace.");return}
+    if(d.error==="invalid_token"){setStatus("This claim link is invalid or has already been used.");return}
+    if(d.error==="no_pending_install"){setStatus("This workspace install was not found — it may have expired or already been connected.");return}
+    if(d.error==="no_org"){setStatus("Your account has no organization to connect this workspace to.");return}
+    setStatus("Something went wrong connecting this workspace.");
+  }
+  claim();
+</script>
+</body></html>`;
+	return c.html(html);
+});
+
+/**
  * GET /api/:orgSlug/tools
  * List admin REST tools available to the caller. Companion to the POST
  * proxy below — gives CLI/web callers a discovery surface without spinning

@@ -112,7 +112,7 @@ ARG VITE_ENVIRONMENT=production
 ENV VITE_ENVIRONMENT=$VITE_ENVIRONMENT
 ARG SKIP_WEB_BUILD=false
 RUN if [ "$SKIP_WEB_BUILD" = "false" ] && [ -f packages/owletto/package.json ]; then \
-      cd packages/owletto && bun run build; \
+      cd packages/owletto && bun run build && bun run build:mcp-apps; \
     else \
       mkdir -p /app/packages/owletto/dist; \
     fi

@@ -81,6 +81,7 @@ import { entityLinkMatchSql } from "./utils/content-search";
 import { isValidFrameAncestor } from "./utils/csp";
 import { errorMessage } from "./utils/errors";
 import logger from "./utils/logger";
+import { readMcpAppBundle } from "./utils/mcp-app-bundle";
 import { generateOpenAPISpec } from "./utils/openapi-generator";
 import {
 	extractSubdomainOrg,
@@ -1477,6 +1478,21 @@ app.all("/mcp", handleMcp);
 app.all("/mcp/", handleMcp);
 app.all("/mcp/:orgSlug", handleMcp);
 app.all("/mcp/:orgSlug/", handleMcp);
+
+// MCP App bundle — asset-only static delivery (NOT an approval endpoint). Serves
+// the self-contained `ui://` iframe payload built by owletto `build:mcp-apps`
+// (e.g. dist-mcp-apps/approval/index.html) so our own SPA can host the same
+// approval card external MCP hosts render, in a sandboxed iframe. There is no
+// approval logic here — Approve/Reject rides the existing `manage_operations`
+// tool via the SPA host bridge. The same `readMcpAppBundle` resolver backs the
+// MCP `resources/read` path for external hosts.
+app.get("/mcp-apps/:app/index.html", async (c) => {
+	const html = await readMcpAppBundle(c.req.param("app"));
+	if (html == null) return c.notFound();
+	c.header("Content-Type", "text/html; charset=utf-8");
+	c.header("Cache-Control", "no-cache");
+	return c.body(html);
+});
 
 /**
  * Catch-all route

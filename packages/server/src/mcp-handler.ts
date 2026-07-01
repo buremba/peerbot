@@ -15,7 +15,12 @@ import { randomUUID } from 'node:crypto';
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import type { Context } from 'hono';
 import { bindRequestAbortToStream, type AbortableStream } from './events/sse-abort-bridge';
 import { OAuthClientsStore } from './auth/oauth/clients';
@@ -23,6 +28,7 @@ import { isPublicReadable } from './auth/tool-access';
 import { createDbClientFromEnv } from './db/client';
 import type { Env } from './index';
 import { agentExistsInOrganization, isValidAgentId, touchAgentLastUsed } from './lobu/stores/postgres-stores';
+import { readMcpAppBundle } from './utils/mcp-app-bundle';
 import { McpSessionStore, type PersistedMcpSession } from './mcp-session-store';
 import {
   clearInMemoryMcpSessionsForTests as clearInMemoryMcpSessionsForTestsShared,
@@ -109,11 +115,23 @@ export async function revokeInMemoryMcpSessionsForClient(
 /** Shared mutable ref so handleMcp can signal the format to tool handlers. */
 const formatRef = { rawJson: false };
 
+/**
+ * MCP Apps UI resources (interactive iframe payloads a host renders in a
+ * sandboxed iframe). Keyed by `ui://` uri → the built bundle's app dir under
+ * owletto's `dist-mcp-apps/`. A tool result that references one of these uris in
+ * `_meta.ui.resourceUri` makes the host fetch + render it (see the pending
+ * `manage_agents` approval below). Adding an app = one entry + its owletto
+ * `src/mcp-apps/<dir>` build — no gateway change.
+ */
+const MCP_APP_RESOURCES: Record<string, { name: string; appDir: string }> = {
+  'ui://lobu/approve': { name: 'Approve agent change', appDir: 'approval' },
+};
+
 function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
   const server = new Server(
     { name: 'lobu-mcp', version: '0.2.0' },
     {
-      capabilities: { tools: {} },
+      capabilities: { tools: {}, resources: {} },
       ...(authCtx.instructions && { instructions: authCtx.instructions }),
     }
   );
@@ -182,6 +200,32 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
     return { tools: allTools };
   });
 
+  // resources/list — advertise the MCP App UI resources (interactive iframe
+  // surfaces a host renders in place of flat text; see MCP Apps).
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: Object.entries(MCP_APP_RESOURCES).map(([uri, meta]) => ({
+      uri,
+      name: meta.name,
+      mimeType: 'text/html',
+    })),
+  }));
+
+  // resources/read — return the built bundle HTML for a `ui://` app resource.
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const uri = request.params.uri;
+    const app = MCP_APP_RESOURCES[uri];
+    if (!app) throw new Error(`Unknown resource: ${uri}`);
+    const html = await readMcpAppBundle(app.appDir);
+    if (html == null) {
+      throw new Error(
+        `MCP App bundle not built for ${uri} (run owletto build:mcp-apps)`
+      );
+    }
+    return {
+      contents: [{ uri, mimeType: 'text/html', text: html }],
+    };
+  });
+
   // tools/call — access control + execution + formatting
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -197,6 +241,32 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
       const text = formatRef.rawJson
         ? JSON.stringify(result)
         : formatToolResult(name, result, { includeRawJson: false });
+      // A pending agent-change approval carries an MCP App UI: point the host at
+      // the `ui://lobu/approve` resource and hand it the proposal, so it renders
+      // the same ApprovalCard shown in our chat, with Approve/Reject brokered
+      // back as a `manage_operations` tools/call (host consent-gated).
+      const pending =
+        result != null &&
+        typeof result === 'object' &&
+        (result as { status?: unknown }).status === 'pending_approval';
+      if (pending) {
+        const r = result as {
+          run_id?: number;
+          action?: string | null;
+          proposal?: unknown;
+          current?: unknown;
+        };
+        return {
+          content: [{ type: 'text' as const, text }],
+          _meta: { ui: { resourceUri: 'ui://lobu/approve' } },
+          structuredContent: {
+            runId: r.run_id,
+            action: r.action ?? null,
+            proposal: r.proposal ?? null,
+            current: r.current ?? null,
+          },
+        };
+      }
       return { content: [{ type: 'text' as const, text }] };
     } catch (error: any) {
       return {

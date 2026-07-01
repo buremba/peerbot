@@ -91,10 +91,23 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     allowCrossOrg: tokenType === 'oauth' && !scopedToOrg,
     allowInternalTools:
       !pathname.startsWith('/mcp') || c.req.header('x-lobu-memory-direct-auth') === '1',
-    // Builder admin-tool grant: carried from the verified worker token through
-    // mcpAuthInfo (see multi-tenant worker direct-auth). Lets the system agent
-    // call its allowlisted internal tools even on the /mcp path.
-    adminTools: mcpAuthInfo?.adminTools ?? null,
+    // Builder admin-tool grant. Verified-worker first:
+    //   1. the verified worker token's per-turn allowlist (the builder/system
+    //      agent run), carried through mcpAuthInfo — its narrow list wins; else
+    //   2. an external MCP caller (Slackbot/Claude/PAT) whose token holds the
+    //      `mcp:admin` scope — surface the builder tools so an approved admin
+    //      can drive agent management + approvals over MCP (e.g. the in-Slack
+    //      "@lobu build an agent" flow and its approval callback).
+    // Check `mcpAuthInfo.scopes` (real grants), NOT `scopes` above: session/
+    // anonymous callers carry the `*` sentinel, which would bypass the scope
+    // check. This only widens visibility/reachability — the owner/admin-role +
+    // `mcp:admin` gate in `enforceRoleScopeAccess` still fires underneath.
+    adminTools:
+      mcpAuthInfo?.adminTools ??
+      (mcpAuthInfo != null &&
+      hasRequiredMcpScope('admin', mcpAuthInfo.scopes ?? [])
+        ? ['manage_agents', 'manage_operations']
+        : null),
   };
 }
 

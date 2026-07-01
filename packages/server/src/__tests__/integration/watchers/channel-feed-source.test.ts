@@ -100,7 +100,10 @@ describe("streaming feed as a watcher @feed source", () => {
 
   /** Compile @feed:<key> to its channel_messages query and run it as the given
    *  reader — exactly the watcher read path (normalize → executeDataSources). */
-  async function readAsWatcherSource(userId: string | null): Promise<unknown[]> {
+  async function readAsWatcherSource(
+    opts: string | null | { userId?: string | null; windowStart?: string; windowEnd?: string }
+  ): Promise<unknown[]> {
+    const o = typeof opts === "object" && opts !== null ? opts : { userId: opts };
     const sql = getTestDb();
     const normalized = await normalizeWatcherSources(sql as unknown as DbClient, orgId, [
       { name: "chat", query: `@feed:${FEED_KEY}` },
@@ -108,7 +111,12 @@ describe("streaming feed as a watcher @feed source", () => {
     expect(normalized[0].query).toContain("channel_messages");
     const out = await executeDataSources(
       [{ name: "chat", query: normalized[0].query }],
-      { organizationId: orgId, userId },
+      {
+        organizationId: orgId,
+        userId: o.userId ?? null,
+        windowStart: o.windowStart,
+        windowEnd: o.windowEnd,
+      },
       sql as unknown as DbClient
     );
     return out.chat ?? [];
@@ -256,5 +264,69 @@ describe("streaming feed as a watcher @feed source", () => {
       "channel secret one",
       "channel secret two",
     ]);
+  });
+
+  it("does not expose a PRIVATE connection's channel to a headless watcher (connection visibility)", async () => {
+    // A private chat connection: visible only to its creator, even though its
+    // channel isn't ACL-enforced. The membership gate alone (not-graphed →
+    // passthrough) would leak it to a headless watcher; connection visibility
+    // must also apply.
+    const priv = await createTestConnection({
+      organization_id: orgId,
+      connector_key: "slack",
+      display_name: "Private Slack",
+      visibility: "private",
+      created_by: workspace.users.owner.id,
+      createDefaultFeed: false,
+    });
+    const sql = getTestDb();
+    await sql`
+      UPDATE connections SET credential_mode = 'managed', external_tenant_id = ${TEAM_ID}
+      WHERE id = ${priv.id}
+    `;
+    const [row] = await sql`SELECT slug FROM connections WHERE id = ${priv.id}`;
+    const runtimeId = slugToRuntimeConnectionId(String(row.slug));
+    await ensureStreamingChannelFeed({
+      connectionId: priv.id,
+      organizationId: orgId,
+      channelKey: FEED_KEY,
+    });
+    await seedTranscript(runtimeId);
+
+    // Headless (null principal) → private connection hidden → nothing.
+    expect((await readAsWatcherSource({ userId: null })).length).toBe(0);
+    // The creator can read it.
+    expect(
+      (await readAsWatcherSource({ userId: workspace.users.owner.id })).length
+    ).toBe(2);
+  });
+
+  it("a channel @feed source respects the watcher window bounds", async () => {
+    const conn = await makeChatConnection();
+    await ensureStreamingChannelFeed({
+      connectionId: conn.id,
+      organizationId: orgId,
+      channelKey: FEED_KEY,
+    });
+    const sql = getTestDb();
+    // One message inside the window, one well before it.
+    await sql`
+      INSERT INTO channel_messages (
+        organization_id, connection_id, platform, channel_id,
+        platform_message_id, author_name, is_bot, text, occurred_at
+      ) VALUES
+        (${orgId}, ${conn.runtimeId}, 'slack', ${CHANNEL}, 'w-in', 'A', false, 'inside window', NOW()),
+        (${orgId}, ${conn.runtimeId}, 'slack', ${CHANNEL}, 'w-out', 'B', false, 'before window', NOW() - interval '2 days')
+    `;
+
+    const windowStart = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const windowEnd = new Date(Date.now() + 60 * 1000).toISOString();
+    const rows = (await readAsWatcherSource({
+      userId: null,
+      windowStart,
+      windowEnd,
+    })) as Array<{ text: string }>;
+    expect(rows.length).toBe(1);
+    expect(rows[0].text).toBe("inside window");
   });
 });

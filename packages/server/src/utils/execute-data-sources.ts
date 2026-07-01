@@ -654,15 +654,39 @@ export function buildScopedQuery(
       );
     } else if (table === 'channel_messages') {
       // Chat transcript rows. `text` is verbatim channel content, so the CTE
-      // applies the per-channel membership gate: org-scope AND (connection not
-      // ACL-enforced OR requester member_of the channel). A headless reader
-      // (null principal) therefore reads only non-enforced channels.
+      // stacks the SAME gates the events CTE applies, adapted to channel_messages:
+      //   1. connection visibility — a PRIVATE connection's transcript is visible
+      //      only to its creator (org-visible connections to everyone). Resolved
+      //      by slug because channel_messages.connection_id is the runtime id, not
+      //      connections.id. A null principal (headless watcher) → org-only.
+      //   2. time window (incremental mode) — only rows inside the watcher window,
+      //      so a channel @feed reads its window, not the whole history.
+      //   3. per-channel membership (channelMessagesVisibility) — ACL-enforced
+      //      channels require member_of; stale/enforced fail closed.
       // security-allowed: see block comment above the for-loop
-      ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table, 'cm')} FROM public.channel_messages cm WHERE cm.organization_id = ${orgP}` +
-          channelMessagesVisibility('cm') +
-          ')'
-      );
+      let cmCte =
+        `"${safeName}" AS (SELECT ${sel(table, 'cm')} FROM public.channel_messages cm ` +
+        `WHERE cm.organization_id = ${orgP}`;
+      idx++;
+      params.push(scope.principal);
+      const cmPrincipal = `$${idx}::text`;
+      cmCte +=
+        ` AND EXISTS (SELECT 1 FROM public.connections cc ` +
+        `WHERE cc.organization_id = ${orgP} AND cc.deleted_at IS NULL ` +
+        `AND cc.slug IN (cm.connection_id, 'agentconn-' || cm.connection_id) ` +
+        `AND (cc.visibility = 'org' OR cc.created_by = ${cmPrincipal}))`;
+      if (context.windowStart && context.windowEnd) {
+        idx++;
+        params.push(context.windowStart);
+        const cmWindowStart = `$${idx}`;
+        idx++;
+        params.push(context.windowEnd);
+        const cmWindowEnd = `$${idx}`;
+        cmCte += ` AND cm.occurred_at >= ${cmWindowStart}::timestamptz AND cm.occurred_at < ${cmWindowEnd}::timestamptz`;
+      }
+      cmCte += channelMessagesVisibility('cm');
+      cmCte += ')';
+      ctes.push(cmCte);
     } else if (table === 'connector_definitions') {
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table)} FROM public.connector_definitions WHERE organization_id = ${orgP})`

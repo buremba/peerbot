@@ -1,15 +1,15 @@
 /**
- * Phase 3 of the Slack marketplace "claim" flow: `claimSlackWorkspace` binds a
- * parked (pending) install to the claiming user's org, but only after proving
- * the caller holds the single-use token, signed in with Slack for the workspace,
- * and is a workspace admin/owner.
+ * The Slack marketplace "claim" flow: `claimSlackWorkspace` binds a parked
+ * (pending) install to the claiming user's org. Authority is the Slack
+ * workspace-admin check — the caller must have signed in with Slack for the
+ * workspace and be an admin/owner. There is NO secret link token; a signed-in
+ * admin can always connect a pending install for their team.
  *
  * Pure unit test — `claimSlackWorkspace` takes every dependency by injection, so
  * no DB / HTTP / server boot is needed. We assert the guard ordering and, on the
  * happy path, that the bind (`claim`) runs with the resolved org.
  */
 
-import { createHash } from "node:crypto";
 import { describe, expect, mock, test } from "bun:test";
 import type { SlackPendingInstall } from "../../lobu/stores/slack-installations.js";
 import {
@@ -18,8 +18,6 @@ import {
 } from "../connections/slack-claim.js";
 
 const TEAM = "T-CLAIM";
-const REAL_TOKEN = "claim-token-abc";
-const REAL_TOKEN_HASH = createHash("sha256").update(REAL_TOKEN).digest("hex");
 
 function pendingInstall(
   overrides: Partial<SlackPendingInstall> = {},
@@ -32,7 +30,7 @@ function pendingInstall(
     installerUserId: "U-INSTALLER",
     botToken: "xoxb-workspace-token",
     isEnterpriseInstall: false,
-    claimTokenHash: REAL_TOKEN_HASH,
+    claimTokenHash: null,
     ...overrides,
   };
 }
@@ -45,8 +43,13 @@ function makeDeps(overrides: Partial<SlackClaimDeps> = {}): {
   const claim = mock(async () => ({ installationId: "slackinst-bound" }));
   const deps: SlackClaimDeps = {
     resolvePending: mock(async () => pendingInstall()),
+    resolveActiveOrgSlug: mock(async () => null),
     resolveClaimerSlackId: mock(async () => "U-ADMIN"),
     usersInfo: mock(async () => ({ isAdmin: true, isOwner: false })),
+    resolveMemberOrgs: mock(async () => [
+      { id: "org-1", slug: "acme", name: "Acme" },
+    ]),
+    resolveOrgIfMember: mock(async () => "org-1"),
     resolveDefaultOrgId: mock(async () => "org-1"),
     claim,
     resolveOrgSlug: mock(async () => "acme"),
@@ -55,10 +58,10 @@ function makeDeps(overrides: Partial<SlackClaimDeps> = {}): {
   return { deps, claim };
 }
 
-const input = { userId: "user-1", team: TEAM, token: REAL_TOKEN };
+const input = { userId: "user-1", team: TEAM };
 
 describe("claimSlackWorkspace", () => {
-  test("binds the workspace on the happy path (admin + valid token)", async () => {
+  test("binds the workspace on the happy path (signed-in admin)", async () => {
     const { deps, claim } = makeDeps();
     const result = await claimSlackWorkspace(deps, input);
 
@@ -82,24 +85,32 @@ describe("claimSlackWorkspace", () => {
     expect(result.status).toBe("ok");
   });
 
-  test("rejects a wrong claim token and never binds", async () => {
-    const { deps, claim } = makeDeps();
+  test("binds into the explicitly chosen org (membership-verified)", async () => {
+    const { deps, claim } = makeDeps({
+      resolveOrgIfMember: mock(async () => "org-2"),
+      resolveOrgSlug: mock(async () => "other-org"),
+    });
     const result = await claimSlackWorkspace(deps, {
       ...input,
-      token: "not-the-token",
+      organizationId: "other-org",
     });
-    expect(result).toEqual({ status: "invalid_token" });
-    expect(claim).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      status: "ok",
+      orgSlug: "other-org",
+      installationId: "slackinst-bound",
+    });
+    expect(claim.mock.calls[0]![1]).toBe("org-2");
   });
 
-  test("rejects when the pending row carries no claim hash", async () => {
+  test("rejects binding into an org the user is not a member of", async () => {
     const { deps, claim } = makeDeps({
-      resolvePending: mock(async () =>
-        pendingInstall({ claimTokenHash: null }),
-      ),
+      resolveOrgIfMember: mock(async () => null),
     });
-    const result = await claimSlackWorkspace(deps, input);
-    expect(result).toEqual({ status: "invalid_token" });
+    const result = await claimSlackWorkspace(deps, {
+      ...input,
+      organizationId: "not-mine",
+    });
+    expect(result).toEqual({ status: "not_member_of_org" });
     expect(claim).not.toHaveBeenCalled();
   });
 
@@ -125,8 +136,26 @@ describe("claimSlackWorkspace", () => {
     expect(claim).not.toHaveBeenCalled();
   });
 
-  test("404s when there is no pending install for the team", async () => {
-    const { deps } = makeDeps({ resolvePending: mock(async () => null) });
+  test("already-connected workspace is an idempotent success", async () => {
+    const { deps, claim } = makeDeps({
+      resolvePending: mock(async () => null),
+      resolveActiveOrgSlug: mock(async () => "acme"),
+    });
+    const result = await claimSlackWorkspace(deps, input);
+    expect(result).toEqual({
+      status: "ok",
+      orgSlug: "acme",
+      installationId: "",
+      alreadyConnected: true,
+    });
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  test("404s when the workspace has no install at all", async () => {
+    const { deps } = makeDeps({
+      resolvePending: mock(async () => null),
+      resolveActiveOrgSlug: mock(async () => null),
+    });
     const result = await claimSlackWorkspace(deps, input);
     expect(result).toEqual({ status: "no_pending_install" });
   });
@@ -148,13 +177,10 @@ describe("claimSlackWorkspace", () => {
     expect(resolvePending).not.toHaveBeenCalled();
   });
 
-  test("400s a missing team or token", async () => {
+  test("400s a missing team", async () => {
     const { deps } = makeDeps();
     expect(
       (await claimSlackWorkspace(deps, { ...input, team: "" })).status,
-    ).toBe("invalid_request");
-    expect(
-      (await claimSlackWorkspace(deps, { ...input, token: "" })).status,
     ).toBe("invalid_request");
   });
 

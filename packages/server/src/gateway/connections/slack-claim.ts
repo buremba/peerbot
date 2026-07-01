@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { SlackPendingInstall } from "../../lobu/stores/slack-installations.js";
 import type { SlackWebApi } from "./slack-web.js";
 
@@ -6,17 +5,17 @@ import type { SlackWebApi } from "./slack-web.js";
  * The marketplace-claim decision, factored out of the HTTP route so it is
  * unit-testable without booting the server. A Slack-initiated (marketplace)
  * install lands as an org-less `pending` row (see `writeSlackPendingInstall`);
- * this binds it to the claiming user's org once they prove they (a) hold the
- * single-use claim token, (b) signed in with Slack for the workspace, and (c)
- * are a workspace admin/owner. Every dependency is injected so the route can
- * wire the real stores and tests can stub them; nothing here touches HTTP,
- * Postgres, or the network directly.
+ * this binds it to the claiming user's org once they prove they (a) signed in
+ * with Slack for the workspace and (b) are a workspace admin/owner.
  *
- * Split into two phases so the UI can CONFIRM the destination org before
- * binding: `resolveSlackClaimContext` runs the authorization guards and returns
- * the workspace + the claimer's eligible orgs (no write); `claimSlackWorkspace`
- * re-runs the guards and binds to the org the user explicitly chose. Binding a
- * whole workspace's data to an org is a decision, so it is never implicit.
+ * Authority is the Slack workspace-admin check — NOT a secret link token. The
+ * install DM carries a convenience deep-link, but a signed-in admin of the
+ * workspace can always connect a pending install for their team; a missing,
+ * stale, or already-used link never blocks them. Split into two phases so the
+ * UI can CONFIRM the destination org before binding: `resolveSlackClaimContext`
+ * runs the guards + returns the workspace and eligible orgs (no write);
+ * `claimSlackWorkspace` binds to the org the user chose. Every dependency is
+ * injected so the route can wire real stores and tests can stub them.
  */
 
 /** Shared authorization error statuses (each maps to an HTTP code in the route). */
@@ -24,7 +23,6 @@ export type SlackClaimError =
   | { status: "unauthenticated" }
   | { status: "invalid_request" }
   | { status: "no_pending_install" }
-  | { status: "invalid_token" }
   | { status: "slack_signin_required" }
   | { status: "not_admin" }
   | { status: "not_member_of_org" }
@@ -33,7 +31,13 @@ export type SlackClaimError =
 
 /** Terminal outcome of the bind (`claimSlackWorkspace`). */
 export type SlackClaimResult =
-  | { status: "ok"; orgSlug: string | null; installationId: string }
+  | {
+      status: "ok";
+      orgSlug: string | null;
+      installationId: string;
+      /** True when the workspace was already connected (idempotent no-op). */
+      alreadyConnected?: boolean;
+    }
   | SlackClaimError;
 
 /** A Lobu org the claimer may bind the workspace into. */
@@ -52,15 +56,23 @@ export type SlackClaimContext =
       /** Orgs the claimer belongs to (the destination picker). */
       orgs: ClaimEligibleOrg[];
     }
+  | {
+      // The workspace is already connected — the UI links to it instead of
+      // showing a scary "not found" error for a re-visited/spent link.
+      status: "already_connected";
+      orgSlug: string | null;
+    }
   | SlackClaimError;
 
 export interface SlackClaimDeps {
   /** The parked pending install for a workspace, or null if none. */
   resolvePending(team: string): Promise<SlackPendingInstall | null>;
+  /** The org slug the workspace is ALREADY connected to (active install), or null. */
+  resolveActiveOrgSlug(team: string): Promise<string | null>;
   /**
    * The claiming user's bare `U…` Slack id for this workspace (from their
    * team-scoped `slack_user_id` identity), or null if they never signed in with
-   * Slack for it.
+   * Slack for it. Doubles as the workspace-membership proof.
    */
   resolveClaimerSlackId(userId: string, team: string): Promise<string | null>;
   /** `users.info` admin/owner flags for the claimer. */
@@ -85,54 +97,58 @@ export interface SlackClaimDeps {
 }
 
 /**
- * Run the claim authorization guards (token hash → Slack sign-in → workspace
- * admin) WITHOUT binding. Returns the pending install on success so callers can
- * bind or preview.
+ * Run the claim authorization guards WITHOUT binding. Authority is the Slack
+ * workspace-admin check: the caller must have signed in with Slack for the team
+ * (membership) and be an admin/owner. Returns the pending install on success, a
+ * distinct `already_connected` when the workspace is already bound, or an error.
  */
-async function authorizeClaim(
+async function resolveClaimTarget(
   deps: SlackClaimDeps,
-  input: { userId: string | null; team: string; token: string },
-): Promise<{ status: "ready"; pending: SlackPendingInstall } | SlackClaimError> {
+  input: { userId: string | null; team: string },
+): Promise<
+  | { status: "ready"; pending: SlackPendingInstall }
+  | { status: "already_connected"; orgSlug: string | null }
+  | SlackClaimError
+> {
   if (!input.userId) return { status: "unauthenticated" };
-  if (!input.team || !input.token) return { status: "invalid_request" };
+  if (!input.team) return { status: "invalid_request" };
 
-  const pending = await deps.resolvePending(input.team);
-  if (!pending) return { status: "no_pending_install" };
-
-  // Validate the presented token against the stored sha256 hash. A null hash
-  // (no claim link was ever minted) is unclaimable via this path.
-  const presentedHash = createHash("sha256").update(input.token).digest("hex");
-  if (!pending.claimTokenHash || presentedHash !== pending.claimTokenHash) {
-    return { status: "invalid_token" };
-  }
-
-  // The claimer must have signed in with Slack for THIS workspace, so we hold
-  // their team-scoped slack_user_id — the UI prompts sign-in on this code.
+  // The claimer must have signed in with Slack for THIS workspace — that both
+  // proves workspace membership and gives us their `U…` id for the admin check.
   const bareUserId = await deps.resolveClaimerSlackId(input.userId, input.team);
   if (!bareUserId) return { status: "slack_signin_required" };
 
-  // …and be a workspace admin/owner to bind the whole workspace.
-  const info = await deps.usersInfo(pending.botToken, bareUserId);
-  if (!info.isAdmin && !info.isOwner) return { status: "not_admin" };
+  const pending = await deps.resolvePending(input.team);
+  if (pending) {
+    // Must be a workspace admin/owner to bind the whole workspace.
+    const info = await deps.usersInfo(pending.botToken, bareUserId);
+    if (!info.isAdmin && !info.isOwner) return { status: "not_admin" };
+    return { status: "ready", pending };
+  }
 
-  return { status: "ready", pending };
+  // No pending install: either it's already connected (a re-visited/spent link),
+  // or Lobu was never installed into this workspace.
+  const orgSlug = await deps.resolveActiveOrgSlug(input.team);
+  if (orgSlug) return { status: "already_connected", orgSlug };
+  return { status: "no_pending_install" };
 }
 
 /**
  * Confirmation context: run the guards and return the workspace name + the
  * claimer's eligible orgs, so the UI can show "Connect <workspace> to <org>"
- * before any write. No mutation.
+ * before any write. Surfaces `already_connected` for a workspace that's already
+ * bound. No mutation.
  */
 export async function resolveSlackClaimContext(
   deps: SlackClaimDeps,
-  input: { userId: string | null; team: string; token: string },
+  input: { userId: string | null; team: string },
 ): Promise<SlackClaimContext> {
   try {
-    const authz = await authorizeClaim(deps, input);
-    if (authz.status !== "ready") return authz;
+    const target = await resolveClaimTarget(deps, input);
+    if (target.status !== "ready") return target;
     const orgs = await deps.resolveMemberOrgs(input.userId as string);
     if (orgs.length === 0) return { status: "no_org" };
-    return { status: "ready", workspaceName: authz.pending.teamName, orgs };
+    return { status: "ready", workspaceName: target.pending.teamName, orgs };
   } catch (err) {
     return {
       status: "claim_failed",
@@ -144,20 +160,29 @@ export async function resolveSlackClaimContext(
 /**
  * Bind the pending workspace into the org the user CONFIRMED. `organizationId`
  * (slug or id) is required from the confirm step; it is membership-verified. When
- * omitted (programmatic callers), falls back to the user's default org.
+ * omitted (programmatic callers), falls back to the user's default org. An
+ * already-connected workspace resolves to an idempotent success pointing at its
+ * existing org.
  */
 export async function claimSlackWorkspace(
   deps: SlackClaimDeps,
   input: {
     userId: string | null;
     team: string;
-    token: string;
     organizationId?: string;
   },
 ): Promise<SlackClaimResult> {
   try {
-    const authz = await authorizeClaim(deps, input);
-    if (authz.status !== "ready") return authz;
+    const target = await resolveClaimTarget(deps, input);
+    if (target.status === "already_connected") {
+      return {
+        status: "ok",
+        orgSlug: target.orgSlug,
+        installationId: "",
+        alreadyConnected: true,
+      };
+    }
+    if (target.status !== "ready") return target;
 
     // Resolve the destination org: the explicitly chosen one (membership-checked)
     // or the user's default. Binding a workspace is never implicit — the UI sends
@@ -174,7 +199,7 @@ export async function claimSlackWorkspace(
     }
     if (!organizationId) return { status: "no_org" };
 
-    const { installationId } = await deps.claim(authz.pending, organizationId);
+    const { installationId } = await deps.claim(target.pending, organizationId);
     const orgSlug = await deps.resolveOrgSlug(organizationId);
     return { status: "ok", orgSlug, installationId };
   } catch (err) {

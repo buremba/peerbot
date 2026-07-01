@@ -22,6 +22,7 @@ import type { ToolContext } from '../../registry';
 import type { ManageWatchersArgs } from '../manage_watchers';
 import {
   assertWatcherVersionConfigValid,
+  assertWatcherSourcesResolve,
   parseJsonInput,
   toJsonParam,
   toTextArrayParam,
@@ -139,6 +140,16 @@ export async function handleCreate(
     }
     organizationSlug = await getOrganizationSlug(organizationId);
   }
+
+  // Resolve @ref sources against the org now so a typo fails at create (422)
+  // instead of producing silent empty context at read_knowledge. Custom-SQL
+  // sources are skipped here; their id projection is enforced above.
+  if (!organizationId) {
+    throw new ToolUserError(
+      'Cannot resolve watcher sources without an organization'
+    );
+  }
+  await assertWatcherSourcesResolve(sql, organizationId, sources);
 
   // Check slug uniqueness within org
   const existingSlug = await sql`

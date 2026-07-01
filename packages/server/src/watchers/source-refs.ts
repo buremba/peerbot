@@ -207,6 +207,87 @@ async function compileRefToQuery(
   }
 }
 
+/**
+ * Save-time resolution: every @ref must resolve in the org NOW, so a typo fails
+ * at create/create_version/update (loud, 422) instead of at read_knowledge
+ * (silent empty rows, or a swallowed metric error). This is the operational-
+ * confidence counterpart to the syntax-only {@link validateWatcherSourceRef}:
+ * it walks the same compile path the reader uses, plus existence checks for
+ * @entity (type) and @metric (type + declared measure) that the reader otherwise
+ * discovers by returning empty. @feed / @connection misses throw via
+ * {@link normalizeWatcherSources}; @connector checks a connection uses that key;
+ * @channel is free-form (no static registry) and left unchecked.
+ */
+export async function resolveWatcherSourcesForSave(
+  sql: DbClient,
+  organizationId: string,
+  sources: WatcherSource[]
+): Promise<void> {
+  for (const source of sources) {
+    const ref = parseWatcherSourceRef(source.query);
+    if (!ref) continue; // custom SQL — id projection is enforced by the caller's config validation
+
+    if (ref.type === 'entity') {
+      const exists = await sql<{ id: number }>`
+        SELECT id FROM entity_types
+        WHERE slug = ${ref.value}
+          AND organization_id = ${organizationId}
+          AND deleted_at IS NULL
+        LIMIT 1
+      `;
+      if (exists.length === 0) {
+        throw new Error(
+          `source "${source.name}": @entity:${ref.value} is not an entity type in this organization`
+        );
+      }
+      continue;
+    }
+
+    if (ref.type === 'metric') {
+      const rows = await sql<{ id: number; metrics_config: unknown }>`
+        SELECT id, metrics_config FROM entity_types
+        WHERE slug = ${ref.entityType}
+          AND organization_id = ${organizationId}
+          AND deleted_at IS NULL
+        LIMIT 1
+      `;
+      if (rows.length === 0) {
+        throw new Error(
+          `source "${source.name}": @metric:${ref.entityType}.${ref.measure} — entity type "${ref.entityType}" not found in this organization`
+        );
+      }
+      const measures = (
+        (rows[0].metrics_config as { measures?: Record<string, unknown> } | null) ?? {}
+      ).measures ?? {};
+      if (!(ref.measure in measures)) {
+        throw new Error(
+          `source "${source.name}": @metric:${ref.entityType}.${ref.measure} — measure "${ref.measure}" is not declared on entity type "${ref.entityType}"`
+        );
+      }
+      continue;
+    }
+
+    if (ref.type === 'connector') {
+      const exists = await sql<{ id: number }>`
+        SELECT id FROM connections
+        WHERE organization_id = ${organizationId}
+          AND deleted_at IS NULL
+          AND connector_key = ${ref.value}
+        LIMIT 1
+      `;
+      if (exists.length === 0) {
+        throw new Error(
+          `source "${source.name}": @connector:${ref.value} — no connection in this organization uses connector key "${ref.value}"`
+        );
+      }
+    }
+  }
+
+  // Resolve feed/connection refs (throws on miss with the same message the
+  // reader produces) so the full set is validated, not just the structured ones.
+  await normalizeWatcherSources(sql, organizationId, sources);
+}
+
 export async function normalizeWatcherSources(
   sql: DbClient,
   organizationId: string,

@@ -60,6 +60,8 @@ async function queryContentData(
   sourcesContent: Record<string, unknown[]>;
   allContent: unknown[];
   page?: { has_more: boolean; next_cursor?: { occurred_at: string; id: number } };
+  totalCount: number;
+  totalCountChars: number;
 }> {
   const page = params.page;
   const queryContext: DataSourceContext = {
@@ -138,6 +140,38 @@ async function queryContentData(
     })
   );
 
+  // Source-aware totals for token estimation. The old count was keyed on the
+  // watcher's entity_ids, which read 0 for @feed / @connection / org-scoped
+  // watchers even when content existed. Count over each normalized event source,
+  // scoped the same way as the content query (org / entity_ids / window).
+  // @metric / @entity sources are context, not content, so they're excluded.
+  // Char estimates use to_jsonb(row)->>'payload_text' so custom SQL/default
+  // sources still contribute when they project payload_text, but safely count 0
+  // when they don't.
+  const statsEventSources = normalizedSources.filter((source) => source.kind === 'event');
+  let totalCount = 0;
+  let totalCountChars = 0;
+  if (statsEventSources.length > 0) {
+    const statsSources = statsEventSources.map((source, idx) => {
+      const alias = `__stats_s_${idx}`;
+      return {
+        name: `__stats_${idx}`,
+        // security-allowed: source.query is an internally-built SQL fragment
+        // (org-scoped eventSelect for refs, or caller-SQL that already passed
+        // read-only validation + id-projection guard at save time).
+        query: `SELECT COUNT(*)::int AS c, COALESCE(SUM(LENGTH(to_jsonb(${alias})->>'payload_text')), 0)::bigint AS ch FROM (${source.query}) AS ${alias}`,
+      };
+    });
+    const statsResults = await executeDataSources(statsSources, queryContext, sql, {});
+    for (const rows of Object.values(statsResults)) {
+      const row = rows[0] as { c?: number; ch?: string | number } | undefined;
+      if (row) {
+        totalCount += Number(row.c || 0);
+        totalCountChars += Number(row.ch || 0);
+      }
+    }
+  }
+
   let pageResult: { has_more: boolean; next_cursor?: { occurred_at: string; id: number } } | undefined;
   if (page) {
     const rows = results[page.sourceName] ?? [];
@@ -200,7 +234,13 @@ async function queryContentData(
     }
   }
 
-  return { sourcesContent: results as Record<string, unknown[]>, allContent, page: pageResult };
+  return {
+    sourcesContent: results as Record<string, unknown[]>,
+    allContent,
+    page: pageResult,
+    totalCount,
+    totalCountChars,
+  };
 }
 
 // ============================================
@@ -310,36 +350,26 @@ export async function handleWatcherMode(
   const entityIdPlaceholders = sourceEntityIds.map((_, i) => `$${i + 1}`).join(',');
 
   // Run content query and total stats in parallel
-  const [contentData, totalStatsResult] = await Promise.all([
-    queryContentData(sql, {
-      sources,
-      window_start: windowStartIso,
-      window_end: windowEndIso,
-      organizationId: watcher.organization_id as string,
-      entityIds: watcherEntityIds,
-      page: {
-        sourceName: 'content',
-        limit: contentLimit,
-        beforeOccurredAt: args.before_occurred_at,
-        beforeId: args.before_id,
-      },
-    }),
-    sql.unsafe(
-      `
-      SELECT
-        COUNT(*) as total_count,
-        COALESCE(SUM(LENGTH(c.payload_text)), 0) as total_chars
-      FROM current_event_records c
-      WHERE c.entity_ids && ARRAY[${entityIdPlaceholders}]::bigint[]
-        AND c.occurred_at >= $${sourceEntityIds.length + 1}
-        AND c.occurred_at < $${sourceEntityIds.length + 2}
-    `,
-      [...sourceEntityIds, windowStartIso, windowEndIso]
-    ),
-  ]);
-  const { sourcesContent, allContent, page: contentPage } = contentData;
-  const totalCount = Number(totalStatsResult[0]?.total_count || 0);
-  const totalCountChars = Number(totalStatsResult[0]?.total_chars || 0);
+  const contentData = await queryContentData(sql, {
+    sources,
+    window_start: windowStartIso,
+    window_end: windowEndIso,
+    organizationId: watcher.organization_id as string,
+    entityIds: watcherEntityIds,
+    page: {
+      sourceName: 'content',
+      limit: contentLimit,
+      beforeOccurredAt: args.before_occurred_at,
+      beforeId: args.before_id,
+    },
+  });
+  const {
+    sourcesContent,
+    allContent,
+    page: contentPage,
+    totalCount,
+    totalCountChars,
+  } = contentData;
 
   const contentIds = allContent
     .map((item) => Number((item as Record<string, unknown>).id))

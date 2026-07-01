@@ -13,7 +13,7 @@ import {
 } from '../../../utils/organization-access';
 import { validateTemplate } from '../../../watchers/renderer';
 import { queryProjectsIdColumn } from '../../../utils/execute-data-sources';
-import { validateWatcherSourceRef } from '../../../watchers/source-refs';
+import { validateWatcherSourceRef, resolveWatcherSourcesForSave } from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
 
 // ============================================
@@ -224,6 +224,28 @@ export function assertWatcherVersionConfigValid(parsed: {
   });
   if (validation) {
     throw new ToolUserError(`Watcher validation failed: ${validation}`, 422);
+  }
+}
+
+/**
+ * Resolve every @ref source against the org at save time so a typo fails here
+ * (loud 422) rather than silently producing empty context at read_knowledge.
+ * Custom-SQL sources are skipped (id projection is already enforced by
+ * {@link assertWatcherVersionConfigValid}). Call after the organization id is
+ * known and before the watcher/version row is persisted.
+ */
+export async function assertWatcherSourcesResolve(
+  sql: DbClient,
+  organizationId: string,
+  sources: Array<{ name: string; query: string }>
+): Promise<void> {
+  try {
+    await resolveWatcherSourcesForSave(sql, organizationId, sources);
+  } catch (err) {
+    throw new ToolUserError(
+      `Watcher validation failed: ${err instanceof Error ? err.message : String(err)}`,
+      422
+    );
   }
 }
 

@@ -164,6 +164,30 @@ describe("manage_watchers source-id + cross-org guards", () => {
 		} as Env);
 		expect(token.content_ids).toEqual([event.id]);
 		expect(token.content_ids).not.toContain(customer.id);
+
+		const orgScoped = (await owner.watchers.create({
+			slug: "source-ref-org-count",
+			name: "Source Ref Org Count",
+			prompt: "Track {{content}}.",
+			agent_id: agentId,
+			sources: [{ name: "content", query: "@feed:default" }],
+		})) as { watcher_id: string };
+
+		const orgResult = (await owner.knowledge.read({
+			watcher_id: orgScoped.watcher_id,
+			since: "today",
+			until: "today",
+		})) as {
+			total: number;
+			total_count?: number;
+			total_count_chars?: number;
+		};
+
+		// Regression guard: the old stats query counted only watcher.entity_ids, so
+		// an org-scoped @feed watcher returned content but reported total_count=0.
+		expect(orgResult.total).toBe(1);
+		expect(orgResult.total_count).toBe(1);
+		expect(Number(orgResult.total_count_chars)).toBeGreaterThan(0);
 	});
 
 	it("rejects create_version when a source query omits id", async () => {
@@ -186,6 +210,56 @@ describe("manage_watchers source-id + cross-org guards", () => {
 				],
 			} as never),
 		).rejects.toThrow(/id/i);
+	});
+
+	// ---- Save-time ref resolution (gap #1) ----
+
+	it("rejects create when an @feed ref matches no feed", async () => {
+		await expect(
+			owner.watchers.create({
+				entity_id: inOrgEntityId,
+				slug: "typo-feed",
+				name: "Typo Feed",
+				prompt: "Track stuff.",
+				agent_id: agentId,
+				sources: [
+					{ name: "content", query: "@feed:nonexistent-typo" },
+				],
+			}),
+		).rejects.toThrow(/nonexistent-typo/i);
+	});
+
+	it("rejects create when an @entity ref is not a type in the org", async () => {
+		await expect(
+			owner.watchers.create({
+				entity_id: inOrgEntityId,
+				slug: "typo-entity",
+				name: "Typo Entity",
+				prompt: "Track stuff.",
+				agent_id: agentId,
+				sources: [
+					{ name: "ctx", query: "@entity:nope-not-a-type" },
+				],
+			}),
+		).rejects.toThrow(/entity type/i);
+	});
+
+	it("rejects create when an @metric ref points at an undeclared measure", async () => {
+		await expect(
+			owner.watchers.create({
+				entity_id: inOrgEntityId,
+				slug: "typo-metric",
+				name: "Typo Metric",
+				prompt: "Track stuff.",
+				agent_id: agentId,
+				sources: [
+					{
+						name: "m",
+						query: "@metric:company.totally-fake-measure",
+					},
+				],
+			}),
+		).rejects.toThrow(/measure/i);
 	});
 
 	// ---- BUG B ----

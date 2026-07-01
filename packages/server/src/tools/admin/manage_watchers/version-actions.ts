@@ -11,6 +11,7 @@ import type { ToolContext } from '../../registry';
 import type { ManageWatchersArgs, ManageWatchersResult } from '../manage_watchers';
 import {
   assertWatcherVersionConfigValid,
+  assertWatcherSourcesResolve,
   parseJsonInput,
   normalizeStoredJsonField,
   toJsonParam,
@@ -44,7 +45,7 @@ export async function handleCreateVersion(
   // identify the group and to apply the per-assignment writes (sources,
   // schedule, scheduler_client_id) to that specific row.
   const watcherRows = await sql`
-    SELECT i.id, i.version, i.current_version_id, i.watcher_group_id, i.sources
+    SELECT i.id, i.version, i.current_version_id, i.watcher_group_id, i.sources, i.organization_id
     FROM watchers i WHERE i.id = ${args.watcher_id}
   `;
   if (watcherRows.length === 0) {
@@ -97,6 +98,14 @@ export async function handleCreateVersion(
   // entity type's metadata_schema at runtime, and an untyped watcher runs
   // the worker's free-form summary fallback.
   assertWatcherVersionConfigValid({ prompt, classifiers, sources });
+
+  // Resolve @ref sources against the org now (typo → 422, not silent empty
+  // context at read_knowledge). The watcher row carries the org; custom-SQL
+  // sources are skipped (id projection is enforced by the config check above).
+  const versionOrganizationId = watcherRows[0].organization_id as string | null;
+  if (versionOrganizationId) {
+    await assertWatcherSourcesResolve(sql, versionOrganizationId, sources);
+  }
 
   if (args.schedule) {
     const scheduleError = validateSchedule(args.schedule);

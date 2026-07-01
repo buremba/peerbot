@@ -1,0 +1,216 @@
+/**
+ * Streaming (chat-channel) feed as a watcher @feed source — the membership-gated
+ * read of `channel_messages`.
+ *
+ * A streaming @feed compiles to a read over `channel_messages` (not `events`),
+ * and that read is gated per-channel by `compileChannelMessagesVisibility`:
+ *
+ *   1. On a NON-enforced connection, a headless watcher run (null principal)
+ *      reads the transcript — org-open channels are usable as sources.
+ *   2. On an ACL-enforced connection, a headless run reads NOTHING — enforced
+ *      channel content never reaches the shared recap. THE security property.
+ *   3. On an ACL-enforced connection, a member (auth $member with a `member_of`
+ *      edge to the channel) DOES read it — the gate is membership, not blanket
+ *      denial.
+ */
+
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { getTestDb } from "../../setup/test-db";
+import { createTestConnection } from "../../setup/test-fixtures";
+import { TestWorkspace } from "../../setup/test-mcp-client";
+import { buildSlackChannelGraph } from "../../../authz/slack-channel-graph";
+import { ensureStreamingChannelFeed } from "../../../gateway/channels/channel-feed";
+import { slugToRuntimeConnectionId } from "../../../lobu/stores/connections-projection";
+import { normalizeWatcherSources } from "../../../watchers/source-refs";
+import { executeDataSources } from "../../../utils/execute-data-sources";
+import { ensureMemberEntity } from "../../../utils/member-entity";
+import type { DbClient } from "../../../db/client";
+
+const TEAM_ID = "TACME";
+const CHANNEL = "C900";
+const FEED_KEY = `slack:${CHANNEL}`;
+
+describe("streaming feed as a watcher @feed source", () => {
+  let workspace: TestWorkspace;
+  let orgId: string;
+
+  beforeAll(async () => {
+    workspace = await TestWorkspace.create({ name: "Channel Feed Source Org" });
+    orgId = workspace.org.id;
+  });
+
+  beforeEach(async () => {
+    const sql = getTestDb();
+    await sql`DELETE FROM channel_messages WHERE organization_id = ${orgId}`;
+    await sql`DELETE FROM authz_source_acl_state WHERE organization_id = ${orgId}`;
+    await sql`DELETE FROM entity_relationships WHERE organization_id = ${orgId}`;
+    await sql`DELETE FROM entity_identities WHERE organization_id = ${orgId}`;
+    await sql`DELETE FROM feeds WHERE organization_id = ${orgId}`;
+    await sql`DELETE FROM connections WHERE organization_id = ${orgId}`;
+    // Keep the workspace's own $member/entities intact; only clear source state.
+    await sql`
+      DELETE FROM entities
+      WHERE organization_id = ${orgId}
+        AND (metadata->>'source' = 'watcher_promotion' OR entity_type_id IN (
+          SELECT id FROM entity_types WHERE organization_id = ${orgId} AND slug IN ('channel', '$member')
+        ))
+    `;
+  });
+
+  /** A chat (slack, managed) connection carrying the team id. Returns the id, the
+   *  slug, and the runtime id that channel_messages + the ACL state key on. */
+  async function makeChatConnection() {
+    const conn = await createTestConnection({
+      organization_id: orgId,
+      connector_key: "slack",
+      display_name: "Org Slack",
+      createDefaultFeed: false,
+    });
+    const sql = getTestDb();
+    const [row] = await sql`
+      UPDATE connections
+      SET credential_mode = 'managed', external_tenant_id = ${TEAM_ID}
+      WHERE id = ${conn.id}
+      RETURNING slug
+    `;
+    const slug = String(row.slug);
+    return { id: conn.id, slug, runtimeId: slugToRuntimeConnectionId(slug) };
+  }
+
+  async function seedTranscript(runtimeId: string) {
+    const sql = getTestDb();
+    for (const [i, [author, text]] of (
+      [
+        ["Alice", "channel secret one"],
+        ["Bob", "channel secret two"],
+      ] as Array<[string, string]>
+    ).entries()) {
+      await sql`
+        INSERT INTO channel_messages (
+          organization_id, connection_id, platform, channel_id,
+          platform_message_id, author_name, is_bot, text, occurred_at
+        ) VALUES (
+          ${orgId}, ${runtimeId}, 'slack', ${CHANNEL},
+          ${`m${i}`}, ${author}, false, ${text},
+          ${new Date(Date.now() + i * 1000)}
+        )
+      `;
+    }
+  }
+
+  /** Compile @feed:<key> to its channel_messages query and run it as the given
+   *  reader — exactly the watcher read path (normalize → executeDataSources). */
+  async function readAsWatcherSource(userId: string | null): Promise<unknown[]> {
+    const sql = getTestDb();
+    const normalized = await normalizeWatcherSources(sql as unknown as DbClient, orgId, [
+      { name: "chat", query: `@feed:${FEED_KEY}` },
+    ]);
+    expect(normalized[0].query).toContain("channel_messages");
+    const out = await executeDataSources(
+      [{ name: "chat", query: normalized[0].query }],
+      { organizationId: orgId, userId },
+      sql as unknown as DbClient
+    );
+    return out.chat ?? [];
+  }
+
+  it("a headless watcher reads a NON-enforced channel's transcript", async () => {
+    const conn = await makeChatConnection();
+    await ensureStreamingChannelFeed({
+      connectionId: conn.id,
+      organizationId: orgId,
+      channelKey: FEED_KEY,
+    });
+    await seedTranscript(conn.runtimeId);
+
+    // No ACL graph → connection not enforced → headless (null principal) reads it.
+    const rows = (await readAsWatcherSource(null)) as Array<{ text: string }>;
+    expect(rows.length).toBe(2);
+    expect(rows.map((r) => r.text).sort()).toEqual([
+      "channel secret one",
+      "channel secret two",
+    ]);
+  });
+
+  it("a headless watcher reads NOTHING from an ACL-enforced channel (no leak)", async () => {
+    const conn = await makeChatConnection();
+    await ensureStreamingChannelFeed({
+      connectionId: conn.id,
+      organizationId: orgId,
+      channelKey: FEED_KEY,
+    });
+    await seedTranscript(conn.runtimeId);
+
+    // Materialize the membership graph → marks the connection ACL-enforced.
+    await buildSlackChannelGraph({
+      organizationId: orgId,
+      connectionId: conn.runtimeId,
+      teamId: TEAM_ID,
+      channels: [{ channelId: CHANNEL, name: "general", memberSlackUserIds: ["UMEMBER"] }],
+    });
+
+    // Headless run has no $member → fails closed on the enforced channel.
+    const rows = await readAsWatcherSource(null);
+    expect(rows.length).toBe(0);
+  });
+
+  it("a channel MEMBER reads the enforced channel (gate is membership, not denial)", async () => {
+    const conn = await makeChatConnection();
+    await ensureStreamingChannelFeed({
+      connectionId: conn.id,
+      organizationId: orgId,
+      channelKey: FEED_KEY,
+    });
+    await seedTranscript(conn.runtimeId);
+
+    const graph = await buildSlackChannelGraph({
+      organizationId: orgId,
+      connectionId: conn.runtimeId,
+      teamId: TEAM_ID,
+      channels: [{ channelId: CHANNEL, name: "general", memberSlackUserIds: [] }],
+    });
+    const channelEntityId = graph.channelEntityIds[CHANNEL];
+    expect(typeof channelEntityId).toBe("number");
+
+    // Provision the reader's $member (writes the auth_user_id/auth:signup identity
+    // the gate resolves), then give it a member_of edge to the channel entity —
+    // the same shape the live ACL sync would produce for a channel member.
+    const readerUserId = workspace.users.owner.id;
+    await ensureMemberEntity({
+      organizationId: orgId,
+      userId: readerUserId,
+      name: "Reader",
+      email: `reader-${readerUserId}@example.com`,
+    });
+    const sql = getTestDb();
+    const [member] = await sql`
+      SELECT e.id
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id AND et.slug = '$member'
+      JOIN entity_identities ei ON ei.entity_id = e.id
+        AND ei.namespace = 'auth_user_id' AND ei.identifier = ${readerUserId}
+        AND ei.source_connector = 'auth:signup'
+      WHERE e.organization_id = ${orgId} AND e.deleted_at IS NULL
+      LIMIT 1
+    `;
+    const [mot] = await sql`
+      SELECT id FROM entity_relationship_types
+      WHERE organization_id = ${orgId} AND slug = 'member_of' AND status = 'active'
+      LIMIT 1
+    `;
+    await sql`
+      INSERT INTO entity_relationships (
+        organization_id, from_entity_id, to_entity_id, relationship_type_id, created_at, updated_at
+      ) VALUES (
+        ${orgId}, ${member.id}, ${channelEntityId}, ${mot.id}, NOW(), NOW()
+      )
+    `;
+
+    const rows = (await readAsWatcherSource(readerUserId)) as Array<{ text: string }>;
+    expect(rows.length).toBe(2);
+    expect(rows.map((r) => r.text).sort()).toEqual([
+      "channel secret one",
+      "channel secret two",
+    ]);
+  });
+});

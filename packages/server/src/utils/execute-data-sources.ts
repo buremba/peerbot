@@ -22,6 +22,7 @@ import {
   compileConnectionFkVisibility,
   compileConnectionRowVisibility,
 } from '../authz/connection-visibility';
+import { compileChannelMessagesVisibility } from '../authz/channel-messages-visibility';
 import { compileResourceVisibility } from '../authz/resource-visibility';
 import type { AuthzScope } from '../authz/scope';
 import {
@@ -429,6 +430,18 @@ export function buildScopedQuery(
     return ` ${vis.sql}`;
   };
 
+  // Per-channel membership gate for the `channel_messages` table (alias has
+  // `connection_id` + `channel_id`): on an ACL-enforced Slack connection, restrict
+  // to channels the requester is `member_of`. A headless/null principal sees only
+  // non-enforced channels — this is what keeps a watcher's streaming @feed source
+  // from leaking enforced-channel content into the shared recap.
+  const channelMessagesVisibility = (alias: string): string => {
+    const vis = compileChannelMessagesVisibility(scope, idx + 1, alias);
+    params.push(...vis.params);
+    idx += vis.params.length;
+    return ` ${vis.sql}`;
+  };
+
   // For the `connections` table itself: the row is visible when org-shared or
   // owned by the requesting user (mirrors manage_connections CRUD).
   const connectionRowVisibility = (alias: string): string => {
@@ -637,6 +650,17 @@ export function buildScopedQuery(
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'fd')} FROM public.feeds fd WHERE fd.organization_id = ${orgP}` +
           eventConnVisibility('fd') +
+          ')'
+      );
+    } else if (table === 'channel_messages') {
+      // Chat transcript rows. `text` is verbatim channel content, so the CTE
+      // applies the per-channel membership gate: org-scope AND (connection not
+      // ACL-enforced OR requester member_of the channel). A headless reader
+      // (null principal) therefore reads only non-enforced channels.
+      // security-allowed: see block comment above the for-loop
+      ctes.push(
+        `"${safeName}" AS (SELECT ${sel(table, 'cm')} FROM public.channel_messages cm WHERE cm.organization_id = ${orgP}` +
+          channelMessagesVisibility('cm') +
           ')'
       );
     } else if (table === 'connector_definitions') {

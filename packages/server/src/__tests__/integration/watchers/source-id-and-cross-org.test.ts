@@ -229,9 +229,10 @@ describe("manage_watchers source-id + cross-org guards", () => {
 		).rejects.toThrow(/nonexistent-typo/i);
 	});
 
-	it("rejects create when an @feed ref points at a streaming (channel) feed", async () => {
-		// A streaming/channel feed's rows live in channel_messages, not events, so
-		// an @feed source over it would validate then read empty. Reject it loudly.
+	it("accepts an @feed ref that points at a streaming (channel) feed", async () => {
+		// A streaming/channel feed compiles to a membership-gated read over
+		// channel_messages (compileChannelMessagesVisibility), so it IS a valid
+		// @feed source — the gate keeps enforced-channel content from leaking.
 		const sql = getTestDb();
 		const connection = await createTestConnection({
 			organization_id: ownerOrgId,
@@ -244,16 +245,15 @@ describe("manage_watchers source-id + cross-org guards", () => {
 			VALUES (${ownerOrgId}, ${connection.id}, 'slack:C123', 'general', 'active', 'streaming', false, ${sql.json({ store: "channel_messages" })}::jsonb)
 		`;
 
-		await expect(
-			owner.watchers.create({
-				entity_id: inOrgEntityId,
-				slug: "streaming-feed-src",
-				name: "Streaming Feed Src",
-				prompt: "Track stuff.",
-				agent_id: agentId,
-				sources: [{ name: "content", query: "@feed:slack:C123" }],
-			}),
-		).rejects.toThrow(/streaming feed|collected/i);
+		const created = (await owner.watchers.create({
+			entity_id: inOrgEntityId,
+			slug: "streaming-feed-src",
+			name: "Streaming Feed Src",
+			prompt: "Track stuff.",
+			agent_id: agentId,
+			sources: [{ name: "content", query: "@feed:slack:C123" }],
+		})) as { watcher_id: string };
+		expect(created.watcher_id).toBeTruthy();
 	});
 
 	it("rejects create when an @entity ref is not a type in the org", async () => {

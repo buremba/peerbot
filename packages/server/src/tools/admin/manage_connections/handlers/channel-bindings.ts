@@ -2,10 +2,11 @@
  * Channel-binding handlers — the tool-side home of channel management.
  *
  * These fold the retired `gateway/routes/public/channels.ts` HTTP routes into
- * `manage_connections` actions, so a channel is managed under its connection on
- * the connectors surface (one surface), not a bespoke channel island. The
- * `ChannelBindingService` itself stays — recall (`bound-channels`) and the
- * Phase-2 streaming-feed materialization depend on it; only the HTTP shell died.
+ * `manage_connections` actions. Reach uses them for the agent-scoped reactive
+ * binding surface; Connectors uses the same channel/feed model for the
+ * connection-scoped transcript lens. The `ChannelBindingService` itself stays —
+ * recall (`bound-channels`) and streaming-feed materialization depend on it;
+ * only the HTTP shell died.
  *
  * AUTH: the org-role tier (auth/tool-access.ts) gates bind/unbind/connect_dm to
  * owner/admin and list/audience to read tier. On TOP of that, every action calls

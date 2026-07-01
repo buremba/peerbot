@@ -121,6 +121,11 @@ export interface WatcherMetadata {
   prompt?: string;
   description?: string;
   keying_config?: KeyingConfig | null;
+  /** Version-owned config surfaced so the edit form can round-trip them
+   *  (create_version preserves prev values on omit, but prefilling avoids
+   *  the empty-form-state clobber). */
+  classifiers?: unknown[];
+  reactions_guidance?: string;
   rendered_prompt?: string;
   available_versions?: WatcherVersionInfo[];
   reaction_script?: string;

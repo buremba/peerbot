@@ -219,6 +219,7 @@ interface WatcherQueryRow {
   sel_version_version_sources: unknown;
   sel_version_classifiers: unknown;
   sel_version_keying_config: unknown;
+  sel_version_reactions_guidance: string | null;
   // Latest window end (folded MAX(window_end) lookup)
   latest_window_end: string | null;
   // jsonb_agg of entities (folded entityCheck/watcherEntityQuery)
@@ -602,6 +603,7 @@ async function getWatcherImpl(
         sv.version_sources as sel_version_version_sources,
         sv.classifiers as sel_version_classifiers,
         sv.keying_config as sel_version_keying_config,
+        sv.reactions_guidance as sel_version_reactions_guidance,
         -- Latest window end for the unprocessedCount bound
         (SELECT MAX(window_end) FROM watcher_windows WHERE watcher_id = i.id) as latest_window_end,
         -- Entities + parent info for entityInfoForUrl / entitiesForTemplate
@@ -806,6 +808,7 @@ async function getWatcherImpl(
           version_sources: watcherRow.sel_version_version_sources,
           classifiers: watcherRow.sel_version_classifiers,
           keying_config: watcherRow.sel_version_keying_config,
+          reactions_guidance: watcherRow.sel_version_reactions_guidance,
         }
       : null;
 
@@ -843,6 +846,9 @@ async function getWatcherImpl(
       prompt: version?.prompt as string | undefined,
       description: (version?.description as string) || undefined,
       keying_config: (version?.keying_config as KeyingConfig | null | undefined) ?? undefined,
+      classifiers: (version?.classifiers as unknown[] | null | undefined) ?? undefined,
+      reactions_guidance:
+        (version?.reactions_guidance as string | null | undefined) ?? undefined,
       rendered_prompt: version?.prompt
         ? renderPromptPreview(version.prompt as string, entitiesForTemplate)
         : undefined,

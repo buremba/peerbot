@@ -144,9 +144,9 @@ export const ManageWatchersSchema = Type.Object({
     })
   ),
   schedule: Type.Optional(
-    Type.String({
+    Type.Union([Type.String(), Type.Null()], {
       description:
-        '[create/update/create_version] Cron expression for watcher schedule (e.g. "0 * * * *" for hourly, "0 9 * * *" for daily at 9am).',
+        '[create/update/create_version] Cron expression for watcher schedule (e.g. "0 * * * *" for hourly, "0 9 * * *" for daily at 9am). Null clears the schedule (an unscheduled/manual watcher).',
     })
   ),
   agent_id: Type.Optional(
@@ -155,9 +155,9 @@ export const ManageWatchersSchema = Type.Object({
     })
   ),
   scheduler_client_id: Type.Optional(
-    Type.String({
+    Type.Union([Type.String(), Type.Null()], {
       description:
-        '[create/update/create_version] Optional MCP client ID that should auto-run this watcher.',
+        '[create/update/create_version] Optional MCP client ID that should auto-run this watcher. Null clears it.',
     })
   ),
   device_worker_id: Type.Optional(

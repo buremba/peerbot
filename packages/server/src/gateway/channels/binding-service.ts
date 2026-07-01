@@ -56,7 +56,7 @@ export class ChannelBindingService {
   ): Promise<ChannelBinding | null> {
     const sql = getDb();
     const orgId = resolveOrgId(organizationId);
-    const rows = teamId
+    let rows = teamId
       ? orgId
         ? await sql`
             SELECT * FROM agent_channel_bindings
@@ -85,6 +85,28 @@ export class ChannelBindingService {
               AND channel_id = ${channelId}
               AND team_id IS NULL
           `;
+    // BYO Slack channels are bound team-less (the connection carries no
+    // external_tenant_id), but inbound Slack messages always carry a team_id.
+    // Without this fallback the team-scoped lookup misses the team-less binding
+    // and routing drops to the connection's owning agent. Managed installs
+    // always store a team_id, so their team-scoped bindings match above and this
+    // never fires for them (no cross-workspace leak).
+    if (rows.length === 0 && teamId) {
+      rows = orgId
+        ? await sql`
+            SELECT * FROM agent_channel_bindings
+            WHERE organization_id = ${orgId}
+              AND platform = ${platform}
+              AND channel_id = ${channelId}
+              AND team_id IS NULL
+          `
+        : await sql`
+            SELECT * FROM agent_channel_bindings
+            WHERE platform = ${platform}
+              AND channel_id = ${channelId}
+              AND team_id IS NULL
+          `;
+    }
     if (rows.length === 0) return null;
     return rowToBinding(rows[0]);
   }

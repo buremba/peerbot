@@ -15,6 +15,7 @@ import { persistSecretValue, SecretStoreRegistry } from "../../../gateway/secret
 import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-installation-store";
 import { orgContext } from "../../../lobu/stores/org-context";
 import { PostgresSecretStore } from "../../../lobu/stores/postgres-secret-store";
+import { ChannelBindingService } from "../../../gateway/channels/binding-service";
 import { __setSlackWebApiForTests } from "../../../tools/admin/manage_connections/handlers/channel-bindings";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -248,5 +249,32 @@ describe("manage_connections channel-binding actions", () => {
       WHERE organization_id = ${orgId} AND agent_id = ${agentId}
     `;
     expect(bound.map((r) => r.channel_id)).toContain("slack:D999");
+  });
+
+  it("getBinding falls back to a team-less binding for BYO Slack, without leaking team-scoped ones", async () => {
+    const sql = getTestDb();
+    const svc = new ChannelBindingService();
+
+    // BYO Slack: the channel is bound team-less (connection has no
+    // external_tenant_id), but inbound Slack messages always carry a team_id.
+    await sql`
+      INSERT INTO agent_channel_bindings
+        (organization_id, agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${orgId}, ${agentId}, 'slack', 'slack:C777', NULL, NOW())
+    `;
+    const found = await svc.getBinding("slack", "slack:C777", "TBYO", orgId);
+    expect(found?.agentId).toBe(agentId);
+
+    // Managed: a team-scoped binding matches exactly, and the fallback must NOT
+    // hand it to a different workspace's message (no cross-tenant leak).
+    await sql`
+      INSERT INTO agent_channel_bindings
+        (organization_id, agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${orgId}, ${agentId}, 'slack', 'slack:C888', 'TMANAGED', NOW())
+    `;
+    expect(
+      (await svc.getBinding("slack", "slack:C888", "TMANAGED", orgId))?.agentId,
+    ).toBe(agentId);
+    expect(await svc.getBinding("slack", "slack:C888", "TOTHER", orgId)).toBeNull();
   });
 });

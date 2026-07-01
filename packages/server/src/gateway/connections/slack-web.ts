@@ -44,6 +44,15 @@ export interface SlackWebApi {
     userId: string
   ): Promise<{ isAdmin: boolean; isOwner: boolean }>;
   /**
+   * `auth.revoke` — invalidate a bot token so an abandoned install can't leave a
+   * live credential lying around. Best-effort by contract: an already-invalid or
+   * unknown token yields a Slack-level error (`invalid_auth`, `token_revoked`)
+   * which this throws on, and the caller treats any throw as "already gone" and
+   * continues. Resolves to Slack's `revoked` flag on success. Used by the
+   * expired-pending-install reaper.
+   */
+  revokeToken(botToken: string): Promise<boolean>;
+  /**
    * `oauth.v2.access` — exchange an OAuth `code` for the workspace bot token +
    * tenant/installer identity. Unlike the other methods this authenticates with
    * the app's client id/secret (not a bot token), so it lives outside
@@ -164,6 +173,10 @@ export function createSlackWebApi(): SlackWebApi {
         isAdmin: user?.is_admin === true,
         isOwner: user?.is_owner === true,
       };
+    },
+    async revokeToken(botToken) {
+      const json = await slackPost(botToken, "auth.revoke", {});
+      return json.revoked === true;
     },
     async exchangeOAuthCode({ clientId, clientSecret, code, redirectUri }) {
       const form = new URLSearchParams({

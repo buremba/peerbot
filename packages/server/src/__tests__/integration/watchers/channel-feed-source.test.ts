@@ -174,6 +174,30 @@ describe("streaming feed as a watcher @feed source", () => {
     expect(rows.length).toBe(0);
   });
 
+  it("reads NOTHING from a connection whose ACL snapshot went STALE (fail closed)", async () => {
+    const conn = await makeChatConnection();
+    await ensureStreamingChannelFeed({
+      connectionId: conn.id,
+      organizationId: orgId,
+      channelKey: FEED_KEY,
+    });
+    await seedTranscript(conn.runtimeId);
+
+    // The connection WAS onboarded into authz (acl row exists) but its snapshot
+    // aged out beyond the freshness window — full+fresh yet last_synced_at old, so
+    // it is NOT in the fresh-enforced set. A bare `NOT IN (enforced)` would leak
+    // it; the gate must fail closed because a row exists.
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO authz_source_acl_state
+        (organization_id, connection_id, acl_support, freshness_state, last_synced_at, created_at, updated_at)
+      VALUES (${orgId}, ${conn.runtimeId}, 'full', 'fresh', now() - interval '2 hours', now(), now())
+    `;
+
+    const rows = await readAsWatcherSource(null);
+    expect(rows.length).toBe(0);
+  });
+
   it("a channel MEMBER reads the enforced channel (gate is membership, not denial)", async () => {
     const conn = await makeChatConnection();
     await ensureStreamingChannelFeed({

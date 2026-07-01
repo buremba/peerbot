@@ -233,6 +233,44 @@ export async function pauseScheduledJob(
   return rows.length > 0;
 }
 
+interface UpdateScheduledJobParams {
+  organizationId: string;
+  id: string;
+  description?: string;
+  /** `null` clears the cron (recurring → one-shot); a string sets a new cadence. */
+  cron?: string | null;
+  /** Reschedule the next firing. */
+  runAt?: Date;
+  /** Replace the durable action payload (e.g. a new wake_agent prompt). */
+  actionArgs?: Record<string, unknown>;
+}
+
+/**
+ * Patch the mutable fields of a schedule (description / cron / next firing /
+ * payload). Attribution, action_type and delivery_context are immutable — a
+ * different target or handler is a new schedule, not an edit. Every param is
+ * optional; omitted fields keep their current value via COALESCE, except
+ * `cron` which is deliberately settable to NULL (recurring → one-shot).
+ */
+export async function updateScheduledJob(
+  params: UpdateScheduledJobParams
+): Promise<ScheduledJobRow | null> {
+  const sql = getDb();
+  const setCron = params.cron !== undefined;
+  const rows = (await sql`
+    UPDATE scheduled_jobs
+    SET
+      description = COALESCE(${params.description ?? null}, description),
+      cron = CASE WHEN ${setCron} THEN ${params.cron ?? null} ELSE cron END,
+      next_run_at = COALESCE(${params.runAt ?? null}, next_run_at),
+      action_args = COALESCE(${params.actionArgs ? sql.json(params.actionArgs) : null}, action_args),
+      updated_at = now()
+    WHERE organization_id = ${params.organizationId} AND id = ${params.id}
+    RETURNING *
+  `) as unknown as ScheduledJobRow[];
+  return rows[0] ?? null;
+}
+
 export async function deleteScheduledJob(
   organizationId: string,
   id: string

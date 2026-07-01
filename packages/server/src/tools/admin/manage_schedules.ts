@@ -30,6 +30,7 @@ import {
   pauseScheduledJob,
   type ScheduledDeliveryContext,
   type ScheduledJobRow,
+  updateScheduledJob,
   validateDeliveryAuthorization,
 } from '../../scheduled/scheduled-jobs-service';
 import type { ToolContext, ToolSourceContext } from '../registry';
@@ -99,6 +100,21 @@ const ListAction = Type.Object({
   include_paused: Type.Optional(Type.Boolean()),
 });
 
+const UpdateAction = Type.Object({
+  action: Type.Literal('update'),
+  id: Type.String({ format: 'uuid' }),
+  description: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+  /** RFC3339 timestamp to reschedule the next firing. */
+  run_at: Type.Optional(Type.String()),
+  /**
+   * New cron cadence, or `null` to clear it (recurring → one-shot). Omit to
+   * leave the cadence unchanged.
+   */
+  cron: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  /** New `wake_agent` prompt (the only editable payload field). */
+  prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
+});
+
 const PauseAction = Type.Object({
   action: Type.Literal('pause'),
   id: Type.String({ format: 'uuid' }),
@@ -124,6 +140,7 @@ interface ToolResult {
 const manageSchedulesTool = defineActionTool('manage_schedules', {
   create: action(CreateAction, handleCreate),
   list: action(ListAction, handleList),
+  update: action(UpdateAction, handleUpdate),
   pause: action(PauseAction, handlePause),
   cancel: action(CancelAction, handleCancel),
 });
@@ -188,6 +205,51 @@ async function handleList(
     includePaused: args.include_paused ?? true,
   });
   return { schedules: rows.map(serializeSchedule) };
+}
+
+async function handleUpdate(
+  args: Static<typeof UpdateAction>,
+  ctx: ToolContext
+): Promise<ToolResult> {
+  let runAt: Date | undefined;
+  if (args.run_at !== undefined) {
+    runAt = new Date(args.run_at);
+    if (Number.isNaN(runAt.getTime())) {
+      return { error: `run_at is not a valid ISO timestamp: ${args.run_at}` };
+    }
+  }
+  if (args.cron) {
+    try {
+      nextCronTickAt(args.cron);
+    } catch (err) {
+      return { error: `cron expression rejected: ${getErrorMessage(err)}` };
+    }
+  }
+
+  // A new prompt merges into the existing durable payload (keeping agent_id /
+  // thread_id / reason) rather than replacing it wholesale.
+  let actionArgs: Record<string, unknown> | undefined;
+  if (args.prompt !== undefined) {
+    const existing = await getScheduledJob(ctx.organizationId, args.id);
+    if (!existing) {
+      return { error: `Schedule '${args.id}' not found in this organization.` };
+    }
+    if (existing.action_type !== 'wake_agent') {
+      return { error: 'prompt can only be updated on a wake_agent schedule.' };
+    }
+    actionArgs = { ...existing.action_args, prompt: args.prompt };
+  }
+
+  const job = await updateScheduledJob({
+    organizationId: ctx.organizationId,
+    id: args.id,
+    description: args.description,
+    cron: args.cron,
+    runAt,
+    actionArgs,
+  });
+  if (!job) return { error: `Schedule '${args.id}' not found in this organization.` };
+  return { schedule: serializeSchedule(job), ok: true };
 }
 
 async function handlePause(

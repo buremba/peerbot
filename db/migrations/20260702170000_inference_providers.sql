@@ -1,8 +1,10 @@
+-- migrate:up
+
 -- Org-owned inference provider credentials with per-modality custom upstreams.
 --
 -- Each row is one named provider credential for an org (slug-referenced by agents).
 -- `capabilities` jsonb carries per-modality config { "<modality>": { base_url?, model?,
--- models_endpoint?, api_key_ref? } } where modality ∈ text|image|stt|tts|embedding. An absent
+-- models_endpoint? } } where modality ∈ text|image|stt|tts|embedding. An absent
 -- modality block ⇒ fall back to today's static/hardcoded behavior for that modality (so existing
 -- orgs are byte-identical at cutover); a present block with a non-null base_url ⇒ that modality's
 -- calls use the org credential ONLY (the URL invariant — never per-user, never process.env).
@@ -87,3 +89,7 @@ CREATE INDEX IF NOT EXISTS inference_providers_org_live
 
 CREATE INDEX IF NOT EXISTS inference_providers_capabilities_gin
     ON public.inference_providers USING gin (capabilities);
+
+-- migrate:down
+
+DROP TABLE IF EXISTS public.inference_providers;

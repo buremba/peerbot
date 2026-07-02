@@ -126,7 +126,7 @@ export const ManageEntitySchema = Type.Object({
   metadata: Type.Optional(
     Type.Record(Type.String(), Type.Unknown(), {
       description:
-        "[create/update/link/update_link] Custom metadata object. For entities: validated against the entity type's JSON schema. For links: relationship metadata.",
+        "[create/update/link/update_link] Custom metadata object. For entities: validated against the entity type's JSON schema. For links: relationship metadata. On update, fields a human owns are NOT overwritten — they are queued for the human's approval and reported in the result's `blocked_fields`/`approval_queued`; tell the user you PROPOSED those changes rather than claiming you set them. Unowned fields in the same call apply directly (`applied_fields`).",
     })
   ),
 

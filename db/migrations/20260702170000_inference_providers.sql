@@ -46,8 +46,12 @@ CREATE TABLE IF NOT EXISTS public.inference_providers (
 
     -- No kind CHECK: kind = provider type; sdkCompat lives in providers.json and is enforced
     -- server-side on base_url writes. A DB enum would abort the backfill and drift on every provider add.
+    -- Slug shape MUST match the CLI (map-config ORG_PROVIDER_SLUG_PATTERN) + backfill
+    -- exactly: lowercase alphanumeric + hyphen, 1-63 chars, no leading/trailing hyphen.
+    -- The optional group makes a single-char slug legal while still rejecting a
+    -- trailing hyphen — the old `[a-z0-9-]{0,62}[a-z0-9]` required >=2 chars.
     CONSTRAINT inference_providers_slug_format
-        CHECK (slug ~ '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'),
+        CHECK (slug ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'),
 
     -- capabilities keys must be known modalities. Subquery-free (a subquery is rejected in a CHECK).
     -- The jsonb_typeof guard is load-bearing: without it, `-` (jsonb minus text[]) on an ARRAY value

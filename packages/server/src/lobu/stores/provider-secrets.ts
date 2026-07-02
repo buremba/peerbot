@@ -52,6 +52,21 @@ export function isInferenceModality(m: string): m is InferenceModality {
 	return INFERENCE_MODALITIES.has(m as InferenceModality);
 }
 
+/**
+ * Canonical provider-slug shape. MUST match the DB CHECK
+ * (`inference_providers_slug_format`) and the CLI (map-config
+ * ORG_PROVIDER_SLUG_PATTERN) EXACTLY: lowercase alphanumeric + hyphen, 1-63
+ * chars, no leading/trailing hyphen. Validated server-side so a bad slug is a
+ * clean 400 instead of a raw DB CHECK-violation 500.
+ */
+export const INFERENCE_PROVIDER_SLUG_PATTERN =
+	/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** Is `slug` a valid inference-provider slug (see INFERENCE_PROVIDER_SLUG_PATTERN)? */
+export function isValidInferenceProviderSlug(slug: string): boolean {
+	return INFERENCE_PROVIDER_SLUG_PATTERN.test(slug);
+}
+
 const ALLOWED_CAPABILITY_KEYS: ReadonlySet<string> = new Set([
 	"base_url",
 	"model",

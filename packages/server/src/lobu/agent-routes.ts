@@ -18,6 +18,7 @@ import {
   softDeleteInferenceProvider,
   validateCapabilityBlock,
   isInferenceModality,
+  isValidInferenceProviderSlug,
   type InferenceCapabilities,
   type InferenceCapabilityBlock,
 } from './stores/provider-secrets';
@@ -449,6 +450,15 @@ routes.post('/inference-providers', async (c) => {
   const kind = typeof body.kind === 'string' ? body.kind : '';
   const apiKey = typeof body.apiKey === 'string' ? body.apiKey : '';
   if (!slug) return c.json({ error: 'Body must include a `slug` string' }, 400);
+  if (!isValidInferenceProviderSlug(slug)) {
+    return c.json(
+      {
+        error:
+          '`slug` must be lowercase alphanumeric + hyphen, 1-63 chars, no leading/trailing hyphen',
+      },
+      400
+    );
+  }
   if (!kind) return c.json({ error: 'Body must include a `kind` string' }, 400);
   if (!apiKey) {
     return c.json({ error: 'Body must include a non-empty `apiKey` string' }, 400);

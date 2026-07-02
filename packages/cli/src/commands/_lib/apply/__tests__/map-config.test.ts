@@ -784,6 +784,31 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/provider slug/);
   });
 
+  test("rejects a trailing-hyphen slug (DB CHECK parity)", () => {
+    // The DB CHECK rejects a trailing hyphen; the CLI regex MUST match so apply
+    // fails up front instead of the server 500ing on the constraint.
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({
+          agents: [],
+          providers: [{ slug: "myvllm-", kind: "openai", key: "k" }],
+        }),
+        env
+      )
+    ).toThrow(/provider slug/);
+  });
+
+  test("accepts a single-character slug (DB CHECK parity)", () => {
+    const state = mapProjectToDesiredState(
+      defineConfig({
+        agents: [],
+        providers: [{ slug: "p", kind: "openai", key: "k" }],
+      }),
+      env
+    );
+    expect(state.providers.map((p) => p.slug)).toContain("p");
+  });
+
   test("rejects an unknown modality", () => {
     expect(() =>
       mapProjectToDesiredState(

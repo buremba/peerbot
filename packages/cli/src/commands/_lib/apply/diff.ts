@@ -887,15 +887,19 @@ function diffInferenceProvider(
     };
   }
 
-  const changed: string[] = [];
-  if (desired.kind !== remote.kind) changed.push("kind");
-  if (
-    desired.displayName !== undefined &&
-    desired.displayName !== "" &&
-    desired.displayName !== (remote.displayName ?? "")
-  ) {
-    changed.push("displayName");
+  // `kind` and `displayName` are immutable after create: the server exposes no
+  // update path for them (only per-modality capabilities + key rotation). Diffing
+  // them here would push a change `executePlan` can't persist, so the drift would
+  // resurface on every apply. `kind` is load-bearing (provider type ↔ credential),
+  // so a mismatch is a hard error; `displayName` is cosmetic and simply not diffed.
+  if (desired.kind !== remote.kind) {
+    throw new ValidationError(
+      `Inference provider "${desired.slug}" has kind "${desired.kind}" but the server has "${remote.kind}". ` +
+        `A provider's kind is immutable — delete and recreate it under a new slug to change the type.`
+    );
   }
+
+  const changed: string[] = [];
 
   // Per-modality capability comparison. Only modalities the config declares are
   // considered — an omitted modality means "no opinion" and never churns.

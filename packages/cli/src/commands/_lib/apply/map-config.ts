@@ -93,8 +93,14 @@ function providerId(provider: ProviderConfig): string {
   return provider.id ?? provider.model;
 }
 
-/** Org-provider slug rules — same shape as a connection slug (server-enforced). */
-const ORG_PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+/**
+ * Org-provider slug rules — MUST match the DB CHECK in the inference_providers
+ * migration exactly (`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`): lowercase
+ * alphanumeric + hyphen, 1-63 chars, no leading/trailing hyphen. Kept in lockstep
+ * so `lobu apply` rejects a bad slug up front instead of the server 500ing on the
+ * CHECK. Single-char slugs are allowed; a trailing hyphen (`myvllm-`) is not.
+ */
+const ORG_PROVIDER_SLUG_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
 /** Modalities the server accepts for an inference-provider capability block. */
 const INFERENCE_MODALITIES = new Set([

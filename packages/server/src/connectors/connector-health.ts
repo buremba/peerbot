@@ -132,8 +132,12 @@ interface UnhealthyRow {
  * The detection query. Read-only. Returns one row per active, non-deleted
  * connection that is past the min-age grace window, with aggregates over its
  * non-deleted feeds, so the JS classifier can decide healthy vs. unhealthy
- * (and which rule tripped). Chat connections live in a separate table
- * (`agent_connections`) and are intentionally NOT scanned here.
+ * (and which rule tripped). NOTE: post-`connections`-unify, chat connections
+ * (slack/telegram) share this SAME `connections` table with connector
+ * connections — they no longer live in a separate table. The query below has
+ * NO connector_key filter, and chat connections own zero feeds, so they would
+ * trip the `zero_feeds` rule and false-positive as unhealthy. Verify whether a
+ * chat-platform exclusion is needed before relying on this scan's output.
  */
 async function loadConnectionHealthRows(
   sql: DbClient,

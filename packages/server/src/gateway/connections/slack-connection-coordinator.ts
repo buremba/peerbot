@@ -300,7 +300,7 @@ export class SlackConnectionCoordinator {
   /**
    * Persist a per-workspace OAuth install: the workspace's bot token + tenant
    * metadata, keyed on (org, team), as an `app_installations` row (provider=slack).
-   * This is NOT an `agent_connections` row — an installed workspace has no owning agent;
+   * This is NOT a BYO `connections` chat row — an installed workspace has no owning agent;
    * it routes to many agents via `/lobu link` channel bindings. The token goes
    * to the secret store (the store handles that); app-level creds
    * (signingSecret/clientId/clientSecret) stay env-sourced at runtime. Idempotent
@@ -409,7 +409,7 @@ export class SlackConnectionCoordinator {
       }
 
       // 2) An OAuth-installed workspace (the "Add to Slack" path). The install
-      //    is an `app_installations` row (provider=slack), not `agent_connections`;
+      //    is an `app_installations` row (provider=slack), not a BYO `connections` chat row;
       //    the manager hydrates an agentless Slack instance from it (the
       //    `slackinst-` id is namespaced, so `ensureConnectionRunning`/
       //    `forwardWebhook` resolve it via the Slack install projection). Per-message

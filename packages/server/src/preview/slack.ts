@@ -15,7 +15,7 @@ import { MANAGED_CHAT_PLATFORMS_SET } from "./managed-platforms";
 // There is no Slack-Preview-specific schema or transport:
 //   * The link code lives in `oauth_states` (scope `slack-preview-claim`).
 //   * The hosted "Lobu Developer" workspace is just an ordinary Slack
-//     `agent_connections` row (no env var, no relay service).
+//     `connections` row (no env var, no relay service).
 //   * `/lobu link <code>` in that workspace consumes the claim and writes a normal
 //     `agent_channel_bindings` row (platform `slack`) — so inbound messages
 //     route through the exact same Chat SDK adapter path every other platform

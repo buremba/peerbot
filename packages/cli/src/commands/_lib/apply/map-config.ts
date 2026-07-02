@@ -287,7 +287,7 @@ function mapAgent(
   const platforms: DesiredPlatform[] = (agent.platforms ?? [])
     // A hosted-bot entry (slack/telegram with no `config`) is reached via the
     // hosted Lobu bot + a `/lobu link` claim, NOT a self-hosted connection. It
-    // must never become a credential-less `agent_connections` row — `lobu run`
+    // must never become a credential-less `connections` chat row — `lobu run`
     // reads it straight from the authored config to mint the link code.
     .filter((p) => !isHostedChatEntry(p))
     .map((p) => ({

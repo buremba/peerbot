@@ -155,8 +155,9 @@ export interface AppWebhookProvider {
 	 *
 	 * This exists for Slack, whose live messaging path does NOT fit the
 	 * resolve-install-then-store model:
-	 *  - Slack's PRIMARY routing target is a BYO `agent_connections` row keyed on
-	 *    team_id — there is NO `app_installations` row for it, so the generic
+	 *  - Slack's PRIMARY routing target is a BYO `connections` row (slug
+	 *    `agentconn-…`) keyed on team_id — there is NO `app_installations` row
+	 *    for it, so the generic
 	 *    `resolveActiveByTenant` would 200-ack the delivery and the live bot would
 	 *    stop receiving events. The precedence (BYO connection → active OAuth
 	 *    install → preview connection → OAuth-fallback chat) and the live forward
@@ -860,11 +861,11 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 
 		// 1b. Providers that own their own routing (Slack) take over here, after
 		//     the edge signing check. They do NOT resolve an `app_installations`
-		//     row — Slack's primary target is a BYO `agent_connections` row that
-		//     has no install row, so the generic resolveActiveByTenant would
-		//     200-ack the live bot's traffic into oblivion. They run their own
-		//     precedence chain and return their own Response; the generic
-		//     install/ingest pipeline below is skipped entirely.
+		//     row — Slack's primary target is a BYO `connections` chat row
+		//     (slug `agentconn-…`) that has no install row, so the generic
+		//     resolveActiveByTenant would 200-ack the live bot's traffic into
+		//     oblivion. They run their own precedence chain and return their own
+		//     Response; the generic install/ingest pipeline below is skipped entirely.
 		if (provider.handleDelivery) {
 			try {
 				return await provider.handleDelivery({

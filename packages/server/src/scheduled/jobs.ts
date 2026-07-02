@@ -162,7 +162,7 @@ function registerMaintenanceTasks(
     { cron: '*/5 * * * *' },
   );
 
-  // Connection health — keeps agent_connections.status honest now that boot
+  // Connection health — keeps connections.status honest now that boot
   // no longer warm-starts (and status-marks) every connection on every pod.
   // One claimant per tick validates config rejections + secret-ref
   // resolution; instances themselves hydrate lazily on use.

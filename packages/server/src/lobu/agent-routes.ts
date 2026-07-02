@@ -1007,7 +1007,7 @@ routes.post('/:agentId/platforms', async (c) => {
   // No ChatInstanceManager — refuse the write rather than persist
   // plaintext secrets directly. Secret normalization (`secret://` ref
   // indirection) lives on the manager; bypassing it would leak bot
-  // tokens into the agent_connections.config JSON.
+  // tokens into the connections.config JSON.
   return c.json(
     { error: 'platform manager unavailable — retry once startup completes' },
     503
@@ -1200,7 +1200,7 @@ routes.put('/:agentId/platforms/by-stable-id/:stableId', async (c) => {
 
         // No ChatInstanceManager — same reasoning as the POST handler:
         // refuse the write so plaintext secrets aren't persisted into
-        // agent_connections.config bypassing secret-ref normalization.
+        // connections.config bypassing secret-ref normalization.
         return c.json(
           { error: 'platform manager unavailable — retry once startup completes' },
           503
@@ -1268,7 +1268,7 @@ routes.put('/:agentId/platforms/by-stable-id/:stableId', async (c) => {
     }
 
     // No ChatInstanceManager — refuse rather than persist plaintext
-    // secrets directly into agent_connections.config.
+    // secrets directly into connections.config.
     return c.json(
       { error: 'platform manager unavailable — retry once startup completes' },
       503

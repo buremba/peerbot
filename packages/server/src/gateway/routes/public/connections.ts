@@ -215,7 +215,7 @@ export function createConnectionWebhookRoutes(
       return c.json({ error: "Missing connectionId" }, 400);
     }
 
-    // Resolve the `agent_connections` row (chat platforms + ingest-only webhook
+    // Resolve the `connections` row (chat platforms + ingest-only webhook
     // connections). A miss is NOT necessarily a 404: the id may name a CONNECTOR
     // connection (`connections` table) that registered a provider webhook at
     // connect time — `handleIngestWebhook` bridges to that row. So fall through

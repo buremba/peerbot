@@ -24,7 +24,6 @@ export function deriveJwtSecret(encryptionKey: string): string {
 
 interface WindowTokenPayload {
   watcher_id: number;
-  window_id?: number; // Optional - created by complete_window if not present
   window_start: string;
   window_end: string;
   granularity: string; // Required for window creation
@@ -99,7 +98,7 @@ function getJwtSecret(env: Env): string {
 /**
  * Generate a signed window token
  *
- * @param payload - Token payload containing watcher_id, dates, content IDs, and optional window_id
+ * @param payload - Token payload containing watcher_id, dates, and content IDs
  * @param env - Environment with JWT secret
  * @returns Signed JWT token string
  */

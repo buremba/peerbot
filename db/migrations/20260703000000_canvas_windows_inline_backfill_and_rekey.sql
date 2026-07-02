@@ -377,20 +377,28 @@ WHERE e.semantic_type = 'correction'
   AND (e.metadata->>'window_id')::bigint = r.old_id;
 
 -- ── (d) runs provenance columns + backfill ──────────────────────────────────
--- The completion write path now records model/run metadata on the RUN row
--- instead of watcher_windows. Backfill from the historical window each run
--- produced (runs.window_id, pre-re-key, matched a watcher_windows.id — so we
--- join via the freshly re-keyed root → back to the window through the same
--- period). Simpler: join runs → watcher_windows on runs.run_id linkage AND on
--- the run's window (now root id) resolving back to the window.
+-- The completion write path records model/run metadata on the RUN row, and the
+-- canvas_windows view (e) resolves ALL window provenance through the chain
+-- head's run_id — no legacy fallback in any read path. To make historical data
+-- uniform with that model, this section (d.1) copies legacy provenance onto
+-- every run associated with a legacy window (merging execution_time_ms and
+-- client_id into run_metadata — runs has no client_id column, so the legacy
+-- PAT/device id survives as run_metadata data; the view's client_id column
+-- stays live-path only), (d.2) stamps each canvas root's run_id with its
+-- window's producing run, and (d.3) synthesizes a completed watcher run for
+-- legacy windows that carry provenance but never had a run row (the execution
+-- demonstrably happened; the run row is its historical record, tagged
+-- run_metadata.source='canvas-provenance-backfill'). Afterwards every window,
+-- live or migrated, resolves provenance identically.
 ALTER TABLE public.runs ADD COLUMN IF NOT EXISTS model_used text;
 ALTER TABLE public.runs ADD COLUMN IF NOT EXISTS run_metadata jsonb;
 
--- Backfill provenance from the window each run wrote. After the re-key above,
--- runs.window_id points at the canvas ROOT event id; map it back to the window
--- via the same period join to read the legacy provenance columns.
+-- (d.1) Copy legacy provenance onto runs linked to a legacy window — via the
+--       re-keyed runs.window_id (root id) OR the window's own run_id pointer.
+--       Existing run values always win; only missing fields are filled.
 WITH win AS (
-    SELECT ev.id AS root_id, ww.model_used, ww.run_metadata
+    SELECT ev.id AS root_id, ww.run_id AS legacy_run_id,
+           ww.model_used, ww.run_metadata, ww.execution_time_ms, ww.client_id
     FROM public.watcher_windows ww
     JOIN public.events ev
       ON ev.semantic_type = 'canvas_state'
@@ -402,19 +410,89 @@ WITH win AS (
 )
 UPDATE public.runs r
 SET model_used   = COALESCE(r.model_used, win.model_used),
-    run_metadata = COALESCE(r.run_metadata, win.run_metadata)
+    run_metadata = jsonb_strip_nulls(
+        COALESCE(r.run_metadata, win.run_metadata, '{}'::jsonb)
+        || jsonb_build_object(
+             'execution_time_ms',
+             COALESCE((r.run_metadata->>'execution_time_ms')::bigint, win.execution_time_ms),
+             'client_id',
+             COALESCE(r.run_metadata->>'client_id', win.client_id)))
 FROM win
-WHERE r.window_id = win.root_id
-  AND (r.model_used IS NULL OR r.run_metadata IS NULL);
+WHERE (r.window_id = win.root_id OR r.id = win.legacy_run_id)
+  AND (r.model_used IS NULL
+       OR r.run_metadata IS NULL
+       OR (r.run_metadata->>'execution_time_ms' IS NULL AND win.execution_time_ms IS NOT NULL)
+       OR (r.run_metadata->>'client_id' IS NULL AND win.client_id IS NOT NULL));
 
--- Also backfill from watcher_windows.run_id linkage (a run whose window was
--- never linked via window_id but which the window records as its producer).
-UPDATE public.runs r
-SET model_used   = COALESCE(r.model_used, ww.model_used),
-    run_metadata = COALESCE(r.run_metadata, ww.run_metadata)
+-- (d.2) Stamp each canvas root's run_id: the window's own run pointer first,
+--       else the newest run whose (re-keyed) window_id is the root. Guarded on
+--       run_id IS NULL → idempotent; never touches a live dual-write root.
+UPDATE public.events ev
+SET run_id = ww.run_id
 FROM public.watcher_windows ww
-WHERE ww.run_id = r.id
-  AND (r.model_used IS NULL OR r.run_metadata IS NULL);
+WHERE ev.semantic_type = 'canvas_state'
+  AND ev.supersedes_event_id IS NULL
+  AND ev.run_id IS NULL
+  AND ww.run_id IS NOT NULL
+  AND (ev.metadata->>'watcher_id')::bigint = ww.watcher_id
+  AND (ev.metadata->>'granularity') = ww.granularity
+  AND (ev.metadata->>'window_start') =
+      to_char(ww.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+
+UPDATE public.events ev
+SET run_id = latest.run_id
+FROM (
+    SELECT window_id, MAX(id) AS run_id
+    FROM public.runs
+    WHERE run_type = 'watcher' AND window_id IS NOT NULL
+    GROUP BY window_id
+) latest
+WHERE ev.semantic_type = 'canvas_state'
+  AND ev.supersedes_event_id IS NULL
+  AND ev.run_id IS NULL
+  AND latest.window_id = ev.id;
+
+-- (d.3) Synthesize the historical run for legacy windows with provenance but
+--       no run row at all, and link the root to it (events.run_id FK → runs is
+--       ON DELETE SET NULL, so removing these reverts the link).
+WITH need AS (
+    SELECT ev.id AS root_id, w.organization_id, ww.watcher_id,
+           ww.model_used, ww.run_metadata, ww.execution_time_ms, ww.client_id,
+           COALESCE(ww.created_at, ww.window_end) AS created_at
+    FROM public.watcher_windows ww
+    JOIN public.watchers w ON w.id = ww.watcher_id
+    JOIN public.events ev
+      ON ev.semantic_type = 'canvas_state'
+     AND ev.supersedes_event_id IS NULL
+     AND (ev.metadata->>'watcher_id')::bigint = ww.watcher_id
+     AND (ev.metadata->>'granularity') = ww.granularity
+     AND (ev.metadata->>'window_start') =
+         to_char(ww.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+    WHERE ev.run_id IS NULL
+      AND (ww.model_used IS NOT NULL OR ww.run_metadata IS NOT NULL
+           OR ww.execution_time_ms IS NOT NULL OR ww.client_id IS NOT NULL)
+),
+made AS (
+    INSERT INTO public.runs (
+        organization_id, run_type, status, watcher_id, window_id,
+        model_used, run_metadata, created_at, completed_at
+    )
+    SELECT organization_id, 'watcher', 'completed', watcher_id, root_id,
+           model_used,
+           jsonb_strip_nulls(
+               COALESCE(run_metadata, '{}'::jsonb)
+               || jsonb_build_object(
+                    'execution_time_ms', execution_time_ms,
+                    'client_id',         client_id,
+                    'source',            'canvas-provenance-backfill')),
+           created_at, created_at
+    FROM need
+    RETURNING id, window_id
+)
+UPDATE public.events ev
+SET run_id = made.id
+FROM made
+WHERE ev.id = made.window_id;
 
 -- ── (e) canvas_windows view — THE window read surface ───────────────────────
 -- One row per window (canvas chain ROOT); live analysis payload from the chain
@@ -473,6 +551,11 @@ DROP VIEW IF EXISTS public.canvas_windows;
 -- watcher_windows ids would require the reverse period join which is lossy for
 -- rows whose legacy window was concurrently modified). Dev rollback restores the
 -- dropped FKs and drops the added columns.
+-- Remove the synthesized provenance runs first (events.run_id FK is
+-- ON DELETE SET NULL, so linked roots revert automatically).
+DELETE FROM public.runs
+WHERE run_metadata->>'source' = 'canvas-provenance-backfill';
+
 ALTER TABLE public.runs DROP COLUMN IF EXISTS run_metadata;
 ALTER TABLE public.runs DROP COLUMN IF EXISTS model_used;
 

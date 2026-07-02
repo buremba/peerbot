@@ -17,7 +17,7 @@ import {
 } from '../../../utils/promote-keyed-entities';
 import { proposeEntityFieldChange } from '../entity-field-approval';
 import { ensureCanvasEntity, findCanvasHead } from '../../../utils/canvas-events';
-import { insertEvent, stableJson } from '../../../utils/insert-event';
+import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
 import { computeStableKeys } from '../../../utils/stable-keys';
 import { deriveWatcherExtractionSchema } from '../../../utils/watcher-extraction-schema';
@@ -117,21 +117,14 @@ export async function handleCompleteWindow(
   }
 
   const firstToken = tokenPayloads[0];
-  const {
-    watcher_id: watcherId,
-    window_start,
-    window_end,
-    granularity,
-    window_id: tokenWindowId,
-  } = firstToken;
+  const { watcher_id: watcherId, window_start, window_end, granularity } = firstToken;
 
   for (const token of tokenPayloads) {
     if (
       token.watcher_id !== watcherId ||
       token.window_start !== window_start ||
       token.window_end !== window_end ||
-      token.granularity !== granularity ||
-      token.window_id !== tokenWindowId
+      token.granularity !== granularity
     ) {
       throw new Error('All window_tokens must belong to the same watcher window.');
     }
@@ -363,21 +356,15 @@ export async function handleCompleteWindow(
     // `semantic_type='canvas_state'` events; the chain ROOT
     // (supersedes_event_id IS NULL) is the window identity and its event id is
     // the `windowId` returned by complete_window. A fresh completion inserts a
-    // root; `replace_existing` (or a legacy tokenWindowId completion whose head
-    // payload changed) supersedes the current head (found by anti-join) instead
-    // of creating a second root — so the root id NEVER changes. Concurrent root
-    // inserts race on the partial unique index idx_canvas_chain_root → 23505 →
-    // 409; concurrent supersedes race on idx_events_superseded_by → 23505 → 409.
-    // Idempotent replays that find a matching head are no-ops.
+    // root; `replace_existing` supersedes the current head instead of creating
+    // a second root — so the root id NEVER changes. Concurrent root inserts
+    // race on the partial unique index idx_canvas_chain_root → 23505 → 409;
+    // concurrent supersedes race on idx_events_superseded_by → 23505 → 409.
     //
-    // tokenWindowId (a legacy in-flight token still carrying window_id) is
-    // treated as an ordinary period-keyed completion: the field is ignored (the
-    // canvas root, not the legacy id, is the identity). In-flight tokens are
-    // short-lived JWTs so no error is raised — it converges on the next run.
-    //
-    // Empty-content replay is idempotent: a matching head short-circuits, so the
-    // agent loop can retry the same period forever without duplicating a root
-    // (LOBU-Q) — no separate no-op code path needed.
+    // Any other same-period completion is an idempotent no-op that returns the
+    // existing root — the agent loop can retry a period forever without
+    // duplicating a root or overwriting a successful head (LOBU-Q); a genuine
+    // re-analysis states replace_existing explicitly.
     // ============================================
     let windowId!: number;
     let windowCreated = false;
@@ -416,20 +403,12 @@ export async function handleCompleteWindow(
       windowStart: window_start,
     });
 
-    // A head that exists with DIFFERENT data must be superseded on a
-    // tokenWindowId (legacy in-flight) completion too, or the refresh is
-    // invisible (stale head). Same-payload replays stay no-ops (stableJson is
-    // key-order independent, matching how jsonb normalizes).
-    const headPayloadChanged =
-      existingHead != null &&
-      stableJson(existingHead.payloadData) !== stableJson(cleanedExtractedData);
-
-    if (existingHead && !args.replace_existing && !(tokenWindowId && headPayloadChanged)) {
+    if (existingHead && !args.replace_existing) {
       // Idempotent replay / concurrent completion that already produced a head:
       // never create a second root and never overwrite a successful head. The
       // window identity is the existing chain root.
       windowId = existingHead.rootEventId;
-    } else if (existingHead && (args.replace_existing || (tokenWindowId && headPayloadChanged))) {
+    } else if (existingHead && args.replace_existing) {
       // Supersede the current head, copying the root's period metadata. Loser of
       // a concurrent supersede hits idx_events_superseded_by → 23505 → 409. The
       // root id (window identity) never changes across a supersede.
@@ -464,9 +443,7 @@ export async function handleCompleteWindow(
       if (args.replace_existing) {
         // An explicit replace states "this analysis covers THIS content set":
         // clear the previous completion's links so STEP 8 re-links exactly the
-        // new batch (legacy parity — the old path deleted the window row and its
-        // links). A tokenWindowId payload refresh keeps its links (also legacy
-        // parity: that path updated in place and unioned links).
+        // new batch.
         await tx`DELETE FROM watcher_window_events WHERE window_id = ${windowId}`;
       }
     } else {

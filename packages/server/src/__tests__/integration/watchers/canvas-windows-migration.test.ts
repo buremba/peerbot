@@ -123,6 +123,82 @@ async function rekeyColumn(table: string): Promise<void> {
   `);
 }
 
+
+/** The migration's (d.1–d.3) provenance backfill: fill linked runs, stamp root
+ * run_id, synthesize runs for runless legacy windows. */
+async function runProvenanceBackfill(): Promise<void> {
+  const sql = getTestDb();
+  await sql.unsafe(`
+    WITH win AS (
+      SELECT ev.id AS root_id, ww.run_id AS legacy_run_id,
+             ww.model_used, ww.run_metadata, ww.execution_time_ms, ww.client_id
+      FROM public.watcher_windows ww
+      JOIN public.events ev ON ev.semantic_type = 'canvas_state' AND ev.supersedes_event_id IS NULL
+        AND (ev.metadata->>'watcher_id')::bigint = ww.watcher_id
+        AND (ev.metadata->>'granularity') = ww.granularity
+        AND (ev.metadata->>'window_start') = to_char(ww.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+    UPDATE public.runs r
+    SET model_used = COALESCE(r.model_used, win.model_used),
+        run_metadata = jsonb_strip_nulls(
+          COALESCE(r.run_metadata, win.run_metadata, '{}'::jsonb)
+          || jsonb_build_object(
+               'execution_time_ms', COALESCE((r.run_metadata->>'execution_time_ms')::bigint, win.execution_time_ms),
+               'client_id', COALESCE(r.run_metadata->>'client_id', win.client_id)))
+    FROM win
+    WHERE (r.window_id = win.root_id OR r.id = win.legacy_run_id)
+      AND (r.model_used IS NULL OR r.run_metadata IS NULL
+           OR (r.run_metadata->>'execution_time_ms' IS NULL AND win.execution_time_ms IS NOT NULL)
+           OR (r.run_metadata->>'client_id' IS NULL AND win.client_id IS NOT NULL));
+  `);
+  await sql.unsafe(`
+    UPDATE public.events ev
+    SET run_id = ww.run_id
+    FROM public.watcher_windows ww
+    WHERE ev.semantic_type = 'canvas_state' AND ev.supersedes_event_id IS NULL
+      AND ev.run_id IS NULL AND ww.run_id IS NOT NULL
+      AND (ev.metadata->>'watcher_id')::bigint = ww.watcher_id
+      AND (ev.metadata->>'granularity') = ww.granularity
+      AND (ev.metadata->>'window_start') = to_char(ww.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+  `);
+  await sql.unsafe(`
+    UPDATE public.events ev
+    SET run_id = latest.run_id
+    FROM (SELECT window_id, MAX(id) AS run_id FROM public.runs
+          WHERE run_type = 'watcher' AND window_id IS NOT NULL GROUP BY window_id) latest
+    WHERE ev.semantic_type = 'canvas_state' AND ev.supersedes_event_id IS NULL
+      AND ev.run_id IS NULL AND latest.window_id = ev.id;
+  `);
+  await sql.unsafe(`
+    WITH need AS (
+      SELECT ev.id AS root_id, w.organization_id, ww.watcher_id,
+             ww.model_used, ww.run_metadata, ww.execution_time_ms, ww.client_id,
+             COALESCE(ww.created_at, ww.window_end) AS created_at
+      FROM public.watcher_windows ww
+      JOIN public.watchers w ON w.id = ww.watcher_id
+      JOIN public.events ev ON ev.semantic_type = 'canvas_state' AND ev.supersedes_event_id IS NULL
+        AND (ev.metadata->>'watcher_id')::bigint = ww.watcher_id
+        AND (ev.metadata->>'granularity') = ww.granularity
+        AND (ev.metadata->>'window_start') = to_char(ww.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+      WHERE ev.run_id IS NULL
+        AND (ww.model_used IS NOT NULL OR ww.run_metadata IS NOT NULL
+             OR ww.execution_time_ms IS NOT NULL OR ww.client_id IS NOT NULL)
+    ),
+    made AS (
+      INSERT INTO public.runs (organization_id, run_type, status, watcher_id, window_id,
+                               model_used, run_metadata, created_at, completed_at)
+      SELECT organization_id, 'watcher', 'completed', watcher_id, root_id, model_used,
+             jsonb_strip_nulls(COALESCE(run_metadata, '{}'::jsonb)
+               || jsonb_build_object('execution_time_ms', execution_time_ms,
+                                     'client_id', client_id,
+                                     'source', 'canvas-provenance-backfill')),
+             created_at, created_at
+      FROM need
+      RETURNING id, window_id
+    )
+    UPDATE public.events ev SET run_id = made.id FROM made WHERE ev.id = made.window_id;
+  `);
+}
+
 describe('canvas-on-events Phase 3a migration', () => {
   let workspace: TestWorkspace;
   let watcherId: number;
@@ -156,16 +232,33 @@ describe('canvas-on-events Phase 3a migration', () => {
     const [win] = await sql`
       INSERT INTO watcher_windows (
         watcher_id, granularity, window_start, window_end,
-        extracted_data, content_analyzed, model_used, run_metadata, created_at
+        extracted_data, content_analyzed, model_used, run_metadata,
+        execution_time_ms, client_id, created_at
       ) VALUES (
         ${watcherId}, 'weekly',
         ${new Date(Date.now() - 7 * DAY_MS)}, ${new Date()},
         ${sql.json({ summary: 'legacy window payload' })}, 3, 'legacy-model',
-        ${sql.json({ legacy: true })}, ${new Date(Date.now() - 3 * DAY_MS)}
+        ${sql.json({ legacy: true })}, 4242, 'pat_legacy',
+        ${new Date(Date.now() - 3 * DAY_MS)}
       )
       RETURNING id
     `;
     legacyWindowId = Number((win as { id: unknown }).id);
+
+    // A second legacy window with provenance but NO run row at all — the
+    // migration must synthesize its historical run (d.3) or the provenance
+    // would be unreachable through canvas_windows and lost at the 3b drop.
+    await sql`
+      INSERT INTO watcher_windows (
+        watcher_id, granularity, window_start, window_end,
+        extracted_data, content_analyzed, model_used, execution_time_ms, created_at
+      ) VALUES (
+        ${watcherId}, 'weekly',
+        ${new Date(Date.now() - 14 * DAY_MS)}, ${new Date(Date.now() - 7 * DAY_MS)},
+        ${sql.json({ summary: 'runless legacy payload' })}, 2, 'external-client', 777,
+        ${new Date(Date.now() - 10 * DAY_MS)}
+      )
+    `;
 
     // A run whose window_id references the legacy window (pre-re-key).
     const [run] = await sql`
@@ -205,20 +298,26 @@ describe('canvas-on-events Phase 3a migration', () => {
 
     await runInlineBackfill();
 
-    // (1) One root, created_at preserved (~3 days ago, not NOW()).
+    // (1) One root per legacy window (2 seeded), created_at preserved.
     const roots = await sql`
       SELECT id, created_at, payload_data, metadata
       FROM events
       WHERE semantic_type = 'canvas_state' AND supersedes_event_id IS NULL
         AND (metadata->>'watcher_id')::bigint = ${watcherId}
+      ORDER BY id ASC
     `;
-    expect(roots).toHaveLength(1);
-    const rootId = Number(roots[0].id);
-    expect(Date.now() - new Date(roots[0].created_at as string).getTime()).toBeGreaterThan(2 * DAY_MS);
-    expect((roots[0].payload_data as Record<string, unknown>).summary).toBe('legacy window payload');
+    expect(roots).toHaveLength(2);
+    const mainRoot = roots.find(
+      (r) => (r.payload_data as Record<string, unknown>).summary === 'legacy window payload'
+    );
+    expect(mainRoot).toBeDefined();
+    const rootId = Number(mainRoot?.id);
+    expect(Date.now() - new Date(mainRoot?.created_at as string).getTime()).toBeGreaterThan(
+      2 * DAY_MS
+    );
     // window_start metadata is canonical UTC ISO — matches Date.toISOString().
     const [legacy] = await sql`SELECT window_start FROM watcher_windows WHERE id = ${legacyWindowId}`;
-    const md = roots[0].metadata as Record<string, unknown>;
+    const md = mainRoot?.metadata as Record<string, unknown>;
     expect(md.window_start).toBe(utcIso(new Date(legacy.window_start as string)));
 
     // Replay is a no-op (idempotent on idx_canvas_chain_root).
@@ -227,8 +326,7 @@ describe('canvas-on-events Phase 3a migration', () => {
       SELECT id FROM events WHERE semantic_type = 'canvas_state' AND supersedes_event_id IS NULL
         AND (metadata->>'watcher_id')::bigint = ${watcherId}
     `;
-    expect(rootsAfter).toHaveLength(1);
-    expect(Number(rootsAfter[0].id)).toBe(rootId);
+    expect(rootsAfter).toHaveLength(2);
 
     // (2) Re-key the four window_id columns.
     for (const table of ['watcher_reactions', 'runs', 'watcher_window_events', 'event_classifications']) {
@@ -259,31 +357,49 @@ describe('canvas-on-events Phase 3a migration', () => {
     `;
     expect(Number(correction.window_id)).toBe(rootId);
 
-    // (4) runs provenance backfill from the legacy window's run linkage.
-    await sql.unsafe(`
-      UPDATE public.runs r
-      SET model_used = COALESCE(r.model_used, ww.model_used),
-          run_metadata = COALESCE(r.run_metadata, ww.run_metadata)
-      FROM public.watcher_windows ww
-      WHERE ww.run_id = r.id AND (r.model_used IS NULL OR r.run_metadata IS NULL);
-    `);
-    // The seeded run had no run_id linkage on the window; provenance backfills
-    // via the re-keyed window_id → root → window join instead.
-    await sql.unsafe(`
-      WITH win AS (
-        SELECT ev.id AS root_id, ww.model_used, ww.run_metadata
-        FROM public.watcher_windows ww
-        JOIN public.events ev ON ev.semantic_type = 'canvas_state' AND ev.supersedes_event_id IS NULL
-          AND (ev.metadata->>'watcher_id')::bigint = ww.watcher_id
-          AND (ev.metadata->>'granularity') = ww.granularity
-          AND (ev.metadata->>'window_start') = to_char(ww.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
-      UPDATE public.runs r
-      SET model_used = COALESCE(r.model_used, win.model_used),
-          run_metadata = COALESCE(r.run_metadata, win.run_metadata)
-      FROM win WHERE r.window_id = win.root_id AND (r.model_used IS NULL OR r.run_metadata IS NULL);
-    `);
+    // (4) runs provenance backfill + root run_id linking + synthesis (d.1–d.3).
+    await runProvenanceBackfill();
+
     const [runAfter] = await sql`SELECT model_used, run_metadata FROM runs WHERE id = ${runId}`;
     expect(runAfter.model_used).toBe('legacy-model');
     expect((runAfter.run_metadata as Record<string, unknown>).legacy).toBe(true);
+    expect(Number((runAfter.run_metadata as Record<string, unknown>).execution_time_ms)).toBe(4242);
+    expect((runAfter.run_metadata as Record<string, unknown>).client_id).toBe('pat_legacy');
+
+    // (5) THE contract the view exists for: canvas_windows resolves the legacy
+    // window's provenance purely through the run model — no legacy fallback in
+    // any read path — so nothing is lost when 3b drops watcher_windows.
+    const [viewRow] = await sql`
+      SELECT model_used, run_metadata, execution_time_ms, extracted_data
+      FROM canvas_windows WHERE id = ${rootId}
+    `;
+    expect(viewRow.model_used).toBe('legacy-model');
+    expect((viewRow.run_metadata as Record<string, unknown>).client_id).toBe('pat_legacy');
+    expect(Number(viewRow.execution_time_ms)).toBe(4242);
+    expect((viewRow.extracted_data as Record<string, unknown>).summary).toBe('legacy window payload');
+
+    // (6) The runless window got a synthesized historical run (d.3), and the
+    // view resolves its provenance identically.
+    const [runlessView] = await sql`
+      SELECT id, model_used, execution_time_ms, run_metadata
+      FROM canvas_windows
+      WHERE watcher_id = ${watcherId} AND (extracted_data->>'summary') = 'runless legacy payload'
+    `;
+    expect(runlessView.model_used).toBe('external-client');
+    expect(Number(runlessView.execution_time_ms)).toBe(777);
+    const [synthRun] = await sql`
+      SELECT status, run_type FROM runs
+      WHERE window_id = ${runlessView.id}
+        AND run_metadata->>'source' = 'canvas-provenance-backfill'
+    `;
+    expect(String(synthRun.status)).toBe('completed');
+    expect(String(synthRun.run_type)).toBe('watcher');
+
+    // Replaying the provenance steps is a no-op (no duplicate synthetic runs).
+    await runProvenanceBackfill();
+    const synthCount = await sql`
+      SELECT id FROM runs WHERE run_metadata->>'source' = 'canvas-provenance-backfill'
+    `;
+    expect(synthCount).toHaveLength(1);
   });
 });

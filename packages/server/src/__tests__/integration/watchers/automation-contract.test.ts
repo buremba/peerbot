@@ -1559,57 +1559,41 @@ describe('canvas-on-events window completion', () => {
     expect(Number(root.id)).toBe(completion.window_id);
   });
 
-  it('a tokenWindowId refresh with changed data supersedes the head; same-data replay is a no-op', async () => {
-    // The tokenWindowId (legacy) branch refreshes watcher_windows.extracted_data
-    // unconditionally. Reads prefer the canvas head, so the canvas must follow a
-    // real data change (else the refresh is invisible) while a same-payload
-    // replay must NOT grow the chain.
+  it('a same-period completion without replace_existing is an idempotent no-op', async () => {
+    // Retrying a period never grows the chain or overwrites a successful head —
+    // even with different data. A genuine re-analysis must state
+    // replace_existing explicitly.
     const { sql, api, watcherId, windowStart, windowEnd, completion } = await completeOnce({
       extracted_data: { summary: 'v1' },
     });
 
-    const tokenWithWindowId = await generateWindowToken(
+    const retryToken = await generateWindowToken(
       {
         watcher_id: watcherId,
         window_start: windowStart,
         window_end: windowEnd,
         granularity: 'daily',
-        window_id: completion.window_id,
         content_count: 0,
         content_ids: [],
       },
       { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env
     );
-
-    // Changed payload → head superseded (chain grows to 2), root id stable.
-    await api.watchers.completeWindow({
+    const retry = (await api.watchers.completeWindow({
       watcher_id: String(watcherId),
-      window_token: tokenWithWindowId,
-      extracted_data: { summary: 'v2 refreshed' },
-    });
-    const afterChange = await sql`
-      SELECT id, payload_data, supersedes_event_id FROM events
-      WHERE semantic_type = 'canvas_state'
-        AND (metadata->>'watcher_id')::bigint = ${watcherId}
-      ORDER BY id ASC
-    `;
-    expect(afterChange).toHaveLength(2);
-    expect(afterChange[0].supersedes_event_id).toBeNull();
-    expect(Number(afterChange[1].supersedes_event_id)).toBe(Number(afterChange[0].id));
-    expect((afterChange[1].payload_data as Record<string, unknown>).summary).toBe('v2 refreshed');
+      window_token: retryToken,
+      extracted_data: { summary: 'v2 changed but not a replace' },
+    })) as { window_id: number; window_created: boolean };
 
-    // Same payload replayed → no new chain member.
-    await api.watchers.completeWindow({
-      watcher_id: String(watcherId),
-      window_token: tokenWithWindowId,
-      extracted_data: { summary: 'v2 refreshed' },
-    });
-    const afterReplay = await sql`
-      SELECT id FROM events
+    // Same window identity returned; chain unchanged; head still v1.
+    expect(retry.window_id).toBe(completion.window_id);
+    expect(retry.window_created).toBe(false);
+    const chain = await sql`
+      SELECT payload_data FROM events
       WHERE semantic_type = 'canvas_state'
         AND (metadata->>'watcher_id')::bigint = ${watcherId}
     `;
-    expect(afterReplay).toHaveLength(2);
+    expect(chain).toHaveLength(1);
+    expect((chain[0].payload_data as Record<string, unknown>).summary).toBe('v1');
   });
 
   it('replace_existing supersedes the head, keeping the root id stable', async () => {

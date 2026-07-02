@@ -19,11 +19,11 @@ COPY patches/ ./patches/
 COPY packages/embeddings/package.json packages/embeddings/
 
 # Stub workspaces not needed at build time
-RUN mkdir -p packages/cli packages/core packages/landing \
+RUN mkdir -p packages/cli packages/core \
                packages/server packages/lobu-cli packages/connectors \
                packages/browser-extension packages/openclaw-plugin packages/connector-sdk \
                packages/owletto packages/connector-worker packages/agent-worker packages/mcpsandbox \
-    && for p in cli core landing server connectors \
+    && for p in cli core server connectors \
                 browser-extension openclaw-plugin connector-sdk owletto connector-worker agent-worker mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \

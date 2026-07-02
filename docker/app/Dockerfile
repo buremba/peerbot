@@ -42,8 +42,8 @@ COPY packages/owletto/package.jso[n] packages/owletto/
 
 # Stub out workspace packages we don't build in this image so bun install doesn't
 # error on missing manifests.
-RUN mkdir -p packages/cli packages/landing packages/lobu-cli packages/browser-extension packages/mcpsandbox \
-    && for p in cli landing browser-extension mcpsandbox; do \
+RUN mkdir -p packages/cli packages/lobu-cli packages/browser-extension packages/mcpsandbox \
+    && for p in cli browser-extension mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \
     && echo '{"name":"lobu","version":"0.0.0","private":true}' > packages/lobu-cli/package.json

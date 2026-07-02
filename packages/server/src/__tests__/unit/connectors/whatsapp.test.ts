@@ -45,7 +45,7 @@ beforeAll(async () => {
   const target = pathToFileURL(
     path.resolve(
       __dirname,
-      '../../../../../examples/personal-agent/whatsapp.cloud.connector.ts'
+      '../../../../../../examples/personal-agent/whatsapp.cloud.connector.ts'
     )
   ).href;
   const mod = (await import(target)) as {

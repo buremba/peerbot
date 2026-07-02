@@ -25,9 +25,6 @@ export function filterByCheckpoint(
   return events.filter((e) => e.occurred_at >= cutoff);
 }
 
-/** @deprecated Use buildTimestampCheckpoint */
-export const buildReviewCheckpoint = buildTimestampCheckpoint;
-
 export function buildTimestampCheckpoint(
   events: EventEnvelope[],
   previous: Record<string, unknown> | null,

@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { applyLookbackCutoff } from '../checkpoint/lookback.js';
 import {
-  buildReviewCheckpoint,
   buildTimestampCheckpoint,
   filterByCheckpoint,
   finalizeTimestampSync,
@@ -73,10 +72,6 @@ describe('buildTimestampCheckpoint', () => {
     expect(cp.last_timestamp).toBe('2024-12-31T00:00:00.000Z');
   });
 
-  test('buildReviewCheckpoint remains an alias', () => {
-    const sorted = [{ occurred_at: new Date('2024-12-31T00:00:00Z') } as any];
-    expect(buildReviewCheckpoint(sorted, null)).toEqual(buildTimestampCheckpoint(sorted, null));
-  });
 });
 
 describe('finalizeTimestampSync', () => {

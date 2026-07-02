@@ -198,7 +198,6 @@ export type { ReviewExtractResult, RunReviewScrapeOptions } from './browser/revi
 export { handleCookieConsent, runReviewScrape } from './browser/review-scrape.js';
 export { applyLookbackCutoff } from './checkpoint/lookback.js';
 export {
-  buildReviewCheckpoint,
   buildTimestampCheckpoint,
   filterByCheckpoint,
   finalizeTimestampSync,

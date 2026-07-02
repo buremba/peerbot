@@ -104,8 +104,8 @@ async function main(): Promise<void> {
 				? deriveJwtSecret(process.env.ENCRYPTION_KEY)
 				: randomBytes(32).toString("base64");
 		}
-		if (!process.env.PUBLIC_WEB_URL) {
-			process.env.PUBLIC_WEB_URL = `http://localhost:${port}`;
+		if (!process.env.PUBLIC_GATEWAY_URL) {
+			process.env.PUBLIC_GATEWAY_URL = `http://localhost:${port}/lobu`;
 		}
 		if (!process.env.NODE_ENV) {
 			process.env.NODE_ENV = "development";

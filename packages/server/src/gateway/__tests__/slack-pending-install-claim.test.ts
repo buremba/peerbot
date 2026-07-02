@@ -116,14 +116,14 @@ describe("completeSlackPendingInstall — installer claim DM", () => {
 		exchangeOAuthCode.mockClear();
 		openDm.mockClear();
 		postMessage.mockClear();
-		savedWebUrl = process.env.PUBLIC_WEB_URL;
-		process.env.PUBLIC_WEB_URL = "https://app.lobu.ai";
+		savedWebUrl = process.env.PUBLIC_GATEWAY_URL;
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
 		__resetPublicOriginCachesForTests();
 	});
 
 	afterEach(() => {
-		if (savedWebUrl === undefined) delete process.env.PUBLIC_WEB_URL;
-		else process.env.PUBLIC_WEB_URL = savedWebUrl;
+		if (savedWebUrl === undefined) delete process.env.PUBLIC_GATEWAY_URL;
+		else process.env.PUBLIC_GATEWAY_URL = savedWebUrl;
 		__resetPublicOriginCachesForTests();
 	});
 

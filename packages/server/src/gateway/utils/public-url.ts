@@ -1,3 +1,8 @@
+import {
+  getConfiguredPublicGatewayUrl,
+  resolvePublicGatewayUrl,
+} from "../../utils/public-origin.js";
+
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
@@ -19,11 +24,14 @@ function resolvePublicBaseUrl(options?: {
     return normalizeBaseUrl(origin.origin);
   }
 
-  if (process.env.PUBLIC_GATEWAY_URL) {
-    return normalizeBaseUrl(process.env.PUBLIC_GATEWAY_URL);
+  const configured = getConfiguredPublicGatewayUrl();
+  if (configured) {
+    return normalizeBaseUrl(configured);
   }
 
-  return normalizeBaseUrl(options?.fallbackUrl || "http://localhost:8080");
+  return normalizeBaseUrl(
+    options?.fallbackUrl || resolvePublicGatewayUrl()
+  );
 }
 
 export function resolvePublicUrl(

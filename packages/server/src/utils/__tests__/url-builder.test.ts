@@ -9,7 +9,7 @@ import {
 /**
  * Behavior contract for `getPublicWebUrl`:
  *   1. Explicit `baseUrl` argument wins.
- *   2. `PUBLIC_WEB_URL` env wins next.
+ *   2. `PUBLIC_GATEWAY_URL` env wins next.
  *   3. With no local frontend bundled, fall back to the hosted-UI origin
  *      (`HOSTED_UI_FALLBACK_ORIGIN`) so backend-only self-hosters still emit
  *      usable links. The `requestUrl` is only consulted when a local frontend
@@ -17,18 +17,18 @@ import {
  *      a `requestUrl` is supplied.
  */
 describe('getPublicWebUrl', () => {
-  const originalWebUrl = process.env.PUBLIC_WEB_URL;
+  const originalGatewayUrl = process.env.PUBLIC_GATEWAY_URL;
 
   beforeEach(() => {
-    delete process.env.PUBLIC_WEB_URL;
+    delete process.env.PUBLIC_GATEWAY_URL;
     __resetPublicOriginCachesForTests();
   });
 
   afterEach(() => {
-    if (originalWebUrl !== undefined) {
-      process.env.PUBLIC_WEB_URL = originalWebUrl;
+    if (originalGatewayUrl !== undefined) {
+      process.env.PUBLIC_GATEWAY_URL = originalGatewayUrl;
     } else {
-      delete process.env.PUBLIC_WEB_URL;
+      delete process.env.PUBLIC_GATEWAY_URL;
     }
     __resetPublicOriginCachesForTests();
   });
@@ -51,8 +51,8 @@ describe('getPublicWebUrl', () => {
     ).toBe('https://configured.lobu.com');
   });
 
-  it('prefers PUBLIC_WEB_URL env var when no explicit baseUrl', () => {
-    process.env.PUBLIC_WEB_URL = 'https://env.lobu.com';
+  it('prefers PUBLIC_GATEWAY_URL env var when no explicit baseUrl', () => {
+    process.env.PUBLIC_GATEWAY_URL = 'https://env.lobu.com/lobu';
     expect(getPublicWebUrl('https://request.lobu.com/mcp')).toBe('https://env.lobu.com');
   });
 

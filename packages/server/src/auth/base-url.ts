@@ -1,7 +1,7 @@
 /**
  * Shared base URL resolution for auth module.
  *
- * Uses PUBLIC_WEB_URL as the canonical public origin, with forwarded-header
+ * Uses PUBLIC_GATEWAY_URL as the canonical public origin, with forwarded-header
  * and request-URL fallbacks for environments where it isn't set.
  */
 
@@ -35,7 +35,7 @@ interface ResolveBaseUrlOptions {
   url?: string;
   /** Fallback when nothing else resolves. Defaults to `http://localhost:8787`. */
   fallback?: string;
-  /** Skip PUBLIC_WEB_URL env override — use the actual serving domain. */
+  /** Skip PUBLIC_GATEWAY_URL env override — use the actual serving domain. */
   skipEnvOverride?: boolean;
 }
 
@@ -43,7 +43,7 @@ interface ResolveBaseUrlOptions {
  * Resolve the public-facing base URL (origin) for the API.
  *
  * Resolution order:
- * 1. `PUBLIC_WEB_URL` environment variable
+ * 1. `PUBLIC_GATEWAY_URL` environment variable
  * 2. `x-forwarded-proto` + (`x-forwarded-host` || `host`) headers
  * 3. The request/URL origin
  * 4. The provided fallback (default: `http://localhost:8787`)
@@ -57,7 +57,7 @@ export function resolveBaseUrl(options: ResolveBaseUrlOptions = {}): string {
     return request?.headers.get(name) ?? undefined;
   };
 
-  // 1. PUBLIC_WEB_URL from environment
+  // 1. PUBLIC_GATEWAY_URL from environment
   if (!options.skipEnvOverride) {
     const fromEnv = getConfiguredPublicOrigin();
     if (fromEnv) return fromEnv;

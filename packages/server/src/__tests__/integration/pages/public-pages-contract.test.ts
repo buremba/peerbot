@@ -29,7 +29,7 @@ const WEB_AVAILABLE = existsSync(
   resolve(__dirname, '../../../../../owletto/src')
 );
 
-const publicWebUrl = 'https://www.lobu.test';
+const publicGatewayUrl = 'https://www.lobu.test/lobu';
 
 describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
   beforeAll(async () => {
@@ -82,7 +82,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
   it('renders crawlable HTML and bootstrap data for a public workspace', async () => {
     const response = await get('/public-contract-org', {
       headers: { Accept: 'text/html' },
-      env: { PUBLIC_WEB_URL: publicWebUrl },
+      env: { PUBLIC_GATEWAY_URL: publicGatewayUrl },
     });
 
     const body = await response.text();
@@ -97,7 +97,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
   it('renders public entity pages and real 404 HTML for missing pages', async () => {
     const entity = await get('/public-contract-org/brand/acme-brand', {
       headers: { Accept: 'text/html' },
-      env: { PUBLIC_WEB_URL: publicWebUrl },
+      env: { PUBLIC_GATEWAY_URL: publicGatewayUrl },
     });
     const entityBody = await entity.text();
     expect(entity.status).toBe(200);
@@ -108,7 +108,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
 
     const missing = await get('/public-contract-org/brand/missing-brand', {
       headers: { Accept: 'text/html' },
-      env: { PUBLIC_WEB_URL: publicWebUrl },
+      env: { PUBLIC_GATEWAY_URL: publicGatewayUrl },
     });
     const missingBody = await missing.text();
     expect(missing.status).toBe(404);
@@ -117,7 +117,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
   });
 
   it('sitemap includes public routes and excludes private workspaces', async () => {
-    const sitemap = await get('/sitemap.xml', { env: { PUBLIC_WEB_URL: publicWebUrl } });
+    const sitemap = await get('/sitemap.xml', { env: { PUBLIC_GATEWAY_URL: publicGatewayUrl } });
     const sitemapXml = await sitemap.text();
 
     expect(sitemap.status).toBe(200);

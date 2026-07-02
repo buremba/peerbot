@@ -24,7 +24,7 @@ function withBaseUrl(baseUrl: string | undefined, path: string): string {
 export function getPublicWebUrl(requestUrl?: string, baseUrl?: string): string | undefined {
   const base = baseUrl || getConfiguredPublicOrigin();
   if (base) return normalizeBaseUrl(base);
-  // Backend-only self-hosters (no PUBLIC_WEB_URL, no bundled frontend) should
+  // Backend-only self-hosters (no PUBLIC_GATEWAY_URL, no bundled frontend) should
   // still produce usable links by pointing at the hosted UI.
   if (!hasLocalFrontend()) return HOSTED_UI_FALLBACK_ORIGIN;
   if (requestUrl) return normalizeBaseUrl(new URL(requestUrl).origin);

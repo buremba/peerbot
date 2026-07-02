@@ -200,7 +200,7 @@ export async function createAuth(
 		}
 	};
 	addTrustedOriginVariants(getConfiguredPublicOrigin());
-	// Also trust the baseURL (resolves from PUBLIC_WEB_URL, forwarded headers, or request URL)
+	// Also trust the baseURL (resolves from PUBLIC_GATEWAY_URL, forwarded headers, or request URL)
 	addTrustedOriginVariants(resolveBaseUrl({ request }));
 
 	// When AUTH_COOKIE_DOMAIN is set (e.g. ".lobu.ai"), trust all subdomains so
@@ -656,11 +656,11 @@ export async function createAuth(
 			// "Sign in with passkey" as a one-tap biometric option.
 			//
 			// rpID = the hostname WebAuthn binds the credential to. Pulled
-			// from PUBLIC_WEB_URL (env), NOT from resolveBaseUrl(request) —
+			// from PUBLIC_GATEWAY_URL (env), NOT from resolveBaseUrl(request) —
 			// resolveBaseUrl reflects the request that happened to construct
 			// this BA instance, and createAuth() is cached for 60s, so a
 			// request from one host could freeze the rpID for the next host's
-			// request. PUBLIC_WEB_URL is stable per-deployment.
+			// request. PUBLIC_GATEWAY_URL is stable per-deployment.
 			//
 			// origin defaults to the request Origin header — handled by the
 			// plugin itself when we pass `null`. That keeps WebAuthn-side
@@ -668,10 +668,10 @@ export async function createAuth(
 			// port than the API) and prod.
 			passkey({
 				rpID: (() => {
-					const publicWebUrl = process.env.PUBLIC_WEB_URL?.trim();
-					if (publicWebUrl) {
+					const origin = getConfiguredPublicOrigin();
+					if (origin) {
 						try {
-							const host = new URL(publicWebUrl).hostname;
+							const host = new URL(origin).hostname;
 							if (host) return host;
 						} catch {
 							/* fallthrough to default */

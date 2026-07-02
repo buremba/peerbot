@@ -16,7 +16,7 @@ import {
 } from "@lobu/core";
 import type { OrchestratorConfig } from "../orchestration/deployment-manager.js";
 import { findEnclosingMonorepoRoot } from "../../utils/monorepo-root.js";
-import { getConfiguredPublicOrigin } from "../../utils/public-origin.js";
+import { normalizePublicGatewayUrl } from "../../utils/public-origin.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const logger = createLogger("cli-config");
@@ -140,25 +140,10 @@ export function getInternalGatewayUrl(): string {
 /**
  * Loopback origin for org-scoped LOBU memory MCP endpoints (`/mcp/:orgSlug`).
  * Derived from {@link getInternalGatewayUrl} so PORT / DISPATCHER_URL are the
- * single source of truth — never PUBLIC_WEB_URL / the public ingress.
+ * single source of truth — never PUBLIC_GATEWAY_URL / the public ingress.
  */
 export function getLobuMemoryUpstreamOrigin(): string {
   return new URL(getInternalGatewayUrl()).origin;
-}
-
-/** Public web origin for embedded mode when PUBLIC_WEB_URL is unset. */
-export function resolveEmbeddedPublicWebOrigin(): string {
-  return (
-    getConfiguredPublicOrigin() ||
-    `http://localhost:${process.env.PORT || process.env.GATEWAY_PORT || "8787"}`
-  );
-}
-
-/** Public gateway base (`PUBLIC_WEB_URL` + `/lobu`) for webhooks and artifact URLs. */
-export function resolveEmbeddedPublicGatewayUrl(): string {
-  return new URL("/lobu/", resolveEmbeddedPublicWebOrigin())
-    .toString()
-    .replace(/\/$/, "");
 }
 
 /**
@@ -376,10 +361,13 @@ export function buildGatewayConfig(
     "AGENT_DEFAULT_MEMORY_FLUSH_PROMPT",
     "Write any lasting notes to memory using available memory tools. Reply with NO_REPLY if nothing to store."
   );
-  const publicGatewayUrl = getOptionalEnv(
+  const publicGatewayUrlRaw = getOptionalEnv(
     "PUBLIC_GATEWAY_URL",
     DEFAULTS.PUBLIC_GATEWAY_URL
   );
+  const publicGatewayUrl = publicGatewayUrlRaw
+    ? normalizePublicGatewayUrl(publicGatewayUrlRaw)
+    : "";
   const config: GatewayConfig = {
     agentDefaults: {
       allowedTools: process.env.ALLOWED_TOOLS?.split(","),

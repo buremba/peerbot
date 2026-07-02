@@ -455,8 +455,8 @@ app.use("/*", async (c, next) => {
  * Subdomain org extraction middleware
  * Parses Host header for {org}.{zone} pattern and sets subdomainOrg.
  * The zone is AUTH_COOKIE_DOMAIN when set (so per-org hosts like `acme.lobu.ai`
- * resolve even though PUBLIC_WEB_URL is `app.lobu.ai`), otherwise the
- * PUBLIC_WEB_URL hostname. Reserved subdomains (www, api, app, admin, etc.)
+ * resolve even though PUBLIC_GATEWAY_URL is `app.lobu.ai`), otherwise the
+ * PUBLIC_GATEWAY_URL hostname. Reserved subdomains (www, api, app, admin, etc.)
  * are not treated as orgs.
  */
 const RESERVED_SUBDOMAINS = new Set([

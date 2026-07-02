@@ -22,8 +22,8 @@
  */
 import { readFile } from "node:fs/promises";
 import { getDb } from "../db/client";
-import { resolveEmbeddedPublicGatewayUrl } from "../gateway/config/index";
 import { getLobuCoreServices } from "../lobu/gateway";
+import { resolvePublicGatewayUrl } from "./public-origin";
 import { insertEvent } from "./insert-event";
 import logger from "./logger";
 
@@ -71,7 +71,7 @@ interface AudioTranscriptionPending {
 }
 
 function publicGatewayUrl(): string {
-  return resolveEmbeddedPublicGatewayUrl();
+  return resolvePublicGatewayUrl();
 }
 
 /**

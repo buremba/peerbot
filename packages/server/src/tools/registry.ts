@@ -101,7 +101,7 @@ export interface ToolContext {
   abortSignal?: AbortSignal;
   /** Original request URL, used to derive public-facing origin for URL generation */
   requestUrl?: string;
-  /** PUBLIC_WEB_URL env var fallback for URL generation when requestUrl is unreliable */
+  /** PUBLIC_GATEWAY_URL env var fallback for URL generation when requestUrl is unreliable */
   baseUrl?: string;
 }
 

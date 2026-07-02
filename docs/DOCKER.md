@@ -31,7 +31,7 @@ That's it. Sign up via the admin UI, add provider API keys from the settings pag
 | `DATABASE_URL` | **Yes** | Postgres with `pgvector` extension. Server refuses to start without it. |
 | `ENCRYPTION_KEY` | **Yes** | 32-byte base64. Encrypts secrets stored in Postgres (provider keys, OAuth tokens). Loses every encrypted secret if you change it after first boot. |
 | `BETTER_AUTH_SECRET` | **Yes** | 32-byte base64. Signs admin session cookies. Auto-generated ephemerally in local dev; required in production. |
-| `PUBLIC_WEB_URL` | Recommended | The URL users hit. Affects OAuth callbacks, public-page links, and cookie domain. Defaults to `http://localhost:8787`. |
+| `PUBLIC_GATEWAY_URL` | Recommended | Public gateway base URL (origin or origin + `/lobu`). Affects OAuth callbacks, webhooks, public-page links, and cookie domain. Defaults to `http://localhost:8787/lobu`. |
 | `ANTHROPIC_API_KEY` | No | Only needed if (a) you run Anthropic-backed agents, or (b) you configure the optional LLM egress judge. Add it from the admin UI after boot instead. |
 | `OPENAI_API_KEY` / `GROQ_API_KEY` / etc. | No | Same as Anthropic — set only the providers you want available, or add them via the admin UI at runtime. |
 | `WORKER_ALLOWED_DOMAINS` | Optional | Default empty = workers have no internet. Comma-separated allowlist, or `*` for unrestricted (not recommended in prod). See `.env.example` for the full pattern. |
@@ -80,7 +80,7 @@ Migrations are applied at boot. If you roll back to an older image whose migrati
 
 ## Running behind a reverse proxy / public URL
 
-`PUBLIC_WEB_URL` is the canonical URL users hit. Set it to your real public URL (e.g. `https://lobu.example.com`) so OAuth callbacks, public-page bootstrap links, and cookie domain attribute match. Behind nginx/Caddy/Cloudflare — proxy `:8787` and terminate TLS at the proxy.
+`PUBLIC_GATEWAY_URL` is the canonical public gateway URL. Set it to your real public URL (e.g. `https://lobu.example.com` or `https://lobu.example.com/lobu`) so OAuth callbacks, webhook URLs, public-page bootstrap links, and cookie domain attribute match. Behind nginx/Caddy/Cloudflare — proxy `:8787` and terminate TLS at the proxy.
 
 `FRAME_ANCESTORS` lets you embed the admin UI inside another origin if needed (Content-Security-Policy frame-ancestors directive). Set as a comma-separated list of allowed origins; leave unset to deny all framing.
 
@@ -88,7 +88,7 @@ Migrations are applied at boot. If you roll back to an older image whose migrati
 
 - [ ] Real `ENCRYPTION_KEY` and `BETTER_AUTH_SECRET` (NOT the example placeholders).
 - [ ] Real postgres password.
-- [ ] `PUBLIC_WEB_URL` set to the real URL.
+- [ ] `PUBLIC_GATEWAY_URL` set to the real URL.
 - [ ] TLS termination via reverse proxy or platform load balancer.
 - [ ] Database backups configured (Lobu writes encrypted secrets there — losing the DB means losing every connected integration).
 - [ ] `WORKER_ALLOWED_DOMAINS` reviewed for your use case.

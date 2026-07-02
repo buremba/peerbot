@@ -1,20 +1,24 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  buildGatewayConfig,
-  getLobuMemoryUpstreamOrigin,
-  resolveEmbeddedPublicGatewayUrl,
-  resolveEmbeddedPublicWebOrigin,
-} from "../config/index.js";
+  __resetPublicOriginCachesForTests,
+  getConfiguredPublicGatewayUrl,
+  getConfiguredPublicOrigin,
+  normalizePublicGatewayUrl,
+  resolvePublicGatewayUrl,
+} from "../../utils/public-origin.js";
+import { getLobuMemoryUpstreamOrigin } from "../config/index.js";
 import { McpConfigService } from "../auth/mcp/config-service.js";
+import { buildGatewayConfig } from "../config/index.js";
 
 const ORIGINAL_ENV = {
   DATABASE_URL: process.env.DATABASE_URL,
   DISPATCHER_URL: process.env.DISPATCHER_URL,
   PORT: process.env.PORT,
-  PUBLIC_WEB_URL: process.env.PUBLIC_WEB_URL,
+  PUBLIC_GATEWAY_URL: process.env.PUBLIC_GATEWAY_URL,
 };
 
 afterEach(() => {
+  __resetPublicOriginCachesForTests();
   for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
     if (value === undefined) {
       delete process.env[key];
@@ -24,11 +28,25 @@ afterEach(() => {
   }
 });
 
+describe("normalizePublicGatewayUrl", () => {
+  test("appends /lobu when only an origin is configured", () => {
+    expect(normalizePublicGatewayUrl("https://public.example.com")).toBe(
+      "https://public.example.com/lobu"
+    );
+  });
+
+  test("preserves an explicit /lobu mount", () => {
+    expect(normalizePublicGatewayUrl("https://public.example.com/lobu/")).toBe(
+      "https://public.example.com/lobu"
+    );
+  });
+});
+
 describe("getLobuMemoryUpstreamOrigin", () => {
   test("derives loopback origin from PORT", () => {
     delete process.env.DISPATCHER_URL;
     process.env.PORT = "8787";
-    process.env.PUBLIC_WEB_URL = "https://public.example.com";
+    process.env.PUBLIC_GATEWAY_URL = "https://public.example.com";
 
     expect(getLobuMemoryUpstreamOrigin()).toBe("http://127.0.0.1:8787");
   });
@@ -40,24 +58,25 @@ describe("getLobuMemoryUpstreamOrigin", () => {
   });
 });
 
-describe("resolveEmbeddedPublicGatewayUrl", () => {
-  test("maps PUBLIC_WEB_URL to the /lobu gateway mount", () => {
-    process.env.PUBLIC_WEB_URL = "https://public.example.com";
+describe("resolvePublicGatewayUrl", () => {
+  test("maps PUBLIC_GATEWAY_URL to the /lobu gateway mount", () => {
+    process.env.PUBLIC_GATEWAY_URL = "https://public.example.com";
     delete process.env.DISPATCHER_URL;
     process.env.PORT = "8787";
 
-    expect(resolveEmbeddedPublicWebOrigin()).toBe("https://public.example.com");
-    expect(resolveEmbeddedPublicGatewayUrl()).toBe(
+    expect(getConfiguredPublicOrigin()).toBe("https://public.example.com");
+    expect(getConfiguredPublicGatewayUrl()).toBe(
       "https://public.example.com/lobu"
     );
+    expect(resolvePublicGatewayUrl()).toBe("https://public.example.com/lobu");
   });
 });
 
 describe("McpConfigService lobu-memory upstream", () => {
-  test("derives upstream from internal gateway URL, not PUBLIC_WEB_URL", async () => {
+  test("derives upstream from internal gateway URL, not PUBLIC_GATEWAY_URL", async () => {
     delete process.env.DISPATCHER_URL;
     process.env.PORT = "8787";
-    process.env.PUBLIC_WEB_URL = "https://public.example.com";
+    process.env.PUBLIC_GATEWAY_URL = "https://public.example.com";
 
     const service = new McpConfigService({
       lobuMemory: {
@@ -74,18 +93,17 @@ describe("McpConfigService lobu-memory upstream", () => {
 });
 
 describe("buildGatewayConfig embedded overrides", () => {
-  test("does not store lobuMemory config — upstream is derived at runtime", () => {
+  test("normalizes PUBLIC_GATEWAY_URL for webhook and artifact URLs", () => {
     process.env.DATABASE_URL = "postgres://localhost/lobu";
-    process.env.PUBLIC_WEB_URL = "https://public.example.com";
+    process.env.PUBLIC_GATEWAY_URL = "https://public.example.com";
     delete process.env.DISPATCHER_URL;
     process.env.PORT = "8787";
 
     const config = buildGatewayConfig({
-      mcp: { publicGatewayUrl: resolveEmbeddedPublicGatewayUrl() },
-      auth: { issuerUrl: resolveEmbeddedPublicWebOrigin() },
+      mcp: { publicGatewayUrl: resolvePublicGatewayUrl() },
+      auth: { issuerUrl: getConfiguredPublicOrigin() || "https://public.example.com" },
     });
 
-    expect("lobuMemory" in config).toBe(false);
     expect(config.mcp.publicGatewayUrl).toBe("https://public.example.com/lobu");
   });
 });

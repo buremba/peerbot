@@ -338,7 +338,7 @@ export class ChatInstanceManager {
   private exclusiveTickInFlight = false;
 
   /**
-   * Public gateway base URL (`PUBLIC_WEB_URL` or derived) — exposed so the
+   * Public gateway base URL (`PUBLIC_GATEWAY_URL` or derived) — exposed so the
    * response bridge can build links into the admin UI (e.g. the
    * provider-settings page) for user-facing error messages.
    */

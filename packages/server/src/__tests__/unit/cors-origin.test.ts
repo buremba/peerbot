@@ -14,7 +14,7 @@ import { __resetPublicOriginCachesForTests } from '../../utils/public-origin';
 
 const REQUEST_URL = 'http://10.0.0.1/api/workers/poll';
 
-const ORIGINAL_PUBLIC_WEB_URL = process.env.PUBLIC_WEB_URL;
+const ORIGINAL_PUBLIC_GATEWAY_URL = process.env.PUBLIC_GATEWAY_URL;
 
 function makeEnv(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -24,15 +24,15 @@ function makeEnv(overrides: Record<string, string | undefined> = {}) {
 }
 
 beforeEach(() => {
-  process.env.PUBLIC_WEB_URL = 'https://app.lobu.ai';
+  process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
   __resetPublicOriginCachesForTests();
 });
 
 afterEach(() => {
-  if (ORIGINAL_PUBLIC_WEB_URL === undefined) {
-    delete process.env.PUBLIC_WEB_URL;
+  if (ORIGINAL_PUBLIC_GATEWAY_URL === undefined) {
+    delete process.env.PUBLIC_GATEWAY_URL;
   } else {
-    process.env.PUBLIC_WEB_URL = ORIGINAL_PUBLIC_WEB_URL;
+    process.env.PUBLIC_GATEWAY_URL = ORIGINAL_PUBLIC_GATEWAY_URL;
   }
   __resetPublicOriginCachesForTests();
 });
@@ -118,7 +118,7 @@ describe('isAllowedCorsOrigin — regression coverage for pre-existing branches'
   });
 
   test('still accepts wildcard subdomains of the public origin', () => {
-    // PUBLIC_WEB_URL is app.lobu.ai → only `.app.lobu.ai` subdomains match
+    // PUBLIC_GATEWAY_URL is app.lobu.ai → only `.app.lobu.ai` subdomains match
     // without AUTH_COOKIE_DOMAIN. The sibling-zone case is exercised
     // separately in the existing subdomain-zone tests.
     expect(isAllowedCorsOrigin('https://acme.app.lobu.ai', makeEnv(), REQUEST_URL)).toBe(true);

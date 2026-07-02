@@ -20,11 +20,11 @@ import {
 	primeAppInstallationMethods,
 	primeBundledIntegrationConnectors,
 } from "../gateway/installation/app-install-credentials";
+import { buildGatewayConfig } from "../gateway/config/index";
 import {
-	buildGatewayConfig,
-	resolveEmbeddedPublicGatewayUrl,
-	resolveEmbeddedPublicWebOrigin,
-} from "../gateway/config/index";
+	getConfiguredPublicOrigin,
+	resolvePublicGatewayUrl,
+} from "../utils/public-origin";
 import { ChatInstanceManager } from "../gateway/connections/chat-instance-manager";
 import { ChatResponseBridge } from "../gateway/connections/chat-response-bridge";
 import { Gateway } from "../gateway/gateway-main";
@@ -337,14 +337,16 @@ export async function initLobuGateway(): Promise<Hono | null> {
 	ensureEmbeddedGatewaySecrets();
 	ensureEmbeddedWorkerLauncher();
 	try {
-		const publicWebUrl = resolveEmbeddedPublicWebOrigin();
+		const publicWebUrl =
+			getConfiguredPublicOrigin() ||
+			`http://localhost:${process.env.PORT || "8787"}`;
 		const env = process.env as unknown as Env;
 
 		// Embedded gateway shares the process with the app's OIDC provider — pass
 		// that issuer explicitly instead of overloading MEMORY_URL. LOBU memory MCP
 		// endpoints are resolved separately per organization/agent.
 		const gatewayConfig = buildGatewayConfig({
-			mcp: { publicGatewayUrl: resolveEmbeddedPublicGatewayUrl() },
+			mcp: { publicGatewayUrl: resolvePublicGatewayUrl() },
 			auth: { issuerUrl: publicWebUrl },
 		});
 

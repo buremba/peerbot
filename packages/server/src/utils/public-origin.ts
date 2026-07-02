@@ -1,5 +1,6 @@
 /**
- * Canonical public origin resolution. PUBLIC_WEB_URL is the explicit override.
+ * Canonical public URL resolution. PUBLIC_GATEWAY_URL is the single override for
+ * the externally reachable gateway base (origin or origin + /lobu mount).
  */
 
 import fs from 'node:fs';
@@ -7,33 +8,58 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const HOSTED_UI_FALLBACK_ORIGIN = 'https://app.lobu.ai';
+const DEFAULT_GATEWAY_MOUNT = '/lobu';
 
-function toOrigin(value?: string | null): string | undefined {
-  if (!value) return undefined;
-  try {
-    return new URL(value).origin;
-  } catch {
-    return undefined;
+/** Normalize PUBLIC_GATEWAY_URL to a gateway base ending in /lobu. */
+export function normalizePublicGatewayUrl(raw: string): string {
+  const url = new URL(raw);
+  const path = url.pathname.replace(/\/+$/, '') || '';
+  if (!path || path === '/') {
+    url.pathname = DEFAULT_GATEWAY_MOUNT;
   }
+  return url.toString().replace(/\/+$/, '');
 }
 
-// PUBLIC_WEB_URL is immutable post-boot; parse it once. `null` sentinel marks
+// PUBLIC_GATEWAY_URL is immutable post-boot; parse it once. `null` sentinel marks
 // "computed and absent" so we don't re-parse on every auth resolution.
 const UNRESOLVED = Symbol('unresolved');
-let configuredPublicOriginCache: string | undefined | typeof UNRESOLVED =
+let configuredPublicGatewayUrlCache: string | undefined | typeof UNRESOLVED =
   UNRESOLVED;
 
-export function getConfiguredPublicOrigin(): string | undefined {
-  if (configuredPublicOriginCache !== UNRESOLVED) {
-    return configuredPublicOriginCache;
+export function getConfiguredPublicGatewayUrl(): string | undefined {
+  if (configuredPublicGatewayUrlCache !== UNRESOLVED) {
+    return configuredPublicGatewayUrlCache;
   }
-  configuredPublicOriginCache = toOrigin(process.env.PUBLIC_WEB_URL);
-  return configuredPublicOriginCache;
+  const raw = process.env.PUBLIC_GATEWAY_URL?.trim();
+  if (!raw) {
+    configuredPublicGatewayUrlCache = undefined;
+    return undefined;
+  }
+  try {
+    configuredPublicGatewayUrlCache = normalizePublicGatewayUrl(raw);
+  } catch {
+    configuredPublicGatewayUrlCache = undefined;
+  }
+  return configuredPublicGatewayUrlCache;
+}
+
+export function getConfiguredPublicOrigin(): string | undefined {
+  const gatewayUrl = getConfiguredPublicGatewayUrl();
+  if (!gatewayUrl) return undefined;
+  return new URL(gatewayUrl).origin;
+}
+
+/** Configured gateway base, or loopback default for embedded/local boot. */
+export function resolvePublicGatewayUrl(): string {
+  const configured = getConfiguredPublicGatewayUrl();
+  if (configured) return configured;
+  const port = process.env.PORT || process.env.GATEWAY_PORT || '8787';
+  return normalizePublicGatewayUrl(`http://localhost:${port}`);
 }
 
 /** Test-only: clear memoized origin/local-frontend caches. */
 export function __resetPublicOriginCachesForTests(): void {
-  configuredPublicOriginCache = UNRESOLVED;
+  configuredPublicGatewayUrlCache = UNRESOLVED;
   localFrontendCache = undefined;
 }
 
@@ -53,7 +79,7 @@ let localFrontendCache: boolean | undefined;
 
 /**
  * Sync check for a locally available frontend. Used by MCP URL builders to
- * decide whether to return the hosted UI fallback when PUBLIC_WEB_URL is not
+ * decide whether to return the hosted UI fallback when PUBLIC_GATEWAY_URL is not
  * configured.
  *
  * Always matches a built bundle (`packages/owletto/dist/index.html`). In
@@ -173,7 +199,7 @@ export function getCanonicalRedirectUrl(
 /**
  * Returns the DNS zone used to map `{sub}.{zone}` hostnames to an organization
  * slug. Prefers AUTH_COOKIE_DOMAIN (e.g. `.lobu.ai`) so per-org subdomains like
- * `acme.lobu.ai` resolve even when PUBLIC_WEB_URL points at a non-apex canonical
+ * `acme.lobu.ai` resolve even when PUBLIC_GATEWAY_URL points at a non-apex canonical
  * host like `app.lobu.ai`. Falls back to the configured origin's hostname so
  * deployments without a cookie zone still get subdomain extraction for
  * `{sub}.{canonicalHost}`.

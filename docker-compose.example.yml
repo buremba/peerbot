@@ -47,7 +47,7 @@ services:
       ENCRYPTION_KEY: REPLACE_ME_openssl_rand_base64_32
       # 32-byte base64 — generate with: openssl rand -base64 32
       BETTER_AUTH_SECRET: REPLACE_ME_openssl_rand_base64_32
-      PUBLIC_WEB_URL: http://localhost:8787
+      PUBLIC_GATEWAY_URL: http://localhost:8787/lobu
 
       # ---- Recommended -----------------------------------------------------
       NODE_ENV: production

@@ -111,11 +111,11 @@ fi
 # bootstrap role already owns its schema.
 unset DATABASE_URL
 
-# The dev .env also sets PUBLIC_WEB_URL=http://localhost:8787, which makes the
+# The dev .env also sets PUBLIC_GATEWAY_URL=http://localhost:8787, which makes the
 # public-origin / public-pages-contract tests fail ("expected 'localhost' to be
 # null") — they assert the unconfigured-origin contract. It is the only var the
 # canonical-origin resolution reads (src/utils/public-origin.ts), so clear it.
-unset PUBLIC_WEB_URL
+unset PUBLIC_GATEWAY_URL
 
 # --- build ------------------------------------------------------------------
 # Tests need workspace packages built. Worktree's `dist/` may be stale or

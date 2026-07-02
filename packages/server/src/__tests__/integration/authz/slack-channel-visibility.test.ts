@@ -388,6 +388,73 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     expect(channels).not.toContain('C01SEC');
   });
 
+  it('reconciles a STALE channel to no members (revokes recall) while still graphing the readable ones', async () => {
+    const { org, alice, agent } = await setupWorkspace();
+
+    // Round 1: BOTH channels readable, Alice is a member of BOTH. She can recall
+    // #eng and #secret.
+    const round1 = await syncSlackConnectionAcl(
+      {
+        slackWeb: {
+          conversationMembers: async () => ['U01ALICE'],
+        },
+        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
+      },
+      { connectionId: CONN, organizationId: org.id },
+    );
+    expect(round1.ok).toBe(true);
+    const recalled1 = (
+      await searchAs(org.id, alice.id, agent.agentId)
+    ).conversation_messages?.map((m) => m.channel_id);
+    expect(recalled1).toContain('C01ENG');
+    expect(recalled1).toContain('C01SEC');
+
+    // Round 2: the bot is kicked from #secret (channel_not_found). #eng stays
+    // readable. The connection must NOT fail-close (pre-fix it did, 0 graphed),
+    // AND #secret's stale member_of edges must be reconciled away — otherwise
+    // Alice keeps recalling a channel the bot can no longer see (fail-OPEN).
+    const round2 = await syncSlackConnectionAcl(
+      {
+        slackWeb: {
+          conversationMembers: async (_t, channelId) => {
+            if (channelId === 'C01SEC') {
+              throw new Error('Slack conversations.members failed: channel_not_found');
+            }
+            return ['U01ALICE'];
+          },
+        },
+        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
+      },
+      { connectionId: CONN, organizationId: org.id },
+    );
+    expect(round2.ok).toBe(true);
+
+    const recalled2 = (
+      await searchAs(org.id, alice.id, agent.agentId)
+    ).conversation_messages?.map((m) => m.channel_id);
+    expect(recalled2).toContain('C01ENG'); // still readable → still recalled
+    expect(recalled2).not.toContain('C01SEC'); // kicked → recall revoked
+  });
+
+  it('still FAILS CLOSED on a systemic Slack error (not a stale-channel error)', async () => {
+    const { org } = await setupWorkspace();
+    // A rate-limit / auth error is systemic — it must propagate and fail the
+    // connection closed, not be swallowed like a stale-channel error.
+    const result = await syncSlackConnectionAcl(
+      {
+        slackWeb: {
+          conversationMembers: async () => {
+            throw new Error('Slack conversations.members failed: ratelimited');
+          },
+        },
+        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
+      },
+      { connectionId: CONN, organizationId: org.id },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.channelsSynced).toBe(0);
+  });
+
   it('production sync FAILS CLOSED for an already-graphed connection when Slack fetch throws', async () => {
     const { org, alice, agent } = await setupWorkspace();
     // First a good sync so the connection has a materialized (enforced) graph.

@@ -47,16 +47,26 @@ export interface SlackAclSyncDeps {
   slackWeb: Pick<SlackWebApi, 'conversationMembers' | 'conversationInfo'>;
   /**
    * Resolve the bot IDENTITY for a workspace — its token plus the bot's own
-   * Slack user id — from the app installation, or null if none is available (no
-   * active install / unresolvable secret), which is treated fail-closed. The bot
-   * id is sourced from the install (stamped at install time), NOT from the
-   * connection metadata, whose `botUserId` is only backfilled lazily at adapter
-   * init: in the window before the adapter first runs it is null, which would let
-   * the bot slip into the `member_of` graph and the audience.
+   * Slack user id — or null if none is available (no active install AND no BYO
+   * token / unresolvable secret), which is treated fail-closed. The OAuth-install
+   * path sources the bot id from the install (stamped at install time). The BYO
+   * fallback sources it from the connection's `chatMetadata.botUserId`, which is
+   * backfilled lazily at adapter init: if it is still null (pre-first-run window)
+   * the bot is NOT filtered out and can transiently gain a `member_of` edge —
+   * self-healing on the next sync once the id backfills (a bot id maps to no
+   * human requester, so this is audience inflation, never access leakage).
    */
   resolveBotIdentity: (params: {
     organizationId: string;
     teamId: string;
+    /**
+     * The connection being synced. Lets the resolver fall back to the
+     * connection's own BYO bot credentials when the team has no OAuth
+     * app-installation — otherwise a BYO Slack connection (active bot, real
+     * bindings, no install row) never gets ACL-graphed and its channel memory
+     * silently degrades to org scope.
+     */
+    connectionId: string;
   }) => Promise<{ token: string; botUserId: string | null } | null>;
 }
 
@@ -143,17 +153,45 @@ export async function syncSlackConnectionAcl(
   let channelsSynced = 0;
   try {
     for (const [teamId, channelIds] of byTeam) {
-      const identity = await deps.resolveBotIdentity({ organizationId, teamId });
+      const identity = await deps.resolveBotIdentity({ organizationId, teamId, connectionId });
       if (!identity) {
         throw new Error(`No bot token for team ${teamId}`);
       }
       const { token, botUserId } = identity;
       const channels: SlackChannelInput[] = [];
       for (const channelId of channelIds) {
-        const rawMembers = await deps.slackWeb.conversationMembers(
-          token,
-          channelId,
-        );
+        // Per-channel tolerance for a STALE binding: if the bot was kicked, the
+        // channel was archived/deleted, or it's simply not in it, Slack throws
+        // `channel_not_found` / `not_in_channel` / `is_archived`. That channel
+        // has no readable audience — DROP it from the graph and keep going;
+        // fail-closing the whole connection over one dead binding would ungraph
+        // every OTHER (readable) channel too. Systemic errors (auth, rate limit)
+        // still propagate to the outer catch and fail the connection closed.
+        let rawMembers: string[];
+        try {
+          rawMembers = await deps.slackWeb.conversationMembers(token, channelId);
+        } catch (error) {
+          const msg = String(error);
+          if (
+            /channel_not_found|not_in_channel|is_archived|method_not_supported_for_channel_type/.test(
+              msg,
+            )
+          ) {
+            // Definitively unreadable (bot kicked / channel archived/gone),
+            // NOT transient. Push it with an EMPTY member set so graph
+            // reconciliation soft-deletes its stale `member_of` edges (revokes
+            // recall) — skipping would leave them alive (fail-OPEN). Transient
+            // errors (ratelimit/auth) fall through to `throw` → whole connection
+            // fails closed, so we never wipe edges on a flaky fetch.
+            logger.warn(
+              { organization_id: organizationId, channel_id: channelId, error: msg },
+              'Slack conversations.members: channel unreadable (stale binding) — reconciling to no members',
+            );
+            channels.push({ channelId, memberSlackUserIds: [] });
+            continue;
+          }
+          throw error;
+        }
         // The bot is itself a member of every channel it's in, so
         // `conversations.members` includes it. Drop it: a bot is not an audience
         // and must never gain a `member_of` edge (it would inflate "who can
@@ -204,6 +242,72 @@ export async function syncSlackConnectionAcl(
 }
 
 /**
+ * Resolve the bot token + user id for one Slack connection's ACL sync. Prefers
+ * the workspace OAuth app-installation (hosted/managed path); falls back to the
+ * connection's OWN bot credentials for a BYO Slack connection that has no
+ * install row. Exported so both branches are unit-testable — the BYO fallback
+ * is what lets an active-but-BYO connection (real bindings, no install) actually
+ * graph instead of failing closed and silently degrading channel memory to org
+ * scope.
+ */
+export async function resolveSlackBotIdentity(
+  deps: {
+    installStore: ReturnType<CoreServices['getAppInstallationStore']>;
+    secretStore: ReturnType<CoreServices['getSecretStore']>;
+  },
+  params: { organizationId: string; teamId: string; connectionId: string },
+): Promise<{ token: string; botUserId: string | null } | null> {
+  const { installStore, secretStore } = deps;
+  const { organizationId, teamId, connectionId } = params;
+
+  // Primary: the workspace OAuth app-installation (the hosted/managed path).
+  const install = await getSlackInstallByTeamId(installStore, teamId);
+  if (install && install.status === 'active') {
+    const tokenRef = (install.config as { botToken?: string }).botToken;
+    const token = await orgContext.run({ organizationId: install.organizationId }, () =>
+      resolveSecretValue(secretStore, tokenRef),
+    );
+    if (token) return { token, botUserId: install.botUserId ?? null };
+  }
+
+  // Fallback: a BYO Slack connection has no install row — its bot token + user
+  // id live on the connection's own config. The token is a `secret://` ref,
+  // resolved under the connection's org exactly like the install path.
+  const sql = getDb();
+  const [conn] = await sql<{
+    organization_id: string;
+    // Slack connection config stores botToken at the top level (the
+    // OAuth-install writer's shape); COALESCE the chatMetadata nesting too.
+    bot_token_ref: string | null;
+    bot_user_id: string | null;
+  }>`
+		SELECT organization_id,
+		       COALESCE(config->>'botToken', config->'chatMetadata'->>'botToken') AS bot_token_ref,
+		       config->'chatMetadata'->>'botUserId' AS bot_user_id
+		FROM connections
+		WHERE slug = ${runtimeConnectionIdToSlug(connectionId)}
+		  AND organization_id = ${organizationId}
+		  AND connector_key = 'slack'
+		  AND status = 'active'
+		  AND deleted_at IS NULL
+		  -- The connection must actually BELONG to the team we're graphing.
+		  -- Without this, a connection whose bindings span a foreign team (or the
+		  -- teamId-null preview case) would hand back its OWN token for a team it
+		  -- doesn't own; Slack answers channel_not_found for every foreign channel
+		  -- and the empty-member reconcile would then wipe live edges the team's
+		  -- REAL connection maintains. Same team expression the tick scopes with.
+		  AND COALESCE(external_tenant_id, config->'chatMetadata'->>'teamId') = ${teamId}
+		LIMIT 1
+	`;
+  if (!conn?.bot_token_ref) return null;
+  const token = await orgContext.run({ organizationId: conn.organization_id }, () =>
+    resolveSecretValue(secretStore, conn.bot_token_ref as string),
+  );
+  if (!token) return null;
+  return { token, botUserId: conn.bot_user_id };
+}
+
+/**
  * The periodic production caller (registered in `scheduled/jobs.ts`). Re-syncs
  * every active Slack connection's channel-membership graph so joins/leaves
  * converge within the tick cadence and the gate's freshness window keeps a
@@ -211,9 +315,10 @@ export async function syncSlackConnectionAcl(
  * runs-queue claim), iterating connections sequentially — membership sync is not
  * latency-critical.
  *
- * Token resolution keys on the workspace install (`getSlackInstallByTeamId`), so
- * it covers the prod OAuth-install path; a connection whose team has no active
- * install is skipped (its sync throws → fail-closed via {@link syncSlackConnectionAcl}).
+ * Token resolution ({@link resolveSlackBotIdentity}) prefers the workspace OAuth
+ * install and falls back to the connection's own BYO bot credentials, so both
+ * managed and BYO Slack connections graph. A connection with neither still
+ * fails closed via {@link syncSlackConnectionAcl}.
  */
 export async function runSlackAclSyncTick(coreServices: CoreServices): Promise<void> {
   const sql = getDb();
@@ -237,16 +342,8 @@ export async function runSlackAclSyncTick(coreServices: CoreServices): Promise<v
 
   const deps: SlackAclSyncDeps = {
     slackWeb,
-    resolveBotIdentity: async ({ teamId }) => {
-      const install = await getSlackInstallByTeamId(installStore, teamId);
-      if (!install || install.status !== 'active') return null;
-      const tokenRef = (install.config as { botToken?: string }).botToken;
-      const token = await orgContext.run({ organizationId: install.organizationId }, () =>
-        resolveSecretValue(secretStore, tokenRef),
-      );
-      if (!token) return null;
-      return { token, botUserId: install.botUserId ?? null };
-    },
+    resolveBotIdentity: (params) =>
+      resolveSlackBotIdentity({ installStore, secretStore }, params),
   };
 
   let ok = 0;

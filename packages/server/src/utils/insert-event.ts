@@ -404,6 +404,33 @@ export async function insertEvent(
         `Row was not persisted; check server logs for diagnostic context.`
     );
   }
+
+    // Dual-write the denormalized supersession edge. `events.superseded_by`
+    // holds the inverse of `supersedes_event_id`: we stamp the row we just
+    // replaced with the id of THIS new superseding row so live-row reads can
+    // one day use `WHERE superseded_by IS NULL` instead of the per-row
+    // anti-join in current_event_records. This touches LINEAGE METADATA ONLY,
+    // never payload — the append-only invariant applies to content (precedent:
+    // search_tsv is likewise maintained post-insert). Runs on the SAME `sql`
+    // handle as the INSERT, so when we're inside the dedup advisory-lock tx or
+    // a caller-supplied tx (identity engine) it is atomic with the supersede.
+    //
+    // The `AND superseded_by IS NULL` guard is belt-and-braces: the partial
+    // unique index idx_events_superseded_by already fired a 23505 on the INSERT
+    // above if the target was already superseded, so a 0-row UPDATE here can
+    // only happen if the column was backfilled/stamped by a losing concurrent
+    // writer whose INSERT nonetheless slipped through — in which case leaving
+    // the existing stamp intact is correct (the unique index still guarantees a
+    // single superseder).
+    if (supersedesEventId !== null) {
+      await sql`
+        UPDATE events
+        SET superseded_by = ${inserted.id}
+        WHERE id = ${supersedesEventId}
+          AND superseded_by IS NULL
+      `;
+    }
+
     await upsertEmbedding(inserted.id, params.embedding, params.embeddingModel, sql);
     return inserted;
   };
@@ -427,6 +454,19 @@ export async function insertEvent(
       `;
       return runInsert(tx as unknown as ReturnType<typeof getDb>);
     }) as Promise<InsertedEvent>;
+  }
+
+  // An explicit supersede without a caller-supplied tx must still commit the
+  // superseding INSERT and the superseded_by stamp atomically: as two
+  // autocommit statements, a crash between them would leave the superseded
+  // row's denormalized edge permanently NULL — which, after the Stage-2 view
+  // flip to `WHERE superseded_by IS NULL`, would resurrect it as a live row.
+  // (The dedup path can only derive a supersede when connectionId+originId are
+  // both present, and that case is already inside the advisory-lock tx above.)
+  if (params.supersedesEventId != null && !options?.sql) {
+    return sql.begin(async (tx) =>
+      runInsert(tx as unknown as ReturnType<typeof getDb>)
+    ) as Promise<InsertedEvent>;
   }
 
   return runInsert(sql);

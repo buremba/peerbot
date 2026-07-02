@@ -116,7 +116,11 @@ describe('validateTableQuery', () => {
 describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
   const INTENTIONALLY_OMITTED: Record<string, Set<string>> = {
     entities: new Set(['embedding', 'content_tsv', 'content_hash', 'field_controls']),
-    events: new Set([]),
+    // superseded_by: the query_sql events CTE reads from current_event_records,
+    // which doesn't expose the column — and never usefully can: the Stage-2
+    // flip makes the view `WHERE superseded_by IS NULL`, so through the view
+    // the column is always NULL. Lineage queries belong on the raw table.
+    events: new Set(['superseded_by']),
     connections: new Set(['credentials', 'unhealthy_alerted_at']),
     // Large per-connector JSONB blobs — too big and structure-dependent to expose
     // via raw SQL. Callers should hit the typed connector handler instead.

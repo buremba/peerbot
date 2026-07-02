@@ -82,11 +82,18 @@ export async function getPastReactionsSummary(
   limit = 20
 ): Promise<string | undefined> {
   const sql = getDb();
+  // Canvas-on-events: watcher_reactions.window_id is the canvas ROOT event id.
+  // Resolve the reaction's window period off that chain-root event (scoped to
+  // semantic_type='canvas_state') instead of the retired watcher_windows table.
   const reactions = await sql`
     SELECT wr.reaction_type, wr.tool_name, wr.tool_args, wr.created_at,
-           ww.window_start, ww.window_end
+           (ww.metadata->>'window_start')::timestamptz AS window_start,
+           (ww.metadata->>'window_end')::timestamptz AS window_end
     FROM watcher_reactions wr
-    JOIN watcher_windows ww ON wr.window_id = ww.id
+    LEFT JOIN events ww
+      ON ww.id = wr.window_id
+     AND ww.semantic_type = 'canvas_state'
+     AND ww.supersedes_event_id IS NULL
     WHERE wr.watcher_id = ${watcherId}
     ORDER BY wr.created_at DESC
     LIMIT ${limit}
@@ -94,7 +101,11 @@ export async function getPastReactionsSummary(
   if (reactions.length === 0) return undefined;
   const lines: string[] = ['## Past Reactions'];
   for (const r of reactions) {
-    const date = new Date(r.window_start as string).toISOString().split('T')[0];
+    // window_start comes from the canvas root event; guard a tombstoned root
+    // (LEFT JOIN → null).
+    const date = r.window_start
+      ? new Date(r.window_start as string).toISOString().split('T')[0]
+      : '?';
     const toolArgs = r.tool_args as Record<string, unknown> | null;
     const detail = toolArgs ? JSON.stringify(toolArgs) : '';
     lines.push(`- Window ${date}: ${r.reaction_type} via ${r.tool_name} ${detail}`);

@@ -16,7 +16,6 @@ describe('QUERYABLE_TABLE_NAMES', () => {
       'watchers',
       'event_classifications',
       'watcher_versions',
-      'watcher_windows',
       'oauth_clients',
       'oauth_tokens',
       'user',
@@ -26,6 +25,12 @@ describe('QUERYABLE_TABLE_NAMES', () => {
     for (const t of expected) {
       expect(QUERYABLE_TABLE_NAMES.has(t)).toBe(true);
     }
+  });
+
+  it('should not expose the retired watcher_windows table (canvas-on-events)', () => {
+    // Windows are canvas_state event chains now; schema exposure is removed
+    // ahead of the two-phase table drop.
+    expect(QUERYABLE_TABLE_NAMES.has('watcher_windows')).toBe(false);
   });
 
   it('should not include non-allowlisted tables', () => {

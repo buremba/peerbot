@@ -869,3 +869,82 @@ export async function createTestDeviceCode(
 
   return { deviceCode, userCode, clientId };
 }
+
+// ============================================
+// Canvas-on-events window fixture
+// ============================================
+
+/**
+ * Insert a canvas_state ROOT event (a watcher "window" in canvas-on-events) and
+ * return its event id — the value the read/write paths treat as `window_id`.
+ * Mirrors the complete_window write path: metadata carries canonical UTC ISO
+ * window_start/window_end (matching Date.toISOString()) so the row collides on
+ * idx_canvas_chain_root and period reads resolve it. Optionally links the
+ * event's provenance run and stamps model/run_metadata on that run.
+ */
+export async function createCanvasWindow(options: {
+  watcherId: number;
+  organizationId: string;
+  granularity?: string;
+  windowStart: Date | string;
+  windowEnd: Date | string;
+  extractedData?: Record<string, unknown>;
+  contentAnalyzed?: number;
+  versionId?: number | null;
+  runId?: number | null;
+  createdBy?: string | null;
+  createdAt?: Date | string | null;
+  entityIds?: number[];
+  clientId?: string | null;
+  modelUsed?: string | null;
+  runMetadata?: Record<string, unknown> | null;
+}): Promise<number> {
+  const sql = getTestDb();
+  const granularity = options.granularity ?? 'weekly';
+  const windowStartIso = new Date(options.windowStart as string).toISOString();
+  const windowEndIso = new Date(options.windowEnd as string).toISOString();
+  const entityIdsLiteral = pgBigintArray(options.entityIds ?? []);
+
+  const [row] = await sql`
+    INSERT INTO events (
+      entity_ids, organization_id, origin_id, payload_type, payload_data,
+      semantic_type, metadata, occurred_at, created_by, created_at, run_id, client_id
+    ) VALUES (
+      ${entityIdsLiteral}::bigint[],
+      ${options.organizationId},
+      ${`canvas_test_${generateSecureToken(8)}`},
+      'json_template',
+      ${sql.json(options.extractedData ?? {})},
+      'canvas_state',
+      ${sql.json({
+        watcher_id: options.watcherId,
+        granularity,
+        window_start: windowStartIso,
+        window_end: windowEndIso,
+        content_analyzed: options.contentAnalyzed ?? 0,
+        version_id: options.versionId ?? null,
+      })},
+      ${windowEndIso},
+      ${options.createdBy ?? null},
+      ${options.createdAt != null ? new Date(options.createdAt as string) : new Date(windowEndIso)},
+      ${options.runId ?? null},
+      ${options.clientId ?? null}
+    )
+    RETURNING id
+  `;
+  const windowId = Number((row as { id: unknown }).id);
+
+  // Provenance now lives on the run row. Stamp window_id + model/run_metadata so
+  // canvas reads (which LEFT JOIN runs on head.run_id) surface them.
+  if (options.runId != null) {
+    await sql`
+      UPDATE runs
+      SET window_id = ${windowId},
+          model_used = COALESCE(${options.modelUsed ?? null}, model_used),
+          run_metadata = COALESCE(${options.runMetadata != null ? sql.json(options.runMetadata) : null}::jsonb, run_metadata)
+      WHERE id = ${options.runId}
+    `;
+  }
+
+  return windowId;
+}

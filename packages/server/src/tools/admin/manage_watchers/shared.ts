@@ -357,12 +357,14 @@ export async function batchCountUnanalyzedContent(
         AND array_length(i.entity_ids, 1) > 0
     ),
     analyzed_counts AS (
+      -- Canvas-on-events: window_id link rows carry a denormalized watcher_id, so
+      -- count analyzed events directly off watcher_window_events without a join
+      -- through the retired watcher_windows table.
       SELECT
         ie.watcher_id,
         COUNT(DISTINCT iwc.event_id) as analyzed_count
       FROM (SELECT DISTINCT watcher_id FROM watcher_entities) ie
-      LEFT JOIN watcher_windows iw ON iw.watcher_id = ie.watcher_id
-      LEFT JOIN watcher_window_events iwc ON iwc.window_id = iw.id
+      LEFT JOIN watcher_window_events iwc ON iwc.watcher_id = ie.watcher_id
       GROUP BY ie.watcher_id
     ),
     total_counts AS (

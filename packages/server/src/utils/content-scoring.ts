@@ -180,8 +180,7 @@ async function buildFilterConditionsAndJoins(
     params.push(validatedWatcherId);
     filterConditions.push(`NOT EXISTS (
       SELECT 1 FROM watcher_window_events exc_iwc
-      JOIN watcher_windows exc_iw ON exc_iw.id = exc_iwc.window_id
-      WHERE exc_iwc.event_id = f.id AND exc_iw.watcher_id = $${paramIndex++}
+      WHERE exc_iwc.event_id = f.id AND exc_iwc.watcher_id = $${paramIndex++}
     )`);
   }
 

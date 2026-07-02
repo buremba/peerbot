@@ -201,27 +201,10 @@ export const QUERYABLE_SCHEMA = {
         'version_sources'
       ),
     },
-    // watcher_windows
-    {
-      name: 'watcher_windows',
-      columns: cols(
-        'id',
-        'watcher_id',
-        'parent_window_id',
-        'granularity',
-        'window_start',
-        'window_end',
-        'content_analyzed',
-        'extracted_data',
-        'model_used',
-        'client_id',
-        'run_metadata',
-        'execution_time_ms',
-        'created_at',
-        'version_id',
-        'run_id'
-      ),
-    },
+    // watcher_windows is retired (canvas-on-events): windows are canvas_state
+    // event chains, read via the events table. Schema exposure is removed FIRST
+    // (this PR); the table DROP is a later PR (two-phase). event_classifications
+    // stays exposed — its window_id now holds canvas root event ids.
     // oauth_clients (excludes: client_secret, client_secret_expires_at)
     {
       name: 'oauth_clients',

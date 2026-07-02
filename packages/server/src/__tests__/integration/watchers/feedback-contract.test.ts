@@ -13,7 +13,7 @@ import type { ToolContext } from '../../../tools/registry';
 import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
+import { createCanvasWindow, createTestAgent, createTestEntity } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
 
 function ownerCtx(workspace: TestWorkspace): ToolContext {
@@ -49,20 +49,20 @@ async function seedWatcher(workspace: TestWorkspace, suffix: string) {
     agent_id: agent.agentId,
   })) as { watcher_id: string };
 
-  const [window] = await getTestDb()`
-    INSERT INTO watcher_windows (
-      watcher_id, granularity, window_start, window_end,
-      extracted_data, content_analyzed, model_used, created_at
-    ) VALUES (
-      ${Number(watcher.watcher_id)}, 'weekly',
-      ${new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)}, ${new Date()},
-      ${getTestDb().json({ problems: [{ name: 'A', severity: 'low' }] })},
-      0, 'test-model', NOW()
-    )
-    RETURNING id
-  `;
+  // Canvas-on-events: the window is a canvas_state chain root; its event id is
+  // the window_id the feedback API keys on.
+  const windowId = await createCanvasWindow({
+    watcherId: Number(watcher.watcher_id),
+    organizationId: workspace.org.id,
+    granularity: 'weekly',
+    windowStart: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+    windowEnd: new Date(),
+    extractedData: { problems: [{ name: 'A', severity: 'low' }] },
+    createdBy: workspace.users.owner.id,
+    entityIds: [entity.id],
+  });
 
-  return { watcherId: watcher.watcher_id, windowId: Number(window.id) };
+  return { watcherId: watcher.watcher_id, windowId };
 }
 
 describe('watcher feedback contract', () => {
@@ -132,17 +132,15 @@ describe('watcher feedback contract', () => {
   });
 
   it('returns scoped feedback and honors window filters', async () => {
-    const otherWindow = await getTestDb()`
-      INSERT INTO watcher_windows (
-        watcher_id, granularity, window_start, window_end,
-        extracted_data, content_analyzed, model_used, created_at
-      ) VALUES (
-        ${Number(watcherId)}, 'weekly', ${new Date(Date.now() - 14 * 24 * 60 * 60 * 1000)},
-        ${new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)}, ${getTestDb().json({ problems: [] })},
-        0, 'test-model', NOW()
-      )
-      RETURNING id
-    `;
+    const otherWindowId = await createCanvasWindow({
+      watcherId: Number(watcherId),
+      organizationId: workspace.org.id,
+      granularity: 'weekly',
+      windowStart: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
+      windowEnd: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+      extractedData: { problems: [] },
+      createdBy: workspace.users.owner.id,
+    });
 
     await manageWatchers(
       {
@@ -158,7 +156,7 @@ describe('watcher feedback contract', () => {
       {
         action: 'submit_feedback',
         watcher_id: watcherId,
-        window_id: Number(otherWindow[0].id),
+        window_id: otherWindowId,
         corrections: [{ field_path: 'other', value: 2 }],
       } as never,
       {} as never,
@@ -166,7 +164,7 @@ describe('watcher feedback contract', () => {
     );
 
     const filtered = (await manageWatchers(
-      { action: 'get_feedback', watcher_id: watcherId, window_id: Number(otherWindow[0].id) } as never,
+      { action: 'get_feedback', watcher_id: watcherId, window_id: otherWindowId } as never,
       {} as never,
       ownerCtx(workspace)
     )) as { feedback: Array<{ field_path: string }> };
@@ -223,40 +221,13 @@ describe('watcher feedback contract', () => {
    * Seed a canvas_state ROOT event for a window's period so submit_feedback has a
    * chain HEAD to supersede. Mirrors what complete_window would have written.
    */
-  async function seedCanvasRoot(
-    orgId: string,
-    wId: string,
-    winId: number,
-    payload: Record<string, unknown>
-  ): Promise<number> {
-    const sql = getTestDb();
-    const [win] = await sql`
-      SELECT granularity, window_start, window_end FROM watcher_windows WHERE id = ${winId}
-    `;
-    const [row] = await sql`
-      INSERT INTO events (
-        organization_id, origin_id, payload_type, payload_data, semantic_type,
-        metadata, occurred_at, created_at
-      ) VALUES (
-        ${orgId}, ${`canvas_seed_${winId}`}, 'json_template', ${sql.json(payload)}, 'canvas_state',
-        ${sql.json({
-          watcher_id: Number(wId),
-          granularity: win.granularity,
-          window_start: new Date(win.window_start as string).toISOString(),
-          window_end: new Date(win.window_end as string).toISOString(),
-        })},
-        ${new Date(win.window_end as string)}, NOW()
-      )
-      RETURNING id
-    `;
-    return Number(row.id);
-  }
+  // Canvas-on-events: seedWatcher already creates the canvas chain ROOT (its id
+  // IS seeded.windowId), so no separate seeding is needed — the root is the
+  // event submit_feedback supersedes.
 
   it('materializes a superseding canvas_state with the correction applied AND still writes advisory events', async () => {
     const seeded = await seedWatcher(workspace, `materialize-${Date.now()}`);
-    const rootId = await seedCanvasRoot(workspace.org.id, seeded.watcherId, seeded.windowId, {
-      problems: [{ name: 'A', severity: 'low' }],
-    });
+    const rootId = seeded.windowId;
 
     const result = (await manageWatchers(
       {
@@ -298,9 +269,7 @@ describe('watcher feedback contract', () => {
 
   it('concurrent supersede of the same head loses with 409', async () => {
     const seeded = await seedWatcher(workspace, `concurrent-${Date.now()}`);
-    const rootId = await seedCanvasRoot(workspace.org.id, seeded.watcherId, seeded.windowId, {
-      problems: [{ name: 'A', severity: 'low' }],
-    });
+    const rootId = seeded.windowId;
 
     // First correction supersedes the root → becomes the head.
     await manageWatchers(
@@ -350,9 +319,7 @@ describe('watcher feedback contract', () => {
 
   it('a prototype-polluting field_path is inert (advisory recorded, payload and prototypes untouched)', async () => {
     const seeded = await seedWatcher(workspace, `pollute-${Date.now()}`);
-    await seedCanvasRoot(workspace.org.id, seeded.watcherId, seeded.windowId, {
-      summary: 'clean',
-    });
+    // seedWatcher already created the canvas root (payload { problems: [...] }).
 
     // field_path is caller input — a path through the prototype chain must not
     // assign onto Object.prototype (CodeQL js/prototype-polluting-assignment)
@@ -388,31 +355,30 @@ describe('watcher feedback contract', () => {
     `;
     expect(head).toHaveLength(1);
     const payload = head[0].payload_data as Record<string, unknown>;
-    expect(payload.summary).toBe('clean');
+    // The seedWatcher root payload is unchanged; the forbidden paths were no-ops.
+    expect(payload.problems).toEqual([{ name: 'A', severity: 'low' }]);
     expect(Object.keys(payload)).not.toContain('polluted');
     expect(Object.keys(payload)).not.toContain('polluted2');
   });
 
-  it('skips materialization gracefully when the window has no canvas chain yet', async () => {
+  it('rejects a window_id that is not a live canvas chain root', async () => {
+    // Canvas-on-events: window_id must resolve to a live canvas_state chain root
+    // (the identity row). A non-existent / non-root id is scoped out by the
+    // window check, so submit_feedback throws "Window not found" before writing
+    // anything — the old "skip materialization when no chain" path is now
+    // architecturally unreachable (window_id IS the root event id).
     const seeded = await seedWatcher(workspace, `nochain-${Date.now()}`);
-    // No canvas_state seeded → materialization must skip, advisory event still written.
-    const result = (await manageWatchers(
-      {
-        action: 'submit_feedback',
-        watcher_id: seeded.watcherId,
-        window_id: seeded.windowId,
-        corrections: [{ field_path: 'problems[0].severity', value: 'high' }],
-      } as never,
-      {} as never,
-      ownerCtx(workspace)
-    )) as { feedback_ids: number[] };
-    expect(result.feedback_ids).toHaveLength(1);
-
-    const canvas = await getTestDb()`
-      SELECT 1 FROM events
-      WHERE semantic_type = 'canvas_state'
-        AND (metadata->>'watcher_id')::bigint = ${Number(seeded.watcherId)}
-    `;
-    expect(canvas).toHaveLength(0);
+    await expect(
+      manageWatchers(
+        {
+          action: 'submit_feedback',
+          watcher_id: seeded.watcherId,
+          window_id: 999_999_999,
+          corrections: [{ field_path: 'problems[0].severity', value: 'high' }],
+        } as never,
+        {} as never,
+        ownerCtx(workspace)
+      )
+    ).rejects.toThrow(/not found/i);
   });
 });

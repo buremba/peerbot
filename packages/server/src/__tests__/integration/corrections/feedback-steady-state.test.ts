@@ -12,7 +12,12 @@ import {
 import type { ToolContext } from '../../../tools/registry';
 import { getRecentFeedbackSummary } from '../../../utils/watcher-feedback';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createTestAgent, createTestOrganization, createTestUser } from '../../setup/test-fixtures';
+import {
+  createCanvasWindow,
+  createTestAgent,
+  createTestOrganization,
+  createTestUser,
+} from '../../setup/test-fixtures';
 
 const sql = getTestDb();
 
@@ -30,11 +35,16 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
       INSERT INTO watchers (id, name, slug, created_by, organization_id, agent_id, watcher_group_id)
       VALUES (${watcherId}, 'w', 'w-fss', ${user.id}, ${org.id}, ${agent.agentId}, ${watcherId})
     `;
-    const windowId = 953001;
-    await sql`
-      INSERT INTO watcher_windows (id, watcher_id, granularity, window_start, window_end, content_analyzed, extracted_data)
-      VALUES (${windowId}, ${watcherId}, 'daily', NOW(), NOW(), 0, '{}'::jsonb)
-    `;
+    // Canvas-on-events: the window is a canvas_state chain root; its event id is
+    // the window_id submit_feedback keys on.
+    const windowId = await createCanvasWindow({
+      watcherId,
+      organizationId: org.id,
+      granularity: 'daily',
+      windowStart: new Date(),
+      windowEnd: new Date(),
+      createdBy: user.id,
+    });
     const ctx = { organizationId: org.id, userId: user.id } as ToolContext;
 
     const submitted = await handleSubmitFeedback(

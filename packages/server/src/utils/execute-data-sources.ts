@@ -620,14 +620,6 @@ export function buildScopedQuery(
           'SELECT 1 FROM public.entities ent WHERE ent.id = ANY(w.entity_ids) ' +
           `AND ent.organization_id = ${orgP}))`
       );
-    } else if (table === 'watcher_windows') {
-      // security-allowed: see block comment above the for-loop
-      ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table, 'ww')} FROM public.watcher_windows ww ` +
-          'JOIN public.watchers w ON w.id = ww.watcher_id WHERE EXISTS (' +
-          'SELECT 1 FROM public.entities ent WHERE ent.id = ANY(w.entity_ids) ' +
-          `AND ent.organization_id = ${orgP}))`
-      );
     } else if (table === 'oauth_clients') {
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table)} FROM public.oauth_clients WHERE organization_id = ${orgP})`

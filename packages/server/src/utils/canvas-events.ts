@@ -201,8 +201,9 @@ export async function ensureCanvasEntity(params: {
 
 /**
  * Look up the current chain HEAD (event with no superseder) for a canvas period.
- * Uses the NOT-EXISTS anti-join over the listing index; returns null when no
- * chain exists yet (pre-backfill window).
+ * Keys on the denormalized `superseded_by IS NULL` stamp (same-tx dual-write
+ * since 20260702200000, fully backfilled by 20260702300000); returns null when
+ * no chain exists yet (pre-backfill window).
  */
 export async function findCanvasHead(
   tx: DbClient,
@@ -215,7 +216,7 @@ export async function findCanvasHead(
       AND (e.metadata->>'watcher_id')::bigint = ${period.watcherId}
       AND (e.metadata->>'granularity') = ${period.granularity}
       AND (e.metadata->>'window_start')::timestamptz = ${period.windowStart}
-      AND NOT EXISTS (SELECT 1 FROM events n WHERE n.supersedes_event_id = e.id)
+      AND e.superseded_by IS NULL
     LIMIT 1
   `;
   if (rows.length === 0) return null;

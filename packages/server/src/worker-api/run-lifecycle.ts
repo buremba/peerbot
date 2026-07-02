@@ -847,17 +847,36 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
           : null;
       // Deterministic provenance from the system of record (the run's pinned
       // agent_kind): the agent isn't trusted to self-report `model` through
-      // complete_window, so windows it left on the pipeline default get the
-      // device stamp. An explicit model passed by the agent wins.
+      // complete_window, so runs it left on the pipeline default get the device
+      // stamp. An explicit model passed by the agent wins. Provenance now lives
+      // on the RUN row (model_used / run_metadata.execution_time_ms), not the
+      // retired watcher_windows table — the canvas is the window projection and
+      // reads pull execution_time_ms from run timestamps / run_metadata.
       await sql`
-        UPDATE watcher_windows
-        SET execution_time_ms = COALESCE(${durationMs}, execution_time_ms),
-            model_used = CASE
-              WHEN model_used = 'external-client'
+        UPDATE runs
+        SET model_used = CASE
+              WHEN model_used = 'external-client' OR model_used IS NULL
                 THEN ${agentKind ? `device-cli:${agentKind}` : 'device-cli'}
               ELSE model_used
+            END,
+            run_metadata = CASE
+              -- jsonb_set is STRICT: a NULL new_value would null out the whole
+              -- run_metadata. No duration from the device and none recorded →
+              -- leave run_metadata untouched.
+              WHEN COALESCE(
+                ${durationMs}::bigint,
+                (run_metadata->>'execution_time_ms')::bigint
+              ) IS NULL THEN run_metadata
+              ELSE jsonb_set(
+                COALESCE(run_metadata, '{}'::jsonb),
+                '{execution_time_ms}',
+                to_jsonb(COALESCE(
+                  ${durationMs}::bigint,
+                  (run_metadata->>'execution_time_ms')::bigint
+                ))
+              )
             END
-        WHERE id = ${run.window_id}
+        WHERE id = ${runId}
       `;
     }
     await sql`

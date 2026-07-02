@@ -29,8 +29,7 @@ export function buildExcludeWatcherClause(
   return {
     sql: ` AND NOT EXISTS (
     SELECT 1 FROM watcher_window_events exc_iwe
-    JOIN watcher_windows exc_iw ON exc_iw.id = exc_iwe.window_id
-    WHERE exc_iwe.event_id = ${tableAlias}.id AND exc_iw.watcher_id = $${baseParamIndex}::bigint
+    WHERE exc_iwe.event_id = ${tableAlias}.id AND exc_iwe.watcher_id = $${baseParamIndex}::bigint
   )`,
     params: [validated],
   };

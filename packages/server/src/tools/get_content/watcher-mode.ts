@@ -433,9 +433,8 @@ export async function handleWatcherMode(
           COUNT(DISTINCT c.id) as linked
         FROM current_event_records c
         JOIN watcher_window_events iwc ON c.id = iwc.event_id
-        JOIN watcher_windows iw ON iwc.window_id = iw.id
         WHERE c.entity_ids && ARRAY[${entityIdPlaceholders}]::bigint[]
-          AND iw.watcher_id = $${sourceEntityIds.length + 1}
+          AND iwc.watcher_id = $${sourceEntityIds.length + 1}
         GROUP BY DATE_TRUNC('month', c.occurred_at)
       `,
         [...sourceEntityIds, watcherId]

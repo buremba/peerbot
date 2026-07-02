@@ -308,10 +308,20 @@ export async function getWatcherRunInfo(
 
 export async function reconcileWatcherRuns(db?: DbClient): Promise<ReconcileWatcherRunsResult> {
   const sql = db ?? getDb();
+  // Canvas-on-events: an active run that already produced a canvas window (the
+  // completion committed the canvas_state event but the run status update didn't
+  // stick) is reconciled to 'completed'. A fresh completion stamps its run_id on
+  // the chain ROOT; a replace_existing completion stamps the superseding HEAD —
+  // so join runs → ANY canvas member on run_id and resolve the window identity
+  // via metadata.root_event_id (a root omits it → its own id). Scoped to
+  // canvas_state so it never matches tab_event/tab_snapshot BROWSER rows
+  // carrying run_id.
   const rows = await sql`
-    SELECT r.id, ww.id AS window_id
+    SELECT r.id, COALESCE((ww.metadata->>'root_event_id')::bigint, ww.id) AS window_id
     FROM runs r
-    JOIN watcher_windows ww ON ww.run_id = r.id
+    JOIN events ww
+      ON ww.run_id = r.id
+     AND ww.semantic_type = 'canvas_state'
     WHERE r.run_type = 'watcher'
       AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
     ORDER BY r.created_at ASC

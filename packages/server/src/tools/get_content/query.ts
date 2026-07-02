@@ -280,7 +280,7 @@ export async function fetchIncludeSuperseded(opts: {
   }
   if (args.exclude_watcher_id !== undefined) {
     conditions.push(
-      `NOT EXISTS (SELECT 1 FROM watcher_window_events exc_iwe JOIN watcher_windows exc_iw ON exc_iw.id = exc_iwe.window_id WHERE exc_iwe.event_id = e.id AND exc_iw.watcher_id = $${paramIndex})`
+      `NOT EXISTS (SELECT 1 FROM watcher_window_events exc_iwe WHERE exc_iwe.event_id = e.id AND exc_iwe.watcher_id = $${paramIndex})`
     );
     queryParams.push(args.exclude_watcher_id);
     paramIndex += 1;

@@ -44,10 +44,18 @@ function resolveFinalizeNudgeBudget(
 }
 
 export async function findWindowIdForRun(sql: DbClient, runId: number): Promise<number | null> {
+  // Canvas-on-events: a run produced a window iff a canvas chain member carries
+  // this run_id (stamped atomically inside complete_window's tx). A fresh
+  // completion stamps the ROOT; a replace_existing completion stamps the
+  // superseding HEAD — so match ANY member and resolve the window identity via
+  // metadata.root_event_id (a root omits it → its own id). Scoped to
+  // canvas_state so it never matches tab_event/tab_snapshot BROWSER rows that
+  // also carry run_id.
   const rows = await sql`
-    SELECT id
-    FROM watcher_windows
+    SELECT COALESCE((metadata->>'root_event_id')::bigint, id) AS id
+    FROM events
     WHERE run_id = ${runId}
+      AND semantic_type = 'canvas_state'
     ORDER BY id DESC
     LIMIT 1
   `;

@@ -2,7 +2,8 @@
  * Tool: get_watcher (Incremental Time Windows)
  *
  * Query a single watcher's analysis windows by date range and granularity.
- * Returns time-windowed watcher data from watcher_windows table.
+ * Returns time-windowed watcher data sourced from canvas_state event chains
+ * (a window = one canvas_state supersede chain; its ROOT event id is window_id).
  */
 
 import {
@@ -40,6 +41,7 @@ import {
 import { renderPromptPreview } from '../watchers/template-renderer';
 import { buildWatchersUrl, type EntityInfo, getPublicWebUrl } from '../utils/url-builder';
 import {
+  buildWindowsCountFromClause,
   buildWindowsSelectClause,
   ensureNumber,
   foldUnprocessedRanges,
@@ -485,8 +487,7 @@ async function getWatcherImpl(
   if (windows.length === 0 && offset > 0) {
     const countQuery = `
       SELECT COUNT(*) as count
-      FROM watcher_windows iw
-      JOIN watchers i ON iw.watcher_id = i.id
+      FROM ${buildWindowsCountFromClause()}
       LEFT JOIN watcher_versions cv ON i.current_version_id = cv.id
       WHERE ${whereClause}
     `;
@@ -604,8 +605,13 @@ async function getWatcherImpl(
         sv.classifiers as sel_version_classifiers,
         sv.keying_config as sel_version_keying_config,
         sv.reactions_guidance as sel_version_reactions_guidance,
-        -- Latest window end for the unprocessedCount bound
-        (SELECT MAX(window_end) FROM watcher_windows WHERE watcher_id = i.id) as latest_window_end,
+        -- Latest window end for the unprocessedCount bound. Canvas-on-events:
+        -- windows are canvas_state chains; MAX over metadata.window_end (any
+        -- chain member carries it). Scoped to canvas_state so it never reads
+        -- tab_event/tab_snapshot BROWSER rows carrying metadata.window_id.
+        (SELECT MAX((ev.metadata->>'window_end')::timestamptz) FROM events ev
+          WHERE ev.semantic_type = 'canvas_state'
+            AND (ev.metadata->>'watcher_id')::bigint = i.id) as latest_window_end,
         -- Entities + parent info for entityInfoForUrl / entitiesForTemplate
         (SELECT jsonb_agg(jsonb_build_object(
           'id', e.id,
@@ -939,8 +945,7 @@ async function getWatcherImpl(
 
     const notInWindowClause = `NOT EXISTS (
         SELECT 1 FROM watcher_window_events iwc
-        JOIN watcher_windows iw ON iw.id = iwc.window_id
-        WHERE iwc.event_id = f.id AND iw.watcher_id = $1
+        WHERE iwc.event_id = f.id AND iwc.watcher_id = $1
       )`;
 
     // unprocessed_count drives the badge ("N pending analysis"). Cap the
@@ -983,10 +988,9 @@ async function getWatcherImpl(
             `SELECT DATE_TRUNC('month', f.occurred_at) as month, COUNT(DISTINCT f.id) as linked
               FROM current_event_records f
               JOIN watcher_window_events iwc ON f.id = iwc.event_id
-              JOIN watcher_windows iw ON iwc.window_id = iw.id
               WHERE ${entityScopeCondition}
                 ${occurredAtBound ? `AND ${occurredAtBound}` : ''}
-                AND iw.watcher_id = $1
+                AND iwc.watcher_id = $1
               GROUP BY DATE_TRUNC('month', f.occurred_at)`,
             watcherScopedParams
           ),

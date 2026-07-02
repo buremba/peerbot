@@ -25,7 +25,7 @@
  *   - `entities.id` / `entity_identities.id` are `nextval()` sequence columns,
  *     so concurrent inserts never collide on the PK (no advisory-lock allocator
  *     needed here — that's only for the MAX(id)+1 tables).
- *   - The window itself is guarded by `idx_watcher_windows_unique_period`, so at
+ *   - The window (canvas chain root) is guarded by `idx_canvas_chain_root`, so at
  *     most one completion creates a given window; idempotent replays reuse it and
  *     re-enter this function, where the per-key identity claim makes repeats
  *     no-ops.
@@ -52,7 +52,7 @@ export interface PromoteKeyedEntitiesParams {
   keyingConfig: KeyingConfig;
   watcherId: number;
   organizationId: string;
-  /** The finalized watcher_windows.id this completion produced/reused. */
+  /** The finalized window identity (canvas ROOT event id) this completion produced/reused. */
   windowId: number;
   /** The watcher's bound parent entity (entity_ids[0]); null when unbound. */
   parentEntityId: number | null;

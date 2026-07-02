@@ -381,7 +381,10 @@ export class MessageHandlerBridge {
         const notice = await workspaceUnlinkedNotice(
           platform,
           this.connection.organizationId,
-          { channelId, teamId },
+          // Fall back to the connection's stored team when the raw message omits
+          // team_id, so the deep-link stays team-scoped (the binding is keyed on
+          // team). The connection always carries it — it's the gate above.
+          { channelId, teamId: teamId ?? this.connection.metadata?.teamId },
         );
         if (notice) {
           logger.info(

@@ -239,7 +239,7 @@ export function createOpenClawCustomTools(params: {
       parameters: Type.Object({
         thread: Type.String({
           description:
-            "A thread handle returned by a previous send_message (identifies the channel you're authorized for)",
+            "A conversation handle (from list_conversations/read_conversation) or a thread handle from a previous send_message. Either identifies a channel you're authorized for — use a conversation handle to react to a message you READ.",
         }),
         message: Type.String({
           description:
@@ -262,7 +262,7 @@ export function createOpenClawCustomTools(params: {
       parameters: Type.Object({
         thread: Type.String({
           description:
-            "A thread handle returned by a previous send_message (identifies the channel)",
+            "A conversation handle (from list_conversations/read_conversation) or a thread handle from a previous send_message — identifies the channel.",
         }),
         message: Type.String({
           description:
@@ -280,7 +280,7 @@ export function createOpenClawCustomTools(params: {
       parameters: Type.Object({
         thread: Type.String({
           description:
-            "A thread handle returned by a previous send_message (identifies the channel)",
+            "A conversation handle (from list_conversations/read_conversation) or a thread handle from a previous send_message — identifies the channel.",
         }),
         message: Type.String({
           description:

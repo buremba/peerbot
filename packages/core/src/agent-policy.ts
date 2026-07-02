@@ -43,15 +43,15 @@ export const CUSTOM_TOOL_METADATA: Record<string, CustomToolMetadata> = {
   },
   react: {
     description:
-      'Add (or remove) an emoji reaction on a message. Pass a thread handle (from a previous send_message) plus the message id to react to. Use to acknowledge or triage a message without posting text (e.g. "eyes" while working, "white_check_mark" when done). Set remove=true to take a reaction back.',
+      'Add (or remove) an emoji reaction on a message. Pass a conversation handle (from list_conversations/read_conversation) or a thread handle (from a previous send_message) plus the message id to react to — you can react to a message you only READ, using the id read_conversation surfaces. Use to acknowledge or triage a message without posting text (e.g. "eyes" while working, "white_check_mark" when done). Set remove=true to take a reaction back.',
   },
   edit_message: {
     description:
-      'Edit the text of a message the bot itself sent, addressed by a thread handle + message id. Use to update an in-progress post in place (e.g. "working…" → the result) instead of posting a new message. Only the bot\'s own messages can be edited.',
+      'Edit the text of a message the bot itself sent, addressed by a conversation or thread handle + message id. Use to update an in-progress post in place (e.g. "working…" → the result) instead of posting a new message. Only the bot\'s own messages can be edited.',
   },
   delete_message: {
     description:
-      "Delete a message the bot itself sent, addressed by a thread handle + message id. Only the bot's own messages can be deleted.",
+      "Delete a message the bot itself sent, addressed by a conversation or thread handle + message id. Only the bot's own messages can be deleted.",
   },
 };
 

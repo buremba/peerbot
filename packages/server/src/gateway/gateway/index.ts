@@ -826,7 +826,10 @@ export class WorkerGateway {
     }
 
     const effectiveProviders =
-      await this.providerCatalogService.getInstalledModules(agentId);
+      await this.providerCatalogService.getInstalledModules(
+        agentId,
+        organizationId
+      );
     if (effectiveProviders.length === 0) {
       return {};
     }

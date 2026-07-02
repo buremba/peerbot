@@ -413,6 +413,164 @@ routes.post('/', async (c) => {
   return c.json({ agentId, name, description }, 201);
 });
 
+// ── Org-scoped inference-provider routes ─────────────────────────────────────
+// Registered BEFORE any `/:agentId` route so these literal paths win the match
+// (Hono would otherwise treat 'inference-providers' as an :agentId → 404).
+// Helpers (requireOrgId, validateCapabilitiesMap) are hoisted fn declarations
+// defined lower in this file.
+
+routes.get('/inference-providers', async (c) => {
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const providers = await listInferenceProviders(orgId);
+  return c.json({ providers });
+});
+
+routes.post('/inference-providers', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+
+  let body: {
+    slug?: unknown;
+    kind?: unknown;
+    displayName?: unknown;
+    apiKey?: unknown;
+    capabilities?: unknown;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+
+  const slug = typeof body.slug === 'string' ? body.slug : '';
+  const kind = typeof body.kind === 'string' ? body.kind : '';
+  const apiKey = typeof body.apiKey === 'string' ? body.apiKey : '';
+  if (!slug) return c.json({ error: 'Body must include a `slug` string' }, 400);
+  if (!kind) return c.json({ error: 'Body must include a `kind` string' }, 400);
+  if (!apiKey) {
+    return c.json({ error: 'Body must include a non-empty `apiKey` string' }, 400);
+  }
+  const capErr = validateCapabilitiesMap(body.capabilities);
+  if (capErr) return c.json({ error: capErr }, 400);
+
+  const createdBy = c.get('user')?.id ?? null;
+
+  const result = await createInferenceProvider({
+    organizationId: orgId,
+    slug,
+    kind,
+    displayName: typeof body.displayName === 'string' ? body.displayName : null,
+    apiKey,
+    capabilities: (body.capabilities as InferenceCapabilities) ?? {},
+    createdBy,
+  });
+  if ('error' in result) {
+    return c.json(
+      { error: `A provider with slug '${result.slug}' already exists` },
+      409
+    );
+  }
+  // Never echo the key or the api_key_ref back to the caller.
+  return c.json(
+    {
+      provider: {
+        id: result.id,
+        slug: result.slug,
+        kind: result.kind,
+        displayName: result.displayName,
+        capabilities: result.capabilities,
+        hasCustomUpstream: result.hasCustomUpstream,
+        status: result.status,
+        createdAt: result.createdAt,
+      },
+    },
+    201
+  );
+});
+
+routes.put('/inference-providers/:slug/capabilities/:modality', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const { slug, modality } = c.req.param();
+
+  if (!isInferenceModality(modality)) {
+    return c.json(
+      { error: 'modality must be one of: text, image, stt, tts, embedding' },
+      400
+    );
+  }
+
+  let body: { block?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+  const block = body.block;
+  const err = validateCapabilityBlock(modality, block);
+  if (err) return c.json({ error: err }, 400);
+
+  const updated = await updateInferenceProviderCapabilities(
+    orgId,
+    slug,
+    modality,
+    block as InferenceCapabilityBlock
+  );
+  if (!updated) return c.json({ error: 'Provider not found' }, 404);
+  return c.json({
+    provider: {
+      id: updated.id,
+      slug: updated.slug,
+      kind: updated.kind,
+      displayName: updated.displayName,
+      capabilities: updated.capabilities,
+      hasCustomUpstream: updated.hasCustomUpstream,
+      status: updated.status,
+      createdAt: updated.createdAt,
+    },
+  });
+});
+
+routes.put('/inference-providers/:slug/key', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const { slug } = c.req.param();
+
+  let body: { value?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+  const value = typeof body.value === 'string' ? body.value : '';
+  if (!value) {
+    return c.json({ error: 'Body must include a non-empty `value` string' }, 400);
+  }
+
+  const ok = await rotateInferenceProviderKey(orgId, slug, value);
+  if (!ok) return c.json({ error: 'Provider not found' }, 404);
+  return c.json({ success: true });
+});
+
+routes.delete('/inference-providers/:slug', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const { slug } = c.req.param();
+
+  const ok = await softDeleteInferenceProvider(orgId, slug);
+  if (!ok) return c.json({ error: 'Provider not found' }, 404);
+  return c.json({ success: true });
+});
+
 // ── Get agent detail ─────────────────────────────────────────────────────────
 
 routes.get('/:agentId', async (c) => {
@@ -1548,156 +1706,5 @@ function validateCapabilitiesMap(value: unknown): string | null {
   return null;
 }
 
-routes.get('/inference-providers', async (c) => {
-  const orgId = requireOrgId(c);
-  if (typeof orgId !== 'string') return orgId;
-  const providers = await listInferenceProviders(orgId);
-  return c.json({ providers });
-});
-
-routes.post('/inference-providers', async (c) => {
-  const denied = requireSessionOrAdminPat(c);
-  if (denied) return denied;
-  const orgId = requireOrgId(c);
-  if (typeof orgId !== 'string') return orgId;
-
-  let body: {
-    slug?: unknown;
-    kind?: unknown;
-    displayName?: unknown;
-    apiKey?: unknown;
-    capabilities?: unknown;
-  };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: 'Invalid or missing JSON body' }, 400);
-  }
-
-  const slug = typeof body.slug === 'string' ? body.slug : '';
-  const kind = typeof body.kind === 'string' ? body.kind : '';
-  const apiKey = typeof body.apiKey === 'string' ? body.apiKey : '';
-  if (!slug) return c.json({ error: 'Body must include a `slug` string' }, 400);
-  if (!kind) return c.json({ error: 'Body must include a `kind` string' }, 400);
-  if (!apiKey) {
-    return c.json({ error: 'Body must include a non-empty `apiKey` string' }, 400);
-  }
-  const capErr = validateCapabilitiesMap(body.capabilities);
-  if (capErr) return c.json({ error: capErr }, 400);
-
-  const createdBy = c.get('user')?.id ?? null;
-
-  const result = await createInferenceProvider({
-    organizationId: orgId,
-    slug,
-    kind,
-    displayName: typeof body.displayName === 'string' ? body.displayName : null,
-    apiKey,
-    capabilities: (body.capabilities as InferenceCapabilities) ?? {},
-    createdBy,
-  });
-  if ('error' in result) {
-    return c.json(
-      { error: `A provider with slug '${result.slug}' already exists` },
-      409
-    );
-  }
-  // Never echo the key or the api_key_ref back to the caller.
-  return c.json(
-    {
-      provider: {
-        id: result.id,
-        slug: result.slug,
-        kind: result.kind,
-        displayName: result.displayName,
-        capabilities: result.capabilities,
-        hasCustomUpstream: result.hasCustomUpstream,
-        status: result.status,
-        createdAt: result.createdAt,
-      },
-    },
-    201
-  );
-});
-
-routes.put('/inference-providers/:slug/capabilities/:modality', async (c) => {
-  const denied = requireSessionOrAdminPat(c);
-  if (denied) return denied;
-  const orgId = requireOrgId(c);
-  if (typeof orgId !== 'string') return orgId;
-  const { slug, modality } = c.req.param();
-
-  if (!isInferenceModality(modality)) {
-    return c.json(
-      { error: 'modality must be one of: text, image, stt, tts, embedding' },
-      400
-    );
-  }
-
-  let body: { block?: unknown };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: 'Invalid or missing JSON body' }, 400);
-  }
-  const block = body.block;
-  const err = validateCapabilityBlock(modality, block);
-  if (err) return c.json({ error: err }, 400);
-
-  const updated = await updateInferenceProviderCapabilities(
-    orgId,
-    slug,
-    modality,
-    block as InferenceCapabilityBlock
-  );
-  if (!updated) return c.json({ error: 'Provider not found' }, 404);
-  return c.json({
-    provider: {
-      id: updated.id,
-      slug: updated.slug,
-      kind: updated.kind,
-      displayName: updated.displayName,
-      capabilities: updated.capabilities,
-      hasCustomUpstream: updated.hasCustomUpstream,
-      status: updated.status,
-      createdAt: updated.createdAt,
-    },
-  });
-});
-
-routes.put('/inference-providers/:slug/key', async (c) => {
-  const denied = requireSessionOrAdminPat(c);
-  if (denied) return denied;
-  const orgId = requireOrgId(c);
-  if (typeof orgId !== 'string') return orgId;
-  const { slug } = c.req.param();
-
-  let body: { value?: unknown };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: 'Invalid or missing JSON body' }, 400);
-  }
-  const value = typeof body.value === 'string' ? body.value : '';
-  if (!value) {
-    return c.json({ error: 'Body must include a non-empty `value` string' }, 400);
-  }
-
-  const ok = await rotateInferenceProviderKey(orgId, slug, value);
-  if (!ok) return c.json({ error: 'Provider not found' }, 404);
-  return c.json({ success: true });
-});
-
-routes.delete('/inference-providers/:slug', async (c) => {
-  const denied = requireSessionOrAdminPat(c);
-  if (denied) return denied;
-  const orgId = requireOrgId(c);
-  if (typeof orgId !== 'string') return orgId;
-  const { slug } = c.req.param();
-
-  const ok = await softDeleteInferenceProvider(orgId, slug);
-  if (!ok) return c.json({ error: 'Provider not found' }, 404);
-  return c.json({ success: true });
-});
 
 export { routes as agentRoutes };

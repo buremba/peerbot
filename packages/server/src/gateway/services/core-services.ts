@@ -16,7 +16,10 @@ import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js"
 // inference_providers row access (per-modality custom upstreams) — the store
 // owns the SQL + api_key_ref decrypt; core-services owns org resolution.
 // See buildInferenceProviderSource below.
-import { resolveInferenceProviderConfig } from "../../lobu/stores/provider-secrets.js";
+import {
+	listInferenceProviders,
+	resolveInferenceProviderConfig,
+} from "../../lobu/stores/provider-secrets.js";
 import {
 	type AppInstallationStore,
 	createPostgresAppInstallationStore,
@@ -693,11 +696,18 @@ export class CoreServices {
 			);
 		}
 
-		// Initialize provider catalog service
+		// Initialize provider catalog service. The inference-provider reader +
+		// registerUpstream callback let it synthesize routable modules for
+		// org-defined provider slugs (custom upstreams) on demand. Registration is
+		// per-pod, hydrated from the row each call — multi-replica safe (no shared
+		// in-memory map another replica must read).
 		this.providerCatalogService = new ProviderCatalogService(
 			this.agentSettingsStore,
 			this.authProfilesManager,
 			this.declaredAgentRegistry,
+			(organizationId) => listInferenceProviders(organizationId),
+			(upstream, providerId) =>
+				this.secretProxy?.registerUpstream(upstream, providerId),
 		);
 		logger.debug("Provider catalog service initialized");
 

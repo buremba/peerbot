@@ -1,14 +1,45 @@
 import { createLogger, type InstalledProvider } from "@lobu/core";
+import type { InferenceProviderListItem } from "../../lobu/stores/provider-secrets.js";
 import {
   getModelProviderModules,
   type ModelProviderModule,
+  type ProviderUpstreamConfig,
 } from "../modules/module-system.js";
 import type { DeclaredAgentRegistry } from "../services/declared-agent-registry.js";
+import { ApiKeyProviderModule } from "./api-key-provider-module.js";
 import type { AgentSettingsStore } from "./settings/agent-settings-store.js";
 import type { AuthProfilesManager } from "./settings/auth-profiles-manager.js";
 import { reconcileModelSelectionForInstalledProviders } from "./settings/model-selection.js";
 
 const logger = createLogger("provider-catalog");
+
+/**
+ * Reads an org's inference-provider rows (slug + custom-upstream capabilities).
+ * Injected so ProviderCatalogService can synthesize routable modules for
+ * org-defined provider slugs without depending on the store directly.
+ */
+export type OrgInferenceProviderReader = (
+  organizationId: string
+) => Promise<InferenceProviderListItem[]>;
+
+/**
+ * Registers a synthesized org provider's upstream on the secret proxy so the
+ * slug becomes routable (populates slugMap + slugToProviderId). Injected from
+ * core-services, which owns the SecretProxy instance.
+ */
+export type RegisterUpstreamFn = (
+  upstream: ProviderUpstreamConfig,
+  providerId: string
+) => void;
+
+/**
+ * Build the synthetic env var name for an org provider slug. The value is never
+ * read (the org key is supplied at egress by resolveUrlInvariant), but
+ * BaseProviderModule needs a stable, collision-free credential env var name.
+ */
+function orgProviderKeyEnvVarName(slug: string): string {
+  return `LOBU_ORG_PROVIDER_${slug.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_KEY`;
+}
 
 /**
  * Resolve an agent's installed providers.
@@ -35,8 +66,61 @@ export class ProviderCatalogService {
   constructor(
     private agentSettingsStore: AgentSettingsStore,
     private authProfilesManager: AuthProfilesManager,
-    private declaredAgents: DeclaredAgentRegistry
+    private declaredAgents: DeclaredAgentRegistry,
+    /**
+     * Reads the org's inference_providers rows. When present, an installed
+     * provider slug that isn't a providers.json module is synthesized from a
+     * matching custom-upstream row (see getInstalledModules).
+     */
+    private listOrgInferenceProviders?: OrgInferenceProviderReader,
+    /**
+     * Registers a synthesized org module's upstream on the secret proxy so the
+     * slug routes. Called just-in-time from getInstalledModules — per-pod,
+     * hydrated from the row, so it stays correct under N>1 replicas (no shared
+     * in-memory state another pod must read).
+     */
+    private registerUpstream?: RegisterUpstreamFn
   ) {}
+
+  /**
+   * Synthesize a routable provider module for an org-defined inference-provider
+   * slug that has a custom text upstream. Reuses ApiKeyProviderModule — the org
+   * key itself is NOT read here; it is injected at egress by resolveUrlInvariant
+   * (org-only). This module only makes the slug appear in the worker's provider
+   * config + the proxy's slug maps. Returns null when the row has no custom
+   * `capabilities.text.base_url` (nothing to route to).
+   */
+  private synthesizeOrgProviderModule(
+    row: InferenceProviderListItem
+  ): ApiKeyProviderModule | null {
+    const textUpstream = row.capabilities.text?.base_url;
+    if (!textUpstream) return null;
+
+    const module = new ApiKeyProviderModule({
+      providerId: row.slug,
+      slug: row.slug,
+      sdkCompat: "openai",
+      upstreamBaseUrl: textUpstream,
+      defaultModel: row.capabilities.text?.model,
+      envVarName: orgProviderKeyEnvVarName(row.slug),
+      providerDisplayName: row.displayName || row.slug,
+      providerIconUrl: "",
+      apiKeyInstructions: "",
+      apiKeyPlaceholder: "",
+      // Never surface synthetic org modules in the "Add Provider" catalog.
+      catalogVisible: false,
+      authProfilesManager: this.authProfilesManager,
+    });
+
+    // Make the slug routable on THIS pod's proxy. registerUpstream is
+    // idempotent (map sets), and every replica reaches this path on demand from
+    // the same row, so there is no cross-pod state to fan out.
+    const upstream = module.getUpstreamConfig();
+    if (upstream && this.registerUpstream) {
+      this.registerUpstream(upstream, module.providerId);
+    }
+    return module;
+  }
 
   private guardDeclared(agentId: string): void {
     if (this.declaredAgents.has(agentId)) {
@@ -54,8 +138,18 @@ export class ProviderCatalogService {
   /**
    * Resolve an agent's installedProviders to their module instances.
    * Returns modules in the agent's install order.
+   *
+   * Providers.json modules resolve directly. Any installed slug that isn't a
+   * providers.json module is resolved (when `organizationId` is provided) from
+   * the org's inference_providers rows: a matching row with a custom text
+   * upstream is synthesized into a routable ApiKeyProviderModule. Slugs with no
+   * matching custom-upstream row (or when no org is given) are dropped, as
+   * before.
    */
-  async getInstalledModules(agentId: string): Promise<ModelProviderModule[]> {
+  async getInstalledModules(
+    agentId: string,
+    organizationId?: string
+  ): Promise<ModelProviderModule[]> {
     const installed = await resolveInstalledProviders(
       this.agentSettingsStore,
       agentId
@@ -65,9 +159,33 @@ export class ProviderCatalogService {
     const allModules = getModelProviderModules();
     const moduleMap = new Map(allModules.map((m) => [m.providerId, m]));
 
-    return installed
-      .map((ip) => moduleMap.get(ip.providerId))
-      .filter((m): m is ModelProviderModule => m !== undefined);
+    // Slugs not backed by a providers.json module may be org-defined inference
+    // providers. Load the org's rows once and index by slug so each unmatched
+    // installed slug can be synthesized in install order.
+    let orgRowsBySlug: Map<string, InferenceProviderListItem> | undefined;
+    if (
+      organizationId &&
+      this.listOrgInferenceProviders &&
+      installed.some((ip) => !moduleMap.has(ip.providerId))
+    ) {
+      const rows = await this.listOrgInferenceProviders(organizationId);
+      orgRowsBySlug = new Map(rows.map((r) => [r.slug, r]));
+    }
+
+    const resolved: ModelProviderModule[] = [];
+    for (const ip of installed) {
+      const staticModule = moduleMap.get(ip.providerId);
+      if (staticModule) {
+        resolved.push(staticModule);
+        continue;
+      }
+      const row = orgRowsBySlug?.get(ip.providerId);
+      if (row) {
+        const synthesized = this.synthesizeOrgProviderModule(row);
+        if (synthesized) resolved.push(synthesized);
+      }
+    }
+    return resolved;
   }
 
   /**
@@ -80,11 +198,7 @@ export class ProviderCatalogService {
   /**
    * Install a provider for an agent. Appends to the end of the list.
    */
-  async installProvider(
-    agentId: string,
-    providerId: string,
-    config?: InstalledProvider["config"]
-  ): Promise<void> {
+  async installProvider(agentId: string, providerId: string): Promise<void> {
     this.guardDeclared(agentId);
     const allModules = getModelProviderModules();
     const module = allModules.find((m) => m.providerId === providerId);
@@ -105,7 +219,6 @@ export class ProviderCatalogService {
     const entry: InstalledProvider = {
       providerId,
       installedAt: Date.now(),
-      ...(config ? { config } : {}),
     };
     const nextInstalledProviders = [...installed, entry];
     const reconciled = reconcileModelSelectionForInstalledProviders({

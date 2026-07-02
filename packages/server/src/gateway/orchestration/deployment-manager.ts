@@ -1575,7 +1575,10 @@ export class DeploymentManager {
 
     // Resolve per-agent installed providers (catalog-only when active, no global fallback)
     const effectiveProviders = this.providerCatalogService
-      ? await this.providerCatalogService.getInstalledModules(agentId)
+      ? await this.providerCatalogService.getInstalledModules(
+          agentId,
+          validated.organizationId
+        )
       : this.providerModules;
 
     for (const provider of effectiveProviders) {

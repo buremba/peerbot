@@ -108,22 +108,11 @@ function getViewer(payload: SettingsTokenPayload | null | undefined): {
 function getProviderModelPreferencesFromSettings(
 	settings: AgentSettings | null | undefined,
 ): Record<string, string> {
-	const directPreferences = Object.fromEntries(
+	return Object.fromEntries(
 		Object.entries(settings?.providerModelPreferences || {})
 			.map(([providerId, modelRef]) => [providerId.trim(), modelRef.trim()])
 			.filter(([providerId, modelRef]) => providerId && modelRef),
 	);
-	if (Object.keys(directPreferences).length > 0) {
-		return directPreferences;
-	}
-
-	const fallbackPreferences: Record<string, string> = {};
-	for (const ip of settings?.installedProviders || []) {
-		if (ip.config?.modelPreference) {
-			fallbackPreferences[ip.providerId] = String(ip.config.modelPreference);
-		}
-	}
-	return fallbackPreferences;
 }
 
 async function resolveSettingsView(

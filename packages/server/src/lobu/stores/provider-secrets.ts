@@ -130,7 +130,7 @@ export function validateCapabilityBlock(
 	modality: string,
 	block: unknown,
 ): string | null {
-	if (!INFERENCE_MODALITIES.has(modality)) {
+	if (!isInferenceModality(modality)) {
 		return `Unknown modality '${modality}' (expected text|image|stt|tts|embedding)`;
 	}
 	if (typeof block !== "object" || block === null || Array.isArray(block)) {

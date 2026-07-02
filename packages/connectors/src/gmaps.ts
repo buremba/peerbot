@@ -13,7 +13,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import { filterByCheckpoint } from './browser-scraper-utils.ts';
+import { filterByCheckpoint } from './scraper-utils.ts';
 
 interface GMapsReview {
   author_name: string;

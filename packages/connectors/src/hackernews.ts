@@ -14,7 +14,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import { sleep, validatePublicUrl } from './browser-scraper-utils.ts';
+import { sleep, validatePublicUrl } from './scraper-utils.ts';
 
 // ---------------------------------------------------------------------------
 // Algolia HN API types

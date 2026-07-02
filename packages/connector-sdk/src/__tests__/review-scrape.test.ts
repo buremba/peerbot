@@ -1,12 +1,10 @@
-import { describe, expect, mock, test } from 'bun:test';
-import { connectorSdkMock } from './connector-sdk.mock';
-
-// Stub @lobu/connector-sdk (it pulls in playwright) so the pure helpers import
-// without the browser stack. Shared superset — see connector-sdk.mock.ts.
-mock.module('@lobu/connector-sdk', connectorSdkMock);
-
-const { applyLookbackCutoff, buildReviewCheckpoint, filterByCheckpoint, validateUrlDomain } =
-  await import('../browser-scraper-utils.ts');
+import { describe, expect, test } from 'bun:test';
+import {
+  applyLookbackCutoff,
+  buildReviewCheckpoint,
+  filterByCheckpoint,
+  validateUrlDomain,
+} from '../browser/scrape-utils.js';
 
 describe('validateUrlDomain', () => {
   test('accepts a well-formed https URL on the expected domain', () => {
@@ -68,7 +66,6 @@ describe('filterByCheckpoint', () => {
     const filtered = filterByCheckpoint(events, {
       last_timestamp: '2024-06-01T00:00:00Z',
     });
-    // strict `>` — event at exactly the cutoff is filtered out
     expect(filtered).toHaveLength(1);
     expect(filtered[0]).toBe(events[2]);
   });
@@ -84,9 +81,9 @@ describe('applyLookbackCutoff', () => {
   const now = Date.now();
   const day = 24 * 60 * 60 * 1000;
   const events = [
-    { occurred_at: new Date(now - 5 * day) } as any, // 5 days ago
-    { occurred_at: new Date(now - 100 * day) } as any, // 100 days ago
-    { occurred_at: new Date(now - 400 * day) } as any, // 400 days ago
+    { occurred_at: new Date(now - 5 * day) } as any,
+    { occurred_at: new Date(now - 100 * day) } as any,
+    { occurred_at: new Date(now - 400 * day) } as any,
   ];
 
   test('returns every event when lookbackDays is undefined', () => {
@@ -112,7 +109,6 @@ describe('applyLookbackCutoff', () => {
 });
 
 describe('buildReviewCheckpoint', () => {
-  // Events are sorted newest-first by callers, so events[0] is the newest.
   const sorted = [
     { occurred_at: new Date('2024-12-31T00:00:00Z') } as any,
     { occurred_at: new Date('2024-06-01T00:00:00Z') } as any,
@@ -143,10 +139,6 @@ describe('buildReviewCheckpoint', () => {
   });
 });
 
-// End-to-end proof of the review-scraper incremental pipeline: the exact
-// applyLookbackCutoff -> filterByCheckpoint -> sort -> buildReviewCheckpoint
-// sequence each scraper now runs. Proves already-seen reviews are NOT re-emitted
-// on the next sync and the checkpoint advances.
 describe('review scraper incremental pipeline', () => {
   const day = 24 * 60 * 60 * 1000;
   const now = Date.now();
@@ -175,7 +167,6 @@ describe('review scraper incremental pipeline', () => {
     ];
     const first = runPipeline(raw, null, 365);
     expect(first.events).toHaveLength(3);
-    // newest-first
     expect(first.events[0].occurred_at.getTime()).toBe(now - 1 * day);
     expect(first.checkpoint.last_timestamp).toBe(new Date(now - 1 * day).toISOString());
   });
@@ -188,14 +179,11 @@ describe('review scraper incremental pipeline', () => {
     ];
     const first = runPipeline(raw, null, 365);
 
-    // Same page re-scraped on the next recurring sync, plus one genuinely new review.
     const newer = { occurred_at: new Date(now) };
     const second = runPipeline([...raw, newer], first.checkpoint, 365);
 
-    // Only the brand-new review is emitted; the three already-seen are dropped.
     expect(second.events).toHaveLength(1);
     expect(second.events[0].occurred_at.getTime()).toBe(now);
-    // Checkpoint advances to the newest review.
     expect(second.checkpoint.last_timestamp).toBe(newer.occurred_at.toISOString());
   });
 
@@ -210,7 +198,7 @@ describe('review scraper incremental pipeline', () => {
   test('lookback_days bounds the emit window even on a fresh checkpoint', () => {
     const raw = [
       { occurred_at: new Date(now - 5 * day) },
-      { occurred_at: new Date(now - 400 * day) }, // outside a 365-day lookback
+      { occurred_at: new Date(now - 400 * day) },
     ];
     const result = runPipeline(raw, null, 365);
     expect(result.events).toHaveLength(1);

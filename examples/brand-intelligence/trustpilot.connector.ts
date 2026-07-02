@@ -11,8 +11,8 @@ import {
   type EventEnvelope,
   type SyncContext,
   type SyncResult,
-} from '@lobu/connector-sdk';
-import { runReviewScrape } from './browser-scraper-utils.ts';
+  runReviewScrape,
+} from "@lobu/connector-sdk";
 
 interface TrustpilotReview {
   rating: number;
@@ -23,55 +23,55 @@ interface TrustpilotReview {
 }
 
 const configSchema = {
-  type: 'object',
+  type: "object",
   properties: {
     business_url: {
-      type: 'string',
-      format: 'uri',
+      type: "string",
+      format: "uri",
       description:
         'Full Trustpilot review URL (e.g., "https://www.trustpilot.com/review/spotify.com")',
     },
     business_name: {
-      type: 'string',
+      type: "string",
       minLength: 1,
-      description: 'Business name for search-based lookup',
+      description: "Business name for search-based lookup",
     },
     lookback_days: {
-      type: 'integer',
+      type: "integer",
       minimum: 1,
       maximum: 730,
       default: 365,
       description:
-        'Number of days to look back for historical data. Default: 365 (1 year). Maximum: 730 (2 years).',
+        "Number of days to look back for historical data. Default: 365 (1 year). Maximum: 730 (2 years).",
     },
   },
 };
 
 export default class TrustpilotConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
-    key: 'trustpilot',
-    name: 'Trustpilot',
-    description: 'Scrapes business reviews from Trustpilot.',
-    version: '1.0.0',
-    faviconDomain: 'trustpilot.com',
+    key: "trustpilot",
+    name: "Trustpilot",
+    description: "Scrapes business reviews from Trustpilot.",
+    version: "1.0.0",
+    faviconDomain: "trustpilot.com",
     authSchema: {
-      methods: [{ type: 'none' }],
+      methods: [{ type: "none" }],
     },
     feeds: {
       reviews: {
-        key: 'reviews',
-        name: 'Business Reviews',
-        description: 'Scrape reviews for a business on Trustpilot.',
+        key: "reviews",
+        name: "Business Reviews",
+        description: "Scrape reviews for a business on Trustpilot.",
         configSchema,
         eventKinds: {
           review: {
-            description: 'A Trustpilot business review',
+            description: "A Trustpilot business review",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                rating: { type: 'number', description: 'Star rating (1-5)' },
-                helpful_count: { type: 'number' },
-                title: { type: 'string', description: 'Review headline' },
+                rating: { type: "number", description: "Star rating (1-5)" },
+                helpful_count: { type: "number" },
+                title: { type: "string", description: "Review headline" },
               },
             },
           },
@@ -85,21 +85,21 @@ export default class TrustpilotConnector extends ConnectorRuntime {
     const businessName = ctx.config.business_name as string | undefined;
 
     if (!businessUrl && !businessName) {
-      throw new Error('Either business_url or business_name is required');
+      throw new Error("Either business_url or business_name is required");
     }
 
     // encodeURIComponent the user-supplied businessName so a value like
     // "../search?foo=bar" can't escape the /review/ path on trustpilot.com.
     const baseUrl =
       businessUrl ||
-      `https://www.trustpilot.com/review/${encodeURIComponent(businessName ?? '')}`;
+      `https://www.trustpilot.com/review/${encodeURIComponent(businessName ?? "")}`;
 
     return runReviewScrape(ctx, {
-      connectorKey: 'trustpilot-sync',
+      connectorKey: "trustpilot-sync",
       baseUrl,
-      expectedDomain: 'trustpilot.com',
-      cookieConsentSelector: '[data-cookie-consent-accept]',
-      reviewCardSelector: '[data-service-review-card-paper]',
+      expectedDomain: "trustpilot.com",
+      cookieConsentSelector: "[data-cookie-consent-accept]",
+      reviewCardSelector: "[data-service-review-card-paper]",
       gotoTimeoutMs: 30000,
       extract: async (page, cardsFound) => {
         if (!cardsFound) {
@@ -114,40 +114,52 @@ export default class TrustpilotConnector extends ConnectorRuntime {
         // Extract raw reviews from the page
         const rawReviews = await page.evaluate(() => {
           const reviewElements = Array.from(
-            document.querySelectorAll('[data-service-review-card-paper]')
+            document.querySelectorAll("[data-service-review-card-paper]")
           );
 
           return reviewElements.map((el: Element) => {
-            const ratingElement = el.querySelector('[data-service-review-rating]');
-            const titleElement = el.querySelector('[data-service-review-title-typography]');
-            const textElement = el.querySelector('[data-service-review-text-typography]');
-            const dateElement = el.querySelector('time');
-            const authorElement = el.querySelector('[data-consumer-name-typography]');
+            const ratingElement = el.querySelector(
+              "[data-service-review-rating]"
+            );
+            const titleElement = el.querySelector(
+              "[data-service-review-title-typography]"
+            );
+            const textElement = el.querySelector(
+              "[data-service-review-text-typography]"
+            );
+            const dateElement = el.querySelector("time");
+            const authorElement = el.querySelector(
+              "[data-consumer-name-typography]"
+            );
 
             const rating = parseInt(
-              ratingElement?.getAttribute('data-service-review-rating') || '0',
+              ratingElement?.getAttribute("data-service-review-rating") || "0",
               10
             );
 
             return {
               rating,
-              title: titleElement?.textContent?.trim() || '',
-              text: textElement?.textContent?.trim() || '',
-              date: dateElement?.getAttribute('datetime') || '',
-              author: authorElement?.textContent?.trim() || '',
+              title: titleElement?.textContent?.trim() || "",
+              text: textElement?.textContent?.trim() || "",
+              date: dateElement?.getAttribute("datetime") || "",
+              author: authorElement?.textContent?.trim() || "",
             };
           });
         });
 
         // Filter reviews with meaningful content (more than 10 chars)
-        const reviews: TrustpilotReview[] = rawReviews.filter((r) => r.text && r.text.length > 10);
+        const reviews: TrustpilotReview[] = rawReviews.filter(
+          (r) => r.text && r.text.length > 10
+        );
 
         // Transform to EventEnvelope format. Drop rows whose `date` attribute
         // was missing/invalid in the DOM — `new Date("")` yields an Invalid
         // Date, which downstream sorting/checkpointing then can't compare, and
         // an empty `date` made `origin_id` collide on `-<author>` across rows.
         const events: EventEnvelope[] = reviews.flatMap((review) => {
-          const content = review.title ? `${review.title}\n\n${review.text}` : review.text;
+          const content = review.title
+            ? `${review.title}\n\n${review.text}`
+            : review.text;
           const parsedDate = review.date ? new Date(review.date) : null;
           if (!parsedDate || Number.isNaN(parsedDate.getTime())) return [];
 
@@ -157,8 +169,8 @@ export default class TrustpilotConnector extends ConnectorRuntime {
               payload_text: content,
               author_name: review.author,
               occurred_at: parsedDate,
-              origin_type: 'review',
-              score: calculateEngagementScore('trustpilot', {
+              origin_type: "review",
+              score: calculateEngagementScore("trustpilot", {
                 rating: review.rating,
                 helpful_count: 0,
               }),

@@ -194,6 +194,16 @@ export {
   captureErrorArtifacts,
   launchBrowser,
 } from './browser/launcher.js';
+export type { ReviewExtractResult, RunReviewScrapeOptions } from './browser/review-scrape.js';
+export { handleCookieConsent, runReviewScrape } from './browser/review-scrape.js';
+export {
+  applyLookbackCutoff,
+  buildReviewCheckpoint,
+  filterByCheckpoint,
+  validatePublicUrl,
+  validateUrlDomain,
+} from './browser/scrape-utils.js';
+export { sleep } from './sleep.js';
 export type { BrowserNetworkConfig, BrowserNetworkResult } from './browser-network.js';
 export { browserNetworkSync } from './browser-network.js';
 export type {

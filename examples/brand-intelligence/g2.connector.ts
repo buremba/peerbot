@@ -11,8 +11,9 @@ import {
   type EventEnvelope,
   type SyncContext,
   type SyncResult,
-} from '@lobu/connector-sdk';
-import { runReviewScrape, sleep } from './browser-scraper-utils.ts';
+  runReviewScrape,
+  sleep,
+} from "@lobu/connector-sdk";
 
 interface G2Review {
   rating: number;
@@ -29,51 +30,62 @@ interface G2Review {
 }
 
 const configSchema = {
-  type: 'object',
-  required: ['product_url'],
+  type: "object",
+  required: ["product_url"],
   properties: {
     product_url: {
-      type: 'string',
-      description: 'Full G2 product review URL e.g. https://www.g2.com/products/confluence/reviews',
+      type: "string",
+      description:
+        "Full G2 product review URL e.g. https://www.g2.com/products/confluence/reviews",
     },
     lookback_days: {
-      type: 'integer',
+      type: "integer",
       minimum: 1,
       maximum: 730,
       default: 365,
-      description: 'Number of days to look back for reviews (default 365)',
+      description: "Number of days to look back for reviews (default 365)",
     },
   },
 };
 
 export default class G2Connector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
-    key: 'g2',
-    name: 'G2',
-    description: 'Scrapes B2B software reviews from G2.com.',
-    version: '1.0.0',
-    faviconDomain: 'g2.com',
+    key: "g2",
+    name: "G2",
+    description: "Scrapes B2B software reviews from G2.com.",
+    version: "1.0.0",
+    faviconDomain: "g2.com",
     authSchema: {
-      methods: [{ type: 'none' }],
+      methods: [{ type: "none" }],
     },
     feeds: {
       reviews: {
-        key: 'reviews',
-        name: 'Product Reviews',
-        description: 'Scrape reviews for a G2 product listing.',
+        key: "reviews",
+        name: "Product Reviews",
+        description: "Scrape reviews for a G2 product listing.",
         configSchema,
         eventKinds: {
           review: {
-            description: 'A G2 B2B software review',
+            description: "A G2 B2B software review",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                rating: { type: 'number', description: 'Star rating (0-5)' },
-                helpful_count: { type: 'number' },
-                job_title: { type: 'string', description: 'Reviewer job title' },
-                industry: { type: 'string', description: 'Reviewer industry' },
-                company_size: { type: 'string', description: 'Reviewer company size' },
-                badges: { type: 'array', items: { type: 'string' }, description: 'Review badges' },
+                rating: { type: "number", description: "Star rating (0-5)" },
+                helpful_count: { type: "number" },
+                job_title: {
+                  type: "string",
+                  description: "Reviewer job title",
+                },
+                industry: { type: "string", description: "Reviewer industry" },
+                company_size: {
+                  type: "string",
+                  description: "Reviewer company size",
+                },
+                badges: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Review badges",
+                },
               },
             },
           },
@@ -85,26 +97,28 @@ export default class G2Connector extends ConnectorRuntime {
   async sync(ctx: SyncContext): Promise<SyncResult> {
     const productUrl = ctx.config.product_url as string;
 
-    if (!productUrl?.match(/^https:\/\/www\.g2\.com\/products\/[^/]+\/reviews/)) {
+    if (
+      !productUrl?.match(/^https:\/\/www\.g2\.com\/products\/[^/]+\/reviews/)
+    ) {
       return {
         events: [],
         checkpoint: ctx.checkpoint,
-        metadata: { items_found: 0, error: 'Invalid product_url' },
+        metadata: { items_found: 0, error: "Invalid product_url" },
       };
     }
 
     // Extract product key from URL for origin_id generation
     const productMatch = productUrl.match(/\/products\/([^/]+)/);
-    const productKey = productMatch ? productMatch[1] : 'unknown';
+    const productKey = productMatch ? productMatch[1] : "unknown";
 
     const baseUrl = productUrl;
     const reviewCardSelector = '[itemprop="review"]';
 
     return runReviewScrape(ctx, {
-      connectorKey: 'g2-sync',
+      connectorKey: "g2-sync",
       baseUrl,
-      expectedDomain: 'g2.com',
-      cookieConsentSelector: '#onetrust-accept-btn-handler',
+      expectedDomain: "g2.com",
+      cookieConsentSelector: "#onetrust-accept-btn-handler",
       reviewCardSelector,
       gotoTimeoutMs: 30000,
       extract: async (page, firstPageHasCards) => {
@@ -117,11 +131,13 @@ export default class G2Connector extends ConnectorRuntime {
           // driver; reuse that result. Subsequent pages navigate + wait here.
           if (pageNum > 1) {
             await page.goto(`${baseUrl}?page=${pageNum}`, {
-              waitUntil: 'domcontentloaded',
+              waitUntil: "domcontentloaded",
               timeout: 30000,
             });
             try {
-              await page.waitForSelector(reviewCardSelector, { timeout: 10000 });
+              await page.waitForSelector(reviewCardSelector, {
+                timeout: 10000,
+              });
             } catch {
               // No reviews found on this page — stop paginating
               break;
@@ -136,54 +152,72 @@ export default class G2Connector extends ConnectorRuntime {
           // Extract reviews from the page
           const reviews: G2Review[] = await page.evaluate(() => {
             const results: G2Review[] = [];
-            const reviewCards = document.querySelectorAll('[itemprop="review"]');
+            const reviewCards = document.querySelectorAll(
+              '[itemprop="review"]'
+            );
 
             reviewCards.forEach((card) => {
               try {
                 // Extract author name from meta tag
-                const authorMeta = card.querySelector('[itemprop="author"] meta[itemprop="name"]');
-                const author = authorMeta?.getAttribute('content') || 'Anonymous';
+                const authorMeta = card.querySelector(
+                  '[itemprop="author"] meta[itemprop="name"]'
+                );
+                const author =
+                  authorMeta?.getAttribute("content") || "Anonymous";
 
                 // Extract author details from sibling divs with elv-text-subtle class
-                const authorContainer = card.querySelector('[itemprop="author"]');
-                const parentDiv = authorContainer?.closest('.elv-gap-2')?.parentElement;
+                const authorContainer = card.querySelector(
+                  '[itemprop="author"]'
+                );
+                const parentDiv =
+                  authorContainer?.closest(".elv-gap-2")?.parentElement;
                 const detailDivs = parentDiv
-                  ? Array.from(parentDiv.querySelectorAll('.elv-text-subtle'))
+                  ? Array.from(parentDiv.querySelectorAll(".elv-text-subtle"))
                   : [];
 
                 // Parse author details (job title, industry, company size)
-                let jobTitle = '';
-                let industry = '';
-                let companySize = '';
+                let jobTitle = "";
+                let industry = "";
+                let companySize = "";
 
                 if (detailDivs.length >= 3) {
-                  jobTitle = detailDivs[0]?.textContent?.trim() || '';
-                  industry = detailDivs[1]?.textContent?.trim() || '';
-                  companySize = detailDivs[2]?.textContent?.trim() || '';
+                  jobTitle = detailDivs[0]?.textContent?.trim() || "";
+                  industry = detailDivs[1]?.textContent?.trim() || "";
+                  companySize = detailDivs[2]?.textContent?.trim() || "";
                 } else if (detailDivs.length === 2) {
-                  jobTitle = detailDivs[0]?.textContent?.trim() || '';
-                  companySize = detailDivs[1]?.textContent?.trim() || '';
+                  jobTitle = detailDivs[0]?.textContent?.trim() || "";
+                  companySize = detailDivs[1]?.textContent?.trim() || "";
                 } else if (detailDivs.length === 1) {
-                  companySize = detailDivs[0]?.textContent?.trim() || '';
+                  companySize = detailDivs[0]?.textContent?.trim() || "";
                 }
 
                 // Extract date from meta tag
-                const dateMeta = card.querySelector('meta[itemprop="datePublished"]');
-                const dateStr = dateMeta?.getAttribute('content') || '';
+                const dateMeta = card.querySelector(
+                  'meta[itemprop="datePublished"]'
+                );
+                const dateStr = dateMeta?.getAttribute("content") || "";
 
                 // Extract rating
-                const ratingMeta = card.querySelector('[itemprop="ratingValue"]');
+                const ratingMeta = card.querySelector(
+                  '[itemprop="ratingValue"]'
+                );
                 const rating = ratingMeta
-                  ? parseFloat(ratingMeta.getAttribute('content') || '0')
+                  ? parseFloat(ratingMeta.getAttribute("content") || "0")
                   : 0;
 
                 // Extract review title
-                const titleDiv = card.querySelector('[itemprop="name"] .elv-font-bold');
-                const title = titleDiv?.textContent?.trim().replace(/^"|"$/g, '') || '';
+                const titleDiv = card.querySelector(
+                  '[itemprop="name"] .elv-font-bold'
+                );
+                const title =
+                  titleDiv?.textContent?.trim().replace(/^"|"$/g, "") || "";
 
                 // Extract review body - use innerText to preserve visual spacing/newlines
-                const reviewBodyEl = card.querySelector('[itemprop="reviewBody"]');
-                const reviewBody = (reviewBodyEl as HTMLElement)?.innerText?.trim() || '';
+                const reviewBodyEl = card.querySelector(
+                  '[itemprop="reviewBody"]'
+                );
+                const reviewBody =
+                  (reviewBodyEl as HTMLElement)?.innerText?.trim() || "";
 
                 // Extract badges
                 const badgeEls = card.querySelectorAll(
@@ -191,19 +225,24 @@ export default class G2Connector extends ConnectorRuntime {
                 );
                 const badges = Array.from(badgeEls)
                   .map((el) => el.textContent?.trim())
-                  .filter((text): text is string => !!text && text.length < 50 && text.length > 3);
+                  .filter(
+                    (text): text is string =>
+                      !!text && text.length < 50 && text.length > 3
+                  );
 
                 // Extract review URL
-                const linkEl = card.querySelector('a[href*="survey_responses"]');
-                const href = linkEl?.getAttribute('href') || '';
+                const linkEl = card.querySelector(
+                  'a[href*="survey_responses"]'
+                );
+                const href = linkEl?.getAttribute("href") || "";
                 const reviewUrl = href
-                  ? href.startsWith('http')
+                  ? href.startsWith("http")
                     ? href
                     : `https://www.g2.com${href}`
-                  : '';
+                  : "";
 
                 // Skip reviews with minimal content
-                if ((reviewBody || '').length < 50) return;
+                if ((reviewBody || "").length < 50) return;
 
                 results.push({
                   rating,
@@ -219,7 +258,7 @@ export default class G2Connector extends ConnectorRuntime {
                   helpfulCount: 0,
                 });
               } catch (e) {
-                console.error('[G2Connector] Error parsing review card:', e);
+                console.error("[G2Connector] Error parsing review card:", e);
               }
             });
 
@@ -229,13 +268,13 @@ export default class G2Connector extends ConnectorRuntime {
           // Transform reviews to EventEnvelope format
           for (const review of reviews) {
             const event: EventEnvelope = {
-              origin_id: `g2-${productKey}-${review.date || 'nodate'}-${review.author.replace(/\s+/g, '-')}`,
+              origin_id: `g2-${productKey}-${review.date || "nodate"}-${review.author.replace(/\s+/g, "-")}`,
               title: review.title,
               payload_text: review.text,
               author_name: review.author,
               occurred_at: review.date ? new Date(review.date) : new Date(),
-              origin_type: 'review',
-              score: calculateEngagementScore('g2', {
+              origin_type: "review",
+              score: calculateEngagementScore("g2", {
                 rating: review.rating,
                 helpful_count: 0,
               }),

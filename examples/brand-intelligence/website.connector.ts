@@ -7,18 +7,19 @@
  * Tracks changes between syncs via content hashing.
  */
 
-import { createHash } from 'node:crypto';
-import TurndownService from 'turndown';
+import { createHash } from "node:crypto";
+import TurndownService from "turndown";
 import {
   type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
   launchBrowser,
+  sleep,
   type SyncContext,
   type SyncResult,
-} from '@lobu/connector-sdk';
-import type { Page } from 'playwright';
-import { sleep, validatePublicUrl } from './browser-scraper-utils.ts';
+  validatePublicUrl,
+} from "@lobu/connector-sdk";
+import type { Page } from "playwright";
 
 interface PageSection {
   heading: string;
@@ -40,60 +41,65 @@ const COOKIE_BANNER_PATTERNS = [
 ];
 
 function countPatternMatches(text: string, patterns: RegExp[]): number {
-  return patterns.reduce((count, pattern) => count + (pattern.test(text) ? 1 : 0), 0);
+  return patterns.reduce(
+    (count, pattern) => count + (pattern.test(text) ? 1 : 0),
+    0
+  );
 }
 
 function shouldSkipCookieBannerText(text: string): boolean {
-  const normalized = text.replace(/\s+/g, ' ').trim();
+  const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return false;
   return countPatternMatches(normalized, COOKIE_BANNER_PATTERNS) >= 3;
 }
 
 export default class WebsiteConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
-    key: 'website',
-    name: 'Website',
+    key: "website",
+    name: "Website",
     description:
-      'Scrapes web pages with JS rendering via Playwright. Supports sitemap.xml for auto-discovery. Converts to markdown sections and tracks changes.',
-    version: '1.0.0',
-    faviconDomain: 'google.com',
+      "Scrapes web pages with JS rendering via Playwright. Supports sitemap.xml for auto-discovery. Converts to markdown sections and tracks changes.",
+    version: "1.0.0",
+    faviconDomain: "google.com",
     authSchema: {
-      methods: [{ type: 'none' }],
+      methods: [{ type: "none" }],
     },
     feeds: {
       pages: {
-        key: 'pages',
-        name: 'Web Pages',
-        description: 'Scrape and parse web pages into structured content.',
+        key: "pages",
+        name: "Web Pages",
+        description: "Scrape and parse web pages into structured content.",
         configSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             sitemap_url: {
-              type: 'string',
-              format: 'uri',
+              type: "string",
+              format: "uri",
               description:
-                'URL to sitemap.xml. All URLs from the sitemap will be scraped. Takes priority over urls.',
+                "URL to sitemap.xml. All URLs from the sitemap will be scraped. Takes priority over urls.",
             },
             urls: {
-              type: 'array',
-              items: { type: 'string', format: 'uri' },
-              description: 'Explicit list of URLs to scrape. Ignored if sitemap_url is set.',
+              type: "array",
+              items: { type: "string", format: "uri" },
+              description:
+                "Explicit list of URLs to scrape. Ignored if sitemap_url is set.",
             },
             max_pages: {
-              type: 'integer',
+              type: "integer",
               minimum: 1,
               maximum: 100,
               default: 20,
-              description: 'Maximum number of pages to scrape per sync (default: 20)',
+              description:
+                "Maximum number of pages to scrape per sync (default: 20)",
             },
             parse_sections: {
-              type: 'boolean',
+              type: "boolean",
               default: true,
               description:
-                'Split page into sections by headings (h1-h3). If false, one event per page.',
+                "Split page into sections by headings (h1-h3). If false, one event per page.",
             },
             wait_for_selector: {
-              type: 'string',
+              type: "string",
               description:
                 'CSS selector to wait for before extracting content (e.g. "main", "#content"). Useful for SPAs.',
             },
@@ -101,29 +107,29 @@ export default class WebsiteConnector extends ConnectorRuntime {
         },
         eventKinds: {
           page: {
-            description: 'Full page content',
+            description: "Full page content",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                content_hash: { type: 'string' },
-                meta_title: { type: 'string' },
-                meta_description: { type: 'string' },
-                og_image: { type: 'string' },
-                word_count: { type: 'number' },
+                content_hash: { type: "string" },
+                meta_title: { type: "string" },
+                meta_description: { type: "string" },
+                og_image: { type: "string" },
+                word_count: { type: "number" },
               },
             },
           },
           section: {
-            description: 'A section of a page (split by headings)',
+            description: "A section of a page (split by headings)",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                heading: { type: 'string' },
-                heading_level: { type: 'number' },
-                anchor: { type: 'string' },
-                section_index: { type: 'number' },
-                page_url: { type: 'string' },
-                content_hash: { type: 'string' },
+                heading: { type: "string" },
+                heading_level: { type: "number" },
+                anchor: { type: "string" },
+                section_index: { type: "number" },
+                page_url: { type: "string" },
+                content_hash: { type: "string" },
               },
             },
           },
@@ -139,8 +145,8 @@ export default class WebsiteConnector extends ConnectorRuntime {
   constructor() {
     super();
     this.turndown = new TurndownService({
-      headingStyle: 'atx',
-      codeBlockStyle: 'fenced',
+      headingStyle: "atx",
+      codeBlockStyle: "fenced",
     });
   }
 
@@ -150,7 +156,8 @@ export default class WebsiteConnector extends ConnectorRuntime {
     const maxPages = (ctx.config.max_pages as number) ?? 20;
     const parseSections = (ctx.config.parse_sections as boolean) ?? true;
     const waitForSelector = ctx.config.wait_for_selector as string | undefined;
-    const previousHashes = (ctx.checkpoint?.hashes as Record<string, string>) ?? {};
+    const previousHashes =
+      (ctx.checkpoint?.hashes as Record<string, string>) ?? {};
 
     // Resolve URLs from sitemap or explicit list
     let urls: string[];
@@ -164,7 +171,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
       return {
         events: [],
         checkpoint: ctx.checkpoint,
-        metadata: { error: 'No sitemap_url or urls configured' },
+        metadata: { error: "No sitemap_url or urls configured" },
       };
     }
 
@@ -182,13 +189,20 @@ export default class WebsiteConnector extends ConnectorRuntime {
           validatePublicUrl(url);
           const page = (await browser.newPage()) as Page;
           try {
-            await page.goto(url, { waitUntil: 'networkidle', timeout: this.PAGE_TIMEOUT });
+            await page.goto(url, {
+              waitUntil: "networkidle",
+              timeout: this.PAGE_TIMEOUT,
+            });
             await this.dismissOverlays(page);
 
             if (waitForSelector) {
-              await page.waitForSelector(waitForSelector, { timeout: 10000 }).catch(() => {
-                ctx.log?.(`Selector "${waitForSelector}" not found on ${url}, continuing anyway`);
-              });
+              await page
+                .waitForSelector(waitForSelector, { timeout: 10000 })
+                .catch(() => {
+                  ctx.log?.(
+                    `Selector "${waitForSelector}" not found on ${url}, continuing anyway`
+                  );
+                });
             }
 
             await this.removeHiddenElements(page);
@@ -196,8 +210,13 @@ export default class WebsiteConnector extends ConnectorRuntime {
             const finalUrl = page.url();
             const meta = this.extractMeta(html);
             const cleanHtml = this.stripNonContent(html);
-            const markdown = this.deduplicateMarkdown(this.turndown.turndown(cleanHtml).trim());
-            if (!markdown || shouldSkipCookieBannerText(`${meta.title ?? ''}\n${markdown}`)) {
+            const markdown = this.deduplicateMarkdown(
+              this.turndown.turndown(cleanHtml).trim()
+            );
+            if (
+              !markdown ||
+              shouldSkipCookieBannerText(`${meta.title ?? ""}\n${markdown}`)
+            ) {
               ctx.log?.(`Skipping low-signal page content for ${finalUrl}`);
               continue;
             }
@@ -221,7 +240,11 @@ export default class WebsiteConnector extends ConnectorRuntime {
                   continue;
                 }
                 newHashes[sectionKey] = sectionHash;
-                if (shouldSkipCookieBannerText(`${section.heading}\n${section.content}`)) {
+                if (
+                  shouldSkipCookieBannerText(
+                    `${section.heading}\n${section.content}`
+                  )
+                ) {
                   continue;
                 }
 
@@ -234,10 +257,12 @@ export default class WebsiteConnector extends ConnectorRuntime {
                   payload_text: section.content,
                   source_url: `${finalUrl}#${section.anchor}`,
                   occurred_at: new Date(),
-                  origin_type: 'section',
-                  semantic_type: 'section',
+                  origin_type: "section",
+                  semantic_type: "section",
                   score: 50,
-                  origin_parent_id: parentKey ? `web_section_${this.hash(parentKey)}` : undefined,
+                  origin_parent_id: parentKey
+                    ? `web_section_${this.hash(parentKey)}`
+                    : undefined,
                   metadata: {
                     heading: section.heading,
                     heading_level: section.level,
@@ -255,8 +280,8 @@ export default class WebsiteConnector extends ConnectorRuntime {
                 payload_text: markdown,
                 source_url: finalUrl,
                 occurred_at: new Date(),
-                origin_type: 'page',
-                semantic_type: 'page',
+                origin_type: "page",
+                semantic_type: "page",
                 score: 50,
                 metadata: {
                   content_hash: contentHash,
@@ -271,7 +296,9 @@ export default class WebsiteConnector extends ConnectorRuntime {
             await page.close();
           }
         } catch (err) {
-          ctx.log?.(`Failed to scrape ${url}: ${err instanceof Error ? err.message : String(err)}`);
+          ctx.log?.(
+            `Failed to scrape ${url}: ${err instanceof Error ? err.message : String(err)}`
+          );
         }
 
         if (i < urls.length - 1) {
@@ -290,18 +317,20 @@ export default class WebsiteConnector extends ConnectorRuntime {
   }
   private async dismissOverlays(page: Page): Promise<void> {
     const dismissLabels = [
-      'Accept',
-      'Accept all',
-      'I agree',
-      'Allow all',
-      'Got it',
-      'Continue',
-      'Close',
+      "Accept",
+      "Accept all",
+      "I agree",
+      "Allow all",
+      "Got it",
+      "Continue",
+      "Close",
     ];
 
     for (const label of dismissLabels) {
       try {
-        const button = page.getByRole('button', { name: new RegExp(`^${label}$`, 'i') }).first();
+        const button = page
+          .getByRole("button", { name: new RegExp(`^${label}$`, "i") })
+          .first();
         if (await button.isVisible({ timeout: 500 })) {
           await button.click({ timeout: 1000 });
           break;
@@ -324,8 +353,8 @@ export default class WebsiteConnector extends ConnectorRuntime {
           '[role="dialog"]',
         ];
 
-        for (const element of document.querySelectorAll(selectors.join(','))) {
-          const html = (element as HTMLElement).innerText || '';
+        for (const element of document.querySelectorAll(selectors.join(","))) {
+          const html = (element as HTMLElement).innerText || "";
           if (/cookie|consent|privacy/i.test(html)) {
             element.remove();
           }
@@ -344,14 +373,20 @@ export default class WebsiteConnector extends ConnectorRuntime {
   private async removeHiddenElements(page: Page): Promise<void> {
     await page
       .evaluate(() => {
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+        const walker = document.createTreeWalker(
+          document.body,
+          NodeFilter.SHOW_ELEMENT
+        );
         const toRemove: Element[] = [];
         while (walker.nextNode()) {
           const el = walker.currentNode as HTMLElement;
           // Skip elements that can't meaningfully contain scraped content
-          if (['SCRIPT', 'STYLE', 'LINK', 'META', 'BR', 'HR'].includes(el.tagName)) continue;
+          if (
+            ["SCRIPT", "STYLE", "LINK", "META", "BR", "HR"].includes(el.tagName)
+          )
+            continue;
           const style = getComputedStyle(el);
-          if (style.display === 'none' || style.visibility === 'hidden') {
+          if (style.display === "none" || style.visibility === "hidden") {
             toRemove.push(el);
           }
         }
@@ -370,7 +405,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
    * or link lines multiple times. This keeps the first occurrence of each.
    */
   private deduplicateMarkdown(markdown: string): string {
-    const lines = markdown.split('\n');
+    const lines = markdown.split("\n");
     const seen = new Set<string>();
     const result: string[] = [];
     for (const line of lines) {
@@ -382,7 +417,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
       }
       result.push(line);
     }
-    return result.join('\n');
+    return result.join("\n");
   }
 
   private async fetchSitemap(sitemapUrl: string, depth = 0): Promise<string[]> {
@@ -391,7 +426,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
     // drive unbounded outbound traffic.
     if (depth > 2) return [];
     const response = await fetch(sitemapUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LobuBot/1.0)' },
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; LobuBot/1.0)" },
     });
 
     if (!response.ok) {
@@ -403,25 +438,28 @@ export default class WebsiteConnector extends ConnectorRuntime {
 
     // Parse <loc> tags from sitemap XML
     const locPattern = /<loc>\s*(.*?)\s*<\/loc>/gi;
-    let match;
-    while ((match = locPattern.exec(xml)) !== null) {
+    let match = locPattern.exec(xml);
+    while (match !== null) {
       const url = match[1].trim();
       // Skip non-HTML resources and anchor fragment URLs
       if (
         url &&
         !url.match(/\.(pdf|jpg|jpeg|png|gif|svg|css|js|xml|json|zip|gz)$/i) &&
-        !url.includes('#')
+        !url.includes("#")
       ) {
         urls.push(url);
       }
+      match = locPattern.exec(xml);
     }
 
     // Handle sitemap index (sitemaps linking to other sitemaps)
     if (urls.length === 0) {
       const sitemapPattern = /<sitemap>\s*<loc>\s*(.*?)\s*<\/loc>/gi;
       const childSitemaps: string[] = [];
-      while ((match = sitemapPattern.exec(xml)) !== null) {
+      match = sitemapPattern.exec(xml);
+      while (match !== null) {
         childSitemaps.push(match[1].trim());
+        match = sitemapPattern.exec(xml);
       }
       for (const childUrl of childSitemaps.slice(0, 5)) {
         validatePublicUrl(childUrl);
@@ -433,14 +471,26 @@ export default class WebsiteConnector extends ConnectorRuntime {
     return urls;
   }
 
-  private extractMeta(html: string): { title?: string; description?: string; ogImage?: string } {
+  private extractMeta(html: string): {
+    title?: string;
+    description?: string;
+    ogImage?: string;
+  } {
     const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/is);
     const descMatch =
-      html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i) ||
-      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']/i);
+      html.match(
+        /<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i
+      ) ||
+      html.match(
+        /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']/i
+      );
     const ogMatch =
-      html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
-      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+      html.match(
+        /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i
+      ) ||
+      html.match(
+        /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i
+      );
 
     return {
       title: titleMatch?.[1]?.trim(),
@@ -451,37 +501,42 @@ export default class WebsiteConnector extends ConnectorRuntime {
 
   private stripNonContent(html: string): string {
     const tags = [
-      'script',
-      'style',
-      'noscript',
-      'nav',
-      'header',
-      'footer',
-      'aside',
-      'iframe',
-      'svg',
-      'canvas',
-      'video',
-      'audio',
-      'menu',
-      'dialog',
-      'embed',
-      'object',
-      'applet',
+      "script",
+      "style",
+      "noscript",
+      "nav",
+      "header",
+      "footer",
+      "aside",
+      "iframe",
+      "svg",
+      "canvas",
+      "video",
+      "audio",
+      "menu",
+      "dialog",
+      "embed",
+      "object",
+      "applet",
     ];
     let cleaned = html;
     for (const tag of tags) {
-      cleaned = cleaned.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, 'gi'), '');
+      cleaned = cleaned.replace(
+        new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, "gi"),
+        ""
+      );
     }
     // Remove self-closing / void elements that add noise
-    cleaned = cleaned.replace(/<(link|meta|input)\b[^>]*\/?>/gi, '');
+    cleaned = cleaned.replace(/<(link|meta|input)\b[^>]*\/?>/gi, "");
     return cleaned;
   }
 
-  private parseSections(markdown: string): (PageSection & { parentAnchor?: string })[] {
-    const lines = markdown.split('\n');
+  private parseSections(
+    markdown: string
+  ): (PageSection & { parentAnchor?: string })[] {
+    const lines = markdown.split("\n");
     const sections: (PageSection & { parentAnchor?: string })[] = [];
-    let currentHeading = 'Introduction';
+    let currentHeading = "Introduction";
     let currentLevel = 1;
     let currentLines: string[] = [];
 
@@ -498,22 +553,29 @@ export default class WebsiteConnector extends ConnectorRuntime {
 
     // Track parent heading stack for hierarchy.
     // Anchors are assigned lazily when the heading's section is emitted.
-    const headingStack: { heading: string; level: number; anchor?: string }[] = [];
+    const headingStack: { heading: string; level: number; anchor?: string }[] =
+      [];
 
     const emitSection = (heading: string, level: number, content: string) => {
       const anchor = makeAnchor(heading);
       // Update the heading stack entry for this heading so children can reference it
-      const stackEntry = headingStack.find((e) => e.heading === heading && e.anchor === undefined);
+      const stackEntry = headingStack.find(
+        (e) => e.heading === heading && e.anchor === undefined
+      );
       if (stackEntry) stackEntry.anchor = anchor;
-      const parent = headingStack.length > 0 ? headingStack[headingStack.length - 1] : undefined;
-      const parentAnchor = parent?.heading === heading ? undefined : parent?.anchor;
+      const parent =
+        headingStack.length > 0
+          ? headingStack[headingStack.length - 1]
+          : undefined;
+      const parentAnchor =
+        parent?.heading === heading ? undefined : parent?.anchor;
       sections.push({ heading, level, content, anchor, parentAnchor });
     };
 
     for (const line of lines) {
       const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
       if (headingMatch) {
-        const content = currentLines.join('\n').trim();
+        const content = currentLines.join("\n").trim();
         if (content.length > 0) {
           emitSection(currentHeading, currentLevel, content);
         }
@@ -522,7 +584,10 @@ export default class WebsiteConnector extends ConnectorRuntime {
         const newHeading = headingMatch[2].trim();
 
         // Pop stack until we find a parent with a lower level
-        while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= newLevel) {
+        while (
+          headingStack.length > 0 &&
+          headingStack[headingStack.length - 1].level >= newLevel
+        ) {
           headingStack.pop();
         }
         headingStack.push({ heading: newHeading, level: newLevel });
@@ -535,7 +600,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
       }
     }
 
-    const content = currentLines.join('\n').trim();
+    const content = currentLines.join("\n").trim();
     if (content.length > 0) {
       emitSection(currentHeading, currentLevel, content);
     }
@@ -546,12 +611,12 @@ export default class WebsiteConnector extends ConnectorRuntime {
   private slugify(text: string): string {
     return text
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
       .substring(0, 60);
   }
 
   private hash(text: string): string {
-    return createHash('sha256').update(text).digest('hex').substring(0, 16);
+    return createHash("sha256").update(text).digest("hex").substring(0, 16);
   }
 }

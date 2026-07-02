@@ -13,7 +13,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import { validatePublicUrl } from './browser-scraper-utils.ts';
+import { validatePublicUrl } from './scraper-utils.ts';
 
 // ---------------------------------------------------------------------------
 // Types

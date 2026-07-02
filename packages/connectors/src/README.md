@@ -402,55 +402,36 @@ Platform-specific logic:
 
 ## Browser-Based Connectors
 
-For scraping sites that need a real browser, import helpers from `./browser-scraper-utils.ts`. The typical pattern:
+For headless public scraping, use `@lobu/connector-sdk` (`launchBrowser`, `runReviewScrape`,
+`validateUrlDomain`, `validatePublicUrl`). Bundled connectors import timing/checkpoint helpers
+from `./scraper-utils.ts` (re-exports from the SDK).
+
+Review-site scrapers (Trustpilot, G2, etc.) live in `examples/brand-intelligence/` — they are
+not bundled because scraping may violate third-party terms of service.
 
 ```typescript
-import {
-  openStealthBrowser,
-  handleCookieConsent,
-  validateUrlDomain,
-  withBrowserErrorCapture,
-} from './browser-scraper-utils.ts';
+import { launchBrowser, runReviewScrape } from '@lobu/connector-sdk';
 
 async sync(ctx: SyncContext): Promise<SyncResult> {
-  validateUrlDomain(url, 'trustpilot.com');
-
-  // 1. Launch browser (tries CDP first if 'auto', falls back to Playwright)
-  const session = await openStealthBrowser({ cdpUrl: 'auto' });
-
-  // 2. Wrap scraping logic with error capture + guaranteed cleanup
-  return withBrowserErrorCapture(session, 'my-connector-sync', async (page) => {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
-    // 3. Dismiss cookie banners
-    await handleCookieConsent(page, '[data-cookie-consent-accept]');
-
-    // 4. Scrape and return results
-    const events = await scrapeReviews(page);
-    return { events, checkpoint: { last_sync_at: new Date().toISOString() } };
+  return runReviewScrape(ctx, {
+    connectorKey: 'my-connector-sync',
+    baseUrl: 'https://www.example.com/reviews',
+    expectedDomain: 'example.com',
+    cookieConsentSelector: '[data-cookie-consent-accept]',
+    reviewCardSelector: '[data-review-card]',
+    gotoTimeoutMs: 30000,
+    extract: async (page, cardsFound) => ({ /* ... */ }),
   });
 }
 ```
 
-### Utilities Reference
-
-**`openStealthBrowser(opts?)`** - Acquire a browser session.
-- `opts.cdpUrl` - `'auto'` to try CDP first (connects to user's Chrome), `null` for Playwright only
-- `opts.cookies` - Playwright `Cookie[]` to inject
-- `opts.authDomains` - Domains to set cookies on
-- Returns `BrowserSession` with `.page`, `.browser`, `.backend` (`'cdp'` | `'playwright'`), `.ownsBrowser`
-
-**`withBrowserErrorCapture(session, name, fn)`** - Run scraper with error artifact capture (screenshots + HTML snapshots on failure) and guaranteed browser cleanup. Always use this instead of manual try/finally.
-
-**`handleCookieConsent(page, selector, timeout?)`** - Click a cookie consent button if it appears within `timeout` ms (default 2000). Silently continues if not found.
-
-**`validateUrlDomain(url, domain)`** - Validate URL is HTTPS and on the expected domain. Throws on mismatch.
-
-**`filterByCheckpoint(events, checkpoint)`** - Filter events newer than `checkpoint.last_timestamp`. Returns all events if no checkpoint.
+For user-session scraping (logged-in sites), use the Chrome extension bridge
+(`extensionDomScrape` / `extensionNetworkSync`) instead of headless Playwright.
 
 ### Browser packages
 
-Browser connectors use `patchright` (an npm alias for Playwright). The SDK also exports `acquireBrowser()` and `captureErrorArtifacts()` as lower-level primitives, but prefer the `browser-scraper-utils.ts` wrappers.
+Browser connectors use `patchright` (an npm alias for Playwright). The SDK exports
+`launchBrowser()` and `captureErrorArtifacts()` for lower-level control.
 
 ## Worker Sandbox Environment
 
@@ -506,10 +487,7 @@ This means edits to `.ts` files in `connectors/` take effect on the next sync wi
 
 | Connector | Auth | Feeds | Actions |
 |-----------|------|-------|---------|
-| `capterra` | none | reviews | - |
-| `g2` | none | reviews | - |
 | `github` | oauth/env_keys | issues, PRs, comments, discussions | create/close/reopen issues, PRs |
-| `glassdoor` | none | reviews | - |
 | `gmaps` | env_keys | reviews | - |
 | `google_play` | none | reviews | - |
 | `hackernews` | none | stories, comments | - |
@@ -518,7 +496,5 @@ This means edits to `.ts` files in `connectors/` take effect on the next sync wi
 | `producthunt` | env_keys | posts & comments | - |
 | `reddit` | oauth/none | posts, comments | - |
 | `rss` | none | articles | - |
-| `trustpilot` | none | reviews | - |
-| `website` | none | pages | - |
 | `x` | browser (CLI) | tweets | - |
 | `youtube` | oauth (Google) | videos & comments | - |

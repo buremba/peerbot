@@ -13,7 +13,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import { sleep } from './browser-scraper-utils.ts';
+import { sleep } from './scraper-utils.ts';
 
 const IOS_HEADERS: Record<string, string> = {
   'User-Agent':

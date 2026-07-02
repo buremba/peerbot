@@ -375,9 +375,13 @@ export class MessageHandlerBridge {
       if (
         !isPreview &&
         platform === "slack" &&
-        this.connection.metadata?.teamId
+        this.connection.metadata?.teamId &&
+        this.connection.organizationId
       ) {
-        const notice = workspaceUnlinkedNotice(platform);
+        const notice = await workspaceUnlinkedNotice(
+          platform,
+          this.connection.organizationId,
+        );
         if (notice) {
           logger.info(
             { platform, channelId, teamId, connectionId: this.connection.id },

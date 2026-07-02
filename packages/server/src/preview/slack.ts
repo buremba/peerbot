@@ -7,6 +7,7 @@ import type { Env } from "../index";
 import { runtimeConnectionIdToSlug } from "../lobu/stores/connections-projection";
 import { errorMessage } from "../utils/errors";
 import logger from "../utils/logger";
+import { getConfiguredPublicOrigin } from "../utils/public-origin";
 import { requireOrgUser } from "../utils/require-org-user";
 import { MANAGED_CHAT_PLATFORMS_SET } from "./managed-platforms";
 
@@ -487,20 +488,90 @@ export async function previewUnlinkedNotice(
 }
 
 /**
+ * The org's agents + slug for building a link notice. Kept separate from
+ * `listPreviewAgents` (which is preview-connection-scoped and excludes the
+ * owning agent) — an OAuth-installed workspace has no owning agent, so every
+ * agent in the org is a valid link target.
+ */
+async function listOrgAgentsForNotice(organizationId: string): Promise<{
+	orgSlug: string | null;
+	agents: Array<{ agentId: string; name: string }>;
+}> {
+	const sql = getDb();
+	const [orgRow] = await sql<{ slug: string | null }>`
+    SELECT slug FROM organization WHERE id = ${organizationId} LIMIT 1
+  `;
+	const rows = await sql<{ id: string; name: string | null }>`
+    SELECT id, name
+    FROM agents
+    WHERE organization_id = ${organizationId}
+    ORDER BY name NULLS LAST, id
+  `;
+	return {
+		orgSlug: orgRow?.slug ?? null,
+		agents: rows.map((r) => ({ agentId: r.id, name: r.name ?? r.id })),
+	};
+}
+
+/**
  * Reply for a tenant's own OAuth-installed workspace bot (a connection with a
  * `metadata.teamId` but no owning agent) when a non-command message arrives in
  * a channel that isn't bound to one of the tenant's agents yet. Unlike a
  * preview connection there are no demo agents to offer — the tenant links their
- * own agents with `/lobu link <code>`. Returns null for non-Slack platforms
- * (OAuth install is Slack-only today).
+ * own agents. Lists the org's agents and, when the public origin is configured,
+ * deep-links each to its Behaviors page (where a channel is added as a Listen
+ * source); also gives the CLI `lobu run` / `/lobu link <code>` path. Returns
+ * null for non-Slack platforms (OAuth install is Slack-only today).
  */
-export function workspaceUnlinkedNotice(platform: string): string | null {
+export async function workspaceUnlinkedNotice(
+	platform: string,
+	organizationId: string,
+): Promise<string | null> {
 	if (platform !== "slack") return null;
-	return [
-		"👋 Thanks for adding Lobu! This channel isn't linked to one of your agents yet.",
-		"",
-		`Run \`${linkCommand(platform)} <code>\` here with a link code from your Lobu dashboard (or \`lobu run\`) to connect an agent.`,
-	].join("\n");
+
+	const header =
+		"👋 Thanks for adding Lobu! This channel isn't linked to one of your agents yet.";
+	const cliLine = `From the CLI — run \`lobu run\`, then paste the \`${linkCommand(platform)} <code>\` it prints here.`;
+
+	let agents: Array<{ agentId: string; name: string }> = [];
+	let orgSlug: string | null = null;
+	try {
+		({ agents, orgSlug } = await listOrgAgentsForNotice(organizationId));
+	} catch (err) {
+		// Never let a lookup failure turn the notice into a dead drop — fall back
+		// to the CLI-only path below.
+		logger.warn(
+			{ err: errorMessage(err), organizationId },
+			"[slack] workspaceUnlinkedNotice: agent lookup failed",
+		);
+	}
+
+	const origin = getConfiguredPublicOrigin()?.replace(/\/+$/, "");
+	// Deep-link each agent to its Behaviors page when we can build a full URL
+	// (need both the public origin and the org slug). The Behaviors → Listen
+	// picker is where a channel is bound to the agent from the UI.
+	const canLink = Boolean(origin && orgSlug);
+	const agentLines = agents.map((a) =>
+		canLink
+			? `   • ${a.name} — ${origin}/${orgSlug}/agents/${a.agentId}/behaviors`
+			: `   • ${a.name}`,
+	);
+
+	if (agentLines.length > 0) {
+		return [
+			header,
+			"",
+			"Link it to an agent two ways:",
+			canLink
+				? "• In the dashboard — open an agent's Behaviors page and add this channel as a Listen source:"
+				: "• In the dashboard — open an agent's Behaviors page and add this channel as a Listen source. Your agents:",
+			...agentLines,
+			`• ${cliLine}`,
+		].join("\n");
+	}
+
+	// No agents yet (or the lookup failed) — CLI path only.
+	return [header, "", cliLine].join("\n");
 }
 
 /** The Lobu user id a chat-platform user has linked to, or null. */

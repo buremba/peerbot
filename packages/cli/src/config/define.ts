@@ -401,6 +401,45 @@ export interface ProviderConfig {
   key?: string | SecretRef;
 }
 
+/** Modalities an org inference provider may declare a capability block for. */
+export type InferenceModality = "text" | "image" | "stt" | "tts" | "embedding";
+
+/**
+ * Per-modality upstream override for an {@link OrgProvider}. Omit a modality
+ * entirely to keep the provider's static (built-in) behavior for it. All fields
+ * are optional; the server validates them (base_url must be https:// with no
+ * userinfo/query/fragment, models_endpoint a relative path).
+ */
+export interface InferenceCapabilityBlock {
+  /** Full base URL of the OpenAI-compatible endpoint (https:// only). */
+  base_url?: string;
+  /** Default model id for this modality. */
+  model?: string;
+  /** Relative path (`/models`) for model discovery. */
+  models_endpoint?: string;
+}
+
+/**
+ * An ORG-owned inference provider, declared at the PROJECT level
+ * (`defineConfig({ providers: [...] })`) — NOT under an agent. `lobu apply`
+ * reconciles these against the org's `/inference-providers` API: creates a
+ * missing provider, updates changed per-modality capability blocks, and rotates
+ * the API key when the config declares one (the key can't be read back, so the
+ * rotate is idempotent — it is re-pushed on every apply).
+ */
+export interface OrgProvider {
+  /** Stable slug identifying the provider within the org (create/update key). */
+  slug: string;
+  /** Provider kind, e.g. `openai` — how the gateway talks to the upstream. */
+  kind: string;
+  /** API key: a `secret(...)` ref or literal `$VAR` string resolved at apply time. */
+  key: string | SecretRef;
+  /** Optional human-readable display name. */
+  displayName?: string;
+  /** Optional per-modality upstream overrides. Omit ⇒ static behavior. */
+  capabilities?: Partial<Record<InferenceModality, InferenceCapabilityBlock>>;
+}
+
 export interface NetworkConfig {
   /** Domains the worker may reach (exact or `.wildcard`). */
   allowed?: string[];
@@ -581,6 +620,13 @@ export interface Project {
   connections?: Connection[];
   authProfiles?: AuthProfile[];
   watchers?: Watcher[];
+  /**
+   * Org-owned inference providers (`[[providers]]`). Reconciled by `lobu apply`
+   * against the org's `/inference-providers` API. NOT pruned: a provider absent
+   * from the config is reported as drift (deleting an org credential is
+   * destructive), never auto-deleted.
+   */
+  providers?: OrgProvider[];
   /**
    * Local connector source files (`*.connector.ts`) to compile and ship,
    * built with {@link connectorFromFile}. Explicit list, no `./connectors`

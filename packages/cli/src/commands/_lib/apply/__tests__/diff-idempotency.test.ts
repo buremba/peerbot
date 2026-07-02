@@ -37,6 +37,7 @@ function buildState(
     memorySchema: { entityTypes: [], relationshipTypes: [] },
     watchers: [],
     connectors: { definitions: [], authProfiles: [], connections: [] },
+    providers: [],
     requiredSecrets: [],
     ...overrides,
   };
@@ -54,6 +55,7 @@ function emptyRemote(): RemoteSnapshot {
     authProfiles: [],
     connections: [],
     feedsByConnectionId: new Map(),
+    inferenceProviders: [],
   };
 }
 

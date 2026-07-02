@@ -350,6 +350,11 @@ async function fetchRemoteSnapshot(
     }
   }
 
+  // Org-owned inference providers are org-scoped (neither agents nor memory), so
+  // only a full apply reconciles them. The list drives create/update/drift.
+  const inferenceProviders =
+    only === undefined ? await client.listInferenceProviders() : [];
+
   return {
     agents,
     agentSettings,
@@ -361,6 +366,7 @@ async function fetchRemoteSnapshot(
     authProfiles,
     connections,
     feedsByConnectionId,
+    inferenceProviders,
   };
 }
 
@@ -993,6 +999,48 @@ export async function executePlan(
       });
     }
     printText(renderProgress(row.verb, "feed", row.id));
+  }
+
+  // 10b) Org-owned inference providers. Create the row if new, then reconcile
+  //      each declared capability modality (idempotent PUT) and — because the
+  //      API key is write-only and can't be diffed — re-push a declared key on
+  //      every apply (a matching value is a server-side no-op). Drift rows
+  //      (remote providers absent from the config) are never auto-deleted:
+  //      dropping an org credential is destructive, so it's UI/API-only.
+  for (const row of rowsByKind("inference-provider")) {
+    if (row.kind !== "inference-provider") continue;
+    if (row.verb === "drift") continue;
+    const provider = row.desired;
+    if (!provider) continue;
+
+    if (row.verb === "create") {
+      await ctx.client.createInferenceProvider({
+        slug: provider.slug,
+        kind: provider.kind,
+        ...(provider.displayName ? { displayName: provider.displayName } : {}),
+        apiKey: provider.apiKey,
+        capabilities: provider.capabilities,
+      });
+      // Create already persisted the key + capabilities; nothing else to push.
+      printText(renderProgress(row.verb, "inference-provider", row.id));
+      continue;
+    }
+
+    // Update: push only the modalities that changed, then rotate the key.
+    for (const modality of row.capabilityModalities ?? []) {
+      await ctx.client.updateInferenceProviderCapabilities(
+        provider.slug,
+        modality,
+        provider.capabilities[modality] ?? {}
+      );
+    }
+    if (row.keyDeclared) {
+      await ctx.client.rotateInferenceProviderKey(
+        provider.slug,
+        provider.apiKey
+      );
+    }
+    printText(renderProgress(row.verb, "inference-provider", row.id));
   }
 
   // 11) Prune — delete definitions absent from a pruning config. Runs

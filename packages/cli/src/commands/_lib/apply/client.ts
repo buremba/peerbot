@@ -1,5 +1,9 @@
 import type { EntityMetrics } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
+import type {
+  InferenceCapabilityBlock,
+  InferenceModality,
+} from "../../../config/define.js";
 import { ApiClient, type HttpMethod } from "../../../internal/api-client.js";
 import { resolveApiClient } from "../../../internal/index.js";
 import { ApiError } from "../../memory/_lib/errors.js";
@@ -71,6 +75,18 @@ interface RemoteOrg {
   id: string;
   slug: string;
   name?: string;
+}
+
+/** One org-owned inference provider as returned by `GET /inference-providers`. */
+export interface RemoteInferenceProvider {
+  id: number;
+  slug: string;
+  kind: string;
+  displayName: string | null;
+  capabilities: Record<string, Record<string, string>>;
+  hasCustomUpstream: boolean;
+  status: string;
+  createdAt: string;
 }
 
 export interface RemoteWatcher {
@@ -431,6 +447,67 @@ export class ApplyClient {
       "PUT",
       `/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}/api-key`,
       { value }
+    );
+  }
+
+  // ── Org inference providers ────────────────────────────────────────────────
+  // Org-scoped, mounted UNDER the agents router (`/api/:orgSlug/agents`), so the
+  // full path is `/api/<org>/agents/inference-providers…` — verified against
+  // `app.route("/api/:orgSlug/agents", agentRoutes)` in packages/server/src/index.ts.
+
+  /** List the org's inference providers (never returns the api key). */
+  async listInferenceProviders(): Promise<RemoteInferenceProvider[]> {
+    const { body } = await this.request<{
+      providers?: RemoteInferenceProvider[];
+    }>("GET", `/api/${this.orgSlug}/agents/inference-providers`);
+    return body.providers ?? [];
+  }
+
+  /** Create an org inference provider. 409 (surfaced as ApiError) on slug conflict. */
+  async createInferenceProvider(body: {
+    slug: string;
+    kind: string;
+    displayName?: string;
+    apiKey: string;
+    capabilities?: Partial<Record<InferenceModality, InferenceCapabilityBlock>>;
+  }): Promise<RemoteInferenceProvider> {
+    const { body: res } = await this.request<{
+      provider: RemoteInferenceProvider;
+    }>("POST", `/api/${this.orgSlug}/agents/inference-providers`, body);
+    return res.provider;
+  }
+
+  /** Upsert one modality's capability block (`{ base_url?, model?, models_endpoint? }`). */
+  async updateInferenceProviderCapabilities(
+    slug: string,
+    modality: InferenceModality,
+    block: InferenceCapabilityBlock
+  ): Promise<void> {
+    await this.request(
+      "PUT",
+      `/api/${this.orgSlug}/agents/inference-providers/${encodeURIComponent(slug)}/capabilities/${encodeURIComponent(modality)}`,
+      { block }
+    );
+  }
+
+  /**
+   * Rotate an org provider's API key. Idempotent — the current key can't be read
+   * back, so apply re-pushes the declared value on every run; a matching value
+   * is a harmless no-op server-side, a changed one rotates.
+   */
+  async rotateInferenceProviderKey(slug: string, value: string): Promise<void> {
+    await this.request(
+      "PUT",
+      `/api/${this.orgSlug}/agents/inference-providers/${encodeURIComponent(slug)}/key`,
+      { value }
+    );
+  }
+
+  /** Soft-delete an org inference provider. */
+  async deleteInferenceProvider(slug: string): Promise<void> {
+    await this.request(
+      "DELETE",
+      `/api/${this.orgSlug}/agents/inference-providers/${encodeURIComponent(slug)}`
     );
   }
 

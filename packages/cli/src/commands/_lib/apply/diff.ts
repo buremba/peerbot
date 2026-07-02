@@ -1,4 +1,8 @@
 import type { AgentSettings } from "@lobu/core";
+import type {
+  InferenceCapabilityBlock,
+  InferenceModality,
+} from "../../../config/define.js";
 import { ValidationError } from "../../memory/_lib/errors.js";
 import type {
   RemoteAgent,
@@ -7,6 +11,7 @@ import type {
   RemoteConnectorDefinition,
   RemoteEntityType,
   RemoteFeed,
+  RemoteInferenceProvider,
   RemotePlatform,
   RemoteRelationshipType,
   RemoteWatcher,
@@ -18,6 +23,7 @@ import type {
   DesiredConnectorDefinition,
   DesiredEntityType,
   DesiredFeed,
+  DesiredOrgProvider,
   DesiredPlatform,
   DesiredRelationshipType,
   DesiredState,
@@ -120,6 +126,23 @@ export interface FeedDiffRow extends ResourceRow<DesiredFeed, RemoteFeed> {
   connectionSlug: string;
 }
 
+export interface InferenceProviderDiffRow
+  extends ResourceRow<DesiredOrgProvider, RemoteInferenceProvider> {
+  kind: "inference-provider";
+  /**
+   * True when the desired provider declares an API key — the server stores it
+   * write-only (can't be read back), so the diff can't tell whether it changed;
+   * apply always re-pushes (idempotent). Matches the auth-profile credentials /
+   * watcher reaction-script pattern.
+   */
+  keyDeclared?: boolean;
+  /**
+   * Modalities whose capability block differs from remote (or is new). Apply
+   * PUTs each. On a create, every declared modality is listed.
+   */
+  capabilityModalities?: InferenceModality[];
+}
+
 export type DiffRow =
   | AgentDiffRow
   | SettingsDiffRow
@@ -130,7 +153,8 @@ export type DiffRow =
   | ConnectorDefinitionDiffRow
   | AuthProfileDiffRow
   | ConnectionDiffRow
-  | FeedDiffRow;
+  | FeedDiffRow
+  | InferenceProviderDiffRow;
 
 export interface DiffPlan {
   rows: DiffRow[];
@@ -836,6 +860,72 @@ function diffFeed(
   }) as unknown as FeedDiffRow;
 }
 
+/**
+ * Diff one org inference provider. The API key is write-only (never read back),
+ * so a declared key always marks the row for a re-push (idempotent PUT) — this
+ * alone escalates a create, and on an existing provider is folded into whether
+ * the row counts as an update. Capability blocks are compared per-modality; any
+ * modality that is new or differs is listed in `capabilityModalities` for apply
+ * to PUT. `kind`/`displayName` changes also count as an update.
+ */
+function diffInferenceProvider(
+  desired: DesiredOrgProvider,
+  remote: RemoteInferenceProvider | undefined
+): InferenceProviderDiffRow {
+  const keyDeclared = desired.apiKey.length > 0;
+
+  if (!remote) {
+    return {
+      kind: "inference-provider",
+      verb: "create",
+      id: desired.slug,
+      desired,
+      keyDeclared,
+      capabilityModalities: Object.keys(
+        desired.capabilities
+      ) as InferenceModality[],
+    };
+  }
+
+  const changed: string[] = [];
+  if (desired.kind !== remote.kind) changed.push("kind");
+  if (
+    desired.displayName !== undefined &&
+    desired.displayName !== "" &&
+    desired.displayName !== (remote.displayName ?? "")
+  ) {
+    changed.push("displayName");
+  }
+
+  // Per-modality capability comparison. Only modalities the config declares are
+  // considered — an omitted modality means "no opinion" and never churns.
+  const capabilityModalities: InferenceModality[] = [];
+  for (const [modality, block] of Object.entries(desired.capabilities) as [
+    InferenceModality,
+    InferenceCapabilityBlock,
+  ][]) {
+    if (!deepEqual(block, remote.capabilities?.[modality] ?? {})) {
+      capabilityModalities.push(modality);
+    }
+  }
+  if (capabilityModalities.length > 0) changed.push("capabilities");
+
+  // A write-only key can't be diffed, so a declared key always warrants a
+  // re-push — surface that as an update so the plan isn't a silent noop.
+  const verb: DiffVerb = changed.length > 0 || keyDeclared ? "update" : "noop";
+
+  return {
+    kind: "inference-provider",
+    verb,
+    id: desired.slug,
+    desired,
+    remote,
+    ...(changed.length > 0 ? { changedFields: changed } : {}),
+    keyDeclared,
+    ...(capabilityModalities.length > 0 ? { capabilityModalities } : {}),
+  };
+}
+
 // ── Top-level diff ─────────────────────────────────────────────────────────
 
 export interface RemoteSnapshot {
@@ -852,6 +942,8 @@ export interface RemoteSnapshot {
   connections: RemoteConnection[];
   /** Feeds keyed by connection ID. */
   feedsByConnectionId: Map<number, RemoteFeed[]>;
+  /** Org-owned inference providers (from `GET /inference-providers`). */
+  inferenceProviders: RemoteInferenceProvider[];
 }
 
 /**
@@ -860,7 +952,7 @@ export interface RemoteSnapshot {
  */
 type DesiredStateForDiff = Pick<
   DesiredState,
-  "agents" | "memorySchema" | "watchers" | "connectors"
+  "agents" | "memorySchema" | "watchers" | "connectors" | "providers"
 >;
 
 interface ComputeDiffOptions {
@@ -1205,6 +1297,38 @@ export function computeDiff(
           verb: "drift",
           id: remoteConn.slug,
           remote: remoteConn,
+        });
+      }
+    }
+  }
+
+  // Org-owned inference providers. Full-apply only (org-scoped, neither
+  // "agents" nor "memory"). A provider in the config but not remote → create; a
+  // matching one whose capabilities/kind/displayName differ (or that declares a
+  // key, which is write-only and always re-pushed) → update; a remote provider
+  // absent from the config → drift (NEVER delete: an org credential is
+  // destructive to remove, so drop it in the UI/API, not via apply).
+  if (only === undefined) {
+    // `?? []` mirrors the `desired.connectors ?? {…}` defensive default above —
+    // test literals build a partial DesiredStateForDiff.
+    const desiredProviders = desired.providers ?? [];
+    const remoteProviders = remote.inferenceProviders ?? [];
+    const remoteProviderBySlug = new Map(
+      remoteProviders.map((p) => [p.slug, p])
+    );
+    const desiredProviderSlugs = new Set(desiredProviders.map((p) => p.slug));
+    for (const provider of desiredProviders) {
+      rows.push(
+        diffInferenceProvider(provider, remoteProviderBySlug.get(provider.slug))
+      );
+    }
+    for (const remoteProvider of remoteProviders) {
+      if (!desiredProviderSlugs.has(remoteProvider.slug)) {
+        rows.push({
+          kind: "inference-provider",
+          verb: "drift",
+          id: remoteProvider.slug,
+          remote: remoteProvider,
         });
       }
     }

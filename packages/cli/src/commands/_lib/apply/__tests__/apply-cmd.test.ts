@@ -27,6 +27,7 @@ function stateWith(connectors: DesiredState["connectors"]): DesiredState {
     memorySchema: { entityTypes: [], relationshipTypes: [] },
     watchers: [],
     connectors,
+    providers: [],
     requiredSecrets: [],
   };
 }

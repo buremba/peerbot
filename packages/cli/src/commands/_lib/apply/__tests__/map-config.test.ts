@@ -697,6 +697,144 @@ describe("mapProjectToDesiredState", () => {
     expect(settings).not.toHaveProperty("guardrails");
     expect(settings).not.toHaveProperty("nixConfig");
   });
+
+  test("maps org providers: slug/kind/displayName, RESOLVED key, capabilities", () => {
+    const providerEnv: NodeJS.ProcessEnv = {
+      ...env,
+      ACME_VLLM_KEY: "vllm-real-key",
+    };
+    const state = mapProjectToDesiredState(
+      defineConfig({
+        agents: [],
+        providers: [
+          {
+            slug: "openai-vllm",
+            kind: "openai",
+            key: secret("ACME_VLLM_KEY"),
+            displayName: "ACME vLLM",
+            capabilities: {
+              text: {
+                base_url: "https://vllm.acme.internal/v1",
+                model: "llama-3.3-70b",
+                models_endpoint: "/models",
+              },
+              image: {
+                base_url: "https://img.acme.internal/v1",
+                model: "sdxl",
+              },
+            },
+          },
+        ],
+      }),
+      providerEnv
+    );
+    const p = state.providers[0];
+    expect(p?.slug).toBe("openai-vllm");
+    expect(p?.kind).toBe("openai");
+    expect(p?.displayName).toBe("ACME vLLM");
+    // secret() resolves to the REAL env value (apply pushes it to the server).
+    expect(p?.apiKey).toBe("vllm-real-key");
+    expect(p?.capabilities).toEqual({
+      text: {
+        base_url: "https://vllm.acme.internal/v1",
+        model: "llama-3.3-70b",
+        models_endpoint: "/models",
+      },
+      image: { base_url: "https://img.acme.internal/v1", model: "sdxl" },
+    });
+    // The env-ref is collected so the secrets gate fails loud when unset.
+    expect(state.requiredSecrets).toContain("ACME_VLLM_KEY");
+  });
+
+  test("resolves a $VAR provider key literal to the env value", () => {
+    const state = mapProjectToDesiredState(
+      defineConfig({
+        agents: [],
+        providers: [{ slug: "p", kind: "openai", key: "$ACME_VLLM_KEY" }],
+      }),
+      { ...env, ACME_VLLM_KEY: "from-var" }
+    );
+    expect(state.providers[0]?.apiKey).toBe("from-var");
+    expect(state.requiredSecrets).toContain("ACME_VLLM_KEY");
+  });
+
+  test("omits capabilities/displayName when not declared", () => {
+    const state = mapProjectToDesiredState(
+      defineConfig({
+        agents: [],
+        providers: [{ slug: "p", kind: "openai", key: "literal-key" }],
+      }),
+      env
+    );
+    const p = state.providers[0];
+    expect(p?.apiKey).toBe("literal-key");
+    expect(p?.capabilities).toEqual({});
+    expect(p).not.toHaveProperty("displayName");
+  });
+
+  test("rejects an invalid provider slug", () => {
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({
+          agents: [],
+          providers: [{ slug: "Bad_Slug", kind: "openai", key: "k" }],
+        }),
+        env
+      )
+    ).toThrow(/provider slug/);
+  });
+
+  test("rejects an unknown modality", () => {
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({
+          agents: [],
+          providers: [
+            {
+              slug: "p",
+              kind: "openai",
+              key: "k",
+              capabilities: {
+                // @ts-expect-error — exercising the runtime guard for a bad modality
+                video: { base_url: "https://x.example/v1" },
+              },
+            },
+          ],
+        }),
+        env
+      )
+    ).toThrow(/unknown modality/i);
+  });
+
+  test("rejects duplicate provider slugs", () => {
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({
+          agents: [],
+          providers: [
+            { slug: "dup", kind: "openai", key: "a" },
+            { slug: "dup", kind: "openai", key: "b" },
+          ],
+        }),
+        env
+      )
+    ).toThrow(/duplicate provider slug "dup"/i);
+  });
+
+  test("skips org providers under --only (no secrets demanded)", () => {
+    const state = mapProjectToDesiredState(
+      defineConfig({
+        agents: [defineAgent({ id: "a" })],
+        providers: [
+          { slug: "p", kind: "openai", key: secret("ACME_VLLM_KEY") },
+        ],
+      }),
+      env,
+      "agents"
+    );
+    expect(state.providers).toEqual([]);
+    expect(state.requiredSecrets).not.toContain("ACME_VLLM_KEY");
+  });
 });
 
 describe("mergeAgentDirArtifacts", () => {

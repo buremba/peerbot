@@ -20,6 +20,7 @@ const KIND_LABEL: Record<DiffRow["kind"], string> = {
   "auth-profile": "auth-profile",
   connection: "connection",
   feed: "feed",
+  "inference-provider": "provider",
 };
 
 const KIND_HEADING: Record<DiffRow["kind"], string> = {
@@ -33,6 +34,7 @@ const KIND_HEADING: Record<DiffRow["kind"], string> = {
   "auth-profile": "auth-profiles",
   connection: "connections",
   feed: "feeds",
+  "inference-provider": "providers",
 };
 
 function fieldsList(fields: string[] | undefined): string {
@@ -136,6 +138,7 @@ export function renderPlan(plan: DiffPlan): string {
     "auth-profile",
     "connection",
     "feed",
+    "inference-provider",
   ];
   for (const kind of order) {
     const rowsForKind = plan.rows.filter((row) => row.kind === kind);

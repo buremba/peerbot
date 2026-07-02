@@ -11,7 +11,13 @@ import type {
 import type { AgentSettings } from "@lobu/core";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
-import type { ConnectorSource, Project, Skill } from "../../../config/index.js";
+import type {
+  ConnectorSource,
+  InferenceCapabilityBlock,
+  InferenceModality,
+  Project,
+  Skill,
+} from "../../../config/index.js";
 import { ValidationError } from "../../memory/_lib/errors.js";
 import {
   type AgentMarkdown,
@@ -217,6 +223,22 @@ export interface DesiredAgent {
   providerKeys: { providerId: string; value: string }[];
 }
 
+/**
+ * An org-owned inference provider resolved from `defineConfig({ providers })`.
+ * The `apiKey` is resolved from its `secret()` / `$VAR` ref at map time (lives
+ * only in process memory, never serialized into a plan row) — like an agent
+ * provider key. Reconciled by apply against the `/inference-providers` API.
+ */
+export interface DesiredOrgProvider {
+  slug: string;
+  kind: string;
+  displayName?: string;
+  /** Resolved API key value (never the `$VAR` placeholder). */
+  apiKey: string;
+  /** Per-modality upstream overrides; empty ⇒ static behavior. */
+  capabilities: Partial<Record<InferenceModality, InferenceCapabilityBlock>>;
+}
+
 export interface DesiredState {
   agents: DesiredAgent[];
   /**
@@ -258,6 +280,14 @@ export interface DesiredState {
    * remote state so missing secrets fail loud instead of expanding to empty.
    */
   requiredSecrets: string[];
+  /**
+   * Org-owned inference providers declared via `defineConfig({ providers })`.
+   * Reconciled against the `/inference-providers` API — created if missing,
+   * capability blocks updated per-modality, key rotated on every apply
+   * (idempotent; the key can't be read back). Absent providers are reported as
+   * drift, never auto-deleted.
+   */
+  providers: DesiredOrgProvider[];
 }
 
 // ── Load + transform ───────────────────────────────────────────────────────

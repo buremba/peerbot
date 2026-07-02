@@ -17,6 +17,8 @@ import type {
   Connection,
   ConnectorRef,
   EntityType,
+  InferenceCapabilityBlock,
+  OrgProvider,
   Project,
   ProviderConfig,
   RelationshipType,
@@ -31,6 +33,7 @@ import type {
   DesiredConnection,
   DesiredEntityType,
   DesiredFeed,
+  DesiredOrgProvider,
   DesiredPlatform,
   DesiredRelationshipType,
   DesiredState,
@@ -88,6 +91,62 @@ function envRefName(value: string): string | null {
 /** Provider id used as the storage key; falls back to the model when omitted. */
 function providerId(provider: ProviderConfig): string {
   return provider.id ?? provider.model;
+}
+
+/** Org-provider slug rules — same shape as a connection slug (server-enforced). */
+const ORG_PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+/** Modalities the server accepts for an inference-provider capability block. */
+const INFERENCE_MODALITIES = new Set([
+  "text",
+  "image",
+  "stt",
+  "tts",
+  "embedding",
+]);
+
+/**
+ * Map an org-owned inference provider (`defineConfig({ providers })`) to its
+ * `DesiredOrgProvider`. Resolves the API key from its `secret()` / `$VAR` ref
+ * to the REAL value at apply time (mirroring {@link resolveCredentialValue} and
+ * the agent-provider key path — apply pushes the resolved value to the server,
+ * never the `$VAR` placeholder) and collects the ref into `required` so the
+ * secrets gate fails loud when unset. Validates the slug + declared modalities
+ * so a malformed config fails in the CLI, not with a confusing server 4xx.
+ */
+function mapOrgProvider(
+  provider: OrgProvider,
+  required: Set<string>,
+  env: NodeJS.ProcessEnv
+): DesiredOrgProvider {
+  if (!ORG_PROVIDER_SLUG_PATTERN.test(provider.slug)) {
+    throw new ValidationError(
+      `provider slug "${provider.slug}" must match /^[a-z0-9][a-z0-9-]{0,62}$/ (lowercase letters/digits/hyphens, no leading hyphen, ≤63 chars)`
+    );
+  }
+  if (!provider.kind) {
+    throw new ValidationError(
+      `provider "${provider.slug}" must declare a non-empty \`kind\``
+    );
+  }
+
+  const capabilities: Record<string, InferenceCapabilityBlock> = {};
+  for (const [modality, block] of Object.entries(provider.capabilities ?? {})) {
+    if (!INFERENCE_MODALITIES.has(modality)) {
+      throw new ValidationError(
+        `provider "${provider.slug}" declares unknown modality "${modality}" (expected text|image|stt|tts|embedding)`
+      );
+    }
+    if (block) capabilities[modality] = block;
+  }
+
+  return {
+    slug: provider.slug,
+    kind: provider.kind,
+    ...(provider.displayName ? { displayName: provider.displayName } : {}),
+    apiKey: resolveCredentialValue(provider.key, required, env),
+    capabilities,
+  };
 }
 
 /** Resolve a connector reference (key string, or the class from `defineConnector`) to its key. */
@@ -614,6 +673,14 @@ export function mapProjectToDesiredState(
   const connections = only
     ? []
     : (project.connections ?? []).map(mapConnection);
+  // Org providers are skipped under `--only` (they're neither agents nor
+  // memory), matching the connector-skip posture — so their secrets aren't
+  // demanded on a targeted apply.
+  const providers = only
+    ? []
+    : (project.providers ?? []).map((provider) =>
+        mapOrgProvider(provider, required, env)
+      );
 
   // Reject duplicate identifiers per collection (the TOML/YAML loader did this;
   // the TS path must keep parity). Duplicates otherwise generate duplicate plan
@@ -624,6 +691,7 @@ export function mapProjectToDesiredState(
   assertUniqueBy(watchers, (w) => w.slug, "watcher slug");
   assertUniqueBy(authProfiles, (p) => p.slug, "auth profile slug");
   assertUniqueBy(connections, (c) => c.slug, "connection slug");
+  assertUniqueBy(providers, (p) => p.slug, "provider slug");
 
   const agentIds = new Set(project.agents.map((agent) => agent.id));
   for (const watcher of watchers) {
@@ -647,6 +715,7 @@ export function mapProjectToDesiredState(
     memorySchema: { entityTypes, relationshipTypes },
     watchers,
     connectors: { definitions: [], authProfiles, connections },
+    providers,
     requiredSecrets: [...required].sort(),
   };
 }

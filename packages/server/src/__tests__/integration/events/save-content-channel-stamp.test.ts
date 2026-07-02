@@ -88,7 +88,26 @@ describe('saveContent > channel entity stamp', () => {
         metadata: {},
       } as never,
       {} as never,
+      // Bare channel id (belt-and-suspenders — the resolver strips anyway).
       ctxWithSource({ teamId: TEAM_ID, channelId: CHANNEL_ID })
+    );
+
+    expect(result.entity_ids).toContain(channelEntityId);
+  });
+
+  it('stamps even when sourceContext.channelId is platform-PREFIXED (the live worker-token form)', async () => {
+    // The Chat SDK / worker token carries `slack:C0ENG`, but the graphed
+    // identity is the bare `T…:C…`. Regression guard: without prefix stripping
+    // in resolveChannelEntityId this misses and the stamp silently never fires.
+    const result = await saveContent(
+      {
+        content: 'Prefixed-channel knowhow should still be channel-scoped.',
+        semantic_type: 'summary',
+        title: 'eng channel knowhow (prefixed)',
+        metadata: {},
+      } as never,
+      {} as never,
+      ctxWithSource({ teamId: TEAM_ID, channelId: `slack:${CHANNEL_ID}` })
     );
 
     expect(result.entity_ids).toContain(channelEntityId);

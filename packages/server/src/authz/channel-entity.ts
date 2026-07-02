@@ -13,6 +13,7 @@
  */
 
 import { type DbClient, getDb } from '../db/client.js';
+import { stripPlatformPrefix } from '../gateway/channels/bound-channels.js';
 import { slackChannelKey } from './slack-channel-graph.js';
 
 /**
@@ -29,7 +30,13 @@ export async function resolveChannelEntityId(
   sql: DbClient = getDb(),
 ): Promise<number | null> {
   if (!teamId || !channelId) return null;
-  const key = slackChannelKey(teamId, channelId);
+  // The worker-token / sourceContext channelId arrives platform-PREFIXED
+  // (`slack:C0ENG`) — the Chat SDK's canonical form — while the graphed
+  // `slack_channel_id` identity is the BARE team-scoped id (`T…:C…`). Strip
+  // the prefix so the key matches; without this the lookup always misses and
+  // the stamp silently never fires (channel memory would leak org-wide).
+  const bareChannelId = stripPlatformPrefix('slack', channelId);
+  const key = slackChannelKey(teamId, bareChannelId);
   const rows = await sql<{ entity_id: number }>`
     SELECT ei.entity_id
     FROM entity_identities ei

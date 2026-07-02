@@ -11,6 +11,8 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { Env } from '../../../index';
+import { materializeDueFeeds } from '../../../scheduled/check-due-feeds';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestConnection, createTestOrganization, createTestUser } from '../../setup/test-fixtures';
 import { TestApiClient } from '../../setup/test-mcp-client';
@@ -86,7 +88,7 @@ describe('manage_feeds create_feed (virtual)', () => {
     expect(result.error).toBeTruthy();
   });
 
-  it('the scheduler never selects the virtual feed for sync', async () => {
+  it('materializeDueFeeds never creates a sync run for the virtual feed', async () => {
     const created = (await owner.feeds.create({
       connection_id: connectionId,
       feed_key: 'issues',
@@ -95,12 +97,15 @@ describe('manage_feeds create_feed (virtual)', () => {
     })) as { feed?: { id: number } };
     const feedId = Number(created.feed?.id);
 
-    // Even if we force a past next_run_at, the virtual guard excludes it.
+    // Force the virtual feed "due" (past next_run_at) so the `virtual` guard —
+    // not a NULL schedule — is what excludes it, then run the scheduler.
     const sql = getTestDb();
     await sql`UPDATE feeds SET next_run_at = NOW() - INTERVAL '1 minute' WHERE id = ${feedId}`;
-    const [row] = await sql<{ virtual: boolean; next_run_at: string | null }[]>`
-      SELECT virtual, next_run_at FROM feeds WHERE id = ${feedId}
+    await materializeDueFeeds({} as Env, sql);
+
+    const [runs] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM runs WHERE feed_id = ${feedId} AND run_type = 'sync'
     `;
-    expect(row?.virtual).toBe(true); // guard key; materializeDueFeeds filters virtual IS NOT TRUE
+    expect(Number(runs?.n)).toBe(0);
   });
 });

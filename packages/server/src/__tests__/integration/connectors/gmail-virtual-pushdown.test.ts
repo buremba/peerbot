@@ -174,11 +174,21 @@ describe('Gmail virtual-feed pushdown', () => {
     expect(cap.listQueries).toEqual(['in:inbox report urgent']);
   });
 
-  it('search() quotes a term containing spaces/operators so it matches literally', async () => {
+  it('search() quotes a term containing spaces so it matches literally', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
     await c.search({ ...CREDS, query: 'in:inbox', terms: ['weekly report'], config: {}, limit: 5 } as never);
     expect(cap.listQueries).toEqual(['in:inbox "weekly report"']);
+  });
+
+  it('search() quotes an operator-like term so it is matched literally, not reparsed', async () => {
+    const cap: Capture = { listQueries: [], listMaxResults: [] };
+    const c = connectorWith(cap);
+    // A recall term is keyword text, not Gmail query syntax — `from:alice@x.com`
+    // must be a literal phrase, not activate the `from:` operator (operators
+    // belong in the base config.query, not in recall terms).
+    await c.search({ ...CREDS, query: 'in:inbox', terms: ['from:alice@x.com'], config: {}, limit: 5 } as never);
+    expect(cap.listQueries).toEqual(['in:inbox "from:alice@x.com"']);
   });
 
   it('clamps the limit and passes it as maxResults', async () => {

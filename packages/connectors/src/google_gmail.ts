@@ -511,12 +511,19 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     return { rows, columns: GMAIL_SEARCH_COLUMNS };
   }
 
-  /** Quote a search term so Gmail matches it literally (handles spaces/operators). */
+  /**
+   * Quote a recall term so Gmail matches it LITERALLY. A bare word passes
+   * through; anything containing whitespace, a quote, or a Gmail query-operator
+   * character (`:` `(` `)` `{` `}`) is wrapped in quotes so it is not reparsed as
+   * query syntax (e.g. `from:alice@example.com` must match the text, not act as a
+   * `from:` operator). Embedded quotes are stripped — Gmail has no escape for a
+   * literal quote inside a phrase.
+   */
   private escapeGmailTerm(term: string): string {
     const t = term.trim();
     if (!t) return '';
-    // Already a bare token with no whitespace/quotes → pass through.
-    if (!/[\s"]/.test(t)) return t;
+    // Bare token with no whitespace, quotes, or operator characters → pass through.
+    if (!/[\s"():{}]/.test(t)) return t;
     return `"${t.replace(/"/g, '')}"`;
   }
 

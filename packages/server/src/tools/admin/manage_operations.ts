@@ -44,20 +44,21 @@ const BackendLiteral = Type.Union([
   Type.Literal('local_action'),
   Type.Literal('mcp_tool'),
   Type.Literal('http_operation'),
-]);
+], { description: 'Filter by operation backend type' });
 
-const KindLiteral = Type.Union([Type.Literal('read'), Type.Literal('write')]);
+const KindLiteral = Type.Union([Type.Literal('read'), Type.Literal('write')], { description: 'Filter by operation kind (read/write)' });
 
 const ListAvailableAction = Type.Object({
   action: Type.Literal('list_available'),
-  connector_key: Type.Optional(Type.String()),
-  connection_id: Type.Optional(Type.Number()),
-  entity_id: Type.Optional(Type.Number()),
+  connector_key: Type.Optional(Type.String({ description: 'Filter by connector key' })),
+  connection_id: Type.Optional(Type.Number({ description: 'Filter by connection ID' })),
+  entity_id: Type.Optional(Type.Number({ description: 'Filter by entity ID' })),
   kind: Type.Optional(KindLiteral),
   backend: Type.Optional(BackendLiteral),
-  include_input_schema: Type.Optional(Type.Boolean({ default: true })),
-  include_output_schema: Type.Optional(Type.Boolean({ default: false })),
-  ...PaginationFields,
+  include_input_schema: Type.Optional(Type.Boolean({ default: true, description: 'Include input schema in response' })),
+  include_output_schema: Type.Optional(Type.Boolean({ default: false, description: 'Include output schema in response' })),
+  limit: Type.Optional(Type.Number({ description: 'Maximum number of results to return' })),
+  offset: Type.Optional(Type.Number({ description: 'Number of results to skip' })),
 });
 
 const ExecuteAction = Type.Object({
@@ -75,20 +76,20 @@ const ExecuteAction = Type.Object({
 
 const ListRunsAction = Type.Object({
   action: Type.Literal('list_runs'),
-  connection_id: Type.Optional(Type.Number()),
-  connection_ids: Type.Optional(Type.Array(Type.Number())),
-  feed_ids: Type.Optional(Type.Array(Type.Number())),
-  device_worker_id: Type.Optional(Type.String()),
-  operation_key: Type.Optional(Type.String()),
-  status: Type.Optional(Type.String()),
-  approval_status: Type.Optional(Type.String()),
+  connection_id: Type.Optional(Type.Number({ description: 'Filter by connection ID' })),
+  connection_ids: Type.Optional(Type.Array(Type.Number({ description: 'Filter by connection IDs' }))),
+  feed_ids: Type.Optional(Type.Array(Type.Number({ description: 'Filter by feed IDs' }))),
+  device_worker_id: Type.Optional(Type.String({ description: 'Filter by device worker ID' })),
+  operation_key: Type.Optional(Type.String({ description: 'Filter by operation key' })),
+  status: Type.Optional(Type.String({ description: 'Filter by run status' })),
+  approval_status: Type.Optional(Type.String({ description: 'Filter by approval status' })),
   /** Filter by run_type. Omit to list every run type (sync, action, auth, …). */
-  run_types: Type.Optional(Type.Array(Type.String())),
+  run_types: Type.Optional(Type.Array(Type.String({ description: 'Filter by run types' }))),
   /** Filter watcher runs by watcher id(s). */
-  watcher_ids: Type.Optional(Type.Array(Type.Number())),
+  watcher_ids: Type.Optional(Type.Array(Type.Number({ description: 'Filter by watcher IDs' }))),
   /** Keyset cursor: return runs ordered before (before_created_at, before_id). */
-  before_id: Type.Optional(Type.Number()),
-  before_created_at: Type.Optional(Type.String()),
+  before_id: Type.Optional(Type.Number({ description: 'Keyset cursor: return runs before this ID' })),
+  before_created_at: Type.Optional(Type.String({ description: 'Keyset cursor: return runs before this timestamp' })),
   ...PaginationFields,
 });
 

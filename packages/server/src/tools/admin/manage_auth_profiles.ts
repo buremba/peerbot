@@ -61,7 +61,7 @@ const ListAuthProfilesAction = Type.Object({
       Type.Literal('oauth_app'),
       Type.Literal('oauth_account'),
       Type.Literal('browser_session'),
-    ])
+    ], { description: 'Filter by auth profile kind' })
   ),
 });
 

@@ -51,12 +51,15 @@ interface AdminToolEntry {
 	description: string;
 	schema: TSchema;
 	handler: (args: any, env: Env, ctx: ToolContext) => Promise<unknown>;
-	/** Defaults to `{ destructiveHint: false }`. */
+	/** Defaults to `{ destructiveHint: false, idempotentHint: false }`. */
 	annotations?: ToolAnnotations;
 }
 
 const READ_ONLY: ToolAnnotations = { readOnlyHint: true, idempotentHint: true };
-const WRITE: ToolAnnotations = { destructiveHint: false };
+const WRITE: ToolAnnotations = { destructiveHint: false, idempotentHint: false };
+
+const WRITE_WITH_TITLE = (title: string): ToolAnnotations => ({ ...WRITE, title });
+const READ_ONLY_WITH_TITLE = (title: string): ToolAnnotations => ({ ...READ_ONLY, title });
 
 const ENTRIES: AdminToolEntry[] = [
 	{
@@ -64,6 +67,7 @@ const ENTRIES: AdminToolEntry[] = [
 		description: "Entity management. SDK alternative: client.entities.",
 		schema: ManageEntitySchema,
 		handler: manageEntity,
+		annotations: WRITE_WITH_TITLE("Manage entities"),
 	},
 	{
 		name: "manage_entity_schema",
@@ -71,31 +75,35 @@ const ENTRIES: AdminToolEntry[] = [
 			"Entity-type schema management. SDK alternative: client.entitySchema.",
 		schema: ManageEntitySchemaSchema,
 		handler: manageEntitySchema,
+		annotations: WRITE_WITH_TITLE("Manage entity schemas"),
 	},
 	{
 		name: "manage_connections",
 		description: "Connection management. SDK alternative: client.connections.",
 		schema: ManageConnectionsSchema,
 		handler: manageConnections,
+		annotations: WRITE_WITH_TITLE("Manage connections"),
 	},
 	{
 		name: "manage_catalog",
 		description: "Global catalog manifests and org/agent installed inventory.",
 		schema: ManageCatalogSchema,
 		handler: manageCatalog,
-		annotations: READ_ONLY,
+		annotations: READ_ONLY_WITH_TITLE("Manage catalog"),
 	},
 	{
 		name: "manage_agents",
 		description: "Agent management (incl. the org system agent pointer).",
 		schema: ManageAgentsSchema,
 		handler: manageAgents,
+		annotations: WRITE_WITH_TITLE("Manage agents"),
 	},
 	{
 		name: "manage_feeds",
 		description: "Feed management. SDK alternative: client.feeds.",
 		schema: ManageFeedsSchema,
 		handler: manageFeeds,
+		annotations: WRITE_WITH_TITLE("Manage feeds"),
 	},
 	{
 		name: "manage_auth_profiles",
@@ -103,6 +111,7 @@ const ENTRIES: AdminToolEntry[] = [
 			"Auth-profile management. SDK alternative: client.authProfiles.",
 		schema: ManageAuthProfilesSchema,
 		handler: manageAuthProfiles,
+		annotations: WRITE_WITH_TITLE("Manage auth profiles"),
 	},
 	{
 		name: "manage_operations",
@@ -110,7 +119,7 @@ const ENTRIES: AdminToolEntry[] = [
 			"Operation execution / approval. SDK alternative: client.operations.",
 		schema: ManageOperationsSchema,
 		handler: manageOperations,
-		annotations: { destructiveHint: false, openWorldHint: true },
+		annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true, title: "Manage operations" },
 	},
 	{
 		name: "notify",
@@ -118,7 +127,7 @@ const ENTRIES: AdminToolEntry[] = [
 			"Send a notification to org users (admins / all / specific user ids).",
 		schema: NotifySchema,
 		handler: notify,
-		annotations: { destructiveHint: false },
+		annotations: WRITE_WITH_TITLE("Send notification"),
 	},
 	{
 		name: "manage_schedules",
@@ -126,20 +135,21 @@ const ENTRIES: AdminToolEntry[] = [
 			"Create / list / pause / cancel recurring or one-shot scheduled jobs. Supports send_notification and wake_agent action types. Per-row attribution lets you trace what scheduled it and from where.",
 		schema: ManageSchedulesSchema,
 		handler: manageSchedules,
-		annotations: { destructiveHint: false },
+		annotations: WRITE_WITH_TITLE("Manage schedules"),
 	},
 	{
 		name: "manage_watchers",
 		description: "Watcher management. SDK alternative: client.watchers.",
 		schema: ManageWatchersSchema,
 		handler: manageWatchers,
+		annotations: WRITE_WITH_TITLE("Manage watchers"),
 	},
 	{
 		name: "list_watchers",
 		description: "List watchers. SDK alternative: client.watchers.list.",
 		schema: ListWatchersSchema,
 		handler: listWatchers,
-		annotations: READ_ONLY,
+		annotations: READ_ONLY_WITH_TITLE("List watchers"),
 	},
 	{
 		name: "get_watcher",
@@ -147,7 +157,7 @@ const ENTRIES: AdminToolEntry[] = [
 			"Watcher detail + windows. SDK alternative: client.watchers.get.",
 		schema: GetWatcherSchema,
 		handler: getWatcher,
-		annotations: READ_ONLY,
+		annotations: READ_ONLY_WITH_TITLE("Get watcher"),
 	},
 	{
 		name: "read_knowledge",
@@ -155,13 +165,14 @@ const ENTRIES: AdminToolEntry[] = [
 			"Read content/memory. SDK alternatives: search_memory, client.knowledge.search.",
 		schema: GetContentSchema,
 		handler: getContent,
-		annotations: READ_ONLY,
+		annotations: READ_ONLY_WITH_TITLE("Read knowledge"),
 	},
 	{
 		name: "manage_classifiers",
 		description: "Classifier management. SDK alternative: client.classifiers.",
 		schema: ManageClassifiersSchema,
 		handler: manageClassifiers,
+		annotations: WRITE_WITH_TITLE("Manage classifiers"),
 	},
 	{
 		name: "manage_view_templates",
@@ -169,6 +180,7 @@ const ENTRIES: AdminToolEntry[] = [
 			"View-template management. SDK alternative: client.viewTemplates.",
 		schema: ManageViewTemplatesSchema,
 		handler: manageViewTemplates,
+		annotations: WRITE_WITH_TITLE("Manage view templates"),
 	},
 ];
 

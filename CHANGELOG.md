@@ -1,5 +1,41 @@
 # Changelog
 
+## [13.4.0](https://github.com/lobu-ai/lobu/compare/lobu-v13.3.0...lobu-v13.4.0) (2026-07-02)
+
+
+### Features
+
+* **behaviors:** server support for unified Behaviors surface ([#1673](https://github.com/lobu-ai/lobu/issues/1673)) ([87ad42f](https://github.com/lobu-ai/lobu/commit/87ad42f76b64b3230f88a1c5169bb96105585f57))
+* **chrome:** reduce orphan tab lifetime via run-scoped ownership ([#1649](https://github.com/lobu-ai/lobu/issues/1649)) ([9fdfa41](https://github.com/lobu-ai/lobu/commit/9fdfa413ff8bbbb96d91841f15e2cb95c9a66a0c))
+* **connectors:** unbundle personal and brand-intel connectors from default catalog ([#1692](https://github.com/lobu-ai/lobu/issues/1692)) ([86e2651](https://github.com/lobu-ai/lobu/commit/86e26515ef2e22851b25ccabb29ed03b36317551))
+* **feeds+connections:** channels as streaming feeds + fold channel API into manage_connections ([#1651](https://github.com/lobu-ai/lobu/issues/1651)) ([010d1f3](https://github.com/lobu-ai/lobu/commit/010d1f386e2792413184f11cd631a4af7e79dc00))
+* **gateway:** replay durable manage_agents approval cards on reload ([#1669](https://github.com/lobu-ai/lobu/issues/1669)) ([0e0a9e2](https://github.com/lobu-ai/lobu/commit/0e0a9e25fbb8e91a471388f256f36d148d8fe865))
+* **mcp-apps:** render every interactive interaction through one MCP App host ([#1674](https://github.com/lobu-ai/lobu/issues/1674)) ([cf0d413](https://github.com/lobu-ai/lobu/commit/cf0d413baf0296b688457e99657241f54d3e63a2))
+* **slack:** actionable unlinked-channel notice (list agents + Behaviors deep-links + CLI) ([#1687](https://github.com/lobu-ai/lobu/issues/1687)) ([bdfab0e](https://github.com/lobu-ai/lobu/commit/bdfab0e8a3291d308fe23107a0df101df6c77bde))
+* **slack:** marketplace / Slack-initiated install → pending claim flow ([#1663](https://github.com/lobu-ai/lobu/issues/1663)) ([4a01d91](https://github.com/lobu-ai/lobu/commit/4a01d914a1f78638f4d10731818ece853b65bb69))
+* **slack:** message tools (react/edit/delete) + channel-entity save stamp ([#1681](https://github.com/lobu-ai/lobu/issues/1681)) ([604f406](https://github.com/lobu-ai/lobu/commit/604f406efbff5d8c0d869cb1bde5da59a53a8a63))
+* **watchers:** @-reference sources + create-form picker ([#1655](https://github.com/lobu-ai/lobu/issues/1655)) ([45b2dc3](https://github.com/lobu-ai/lobu/commit/45b2dc37195222d11323956a5a33d5eec112115c))
+* **watchers:** per-item recap feedback loop on the entity field-ownership plane ([#1661](https://github.com/lobu-ai/lobu/issues/1661)) ([0bad0d1](https://github.com/lobu-ai/lobu/commit/0bad0d13ab9b4c10d2499d62e349a675b5873e9a))
+* **watchers:** streaming channel feed as a membership-gated [@feed](https://github.com/feed) source ([#1662](https://github.com/lobu-ai/lobu/issues/1662)) ([4565928](https://github.com/lobu-ai/lobu/commit/45659280082f827c1116dd58616b349138985dd3))
+
+
+### Bug Fixes
+
+* **authz:** graph BYO Slack connections + reconcile stale channel bindings ([#1683](https://github.com/lobu-ai/lobu/issues/1683)) ([cf1f407](https://github.com/lobu-ai/lobu/commit/cf1f407ed8983f578265c2b79e1f7cac6862cafe))
+* **authz:** resource events gate fails closed on stale ACL state ([#1668](https://github.com/lobu-ai/lobu/issues/1668)) ([ccbc2bc](https://github.com/lobu-ai/lobu/commit/ccbc2bc5a971d985be6b07105ae79732c1cf121a))
+* **authz:** self-heal teamId on BYO Slack connections via auth.test ([#1686](https://github.com/lobu-ai/lobu/issues/1686)) ([b706630](https://github.com/lobu-ai/lobu/commit/b706630657e92ef51637a0306dde1fdb10e8f662))
+* **ci:** managed-e2e uses read_feed action (same dead get_feed as [#1671](https://github.com/lobu-ai/lobu/issues/1671)) ([#1672](https://github.com/lobu-ai/lobu/issues/1672)) ([466a7cb](https://github.com/lobu-ai/lobu/commit/466a7cb6a9b0997816dcafd8ac77101827f59a44))
+* **ci:** sdk-e2e uses read_feed action + security guard matches cross-platform ([#1671](https://github.com/lobu-ai/lobu/issues/1671)) ([d0cd436](https://github.com/lobu-ai/lobu/commit/d0cd4363b59d78716f7e8339d2b373ba40d156b0))
+* **feeds:** channel-feed lifecycle fixes + read_feed consolidation ([#1660](https://github.com/lobu-ai/lobu/issues/1660)) ([26659eb](https://github.com/lobu-ai/lobu/commit/26659ebd7ddfcd54637d4a26aba3560445b908d3))
+* remove legacy UI routes and simplify routing ([#1652](https://github.com/lobu-ai/lobu/issues/1652)) ([e2b9748](https://github.com/lobu-ai/lobu/commit/e2b974823c4c9869f6cf7961f97dfd82ff56873e))
+* **server:** loopback lobu-memory MCP + consolidate on PUBLIC_GATEWAY_URL ([#1678](https://github.com/lobu-ai/lobu/issues/1678)) ([a5b3b9d](https://github.com/lobu-ai/lobu/commit/a5b3b9d457c13f7a08a706b0c383cda11406425e)), closes [#1584](https://github.com/lobu-ai/lobu/issues/1584)
+* **ui:** memory page filter rail grid layout ([#1657](https://github.com/lobu-ai/lobu/issues/1657)) ([4f06062](https://github.com/lobu-ai/lobu/commit/4f06062b2039c904ce0fdbd51497f9198b0a8227))
+
+
+### Performance Improvements
+
+* cut initial bundle ~75KB gzip, self-host fonts, edge-cache HTML shell ([#1691](https://github.com/lobu-ai/lobu/issues/1691)) ([7740493](https://github.com/lobu-ai/lobu/commit/77404932771176d029321059d1dcdc1abf2c9df3))
+
 ## [13.3.0](https://github.com/lobu-ai/lobu/compare/lobu-v13.2.0...lobu-v13.3.0) (2026-06-30)
 
 

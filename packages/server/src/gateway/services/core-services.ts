@@ -13,6 +13,10 @@ import {
 import { getDb } from "../../db/client.js";
 import { resolveEnv } from "../auth/mcp/string-substitution.js";
 import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js";
+// inference_providers row access (per-modality custom upstreams) — the store
+// owns the SQL + api_key_ref decrypt; core-services owns org resolution.
+// See buildInferenceProviderSource below.
+import { resolveInferenceProviderConfig } from "../../lobu/stores/provider-secrets.js";
 import {
 	type AppInstallationStore,
 	createPostgresAppInstallationStore,
@@ -74,6 +78,7 @@ import {
 	entryFromAgentConfig,
 } from "./declared-agent-registry.js";
 import { ImageGenerationService } from "./image-generation-service.js";
+import type { InferenceProviderConfigSource } from "./inference-provider-source.js";
 import { InstructionService } from "./instruction-service.js";
 import { ProviderConfigResolver } from "./provider-config-resolver.js";
 import {
@@ -638,6 +643,18 @@ export class CoreServices {
 				: Promise.resolve({}),
 		);
 
+		// Inference-provider config source: resolves an org's `inference_providers`
+		// row for (agentId, slug, modality) → { apiKey, base_url, model,
+		// models_endpoint }. Org resolution (agentId → organizationId) stays here
+		// (we own `resolveAgentOrgId`); the store owns the row read + key decrypt.
+		const inferenceProviderSource = this.buildInferenceProviderSource();
+		this.transcriptionService?.setInferenceProviderSource(
+			inferenceProviderSource,
+		);
+		this.imageGenerationService?.setInferenceProviderSource(
+			inferenceProviderSource,
+		);
+
 		// Register config-driven providers from the bundled providers registry
 		const configProviders =
 			await this.providerConfigResolver.getProviderConfigs();
@@ -944,6 +961,37 @@ export class CoreServices {
       SELECT organization_id FROM agents WHERE id = ${agentId} LIMIT 1
     `) as Array<{ organization_id?: string }>;
 		return rows[0]?.organization_id ?? null;
+	}
+
+	/**
+	 * Build the {@link InferenceProviderConfigSource} the capability services
+	 * consume. Resolves the org from the agent, then delegates to
+	 * provider-secrets.resolveInferenceProviderConfig — one row read for the
+	 * modality's config + key (the single-read URL invariant). Returns null when
+	 * no live row / no capabilities block / no usable key ⇒ static fallback.
+	 */
+	private buildInferenceProviderSource(): InferenceProviderConfigSource {
+		return async (agentId, slug, modality) => {
+			const organizationId = await this.resolveAgentOrgId(agentId);
+			if (!organizationId) return null;
+
+			// One row read: capabilities + key together (see the store's
+			// single-read invariant). Require a usable key so the service never
+			// tries a custom upstream with no credential.
+			const config = await resolveInferenceProviderConfig(
+				organizationId,
+				slug,
+				modality,
+			);
+			if (!config?.apiKey) return null;
+
+			return {
+				apiKey: config.apiKey,
+				baseUrl: config.baseUrl,
+				model: config.model,
+				modelsEndpoint: config.modelsEndpoint,
+			};
+		};
 	}
 
 	getSecretStore(): SecretStoreRegistry {

@@ -9,7 +9,18 @@ import { Hono } from 'hono';
 import { mcpAuth } from '../auth/middleware';
 import { ensureBuilderAgent } from '../auth/builder-provisioning';
 import { getDb } from '../db/client';
-import { providerOrgSecretName } from './stores/provider-secrets';
+import {
+  providerOrgSecretName,
+  createInferenceProvider,
+  listInferenceProviders,
+  updateInferenceProviderCapabilities,
+  rotateInferenceProviderKey,
+  softDeleteInferenceProvider,
+  validateCapabilityBlock,
+  isInferenceModality,
+  type InferenceCapabilities,
+  type InferenceCapabilityBlock,
+} from './stores/provider-secrets';
 import { OAuthClient } from '../gateway/auth/oauth/client';
 import { CLAUDE_PROVIDER } from '../gateway/auth/oauth/providers';
 import { ChannelBindingService } from '../gateway/channels/binding-service';
@@ -709,6 +720,7 @@ routes.post('/:agentId/providers/:providerId/oauth/code', async (c) => {
 // router; the secret itself is org-scoped, not per-agent (one z-ai key for the
 // whole org). PUT is idempotent; same name overwrites.
 
+// TODO(inference-providers): remove after resolver cutover
 routes.put('/:agentId/providers/:providerId/api-key', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
@@ -1502,6 +1514,190 @@ routes.post('/:agentId/platforms/:platformId/stop', async (c) => {
   if (denied) return denied;
   const { agentId, platformId } = c.req.param();
   return changePlatformRunState(c, agentId, platformId, 'stopConnection', 'stopped');
+});
+
+// ── Inference providers (org-owned per-modality custom upstreams) ─────────────
+//
+// Org-scoped credential rows in `inference_providers` (slug-referenced by
+// agents). ONE api key per row; a row with any custom base_url is
+// org-key-only across every modality. `capabilities` is per-modality config
+// `{ "<modality>": { base_url?, model?, models_endpoint? } }`. The org comes
+// from the router-level orgContext middleware (`c.get('organizationId')`); the
+// `:agentId`-free paths keep these purely org-scoped. Reads use `mcpAuth`
+// alone; mutations require the session/admin-PAT gate.
+
+function requireOrgId(c: any): string | Response {
+  const orgId = c.get('organizationId') as string | undefined;
+  if (!orgId) return c.json({ error: 'Organization context not available' }, 500);
+  return orgId;
+}
+
+/**
+ * Validate a full `capabilities` map ({ modality: block, … }). Returns an
+ * error string on the first invalid modality/block, or null when valid.
+ */
+function validateCapabilitiesMap(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'capabilities must be an object';
+  }
+  for (const [modality, block] of Object.entries(value)) {
+    const err = validateCapabilityBlock(modality, block);
+    if (err) return err;
+  }
+  return null;
+}
+
+routes.get('/inference-providers', async (c) => {
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const providers = await listInferenceProviders(orgId);
+  return c.json({ providers });
+});
+
+routes.post('/inference-providers', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+
+  let body: {
+    slug?: unknown;
+    kind?: unknown;
+    displayName?: unknown;
+    apiKey?: unknown;
+    capabilities?: unknown;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+
+  const slug = typeof body.slug === 'string' ? body.slug : '';
+  const kind = typeof body.kind === 'string' ? body.kind : '';
+  const apiKey = typeof body.apiKey === 'string' ? body.apiKey : '';
+  if (!slug) return c.json({ error: 'Body must include a `slug` string' }, 400);
+  if (!kind) return c.json({ error: 'Body must include a `kind` string' }, 400);
+  if (!apiKey) {
+    return c.json({ error: 'Body must include a non-empty `apiKey` string' }, 400);
+  }
+  const capErr = validateCapabilitiesMap(body.capabilities);
+  if (capErr) return c.json({ error: capErr }, 400);
+
+  const createdBy = c.get('user')?.id ?? null;
+
+  const result = await createInferenceProvider({
+    organizationId: orgId,
+    slug,
+    kind,
+    displayName: typeof body.displayName === 'string' ? body.displayName : null,
+    apiKey,
+    capabilities: (body.capabilities as InferenceCapabilities) ?? {},
+    createdBy,
+  });
+  if ('error' in result) {
+    return c.json(
+      { error: `A provider with slug '${result.slug}' already exists` },
+      409
+    );
+  }
+  // Never echo the key or the api_key_ref back to the caller.
+  return c.json(
+    {
+      provider: {
+        id: result.id,
+        slug: result.slug,
+        kind: result.kind,
+        displayName: result.displayName,
+        capabilities: result.capabilities,
+        hasCustomUpstream: result.hasCustomUpstream,
+        status: result.status,
+        createdAt: result.createdAt,
+      },
+    },
+    201
+  );
+});
+
+routes.put('/inference-providers/:slug/capabilities/:modality', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const { slug, modality } = c.req.param();
+
+  if (!isInferenceModality(modality)) {
+    return c.json(
+      { error: 'modality must be one of: text, image, stt, tts, embedding' },
+      400
+    );
+  }
+
+  let body: { block?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+  const block = body.block;
+  const err = validateCapabilityBlock(modality, block);
+  if (err) return c.json({ error: err }, 400);
+
+  const updated = await updateInferenceProviderCapabilities(
+    orgId,
+    slug,
+    modality,
+    block as InferenceCapabilityBlock
+  );
+  if (!updated) return c.json({ error: 'Provider not found' }, 404);
+  return c.json({
+    provider: {
+      id: updated.id,
+      slug: updated.slug,
+      kind: updated.kind,
+      displayName: updated.displayName,
+      capabilities: updated.capabilities,
+      hasCustomUpstream: updated.hasCustomUpstream,
+      status: updated.status,
+      createdAt: updated.createdAt,
+    },
+  });
+});
+
+routes.put('/inference-providers/:slug/key', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const { slug } = c.req.param();
+
+  let body: { value?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+  const value = typeof body.value === 'string' ? body.value : '';
+  if (!value) {
+    return c.json({ error: 'Body must include a non-empty `value` string' }, 400);
+  }
+
+  const ok = await rotateInferenceProviderKey(orgId, slug, value);
+  if (!ok) return c.json({ error: 'Provider not found' }, 404);
+  return c.json({ success: true });
+});
+
+routes.delete('/inference-providers/:slug', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const { slug } = c.req.param();
+
+  const ok = await softDeleteInferenceProvider(orgId, slug);
+  if (!ok) return c.json({ error: 'Provider not found' }, 404);
+  return c.json({ success: true });
 });
 
 export { routes as agentRoutes };

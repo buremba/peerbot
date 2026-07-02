@@ -21,12 +21,15 @@ export type ProviderModelPreferences = Record<string, string>;
  * Stored in AgentSettings.installedProviders as an ordered array (index 0 = primary).
  */
 export interface InstalledProvider {
-  providerId: string; // "claude", "chatgpt", "gemini", "z-ai"
+  /**
+   * Provider reference. For built-in providers this is the provider id
+   * ("claude", "chatgpt", "gemini", "z-ai"); for an org-defined inference
+   * provider it is the row's slug. Custom upstreams live on the org's
+   * `inference_providers` row (capabilities.<modality>.base_url), NOT here —
+   * the old per-agent `config.baseUrl` override was removed with that move.
+   */
+  providerId: string;
   installedAt: number;
-  config?: {
-    baseUrl?: string; // override upstream (e.g. z.ai proxy)
-    [key: string]: unknown;
-  };
 }
 
 /**

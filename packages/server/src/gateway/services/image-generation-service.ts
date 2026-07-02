@@ -4,8 +4,17 @@ import {
 	getErrorMessage,
 } from "@lobu/core";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
+import type { InferenceProviderConfigSource } from "./inference-provider-source.js";
 
 const logger = createLogger("image-generation-service");
+
+// Static defaults for the OpenAI image path. An org `inference_providers` row
+// with a `capabilities.image` block overrides these (base_url → URL, model →
+// model); an absent block ⇒ these exact values, so existing orgs are
+// byte-identical at cutover.
+const OPENAI_IMAGE_DEFAULT_URL =
+  "https://api.openai.com/v1/images/generations";
+const OPENAI_IMAGE_DEFAULT_MODEL = "gpt-image-1";
 
 // Abort hung provider calls instead of pinning the request indefinitely.
 // 120s matches the worker-side generate_image budget.
@@ -20,6 +29,10 @@ interface ImageGenerationConfig {
   displayName: string;
   provider: ImageGenerationProvider;
   apiKey: string;
+  /** OpenAI image endpoint URL (org `capabilities.image.base_url` or static default). */
+  baseUrl?: string;
+  /** OpenAI image model (org `capabilities.image.model` or static default). */
+  model?: string;
 }
 
 interface ImageGenerationSuccess {
@@ -113,7 +126,18 @@ function hasImageGenerationAccess(
 }
 
 export class ImageGenerationService {
-  constructor(private readonly authProfilesManager: AuthProfilesManager) {}
+  private inferenceProviderSource?: InferenceProviderConfigSource | undefined;
+
+  constructor(
+    private readonly authProfilesManager: AuthProfilesManager,
+    inferenceProviderSource?: InferenceProviderConfigSource
+  ) {
+    this.inferenceProviderSource = inferenceProviderSource;
+  }
+
+  setInferenceProviderSource(source: InferenceProviderConfigSource): void {
+    this.inferenceProviderSource = source;
+  }
 
   async getConfig(agentId: string): Promise<ImageGenerationConfig | null> {
     for (const {
@@ -121,6 +145,28 @@ export class ImageGenerationService {
       provider,
       displayName,
     } of IMAGE_CAPABLE_PROVIDERS) {
+      // Prefer the org `inference_providers` row for this provider slug: one
+      // read yields the row key + capabilities.image (base_url/model) together,
+      // honoring the single-read URL invariant. Only the OpenAI path supports a
+      // custom upstream; Gemini keeps its static key-in-URL shape below.
+      if (provider === "openai" && this.inferenceProviderSource) {
+        const resolved = await this.inferenceProviderSource(
+          agentId,
+          profileProviderId,
+          "image"
+        );
+        if (resolved) {
+          return {
+            profileProviderId,
+            displayName,
+            provider,
+            apiKey: resolved.apiKey,
+            baseUrl: resolved.baseUrl ?? OPENAI_IMAGE_DEFAULT_URL,
+            model: resolved.model ?? OPENAI_IMAGE_DEFAULT_MODEL,
+          };
+        }
+      }
+
       const profile = await this.authProfilesManager.getBestProfile(
         agentId,
         profileProviderId
@@ -182,7 +228,7 @@ export class ImageGenerationService {
       const result =
         config.provider === "gemini"
           ? await this.generateWithGemini(prompt, config.apiKey, options)
-          : await this.generateWithOpenAI(prompt, config.apiKey, options);
+          : await this.generateWithOpenAI(prompt, config, options);
       return {
         imageBuffer: result.imageBuffer,
         mimeType: result.mimeType,
@@ -215,20 +261,20 @@ export class ImageGenerationService {
 
   private async generateWithOpenAI(
     prompt: string,
-    apiKey: string,
+    config: ImageGenerationConfig,
     options: ImageGenerationOptions
   ): Promise<{ imageBuffer: Buffer; mimeType: string }> {
     const format = options.format || "png";
     const response = await fetch(
-      "https://api.openai.com/v1/images/generations",
+      config.baseUrl || OPENAI_IMAGE_DEFAULT_URL,
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${config.apiKey}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "gpt-image-1",
+          model: config.model || OPENAI_IMAGE_DEFAULT_MODEL,
           prompt,
           size: options.size || "1024x1024",
           quality: options.quality || "auto",

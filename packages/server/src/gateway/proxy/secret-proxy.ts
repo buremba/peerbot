@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createLogger, type SecretRef, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { resolveUrlInvariant } from "../auth/inference-invariant.js";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
 import type { ProviderCredentialContext } from "../embedded.js";
 import type { ProviderUpstreamConfig } from "../modules/module-system.js";
@@ -700,7 +701,11 @@ export class SecretProxy {
       }
     }
 
-    const upstream = `${upstreamBaseUrl}${forwardPath}${url.search}`;
+    // Static default upstream (providers.json slugMap). A custom org upstream,
+    // if configured, overrides `upstreamBaseUrl` below — resolved together with
+    // the org-only credential from a single row read so the URL the key is
+    // consented for and the URL we POST to cannot diverge.
+    let resolvedUpstreamBaseUrl = upstreamBaseUrl;
 
     // Copy request body for non-GET/HEAD
     const method = c.req.method;
@@ -863,32 +868,53 @@ export class SecretProxy {
           expectedOrganizationId
             ? orgContext.run({ organizationId: expectedOrganizationId }, fn)
             : fn();
-        const authProfilesManager = this.authProfilesManager;
-        const profile = await runWithOrg(() =>
-          authProfilesManager.getBestProfile(
-            urlAgentId,
-            providerId,
-            undefined,
-            providerContext
-          )
+        // URL invariant (see inference-invariant.ts): if this org configured a
+        // custom upstream for the provider, the request is bound for a
+        // tenant-defined URL and ONLY the org row's own key may be sent there —
+        // never a per-user profile or a deployment env key. The row is read
+        // once (base_url + key together), so the base_url can't be flipped
+        // between this gate and the fetch below.
+        const invariant = await runWithOrg(() =>
+          resolveUrlInvariant(resolvedSlug, expectedOrganizationId)
         );
-        const userIdForRefresh = providerContext?.userId;
-        const credential = profile && userIdForRefresh
-          ? await runWithOrg(() =>
-              authProfilesManager.ensureFreshCredential(profile, {
-                userId: userIdForRefresh,
-                agentId: urlAgentId,
-              })
+
+        let resolvedCredential: ResolvedProviderCredential | null;
+        if (invariant.kind === "org-only") {
+          resolvedCredential = { value: invariant.credential, kind: "api-key" };
+          // Route to the tenant-defined URL from the SAME row read as the key.
+          resolvedUpstreamBaseUrl = invariant.baseUrl;
+        } else if (invariant.kind === "org-only-unavailable") {
+          // Custom upstream but no usable org key: fail CLOSED, never fall
+          // through to a profile/env key bound for a tenant URL.
+          resolvedCredential = null;
+        } else {
+          const authProfilesManager = this.authProfilesManager;
+          const profile = await runWithOrg(() =>
+            authProfilesManager.getBestProfile(
+              urlAgentId,
+              providerId,
+              undefined,
+              providerContext
             )
-          : profile?.credential;
-        const resolvedCredential = await resolveProviderCredential({
-          profileCredential: credential ?? null,
-          profileAuthType: profile?.authType,
-          providerId,
-          organizationId: expectedOrganizationId,
-          readOrgSharedKey: readOrgSharedProviderApiKey,
-          systemKeyResolver: this.systemKeyResolver,
-        });
+          );
+          const userIdForRefresh = providerContext?.userId;
+          const credential = profile && userIdForRefresh
+            ? await runWithOrg(() =>
+                authProfilesManager.ensureFreshCredential(profile, {
+                  userId: userIdForRefresh,
+                  agentId: urlAgentId,
+                })
+              )
+            : profile?.credential;
+          resolvedCredential = await resolveProviderCredential({
+            profileCredential: credential ?? null,
+            profileAuthType: profile?.authType,
+            providerId,
+            organizationId: expectedOrganizationId,
+            readOrgSharedKey: readOrgSharedProviderApiKey,
+            systemKeyResolver: this.systemKeyResolver,
+          });
+        }
         if (resolvedCredential) {
           this.applyCredentialHeader(
             headers,
@@ -953,6 +979,34 @@ export class SecretProxy {
         }
       }
     }
+
+    // Build the final upstream from the resolved base (static slugMap, or the
+    // org custom upstream set by the URL invariant) + the forwarded path. The
+    // forwarded path must be an absolute path segment ("/…") so it can only
+    // extend the resolved base, never replace its host: a protocol-relative
+    // "//evil" or an absolute "http://evil" as forwardPath would otherwise let
+    // a worker-supplied suffix escape the resolved host. (Pre-existing gap —
+    // forward() built `${base}${forwardPath}` from an unvalidated suffix.)
+    const forwardPathOk =
+      forwardPath === "" ||
+      forwardPath === "/" ||
+      (/^\/[^/\\]/.test(forwardPath) && !forwardPath.includes("\\"));
+    if (!forwardPathOk) {
+      logger.warn(
+        `Rejected proxy request: forwarded path "${forwardPath}" is not a plain absolute path segment`
+      );
+      return c.json(
+        {
+          error: {
+            message: "Invalid upstream path.",
+            type: "invalid_request_error",
+            code: "invalid_path",
+          },
+        },
+        400
+      );
+    }
+    const upstream = `${resolvedUpstreamBaseUrl}${forwardPath}${url.search}`;
 
     logger.info(`Forwarding to upstream: ${method} ${upstream}`);
 

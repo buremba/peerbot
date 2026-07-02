@@ -17,6 +17,7 @@ import { checkStalledExecutions } from './check-stalled-executions';
 import { runConnectorHealthCheck } from '../connectors/connector-health';
 import { runClassificationReconciliation } from './classification-reconciliation';
 import { refreshConnectorDefinitions } from './refresh-connector-definitions';
+import { backfillInferenceProviders } from './backfill-inference-providers';
 import {
   isDeliverableChatPlatform,
   registerScheduledJobsTicker,
@@ -241,6 +242,28 @@ function registerMaintenanceTasks(
       const result = await refreshConnectorDefinitions();
       if (result.refreshed > 0 || result.errored > 0) {
         logger.info({ ...result }, '[task] refresh-connector-definitions completed');
+      }
+    },
+    { cron: '0 * * * *' },
+  );
+
+  // Inference-provider backfill — seeds inference_providers rows from legacy
+  // `provider:<type>:apiKey` agent_secrets (copies the ciphertext into a new
+  // row-unique keyref, empty capabilities so behavior is byte-identical). App
+  // -level (NOT inline in a migration — the classifier-backfill outage
+  // precedent), idempotent (ON CONFLICT DO NOTHING + candidate anti-join),
+  // single-claimant per tick (multi-replica safe). The first tick after a
+  // deploy converges the fleet without an operator step; hourly thereafter is
+  // plenty since it only matters until every legacy secret is migrated.
+  scheduler.register(
+    'backfill-inference-providers',
+    async () => {
+      const result = await backfillInferenceProviders();
+      if (result.created > 0 || result.invalidSlug > 0) {
+        logger.info(
+          { ...result },
+          '[task] backfill-inference-providers completed',
+        );
       }
     },
     { cron: '0 * * * *' },

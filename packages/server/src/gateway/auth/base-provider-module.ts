@@ -8,6 +8,7 @@ import {
   type ModelProviderModule,
   type ProviderUpstreamConfig,
 } from "../modules/module-system.js";
+import { resolveUrlInvariant } from "./inference-invariant.js";
 import { resolveEnv } from "./mcp/string-substitution.js";
 import type { AuthProfilesManager } from "./settings/auth-profiles-manager.js";
 
@@ -247,6 +248,22 @@ export abstract class BaseProviderModule
     credential: string;
     source: "profile" | "org" | "system";
   } | null> {
+    // URL invariant (see inference-invariant.ts): if this org configured a
+    // custom upstream for the provider, the request goes to a tenant-defined
+    // URL and ONLY the org row's own key may be sent there — never a per-user
+    // profile or a deployment env key. Short-circuit the normal chain.
+    const invariant = await resolveUrlInvariant(
+      this.providerId,
+      resolveOrgId(context?.organizationId) ?? undefined
+    );
+    if (invariant.kind === "org-only") {
+      return { credential: invariant.credential, source: "org" };
+    }
+    if (invariant.kind === "org-only-unavailable") {
+      // Custom upstream but no usable org key: fail CLOSED, do not fall through.
+      return null;
+    }
+
     const profile = await this.authProfilesManager.getBestProfile(
       agentId,
       this.providerId,

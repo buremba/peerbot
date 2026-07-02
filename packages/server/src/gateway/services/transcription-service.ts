@@ -17,8 +17,16 @@ import {
 	getErrorMessage,
 } from "@lobu/core";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
+import type { InferenceProviderConfigSource } from "./inference-provider-source.js";
 
 const logger = createLogger("transcription-service");
+
+// Static defaults for the OpenAI TTS path. An org `inference_providers` row
+// with a `capabilities.tts` block overrides these (base_url → URL, model →
+// model); an absent block ⇒ these exact values, so existing orgs are
+// byte-identical at cutover.
+const OPENAI_TTS_DEFAULT_URL = "https://api.openai.com/v1/audio/speech";
+const OPENAI_TTS_DEFAULT_MODEL = "tts-1";
 
 // Every provider call carries an abort timeout: a hung upstream otherwise
 // pins the request (and its DB pool connection) indefinitely — none of these
@@ -37,6 +45,11 @@ interface TranscriptionConfig {
   provider: TranscriptionProvider;
   apiKey: string;
   openaiCompat?: {
+    endpointUrl: string;
+    model: string;
+  };
+  /** OpenAI-compatible TTS override (org `capabilities.tts` base_url/model). */
+  ttsCompat?: {
     endpointUrl: string;
     model: string;
   };
@@ -107,18 +120,25 @@ export class TranscriptionService {
   private providerConfigSource?:
     | (() => Promise<Record<string, ProviderConfigEntry>>)
     | undefined;
+  private inferenceProviderSource?: InferenceProviderConfigSource | undefined;
 
   constructor(
     private readonly authProfilesManager: AuthProfilesManager,
-    providerConfigSource?: () => Promise<Record<string, ProviderConfigEntry>>
+    providerConfigSource?: () => Promise<Record<string, ProviderConfigEntry>>,
+    inferenceProviderSource?: InferenceProviderConfigSource
   ) {
     this.providerConfigSource = providerConfigSource;
+    this.inferenceProviderSource = inferenceProviderSource;
   }
 
   setProviderConfigSource(
     source: () => Promise<Record<string, ProviderConfigEntry>>
   ): void {
     this.providerConfigSource = source;
+  }
+
+  setInferenceProviderSource(source: InferenceProviderConfigSource): void {
+    this.inferenceProviderSource = source;
   }
 
   /**
@@ -194,20 +214,62 @@ export class TranscriptionService {
   ): Promise<TranscriptionConfig[]> {
     const configs: TranscriptionConfig[] = [];
     for (const { profileProviderId, ttsProvider } of TTS_CAPABLE_PROVIDERS) {
-      const profile = await this.authProfilesManager.getBestProfile(
-        agentId,
-        profileProviderId
-      );
-      if (profile?.credential) {
-        configs.push({
-          profileProviderId,
-          displayName: displayName(ttsProvider),
-          provider: ttsProvider,
-          apiKey: profile.credential,
-        });
-      }
+      // Only the OpenAI TTS path supports a custom upstream. Read the org
+      // `inference_providers` row once → key + capabilities.tts (base_url/model)
+      // together; when present, use the org key (honors the URL invariant).
+      const orgTts =
+        ttsProvider === "openai"
+          ? await this.getConfigDrivenTtsCandidate(agentId, profileProviderId)
+          : null;
+
+      const profile = orgTts
+        ? undefined
+        : await this.authProfilesManager.getBestProfile(
+            agentId,
+            profileProviderId
+          );
+
+      const apiKey = orgTts?.apiKey ?? profile?.credential;
+      if (!apiKey) continue;
+
+      configs.push({
+        profileProviderId,
+        displayName: displayName(ttsProvider),
+        provider: ttsProvider,
+        apiKey,
+        ttsCompat: orgTts
+          ? {
+              endpointUrl: orgTts.baseUrl ?? OPENAI_TTS_DEFAULT_URL,
+              model: orgTts.model ?? OPENAI_TTS_DEFAULT_MODEL,
+            }
+          : undefined,
+      });
     }
     return configs;
+  }
+
+  /**
+   * Resolve the org `inference_providers` row's `capabilities.tts` for this
+   * agent + provider slug (one read → key + base_url + model together). Returns
+   * null when no row/block exists ⇒ static OpenAI TTS fallback. Mirrors
+   * {@link getConfigDrivenSttCandidates}.
+   */
+  private async getConfigDrivenTtsCandidate(
+    agentId: string,
+    profileProviderId: string
+  ): Promise<{ apiKey: string; baseUrl?: string; model?: string } | null> {
+    if (!this.inferenceProviderSource) return null;
+    const resolved = await this.inferenceProviderSource(
+      agentId,
+      profileProviderId,
+      "tts"
+    );
+    if (!resolved) return null;
+    return {
+      apiKey: resolved.apiKey,
+      baseUrl: resolved.baseUrl,
+      model: resolved.model,
+    };
   }
 
   private async getTranscriptionConfigs(
@@ -215,22 +277,29 @@ export class TranscriptionService {
   ): Promise<TranscriptionConfig[]> {
     const configs = await this.getSynthesisConfigs(agentId);
     const providerIds = new Set(configs.map((c) => c.profileProviderId));
-    const configDriven = await this.getConfigDrivenSttCandidates();
+    const configDriven = await this.getConfigDrivenSttCandidates(agentId);
 
     for (const candidate of configDriven) {
       if (providerIds.has(candidate.profileProviderId)) continue;
 
-      const profile = await this.authProfilesManager.getBestProfile(
-        agentId,
-        candidate.profileProviderId
-      );
-      if (!profile?.credential) continue;
+      // The org `inference_providers` row (when present) supplies BOTH the key
+      // and the base_url/model in the candidate — single read, so honor its key.
+      // Otherwise fall back to the per-user auth profile for the credential.
+      let apiKey = candidate.orgApiKey;
+      if (!apiKey) {
+        const profile = await this.authProfilesManager.getBestProfile(
+          agentId,
+          candidate.profileProviderId
+        );
+        if (!profile?.credential) continue;
+        apiKey = profile.credential;
+      }
 
       configs.push({
         profileProviderId: candidate.profileProviderId,
         displayName: candidate.displayName,
         provider: candidate.provider,
-        apiKey: profile.credential,
+        apiKey,
         openaiCompat: candidate.openaiCompat,
       });
       providerIds.add(candidate.profileProviderId);
@@ -239,8 +308,10 @@ export class TranscriptionService {
     return configs;
   }
 
-  private async getConfigDrivenSttCandidates(): Promise<
-    Array<Omit<TranscriptionConfig, "apiKey">>
+  private async getConfigDrivenSttCandidates(
+    agentId: string
+  ): Promise<
+    Array<Omit<TranscriptionConfig, "apiKey"> & { orgApiKey?: string }>
   > {
     if (!this.providerConfigSource) return [];
 
@@ -254,7 +325,9 @@ export class TranscriptionService {
       return [];
     }
 
-    const candidates: Array<Omit<TranscriptionConfig, "apiKey">> = [];
+    const candidates: Array<
+      Omit<TranscriptionConfig, "apiKey"> & { orgApiKey?: string }
+    > = [];
     for (const [providerId, entry] of Object.entries(providerConfigs)) {
       const stt = entry.stt;
       const compat = stt?.sdkCompat || entry.sdkCompat;
@@ -269,15 +342,27 @@ export class TranscriptionService {
         continue;
       }
 
-      const endpoint = this.resolveEndpointUrl(
-        stt?.transcriptionPath,
-        stt?.baseUrl || entry.upstreamBaseUrl
-      );
+      // Prefer the org `inference_providers` row's capabilities.stt when
+      // present (one read → key + base_url + model + models_endpoint), else the
+      // providers.json `stt` block, else the static OpenAI default. Field names
+      // map 1:1 (base_url→baseUrl, models_endpoint→transcriptionPath, model).
+      const orgStt = this.inferenceProviderSource
+        ? await this.inferenceProviderSource(agentId, providerId, "stt")
+        : null;
+
+      const baseUrl =
+        orgStt?.baseUrl || stt?.baseUrl || entry.upstreamBaseUrl;
+      const transcriptionPath =
+        orgStt?.modelsEndpoint || stt?.transcriptionPath;
+      const model =
+        orgStt?.model?.trim() || stt?.model?.trim() || "whisper-1";
+
+      const endpoint = this.resolveEndpointUrl(transcriptionPath, baseUrl);
       if (!endpoint) {
         logger.warn("Invalid STT endpoint configuration", {
           providerId,
-          transcriptionPath: stt?.transcriptionPath,
-          baseUrl: stt?.baseUrl || entry.upstreamBaseUrl,
+          transcriptionPath,
+          baseUrl,
         });
         continue;
       }
@@ -288,8 +373,9 @@ export class TranscriptionService {
         provider: "openai",
         openaiCompat: {
           endpointUrl: endpoint,
-          model: stt?.model?.trim() || "whisper-1",
+          model,
         },
+        orgApiKey: orgStt?.apiKey,
       });
     }
     return candidates;
@@ -505,7 +591,7 @@ export class TranscriptionService {
   ): Promise<{ audioBuffer: Buffer; mimeType: string }> {
     switch (config.provider) {
       case "openai":
-        return this.synthesizeWithOpenAI(text, config.apiKey, options);
+        return this.synthesizeWithOpenAI(text, config, options);
       case "gemini":
         return this.synthesizeWithGemini(text, config.apiKey);
       case "elevenlabs":
@@ -517,7 +603,7 @@ export class TranscriptionService {
 
   private async synthesizeWithOpenAI(
     text: string,
-    apiKey: string,
+    config: TranscriptionConfig,
     options: VoiceOptions
   ): Promise<{ audioBuffer: Buffer; mimeType: string }> {
     // OpenAI TTS API
@@ -525,14 +611,16 @@ export class TranscriptionService {
     const voice = options.voice || "alloy";
     const speed = options.speed || 1.0;
 
-    const resp = await fetch("https://api.openai.com/v1/audio/speech", {
+    const resp = await fetch(
+      config.ttsCompat?.endpointUrl || OPENAI_TTS_DEFAULT_URL,
+      {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${config.apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "tts-1",
+        model: config.ttsCompat?.model || OPENAI_TTS_DEFAULT_MODEL,
         input: text,
         voice,
         speed,

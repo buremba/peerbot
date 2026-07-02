@@ -5,10 +5,10 @@
  * at `~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/
  * ChatStorage.sqlite`. Lobu for Mac snapshots the DB read-only, walks new
  * rows since the last `Z_PK` checkpoint, and emits events that share the
- * `whatsapp` connector's metadata shape so downstream entity links work
+ * `whatsapp.cloud` connector's metadata shape so downstream entity links work
  * identically.
  *
- * Differences from the QR-paired `whatsapp` connector:
+ * Differences from the QR-paired `whatsapp.cloud` connector:
  *   - No Baileys, no socket, no phone-offline auto-unlink (WA Desktop itself
  *     is the linked device).
  *   - Ciphertext never leaves the Mac.

@@ -1,5 +1,5 @@
 /**
- * Spotify Connector (V1 runtime)
+ * Spotify Connector (example-only — not bundled with Lobu) (V1 runtime)
  *
  * Syncs saved tracks, playlists, recently played, and top tracks from Spotify.
  * Requires OAuth with user-scoped tokens.
@@ -15,7 +15,7 @@ import {
   requireBearerClient,
   type SyncContext,
   type SyncResult,
-} from '@lobu/connector-sdk';
+} from "@lobu/connector-sdk";
 
 // ---------------------------------------------------------------------------
 // Spotify API types
@@ -95,7 +95,11 @@ interface SpotifyPlaylistTrackItem {
 interface SpotifyRecentlyPlayedItem {
   track: SpotifyTrack;
   played_at: string;
-  context: { type: string; uri: string; external_urls: { spotify: string } } | null;
+  context: {
+    type: string;
+    uri: string;
+    external_urls: { spotify: string };
+  } | null;
 }
 
 interface SpotifyRecentlyPlayedResponse {
@@ -115,7 +119,7 @@ interface SpotifyCheckpoint {
 // ---------------------------------------------------------------------------
 
 function artistNames(artists: SpotifyArtist[]): string {
-  return artists.map((a) => a.name).join(', ');
+  return artists.map((a) => a.name).join(", ");
 }
 
 /**
@@ -139,150 +143,151 @@ function albumArt(images: SpotifyImage[]): string | undefined {
 
 export default class SpotifyConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
-    key: 'spotify',
-    name: 'Spotify',
-    description: 'Syncs saved tracks, playlists, recently played, and top tracks from Spotify.',
-    version: '1.0.0',
-    faviconDomain: 'spotify.com',
+    key: "spotify",
+    name: "Spotify",
+    description:
+      "Syncs saved tracks, playlists, recently played, and top tracks from Spotify.",
+    version: "1.0.0",
+    faviconDomain: "spotify.com",
     authSchema: {
       methods: [
         {
-          type: 'oauth',
-          provider: 'spotify',
-          authorizationUrl: 'https://accounts.spotify.com/authorize',
-          tokenUrl: 'https://accounts.spotify.com/api/token',
-          userinfoUrl: 'https://api.spotify.com/v1/me',
-          tokenEndpointAuthMethod: 'client_secret_basic',
+          type: "oauth",
+          provider: "spotify",
+          authorizationUrl: "https://accounts.spotify.com/authorize",
+          tokenUrl: "https://accounts.spotify.com/api/token",
+          userinfoUrl: "https://api.spotify.com/v1/me",
+          tokenEndpointAuthMethod: "client_secret_basic",
           requiredScopes: [
-            'user-read-private',
-            'user-read-email',
-            'user-library-read',
-            'user-top-read',
-            'user-read-recently-played',
-            'playlist-read-private',
+            "user-read-private",
+            "user-read-email",
+            "user-library-read",
+            "user-top-read",
+            "user-read-recently-played",
+            "playlist-read-private",
           ],
-          loginScopes: ['user-read-private', 'user-read-email'],
-          clientIdKey: 'SPOTIFY_CLIENT_ID',
-          clientSecretKey: 'SPOTIFY_CLIENT_SECRET',
+          loginScopes: ["user-read-private", "user-read-email"],
+          clientIdKey: "SPOTIFY_CLIENT_ID",
+          clientSecretKey: "SPOTIFY_CLIENT_SECRET",
           loginProvisioning: {
             autoCreateConnection: true,
           },
           setupInstructions:
-            'Create a Spotify App at https://developer.spotify.com/dashboard — add {{redirect_uri}} as a Redirect URI, then copy the client ID and secret below.',
+            "Create a Spotify App at https://developer.spotify.com/dashboard — add {{redirect_uri}} as a Redirect URI, then copy the client ID and secret below.",
         },
       ],
     },
     feeds: {
       saved_tracks: {
-        key: 'saved_tracks',
-        name: 'Saved Tracks',
-        description: 'Your liked/saved tracks on Spotify.',
-        displayNameTemplate: 'Saved Tracks',
-        requiredScopes: ['user-library-read'],
+        key: "saved_tracks",
+        name: "Saved Tracks",
+        description: "Your liked/saved tracks on Spotify.",
+        displayNameTemplate: "Saved Tracks",
+        requiredScopes: ["user-library-read"],
         eventKinds: {
           track: {
-            description: 'A saved Spotify track',
+            description: "A saved Spotify track",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                artist: { type: 'string' },
-                album: { type: 'string' },
-                album_art_url: { type: 'string', format: 'uri' },
-                duration_ms: { type: 'number' },
-                popularity: { type: 'number' },
-                explicit: { type: 'boolean' },
-                release_date: { type: 'string' },
+                artist: { type: "string" },
+                album: { type: "string" },
+                album_art_url: { type: "string", format: "uri" },
+                duration_ms: { type: "number" },
+                popularity: { type: "number" },
+                explicit: { type: "boolean" },
+                release_date: { type: "string" },
               },
             },
           },
         },
       },
       playlists: {
-        key: 'playlists',
-        name: 'Playlists',
-        description: 'Your playlists and their tracks.',
-        displayNameTemplate: 'Playlists',
-        requiredScopes: ['playlist-read-private'],
+        key: "playlists",
+        name: "Playlists",
+        description: "Your playlists and their tracks.",
+        displayNameTemplate: "Playlists",
+        requiredScopes: ["playlist-read-private"],
         eventKinds: {
           playlist: {
-            description: 'A Spotify playlist',
+            description: "A Spotify playlist",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                track_count: { type: 'number' },
-                public: { type: 'boolean' },
-                collaborative: { type: 'boolean' },
-                owner: { type: 'string' },
+                track_count: { type: "number" },
+                public: { type: "boolean" },
+                collaborative: { type: "boolean" },
+                owner: { type: "string" },
               },
             },
           },
           playlist_track: {
-            description: 'A track within a Spotify playlist',
+            description: "A track within a Spotify playlist",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                playlist_id: { type: 'string' },
-                playlist_name: { type: 'string' },
-                artist: { type: 'string' },
-                album: { type: 'string' },
-                added_at: { type: 'string' },
-                added_by: { type: 'string' },
+                playlist_id: { type: "string" },
+                playlist_name: { type: "string" },
+                artist: { type: "string" },
+                album: { type: "string" },
+                added_at: { type: "string" },
+                added_by: { type: "string" },
               },
             },
           },
         },
       },
       recently_played: {
-        key: 'recently_played',
-        name: 'Recently Played',
-        description: 'Your recently played tracks.',
-        displayNameTemplate: 'Recently Played',
-        requiredScopes: ['user-read-recently-played'],
+        key: "recently_played",
+        name: "Recently Played",
+        description: "Your recently played tracks.",
+        displayNameTemplate: "Recently Played",
+        requiredScopes: ["user-read-recently-played"],
         eventKinds: {
           play: {
-            description: 'A recently played track',
+            description: "A recently played track",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                artist: { type: 'string' },
-                album: { type: 'string' },
-                duration_ms: { type: 'number' },
-                context_type: { type: 'string' },
-                context_uri: { type: 'string' },
+                artist: { type: "string" },
+                album: { type: "string" },
+                duration_ms: { type: "number" },
+                context_type: { type: "string" },
+                context_uri: { type: "string" },
               },
             },
           },
         },
       },
       top_tracks: {
-        key: 'top_tracks',
-        name: 'Top Tracks',
-        description: 'Your top tracks by listening frequency.',
-        displayNameTemplate: 'Top Tracks ({time_range})',
-        requiredScopes: ['user-top-read'],
+        key: "top_tracks",
+        name: "Top Tracks",
+        description: "Your top tracks by listening frequency.",
+        displayNameTemplate: "Top Tracks ({time_range})",
+        requiredScopes: ["user-top-read"],
         configSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             time_range: {
-              type: 'string',
-              enum: ['short_term', 'medium_term', 'long_term'],
-              default: 'medium_term',
+              type: "string",
+              enum: ["short_term", "medium_term", "long_term"],
+              default: "medium_term",
               description:
-                'Time range: short_term (~4 weeks), medium_term (~6 months), long_term (all time).',
+                "Time range: short_term (~4 weeks), medium_term (~6 months), long_term (all time).",
             },
           },
         },
         eventKinds: {
           top_track: {
-            description: 'A top track by listening frequency',
+            description: "A top track by listening frequency",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                artist: { type: 'string' },
-                album: { type: 'string' },
-                popularity: { type: 'number' },
-                rank: { type: 'number' },
-                time_range: { type: 'string' },
+                artist: { type: "string" },
+                album: { type: "string" },
+                popularity: { type: "number" },
+                rank: { type: "number" },
+                time_range: { type: "string" },
               },
             },
           },
@@ -291,7 +296,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
     },
   };
 
-  private readonly API_BASE = 'https://api.spotify.com/v1';
+  private readonly API_BASE = "https://api.spotify.com/v1";
   private readonly PAGE_SIZE = 50;
   private readonly MAX_PAGES = 20;
 
@@ -301,18 +306,18 @@ export default class SpotifyConnector extends ConnectorRuntime {
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
     const http = requireBearerClient(ctx.credentials, {
-      errorPrefix: 'Spotify API',
-      label: 'Spotify',
+      errorPrefix: "Spotify API",
+      label: "Spotify",
     });
 
     switch (ctx.feedKey) {
-      case 'saved_tracks':
+      case "saved_tracks":
         return this.syncSavedTracks(ctx, http);
-      case 'playlists':
+      case "playlists":
         return this.syncPlaylists(ctx, http);
-      case 'recently_played':
+      case "recently_played":
         return this.syncRecentlyPlayed(ctx, http);
-      case 'top_tracks':
+      case "top_tracks":
         return this.syncTopTracks(ctx, http);
       default:
         throw new Error(`Unknown feed: ${ctx.feedKey}`);
@@ -326,7 +331,10 @@ export default class SpotifyConnector extends ConnectorRuntime {
   // Feed: saved_tracks
   // -------------------------------------------------------------------------
 
-  private async syncSavedTracks(ctx: SyncContext, http: HttpClient): Promise<SyncResult> {
+  private async syncSavedTracks(
+    ctx: SyncContext,
+    http: HttpClient
+  ): Promise<SyncResult> {
     const events: EventEnvelope[] = [];
 
     const pages = paginateByOffset(
@@ -349,7 +357,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
           author_name: artistNames(track.artists),
           source_url: track.external_urls.spotify,
           occurred_at: new Date(item.added_at),
-          origin_type: 'track',
+          origin_type: "track",
           metadata: {
             artist: artistNames(track.artists),
             album: track.album.name,
@@ -367,10 +375,9 @@ export default class SpotifyConnector extends ConnectorRuntime {
 
     return {
       events,
-      checkpoint: { last_sync_at: new Date().toISOString() } satisfies SpotifyCheckpoint as Record<
-        string,
-        unknown
-      >,
+      checkpoint: {
+        last_sync_at: new Date().toISOString(),
+      } satisfies SpotifyCheckpoint as Record<string, unknown>,
     };
   }
 
@@ -378,7 +385,10 @@ export default class SpotifyConnector extends ConnectorRuntime {
   // Feed: playlists
   // -------------------------------------------------------------------------
 
-  private async syncPlaylists(ctx: SyncContext, http: HttpClient): Promise<SyncResult> {
+  private async syncPlaylists(
+    ctx: SyncContext,
+    http: HttpClient
+  ): Promise<SyncResult> {
     const events: EventEnvelope[] = [];
 
     // First, fetch all playlists
@@ -405,7 +415,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
         author_name: pl.owner.display_name ?? pl.owner.id,
         source_url: pl.external_urls.spotify,
         occurred_at: new Date(),
-        origin_type: 'playlist',
+        origin_type: "playlist",
         metadata: {
           track_count: pl.tracks.total,
           public: pl.public,
@@ -421,7 +431,9 @@ export default class SpotifyConnector extends ConnectorRuntime {
     for (const pl of playlists) {
       const trackPages = paginateByOffset(
         async (offset) => {
-          const data = await http.get<SpotifyPagingResponse<SpotifyPlaylistTrackItem>>(
+          const data = await http.get<
+            SpotifyPagingResponse<SpotifyPlaylistTrackItem>
+          >(
             `${this.API_BASE}/playlists/${pl.id}/tracks?limit=${this.PAGE_SIZE}&offset=${offset}`
           );
           return { items: data.items, hasMore: !!data.next };
@@ -441,7 +453,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
             author_name: artistNames(track.artists),
             source_url: track.external_urls.spotify,
             occurred_at: new Date(item.added_at),
-            origin_type: 'playlist_track',
+            origin_type: "playlist_track",
             origin_parent_id: `spotify_playlist_${pl.id}`,
             metadata: {
               playlist_id: pl.id,
@@ -461,10 +473,9 @@ export default class SpotifyConnector extends ConnectorRuntime {
 
     return {
       events,
-      checkpoint: { last_sync_at: new Date().toISOString() } satisfies SpotifyCheckpoint as Record<
-        string,
-        unknown
-      >,
+      checkpoint: {
+        last_sync_at: new Date().toISOString(),
+      } satisfies SpotifyCheckpoint as Record<string, unknown>,
     };
   }
 
@@ -472,7 +483,10 @@ export default class SpotifyConnector extends ConnectorRuntime {
   // Feed: recently_played
   // -------------------------------------------------------------------------
 
-  private async syncRecentlyPlayed(ctx: SyncContext, http: HttpClient): Promise<SyncResult> {
+  private async syncRecentlyPlayed(
+    ctx: SyncContext,
+    http: HttpClient
+  ): Promise<SyncResult> {
     const events: EventEnvelope[] = [];
     const checkpoint = (ctx.checkpoint ?? {}) as SpotifyCheckpoint;
     let firstUrl = `${this.API_BASE}/me/player/recently-played?limit=${this.PAGE_SIZE}`;
@@ -487,7 +501,9 @@ export default class SpotifyConnector extends ConnectorRuntime {
     // Spotify paginates recently-played via full `next` URLs, so the cursor is the page URL.
     const pages = paginateByCursor<SpotifyRecentlyPlayedItem, string>(
       async (url) => {
-        const data = await http.get<SpotifyRecentlyPlayedResponse>(url ?? firstUrl);
+        const data = await http.get<SpotifyRecentlyPlayedResponse>(
+          url ?? firstUrl
+        );
         // Store the latest cursor for next sync
         if (data.cursors?.after) {
           newCursor = data.cursors.after;
@@ -508,7 +524,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
           author_name: artistNames(track.artists),
           source_url: track.external_urls.spotify,
           occurred_at: playedAt,
-          origin_type: 'play',
+          origin_type: "play",
           metadata: {
             artist: artistNames(track.artists),
             album: track.album.name,
@@ -535,12 +551,17 @@ export default class SpotifyConnector extends ConnectorRuntime {
   // Feed: top_tracks
   // -------------------------------------------------------------------------
 
-  private async syncTopTracks(ctx: SyncContext, http: HttpClient): Promise<SyncResult> {
-    const timeRange = (ctx.config.time_range as string) ?? 'medium_term';
+  private async syncTopTracks(
+    ctx: SyncContext,
+    http: HttpClient
+  ): Promise<SyncResult> {
+    const timeRange = (ctx.config.time_range as string) ?? "medium_term";
     const events: EventEnvelope[] = [];
     let rank = 1;
     // UTC-midnight bucket so re-syncs within the same day dedup (see occurred_at below).
-    const snapshotDay = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+    const snapshotDay = new Date(
+      `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`
+    );
 
     const pages = paginateByOffset(
       async (offset) => {
@@ -567,7 +588,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
           // identical same-day snapshot dedup while still recording the new
           // ranking whenever it actually shifts.
           occurred_at: snapshotDay,
-          origin_type: 'top_track',
+          origin_type: "top_track",
           metadata: {
             artist: artistNames(track.artists),
             album: track.album.name,
@@ -584,10 +605,9 @@ export default class SpotifyConnector extends ConnectorRuntime {
 
     return {
       events,
-      checkpoint: { last_sync_at: new Date().toISOString() } satisfies SpotifyCheckpoint as Record<
-        string,
-        unknown
-      >,
+      checkpoint: {
+        last_sync_at: new Date().toISOString(),
+      } satisfies SpotifyCheckpoint as Record<string, unknown>,
     };
   }
 }

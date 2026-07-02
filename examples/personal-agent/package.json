@@ -2,10 +2,13 @@
   "name": "@lobu/example-personal-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Lobu example: personal agent with a project-local Revolut connector.",
+  "description": "Lobu example: personal agent connectors (Revolut, LinkedIn, Spotify, WhatsApp cloud).",
   "type": "module",
+  "dependencies": {
+    "baileys": "7.0.0-rc12"
+  },
   "devDependencies": {
-    "@lobu/cli": "^9.3.0",
-    "@lobu/connector-sdk": "^9.3.0"
+    "@lobu/cli": "^13.3.0",
+    "@lobu/connector-sdk": "^13.3.0"
   }
 }

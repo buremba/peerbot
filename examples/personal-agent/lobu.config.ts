@@ -5,7 +5,10 @@ import {
   defineConnection,
   defineEntityType,
 } from "@lobu/cli/config";
+import type LinkedInConnector from "./linkedin.connector.ts";
 import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
+import type SpotifyConnector from "./spotify.connector.ts";
+import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 
 const personalAgent = defineAgent({
   id: "personal-agent",
@@ -667,6 +670,11 @@ export default defineConfig({
   connectors: [
     connectorFromFile<typeof RevolutTransactionsConnector>(
       "./revolut-transactions.connector.ts"
+    ),
+    connectorFromFile<typeof LinkedInConnector>("./linkedin.connector.ts"),
+    connectorFromFile<typeof SpotifyConnector>("./spotify.connector.ts"),
+    connectorFromFile<typeof WhatsAppCloudConnector>(
+      "./whatsapp.cloud.connector.ts"
     ),
   ],
   org: "buremba",

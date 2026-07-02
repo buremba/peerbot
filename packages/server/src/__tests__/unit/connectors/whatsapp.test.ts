@@ -43,7 +43,10 @@ beforeAll(async () => {
   // the static import graph. Resolve relative to this file so it works whether
   // process.cwd() is the repo root, the package, or a worktree.
   const target = pathToFileURL(
-    path.resolve(__dirname, '../../../../../connectors/src/whatsapp.ts')
+    path.resolve(
+      __dirname,
+      '../../../../../examples/personal-agent/whatsapp.cloud.connector.ts'
+    )
   ).href;
   const mod = (await import(target)) as {
     toEvent: ToEventFn;

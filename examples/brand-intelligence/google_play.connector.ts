@@ -1,5 +1,5 @@
 /**
- * Google Play Store Connector (V1 runtime)
+ * Google Play Store Connector (V1 runtime) — example-only, not bundled with Lobu.
  *
  * Syncs app reviews from the Google Play Store.
  * Directly calls the Play Store batchexecute API instead of using an npm package.
@@ -15,13 +15,13 @@ import {
   paginateByCursor,
   type SyncContext,
   type SyncResult,
-} from '@lobu/connector-sdk';
+} from "@lobu/connector-sdk";
 
 // ── Google Play batchexecute API helpers ────────────────────────────
 
-const BASE_URL = 'https://play.google.com';
+const BASE_URL = "https://play.google.com";
 
-const http = createHttpClient({ errorPrefix: 'Google Play' });
+const http = createHttpClient({ errorPrefix: "Google Play" });
 
 const SORT = {
   HELPFULNESS: 1,
@@ -96,17 +96,17 @@ function extractReviews(data: any[], appId: string): RawReview[] {
   if (!Array.isArray(reviewsList)) return [];
 
   return reviewsList.map((r: any) => ({
-    id: r[0] ?? '',
-    userName: r[1]?.[0] ?? '',
+    id: r[0] ?? "",
+    userName: r[1]?.[0] ?? "",
     userImage: r[1]?.[1]?.[3]?.[2] ?? null,
     date: parseDate(r[5]),
     score: r[2] ?? 0,
-    text: r[4] ?? '',
+    text: r[4] ?? "",
     replyDate: parseDate(r[7]?.[2]),
     replyText: r[7]?.[1] ?? null,
     version: r[10] ?? null,
     thumbsUp: r[6] ?? 0,
-    url: `${BASE_URL}/store/apps/details?id=${appId}&reviewId=${r[0] ?? ''}`,
+    url: `${BASE_URL}/store/apps/details?id=${appId}&reviewId=${r[0] ?? ""}`,
   }));
 }
 
@@ -132,15 +132,15 @@ async function fetchReviewsPage(
   let res: Response;
   try {
     res = await http.request(url, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
       },
       body,
     });
   } catch (error) {
     if (error instanceof HttpStatusError && error.status === 404) {
-      throw new Error('App not found (404)');
+      throw new Error("App not found (404)");
     }
     throw error;
   }
@@ -156,7 +156,7 @@ async function fetchReviewsPage(
   try {
     outer = JSON.parse(text.substring(5));
   } catch {
-    const preview = text.substring(0, 120).replace(/\s+/g, ' ');
+    const preview = text.substring(0, 120).replace(/\s+/g, " ");
     throw new Error(`Google Play returned non-JSON response: ${preview}`);
   }
   const innerJson: string | null = outer?.[0]?.[2];
@@ -169,7 +169,7 @@ async function fetchReviewsPage(
   try {
     data = JSON.parse(innerJson);
   } catch {
-    throw new Error('Google Play returned malformed inner JSON payload');
+    throw new Error("Google Play returned malformed inner JSON payload");
   }
   return {
     reviews: extractReviews(data, appId),
@@ -186,55 +186,62 @@ interface GooglePlayCheckpoint {
 
 export default class GooglePlayConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
-    key: 'google_play',
-    name: 'Google Play Store',
-    description: 'Fetches app reviews from the Google Play Store.',
-    version: '1.0.0',
-    faviconDomain: 'play.google.com',
+    key: "google_play",
+    name: "Google Play Store",
+    description: "Fetches app reviews from the Google Play Store.",
+    version: "1.0.0",
+    faviconDomain: "play.google.com",
     authSchema: {
-      methods: [{ type: 'none' }],
+      methods: [{ type: "none" }],
     },
     feeds: {
       reviews: {
-        key: 'reviews',
-        name: 'App Reviews',
-        description: 'Fetch reviews for an Android app.',
+        key: "reviews",
+        name: "App Reviews",
+        description: "Fetch reviews for an Android app.",
         configSchema: {
-          type: 'object',
-          required: ['app_id'],
+          type: "object",
+          required: ["app_id"],
           properties: {
             app_id: {
-              type: 'string',
+              type: "string",
               minLength: 1,
-              description: 'Google Play package name (e.g., "com.spotify.music")',
+              description:
+                'Google Play package name (e.g., "com.spotify.music")',
             },
             country: {
-              type: 'string',
+              type: "string",
               minLength: 2,
               maxLength: 2,
-              default: 'us',
-              description: 'ISO country code',
+              default: "us",
+              description: "ISO country code",
             },
             lang: {
-              type: 'string',
+              type: "string",
               minLength: 2,
               maxLength: 5,
-              default: 'en',
-              description: 'Language code',
+              default: "en",
+              description: "Language code",
             },
           },
         },
         eventKinds: {
           review: {
-            description: 'A Google Play Store app review',
+            description: "A Google Play Store app review",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                rating: { type: 'number', description: 'Star rating (1-5)' },
-                thumbs_up: { type: 'number', description: 'Thumbs up count' },
-                version: { type: 'string', description: 'App version reviewed' },
-                reply: { type: 'string', description: 'Developer reply text' },
-                reply_date: { type: 'string', description: 'Developer reply date' },
+                rating: { type: "number", description: "Star rating (1-5)" },
+                thumbs_up: { type: "number", description: "Thumbs up count" },
+                version: {
+                  type: "string",
+                  description: "App version reviewed",
+                },
+                reply: { type: "string", description: "Developer reply text" },
+                reply_date: {
+                  type: "string",
+                  description: "Developer reply date",
+                },
               },
             },
           },
@@ -245,8 +252,8 @@ export default class GooglePlayConnector extends ConnectorRuntime {
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
     const app_id = ctx.config.app_id as string;
-    const country = (ctx.config.country as string) || 'us';
-    const lang = (ctx.config.lang as string) || 'en';
+    const country = (ctx.config.country as string) || "us";
+    const lang = (ctx.config.lang as string) || "en";
     const checkpoint = (ctx.checkpoint ?? {}) as GooglePlayCheckpoint;
 
     const MAX_REVIEWS = 500;
@@ -263,7 +270,13 @@ export default class GooglePlayConnector extends ConnectorRuntime {
 
     const pages = paginateByCursor<RawReview, string>(
       async (cursor) => {
-        const page = await fetchReviewsPage(app_id, SORT.HELPFULNESS, lang, country, cursor);
+        const page = await fetchReviewsPage(
+          app_id,
+          SORT.HELPFULNESS,
+          lang,
+          country,
+          cursor
+        );
         lastFetchedToken = page.nextToken;
         return { items: page.reviews, nextCursor: page.nextToken };
       },
@@ -306,8 +319,8 @@ export default class GooglePlayConnector extends ConnectorRuntime {
           payload_text: review.text,
           author_name: review.userName || undefined,
           occurred_at: review.date ? new Date(review.date) : new Date(),
-          origin_type: 'review',
-          score: calculateEngagementScore('google_play', {
+          origin_type: "review",
+          score: calculateEngagementScore("google_play", {
             rating,
             helpful_count: thumbsUp,
             reply_count: replyCount,

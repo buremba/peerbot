@@ -1,13 +1,13 @@
-import { beforeAll, describe, expect, mock, test } from 'bun:test';
-import { connectorSdkMock } from './connector-sdk.mock';
+import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { connectorSdkMock } from "./connector-sdk.mock";
 
-mock.module('@lobu/connector-sdk', connectorSdkMock);
+mock.module("@lobu/connector-sdk", connectorSdkMock);
 
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let GoogleMapsConnector: any;
 
 beforeAll(async () => {
-  const mod = await import('../gmaps');
+  const mod = await import("../gmaps.connector");
   GoogleMapsConnector = mod.default;
 });
 
@@ -20,8 +20,8 @@ function jsonResponse(body: unknown, status = 200) {
   } as unknown as Response;
 }
 
-describe('GoogleMapsConnector.sync', () => {
-  test('searches by business_name then fetches details via the http client', async () => {
+describe("GoogleMapsConnector.sync", () => {
+  test("searches by business_name then fetches details via the http client", async () => {
     const connector = new GoogleMapsConnector();
     const urls: string[] = [];
     // Override the class-field client with a fake `raw()` (the SDK mock returns
@@ -29,19 +29,19 @@ describe('GoogleMapsConnector.sync', () => {
     connector.http = {
       raw: async (url: string) => {
         urls.push(url);
-        if (url.includes('findplacefromtext')) {
-          return jsonResponse({ candidates: [{ place_id: 'PID' }] });
+        if (url.includes("findplacefromtext")) {
+          return jsonResponse({ candidates: [{ place_id: "PID" }] });
         }
         return jsonResponse({
-          status: 'OK',
+          status: "OK",
           result: {
-            name: 'Acme',
-            url: 'https://maps/acme',
+            name: "Acme",
+            url: "https://maps/acme",
             reviews: [
               {
-                author_name: 'Reviewer',
+                author_name: "Reviewer",
                 rating: 5,
-                text: 'Great place',
+                text: "Great place",
                 time: 1_700_000_000,
               },
             ],
@@ -51,24 +51,27 @@ describe('GoogleMapsConnector.sync', () => {
     };
 
     const result = await connector.sync({
-      config: { GOOGLE_MAPS_API_KEY: 'key', business_name: 'Acme' },
+      config: { GOOGLE_MAPS_API_KEY: "key", business_name: "Acme" },
       checkpoint: null,
     });
 
-    expect(urls[0]).toContain('findplacefromtext');
-    expect(urls[1]).toContain('place_id=PID');
+    expect(urls[0]).toContain("findplacefromtext");
+    expect(urls[1]).toContain("place_id=PID");
     expect(result.events).toHaveLength(1);
-    expect(result.events[0].payload_text).toBe('Great place');
+    expect(result.events[0].payload_text).toBe("Great place");
   });
 
-  test('throws with the place-details status when the API returns non-ok', async () => {
+  test("throws with the place-details status when the API returns non-ok", async () => {
     const connector = new GoogleMapsConnector();
     connector.http = {
       raw: async () => jsonResponse({}, 500),
     };
 
     await expect(
-      connector.sync({ config: { GOOGLE_MAPS_API_KEY: 'key', place_id: 'PID' }, checkpoint: null })
+      connector.sync({
+        config: { GOOGLE_MAPS_API_KEY: "key", place_id: "PID" },
+        checkpoint: null,
+      })
     ).rejects.toThrow(/Google Places details failed \(500\)/);
   });
 });

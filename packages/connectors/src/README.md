@@ -488,11 +488,7 @@ This means edits to `.ts` files in `connectors/` take effect on the next sync wi
 | Connector | Auth | Feeds | Actions |
 |-----------|------|-------|---------|
 | `github` | oauth/env_keys | issues, PRs, comments, discussions | create/close/reopen issues, PRs |
-| `gmaps` | env_keys | reviews | - |
-| `google_play` | none | reviews | - |
 | `hackernews` | none | stories, comments | - |
-| `ios_appstore` | none | reviews | - |
-| `linkedin` | browser (CLI) | company updates, jobs | - |
 | `producthunt` | env_keys | posts & comments | - |
 | `reddit` | oauth/none | posts, comments | - |
 | `rss` | none | articles | - |

@@ -479,30 +479,56 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
       throw new Error('Gmail virtual-feed reads require Google OAuth credentials.');
     }
 
-    const parts = [baseQuery, ...terms.map((t) => t.trim()).filter(Boolean)].filter(Boolean);
+    // Gmail's `q` is space-separated = AND. Each term is escaped so a term that
+    // contains Gmail operators/spaces (e.g. `from:a b`) is matched literally as a
+    // quoted phrase rather than reinterpreted as query syntax.
+    const parts = [baseQuery.trim(), ...terms.map((t) => this.escapeGmailTerm(t))].filter(Boolean);
     const q = parts.join(' ');
     if (!q) {
       throw new Error('Gmail virtual feed has no `query` in its config and no search terms.');
     }
 
-    const limit = Math.min(Math.max(Math.trunc(ctx.limit ?? ctx.config.max_results ?? 25), 1), 100);
+    // Gmail search has no arbitrary sort — results are always reverse-chronological
+    // (newest first). Reject a sort we can't honor rather than silently ignore it.
+    if (ctx.sort && !(ctx.sort.column === 'date' && ctx.sort.order === 'desc')) {
+      throw new Error(
+        `Gmail virtual feed only supports sort {column:'date', order:'desc'} (newest first); got ${JSON.stringify(ctx.sort)}.`
+      );
+    }
 
+    const limit = Math.min(Math.max(Math.trunc(ctx.limit ?? ctx.config.max_results ?? 25), 1), 100);
+    const offset = Math.max(Math.trunc(ctx.offset ?? 0), 0);
+
+    // Apply offset by listing offset+limit ids then dropping the leading `offset`.
+    // Gmail's list endpoint has no offset param, only forward pagination.
     const http = this.createClient(token);
-    const ids = await this.listMessageIds(http, q, limit);
+    const ids = (await this.listMessageIds(http, q, offset + limit)).slice(offset, offset + limit);
     const rows = await this.fetchMessageRows(http, ids);
 
-    return { rows, columns: GMAIL_SEARCH_COLUMNS, total: ids.length };
+    // No `total`: Gmail's list endpoint returns no reliable match count, and
+    // `resultSizeEstimate` is a coarse estimate — reporting the page length as a
+    // total would be wrong. Callers page until a short page.
+    return { rows, columns: GMAIL_SEARCH_COLUMNS };
+  }
+
+  /** Quote a search term so Gmail matches it literally (handles spaces/operators). */
+  private escapeGmailTerm(term: string): string {
+    const t = term.trim();
+    if (!t) return '';
+    // Already a bare token with no whitespace/quotes → pass through.
+    if (!/[\s"]/.test(t)) return t;
+    return `"${t.replace(/"/g, '')}"`;
   }
 
   private async listMessageIds(
     http: HttpClient,
     q: string,
-    limit: number
+    want: number
   ): Promise<Array<{ id: string; threadId: string }>> {
     const out: Array<{ id: string; threadId: string }> = [];
     let pageToken: string | undefined;
     do {
-      const remaining = limit - out.length;
+      const remaining = want - out.length;
       if (remaining <= 0) break;
       const params = new URLSearchParams({
         q,
@@ -519,8 +545,8 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
       };
       for (const m of data.messages ?? []) out.push({ id: m.id, threadId: m.threadId });
       pageToken = data.nextPageToken;
-    } while (pageToken && out.length < limit);
-    return out.slice(0, limit);
+    } while (pageToken && out.length < want);
+    return out.slice(0, want);
   }
 
   private async fetchMessageRows(

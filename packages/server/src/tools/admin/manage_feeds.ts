@@ -445,15 +445,20 @@ async function handleCreateFeed(
     };
   }
 
-  const schedule = args.schedule ?? getDefaultSchedule(env);
-  const scheduleError = validateSchedule(schedule);
-  if (scheduleError) {
-    return { error: scheduleError };
-  }
   // A virtual feed is read LIVE at request time and never synced, so it has no
   // schedule. It MUST carry config.query (the pushdown predicate readVirtualFeed
   // reads) — without it the live read would always throw at request time.
   const isVirtual = args.virtual === true;
+  // Only validate the sync schedule for non-virtual feeds — a virtual feed
+  // persists schedule = NULL, so a (possibly defaulted) schedule string must not
+  // gate its creation.
+  const schedule = isVirtual ? null : (args.schedule ?? getDefaultSchedule(env));
+  if (!isVirtual) {
+    const scheduleError = validateSchedule(schedule as string);
+    if (scheduleError) {
+      return { error: scheduleError };
+    }
+  }
   if (isVirtual) {
     const configQuery = args.config?.query;
     if (typeof configQuery !== 'string' || !configQuery.trim()) {
@@ -464,9 +469,9 @@ async function handleCreateFeed(
     }
   }
   // Don't schedule a first run for a feed whose connection is still pending auth,
-  // or for a virtual feed (never synced).
+  // or for a virtual feed (never synced — schedule is NULL).
   const nextRunAtVal =
-    !isVirtual && feedInitialStatus === 'active' ? nextRunAt(schedule) : null;
+    schedule && feedInitialStatus === 'active' ? nextRunAt(schedule) : null;
   // Reject cross-org entity_ids: a feed pointing at another org's entity links
   // synced events to a non-existent in-org entity (silent data-correctness bug).
   try {
@@ -493,7 +498,7 @@ async function handleCreateFeed(
       ${organizationId}, ${args.connection_id}, ${args.feed_key}, ${displayName}, ${feedInitialStatus},
       ${entityIdsValue}::bigint[],
       ${args.config ? sql.json(args.config) : null},
-      ${isVirtual ? null : schedule}, ${nextRunAtVal},
+      ${schedule}, ${nextRunAtVal},
       ${isVirtual ? 'virtual' : 'collected'}, ${isVirtual}
     )
     RETURNING *

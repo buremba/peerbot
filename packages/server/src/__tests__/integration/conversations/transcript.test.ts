@@ -42,6 +42,25 @@ describe('channel transcript', () => {
     expect(out[0]).toMatchObject({ user: 'Alice', text: 'I want a burrito', isBot: false });
   });
 
+  it('exposes the platform message id + thread id so a reader can react to a read message', async () => {
+    // Top-level message: messageId is the Slack ts, threadId is null.
+    await persistChannelMessage(msg({ platformMessageId: '1718000000.0001', threadId: null }));
+    // A threaded reply: threadId carries the platform thread id.
+    await persistChannelMessage(
+      msg({
+        platformMessageId: '1718000000.0002',
+        threadId: 'slack:C0LUNCH:1718000000.0001',
+        text: 'same here',
+        occurredAt: new Date('2026-06-18T11:01:00Z'),
+      })
+    );
+    const out = await readChannelTranscript('org-1', 'conn-1', 'C0LUNCH', 50);
+    expect(out.map((m) => [m.messageId, m.threadId])).toEqual([
+      ['1718000000.0001', null],
+      ['1718000000.0002', 'slack:C0LUNCH:1718000000.0001'],
+    ]);
+  });
+
   it('is idempotent: same (connection, channel, platform_message_id) collapses to one row', async () => {
     await persistChannelMessage(msg());
     await persistChannelMessage(msg({ text: 'redelivered copy' })); // same id

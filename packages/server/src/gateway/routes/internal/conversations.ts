@@ -283,23 +283,46 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
         if (!thread || !message) {
           return errorResponse(c, "thread and message are required", 400);
         }
+        // `thread` is either a THREAD handle (from a prior send — its
+        // `threadId` is `platform:channel:root`) or a CHANNEL handle (from
+        // read_conversation / list — for reacting to a message the agent only
+        // READ). Try thread first; fall back to channel. For the channel case
+        // the adapter target is the 2-part `platform:channel` (channelKey),
+        // which its decodeThreadId accepts — reactions/edits key on channel +
+        // message id (`ts`), not a thread root. Either handle re-authorizes the
+        // channel binding on every call (revocation-safe).
         const asThread = await resolveAuthorizedThread(
           worker.agentId,
           worker.organizationId,
           thread
         );
-        if (!asThread) {
-          return errorResponse(c, "Not authorized for this conversation", 403);
-        }
-        return await handler(
-          c,
-          {
+        let target: MessageTarget;
+        if (asThread) {
+          target = {
             connectionId: asThread.target.connectionId,
             threadId: asThread.threadId,
             messageId: message,
-          },
-          body
-        );
+          };
+        } else {
+          const asChannel = await resolveAuthorizedTarget(
+            worker.agentId,
+            worker.organizationId,
+            thread
+          );
+          if (!asChannel) {
+            return errorResponse(
+              c,
+              "Not authorized for this conversation",
+              403
+            );
+          }
+          target = {
+            connectionId: asChannel.connectionId,
+            threadId: asChannel.channelKey,
+            messageId: message,
+          };
+        }
+        return await handler(c, target, body);
       } catch (error) {
         logger.error(`${label} failed: ${String(error)}`);
         return errorResponse(c, "Internal server error", 500);

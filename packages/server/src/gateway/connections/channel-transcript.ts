@@ -112,6 +112,14 @@ interface TranscriptMessage {
   user: string;
   text: string;
   isBot: boolean;
+  /**
+   * Platform-native message id (Slack `ts`). Exposed so a reader (e.g.
+   * read_conversation) can hand it back to react/edit/delete — reacting to a
+   * message the agent only READ, not one it sent.
+   */
+  messageId: string;
+  /** Platform thread id if this message is a threaded reply; null at top level. */
+  threadId: string | null;
 }
 
 /**
@@ -131,7 +139,8 @@ export async function readChannelTranscript(
 ): Promise<TranscriptMessage[]> {
   const sql = getDb();
   const rows = (await sql`
-    SELECT author_name, author_id, is_bot, text, occurred_at
+    SELECT author_name, author_id, is_bot, text, occurred_at,
+           platform_message_id, thread_id
     FROM channel_messages
     WHERE organization_id = ${organizationId}
       AND connection_id = ${connectionId}
@@ -144,6 +153,8 @@ export async function readChannelTranscript(
     is_bot: boolean;
     text: string;
     occurred_at: Date;
+    platform_message_id: string;
+    thread_id: string | null;
   }>;
   // Newest-first from the index; reverse to chronological for the reader.
   return rows.reverse().map((r) => ({
@@ -151,5 +162,7 @@ export async function readChannelTranscript(
     user: r.author_name || r.author_id || (r.is_bot ? "assistant" : "user"),
     text: r.text,
     isBot: r.is_bot === true,
+    messageId: r.platform_message_id,
+    threadId: r.thread_id,
   }));
 }

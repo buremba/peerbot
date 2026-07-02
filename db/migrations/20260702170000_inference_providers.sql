@@ -81,19 +81,24 @@ CREATE TABLE IF NOT EXISTS public.inference_providers (
 -- api_key_ref is a row-unique name (<slug>-<id>) so a soft-delete→recreate never collides and a new
 -- row can't inherit a deleted row's ciphertext. TOTAL index (no deleted_at filter) so a soft-deleted
 -- row still reserves its ref.
+-- squawk-ignore require-concurrent-index-creation -- brand-new empty table; nothing to lock, and dbmate wraps in a transaction
 CREATE UNIQUE INDEX IF NOT EXISTS inference_providers_keyref_unique
     ON public.inference_providers (api_key_ref);
 
 -- One live slug per org (soft-delete aware — mirrors connections_org_slug_unique).
+-- squawk-ignore require-concurrent-index-creation -- brand-new empty table; nothing to lock, and dbmate wraps in a transaction
 CREATE UNIQUE INDEX IF NOT EXISTS inference_providers_org_slug_live
     ON public.inference_providers (organization_id, slug) WHERE (deleted_at IS NULL);
 
+-- squawk-ignore require-concurrent-index-creation -- brand-new empty table; nothing to lock, and dbmate wraps in a transaction
 CREATE INDEX IF NOT EXISTS inference_providers_org_live
     ON public.inference_providers (organization_id) WHERE (deleted_at IS NULL);
 
+-- squawk-ignore require-concurrent-index-creation -- brand-new empty table; nothing to lock, and dbmate wraps in a transaction
 CREATE INDEX IF NOT EXISTS inference_providers_capabilities_gin
     ON public.inference_providers USING gin (capabilities);
 
 -- migrate:down
 
+-- squawk-ignore ban-drop-table -- rollback of a same-PR new table; no external clients depend on it yet
 DROP TABLE IF EXISTS public.inference_providers;

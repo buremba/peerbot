@@ -266,8 +266,10 @@ describe('MCP Authentication', () => {
       expect(toolNames).not.toContain('save_memory');
       expect(toolNames).not.toContain('query_sql');
       expect(toolNames).not.toContain('run_sdk');
-      // Legacy `manage_*` tools are no longer registered as external MCP tools.
-      expect(toolNames).not.toContain('manage_entity');
+      // Uniform surface: manage_entity is listed for anonymous public callers,
+      // filtered down to its public-read actions (pinned by the access-matrix
+      // fixture in auth/__tests__/tool-access.test.ts).
+      expect(toolNames).toContain('manage_entity');
     });
 
     it('allows anonymous public-read tool calls on public org MCP routes', async () => {
@@ -367,7 +369,8 @@ describe('MCP Authentication', () => {
       expect(toolNames).not.toContain('save_memory');
       expect(toolNames).not.toContain('query_sql');
       expect(toolNames).not.toContain('run_sdk');
-      expect(toolNames).not.toContain('manage_entity');
+      // Uniform surface: manage_entity appears with public-read actions only.
+      expect(toolNames).toContain('manage_entity');
     });
 
     it('should reject expired OAuth access token', async () => {
@@ -885,25 +888,24 @@ describe('MCP Authentication', () => {
 
       expect(result.tools).toBeInstanceOf(Array);
 
-      // Verify expected tools are present. The legacy `manage_*`,
-      // `read_knowledge`, `get_watcher`, `list_watchers` MCP tools are now
-      // internal-only and reachable via the SDK from `run_sdk` / `query_sdk` scripts.
-      // lobu-cli's browser-auth flow now hits the REST proxy, so
-      // `manage_connections` / `manage_auth_profiles` are no longer public-MCP.
+      // Uniform tool surface: every registered tool is listed for an
+      // authorized member, admin tools included — reach is gated by
+      // per-action tier x role x scope at execute time, not by visibility.
       const toolNames = result.tools.map((t: any) => t.name);
       expect(toolNames).toContain('search_memory');
       expect(toolNames).toContain('save_memory');
       expect(toolNames).toContain('search_sdk');
       expect(toolNames).toContain('query_sdk');
       expect(toolNames).toContain('run_sdk');
+      expect(toolNames).toContain('read_knowledge');
+      expect(toolNames).toContain('get_watcher');
+      expect(toolNames).toContain('list_watchers');
+      expect(toolNames).toContain('manage_entity');
+      expect(toolNames).toContain('manage_connections');
+      expect(toolNames).toContain('manage_feeds');
+      expect(toolNames).toContain('manage_auth_profiles');
+      // Never-registered names stay absent.
       expect(toolNames).not.toContain('execute');
-      expect(toolNames).not.toContain('read_knowledge');
-      expect(toolNames).not.toContain('get_watcher');
-      expect(toolNames).not.toContain('list_watchers');
-      expect(toolNames).not.toContain('manage_entity');
-      expect(toolNames).not.toContain('manage_connections');
-      expect(toolNames).not.toContain('manage_feeds');
-      expect(toolNames).not.toContain('manage_auth_profiles');
       expect(toolNames).not.toContain('join_organization');
     });
 

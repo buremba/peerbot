@@ -360,7 +360,7 @@ async function serveStaticFile(
 	c.header(
 		"Cache-Control",
 		isHtml
-			? "no-cache, no-store, must-revalidate"
+			? "public, max-age=0, s-maxage=60, stale-while-revalidate=300"
 			: "public, max-age=31536000, immutable",
 	);
 	// Hono's Data type expects Uint8Array<ArrayBuffer>; copy into a fresh

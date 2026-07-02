@@ -139,6 +139,14 @@ type ManageFeedsResult =
         isBot: boolean;
       }>;
     }
+  | {
+      action: 'read_feed';
+      kind: 'virtual';
+      feed: any;
+      rows: Record<string, unknown>[];
+      columns: { name: string; type: string }[];
+      total?: number;
+    }
   | { action: 'create_feed'; feed: any }
   | { action: 'update_feed'; feed: any }
   | { action: 'delete_feed'; deleted: true; feed_id: number }

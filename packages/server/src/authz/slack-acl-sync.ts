@@ -317,9 +317,12 @@ export async function resolveSlackBotIdentity(
   if (!token) return null;
 
   // Self-heal the teamId-less BYO connection: confirm the token's REAL team from
-  // Slack before graphing (a stronger guard than a stored string — it verifies
-  // the LIVE credential owns this team), then backfill it onto the row so future
-  // ticks take the fast path above and the connection is team-scoped everywhere.
+  // Slack (a stronger guard than a stored string — it verifies the LIVE
+  // credential's team), then backfill THAT team onto the row so future ticks take
+  // the fast/foreign-team paths above without another auth.test. We backfill the
+  // real team even when it isn't the one we were asked to graph: otherwise a
+  // connection reached first for a foreign binding would re-hit auth.test every
+  // tick forever. Graphing itself still requires the real team to match.
   if (!conn.stored_team_id) {
     let realTeamId: string;
     try {
@@ -334,19 +337,21 @@ export async function resolveSlackBotIdentity(
       );
       return null;
     }
-    if (realTeamId !== teamId) return null;
     await sql`
 			UPDATE connections
-			SET external_tenant_id = ${teamId}
+			SET external_tenant_id = ${realTeamId}
 			WHERE slug = ${runtimeConnectionIdToSlug(connectionId)}
 			  AND organization_id = ${organizationId}
 			  AND connector_key = 'slack'
 			  AND external_tenant_id IS NULL
 		`;
     logger.info(
-      { connectionId, teamId },
+      { connectionId, teamId: realTeamId },
       'Backfilled teamId onto BYO Slack connection from auth.test',
     );
+    // Only hand back the token when the confirmed team is the one being graphed;
+    // a token for a different workspace must not touch this team's edges.
+    if (realTeamId !== teamId) return null;
   }
 
   return { token, botUserId: conn.bot_user_id };

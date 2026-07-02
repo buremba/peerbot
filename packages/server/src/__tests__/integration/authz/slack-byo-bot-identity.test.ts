@@ -180,9 +180,11 @@ describe('resolveSlackBotIdentity — BYO fallback', () => {
     expect(authCalls).toBe(1); // fast path — no second auth.test
   });
 
-  it('fails closed when auth.test reports the token belongs to a DIFFERENT team', async () => {
+  it('fails closed for the requested team but backfills the REAL team when auth.test disagrees', async () => {
     // A teamId-less BYO connection whose token actually belongs to another
     // workspace must NOT graph the requested team (would wipe that team's edges).
+    // But it SHOULD record the token's real team so it stops re-hitting auth.test
+    // every tick and takes the foreign-team fast-fail path thereafter.
     await insertChatConnectionRow({
       id: 'conn-noteam',
       organizationId: orgId,
@@ -193,7 +195,11 @@ describe('resolveSlackBotIdentity — BYO fallback', () => {
       metadata: { botUserId: 'U0BYOBOT' }, // NO teamId
     });
 
-    const slackWeb = makeSlackWeb(async () => ({ teamId: 'T0SOMEOTHER' }));
+    let authCalls = 0;
+    const slackWeb = makeSlackWeb(async () => {
+      authCalls += 1;
+      return { teamId: 'T0SOMEOTHER' };
+    });
 
     const identity = await resolveSlackBotIdentity(
       { installStore: emptyInstallStore, secretStore, slackWeb },
@@ -202,11 +208,20 @@ describe('resolveSlackBotIdentity — BYO fallback', () => {
 
     expect(identity).toBeNull();
 
-    // Not backfilled with the requested (wrong) team.
+    // Backfilled with the token's REAL team (not the requested one).
     const [row] = await getDb()<{ external_tenant_id: string | null }>`
       SELECT external_tenant_id FROM connections WHERE slug = 'agentconn-conn-noteam'
     `;
-    expect(row?.external_tenant_id).toBeNull();
+    expect(row?.external_tenant_id).toBe('T0SOMEOTHER');
+
+    // A subsequent resolve for the requested team takes the foreign-team fast-fail
+    // path — no second auth.test round-trip.
+    const second = await resolveSlackBotIdentity(
+      { installStore: emptyInstallStore, secretStore, slackWeb },
+      { organizationId: orgId, teamId: TEAM, connectionId: 'conn-noteam' },
+    );
+    expect(second).toBeNull();
+    expect(authCalls).toBe(1);
   });
 
   it('fails closed when auth.test throws (dead/invalid token)', async () => {

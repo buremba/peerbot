@@ -1,9 +1,7 @@
-import type { EventEnvelope } from '../connector-types.js';
-
 /**
- * Validates a URL is safe for server-side fetching.
- * Blocks private/internal network addresses to prevent SSRF attacks.
+ * URL validation for connector egress (SSRF guards + domain allowlists).
  */
+
 export function validatePublicUrl(url: string): void {
   let parsed: URL;
   try {
@@ -81,36 +79,4 @@ export function validateUrlDomain(url: string, expectedDomain: string): void {
   ) {
     throw new Error(`URL must be on ${expectedDomain}, got ${parsed.hostname}`);
   }
-}
-
-export function filterByCheckpoint(
-  events: EventEnvelope[],
-  checkpoint: Record<string, unknown> | null
-): EventEnvelope[] {
-  const lastTimestamp = checkpoint?.last_timestamp as string | undefined;
-  if (!lastTimestamp) return events;
-
-  const cutoff = new Date(lastTimestamp);
-  return events.filter((e) => e.occurred_at > cutoff);
-}
-
-export function applyLookbackCutoff(
-  events: EventEnvelope[],
-  lookbackDays: number | undefined
-): EventEnvelope[] {
-  if (!lookbackDays || lookbackDays <= 0) return events;
-  const cutoff = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
-  return events.filter((e) => e.occurred_at >= cutoff);
-}
-
-export function buildReviewCheckpoint(
-  events: EventEnvelope[],
-  previous: Record<string, unknown> | null,
-  extra: Record<string, unknown> = {}
-): Record<string, unknown> {
-  const priorTimestamp = (previous?.last_timestamp as string | undefined) ?? null;
-  return {
-    ...extra,
-    last_timestamp: events.length > 0 ? events[0].occurred_at.toISOString() : priorTimestamp,
-  };
 }

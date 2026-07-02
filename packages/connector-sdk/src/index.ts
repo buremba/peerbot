@@ -196,13 +196,14 @@ export {
 } from './browser/launcher.js';
 export type { ReviewExtractResult, RunReviewScrapeOptions } from './browser/review-scrape.js';
 export { handleCookieConsent, runReviewScrape } from './browser/review-scrape.js';
+export { applyLookbackCutoff } from './checkpoint/lookback.js';
 export {
-  applyLookbackCutoff,
   buildReviewCheckpoint,
+  buildTimestampCheckpoint,
   filterByCheckpoint,
-  validatePublicUrl,
-  validateUrlDomain,
-} from './browser/scrape-utils.js';
+  finalizeTimestampSync,
+} from './checkpoint/timestamp-watermark.js';
+export { validatePublicUrl, validateUrlDomain } from './url-guards.js';
 export { sleep } from './sleep.js';
 export type { BrowserNetworkConfig, BrowserNetworkResult } from './browser-network.js';
 export { browserNetworkSync } from './browser-network.js';

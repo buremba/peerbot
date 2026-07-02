@@ -1,10 +1,6 @@
 import type { EventEnvelope, SyncContext, SyncResult } from '../connector-types.js';
-import {
-  applyLookbackCutoff,
-  buildReviewCheckpoint,
-  filterByCheckpoint,
-  validateUrlDomain,
-} from './scrape-utils.js';
+import { finalizeTimestampSync } from '../checkpoint/timestamp-watermark.js';
+import { validateUrlDomain } from '../url-guards.js';
 import { captureErrorArtifacts, launchBrowser } from './launcher.js';
 import type { Browser, Page } from 'playwright';
 
@@ -96,17 +92,17 @@ export async function runReviewScrape(
     }
 
     const extracted = await opts.extract(page, cardsFound);
-
-    let events = applyLookbackCutoff(extracted.events, lookbackDays);
-    events = filterByCheckpoint(events, ctx.checkpoint);
-    events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
+    const { events, checkpoint } = finalizeTimestampSync(extracted.events, ctx.checkpoint, {
+      lookbackDays,
+      extra: {
+        last_sync_at: new Date().toISOString(),
+        ...extracted.checkpointExtra,
+      },
+    });
 
     return {
       events,
-      checkpoint: buildReviewCheckpoint(events, ctx.checkpoint, {
-        last_sync_at: new Date().toISOString(),
-        ...extracted.checkpointExtra,
-      }),
+      checkpoint,
       metadata: extracted.metadata(events),
     };
   });

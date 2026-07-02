@@ -164,7 +164,6 @@ export default class WebsiteConnector extends ConnectorRuntime {
     if (sitemapUrl) {
       validatePublicUrl(sitemapUrl);
       urls = await this.fetchSitemap(sitemapUrl);
-      ctx.log?.(`Sitemap: found ${urls.length} URLs`);
     } else if (explicitUrls?.length) {
       urls = explicitUrls;
     } else {
@@ -199,9 +198,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
               await page
                 .waitForSelector(waitForSelector, { timeout: 10000 })
                 .catch(() => {
-                  ctx.log?.(
-                    `Selector "${waitForSelector}" not found on ${url}, continuing anyway`
-                  );
+                  // Optional selector — continue with full-page extract.
                 });
             }
 
@@ -217,7 +214,6 @@ export default class WebsiteConnector extends ConnectorRuntime {
               !markdown ||
               shouldSkipCookieBannerText(`${meta.title ?? ""}\n${markdown}`)
             ) {
-              ctx.log?.(`Skipping low-signal page content for ${finalUrl}`);
               continue;
             }
             const contentHash = this.hash(markdown);
@@ -295,10 +291,8 @@ export default class WebsiteConnector extends ConnectorRuntime {
           } finally {
             await page.close();
           }
-        } catch (err) {
-          ctx.log?.(
-            `Failed to scrape ${url}: ${err instanceof Error ? err.message : String(err)}`
-          );
+        } catch {
+          // Best-effort per-URL scrape; continue with remaining URLs.
         }
 
         if (i < urls.length - 1) {

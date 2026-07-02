@@ -13,7 +13,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import { filterByCheckpoint } from './scraper-utils.ts';
+import { finalizeTimestampSync } from '@lobu/connector-sdk';
 
 interface GMapsReview {
   author_name: string;
@@ -36,10 +36,6 @@ interface PlaceDetailsResponse {
 
 interface FindPlaceResponse {
   candidates?: Array<{ place_id: string }>;
-}
-
-interface GMapsCheckpoint {
-  last_timestamp?: string;
 }
 
 const configSchema = {
@@ -173,20 +169,13 @@ export default class GoogleMapsConnector extends ConnectorRuntime {
         },
       }));
 
-    // Filter by checkpoint
-    const checkpoint = ctx.checkpoint as GMapsCheckpoint | null;
-    events = filterByCheckpoint(events, checkpoint);
-
-    // Sort descending by occurred_at
-    events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
-
-    const newCheckpoint: Record<string, unknown> =
-      events.length > 0
-        ? { last_timestamp: events[0].occurred_at.toISOString() }
-        : { last_timestamp: checkpoint?.last_timestamp ?? null };
+    const { events: emitted, checkpoint: newCheckpoint } = finalizeTimestampSync(
+      events,
+      ctx.checkpoint
+    );
 
     return {
-      events,
+      events: emitted,
       checkpoint: newCheckpoint,
       metadata: {
         items_found: reviews.length,

@@ -118,7 +118,7 @@ export default class GlassdoorConnector extends ConnectorRuntime {
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
-    const config = ctx.config as GlassdoorConfig;
+    const config = ctx.config as unknown as GlassdoorConfig;
     const { company_name, company_id } = config;
 
     if (!company_name) {

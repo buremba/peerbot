@@ -12,6 +12,7 @@ import {
   skillFromFile,
 } from "@lobu/cli/config";
 import type NpmDownloadsConnector from "./npm-downloads.connector.ts";
+import type WebsiteConnector from "../brand-intelligence/website.connector.ts";
 import type funnelDigestReaction from "./funnel-digest.reaction.ts";
 import type inboundTriageReaction from "./inbound-triage.reaction.ts";
 
@@ -392,6 +393,9 @@ export default defineConfig({
   connectors: [
     connectorFromFile<typeof NpmDownloadsConnector>(
       "./npm-downloads.connector.ts"
+    ),
+    connectorFromFile<typeof WebsiteConnector>(
+      "../brand-intelligence/website.connector.ts"
     ),
   ],
   org: "lobu-crm",

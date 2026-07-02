@@ -6,6 +6,7 @@ import type TrustpilotConnector from "./trustpilot.connector.ts";
 import type WebsiteConnector from "./website.connector.ts";
 
 export default defineConfig({
+  agents: [],
   org: "brand-intelligence",
   orgName: "Brand Intelligence",
   orgDescription:

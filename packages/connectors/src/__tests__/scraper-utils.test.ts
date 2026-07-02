@@ -12,11 +12,12 @@ describe('filterByCheckpoint', () => {
     expect(filterByCheckpoint(events, null)).toEqual(events);
   });
 
-  test('keeps only events strictly newer than last_timestamp', () => {
+  test('keeps events at or after last_timestamp', () => {
     const filtered = filterByCheckpoint(events, {
       last_timestamp: '2024-06-01T00:00:00Z',
     });
-    expect(filtered).toHaveLength(1);
-    expect(filtered[0]).toBe(events[2]);
+    expect(filtered).toHaveLength(2);
+    expect(filtered[0]).toBe(events[1]);
+    expect(filtered[1]).toBe(events[2]);
   });
 });

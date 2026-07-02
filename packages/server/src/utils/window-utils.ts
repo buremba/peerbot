@@ -154,6 +154,14 @@ export async function computePendingWindow(
  * @returns SQL SELECT ... FROM ... JOIN fragment (without WHERE clause)
  */
 export function buildWindowsSelectClause(): string {
+  // Canvas-on-events read flip (dual-write transition): a window's extracted_data
+  // now lives on the chain HEAD `canvas_state` event (payload_data). The LATERAL
+  // finds the head for this window's period — the chain member with no superseder
+  // (NOT EXISTS anti-join), scoped to semantic_type='canvas_state' so it never
+  // matches the tab_event/tab_snapshot BROWSER rows that also carry
+  // metadata.window_id. COALESCE falls back to the legacy iw.extracted_data column
+  // for pre-backfill windows, keeping the API field shape byte-identical. Keys
+  // match idx_canvas_state_listing so the probe stays on the partial index.
   return `
     SELECT
       iw.id as window_id,
@@ -163,7 +171,7 @@ export function buildWindowsSelectClause(): string {
       iw.window_start,
       iw.window_end,
       iw.content_analyzed,
-      iw.extracted_data,
+      COALESCE(canvas_head.payload_data, iw.extracted_data) as extracted_data,
       iw.model_used,
       iw.client_id,
       iw.run_metadata,
@@ -175,6 +183,16 @@ export function buildWindowsSelectClause(): string {
     JOIN watchers i ON iw.watcher_id = i.id
     LEFT JOIN watcher_versions watcher_v ON i.current_version_id = watcher_v.id
     LEFT JOIN watcher_versions window_v ON iw.version_id = window_v.id
+    LEFT JOIN LATERAL (
+      SELECT e.payload_data
+      FROM events e
+      WHERE e.semantic_type = 'canvas_state'
+        AND (e.metadata->>'watcher_id')::bigint = iw.watcher_id
+        AND (e.metadata->>'granularity') = iw.granularity
+        AND (e.metadata->>'window_start')::timestamptz = iw.window_start
+        AND NOT EXISTS (SELECT 1 FROM events n WHERE n.supersedes_event_id = e.id)
+      LIMIT 1
+    ) canvas_head ON TRUE
   `.trim();
 }
 

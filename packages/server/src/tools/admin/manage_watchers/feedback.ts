@@ -3,8 +3,13 @@
  *   submit_feedback, get_feedback, list_promoted
  */
 
-import { getDb } from '../../../db/client';
+import { getDb, parsePgNumberArray } from '../../../db/client';
 import { parseJsonObject } from '@lobu/core';
+import { ensureCanvasEntity, findCanvasHead } from '../../../utils/canvas-events';
+import { ToolUserError } from '../../../utils/errors';
+import { insertEvent } from '../../../utils/insert-event';
+import { isUniqueViolation } from '../../../utils/pg-errors';
+import logger from '../../../utils/logger';
 import type { ToolContext } from '../../registry';
 import type { ManageWatchersArgs, ManageWatchersResult } from '../manage_watchers';
 
@@ -14,6 +19,103 @@ type CorrectionInput = {
   value?: unknown;
   note?: string;
 };
+
+/**
+ * Segments that would let a caller-supplied field_path walk or assign onto the
+ * prototype chain instead of the payload's own data (prototype pollution).
+ * field_path is user input — a path like `__proto__.polluted` must be a no-op.
+ */
+const FORBIDDEN_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * Parse a correction field_path into path segments, supporting dot notation and
+ * array-index brackets: `problems[0].severity` → ['problems', 0, 'severity'].
+ * Returns null when any segment targets the prototype chain — callers treat it
+ * as an inapplicable path (the advisory event still records the intent).
+ */
+function parseFieldPath(path: string): (string | number)[] | null {
+  const segments: (string | number)[] = [];
+  for (const part of path.split('.')) {
+    const match = part.match(/^([^[\]]*)((\[\d+\])*)$/);
+    if (!match) {
+      segments.push(part);
+      continue;
+    }
+    const [, key, indices] = match;
+    if (key) segments.push(key);
+    if (indices) {
+      for (const idx of indices.matchAll(/\[(\d+)\]/g)) {
+        segments.push(Number(idx[1]));
+      }
+    }
+  }
+  if (segments.some((s) => typeof s === 'string' && FORBIDDEN_PATH_SEGMENTS.has(s))) {
+    return null;
+  }
+  return segments;
+}
+
+/**
+ * Apply a single set/remove/add correction to `data` in place (mutates a copy
+ * the caller owns). Mirrors the advisory correction semantics:
+ *   - set:    write `value` at the path (creating intermediate objects/arrays).
+ *   - remove: delete the array element / object key at the path.
+ *   - add:    push `value` onto the array at the path (creating it if absent).
+ * Best-effort: a path that can't be traversed is a no-op (the advisory event
+ * still records the intent).
+ */
+function applyCorrectionToData(
+  data: Record<string, unknown>,
+  fieldPath: string,
+  mutation: 'set' | 'remove' | 'add',
+  value: unknown
+): void {
+  const segments = parseFieldPath(fieldPath);
+  if (segments == null || segments.length === 0) return;
+
+  // Walk to the parent container of the final segment, creating intermediates
+  // for set/add (never for remove — removing a missing path is a no-op). Only
+  // OWN properties are traversed — inherited (prototype) values are treated as
+  // absent, so the walk can never step onto the prototype chain.
+  let parent: unknown = data;
+  for (let i = 0; i < segments.length - 1; i++) {
+    const seg = segments[i];
+    const next = segments[i + 1];
+    if (parent == null || typeof parent !== 'object') return;
+    const container = parent as Record<string | number, unknown>;
+    if (!Object.hasOwn(container, seg) || container[seg] == null) {
+      if (mutation === 'remove') return;
+      container[seg] = typeof next === 'number' ? [] : {};
+    }
+    parent = container[seg];
+  }
+  if (parent == null || typeof parent !== 'object') return;
+
+  const last = segments[segments.length - 1];
+  const container = parent as Record<string | number, unknown>;
+
+  if (mutation === 'remove') {
+    if (Array.isArray(container) && typeof last === 'number') {
+      container.splice(last, 1);
+    } else {
+      delete container[last];
+    }
+    return;
+  }
+  if (mutation === 'add') {
+    const target = container[last];
+    if (Array.isArray(target)) {
+      target.push(value);
+    } else if (target == null) {
+      container[last] = [value];
+    } else {
+      container[last] = [target, value];
+    }
+    return;
+  }
+  // set
+  container[last] = value;
+}
 
 // ============================================
 // handleSubmitFeedback
@@ -52,7 +154,8 @@ export async function handleSubmitFeedback(
   // Scope to the caller's current org so a member of org A can't write
   // feedback against a watcher in org B by passing its watcher_id.
   const windowCheck = await sql`
-    SELECT ww.id, w.organization_id
+    SELECT ww.id, ww.granularity, ww.window_start, ww.window_end,
+           w.organization_id, w.created_by, w.entity_ids
     FROM watcher_windows ww
     JOIN watchers w ON ww.watcher_id = w.id
     WHERE ww.id = ${args.window_id}
@@ -63,12 +166,23 @@ export async function handleSubmitFeedback(
     throw new Error(`Window ${args.window_id} not found for watcher ${watcherId}`);
   }
   const organizationId = windowCheck[0].organization_id as string;
+  const windowGranularity = windowCheck[0].granularity as string;
+  const windowStart = new Date(windowCheck[0].window_start as string).toISOString();
+  const windowEnd = new Date(windowCheck[0].window_end as string).toISOString();
 
   // Correction-events (P1): every submit emits a correction event directly to the events spine
   // (semantic_type='correction'). The id is allocated from the retired table's sequence
   // (watcher_window_field_feedback_id_seq, kept alive via ALTER SEQUENCE OWNED BY NONE) so
   // origin_id stays 'wwff_<id>' and the reader's substring id-recovery + ids remain stable.
   // One transaction so a partial failure never leaks half-applied corrections.
+  // Advisory correction events and canvas materialization commit in ONE
+  // transaction so a surfaced 409 rolls back BOTH: the caller sees a clean
+  // conflict, retries, and the advisory events are recorded exactly once
+  // (committing them before a 409 would double-record on retry). Materialization
+  // itself runs in a SAVEPOINT: any non-conflict failure rolls back only the
+  // canvas write and the advisory events still commit (materialization is
+  // additive; the advisory 'correction' events keep feeding
+  // getRecentFeedbackSummary into future runs regardless).
   const feedbackIds = await sql.begin(async (tx) => {
     const ids: number[] = [];
     for (const c of corrections) {
@@ -98,6 +212,87 @@ export async function handleSubmitFeedback(
       `;
       ids.push(Number(row.id));
     }
+
+    // Materialize the corrections onto the canvas so the user sees their edit
+    // immediately: apply the set/remove/add mutations to the current chain
+    // HEAD's payload_data and insert ONE superseding canvas_state event
+    // authored by the user. If no chain exists yet (pre-backfill window), skip
+    // gracefully. The concurrent-edit loser hits idx_events_superseded_by →
+    // 409 (same handling as save_content.ts).
+    try {
+      await tx.savepoint(async (sp) => {
+        const spSql = sp as unknown as typeof tx;
+        const head = await findCanvasHead(spSql, {
+          watcherId,
+          granularity: windowGranularity,
+          windowStart,
+        });
+        if (!head) {
+          logger.info(
+            { watcherId, windowId: args.window_id },
+            '[submit_feedback] no canvas_state chain yet — skipping materialization'
+          );
+          return;
+        }
+
+        const nextPayload = structuredClone(head.payloadData);
+        for (const c of corrections) {
+          applyCorrectionToData(nextPayload, c.field_path, c.mutation ?? 'set', c.value);
+        }
+
+        const parentEntityId = parsePgNumberArray(windowCheck[0].entity_ids)[0] ?? null;
+        const canvasEntityId = await ensureCanvasEntity({
+          tx: spSql,
+          watcherId,
+          organizationId,
+          parentEntityId,
+          createdBy: (windowCheck[0].created_by as string | null) ?? ctx.userId ?? null,
+        });
+
+        try {
+          await insertEvent(
+            {
+              entityIds: canvasEntityId != null ? [canvasEntityId] : [],
+              organizationId,
+              originId: `canvas_${crypto.randomUUID()}`,
+              payloadType: 'json_template',
+              payloadData: nextPayload,
+              semanticType: 'canvas_state',
+              metadata: {
+                watcher_id: watcherId,
+                granularity: windowGranularity,
+                window_start: windowStart,
+                window_end: windowEnd,
+                root_event_id: head.rootEventId,
+                correction: true,
+              },
+              occurredAt: windowEnd,
+              createdBy: ctx.userId,
+              supersedesEventId: head.id,
+            },
+            { sql: spSql }
+          );
+        } catch (err) {
+          if (isUniqueViolation(err, 'idx_events_superseded_by')) {
+            throw new ToolUserError(
+              `Canvas for watcher ${watcherId} was concurrently updated. Reload the latest state and retry.`,
+              409
+            );
+          }
+          throw err;
+        }
+      });
+    } catch (err) {
+      // 409 (concurrent edit) aborts the whole transaction — advisory events
+      // included — so the caller's retry re-records exactly once. Anything else
+      // rolled back to the savepoint only: keep the advisory events.
+      if (err instanceof ToolUserError) throw err;
+      logger.warn(
+        { err, watcherId, windowId: args.window_id },
+        '[submit_feedback] canvas materialization failed (advisory events kept)'
+      );
+    }
+
     return ids;
   });
 

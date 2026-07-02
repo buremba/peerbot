@@ -1399,3 +1399,234 @@ describe('watcher automation contract', () => {
     });
   });
 });
+
+// ============================================
+// Canvas-on-events contract
+// ============================================
+describe('canvas-on-events window completion', () => {
+  async function completeOnce(
+    overrides: {
+      extracted_data?: Record<string, unknown>;
+      replace_existing?: boolean;
+      client_id?: string;
+    } = {}
+  ) {
+    const { sql, workspace, api, entityId, watcherId } = await createAutomatedWatcher();
+    const event = await createTestEvent({
+      entity_id: entityId,
+      organization_id: workspace.org.id,
+      content: 'Canvas event content.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const windowStart = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const windowEnd = new Date().toISOString();
+    const windowToken = await generateWindowToken(
+      {
+        watcher_id: watcherId,
+        window_start: windowStart,
+        window_end: windowEnd,
+        granularity: 'daily',
+        content_count: 1,
+        content_ids: [event.id],
+      },
+      { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env
+    );
+    const completion = (await api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: windowToken,
+      extracted_data: overrides.extracted_data ?? { summary: 'v1 canvas summary' },
+      replace_existing: overrides.replace_existing ?? false,
+      ...(overrides.client_id ? { client_id: overrides.client_id } : {}),
+    })) as { action: string; window_id: number };
+    return { sql, workspace, api, watcherId, windowStart, windowEnd, windowToken, completion };
+  }
+
+  it('emits a canvas_state ROOT event on window completion', async () => {
+    const { sql, watcherId } = await completeOnce({ extracted_data: { summary: 'hello canvas' } });
+    const rows = await sql`
+      SELECT id, payload_data, supersedes_event_id, metadata->>'granularity' AS granularity
+      FROM events
+      WHERE semantic_type = 'canvas_state'
+        AND (metadata->>'watcher_id')::bigint = ${watcherId}
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].supersedes_event_id).toBeNull();
+    expect(rows[0].granularity).toBe('daily');
+    expect((rows[0].payload_data as Record<string, unknown>).summary).toBe('hello canvas');
+  });
+
+  it('completes with a PAT/device client_id that is not an oauth_clients row', async () => {
+    // Reproduces the sdk-e2e failure: events.client_id has an FK to
+    // oauth_clients (unlike watcher_windows.client_id, which stores PAT ids
+    // verbatim). The canvas insert runs inside the completion tx, where
+    // insertEvent's client-id-FK retry can't engage (the first failed INSERT
+    // aborts the tx) — so complete_window must pre-validate and stamp NULL.
+    const { sql, watcherId, completion } = await completeOnce({
+      extracted_data: { summary: 'pat canvas' },
+      client_id: 'pat_nonexistent_e2e',
+    });
+    expect(completion.action).toBe('complete_window');
+
+    const [root] = await sql`
+      SELECT client_id, payload_data FROM events
+      WHERE semantic_type = 'canvas_state'
+        AND (metadata->>'watcher_id')::bigint = ${watcherId}
+    `;
+    expect(root.client_id).toBeNull();
+    expect((root.payload_data as Record<string, unknown>).summary).toBe('pat canvas');
+
+    // The legacy row keeps the raw PAT id (no FK there) — provenance preserved.
+    const [win] = await sql`
+      SELECT client_id FROM watcher_windows WHERE id = ${completion.window_id}
+    `;
+    expect(String(win.client_id)).toBe('pat_nonexistent_e2e');
+  });
+
+  it('a tokenWindowId refresh with changed data supersedes the head; same-data replay is a no-op', async () => {
+    // The tokenWindowId (legacy) branch refreshes watcher_windows.extracted_data
+    // unconditionally. Reads prefer the canvas head, so the canvas must follow a
+    // real data change (else the refresh is invisible) while a same-payload
+    // replay must NOT grow the chain.
+    const { sql, api, watcherId, windowStart, windowEnd, completion } = await completeOnce({
+      extracted_data: { summary: 'v1' },
+    });
+
+    const tokenWithWindowId = await generateWindowToken(
+      {
+        watcher_id: watcherId,
+        window_start: windowStart,
+        window_end: windowEnd,
+        granularity: 'daily',
+        window_id: completion.window_id,
+        content_count: 0,
+        content_ids: [],
+      },
+      { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env
+    );
+
+    // Changed payload → head superseded (chain grows to 2), root id stable.
+    await api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: tokenWithWindowId,
+      extracted_data: { summary: 'v2 refreshed' },
+    });
+    const afterChange = await sql`
+      SELECT id, payload_data, supersedes_event_id FROM events
+      WHERE semantic_type = 'canvas_state'
+        AND (metadata->>'watcher_id')::bigint = ${watcherId}
+      ORDER BY id ASC
+    `;
+    expect(afterChange).toHaveLength(2);
+    expect(afterChange[0].supersedes_event_id).toBeNull();
+    expect(Number(afterChange[1].supersedes_event_id)).toBe(Number(afterChange[0].id));
+    expect((afterChange[1].payload_data as Record<string, unknown>).summary).toBe('v2 refreshed');
+
+    // Same payload replayed → no new chain member.
+    await api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: tokenWithWindowId,
+      extracted_data: { summary: 'v2 refreshed' },
+    });
+    const afterReplay = await sql`
+      SELECT id FROM events
+      WHERE semantic_type = 'canvas_state'
+        AND (metadata->>'watcher_id')::bigint = ${watcherId}
+    `;
+    expect(afterReplay).toHaveLength(2);
+  });
+
+  it('replace_existing supersedes the head, keeping the root id stable', async () => {
+    const { sql, api, watcherId, windowStart, windowEnd, workspace } = await completeOnce({
+      extracted_data: { summary: 'v1' },
+    });
+
+    const [root] = await sql`
+      SELECT id FROM events
+      WHERE semantic_type = 'canvas_state'
+        AND (metadata->>'watcher_id')::bigint = ${watcherId}
+        AND supersedes_event_id IS NULL
+    `;
+    const rootId = Number(root.id);
+
+    // A second completion for the SAME period with replace_existing supersedes.
+    const event = await sql`SELECT id FROM events WHERE organization_id = ${workspace.org.id} AND semantic_type <> 'canvas_state' LIMIT 1`;
+    const windowToken = await generateWindowToken(
+      {
+        watcher_id: watcherId,
+        window_start: windowStart,
+        window_end: windowEnd,
+        granularity: 'daily',
+        content_count: 1,
+        content_ids: [Number(event[0].id)],
+      },
+      { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env
+    );
+    await api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: windowToken,
+      extracted_data: { summary: 'v2' },
+      replace_existing: true,
+    });
+
+    // Still exactly one ROOT, with the SAME id.
+    const roots = await sql`
+      SELECT id FROM events
+      WHERE semantic_type = 'canvas_state'
+        AND (metadata->>'watcher_id')::bigint = ${watcherId}
+        AND supersedes_event_id IS NULL
+    `;
+    expect(roots).toHaveLength(1);
+    expect(Number(roots[0].id)).toBe(rootId);
+
+    // The HEAD is the superseding v2 event; it stamps root_event_id = rootId.
+    const head = await sql`
+      SELECT id, payload_data, (metadata->>'root_event_id')::bigint AS root_event_id
+      FROM events e
+      WHERE e.semantic_type = 'canvas_state'
+        AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
+        AND NOT EXISTS (SELECT 1 FROM events n WHERE n.supersedes_event_id = e.id)
+    `;
+    expect(head).toHaveLength(1);
+    expect((head[0].payload_data as Record<string, unknown>).summary).toBe('v2');
+    expect(Number(head[0].root_event_id)).toBe(rootId);
+
+    // The read flip surfaces the HEAD payload via get_watcher.
+    const view = (await api.watchers.get(String(watcherId))) as {
+      windows: Array<{ extracted_data: Record<string, unknown> }>;
+    };
+    expect(view.windows[0].extracted_data.summary).toBe('v2');
+  });
+
+  it('superseded canvas states are masked from current_event_records', async () => {
+    const { sql, api, watcherId, windowStart, windowEnd, workspace } = await completeOnce({
+      extracted_data: { summary: 'v1' },
+    });
+    const event = await sql`SELECT id FROM events WHERE organization_id = ${workspace.org.id} AND semantic_type <> 'canvas_state' LIMIT 1`;
+    const windowToken = await generateWindowToken(
+      {
+        watcher_id: watcherId,
+        window_start: windowStart,
+        window_end: windowEnd,
+        granularity: 'daily',
+        content_count: 1,
+        content_ids: [Number(event[0].id)],
+      },
+      { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env
+    );
+    await api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: windowToken,
+      extracted_data: { summary: 'v2' },
+      replace_existing: true,
+    });
+
+    const current = await sql`
+      SELECT payload_data FROM current_event_records
+      WHERE semantic_type = 'canvas_state'
+        AND (metadata->>'watcher_id')::bigint = ${watcherId}
+    `;
+    // Only the HEAD (v2) is current; the superseded v1 root is masked.
+    expect(current).toHaveLength(1);
+    expect((current[0].payload_data as Record<string, unknown>).summary).toBe('v2');
+  });
+});

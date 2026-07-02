@@ -10,6 +10,7 @@
 import { type Static, Type } from '@sinclair/typebox';
 import type { CardElement } from 'chat';
 import { getDb, pgTextArray } from '../../db/client';
+import { WATCHER_CANVAS_NAMESPACE } from '../../utils/canvas-events';
 import { emit } from '../../events/emitter';
 import { createNotificationForUsers } from '../../notifications/service';
 import logger from '../../utils/logger';
@@ -127,6 +128,37 @@ async function handleSend(
     body = body ? `${body}\n\n${dataStr}` : dataStr;
   }
 
+  // Anchor watcher-sourced notifications to the watcher's canvas entity so they
+  // thread under the canvas. watcher_source is caller input, so validate the
+  // (watcher_id, window_id) pair against the caller's org before anchoring —
+  // otherwise any org member could thread a notification under an unrelated
+  // watcher's canvas. Resolve the lazy canvas entity via its entity_identities
+  // claim; a mismatched pair or a watcher with no canvas yet anchors nothing.
+  let canvasEntityIds: number[] | undefined;
+  if (args.watcher_source) {
+    const rows = await getDb()<{ entity_id: number | string }>`
+      SELECT ei.entity_id
+      FROM entity_identities ei
+      JOIN watchers w
+        ON w.id = ${args.watcher_source.watcher_id}
+       AND w.organization_id = ${ctx.organizationId}
+      WHERE ei.organization_id = ${ctx.organizationId}
+        AND ei.namespace = ${WATCHER_CANVAS_NAMESPACE}
+        AND ei.identifier = ${String(args.watcher_source.watcher_id)}
+        AND ei.deleted_at IS NULL
+        AND (
+          ${args.watcher_source.window_id ?? null}::bigint IS NULL
+          OR EXISTS (
+            SELECT 1 FROM watcher_windows ww
+            WHERE ww.id = ${args.watcher_source.window_id ?? null}
+              AND ww.watcher_id = w.id
+          )
+        )
+      LIMIT 1
+    `;
+    if (rows.length > 0) canvasEntityIds = [Number(rows[0].entity_id)];
+  }
+
   await createNotificationForUsers(userIds, {
     organizationId: ctx.organizationId,
     type: 'agent_message',
@@ -135,6 +167,7 @@ async function handleSend(
     resourceUrl: args.resource_url ?? null,
     connectionId: args.connection_id ?? null,
     card: (args.card as CardElement | undefined) ?? null,
+    entityIds: canvasEntityIds,
   });
 
   emit(ctx.organizationId, { keys: ['notifications', 'notifications-unread-count'] });

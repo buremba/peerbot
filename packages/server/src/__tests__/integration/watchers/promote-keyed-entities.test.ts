@@ -229,16 +229,22 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       expect(Number(row.parent_id)).toBe(parentEntityId);
     }
 
-    // The promoted entities are of the configured type.
+    // The promoted entities are of the configured type. complete_window also
+    // creates the per-watcher canvas entity as a child of the same parent
+    // (canvas-on-events, metadata.source='watcher_canvas'), so scope the
+    // promoted-type assertion to the non-canvas children.
     const childTypes = await sql`
-      SELECT et.slug
+      SELECT et.slug, e.metadata->>'source' AS source
       FROM entities e
       JOIN entity_types et ON et.id = e.entity_type_id
       WHERE e.parent_id = ${parentEntityId}
         AND e.organization_id = ${workspace.org.id}
     `;
-    expect(childTypes).toHaveLength(2);
-    expect(childTypes.every((r) => String(r.slug) === 'topic')).toBe(true);
+    expect(childTypes).toHaveLength(3);
+    const promoted = childTypes.filter((r) => r.source !== 'watcher_canvas');
+    expect(promoted).toHaveLength(2);
+    expect(promoted.every((r) => String(r.slug) === 'topic')).toBe(true);
+    expect(childTypes.filter((r) => r.source === 'watcher_canvas')).toHaveLength(1);
 
     // Origin provenance lives on the entity itself — each promoted child carries
     // its window_id / stable_key in metadata (no separate observation event).
@@ -299,12 +305,21 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     );
     expect(entitiesAfterSecond).toHaveLength(2);
 
-    // No entity-count growth under the parent.
+    // No entity-count growth under the parent: 2 promoted + exactly 1 canvas
+    // entity. The replay must reuse the canvas identity claim (namespace
+    // 'watcher_canvas'), never mint a second canvas entity.
     const childCount = await sql`
       SELECT COUNT(*)::int AS c FROM entities
       WHERE parent_id = ${parentEntityId} AND organization_id = ${workspace.org.id}
     `;
-    expect(Number(childCount[0].c)).toBe(2);
+    expect(Number(childCount[0].c)).toBe(3);
+    const canvasCount = await sql`
+      SELECT COUNT(*)::int AS c FROM entities
+      WHERE parent_id = ${parentEntityId}
+        AND organization_id = ${workspace.org.id}
+        AND metadata->>'source' = 'watcher_canvas'
+    `;
+    expect(Number(canvasCount[0].c)).toBe(1);
   });
 
   it('syncs extracted fields into entities and respects a human-owned field on re-run, queuing an approval', async () => {

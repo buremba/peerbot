@@ -26,6 +26,12 @@ interface CreateNotificationParams {
    * in-app inbox entry still uses title/body.
    */
   card?: CardElement | null;
+  /**
+   * Optional entity ids to anchor the notification event to (e.g. a watcher's
+   * canvas entity, so the notification threads under the canvas). Stamped onto
+   * the notification event's `entity_ids`.
+   */
+  entityIds?: number[];
 }
 
 /**
@@ -157,13 +163,19 @@ export async function createNotificationForUsers(
   if (userIds.length === 0) return;
   const sql = getDb();
 
+  // fetch_types:false safe: entity_ids is a `{n,...}` literal (or NULL) cast to
+  // bigint[] — never a raw JS array bind. Same pattern as insert-event.ts.
+  const entityIdsValue =
+    params.entityIds && params.entityIds.length > 0 ? `{${params.entityIds.join(',')}}` : null;
+
   await sql.begin(async (tx) => {
     const inserted = (await tx`
       INSERT INTO events
-        (organization_id, title, payload_text, payload_type, semantic_type,
+        (organization_id, entity_ids, title, payload_text, payload_type, semantic_type,
          occurred_at, metadata)
       VALUES (
         ${params.organizationId},
+        ${entityIdsValue}::bigint[],
         ${params.title},
         ${params.body ?? null},
         'text',

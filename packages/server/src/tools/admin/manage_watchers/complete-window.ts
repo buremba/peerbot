@@ -16,6 +16,9 @@ import {
   promoteKeyedEntities,
 } from '../../../utils/promote-keyed-entities';
 import { proposeEntityFieldChange } from '../entity-field-approval';
+import { ensureCanvasEntity, findCanvasHead } from '../../../utils/canvas-events';
+import { insertEvent, stableJson } from '../../../utils/insert-event';
+import { isUniqueViolation } from '../../../utils/pg-errors';
 import { computeStableKeys } from '../../../utils/stable-keys';
 import { deriveWatcherExtractionSchema } from '../../../utils/watcher-extraction-schema';
 import { trackWatcherReaction } from '../../../utils/watcher-reactions';
@@ -480,6 +483,132 @@ export async function handleCompleteWindow(
     }
 
     // ============================================
+    // STEP 7.5: Canvas-on-events write (dual-write with watcher_windows above).
+    //
+    // The canvas is a supersede chain of `semantic_type='canvas_state'` events.
+    // The chain ROOT is the window identity; a fresh completion inserts a root,
+    // and `replace_existing` supersedes the current head (found by anti-join)
+    // instead of creating a second root — so the root event id NEVER changes
+    // (fixes the DELETE+reinsert-with-new-id dangling-reference bug the legacy
+    // watcher_windows path has). Concurrent root inserts race on the partial
+    // unique index idx_canvas_chain_root → 23505 → 409, mirroring the legacy
+    // idx_watcher_windows_unique_period handling above. Idempotent replays that
+    // find a non-empty head are no-ops. Runs on `tx` so the entity + identity +
+    // event writes commit atomically with the window.
+    // ============================================
+    const canvasEntityId = await ensureCanvasEntity({
+      tx,
+      watcherId: Number(watcherId),
+      organizationId: watcherOrgId,
+      parentEntityId,
+      createdBy: watcherCreatedBy,
+    });
+    const canvasEntityIds = canvasEntityId != null ? [canvasEntityId] : [];
+    // events.client_id has an FK to oauth_clients — unlike the legacy
+    // watcher_windows.client_id, which stores PAT/device ids verbatim. Inside
+    // this transaction insertEvent's client-id-FK retry cannot engage (the
+    // first failed INSERT aborts the tx), so resolve validity up front and
+    // drop unknown ids to NULL rather than aborting the whole completion.
+    let canvasClientId: string | null = provenanceClientId;
+    if (canvasClientId) {
+      const knownClient = await tx`
+        SELECT 1 FROM oauth_clients WHERE id = ${canvasClientId} LIMIT 1
+      `;
+      if (knownClient.length === 0) canvasClientId = null;
+    }
+    const canvasPeriodMeta = {
+      watcher_id: Number(watcherId),
+      granularity: timeGranularity,
+      window_start,
+      window_end,
+      content_analyzed: batchContentIds.length,
+      version_id: resolvedVersionId,
+    };
+
+    const existingHead = await findCanvasHead(tx, {
+      watcherId: Number(watcherId),
+      granularity: timeGranularity,
+      windowStart: window_start,
+    });
+
+    // The tokenWindowId branch above refreshes the legacy row's extracted_data
+    // unconditionally. Reads prefer the canvas head, so a head that exists with
+    // DIFFERENT data must be superseded too or the refresh is invisible (stale
+    // head). Same-payload replays stay no-ops (stableJson is key-order
+    // independent, matching how jsonb normalizes).
+    const headPayloadChanged =
+      existingHead != null &&
+      stableJson(existingHead.payloadData) !== stableJson(cleanedExtractedData);
+
+    if (existingHead && !args.replace_existing && !(tokenWindowId && headPayloadChanged)) {
+      // Idempotent replay / concurrent completion that already produced a head:
+      // never create a second root and never overwrite a successful head.
+      // (The legacy branch above already refreshed provenance where allowed.)
+    } else if (existingHead && (args.replace_existing || (tokenWindowId && headPayloadChanged))) {
+      // Supersede the current head, copying the root's period metadata. Loser of
+      // a concurrent supersede hits idx_events_superseded_by → 23505 → 409.
+      try {
+        await insertEvent(
+          {
+            entityIds: canvasEntityIds,
+            organizationId: watcherOrgId,
+            originId: `canvas_${crypto.randomUUID()}`,
+            payloadType: 'json_template',
+            payloadData: cleanedExtractedData,
+            semanticType: 'canvas_state',
+            metadata: { ...canvasPeriodMeta, root_event_id: existingHead.rootEventId },
+            runId: watcherRunId,
+            occurredAt: window_end,
+            createdBy: watcherCreatedBy,
+            clientId: canvasClientId,
+            supersedesEventId: existingHead.id,
+          },
+          { sql: tx }
+        );
+      } catch (err) {
+        if (isUniqueViolation(err, 'idx_events_superseded_by')) {
+          throw new ToolUserError(
+            `Canvas for watcher ${watcherId} period ${window_start} was concurrently updated. Retry with the latest state.`,
+            409
+          );
+        }
+        throw err;
+      }
+    } else {
+      // No chain yet → insert the ROOT. A root omits metadata.root_event_id (its
+      // id isn't known until after insert, and metadata is immutable); readers
+      // treat a missing root_event_id as "self", so the root id IS the window id.
+      // Superseders below stamp root_event_id explicitly for zero-traversal reads.
+      try {
+        await insertEvent(
+          {
+            entityIds: canvasEntityIds,
+            organizationId: watcherOrgId,
+            originId: `canvas_${crypto.randomUUID()}`,
+            payloadType: 'json_template',
+            payloadData: cleanedExtractedData,
+            semanticType: 'canvas_state',
+            metadata: canvasPeriodMeta,
+            runId: watcherRunId,
+            occurredAt: window_end,
+            createdBy: watcherCreatedBy,
+            clientId: canvasClientId,
+          },
+          { sql: tx }
+        );
+      } catch (err) {
+        if (isUniqueViolation(err, 'idx_canvas_chain_root')) {
+          throw new ToolUserError(
+            `Window already exists for watcher ${watcherId} for period ${window_start} to ${window_end}. ` +
+              'Use replace_existing: true to replace it, or query a different time period.',
+            409
+          );
+        }
+        throw err;
+      }
+    }
+
+    // ============================================
     // STEP 8: Link content to window (bulk INSERT)
     // Build VALUES clause for bulk insert
     // ============================================
@@ -489,14 +618,14 @@ export async function handleCompleteWindow(
       const insertParams: unknown[] = [];
       let pIdx = 1;
       for (const contentId of batchContentIds) {
-        valuePlaceholders.push(`($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, NOW())`);
-        insertParams.push(nextWindowEventId, windowId, contentId);
+        valuePlaceholders.push(`($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, $${pIdx + 3}, NOW())`);
+        insertParams.push(nextWindowEventId, windowId, contentId, Number(watcherId));
         nextWindowEventId += 1;
-        pIdx += 3;
+        pIdx += 4;
       }
 
       await tx.unsafe(
-        `INSERT INTO watcher_window_events (id, window_id, event_id, created_at)
+        `INSERT INTO watcher_window_events (id, window_id, event_id, watcher_id, created_at)
          VALUES ${valuePlaceholders.join(', ')}
          ON CONFLICT DO NOTHING`,
         insertParams

@@ -1101,25 +1101,23 @@ app.get("/api/:orgSlug/watchers/windows/:windowId", mcpAuth, async (c) => {
 	const organizationId = c.var.organizationId;
 
 	try {
-		// Canvas-on-events: windowId is the canvas ROOT event id. Source the
-		// window fields from the chain HEAD (semantic_type='canvas_state'; the
-		// live member has no superseder) and provenance from its run. Content
-		// links are counted off watcher_window_events.window_id (re-keyed to the
-		// root event id).
+		// Canvas-on-events: windowId is the canvas ROOT event id; canvas_windows
+		// resolves the chain (head payload + run provenance). Content links are
+		// counted off watcher_window_events.window_id (re-keyed to the root id).
 		const windowResult = await sql`
       SELECT
-        root.id,
-        (root.metadata->>'watcher_id')::bigint as watcher_id,
-        root.metadata->>'granularity' as granularity,
-        (root.metadata->>'window_start')::timestamptz as window_start,
-        (root.metadata->>'window_end')::timestamptz as window_end,
-        (root.metadata->>'version_id')::bigint as version_id,
-        root.created_at,
-        head.payload_data as extracted_data,
-        COALESCE((head.metadata->>'content_analyzed')::int, 0) as content_analyzed,
-        head.client_id,
-        run.model_used,
-        run.run_metadata,
+        iw.id,
+        iw.watcher_id,
+        iw.granularity,
+        iw.window_start,
+        iw.window_end,
+        iw.version_id,
+        iw.created_at,
+        iw.extracted_data,
+        iw.content_analyzed,
+        iw.client_id,
+        iw.model_used,
+        iw.run_metadata,
         i.entity_ids,
         i.slug as watcher_slug,
         i.name as watcher_name,
@@ -1127,30 +1125,18 @@ app.get("/api/:orgSlug/watchers/windows/:windowId", mcpAuth, async (c) => {
         et.slug AS entity_type,
         parent.name as parent_name,
         CAST(COUNT(iwf.event_id) AS INTEGER) as content_count
-      FROM events root
-      LEFT JOIN LATERAL (
-        SELECT ev.payload_data, ev.metadata, ev.client_id, ev.run_id
-        FROM events ev
-        WHERE ev.semantic_type = 'canvas_state'
-          AND (ev.metadata->>'watcher_id')::bigint = (root.metadata->>'watcher_id')::bigint
-          AND (ev.metadata->>'granularity') = (root.metadata->>'granularity')
-          AND (ev.metadata->>'window_start') = (root.metadata->>'window_start')
-          AND ev.superseded_by IS NULL
-        LIMIT 1
-      ) head ON TRUE
-      LEFT JOIN runs run ON run.id = head.run_id
-      JOIN watchers i ON i.id = (root.metadata->>'watcher_id')::bigint
+      FROM canvas_windows iw
+      JOIN watchers i ON i.id = iw.watcher_id
       JOIN entities e ON e.id = ANY(i.entity_ids)
       JOIN entity_types et ON et.id = e.entity_type_id
       LEFT JOIN entities parent ON e.parent_id = parent.id
-      LEFT JOIN watcher_window_events iwf ON iwf.window_id = root.id
-      WHERE root.id = ${windowId}
-        AND root.semantic_type = 'canvas_state'
-        AND root.supersedes_event_id IS NULL
+      LEFT JOIN watcher_window_events iwf ON iwf.window_id = iw.id
+      WHERE iw.id = ${windowId}
         AND e.organization_id = ${organizationId}
         AND i.status = 'active'
-      GROUP BY root.id, root.metadata, root.created_at, head.payload_data,
-               head.metadata, head.client_id, run.model_used, run.run_metadata,
+      GROUP BY iw.id, iw.watcher_id, iw.granularity, iw.window_start, iw.window_end,
+               iw.version_id, iw.created_at, iw.extracted_data, iw.content_analyzed,
+               iw.client_id, iw.model_used, iw.run_metadata,
                i.entity_ids, i.slug, i.name, e.name, et.slug, parent.name
     `;
 

@@ -416,7 +416,56 @@ FROM public.watcher_windows ww
 WHERE ww.run_id = r.id
   AND (r.model_used IS NULL OR r.run_metadata IS NULL);
 
+-- ── (e) canvas_windows view — THE window read surface ───────────────────────
+-- One row per window (canvas chain ROOT); live analysis payload from the chain
+-- HEAD (superseded_by IS NULL — same-tx dual-write since 20260702200000, view
+-- flip 20260702300020); provenance from the head's run. Every code read site
+-- and query_sql exposure selects FROM this view instead of re-implementing the
+-- chain resolution. Postgres macro-expands views, so watcher_id/granularity
+-- predicates push down onto idx_canvas_chain_root / idx_canvas_state_listing
+-- exactly like the inlined subquery (EXPLAIN-verified).
+CREATE VIEW public.canvas_windows AS
+SELECT
+    root.id,
+    root.organization_id,
+    (root.metadata->>'watcher_id')::bigint  AS watcher_id,
+    root.metadata->>'granularity'           AS granularity,
+    (root.metadata->>'window_start')::timestamptz AS window_start,
+    (root.metadata->>'window_end')::timestamptz   AS window_end,
+    (root.metadata->>'version_id')::bigint  AS version_id,
+    root.created_at,
+    head.payload_data                       AS extracted_data,
+    COALESCE((head.metadata->>'content_analyzed')::int, 0) AS content_analyzed,
+    head.client_id,
+    head.run_id,
+    run.model_used,
+    run.run_metadata,
+    COALESCE(
+        (run.run_metadata->>'execution_time_ms')::int,
+        CASE
+            WHEN run.completed_at IS NOT NULL AND run.claimed_at IS NOT NULL
+                THEN (EXTRACT(EPOCH FROM (run.completed_at - run.claimed_at)) * 1000)::int
+            ELSE NULL
+        END
+    ) AS execution_time_ms
+FROM public.events root
+LEFT JOIN LATERAL (
+    SELECT e.payload_data, e.metadata, e.client_id, e.run_id
+    FROM public.events e
+    WHERE e.semantic_type = 'canvas_state'
+      AND (e.metadata->>'watcher_id')::bigint = (root.metadata->>'watcher_id')::bigint
+      AND (e.metadata->>'granularity') = (root.metadata->>'granularity')
+      AND (e.metadata->>'window_start') = (root.metadata->>'window_start')
+      AND e.superseded_by IS NULL
+    LIMIT 1
+) head ON TRUE
+LEFT JOIN public.runs run ON run.id = head.run_id
+WHERE root.semantic_type = 'canvas_state'
+  AND root.supersedes_event_id IS NULL;
+
 -- migrate:down
+
+DROP VIEW IF EXISTS public.canvas_windows;
 
 -- Reversible parts only. The inline backfill (a) and re-key (c) are NOT reverted
 -- (canvas roots are the system of record on the way forward; the append-only

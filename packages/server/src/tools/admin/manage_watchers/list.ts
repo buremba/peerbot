@@ -91,10 +91,7 @@ export async function handleList(
       parent.slug as parent_slug,
       pet.slug as parent_entity_type,
       i.current_version_id,
-      (SELECT COUNT(*) FROM events iw
-        WHERE iw.semantic_type = 'canvas_state'
-          AND iw.supersedes_event_id IS NULL
-          AND (iw.metadata->>'watcher_id')::bigint = i.id) as windows_count
+      (SELECT COUNT(*) FROM canvas_windows iw WHERE iw.watcher_id = i.id) as windows_count
   `;
 
 	if (args.include_details) {

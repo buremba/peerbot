@@ -152,22 +152,15 @@ export async function handleSubmitFeedback(
   const watcherId = Number(args.watcher_id);
 
   // Scope to the caller's current org so a member of org A can't write
-  // feedback against a watcher in org B by passing its watcher_id. Canvas-on-
-  // events: window_id is the canvas ROOT event id; resolve the window's period
-  // metadata off the chain root (semantic_type='canvas_state', the identity
-  // row). The org-scope check is preserved via the watcher join.
+  // feedback against a watcher in org B by passing its watcher_id. window_id is
+  // the canvas ROOT event id — canvas_windows resolves the period metadata.
   const windowCheck = await sql`
-    SELECT ww.id,
-           ww.metadata->>'granularity' AS granularity,
-           (ww.metadata->>'window_start')::timestamptz AS window_start,
-           (ww.metadata->>'window_end')::timestamptz AS window_end,
+    SELECT ww.id, ww.granularity, ww.window_start, ww.window_end,
            w.organization_id, w.created_by, w.entity_ids
-    FROM events ww
-    JOIN watchers w ON w.id = (ww.metadata->>'watcher_id')::bigint
+    FROM canvas_windows ww
+    JOIN watchers w ON w.id = ww.watcher_id
     WHERE ww.id = ${args.window_id}
-      AND ww.semantic_type = 'canvas_state'
-      AND ww.supersedes_event_id IS NULL
-      AND (ww.metadata->>'watcher_id')::bigint = ${watcherId}
+      AND ww.watcher_id = ${watcherId}
       AND w.organization_id = ${ctx.organizationId}
   `;
   if (windowCheck.length === 0) {
@@ -331,24 +324,18 @@ export async function handleGetFeedback(
   // (semantic_type='correction'); the feedback id is recovered from origin_id 'wwff_<id>'.
   // created_by is the author user id, or NULL once that user is deleted (events.created_by FK
   // SET NULL) — the dangling-id behavior the retired table had is intentionally not reproduced.
-  // Canvas-on-events: a correction's metadata.window_id is the canvas ROOT event
-  // id. Resolve window_start/window_end off that chain-root event (identity row,
-  // scoped to semantic_type='canvas_state') instead of the retired
-  // watcher_windows table.
+  // A correction's metadata.window_id is the canvas ROOT event id; the
+  // canvas_windows view resolves the period (LEFT JOIN — tombstoned roots null).
   const feedback = args.window_id
     ? await sql`
         SELECT (substring(e.origin_id from 6))::bigint AS id,
                (e.metadata->>'window_id')::bigint AS window_id,
                e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
                e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,
-               e.created_by, e.created_at,
-               (w.metadata->>'window_start')::timestamptz AS window_start,
-               (w.metadata->>'window_end')::timestamptz AS window_end
+               e.created_by, e.created_at, w.window_start, w.window_end
         FROM events e
-        LEFT JOIN events w
+        LEFT JOIN canvas_windows w
           ON w.id = (e.metadata->>'window_id')::bigint
-         AND w.semantic_type = 'canvas_state'
-         AND w.supersedes_event_id IS NULL
         WHERE e.semantic_type = 'correction'
           AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
           AND (e.metadata->>'window_id')::bigint = ${args.window_id}
@@ -361,14 +348,10 @@ export async function handleGetFeedback(
                (e.metadata->>'window_id')::bigint AS window_id,
                e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
                e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,
-               e.created_by, e.created_at,
-               (w.metadata->>'window_start')::timestamptz AS window_start,
-               (w.metadata->>'window_end')::timestamptz AS window_end
+               e.created_by, e.created_at, w.window_start, w.window_end
         FROM events e
-        LEFT JOIN events w
+        LEFT JOIN canvas_windows w
           ON w.id = (e.metadata->>'window_id')::bigint
-         AND w.semantic_type = 'canvas_state'
-         AND w.supersedes_event_id IS NULL
         WHERE e.semantic_type = 'correction'
           AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
           AND e.organization_id = ${ctx.organizationId}

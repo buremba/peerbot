@@ -605,13 +605,8 @@ async function getWatcherImpl(
         sv.classifiers as sel_version_classifiers,
         sv.keying_config as sel_version_keying_config,
         sv.reactions_guidance as sel_version_reactions_guidance,
-        -- Latest window end for the unprocessedCount bound. Canvas-on-events:
-        -- windows are canvas_state chains; MAX over metadata.window_end (any
-        -- chain member carries it). Scoped to canvas_state so it never reads
-        -- tab_event/tab_snapshot BROWSER rows carrying metadata.window_id.
-        (SELECT MAX((ev.metadata->>'window_end')::timestamptz) FROM events ev
-          WHERE ev.semantic_type = 'canvas_state'
-            AND (ev.metadata->>'watcher_id')::bigint = i.id) as latest_window_end,
+        -- Latest window end for the unprocessedCount bound.
+        (SELECT MAX(window_end) FROM canvas_windows WHERE watcher_id = i.id) as latest_window_end,
         -- Entities + parent info for entityInfoForUrl / entitiesForTemplate
         (SELECT jsonb_agg(jsonb_build_object(
           'id', e.id,

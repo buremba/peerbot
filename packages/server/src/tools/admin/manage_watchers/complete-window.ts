@@ -389,8 +389,8 @@ export async function handleCompleteWindow(
       createdBy: watcherCreatedBy,
     });
     const canvasEntityIds = canvasEntityId != null ? [canvasEntityId] : [];
-    // events.client_id has an FK to oauth_clients — unlike the legacy
-    // watcher_windows.client_id, which stores PAT/device ids verbatim. Inside
+    // events.client_id has an FK to oauth_clients — but callers pass PAT/device
+    // ids verbatim (the legacy column had no FK, so they were accepted). Inside
     // this transaction insertEvent's client-id-FK retry cannot engage (the
     // first failed INSERT aborts the tx), so resolve validity up front and
     // drop unknown ids to NULL rather than aborting the whole completion.

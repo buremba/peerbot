@@ -149,13 +149,10 @@ async function handleSend(
         AND (
           ${args.watcher_source.window_id ?? null}::bigint IS NULL
           OR EXISTS (
-            -- Canvas-on-events: window_id is the canvas ROOT event id. Validate
-            -- the (watcher, window) pair against the canvas chain root.
-            SELECT 1 FROM events ww
+            -- window_id is the canvas ROOT event id; validate the pair.
+            SELECT 1 FROM canvas_windows ww
             WHERE ww.id = ${args.watcher_source.window_id ?? null}
-              AND ww.semantic_type = 'canvas_state'
-              AND ww.supersedes_event_id IS NULL
-              AND (ww.metadata->>'watcher_id')::bigint = w.id
+              AND ww.watcher_id = w.id
           )
         )
       LIMIT 1

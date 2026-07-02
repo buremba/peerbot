@@ -1070,15 +1070,10 @@ async function fetchRecentWatchers(
       LIMIT ${BOOTSTRAP_RECENT_LIMIT}
     ),
     watcher_window_counts AS (
-      -- Canvas-on-events: a window is a canvas_state chain ROOT
-      -- (supersedes_event_id IS NULL). Scoped to canvas_state so it never counts
-      -- tab_event/tab_snapshot BROWSER rows that also carry metadata.window_id.
-      SELECT (ww.metadata->>'watcher_id')::bigint AS watcher_id, COUNT(*)::int AS windows_count
-      FROM events ww
-      WHERE ww.semantic_type = 'canvas_state'
-        AND ww.supersedes_event_id IS NULL
-        AND (ww.metadata->>'watcher_id')::bigint IN (SELECT id FROM scoped_watchers)
-      GROUP BY (ww.metadata->>'watcher_id')::bigint
+      SELECT ww.watcher_id, COUNT(*)::int AS windows_count
+      FROM canvas_windows ww
+      WHERE ww.watcher_id IN (SELECT id FROM scoped_watchers)
+      GROUP BY ww.watcher_id
     )
     SELECT
       sw.id AS watcher_id,

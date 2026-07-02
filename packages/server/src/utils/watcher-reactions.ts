@@ -82,18 +82,13 @@ export async function getPastReactionsSummary(
   limit = 20
 ): Promise<string | undefined> {
   const sql = getDb();
-  // Canvas-on-events: watcher_reactions.window_id is the canvas ROOT event id.
-  // Resolve the reaction's window period off that chain-root event (scoped to
-  // semantic_type='canvas_state') instead of the retired watcher_windows table.
+  // watcher_reactions.window_id is the canvas ROOT event id; the canvas_windows
+  // view resolves the period (LEFT JOIN — tombstoned roots null).
   const reactions = await sql`
     SELECT wr.reaction_type, wr.tool_name, wr.tool_args, wr.created_at,
-           (ww.metadata->>'window_start')::timestamptz AS window_start,
-           (ww.metadata->>'window_end')::timestamptz AS window_end
+           ww.window_start, ww.window_end
     FROM watcher_reactions wr
-    LEFT JOIN events ww
-      ON ww.id = wr.window_id
-     AND ww.semantic_type = 'canvas_state'
-     AND ww.supersedes_event_id IS NULL
+    LEFT JOIN canvas_windows ww ON ww.id = wr.window_id
     WHERE wr.watcher_id = ${watcherId}
     ORDER BY wr.created_at DESC
     LIMIT ${limit}

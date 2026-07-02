@@ -126,7 +126,7 @@ type NumericIdTable = (typeof NUMERIC_ID_TABLES)[number];
  *
  * Without the advisory lock, two concurrent completions on DIFFERENT rows
  * (e.g. two device workers completing two different watcher runs) can both
- * compute the same `MAX(id)+1` and one will fail on the watcher_windows PK
+ * compute the same `MAX(id)+1` and one will fail on the target table's PK
  * conflict. With the lock + caller-side tx, the second caller blocks until
  * the first commits (and thus sees the first INSERT in its `MAX(id)`).
  */

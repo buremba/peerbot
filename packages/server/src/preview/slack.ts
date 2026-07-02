@@ -526,7 +526,7 @@ async function listOrgAgentsForNotice(organizationId: string): Promise<{
 export async function workspaceUnlinkedNotice(
 	platform: string,
 	organizationId: string,
-	channel?: { channelId: string; teamId?: string },
+	channel?: { channelId: string; teamId?: string; channelName?: string },
 ): Promise<string | null> {
 	if (platform !== "slack") return null;
 
@@ -563,6 +563,9 @@ export async function workspaceUnlinkedNotice(
 			platform: "slack",
 		});
 		if (channel.teamId) params.set("team", channel.teamId);
+		// Friendly channel name → the confirm card's label (falls back to the id in
+		// the UI when absent). Prefixed with `#` so it reads as a channel.
+		if (channel.channelName) params.set("label", `#${channel.channelName}`);
 		return `${base}/new?${params.toString()}`;
 	};
 	const agentLines = agents.map((a) =>

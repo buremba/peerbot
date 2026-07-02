@@ -30,6 +30,7 @@ import {
 } from '../gateway/channels/bound-channels.js';
 import { createSlackWebApi, type SlackWebApi } from '../gateway/connections/slack-web.js';
 import { resolveSecretValue } from '../gateway/secrets/index.js';
+import type { SecretStore } from '../gateway/secrets/index.js';
 import type { CoreServices } from '../gateway/services/core-services.js';
 import {
   runtimeConnectionIdToSlug,
@@ -253,7 +254,10 @@ export async function syncSlackConnectionAcl(
 export async function resolveSlackBotIdentity(
   deps: {
     installStore: ReturnType<CoreServices['getAppInstallationStore']>;
-    secretStore: ReturnType<CoreServices['getSecretStore']>;
+    // Only the read side (`.get`) is used, via resolveSecretValue — accept the
+    // minimal SecretStore so callers with either the WritableSecretStore
+    // (platform.ts CoreServices) or the SecretStoreRegistry (concrete) type fit.
+    secretStore: SecretStore;
     slackWeb: SlackWebApi;
   },
   params: { organizationId: string; teamId: string; connectionId: string },

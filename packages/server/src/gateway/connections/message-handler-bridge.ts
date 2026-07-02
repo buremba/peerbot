@@ -18,7 +18,10 @@ import {
   resolveAgentId,
   resolveAgentOptions,
 } from "../services/platform-helpers.js";
+import { resolveSlackBotIdentity } from "../../authz/slack-acl-sync.js";
+import { stripPlatformPrefix } from "../channels/bound-channels.js";
 import { captureChannelMessage } from "./channel-transcript.js";
+import { createSlackWebApi } from "./slack-web.js";
 import type { ConversationStateStore } from "./conversation-state-store.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
 import type { PlatformConnection } from "./types.js";
@@ -378,13 +381,47 @@ export class MessageHandlerBridge {
         this.connection.metadata?.teamId &&
         this.connection.organizationId
       ) {
+        const linkTeamId = teamId ?? this.connection.metadata?.teamId;
+        // Best-effort: resolve the channel's friendly name (#general) for the
+        // notice's deep-link label. Uses this connection's own bot token via
+        // conversations.info; any failure (no token, not-in-channel, rate limit)
+        // just drops to the channel id in the UI — never blocks the notice.
+        let channelName: string | undefined;
+        if (linkTeamId) {
+          try {
+            const identity = await resolveSlackBotIdentity(
+              {
+                installStore: this.services.getAppInstallationStore(),
+                secretStore: this.services.getSecretStore(),
+                slackWeb: createSlackWebApi(),
+              },
+              {
+                organizationId: this.connection.organizationId,
+                teamId: linkTeamId,
+                connectionId: this.connection.id,
+              },
+            );
+            if (identity?.token) {
+              const info = await createSlackWebApi().conversationInfo(
+                identity.token,
+                stripPlatformPrefix(platform, channelId),
+              );
+              channelName = info.name ?? undefined;
+            }
+          } catch (err) {
+            logger.debug(
+              { channelId, error: String(err) },
+              "unlinked-notice: channel name lookup failed (using id)"
+            );
+          }
+        }
         const notice = await workspaceUnlinkedNotice(
           platform,
           this.connection.organizationId,
           // Fall back to the connection's stored team when the raw message omits
           // team_id, so the deep-link stays team-scoped (the binding is keyed on
           // team). The connection always carries it — it's the gate above.
-          { channelId, teamId: teamId ?? this.connection.metadata?.teamId },
+          { channelId, teamId: linkTeamId, channelName },
         );
         if (notice) {
           logger.info(

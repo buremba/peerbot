@@ -49,6 +49,7 @@ describe('workspaceUnlinkedNotice', () => {
     const notice = await workspaceUnlinkedNotice('slack', org.id, {
       channelId: 'slack:C0ABC123',
       teamId: 'T0TEAM',
+      channelName: 'general',
     });
     expect(notice).not.toBeNull();
     const text = notice as string;
@@ -56,12 +57,12 @@ describe('workspaceUnlinkedNotice', () => {
     // getConfiguredPublicOrigin() returns the URL *origin* (scheme+host), so the
     // /lobu gateway mount is dropped — the SPA lives at the bare origin. The link
     // targets the Listen "new" step with the channel prefilled for confirm-bind.
-    // `slack:C…` and `T0TEAM` are URL-encoded in the query string.
+    // `slack:C…`, `T0TEAM`, and the `#general` label are URL-encoded.
     expect(text).toContain(
-      'https://app.lobu.ai/acme/agents/planner/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM',
+      'https://app.lobu.ai/acme/agents/planner/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM&label=%23general',
     );
     expect(text).toContain(
-      'https://app.lobu.ai/acme/agents/builder/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM',
+      'https://app.lobu.ai/acme/agents/builder/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM&label=%23general',
     );
     expect(text).toContain('Planner');
     expect(text).toContain('Builder');

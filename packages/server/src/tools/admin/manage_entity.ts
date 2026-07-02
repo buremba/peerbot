@@ -46,6 +46,7 @@ import { buildEntityUrl } from '../../utils/url-builder';
 import { trackWatcherReaction } from '../../utils/watcher-reactions';
 import { isAdminOrOwnerRole } from '../access-control';
 import { MEMBER_ENTITY_TYPE_SLUG } from '../constants';
+import { proposeEntityFieldChange } from './entity-field-approval';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { buildEntityViewUrl, getOrgUrlContext, toEntityInfo } from '../view-urls';
@@ -286,6 +287,14 @@ type ManageEntityResult =
         enabled_classifiers?: string[] | null;
         view_url?: string;
       };
+      /** Fields the ownership-aware merge wrote (unowned for a watcher-source edit). */
+      applied_fields?: string[];
+      /** Human-owned fields the edit was blocked from writing — queued for approval. */
+      blocked_fields?: string[];
+      /** True when a blocked-field approval was queued this call. */
+      approval_queued?: boolean;
+      /** Permalink to the approval card, when one was queued. */
+      approval_url?: string;
     }
   | {
       action: 'list';
@@ -669,6 +678,31 @@ async function handleUpdate(
 
   const viewUrl = await buildEntityViewUrl(ctx, entityDetails);
 
+  // Post-commit: any blocked (human-owned) fields become a single durable
+  // approval card. Done AFTER the entity tx + change event so the approval
+  // (run + event + notification) is never rolled back with the edit — same
+  // rule as complete_window's blockedProposals.
+  const blocked = updatedEntity.fieldMerge?.blocked ?? {};
+  const blockedPaths = Object.keys(blocked);
+  let approvalQueued = false;
+  let approvalUrl: string | undefined;
+  if (blockedPaths.length > 0) {
+    const fields = Object.fromEntries(blockedPaths.map((p) => [p, blocked[p].proposed]));
+    const current = Object.fromEntries(blockedPaths.map((p) => [p, blocked[p].current]));
+    const res = await proposeEntityFieldChange(ctx, {
+      entity_id: entityId,
+      fields,
+      current,
+      watcher_id: args.watcher_source?.watcher_id ?? null,
+      attribution: args.watcher_source ? 'watcher' : 'agent',
+      reason: args.watcher_source
+        ? `A watcher proposes updating ${blockedPaths.join(', ')} on this entity.`
+        : `An agent proposes updating ${blockedPaths.join(', ')} on this entity.`,
+    });
+    approvalQueued = true;
+    approvalUrl = res.approvalUrl;
+  }
+
   return {
     action: 'update',
     entity: {
@@ -683,6 +717,10 @@ async function handleUpdate(
       enabled_classifiers: entityDetails.enabled_classifiers,
       view_url: viewUrl,
     },
+    applied_fields: updatedEntity.fieldMerge?.applied,
+    blocked_fields: blockedPaths.length > 0 ? blockedPaths : undefined,
+    approval_queued: approvalQueued || undefined,
+    approval_url: approvalUrl,
   };
 }
 

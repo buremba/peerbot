@@ -27,11 +27,13 @@ export const ENTITY_FIELD_CHANGE_ACTION_KEY = 'entity_field_change';
 /** Proposed field changes held in runs.action_input for a field-change gate run. */
 export interface EntityFieldChangeProposal {
   entity_id: number;
-  /** field_path -> proposed value (what the watcher wanted to write). */
+  /** field_path -> proposed value (what the watcher/agent wanted to write). */
   fields: Record<string, unknown>;
   /** field_path -> current human-owned value (for the diff card). */
   current?: Record<string, unknown>;
   watcher_id?: number | null;
+  /** Who proposed the change — drives the card label/author. Defaults to 'watcher'. */
+  attribution?: 'watcher' | 'agent';
   reason?: string | null;
 }
 
@@ -86,13 +88,15 @@ export async function proposeEntityFieldChange(
   const runId = Number((inserted[0] as { id: unknown }).id);
 
   const fieldList = Object.keys(proposal.fields).join(', ');
-  const label = `Watcher proposes changing ${fieldList}`;
+  const attribution = proposal.attribution ?? 'watcher';
+  const actorNoun = attribution === 'agent' ? 'An agent' : 'A watcher';
+  const label = `${actorNoun} proposes changing ${fieldList}`;
   const event = await insertEvent({
     entityIds: [proposal.entity_id],
     organizationId: ctx.organizationId,
     originId: `run_${runId}_pending`,
     title: `${label} — pending approval`,
-    content: proposal.reason ?? `A watcher proposed updating ${fieldList} on this entity.`,
+    content: proposal.reason ?? `${actorNoun} proposed updating ${fieldList} on this entity.`,
     semanticType: 'operation',
     runId,
     interactionType: 'approval',
@@ -105,11 +109,12 @@ export async function proposeEntityFieldChange(
       fields: proposal.fields,
       current: proposal.current ?? null,
       watcher_id: proposal.watcher_id ?? null,
+      attribution,
       reason: proposal.reason ?? null,
       status: 'pending_approval',
       run_id: runId,
     },
-    authorName: 'watcher',
+    authorName: attribution,
   });
   const eventId = Number(event.id);
 

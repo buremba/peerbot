@@ -141,6 +141,16 @@ export interface CreatedEntity {
   warnings?: string[];
 }
 
+/**
+ * Outcome of the ownership-aware merge in `updateEntity`, threaded out so the
+ * caller can queue an approval for blocked (human-owned) fields. Kept off the
+ * shared `CreatedEntity` interface — only `updateEntity`'s return carries it.
+ */
+export interface FieldMergeInfo {
+  applied: string[];
+  blocked: Record<string, { current: unknown; proposed: unknown }>;
+}
+
 // ============================================
 // Validation Helpers
 // ============================================
@@ -359,7 +369,7 @@ export async function updateEntity(
   data: Partial<EntityData>,
   env: Env,
   ctx: ToolContext
-): Promise<CreatedEntity> {
+): Promise<CreatedEntity & { fieldMerge?: FieldMergeInfo }> {
   const pgSql = createDbClientFromEnv(env);
   const sql = getDb();
 
@@ -378,19 +388,31 @@ export async function updateEntity(
   const hasMetadataUpdates = Object.keys(metadataUpdates).length > 0;
   const affirmFields = Array.isArray(data.affirm_fields) ? data.affirm_fields : [];
 
+  // A genuine human edit (a real user, not an agent run) claims per-field
+  // ownership so a watcher can't later overwrite it without an approval. Every
+  // non-human write (chat agent or watcher reaction via manage_entity) is an
+  // ownership-aware watcher-source merge: unowned fields write, owned fields
+  // are blocked and surfaced to the caller for an approval. There is no
+  // plain-merge branch — the only caller is agent-attributed.
+  const isHumanEdit = !!ctx.userId && !ctx.agentId;
+  // affirm_fields claims ownership, which only a human may do. An agent must
+  // never silently claim a field — reject before touching the transaction.
+  if (!isHumanEdit && affirmFields.length > 0) {
+    throw new Error('affirm_fields is only allowed for human edits');
+  }
+
   const hasContent = data.content !== undefined;
   const contentValue = data.content?.trim() || null;
   const hasEmbedding = data.embedding !== undefined;
   const embeddingLiteral = toVectorLiteral(data.embedding);
 
-  // A genuine human edit (a real user, not an agent run) claims per-field ownership
-  // so a watcher can't later overwrite it without an approval. Agent/system writes keep
-  // the existing plain-merge behavior; watcher ownership-aware writes go through
-  // mergeEntityFields at the promotion call site.
-  const isHumanEdit = !!ctx.userId && !ctx.agentId;
   // An affirm-only edit (approve a value as-is) has no metadata delta but still
   // must run the merge so it can claim field ownership.
   const hasAffirm = isHumanEdit && affirmFields.length > 0;
+
+  // Outcome of the ownership-aware merge, threaded out so the caller can queue
+  // an approval for blocked (human-owned) fields AFTER the tx commits.
+  let fieldMerge: FieldMergeInfo | undefined;
 
   // Lock the entity row, merge metadata, and write in ONE transaction: concurrent
   // updates to the same entity serialize on the row lock, fixing the pre-existing
@@ -413,27 +435,31 @@ export async function updateEntity(
           ? JSON.parse(current[0].metadata as string)
           : (current[0].metadata ?? {})
       ) as Record<string, unknown>;
-      if (isHumanEdit) {
-        const existingControls = (
-          typeof current[0].field_controls === 'string'
-            ? JSON.parse(current[0].field_controls as string)
-            : (current[0].field_controls ?? {})
-        ) as Record<string, FieldControl>;
-        const merge = computeFieldMerge({
-          metadata: existing,
-          controls: existingControls,
-          fields: metadataUpdates,
-          source: 'human',
-          actorId: ctx.userId,
-          note: data.field_note ?? null,
-          nowIso: new Date().toISOString(),
-          affirm: affirmFields,
-        });
-        mergedMetadata = merge.nextMetadata;
-        mergedControls = merge.nextControls;
-      } else {
-        mergedMetadata = { ...existing, ...metadataUpdates };
-      }
+      const existingControls = (
+        typeof current[0].field_controls === 'string'
+          ? JSON.parse(current[0].field_controls as string)
+          : (current[0].field_controls ?? {})
+      ) as Record<string, FieldControl>;
+      const merge = computeFieldMerge({
+        metadata: existing,
+        controls: existingControls,
+        fields: metadataUpdates,
+        source: isHumanEdit ? 'human' : 'watcher',
+        actorId: isHumanEdit ? ctx.userId : (ctx.agentId ?? ctx.clientId ?? null),
+        note: isHumanEdit ? (data.field_note ?? null) : null,
+        nowIso: new Date().toISOString(),
+        affirm: isHumanEdit ? affirmFields : undefined,
+      });
+      mergedMetadata = merge.nextMetadata;
+      // A human edit claims ownership of the fields it sets; a watcher-source
+      // merge never claims ownership, so leave field_controls untouched.
+      mergedControls = isHumanEdit ? merge.nextControls : null;
+      fieldMerge = {
+        applied: Object.keys(merge.applied),
+        blocked: Object.fromEntries(
+          Object.entries(merge.blocked).map(([p, v]) => [p, { current: v.current, proposed: v.proposed }])
+        ),
+      };
     }
 
     await tx`
@@ -460,7 +486,7 @@ export async function updateEntity(
     if (sel.length === 0) {
       throw new Error(`Entity ${entityId} not found`);
     }
-    return sel[0];
+    return { ...sel[0], fieldMerge } as CreatedEntity & { fieldMerge?: FieldMergeInfo };
   });
 
   return result;

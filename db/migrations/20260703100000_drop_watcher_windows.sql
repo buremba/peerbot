@@ -98,7 +98,11 @@ WITH root AS (
      AND (ev.metadata->>'window_start') =
          to_char(ww.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
 )
-UPDATE public.watcher_reactions t SET window_id = r.root_id FROM root r WHERE t.window_id = r.old_id;
+UPDATE public.watcher_reactions t SET window_id = r.root_id FROM root r
+WHERE t.window_id = r.old_id
+  -- collision guard: a window_id that is already a canvas_state event id is
+  -- migrated — never rewrite it, even if a straggler ww.id collides numerically.
+  AND NOT EXISTS (SELECT 1 FROM public.events g WHERE g.id = t.window_id AND g.semantic_type = 'canvas_state');
 
 WITH root AS (
     SELECT ww.id AS old_id, ev.id AS root_id
@@ -111,7 +115,11 @@ WITH root AS (
      AND (ev.metadata->>'window_start') =
          to_char(ww.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
 )
-UPDATE public.runs t SET window_id = r.root_id FROM root r WHERE t.window_id = r.old_id;
+UPDATE public.runs t SET window_id = r.root_id FROM root r
+WHERE t.window_id = r.old_id
+  -- collision guard: a window_id that is already a canvas_state event id is
+  -- migrated — never rewrite it, even if a straggler ww.id collides numerically.
+  AND NOT EXISTS (SELECT 1 FROM public.events g WHERE g.id = t.window_id AND g.semantic_type = 'canvas_state');
 
 WITH root AS (
     SELECT ww.id AS old_id, ev.id AS root_id
@@ -124,7 +132,11 @@ WITH root AS (
      AND (ev.metadata->>'window_start') =
          to_char(ww.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
 )
-UPDATE public.watcher_window_events t SET window_id = r.root_id FROM root r WHERE t.window_id = r.old_id;
+UPDATE public.watcher_window_events t SET window_id = r.root_id FROM root r
+WHERE t.window_id = r.old_id
+  -- collision guard: a window_id that is already a canvas_state event id is
+  -- migrated — never rewrite it, even if a straggler ww.id collides numerically.
+  AND NOT EXISTS (SELECT 1 FROM public.events g WHERE g.id = t.window_id AND g.semantic_type = 'canvas_state');
 
 WITH root AS (
     SELECT ww.id AS old_id, ev.id AS root_id
@@ -137,7 +149,11 @@ WITH root AS (
      AND (ev.metadata->>'window_start') =
          to_char(ww.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
 )
-UPDATE public.event_classifications t SET window_id = r.root_id FROM root r WHERE t.window_id = r.old_id;
+UPDATE public.event_classifications t SET window_id = r.root_id FROM root r
+WHERE t.window_id = r.old_id
+  -- collision guard: a window_id that is already a canvas_state event id is
+  -- migrated — never rewrite it, even if a straggler ww.id collides numerically.
+  AND NOT EXISTS (SELECT 1 FROM public.events g WHERE g.id = t.window_id AND g.semantic_type = 'canvas_state');
 
 WITH root AS (
     SELECT ww.id AS old_id, ev.id AS root_id
@@ -154,7 +170,12 @@ UPDATE public.events e
 SET metadata = jsonb_set(e.metadata, '{window_id}', to_jsonb(r.root_id))
 FROM root r
 WHERE e.semantic_type = 'correction'
-  AND (e.metadata->>'window_id')::bigint = r.old_id;
+  AND (e.metadata->>'window_id')::bigint = r.old_id
+  -- collision guard (see re-keys above).
+  AND NOT EXISTS (
+      SELECT 1 FROM public.events g
+      WHERE g.id = (e.metadata->>'window_id')::bigint
+        AND g.semantic_type = 'canvas_state');
 
 -- (1c) Straggler provenance → run model (3a §d.1–d.3, all guarded/idempotent).
 WITH win AS (

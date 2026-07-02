@@ -104,6 +104,13 @@ describe('supersession > hidden, not deleted', () => {
       RETURNING id
     `;
     successorId = Number(succ.id);
+    // The masking view now reads `WHERE superseded_by IS NULL`
+    // (20260702300020), so a raw supersede must stamp the inverse edge exactly
+    // like every production write does via insertEvent's same-tx dual-write.
+    await sql`
+      UPDATE events SET superseded_by = ${successorId}
+      WHERE id = ${originalId} AND superseded_by IS NULL
+    `;
   });
 
   it('keeps the superseded original PHYSICALLY present in the raw events table', async () => {
@@ -169,10 +176,10 @@ describe('supersession > hidden, not deleted', () => {
  * Migration 20260702200000 adds `superseded_by` as the inverse edge of
  * `supersedes_event_id`. New superseding writes dual-write it in the same tx as
  * the superseding INSERT (utils/insert-event.ts); historical rows are filled by
- * the batched, resumable backfill (events/backfill-superseded-by.ts). Through
- * all of this the masking contract above stays intact — the view still hides
- * superseded rows — so the flip to `WHERE superseded_by IS NULL` (Stage 2) is a
- * pure performance change, not a behaviour change.
+ * the batched, resumable backfill (events/backfill-superseded-by.ts) and the
+ * inline migration 20260702300000. Since 20260702300020 the masking view reads
+ * `WHERE superseded_by IS NULL` directly — masking DEPENDS on the stamp, which
+ * is why the stamp is transactionally coupled to the supersede everywhere.
  */
 describe('supersession > denormalized superseded_by lineage', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
@@ -324,17 +331,19 @@ describe('supersession > denormalized superseded_by lineage', () => {
     `;
     const successorId = Number(succ.id);
 
-    // The historical edge is unstamped, but the view already masks it (proves
-    // the flip is a perf-only change: masking works both before AND after the
-    // backfill).
+    // Post-flip (20260702300020) the view keys masking on superseded_by, so an
+    // unstamped edge means the superseded row is still VISIBLE — this is
+    // exactly why the flip migration is ordered AFTER the inline backfill and
+    // why prod is pre-backfilled out of band. The backfill below is what
+    // restores masking for edges that predate the dual-write.
     const [preBackfill] = await sql`
       SELECT superseded_by FROM events WHERE id = ${original.id}
     `;
     expect(preBackfill.superseded_by).toBeNull();
-    const maskedBefore = await sql`
+    const visibleBefore = await sql`
       SELECT id FROM current_event_records WHERE id = ${original.id}
     `;
-    expect(maskedBefore).toHaveLength(0);
+    expect(visibleBefore).toHaveLength(1);
 
     // Dry-run reports the edge without writing.
     const dry = await backfillSupersededBy({ db: sql, execute: false, sleepMs: 0 });

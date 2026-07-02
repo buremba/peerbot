@@ -67,7 +67,16 @@ async function insertRow(opts: {
     )
     RETURNING id
   `;
-  return Number(row.id);
+  const id = Number(row.id);
+  // The masking view keys on superseded_by (20260702300020), so raw supersedes
+  // must stamp the inverse edge like insertEvent's same-tx dual-write does.
+  if (opts.supersedesEventId != null) {
+    await sql`
+      UPDATE events SET superseded_by = ${id}
+      WHERE id = ${opts.supersedesEventId} AND superseded_by IS NULL
+    `;
+  }
+  return id;
 }
 
 async function isCurrent(id: number): Promise<boolean> {

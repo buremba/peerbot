@@ -23,44 +23,13 @@
  * guard on `superseded_by IS NULL`, and the unique index serializes supersede
  * winners, so neither can clobber the other.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * STAGE 2 (view flip + partial index) — deploy ONLY after this backfill has
- * completed on the target DB. It is deliberately NOT committed as a migration
- * file: the migration runner (embedded-runtime.ts / dbmate) auto-applies every
- * unapplied migration in filename order at boot, which would flip the view
- * BEFORE the backfill finished and un-mask every not-yet-stamped superseded
- * row. Run this SQL by hand (or add it as a migration in the follow-up PR once
- * prod is fully backfilled):
- *
- *   -- Partial index backing the flipped predicate. Org-scoped chronological
- *   -- reads (get_content, metrics/compiler.ts rewrites events→
- *   -- current_event_records, utils/execute-data-sources.ts) filter on
- *   -- organization_id then order by created_at, so key the live-row index on
- *   -- (organization_id, created_at) restricted to live rows. CONCURRENTLY so
- *   -- the build never blocks writes.
- *   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_live_org_created
- *       ON public.events (organization_id, created_at)
- *       WHERE superseded_by IS NULL;
- *
- *   -- Flip the view from the per-row anti-join to the cheap partial-index
- *   -- predicate. Column list MUST match the current definition (see migration
- *   -- 20260618140000_event_embeddings_contract.sql, which added the
- *   -- event_embeddings LEFT JOIN). Only the WHERE clause changes.
- *   CREATE OR REPLACE VIEW public.current_event_records AS
- *    SELECT e.id, e.organization_id, e.entity_ids, e.origin_id, e.title,
- *           e.payload_type, e.payload_text, e.payload_data, e.payload_template,
- *           e.attachments, e.metadata, e.score, emb.embedding, e.author_name,
- *           e.source_url, e.occurred_at, e.created_at, e.origin_parent_id,
- *           COALESCE(length(e.payload_text), 0) AS content_length,
- *           e.search_tsv, e.origin_type, e.connector_key, e.connection_id,
- *           e.feed_key, e.feed_id, e.run_id, e.semantic_type, e.client_id,
- *           e.created_by, e.interaction_type, e.interaction_status,
- *           e.interaction_input_schema, e.interaction_input,
- *           e.interaction_output, e.interaction_error, e.supersedes_event_id
- *      FROM (public.events e
- *        LEFT JOIN public.event_embeddings emb ON ((emb.event_id = e.id)))
- *     WHERE e.superseded_by IS NULL;
- * ─────────────────────────────────────────────────────────────────────────────
+ * STAGE 2 IS NOW SHIPPED as migrations 20260702300000 (inline backfill for
+ * small/fresh installs), 20260702300010 (partial index
+ * idx_events_live_org_created), and 20260702300020 (view flip to
+ * `WHERE superseded_by IS NULL`). This script's remaining job is PRE-backfilling
+ * a large live database out of band BEFORE deploying those migrations, so the
+ * inline UPDATE in 20260702300000 matches ~0 rows at boot instead of rewriting
+ * millions of rows during a rolling deploy (prod: ~1.5M superseded rows).
  */
 
 import { type DbClient, pgBigintArray } from '../db/client';

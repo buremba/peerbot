@@ -10,10 +10,10 @@ import {
   calculateEngagementScore,
   createHttpClient,
   type EventEnvelope,
+  finalizeTimestampSync,
   type SyncContext,
   type SyncResult,
 } from "@lobu/connector-sdk";
-import { finalizeTimestampSync } from "@lobu/connector-sdk";
 
 interface GMapsReview {
   author_name: string;

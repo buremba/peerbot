@@ -113,6 +113,17 @@ jobs:
         # Neither needs Postgres.
         run: bun test packages/client packages/promptfoo-provider
 
+      - name: connector-sdk (bun:test)
+        # Checkpoint/watermark + url-guards moved here from bundled scraper-utils.
+        run: bun test packages/connector-sdk
+
+      - name: example connectors (bun:test)
+        # Unbundled connectors live under examples/; mock @lobu/connector-sdk
+        # so Playwright/Baileys never load in CI.
+        run: |
+          bun test examples/personal-agent
+          bun test examples/brand-intelligence
+
       - name: Upload coverage
         if: always()
         uses: codecov/codecov-action@v7

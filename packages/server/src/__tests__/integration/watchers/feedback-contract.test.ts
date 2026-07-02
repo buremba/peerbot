@@ -131,6 +131,49 @@ describe('watcher feedback contract', () => {
     });
   });
 
+  it('feedback ids are the correction event ids; historical wwff_ origin_ids still parse', async () => {
+    // Post-3b (watcher_window_field_feedback_id_seq dropped): a new correction's
+    // feedback id IS its event id (origin_id NULL). Historical rows carry
+    // origin_id 'wwff_<seq>' and the reader recovers the legacy id from it.
+    const sql = getTestDb();
+    const result = (await manageWatchers(
+      {
+        action: 'submit_feedback',
+        watcher_id: watcherId,
+        window_id: windowId,
+        corrections: [{ field_path: 'summary', value: 'id-contract', note: 'id check' }],
+      } as never,
+      {} as never,
+      ownerCtx(workspace)
+    )) as { feedback_ids: number[] };
+    expect(result.feedback_ids).toHaveLength(1);
+    const [ev] = await sql`
+      SELECT id, origin_id FROM events
+      WHERE semantic_type = 'correction'
+        AND (metadata->>'watcher_id')::bigint = ${Number(watcherId)}
+        AND metadata->>'field_path' = 'summary'
+    `;
+    expect(Number(ev.id)).toBe(result.feedback_ids[0]);
+    expect(ev.origin_id).toBeNull();
+
+    // Seed a historical (pre-3b) correction row with a wwff_ origin_id.
+    await sql`
+      INSERT INTO events (organization_id, semantic_type, entity_ids, origin_id, metadata, occurred_at, created_at)
+      VALUES (${workspace.org.id}, 'correction', '{}'::bigint[], 'wwff_424242',
+        ${sql.json({ window_id: Number(windowId), watcher_id: Number(watcherId), field_path: 'legacy.field', mutation: 'set', corrected_value: 'old', note: null })},
+        NOW(), NOW())
+    `;
+    const feedback = (await manageWatchers(
+      { action: 'get_feedback', watcher_id: watcherId, window_id: windowId } as never,
+      {} as never,
+      ownerCtx(workspace)
+    )) as { feedback: Array<{ id: number; field_path: string }> };
+    const legacy = feedback.feedback.find((f) => f.field_path === 'legacy.field');
+    const fresh = feedback.feedback.find((f) => f.field_path === 'summary');
+    expect(legacy?.id).toBe(424242);
+    expect(fresh?.id).toBe(result.feedback_ids[0]);
+  });
+
   it('returns scoped feedback and honors window filters', async () => {
     const otherWindowId = await createCanvasWindow({
       watcherId: Number(watcherId),

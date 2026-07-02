@@ -172,9 +172,9 @@ export async function handleSubmitFeedback(
   const windowEnd = new Date(windowCheck[0].window_end as string).toISOString();
 
   // Correction-events (P1): every submit emits a correction event directly to the events spine
-  // (semantic_type='correction'). The id is allocated from the retired table's sequence
-  // (watcher_window_field_feedback_id_seq, kept alive via ALTER SEQUENCE OWNED BY NONE) so
-  // origin_id stays 'wwff_<id>' and the reader's substring id-recovery + ids remain stable.
+  // (semantic_type='correction'). The correction EVENT's id is the feedback id
+  // (origin_id stays NULL); historical rows carry origin_id 'wwff_<seq>' from the
+  // retired sequence and readers still parse those.
   // One transaction so a partial failure never leaks half-applied corrections.
   // Advisory correction events and canvas materialization commit in ONE
   // transaction so a surfaced 409 rolls back BOTH: the caller sees a clean
@@ -191,13 +191,12 @@ export async function handleSubmitFeedback(
       const correctedValueJson =
         mutation === 'remove' || c.value === undefined ? null : tx.json(c.value);
       const [row] = await tx`
-        WITH seq AS (SELECT nextval('watcher_window_field_feedback_id_seq') AS id)
         INSERT INTO events (
-          organization_id, semantic_type, entity_ids, origin_id, metadata,
+          organization_id, semantic_type, entity_ids, metadata,
           created_by, occurred_at, created_at
         )
         SELECT
-          ${organizationId}, 'correction', '{}'::bigint[], 'wwff_' || seq.id::text,
+          ${organizationId}, 'correction', '{}'::bigint[],
           jsonb_build_object(
             'window_id', ${args.window_id}::bigint,
             'watcher_id', ${watcherId}::bigint,
@@ -208,8 +207,7 @@ export async function handleSubmitFeedback(
           ),
           (SELECT u.id FROM "user" u WHERE u.id = ${ctx.userId}),
           NOW(), NOW()
-        FROM seq
-        RETURNING (substring(origin_id from 6))::bigint AS id
+        RETURNING id
       `;
       ids.push(Number(row.id));
     }
@@ -321,14 +319,15 @@ export async function handleGetFeedback(
 
   // Scope to the caller's current org so a member of org A can't enumerate feedback for a watcher
   // in org B by passing its watcher_id. Correction-events (P1): read from the events spine
-  // (semantic_type='correction'); the feedback id is recovered from origin_id 'wwff_<id>'.
+  // (semantic_type='correction'); the feedback id is the event id for current rows,
+  // or recovered from origin_id 'wwff_<id>' for historical (pre-3b) rows.
   // created_by is the author user id, or NULL once that user is deleted (events.created_by FK
   // SET NULL) — the dangling-id behavior the retired table had is intentionally not reproduced.
   // A correction's metadata.window_id is the canvas ROOT event id; the
   // canvas_windows view resolves the period (LEFT JOIN — tombstoned roots null).
   const feedback = args.window_id
     ? await sql`
-        SELECT (substring(e.origin_id from 6))::bigint AS id,
+        SELECT COALESCE((substring(e.origin_id from 6))::bigint, e.id) AS id,
                (e.metadata->>'window_id')::bigint AS window_id,
                e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
                e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,
@@ -344,7 +343,7 @@ export async function handleGetFeedback(
         LIMIT ${limit}
       `
     : await sql`
-        SELECT (substring(e.origin_id from 6))::bigint AS id,
+        SELECT COALESCE((substring(e.origin_id from 6))::bigint, e.id) AS id,
                (e.metadata->>'window_id')::bigint AS window_id,
                e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
                e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,

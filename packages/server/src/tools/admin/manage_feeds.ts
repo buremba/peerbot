@@ -209,7 +209,7 @@ async function handleListFeeds(
         -- JOIN drops any over-count from the cross-product.
         AND e.connection_id = ANY(ARRAY(SELECT DISTINCT connection_id FROM page))
         AND e.feed_key = ANY(ARRAY(SELECT DISTINCT feed_key FROM page WHERE feed_key IS NOT NULL))
-        AND NOT EXISTS (SELECT 1 FROM events n WHERE n.supersedes_event_id = e.id)
+        AND e.superseded_by IS NULL
       GROUP BY e.connection_id, e.feed_key
     )
     SELECT p.*, c.connector_key, c.display_name AS connection_name,

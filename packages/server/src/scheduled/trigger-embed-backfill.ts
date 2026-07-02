@@ -82,7 +82,7 @@ function needsEmbeddingPredicate(): string {
 // base `events` table directly (so the partial index is usable) and replicate
 // the mask here. Correlates on `e`.
 const NOT_SUPERSEDED_PREDICATE =
-  'NOT EXISTS (SELECT 1 FROM events newer WHERE newer.supersedes_event_id = e.id)';
+  'e.superseded_by IS NULL';
 
 // Org-discovery scan, bounded by statement_timeout and run READ ONLY. Returns
 // the per-org recent-window backlog counts (top MAX_ORGS_PER_TICK). If the scan exceeds

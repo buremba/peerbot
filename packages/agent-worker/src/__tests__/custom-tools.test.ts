@@ -31,6 +31,9 @@ describe("createOpenClawCustomTools", () => {
       "list_conversations",
       "read_conversation",
       "send_message",
+      "react",
+      "edit_message",
+      "delete_message",
       "ask_user",
     ]);
   });

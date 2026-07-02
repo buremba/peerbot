@@ -972,6 +972,60 @@ export class ChatInstanceManager {
   }
 
   /**
+   * Resolve the running instance for a connection or throw. Shared by the
+   * message-mutation helpers below (react/edit/delete), which all address a
+   * message by its (threadId, messageId) and go straight to the adapter — the
+   * SDK's channel/thread abstraction is post-oriented, but the adapter exposes
+   * message-scoped `addReaction`/`editMessage`/`deleteMessage` directly.
+   */
+  private requireRunningInstance(connectionId: string): ManagedInstance {
+    const instance = this.instances.get(connectionId);
+    if (!instance) {
+      throw new Error(
+        `No active chat instance for connection ${connectionId} (could not start it on this pod)`
+      );
+    }
+    return instance;
+  }
+
+  /** Add or remove an emoji reaction on a specific message. */
+  async reactToMessage(
+    connectionId: string,
+    opts: { threadId: string; messageId: string; emoji: string; remove?: boolean }
+  ): Promise<void> {
+    await this.ensureConnectionRunning(connectionId);
+    const instance = this.requireRunningInstance(connectionId);
+    const adapter = instance.chat?.adapter;
+    if (opts.remove) {
+      await adapter.removeReaction(opts.threadId, opts.messageId, opts.emoji);
+    } else {
+      await adapter.addReaction(opts.threadId, opts.messageId, opts.emoji);
+    }
+  }
+
+  /** Replace the text of a message the bot previously sent. */
+  async editMessage(
+    connectionId: string,
+    opts: { threadId: string; messageId: string; text: string }
+  ): Promise<void> {
+    await this.ensureConnectionRunning(connectionId);
+    const instance = this.requireRunningInstance(connectionId);
+    await instance.chat?.adapter.editMessage(opts.threadId, opts.messageId, {
+      markdown: opts.text,
+    } as AdapterPostableMessage);
+  }
+
+  /** Delete a message the bot previously sent. */
+  async deleteMessage(
+    connectionId: string,
+    opts: { threadId: string; messageId: string }
+  ): Promise<void> {
+    await this.ensureConnectionRunning(connectionId);
+    const instance = this.requireRunningInstance(connectionId);
+    await instance.chat?.adapter.deleteMessage(opts.threadId, opts.messageId);
+  }
+
+  /**
    * Live channel history for a SPECIFIC connection (the conversations
    * read_conversation tool). This:
    *  - is scoped to the caller's authorized `connectionId` (no global

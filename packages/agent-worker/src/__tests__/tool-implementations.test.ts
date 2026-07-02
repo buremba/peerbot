@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   askUserQuestion,
+  deleteMessage,
+  editMessage,
+  reactToMessage,
   uploadUserFile,
 } from "../shared/tool-implementations";
 
@@ -196,5 +199,98 @@ describe("tool implementations", () => {
     // A failed post must not end the turn — the model should be free to react.
     expect(posted).toBe(0);
     expect(extractText(result as any)).toContain("Error");
+  });
+
+  test("reactToMessage posts to /conversations/react with the emoji", async () => {
+    let capturedUrl = "";
+    let capturedBody: unknown;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      capturedUrl = url;
+      capturedBody = JSON.parse(String(init?.body));
+      return Response.json({ ok: true }, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const result = await reactToMessage(gw, {
+      thread: "t_handle",
+      message: "1718000000.0001",
+      emoji: ":eyes:",
+    });
+
+    expect(capturedUrl).toContain("/internal/conversations/react");
+    expect(capturedBody).toEqual({
+      thread: "t_handle",
+      message: "1718000000.0001",
+      emoji: ":eyes:",
+      remove: false,
+    });
+    expect(extractText(result as any)).toContain("Reaction added.");
+  });
+
+  test("reactToMessage remove=true routes through and reports removal", async () => {
+    globalThis.fetch = mock(async () =>
+      Response.json({ ok: true }, { status: 200 })
+    ) as unknown as typeof fetch;
+
+    const result = await reactToMessage(gw, {
+      thread: "t_handle",
+      message: "m1",
+      emoji: "eyes",
+      remove: true,
+    });
+    expect(extractText(result as any)).toContain("Reaction removed.");
+  });
+
+  test("reactToMessage validates required args without calling the gateway", async () => {
+    let called = 0;
+    globalThis.fetch = mock(async () => {
+      called++;
+      return Response.json({ ok: true });
+    }) as unknown as typeof fetch;
+
+    const result = await reactToMessage(gw, {
+      thread: "t_handle",
+      message: "",
+      emoji: "eyes",
+    });
+    expect(called).toBe(0);
+    expect(extractText(result as any)).toContain("Error");
+  });
+
+  test("editMessage posts new text to /conversations/edit", async () => {
+    let capturedUrl = "";
+    let capturedBody: unknown;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      capturedUrl = url;
+      capturedBody = JSON.parse(String(init?.body));
+      return Response.json({ ok: true }, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const result = await editMessage(gw, {
+      thread: "t_handle",
+      message: "m1",
+      text: "updated text",
+    });
+    expect(capturedUrl).toContain("/internal/conversations/edit");
+    expect(capturedBody).toEqual({
+      thread: "t_handle",
+      message: "m1",
+      text: "updated text",
+    });
+    expect(extractText(result as any)).toContain("Message edited.");
+  });
+
+  test("deleteMessage posts to /conversations/delete", async () => {
+    let capturedUrl = "";
+    globalThis.fetch = mock(async (url: string) => {
+      capturedUrl = url;
+      return Response.json({ ok: true }, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const result = await deleteMessage(gw, {
+      thread: "t_handle",
+      message: "m1",
+    });
+    expect(capturedUrl).toContain("/internal/conversations/delete");
+    expect(extractText(result as any)).toContain("Message deleted.");
   });
 });

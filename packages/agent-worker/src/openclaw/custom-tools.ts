@@ -8,11 +8,14 @@ import {
   askUserQuestion,
   callMcpTool,
   checkMcpLogin,
+  deleteMessage,
+  editMessage,
   generateAudio,
   generateImage,
   listConversations,
   logoutMcp,
   maybePostApprovalCard,
+  reactToMessage,
   readConversation,
   sendMessage,
   startMcpLogin,
@@ -229,6 +232,62 @@ export function createOpenClawCustomTools(params: {
         }),
       }),
       run: (args) => sendMessage(gw, args),
+    }),
+
+    createGatewayTool({
+      name: "react",
+      parameters: Type.Object({
+        thread: Type.String({
+          description:
+            "A thread handle returned by a previous send_message (identifies the channel you're authorized for)",
+        }),
+        message: Type.String({
+          description:
+            "The message id to react to (e.g. the messageId returned by send_message, or a message id from read_conversation)",
+        }),
+        emoji: Type.String({
+          description: 'Emoji name without colons, e.g. "thumbsup", "eyes"',
+        }),
+        remove: Type.Optional(
+          Type.Boolean({
+            description: "Set true to remove the reaction instead of adding it",
+          })
+        ),
+      }),
+      run: (args) => reactToMessage(gw, args),
+    }),
+
+    createGatewayTool({
+      name: "edit_message",
+      parameters: Type.Object({
+        thread: Type.String({
+          description:
+            "A thread handle returned by a previous send_message (identifies the channel)",
+        }),
+        message: Type.String({
+          description:
+            "The message id to edit. Only messages the bot itself sent can be edited.",
+        }),
+        text: Type.String({
+          description: "The new message text (markdown)",
+        }),
+      }),
+      run: (args) => editMessage(gw, args),
+    }),
+
+    createGatewayTool({
+      name: "delete_message",
+      parameters: Type.Object({
+        thread: Type.String({
+          description:
+            "A thread handle returned by a previous send_message (identifies the channel)",
+        }),
+        message: Type.String({
+          description:
+            "The message id to delete. Only messages the bot itself sent can be deleted.",
+        }),
+      }),
+      run: (args) => deleteMessage(gw, args),
     }),
 
     createGatewayTool({

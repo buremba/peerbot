@@ -1,5 +1,5 @@
 import { createLogger } from "@lobu/core";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import {
   resolveAddressableTargets,
   resolveAuthorizedTarget,
@@ -247,6 +247,141 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
       return errorResponse(c, "Internal server error", 500);
     }
   });
+
+  // Shared skeleton for the message-mutation routes (react/edit/delete): parse
+  // the body, re-authorize the (thread handle → channel, message id) — the
+  // thread handle carries the channel binding, so resolveAuthorizedThread
+  // re-checks membership every call (revocation-safe) — then hand the resolved
+  // target + body to the route's own handler. `message` is the platform message
+  // id WITHIN that authorized channel. Owns the try/catch + error mapping so
+  // each route only expresses its specific validation + manager call.
+  interface MessageTarget {
+    connectionId: string;
+    threadId: string;
+    messageId: string;
+  }
+  function messageRoute(
+    label: string,
+    handler: (
+      c: Context<WorkerContext>,
+      target: MessageTarget,
+      body: Record<string, unknown>
+    ) => Promise<Response>
+  ) {
+    return async (c: Context<WorkerContext>): Promise<Response> => {
+      try {
+        const worker = getVerifiedWorker(c);
+        if (!worker.agentId || !worker.organizationId) {
+          return errorResponse(c, "Token missing agent/org context", 403);
+        }
+        const body = ((await c.req.json().catch(() => null)) ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const thread = typeof body.thread === "string" ? body.thread : "";
+        const message = typeof body.message === "string" ? body.message : "";
+        if (!thread || !message) {
+          return errorResponse(c, "thread and message are required", 400);
+        }
+        const asThread = await resolveAuthorizedThread(
+          worker.agentId,
+          worker.organizationId,
+          thread
+        );
+        if (!asThread) {
+          return errorResponse(c, "Not authorized for this conversation", 403);
+        }
+        return await handler(
+          c,
+          {
+            connectionId: asThread.target.connectionId,
+            threadId: asThread.threadId,
+            messageId: message,
+          },
+          body
+        );
+      } catch (error) {
+        logger.error(`${label} failed: ${String(error)}`);
+        return errorResponse(c, "Internal server error", 500);
+      }
+    };
+  }
+
+  // POST /conversations/react { thread, message, emoji, remove? }
+  router.post(
+    "/conversations/react",
+    authenticateWorker,
+    messageRoute("react", async (c, target, body) => {
+      const emoji =
+        typeof body.emoji === "string"
+          ? body.emoji.trim().replace(/^:|:$/g, "")
+          : "";
+      if (!emoji) return errorResponse(c, "emoji is required", 400);
+      const manager = getChatInstanceManager();
+      if (!manager?.reactToMessage) {
+        return errorResponse(c, "Chat instance manager unavailable", 503);
+      }
+      await manager.reactToMessage(target.connectionId, {
+        threadId: target.threadId,
+        messageId: target.messageId,
+        emoji,
+        remove: body.remove === true,
+      });
+      return c.json({ ok: true });
+    })
+  );
+
+  // POST /conversations/edit { thread, message, text } — bot's own messages only
+  // (Slack enforces this server-side on the bot token).
+  router.post(
+    "/conversations/edit",
+    authenticateWorker,
+    messageRoute("edit", async (c, target, body) => {
+      const text = typeof body.text === "string" ? body.text.trim() : "";
+      if (!text) return errorResponse(c, "text is required", 400);
+      if (text.length > MAX_CONTENT_LENGTH) {
+        return errorResponse(
+          c,
+          `Message too long (max ${MAX_CONTENT_LENGTH} chars)`,
+          400
+        );
+      }
+      if (MASS_MENTION.test(text)) {
+        return errorResponse(
+          c,
+          "Mass mentions (@channel/@here/@everyone) are not allowed",
+          400
+        );
+      }
+      const manager = getChatInstanceManager();
+      if (!manager?.editMessage) {
+        return errorResponse(c, "Chat instance manager unavailable", 503);
+      }
+      await manager.editMessage(target.connectionId, {
+        threadId: target.threadId,
+        messageId: target.messageId,
+        text,
+      });
+      return c.json({ ok: true });
+    })
+  );
+
+  // POST /conversations/delete { thread, message } — bot's own messages only.
+  router.post(
+    "/conversations/delete",
+    authenticateWorker,
+    messageRoute("delete", async (c, target) => {
+      const manager = getChatInstanceManager();
+      if (!manager?.deleteMessage) {
+        return errorResponse(c, "Chat instance manager unavailable", 503);
+      }
+      await manager.deleteMessage(target.connectionId, {
+        threadId: target.threadId,
+        messageId: target.messageId,
+      });
+      return c.json({ ok: true });
+    })
+  );
 
   return router;
 }

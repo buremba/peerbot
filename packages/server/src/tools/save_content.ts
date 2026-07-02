@@ -10,6 +10,7 @@
 import { normalizeAuthUserId, normalizeEmail } from '@lobu/connector-sdk';
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
+import { resolveChannelEntityId } from '../authz/channel-entity';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { autoLinkEvent } from '../utils/auto-linker';
@@ -277,6 +278,24 @@ async function saveContentImpl(
         finalEntityIds.push(memberId);
       }
     }
+  }
+
+  // 4b. Stamp the source CHANNEL entity when this save originates from a chat
+  //     session (worker-originated, carries team + channel in sourceContext).
+  //     This makes distilled channel knowhow inherit the channel's per-member
+  //     visibility gate (resource-visibility) instead of being org-visible —
+  //     so a member of #eng recalls what the agent learned there, but #exec
+  //     knowhow never leaks into #eng recall. Best-effort: a channel with no
+  //     graphed entity (never synced) resolves to null and the save proceeds
+  //     with the existing org/$member scoping.
+  const channelEntityId = await resolveChannelEntityId(
+    ctx.organizationId,
+    ctx.sourceContext?.teamId,
+    ctx.sourceContext?.channelId,
+    sql
+  );
+  if (channelEntityId !== null && !finalEntityIds.includes(channelEntityId)) {
+    finalEntityIds.push(channelEntityId);
   }
 
   // 5. Validate supersedes target exists and belongs to this org

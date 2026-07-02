@@ -1047,6 +1047,87 @@ export async function sendMessage(
   });
 }
 
+export async function reactToMessage(
+  gw: GatewayParams,
+  args: { thread: string; message: string; emoji: string; remove?: boolean }
+): Promise<TextResult> {
+  return withErrorHandling("react", async () => {
+    if (!args.thread || !args.message || !args.emoji?.trim()) {
+      return textResult(
+        "Error: thread (a thread handle from send_message), message (the message id), and emoji are required."
+      );
+    }
+    const { error } = await gatewayFetch<{ ok: boolean }>(
+      gw,
+      "/internal/conversations/react",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          thread: args.thread,
+          message: args.message,
+          emoji: args.emoji,
+          remove: args.remove === true,
+        }),
+      },
+      args.remove ? "Failed to remove reaction" : "Failed to add reaction"
+    );
+    if (error) return error;
+    return textResult(args.remove ? "Reaction removed." : "Reaction added.");
+  });
+}
+
+export async function editMessage(
+  gw: GatewayParams,
+  args: { thread: string; message: string; text: string }
+): Promise<TextResult> {
+  return withErrorHandling("edit_message", async () => {
+    if (!args.thread || !args.message || !args.text?.trim()) {
+      return textResult(
+        "Error: thread (a thread handle from send_message), message (the message id), and text are required. Only messages the bot itself sent can be edited."
+      );
+    }
+    const { error } = await gatewayFetch<{ ok: boolean }>(
+      gw,
+      "/internal/conversations/edit",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          thread: args.thread,
+          message: args.message,
+          text: args.text,
+        }),
+      },
+      "Failed to edit message"
+    );
+    if (error) return error;
+    return textResult("Message edited.");
+  });
+}
+
+export async function deleteMessage(
+  gw: GatewayParams,
+  args: { thread: string; message: string }
+): Promise<TextResult> {
+  return withErrorHandling("delete_message", async () => {
+    if (!args.thread || !args.message) {
+      return textResult(
+        "Error: thread (a thread handle from send_message) and message (the message id) are required. Only messages the bot itself sent can be deleted."
+      );
+    }
+    const { error } = await gatewayFetch<{ ok: boolean }>(
+      gw,
+      "/internal/conversations/delete",
+      {
+        method: "POST",
+        body: JSON.stringify({ thread: args.thread, message: args.message }),
+      },
+      "Failed to delete message"
+    );
+    if (error) return error;
+    return textResult("Message deleted.");
+  });
+}
+
 // ============================================================================
 // MCP Tools (route to MCP proxy /mcp/{mcpId}/tools/{toolName})
 // ============================================================================

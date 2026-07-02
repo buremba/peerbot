@@ -389,11 +389,12 @@ export class MessageHandlerBridge {
         let channelName: string | undefined;
         if (linkTeamId) {
           try {
+            const slackWeb = createSlackWebApi();
             const identity = await resolveSlackBotIdentity(
               {
                 installStore: this.services.getAppInstallationStore(),
                 secretStore: this.services.getSecretStore(),
-                slackWeb: createSlackWebApi(),
+                slackWeb,
               },
               {
                 organizationId: this.connection.organizationId,
@@ -402,7 +403,7 @@ export class MessageHandlerBridge {
               },
             );
             if (identity?.token) {
-              const info = await createSlackWebApi().conversationInfo(
+              const info = await slackWeb.conversationInfo(
                 identity.token,
                 stripPlatformPrefix(platform, channelId),
               );

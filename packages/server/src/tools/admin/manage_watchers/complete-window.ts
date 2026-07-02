@@ -58,6 +58,9 @@ export async function handleCompleteWindow(
   content_linked: number;
   /** False on idempotent replays that reused an existing window. */
   window_created: boolean;
+  /** True when replace_existing superseded the head — the canvas changed, so
+   *  reactions fire and the schedule advances like a fresh completion. */
+  head_superseded: boolean;
   reaction_status: 'success' | 'failed' | 'skipped';
   reaction_error?: string;
 }> {
@@ -368,6 +371,7 @@ export async function handleCompleteWindow(
     // ============================================
     let windowId!: number;
     let windowCreated = false;
+    let headSuperseded = false;
     const canvasEntityId = await ensureCanvasEntity({
       tx,
       watcherId: Number(watcherId),
@@ -440,6 +444,7 @@ export async function handleCompleteWindow(
         }
         throw err;
       }
+      headSuperseded = true;
       if (args.replace_existing) {
         // An explicit replace states "this analysis covers THIS content set":
         // clear the previous completion's links so STEP 8 re-links exactly the
@@ -592,7 +597,7 @@ export async function handleCompleteWindow(
     // Advance the schedule only when we actually did new work. Idempotent
     // replays (no window created, no run transitioned) must not push
     // next_run_at forward, or each retry would shift the schedule.
-    if (windowCreated || runMarkedCompleted) {
+    if (windowCreated || headSuperseded || runMarkedCompleted) {
       await advanceWatcherSchedule(tx, watcherId);
     }
 
@@ -609,6 +614,7 @@ export async function handleCompleteWindow(
       window_end,
       content_linked: batchContentIds.length,
       window_created: windowCreated,
+      head_superseded: headSuperseded,
     };
   });
 
@@ -656,7 +662,7 @@ export async function handleCompleteWindow(
     const sql = watcherMetaSql;
     const scriptRows = watcherMetaRows;
     if (
-      (result.content_linked > 0 || result.window_created) &&
+      (result.content_linked > 0 || result.window_created || result.head_superseded) &&
       scriptRows.length > 0 &&
       scriptRows[0].reaction_script_compiled
     ) {

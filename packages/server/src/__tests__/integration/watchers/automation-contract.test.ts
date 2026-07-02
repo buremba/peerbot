@@ -701,6 +701,61 @@ describe('watcher automation contract', () => {
       expect(window?.reactions?.[0].tool_name).toBe('reaction_executor');
     });
 
+    // Canvas-on-events: replace_existing supersedes the head instead of
+    // deleting+recreating the window row, so window_created is false — the
+    // head_superseded gate must fire reactions for a zero-content replace
+    // (legacy parity: the recreate set window_created=true and reactions ran).
+    it('fires the reaction script on a zero-content replace_existing (head_superseded gate)', async () => {
+      const { api, watcherId } = await createAutomatedWatcher();
+      await api.watchers.setReactionScript({
+        watcher_id: String(watcherId),
+        reaction_script: 'export default async function reaction() { return; }',
+      });
+      const windowStart = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      const windowEnd = new Date().toISOString();
+      const env = { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env;
+      const mint = () =>
+        generateWindowToken(
+          {
+            watcher_id: watcherId,
+            window_start: windowStart,
+            window_end: windowEnd,
+            granularity: 'daily',
+            content_count: 0,
+            content_ids: [],
+          },
+          env
+        );
+
+      const first = (await api.watchers.completeWindow({
+        watcher_id: String(watcherId),
+        window_token: await mint(),
+        extracted_data: { summary: 'v1' },
+      })) as { window_id: number };
+
+      const replaced = (await api.watchers.completeWindow({
+        watcher_id: String(watcherId),
+        window_token: await mint(),
+        extracted_data: { summary: 'v2 re-analysis' },
+        replace_existing: true,
+      })) as {
+        window_id: number;
+        window_created: boolean;
+        head_superseded: boolean;
+        content_linked: number;
+        reaction_status: string;
+      };
+
+      // Same root identity, no new window, no content — yet the canvas CHANGED,
+      // so the reaction must be attempted (never 'skipped'; 'failed' is fine on
+      // runtimes without an isolated-vm build, as in the content-less test).
+      expect(replaced.window_id).toBe(first.window_id);
+      expect(replaced.window_created).toBe(false);
+      expect(replaced.head_superseded).toBe(true);
+      expect(replaced.content_linked).toBe(0);
+      expect(replaced.reaction_status).not.toBe('skipped');
+    });
+
     // Fail closed: the agent exiting cleanly WITHOUT calling complete_window
     // means no real work was recorded — the run must fail (and the schedule
     // advance), mirroring the server-side dispatch guard. This is exactly

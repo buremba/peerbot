@@ -427,15 +427,18 @@ WHERE ww.run_id = r.id
 ALTER TABLE public.runs DROP COLUMN IF EXISTS run_metadata;
 ALTER TABLE public.runs DROP COLUMN IF EXISTS model_used;
 
+-- NOT VALID: the re-added FKs skip the validating table scan (rows re-keyed to
+-- canvas root event ids would fail validation anyway); a dev rollback only needs
+-- the constraint in place for NEW rows. No VALIDATE follows by design.
 ALTER TABLE public.event_classifications
   ADD CONSTRAINT event_classifications_window_id_fkey
-  FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE CASCADE;
+  FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE CASCADE NOT VALID;
 ALTER TABLE public.watcher_window_events
   ADD CONSTRAINT insight_window_events_window_id_fkey
-  FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE CASCADE;
+  FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE CASCADE NOT VALID;
 ALTER TABLE public.runs
   ADD CONSTRAINT runs_window_id_fkey
-  FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE SET NULL;
+  FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE SET NULL NOT VALID;
 ALTER TABLE public.watcher_reactions
   ADD CONSTRAINT watcher_reactions_window_id_fkey
-  FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE CASCADE;
+  FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE CASCADE NOT VALID;

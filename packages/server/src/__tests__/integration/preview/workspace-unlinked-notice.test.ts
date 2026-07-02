@@ -40,26 +40,44 @@ describe('workspaceUnlinkedNotice', () => {
     expect(await workspaceUnlinkedNotice('telegram', org.id)).toBeNull();
   });
 
-  it('lists agents and deep-links each Behaviors page when the public origin is set', async () => {
+  it('deep-links each agent to the Behaviors "new" step with the channel prefilled', async () => {
     setOrigin('https://app.lobu.ai/lobu');
     const org = await createTestOrganization({ slug: 'acme' });
     await createTestAgent({ organizationId: org.id, agentId: 'planner', name: 'Planner' });
     await createTestAgent({ organizationId: org.id, agentId: 'builder', name: 'Builder' });
 
-    const notice = await workspaceUnlinkedNotice('slack', org.id);
+    const notice = await workspaceUnlinkedNotice('slack', org.id, {
+      channelId: 'slack:C0ABC123',
+      teamId: 'T0TEAM',
+    });
     expect(notice).not.toBeNull();
     const text = notice as string;
 
     // getConfiguredPublicOrigin() returns the URL *origin* (scheme+host), so the
-    // /lobu gateway mount is dropped — the SPA lives at the bare origin. We build
-    // `${origin}/${slug}/agents/${id}/behaviors`.
-    expect(text).toContain('https://app.lobu.ai/acme/agents/planner/behaviors');
-    expect(text).toContain('https://app.lobu.ai/acme/agents/builder/behaviors');
+    // /lobu gateway mount is dropped — the SPA lives at the bare origin. The link
+    // targets the Listen "new" step with the channel prefilled for confirm-bind.
+    // `slack:C…` and `T0TEAM` are URL-encoded in the query string.
+    expect(text).toContain(
+      'https://app.lobu.ai/acme/agents/planner/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM',
+    );
+    expect(text).toContain(
+      'https://app.lobu.ai/acme/agents/builder/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM',
+    );
     expect(text).toContain('Planner');
     expect(text).toContain('Builder');
     // The CLI path is always offered too.
     expect(text).toContain('lobu run');
     expect(text).toContain('/lobu link');
+  });
+
+  it('deep-links to the plain Behaviors page when no channel context is given', async () => {
+    setOrigin('https://app.lobu.ai');
+    const org = await createTestOrganization({ slug: 'acme' });
+    await createTestAgent({ organizationId: org.id, agentId: 'planner', name: 'Planner' });
+
+    const text = (await workspaceUnlinkedNotice('slack', org.id)) as string;
+    expect(text).toContain('https://app.lobu.ai/acme/agents/planner/behaviors');
+    expect(text).not.toContain('/behaviors/new?');
   });
 
   it('lists agents by name (no URLs) when the public origin is not configured', async () => {

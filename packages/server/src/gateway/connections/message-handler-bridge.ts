@@ -381,6 +381,7 @@ export class MessageHandlerBridge {
         const notice = await workspaceUnlinkedNotice(
           platform,
           this.connection.organizationId,
+          { channelId, teamId },
         );
         if (notice) {
           logger.info(

@@ -526,6 +526,7 @@ async function listOrgAgentsForNotice(organizationId: string): Promise<{
 export async function workspaceUnlinkedNotice(
 	platform: string,
 	organizationId: string,
+	channel?: { channelId: string; teamId?: string },
 ): Promise<string | null> {
 	if (platform !== "slack") return null;
 
@@ -547,14 +548,25 @@ export async function workspaceUnlinkedNotice(
 	}
 
 	const origin = getConfiguredPublicOrigin()?.replace(/\/+$/, "");
-	// Deep-link each agent to its Behaviors page when we can build a full URL
-	// (need both the public origin and the org slug). The Behaviors → Listen
-	// picker is where a channel is bound to the agent from the UI.
+	// Deep-link each agent to its Behaviors "new" step with THIS channel prefilled,
+	// so the user lands on a one-click confirm-bind (no hunting in the picker,
+	// which only lists channels that already have a streaming feed). `channelId` is
+	// the canonical `slack:C…` form the binding is stored under, passed verbatim so
+	// the confirm binds the exact key the router resolves. Falls back to the plain
+	// Behaviors page when we have no channel context.
 	const canLink = Boolean(origin && orgSlug);
+	const behaviorsUrl = (agentId: string): string => {
+		const base = `${origin}/${orgSlug}/agents/${agentId}/behaviors`;
+		if (!channel?.channelId) return base;
+		const params = new URLSearchParams({
+			listen: channel.channelId,
+			platform: "slack",
+		});
+		if (channel.teamId) params.set("team", channel.teamId);
+		return `${base}/new?${params.toString()}`;
+	};
 	const agentLines = agents.map((a) =>
-		canLink
-			? `   • ${a.name} — ${origin}/${orgSlug}/agents/${a.agentId}/behaviors`
-			: `   • ${a.name}`,
+		canLink ? `   • ${a.name} — ${behaviorsUrl(a.agentId)}` : `   • ${a.name}`,
 	);
 
 	if (agentLines.length > 0) {

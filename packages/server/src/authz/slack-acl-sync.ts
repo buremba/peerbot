@@ -254,10 +254,11 @@ export async function resolveSlackBotIdentity(
   deps: {
     installStore: ReturnType<CoreServices['getAppInstallationStore']>;
     secretStore: ReturnType<CoreServices['getSecretStore']>;
+    slackWeb: SlackWebApi;
   },
   params: { organizationId: string; teamId: string; connectionId: string },
 ): Promise<{ token: string; botUserId: string | null } | null> {
-  const { installStore, secretStore } = deps;
+  const { installStore, secretStore, slackWeb } = deps;
   const { organizationId, teamId, connectionId } = params;
 
   // Primary: the workspace OAuth app-installation (the hosted/managed path).
@@ -273,6 +274,12 @@ export async function resolveSlackBotIdentity(
   // Fallback: a BYO Slack connection has no install row — its bot token + user
   // id live on the connection's own config. The token is a `secret://` ref,
   // resolved under the connection's org exactly like the install path.
+  //
+  // We fetch by (slug, org) only and check the team OURSELVES rather than in the
+  // predicate: a BYO connection created without an OAuth install NEVER persists a
+  // teamId (see slack-connection-coordinator: "created without an OAuth install
+  // never gets a metadata.teamId"), so a `= ${teamId}` predicate would drop it
+  // entirely and the sync would fail closed forever. Instead we self-heal.
   const sql = getDb();
   const [conn] = await sql<{
     organization_id: string;
@@ -280,30 +287,68 @@ export async function resolveSlackBotIdentity(
     // OAuth-install writer's shape); COALESCE the chatMetadata nesting too.
     bot_token_ref: string | null;
     bot_user_id: string | null;
+    // The team this connection is already known to belong to, if any.
+    stored_team_id: string | null;
   }>`
 		SELECT organization_id,
 		       COALESCE(config->>'botToken', config->'chatMetadata'->>'botToken') AS bot_token_ref,
-		       config->'chatMetadata'->>'botUserId' AS bot_user_id
+		       config->'chatMetadata'->>'botUserId' AS bot_user_id,
+		       COALESCE(external_tenant_id, config->'chatMetadata'->>'teamId') AS stored_team_id
 		FROM connections
 		WHERE slug = ${runtimeConnectionIdToSlug(connectionId)}
 		  AND organization_id = ${organizationId}
 		  AND connector_key = 'slack'
 		  AND status = 'active'
 		  AND deleted_at IS NULL
-		  -- The connection must actually BELONG to the team we're graphing.
-		  -- Without this, a connection whose bindings span a foreign team (or the
-		  -- teamId-null preview case) would hand back its OWN token for a team it
-		  -- doesn't own; Slack answers channel_not_found for every foreign channel
-		  -- and the empty-member reconcile would then wipe live edges the team's
-		  -- REAL connection maintains. Same team expression the tick scopes with.
-		  AND COALESCE(external_tenant_id, config->'chatMetadata'->>'teamId') = ${teamId}
 		LIMIT 1
 	`;
   if (!conn?.bot_token_ref) return null;
+
+  // Guard the FOREIGN-team case: a connection that already carries a DIFFERENT
+  // team id must NOT hand back its token for the team we're graphing. Without
+  // this, its token would answer channel_not_found for every foreign channel and
+  // the empty-member reconcile would wipe live edges the team's REAL connection
+  // maintains. A matching stored team is the fast path (no Slack round-trip).
+  if (conn.stored_team_id && conn.stored_team_id !== teamId) return null;
+
   const token = await orgContext.run({ organizationId: conn.organization_id }, () =>
     resolveSecretValue(secretStore, conn.bot_token_ref as string),
   );
   if (!token) return null;
+
+  // Self-heal the teamId-less BYO connection: confirm the token's REAL team from
+  // Slack before graphing (a stronger guard than a stored string — it verifies
+  // the LIVE credential owns this team), then backfill it onto the row so future
+  // ticks take the fast path above and the connection is team-scoped everywhere.
+  if (!conn.stored_team_id) {
+    let realTeamId: string;
+    try {
+      ({ teamId: realTeamId } = await slackWeb.authTest(token));
+    } catch (error) {
+      // A dead/invalid token can't be identified — fail closed for THIS team
+      // (leave the connection ungraphed rather than risk wiping a foreign
+      // team's edges). Transient failures retry on the next tick.
+      logger.warn(
+        { connectionId, teamId, error: String(error) },
+        'Slack auth.test failed resolving BYO connection team; skipping',
+      );
+      return null;
+    }
+    if (realTeamId !== teamId) return null;
+    await sql`
+			UPDATE connections
+			SET external_tenant_id = ${teamId}
+			WHERE slug = ${runtimeConnectionIdToSlug(connectionId)}
+			  AND organization_id = ${organizationId}
+			  AND connector_key = 'slack'
+			  AND external_tenant_id IS NULL
+		`;
+    logger.info(
+      { connectionId, teamId },
+      'Backfilled teamId onto BYO Slack connection from auth.test',
+    );
+  }
+
   return { token, botUserId: conn.bot_user_id };
 }
 
@@ -343,7 +388,7 @@ export async function runSlackAclSyncTick(coreServices: CoreServices): Promise<v
   const deps: SlackAclSyncDeps = {
     slackWeb,
     resolveBotIdentity: (params) =>
-      resolveSlackBotIdentity({ installStore, secretStore }, params),
+      resolveSlackBotIdentity({ installStore, secretStore, slackWeb }, params),
   };
 
   let ok = 0;

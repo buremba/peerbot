@@ -3,11 +3,14 @@
  * ACL sync. Covers the gap that left BYO Slack connections ungraphed: an active
  * connection with real bindings but NO OAuth app-installation must resolve its
  * bot identity from the connection's OWN config, not fail closed. Also proves
- * the install path still wins when an install exists.
+ * the install path still wins when an install exists, and that a teamId-less BYO
+ * connection self-heals its team via `auth.test` (the real prod case: a BYO
+ * connection created without an OAuth install never persists a teamId).
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { resolveSlackBotIdentity } from '../../../authz/slack-acl-sync';
+import { getDb } from '../../../db/client';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   createTestOrganization,
@@ -26,6 +29,19 @@ const secretStore = {
 const emptyInstallStore = {
   resolveActiveByTenant: async () => null,
 } as unknown as Parameters<typeof resolveSlackBotIdentity>[0]['installStore'];
+
+// Slack Web stub. `authTest` is only reached on the self-heal path (a BYO
+// connection with no stored teamId); the default throws so any UNEXPECTED
+// auth.test call surfaces as a test failure. Individual tests override it.
+function makeSlackWeb(authTest?: (token: string) => Promise<{ teamId: string }>) {
+  return {
+    authTest:
+      authTest ??
+      (async () => {
+        throw new Error('auth.test should not be called on the fast path');
+      }),
+  } as unknown as Parameters<typeof resolveSlackBotIdentity>[0]['slackWeb'];
+}
 
 const TEAM = 'T0BYOTEAM';
 
@@ -50,7 +66,7 @@ describe('resolveSlackBotIdentity — BYO fallback', () => {
     });
 
     const identity = await resolveSlackBotIdentity(
-      { installStore: emptyInstallStore, secretStore },
+      { installStore: emptyInstallStore, secretStore, slackWeb: makeSlackWeb() },
       { organizationId: orgId, teamId: TEAM, connectionId: 'conn-byo' },
     );
 
@@ -69,7 +85,7 @@ describe('resolveSlackBotIdentity — BYO fallback', () => {
     });
 
     const identity = await resolveSlackBotIdentity(
-      { installStore: emptyInstallStore, secretStore },
+      { installStore: emptyInstallStore, secretStore, slackWeb: makeSlackWeb() },
       { organizationId: orgId, teamId: TEAM, connectionId: 'conn-notoken' },
     );
 
@@ -89,18 +105,19 @@ describe('resolveSlackBotIdentity — BYO fallback', () => {
 
     const other = await createTestOrganization();
     const identity = await resolveSlackBotIdentity(
-      { installStore: emptyInstallStore, secretStore },
+      { installStore: emptyInstallStore, secretStore, slackWeb: makeSlackWeb() },
       { organizationId: other.id, teamId: TEAM, connectionId: 'conn-byo' },
     );
 
     expect(identity).toBeNull();
   });
 
-  it('does NOT hand back a BYO token for a team the connection does not belong to', async () => {
-    // The connection is team T0BYOTEAM; asking to graph a DIFFERENT team must
-    // resolve null (fail-closed), never this connection's own token — otherwise
-    // Slack channel_not_found on the foreign team + the empty-member reconcile
-    // would wipe live edges the foreign team's real connection maintains.
+  it('does NOT hand back a BYO token for a team the connection already belongs to a DIFFERENT team', async () => {
+    // The connection carries stored team T0BYOTEAM; asking to graph a DIFFERENT
+    // team must resolve null (fail-closed) via the stored-team guard, never this
+    // connection's own token — otherwise Slack channel_not_found on the foreign
+    // team + the empty-member reconcile would wipe live edges the foreign team's
+    // real connection maintains. No auth.test needed (stored team suffices).
     await insertChatConnectionRow({
       id: 'conn-byo',
       organizationId: orgId,
@@ -112,8 +129,104 @@ describe('resolveSlackBotIdentity — BYO fallback', () => {
     });
 
     const identity = await resolveSlackBotIdentity(
-      { installStore: emptyInstallStore, secretStore },
+      { installStore: emptyInstallStore, secretStore, slackWeb: makeSlackWeb() },
       { organizationId: orgId, teamId: 'T0OTHERTEAM', connectionId: 'conn-byo' },
+    );
+
+    expect(identity).toBeNull();
+  });
+
+  it('self-heals a teamId-less BYO connection: auth.test confirms the team, backfills it, returns the token', async () => {
+    // The REAL prod case: a BYO connection created without an OAuth install never
+    // persists a teamId (external_tenant_id NULL, no config.chatMetadata.teamId).
+    // The resolver must confirm the token's team live and backfill it.
+    await insertChatConnectionRow({
+      id: 'conn-noteam',
+      organizationId: orgId,
+      platform: 'slack',
+      status: 'active',
+      credentialMode: 'byo',
+      config: { botToken: 'xoxb-byo-token' },
+      metadata: { botUserId: 'U0BYOBOT' }, // NO teamId
+    });
+
+    let authCalls = 0;
+    const slackWeb = makeSlackWeb(async (token) => {
+      authCalls += 1;
+      expect(token).toBe('xoxb-byo-token');
+      return { teamId: TEAM };
+    });
+
+    const identity = await resolveSlackBotIdentity(
+      { installStore: emptyInstallStore, secretStore, slackWeb },
+      { organizationId: orgId, teamId: TEAM, connectionId: 'conn-noteam' },
+    );
+
+    expect(identity).toEqual({ token: 'xoxb-byo-token', botUserId: 'U0BYOBOT' });
+    expect(authCalls).toBe(1);
+
+    // Backfilled: external_tenant_id now carries the confirmed team, so the NEXT
+    // resolve takes the fast path (no auth.test round-trip).
+    const [row] = await getDb()<{ external_tenant_id: string | null }>`
+      SELECT external_tenant_id FROM connections WHERE slug = 'agentconn-conn-noteam'
+    `;
+    expect(row?.external_tenant_id).toBe(TEAM);
+
+    const second = await resolveSlackBotIdentity(
+      { installStore: emptyInstallStore, secretStore, slackWeb },
+      { organizationId: orgId, teamId: TEAM, connectionId: 'conn-noteam' },
+    );
+    expect(second).toEqual({ token: 'xoxb-byo-token', botUserId: 'U0BYOBOT' });
+    expect(authCalls).toBe(1); // fast path — no second auth.test
+  });
+
+  it('fails closed when auth.test reports the token belongs to a DIFFERENT team', async () => {
+    // A teamId-less BYO connection whose token actually belongs to another
+    // workspace must NOT graph the requested team (would wipe that team's edges).
+    await insertChatConnectionRow({
+      id: 'conn-noteam',
+      organizationId: orgId,
+      platform: 'slack',
+      status: 'active',
+      credentialMode: 'byo',
+      config: { botToken: 'xoxb-byo-token' },
+      metadata: { botUserId: 'U0BYOBOT' }, // NO teamId
+    });
+
+    const slackWeb = makeSlackWeb(async () => ({ teamId: 'T0SOMEOTHER' }));
+
+    const identity = await resolveSlackBotIdentity(
+      { installStore: emptyInstallStore, secretStore, slackWeb },
+      { organizationId: orgId, teamId: TEAM, connectionId: 'conn-noteam' },
+    );
+
+    expect(identity).toBeNull();
+
+    // Not backfilled with the requested (wrong) team.
+    const [row] = await getDb()<{ external_tenant_id: string | null }>`
+      SELECT external_tenant_id FROM connections WHERE slug = 'agentconn-conn-noteam'
+    `;
+    expect(row?.external_tenant_id).toBeNull();
+  });
+
+  it('fails closed when auth.test throws (dead/invalid token)', async () => {
+    await insertChatConnectionRow({
+      id: 'conn-noteam',
+      organizationId: orgId,
+      platform: 'slack',
+      status: 'active',
+      credentialMode: 'byo',
+      config: { botToken: 'xoxb-byo-token' },
+      metadata: { botUserId: 'U0BYOBOT' }, // NO teamId
+    });
+
+    const slackWeb = makeSlackWeb(async () => {
+      throw new Error('Slack auth.test failed: invalid_auth');
+    });
+
+    const identity = await resolveSlackBotIdentity(
+      { installStore: emptyInstallStore, secretStore, slackWeb },
+      { organizationId: orgId, teamId: TEAM, connectionId: 'conn-noteam' },
     );
 
     expect(identity).toBeNull();
@@ -148,7 +261,7 @@ describe('resolveSlackBotIdentity — BYO fallback', () => {
     });
 
     const identity = await resolveSlackBotIdentity(
-      { installStore, secretStore },
+      { installStore, secretStore, slackWeb: makeSlackWeb() },
       { organizationId: orgId, teamId: TEAM, connectionId: 'conn-byo' },
     );
 

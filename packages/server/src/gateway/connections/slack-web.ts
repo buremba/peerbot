@@ -53,6 +53,15 @@ export interface SlackWebApi {
    */
   revokeToken(botToken: string): Promise<boolean>;
   /**
+   * `auth.test` — identify the workspace a bot token belongs to. Returns the
+   * `T…` team id. Used by the ACL sync to self-heal a BYO connection that was
+   * created without an OAuth install (so it never persisted a `teamId`): we
+   * resolve the token's REAL team from Slack, verify it matches the channel
+   * binding's team before graphing, and backfill it onto the connection row.
+   * Throws on a Slack-level error (an invalid/revoked token yields `invalid_auth`).
+   */
+  authTest(botToken: string): Promise<{ teamId: string }>;
+  /**
    * `oauth.v2.access` — exchange an OAuth `code` for the workspace bot token +
    * tenant/installer identity. Unlike the other methods this authenticates with
    * the app's client id/secret (not a bot token), so it lives outside
@@ -177,6 +186,14 @@ export function createSlackWebApi(): SlackWebApi {
     async revokeToken(botToken) {
       const json = await slackPost(botToken, "auth.revoke", {});
       return json.revoked === true;
+    },
+    async authTest(botToken) {
+      const json = await slackPost(botToken, "auth.test", {});
+      const teamId = json.team_id;
+      if (typeof teamId !== "string" || !teamId) {
+        throw new Error("Slack auth.test returned no team_id");
+      }
+      return { teamId };
     },
     async exchangeOAuthCode({ clientId, clientSecret, code, redirectUri }) {
       const form = new URLSearchParams({

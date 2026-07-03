@@ -8,8 +8,9 @@ import { buildProviderCatalog } from "../provider-catalog.js";
  * catalog route and the per-agent agent-config catalog map from. It must:
  *  - include OAuth modules (Claude/ChatGPT) with their auth metadata, so they
  *    appear in the "Add provider" catalog;
- *  - carry sdkCompat so the POST route can gate: only sdkCompat === "openai" is
- *    addable via API key today (OAuth providers are null ⇒ rejected).
+ *  - carry sdkCompat so the POST route can gate on routable protocols via
+ *    isSdkCompat (openai, anthropic, google, …) — not only "openai". OAuth /
+ *    subscription-only providers carry a null sdkCompat ⇒ rejected.
  *
  * The registry is a process-global singleton; these tests register minimal fake
  * modules and clear between cases to stay hermetic.

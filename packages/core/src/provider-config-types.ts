@@ -29,8 +29,11 @@ export interface ProviderConfigEntry {
    * Gates which per-modality overrides are offered and (for STT) whether the
    * provider is a transcription candidate at all — an OpenAI-compatible chat
    * provider like Cerebras does NOT do speech-to-text, so it must not be listed
-   * for `stt`. `image`/`tts` remain additionally gated by their service
-   * allowlists; this list is the source of truth for the UI + STT eligibility.
+   * for `stt`. STT is enabled only when this list includes `"stt"` OR an
+   * explicit `stt` block enables it (`enabled !== false`); there is no
+   * "default on for openai-compatible" fallback. `image`/`tts` remain
+   * additionally gated by their service allowlists; this list is the source of
+   * truth for the UI + STT eligibility.
    */
   modalities?: ("text" | "image" | "stt" | "tts")[];
   /** Default model ID when none is configured */

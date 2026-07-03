@@ -470,11 +470,15 @@ describe("lobu init --from-org", () => {
         "/oauth/userinfo": () => ({
           organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
         }),
-        "/agents/bot/platforms": () => ({
-          platforms: [
+        manage_connections: () => ({
+          connections: [
             {
-              id: "bot-telegram",
-              platform: "telegram",
+              id: 1,
+              slug: "agentconn-bot-telegram",
+              connector_key: "telegram",
+              agent_id: "bot",
+              credential_mode: "byo",
+              status: "active",
               // GET round-trip: `platform` key + redacted secret + a literal.
               config: {
                 platform: "telegram",
@@ -492,7 +496,6 @@ describe("lobu init --from-org", () => {
           relationship_types: [],
         }),
         manage_auth_profiles: () => ({ auth_profiles: [] }),
-        manage_connections: () => ({ connections: [] }),
       }),
     });
 
@@ -526,11 +529,15 @@ describe("lobu init --from-org", () => {
         "/oauth/userinfo": () => ({
           organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
         }),
-        "/agents/bot/platforms": () => ({
-          platforms: [
+        manage_connections: () => ({
+          connections: [
             {
-              id: "bot-telegram",
-              platform: "telegram",
+              id: 1,
+              slug: "agentconn-bot-telegram",
+              connector_key: "telegram",
+              agent_id: "bot",
+              credential_mode: "byo",
+              status: "active",
               // A hyphenated config key: the emitted TS key must be quoted, and
               // the derived secret env var must be a valid POSIX name (no `-`).
               config: { platform: "telegram", "bot-token": "***oken" },
@@ -545,7 +552,6 @@ describe("lobu init --from-org", () => {
           relationship_types: [],
         }),
         manage_auth_profiles: () => ({ auth_profiles: [] }),
-        manage_connections: () => ({ connections: [] }),
       }),
     });
 

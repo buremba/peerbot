@@ -23,7 +23,7 @@ interface BuiltInCommandDeps {
  */
 export function registerBuiltInCommands(
   registry: CommandRegistry,
-  deps: BuiltInCommandDeps
+	deps: BuiltInCommandDeps,
 ): void {
   registry.register({
     name: "new",
@@ -50,7 +50,7 @@ export function registerBuiltInCommands(
       const commands = registry.getAll();
       const lines = commands.map((c) => `/${c.name} - ${c.description}`);
       await ctx.reply(
-        `Available commands:\n${lines.join("\n")}\n\nYou can also just send a message to start a conversation with the agent.`
+				`Available commands:\n${lines.join("\n")}\n\nYou can also just send a message to start a conversation with the agent.`,
       );
     },
   });
@@ -89,7 +89,9 @@ export function registerBuiltInCommands(
   // rebinds. (Reached as the `try` / `agents` subcommand on Slack.)
   const replyDemoMenu = async (ctx: CommandContext, prefix?: string) => {
     if (!ctx.connectionId) {
-      await ctx.reply("Couldn't identify this workspace — try again in a moment.");
+			await ctx.reply(
+				"Couldn't identify this workspace — try again in a moment.",
+			);
       return;
     }
     const agents = await listPreviewAgents(ctx.connectionId);
@@ -108,7 +110,9 @@ export function registerBuiltInCommands(
         return;
       }
       if (!ctx.connectionId) {
-        await ctx.reply("Couldn't identify this workspace — try again in a moment.");
+				await ctx.reply(
+					"Couldn't identify this workspace — try again in a moment.",
+				);
         return;
       }
       // Bindings are keyed on the canonical channel-id form; Slack slash
@@ -127,7 +131,7 @@ export function registerBuiltInCommands(
       switch (result.status) {
         case "bound":
           await ctx.reply(
-            `Now talking to \`${result.agentId}\`. Say hi — I'll reply here from now on.`
+						`Now talking to \`${result.agentId}\`. Say hi — I'll reply here from now on.`,
           );
           return;
         case "not_available":
@@ -135,7 +139,7 @@ export function registerBuiltInCommands(
           return;
         case "no_connection":
           await ctx.reply(
-            "This chat isn't connected to a Lobu preview workspace."
+						"This chat isn't connected to a Lobu preview workspace.",
           );
           return;
       }
@@ -163,7 +167,7 @@ export function registerBuiltInCommands(
       const cmd = ctx.platform === "slack" ? "/lobu link" : "/link";
       if (!arg) {
         await ctx.reply(
-          `Usage: \`${cmd} <code>\` — get a code by running \`lobu run\` on a Preview-enabled agent. (Once you've linked here once, \`${cmd} <agentId>\` works too.)`
+					`Usage: \`${cmd} <code>\` — get a code by running \`lobu run\` on a Preview-enabled agent. (Once you've linked here once, \`${cmd} <agentId>\` works too.)`,
         );
         return;
       }
@@ -181,16 +185,23 @@ export function registerBuiltInCommands(
         channelId,
         surfaceType,
         platformUserId: ctx.userId,
+				connectionId: ctx.connectionId,
+				connectionOrganizationId: ctx.organizationId,
       });
       switch (result.status) {
         case "bound":
           await ctx.reply(
-            `Linked this chat to agent \`${result.agentId}\`. Say hi — I'll reply here from now on.`
+						`Linked this chat to agent \`${result.agentId}\`. Say hi — I'll reply here from now on.`,
           );
           return;
         case "surface_not_allowed":
           await ctx.reply(
-            `This code can't be used in a ${result.surfaceType === "dm" ? "DM" : "channel"}. Check the agent's \`preview.${ctx.platform}.surfaces\` setting.`
+						`This code can't be used in a ${result.surfaceType === "dm" ? "DM" : "channel"}. Check the agent's \`preview.${ctx.platform}.surfaces\` setting.`,
+					);
+					return;
+				case "connection_mismatch":
+					await ctx.reply(
+						"That link code belongs to a different connection. Generate a new code for this bot.",
           );
           return;
         case "not_found": {
@@ -199,7 +210,7 @@ export function registerBuiltInCommands(
           const lobuUserId = await resolveChatUserIdentity(
             ctx.platform,
             ctx.teamId,
-            ctx.userId
+						ctx.userId,
           );
           if (lobuUserId) {
             const bound = await bindChatToAgentForOwner({
@@ -208,20 +219,22 @@ export function registerBuiltInCommands(
               channelId,
               agentId: arg,
               lobuUserId,
+							connectionId: ctx.connectionId ?? "",
+							connectionOrganizationId: ctx.organizationId,
             });
             if (bound.status === "bound") {
               await ctx.reply(
-                `Linked this chat to agent \`${arg}\`. Say hi — I'll reply here from now on.`
+								`Linked this chat to agent \`${arg}\`. Say hi — I'll reply here from now on.`,
               );
               return;
             }
             await ctx.reply(
-              `No agent \`${arg}\` you can manage in your orgs. Either run \`lobu apply\` to register it, or paste a fresh \`/lobu link <code>\` from \`lobu run\`.`
+							`No agent \`${arg}\` you can manage in your orgs. Either run \`lobu apply\` to register it, or paste a fresh \`/lobu link <code>\` from \`lobu run\`.`,
             );
             return;
           }
           await ctx.reply(
-            "That link code is invalid or expired. Run `lobu run` again to get a fresh one."
+						"That link code is invalid or expired. Run `lobu run` again to get a fresh one.",
           );
           return;
         }

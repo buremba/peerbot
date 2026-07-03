@@ -1,22 +1,22 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import type { SecretPutOptions, SecretRef } from "@lobu/core";
 import type { GatewayConfig } from "../config/index.js";
-import { CoreServices } from "../services/core-services.js";
 import {
   type SecretListEntry,
   SecretStoreRegistry,
   type WritableSecretStore,
 } from "../secrets/index.js";
+import { CoreServices } from "../services/core-services.js";
 import { InMemoryStateAdapter } from "./fixtures/in-memory-state-adapter.js";
 import {
-  ensureEncryptionKey,
   ensureDbForGatewayTests,
+	ensureEncryptionKey,
   resetTestDatabase,
 } from "./helpers/db-setup.js";
 import { MockMessageQueue } from "./setup.js";
 
 function createGatewayConfig(
-  overrides?: Partial<GatewayConfig>
+	overrides?: Partial<GatewayConfig>,
 ): GatewayConfig {
   return {
     agentDefaults: {},
@@ -83,7 +83,7 @@ class InMemoryWritableStore implements WritableSecretStore {
   async put(
     name: string,
     value: string,
-    _options?: SecretPutOptions
+		_options?: SecretPutOptions,
   ): Promise<SecretRef> {
     this.entries.set(name, { value, updatedAt: Date.now() });
     return `${this.scheme}://${encodeURIComponent(name)}` as SecretRef;
@@ -135,7 +135,7 @@ describe("CoreServices store selection", () => {
     // config/connection stores AND no lobu.config.ts is present,
     // initializeSessionServices throws.
     await expect(
-      (coreServices as any).initializeSessionServices()
+			(coreServices as any).initializeSessionServices(),
     ).rejects.toThrow(/No agent sub-stores configured/);
   });
 
@@ -169,11 +169,6 @@ describe("CoreServices store selection", () => {
         saveConnection: async () => {},
         updateConnection: async () => {},
         deleteConnection: async () => {},
-        getChannelBinding: async () => null,
-        createChannelBinding: async () => {},
-        deleteChannelBinding: async () => {},
-        listChannelBindings: async () => [],
-        deleteAllChannelBindings: async () => 0,
       } as any,
     });
     (coreServices as any).queue = new MockMessageQueue();
@@ -193,10 +188,9 @@ describe("CoreServices store selection", () => {
     });
 
     const hostEntries = await hostStore.list(
-      "users/user-1/agents/agent-1/auth-profiles/"
+			"users/user-1/agents/agent-1/auth-profiles/",
     );
     expect(hostEntries).toHaveLength(1);
     expect(await hostStore.get(hostEntries[0]!.ref)).toBe("sk-host-store-only");
   });
 });
-

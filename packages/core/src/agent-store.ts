@@ -164,16 +164,6 @@ export function inferGrantKind(pattern: string): GrantKind {
   return pattern.startsWith("/") ? "mcp_tool" : "domain";
 }
 
-// ── Channel Bindings ────────────────────────────────────────────────────────
-
-export interface ChannelBinding {
-  agentId: string;
-  platform: string;
-  channelId: string;
-  teamId?: string;
-  createdAt: number;
-}
-
 // ── Sub-Store Interfaces ──────────────────────────────────────────────────
 
 /**
@@ -217,20 +207,6 @@ export interface AgentConnectionStore {
     updates: Partial<StoredConnection>
   ): Promise<void>;
   deleteConnection(connectionId: string): Promise<void>;
-
-  getChannelBinding(
-    platform: string,
-    channelId: string,
-    teamId?: string
-  ): Promise<ChannelBinding | null>;
-  createChannelBinding(binding: ChannelBinding): Promise<void>;
-  deleteChannelBinding(
-    platform: string,
-    channelId: string,
-    teamId?: string
-  ): Promise<void>;
-  listChannelBindings(agentId: string): Promise<ChannelBinding[]>;
-  deleteAllChannelBindings(agentId: string): Promise<number>;
 }
 
 /**

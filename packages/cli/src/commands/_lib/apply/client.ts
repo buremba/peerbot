@@ -164,6 +164,8 @@ export interface RemoteConnection {
   app_auth_profile_slug?: string | null;
   config?: Record<string, unknown> | null;
   device_worker_id?: string | null;
+  agent_id?: string | null;
+  credential_mode?: "managed" | "byo" | null;
 }
 
 export interface RemoteFeed {
@@ -511,25 +513,36 @@ export class ApplyClient {
     );
   }
 
-  // ── Platforms ─────────────────────────────────────────────────────────────
+  // ── Declarative chat connections ──────────────────────────────────────────
 
   async listPlatforms(agentId: string): Promise<RemotePlatform[]> {
-    const { body } = await this.request<{ platforms?: RemotePlatform[] }>(
-      "GET",
-      `/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/platforms`
-    );
-    return body.platforms ?? [];
+    const body = await this.connectionsTool<{
+      connections?: RemoteConnection[];
+    }>({ action: "list", limit: 500 });
+    return (body.connections ?? [])
+      .filter(
+        (connection) =>
+          connection.credential_mode != null && connection.agent_id === agentId
+      )
+      .map((connection) => {
+        const config = { ...(connection.config ?? {}) };
+        delete config.settings;
+        delete config.chatMetadata;
+        return {
+          id: connection.slug.startsWith("agentconn-")
+            ? connection.slug.slice("agentconn-".length)
+            : connection.slug,
+          platform: connection.connector_key,
+          agentId: connection.agent_id ?? undefined,
+          config,
+          status: connection.status,
+        };
+      });
   }
 
   /**
-   * Stable-ID upsert.
-   *
-   * Server contract:
-   *   PUT /:agentId/platforms/by-stable-id/:stableId
-   *   body: { platform, name?, config }
-   *   response when unchanged: { noop: true, platform }
-   *   response when changed:   { updated: true, willRestart: true, platform }
-   *   response on first write: { created: true, platform }
+   * Apply one stable declarative chat connection through the canonical
+   * connections API. The server performs a secret-aware idempotency check.
    */
   async upsertPlatform(
     agentId: string,
@@ -540,35 +553,63 @@ export class ApplyClient {
       config: Record<string, string>;
     }
   ): Promise<UpsertPlatformResult> {
-    const { body } = await this.request<UpsertPlatformResult>(
-      "PUT",
-      `/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/platforms/by-stable-id/${encodeURIComponent(stableId)}`,
-      payload
-    );
-    return body;
+    const body = await this.connectionsTool<{
+      connection?: RemoteConnection;
+      created?: boolean;
+      changed?: boolean;
+      error?: string;
+    }>({
+      action: "apply_chat_connection",
+      stable_id: stableId,
+      connector_key: payload.platform,
+      display_name: payload.name,
+      agent_id: agentId,
+      config: payload.config,
+    });
+    if (body.error) throw new Error(body.error);
+    const changed = body.changed === true;
+    const connection = body.connection;
+    return {
+      created: body.created === true,
+      updated: body.created !== true && changed,
+      noop: !changed,
+      willRestart: body.created !== true && changed,
+      ...(connection
+        ? {
+            platform: {
+              id: stableId,
+              platform: connection.connector_key,
+              agentId: connection.agent_id ?? undefined,
+              config: connection.config ?? undefined,
+              status: connection.status,
+            },
+          }
+        : {}),
+    };
   }
 
   /**
    * Reconcile a platform's declarative channel bindings.
    *
-   * Server contract:
-   *   POST /:agentId/platforms/:platformId/sync-channels
-   *   body: { channels: string[] }   // each "<teamId>/<channelId>"
-   *   response: { bound: string[], removed: string[] }
+   * Uses the stable connection id; the server derives platform and tenant
+   * identity from the connection row.
    */
   async syncPlatformChannels(
     agentId: string,
     platformId: string,
     channels: string[]
   ): Promise<{ bound: string[]; removed: string[] }> {
-    const { body } = await this.request<{
+    const body = await this.connectionsTool<{
       bound?: string[];
       removed?: string[];
-    }>(
-      "POST",
-      `/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/platforms/${encodeURIComponent(platformId)}/sync-channels`,
-      { channels }
-    );
+      error?: string;
+    }>({
+      action: "sync_channel_bindings",
+      agent_id: agentId,
+      connection_id: platformId,
+      channels,
+    });
+    if (body.error) throw new Error(body.error);
     return { bound: body.bound ?? [], removed: body.removed ?? [] };
   }
 
@@ -1267,7 +1308,9 @@ export class ApplyClient {
     const body = await this.connectionsTool<{
       connections?: RemoteConnection[];
     }>({ action: "list", limit: 500 });
-    return body.connections ?? [];
+    return (body.connections ?? []).filter(
+      (connection) => connection.credential_mode == null
+    );
   }
 
   async createConnection(payload: {

@@ -16,7 +16,6 @@ import type {
 	AgentMetadata,
 	AgentSettings,
 	AgentStore,
-	ChannelBinding,
 	StoredConnection,
 } from "@lobu/core";
 
@@ -112,22 +111,6 @@ export abstract class BaseAgentStore implements AgentStore {
 		userId: string,
 		agentId: string,
 	): Promise<boolean>;
-
-	// ── Channel Bindings (implemented per-backend) ────────────────────
-
-	abstract getChannelBinding(
-		platform: string,
-		channelId: string,
-		teamId?: string,
-	): Promise<ChannelBinding | null>;
-	abstract createChannelBinding(binding: ChannelBinding): Promise<void>;
-	abstract deleteChannelBinding(
-		platform: string,
-		channelId: string,
-		teamId?: string,
-	): Promise<void>;
-	abstract listChannelBindings(agentId: string): Promise<ChannelBinding[]>;
-	abstract deleteAllChannelBindings(agentId: string): Promise<number>;
 
 	// ── Settings (AgentConfigStore) ────────────────────────────────────
 

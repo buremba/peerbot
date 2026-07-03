@@ -15,6 +15,7 @@ export interface CommandContext {
   isGroup?: boolean;
   conversationId?: string;
   connectionId?: string;
+  organizationId?: string;
   agentId?: string;
   args: string;
   reply: (

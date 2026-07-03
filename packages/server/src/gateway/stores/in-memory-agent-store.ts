@@ -9,7 +9,6 @@
 import type {
 	AgentMetadata,
 	AgentSettings,
-	ChannelBinding,
 	StoredConnection,
 } from "@lobu/core";
 import {
@@ -24,8 +23,6 @@ export class InMemoryAgentStore extends BaseAgentStore {
 	private connections = new Map<string, StoredConnection>();
 	private connectionsAll = new Set<string>();
 	private connectionsByAgent = new Map<string, Set<string>>();
-	private channelBindings = new Map<string, ChannelBinding>();
-	private channelBindingIndex = new Map<string, Set<string>>();
 	private userAgents = new Map<string, Set<string>>();
 
 	// ── Settings primitives ───────────────────────────────────────────
@@ -167,78 +164,5 @@ export class InMemoryAgentStore extends BaseAgentStore {
 	): Promise<boolean> {
 		const set = this.userAgents.get(this.userKey(platform, userId));
 		return set ? set.has(agentId) : false;
-	}
-
-	// ── Channel Bindings ────────────────────────────────────────────
-
-	private channelBindingKey(
-		platform: string,
-		channelId: string,
-		teamId?: string,
-	): string {
-		return teamId
-			? buildKey([platform, channelId, teamId])
-			: buildKey([platform, channelId]);
-	}
-
-	async getChannelBinding(
-		platform: string,
-		channelId: string,
-		teamId?: string,
-	): Promise<ChannelBinding | null> {
-		return (
-			this.channelBindings.get(
-				this.channelBindingKey(platform, channelId, teamId),
-			) ?? null
-		);
-	}
-
-	async createChannelBinding(binding: ChannelBinding): Promise<void> {
-		const key = this.channelBindingKey(
-			binding.platform,
-			binding.channelId,
-			binding.teamId,
-		);
-		this.channelBindings.set(key, binding);
-		getOrCreateSet(this.channelBindingIndex, binding.agentId).add(key);
-	}
-
-	async deleteChannelBinding(
-		platform: string,
-		channelId: string,
-		teamId?: string,
-	): Promise<void> {
-		const key = this.channelBindingKey(platform, channelId, teamId);
-		const binding = this.channelBindings.get(key);
-		if (binding) {
-			const set = this.channelBindingIndex.get(binding.agentId);
-			if (set) {
-				set.delete(key);
-				if (set.size === 0) this.channelBindingIndex.delete(binding.agentId);
-			}
-		}
-		this.channelBindings.delete(key);
-	}
-
-	async listChannelBindings(agentId: string): Promise<ChannelBinding[]> {
-		const keys = this.channelBindingIndex.get(agentId);
-		if (!keys) return [];
-		const bindings: ChannelBinding[] = [];
-		for (const key of keys) {
-			const binding = this.channelBindings.get(key);
-			if (binding) bindings.push(binding);
-		}
-		return bindings;
-	}
-
-	async deleteAllChannelBindings(agentId: string): Promise<number> {
-		const keys = this.channelBindingIndex.get(agentId);
-		if (!keys || keys.size === 0) return 0;
-		const count = keys.size;
-		for (const key of keys) {
-			this.channelBindings.delete(key);
-		}
-		this.channelBindingIndex.delete(agentId);
-		return count;
 	}
 }

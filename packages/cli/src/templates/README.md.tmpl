@@ -39,7 +39,7 @@ Edit `.env` to configure:
 
 ### Platform Connections
 
-If you selected a platform during `lobu init`, fill the generated platform variables in `.env` (for example `TELEGRAM_BOT_TOKEN` or `SLACK_BOT_TOKEN`) before starting Lobu. Otherwise, manage platform connections through the gateway APIs at `{PUBLIC_GATEWAY_URL}/api/v1/connections` and related auth/config endpoints.
+If you selected a chat platform during `lobu init`, declare its credentials in your Lobu config and run `lobu apply`. Interactive setup and credential rotation are also available from Connections in the web app.
 
 ### Worker Customization
 

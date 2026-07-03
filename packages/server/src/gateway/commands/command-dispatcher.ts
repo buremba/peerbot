@@ -36,7 +36,7 @@ export class CommandDispatcher {
 
   async tryHandleSlashText(
     rawText: string,
-    input: CommandDispatchInput
+		input: CommandDispatchInput,
   ): Promise<boolean> {
     const match = rawText.trim().match(/^\/(\w+)(?:\s+(.*))?$/);
     if (!match?.[1]) return false;
@@ -61,7 +61,7 @@ export class CommandDispatcher {
   async tryHandle(
     commandName: string,
     commandArgs: string,
-    input: CommandDispatchInput
+		input: CommandDispatchInput,
   ): Promise<boolean> {
     const agentId = await this.resolveAgentId(input);
 
@@ -74,7 +74,7 @@ export class CommandDispatcher {
         teamId: input.teamId,
         agentId,
       },
-      "Dispatching command"
+			"Dispatching command",
     );
 
     return this.registry.tryHandle(commandName, {
@@ -84,6 +84,7 @@ export class CommandDispatcher {
       isGroup: input.isGroup,
       conversationId: input.conversationId,
       connectionId: input.connectionId,
+			organizationId: input.organizationId,
       agentId,
       args: commandArgs,
       platform: input.platform,
@@ -95,12 +96,14 @@ export class CommandDispatcher {
     // Check channel binding first (Slack multi-tenant). Scope to the inbound
     // org — bindings are org-scoped, so an org-less read could match another
     // tenant's binding for the same channel.
-    const binding = await this.channelBindingService.getBinding(
-      input.platform,
+		const binding =
+			input.connectionId && input.organizationId
+				? await this.channelBindingService.getBindingForConnection(
+						input.connectionId,
       input.channelId,
-      input.teamId,
-      input.organizationId
-    );
+						input.organizationId,
+					)
+				: null;
     if (binding?.agentId) {
       return binding.agentId;
     }
@@ -109,7 +112,7 @@ export class CommandDispatcher {
       input.platform,
       input.userId,
       input.channelId,
-      input.isGroup
+			input.isGroup,
     );
   }
 }

@@ -661,7 +661,7 @@ export function createGatewayApp(
 
     // Channel management is no longer a bespoke HTTP island — it lives on the
     // connections surface as manage_connections actions (list_channel_bindings,
-    // bind_channel, unbind_channel, get_channel_audience, connect_channel_dm).
+    // bind_channel, unbind_channel, sync_channel_bindings, connect_channel_dm).
     // ChannelBindingService stays: agent routes + recall + streaming-feed
     // materialization still depend on it.
     const channelBindingService = coreServices.getChannelBindingService();
@@ -787,15 +787,9 @@ export function createGatewayApp(
             : Promise.resolve(null),
       }),
     );
-    app.route(
-      "",
-      createConnectionCrudRoutes(chatInstanceManager, {
-        userAgentsStore: coreServices.getUserAgentsStore(),
-        agentMetadataStore: coreServices.getConfigStore()!,
-			}),
-    );
+    app.route("", createConnectionCrudRoutes(chatInstanceManager));
     logger.debug(
-			"Slack and connection routes enabled at :8080/slack/*, :8080/api/v1/connections/*, and :8080/api/v1/webhooks/*",
+			"Slack and connection webhook routes enabled at :8080/slack/* and :8080/api/v1/webhooks/*",
     );
   }
 

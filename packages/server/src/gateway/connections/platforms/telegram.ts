@@ -328,6 +328,8 @@ export const telegramPlatform: ChatPlatformDescriptor = {
     }
   },
 
+  serverStampedConfigKeys: ["secretToken"],
+
   ensureWebhookSecret: ensureTelegramWebhookSecret,
 
   resolveWebhookMode: (config) =>

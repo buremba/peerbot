@@ -17,7 +17,6 @@
  *   | skills      | agent `skillsConfig` in settings                      | no          |
  *   | providers   | agent `installedProviders` + module registry metadata | no          |
  *   | guardrails  | agent `guardrails` enable list + gateway registry     | no          |
- *   | channels    | agent platform connection rows                        | no          |
  *
  * Only connector *definitions* are persisted as installable catalog entries in
  * Postgres. Everything else is manifest/registry + settings overlay.
@@ -34,7 +33,6 @@ export const AGENT_INSTALLED_KINDS = [
 	"skills",
 	"providers",
 	"guardrails",
-	"channels",
 ] as const;
 export type AgentInstalledKind = (typeof AGENT_INSTALLED_KINDS)[number];
 

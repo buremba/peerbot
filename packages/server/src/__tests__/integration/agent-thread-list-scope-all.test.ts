@@ -101,11 +101,17 @@ describe("listAgentThreads scope=all", () => {
 			status: "active",
 		});
 		await sql`
-      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id)
-      VALUES (${org}, ${AGENT}, 'slack', 'slack:C123', 'T1')`;
+      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
+      SELECT ${org}, ${AGENT}, 'slack', 'slack:C123', 'T1', id
+      FROM connections
+      WHERE organization_id = ${org} AND slug = ${`agentconn-${connId}`} AND deleted_at IS NULL`;
 
 		// A bound Slack conversation (newest) + an UNBOUND one (must be filtered).
-		await insertSnapshot(SLACK_CONV, "hello from slack", "2026-06-28T02:00:00Z");
+		await insertSnapshot(
+			SLACK_CONV,
+			"hello from slack",
+			"2026-06-28T02:00:00Z",
+		);
 		await insertSnapshot(
 			SLACK_UNBOUND_CONV,
 			"secret channel transcript",

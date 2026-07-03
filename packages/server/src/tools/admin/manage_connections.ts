@@ -28,8 +28,8 @@ import {
 import {
 	handleBindChannel,
 	handleConnectChannelDm,
-	handleGetChannelAudience,
 	handleListChannelBindings,
+	handleSyncChannelBindings,
 	handleUnbindChannel,
 } from "./manage_connections/handlers/channel-bindings";
 import { handleConnect } from "./manage_connections/handlers/connect";
@@ -43,6 +43,7 @@ import {
 	handleUpdateConnectorDefaultRepairAgent,
 } from "./manage_connections/handlers/connector-management";
 import {
+	handleApplyChatConnection,
 	handleCreate,
 	handleDelete,
 	handleGet,
@@ -51,19 +52,20 @@ import {
 	handleUpdate,
 } from "./manage_connections/handlers/crud";
 import {
+	ApplyChatConnectionAction,
 	BindChannelAction,
 	ConnectAction,
 	ConnectChannelDmAction,
 	CreateAction,
 	DeleteAction,
 	GetAction,
-	GetChannelAudienceAction,
 	InstallConnectorAction,
-	ListConnectorGroupsAction,
 	ListAction,
 	ListChannelBindingsAction,
+	ListConnectorGroupsAction,
 	ReauthenticateAction,
 	SetConnectorEntityLinkOverridesAction,
+	SyncChannelBindingsAction,
 	TestAction,
 	ToggleConnectorLoginAction,
 	UnbindChannelAction,
@@ -88,6 +90,10 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 	create: action(CreateAction, handleCreate),
 	connect: action(ConnectAction, handleConnect),
 	update: action(UpdateAction, handleUpdate),
+	apply_chat_connection: action(
+		ApplyChatConnectionAction,
+		handleApplyChatConnection,
+	),
 	delete: action(DeleteAction, handleDelete),
 	reauthenticate: action(ReauthenticateAction, handleReauthenticate),
 	test: action(TestAction, handleTest),
@@ -122,9 +128,9 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 	),
 	bind_channel: action(BindChannelAction, handleBindChannel),
 	unbind_channel: action(UnbindChannelAction, handleUnbindChannel),
-	get_channel_audience: action(
-		GetChannelAudienceAction,
-		handleGetChannelAudience,
+	sync_channel_bindings: action(
+		SyncChannelBindingsAction,
+		handleSyncChannelBindings,
 	),
 	connect_channel_dm: action(ConnectChannelDmAction, handleConnectChannelDm),
 });

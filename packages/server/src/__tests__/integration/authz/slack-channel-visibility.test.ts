@@ -10,15 +10,20 @@
  * legacy per-agent behavior (no regression until a workspace is graphed).
  */
 
-import { normalizeSlackUserId } from '@lobu/connector-sdk';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { syncSlackConnectionAcl } from '../../../authz/slack-acl-sync';
-import { buildSlackChannelGraph } from '../../../authz/slack-channel-graph';
-import { gatherRecall, type RecallContext, RECALL_SOURCES, search } from '../../../tools/search';
-import { clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';
-import { ensureMemberEntity } from '../../../utils/member-entity';
-import { initWorkspaceProvider } from '../../../workspace';
-import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
+import { normalizeSlackUserId } from "@lobu/connector-sdk";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { syncSlackConnectionAcl } from "../../../authz/slack-acl-sync";
+import { buildSlackChannelGraph } from "../../../authz/slack-channel-graph";
+import {
+	gatherRecall,
+	RECALL_SOURCES,
+	type RecallContext,
+	search,
+} from "../../../tools/search";
+import { clearEntityLinkRulesCache } from "../../../utils/entity-link-upsert";
+import { ensureMemberEntity } from "../../../utils/member-entity";
+import { initWorkspaceProvider } from "../../../workspace";
+import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
   addUserToOrganization,
   createTestAgent,
@@ -26,10 +31,10 @@ import {
   createTestOrganization,
   createTestUser,
   insertChatConnectionRow,
-} from '../../setup/test-fixtures';
+} from "../../setup/test-fixtures";
 
-const TEAM = 'T01ACME';
-const CONN = 'conn-acme';
+const TEAM = "T01ACME";
+const CONN = "conn-acme";
 
 type SearchCtx = Parameters<typeof search>[2];
 
@@ -42,7 +47,7 @@ async function seedSignedInMember(opts: {
   const sql = getTestDb();
   const entity = await createTestEntity({
     name: opts.name,
-    entity_type: '$member',
+		entity_type: "$member",
     organization_id: opts.orgId,
     created_by: opts.userId,
   });
@@ -65,8 +70,10 @@ async function bindChannel(opts: {
 }): Promise<void> {
   const sql = getTestDb();
   await sql`
-    INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id)
-    VALUES (${opts.orgId}, ${opts.agentId}, 'slack', ${opts.channelId}, ${TEAM})
+    INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
+    SELECT ${opts.orgId}, ${opts.agentId}, 'slack', ${opts.channelId}, ${TEAM}, id
+    FROM connections
+    WHERE organization_id = ${opts.orgId} AND slug = ${`agentconn-${CONN}`} AND deleted_at IS NULL
   `;
   await sql`
     INSERT INTO channel_messages (
@@ -81,13 +88,13 @@ async function bindChannel(opts: {
 
 function searchAs(orgId: string, userId: string | null, agentId: string) {
   return search(
-    { query: 'quarterly revenue', include_content: true },
+		{ query: "quarterly revenue", include_content: true },
     {} as Parameters<typeof search>[1],
     { organizationId: orgId, userId, agentId } as SearchCtx,
   );
 }
 
-describe('slack channel visibility gate (e2e via search_memory)', () => {
+describe("slack channel visibility gate (e2e via search_memory)", () => {
   beforeAll(async () => {
     await initWorkspaceProvider();
   });
@@ -97,9 +104,9 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
   });
 
   async function setupWorkspace() {
-    const org = await createTestOrganization({ name: 'Acme' });
-    const alice = await createTestUser({ name: 'Alice' });
-    await addUserToOrganization(alice.id, org.id, 'owner');
+		const org = await createTestOrganization({ name: "Acme" });
+		const alice = await createTestUser({ name: "Alice" });
+		await addUserToOrganization(alice.id, org.id, "owner");
     const agent = await createTestAgent({ organizationId: org.id });
 
     // The builder auto-creates `person` entities for channel members; the type
@@ -116,34 +123,34 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     await insertChatConnectionRow({
       id: CONN,
       agentId: agent.agentId,
-      platform: 'slack',
+			platform: "slack",
       organizationId: org.id,
-      status: 'active',
+			status: "active",
     });
     await bindChannel({
       orgId: org.id,
       agentId: agent.agentId,
-      channelId: 'C01ENG',
-      text: 'We discussed the quarterly revenue forecast',
+			channelId: "C01ENG",
+			text: "We discussed the quarterly revenue forecast",
     });
     await bindChannel({
       orgId: org.id,
       agentId: agent.agentId,
-      channelId: 'C01SEC',
-      text: 'Secret: the quarterly revenue numbers are confidential',
+			channelId: "C01SEC",
+			text: "Secret: the quarterly revenue numbers are confidential",
     });
 
     // Alice signed in + linked Slack.
     await seedSignedInMember({
       orgId: org.id,
       userId: alice.id,
-      name: 'Alice',
-      slackUserId: 'U01ALICE',
+			name: "Alice",
+			slackUserId: "U01ALICE",
     });
     return { org, alice, agent };
   }
 
-  it('surfaces only the channel the user belongs to once the graph is enforced', async () => {
+	it("surfaces only the channel the user belongs to once the graph is enforced", async () => {
     const { org, alice, agent } = await setupWorkspace();
 
     // Alice is a member of #eng only. Bob is the lone member of #secret.
@@ -152,87 +159,103 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
       connectionId: CONN,
       teamId: TEAM,
       channels: [
-        { channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01ALICE'] },
+				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
         {
-          channelId: 'C01SEC',
-          name: 'secret',
+					channelId: "C01SEC",
+					name: "secret",
           isPrivate: true,
-          memberSlackUserIds: ['U01BOB'],
+					memberSlackUserIds: ["U01BOB"],
         },
       ],
     });
 
     const result = await searchAs(org.id, alice.id, agent.agentId);
-    const channels = (result.conversation_messages ?? []).map((m) => m.channel_id);
-    expect(channels).toContain('C01ENG');
-    expect(channels).not.toContain('C01SEC');
+		const channels = (result.conversation_messages ?? []).map(
+			(m) => m.channel_id,
+		);
+		expect(channels).toContain("C01ENG");
+		expect(channels).not.toContain("C01SEC");
   });
 
-  it('fails closed: an unresolved requester sees NONE of an enforced connection', async () => {
+	it("fails closed: an unresolved requester sees NONE of an enforced connection", async () => {
     const { org, agent } = await setupWorkspace();
     await buildSlackChannelGraph({
       organizationId: org.id,
       connectionId: CONN,
       teamId: TEAM,
       channels: [
-        { channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01ALICE'] },
+				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
         {
-          channelId: 'C01SEC',
-          name: 'secret',
+					channelId: "C01SEC",
+					name: "secret",
           isPrivate: true,
-          memberSlackUserIds: ['U01BOB'],
+					memberSlackUserIds: ["U01BOB"],
         },
       ],
     });
 
     // A user with no $member in this org → resolves to nothing → fail closed.
-    const result = await searchAs(org.id, 'intruder-user-id', agent.agentId);
+		const result = await searchAs(org.id, "intruder-user-id", agent.agentId);
     expect(result.conversation_messages ?? []).toHaveLength(0);
   });
 
-  it('revokes on departure: a member who leaves #eng loses recall on the next sync', async () => {
+	it("revokes on departure: a member who leaves #eng loses recall on the next sync", async () => {
     const { org, alice, agent } = await setupWorkspace();
     // Alice is in #eng → can recall it.
     await buildSlackChannelGraph({
       organizationId: org.id,
       connectionId: CONN,
       teamId: TEAM,
-      channels: [{ channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01ALICE'] }],
+			channels: [
+				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
+			],
     });
     const before = await searchAs(org.id, alice.id, agent.agentId);
-    expect((before.conversation_messages ?? []).map((m) => m.channel_id)).toContain('C01ENG');
+		expect(
+			(before.conversation_messages ?? []).map((m) => m.channel_id),
+		).toContain("C01ENG");
 
     // Alice leaves #eng → re-sync with the new membership (just Bob).
     await buildSlackChannelGraph({
       organizationId: org.id,
       connectionId: CONN,
       teamId: TEAM,
-      channels: [{ channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01BOB'] }],
+			channels: [
+				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01BOB"] },
+			],
     });
     const after = await searchAs(org.id, alice.id, agent.agentId);
-    expect((after.conversation_messages ?? []).map((m) => m.channel_id)).not.toContain('C01ENG');
+		expect(
+			(after.conversation_messages ?? []).map((m) => m.channel_id),
+		).not.toContain("C01ENG");
   });
 
-  it('no regression: WITHOUT a materialized graph the legacy per-agent fence applies', async () => {
+	it("no regression: WITHOUT a materialized graph the legacy per-agent fence applies", async () => {
     const { org, alice, agent } = await setupWorkspace();
     // No buildSlackChannelGraph → connection is not enforced → both channels recall.
     const result = await searchAs(org.id, alice.id, agent.agentId);
-    const channels = (result.conversation_messages ?? []).map((m) => m.channel_id);
-    expect(channels).toContain('C01ENG');
-    expect(channels).toContain('C01SEC');
+		const channels = (result.conversation_messages ?? []).map(
+			(m) => m.channel_id,
+		);
+		expect(channels).toContain("C01ENG");
+		expect(channels).toContain("C01SEC");
   });
 
-  it('fails closed when the graph ages past the freshness window (no stale-membership re-exposure)', async () => {
+	it("fails closed when the graph ages past the freshness window (no stale-membership re-exposure)", async () => {
     const { org, alice, agent } = await setupWorkspace();
     // Alice is a member of #eng → a FRESH graph lets her recall it.
     await buildSlackChannelGraph({
       organizationId: org.id,
       connectionId: CONN,
       teamId: TEAM,
-      channels: [{ channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01ALICE'] }],
+			channels: [
+				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
+			],
     });
     const fresh = await searchAs(org.id, alice.id, agent.agentId);
-    expect((fresh.conversation_messages ?? []).map((m) => m.channel_id)).toContain('C01ENG');
+		expect(
+			(fresh.conversation_messages ?? []).map((m) => m.channel_id),
+		).toContain("C01ENG");
 
     // The sync stops: age this connection's graph past the 60-min window. An
     // onboarded-but-stale connection must FAIL CLOSED (drop its channels), NOT
@@ -248,22 +271,26 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     expect(stale.conversation_messages ?? []).toHaveLength(0);
   });
 
-  it('enforces through the PRODUCTION sync path (syncSlackConnectionAcl), not just the test builder', async () => {
+	it("enforces through the PRODUCTION sync path (syncSlackConnectionAcl), not just the test builder", async () => {
     const { org, alice, agent } = await setupWorkspace();
 
     // Drive the real production caller with a stubbed Slack API + token resolver,
     // exactly as runSlackAclSyncTick wires it in prod. THIS is what activates the
     // gate for a live connection — buildSlackChannelGraph is never called by hand.
     const membersByChannel: Record<string, string[]> = {
-      C01ENG: ['U01ALICE'],
-      C01SEC: ['U01BOB'],
+			C01ENG: ["U01ALICE"],
+			C01SEC: ["U01BOB"],
     };
     const result = await syncSlackConnectionAcl(
       {
         slackWeb: {
-          conversationMembers: async (_token, channelId) => membersByChannel[channelId] ?? [],
+					conversationMembers: async (_token, channelId) =>
+						membersByChannel[channelId] ?? [],
         },
-        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
+				resolveBotIdentity: async () => ({
+					token: "xoxb-test-token",
+					botUserId: null,
+				}),
       },
       { connectionId: CONN, organizationId: org.id },
     );
@@ -273,12 +300,14 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     // The gate now enforces off the materialized graph: Alice (member of #eng
     // only) recalls #eng, never #secret.
     const search1 = await searchAs(org.id, alice.id, agent.agentId);
-    const channels = (search1.conversation_messages ?? []).map((m) => m.channel_id);
-    expect(channels).toContain('C01ENG');
-    expect(channels).not.toContain('C01SEC');
+		const channels = (search1.conversation_messages ?? []).map(
+			(m) => m.channel_id,
+		);
+		expect(channels).toContain("C01ENG");
+		expect(channels).not.toContain("C01SEC");
   });
 
-  it('scopes the production sync to the connection workspace — a second workspace never leaks in', async () => {
+	it("scopes the production sync to the connection workspace — a second workspace never leaks in", async () => {
     const { org, agent } = await setupWorkspace();
     const sql = getTestDb();
     // CONN is the Acme (T01ACME) workspace bot.
@@ -292,8 +321,10 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     // Slack connection) must NOT be synced under CONN — otherwise CONN would
     // fetch it with the wrong token and fail closed, or stamp it under itself.
     await sql`
-      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id)
-      VALUES (${org.id}, ${agent.agentId}, 'slack', 'C02FOREIGN', 'T02OTHER')
+      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
+      SELECT ${org.id}, ${agent.agentId}, 'slack', 'C02FOREIGN', 'T02OTHER', id
+      FROM connections
+      WHERE organization_id = ${org.id} AND slug = ${`agentconn-${CONN}`} AND deleted_at IS NULL
     `;
 
     const fetched: string[] = [];
@@ -302,12 +333,14 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
         slackWeb: {
           conversationMembers: async (_t, channelId) => {
             fetched.push(channelId);
-            return ['U01ALICE'];
+						return ["U01ALICE"];
           },
         },
         // Only the Acme workspace has a token — reaching T02OTHER would fail closed.
         resolveBotIdentity: async ({ teamId }) =>
-          teamId === TEAM ? { token: 'xoxb-test-token', botUserId: null } : null,
+					teamId === TEAM
+						? { token: "xoxb-test-token", botUserId: null }
+						: null,
       },
       { connectionId: CONN, organizationId: org.id },
     );
@@ -316,10 +349,10 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     // channels are fetched. Pre-fix this threw (no token for T02OTHER) → ok=false.
     expect(result.ok).toBe(true);
     expect(result.channelsSynced).toBe(2);
-    expect(fetched.sort()).toEqual(['C01ENG', 'C01SEC']);
+		expect(fetched.sort()).toEqual(["C01ENG", "C01SEC"]);
   });
 
-  it('resolves a member provisioned through the REAL path (ensureMemberEntity), not a hand-seeded identity', async () => {
+	it("resolves a member provisioned through the REAL path (ensureMemberEntity), not a hand-seeded identity", async () => {
     // setupWorkspace seeds Alice via seedSignedInMember, which writes the
     // auth_user_id identity by hand. THIS test instead provisions a second user
     // (Carol) the way production does — through ensureMemberEntity (the
@@ -328,17 +361,17 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     // resolves to nothing and the gate fails closed → this test goes red. That
     // is the production gap the hand-seeded tests masked.
     const { org, agent } = await setupWorkspace();
-    const carol = await createTestUser({ name: 'Carol' });
-    await addUserToOrganization(carol.id, org.id, 'member');
+		const carol = await createTestUser({ name: "Carol" });
+		await addUserToOrganization(carol.id, org.id, "member");
 
     // Real provisioning — writes the $member entity AND its auth_user_id identity.
     await ensureMemberEntity({
       organizationId: org.id,
       userId: carol.id,
-      name: 'Carol',
-      email: 'carol@acme.test',
-      role: 'member',
-      status: 'active',
+			name: "Carol",
+			email: "carol@acme.test",
+			role: "member",
+			status: "active",
     });
     // The Slack link is a separate real mechanism (Connect-my-DM / email claim);
     // attach it so the channel member collapses onto Carol's $member.
@@ -352,7 +385,8 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     `;
     // The email identity is written by ensureMemberEntity-adjacent provisioning;
     // fall back to looking the member up by metadata if email identity is absent.
-    let memberEntityId: number | null = memberRows.length > 0 ? Number(memberRows[0].entity_id) : null;
+		let memberEntityId: number | null =
+			memberRows.length > 0 ? Number(memberRows[0].entity_id) : null;
     if (memberEntityId === null) {
       const byMeta = await sql<{ id: number }>`
         SELECT e.id FROM entities e
@@ -365,7 +399,7 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
       memberEntityId = byMeta.length > 0 ? Number(byMeta[0].id) : null;
     }
     expect(memberEntityId).not.toBeNull();
-    const combined = normalizeSlackUserId(TEAM, 'U01CAROL');
+		const combined = normalizeSlackUserId(TEAM, "U01CAROL");
     await sql`
       INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
       VALUES (${org.id}, ${memberEntityId}, 'slack_user_id', ${combined}, 'connector:slack')
@@ -377,18 +411,25 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
       connectionId: CONN,
       teamId: TEAM,
       channels: [
-        { channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01CAROL'] },
-        { channelId: 'C01SEC', name: 'secret', isPrivate: true, memberSlackUserIds: ['U01BOB'] },
+				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01CAROL"] },
+				{
+					channelId: "C01SEC",
+					name: "secret",
+					isPrivate: true,
+					memberSlackUserIds: ["U01BOB"],
+				},
       ],
     });
 
     const result = await searchAs(org.id, carol.id, agent.agentId);
-    const channels = (result.conversation_messages ?? []).map((m) => m.channel_id);
-    expect(channels).toContain('C01ENG');
-    expect(channels).not.toContain('C01SEC');
+		const channels = (result.conversation_messages ?? []).map(
+			(m) => m.channel_id,
+		);
+		expect(channels).toContain("C01ENG");
+		expect(channels).not.toContain("C01SEC");
   });
 
-  it('reconciles a STALE channel to no members (revokes recall) while still graphing the readable ones', async () => {
+	it("reconciles a STALE channel to no members (revokes recall) while still graphing the readable ones", async () => {
     const { org, alice, agent } = await setupWorkspace();
 
     // Round 1: BOTH channels readable, Alice is a member of BOTH. She can recall
@@ -396,9 +437,12 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     const round1 = await syncSlackConnectionAcl(
       {
         slackWeb: {
-          conversationMembers: async () => ['U01ALICE'],
+					conversationMembers: async () => ["U01ALICE"],
         },
-        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
+				resolveBotIdentity: async () => ({
+					token: "xoxb-test-token",
+					botUserId: null,
+				}),
       },
       { connectionId: CONN, organizationId: org.id },
     );
@@ -406,8 +450,8 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     const recalled1 = (
       await searchAs(org.id, alice.id, agent.agentId)
     ).conversation_messages?.map((m) => m.channel_id);
-    expect(recalled1).toContain('C01ENG');
-    expect(recalled1).toContain('C01SEC');
+		expect(recalled1).toContain("C01ENG");
+		expect(recalled1).toContain("C01SEC");
 
     // Round 2: the bot is kicked from #secret (channel_not_found). #eng stays
     // readable. The connection must NOT fail-close (pre-fix it did, 0 graphed),
@@ -417,13 +461,18 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
       {
         slackWeb: {
           conversationMembers: async (_t, channelId) => {
-            if (channelId === 'C01SEC') {
-              throw new Error('Slack conversations.members failed: channel_not_found');
+						if (channelId === "C01SEC") {
+							throw new Error(
+								"Slack conversations.members failed: channel_not_found",
+							);
             }
-            return ['U01ALICE'];
+						return ["U01ALICE"];
           },
         },
-        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
+				resolveBotIdentity: async () => ({
+					token: "xoxb-test-token",
+					botUserId: null,
+				}),
       },
       { connectionId: CONN, organizationId: org.id },
     );
@@ -432,11 +481,11 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     const recalled2 = (
       await searchAs(org.id, alice.id, agent.agentId)
     ).conversation_messages?.map((m) => m.channel_id);
-    expect(recalled2).toContain('C01ENG'); // still readable → still recalled
-    expect(recalled2).not.toContain('C01SEC'); // kicked → recall revoked
+		expect(recalled2).toContain("C01ENG"); // still readable → still recalled
+		expect(recalled2).not.toContain("C01SEC"); // kicked → recall revoked
   });
 
-  it('still FAILS CLOSED on a systemic Slack error (not a stale-channel error)', async () => {
+	it("still FAILS CLOSED on a systemic Slack error (not a stale-channel error)", async () => {
     const { org } = await setupWorkspace();
     // A rate-limit / auth error is systemic — it must propagate and fail the
     // connection closed, not be swallowed like a stale-channel error.
@@ -444,10 +493,13 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
       {
         slackWeb: {
           conversationMembers: async () => {
-            throw new Error('Slack conversations.members failed: ratelimited');
+						throw new Error("Slack conversations.members failed: ratelimited");
           },
         },
-        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
+				resolveBotIdentity: async () => ({
+					token: "xoxb-test-token",
+					botUserId: null,
+				}),
       },
       { connectionId: CONN, organizationId: org.id },
     );
@@ -455,18 +507,23 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     expect(result.channelsSynced).toBe(0);
   });
 
-  it('production sync FAILS CLOSED for an already-graphed connection when Slack fetch throws', async () => {
+	it("production sync FAILS CLOSED for an already-graphed connection when Slack fetch throws", async () => {
     const { org, alice, agent } = await setupWorkspace();
     // First a good sync so the connection has a materialized (enforced) graph.
     await syncSlackConnectionAcl(
       {
-        slackWeb: { conversationMembers: async () => ['U01ALICE'] },
-        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
+				slackWeb: { conversationMembers: async () => ["U01ALICE"] },
+				resolveBotIdentity: async () => ({
+					token: "xoxb-test-token",
+					botUserId: null,
+				}),
       },
       { connectionId: CONN, organizationId: org.id },
     );
-    expect((await searchAs(org.id, alice.id, agent.agentId)).conversation_messages ?? []).not
-      .toHaveLength(0);
+		expect(
+			(await searchAs(org.id, alice.id, agent.agentId)).conversation_messages ??
+				[],
+		).not.toHaveLength(0);
 
     // Slack outage on the next tick: ANY channel fetch throws → the sync must
     // mark the connection failed (not leave a half-synced graph), and the gate
@@ -475,10 +532,13 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
       {
         slackWeb: {
           conversationMembers: async () => {
-            throw new Error('slack outage');
+						throw new Error("slack outage");
           },
         },
-        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
+				resolveBotIdentity: async () => ({
+					token: "xoxb-test-token",
+					botUserId: null,
+				}),
       },
       { connectionId: CONN, organizationId: org.id },
     );
@@ -487,7 +547,7 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     expect(after.conversation_messages ?? []).toHaveLength(0);
   });
 
-  it('resolves an in-Slack requester via slack_user_id when they have no auth identity', async () => {
+	it("resolves an in-Slack requester via slack_user_id when they have no auth identity", async () => {
     const { org, agent } = await setupWorkspace();
     // Dave is a Slack-only user (never signed in to the web app → no auth_user_id).
     // The graph auto-creates his person entity with a slack_user_id claim + a
@@ -497,41 +557,55 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
       connectionId: CONN,
       teamId: TEAM,
       channels: [
-        { channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01DAVE'] },
-        { channelId: 'C01SEC', name: 'secret', isPrivate: true, memberSlackUserIds: ['U01BOB'] },
+				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01DAVE"] },
+				{
+					channelId: "C01SEC",
+					name: "secret",
+					isPrivate: true,
+					memberSlackUserIds: ["U01BOB"],
+				},
       ],
     });
 
     // ctx.userId is Dave's bare Slack id (the in-Slack message author), NOT an
     // auth_user_id — the auth lookup misses, so this only passes via the
     // slack_user_id fallback. Without it, Dave fails closed and sees nothing.
-    const result = await searchAs(org.id, 'U01DAVE', agent.agentId);
-    const channels = (result.conversation_messages ?? []).map((m) => m.channel_id);
-    expect(channels).toContain('C01ENG');
-    expect(channels).not.toContain('C01SEC');
+		const result = await searchAs(org.id, "U01DAVE", agent.agentId);
+		const channels = (result.conversation_messages ?? []).map(
+			(m) => m.channel_id,
+		);
+		expect(channels).toContain("C01ENG");
+		expect(channels).not.toContain("C01SEC");
   });
 
   // Registry-seam regression: drive the REAL production `conversationSource`
   // (via RECALL_SOURCES) through `gatherRecall` with the gate as the only ACL
   // input — proving the gate, not a fake, denies a non-member. This is the
   // direct-`gatherRecall` counterpart to the search()-level tests above.
-  it('gatherRecall denies a non-member principal but serves a member (real conversationSource)', async () => {
+	it("gatherRecall denies a non-member principal but serves a member (real conversationSource)", async () => {
     const { org, alice, agent } = await setupWorkspace();
     await buildSlackChannelGraph({
       organizationId: org.id,
       connectionId: CONN,
       teamId: TEAM,
       channels: [
-        { channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01ALICE'] },
-        { channelId: 'C01SEC', name: 'secret', isPrivate: true, memberSlackUserIds: ['U01BOB'] },
+				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
+				{
+					channelId: "C01SEC",
+					name: "secret",
+					isPrivate: true,
+					memberSlackUserIds: ["U01BOB"],
+				},
       ],
     });
 
-    const conversationOnly = RECALL_SOURCES.filter((s) => s.kind === 'conversation');
+		const conversationOnly = RECALL_SOURCES.filter(
+			(s) => s.kind === "conversation",
+		);
     // conversationSource reads only ctx.query + ctx.contentLimit; env/embedding
     // are unused on this path.
     const ctx = {
-      query: 'quarterly revenue',
+			query: "quarterly revenue",
       contentAgentId: undefined,
       contentLimit: 20,
     } as unknown as RecallContext;
@@ -542,13 +616,19 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
       ctx,
       conversationOnly,
     );
-    const memberChannels = (asMember.conversation_messages ?? []).map((m) => m.channel_id);
-    expect(memberChannels).toContain('C01ENG');
-    expect(memberChannels).not.toContain('C01SEC');
+		const memberChannels = (asMember.conversation_messages ?? []).map(
+			(m) => m.channel_id,
+		);
+		expect(memberChannels).toContain("C01ENG");
+		expect(memberChannels).not.toContain("C01SEC");
 
     // A principal with no $member in this org resolves to nothing → fail closed.
     const asNonMember = await gatherRecall(
-      { organizationId: org.id, principal: 'intruder-user-id', agentId: agent.agentId },
+			{
+				organizationId: org.id,
+				principal: "intruder-user-id",
+				agentId: agent.agentId,
+			},
       ctx,
       conversationOnly,
     );

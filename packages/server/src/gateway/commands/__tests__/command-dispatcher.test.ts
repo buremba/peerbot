@@ -13,7 +13,9 @@ function makeDispatcher() {
       return true;
     }),
   };
-  const channelBindingService = { getBinding: mock(async () => null) };
+	const channelBindingService = {
+		getBindingForConnection: mock(async () => null),
+	};
   const dispatcher = new CommandDispatcher({
     registry: registry as never,
     channelBindingService: channelBindingService as never,
@@ -37,7 +39,7 @@ describe("CommandDispatcher.tryHandleSlashText", () => {
     const { dispatcher, calls } = makeDispatcher();
     const handled = await dispatcher.tryHandleSlashText(
       "/lobu link crm-ABC123",
-      input
+			input,
     );
     expect(handled).toBe(true);
     expect(calls).toEqual([{ name: "link", args: "crm-ABC123" }]);
@@ -59,7 +61,7 @@ describe("CommandDispatcher.tryHandleSlashText", () => {
     const { dispatcher, calls } = makeDispatcher();
     const handled = await dispatcher.tryHandleSlashText(
       "hey can you help me",
-      input
+			input,
     );
     expect(handled).toBe(false);
     expect(calls).toEqual([]);

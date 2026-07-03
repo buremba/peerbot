@@ -18,9 +18,9 @@
  * still sees nothing, a member sees the channel WITH its author attribution.
  */
 
-import { normalizeSlackUserId } from '@lobu/connector-sdk';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
+import { normalizeSlackUserId } from "@lobu/connector-sdk";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { cleanupTestDatabase, getTestDb } from "../../__tests__/setup/test-db";
 import {
   addUserToOrganization,
   createTestAgent,
@@ -28,27 +28,29 @@ import {
   createTestOrganization,
   createTestUser,
   insertChatConnectionRow,
-} from '../../__tests__/setup/test-fixtures';
-import { buildSlackChannelGraph } from '../../authz/slack-channel-graph';
-import { ChannelBindingService } from '../../gateway/channels/binding-service';
-import { clearEntityLinkRulesCache } from '../../utils/entity-link-upsert';
-import { initWorkspaceProvider } from '../../workspace';
-import { search } from '../search';
+} from "../../__tests__/setup/test-fixtures";
+import { buildSlackChannelGraph } from "../../authz/slack-channel-graph";
+import { ChannelBindingService } from "../../gateway/channels/binding-service";
+import { clearEntityLinkRulesCache } from "../../utils/entity-link-upsert";
+import { initWorkspaceProvider } from "../../workspace";
+import { search } from "../search";
 
-const TEAM = 'TMANAGED';
-const MANAGED_CONN = 'slackinst-recall-test';
+const TEAM = "TMANAGED";
+const MANAGED_CONN = "slackinst-recall-test";
 
 type SearchCtx = Parameters<typeof search>[2];
 
 async function seedManagedMessage(
   connectionId: string,
   channelId: string,
-  text: string
+	text: string,
 ): Promise<void> {
   const sql = getTestDb();
   // channel_messages stores the BARE channel id; the binding stores the
   // platform-prefixed form (`slack:C…`).
-  const bare = channelId.startsWith('slack:') ? channelId.slice('slack:'.length) : channelId;
+	const bare = channelId.startsWith("slack:")
+		? channelId.slice("slack:".length)
+		: channelId;
   await sql`
     INSERT INTO channel_messages (
       organization_id, connection_id, platform, channel_id,
@@ -60,7 +62,7 @@ async function seedManagedMessage(
   `;
 }
 
-describe('managed-install recall (Item 2) + author attribution surfacing (Item 3)', () => {
+describe("managed-install recall (Item 2) + author attribution surfacing (Item 3)", () => {
   beforeAll(async () => {
     await initWorkspaceProvider();
   });
@@ -70,30 +72,30 @@ describe('managed-install recall (Item 2) + author attribution surfacing (Item 3
   });
 
   async function setupManaged() {
-    const org = await createTestOrganization({ name: 'Managed Co' });
+		const org = await createTestOrganization({ name: "Managed Co" });
     const user = await createTestUser();
-    await addUserToOrganization(user.id, org.id, 'owner');
+		await addUserToOrganization(user.id, org.id, "owner");
     // The agent that LINKS the channel (a real, non-null agent) — the managed
     // connection itself has agent_id NULL.
     const agent = await createTestAgent({ organizationId: org.id });
     await insertChatConnectionRow({
       id: MANAGED_CONN,
       organizationId: org.id,
-      platform: 'slack',
+			platform: "slack",
       agentId: null,
-      credentialMode: 'managed',
-      status: 'active',
+			credentialMode: "managed",
+			status: "active",
       metadata: { teamId: TEAM },
     });
     await seedManagedMessage(
       MANAGED_CONN,
-      'slack:CMANAGED',
-      'We discussed the quarterly revenue forecast'
+			"slack:CMANAGED",
+			"We discussed the quarterly revenue forecast",
     );
     return { org, user, agent };
   }
 
-  it('RED: an UNLINKED managed binding (connection_id NULL) is an unrecallable orphan', async () => {
+	it("RED: an UNLINKED managed binding (connection_id NULL) is an unrecallable orphan", async () => {
     const { org, user, agent } = await setupManaged();
     const sql = getTestDb();
     // Bind WITHOUT the connection_id link (raw insert, the pre-fix shape).
@@ -103,24 +105,39 @@ describe('managed-install recall (Item 2) + author attribution surfacing (Item 3
     `;
 
     const result = await search(
-      { query: 'quarterly revenue', include_content: true },
+			{ query: "quarterly revenue", include_content: true },
       {} as Parameters<typeof search>[1],
-      { organizationId: org.id, userId: user.id, agentId: agent.agentId } as SearchCtx
+			{
+				organizationId: org.id,
+				userId: user.id,
+				agentId: agent.agentId,
+			} as SearchCtx,
     );
     // The managed connection's agent_id is NULL → the tuple fallback can't match
     // and there is no connection_id link → branch (A) yields nothing.
     expect(result.conversation_messages ?? []).toHaveLength(0);
   });
 
-  it('GREEN: createBinding LINKS connection_id, so the managed install recalls + attributes', async () => {
+	it("GREEN: createBinding LINKS connection_id, so the managed install recalls + attributes", async () => {
     const { org, user, agent } = await setupManaged();
     const sql = getTestDb();
+		const [connection] = await sql`
+		SELECT id FROM connections
+		WHERE organization_id = ${org.id} AND slug = ${MANAGED_CONN}
+	`;
 
     // The REAL runtime bind path — links connection_id to the active managed
     // connection for (org, slack, TEAM).
-    await new ChannelBindingService().createBinding(agent.agentId, 'slack', 'slack:CMANAGED', TEAM, {
+		await new ChannelBindingService().createBinding(
+			agent.agentId,
+			"slack",
+			"slack:CMANAGED",
+			TEAM,
+			{
       organizationId: org.id,
-    });
+				connectionId: String(connection.id),
+			},
+		);
 
     // The fix's load-bearing assertion: the binding is now linked to the managed
     // connection (this is what makes branch (A) resolve a NULL-agent install).
@@ -134,29 +151,35 @@ describe('managed-install recall (Item 2) + author attribution surfacing (Item 3
     expect(binding.slug).toBe(MANAGED_CONN);
 
     const result = await search(
-      { query: 'quarterly revenue', include_content: true },
+			{ query: "quarterly revenue", include_content: true },
       {} as Parameters<typeof search>[1],
-      { organizationId: org.id, userId: user.id, agentId: agent.agentId } as SearchCtx
+			{
+				organizationId: org.id,
+				userId: user.id,
+				agentId: agent.agentId,
+			} as SearchCtx,
+		);
+		const channels = (result.conversation_messages ?? []).map(
+			(m) => m.channel_id,
     );
-    const channels = (result.conversation_messages ?? []).map((m) => m.channel_id);
-    expect(channels).toContain('CMANAGED');
+		expect(channels).toContain("CMANAGED");
   });
 
-  it('Item 3: surfaces author_entity_id additively without changing the ACL fence', async () => {
-    const org = await createTestOrganization({ name: 'Attr Recall Co' });
-    const alice = await createTestUser({ name: 'Alice' });
-    await addUserToOrganization(alice.id, org.id, 'owner');
+	it("Item 3: surfaces author_entity_id additively without changing the ACL fence", async () => {
+		const org = await createTestOrganization({ name: "Attr Recall Co" });
+		const alice = await createTestUser({ name: "Alice" });
+		await addUserToOrganization(alice.id, org.id, "owner");
     const agent = await createTestAgent({ organizationId: org.id });
     const sql = getTestDb();
 
     // BYO connection (agent_id set → tuple-resolves) + a graphed workspace.
-    const CONN = 'conn-attr-recall';
+		const CONN = "conn-attr-recall";
     await insertChatConnectionRow({
       id: CONN,
       organizationId: org.id,
-      platform: 'slack',
+			platform: "slack",
       agentId: agent.agentId,
-      status: 'active',
+			status: "active",
       metadata: { teamId: TEAM },
     });
     await sql`
@@ -168,12 +191,12 @@ describe('managed-install recall (Item 2) + author attribution surfacing (Item 3
 
     // Alice signed in ($member with the team-scoped slack id) — the requester.
     const aliceMember = await createTestEntity({
-      name: 'Alice',
-      entity_type: '$member',
+			name: "Alice",
+			entity_type: "$member",
       organization_id: org.id,
       created_by: alice.id,
     });
-    const aliceSlack = normalizeSlackUserId(TEAM, 'U01ALICE');
+		const aliceSlack = normalizeSlackUserId(TEAM, "U01ALICE");
     await sql`
       INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
       VALUES
@@ -183,17 +206,19 @@ describe('managed-install recall (Item 2) + author attribution surfacing (Item 3
 
     // The author of the recalled message — a person already attributed.
     const author = await createTestEntity({
-      name: 'Bob',
-      entity_type: 'person',
+			name: "Bob",
+			entity_type: "person",
       organization_id: org.id,
       created_by: alice.id,
     });
 
     // Bind both channels; Alice is a member of #eng only.
-    for (const ch of ['C01ENG', 'C01SEC']) {
+		for (const ch of ["C01ENG", "C01SEC"]) {
       await sql`
-        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id)
-        VALUES (${org.id}, ${agent.agentId}, 'slack', ${`slack:${ch}`}, ${TEAM})
+        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
+        SELECT ${org.id}, ${agent.agentId}, 'slack', ${`slack:${ch}`}, ${TEAM}, id
+        FROM connections
+        WHERE organization_id = ${org.id} AND slug = ${`agentconn-${CONN}`} AND deleted_at IS NULL
       `;
     }
     await sql`
@@ -212,29 +237,46 @@ describe('managed-install recall (Item 2) + author attribution surfacing (Item 3
       connectionId: CONN,
       teamId: TEAM,
       channels: [
-        { channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01ALICE'] },
-        { channelId: 'C01SEC', name: 'secret', isPrivate: true, memberSlackUserIds: ['U01BOB'] },
+				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
+				{
+					channelId: "C01SEC",
+					name: "secret",
+					isPrivate: true,
+					memberSlackUserIds: ["U01BOB"],
+				},
       ],
     });
 
     // Member: sees #eng only (ACL fence intact) AND the snippet carries the
     // surfaced author_entity_id.
     const asMember = await search(
-      { query: 'quarterly revenue', include_content: true },
+			{ query: "quarterly revenue", include_content: true },
       {} as Parameters<typeof search>[1],
-      { organizationId: org.id, userId: alice.id, agentId: agent.agentId } as SearchCtx
+			{
+				organizationId: org.id,
+				userId: alice.id,
+				agentId: agent.agentId,
+			} as SearchCtx,
+		);
+		const memberChannels = (asMember.conversation_messages ?? []).map(
+			(m) => m.channel_id,
+		);
+		expect(memberChannels).toContain("C01ENG");
+		expect(memberChannels).not.toContain("C01SEC");
+		const engSnippet = (asMember.conversation_messages ?? []).find(
+			(m) => m.channel_id === "C01ENG",
     );
-    const memberChannels = (asMember.conversation_messages ?? []).map((m) => m.channel_id);
-    expect(memberChannels).toContain('C01ENG');
-    expect(memberChannels).not.toContain('C01SEC');
-    const engSnippet = (asMember.conversation_messages ?? []).find((m) => m.channel_id === 'C01ENG');
     expect(engSnippet?.author_entity_id).toBe(author.id);
 
     // Non-member: the graphed connection fails closed (Item 3 didn't widen it).
     const asIntruder = await search(
-      { query: 'quarterly revenue', include_content: true },
+			{ query: "quarterly revenue", include_content: true },
       {} as Parameters<typeof search>[1],
-      { organizationId: org.id, userId: 'intruder-user-id', agentId: agent.agentId } as SearchCtx
+			{
+				organizationId: org.id,
+				userId: "intruder-user-id",
+				agentId: agent.agentId,
+			} as SearchCtx,
     );
     expect(asIntruder.conversation_messages ?? []).toHaveLength(0);
   });

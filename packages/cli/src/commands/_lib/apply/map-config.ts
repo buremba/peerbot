@@ -179,8 +179,8 @@ function authProfileSlug(
 /**
  * Deterministic, human-readable stable id for a platform binding, derived from
  * `(agentId, type, name?)`. Must stay stable across applies so the same
- * platform matches (noop) instead of being recreated — `apply` PUTs it to
- * `/platforms/by-stable-id/:stableId`.
+ * platform matches (noop) instead of being recreated by
+ * `manage_connections(action='apply_chat_connection')`.
  */
 function platformStableId(
   agentId: string,

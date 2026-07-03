@@ -8,7 +8,7 @@ function createSlackConnection(
   id: string,
   metadata: Record<string, unknown> = {},
   config: Record<string, unknown> = {},
-  settings: PlatformConnection["settings"] = { allowGroups: true }
+	settings: PlatformConnection["settings"] = { allowGroups: true },
 ): PlatformConnection {
   return {
     id,
@@ -32,6 +32,10 @@ function createSlackConnection(
 type Deps = ConstructorParameters<typeof SlackConnectionCoordinator>[0];
 type AppStore = ReturnType<Deps["getAppInstallationStore"]>;
 type AppRow = Awaited<ReturnType<AppStore["upsert"]>>;
+type TrackedAppStore = AppStore & { __upsertCalls: Array<Record<string, any>> };
+type TrackedSecretStore = ReturnType<Deps["getSecretStore"]> & {
+	__putCalls: string[];
+};
 
 /**
  * In-memory AppInstallationStore so the Slack install projection
@@ -39,21 +43,21 @@ type AppRow = Awaited<ReturnType<AppStore["upsert"]>>;
  * unit test — no Postgres. Implements just the methods the projection uses;
  * `upsert` enforces one-active-per-team (the real store's invariant).
  */
-function makeAppInstallationStore(): AppStore {
+function makeAppInstallationStore(): TrackedAppStore {
   let nextId = 1;
   const rows: AppRow[] = [];
+	const upsertCalls: Array<Record<string, any>> = [];
   const tupleEq = (r: AppRow, u: any) =>
     r.provider === u.provider &&
     r.providerInstance === u.providerInstance &&
     r.providerAppId === u.providerAppId &&
     r.externalTenantId === u.externalTenantId;
   return {
-    upsert: mock(async (u: any) => {
+		upsert: async (u: any) => {
+			upsertCalls.push(u);
       const status = u.status ?? "active";
       if (status === "active") {
-        const active = rows.find(
-          (r) => tupleEq(r, u) && r.status === "active"
-        );
+				const active = rows.find((r) => tupleEq(r, u) && r.status === "active");
         if (active && active.organizationId === u.organizationId) {
           // In-place update: preserve requested metadata keys from the existing
           // row (matches the real store's race-safe external_id claim).
@@ -85,76 +89,80 @@ function makeAppInstallationStore(): AppStore {
       };
       rows.push(row);
       return row;
-    }),
-    resolveActiveByTenant: mock(async (key: any) => {
-      return (
-        rows.find((r) => tupleEq(r, key) && r.status === "active") ?? null
-      );
-    }),
-    getByTenantAndOrg: mock(async (key: any, org: string) => {
+		},
+		resolveActiveByTenant: async (key: any) => {
+			return rows.find((r) => tupleEq(r, key) && r.status === "active") ?? null;
+		},
+		getByTenantAndOrg: async (key: any, org: string) => {
       const matches = rows.filter(
-        (r) => tupleEq(r, key) && r.organizationId === org
+				(r) => tupleEq(r, key) && r.organizationId === org,
       );
       matches.sort(
         (a, b) =>
           Number(b.status === "active") - Number(a.status === "active") ||
-          b.updatedAt - a.updatedAt
+					b.updatedAt - a.updatedAt,
       );
       return matches[0] ?? null;
-    }),
-    resolveByExternalId: mock(async (provider: string, externalId: string) => {
+		},
+		resolveByExternalId: async (provider: string, externalId: string) => {
       const matches = rows.filter(
-        (r) => r.provider === provider && r.metadata.external_id === externalId
+				(r) => r.provider === provider && r.metadata.external_id === externalId,
       );
       matches.sort(
         (a, b) =>
           Number(b.status === "active") - Number(a.status === "active") ||
-          b.updatedAt - a.updatedAt
+					b.updatedAt - a.updatedAt,
       );
       return matches[0] ?? null;
-    }),
-    listByProviderAndOrg: mock(async (provider: string, org: string) =>
+		},
+		listByProviderAndOrg: async (provider: string, org: string) =>
       rows
         .filter((r) => r.provider === provider && r.organizationId === org)
-        .sort((a, b) => b.createdAt - a.createdAt)
-    ),
-    getById: mock(async (id: number) => rows.find((r) => r.id === id) ?? null),
-    listByOrg: mock(async (org: string) =>
-      rows.filter((r) => r.organizationId === org)
-    ),
-    setStatus: mock(async (id: number, status: any) => {
+				.sort((a, b) => b.createdAt - a.createdAt),
+		getById: async (id: number) => rows.find((r) => r.id === id) ?? null,
+		listByOrg: async (org: string) =>
+			rows.filter((r) => r.organizationId === org),
+		setStatus: async (id: number, status: any) => {
       const r = rows.find((x) => x.id === id);
       if (r) r.status = status;
-    }),
-    revoke: mock(async () => undefined),
-    setStatusByExternalId: mock(
-      async (provider: string, externalId: string, status: any) => {
+		},
+		revoke: async () => undefined,
+		setStatusByExternalId: async (
+			provider: string,
+			externalId: string,
+			status: any,
+		) => {
         for (const r of rows) {
           if (r.provider === provider && r.metadata.external_id === externalId) {
             r.status = status;
           }
         }
-      }
-    ),
-    deleteByExternalId: mock(async (provider: string, externalId: string) => {
+		},
+		deleteByExternalId: async (provider: string, externalId: string) => {
       for (let i = rows.length - 1; i >= 0; i--) {
         const r = rows[i];
         if (r.provider === provider && r.metadata.external_id === externalId) {
           rows.splice(i, 1);
         }
       }
-    }),
-  } as unknown as AppStore;
+		},
+		__upsertCalls: upsertCalls,
+	} as unknown as TrackedAppStore;
 }
 
 /** No-op secret store: returns a deterministic ref so token persistence works. */
-function makeSecretStore(): ReturnType<Deps["getSecretStore"]> {
+function makeSecretStore(): TrackedSecretStore {
+	const putCalls: string[] = [];
   return {
-    get: mock(async () => null),
-    put: mock(async (name: string) => `secret://${encodeURIComponent(name)}`),
-    delete: mock(async () => undefined),
-    list: mock(async () => []),
-  } as unknown as ReturnType<Deps["getSecretStore"]>;
+		get: async () => null,
+		put: async (name: string) => {
+			putCalls.push(name);
+			return `secret://${encodeURIComponent(name)}`;
+		},
+		delete: async () => undefined,
+		list: async () => [],
+		__putCalls: putCalls,
+	} as unknown as TrackedSecretStore;
 }
 
 /** Deps stub with sensible no-op defaults; override per test. */
@@ -213,20 +221,18 @@ describe("SlackConnectionCoordinator", () => {
     // team tuple, never agent_connections. Only tenant data (bot token by ref +
     // teamName/botUserId) is recorded; app-level creds stay env-sourced.
     const appStore = makeAppInstallationStore();
-    const upsert = appStore.upsert as ReturnType<typeof mock>;
     const secretStore = makeSecretStore();
-    const put = secretStore.put as ReturnType<typeof mock>;
     const coordinator = new SlackConnectionCoordinator(
       makeDeps({
         getAppInstallationStore: () => appStore,
         getSecretStore: () => secretStore,
-      })
+			}),
     );
 
     const result = await coordinator.ensureWorkspaceInstallation(
       "org-acme",
       "T123",
-      { botToken: "xoxb-tenant-token", botUserId: "U123", teamName: "Acme" }
+			{ botToken: "xoxb-tenant-token", botUserId: "U123", teamName: "Acme" },
     );
 
     expect(result.installationId.startsWith("slackinst-")).toBe(true);
@@ -235,12 +241,12 @@ describe("SlackConnectionCoordinator", () => {
     // is activated, so a persist failure can never leave an active row without a
     // token. The happy path is a SINGLE activation upsert that already carries the
     // token ref in config (no separate claim/write round-trip).
-    expect(put).toHaveBeenCalledTimes(1);
-    expect(put.mock.calls[0]?.[0]).toBe(
-      `installations/${result.installationId}/botToken`
+		expect(secretStore.__putCalls).toHaveLength(1);
+		expect(secretStore.__putCalls[0]).toBe(
+			`installations/${result.installationId}/botToken`,
     );
-    expect(upsert).toHaveBeenCalledTimes(1);
-    const a = upsert.mock.calls[0]?.[0] as Record<string, any>;
+		expect(appStore.__upsertCalls).toHaveLength(1);
+		const a = appStore.__upsertCalls[0] as Record<string, any>;
     expect(a.provider).toBe("slack");
     expect(a.providerInstance).toBe("cloud");
     expect(a.providerAppId).toBe("cloud");
@@ -258,8 +264,12 @@ describe("SlackConnectionCoordinator", () => {
     expect(typeof a.metadata.config.botToken).toBe("string");
     expect(a.metadata.config.botToken).not.toBe("xoxb-tenant-token");
     // No app secrets anywhere in the recorded row.
-    expect(JSON.stringify(upsert.mock.calls)).not.toContain("signingSecret");
-    expect(JSON.stringify(upsert.mock.calls)).not.toContain("clientSecret");
+		expect(JSON.stringify(appStore.__upsertCalls)).not.toContain(
+			"signingSecret",
+		);
+		expect(JSON.stringify(appStore.__upsertCalls)).not.toContain(
+			"clientSecret",
+		);
   });
 
   test("handleAppWebhook routes a matched team to its OAuth installation", async () => {
@@ -273,7 +283,7 @@ describe("SlackConnectionCoordinator", () => {
       secretStore,
       "org-acme",
       "T777",
-      { botToken: "xoxb-T777" }
+			{ botToken: "xoxb-T777" },
     );
     const coordinator = new SlackConnectionCoordinator(
       makeDeps({
@@ -284,7 +294,7 @@ describe("SlackConnectionCoordinator", () => {
           forwarded.push(connectionId);
           return new Response("ok");
         }),
-      })
+			}),
     );
 
     const response = await coordinator.handleAppWebhook(
@@ -292,7 +302,7 @@ describe("SlackConnectionCoordinator", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
-      })
+			}),
     );
 
     expect(response.status).toBe(200);
@@ -310,14 +320,17 @@ describe("SlackConnectionCoordinator", () => {
       secretStore,
       "org-acme",
       "T888",
-      { botToken: "xoxb-T888" }
+			{ botToken: "xoxb-T888" },
     );
     const coordinator = new SlackConnectionCoordinator(
       makeDeps({
         // ...alongside a STOPPED BYO connection for the same team. Routing must
         // reach the install, not 503 on the stopped row.
         listSlackConnections: async () => [
-          { ...createSlackConnection("conn-stopped", { teamId: "T888" }), status: "stopped" },
+					{
+						...createSlackConnection("conn-stopped", { teamId: "T888" }),
+						status: "stopped",
+					},
         ],
         getAppInstallationStore: () => appStore,
         getSecretStore: () => secretStore,
@@ -325,7 +338,7 @@ describe("SlackConnectionCoordinator", () => {
           forwarded.push(connectionId);
           return new Response("ok");
         }),
-      })
+			}),
     );
 
     const response = await coordinator.handleAppWebhook(
@@ -333,7 +346,7 @@ describe("SlackConnectionCoordinator", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
-      })
+			}),
     );
 
     expect(response.status).toBe(200);
@@ -359,11 +372,11 @@ describe("SlackConnectionCoordinator", () => {
   test("resolveAdapterConfig throws when Slack env is absent", () => {
     const coordinator = new SlackConnectionCoordinator(makeDeps());
     expect(() => coordinator.resolveAdapterConfig()).toThrow(
-      /SLACK_SIGNING_SECRET/
+			/SLACK_SIGNING_SECRET/,
     );
-    expect(() => coordinator.resolveAdapterConfig({ requireOAuth: true })).toThrow(
-      /SLACK_SIGNING_SECRET/
-    );
+		expect(() =>
+			coordinator.resolveAdapterConfig({ requireOAuth: true }),
+		).toThrow(/SLACK_SIGNING_SECRET/);
   });
 
   test("handleAppWebhook prefers an exact team match", async () => {
@@ -377,7 +390,7 @@ describe("SlackConnectionCoordinator", () => {
           createSlackConnection("conn-team", { teamId: "T123" }),
           createSlackConnection("conn-default"),
         ],
-      })
+			}),
     );
 
     const response = await coordinator.handleAppWebhook(
@@ -385,7 +398,7 @@ describe("SlackConnectionCoordinator", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
-      })
+			}),
     );
 
     expect(response.status).toBe(200);
@@ -406,7 +419,7 @@ describe("SlackConnectionCoordinator", () => {
         listSlackConnections: async () => [
           createSlackConnection("conn-byo", { teamId: "T777" }),
         ],
-      })
+			}),
     );
 
     const response = await coordinator.handleAppWebhook(
@@ -414,7 +427,7 @@ describe("SlackConnectionCoordinator", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
-      })
+			}),
     );
 
     expect(response.status).toBe(200);
@@ -435,10 +448,10 @@ describe("SlackConnectionCoordinator", () => {
             "conn-default",
             {},
             {},
-            { allowGroups: true, previewMode: true }
+						{ allowGroups: true, previewMode: true },
           ),
         ],
-      })
+			}),
     );
 
     const response = await coordinator.handleAppWebhook(
@@ -446,7 +459,7 @@ describe("SlackConnectionCoordinator", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
-      })
+			}),
     );
 
     expect(response.status).toBe(200);
@@ -462,7 +475,7 @@ describe("SlackConnectionCoordinator", () => {
         listSlackConnections: async () => [
           createSlackConnection("conn-tenant"),
         ],
-      })
+			}),
     );
 
     expect(await coordinator.getDefaultConnection()).toBeNull();
@@ -477,10 +490,10 @@ describe("SlackConnectionCoordinator", () => {
             "conn-preview",
             {},
             {},
-            { allowGroups: true, previewMode: true }
+						{ allowGroups: true, previewMode: true },
           ),
         ],
-      })
+			}),
     );
 
     const def = await coordinator.getDefaultConnection();
@@ -496,7 +509,7 @@ describe("SlackConnectionCoordinator", () => {
         listSlackConnections: async () => [
           createSlackConnection("conn-team", { teamId: "T123" }),
         ],
-      })
+			}),
     );
 
     const response = await coordinator.handleAppWebhook(
@@ -514,13 +527,13 @@ describe("SlackConnectionCoordinator", () => {
             },
           },
         }),
-      })
+			}),
     );
 
     expect(response.status).toBe(200);
     expect(openDM).toHaveBeenCalledWith("U123");
     expect(post).toHaveBeenCalledWith(
-      "Welcome to Lobu, Ada. Mention me in a channel or send me a DM to start a thread. Use `/lobu help` to see the built-in commands."
+			"Welcome to Lobu, Ada. Mention me in a channel or send me a DM to start a thread. Use `/lobu help` to see the built-in commands.",
     );
   });
 });

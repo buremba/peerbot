@@ -3,11 +3,11 @@
  */
 
 import { type Static, Type } from "@sinclair/typebox";
-import type { ChannelAudience } from "../../../authz/audience";
 import { PaginationFields } from "../schemas/common-fields";
 
 /** A channel binding as returned by list_channel_bindings. */
 export interface ChannelBindingDto {
+	connectionId?: string;
 	platform: string;
 	channelId: string;
 	teamId?: string;
@@ -27,7 +27,6 @@ export const ListConnectorGroupsAction = Type.Object({
 		}),
 	),
 });
-
 
 export const ListAction = Type.Object({
 	action: Type.Literal("list"),
@@ -169,6 +168,23 @@ export const UpdateAction = Type.Object({
 				"When true and `config` is provided, replace the stored connection config with exactly that object (declarative apply); when false/omitted, merge into the existing config (default).",
 		}),
 	),
+});
+
+export const ApplyChatConnectionAction = Type.Object({
+	action: Type.Literal("apply_chat_connection"),
+	stable_id: Type.String({
+		description: "Stable declarative connection id used by lobu apply.",
+	}),
+	connector_key: Type.String({ description: "Chat connector key." }),
+	display_name: Type.Optional(Type.String()),
+	agent_id: Type.Optional(
+		Type.String({
+			description:
+				"Declarative fallback agent. Channel bindings remain authoritative when present.",
+		}),
+	),
+	config: Type.Record(Type.String(), Type.Any()),
+	settings: Type.Optional(Type.Record(Type.String(), Type.Any())),
 });
 
 export const DeleteAction = Type.Object({
@@ -325,12 +341,8 @@ export const UpdateConnectorDefaultRepairAgentAction = Type.Object({
 // surface, not a bespoke channel island.
 // ============================================
 
-const PLATFORM_DESC =
-	"Chat platform key (lowercase, e.g. 'slack', 'telegram').";
 const CHANNEL_ID_DESC =
 	"Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').";
-const TEAM_ID_DESC =
-	"Provider tenant id (Slack team_id, …); omit for tenantless platforms.";
 
 export const ListChannelBindingsAction = Type.Object({
 	action: Type.Literal("list_channel_bindings"),
@@ -342,41 +354,41 @@ export const ListChannelBindingsAction = Type.Object({
 export const BindChannelAction = Type.Object({
 	action: Type.Literal("bind_channel"),
 	agent_id: Type.String({ description: "Agent to bind the channel to." }),
-	platform: Type.String({ description: PLATFORM_DESC }),
+	connection_id: Type.Number({
+		description: "Chat connection that receives this channel's messages.",
+	}),
 	channel_id: Type.String({ description: CHANNEL_ID_DESC }),
-	team_id: Type.Optional(Type.String({ description: TEAM_ID_DESC })),
 });
 
 export const UnbindChannelAction = Type.Object({
 	action: Type.Literal("unbind_channel"),
 	agent_id: Type.String({ description: "Agent to unbind the channel from." }),
-	platform: Type.String({ description: PLATFORM_DESC }),
+	connection_id: Type.Number({
+		description: "Chat connection owning the binding.",
+	}),
 	channel_id: Type.String({ description: CHANNEL_ID_DESC }),
-	team_id: Type.Optional(Type.String({ description: TEAM_ID_DESC })),
 });
 
-export const GetChannelAudienceAction = Type.Object({
-	action: Type.Literal("get_channel_audience"),
-	agent_id: Type.Optional(
-		Type.String({
+export const SyncChannelBindingsAction = Type.Object({
+	action: Type.Literal("sync_channel_bindings"),
+	agent_id: Type.String({
+		description: "Agent whose declarative bindings to reconcile.",
+	}),
+	connection_id: Type.Union([Type.Number(), Type.String()], {
 			description:
-				"Agent whose bound channels' recall audience to read (per-agent view).",
+			"Chat connection numeric id, or the stable declarative id used by lobu apply.",
 		}),
-	),
-	connection_id: Type.Optional(
-		Type.Number({
+	channels: Type.Array(Type.String(), {
 			description:
-				"Connection whose channels' recall audience to read (connection-centric view, across every agent that bound a channel through it). Each audience carries the binding's agent. Provide exactly one of agent_id / connection_id.",
+			"Desired channel ids. Slack also accepts the declarative <teamId>/<channelId> form.",
 		}),
-	),
 });
 
 export const ConnectChannelDmAction = Type.Object({
 	action: Type.Literal("connect_channel_dm"),
 	agent_id: Type.String({ description: "Agent to wire the caller's DM to." }),
-	external_id: Type.String({
-		description:
-			"Managed Slack install external id (the slackinst-… handle) to open a DM through.",
+	connection_id: Type.Number({
+		description: "Slack connection to open and bind the caller's DM through.",
 	}),
 });
 
@@ -457,6 +469,12 @@ export type ManageConnectionsResult =
 			view_url?: string;
 	  }
 	| { action: "update"; connection: ConnectionRow }
+	| {
+			action: "apply_chat_connection";
+			connection: ConnectionRow;
+			created: boolean;
+			changed: boolean;
+	  }
 	| { action: "delete"; deleted: true; connection_id: number; slug: string }
 	| { action: "reauthenticate"; connection_id: number; auth_run_id: number }
 	| {
@@ -497,16 +515,17 @@ export type ManageConnectionsResult =
 			action: "bind_channel";
 			success: true;
 			agent_id: string;
+			connection_id: number;
 			platform: string;
 			channel_id: string;
 			team_id?: string;
 	  }
 	| { action: "unbind_channel"; success: true }
 	| {
-			action: "get_channel_audience";
-			agent_id?: string;
-			connection_id?: number;
-			audiences: ChannelAudience[];
+			action: "sync_channel_bindings";
+			success: true;
+			bound: string[];
+			removed: string[];
 	  }
 	| {
 			action: "connect_channel_dm";
@@ -528,6 +547,7 @@ export type ConnectionsArgs =
 	| Static<typeof CreateAction>
 	| Static<typeof ConnectAction>
 	| Static<typeof UpdateAction>
+	| Static<typeof ApplyChatConnectionAction>
 	| Static<typeof DeleteAction>
 	| Static<typeof ReauthenticateAction>
 	| Static<typeof TestAction>
@@ -541,5 +561,5 @@ export type ConnectionsArgs =
 	| Static<typeof ListChannelBindingsAction>
 	| Static<typeof BindChannelAction>
 	| Static<typeof UnbindChannelAction>
-	| Static<typeof GetChannelAudienceAction>
+	| Static<typeof SyncChannelBindingsAction>
 	| Static<typeof ConnectChannelDmAction>;

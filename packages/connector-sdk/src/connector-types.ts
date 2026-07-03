@@ -221,6 +221,8 @@ export type ConnectorAuthMethod =
 
 export interface ConnectorAuthNone {
   type: 'none';
+  /** User-facing label when `none` represents provider-managed credentials. */
+  label?: string;
 }
 
 export interface ConnectorAuthEnvField {

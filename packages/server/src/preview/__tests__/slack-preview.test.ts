@@ -32,6 +32,8 @@ function slackSurfaceType(channelId: string): "dm" | "channel" {
 const AGENT_ID = "demo-agent";
 const OTHER_AGENT_ID = "other-agent";
 const TEAM_ID = "T_DEVELOPER";
+const CLAIM_SLACK_CONNECTION = "claim-slack";
+const CLAIM_TELEGRAM_CONNECTION = "claim-telegram";
 
 let ORG_ID = "";
 // A real `user` row — `consumePreviewClaim` records `chat_user_identities`
@@ -48,6 +50,8 @@ function consumeSlack(args: { code: string; teamId: string; channelId: string })
     teamId: args.teamId,
     channelId: canonicalSlackChannelId(args.channelId),
     surfaceType: slackSurfaceType(args.channelId),
+    connectionId: CLAIM_SLACK_CONNECTION,
+    connectionOrganizationId: ORG_ID,
   });
 }
 
@@ -106,6 +110,23 @@ describe("Slack Preview claims + channel bindings", () => {
       agentId: OTHER_AGENT_ID,
       name: "Other",
     });
+	await insertChatConnectionRow({
+		id: CLAIM_SLACK_CONNECTION,
+		organizationId: ORG_ID,
+		platform: "slack",
+		agentId: AGENT_ID,
+		credentialMode: "managed",
+		status: "active",
+		metadata: { teamId: TEAM_ID },
+	});
+	await insertChatConnectionRow({
+		id: CLAIM_TELEGRAM_CONNECTION,
+		organizationId: ORG_ID,
+		platform: "telegram",
+		agentId: AGENT_ID,
+		credentialMode: "managed",
+		status: "active",
+	});
   });
 
   beforeEach(async () => {
@@ -167,6 +188,8 @@ describe("Slack Preview claims + channel bindings", () => {
       platform: "telegram",
       channelId: "12345",
       surfaceType: "dm",
+      connectionId: CLAIM_TELEGRAM_CONNECTION,
+      connectionOrganizationId: ORG_ID,
     });
     expect(bound).toMatchObject({ status: "bound", agentId: AGENT_ID });
 
@@ -296,6 +319,8 @@ describe("Slack Preview claims + channel bindings", () => {
       teamId: TEAM_ID,
       isGroup: false,
       platform: "slack",
+      connectionId: CLAIM_SLACK_CONNECTION,
+      organizationId: ORG_ID,
       args: code,
       reply: async (text: string) => {
         replies.push(text);
@@ -321,6 +346,8 @@ describe("Slack Preview claims + channel bindings", () => {
       teamId: TEAM_ID,
       isGroup: false,
       platform: "slack",
+      connectionId: CLAIM_SLACK_CONNECTION,
+      organizationId: ORG_ID,
       args: "demo-agent-BADBAD",
       reply: async (text: string) => {
         replies2.push(text);
@@ -505,6 +532,7 @@ describe("Public preview — /lobu try a demo agent", () => {
 describe("chat-user identity + codeless re-link by agent id", () => {
   const ID_TEAM = "T_IDENTITY";
   const ID_AGENT = "owned-agent";
+  const ID_CONNECTION = "identity-slack";
   let idOrgId = "";
   let lobuUserId = "";
   const SLACK_USER = "U_IDENTITY";
@@ -529,6 +557,15 @@ describe("chat-user identity + codeless re-link by agent id", () => {
     await addUserToOrganization(lobuUserId, idOrgId);
     await createTestAgent({ organizationId: idOrgId, agentId: ID_AGENT, name: "Owned" });
     await createTestAgent({ organizationId: idOrgId, agentId: "second-agent", name: "Second" });
+	await insertChatConnectionRow({
+		id: ID_CONNECTION,
+		organizationId: idOrgId,
+		platform: "slack",
+		agentId: ID_AGENT,
+		credentialMode: "byo",
+		status: "active",
+		metadata: { teamId: ID_TEAM },
+	});
   });
 
   beforeEach(async () => {
@@ -552,6 +589,8 @@ describe("chat-user identity + codeless re-link by agent id", () => {
       channelId: canonicalSlackChannelId(channelId),
       surfaceType: "dm",
       platformUserId: SLACK_USER,
+      connectionId: ID_CONNECTION,
+      connectionOrganizationId: idOrgId,
     });
   }
 
@@ -578,6 +617,8 @@ describe("chat-user identity + codeless re-link by agent id", () => {
         channelId: canonicalSlackChannelId("D901"),
         agentId: "second-agent",
         lobuUserId,
+        connectionId: ID_CONNECTION,
+        connectionOrganizationId: idOrgId,
       })
     ).toEqual({ status: "bound" });
     const rows = await getDb()`
@@ -592,6 +633,8 @@ describe("chat-user identity + codeless re-link by agent id", () => {
         channelId: canonicalSlackChannelId("D902"),
         agentId: "agent-in-another-org",
         lobuUserId,
+        connectionId: ID_CONNECTION,
+        connectionOrganizationId: idOrgId,
       })
     ).toEqual({ status: "forbidden" });
   });
@@ -610,6 +653,8 @@ describe("chat-user identity + codeless re-link by agent id", () => {
       teamId: ID_TEAM,
       isGroup: false,
       platform: "slack",
+      connectionId: ID_CONNECTION,
+      organizationId: idOrgId,
       args: "second-agent",
       reply: async (text: string) => {
         replies.push(text);
@@ -629,6 +674,8 @@ describe("chat-user identity + codeless re-link by agent id", () => {
       teamId: ID_TEAM,
       isGroup: false,
       platform: "slack",
+      connectionId: ID_CONNECTION,
+      organizationId: idOrgId,
       args: "agent-in-another-org",
       reply: async (text: string) => {
         replies2.push(text);

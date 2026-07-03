@@ -71,30 +71,13 @@ export async function resolveBoundChannelRows(
   // `external_tenant_id`. Chat rows carry `credential_mode IS NOT NULL`.
   return (await sql`
     SELECT id, platform, channel_id, team_id, created_at FROM (
-      -- (A) the org's own connections. A binding matches its serving connection
-      -- by the unified connection_id link (the source of truth — populated for
-      -- every binding by the connections-unify backfill/re-sync) when set, and
-      -- falls back to the legacy (org, agent, platform) tuple only when the
-      -- binding is not yet linked. The connection_id path is what lets MANAGED
-      -- Slack OAuth installs (slackinst- slug, agent_id NULL) resolve their
-      -- channels at all — the tuple join never matched a NULL agent_id.
-      -- KNOWN LIMITATION (tuple fallback only): an agent with TWO Slack
-      -- connections cross-joins a channel onto both via the tuple; linked
-      -- bindings route precisely by connection_id, so this only affects
-      -- not-yet-linked bindings.
+      -- (A) the org's own connections. connection_id is the sole routing key.
       SELECT
         CASE WHEN ac.slug LIKE 'agentconn-%'
           THEN substring(ac.slug from 11) ELSE ac.slug END AS id,
         ac.connector_key AS platform, b.channel_id, b.team_id, b.created_at
       FROM connections ac
-      JOIN agent_channel_bindings b
-        ON (
-             b.connection_id = ac.id
-             OR (b.connection_id IS NULL
-                 AND b.organization_id = ac.organization_id
-                 AND b.agent_id = ac.agent_id
-                 AND b.platform = ac.connector_key)
-           )
+      JOIN agent_channel_bindings b ON b.connection_id = ac.id
       WHERE ac.organization_id = ${organizationId}
         AND ac.status = 'active'
         AND ac.credential_mode IS NOT NULL
@@ -126,14 +109,7 @@ export async function resolveBoundChannelRows(
         AND NOT EXISTS (
           SELECT 1
           FROM connections own
-          JOIN agent_channel_bindings ob
-            ON (
-                 ob.connection_id = own.id
-                 OR (ob.connection_id IS NULL
-                     AND ob.organization_id = own.organization_id
-                     AND ob.agent_id = own.agent_id
-                     AND ob.platform = own.connector_key)
-               )
+          JOIN agent_channel_bindings ob ON ob.connection_id = own.id
           WHERE own.organization_id = ${organizationId}
             AND own.status = 'active'
             AND own.credential_mode IS NOT NULL

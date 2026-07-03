@@ -365,6 +365,7 @@ export class MessageHandlerBridge {
       teamId,
       agentId: this.connection.agentId,
       organizationId: this.connection.organizationId,
+      connectionId: this.connection.id,
       channelBindingService,
       crossOrg: isPreview,
     });
@@ -961,6 +962,7 @@ export class MessageHandlerBridge {
       teamId,
       agentId: this.connection.agentId,
       organizationId: this.connection.organizationId,
+      connectionId: this.connection.id,
       channelBindingService,
       crossOrg: isPreview,
     });

@@ -3,8 +3,6 @@
 // Shared exports for @lobu/core consumers (gateway, worker, external tools)
 
 export * from "./agent-policy";
-// Shared credential-store primitives (CLI + embedded server share one impl)
-export * from "./credentials";
 // Agent store interface (unified storage abstraction)
 export type {
   AgentAccessStore,
@@ -13,7 +11,6 @@ export type {
   AgentMetadata,
   AgentSettings,
   AgentStore,
-  ChannelBinding,
   ConnectionSettings,
   Grant,
   GrantKind,
@@ -35,6 +32,8 @@ export type { CommandContext, CommandDefinition } from "./command-registry";
 // Command registry
 export { CommandRegistry } from "./command-registry";
 export * from "./constants";
+// Shared credential-store primitives (CLI + embedded server share one impl)
+export * from "./credentials";
 // Errors & logging
 export * from "./errors";
 // Guardrail primitive (type + registry + parallel runner + no-op builtin)
@@ -134,7 +133,6 @@ export type { McpStatus, McpToolDef } from "./utils/mcp-tool-instructions";
 export * from "./utils/network-domains";
 export * from "./utils/retry";
 export * from "./utils/sanitize";
-export { slugify } from "./utils/slug";
 // Shared OpenClaw session.jsonl parser (gateway + worker).
 export {
   entryToMessage,
@@ -143,6 +141,7 @@ export {
   type SessionEntry,
   titleFromSessionJsonl,
 } from "./utils/session-file";
+export { slugify } from "./utils/slug";
 export * from "./utils/urls";
 export * from "./worker/auth";
 export type {

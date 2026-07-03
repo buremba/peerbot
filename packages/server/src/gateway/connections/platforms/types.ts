@@ -91,6 +91,14 @@ export interface ChatPlatformDescriptor {
   prepareNewConnectionConfig?(config: PlatformAdapterConfig): void;
 
   /**
+   * Config keys the server stamps onto the stored config (e.g. an
+   * auto-generated webhook secret). The declarative no-op check ignores them
+   * when the incoming declaration doesn't set them — otherwise every apply
+   * of an unchanged declaration would look like a credential change.
+   */
+  serverStampedConfigKeys?: readonly string[];
+
+  /**
    * Backfill/converge a webhook verification secret for an existing
    * connection at start time. Runs after the config is resolved to plaintext.
    */

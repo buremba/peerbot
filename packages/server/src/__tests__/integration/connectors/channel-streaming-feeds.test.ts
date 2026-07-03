@@ -163,6 +163,7 @@ describe("channel streaming feeds", () => {
 
     await svc.createBinding(agentId, "slack", "slack:C300", "TACME", {
       organizationId: orgId,
+      connectionId: String(conn.id),
     });
 
     const sql = getDb();
@@ -177,9 +178,8 @@ describe("channel streaming feeds", () => {
 
     const deleted = await svc.deleteBinding(
       agentId,
-      "slack",
       "slack:C300",
-      "TACME",
+      String(conn.id),
       orgId
     );
     expect(deleted).toBe(true);
@@ -296,9 +296,11 @@ describe("channel streaming feeds", () => {
 
     await svc.createBinding(agentId, "slack", "slack:C700", "TACME", {
       organizationId: orgId,
+      connectionId: String(conn.id),
     });
     await svc.createBinding(agentId, "slack", "slack:C701", "TACME", {
       organizationId: orgId,
+      connectionId: String(conn.id),
     });
 
     const sql = getDb();

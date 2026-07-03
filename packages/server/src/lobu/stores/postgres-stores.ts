@@ -3,7 +3,6 @@ import type {
 	AgentConnectionStore,
 	AgentMetadata,
 	AgentSettings,
-	ChannelBinding,
 } from "@lobu/core";
 import { getDb, tsTime, tsTimeOrNull } from "../../db/client";
 import { recordLifecycleEvent } from "../../utils/insert-event";
@@ -14,7 +13,6 @@ import {
 	upsertChatConnectionProjection,
 } from "./connections-projection";
 import { getOrgId, tryGetOrgId } from "./org-context";
-
 
 export const AGENT_ID_PATTERN = /^[a-z][a-z0-9-]{2,59}$/;
 
@@ -70,8 +68,7 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
 		guardrails: row.guardrails ?? undefined,
 		guardrailsInline: row.guardrails_inline ?? undefined,
 		environmentId: row.environment_id ?? undefined,
-		updatedAt:
-			tsTime(row.updated_at),
+		updatedAt: tsTime(row.updated_at),
 	};
 }
 
@@ -85,10 +82,8 @@ function rowToMetadata(row: Record<string, any>): AgentMetadata {
 			userId: row.owner_user_id ?? "",
 		},
 		organizationId: row.organization_id ?? undefined,
-		createdAt:
-			tsTime(row.created_at),
-		lastUsedAt:
-			tsTimeOrNull(row.last_used_at),
+		createdAt: tsTime(row.created_at),
+		lastUsedAt: tsTimeOrNull(row.last_used_at),
 	};
 }
 
@@ -101,17 +96,6 @@ function isSecretField(key: string): boolean {
 
 function isRedactedSecretValue(value: unknown): value is string {
 	return typeof value === "string" && value.startsWith("***");
-}
-
-function rowToChannelBinding(row: Record<string, any>): ChannelBinding {
-	return {
-		agentId: row.agent_id,
-		platform: row.platform,
-		channelId: row.channel_id,
-		teamId: row.team_id ?? undefined,
-		createdAt:
-			tsTime(row.created_at),
-	};
 }
 
 export function createPostgresAgentConfigStore(): AgentConfigStore {
@@ -415,118 +399,6 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			// `connections` is the sole source of truth — soft-delete (`deleted_at`)
 			// the chat projection (kept for audit; getConnection filters it out).
 			await softDeleteChatConnectionProjection(sql, orgId, connectionId);
-		},
-		async getChannelBinding(platform, channelId, teamId) {
-			const sql = getDb();
-			const orgId = tryGetOrgId();
-			const rows = teamId
-				? orgId
-					? await sql`
-              SELECT * FROM agent_channel_bindings
-              WHERE organization_id = ${orgId}
-                AND platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
-            `
-					: await sql`
-              SELECT * FROM agent_channel_bindings
-              WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
-            `
-				: orgId
-					? await sql`
-              SELECT * FROM agent_channel_bindings
-              WHERE organization_id = ${orgId}
-                AND platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
-            `
-					: await sql`
-              SELECT * FROM agent_channel_bindings
-              WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
-            `;
-			if (rows.length === 0) return null;
-			return rowToChannelBinding(rows[0]);
-		},
-		async createChannelBinding(binding) {
-			const sql = getDb();
-			const orgId = getOrgId();
-			if (binding.teamId) {
-				// Org-scoped UNIQUE — a sibling tenant binding the same platform+channel
-				// can never collide with this org's row. `organization_id` is
-				// deliberately absent from the SET list so a binding cannot change owners.
-				await sql`
-          INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
-          VALUES (${orgId}, ${binding.agentId}, ${binding.platform}, ${binding.channelId}, ${binding.teamId}, now())
-          ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
-            agent_id = EXCLUDED.agent_id
-        `;
-			} else {
-				// PG treats NULL as distinct under the org-scoped UNIQUE; the
-				// team_id IS NULL branch upserts via the org-scoped partial unique
-				// index agent_channel_bindings_org_no_team_unique.
-				await sql`
-          INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
-          VALUES (${orgId}, ${binding.agentId}, ${binding.platform}, ${binding.channelId}, NULL, now())
-          ON CONFLICT (organization_id, platform, channel_id)
-            WHERE team_id IS NULL
-            DO UPDATE SET agent_id = EXCLUDED.agent_id
-        `;
-			}
-		},
-		async deleteChannelBinding(platform, channelId, teamId) {
-			const sql = getDb();
-			const orgId = tryGetOrgId();
-			if (teamId) {
-				if (orgId) {
-					await sql`
-            DELETE FROM agent_channel_bindings
-            WHERE organization_id = ${orgId}
-              AND platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
-          `;
-				} else {
-					await sql`
-            DELETE FROM agent_channel_bindings
-            WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
-          `;
-				}
-				return;
-			}
-
-			if (orgId) {
-				await sql`
-          DELETE FROM agent_channel_bindings
-          WHERE organization_id = ${orgId}
-            AND platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
-        `;
-			} else {
-				await sql`
-          DELETE FROM agent_channel_bindings
-          WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
-        `;
-			}
-		},
-		async listChannelBindings(agentId) {
-			const sql = getDb();
-			const orgId = tryGetOrgId();
-			const rows = orgId
-				? await sql`
-            SELECT * FROM agent_channel_bindings
-            WHERE agent_id = ${agentId} AND organization_id = ${orgId}
-          `
-				: await sql`
-            SELECT * FROM agent_channel_bindings WHERE agent_id = ${agentId}
-          `;
-			return rows.map(rowToChannelBinding);
-		},
-		async deleteAllChannelBindings(agentId) {
-			const sql = getDb();
-			const orgId = tryGetOrgId();
-			const rows = orgId
-				? await sql`
-            DELETE FROM agent_channel_bindings
-            WHERE agent_id = ${agentId} AND organization_id = ${orgId}
-            RETURNING 1
-          `
-				: await sql`
-            DELETE FROM agent_channel_bindings WHERE agent_id = ${agentId} RETURNING 1
-          `;
-			return rows.length;
 		},
 	};
 }

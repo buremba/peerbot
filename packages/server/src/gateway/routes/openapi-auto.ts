@@ -78,7 +78,6 @@ function deriveTag(path: string): string {
 	if (
 		path.startsWith("/api/v1/agents") &&
 		!path.includes("/config") &&
-		!path.includes("/channels") &&
 		!path.includes("/history")
 	) {
 		return "Agents";
@@ -87,11 +86,6 @@ function deriveTag(path: string): string {
 	// Configuration — providers, packages, domain grants
 	if (path.includes("/config")) {
 		return "Configuration";
-	}
-
-	// Channels — platform bindings
-	if (path.includes("/channels")) {
-		return "Channels";
 	}
 
 	// History — session messages and stats
@@ -143,12 +137,6 @@ const ROUTE_SUMMARIES: Record<string, string> = {
 	"get /api/v1/agents/{agentId}/history/session/messages":
 		"Get session messages",
 	"get /api/v1/agents/{agentId}/history/session/stats": "Get session stats",
-
-	// Channels
-	"get /api/v1/agents/{agentId}/channels": "List channel bindings",
-	"post /api/v1/agents/{agentId}/channels": "Bind agent to channel",
-	"delete /api/v1/agents/{agentId}/channels/{platform}/{channelId}":
-		"Unbind agent from channel",
 };
 
 /**

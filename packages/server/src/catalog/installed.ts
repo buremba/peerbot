@@ -2,10 +2,7 @@ import type { GuardrailStage } from "@lobu/core";
 import { getModelProviderModules } from "../gateway/modules/module-system";
 import type { Env } from "../index";
 import { getLobuCoreServices } from "../lobu/gateway";
-import {
-	createPostgresAgentConfigStore,
-	createPostgresAgentConnectionStore,
-} from "../lobu/stores/postgres-stores";
+import { createPostgresAgentConfigStore } from "../lobu/stores/postgres-stores";
 import {
 	EMPTY_SUMMARY,
 	getOperationsSummaryBatch,
@@ -27,7 +24,6 @@ import type {
 } from "./types";
 
 const configStore = createPostgresAgentConfigStore();
-const connectionStore = createPostgresAgentConnectionStore();
 
 export type ListInstalledOptions = {
 	includeCatalog?: boolean;
@@ -220,22 +216,6 @@ export async function listAgentInstalled(
 			detail: { stages, enabled: enabled.has(name) },
 		}));
 		result.guardrails = { kind: "guardrails", items };
-	}
-
-	if (wanted.has("channels")) {
-		const platforms = await connectionStore.listConnections({ agentId });
-		result.channels = {
-			kind: "channels",
-			items: platforms.map((platform) => ({
-				id: platform.id,
-				name: platform.platform,
-				detail: {
-					platform: platform.platform,
-					status: platform.status,
-					agent_id: platform.agentId,
-				},
-			})),
-		};
 	}
 
 	return result;

@@ -14,19 +14,12 @@
 
 import { randomUUID } from "node:crypto";
 import type { AgentConnectionStore, StoredConnection } from "@lobu/core";
-import {
-	createLogger,
-	getErrorMessage,
-	isSecretRef,
-} from "@lobu/core";
+import { createLogger, getErrorMessage, isSecretRef } from "@lobu/core";
 import { type AdapterPostableMessage, Chat } from "chat";
+import { resolveConnectionWebhookConfig } from "../../connect/webhook-registration.js";
 import { getDb } from "../../db/client.js";
 import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
-import {
-  deleteSlackInstall,
-  getSlackInstallById,
-  SLACK_INSTALLATION_ID_PREFIX,
-} from "../../lobu/stores/slack-installations.js";
+import { deleteSlackInstall } from "../../lobu/stores/slack-installations.js";
 import { CommandDispatcher } from "../commands/command-dispatcher.js";
 import type { IFileHandler } from "../platform/file-handler.js";
 import type { CoreServices, PlatformAdapter } from "../platform.js";
@@ -36,6 +29,7 @@ import {
   resolveSecretValue,
 } from "../secrets/index.js";
 import { resolveAgentOptions } from "../services/platform-helpers.js";
+import { configsEqual } from "./config-equal.js";
 import { ConversationStateStore } from "./conversation-state-store.js";
 import { registerInteractionBridge } from "./interaction-bridge.js";
 import {
@@ -44,11 +38,6 @@ import {
 } from "./message-handler-bridge.js";
 import { getPlatformDescriptor, PLATFORM_REGISTRY } from "./platforms/index.js";
 import { resolveChatTarget } from "./platforms/shared.js";
-import {
-  handleWebhookIngest,
-  prepareWebhookIngestConfig,
-} from "./webhook-ingest.js";
-import { resolveConnectionWebhookConfig } from "../../connect/webhook-registration.js";
 import { SlackConnectionCoordinator } from "./slack-connection-coordinator.js";
 import {
   registerSlackAppHome,
@@ -63,8 +52,10 @@ import {
   type PlatformAdapterConfig,
   type PlatformConnection,
 } from "./types.js";
-import { configsEqual } from "./config-equal.js";
-
+import {
+	handleWebhookIngest,
+	prepareWebhookIngestConfig,
+} from "./webhook-ingest.js";
 
 const logger = createLogger("chat-instance-manager");
 
@@ -285,7 +276,7 @@ const EXCLUSIVE_FAILURE_MAX_BACKOFF_MS = 10 * 60_000;
  */
 const ADAPTERLESS_PLATFORMS = new Set<string>(["rest", "webhook"]);
 
-function isAdapterlessPlatform(platform: string): boolean {
+export function isAdapterlessPlatform(platform: string): boolean {
   return ADAPTERLESS_PLATFORMS.has(platform);
 }
 
@@ -376,7 +367,7 @@ export class ChatInstanceManager {
   async shutdown(): Promise<void> {
     logger.info(
       { count: this.instances.size },
-      "Shutting down all connections"
+			"Shutting down all connections",
     );
     if (this.exclusiveTimer) {
       clearInterval(this.exclusiveTimer);
@@ -393,7 +384,7 @@ export class ChatInstanceManager {
       } catch (error) {
         logger.warn(
           { error: String(error) },
-          "Failed to release exclusive connection claims on shutdown"
+					"Failed to release exclusive connection claims on shutdown",
         );
       }
       this.exclusiveOwned.clear();
@@ -406,10 +397,10 @@ export class ChatInstanceManager {
         } catch (error) {
           logger.error(
             { id: instance.connection.id, error: String(error) },
-            "Error shutting down connection"
+						"Error shutting down connection",
           );
         }
-      }
+			},
     );
     await Promise.allSettled(shutdownPromises);
     this.instances.clear();
@@ -421,7 +412,7 @@ export class ChatInstanceManager {
     config: PlatformAdapterConfig,
     settings?: ConnectionSettings,
     metadata: Record<string, any> = {},
-    stableId?: string
+		stableId?: string,
   ): Promise<PlatformConnection> {
     const descriptor = getPlatformDescriptor(platform);
     if (!descriptor && !isAdapterlessPlatform(platform)) {
@@ -429,7 +420,7 @@ export class ChatInstanceManager {
     }
     if (config.platform !== platform) {
       throw new Error(
-        `Config platform mismatch: expected ${platform}, got ${config.platform}`
+				`Config platform mismatch: expected ${platform}, got ${config.platform}`,
       );
     }
 
@@ -496,7 +487,7 @@ export class ChatInstanceManager {
       void this.exclusiveTick().catch((error) => {
         logger.warn(
           { id, error: String(error) },
-          "Exclusive tick after connection create failed"
+					"Exclusive tick after connection create failed",
         );
       });
       logger.info({ id, platform, agentId }, "Connection added (lease-owned)");
@@ -514,7 +505,7 @@ export class ChatInstanceManager {
       try {
         await deleteSecretsByPrefix(
           this.services.getSecretStore(),
-          `connections/${connection.id}/`
+					`connections/${connection.id}/`,
         );
       } catch {
         // best-effort
@@ -544,7 +535,7 @@ export class ChatInstanceManager {
     const historyDeleted = await conversationState.clearAllHistory(id);
     const secretsDeleted = await deleteSecretsByPrefix(
       this.services.getSecretStore(),
-      `connections/${id}/`
+			`connections/${id}/`,
     );
     await this.connectionStore.deleteConnection(id);
 
@@ -569,7 +560,7 @@ export class ChatInstanceManager {
    * (`slackinst-…`) the install store keys on.
    */
   async revokeManagedConnection(
-    connectionId: number
+		connectionId: number,
   ): Promise<{ revoked: true }> {
     const sql = getDb();
     const rows = await sql`
@@ -593,11 +584,11 @@ export class ChatInstanceManager {
       await deleteSlackInstall(
         this.services.getAppInstallationStore(),
         this.services.getSecretStore(),
-        row.slug
+				row.slug,
       );
     } else {
       throw new Error(
-        `Revoke not supported for connector "${row.connector_key}"`
+				`Revoke not supported for connector "${row.connector_key}"`,
       );
     }
 
@@ -609,7 +600,7 @@ export class ChatInstanceManager {
     `;
     logger.info(
       { connectionId, connectorKey: row.connector_key },
-      "Revoked managed connection"
+			"Revoked managed connection",
     );
     return { revoked: true };
   }
@@ -643,7 +634,7 @@ export class ChatInstanceManager {
       await this.writeConnectionStatus(
         stored,
         "error",
-        `Startup failed: ${getErrorMessage(error)}`
+				`Startup failed: ${getErrorMessage(error)}`,
       );
       throw error;
     }
@@ -679,7 +670,7 @@ export class ChatInstanceManager {
       config?: PlatformAdapterConfig;
       settings?: ConnectionSettings;
       metadata?: Record<string, any>;
-    }
+		},
   ): Promise<PlatformConnection> {
     const stored = await this.connectionStore.getConnection(id);
     if (!stored) throw new Error(`Connection ${id} not found`);
@@ -706,7 +697,7 @@ export class ChatInstanceManager {
     // create-time rejection.
     if (nextConfig !== undefined) {
       const rejection = getPlatformDescriptor(
-        connection.platform
+				connection.platform,
       )?.getConfigRejection?.(nextConfig as PlatformAdapterConfig);
       if (rejection) {
         throw new Error(rejection);
@@ -721,7 +712,7 @@ export class ChatInstanceManager {
       nextConfig !== undefined
         ? ((await this.resolveConfigForRuntime(
             id,
-            previousConfig as PlatformAdapterConfig
+						previousConfig as PlatformAdapterConfig,
           )) as Record<string, unknown>)
         : previousConfig;
 
@@ -780,7 +771,7 @@ export class ChatInstanceManager {
           await this.writeConnectionStatus(
             reread,
             "error",
-            `Startup failed: ${getErrorMessage(error)}`
+						`Startup failed: ${getErrorMessage(error)}`,
           );
           throw error;
         }
@@ -808,6 +799,42 @@ export class ChatInstanceManager {
     const conn = await this.connectionStore.getConnection(id);
     return conn ? this.sanitizeConnection(storedToPlatform(conn)) : null;
   }
+
+	/** Secret-aware idempotency check for declarative connection upserts. The
+	 * stored config contains secret refs, so callers cannot compare it safely
+	 * themselves without either leaking or spuriously rotating credentials. */
+	async connectionMatches(
+		id: string,
+		config: PlatformAdapterConfig,
+		settings: ConnectionSettings,
+		agentId?: string,
+	): Promise<boolean> {
+		const stored = await this.connectionStore.getConnection(id);
+		if (!stored) return false;
+		const connection = storedToPlatform(stored);
+		const resolved = await this.resolveConfigForRuntime(id, connection.config);
+		// Server-stamped keys (e.g. Telegram's auto-generated secretToken) exist
+		// only on the stored side; ignore them unless the declaration sets one.
+		const comparable: Record<string, unknown> = { ...resolved };
+		const stamped =
+			getPlatformDescriptor(connection.platform)?.serverStampedConfigKeys ?? [];
+		for (const key of stamped) {
+			if (!(key in config)) delete comparable[key];
+		}
+		return (
+			configsEqual(comparable, config) &&
+			configsEqual(connection.settings ?? {}, settings) &&
+			(connection.agentId ?? undefined) === (agentId ?? undefined)
+		);
+	}
+
+	/** Resolve stored secret refs for server-side credential validation. */
+	async resolveConnectionConfig(
+		id: string,
+		config: PlatformAdapterConfig,
+	): Promise<PlatformAdapterConfig> {
+		return this.resolveConfigForRuntime(id, config);
+	}
 
   has(id: string): boolean {
     return this.instances.has(id);
@@ -839,7 +866,7 @@ export class ChatInstanceManager {
   async postMessageToChannel(
     connectionId: string,
     channelKey: string,
-    content: AdapterPostableMessage
+		content: AdapterPostableMessage,
   ): Promise<void> {
     // Channel-level post is a thread-less postToConversation; the colon splits
     // `${platform}:${channelId}`. One post path, no duplicated resolution.
@@ -880,13 +907,13 @@ export class ChatInstanceManager {
        * send_message; a one-off notify does NOT subscribe.
        */
       subscribe?: boolean;
-    }
+		},
   ): Promise<{ messageId: string; threadId: string }> {
     const running = await this.ensureConnectionRunning(connectionId);
     const instance = running ? this.instances.get(connectionId) : undefined;
     if (!instance) {
       throw new Error(
-        `No active chat instance for connection ${connectionId} (could not start it on this pod)`
+				`No active chat instance for connection ${connectionId} (could not start it on this pod)`,
       );
     }
     const target = await resolveChatTarget(instance.chat, opts.platform, {
@@ -896,7 +923,7 @@ export class ChatInstanceManager {
     });
     if (!target) {
       throw new Error(
-        `Could not resolve target ${opts.channelKey}${opts.threadId ? ` (thread ${opts.threadId})` : ""} for connection ${connectionId}`
+				`Could not resolve target ${opts.channelKey}${opts.threadId ? ` (thread ${opts.threadId})` : ""} for connection ${connectionId}`,
       );
     }
     let sent: { id?: unknown; threadId?: unknown };
@@ -913,11 +940,15 @@ export class ChatInstanceManager {
       if (!opts.threadId) throw err;
       logger.debug(
         { connectionId, threadId: opts.threadId, err: String(err) },
-        "threaded post failed; retrying at channel level"
+				"threaded post failed; retrying at channel level",
       );
-      const channelTarget = await resolveChatTarget(instance.chat, opts.platform, {
+			const channelTarget = await resolveChatTarget(
+				instance.chat,
+				opts.platform,
+				{
         channelId: opts.channelId,
-      });
+				},
+			);
       if (!channelTarget) throw err;
       sent = (await channelTarget.post(opts.content)) as {
         id?: unknown;
@@ -939,27 +970,29 @@ export class ChatInstanceManager {
           : messageId;
       const subThreadId =
         opts.threadId ??
-        (rootRef
-          ? `${opts.platform}:${opts.channelId}:${rootRef}`
-          : undefined);
+				(rootRef ? `${opts.platform}:${opts.channelId}:${rootRef}` : undefined);
       // subscribe() lives on the Chat SDK Thread, NOT on Chat — resolve the
       // thread first (same as the inbound mention/dm path) and subscribe on it.
       // A channel-level target (e.g. a threadless Telegram DM) has no
       // subscribe(), so the guard makes it a no-op there.
       if (subThreadId) {
         try {
-          const thread = (await resolveChatTarget(instance.chat, opts.platform, {
+					const thread = (await resolveChatTarget(
+						instance.chat,
+						opts.platform,
+						{
             channelId: opts.channelId,
             conversationId: subThreadId,
             responseThreadId: subThreadId,
-          })) as { subscribe?: () => Promise<void> } | null;
+						},
+					)) as { subscribe?: () => Promise<void> } | null;
           if (thread && typeof thread.subscribe === "function") {
             await thread.subscribe();
           }
         } catch (err) {
           logger.debug(
             { connectionId, subThreadId, err: String(err) },
-            "thread auto-subscribe failed (non-fatal)"
+						"thread auto-subscribe failed (non-fatal)",
           );
         }
       }
@@ -982,7 +1015,7 @@ export class ChatInstanceManager {
     const instance = this.instances.get(connectionId);
     if (!instance) {
       throw new Error(
-        `No active chat instance for connection ${connectionId} (could not start it on this pod)`
+				`No active chat instance for connection ${connectionId} (could not start it on this pod)`,
       );
     }
     return instance;
@@ -991,7 +1024,12 @@ export class ChatInstanceManager {
   /** Add or remove an emoji reaction on a specific message. */
   async reactToMessage(
     connectionId: string,
-    opts: { threadId: string; messageId: string; emoji: string; remove?: boolean }
+		opts: {
+			threadId: string;
+			messageId: string;
+			emoji: string;
+			remove?: boolean;
+		},
   ): Promise<void> {
     await this.ensureConnectionRunning(connectionId);
     const instance = this.requireRunningInstance(connectionId);
@@ -1006,7 +1044,7 @@ export class ChatInstanceManager {
   /** Replace the text of a message the bot previously sent. */
   async editMessage(
     connectionId: string,
-    opts: { threadId: string; messageId: string; text: string }
+		opts: { threadId: string; messageId: string; text: string },
   ): Promise<void> {
     await this.ensureConnectionRunning(connectionId);
     const instance = this.requireRunningInstance(connectionId);
@@ -1018,7 +1056,7 @@ export class ChatInstanceManager {
   /** Delete a message the bot previously sent. */
   async deleteMessage(
     connectionId: string,
-    opts: { threadId: string; messageId: string }
+		opts: { threadId: string; messageId: string },
   ): Promise<void> {
     await this.ensureConnectionRunning(connectionId);
     const instance = this.requireRunningInstance(connectionId);
@@ -1038,7 +1076,7 @@ export class ChatInstanceManager {
   async getLiveConversationHistory(
     connectionId: string,
     channelKey: string,
-    limit: number
+		limit: number,
   ): Promise<{
     messages: Array<{
       timestamp: string;
@@ -1051,7 +1089,7 @@ export class ChatInstanceManager {
     const instance = running ? this.instances.get(connectionId) : undefined;
     if (!instance) {
       throw new Error(
-        `No active chat instance for connection ${connectionId} (could not start it on this pod)`
+				`No active chat instance for connection ${connectionId} (could not start it on this pod)`,
       );
     }
     const collected: Array<{
@@ -1093,7 +1131,7 @@ export class ChatInstanceManager {
         (await instance.conversationState?.getEntries(
           connectionId,
           channelId,
-          channelId
+					channelId,
         )) ?? [];
       for (const e of entries.slice(-limit)) {
         if (!e.content) continue;
@@ -1119,7 +1157,7 @@ export class ChatInstanceManager {
       return instance.conversationState.listHistoryChannels(connectionId);
     }
     const conversationState = new ConversationStateStore(
-      await this.createStateAdapter()
+			await this.createStateAdapter(),
     );
     return conversationState.listHistoryChannels(connectionId);
   }
@@ -1135,29 +1173,34 @@ export class ChatInstanceManager {
   async handleIngestWebhook(
     connectionId: string,
     request: Request,
-    peerAddress?: string | null
+		peerAddress?: string | null,
   ): Promise<Response> {
     // A stopped row is deliberately off — refuse deliveries exactly like a
     // stopped chat connection (whose instance would not be running). Error
     // status stays accepting: webhook connections have no startup that can
     // fail, and a stray error row should not silently drop deliveries.
     const stored = await this.connectionStore.getConnection(connectionId);
-    if (!stored || stored.platform !== "webhook" || stored.status === "stopped") {
+		if (
+			!stored ||
+			stored.platform !== "webhook" ||
+			stored.status === "stopped"
+		) {
       // A chat-connection miss may still be a CONNECTOR connection (a data
       // connector row in `connections`, credential_mode NULL) that registered a
       // provider webhook at connect time. Resolve that row, build a synthetic
       // webhook config from
       // its stored scheme + secret, and run the SAME ingest handler — so HMAC
       // verification, size cap, rate limits, and dedupe all apply unchanged.
-      const bridged = await this.resolveConnectorWebhookConnection(connectionId);
+			const bridged =
+				await this.resolveConnectorWebhookConnection(connectionId);
       if (bridged) {
         return orgContext.run({ organizationId: bridged.organizationId! }, () =>
           handleWebhookIngest(
             bridged,
             request,
             this.services.getSecretStore(),
-            peerAddress
-          )
+						peerAddress,
+					),
         );
       }
       return new Response(JSON.stringify({ error: "Connection not found" }), {
@@ -1171,7 +1214,7 @@ export class ChatInstanceManager {
         stored,
         request,
         this.services.getSecretStore(),
-        peerAddress
+				peerAddress,
       );
     }
     return orgContext.run({ organizationId: stored.organizationId }, () =>
@@ -1179,8 +1222,8 @@ export class ChatInstanceManager {
         stored,
         request,
         this.services.getSecretStore(),
-        peerAddress
-      )
+				peerAddress,
+			),
     );
   }
 
@@ -1200,7 +1243,7 @@ export class ChatInstanceManager {
    * webhook — the caller then 404s rather than accepting an unsigned delivery.
    */
   private async resolveConnectorWebhookConnection(
-    connectionId: string
+		connectionId: string,
   ): Promise<StoredConnection | null> {
     // Connector connection ids are bigints; a non-numeric id can't match.
     if (!/^\d+$/.test(connectionId)) return null;
@@ -1243,7 +1286,7 @@ export class ChatInstanceManager {
 
   async handleWebhook(
     connectionId: string,
-    request: Request
+		request: Request,
   ): Promise<Response> {
     // Multi-replica: hydration is per-request and row-versioned. Any replica
     // can receive any connection's webhook (the LB sprays platform deliveries
@@ -1276,7 +1319,7 @@ export class ChatInstanceManager {
     if (!webhookHandler) {
       logger.warn(
         { connectionId, platform },
-        "No webhook handler found for platform"
+				"No webhook handler found for platform",
       );
       return new Response("No webhook handler", { status: 404 });
     }
@@ -1286,7 +1329,7 @@ export class ChatInstanceManager {
     } catch (error) {
       logger.error(
         { connectionId, platform, error: String(error) },
-        "Webhook handling failed"
+				"Webhook handling failed",
       );
       return new Response("Internal error", { status: 500 });
     }
@@ -1297,7 +1340,7 @@ export class ChatInstanceManager {
   }
 
   async findSlackConnectionByTeamId(
-    teamId: string
+		teamId: string,
   ): Promise<PlatformConnection | null> {
     return this.slackCoordinator.findConnectionByTeamId(teamId);
   }
@@ -1317,7 +1360,7 @@ export class ChatInstanceManager {
     provider: string,
     request: Request,
     redirectUri: string | undefined,
-    organizationId: string
+		organizationId: string,
   ): Promise<{
     teamId: string;
     teamName?: string;
@@ -1327,11 +1370,11 @@ export class ChatInstanceManager {
       return this.slackCoordinator.completeOAuthInstall(
         request,
         redirectUri,
-        organizationId
+				organizationId,
       );
     }
     throw new Error(
-      `No chat coordinator registered for app-install provider "${provider}"`
+			`No chat coordinator registered for app-install provider "${provider}"`,
     );
   }
 
@@ -1344,13 +1387,13 @@ export class ChatInstanceManager {
    */
   async handleChatAppWebhook(
     provider: string,
-    request: Request
+		request: Request,
   ): Promise<Response> {
     if (provider === "slack") {
       return this.slackCoordinator.handleAppWebhook(request);
     }
     throw new Error(
-      `No chat coordinator registered for app-webhook provider "${provider}"`
+			`No chat coordinator registered for app-webhook provider "${provider}"`,
     );
   }
 
@@ -1383,7 +1426,7 @@ export class ChatInstanceManager {
     if (isAdapterlessPlatform(connection.platform)) {
       logger.debug(
         { id: connection.id, platform: connection.platform },
-        "Adapterless platform — persisted only, no chat instance to start"
+				"Adapterless platform — persisted only, no chat instance to start",
       );
       return;
     }
@@ -1401,7 +1444,7 @@ export class ChatInstanceManager {
     // the connection's row).
     if (connection.organizationId) {
       return orgContext.run({ organizationId: connection.organizationId }, () =>
-        this.startInstanceUnscoped(connection)
+				this.startInstanceUnscoped(connection),
       );
     }
     // Pre-org-scoping rows (legacy connections without organizationId)
@@ -1411,7 +1454,7 @@ export class ChatInstanceManager {
   }
 
   private async startInstanceUnscoped(
-    connection: PlatformConnection
+		connection: PlatformConnection,
   ): Promise<void> {
     try {
       // Resolve any `secret://` refs in the connection config to plaintext
@@ -1421,7 +1464,7 @@ export class ChatInstanceManager {
       // resolver leaves non-ref values alone.
       connection.config = await this.resolveConfigForRuntime(
         connection.id,
-        connection.config
+				connection.config,
       );
 
       // Backfill a webhook verification secret for connections persisted
@@ -1456,7 +1499,7 @@ export class ChatInstanceManager {
         connection,
         this.services,
         this,
-        commandDispatcher
+				commandDispatcher,
       );
       registerSlackPlatformHandlers(chat, connection, commandDispatcher);
       registerSlackAppHome(chat, connection, {
@@ -1476,7 +1519,7 @@ export class ChatInstanceManager {
       // Set webhook URL if applicable
       const mode =
         getPlatformDescriptor(connection.platform)?.resolveWebhookMode?.(
-          connection.config
+					connection.config,
         ) ?? "auto";
       const useWebhook =
         mode === "webhook" || (mode === "auto" && !!this.publicGatewayUrl);
@@ -1491,7 +1534,7 @@ export class ChatInstanceManager {
           // a previous deploy or manual configuration).
           logger.warn(
             { id: connection.id, error: String(error) },
-            "Webhook registration failed, continuing without it"
+						"Webhook registration failed, continuing without it",
           );
         }
       }
@@ -1550,7 +1593,7 @@ export class ChatInstanceManager {
         connection,
         chat,
         this.services.getGrantStore(),
-        mcpProxy?.executeToolDirect.bind(mcpProxy)
+				mcpProxy?.executeToolDirect.bind(mcpProxy),
       );
       this.instances.get(connection.id)!.interactionCleanup =
         interactionCleanup;
@@ -1559,20 +1602,20 @@ export class ChatInstanceManager {
       this.registerPlatformCommands(connection).catch((err) => {
         logger.warn(
           { id: connection.id, error: String(err) },
-          "Failed to register platform commands"
+					"Failed to register platform commands",
         );
       });
 
       logger.info(
         { id: connection.id, platform: connection.platform },
-        "Chat instance started"
+				"Chat instance started",
       );
     } catch (error) {
       connection.status = "error";
       connection.errorMessage = String(error);
       logger.error(
         { id: connection.id, error: String(error) },
-        "Failed to start Chat instance"
+				"Failed to start Chat instance",
       );
       throw error;
     }
@@ -1593,7 +1636,7 @@ export class ChatInstanceManager {
    * the hook.
    */
   private async ensurePlatformWebhookSecret(
-    connection: PlatformConnection
+		connection: PlatformConnection,
   ): Promise<void> {
     const descriptor = getPlatformDescriptor(connection.platform);
     if (!descriptor?.ensureWebhookSecret) return;
@@ -1611,7 +1654,7 @@ export class ChatInstanceManager {
    * rejects unused private members.)
    */
   async ensureTelegramWebhookSecret(
-    connection: PlatformConnection
+		connection: PlatformConnection,
   ): Promise<void> {
     return this.ensurePlatformWebhookSecret(connection);
   }
@@ -1627,11 +1670,11 @@ export class ChatInstanceManager {
    */
   private async configurePlatformWebhook(
     connection: PlatformConnection,
-    webhookUrl: string
+		webhookUrl: string,
   ): Promise<void> {
     await getPlatformDescriptor(connection.platform)?.configureWebhook?.(
       connection,
-      webhookUrl
+			webhookUrl,
     );
   }
 
@@ -1640,7 +1683,7 @@ export class ChatInstanceManager {
    * descriptor hook (today only Telegram implements it — setMyCommands).
    */
   private async registerPlatformCommands(
-    connection: PlatformConnection
+		connection: PlatformConnection,
   ): Promise<void> {
     const commands = this.services
       .getCommandRegistry()
@@ -1652,7 +1695,7 @@ export class ChatInstanceManager {
 
     await getPlatformDescriptor(connection.platform)?.registerCommands?.(
       connection,
-      commands
+			commands,
     );
   }
 
@@ -1668,60 +1711,9 @@ export class ChatInstanceManager {
     });
   }
 
-  /**
-   * Resolve the `StoredConnection` for `id` from the right source. Most ids are
-   * BYO `connections` chat rows; ids in the Slack-installation namespace
-   * (`slackinst-…`) are OAuth workspace installs stored as `app_installations`
-   * rows (provider=slack), surfaced as agentless connection-shaped rows so the
-   * existing hydration / instance-memo / webhook machinery runs them unchanged
-   * (the runtime never needs an owning agent — routing is per-message via
-   * bindings). The `slackinst-` id is the install's stable external id; it stays
-   * the secret-store prefix + memo/routing key, so it is resolved via the Slack
-   * install projection over the generic store rather than the bigint PK.
-   */
+	/** Resolve a chat connection exclusively from the unified connections row. */
   private async resolveStored(id: string): Promise<StoredConnection | null> {
-    // Read cutover (connections-unify Stage 2a): prefer the unified `connections`
-    // projection. The connection store resolves BOTH BYO (slug
-    // `agentconn-<id>`) AND managed Slack installs (slug = the `slackinst-…` id)
-    // from `connections` by slug — the sole source of truth — so a single store
-    // read covers both.
-    if (this.connectionStore) {
-      const fromConnections = await this.connectionStore.getConnection(id);
-      if (fromConnections) return fromConnections;
-    }
-
-    // Legacy fallback for a managed install not yet projected into `connections`
-    // (created before this deploy, or a crash between the app_installations
-    // upsert and its projection write). Maps the app_installations row to the
-    // agentless connection shape the runtime expects.
-    if (id.startsWith(SLACK_INSTALLATION_ID_PREFIX)) {
-      const inst = await getSlackInstallById(
-        this.services.getAppInstallationStore(),
-        id
-      );
-      if (!inst) return null;
-      logger.info(
-        { id },
-        "connections projection miss; resolved Slack install from app_installations"
-      );
-      return {
-        id: inst.id,
-        platform: "slack",
-        agentId: undefined,
-        organizationId: inst.organizationId,
-        config: inst.config as Record<string, any>,
-        settings: { allowGroups: true },
-        metadata: {
-          teamId: inst.teamId,
-          ...(inst.teamName ? { teamName: inst.teamName } : {}),
-          ...(inst.botUserId ? { botUserId: inst.botUserId } : {}),
-        },
-        status: inst.status,
-        createdAt: inst.createdAt,
-        updatedAt: inst.updatedAt,
-      };
-    }
-    return null;
+		return this.connectionStore?.getConnection(id) ?? null;
   }
 
   /**
@@ -1762,12 +1754,12 @@ export class ChatInstanceManager {
     } catch (error) {
       logger.error(
         { id, error: String(error) },
-        "Failed to hydrate connection"
+				"Failed to hydrate connection",
       );
       await this.writeConnectionStatus(
         stored,
         "error",
-        `Startup failed: ${getErrorMessage(error)}`
+				`Startup failed: ${getErrorMessage(error)}`,
       );
       return false;
     }
@@ -1794,9 +1786,9 @@ export class ChatInstanceManager {
     // EVERY start path here — request hydration, the claim runner, restart —
     // so a persisted refused config can never run, matching the create-time
     // rejection in addConnection().
-    const rejection = getPlatformDescriptor(stored.platform)?.getConfigRejection?.(
-      stored.config as PlatformAdapterConfig
-    );
+		const rejection = getPlatformDescriptor(
+			stored.platform,
+		)?.getConfigRejection?.(stored.config as PlatformAdapterConfig);
     if (rejection) {
       throw new Error(rejection);
     }
@@ -1806,7 +1798,7 @@ export class ChatInstanceManager {
     const instance = this.instances.get(stored.id);
     if (!instance) {
       throw new Error(
-        `Instance for connection ${stored.id} did not register after start`
+				`Instance for connection ${stored.id} did not register after start`,
       );
     }
     // startInstance may backfill metadata (e.g. botUsername/botUserId on first
@@ -1837,23 +1829,12 @@ export class ChatInstanceManager {
       "id" | "organizationId" | "status" | "errorMessage"
     >,
     status: "active" | "error",
-    errorMessage: string | undefined
+		errorMessage: string | undefined,
   ): Promise<void> {
     if (
       row.status === status &&
       (row.errorMessage ?? undefined) === errorMessage
     ) {
-      return;
-    }
-    // OAuth workspace installs are backed by `app_installations` (provider=slack),
-    // not a BYO `connections` chat row; their runtime status isn't tracked there
-    // (token-health
-    // is a deferred concern). Log and skip — the hydration error is already logged.
-    if (row.id.startsWith(SLACK_INSTALLATION_ID_PREFIX)) {
-      logger.warn(
-        { id: row.id, status, errorMessage },
-        "Skipping status write for Slack installation-backed instance"
-      );
       return;
     }
     const write = () =>
@@ -1867,7 +1848,7 @@ export class ChatInstanceManager {
     } catch (error) {
       logger.error(
         { id: row.id, error: String(error) },
-        "Failed to write connection status"
+				"Failed to write connection status",
       );
     }
   }
@@ -1876,7 +1857,7 @@ export class ChatInstanceManager {
     return (
       getPlatformDescriptor(stored.platform)?.requiresExclusiveStart?.(
         stored.config as PlatformAdapterConfig,
-        { publicGatewayUrl: this.publicGatewayUrl }
+				{ publicGatewayUrl: this.publicGatewayUrl },
       ) ?? false
     );
   }
@@ -1896,7 +1877,7 @@ export class ChatInstanceManager {
       void this.exclusiveTick().catch((error) => {
         logger.warn(
           { error: String(error) },
-          "Exclusive connection tick failed"
+					"Exclusive connection tick failed",
         );
       });
     }, EXCLUSIVE_TICK_MS);
@@ -1905,7 +1886,7 @@ export class ChatInstanceManager {
     void this.exclusiveTick().catch((error) => {
       logger.warn(
         { error: String(error) },
-        "Initial exclusive connection tick failed"
+				"Initial exclusive connection tick failed",
       );
     });
   }
@@ -1951,7 +1932,7 @@ export class ChatInstanceManager {
       } catch (error) {
         logger.warn(
           { id: s.id, error: String(error) },
-          "Exclusive claim attempt failed"
+					"Exclusive claim attempt failed",
         );
         if (this.exclusiveOwned.has(s.id)) {
           // Fail closed: we can't prove the lease is still ours (claims
@@ -1999,7 +1980,7 @@ export class ChatInstanceManager {
       } catch (error) {
         logger.error(
           { id: s.id, error: String(error) },
-          "Failed to start exclusive connection"
+					"Failed to start exclusive connection",
         );
         // Write the error STATUS only on the FIRST failure for this config
         // version. On a backed-off retry we deliberately do NOT re-write it:
@@ -2013,7 +1994,7 @@ export class ChatInstanceManager {
           await this.writeConnectionStatus(
             s,
             "error",
-            `Startup failed: ${getErrorMessage(error)}`
+						`Startup failed: ${getErrorMessage(error)}`,
           );
         }
         // Schedule a bounded, exponentially-backed-off retry. The first-failure
@@ -2032,7 +2013,7 @@ export class ChatInstanceManager {
         const attempts = prior + 1;
         const backoff = Math.min(
           EXCLUSIVE_FAILURE_BASE_BACKOFF_MS * 2 ** (attempts - 1),
-          EXCLUSIVE_FAILURE_MAX_BACKOFF_MS
+					EXCLUSIVE_FAILURE_MAX_BACKOFF_MS,
         );
         this.exclusiveFailures.set(s.id, {
           rowVersion,
@@ -2073,7 +2054,7 @@ export class ChatInstanceManager {
     } catch (error) {
       logger.warn(
         { id: connectionId, error: String(error) },
-        "Failed to release exclusive claim"
+				"Failed to release exclusive claim",
       );
     }
   }
@@ -2092,7 +2073,7 @@ export class ChatInstanceManager {
     } catch (error) {
       logger.warn(
         { id: connectionId, error: String(error) },
-        "Failed to delete exclusive claim on connection removal"
+				"Failed to delete exclusive claim on connection removal",
       );
     }
   }
@@ -2128,9 +2109,9 @@ export class ChatInstanceManager {
       }
       result.checked += 1;
 
-      const rejection = getPlatformDescriptor(
-        s.platform
-      )?.getConfigRejection?.(s.config as PlatformAdapterConfig);
+			const rejection = getPlatformDescriptor(s.platform)?.getConfigRejection?.(
+				s.config as PlatformAdapterConfig,
+			);
       if (rejection) {
         if (s.status !== "error") {
           // Prefixed like every sweep-written error so a later sweep can
@@ -2139,7 +2120,7 @@ export class ChatInstanceManager {
           await this.writeConnectionStatus(
             s,
             "error",
-            `Health check failed: ${rejection}`
+						`Health check failed: ${rejection}`,
           );
           result.errored += 1;
         }
@@ -2173,7 +2154,7 @@ export class ChatInstanceManager {
           await this.writeConnectionStatus(
             s,
             "error",
-            `Health check failed: ${getErrorMessage(error)}`
+						`Health check failed: ${getErrorMessage(error)}`,
           );
           result.errored += 1;
         }
@@ -2183,14 +2164,14 @@ export class ChatInstanceManager {
   }
 
   private async persistConnection(
-    connection: PlatformConnection
+		connection: PlatformConnection,
   ): Promise<void> {
     // Move plaintext secrets into the SecretStoreRegistry and store only
     // the returned `secret://` refs in the row's config JSON. Idempotent
     // — already-ref values pass through untouched.
     const persistedConfig = await this.normalizeConfigForStorage(
       connection.id,
-      connection.config
+			connection.config,
     );
     await this.connectionStore.saveConnection({
       ...connection,
@@ -2205,7 +2186,7 @@ export class ChatInstanceManager {
    */
   private async normalizeConfigForStorage(
     connectionId: string,
-    config: PlatformAdapterConfig
+		config: PlatformAdapterConfig,
   ): Promise<PlatformAdapterConfig> {
     const normalized = { ...config } as Record<string, unknown>;
     const secretStore = this.services.getSecretStore();
@@ -2217,7 +2198,7 @@ export class ChatInstanceManager {
       normalized[field] = await persistSecretValue(
         secretStore,
         `connections/${connectionId}/${field}`,
-        value
+				value,
       );
     }
 
@@ -2232,7 +2213,7 @@ export class ChatInstanceManager {
    */
   private async resolveConfigForRuntime(
     connectionId: string,
-    config: PlatformAdapterConfig
+		config: PlatformAdapterConfig,
   ): Promise<PlatformAdapterConfig> {
     const resolved = { ...config } as Record<string, unknown>;
     const secretStore = this.services.getSecretStore();
@@ -2245,7 +2226,7 @@ export class ChatInstanceManager {
       const secretValue = await resolveSecretValue(secretStore, value);
       if (secretValue === undefined) {
         throw new Error(
-          `Failed to resolve secret ref for connection ${connectionId} field "${field}"`
+					`Failed to resolve secret ref for connection ${connectionId} field "${field}"`,
         );
       }
       resolved[field] = secretValue;
@@ -2256,7 +2237,7 @@ export class ChatInstanceManager {
 
   /** Return connection with secrets redacted for API responses. */
   private sanitizeConnection(
-    connection: PlatformConnection
+		connection: PlatformConnection,
   ): PlatformConnection {
     const sanitized = {
       ...connection,
@@ -2281,7 +2262,7 @@ export class ChatInstanceManager {
    */
   createPlatformAdapters(): PlatformAdapter[] {
     return Object.keys(PLATFORM_REGISTRY).map((name) =>
-      this.createPlatformAdapter(name)
+			this.createPlatformAdapter(name),
     );
   }
 
@@ -2312,7 +2293,7 @@ export class ChatInstanceManager {
           conversationId?: string;
           teamId: string;
           files?: Array<{ buffer: Buffer; filename: string }>;
-        }
+				},
       ) => this.routePlatformMessage(name, token, message, options),
       getFileHandler: (options) => this.getPlatformFileHandler(name, options),
       ...(descriptor?.getInstructionProvider
@@ -2331,7 +2312,7 @@ export class ChatInstanceManager {
       channelId?: string;
       conversationId?: string;
       teamId?: string;
-    }
+		},
   ): IFileHandler | undefined {
     const instance = this.resolveFileHandlerInstance(name, options);
     if (!instance) {
@@ -2348,7 +2329,7 @@ export class ChatInstanceManager {
       channelId?: string;
       conversationId?: string;
       teamId?: string;
-    }
+		},
   ): ManagedInstance | undefined {
     if (options?.connectionId) {
       const directInstance = this.instances.get(options.connectionId);
@@ -2384,7 +2365,7 @@ export class ChatInstanceManager {
       conversationId?: string;
       teamId: string;
       files?: Array<{ buffer: Buffer; filename: string }>;
-    }
+		},
   ): Promise<{
     messageId: string;
     eventsUrl?: string;
@@ -2392,14 +2373,14 @@ export class ChatInstanceManager {
   }> {
     if (options.files?.length) {
       throw new Error(
-        `Platform "${name}" does not support file uploads via Chat SDK routing yet`
+				`Platform "${name}" does not support file uploads via Chat SDK routing yet`,
       );
     }
 
     const connection = await this.selectConnectionForPlatform(
       name,
       options.channelId,
-      options.teamId
+			options.teamId,
     );
     if (!connection) {
       throw new Error(`No active ${name} connection is available`);
@@ -2416,7 +2397,7 @@ export class ChatInstanceManager {
     const agentOptions = await resolveAgentOptions(
       options.agentId,
       {},
-      agentSettingsStore
+			agentSettingsStore,
     );
 
     await sessionManager.setSession({
@@ -2461,7 +2442,7 @@ export class ChatInstanceManager {
     });
 
     logger.info(
-      `Queued platform message via ${name}: agentId=${options.agentId}, channelId=${options.channelId}, conversationId=${conversationId}, sessionId=${sessionId}`
+			`Queued platform message via ${name}: agentId=${options.agentId}, channelId=${options.channelId}, conversationId=${conversationId}, sessionId=${sessionId}`,
     );
 
     return {
@@ -2474,27 +2455,27 @@ export class ChatInstanceManager {
   private async selectConnectionForPlatform(
     name: string,
     channelId: string,
-    teamId?: string
+		teamId?: string,
   ): Promise<PlatformConnection | null> {
     // Select from rows, not warm instances: with lazy hydration a fresh pod
     // legitimately has zero instances while active connections exist. A warm
     // instance is preferred only as a tiebreaker (it served traffic here).
     const connections = await this.listConnections({ platform: name });
     const activeConnections = connections.filter(
-      (connection) => connection.status === "active"
+			(connection) => connection.status === "active",
     );
     if (activeConnections.length === 0) return null;
     if (activeConnections.length === 1) return activeConnections[0] || null;
 
     const teamMatch = activeConnections.find(
-      (connection) => connection.metadata?.teamId === teamId
+			(connection) => connection.metadata?.teamId === teamId,
     );
     if (teamMatch) return teamMatch;
 
     // Prefer a connection that already has history for this channel; the
     // state store is row-backed, so no warm instance is required to ask.
     const conversationState = new ConversationStateStore(
-      await this.createStateAdapter()
+			await this.createStateAdapter(),
     );
     for (const connection of activeConnections) {
       if (
@@ -2505,7 +2486,7 @@ export class ChatInstanceManager {
     }
 
     const warm = activeConnections.find((connection) =>
-      this.has(connection.id)
+			this.has(connection.id),
     );
     return warm ?? activeConnections[0] ?? null;
   }

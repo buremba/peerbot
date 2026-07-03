@@ -31,7 +31,6 @@ import { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import type { SettingsTokenPayload } from "../auth/settings/token-service.js";
 import {
-  createConnectionCrudRoutes,
   createConnectionWebhookRoutes,
 } from "../routes/public/connections.js";
 import { createAgentRoutes } from "../routes/public/agents.js";
@@ -328,30 +327,6 @@ describe("cross-org isolation: agents cannot leak across organizations", () => {
     expect(response.status).toBe(404);
   });
 
-  test("connection listing for another org's agent is forbidden", async () => {
-    // u-a owns agent-org-a; they request connections for agent-org-b
-    setAuthProvider(() =>
-      makeSession({ userId: "u-a", oauthUserId: "u-a" })
-    );
-
-    const app = createConnectionCrudRoutes(
-      {
-        async listConnections() { return []; },
-        async getConnection() { return null; },
-        has() { return false; },
-        getServices() { return { getQueue() { return {}; } }; },
-      } as any,
-      {
-        userAgentsStore: userAgentsStoreA,
-        agentMetadataStore: { getMetadata: (id: string) => agentMetadataStoreB.getMetadata(id) },
-      }
-    );
-
-    const response = await orgContext.run({ organizationId: ORG_B }, () =>
-      app.request("/api/v1/connections?agentId=agent-org-b")
-    );
-    expect(response.status).toBe(403);
-  });
 });
 
 // ─── 3. Agent CRUD access control ─────────────────────────────────────────────
@@ -582,149 +557,6 @@ describe("agent CRUD: access control and input validation", () => {
   });
 });
 
-// ─── 4. Connection CRUD access control ───────────────────────────────────────
-
-describe("connection routes: access control", () => {
-  let agentMetadataStore: AgentMetadataStore;
-  let userAgentsStore: UserAgentsStore;
-
-  beforeAll(async () => {
-    await ensureDbForGatewayTests();
-  });
-
-  beforeEach(async () => {
-    await resetTestDatabase();
-    agentMetadataStore = new AgentMetadataStore(createPostgresAgentConfigStore());
-    userAgentsStore = new UserAgentsStore();
-
-    await orgContext.run({ organizationId: ORG_A }, async () => {
-      await seedAgentRow("conn-agent", {
-        organizationId: ORG_A,
-        ownerPlatform: "external",
-        ownerUserId: "u1",
-      });
-      await userAgentsStore.addAgent("external", "u1", "conn-agent");
-    });
-  });
-
-  afterEach(() => {
-    setAuthProvider(null);
-  });
-
-  function buildConnectionApp() {
-    return createConnectionCrudRoutes(
-      {
-        async listConnections(filters?: any) {
-          if (filters?.agentId && filters.agentId !== "conn-agent") return [];
-          return [
-            {
-              id: "conn-1",
-              platform: "telegram",
-              agentId: "conn-agent",
-              config: { platform: "telegram" },
-              settings: {},
-              metadata: {},
-              status: "active",
-              createdAt: 1,
-              updatedAt: 1,
-            },
-          ];
-        },
-        async getConnection(id: string) {
-          if (id !== "conn-1") return null;
-          return {
-            id: "conn-1",
-            platform: "telegram",
-            agentId: "conn-agent",
-            config: { platform: "telegram" },
-            settings: {},
-            metadata: {},
-            status: "active",
-            createdAt: 1,
-            updatedAt: 1,
-          };
-        },
-        has() { return true; },
-        getServices() { return { getQueue() { return {}; } }; },
-      } as any,
-      {
-        userAgentsStore,
-        agentMetadataStore: { getMetadata: (id: string) => agentMetadataStore.getMetadata(id) },
-      }
-    );
-  }
-
-  test("GET /api/v1/connections without session returns 401", async () => {
-    // No auth provider set
-    const response = await orgContext.run({ organizationId: ORG_A }, () =>
-      buildConnectionApp().request("/api/v1/connections")
-    );
-    expect(response.status).toBe(401);
-  });
-
-  test("GET /api/v1/connections/:id without session returns 401", async () => {
-    const response = await orgContext.run({ organizationId: ORG_A }, () =>
-      buildConnectionApp().request("/api/v1/connections/conn-1")
-    );
-    expect(response.status).toBe(401);
-  });
-
-  test("non-admin session listing all connections (no agentId filter) returns 403", async () => {
-    setAuthProvider(() => makeSession({ userId: "u1" }));
-
-    const response = await orgContext.run({ organizationId: ORG_A }, () =>
-      buildConnectionApp().request("/api/v1/connections")
-    );
-    expect(response.status).toBe(403);
-  });
-
-  test("non-owner requesting connection for another agent is forbidden (403)", async () => {
-    setAuthProvider(() =>
-      makeSession({ userId: "attacker", oauthUserId: "attacker" })
-    );
-
-    const response = await orgContext.run({ organizationId: ORG_A }, () =>
-      buildConnectionApp().request("/api/v1/connections?agentId=conn-agent")
-    );
-    expect(response.status).toBe(403);
-  });
-
-  test("GET /api/v1/connections/:id returns 404 for unknown connection", async () => {
-    setAuthProvider(() =>
-      makeSession({ userId: "u1", oauthUserId: "u1" })
-    );
-
-    const response = await orgContext.run({ organizationId: ORG_A }, () =>
-      buildConnectionApp().request("/api/v1/connections/does-not-exist")
-    );
-    expect(response.status).toBe(404);
-  });
-
-  test("admin session can list all connections without agentId filter", async () => {
-    setAuthProvider(() =>
-      makeSession({ userId: "admin", isAdmin: true, settingsMode: "admin" })
-    );
-
-    const response = await orgContext.run({ organizationId: ORG_A }, () =>
-      buildConnectionApp().request("/api/v1/connections")
-    );
-    expect(response.status).toBe(200);
-  });
-
-  /**
-   * Regression: GET /internal/connections was previously registered with no
-   * auth middleware, enabling unauthenticated tenant enumeration. The route
-   * had no internal callers (the "Internal endpoint" comment was aspirational)
-   * so it was removed outright. This test pins the 404 to prevent re-introduction.
-   */
-  test("GET /internal/connections is not exposed (route removed)", async () => {
-    // No session set — completely unauthenticated
-    const response = await orgContext.run({ organizationId: ORG_A }, () =>
-      buildConnectionApp().request("/internal/connections")
-    );
-    expect(response.status).toBe(404);
-  });
-});
 
 // ─── 6. /lobu prefix routing ──────────────────────────────────────────────────
 

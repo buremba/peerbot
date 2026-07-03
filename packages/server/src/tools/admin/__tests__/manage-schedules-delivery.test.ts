@@ -7,8 +7,8 @@ import {
 } from "../../../gateway/__tests__/helpers/db-setup";
 import { runtimeConnectionIdToSlug } from "../../../lobu/stores/connections-projection";
 import { registerScheduledJobsTicker } from "../../../scheduled/scheduled-jobs-service";
-import { manageSchedules } from "../manage_schedules";
 import type { ToolContext } from "../../registry";
+import { manageSchedules } from "../manage_schedules";
 
 const ORG = "org-scheduled-delivery";
 const AGENT = "agent-scheduled-delivery";
@@ -81,11 +81,12 @@ describe("manage_schedules wake_agent chat delivery", () => {
         } as any,
       },
       {} as any,
-      ctx()
+			ctx(),
     );
 
     expect(result.error).toBeUndefined();
-    const rows = await getDb()`SELECT action_args, delivery_context FROM scheduled_jobs`;
+		const rows =
+			await getDb()`SELECT action_args, delivery_context FROM scheduled_jobs`;
     expect(rows).toHaveLength(1);
     expect(rows[0].action_args.delivery).toBeUndefined();
     expect(rows[0].delivery_context).toBeNull();
@@ -113,7 +114,7 @@ describe("manage_schedules wake_agent chat delivery", () => {
         conversationId: "slack:C-real:123",
         teamId: "T-real",
         userId: USER,
-      })
+			}),
     );
 
     expect(result.error).toBeUndefined();
@@ -147,12 +148,15 @@ describe("manage_schedules wake_agent chat delivery", () => {
         conversationId: "slack:C-real:123",
         teamId: "T-real",
         userId: USER,
-      })
+			}),
     );
     expect(result.error).toBeUndefined();
 
     const spawned: Array<{ name: string; payload: any; opts: any }> = [];
-    const handlers = new Map<string, (ctx: { payload: unknown; taskRunId: number }) => Promise<void>>();
+		const handlers = new Map<
+			string,
+			(ctx: { payload: unknown; taskRunId: number }) => Promise<void>
+		>();
     registerScheduledJobsTicker({
       register: (name: string, handler: any) => handlers.set(name, handler),
       spawn: async (name: string, payload: any, opts: any) => {
@@ -197,13 +201,15 @@ describe("manage_schedules wake_agent chat delivery", () => {
         conversationId: "slack:C-real:123",
         teamId: "T-real",
         userId: USER,
-      })
+			}),
     );
     expect(missingBinding.error).toMatch(/channel is not bound/);
 
     await getDb()`
-      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id)
-      VALUES (${ORG}, ${AGENT}, 'slack', 'C-real', 'T-real')
+      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
+      SELECT ${ORG}, ${AGENT}, 'slack', 'C-real', 'T-real', id
+      FROM connections
+      WHERE organization_id = ${ORG} AND slug = ${runtimeConnectionIdToSlug("slackinst-real")}
     `;
 
     const withBinding = await manageSchedules(
@@ -221,10 +227,11 @@ describe("manage_schedules wake_agent chat delivery", () => {
         conversationId: "slack:C-real:123",
         teamId: "T-real",
         userId: USER,
-      })
+			}),
     );
     expect(withBinding.error).toBeUndefined();
-    const rows = await getDb()`SELECT delivery_context FROM scheduled_jobs ORDER BY created_at DESC LIMIT 1`;
+		const rows =
+			await getDb()`SELECT delivery_context FROM scheduled_jobs ORDER BY created_at DESC LIMIT 1`;
     expect(rows[0].delivery_context.connectionId).toBe("slackinst-real");
   });
 
@@ -238,7 +245,7 @@ describe("manage_schedules wake_agent chat delivery", () => {
         payload: { type: "wake_agent", agent_id: AGENT, prompt: "digest" },
       } as any,
       {} as any,
-      ctx()
+			ctx(),
     );
     const id = (created as { schedule?: { id: string } }).schedule?.id;
     expect(id).toBeTruthy();
@@ -247,7 +254,7 @@ describe("manage_schedules wake_agent chat delivery", () => {
     const empty = await manageSchedules(
       { action: "update", id, cron: "" } as any,
       {} as any,
-      ctx()
+			ctx(),
     );
     expect(empty.error).toMatch(/cron/i);
 
@@ -255,10 +262,11 @@ describe("manage_schedules wake_agent chat delivery", () => {
     const cleared = await manageSchedules(
       { action: "update", id, cron: null } as any,
       {} as any,
-      ctx()
+			ctx(),
     );
     expect(cleared.error).toBeUndefined();
-    const rows = await getDb()`SELECT cron FROM scheduled_jobs WHERE id = ${id}`;
+		const rows =
+			await getDb()`SELECT cron FROM scheduled_jobs WHERE id = ${id}`;
     expect(rows[0].cron).toBeNull();
   });
 });

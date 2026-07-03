@@ -118,7 +118,7 @@ describe("connection-health sweep (boot-loop successor)", () => {
       getPublicGatewayUrl: () => "",
       getSecretStore: () => secretStore,
       getConnectionStore: () => connectionStore,
-      getChannelBindingService: () => ({ getBinding: async () => null, getBindingAnyOrg: async () => null }),
+      getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
       getCommandRegistry: () => undefined,
     } as any;
 
@@ -167,7 +167,7 @@ describe("connection-health sweep (boot-loop successor)", () => {
       getPublicGatewayUrl: () => "",
       getSecretStore: () => secretStore,
       getConnectionStore: () => connectionStore,
-      getChannelBindingService: () => ({ getBinding: async () => null, getBindingAnyOrg: async () => null }),
+      getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
       getCommandRegistry: () => undefined,
     } as any;
     wireManager(manager, services);
@@ -218,7 +218,7 @@ describe("connection-health sweep (boot-loop successor)", () => {
       getPublicGatewayUrl: () => "",
       getSecretStore: () => secretStore,
       getConnectionStore: () => connectionStore,
-      getChannelBindingService: () => ({ getBinding: async () => null, getBindingAnyOrg: async () => null }),
+      getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
       getCommandRegistry: () => undefined,
     } as any;
 
@@ -278,7 +278,7 @@ describe("connection-health sweep (boot-loop successor)", () => {
       getPublicGatewayUrl: () => "",
       getSecretStore: () => secretStore,
       getConnectionStore: () => connectionStore,
-      getChannelBindingService: () => ({ getBinding: async () => null, getBindingAnyOrg: async () => null }),
+      getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
       getCommandRegistry: () => undefined,
     } as any;
     manager.services = services;

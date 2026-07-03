@@ -56,7 +56,7 @@ async function buildReplica() {
     getPublicGatewayUrl: () => "",
     getSecretStore: () => secretStore,
     getConnectionStore: () => connectionStore,
-    getChannelBindingService: () => ({ getBinding: async () => null }),
+		getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
     getCommandRegistry: () => undefined,
   } as any;
 
@@ -86,7 +86,7 @@ async function seedTelegramPolling(
   connectionStore: any,
   orgId: string,
   agentId: string,
-  connectionId: string
+	connectionId: string,
 ): Promise<void> {
   const { orgContext } = await import("../../../lobu/stores/org-context.js");
   await seedAgentRow(agentId, { organizationId: orgId });
@@ -116,7 +116,12 @@ describe("connection_claims lease (exclusive transports)", () => {
     const { manager: a } = await buildReplica();
     const { manager: b, connectionStore } = await buildReplica();
 
-    await seedTelegramPolling(connectionStore, "org-lease", "agent-lease", "conn-poll");
+		await seedTelegramPolling(
+			connectionStore,
+			"org-lease",
+			"agent-lease",
+			"conn-poll",
+		);
 
     // Both replicas tick: exactly one must hold the instance.
     await a.exclusiveTick();
@@ -160,7 +165,7 @@ describe("connection_claims lease (exclusive transports)", () => {
       connectionStore,
       "org-transient",
       "agent-transient",
-      "conn-transient"
+			"conn-transient",
     );
 
     // First hydrate throws (Telegram 5xx / DB blip class) — this leaves the
@@ -195,7 +200,8 @@ describe("connection_claims lease (exclusive transports)", () => {
     // Simulate elapsed backoff WITHOUT any config/row edit: the time-based gate
     // must now allow re-hydration. (Old code keyed retry purely on updated_at,
     // so it would NEVER retry without a human edit — this is the regression.)
-    manager.exclusiveFailures.get("conn-transient").nextRetryAt = Date.now() - 1;
+		manager.exclusiveFailures.get("conn-transient").nextRetryAt =
+			Date.now() - 1;
     await manager.exclusiveTick();
     expect(calls).toBe(2);
     expect(manager.instances.has("conn-transient")).toBe(true);
@@ -209,7 +215,7 @@ describe("connection_claims lease (exclusive transports)", () => {
       connectionStore,
       "org-vary",
       "agent-vary",
-      "conn-vary"
+			"conn-vary",
     );
 
     // Every hydrate throws with a DIFFERENT message — real transient start
@@ -248,7 +254,7 @@ describe("connection_claims lease (exclusive transports)", () => {
       connectionStore,
       "org-rm",
       "agent-rm",
-      "conn-rm-claim"
+			"conn-rm-claim",
     );
 
     // Register a minimal instance whose conversationState is a no-op stub, so
@@ -273,7 +279,7 @@ describe("connection_claims lease (exclusive transports)", () => {
     // Remove the connection: the lease row must be gone (no FK cascade exists).
     const { orgContext } = await import("../../../lobu/stores/org-context.js");
     await orgContext.run({ organizationId: "org-rm" }, () =>
-      manager.removeConnection("conn-rm-claim")
+			manager.removeConnection("conn-rm-claim"),
     );
     const after = await getDb()`
       SELECT 1 FROM connection_claims WHERE connection_id = 'conn-rm-claim'
@@ -284,7 +290,12 @@ describe("connection_claims lease (exclusive transports)", () => {
   test("request paths never start an exclusive connection on a non-owner replica", async () => {
     const { manager: a } = await buildReplica();
     const { manager: b, connectionStore } = await buildReplica();
-    await seedTelegramPolling(connectionStore, "org-req", "agent-req", "conn-poll-2");
+		await seedTelegramPolling(
+			connectionStore,
+			"org-req",
+			"agent-req",
+			"conn-poll-2",
+		);
 
     await a.exclusiveTick();
     expect(a.instances.has("conn-poll-2")).toBe(true);
@@ -303,7 +314,7 @@ describe("row-versioned lazy hydration (webhook transports)", () => {
     connectionStore: any,
     orgId: string,
     agentId: string,
-    connectionId: string
+		connectionId: string,
   ): Promise<void> {
     const { orgContext } = await import("../../../lobu/stores/org-context.js");
     await seedAgentRow(agentId, { organizationId: orgId });
@@ -395,14 +406,14 @@ describe("updateConnection config rejection (parity with addConnection)", () => 
               botToken: "12345:fake",
               mode: "polling",
             },
-          })
-        )
+					}),
+				),
       ).rejects.toThrow(/Polling mode/);
 
       // The refused config must NOT have been persisted.
       const stored = await orgContext.run(
         { organizationId: "org-upd-rej" },
-        () => connectionStore.getConnection("conn-upd-rej")
+				() => connectionStore.getConnection("conn-upd-rej"),
       );
       expect((stored!.config as any).mode).toBe("webhook");
     } finally {
@@ -441,14 +452,14 @@ describe("updateConnection config rejection (parity with addConnection)", () => 
       orgContext.run({ organizationId: "org-upd-err" }, () =>
         manager.updateConnection("conn-upd-err", {
           config: { platform: "slack", botToken: "xoxb-broken" },
-        })
-      )
+				}),
+			),
     ).rejects.toThrow("adapter exploded");
 
     // The new config persisted (the edit isn't silently lost), but the row
     // must reflect that it cannot start — not sit `active` until next use.
     const stored = await orgContext.run({ organizationId: "org-upd-err" }, () =>
-      connectionStore.getConnection("conn-upd-err")
+			connectionStore.getConnection("conn-upd-err"),
     );
     expect(stored!.status).toBe("error");
     expect(stored!.errorMessage ?? "").toContain("adapter exploded");
@@ -514,87 +525,5 @@ describe("connections_active_chat_tenant (one active per workspace)", () => {
     });
     expect((await get("conn-uniq-2"))?.status).toBe("active");
     expect((await get("conn-uniq-4"))?.status).toBe("active");
-  });
-});
-
-describe("installation-backed instances (OAuth workspace, no owning agent)", () => {
-  test("a slackinst- id hydrates from the installation store as an agentless slack connection", async () => {
-    const { ChatInstanceManager } = await import(
-      "../chat-instance-manager.js"
-    );
-
-    // Stub the generic app-installation store; capture what the manager tries to
-    // hydrate. Slack installs are app_installations rows (provider=slack) — the
-    // stable `slackinst-` id lives in metadata.external_id, the bot token ref +
-    // tenant data in metadata.config / metadata.*.
-    const externalId = "slackinst-abc123";
-    const installRow = {
-      id: 7,
-      organizationId: "org-ws",
-      provider: "slack",
-      providerInstance: "cloud",
-      providerAppId: "cloud",
-      externalTenantId: "TWS1",
-      authProfileId: null,
-      status: "active" as const,
-      metadata: {
-        external_id: externalId,
-        team_name: "Acme",
-        bot_user_id: "UBOT",
-        config: { platform: "slack", botToken: "secret://ref" },
-      },
-      createdAt: 1,
-      updatedAt: 42,
-    };
-    const services = {
-      getPublicGatewayUrl: () => "",
-      getAppInstallationStore: () => ({
-        resolveByExternalId: async (provider: string, id: string) =>
-          provider === "slack" && id === externalId ? installRow : null,
-      }),
-    } as any;
-
-    const manager = new ChatInstanceManager() as any;
-    manager.services = services;
-    manager.publicGatewayUrl = "";
-    // No connectionStore — installs must resolve without one.
-
-    let hydrated: any = null;
-    manager.hydrateFromRow = async (stored: any) => {
-      hydrated = stored;
-      manager.instances.set(stored.id, {
-        connection: { id: stored.id, platform: stored.platform },
-        chat: {},
-        rowVersion: stored.updatedAt,
-      });
-    };
-
-    const ok = await manager.warmConnection("slackinst-abc123");
-    expect(ok).toBe(true);
-    expect(hydrated).not.toBeNull();
-    expect(hydrated.platform).toBe("slack");
-    expect(hydrated.agentId).toBeUndefined();
-    expect(hydrated.organizationId).toBe("org-ws");
-    expect(hydrated.config.botToken).toBe("secret://ref");
-    expect(hydrated.metadata.teamId).toBe("TWS1");
-    expect(hydrated.metadata.botUserId).toBe("UBOT");
-    // Row-version memo carries the installation's updated_at.
-    expect(manager.instances.get("slackinst-abc123").rowVersion).toBe(42);
-  });
-
-  test("an unknown slackinst- id does not start anything", async () => {
-    const { ChatInstanceManager } = await import(
-      "../chat-instance-manager.js"
-    );
-    const manager = new ChatInstanceManager() as any;
-    manager.services = {
-      getAppInstallationStore: () => ({
-        resolveByExternalId: async () => null,
-      }),
-    };
-    manager.hydrateFromRow = async () => {
-      throw new Error("should not hydrate an unknown installation");
-    };
-    expect(await manager.warmConnection("slackinst-missing")).toBe(false);
   });
 });

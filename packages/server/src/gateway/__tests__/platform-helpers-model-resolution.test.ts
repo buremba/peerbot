@@ -20,7 +20,7 @@ describe("resolveAgentOptions model resolution", () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
       { model: "fallback-model" },
-      settingsStore as any
+			settingsStore as any,
     );
 
     expect(resolved.model).toBe("openai/gpt-5");
@@ -47,7 +47,7 @@ describe("resolveAgentOptions model resolution", () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
       { model: "fallback-model" },
-      settingsStore as any
+			settingsStore as any,
     );
 
     expect(resolved.model).toBe("chatgpt/gpt-5");
@@ -67,7 +67,7 @@ describe("resolveAgentOptions model resolution", () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
       { model: "fallback-model" },
-      settingsStore as any
+			settingsStore as any,
     );
 
     expect(resolved.model).toBeUndefined();
@@ -98,7 +98,7 @@ describe("resolveAgentOptions model resolution", () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
       {},
-      settingsStore as any
+			settingsStore as any,
     );
 
     expect(resolved.pluginsConfig).toEqual({
@@ -141,7 +141,7 @@ describe("resolveAgentOptions model resolution", () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
       {},
-      settingsStore as any
+			settingsStore as any,
     );
 
     expect(resolved.pluginsConfig).toEqual({
@@ -180,7 +180,7 @@ describe("resolveAgentOptions model resolution", () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
       {},
-      settingsStore as any
+			settingsStore as any,
     );
 
     expect(resolved.pluginsConfig).toEqual({
@@ -211,15 +211,15 @@ describe("resolveAgentId", () => {
 
   test("existing binding wins over connection agent", async () => {
     const bindingService = {
-      getBinding: async (
-        platform: string,
+			getBindingForConnection: async (
+				connectionId: string,
         channelId: string,
-        teamId?: string
+				organizationId: string,
       ) => {
-        expect(platform).toBe("slack");
+				expect(connectionId).toBe("conn-1");
         expect(channelId).toBe("C1");
-        expect(teamId).toBe("T1");
-        return { agentId: "bound-agent", platform, channelId, teamId };
+				expect(organizationId).toBe("org-1");
+				return { agentId: "bound-agent", platform: "slack", channelId };
       },
     };
 
@@ -228,6 +228,8 @@ describe("resolveAgentId", () => {
       channelId: "C1",
       teamId: "T1",
       agentId: "connection-agent",
+			connectionId: "conn-1",
+			organizationId: "org-1",
       channelBindingService: bindingService as any,
     });
 
@@ -239,7 +241,7 @@ describe("resolveAgentId", () => {
 
   test("no binding + agentId routes to connection agent", async () => {
     const bindingService = {
-      getBinding: async () => null,
+			getBindingForConnection: async () => null,
     };
 
     const resolved = await resolveAgentId({
@@ -258,7 +260,7 @@ describe("resolveAgentId", () => {
 
   test("no binding + no connection agent returns null", async () => {
     const bindingService = {
-      getBinding: async () => null,
+			getBindingForConnection: async () => null,
     };
 
     const resolved = await resolveAgentId({
@@ -273,10 +275,7 @@ describe("resolveAgentId", () => {
 
   test("connection agent works on platforms without teamId (Telegram)", async () => {
     const bindingService = {
-      getBinding: async (_p: string, _c: string, teamId?: string) => {
-        expect(teamId).toBeUndefined();
-        return null;
-      },
+			getBindingForConnection: async () => null,
     };
 
     const resolved = await resolveAgentId({
@@ -295,7 +294,7 @@ describe("resolveAgentId", () => {
   test("resolver does NOT write bindings — pure side-effect-free", async () => {
     let createCount = 0;
     const bindingService = {
-      getBinding: async () => null,
+			getBindingForConnection: async () => null,
       createBinding: async () => {
         createCount += 1;
       },

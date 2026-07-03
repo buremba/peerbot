@@ -212,6 +212,14 @@ export const WebhookConfigSchema = z.object({
     }),
 });
 
+/** The HTTP Agent API surface (lobu-ai/lobu#1179). Adapterless: the row is
+ * persisted so the scaffolded `{ type: "rest", config: {} }` declaration
+ * reconciles under `lobu apply`, but no chat instance is ever created and no
+ * credentials exist. */
+export const RestConfigSchema = z.object({
+  platform: z.literal("rest"),
+});
+
 export const PlatformAdapterConfigSchema = z.discriminatedUnion("platform", [
   TelegramConfigSchema,
   SlackConfigSchema,
@@ -220,6 +228,7 @@ export const PlatformAdapterConfigSchema = z.discriminatedUnion("platform", [
   TeamsConfigSchema,
   GoogleChatConfigSchema,
   WebhookConfigSchema,
+  RestConfigSchema,
 ]);
 
 /** Derived from the discriminated union — no separate list to maintain. */

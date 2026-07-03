@@ -26,7 +26,10 @@
  * Slack-specific verify plugin.
  */
 
-import { type ConnectorDefinition, IntegrationConnector } from '@lobu/connector-sdk';
+import {
+	type ConnectorDefinition,
+	IntegrationConnector,
+} from "@lobu/connector-sdk";
 
 /**
  * Bot scopes the hosted Lobu Slack app requests (mentions, threads, slash
@@ -34,48 +37,48 @@ import { type ConnectorDefinition, IntegrationConnector } from '@lobu/connector-
  * `config/slack-app-manifest.self-install.json`'s `oauth_config.scopes.bot`.
  */
 const SLACK_BOT_SCOPES = [
-  'app_mentions:read',
-  'assistant:write',
-  'channels:history',
-  'channels:read',
-  'chat:write',
-  'chat:write.public',
-  'commands',
-  'files:read',
-  'files:write',
-  'groups:history',
-  'groups:read',
-  'im:history',
-  'im:read',
-  'im:write',
-  'mpim:history',
-  'mpim:read',
-  'reactions:read',
-  'reactions:write',
-  'users:read',
+	"app_mentions:read",
+	"assistant:write",
+	"channels:history",
+	"channels:read",
+	"chat:write",
+	"chat:write.public",
+	"commands",
+	"files:read",
+	"files:write",
+	"groups:history",
+	"groups:read",
+	"im:history",
+	"im:read",
+	"im:write",
+	"mpim:history",
+	"mpim:read",
+	"reactions:read",
+	"reactions:write",
+	"users:read",
 ];
 
 /** Bot events the hosted app subscribes to (manifest `bot_events`). */
 const SLACK_BOT_EVENTS = [
-  'app_home_opened',
-  'app_mention',
-  'member_joined_channel',
-  'message.channels',
-  'message.groups',
-  'message.im',
-  'message.mpim',
-  'team_join',
+	"app_home_opened",
+	"app_mention",
+	"member_joined_channel",
+	"message.channels",
+	"message.groups",
+	"message.im",
+	"message.mpim",
+	"team_join",
 ];
 
 export default class SlackConnector extends IntegrationConnector {
   readonly definition: ConnectorDefinition = {
-    key: 'slack',
-    kind: 'integration',
-    name: 'Slack',
+		key: "slack",
+		kind: "integration",
+		name: "Slack",
     description:
-      'Connect a Slack workspace to Lobu. Mention the bot, DM it, or run /lobu in any channel to drive a sandboxed agent.',
-    version: '1.0.0',
-    faviconDomain: 'slack.com',
+			"Connect a Slack workspace to Lobu. Mention the bot, DM it, or run /lobu in any channel to drive a sandboxed agent.",
+		version: "1.0.0",
+		faviconDomain: "slack.com",
     webhook: {
       // App-level delivery: one webhook is configured ONCE on the Slack app, and
       // inbound deliveries route via the shared `/api/v1/app-webhooks/slack`
@@ -83,46 +86,46 @@ export default class SlackConnector extends IntegrationConnector {
       // `v0:{timestamp}:{body}` compared against `x-slack-signature` (prefix
       // `v0=`), plus a 300s timestamp-freshness replay guard — the generic engine
       // verifies it with no Slack-specific code.
-      delivery: 'app_installation',
+			delivery: "app_installation",
       // Verified deliveries forward to the chat adapter (the routing chain in
       // SlackConnectionCoordinator), not the data-ingest path. The generic engine
       // dispatches on this, never on the `slack` name.
-      deliveryKind: 'chat',
-      signatureHeader: 'x-slack-signature',
-      algorithm: 'sha256',
-      signaturePrefix: 'v0=',
-      signingBaseTemplate: 'v0:{timestamp}:{body}',
-      timestampHeader: 'x-slack-request-timestamp',
+			deliveryKind: "chat",
+			signatureHeader: "x-slack-signature",
+			algorithm: "sha256",
+			signaturePrefix: "v0=",
+			signingBaseTemplate: "v0:{timestamp}:{body}",
+			timestampHeader: "x-slack-request-timestamp",
       freshnessSeconds: 300,
       // The team id sits in different places across Slack event shapes; first
       // match wins.
-      routingKeyPaths: ['team_id', 'team.id', 'event.team_id'],
+			routingKeyPaths: ["team_id", "team.id", "event.team_id"],
     },
     authSchema: {
       methods: [
         {
-          type: 'app_installation',
-          provider: 'slack',
-          providerInstance: 'cloud',
+					type: "app_installation",
+					provider: "slack",
+					providerInstance: "cloud",
           // "Add to Slack" is a standard OAuth code exchange: the gateway's
           // generic install engine mounts /slack/install + /slack/oauth_callback,
           // redirects to `authorizeUrl` with the client id + scopes, and on
           // callback exchanges the code at `tokenUrl`. The engine dispatches on
           // this shape, never on the `slack` name.
-          installShape: 'oauth-code-exchange',
-          authorizeUrl: 'https://slack.com/oauth/v2/authorize',
-          tokenUrl: 'https://slack.com/api/oauth.v2.access',
+					installShape: "oauth-code-exchange",
+					authorizeUrl: "https://slack.com/oauth/v2/authorize",
+					tokenUrl: "https://slack.com/api/oauth.v2.access",
           // The hosted Lobu Slack app's OAuth client (used for the "Add to Slack"
           // install handshake) + the signing secret used to verify inbound
           // events. Declared as env-var NAMES; the gateway resolves the values.
-          clientIdKey: 'SLACK_CLIENT_ID',
-          clientSecretKey: 'SLACK_CLIENT_SECRET',
-          webhookSecretKey: 'SLACK_SIGNING_SECRET',
+					clientIdKey: "SLACK_CLIENT_ID",
+					clientSecretKey: "SLACK_CLIENT_SECRET",
+					webhookSecretKey: "SLACK_SIGNING_SECRET",
           permissions: SLACK_BOT_SCOPES,
           events: SLACK_BOT_EVENTS,
           required: false,
           description:
-            'Install the Lobu app on your Slack workspace to grant the bot token. Routing to agents is per-channel via /lobu link.',
+						"Install the Lobu app on your Slack workspace to grant the bot token. Routing to agents is per-channel via /lobu link.",
         },
         {
           // "Sign in with Slack" (OpenID Connect). Fully self-describing: the
@@ -135,19 +138,43 @@ export default class SlackConnector extends IntegrationConnector {
           // (env-var NAMES; the gateway resolves the values). Signing in
           // auto-provisions the user's personal org + default agent via Better
           // Auth's `user.create` hook (OIDC `sub` → Slack user id); no data feed.
-          type: 'oauth',
-          provider: 'slack',
-          loginScopes: ['openid', 'email', 'profile'],
-          authorizationUrl: 'https://slack.com/openid/connect/authorize',
-          tokenUrl: 'https://slack.com/api/openid.connect.token',
-          userinfoUrl: 'https://slack.com/api/openid.connect.userInfo',
-          clientIdKey: 'SLACK_CLIENT_ID',
-          clientSecretKey: 'SLACK_CLIENT_SECRET',
+					type: "oauth",
+					provider: "slack",
+					loginScopes: ["openid", "email", "profile"],
+					authorizationUrl: "https://slack.com/openid/connect/authorize",
+					tokenUrl: "https://slack.com/api/openid.connect.token",
+					userinfoUrl: "https://slack.com/api/openid.connect.userInfo",
+					clientIdKey: "SLACK_CLIENT_ID",
+					clientSecretKey: "SLACK_CLIENT_SECRET",
           required: false,
           description:
-            'Sign in with Slack to create or access your Lobu account using your Slack identity.',
+						"Sign in with Slack to create or access your Lobu account using your Slack identity.",
+				},
+				{
+					type: "none",
+					label: "Use your own Slack app",
         },
       ],
     },
+		optionsSchema: {
+			type: "object",
+			"x-lobu-chat-platform": "slack",
+			properties: {
+				botToken: {
+					type: "string",
+					format: "password",
+					title: "Bot token",
+					description:
+						"The xoxb- token issued when you install your Slack app.",
+				},
+				signingSecret: {
+					type: "string",
+					format: "password",
+					title: "Signing secret",
+					description: "Used to verify every inbound Slack request.",
+				},
+			},
+			required: ["botToken", "signingSecret"],
+		},
   };
 }

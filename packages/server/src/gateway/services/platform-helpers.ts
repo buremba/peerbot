@@ -20,7 +20,7 @@ const LOBU_PLUGIN_SOURCE = "@lobu/openclaw-plugin";
 function readLobuRuntimeDefaults(): PluginConfig | null {
   const configuredPlugin = buildMemoryPlugins().find(
     (plugin) =>
-      plugin.source === LOBU_PLUGIN_SOURCE && plugin.slot === "memory"
+			plugin.source === LOBU_PLUGIN_SOURCE && plugin.slot === "memory",
   );
   if (configuredPlugin) {
     return configuredPlugin;
@@ -40,7 +40,7 @@ function readLobuRuntimeDefaults(): PluginConfig | null {
 
 function normalizeLobuPluginConfig(
   plugin: PluginConfig,
-  runtimeDefault: PluginConfig | null
+	runtimeDefault: PluginConfig | null,
 ): PluginConfig {
   if (
     plugin.source !== LOBU_PLUGIN_SOURCE ||
@@ -61,7 +61,7 @@ function normalizeLobuPluginConfig(
 }
 
 function normalizePluginsConfig(
-  pluginsConfig: PluginsConfig | undefined
+	pluginsConfig: PluginsConfig | undefined,
 ): PluginsConfig | undefined {
   if (!pluginsConfig?.plugins?.length) {
     return pluginsConfig;
@@ -87,7 +87,7 @@ function normalizePluginsConfig(
 export async function resolveAgentOptions(
   agentId: string,
   baseOptions: Record<string, any>,
-  agentSettingsStore?: AgentSettingsStore
+	agentSettingsStore?: AgentSettingsStore,
 ): Promise<Record<string, any>> {
   if (!agentSettingsStore) {
     return { ...baseOptions };
@@ -108,7 +108,7 @@ export async function resolveAgentOptions(
       configuredModel: settings.model,
       effectiveModel: effectiveModelRef,
     },
-    "Applying agent settings"
+		"Applying agent settings",
   );
 
   if (effectiveModelRef) {
@@ -135,7 +135,7 @@ export async function resolveAgentOptions(
   }
   if (settings.pluginsConfig) {
     mergedOptions.pluginsConfig = normalizePluginsConfig(
-      settings.pluginsConfig
+			settings.pluginsConfig,
     );
   }
   // Apply default memory plugins if no pluginsConfig from settings or baseOptions
@@ -166,6 +166,7 @@ export function buildMessagePayload(params: {
   teamId?: string;
   agentId: string;
   organizationId?: string;
+	connectionId?: string;
   messageId: string;
   messageText: string;
   channelId: string;
@@ -219,6 +220,7 @@ export async function resolveAgentId(params: {
   teamId?: string;
   agentId?: string;
   organizationId?: string;
+	connectionId?: string;
   channelBindingService?: ChannelBindingService;
   crossOrg?: boolean;
 }): Promise<{
@@ -229,9 +231,9 @@ export async function resolveAgentId(params: {
   const {
     platform,
     channelId,
-    teamId,
     agentId,
     organizationId,
+		connectionId,
     channelBindingService,
     crossOrg,
   } = params;
@@ -239,17 +241,17 @@ export async function resolveAgentId(params: {
   if (channelBindingService) {
     // Bindings are org-scoped (a channel_id can be bound independently by
     // multiple tenants), so the read MUST be scoped to the inbound
-    // connection's org — otherwise getBinding falls back to an org-less query
-    // and can route a message to another tenant's agent. Preview connections
-    // are the deliberate exception: they fan out across orgs (see crossOrg).
-    const binding = crossOrg
-      ? await channelBindingService.getBindingAnyOrg(platform, channelId, teamId)
-      : await channelBindingService.getBinding(
-          platform,
+		// connection's org. Preview connections are the deliberate exception: they
+		// fan out across orgs, but still resolve through that concrete connection.
+		const binding =
+			connectionId && organizationId
+				? await channelBindingService.getBindingForConnection(
+						connectionId,
           channelId,
-          teamId,
-          organizationId
-        );
+						organizationId,
+						crossOrg === true,
+					)
+				: null;
     if (binding) {
       logger.info(
         {
@@ -258,7 +260,7 @@ export async function resolveAgentId(params: {
           channelId,
           bindingOrg: binding.organizationId,
         },
-        "Routing via existing channel binding"
+				"Routing via existing channel binding",
       );
       return {
         agentId: binding.agentId,
@@ -271,7 +273,7 @@ export async function resolveAgentId(params: {
   if (agentId) {
     logger.info(
       { agentId, platform, channelId },
-      "Routing to connection's owning agent"
+			"Routing to connection's owning agent",
     );
     return { agentId, source: "connection", organizationId };
   }

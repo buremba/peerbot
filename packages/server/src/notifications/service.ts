@@ -1,18 +1,18 @@
-import type { CardElement } from 'chat';
-import { getDb, pgTextArray } from '../db/client';
-import { resolveBoundChannelRows } from '../gateway/channels/bound-channels';
-import { getChatInstanceManager, isLobuGatewayRunning } from '../lobu/gateway';
-import logger from '../utils/logger';
+import type { CardElement } from "chat";
+import { getDb, pgTextArray } from "../db/client";
+import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
+import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
+import logger from "../utils/logger";
 
 interface CreateNotificationParams {
   organizationId: string;
   type:
-    | 'action_approval_needed'
-    | 'connection_permission_request'
-    | 'invitation_received'
-    | 'browser_auth_expired'
-    | 'generic'
-    | 'agent_message';
+		| "action_approval_needed"
+		| "connection_permission_request"
+		| "invitation_received"
+		| "browser_auth_expired"
+		| "generic"
+		| "agent_message";
   title: string;
   body?: string | null;
   resourceType?: string | null;
@@ -72,7 +72,7 @@ interface BotDeliveryTarget {
  *       `(org, agent)` JOIN misses it on BOTH columns and proactive
  *       notifications silently drop. This branch resolves the org's bindings
  *       through the shared preview connection, mirroring the inbound
- *       `getBindingAnyOrg` exception. It is gated HARD to previewMode
+ *       concrete-connection routing. It is gated HARD to previewMode
  *       connections with no `metadata.teamId` (the hosted-bot invariant, same as
  *       `getDefaultConnection`) and is NOT joined on `agent_id`, so a normal
  *       tenant bot can never be used to deliver cross-org.
@@ -88,7 +88,7 @@ interface BotDeliveryTarget {
  */
 export async function resolveBotDeliveryTargets(
   organizationId: string,
-  connectionId?: string | null
+	connectionId?: string | null,
 ): Promise<BotDeliveryTarget[]> {
   // Org-wide (no agentId): every channel any of the org's agents is bound to,
   // resolved through the right connection. Shared resolver = one home for the
@@ -103,14 +103,14 @@ export async function resolveBotDeliveryTargets(
     platform: row.platform,
     // Bindings store the platform-prefixed id ("slack:C0123ABCD"); older rows
     // may hold the bare id, so prefix defensively.
-    channelKey: row.channel_id.includes(':')
+		channelKey: row.channel_id.includes(":")
       ? row.channel_id
       : `${row.platform}:${row.channel_id}`,
   }));
 }
 
 async function deliverToBotConnections(
-  params: Omit<CreateNotificationParams, 'userId'>
+	params: Omit<CreateNotificationParams, "userId">,
 ): Promise<void> {
   if (!isLobuGatewayRunning()) return;
   const manager = getChatInstanceManager();
@@ -123,7 +123,7 @@ async function deliverToBotConnections(
   try {
     const targets = await resolveBotDeliveryTargets(
       params.organizationId,
-      params.connectionId
+			params.connectionId,
     );
     if (targets.length === 0) return;
 
@@ -134,13 +134,16 @@ async function deliverToBotConnections(
         } catch (err) {
           logger.warn(
             { err, connectionId, channelKey },
-            '[Notifications] Failed to post to bot connection channel'
+						"[Notifications] Failed to post to bot connection channel",
           );
         }
-      })
+			}),
     );
   } catch (err) {
-    logger.warn({ err }, '[Notifications] Failed to deliver to bot connections');
+		logger.warn(
+			{ err },
+			"[Notifications] Failed to deliver to bot connections",
+		);
   }
 }
 
@@ -158,7 +161,7 @@ async function deliverToBotConnections(
  */
 export async function createNotificationForUsers(
   userIds: string[],
-  params: Omit<CreateNotificationParams, 'userId'>
+	params: Omit<CreateNotificationParams, "userId">,
 ): Promise<void> {
   if (userIds.length === 0) return;
   const sql = getDb();
@@ -166,7 +169,9 @@ export async function createNotificationForUsers(
   // fetch_types:false safe: entity_ids is a `{n,...}` literal (or NULL) cast to
   // bigint[] — never a raw JS array bind. Same pattern as insert-event.ts.
   const entityIdsValue =
-    params.entityIds && params.entityIds.length > 0 ? `{${params.entityIds.join(',')}}` : null;
+		params.entityIds && params.entityIds.length > 0
+			? `{${params.entityIds.join(",")}}`
+			: null;
 
   await sql.begin(async (tx) => {
     const inserted = (await tx`
@@ -205,7 +210,10 @@ export async function createNotificationForUsers(
   // the org's connection default channels and is identical for every user in
   // this call, so fan it out once — not once per user.
   deliverToBotConnections(params).catch((err) =>
-    logger.warn({ err }, '[Notifications] Failed to deliver to bot connections')
+		logger.warn(
+			{ err },
+			"[Notifications] Failed to deliver to bot connections",
+		),
   );
 }
 
@@ -215,7 +223,10 @@ export async function listNotifications(opts: {
   cursor?: number | null;
   limit?: number;
   unreadOnly?: boolean;
-}): Promise<{ notifications: Record<string, unknown>[]; nextCursor: number | null }> {
+}): Promise<{
+	notifications: Record<string, unknown>[];
+	nextCursor: number | null;
+}> {
   const sql = getDb();
   const limit = Math.min(opts.limit ?? 20, 50);
   const cursor = opts.cursor ?? null;
@@ -250,12 +261,17 @@ export async function listNotifications(opts: {
 
   const hasMore = rows.length > limit;
   const notifications = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? (notifications[notifications.length - 1]?.id ?? null) : null;
+	const nextCursor = hasMore
+		? (notifications[notifications.length - 1]?.id ?? null)
+		: null;
 
   return { notifications, nextCursor };
 }
 
-export async function getUnreadCount(organizationId: string, userId: string): Promise<number> {
+export async function getUnreadCount(
+	organizationId: string,
+	userId: string,
+): Promise<number> {
   const sql = getDb();
   const rows = (await sql`
     SELECT COUNT(*)::int AS count
@@ -271,7 +287,7 @@ export async function getUnreadCount(organizationId: string, userId: string): Pr
 export async function markAsRead(
   organizationId: string,
   userId: string,
-  notificationId: number
+	notificationId: number,
 ): Promise<boolean> {
   const sql = getDb();
   const rows = (await sql`
@@ -288,7 +304,10 @@ export async function markAsRead(
   return rows.length > 0;
 }
 
-export async function markAllAsRead(organizationId: string, userId: string): Promise<number> {
+export async function markAllAsRead(
+	organizationId: string,
+	userId: string,
+): Promise<number> {
   const sql = getDb();
   const rows = (await sql`
     UPDATE notification_targets t
@@ -311,7 +330,7 @@ export async function markAllAsRead(organizationId: string, userId: string): Pro
 export async function deleteNotification(
   organizationId: string,
   userId: string,
-  notificationId: number
+	notificationId: number,
 ): Promise<boolean> {
   const sql = getDb();
   const rows = (await sql`

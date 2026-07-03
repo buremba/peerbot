@@ -59,7 +59,7 @@ async function buildManager() {
     getPublicGatewayUrl: () => "",
     getSecretStore: () => secretStore,
     getConnectionStore: () => connectionStore,
-    getChannelBindingService: () => ({ getBinding: async () => null }),
+    getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
     getCommandRegistry: () => undefined,
   } as any;
 

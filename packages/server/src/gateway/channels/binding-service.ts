@@ -1,5 +1,6 @@
 import { createLogger } from "@lobu/core";
 import { getDb, tsTime } from "../../db/client.js";
+import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection.js";
 import { requireOrgId, resolveOrgId } from "../../lobu/stores/org-context.js";
 import {
   resolveStreamingChannelFeedId,
@@ -37,9 +38,9 @@ function rowToBinding(row: Record<string, any>): ChannelBinding {
     teamId: row.team_id ?? undefined,
     agentId: row.agent_id,
     organizationId: row.organization_id ?? undefined,
-    connectionId: row.connection_id != null ? String(row.connection_id) : undefined,
-    createdAt:
-      tsTime(row.created_at),
+		connectionId:
+			row.connection_id != null ? String(row.connection_id) : undefined,
+		createdAt: tsTime(row.created_at),
   };
 }
 
@@ -48,105 +49,41 @@ function rowToBinding(row: Record<string, any>): ChannelBinding {
  * Read-through to PG.
  */
 export class ChannelBindingService {
-  async getBinding(
-    platform: string,
+	/** Resolve the binding for the concrete bot connection handling an inbound
+	 * message. This is the authoritative read path when multiple apps from the
+	 * same provider share a workspace and channel. */
+	async getBindingForConnection(
+		connectionId: string,
     channelId: string,
-    teamId?: string,
-    organizationId?: string
+		connectionOrganizationId: string,
+		crossOrg = false,
   ): Promise<ChannelBinding | null> {
     const sql = getDb();
-    const orgId = resolveOrgId(organizationId);
-    let rows = teamId
-      ? orgId
+		const slug = runtimeConnectionIdToSlug(connectionId);
+		const rows = crossOrg
         ? await sql`
-            SELECT * FROM agent_channel_bindings
-            WHERE organization_id = ${orgId}
-              AND platform = ${platform}
-              AND channel_id = ${channelId}
-              AND team_id = ${teamId}
-          `
-        : await sql`
-            SELECT * FROM agent_channel_bindings
-            WHERE platform = ${platform}
-              AND channel_id = ${channelId}
-              AND team_id = ${teamId}
-          `
-      : orgId
-        ? await sql`
-            SELECT * FROM agent_channel_bindings
-            WHERE organization_id = ${orgId}
-              AND platform = ${platform}
-              AND channel_id = ${channelId}
-              AND team_id IS NULL
-          `
-        : await sql`
-            SELECT * FROM agent_channel_bindings
-            WHERE platform = ${platform}
-              AND channel_id = ${channelId}
-              AND team_id IS NULL
-          `;
-    // BYO Slack channels are bound team-less (the connection carries no
-    // external_tenant_id), but inbound Slack messages always carry a team_id.
-    // Without this fallback the team-scoped lookup misses the team-less binding
-    // and routing drops to the connection's owning agent. Managed installs
-    // always store a team_id, so their team-scoped bindings match above and this
-    // never fires for them (no cross-workspace leak).
-    if (rows.length === 0 && teamId) {
-      rows = orgId
-        ? await sql`
-            SELECT * FROM agent_channel_bindings
-            WHERE organization_id = ${orgId}
-              AND platform = ${platform}
-              AND channel_id = ${channelId}
-              AND team_id IS NULL
-          `
-        : await sql`
-            SELECT * FROM agent_channel_bindings
-            WHERE platform = ${platform}
-              AND channel_id = ${channelId}
-              AND team_id IS NULL
-          `;
-    }
-    if (rows.length === 0) return null;
-    return rowToBinding(rows[0]);
-  }
-
-  /**
-   * Resolve a binding by its physical channel WITHOUT scoping to a caller org.
-   *
-   * The hosted preview bot is one connection (in its own org) that fans out to
-   * agents across MANY orgs — a `/lobu link <code>` writes the binding under the
-   * claim's org, not the connection's. The normal org-scoped {@link getBinding}
-   * would never find it. A physical Slack channel is unique per workspace, so
-   * `(platform, channel_id, team_id)` identifies exactly one place; we return
-   * the most recent binding (and its org) for it. Use ONLY for previewMode
-   * connections — for normal bots, org-scoping is the multi-tenant guardrail.
-   */
-  async getBindingAnyOrg(
-    platform: string,
-    channelId: string,
-    teamId?: string
-  ): Promise<ChannelBinding | null> {
-    const sql = getDb();
-    const rows = teamId
-      ? await sql`
-          SELECT * FROM agent_channel_bindings
-          WHERE platform = ${platform}
-            AND channel_id = ${channelId}
-            AND team_id = ${teamId}
-          ORDER BY created_at DESC
+          SELECT b.*
+          FROM agent_channel_bindings b
+          JOIN connections c ON c.id = b.connection_id
+          WHERE c.organization_id = ${connectionOrganizationId}
+            AND c.slug = ${slug}
+            AND c.deleted_at IS NULL
+            AND b.channel_id = ${channelId}
+          ORDER BY b.created_at DESC
           LIMIT 1
         `
       : await sql`
-          SELECT * FROM agent_channel_bindings
-          WHERE platform = ${platform}
-            AND channel_id = ${channelId}
-            AND team_id IS NULL
-          ORDER BY created_at DESC
+          SELECT b.*
+          FROM agent_channel_bindings b
+          JOIN connections c ON c.id = b.connection_id
+          WHERE c.organization_id = ${connectionOrganizationId}
+            AND c.slug = ${slug}
+            AND c.deleted_at IS NULL
+            AND b.organization_id = ${connectionOrganizationId}
+            AND b.channel_id = ${channelId}
           LIMIT 1
         `;
-    if (rows.length === 0) return null;
-    return rowToBinding(rows[0]);
+		return rows[0] ? rowToBinding(rows[0]) : null;
   }
 
   async createBinding(
@@ -154,94 +91,39 @@ export class ChannelBindingService {
     platform: string,
     channelId: string,
     teamId?: string,
-    options?: { configuredBy?: string; wasAdmin?: boolean; organizationId?: string }
+		options: {
+			configuredBy?: string;
+			wasAdmin?: boolean;
+			organizationId?: string;
+			/** Authoritative unified connection row. */
+			connectionId: string;
+		},
   ): Promise<void> {
     const sql = getDb();
     const orgId = requireOrgId(
       options?.organizationId,
       "ChannelBindingService.createBinding",
     );
-    // The upsert RETURNs the final linked connection_id (its own resolved value,
-    // or a pre-existing link kept via COALESCE) so we can materialize the
-    // channel's streaming feed against the SAME connection the binding routes
-    // through — no second resolve that could diverge.
-    let linkedConnectionId: string | null = null;
-    if (teamId) {
-      // The (organization_id, platform, channel_id, team_id) UNIQUE covers the
-      // team-id-set case. The key is org-scoped so a sibling tenant binding the
-      // same platform+channel can never collide with — and silently take over —
-      // this org's row. `organization_id` is intentionally NOT in the SET list:
-      // a binding must never change owners.
-      //
-      // Link `connection_id` to the active chat connection for this (org,
-      // platform, team) at bind time (mirrors the connections-unify backfill's
-      // Step 3, but at runtime so it works for installs created after the
-      // one-shot migration). This is the ONLY thing that makes a MANAGED Slack
-      // install (slackinst- slug, connection agent_id NULL) resolve its channels
-      // in `resolveBoundChannelRows` branch (A): the tuple fallback joins on
-      // `b.agent_id = ac.agent_id`, which can never match a NULL connection
-      // agent_id, so without this link a managed install's transcript is an
-      // unrecallable orphan. COALESCE on conflict keeps an existing link if the
-      // connection isn't resolvable yet (binding created before the install row).
+		// A physical channel is scoped by the concrete bot connection, not by a
+		// provider tuple. Two Slack apps in one workspace may independently bind
+		// the same channel without overwriting each other.
       const rows = await sql`
         INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id, created_at)
         VALUES (
-          ${orgId}, ${agentId}, ${platform}, ${channelId}, ${teamId},
-          (
-            SELECT c.id FROM connections c
-            WHERE c.deleted_at IS NULL
-              AND c.status = 'active'
-              AND c.credential_mode IS NOT NULL
-              AND c.organization_id = ${orgId}
-              AND c.connector_key = ${platform}
-              AND c.external_tenant_id = ${teamId}
-            ORDER BY c.updated_at DESC
-            LIMIT 1
-          ),
+          ${orgId}, ${agentId}, ${platform}, ${channelId}, ${teamId ?? null},
+		  ${options.connectionId}::bigint,
           now()
         )
-        ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
-          agent_id = EXCLUDED.agent_id,
-          connection_id = COALESCE(EXCLUDED.connection_id, agent_channel_bindings.connection_id),
-          created_at = EXCLUDED.created_at
-        RETURNING connection_id
-      `;
-      linkedConnectionId =
-        rows[0]?.connection_id != null ? String(rows[0].connection_id) : null;
-    } else {
-      // For team_id IS NULL the unique constraint above doesn't fire (PG
-      // treats NULL as distinct). The companion org-scoped partial unique index
-      // (agent_channel_bindings_org_no_team_unique) is what we conflict on.
-      // Tenantless (Telegram, etc.) bindings link to the active chat connection
-      // owned by this agent (mirrors the backfill's tenantless match).
-      const rows = await sql`
-        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id, created_at)
-        VALUES (
-          ${orgId}, ${agentId}, ${platform}, ${channelId}, NULL,
-          (
-            SELECT c.id FROM connections c
-            WHERE c.deleted_at IS NULL
-              AND c.status = 'active'
-              AND c.credential_mode IS NOT NULL
-              AND c.organization_id = ${orgId}
-              AND c.connector_key = ${platform}
-              AND c.external_tenant_id IS NULL
-              AND c.agent_id = ${agentId}
-            ORDER BY c.updated_at DESC
-            LIMIT 1
-          ),
-          now()
-        )
-        ON CONFLICT (organization_id, platform, channel_id)
-          WHERE team_id IS NULL
+        ON CONFLICT (organization_id, connection_id, channel_id)
+          WHERE connection_id IS NOT NULL
           DO UPDATE SET agent_id = EXCLUDED.agent_id,
-            connection_id = COALESCE(EXCLUDED.connection_id, agent_channel_bindings.connection_id),
+		    platform = EXCLUDED.platform,
+		    team_id = EXCLUDED.team_id,
             created_at = EXCLUDED.created_at
         RETURNING connection_id
       `;
-      linkedConnectionId =
+		const linkedConnectionId =
         rows[0]?.connection_id != null ? String(rows[0].connection_id) : null;
-    }
     logger.info(`Created binding: ${platform}/${channelId} → ${agentId}`);
 
     // Materialize the channel as a streaming feed under its connection, so it
@@ -261,53 +143,45 @@ export class ChannelBindingService {
 
   async deleteBinding(
     agentId: string,
-    platform: string,
     channelId: string,
-    teamId?: string,
-    organizationId?: string
+		connectionId: string,
+		organizationId: string,
   ): Promise<boolean> {
     const sql = getDb();
-    const orgId = resolveOrgId(organizationId);
-    const existing = await this.getBinding(platform, channelId, teamId, orgId ?? undefined);
+		const orgId = requireOrgId(
+			organizationId,
+			"ChannelBindingService.deleteBinding",
+		);
+		const rows = await sql`
+      SELECT * FROM agent_channel_bindings
+      WHERE organization_id = ${orgId}
+        AND connection_id = ${connectionId}::bigint
+        AND channel_id = ${channelId}
+      LIMIT 1
+    `;
+		const existing = rows[0] ? rowToBinding(rows[0]) : null;
     if (!existing) {
-      logger.warn(`No binding found for ${platform}/${channelId}`);
+			logger.warn(
+				`No binding found for connection ${connectionId}/${channelId}`,
+			);
       return false;
     }
     if (existing.agentId !== agentId) {
       logger.warn(
-        `Binding for ${platform}/${channelId} belongs to ${existing.agentId}, not ${agentId}`
+				`Binding for connection ${connectionId}/${channelId} belongs to ${existing.agentId}, not ${agentId}`,
       );
       return false;
     }
 
-    if (teamId) {
-      if (orgId) {
         await sql`
           DELETE FROM agent_channel_bindings
           WHERE organization_id = ${orgId}
-            AND platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
+        AND connection_id = ${connectionId}::bigint
+        AND channel_id = ${channelId}
         `;
-      } else {
-        await sql`
-          DELETE FROM agent_channel_bindings
-          WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
-        `;
-      }
-    } else {
-      if (orgId) {
-        await sql`
-          DELETE FROM agent_channel_bindings
-          WHERE organization_id = ${orgId}
-            AND platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
-        `;
-      } else {
-        await sql`
-          DELETE FROM agent_channel_bindings
-          WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
-        `;
-      }
-    }
-    logger.info(`Deleted binding: ${platform}/${channelId} from ${agentId}`);
+		logger.info(
+			`Deleted binding: connection ${connectionId}/${channelId} from ${agentId}`,
+		);
 
     // The channel is no longer bound, so its streaming feed is retired
     // (soft-delete). Best-effort: the binding (the routing contract) is already
@@ -324,7 +198,7 @@ export class ChannelBindingService {
 
   async listBindings(
     agentId: string,
-    organizationId?: string
+		organizationId?: string,
   ): Promise<ChannelBinding[]> {
     const sql = getDb();
     const orgId = resolveOrgId(organizationId);
@@ -341,7 +215,7 @@ export class ChannelBindingService {
 
   async deleteAllBindings(
     agentId: string,
-    organizationId?: string
+		organizationId?: string,
   ): Promise<number> {
     const sql = getDb();
     const orgId = resolveOrgId(organizationId);

@@ -35,9 +35,9 @@ import { streamInvalidationEvents } from "./events/sse";
 import { invalidationSseAuth } from "./events/sse-invalidation-auth";
 import {
 	type ClaimEligibleOrg,
-	type SlackClaimDeps,
 	claimSlackWorkspace,
 	resolveSlackClaimContext,
+	type SlackClaimDeps,
 } from "./gateway/connections/slack-claim";
 import { createSlackWebApi } from "./gateway/connections/slack-web";
 import {
@@ -47,8 +47,8 @@ import {
 import { isExcludedSpaPath } from "./http/spa-route-filter";
 import { isShuttingDown } from "./lifecycle-state";
 import { agentRoutes } from "./lobu/agent-routes";
+import { clientRoutes } from "./lobu/client-routes";
 import { environmentRoutes } from "./lobu/environment-routes";
-import { clientRoutes, platformSchemaRoutes } from "./lobu/client-routes";
 import {
 	getLobuCoreServices,
 	isLobuGatewayRunning,
@@ -726,12 +726,12 @@ app.get("/legal", (c) => {
 // Health check and worker endpoints must be before mcpAuth middleware
 app.get("/api/health", restHealth);
 
+import { createRuntimeRoutes } from "./gateway/routes/internal/runtime";
 // Internal smoke-test dispatch. Authentication is a shared bearer
 // (`SMOKE_TEST_TOKEN`) loaded into the pod via the deployment Secret —
 // not exposed to public ingress consumers. Mounted before mcpAuth so the
 // route handles its own auth without falling into the OAuth-bearer path.
 import { createSmokeRoutes } from "./gateway/routes/internal/smoke";
-import { createRuntimeRoutes } from "./gateway/routes/internal/runtime";
 
 app.route("/api/internal/smoke", createSmokeRoutes());
 app.route("", createRuntimeRoutes());
@@ -1348,7 +1348,6 @@ app.route("/api/:orgSlug/installed", orgInstalledRoutes);
 app.route("/api/:orgSlug/agents", agentRoutes);
 app.route("/api/:orgSlug/environments", environmentRoutes);
 app.route("/api/:orgSlug/clients", clientRoutes);
-app.route("/api/agents/platforms", platformSchemaRoutes);
 
 // ============================================
 // SSE Invalidation Events (for frontend cache sync)
@@ -1482,7 +1481,10 @@ async function resolveClaimingUserSlackId(
  */
 // The main app doesn't run the Lobu auth bridge, so resolve the session here
 // (same pattern as /api/:orgSlug/join). Cookie or Better-Auth bearer.
-async function resolveClaimSessionUser(env: Env, req: Request): Promise<string | null> {
+async function resolveClaimSessionUser(
+	env: Env,
+	req: Request,
+): Promise<string | null> {
 	try {
 		const auth = await createAuth(env);
 		const session = await auth.api.getSession({ headers: req.headers });
@@ -1549,7 +1551,9 @@ function slackClaimDeps(): SlackClaimDeps {
 }
 
 /** Map a claim/context status to its HTTP code (shared by both routes). */
-function slackClaimHttpStatus(status: string): 400 | 401 | 403 | 404 | 409 | 500 {
+function slackClaimHttpStatus(
+	status: string,
+): 400 | 401 | 403 | 404 | 409 | 500 {
 	switch (status) {
 		case "unauthenticated":
 			return 401;
@@ -1581,7 +1585,11 @@ app.get("/api/slack/claim/context", async (c) => {
 		team,
 	});
 	if (ctx.status === "ready") {
-		return c.json({ ok: true, workspaceName: ctx.workspaceName, orgs: ctx.orgs });
+		return c.json({
+			ok: true,
+			workspaceName: ctx.workspaceName,
+			orgs: ctx.orgs,
+		});
 	}
 	if (ctx.status === "already_connected") {
 		return c.json({ ok: true, alreadyConnected: true, orgSlug: ctx.orgSlug });
@@ -1605,7 +1613,9 @@ app.post("/api/slack/claim", async (c) => {
 	// The org the user CONFIRMED on the /slack/claim page (slug or id). Optional
 	// for programmatic callers, who then fall back to the default org.
 	const organizationId =
-		typeof body.org === "string" && body.org.trim() ? body.org.trim() : undefined;
+		typeof body.org === "string" && body.org.trim()
+			? body.org.trim()
+			: undefined;
 
 	// All branching lives in the injectable `claimSlackWorkspace` so it stays
 	// unit-testable; the route only wires real deps + maps outcomes to HTTP.
@@ -1625,10 +1635,7 @@ app.post("/api/slack/claim", async (c) => {
 	}
 	if (result.status === "claim_failed") {
 		logger.error({ team, err: result.message }, "Slack workspace claim failed");
-		return c.json(
-			{ error: "claim_failed", message: result.message },
-			500,
-		);
+		return c.json({ error: "claim_failed", message: result.message }, 500);
 	}
 	return c.json({ error: result.status }, slackClaimHttpStatus(result.status));
 });

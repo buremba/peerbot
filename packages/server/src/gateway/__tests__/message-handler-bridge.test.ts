@@ -29,19 +29,23 @@ describe("buildAttachmentTranscriptText", () => {
     expect(
       buildAttachmentTranscriptText("see attached", [
         file("abc", "report.pdf", "application/pdf"),
-      ])
+			]),
     ).toBe("see attached\n\n[report.pdf](/api/v1/files/abc)");
   });
 
   test("supports a file-only message (empty caption)", () => {
     expect(
-      buildAttachmentTranscriptText("", [file("xyz", "notes.txt", "text/plain")])
+			buildAttachmentTranscriptText("", [
+				file("xyz", "notes.txt", "text/plain"),
+			]),
     ).toBe("[notes.txt](/api/v1/files/xyz)");
   });
 
   test("skips images (they persist as inline transcript blocks)", () => {
     expect(
-      buildAttachmentTranscriptText("hi", [file("img", "pic.png", "image/png")])
+			buildAttachmentTranscriptText("hi", [
+				file("img", "pic.png", "image/png"),
+			]),
     ).toBe("hi");
   });
 
@@ -51,7 +55,7 @@ describe("buildAttachmentTranscriptText", () => {
         file("a", "a.pdf", "application/pdf"),
         file("b", "pic.jpg", "image/jpeg"),
         file("c", "b.csv", "text/csv"),
-      ])
+			]),
     ).toBe("docs\n\n[a.pdf](/api/v1/files/a)\n[b.csv](/api/v1/files/c)");
   });
 
@@ -68,7 +72,7 @@ describe("buildAttachmentTranscriptText", () => {
 
   test("falls back to 'file' when the name sanitizes to empty", () => {
     expect(
-      buildAttachmentTranscriptText("", [file("id2", "()[]", "text/plain")])
+			buildAttachmentTranscriptText("", [file("id2", "()[]", "text/plain")]),
     ).toBe("[file](/api/v1/files/id2)");
   });
 
@@ -83,7 +87,7 @@ describe("parsePreviewLinkCode", () => {
   });
   test("multi-segment slug bare code", () => {
     expect(parsePreviewLinkCode("food-ordering-ABC123", false)).toBe(
-      "food-ordering-ABC123"
+			"food-ordering-ABC123",
     );
   });
   test("`link <code>`", () => {
@@ -91,7 +95,7 @@ describe("parsePreviewLinkCode", () => {
   });
   test("`/lobu link <code>` delivered as text", () => {
     expect(parsePreviewLinkCode("/lobu link crm-TGHE0Z", false)).toBe(
-      "crm-TGHE0Z"
+			"crm-TGHE0Z",
     );
   });
   test("`/link <code>`", () => {
@@ -105,7 +109,7 @@ describe("parsePreviewLinkCode", () => {
   });
   test("normal chatter is ignored", () => {
     expect(
-      parsePreviewLinkCode("can you help me link the accounts", false)
+			parsePreviewLinkCode("can you help me link the accounts", false),
     ).toBeNull();
   });
 });
@@ -380,7 +384,7 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
           "M_NEW",
           "<@U_BOT> what was the prior context?",
           false,
-          1_700_000_003_000
+					1_700_000_003_000,
         ),
       ],
     }));
@@ -397,7 +401,11 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
       direction: "forward",
     });
 
-    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
+		const entries = await conversationState.getEntries(
+			CONN_ID,
+			CHANNEL_ID,
+			THREAD_ID,
+		);
     // 2 backfilled (current message id is skipped) + the current mention
     // message (mention text stripped of `<@U_BOT>`).
     expect(entries.map((e) => e.content)).toEqual([
@@ -434,7 +442,11 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
 
     await bridge.handleMessage(thread, makeMessage(), "mention");
 
-    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
+		const entries = await conversationState.getEntries(
+			CONN_ID,
+			CHANNEL_ID,
+			THREAD_ID,
+		);
     expect(entries[0]?.role).toBe("user");
     expect(entries[1]?.role).toBe("assistant");
   });
@@ -474,7 +486,11 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
     await bridge.handleMessage(thread, makeMessage(), "subscribed");
 
     expect(fetchMessages).toHaveBeenCalledTimes(1);
-    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
+		const entries = await conversationState.getEntries(
+			CONN_ID,
+			CHANNEL_ID,
+			THREAD_ID,
+		);
     expect(entries.map((e) => e.content)).toContain("earlier note");
   });
 
@@ -493,7 +509,11 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
     // First mention — fetch throws, marker is released.
     await bridge.handleMessage(thread, makeMessage({ id: "M_A" }), "mention");
     expect(fetchMessages).toHaveBeenCalledTimes(1);
-    let entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
+		let entries = await conversationState.getEntries(
+			CONN_ID,
+			CHANNEL_ID,
+			THREAD_ID,
+		);
     // Only the current message survives — no backfill from the throw.
     expect(entries.map((e) => e.content)).toEqual([
       "what was the prior context?",
@@ -502,7 +522,11 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
     // Second mention — claim is free, fetch retries and succeeds.
     await bridge.handleMessage(thread, makeMessage({ id: "M_B" }), "mention");
     expect(fetchMessages).toHaveBeenCalledTimes(2);
-    entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
+		entries = await conversationState.getEntries(
+			CONN_ID,
+			CHANNEL_ID,
+			THREAD_ID,
+		);
     expect(entries.map((e) => e.content)).toContain("recovered");
   });
 
@@ -519,7 +543,11 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
     await bridge.handleMessage(thread, makeMessage({ id: "M_B" }), "mention");
 
     // Only the two current mentions land in history.
-    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
+		const entries = await conversationState.getEntries(
+			CONN_ID,
+			CHANNEL_ID,
+			THREAD_ID,
+		);
     expect(entries).toHaveLength(2);
   });
 });
@@ -557,7 +585,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     const channelBindingService =
       opts.binding === undefined
         ? undefined
-        : { getBinding: mock(async () => opts.binding), getBindingAnyOrg: mock(async () => opts.binding) };
+				: { getBindingForConnection: mock(async () => opts.binding) };
     const services = {
       getArtifactStore: () => null,
       getPublicGatewayUrl: () => "https://gateway.example.com",
@@ -577,7 +605,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       connection,
       services,
       manager,
-      opts.commandDispatcher as never
+			opts.commandDispatcher as never,
     );
     return { bridge, enqueueMessage };
   }
@@ -604,12 +632,12 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     expect(enqueueMessage).toHaveBeenCalledTimes(1);
     const payload = enqueueMessage.mock.calls[0]?.[0] as any;
     expect(payload.agentId ?? payload.platformMetadata?.agentId).toBe(
-      "linked-agent"
+			"linked-agent",
     );
     expect(
       thread.post.mock.calls.every(
-        (c: unknown[]) => !String(c[0]).includes("/lobu link")
-      )
+				(c: unknown[]) => !String(c[0]).includes("/lobu link"),
+			),
     ).toBe(true);
   });
 
@@ -648,7 +676,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     expect(enqueueMessage).toHaveBeenCalledTimes(1);
     const payload = enqueueMessage.mock.calls[0]?.[0] as any;
     expect(payload.agentId ?? payload.platformMetadata?.agentId).toBe(
-      "food-ordering"
+			"food-ordering",
     );
     // The binding's org wins over the connection's org ("org-connection").
     expect(payload.organizationId).toBe("org-bound");
@@ -670,7 +698,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     await bridge.handleMessage(
       thread,
       makeMessage({ text: "/lobu link crm-ABC123" }),
-      "dm"
+			"dm",
     );
 
     expect(tryHandle).toHaveBeenCalledTimes(1);
@@ -679,8 +707,8 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     // The preview menu was NOT posted, and no agent run was queued.
     expect(
       thread.post.mock.calls.every(
-        (c: unknown[]) => !String(c[0]).includes("/lobu link")
-      )
+				(c: unknown[]) => !String(c[0]).includes("/lobu link"),
+			),
     ).toBe(true);
     expect(enqueueMessage).not.toHaveBeenCalled();
   });
@@ -699,7 +727,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     await bridge.handleMessage(
       thread,
       makeMessage({ text: "crm-ABC123" }),
-      "dm"
+			"dm",
     );
 
     expect(tryHandle).toHaveBeenCalledTimes(1);
@@ -726,7 +754,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     await bridge.handleMessage(
       thread,
       makeMessage({ text: "crm-ABC123" }),
-      "dm"
+			"dm",
     );
 
     expect(tryHandle).not.toHaveBeenCalled();

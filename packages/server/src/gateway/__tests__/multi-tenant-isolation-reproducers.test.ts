@@ -524,7 +524,7 @@ describe("[finding 4] persisted Telegram polling rows are refused in cloud (clai
         getPublicGatewayUrl: () => "https://gw.example.com",
         getSecretStore: () => ({ get: async () => null, put: async () => "" }),
         getConnectionStore: () => connectionStore,
-        getChannelBindingService: () => ({ getBinding: async () => null, getBindingAnyOrg: async () => null }),
+        getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
       } as any;
       const manager = new mod.ChatInstanceManager() as any;
       // A persisted polling row in cloud is an exclusive transport whose

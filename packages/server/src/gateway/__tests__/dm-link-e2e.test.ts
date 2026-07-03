@@ -20,9 +20,7 @@ beforeAll(async () => {
 
 // Mirrors codeHash() in preview/slack.ts (sha256 of the trimmed, lowercased code).
 function codeHash(code: string): string {
-  return createHash("sha256")
-    .update(code.trim().toLowerCase())
-    .digest("hex");
+	return createHash("sha256").update(code.trim().toLowerCase()).digest("hex");
 }
 
 describe("DM /lobu link <code> — real consume→bind chain", () => {
@@ -37,6 +35,17 @@ describe("DM /lobu link <code> — real consume→bind chain", () => {
     // The binding has an FK on (organization_id, agent_id), so the agent must
     // exist (seedAgentRow also creates the organization row).
     await seedAgentRow(agentId, { organizationId });
+		const [connection] = await sql`
+		INSERT INTO connections (
+			organization_id, connector_key, slug, display_name, status,
+			credential_mode, config
+		)
+		VALUES (
+			${organizationId}, 'slack', ${`agentconn-${agentId}`}, 'Slack',
+			'active', 'byo', '{}'
+		)
+		RETURNING id
+	`;
 
     // Seed the preview claim exactly as createPreviewClaim would.
     await sql`
@@ -64,7 +73,9 @@ describe("DM /lobu link <code> — real consume→bind chain", () => {
       });
       const dispatcher = new CommandDispatcher({
         registry,
-        channelBindingService: { getBinding: mock(async () => null), getBindingAnyOrg: mock(async () => null) } as never,
+				channelBindingService: {
+					getBindingForConnection: mock(async () => null),
+				} as never,
       });
 
       const replies: string[] = [];
@@ -75,13 +86,15 @@ describe("DM /lobu link <code> — real consume→bind chain", () => {
           userId: "U_E2E",
           channelId,
           teamId: "T_E2E",
+					connectionId: agentId,
+					organizationId,
           isGroup: false,
           reply: async (content: unknown) => {
             replies.push(
-              typeof content === "string" ? content : JSON.stringify(content)
+							typeof content === "string" ? content : JSON.stringify(content),
             );
           },
-        }
+				},
       );
 
       expect(handled).toBe(true);
@@ -111,6 +124,7 @@ describe("DM /lobu link <code> — real consume→bind chain", () => {
       expect(binding[0]?.organization_id).toBe(organizationId);
     } finally {
       await sql`DELETE FROM agent_channel_bindings WHERE channel_id = ${canonical}`;
+			await sql`DELETE FROM connections WHERE id = ${connection.id}`;
       await sql`DELETE FROM oauth_states WHERE id = ${codeHash(code)}`;
       await sql`DELETE FROM agents WHERE id = ${agentId} AND organization_id = ${organizationId}`;
       await sql`DELETE FROM organization WHERE id = ${organizationId}`;

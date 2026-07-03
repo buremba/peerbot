@@ -2,19 +2,32 @@
  * CRUD action handlers: list, get, create, update, delete.
  */
 
-import { getErrorMessage, parseJsonObject } from '@lobu/core';
-import { getDb, parsePgNumberArray, pgBigintArray } from '../../../../db/client';
+import { randomUUID } from "node:crypto";
+import { getErrorMessage, parseJsonObject } from "@lobu/core";
+import { getScopedConnectorDefinition } from "../../../../catalog/connector-definitions";
+import { enrichConnectorGroupsWithCatalogDisplay } from "../../../../catalog/connector-group-display";
+import { unregisterConnectorWebhook } from "../../../../connect/webhook-registration";
+import {
+	getDb,
+	parsePgNumberArray,
+	pgBigintArray,
+} from "../../../../db/client";
+import {
+	deleteChatConnection,
+	updateChatConnection,
+	upsertByoChatConnection,
+} from "../../../../gateway/connections/chat-connection-service";
 import {
   EMPTY_SUMMARY,
   getOperationsSummary,
   getOperationsSummaryBatch,
-} from '../../../../operations/connector-operations';
+} from "../../../../operations/connector-operations";
 import {
   createAuthProfile,
   getAuthProfileById,
   getAuthProfileBySlug,
   getBrowserSessionReadiness,
-} from '../../../../utils/auth-profiles';
+} from "../../../../utils/auth-profiles";
 import {
   ConnectionSlugConflictError,
   connectionSlugFormatError,
@@ -22,37 +35,52 @@ import {
   insertConnectionWithSlug,
   isConnectionSlugUniqueViolation,
   resolveNewConnectionSlug,
-} from '../../../../utils/connections';
-import { applyEntityLinkOverrides } from '../../../../utils/entity-link-validation';
-import { recordChangeEvent, recordLifecycleEvent } from '../../../../utils/insert-event';
-import logger from '../../../../utils/logger';
-import { syncOAuthConnectionsForAuthProfile } from '../../../../utils/oauth-connection-state';
-import { getWorkspaceRole } from '../../../../utils/organization-access';
-import { resolveUsernames } from '../../../../utils/resolve-usernames';
-import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../../../utils/run-statuses';
+} from "../../../../utils/connections";
+import { assertConnectorAllowedInCloud } from "../../../../utils/connector-cloud-gate";
+import { ensureConnectorInstalled } from "../../../../utils/ensure-connector-installed";
+import { applyEntityLinkOverrides } from "../../../../utils/entity-link-validation";
+import {
+	recordChangeEvent,
+	recordLifecycleEvent,
+} from "../../../../utils/insert-event";
+import logger from "../../../../utils/logger";
+import { syncOAuthConnectionsForAuthProfile } from "../../../../utils/oauth-connection-state";
+import { getWorkspaceRole } from "../../../../utils/organization-access";
+import { resolveUsernames } from "../../../../utils/resolve-usernames";
+import {
+	ACTIVE_RUN_STATUSES,
+	runStatusLiteral,
+} from "../../../../utils/run-statuses";
+import type { ToolContext } from "../../../registry";
+import { rejectUnboundAppInstallationCreate } from "../../helpers/app-installation-guard";
 import {
   buildViewUrl,
-  ensureEnvBackedOAuthAppProfile,
   enrichWithAuthProfiles,
+	ensureEnvBackedOAuthAppProfile,
   getInteractiveMethods,
   isPersonalCredentialKind,
   mapConnectionStatusToFeedStatus,
   resolveConnectionAuthSelection,
   resolveConnectionDisplayName,
   resolveConnectionVisibility,
-} from '../../helpers/connection-helpers';
-import { assertEntityIdsInOrg, callerIsAdmin as resolveCallerIsAdmin } from '../../helpers/db-helpers';
-import { rejectUnboundAppInstallationCreate } from '../../helpers/app-installation-guard';
-import { type FeedDefinition, splitConfigByFeedScope } from '../../helpers/feed-helpers';
-import { getScopedConnectorDefinition } from '../../../../catalog/connector-definitions';
-import type { ToolContext } from '../../../registry';
-import type { ManageConnectionsResult, ConnectionsArgs } from '../schemas';
-import { resolveDeviceBinding, isManagedPublicOrgConnect } from './device-binding';
-import { assertConnectorAllowedInCloud } from '../../../../utils/connector-cloud-gate';
-import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';
-import { unregisterConnectorWebhook } from '../../../../connect/webhook-registration';
-import { enrichConnectorGroupsWithCatalogDisplay } from '../../../../catalog/connector-group-display';
-import { deriveConnectionFacets, deriveEffectiveCredentialMode } from './facets';
+} from "../../helpers/connection-helpers";
+import {
+	assertEntityIdsInOrg,
+	callerIsAdmin as resolveCallerIsAdmin,
+} from "../../helpers/db-helpers";
+import {
+	type FeedDefinition,
+	splitConfigByFeedScope,
+} from "../../helpers/feed-helpers";
+import type { ConnectionsArgs, ManageConnectionsResult } from "../schemas";
+import {
+	isManagedPublicOrgConnect,
+	resolveDeviceBinding,
+} from "./device-binding";
+import {
+	deriveConnectionFacets,
+	deriveEffectiveCredentialMode,
+} from "./facets";
 
 // ============================================
 // handleListConnectorGroups
@@ -70,11 +98,11 @@ function mapConnectorGroupSummaries(raw: unknown): Array<{
     feed_count: number;
   }> = [];
   for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
+		if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
     const id = Number(record.id);
     const displayName =
-      typeof record.display_name === 'string' && record.display_name.trim()
+			typeof record.display_name === "string" && record.display_name.trim()
         ? record.display_name.trim()
         : null;
     const feedCount = Number(record.feed_count) || 0;
@@ -85,8 +113,8 @@ function mapConnectorGroupSummaries(raw: unknown): Array<{
 }
 
 export async function handleListConnectorGroups(
-  args: Extract<ConnectionsArgs, { action: 'list_connector_groups' }>,
-  ctx: ToolContext
+	args: Extract<ConnectionsArgs, { action: "list_connector_groups" }>,
+	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId } = ctx;
@@ -154,7 +182,7 @@ export async function handleListConnectorGroups(
     query = sql`${query} AND c.visibility = 'org'`;
   } else {
     const userRole = await getWorkspaceRole(sql, organizationId, ctx.userId);
-    if (userRole !== 'owner' && userRole !== 'admin') {
+		if (userRole !== "owner" && userRole !== "admin") {
       query = sql`${query} AND (c.visibility = 'org' OR c.created_by = ${ctx.userId})`;
     }
   }
@@ -163,7 +191,10 @@ export async function handleListConnectorGroups(
 
   const rows = await query;
   const connectorKeys = [...new Set(rows.map((r) => String(r.connector_key)))];
-  const opsSummaries = await getOperationsSummaryBatch(organizationId, connectorKeys);
+	const opsSummaries = await getOperationsSummaryBatch(
+		organizationId,
+		connectorKeys,
+	);
 
   const groups = rows.map((row) => {
     const connectorKey = String(row.connector_key);
@@ -187,7 +218,7 @@ export async function handleListConnectorGroups(
   });
 
   return {
-    action: 'list_connector_groups',
+		action: "list_connector_groups",
     groups: await enrichConnectorGroupsWithCatalogDisplay(groups),
   };
 }
@@ -197,8 +228,8 @@ export async function handleListConnectorGroups(
 // ============================================
 
 export async function handleList(
-  args: Extract<ConnectionsArgs, { action: 'list' }>,
-  ctx: ToolContext
+	args: Extract<ConnectionsArgs, { action: "list" }>,
+	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId } = ctx;
@@ -306,7 +337,7 @@ export async function handleList(
     query = sql`${query} AND c.visibility = 'org'`;
   } else {
     const userRole = await getWorkspaceRole(sql, organizationId, ctx.userId);
-    if (userRole !== 'owner' && userRole !== 'admin') {
+		if (userRole !== "owner" && userRole !== "admin") {
       query = sql`${query} AND (c.visibility = 'org' OR c.created_by = ${ctx.userId})`;
     }
   }
@@ -316,14 +347,21 @@ export async function handleList(
   const rows = await query;
   const resolved = await resolveUsernames(
     rows as unknown as Record<string, unknown>[],
-    'created_by'
+		"created_by",
   );
 
-  const connectorKeys = [...new Set(resolved.map((r) => String(r.connector_key)))];
-  const summaries = await getOperationsSummaryBatch(organizationId, connectorKeys);
+	const connectorKeys = [
+		...new Set(resolved.map((r) => String(r.connector_key))),
+	];
+	const summaries = await getOperationsSummaryBatch(
+		organizationId,
+		connectorKeys,
+	);
 
   const connections = resolved.map((row) => {
-    const operationsSummary = summaries.get(String(row.connector_key)) ?? { ...EMPTY_SUMMARY };
+		const operationsSummary = summaries.get(String(row.connector_key)) ?? {
+			...EMPTY_SUMMARY,
+		};
     const hasOperations = operationsSummary.total > 0;
     return {
       ...row,
@@ -348,7 +386,7 @@ export async function handleList(
   });
 
   return {
-    action: 'list',
+		action: "list",
     connections,
     total: connections.length,
     limit,
@@ -362,8 +400,8 @@ export async function handleList(
 // ============================================
 
 export async function handleGet(
-  args: Extract<ConnectionsArgs, { action: 'get' }>,
-  ctx: ToolContext
+	args: Extract<ConnectionsArgs, { action: "get" }>,
+	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId } = ctx;
@@ -419,24 +457,27 @@ export async function handleGet(
     query = sql`${query} AND c.visibility = 'org'`;
   } else {
     const userRole = await getWorkspaceRole(sql, organizationId, ctx.userId);
-    if (userRole !== 'owner' && userRole !== 'admin') {
+		if (userRole !== "owner" && userRole !== "admin") {
       query = sql`${query} AND (c.visibility = 'org' OR c.created_by = ${ctx.userId})`;
     }
   }
 
   const rows = await query;
   if (rows.length === 0) {
-    return { error: 'Connection not found' };
+		return { error: "Connection not found" };
   }
 
-  const [resolved] = await resolveUsernames([rows[0] as Record<string, unknown>], 'created_by');
+	const [resolved] = await resolveUsernames(
+		[rows[0] as Record<string, unknown>],
+		"created_by",
+	);
 
   const connection = rows[0] as { status: string; connector_key: string };
   const viewUrl = await buildViewUrl(ctx, connection.connector_key);
 
   // For pending_auth connections, include the connect token so the UI can initiate OAuth
   let connectToken: string | undefined;
-  if (connection.status === 'pending_auth') {
+	if (connection.status === "pending_auth") {
     const tokenRows = await sql`
       SELECT token
       FROM connect_tokens
@@ -454,19 +495,19 @@ export async function handleGet(
 
   const operationsSummary = await getOperationsSummary(
     organizationId,
-    String((resolved as any).connector_key)
+		String((resolved as any).connector_key),
   );
 
   const getRow = resolved as Record<string, unknown>;
   const feedsSchema = getRow.feeds_schema;
   const connectorHasFeeds =
     feedsSchema != null &&
-    JSON.stringify(feedsSchema) !== '{}' &&
-    JSON.stringify(feedsSchema) !== 'null';
+		JSON.stringify(feedsSchema) !== "{}" &&
+		JSON.stringify(feedsSchema) !== "null";
   const hasOperations = operationsSummary.total > 0;
 
   return {
-    action: 'get',
+		action: "get",
     connection: {
       ...resolved,
       ...(connectToken ? { connect_token: connectToken } : {}),
@@ -494,8 +535,8 @@ export async function handleGet(
 // ============================================
 
 export async function handleCreate(
-  args: Extract<ConnectionsArgs, { action: 'create' }>,
-  ctx: ToolContext
+	args: Extract<ConnectionsArgs, { action: "create" }>,
+	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId, userId } = ctx;
@@ -511,13 +552,16 @@ export async function handleCreate(
 
   // Resolve caller role once — we use it for created_by overrides, explicit
   // app_auth_profile picks, and member-friendly error messages downstream.
-  const callerIsAdmin = await resolveCallerIsAdmin(sql, { organizationId, userId });
+	const callerIsAdmin = await resolveCallerIsAdmin(sql, {
+		organizationId,
+		userId,
+	});
 
   // Resolve effective owner — admins can create connections on behalf of other users
   let effectiveCreatedBy = userId;
   if (args.created_by && args.created_by !== userId) {
     if (!callerIsAdmin) {
-      return { error: 'Only admins can create connections for other users.' };
+			return { error: "Only admins can create connections for other users." };
     }
     effectiveCreatedBy = args.created_by;
   }
@@ -529,7 +573,7 @@ export async function handleCreate(
   if (!callerIsAdmin && args.entity_link_overrides !== undefined) {
     return {
       error:
-        'Only admins can change connector entity-link overrides. Omit `entity_link_overrides`, or ask an admin to update them via `set_connector_entity_link_overrides`.',
+				"Only admins can change connector entity-link overrides. Omit `entity_link_overrides`, or ask an admin to update them via `set_connector_entity_link_overrides`.",
     };
   }
 
@@ -537,12 +581,18 @@ export async function handleCreate(
   // bring an alternate OAuth client. If they explicitly pass a slug, it has
   // to match the admin-pinned default for the connector.
   if (!callerIsAdmin && args.app_auth_profile_slug) {
-    const picked = await getAuthProfileBySlug(organizationId, args.app_auth_profile_slug);
-    if (!picked || picked.profile_kind !== 'oauth_app') {
-      return { error: `App auth profile '${args.app_auth_profile_slug}' not found` };
+		const picked = await getAuthProfileBySlug(
+			organizationId,
+			args.app_auth_profile_slug,
+		);
+		if (!picked || picked.profile_kind !== "oauth_app") {
+			return {
+				error: `App auth profile '${args.app_auth_profile_slug}' not found`,
+			};
     }
     const pinnedAsDefault =
-      picked.is_default_for_connector && picked.connector_key === args.connector_key;
+			picked.is_default_for_connector &&
+			picked.connector_key === args.connector_key;
     if (!pinnedAsDefault) {
       return {
         error: `Only admins can override the OAuth app profile. Ask an admin to pin '${args.app_auth_profile_slug}' as the default for this connector, or omit app_auth_profile_slug to use the org default.`,
@@ -551,7 +601,10 @@ export async function handleCreate(
   }
 
   // Ensure connector is installed from bundled catalog if needed
-  await ensureConnectorInstalled({ organizationId, connectorKey: args.connector_key });
+	await ensureConnectorInstalled({
+		organizationId,
+		connectorKey: args.connector_key,
+	});
 
   // Verify connector exists
   const connector = await getScopedConnectorDefinition({
@@ -560,7 +613,40 @@ export async function handleCreate(
   });
 
   if (!connector) {
-    return { error: `Connector '${args.connector_key}' not found or not active` };
+		return {
+			error: `Connector '${args.connector_key}' not found or not active`,
+		};
+	}
+
+	const chatPlatform =
+		connector.options_schema &&
+		typeof connector.options_schema === "object" &&
+		(connector.options_schema as Record<string, unknown>)[
+			"x-lobu-chat-platform"
+		];
+	if (chatPlatform === args.connector_key) {
+		try {
+			const stableId = args.slug || randomUUID().replace(/-/g, "").slice(0, 16);
+			const created = await upsertByoChatConnection({
+				organizationId,
+				platform: args.connector_key,
+				stableId,
+				displayName: args.display_name,
+				config: args.config ?? {},
+			});
+			const read = await handleGet(
+				{ action: "get", connection_id: created.connectionId },
+				ctx,
+			);
+			if ("error" in read) return read;
+			return {
+				action: "create",
+				connection: read.connection,
+				connector,
+			};
+		} catch (error) {
+			return { error: getErrorMessage(error) };
+		}
   }
 
   // Reject a direct create of an UNBOUND app_installation connection (no
@@ -584,7 +670,7 @@ export async function handleCreate(
     connector,
     deviceWorkerId: args.device_worker_id,
   });
-  if ('error' in deviceBinding) return deviceBinding;
+	if ("error" in deviceBinding) return deviceBinding;
   if (deviceBinding.deviceWorkerId) {
     const dup = (await sql`
       SELECT id FROM connections
@@ -605,7 +691,7 @@ export async function handleCreate(
     const err = await applyEntityLinkOverrides(
       organizationId,
       args.connector_key,
-      args.entity_link_overrides
+			args.entity_link_overrides,
     );
     if (err) return { error: err };
   }
@@ -615,8 +701,10 @@ export async function handleCreate(
   // (org, connector, device)" (enforced just above + by the unique index), so a
   // user's second device can back the same connector with its own connection.
   const authMethods =
-    (connector.auth_schema as { methods?: Array<{ type: string }> })?.methods ?? [];
-  const isNoAuth = authMethods.length > 0 && authMethods.every((m) => m.type === 'none');
+		(connector.auth_schema as { methods?: Array<{ type: string }> })?.methods ??
+		[];
+	const isNoAuth =
+		authMethods.length > 0 && authMethods.every((m) => m.type === "none");
   if (isNoAuth && !deviceBinding.deviceWorkerId) {
     const existing = await sql`
       SELECT id FROM connections
@@ -637,7 +725,8 @@ export async function handleCreate(
   // Detect interactive-auth connectors (e.g. WhatsApp QR). These bypass the
   // standard auth profile selection and instead drive an `authenticate()` run
   // that emits artifacts (qr/code/etc.) for the UI to render.
-  const interactiveMethod = getInteractiveMethods(connector.auth_schema)[0] ?? null;
+	const interactiveMethod =
+		getInteractiveMethods(connector.auth_schema)[0] ?? null;
 
   // A `managedBy` connection's OAuth grant lives in a cloud (public) org — the
   // local instance fetches the token at runtime (execution-context.ts) and never
@@ -650,21 +739,21 @@ export async function handleCreate(
   // active+unauthenticated.
   const incomingConfig = parseJsonObject(args.config);
   const managedByOrg =
-    !!incomingConfig.managedBy &&
-    typeof incomingConfig.managedBy === 'object' &&
+		incomingConfig.managedBy &&
+		typeof incomingConfig.managedBy === "object" &&
     !Array.isArray(incomingConfig.managedBy)
       ? (incomingConfig.managedBy as Record<string, unknown>).org
       : undefined;
   const managedByRequested =
-    typeof managedByOrg === 'string' && managedByOrg.trim().length > 0;
+		typeof managedByOrg === "string" && managedByOrg.trim().length > 0;
   // managedBy delegates to a cloud OAuth grant, so it only applies to OAuth
   // connectors. On a non-OAuth connector (env/browser/none) treating it as
   // managed would bypass a real local auth requirement, so reject it instead of
   // creating an unauthenticated connection.
-  if (managedByRequested && !authMethods.some((m) => m.type === 'oauth')) {
+	if (managedByRequested && !authMethods.some((m) => m.type === "oauth")) {
     return {
       error:
-        'managedBy is only valid for OAuth connectors (the managed grant is an OAuth token fetched from the cloud); this connector has no OAuth auth method.',
+				"managedBy is only valid for OAuth connectors (the managed grant is an OAuth token fetched from the cloud); this connector has no OAuth auth method.",
     };
   }
   const isManagedByConnection = managedByRequested;
@@ -687,24 +776,30 @@ export async function handleCreate(
 
   if (authSelection) {
     const requiresAuth =
-      !!authSelection.oauthMethod || !!authSelection.envMethod || !!authSelection.browserMethod;
+			!!authSelection.oauthMethod ||
+			!!authSelection.envMethod ||
+			!!authSelection.browserMethod;
     if (requiresAuth && !authSelection.authProfile) {
       return {
         error: authSelection.browserMethod
-          ? 'Select or create a browser auth profile before creating the connection.'
+					? "Select or create a browser auth profile before creating the connection."
           : authSelection.oauthMethod && authSelection.envMethod
-            ? 'Select an auth profile for this connector before creating the connection.'
+						? "Select an auth profile for this connector before creating the connection."
             : authSelection.oauthMethod
-              ? 'Select or create an OAuth account profile before creating the connection.'
-              : 'Select or create an auth profile before creating the connection.',
+							? "Select or create an OAuth account profile before creating the connection."
+							: "Select or create an auth profile before creating the connection.",
       };
     }
   }
 
   const browserProfileUsable =
-    authSelection?.authProfile?.profile_kind === 'browser_session'
-      ? (await getBrowserSessionReadiness(authSelection.authProfile.auth_data, args.connector_key))
-          .usable
+		authSelection?.authProfile?.profile_kind === "browser_session"
+			? (
+					await getBrowserSessionReadiness(
+						authSelection.authProfile.auth_data,
+						args.connector_key,
+					)
+				).usable
       : false;
 
   // A `pending_auth` auth profile is OK on create *only* for kinds that can
@@ -715,18 +810,18 @@ export async function handleCreate(
   // `lobu apply`. An `env`/`oauth_app` profile that's not active is an error.
   if (
     authSelection?.authProfile &&
-    authSelection.authProfile.profile_kind !== 'browser_session' &&
-    authSelection.authProfile.status !== 'active' &&
+		authSelection.authProfile.profile_kind !== "browser_session" &&
+		authSelection.authProfile.status !== "active" &&
     !(
-      authSelection.authProfile.status === 'pending_auth' &&
-      authSelection.authProfile.profile_kind === 'oauth_account'
+			authSelection.authProfile.status === "pending_auth" &&
+			authSelection.authProfile.profile_kind === "oauth_account"
     )
   ) {
     return {
       error: `Selected auth profile '${authSelection.authProfile.slug}' is ${authSelection.authProfile.status}${
-        authSelection.authProfile.profile_kind === 'oauth_account'
-          ? ' — must be active or pending_auth'
-          : ' — must be active'
+				authSelection.authProfile.profile_kind === "oauth_account"
+					? " — must be active or pending_auth"
+					: " — must be active"
       }.`,
     };
   }
@@ -738,14 +833,15 @@ export async function handleCreate(
   // hijack another member's grant by passing their slug.
   if (authSelection?.authProfile && !callerIsAdmin) {
     const profile = authSelection.authProfile;
-    if (profile.profile_kind === 'env') {
+		if (profile.profile_kind === "env") {
       return {
         error:
-          'Only admins can use env-credential auth profiles. Ask an admin to install this connection.',
+					"Only admins can use env-credential auth profiles. Ask an admin to install this connection.",
       };
     }
     if (
-      (profile.profile_kind === 'oauth_account' || profile.profile_kind === 'browser_session') &&
+			(profile.profile_kind === "oauth_account" ||
+				profile.profile_kind === "browser_session") &&
       profile.created_by !== ctx.userId
     ) {
       return {
@@ -754,7 +850,7 @@ export async function handleCreate(
     }
   }
 
-  if (authSelection?.selectedKind === 'oauth_account') {
+	if (authSelection?.selectedKind === "oauth_account") {
     // The ACCOUNT token (oauth_account profile) is required and already
     // resolved (it's the precondition of this branch). The APP credentials
     // (client id/secret) may instead come from deployment env vars — the same
@@ -773,11 +869,11 @@ export async function handleCreate(
     if (!authSelection.appAuthProfile) {
       return {
         error: callerIsAdmin
-          ? 'Select or create an OAuth app profile before creating the connection.'
+					? "Select or create an OAuth app profile before creating the connection."
           : `No OAuth app credentials configured for this connector. Ask an admin to set up the ${authSelection.oauthMethod?.provider ?? args.connector_key} app in /oauth-apps first.`,
       };
     }
-    if (authSelection.appAuthProfile.status !== 'active') {
+		if (authSelection.appAuthProfile.status !== "active") {
       return {
         error: `Selected app auth profile '${authSelection.appAuthProfile.slug}' is not active.`,
       };
@@ -802,7 +898,12 @@ export async function handleCreate(
     connectorName: connector.name,
     username: effectiveCreatedBy
       ? ((
-          (await resolveUsernames([{ created_by: effectiveCreatedBy }], 'created_by'))[0] as {
+					(
+						await resolveUsernames(
+							[{ created_by: effectiveCreatedBy }],
+							"created_by",
+						)
+					)[0] as {
             created_by_username?: string;
           }
         )?.created_by_username ?? null)
@@ -812,7 +913,7 @@ export async function handleCreate(
   const visibility = await resolveConnectionVisibility(
     organizationId,
     effectiveCreatedBy,
-    authSelection?.authProfile?.profile_kind
+		authSelection?.authProfile?.profile_kind,
   );
   const connectorFeedsSchema = (connector.feeds_schema ?? null) as Record<
     string,
@@ -824,7 +925,7 @@ export async function handleCreate(
   };
   const splitConfig = splitConfigByFeedScope(
     Object.keys(mergedConfig).length > 0 ? mergedConfig : null,
-    connectorFeedsSchema
+		connectorFeedsSchema,
   );
 
   if (splitConfig.feedConfig) {
@@ -872,9 +973,9 @@ export async function handleCreate(
       connectorKey: args.connector_key,
       displayName: `${displayName} (pairing)`,
       slug: `${args.connector_key}-interactive-${Date.now()}`,
-      profileKind: 'interactive',
+			profileKind: "interactive",
       authData: {},
-      status: 'pending_auth',
+			status: "pending_auth",
       createdBy: effectiveCreatedBy ?? null,
     });
     interactiveAuthProfileId = profile.id;
@@ -883,7 +984,8 @@ export async function handleCreate(
   // Device-bound browser auth profiles live on a specific Mac. Pin the
   // connection there automatically; reject mismatches.
   let effectiveDeviceWorkerId = deviceBinding.deviceWorkerId;
-  const profileDeviceWorkerId = authSelection?.authProfile?.device_worker_id ?? null;
+	const profileDeviceWorkerId =
+		authSelection?.authProfile?.device_worker_id ?? null;
   if (profileDeviceWorkerId) {
     if (!effectiveDeviceWorkerId) {
       effectiveDeviceWorkerId = profileDeviceWorkerId;
@@ -899,7 +1001,10 @@ export async function handleCreate(
   // pass we'd skip the guard for device-bound profiles and hit the partial
   // unique index `idx_connections_org_connector_device_live` as a primary
   // exception instead of a clean error.
-  if (effectiveDeviceWorkerId && effectiveDeviceWorkerId !== deviceBinding.deviceWorkerId) {
+	if (
+		effectiveDeviceWorkerId &&
+		effectiveDeviceWorkerId !== deviceBinding.deviceWorkerId
+	) {
     const dup = (await sql`
       SELECT id FROM connections
       WHERE organization_id = ${organizationId}
@@ -919,7 +1024,8 @@ export async function handleCreate(
   // returns unusable — but the connection is fine to mark active, since the
   // Mac app handles auth status independently.
   const isDeviceBoundBrowserSession =
-    authSelection?.authProfile?.profile_kind === 'browser_session' && !!profileDeviceWorkerId;
+		authSelection?.authProfile?.profile_kind === "browser_session" &&
+		!!profileDeviceWorkerId;
 
   // Device-bound browser profiles can be `pending_auth` on the profile itself
   // until the user logs in (the Mac app launches the managed Chrome) — but
@@ -929,12 +1035,13 @@ export async function handleCreate(
   // are missing, which is the same as any other "logged out" case.
   const connectionStatus =
     interactiveMethod ||
-    (authSelection?.authProfile?.profile_kind === 'browser_session' &&
+		(authSelection?.authProfile?.profile_kind === "browser_session" &&
       !isDeviceBoundBrowserSession &&
       !browserProfileUsable) ||
-    (authSelection?.authProfile?.status === 'pending_auth' && !isDeviceBoundBrowserSession)
-      ? 'pending_auth'
-      : 'active';
+		(authSelection?.authProfile?.status === "pending_auth" &&
+			!isDeviceBoundBrowserSession)
+			? "pending_auth"
+			: "active";
 
   // Reject cross-org entity_ids: a connection tagged with another org's entity
   // would surface under a non-existent in-org entity (mirrors manage_feeds).
@@ -944,7 +1051,9 @@ export async function handleCreate(
     return { error: getErrorMessage(err) };
   }
   const entityIdsValue =
-    args.entity_ids && args.entity_ids.length > 0 ? pgBigintArray(args.entity_ids) : null;
+		args.entity_ids && args.entity_ids.length > 0
+			? pgBigintArray(args.entity_ids)
+			: null;
 
   const slugResult = await resolveNewConnectionSlug({
     organizationId,
@@ -952,7 +1061,7 @@ export async function handleCreate(
     explicitSlug: args.slug,
     displayName,
   });
-  if ('error' in slugResult) return { error: slugResult.error };
+	if ("error" in slugResult) return { error: slugResult.error };
 
   // biome-ignore lint/suspicious/noExplicitAny: postgres.js row shape
   let inserted: any[];
@@ -985,12 +1094,16 @@ export async function handleCreate(
       `,
     });
   } catch (err) {
-    if (err instanceof ConnectionSlugConflictError) return { error: err.message };
+		if (err instanceof ConnectionSlugConflictError)
+			return { error: err.message };
     throw err;
   }
 
-  if (authSelection?.authProfile?.profile_kind === 'oauth_account') {
-    await syncOAuthConnectionsForAuthProfile(organizationId, authSelection.authProfile.id);
+	if (authSelection?.authProfile?.profile_kind === "oauth_account") {
+		await syncOAuthConnectionsForAuthProfile(
+			organizationId,
+			authSelection.authProfile.id,
+		);
   }
 
   logger.info(
@@ -999,28 +1112,68 @@ export async function handleCreate(
       connector_key: args.connector_key,
       status: connectionStatus,
     },
-    'Connection created'
+		"Connection created",
   );
 
   recordLifecycleEvent({
     organizationId,
-    entityType: 'connection',
-    op: 'created',
+		entityType: "connection",
+		op: "created",
     entityId: inserted[0].id,
     summary: `Connection "${displayName}" created`,
     extra: { connector_key: args.connector_key, slug: inserted[0].slug },
   });
 
   return {
-    action: 'create',
+		action: "create",
     connection: enrichWithAuthProfiles(
       inserted[0] as Record<string, unknown>,
       authSelection?.authProfile ?? null,
-      authSelection?.appAuthProfile ?? null
+			authSelection?.appAuthProfile ?? null,
     ),
     connector,
     view_url: await buildViewUrl(ctx, args.connector_key),
   };
+}
+
+export async function handleApplyChatConnection(
+	args: Extract<ConnectionsArgs, { action: "apply_chat_connection" }>,
+	ctx: ToolContext,
+): Promise<ManageConnectionsResult> {
+	const { organizationId } = ctx;
+	if (args.agent_id) {
+		const sql = getDb();
+		const agents = await sql`
+      SELECT 1 FROM agents
+      WHERE organization_id = ${organizationId} AND id = ${args.agent_id}
+      LIMIT 1
+    `;
+		if (agents.length === 0) return { error: "Agent not found" };
+	}
+	try {
+		const result = await upsertByoChatConnection({
+			organizationId,
+			platform: args.connector_key,
+			stableId: args.stable_id,
+			displayName: args.display_name,
+			agentId: args.agent_id,
+			config: args.config,
+			settings: args.settings,
+		});
+		const read = await handleGet(
+			{ action: "get", connection_id: result.connectionId },
+			ctx,
+		);
+		if ("error" in read) return read;
+		return {
+			action: "apply_chat_connection",
+			connection: read.connection,
+			created: result.created,
+			changed: result.changed,
+		};
+	} catch (error) {
+		return { error: getErrorMessage(error) };
+	}
 }
 
 // ============================================
@@ -1028,15 +1181,16 @@ export async function handleCreate(
 // ============================================
 
 export async function handleUpdate(
-  args: Extract<ConnectionsArgs, { action: 'update' }>,
-  ctx: ToolContext
+	args: Extract<ConnectionsArgs, { action: "update" }>,
+	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId } = ctx;
 
   // Verify ownership
   const existingRows = await sql`
-    SELECT c.id, c.connector_key, c.auth_profile_id, c.app_auth_profile_id, c.created_by, c.config, cd.auth_schema, cd.feeds_schema
+    SELECT c.id, c.connector_key, c.auth_profile_id, c.app_auth_profile_id, c.created_by,
+           c.config, c.credential_mode, cd.auth_schema, cd.feeds_schema
     FROM connections c
     LEFT JOIN LATERAL (
       SELECT auth_schema, feeds_schema
@@ -1052,7 +1206,7 @@ export async function handleUpdate(
       AND c.deleted_at IS NULL
   `;
   if (existingRows.length === 0) {
-    return { error: 'Connection not found' };
+		return { error: "Connection not found" };
   }
 
   const existing = existingRows[0] as {
@@ -1064,11 +1218,12 @@ export async function handleUpdate(
     app_auth_profile_id: number | null;
     created_by: string | null;
     config: Record<string, unknown> | null;
+		credential_mode: "byo" | "managed" | null;
   };
 
-  const hasAuthProfileArg = Object.hasOwn(args, 'auth_profile_slug');
-  const hasAppAuthProfileArg = Object.hasOwn(args, 'app_auth_profile_slug');
-  const hasDeviceWorkerArg = Object.hasOwn(args, 'device_worker_id');
+	const hasAuthProfileArg = Object.hasOwn(args, "auth_profile_slug");
+	const hasAppAuthProfileArg = Object.hasOwn(args, "app_auth_profile_slug");
+	const hasDeviceWorkerArg = Object.hasOwn(args, "device_worker_id");
 
   // `update` is now member-writable so members can edit their own
   // connection. Resolve the caller's role once up front and gate every
@@ -1082,10 +1237,30 @@ export async function handleUpdate(
   if (!callerIsAdmin) {
     if (!ctx.userId || existing.created_by !== ctx.userId) {
       return {
-        error: 'You can only update connections you created.',
+				error: "You can only update connections you created.",
       };
     }
   }
+
+	if (existing.credential_mode !== null) {
+		try {
+			await updateChatConnection({
+				organizationId,
+				connectionId: args.connection_id,
+				displayName: args.display_name,
+				config: args.config,
+				status: args.status,
+			});
+			const read = await handleGet(
+				{ action: "get", connection_id: args.connection_id },
+				ctx,
+			);
+			if ("error" in read) return read;
+			return { action: "update", connection: read.connection };
+		} catch (error) {
+			return { error: getErrorMessage(error) };
+		}
+	}
 
   // App profile updates: non-admins may only set the connector's pinned
   // default (mirrors handleCreate's gate). Clearing the app profile is
@@ -1094,11 +1269,11 @@ export async function handleUpdate(
   if (hasAppAuthProfileArg && !callerIsAdmin) {
     const slug = args.app_auth_profile_slug;
     if (!slug) {
-      return { error: 'Only admins can clear the OAuth app profile.' };
+			return { error: "Only admins can clear the OAuth app profile." };
     }
     const picked = await getAuthProfileBySlug(organizationId, slug);
     const pinned =
-      picked?.profile_kind === 'oauth_app' &&
+			picked?.profile_kind === "oauth_app" &&
       picked.is_default_for_connector &&
       picked.connector_key === existing.connector_key;
     if (!pinned) {
@@ -1122,7 +1297,9 @@ export async function handleUpdate(
       connectorKey: existing.connector_key,
     });
     if (!connectorDef) {
-      return { error: `Connector '${existing.connector_key}' not found or not active` };
+			return {
+				error: `Connector '${existing.connector_key}' not found or not active`,
+			};
     }
     const binding = await resolveDeviceBinding({
       organizationId,
@@ -1130,7 +1307,7 @@ export async function handleUpdate(
       connector: connectorDef,
       deviceWorkerId: args.device_worker_id,
     });
-    if ('error' in binding) return binding;
+		if ("error" in binding) return binding;
     nextDeviceWorkerId = binding.deviceWorkerId;
   }
 
@@ -1144,7 +1321,9 @@ export async function handleUpdate(
   });
 
   if (args.auth_profile_slug && !authSelection.authProfile) {
-    return { error: `Auth profile '${args.auth_profile_slug}' not found for this connector` };
+		return {
+			error: `Auth profile '${args.auth_profile_slug}' not found for this connector`,
+		};
   }
   if (args.app_auth_profile_slug && !authSelection.appAuthProfile) {
     return {
@@ -1153,15 +1332,18 @@ export async function handleUpdate(
   }
   if (
     authSelection.authProfile &&
-    authSelection.authProfile.profile_kind !== 'browser_session' &&
-    authSelection.authProfile.status !== 'active' &&
-    authSelection.authProfile.status !== 'pending_auth'
+		authSelection.authProfile.profile_kind !== "browser_session" &&
+		authSelection.authProfile.status !== "active" &&
+		authSelection.authProfile.status !== "pending_auth"
   ) {
     return {
       error: `Auth profile '${args.auth_profile_slug}' has status '${authSelection.authProfile.status}' — must be active or pending_auth`,
     };
   }
-  if (authSelection.appAuthProfile && authSelection.appAuthProfile.status !== 'active') {
+	if (
+		authSelection.appAuthProfile &&
+		authSelection.appAuthProfile.status !== "active"
+	) {
     return {
       error: `App auth profile '${args.app_auth_profile_slug}' has status '${authSelection.appAuthProfile.status}' — must be active`,
     };
@@ -1173,15 +1355,15 @@ export async function handleUpdate(
   // admin-managed org-shared credentials — same rule as create.
   if (hasAuthProfileArg && !callerIsAdmin && authSelection.authProfile) {
     const profile = authSelection.authProfile;
-    if (profile.profile_kind === 'env') {
+		if (profile.profile_kind === "env") {
       return {
         error:
-          'Only admins can use env-credential auth profiles. Ask an admin to rebind this connection.',
+					"Only admins can use env-credential auth profiles. Ask an admin to rebind this connection.",
       };
     }
     if (
-      (profile.profile_kind === 'oauth_account' ||
-        profile.profile_kind === 'browser_session') &&
+			(profile.profile_kind === "oauth_account" ||
+				profile.profile_kind === "browser_session") &&
       profile.created_by !== ctx.userId
     ) {
       return {
@@ -1190,10 +1372,13 @@ export async function handleUpdate(
     }
   }
 
-  const currentAuthProfile = await getAuthProfileById(organizationId, existing.auth_profile_id);
+	const currentAuthProfile = await getAuthProfileById(
+		organizationId,
+		existing.auth_profile_id,
+	);
   const currentAppAuthProfile = await getAuthProfileById(
     organizationId,
-    existing.app_auth_profile_id
+		existing.app_auth_profile_id,
   );
 
   const nextAuthProfileId = hasAuthProfileArg
@@ -1205,7 +1390,8 @@ export async function handleUpdate(
   // owner's token. Downgrade-only: we never widen here (the CASE keeps the
   // current visibility when the new profile is not personal).
   const rebindToPersonalCred =
-    hasAuthProfileArg && isPersonalCredentialKind(authSelection.authProfile?.profile_kind);
+		hasAuthProfileArg &&
+		isPersonalCredentialKind(authSelection.authProfile?.profile_kind);
   const nextAppAuthProfileId = hasAppAuthProfileArg
     ? (authSelection.appAuthProfile?.id ?? null)
     : existing.app_auth_profile_id;
@@ -1214,12 +1400,16 @@ export async function handleUpdate(
     : currentAuthProfile;
 
   // Device-bound browser profile auto-pins the connection's device.
-  const updateProfileDeviceWorkerId = effectiveSelectedAuthProfile?.device_worker_id ?? null;
+	const updateProfileDeviceWorkerId =
+		effectiveSelectedAuthProfile?.device_worker_id ?? null;
   if (updateProfileDeviceWorkerId) {
     if (!hasDeviceWorkerArg) {
       // Caller didn't touch device pin — adopt the profile's device.
       nextDeviceWorkerId = updateProfileDeviceWorkerId;
-    } else if (nextDeviceWorkerId && nextDeviceWorkerId !== updateProfileDeviceWorkerId) {
+		} else if (
+			nextDeviceWorkerId &&
+			nextDeviceWorkerId !== updateProfileDeviceWorkerId
+		) {
       return {
         error: `Auth profile '${effectiveSelectedAuthProfile!.slug}' lives on a different device than the one selected; pick that device or a different profile.`,
       };
@@ -1228,31 +1418,31 @@ export async function handleUpdate(
     }
   }
   const isDeviceBoundBrowserSessionUpdate =
-    effectiveSelectedAuthProfile?.profile_kind === 'browser_session' &&
+		effectiveSelectedAuthProfile?.profile_kind === "browser_session" &&
     !!updateProfileDeviceWorkerId;
 
   const browserProfileUsable =
-    effectiveSelectedAuthProfile?.profile_kind === 'browser_session' &&
+		effectiveSelectedAuthProfile?.profile_kind === "browser_session" &&
     !isDeviceBoundBrowserSessionUpdate
       ? (
           await getBrowserSessionReadiness(
             effectiveSelectedAuthProfile.auth_data,
-            existing.connector_key
+						existing.connector_key,
           )
         ).usable
       : false;
   const effectiveStatus =
     args.status ??
-    (effectiveSelectedAuthProfile?.profile_kind === 'browser_session'
+		(effectiveSelectedAuthProfile?.profile_kind === "browser_session"
       ? isDeviceBoundBrowserSessionUpdate
-        ? 'active'
+				? "active"
         : browserProfileUsable
-          ? 'active'
-          : 'pending_auth'
+					? "active"
+					: "pending_auth"
       : null);
   const splitConfig = splitConfigByFeedScope(
     args.config ?? null,
-    (existing.feeds_schema as Record<string, FeedDefinition>) ?? null
+		(existing.feeds_schema as Record<string, FeedDefinition>) ?? null,
   );
 
   if (splitConfig.feedConfig) {
@@ -1265,7 +1455,8 @@ export async function handleUpdate(
   // Config write mode: declarative `lobu apply` passes `replace_config: true`
   // so a removed manifest key actually disappears remotely. Default (merge)
   // is preserved for the web UI / partial updates.
-  const replaceConfig = args.replace_config === true && args.config !== undefined;
+	const replaceConfig =
+		args.replace_config === true && args.config !== undefined;
   const connectionConfigForReplace = splitConfig.connectionConfig ?? {};
 
   // Consent-only is enforced BIDIRECTIONALLY: the feed-creation guard stops a
@@ -1280,7 +1471,8 @@ export async function handleUpdate(
     : splitConfig.connectionConfig
       ? { ...existingConfig, ...splitConfig.connectionConfig }
       : existingConfig;
-  const willBeConsentOnly = parseJsonObject(resultingConfig).consent_only === true;
+	const willBeConsentOnly =
+		parseJsonObject(resultingConfig).consent_only === true;
   if (willBeConsentOnly && existingConfig.consent_only !== true) {
     const feedRows = await sql`
       SELECT 1 FROM feeds
@@ -1292,7 +1484,7 @@ export async function handleUpdate(
     if (feedRows.length > 0) {
       return {
         error:
-          'This connection has feeds; a consent-only connection cannot have feeds. Remove its feeds first.',
+					"This connection has feeds; a consent-only connection cannot have feeds. Remove its feeds first.",
       };
     }
   }
@@ -1303,7 +1495,7 @@ export async function handleUpdate(
   if (existingConfig.consent_only === true && !willBeConsentOnly) {
     return {
       error:
-        'This connection is consent-only (holds an OAuth grant for delegation); the consent-only flag cannot be removed.',
+				"This connection is consent-only (holds an OAuth grant for delegation); the consent-only flag cannot be removed.",
     };
   }
 
@@ -1321,7 +1513,7 @@ export async function handleUpdate(
     args.entity_ids !== undefined
       ? args.entity_ids.length > 0
         ? pgBigintArray(args.entity_ids)
-        : '{}'
+				: "{}"
       : null;
 
   // Slug is only ever changed when the caller passes one explicitly — a
@@ -1340,7 +1532,9 @@ export async function handleUpdate(
         excludeId: args.connection_id,
       })
     ) {
-      return { error: `Connection slug '${updateExplicitSlug}' already exists for this organization.` };
+			return {
+				error: `Connection slug '${updateExplicitSlug}' already exists for this organization.`,
+			};
     }
     nextSlug = updateExplicitSlug;
   }
@@ -1368,18 +1562,24 @@ export async function handleUpdate(
     `;
   } catch (err) {
     if (isConnectionSlugUniqueViolation(err) && updateExplicitSlug) {
-      return { error: `Connection slug '${updateExplicitSlug}' already exists for this organization.` };
+			return {
+				error: `Connection slug '${updateExplicitSlug}' already exists for this organization.`,
+			};
     }
     throw err;
   }
 
-  if (hasDeviceWorkerArg || (updateProfileDeviceWorkerId && !hasDeviceWorkerArg)) {
+	if (
+		hasDeviceWorkerArg ||
+		(updateProfileDeviceWorkerId && !hasDeviceWorkerArg)
+	) {
     await sql`
       UPDATE connections
       SET device_worker_id = ${nextDeviceWorkerId}, updated_at = NOW()
       WHERE id = ${args.connection_id} AND organization_id = ${organizationId}
     `;
-    (updated[0] as Record<string, unknown>).device_worker_id = nextDeviceWorkerId;
+		(updated[0] as Record<string, unknown>).device_worker_id =
+			nextDeviceWorkerId;
   }
 
   const updatedConnection = updated[0] as {
@@ -1400,21 +1600,23 @@ export async function handleUpdate(
     WHERE connection_id = ${updatedConnection.id}
   `;
 
-  const effectiveAuth = hasAuthProfileArg ? authSelection.authProfile : currentAuthProfile;
+	const effectiveAuth = hasAuthProfileArg
+		? authSelection.authProfile
+		: currentAuthProfile;
   const effectiveAppAuth = hasAppAuthProfileArg
     ? authSelection.appAuthProfile
     : currentAppAuthProfile;
 
-  if (effectiveAuth?.profile_kind === 'oauth_account') {
+	if (effectiveAuth?.profile_kind === "oauth_account") {
     await syncOAuthConnectionsForAuthProfile(organizationId, effectiveAuth.id);
   }
 
   return {
-    action: 'update',
+		action: "update",
     connection: enrichWithAuthProfiles(
       updated[0] as Record<string, unknown>,
       effectiveAuth ?? null,
-      effectiveAppAuth ?? null
+			effectiveAppAuth ?? null,
     ),
   };
 }
@@ -1424,30 +1626,53 @@ export async function handleUpdate(
 // ============================================
 
 export async function handleDelete(
-  args: Extract<ConnectionsArgs, { action: 'delete' }>,
-  ctx: ToolContext
+	args: Extract<ConnectionsArgs, { action: "delete" }>,
+	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId } = ctx;
+	const targets = await sql`
+		SELECT id, slug, display_name, connector_key, credential_mode
+		FROM connections
+		WHERE id = ${args.connection_id}
+			AND organization_id = ${organizationId}
+			AND deleted_at IS NULL
+		LIMIT 1
+	`;
+	if (targets.length === 0) {
+		return { error: "Connection not found or already deleted" };
+	}
+	const target = targets[0] as {
+		id: number;
+		slug: string;
+		display_name: string | null;
+		connector_key: string;
+		credential_mode: string | null;
+	};
 
   // Tear down any provider webhook subscription BEFORE the soft-delete, while
   // the connection row (with its stored externalId + credentials) is still
   // readable. Best-effort: the helper logs + swallows failures so a provider
   // hiccup never blocks the delete.
+	let deleted: Array<Record<string, unknown>>;
+	if (target.credential_mode !== null) {
+		try {
+			await deleteChatConnection(organizationId, args.connection_id);
+		} catch (error) {
+			return { error: getErrorMessage(error) };
+		}
+		deleted = [target];
+	} else {
   await unregisterConnectorWebhook({
     organizationId,
     connectionId: args.connection_id,
   });
-
-  const deleted = await sql`
+		deleted = await sql`
     UPDATE connections
     SET deleted_at = NOW(), status = 'paused', updated_at = NOW()
     WHERE id = ${args.connection_id} AND organization_id = ${organizationId} AND deleted_at IS NULL
     RETURNING id, slug, display_name, connector_key
   `;
-
-  if (deleted.length === 0) {
-    return { error: 'Connection not found or already deleted' };
   }
 
   // Cancel any pending runs for this connection's feeds
@@ -1469,14 +1694,15 @@ export async function handleDelete(
   const entityIds = affectedFeeds
     .map((row: { entity_id: number | string | null }) => Number(row.entity_id))
     .filter((value) => Number.isFinite(value));
-  const connName = conn.display_name || conn.connector_key || args.connection_id;
+	const connName =
+		conn.display_name || conn.connector_key || args.connection_id;
   recordChangeEvent({
     entityIds: entityIds.map(Number),
     organizationId,
     title: `Connection deleted: ${connName}`,
     content: `Connection "${connName}" (id: ${args.connection_id}, connector: ${conn.connector_key}) was deleted.`,
     metadata: {
-      action: 'connection_deleted',
+			action: "connection_deleted",
       connection_id: args.connection_id,
       connector_key: conn.connector_key,
       slug: conn.slug,
@@ -1485,15 +1711,15 @@ export async function handleDelete(
   });
   recordLifecycleEvent({
     organizationId,
-    entityType: 'connection',
-    op: 'deleted',
+		entityType: "connection",
+		op: "deleted",
     entityId: args.connection_id,
     summary: `Connection "${connName}" deleted`,
     extra: { connector_key: conn.connector_key, slug: conn.slug },
   });
 
   return {
-    action: 'delete',
+		action: "delete",
     deleted: true,
     connection_id: args.connection_id,
     slug: conn.slug as string,

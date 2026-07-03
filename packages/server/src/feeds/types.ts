@@ -1,4 +1,4 @@
-// Shape returned by GET /api/v1/connections/{id}/feeds. A projection of the
+// Shape returned by manage_feeds(action='list_feeds'). A projection of the
 // `feeds` table into the camelCase the frontend consumes.
 
 export type FeedKind = "collected" | "streaming" | "virtual";

@@ -685,36 +685,44 @@ export async function executePlan(
     );
   }
 
-  // 3) Platforms — upsert only the platforms the diff flagged (create / config
-  // change / key removal). The diff treats an opaque remote secret (`***` /
-  // `secret://`) as unchanged while the key is still declared (see
-  // platformConfigChanged), so a stable config is a true noop and the live
-  // worker is NOT restarted on every apply. The flip side — rotating a secret
-  // VALUE in place can't be detected from the opaque round-trip and so isn't
-  // auto-pushed here; that needs a secret-aware compare on the server's upsert
-  // (owletto) and is tracked as a follow-up. A REMOVED key IS detected (it's
-  // absent from desired) and applied.
-  for (const row of rowsByKind("platform")) {
-    if (row.kind !== "platform") continue;
-    const desired = row.desired;
-    if (!desired) continue;
-    const result = await ctx.client.upsertPlatform(
-      row.agentId,
-      desired.stableId,
-      {
-        platform: desired.type,
-        ...(desired.name ? { name: desired.name } : {}),
-        config: desired.config,
-      }
-    );
-    const detail = result.willRestart
-      ? "(restarted)"
-      : result.noop
-        ? "(noop on server)"
-        : undefined;
-    printText(
-      renderProgress(row.verb, "platform", `${row.agentId}/${row.id}`, detail)
-    );
+  // 3) Platforms — reconcile every declaration. Secret values cannot safely
+  // round-trip through list APIs, so the CLI cannot detect an in-place token
+  // rotation. The server compares resolved credentials under a PG advisory
+  // lock and makes unchanged declarations true no-ops (no write or restart).
+  const platformRows = new Map(
+    ctx.plan.rows
+      .filter((row) => row.kind === "platform")
+      .map((row) => [`${row.agentId}:${row.id}`, row])
+  );
+  for (const agent of ctx.state.agents) {
+    for (const desired of agent.platforms) {
+      const row = platformRows.get(
+        `${agent.metadata.agentId}:${desired.stableId}`
+      );
+      if (!row || row.kind !== "platform") continue;
+      const result = await ctx.client.upsertPlatform(
+        agent.metadata.agentId,
+        desired.stableId,
+        {
+          platform: desired.type,
+          ...(desired.name ? { name: desired.name } : {}),
+          config: desired.config,
+        }
+      );
+      const detail = result.willRestart
+        ? "(restarted)"
+        : result.noop
+          ? "(noop on server)"
+          : undefined;
+      printText(
+        renderProgress(
+          result.noop ? "noop" : row.verb,
+          "platform",
+          `${agent.metadata.agentId}/${row.id}`,
+          detail
+        )
+      );
+    }
   }
 
   // 3b) Declarative channel bindings — reconcile after the platform upserts

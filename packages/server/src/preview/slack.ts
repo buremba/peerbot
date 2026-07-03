@@ -56,6 +56,9 @@ function linkCommand(platform: string): string {
 interface ClaimPayload {
 	organizationId: string;
 	agentId: string;
+	/** Unified chat connection this code may be redeemed through. Omitted only
+	 * for the hosted cross-org preview bot flow used by `lobu run`. */
+	connectionId?: number;
 	createdBy: string | null;
 	allowedSurfaces: SurfaceType[];
 	createdAt: number;
@@ -139,20 +142,41 @@ export async function createPreviewClaim(c: Context<{ Bindings: Env }>) {
 
 	const platform =
 		typeof body.platform === "string" ? body.platform.trim().toLowerCase() : "";
-	if (!PREVIEW_PLATFORMS.has(platform)) {
-		return c.json(
-			{
-				error: "Unsupported preview platform",
-				message: `platform must be one of: ${[...PREVIEW_PLATFORMS].join(", ")}`,
-			},
-			400,
-		);
-	}
+	if (!platform) return c.json({ error: "platform is required" }, 400);
 
 	const surfaces = normalizeSurfaces(body.surfaces);
 	const ttlMinutes = normalizeTtlMinutes(body.ttl_minutes);
 	const codePrefix = slugify(agentId, { maxLength: 32 }) || "agent";
 	const sql = getDb();
+	const requestedConnectionId = Number(body.connection_id);
+	let connectionId: number | undefined;
+	if (Number.isFinite(requestedConnectionId) && requestedConnectionId > 0) {
+		const rows = (await sql`
+			SELECT id, connector_key
+			FROM connections
+			WHERE id = ${requestedConnectionId}
+				AND organization_id = ${auth.organizationId}
+				AND credential_mode IS NOT NULL
+				AND status = 'active'
+				AND deleted_at IS NULL
+			LIMIT 1
+		`) as Array<{ id: number; connector_key: string }>;
+		const connection = rows[0];
+		if (!connection)
+			return c.json({ error: "Active chat connection not found" }, 404);
+		if (connection.connector_key !== platform) {
+			return c.json({ error: "Connection platform does not match" }, 400);
+		}
+		connectionId = connection.id;
+	} else if (!PREVIEW_PLATFORMS.has(platform)) {
+		return c.json(
+			{
+				error: "Unsupported preview platform",
+				message: `A connection_id is required for ${platform}`,
+			},
+			400,
+		);
+	}
 
 	const agentRows = await sql<{ id: string }>`
     SELECT id
@@ -179,6 +203,7 @@ export async function createPreviewClaim(c: Context<{ Bindings: Env }>) {
 		const payload: ClaimPayload = {
 			organizationId: auth.organizationId,
 			agentId,
+			...(connectionId ? { connectionId } : {}),
 			createdBy: auth.userId,
 			allowedSurfaces: surfaces,
 			createdAt: Date.now(),
@@ -189,11 +214,11 @@ export async function createPreviewClaim(c: Context<{ Bindings: Env }>) {
         VALUES (${codeHash(code)}, ${CLAIM_SCOPE}, ${sql.json(payload)}, ${expiresAt})
       `;
 			return c.json({
-				provider: `lobu-public-${platform}`,
+				provider: connectionId ? platform : `lobu-public-${platform}`,
 				platform,
 				code,
 				command: previewLinkCommand(platform, code),
-				join_url: previewJoinUrl(platform),
+				join_url: connectionId ? "" : previewJoinUrl(platform),
 				expires_at: expiresAt.toISOString(),
 				allowed_surfaces: surfaces,
 			});
@@ -213,14 +238,11 @@ export async function createPreviewClaim(c: Context<{ Bindings: Env }>) {
 type ConsumeClaimResult =
 	| { status: "bound"; agentId: string; organizationId: string }
 	| { status: "not_found" }
+	| { status: "connection_mismatch" }
 	| { status: "surface_not_allowed"; surfaceType: SurfaceType };
 
-// `agent_channel_bindings` upsert — last link for THIS org's chat wins. The
-// uniqueness is org-scoped (org_id, platform, channel_id[, team_id]) so a
-// sibling tenant binding the same platform+channel can never collide with — or
-// take over — this org's row. `organization_id` is intentionally never updated,
-// so a binding cannot change owners. The team_id IS NULL branch upserts via the
-// org-scoped partial unique index. `tx` is a `sql` or a `sql.begin` handle.
+// `agent_channel_bindings` upsert — last link for this concrete bot connection
+// and channel wins. `tx` is a `sql` or a `sql.begin` handle.
 async function upsertBinding(
 	tx: ReturnType<typeof getDb>,
 	platform: string,
@@ -228,25 +250,18 @@ async function upsertBinding(
 	teamId: string | undefined,
 	agentId: string,
 	organizationId: string,
+	connectionId: number,
 ): Promise<void> {
-	if (teamId) {
-		await tx`
-      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
-      VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, ${teamId}, now())
-      ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
-        agent_id = EXCLUDED.agent_id,
-        created_at = EXCLUDED.created_at
-    `;
-	} else {
-		await tx`
-      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
-      VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, NULL, now())
-      ON CONFLICT (organization_id, platform, channel_id)
-        WHERE team_id IS NULL
-        DO UPDATE SET agent_id = EXCLUDED.agent_id,
+	await tx`
+		INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id, created_at)
+		VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, ${teamId ?? null}, ${connectionId}, now())
+      ON CONFLICT (organization_id, connection_id, channel_id)
+        WHERE connection_id IS NOT NULL
+		DO UPDATE SET agent_id = EXCLUDED.agent_id,
+			platform = EXCLUDED.platform,
+			team_id = EXCLUDED.team_id,
           created_at = EXCLUDED.created_at
     `;
-	}
 }
 
 /**
@@ -271,24 +286,71 @@ export async function consumePreviewClaim(args: {
 	surfaceType: SurfaceType;
 	/** Sender's platform user id (e.g. Slack `U…`), if known. */
 	platformUserId?: string;
+	/** Runtime connection id handling the command. Required for a
+	 * connection-scoped claim; hosted preview claims intentionally omit it. */
+	connectionId?: string;
+	/** Organization that owns the runtime connection handling redemption. */
+	connectionOrganizationId?: string;
 }): Promise<ConsumeClaimResult> {
-	const { code, platform, teamId, channelId, surfaceType, platformUserId } =
-		args;
+	const {
+		code,
+		platform,
+		teamId,
+		channelId,
+		surfaceType,
+		platformUserId,
+		connectionId,
+		connectionOrganizationId,
+	} = args;
 	const sql = getDb();
 
 	return sql.begin(async (tx) => {
 		const claims = await tx<{ payload: ClaimPayload }>`
-      DELETE FROM oauth_states
-      WHERE id = ${codeHash(code)}
-        AND scope = ${CLAIM_SCOPE}
-        AND expires_at > now()
-      RETURNING payload
-    `;
+			SELECT payload FROM oauth_states
+			WHERE id = ${codeHash(code)}
+				AND scope = ${CLAIM_SCOPE}
+				AND expires_at > now()
+			FOR UPDATE
+		`;
 		const claim = claims[0]?.payload;
 		if (!claim) return { status: "not_found" as const };
+		let bindingConnectionId = claim.connectionId;
+		if (bindingConnectionId != null) {
+			if (!connectionId) return { status: "connection_mismatch" as const };
+			const matched = await tx`
+				SELECT 1 FROM connections
+				WHERE id = ${claim.connectionId}
+					AND organization_id = ${claim.organizationId}
+					AND slug = ${runtimeConnectionIdToSlug(connectionId)}
+					AND connector_key = ${platform}
+					AND status = 'active'
+					AND deleted_at IS NULL
+				LIMIT 1
+			`;
+			if (matched.length === 0)
+				return { status: "connection_mismatch" as const };
+		} else {
+			if (!connectionId) return { status: "connection_mismatch" as const };
+			const matched = await tx<{ id: number }>`
+				SELECT id FROM connections
+				WHERE slug = ${runtimeConnectionIdToSlug(connectionId)}
+					AND connector_key = ${platform}
+					AND status = 'active'
+					AND deleted_at IS NULL
+					${connectionOrganizationId ? tx`AND organization_id = ${connectionOrganizationId}` : tx``}
+				LIMIT 2
+			`;
+			if (matched.length !== 1)
+				return { status: "connection_mismatch" as const };
+			bindingConnectionId = matched[0].id;
+		}
 		if (!claim.allowedSurfaces.includes(surfaceType)) {
 			return { status: "surface_not_allowed" as const, surfaceType };
 		}
+		await tx`
+			DELETE FROM oauth_states
+			WHERE id = ${codeHash(code)} AND scope = ${CLAIM_SCOPE}
+		`;
 
 		await upsertBinding(
 			tx,
@@ -297,6 +359,7 @@ export async function consumePreviewClaim(args: {
 			teamId,
 			claim.agentId,
 			claim.organizationId,
+			bindingConnectionId,
 		);
 
 		// The code was minted by an authenticated `lobu run`, so the sender is the
@@ -341,19 +404,31 @@ interface PreviewAgent {
  */
 async function resolvePreviewConnectionOrg(
 	connectionId: string,
-): Promise<{ organizationId: string; owningAgentId: string } | null> {
+): Promise<{
+	organizationId: string;
+	owningAgentId: string;
+	connectionDatabaseId: number;
+} | null> {
 	const sql = getDb();
 	const rows = (await sql`
-    SELECT organization_id, agent_id
+    SELECT id, organization_id, agent_id
     FROM connections
     WHERE slug = ${runtimeConnectionIdToSlug(connectionId)}
       AND credential_mode IS NOT NULL
       AND deleted_at IS NULL
     LIMIT 1
-  `) as Array<{ organization_id: string | null; agent_id: string | null }>;
+  `) as Array<{
+		id: number;
+		organization_id: string | null;
+		agent_id: string | null;
+	}>;
 	const row = rows[0];
 	if (!row?.organization_id || !row.agent_id) return null;
-	return { organizationId: row.organization_id, owningAgentId: row.agent_id };
+	return {
+		organizationId: row.organization_id,
+		owningAgentId: row.agent_id,
+		connectionDatabaseId: row.id,
+	};
 }
 
 /**
@@ -436,6 +511,7 @@ export async function bindChatToPreviewAgent(args: {
 		teamId,
 		target.id,
 		org.organizationId,
+		org.connectionDatabaseId,
 	);
 	return { status: "bound", agentId: target.id };
 }
@@ -616,6 +692,8 @@ export async function bindChatToAgentForOwner(args: {
 	channelId: string;
 	agentId: string;
 	lobuUserId: string;
+	connectionId: string;
+	connectionOrganizationId?: string;
 }): Promise<BindForOwnerResult> {
 	const { platform, teamId, channelId, agentId, lobuUserId } = args;
 	const sql = getDb();
@@ -628,8 +706,25 @@ export async function bindChatToAgentForOwner(args: {
   `;
 	if (owned.length === 0) return { status: "forbidden" };
 	const organizationId = owned[0].organization_id;
+	const connections = await sql<{ id: number }>`
+		SELECT id FROM connections
+		WHERE slug = ${runtimeConnectionIdToSlug(args.connectionId)}
+			AND connector_key = ${platform}
+			AND deleted_at IS NULL
+			${args.connectionOrganizationId ? sql`AND organization_id = ${args.connectionOrganizationId}` : sql``}
+		LIMIT 2
+	`;
+	if (connections.length !== 1) return { status: "forbidden" };
 	await sql.begin((tx) =>
-		upsertBinding(tx, platform, channelId, teamId, agentId, organizationId),
+		upsertBinding(
+			tx,
+			platform,
+			channelId,
+			teamId,
+			agentId,
+			organizationId,
+			connections[0].id,
+		),
 	);
 	return { status: "bound" };
 }

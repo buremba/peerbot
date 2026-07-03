@@ -710,7 +710,7 @@ describe("ChatInstanceManager webhook wiring", () => {
 			getPublicGatewayUrl: () => "",
 			getSecretStore: () => secretStore,
 			getConnectionStore: () => connectionStore,
-			getChannelBindingService: () => ({ getBinding: async () => null }),
+			getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
 			getCommandRegistry: () => undefined,
 		};
 		manager.publicGatewayUrl = "";
@@ -972,7 +972,7 @@ describe("connector-connection webhook bridge (connections table)", () => {
 			getPublicGatewayUrl: () => "",
 			getSecretStore: () => secretStore,
 			getConnectionStore: () => connectionStore,
-			getChannelBindingService: () => ({ getBinding: async () => null }),
+			getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
 			getCommandRegistry: () => undefined,
 		};
 		manager.publicGatewayUrl = "";

@@ -22,15 +22,17 @@ beforeAll(async () => {
 });
 
 function codeHash(code: string): string {
-  return createHash("sha256")
-    .update(code.trim().toLowerCase())
-    .digest("hex");
+	return createHash("sha256").update(code.trim().toLowerCase()).digest("hex");
 }
 
 describe("DM bare-code message → real consume→bind (previewMode)", () => {
   test("a bare preview code DM binds the chat to the claim's agent", async () => {
     const sql = getDb();
-    const suffix = Date.now().toString(36).toUpperCase().slice(-6).padStart(6, "0");
+		const suffix = Date.now()
+			.toString(36)
+			.toUpperCase()
+			.slice(-6)
+			.padStart(6, "0");
     const code = `crm-${suffix}`;
     const agentId = `agent-msg-e2e-${Date.now()}`;
     const organizationId = `org-msg-e2e-${Date.now()}`;
@@ -38,6 +40,16 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
     const canonical = `slack:${channelId}`;
 
     await seedAgentRow(agentId, { organizationId });
+		const [connectionRow] = await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        credential_mode, config
+      ) VALUES (
+        ${organizationId}, 'slack', 'agentconn-conn-msg-e2e', 'Slack',
+        'active', 'byo', '{}'
+      )
+      RETURNING id
+    `;
     await sql`
       INSERT INTO oauth_states (id, scope, payload, expires_at)
       VALUES (
@@ -59,11 +71,13 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
       registerBuiltInCommands(registry, { agentSettingsStore: {} as never });
       const dispatcher = new CommandDispatcher({
         registry,
-        channelBindingService: { getBinding: mock(async () => null), getBindingAnyOrg: mock(async () => null) } as never,
+				channelBindingService: {
+					getBindingForConnection: mock(async () => null),
+				} as never,
       });
 
       const conversationState = new ConversationStateStore(
-        new InMemoryStateAdapter()
+				new InMemoryStateAdapter(),
       );
       const connection: PlatformConnection = {
         id: "conn-msg-e2e",
@@ -80,7 +94,9 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
       const services = {
         getArtifactStore: () => null,
         getPublicGatewayUrl: () => "https://gateway.example.com",
-        getChannelBindingService: () => ({ getBinding: mock(async () => null), getBindingAnyOrg: mock(async () => null) }),
+				getChannelBindingService: () => ({
+					getBindingForConnection: mock(async () => null),
+				}),
         getAgentMetadataStore: () => undefined,
         getUserAgentsStore: () => undefined,
         getTranscriptionService: () => undefined,
@@ -96,7 +112,7 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
         connection,
         services,
         manager,
-        dispatcher
+				dispatcher,
       );
 
       const posts: string[] = [];
@@ -107,13 +123,18 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
         subscribe: mock(async () => undefined),
         startTyping: mock(async () => undefined),
         post: mock(async (c: unknown) =>
-          posts.push(typeof c === "string" ? c : JSON.stringify(c))
+					posts.push(typeof c === "string" ? c : JSON.stringify(c)),
         ),
       };
       const message = {
         id: "M_E2E",
         text: code,
-        author: { userId: "U_E2E", userName: "alice", isBot: false, isMe: false },
+				author: {
+					userId: "U_E2E",
+					userName: "alice",
+					isBot: false,
+					isMe: false,
+				},
         raw: { team_id: "T_E2E" },
         attachments: [],
         metadata: { dateSent: new Date(), edited: false },
@@ -140,6 +161,7 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
       expect(binding[0]?.organization_id).toBe(organizationId);
     } finally {
       await sql`DELETE FROM agent_channel_bindings WHERE channel_id = ${canonical}`;
+			await sql`DELETE FROM connections WHERE id = ${connectionRow.id}`;
       await sql`DELETE FROM oauth_states WHERE id = ${codeHash(code)}`;
       await sql`DELETE FROM agents WHERE id = ${agentId} AND organization_id = ${organizationId}`;
       await sql`DELETE FROM organization WHERE id = ${organizationId}`;

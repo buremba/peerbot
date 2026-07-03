@@ -14,23 +14,23 @@
  * Mirrors the CoreServices wiring proven in
  * `gateway/__tests__/core-services-store-selection.test.ts`.
  */
-import type { SecretPutOptions, SecretRef } from '@lobu/core';
-import type { GatewayConfig } from '../../../gateway/config/index.js';
-import { CoreServices } from '../../../gateway/services/core-services.js';
+import type { SecretPutOptions, SecretRef } from "@lobu/core";
+import { InMemoryStateAdapter } from "../../../gateway/__tests__/fixtures/in-memory-state-adapter.js";
+import { MockMessageQueue } from "../../../gateway/__tests__/setup.js";
+import type { ProviderOAuthStateStore } from "../../../gateway/auth/oauth/state-store.js";
+import type { AuthProfilesManager } from "../../../gateway/auth/settings/auth-profiles-manager.js";
+import type { GatewayConfig } from "../../../gateway/config/index.js";
 import {
   SecretStoreRegistry,
   type WritableSecretStore,
-} from '../../../gateway/secrets/index.js';
-import { InMemoryStateAdapter } from '../../../gateway/__tests__/fixtures/in-memory-state-adapter.js';
-import { MockMessageQueue } from '../../../gateway/__tests__/setup.js';
-import type { AuthProfilesManager } from '../../../gateway/auth/settings/auth-profiles-manager.js';
-import type { ProviderOAuthStateStore } from '../../../gateway/auth/oauth/state-store.js';
+} from "../../../gateway/secrets/index.js";
+import { CoreServices } from "../../../gateway/services/core-services.js";
 
 /** Minimal in-memory `WritableSecretStore` (the persisted credential lands
  *  here; the profile row itself goes to the test Postgres). */
 class InMemoryWritableStore implements WritableSecretStore {
   private readonly entries = new Map<string, { value: string }>();
-  constructor(private readonly scheme: string = 'host') {}
+	constructor(private readonly scheme: string = "host") {}
   async get(ref: SecretRef): Promise<string | null> {
     if (!ref.startsWith(`${this.scheme}://`)) return null;
     const name = decodeURIComponent(ref.slice(`${this.scheme}://`.length));
@@ -39,7 +39,7 @@ class InMemoryWritableStore implements WritableSecretStore {
   async put(
     name: string,
     value: string,
-    _options?: SecretPutOptions
+		_options?: SecretPutOptions,
   ): Promise<SecretRef> {
     this.entries.set(name, { value });
     return `${this.scheme}://${encodeURIComponent(name)}` as SecretRef;
@@ -54,11 +54,11 @@ function minimalGatewayConfig(): GatewayConfig {
   return {
     agentDefaults: {},
     sessionTimeoutMinutes: 5,
-    logLevel: 'INFO',
+		logLevel: "INFO",
     queues: {
-      connectionString: 'postgres://test',
-      directMessage: 'direct_message',
-      messageQueue: 'message_queue',
+			connectionString: "postgres://test",
+			directMessage: "direct_message",
+			messageQueue: "message_queue",
       retryLimit: 3,
       retryDelay: 1,
       expireInHours: 24,
@@ -66,7 +66,7 @@ function minimalGatewayConfig(): GatewayConfig {
     anthropicProxy: { enabled: true },
     orchestration: {
       queues: {
-        connectionString: 'postgres://test',
+				connectionString: "postgres://test",
         retryLimit: 3,
         retryDelay: 1,
         expireInSeconds: 3600,
@@ -78,7 +78,7 @@ function minimalGatewayConfig(): GatewayConfig {
       },
       cleanup: { initialDelayMs: 1000, intervalMs: 60000, veryOldDays: 7 },
     },
-    mcp: { publicGatewayUrl: 'http://localhost:8080' },
+		mcp: { publicGatewayUrl: "http://localhost:8080" },
     auth: {},
 
     secrets: { aws: {} },
@@ -130,18 +130,13 @@ export async function buildRealClaudeAuthStack(): Promise<RealClaudeAuthStack> {
       saveConnection: async () => {},
       updateConnection: async () => {},
       deleteConnection: async () => {},
-      getChannelBinding: async () => null,
-      createChannelBinding: async () => {},
-      deleteChannelBinding: async () => {},
-      listChannelBindings: async () => [],
-      deleteAllChannelBindings: async () => 0,
     } as never,
   });
   // MockMessageQueue has no stop(); coreServices.shutdown() calls queue.stop(),
   // so give the injected queue a no-op stop to keep teardown clean.
   (coreServices as unknown as { queue: unknown }).queue = Object.assign(
     new MockMessageQueue(),
-    { stop: async () => {} }
+		{ stop: async () => {} },
   );
 
   await (
@@ -159,7 +154,7 @@ export async function buildRealClaudeAuthStack(): Promise<RealClaudeAuthStack> {
   const authProfilesManager = coreServices.getAuthProfilesManager();
   const oauthStateStore = coreServices.getOAuthStateStore();
   if (!authProfilesManager || !oauthStateStore) {
-    throw new Error('CoreServices did not initialize the Claude auth stack');
+		throw new Error("CoreServices did not initialize the Claude auth stack");
   }
   return {
     authProfilesManager,

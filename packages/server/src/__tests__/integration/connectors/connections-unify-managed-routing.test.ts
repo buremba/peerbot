@@ -72,7 +72,7 @@ describe("connections-unify managed-install routing", () => {
 			"slackinst-mr-test",
 		);
 
-		// AGENT-SCOPED paths (list_conversations / search / channel-audience) must
+		// AGENT-SCOPED paths (list_conversations / search) must
 		// ALSO see it: the binding belongs to the agent that linked it, even though
 		// the managed connection's own agent_id is NULL.
 		const agentScoped = await resolveBoundChannelRows(sql, {

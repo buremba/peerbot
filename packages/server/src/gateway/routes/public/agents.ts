@@ -86,7 +86,6 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
         agentId: string;
         name: string;
         description?: string;
-        channelId?: string;
       }>();
 
       if (!body.agentId || !body.name) {
@@ -140,19 +139,8 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
         agentId
       );
 
-      // Auto-bind to channel if channelId provided (from session context)
-      if (body.channelId) {
-        await config.channelBindingService.createBinding(
-          agentId,
-          payload.platform,
-          body.channelId,
-          payload.teamId,
-          { configuredBy: payload.userId }
-        );
-      }
-
       logger.info(
-        `Created agent ${agentId} for user ${payload.platform}/${payload.userId}${body.channelId ? ` (bound to ${body.channelId})` : ""}`
+        `Created agent ${agentId} for user ${payload.platform}/${payload.userId}`
       );
 
       return c.json({

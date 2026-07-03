@@ -393,7 +393,9 @@ function formatVirtualFeeds(feeds: any[]): string {
       const cells = names.map((n) => {
         const v = row[n];
         const s = v == null ? '' : String(v);
-        const flat = s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+        // Escape backslash FIRST (so the escaping we add for `|` isn't itself
+        // re-escaped), then the cell delimiter, then flatten newlines.
+        const flat = s.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ');
         return flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
       });
       md += `| ${cells.join(' | ')} |\n`;

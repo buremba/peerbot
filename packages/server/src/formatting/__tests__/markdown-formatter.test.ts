@@ -72,6 +72,34 @@ describe('formatToolResult', () => {
       expect(md).toContain('quarterly revenue forecast');
       expect(md).toContain('Alice');
     });
+
+    it('renders virtual-feed rows as a table and escapes cell delimiters', () => {
+      const result = {
+        entity: null,
+        matches: [],
+        virtual_feeds: [
+          {
+            feed_id: 7,
+            feed_key: 'inbox',
+            columns: [
+              { name: 'subject', type: 'text' },
+              { name: 'from', type: 'text' },
+            ],
+            // A subject with a literal pipe AND a backslash must not break the
+            // table row and must be escaped completely (backslash + pipe).
+            rows: [{ subject: 'a | b \\ c', from: 'alice@x.com' }],
+          },
+        ],
+      };
+      const md = formatToolResult('search_memory', result);
+      expect(md).not.toContain('No Results Found');
+      expect(md).toContain('inbox (live) (1)');
+      expect(md).toContain('| subject | from |');
+      // backslash escaped to `\\`, pipe escaped to `\|` — the raw ` | ` delimiter
+      // never leaks into the cell.
+      expect(md).toContain('a \\| b \\\\ c');
+      expect(md).toContain('alice@x.com');
+    });
   });
 
   describe('query_sql tool', () => {

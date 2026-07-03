@@ -808,7 +808,11 @@ export async function handleCreate(
       : null,
   });
 
-  const visibility = await resolveConnectionVisibility(organizationId, effectiveCreatedBy);
+  const visibility = await resolveConnectionVisibility(
+    organizationId,
+    effectiveCreatedBy,
+    authSelection?.authProfile?.profile_kind
+  );
   const connectorFeedsSchema = (connector.feeds_schema ?? null) as Record<
     string,
     FeedDefinition

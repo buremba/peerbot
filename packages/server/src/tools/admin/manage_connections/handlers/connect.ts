@@ -265,7 +265,11 @@ export async function handleConnect(
       : null,
   });
 
-  const connectVisibility = await resolveConnectionVisibility(organizationId, userId);
+  const connectVisibility = await resolveConnectionVisibility(
+    organizationId,
+    userId,
+    authSelection?.authProfile?.profile_kind
+  );
   const connectorFeedsSchema = (connector.feeds_schema ?? null) as Record<
     string,
     FeedDefinition

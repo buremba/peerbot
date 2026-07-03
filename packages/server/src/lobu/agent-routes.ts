@@ -452,6 +452,9 @@ routes.get('/inference-providers/catalog', async (c) => {
         modelsEndpoint: entry.modelsEndpoint ?? null,
         apiKeyPlaceholder: entry.apiKeyPlaceholder,
         apiKeyInstructions: entry.apiKeyInstructions,
+        // Which modalities this provider serves (omitted ⇒ text only). Lets the
+        // UI offer per-modality overrides only where they make sense.
+        modalities: entry.modalities ?? ['text'],
       }))
       .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
     return c.json({ catalog });

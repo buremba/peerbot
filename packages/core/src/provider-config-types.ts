@@ -18,6 +18,15 @@ export interface ProviderConfigEntry {
   apiKeyPlaceholder: string;
   /** SDK compatibility hint — "openai" means OpenAI-compatible API format */
   sdkCompat?: "openai";
+  /**
+   * Modalities this provider actually serves. Omitted ⇒ text only.
+   * Gates which per-modality overrides are offered and (for STT) whether the
+   * provider is a transcription candidate at all — an OpenAI-compatible chat
+   * provider like Cerebras does NOT do speech-to-text, so it must not be listed
+   * for `stt`. `image`/`tts` remain additionally gated by their service
+   * allowlists; this list is the source of truth for the UI + STT eligibility.
+   */
+  modalities?: ("text" | "image" | "stt" | "tts")[];
   /** Default model ID when none is configured */
   defaultModel?: string;
   /** Relative path to fetch model list (e.g. "/v1/models") */

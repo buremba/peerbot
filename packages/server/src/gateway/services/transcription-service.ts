@@ -331,7 +331,16 @@ export class TranscriptionService {
     for (const [providerId, entry] of Object.entries(providerConfigs)) {
       const stt = entry.stt;
       const compat = stt?.sdkCompat || entry.sdkCompat;
-      const sttEnabled = stt ? stt.enabled !== false : compat === "openai";
+      // STT is only offered for providers that declare it. Historically this
+      // defaulted ON for every OpenAI-compatible provider, which wrongly listed
+      // text-only chat providers (Cerebras, z.ai, Mistral, …) as transcription
+      // candidates — they have no /audio/transcriptions endpoint and 404. Gate
+      // on the provider's declared modalities; an explicit `stt` block (with
+      // enabled !== false) still counts as declaring STT.
+      const declaresStt =
+        entry.modalities?.includes("stt") ??
+        (stt ? stt.enabled !== false : false);
+      const sttEnabled = stt ? stt.enabled !== false : declaresStt;
       if (!sttEnabled) continue;
 
       if (compat !== "openai") {

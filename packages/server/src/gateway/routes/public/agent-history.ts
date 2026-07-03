@@ -409,6 +409,8 @@ export function createAgentHistoryRoutes(deps: {
 			action: string | null;
 			proposal: Record<string, unknown> | null;
 			current: Record<string, unknown> | null;
+			fields: Record<string, unknown> | null;
+			attribution: string | null;
 		}> = [];
 		if (scope.organizationId) {
 			const conversationId = buildApiConversationId({
@@ -422,11 +424,18 @@ export function createAgentHistoryRoutes(deps: {
 				action: string | null;
 				proposal: Record<string, unknown> | null;
 				current: Record<string, unknown> | null;
+				fields: Record<string, unknown> | null;
+				attribution: string | null;
 			}>`
 				SELECT run_id,
 				       metadata->>'action' AS action,
 				       metadata->'proposal' AS proposal,
-				       metadata->'current' AS current
+				       metadata->'current' AS current,
+				       -- entity_field_change (manage_entity) carries the
+				       -- human-owned-field diff + attribution; manage_agents
+				       -- leaves these null and replays its agent-row proposal.
+				       metadata->'fields' AS fields,
+				       metadata->>'attribution' AS attribution
 				FROM current_event_records
 				WHERE organization_id = ${scope.organizationId}
 				  AND interaction_type = 'approval'
@@ -440,6 +449,8 @@ export function createAgentHistoryRoutes(deps: {
 				action: r.action,
 				proposal: r.proposal ?? null,
 				current: r.current ?? null,
+				fields: r.fields ?? null,
+				attribution: r.attribution ?? null,
 			}));
 		}
 		return c.json({ ...data, interactions });

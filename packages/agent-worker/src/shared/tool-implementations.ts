@@ -1154,15 +1154,25 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
   // not formatted markdown, to forward an approval card into the chat (see
   // maybePostApprovalCard / createMcpToolDefinitions).
   "manage_agents",
+  // manage_entity's update path queues a human-owned-field change for approval
+  // (approval_queued + approval_run_id + approval_fields/current). Same reason:
+  // we need the JSON to forward the entity_field_change approval card.
+  "manage_entity",
 ]);
 
 /**
- * Builder-gate bridge: when a manage_agents write returns a
- * `pending_approval` result, post a durable approval card into the chat so the
- * SPA renders the interactive Approve/Reject diff. Fire-and-forget — a failed
- * post never breaks the tool call (the agent still narrates the result, and the
- * events-tab approval card remains the fallback). Returns true when a card was
- * posted (caller logs at debug only).
+ * Approval-gate bridge: when a gated write returns a pending-approval result,
+ * post a durable approval card into the chat so the SPA renders the interactive
+ * Approve/Reject diff. Handles two producers:
+ *   - manage_agents write gate → `{ status: 'pending_approval', run_id,
+ *     action, proposal, current }` (the builder agent's create/update/delete).
+ *   - manage_entity update gate → `{ approval_queued: true, approval_run_id,
+ *     approval_fields, approval_current, approval_attribution }` (a human-owned
+ *     entity field the agent proposed changing).
+ *
+ * Fire-and-forget — a failed post never breaks the tool call (the agent still
+ * narrates the result, and the events-tab approval card remains the fallback).
+ * Returns true when a card was posted (caller logs at debug only).
  *
  * The card rides the SAME owner-gated thread_response delivery as ask_user:
  * POST /internal/interactions/create → InteractionService → API platform →
@@ -1173,25 +1183,8 @@ export async function maybePostApprovalCard(
   toolName: string,
   rawResultText: string
 ): Promise<boolean> {
-  if (toolName !== "manage_agents") return false;
-  let parsed: {
-    status?: unknown;
-    run_id?: unknown;
-    action?: unknown;
-    proposal?: unknown;
-    current?: unknown;
-  };
-  try {
-    parsed = JSON.parse(rawResultText);
-  } catch {
-    return false;
-  }
-  if (
-    parsed.status !== "pending_approval" ||
-    typeof parsed.run_id !== "number"
-  ) {
-    return false;
-  }
+  const body = buildApprovalCardBody(toolName, rawResultText);
+  if (!body) return false;
 
   // Fire-and-forget: a failed post must never break the tool call (the agent
   // still narrates the result, and the events-tab approval card is the
@@ -1201,27 +1194,74 @@ export async function maybePostApprovalCard(
     ({ error } = await gatewayFetch<{ id: string }>(
       gw,
       "/internal/interactions/create",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          interactionType: "tool_approval",
-          runId: parsed.run_id,
-          action: typeof parsed.action === "string" ? parsed.action : "change",
-          proposal: parsed.proposal ?? null,
-          current: parsed.current ?? null,
-        }),
-      },
+      { method: "POST", body: JSON.stringify(body) },
       "Failed to post approval card"
     ));
   } catch {
-    logger.warn("manage_agents approval card post threw");
+    logger.warn(`${toolName} approval card post threw`);
     return false;
   }
   if (error) {
-    logger.warn("manage_agents approval card post failed");
+    logger.warn(`${toolName} approval card post failed`);
     return false;
   }
   return true;
+}
+
+/**
+ * Parse a gated tool result into the /internal/interactions/create body, or
+ * null when the result is not a pending approval. entity_field_change carries
+ * `fields`/`attribution` (the human-owned-field diff); manage_agents carries
+ * `proposal` (the agent row diff). Both share the `tool_approval` transport.
+ */
+function buildApprovalCardBody(
+  toolName: string,
+  rawResultText: string
+): Record<string, unknown> | null {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(rawResultText);
+  } catch {
+    return null;
+  }
+
+  if (toolName === "manage_agents") {
+    if (
+      parsed.status !== "pending_approval" ||
+      typeof parsed.run_id !== "number"
+    ) {
+      return null;
+    }
+    return {
+      interactionType: "tool_approval",
+      runId: parsed.run_id,
+      action: typeof parsed.action === "string" ? parsed.action : "change",
+      proposal: parsed.proposal ?? null,
+      current: parsed.current ?? null,
+    };
+  }
+
+  if (toolName === "manage_entity") {
+    if (
+      parsed.approval_queued !== true ||
+      typeof parsed.approval_run_id !== "number"
+    ) {
+      return null;
+    }
+    return {
+      interactionType: "tool_approval",
+      runId: parsed.approval_run_id,
+      action: "change",
+      // entity_field_change diff: field_path -> proposed / current. The SPA
+      // routes on `fields` (non-empty) to the entity-field-change card.
+      fields: parsed.approval_fields ?? null,
+      current: parsed.approval_current ?? null,
+      attribution:
+        parsed.approval_attribution === "watcher" ? "watcher" : "agent",
+    };
+  }
+
+  return null;
 }
 
 export async function callMcpTool(

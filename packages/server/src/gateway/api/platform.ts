@@ -111,7 +111,12 @@ export class ApiPlatform implements PlatformAdapter {
         action: event.cardAction,
         proposal: event.proposal ?? null,
         current: event.current ?? null,
-        toolName: "manage_agents",
+        // entity_field_change carries a human-owned-field diff + attribution;
+        // the SPA routes on `fields` (non-empty) to the entity-field-change
+        // card. manage_agents leaves these null and renders its agent-row diff.
+        fields: event.fields ?? null,
+        attribution: event.attribution ?? null,
+        toolName: event.fields ? "manage_entity" : "manage_agents",
       });
     });
 

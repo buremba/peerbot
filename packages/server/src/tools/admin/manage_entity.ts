@@ -295,6 +295,15 @@ type ManageEntityResult =
       approval_queued?: boolean;
       /** Permalink to the approval card, when one was queued. */
       approval_url?: string;
+      /** Pending approval run id — the worker bridges this into a live chat
+       *  approval card (parity with manage_agents' `pending_approval`). */
+      approval_run_id?: number;
+      /** Blocked field_path -> proposed value, for the live card diff. */
+      approval_fields?: Record<string, unknown>;
+      /** Blocked field_path -> current human-owned value, for the diff. */
+      approval_current?: Record<string, unknown>;
+      /** Who proposed the blocked change: 'agent' | 'watcher'. */
+      approval_attribution?: 'agent' | 'watcher';
     }
   | {
       action: 'list';
@@ -686,6 +695,10 @@ async function handleUpdate(
   const blockedPaths = Object.keys(blocked);
   let approvalQueued = false;
   let approvalUrl: string | undefined;
+  let approvalRunId: number | undefined;
+  let approvalFields: Record<string, unknown> | undefined;
+  let approvalCurrent: Record<string, unknown> | undefined;
+  const approvalAttribution: 'agent' | 'watcher' = args.watcher_source ? 'watcher' : 'agent';
   if (blockedPaths.length > 0) {
     const fields = Object.fromEntries(blockedPaths.map((p) => [p, blocked[p].proposed]));
     const current = Object.fromEntries(blockedPaths.map((p) => [p, blocked[p].current]));
@@ -694,13 +707,16 @@ async function handleUpdate(
       fields,
       current,
       watcher_id: args.watcher_source?.watcher_id ?? null,
-      attribution: args.watcher_source ? 'watcher' : 'agent',
+      attribution: approvalAttribution,
       reason: args.watcher_source
         ? `A watcher proposes updating ${blockedPaths.join(', ')} on this entity.`
         : `An agent proposes updating ${blockedPaths.join(', ')} on this entity.`,
     });
     approvalQueued = true;
     approvalUrl = res.approvalUrl;
+    approvalRunId = res.runId;
+    approvalFields = fields;
+    approvalCurrent = current;
   }
 
   return {
@@ -721,6 +737,10 @@ async function handleUpdate(
     blocked_fields: blockedPaths.length > 0 ? blockedPaths : undefined,
     approval_queued: approvalQueued || undefined,
     approval_url: approvalUrl,
+    approval_run_id: approvalRunId,
+    approval_fields: approvalFields,
+    approval_current: approvalCurrent,
+    approval_attribution: approvalQueued ? approvalAttribution : undefined,
   };
 }
 

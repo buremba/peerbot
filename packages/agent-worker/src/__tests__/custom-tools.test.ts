@@ -200,6 +200,96 @@ describe("maybePostApprovalCard (builder gate)", () => {
     expect(posts).toHaveLength(0);
   });
 
+  test("posts an entity_field_change card for a manage_entity approval_queued result", async () => {
+    const posts: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = mock(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        posts.push({
+          url,
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        return Response.json({ id: "appr-2" });
+      }
+    ) as unknown as typeof fetch;
+
+    const resultText = JSON.stringify({
+      action: "update",
+      entity: { id: 7, name: "Acme" },
+      applied_fields: ["metadata.website"],
+      blocked_fields: ["metadata.tier"],
+      approval_queued: true,
+      approval_run_id: 42,
+      approval_fields: { "metadata.tier": "enterprise" },
+      approval_current: { "metadata.tier": "free" },
+      approval_attribution: "agent",
+    });
+
+    const posted = await maybePostApprovalCard(gw, "manage_entity", resultText);
+
+    expect(posted).toBe(true);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.url).toEndWith("/internal/interactions/create");
+    // `fields` (non-empty) is what the SPA routes on for the entity-field card.
+    expect(posts[0]!.body).toMatchObject({
+      interactionType: "tool_approval",
+      runId: 42,
+      action: "change",
+      fields: { "metadata.tier": "enterprise" },
+      current: { "metadata.tier": "free" },
+      attribution: "agent",
+    });
+    // manage_entity does not carry the manage_agents `proposal` shape.
+    expect(posts[0]!.body.proposal).toBeUndefined();
+  });
+
+  test("carries watcher attribution when a manage_entity update was watcher-sourced", async () => {
+    const posts: Array<{ body: any }> = [];
+    globalThis.fetch = mock(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        posts.push({ body: init?.body ? JSON.parse(String(init.body)) : null });
+        return Response.json({ id: "appr-3" });
+      }
+    ) as unknown as typeof fetch;
+
+    const posted = await maybePostApprovalCard(
+      gw,
+      "manage_entity",
+      JSON.stringify({
+        action: "update",
+        approval_queued: true,
+        approval_run_id: 43,
+        approval_fields: { "metadata.stage": "won" },
+        approval_current: { "metadata.stage": "lead" },
+        approval_attribution: "watcher",
+      })
+    );
+
+    expect(posted).toBe(true);
+    expect(posts[0]!.body.attribution).toBe("watcher");
+  });
+
+  test("does nothing for a manage_entity update with no blocked fields", async () => {
+    const posts: string[] = [];
+    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+      posts.push(String(input));
+      return Response.json({});
+    }) as unknown as typeof fetch;
+
+    const posted = await maybePostApprovalCard(
+      gw,
+      "manage_entity",
+      JSON.stringify({
+        action: "update",
+        entity: { id: 7 },
+        applied_fields: ["metadata.website"],
+      })
+    );
+
+    expect(posted).toBe(false);
+    expect(posts).toHaveLength(0);
+  });
+
   test("does nothing for a different tool", async () => {
     const posts: string[] = [];
     globalThis.fetch = mock(async (input: RequestInfo | URL) => {

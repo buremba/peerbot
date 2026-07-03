@@ -182,6 +182,87 @@ describe("agent history routes", () => {
 		expect(card?.current).toMatchObject({ id: "weekly-digest" });
 	});
 
+	test("replays a pending entity_field_change approval with fields + attribution", async () => {
+		setAuthProvider(() => ({
+			userId: USER_ID,
+			platform: "external",
+			exp: Date.now() + 60_000,
+		}));
+
+		const agentId = "agent-1";
+		const threadId = "thread-efc";
+		const conversationId = buildApiConversationId({
+			agentId,
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			threadId,
+		});
+
+		// An agent proposed changing a human-owned field; the worker stamped the
+		// conversationId (via /internal/interactions/create) so it replays. The
+		// entity_field_change card routes on `fields`, not `proposal`.
+		const runId = await insertRun({
+			organizationId: ORG_ID,
+			agentId,
+			conversationId,
+			runType: "internal",
+			status: "pending",
+		});
+		const fields = { "metadata.tier": "enterprise" };
+		const current = { "metadata.tier": "free" };
+		await orgContext.run({ organizationId: ORG_ID }, () =>
+			insertEvent({
+				entityIds: [],
+				organizationId: ORG_ID,
+				originId: `run_${runId}_pending`,
+				title: "An agent proposes changing metadata.tier — pending approval",
+				content: "An agent proposed updating metadata.tier on this entity.",
+				semanticType: "operation",
+				runId,
+				interactionType: "approval",
+				interactionStatus: "pending",
+				interactionInput: { entity_id: 7, fields, current },
+				metadata: {
+					conversationId,
+					tool: "entity_field_change",
+					action_key: "entity_field_change",
+					entity_id: 7,
+					fields,
+					current,
+					attribution: "agent",
+					status: "pending_approval",
+					run_id: runId,
+				},
+			}),
+		);
+
+		const res = await orgContext.run({ organizationId: ORG_ID }, () =>
+			createApp().request(
+				`/api/v1/agents/${agentId}/history/threads/${threadId}/messages`,
+				{ method: "GET", headers: { host: "localhost" } },
+			),
+		);
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			interactions?: Array<{
+				type: string;
+				runId: number;
+				fields: Record<string, unknown> | null;
+				current: Record<string, unknown> | null;
+				attribution: string | null;
+			}>;
+		};
+		expect(body.interactions).toHaveLength(1);
+		const card = body.interactions?.[0];
+		expect(card?.type).toBe("tool-approval");
+		expect(card?.runId).toBe(runId);
+		// The SPA routes on `fields` (non-empty) to the entity-field-change card.
+		expect(card?.fields).toMatchObject({ "metadata.tier": "enterprise" });
+		expect(card?.current).toMatchObject({ "metadata.tier": "free" });
+		expect(card?.attribution).toBe("agent");
+	});
+
 	test("rejects sessions that do not own the requested agent", async () => {
 		setAuthProvider(() => ({
 			userId: "u2",

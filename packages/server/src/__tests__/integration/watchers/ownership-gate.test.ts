@@ -80,6 +80,10 @@ async function manageEntityUpdate(
     blocked_fields?: string[];
     approval_queued?: boolean;
     approval_url?: string;
+    approval_run_id?: number;
+    approval_fields?: Record<string, unknown>;
+    approval_current?: Record<string, unknown>;
+    approval_attribution?: 'agent' | 'watcher';
   }>;
 }
 
@@ -181,6 +185,13 @@ describe('ownership gate on agent entity writes', () => {
     expect(result.blocked_fields).toContain('severity');
     expect(result.applied_fields).toContain('notes');
     expect(result.approval_queued).toBe(true);
+
+    // The result carries the bridge fields the worker forwards into a live
+    // chat approval card (parity with manage_agents' pending_approval).
+    expect(result.approval_run_id).toBe(Number(run.id));
+    expect(result.approval_fields?.severity).toBe('critical');
+    expect(result.approval_current?.severity).toBe('high');
+    expect(result.approval_attribution).toBe('agent');
   });
 
   it('writes unowned fields without producing an approval', async () => {
@@ -223,9 +234,12 @@ describe('ownership gate on agent entity writes', () => {
     await manageEntityUpdate(humanCtx(org, user), reactionEntity.id, { severity: 'high' });
 
     // Agent mutation attributed to a watcher reaction.
-    await manageEntityUpdate(agentCtx(org, user), reactionEntity.id, { severity: 'critical' }, {
-      watcher_source: { watcher_id: watcherId, window_id: windowId },
-    });
+    const result = await manageEntityUpdate(
+      agentCtx(org, user),
+      reactionEntity.id,
+      { severity: 'critical' },
+      { watcher_source: { watcher_id: watcherId, window_id: windowId } }
+    );
 
     const [row] = await getTestDb()`SELECT metadata FROM entities WHERE id = ${reactionEntity.id}`;
     expect((row.metadata as Record<string, unknown>).severity).toBe('high');
@@ -239,6 +253,10 @@ describe('ownership gate on agent entity writes', () => {
     `;
     expect(run).toBeTruthy();
     expect(Number((run.action_input as { watcher_id: number }).watcher_id)).toBe(watcherId);
+
+    // The card attribution flows through as 'watcher' so the SPA labels it
+    // "A watcher proposes…" instead of "An agent proposes…".
+    expect(result.approval_attribution).toBe('watcher');
   });
 
   it('collapses an identical repeated agent edit into a single pending approval', async () => {

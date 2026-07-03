@@ -87,7 +87,11 @@ export function createInteractionRoutes(
             typeof body.action === "string" ? body.action : "change",
             (body.proposal ?? null) as Record<string, unknown> | null,
             (body.current ?? null) as Record<string, unknown> | null,
-            source
+            source,
+            // entity_field_change (manage_entity) carries a human-owned-field
+            // diff + who proposed it; manage_agents leaves these null.
+            (body.fields ?? null) as Record<string, unknown> | null,
+            typeof body.attribution === "string" ? body.attribution : null
           );
           // The live approval card is a one-shot SSE push, and the transcript
           // doesn't carry interaction parts — so on reload the card is lost.

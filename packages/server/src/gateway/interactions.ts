@@ -119,10 +119,15 @@ export interface PostedDurableApproval extends BaseMessage {
   runId: number;
   /** create | update | delete. */
   cardAction: string;
-  /** Proposed field values + the agent id. */
+  /** Proposed field values + the agent id (manage_agents). Null for entity_field_change. */
   proposal: Record<string, unknown> | null;
   /** Current agent row (null for create), for the proposed-vs-current diff. */
   current: Record<string, unknown> | null;
+  /** entity_field_change diff: field_path -> proposed value. Null for manage_agents.
+   *  The SPA routes on this (non-empty) to the entity-field-change card. */
+  fields: Record<string, unknown> | null;
+  /** Who proposed the entity_field_change: 'agent' | 'watcher'. Null for manage_agents. */
+  attribution: string | null;
   /** Headless-origin marker (parity with PostedQuestion/PostedToolApproval). */
   source?: string;
 }
@@ -259,7 +264,9 @@ export class InteractionService extends EventEmitter {
     cardAction: string,
     proposal: Record<string, unknown> | null,
     current: Record<string, unknown> | null,
-    source?: string
+    source?: string,
+    fields: Record<string, unknown> | null = null,
+    attribution: string | null = null
   ): Promise<PostedDurableApproval> {
     assertRoutableInteraction(connectionId, platform, "approval card");
     if (this.beforeCreateHook) {
@@ -278,6 +285,8 @@ export class InteractionService extends EventEmitter {
       cardAction,
       proposal,
       current,
+      fields,
+      attribution,
       source,
     };
 

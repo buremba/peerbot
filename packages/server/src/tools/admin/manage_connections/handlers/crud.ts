@@ -35,6 +35,7 @@ import {
   ensureEnvBackedOAuthAppProfile,
   enrichWithAuthProfiles,
   getInteractiveMethods,
+  isPersonalCredentialKind,
   mapConnectionStatusToFeedStatus,
   resolveConnectionAuthSelection,
   resolveConnectionDisplayName,
@@ -1198,6 +1199,13 @@ export async function handleUpdate(
   const nextAuthProfileId = hasAuthProfileArg
     ? (authSelection.authProfile?.id ?? null)
     : existing.auth_profile_id;
+  // Re-pointing a connection onto a PERSONAL credential (oauth_account) must
+  // floor its visibility to 'private' — otherwise an existing 'org' connection
+  // rebound onto a user's own Gmail would expose that inbox org-wide through the
+  // owner's token. Downgrade-only: we never widen here (the CASE keeps the
+  // current visibility when the new profile is not personal).
+  const rebindToPersonalCred =
+    hasAuthProfileArg && isPersonalCredentialKind(authSelection.authProfile?.profile_kind);
   const nextAppAuthProfileId = hasAppAuthProfileArg
     ? (authSelection.appAuthProfile?.id ?? null)
     : existing.app_auth_profile_id;
@@ -1347,6 +1355,7 @@ export async function handleUpdate(
           status = COALESCE(${effectiveStatus}, status),
           auth_profile_id = ${nextAuthProfileId},
           app_auth_profile_id = ${nextAppAuthProfileId},
+          visibility = CASE WHEN ${rebindToPersonalCred} THEN 'private' ELSE visibility END,
           entity_ids = COALESCE(${entityIdsValue}::bigint[], entity_ids),
           config = ${
             replaceConfig

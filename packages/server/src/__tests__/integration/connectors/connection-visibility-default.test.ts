@@ -158,4 +158,105 @@ describe('connection visibility default depends on credential kind', () => {
     // No personal credential → role default preserved (owner → org).
     expect(row.visibility).toBe('org');
   });
+
+  it('re-pointing an ORG connection onto an oauth_account profile DOWNGRADES it to private', async () => {
+    process.env.VISOAUTH_CLIENT_ID = 'env-id';
+    process.env.VISOAUTH_CLIENT_SECRET = 'env-secret';
+    const org = await createTestOrganization({ name: 'Vis Org C' });
+    const user = await createTestUser({ name: 'Owner C' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const ctx = ownerCtx(org.id, user.id);
+    await makeConnectors(org.id);
+    const sql = getTestDb();
+
+    // Seed an ORG-visible connection on the oauth connector directly (bypassing
+    // the create path, which would now default a personal-cred connection to
+    // private — here we're testing the UPDATE re-point, and need a pre-existing
+    // 'org' row to prove the downgrade). No auth profile yet.
+    const [seed] = (await sql`
+      INSERT INTO connections (organization_id, connector_key, slug, display_name, status, visibility, created_by)
+      VALUES (${org.id}, 'vis.oauth', 'vis-rebind-conn', 'Vis Rebind Connection', 'active', 'org', ${user.id})
+      RETURNING id
+    `) as Array<{ id: number }>;
+    const connectionId = seed.id;
+    const [before] = (await sql`
+      SELECT visibility FROM connections WHERE id = ${connectionId}
+    `) as Array<{ visibility: string }>;
+    expect(before.visibility).toBe('org');
+
+    // Create a personal oauth_account profile on the SAME oauth connector, then
+    // rebind this connection onto it.
+    await manageAuthProfiles(
+      {
+        action: 'create_auth_profile',
+        connector_key: 'vis.oauth',
+        profile_kind: 'oauth_account',
+        display_name: 'Rebind Account',
+        slug: 'rebind-account',
+      },
+      TEST_ENV,
+      ctx
+    );
+    const updated = await manageConnections(
+      {
+        action: 'update',
+        connection_id: connectionId,
+        auth_profile_slug: 'rebind-account',
+      },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in updated).toBe(false);
+
+    const [after] = (await sql`
+      SELECT visibility, auth_profile_id FROM connections WHERE id = ${connectionId}
+    `) as Array<{ visibility: string; auth_profile_id: number | null }>;
+    expect(after.auth_profile_id).not.toBeNull();
+    // The fix: rebinding onto personal creds floors visibility to private.
+    expect(after.visibility).toBe('private');
+
+    delete process.env.VISOAUTH_CLIENT_ID;
+    delete process.env.VISOAUTH_CLIENT_SECRET;
+  });
+
+  it('the OAuth-callback downgrade SQL flips org→private only when the attached profile is personal', async () => {
+    // The GET /:token/oauth/callback route attaches the freshly-created
+    // oauth_account profile and runs this exact CASE. The route wiring is not
+    // unit-testable without full connect-token + provider scaffolding, so this
+    // pins the mechanism it depends on: downgrade org→private for a personal
+    // attach, leave a non-personal attach untouched. Mirrors connect/routes.ts.
+    const org = await createTestOrganization({ name: 'Vis Org D' });
+    const user = await createTestUser({ name: 'Owner D' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const sql = getTestDb();
+    await makeConnectors(org.id);
+
+    const mkConn = async (slug: string) => {
+      const [r] = (await sql`
+        INSERT INTO connections (organization_id, connector_key, slug, display_name, status, visibility, created_by)
+        VALUES (${org.id}, 'vis.oauth', ${slug}, ${slug}, 'pending_auth', 'org', ${user.id})
+        RETURNING id
+      `) as Array<{ id: number }>;
+      return r.id;
+    };
+    const personalId = await mkConn('cb-personal');
+    const sharedId = await mkConn('cb-shared');
+
+    const downgrade = (forcePrivate: boolean, id: number) => sql`
+      UPDATE connections
+      SET visibility = CASE WHEN ${forcePrivate} THEN 'private' ELSE visibility END
+      WHERE id = ${id}
+    `;
+    await downgrade(true, personalId); // attached profile kind was oauth_account
+    await downgrade(false, sharedId); // attached profile kind was not personal
+
+    const [p] = (await sql`
+      SELECT visibility FROM connections WHERE id = ${personalId}
+    `) as Array<{ visibility: string }>;
+    const [s] = (await sql`
+      SELECT visibility FROM connections WHERE id = ${sharedId}
+    `) as Array<{ visibility: string }>;
+    expect(p.visibility).toBe('private'); // personal attach → downgraded
+    expect(s.visibility).toBe('org'); // non-personal attach → untouched
+  });
 });

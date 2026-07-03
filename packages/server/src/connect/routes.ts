@@ -33,7 +33,10 @@ import {
 import { type ConnectTokenRow, resolveConnectToken } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../utils/oauth-connection-state';
-import { resolveOAuthAppClientCredentials } from '../tools/admin/helpers/connection-helpers';
+import {
+  isPersonalCredentialKind,
+  resolveOAuthAppClientCredentials,
+} from '../tools/admin/helpers/connection-helpers';
 import { registerConnectorWebhook } from './webhook-registration';
 import { mergeOAuthScopeAuthData, normalizeScopeList } from '../auth/oauth/scopes';
 import { createSyncRun } from '../runs/queue-service';
@@ -852,11 +855,30 @@ async function handleOAuthCallback(
     }
 
     if (tokenRow.connection_id) {
+      // This callback attaches a PERSONAL oauth_account grant (the else branch
+      // above hard-codes profile_kind='oauth_account'; the if branch reuses a
+      // profile this same OAuth-account flow created). The connection may have
+      // been inserted with visibility='org' because the account profile did not
+      // exist at connect time (resolveConnectionVisibility saw no kind). Now that
+      // it is personal-credential-backed, DOWNGRADE it to 'private' — an org read
+      // through the connection uses this user's token. Downgrade-only: we never
+      // widen a connection here, and 'private' is the floor for personal creds.
+      const attachedKind = authProfileId
+        ? (
+            (await tx`
+              SELECT profile_kind FROM auth_profiles
+              WHERE id = ${authProfileId} AND organization_id = ${tokenRow.organization_id}
+              LIMIT 1
+            `) as Array<{ profile_kind: string }>
+          )[0]?.profile_kind
+        : undefined;
+      const forcePrivate = isPersonalCredentialKind(attachedKind);
       await tx`
         UPDATE connections
         SET account_id = ${resolvedAccountId},
             auth_profile_id = COALESCE(${authProfileId ?? null}, auth_profile_id),
             status = 'active',
+            visibility = CASE WHEN ${forcePrivate} THEN 'private' ELSE visibility END,
             display_name = COALESCE(display_name, ${displayNameOverride}),
             updated_at = NOW()
         WHERE id = ${tokenRow.connection_id}

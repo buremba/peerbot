@@ -550,7 +550,7 @@ routes.put('/inference-providers/:slug/capabilities/:modality', async (c) => {
 
   if (!isInferenceModality(modality)) {
     return c.json(
-      { error: 'modality must be one of: text, image, stt, tts, embedding' },
+      { error: 'modality must be one of: text, image, stt, tts' },
       400
     );
   }

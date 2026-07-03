@@ -1,10 +1,12 @@
 /**
- * Generic test of the recall-source registry — the ONE abstraction over the two
+ * Generic test of the recall-source registry — the ONE abstraction over the
  * consolidated recall kinds (`knowledge` = events, `conversation` =
- * channel_messages). Uses fake sources so it asserts the registry CONTRACT
- * (merge, failure isolation, empty omission, unique kinds, GATE forwarding)
- * independent of any one source's behavior. Per-source behavior is covered
- * separately (search-channel-recall.test.ts, search-content-*.test.ts).
+ * channel_messages, `virtual` = live virtual feeds), realized as the
+ * `(source, lens='recall')` row of the FeedReader matrix. Uses fake sources so it
+ * asserts the registry CONTRACT (canRead gating, merge, failure isolation, empty
+ * omission, unique kinds, GATE forwarding) independent of any one source's
+ * behavior. Per-source behavior is covered separately
+ * (search-channel-recall.test.ts, search-content-*.test.ts).
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -23,11 +25,17 @@ const gate: AuthzScope = { organizationId: 'org-1', principal: 'user-1', agentId
 
 const knowledgeHit: RecallSource = {
   kind: 'knowledge',
+  source: 'collected',
+  lens: 'recall',
+  canRead: () => true,
   // biome-ignore lint/suspicious/noExplicitAny: fixture snippet, shape irrelevant
   read: async () => ({ content: [{ id: 1 } as any] }),
 };
 const conversationHit: RecallSource = {
   kind: 'conversation',
+  source: 'chat-channel',
+  lens: 'recall',
+  canRead: () => true,
   // biome-ignore lint/suspicious/noExplicitAny: fixture snippet, shape irrelevant
   read: async () => ({ conversation_messages: [{ text: 'hi' } as any] }),
 };
@@ -42,6 +50,9 @@ describe('recall source registry (generic contract)', () => {
   it('isolates a failing source — the others still contribute', async () => {
     const boom: RecallSource = {
       kind: 'conversation',
+      source: 'chat-channel',
+      lens: 'recall',
+      canRead: () => true,
       read: async () => {
         throw new Error('source blew up');
       },
@@ -52,15 +63,38 @@ describe('recall source registry (generic contract)', () => {
   });
 
   it('omits the facet for a source that returns nothing', async () => {
-    const empty: RecallSource = { kind: 'conversation', read: async () => ({}) };
+    const empty: RecallSource = {
+      kind: 'conversation',
+      source: 'chat-channel',
+      lens: 'recall',
+      canRead: () => true,
+      read: async () => ({}),
+    };
     const merged = await gatherRecall(gate, ctx, [empty]);
     expect(merged).toEqual({});
   });
 
-  it('every registered source owns a distinct kind', () => {
+  it('skips a source whose canRead returns false — read is never called', async () => {
+    const declines: RecallSource = {
+      kind: 'virtual',
+      source: 'virtual-live-dataset',
+      lens: 'recall',
+      canRead: () => false,
+      read: vi.fn(async () => ({ content: [{ id: 99 }] as never })),
+    };
+    const merged = await gatherRecall(gate, ctx, [knowledgeHit, declines]);
+    // knowledgeHit ran; the declining source contributed nothing and its read
+    // was never invoked (branch-free skip, not a wasted call swallowed later).
+    expect(merged.content).toHaveLength(1);
+    expect(declines.read).not.toHaveBeenCalled();
+  });
+
+  it('every registered source owns a distinct kind and the recall lens', () => {
     const kinds = RECALL_SOURCES.map((s) => s.kind);
     expect(new Set(kinds).size).toBe(kinds.length);
     expect(RECALL_SOURCES.length).toBeGreaterThanOrEqual(2);
+    // The registry is the `lens = recall` row of the matrix — every entry agrees.
+    expect(RECALL_SOURCES.every((s) => s.lens === 'recall')).toBe(true);
   });
 });
 
@@ -69,6 +103,9 @@ describe('recall gate is a REQUIRED, typed argument (the contract)', () => {
     const seen: AuthzScope[] = [];
     const spy1: RecallSource = {
       kind: 'knowledge',
+      source: 'collected',
+      lens: 'recall',
+      canRead: () => true,
       read: vi.fn(async (g: AuthzScope) => {
         seen.push(g);
         return {};
@@ -76,6 +113,9 @@ describe('recall gate is a REQUIRED, typed argument (the contract)', () => {
     };
     const spy2: RecallSource = {
       kind: 'conversation',
+      source: 'chat-channel',
+      lens: 'recall',
+      canRead: () => true,
       read: vi.fn(async (g: AuthzScope) => {
         seen.push(g);
         return {};
@@ -91,19 +131,24 @@ describe('recall gate is a REQUIRED, typed argument (the contract)', () => {
 
   it('the registry type CANNOT hold a reader that omits the gate', () => {
     // A reader on the OLD `recall(ctx)` shape (no gate) is structurally
-    // incompatible with FeedReader<RecallContext, …> — the compiler rejects it.
+    // incompatible with FeedReader<…> — the compiler rejects it.
     // @ts-expect-error — `read` MUST accept the AuthzScope gate as its first arg.
     const leaky: RecallSource = {
       kind: 'knowledge',
+      source: 'collected',
+      lens: 'recall',
+      canRead: () => true,
       recall: async (_ctx: RecallContext) => ({}),
     };
     // Sanity: a correctly-typed reader IS assignable.
-    const ok: FeedReader<RecallContext, Record<string, never>> = {
-      kind: 'knowledge',
+    const ok: FeedReader<'collected', 'recall', RecallContext, Record<string, never>> = {
+      source: 'collected',
+      lens: 'recall',
+      canRead: () => true,
       read: async (_gate: AuthzScope, _ctx: RecallContext) => ({}),
     };
     expect(leaky.kind).toBe('knowledge');
-    expect(ok.kind).toBe('knowledge');
+    expect(ok.source).toBe('collected');
   });
   // NOTE: that a reader DENIES a non-member is NOT asserted here — a fake source
   // proves nothing about production enforcement. The real fail-closed regression

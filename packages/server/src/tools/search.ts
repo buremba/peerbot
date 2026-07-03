@@ -13,7 +13,7 @@ import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
-import type { FeedReader } from '../lib/feed-reader';
+import type { FeedReader, SourceKind } from '../lib/feed-reader';
 import { readVirtualFeed } from '../lib/connector-pushdown';
 import { entityLinkMatchSql, searchContentByText } from '../utils/content-search';
 import { resolveBoundChannelRows, stripPlatformPrefix } from '../gateway/channels/bound-channels';
@@ -472,13 +472,22 @@ export interface RecallContext {
 }
 
 /**
- * The consolidated recall types. `knowledge` (the `events` store — where data
- * feeds and promoted memory live), `conversation` (the `channel_messages` chat
- * transcript), and `virtual` (opt-in virtual feeds read LIVE at request time).
- * All read through ONE abstraction — add a type here + a RECALL_SOURCES entry;
- * nothing branches on the kind.
+ * The consolidated recall sources — the `lens = 'recall'` row of the feed matrix
+ * (see `docs/plans/feeds-and-connections-model.md`), one entry per source KIND:
+ * `knowledge` (the `events` store — where data feeds and promoted memory live,
+ * source `collected`), `conversation` (the `channel_messages` chat transcript,
+ * source `chat-channel`), and `virtual` (opt-in virtual feeds read LIVE at
+ * request time, source `virtual-live-dataset`). All read through ONE abstraction
+ * — add a kind here + a RECALL_SOURCES entry; nothing branches on the kind.
  */
 export type RecallKind = 'knowledge' | 'conversation' | 'virtual';
+
+/** Maps each recall source's human label to its {@link SourceKind} axis value. */
+const RECALL_SOURCE_KIND: Record<RecallKind, SourceKind> = {
+  knowledge: 'collected',
+  conversation: 'chat-channel',
+  virtual: 'virtual-live-dataset',
+};
 
 /**
  * Max virtual feeds fanned out on a single recall. Each virtual feed spawns a
@@ -490,21 +499,34 @@ export type RecallKind = 'knowledge' | 'conversation' | 'virtual';
 const MAX_VIRTUAL_RECALL_FEEDS = 5;
 
 /**
- * A recall source is a {@link FeedReader}: it owns exactly one kind and
- * contributes ONLY the result facet it produces (or `{}` when it has none).
- * `gatherRecall` runs them all and merges — there is no central type-switch over
- * kinds. Each reader receives the ACL gate ({@link AuthzScope}) as a REQUIRED,
- * typed argument supplied by `gatherRecall` — never buried in `ctx`, so it can't
- * be dropped at the call site. (The gate enforcing the scope is verified by the
- * per-source ACL tests, not by the type.) Readers fail independently.
+ * A recall source is a {@link FeedReader} on the `(source, lens='recall')` tuple:
+ * it owns exactly one source kind and contributes ONLY the result facet it
+ * produces (or `{}` when it has none). `canRead(ctx)` lets a source decline a ctx
+ * it can't serve (no query text, wrong signal) so `gatherRecall` skips it
+ * BRANCH-FREE — the guard lives on the reader, not in a caller-side `if`. Each
+ * reader receives the ACL gate ({@link AuthzScope}) as a REQUIRED, typed argument
+ * supplied by `gatherRecall` — never buried in `ctx`, so it can't be dropped at
+ * the call site. (The gate enforcing the scope is verified by the per-source ACL
+ * tests, not by the type.) Readers fail independently.
  */
-export type RecallSource = FeedReader<RecallContext, Partial<UnifiedSearchResult>> & {
+export type RecallSource = FeedReader<
+  SourceKind,
+  'recall',
+  RecallContext,
+  Partial<UnifiedSearchResult>
+> & {
+  /** Human label for logs + the result facet it owns; maps to `source` via RECALL_SOURCE_KIND. */
   readonly kind: RecallKind;
 };
 
 /** `knowledge` — semantic/keyword snippets from the `events` store. */
 const knowledgeSource: RecallSource = {
   kind: 'knowledge',
+  source: RECALL_SOURCE_KIND.knowledge,
+  lens: 'recall',
+  // Reads via text OR a precomputed embedding; fetchContentSnippets tolerates a
+  // null query (embedding-only), so there is nothing to decline here.
+  canRead: () => true,
   read: async (gate, ctx) => {
     const content = await fetchContentSnippets(
       gate,
@@ -521,9 +543,14 @@ const knowledgeSource: RecallSource = {
 /** `conversation` — keyword/recency hits from the `channel_messages` transcript. */
 const conversationSource: RecallSource = {
   kind: 'conversation',
+  source: RECALL_SOURCE_KIND.conversation,
+  lens: 'recall',
+  // Keyword match has no embedding path, so a text query is required. (The
+  // calling-agent requirement is gate-dependent and stays in `read`.)
+  canRead: (ctx) => Boolean(ctx.query),
   read: async (gate, ctx) => {
-    // Needs a calling agent (its bindings are the tenant fence, on the gate) and
-    // a text query (keyword match has no embedding path). The requesting user
+    // Needs a calling agent (its bindings are the tenant fence, on the gate).
+    // `canRead` already guaranteed a text query. The requesting user
     // (`gate.principal`) is the per-user side of the gate — see
     // fetchConversationSnippets.
     if (!ctx.query || !gate.agentId) return {};
@@ -545,8 +572,12 @@ const conversationSource: RecallSource = {
  */
 const virtualSource: RecallSource = {
   kind: 'virtual',
+  source: RECALL_SOURCE_KIND.virtual,
+  lens: 'recall',
+  // Recall over a virtual feed is a keyword `search()` — it needs query text.
+  canRead: (ctx) => Boolean(ctx.query),
   read: async (gate, ctx) => {
-    // Recall over a virtual feed is a keyword `search()` — it needs query text.
+    // `canRead` already guaranteed a text query.
     if (!ctx.query) return {};
 
     // Candidate opt-in feeds, gated by the same connection visibility every read
@@ -605,23 +636,27 @@ const virtualSource: RecallSource = {
 
 export const RECALL_SOURCES: RecallSource[] = [knowledgeSource, conversationSource, virtualSource];
 
-/** Run every recall reader under `gate` and merge their facets into one
- * fragment. Readers fail independently — one reader's error never drops
- * another's results. The `sources` param is injectable so the registry can be
- * tested generically. The gate is a required, explicit argument: it is the ACL
- * boundary every reader compiles against, never buried in `ctx`. */
+/** Run every recall reader that CAN serve `ctx` under `gate` and merge their
+ * facets into one fragment. A source that returns `false` from `canRead` is
+ * skipped BRANCH-FREE — the "needs query text" guard lives on the reader, not in
+ * a caller-side type-switch. Readers fail independently — one reader's error
+ * never drops another's results. The `sources` param is injectable so the
+ * registry can be tested generically. The gate is a required, explicit argument:
+ * it is the ACL boundary every reader compiles against, never buried in `ctx`. */
 export async function gatherRecall(
   gate: AuthzScope,
   ctx: RecallContext,
   sources: RecallSource[] = RECALL_SOURCES
 ): Promise<Partial<UnifiedSearchResult>> {
   const fragments = await Promise.all(
-    sources.map((source) =>
-      source.read(gate, ctx).catch((err) => {
-        logger.warn(`[search] recall source '${source.kind}' failed: ${getErrorMessage(err)}`);
-        return {} as Partial<UnifiedSearchResult>;
-      })
-    )
+    sources
+      .filter((source) => source.canRead(ctx))
+      .map((source) =>
+        source.read(gate, ctx).catch((err) => {
+          logger.warn(`[search] recall source '${source.kind}' failed: ${getErrorMessage(err)}`);
+          return {} as Partial<UnifiedSearchResult>;
+        })
+      )
   );
   return Object.assign({}, ...fragments);
 }

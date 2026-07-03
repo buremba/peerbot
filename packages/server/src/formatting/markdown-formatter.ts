@@ -319,10 +319,11 @@ function formatSearchResult(result: any, options: FormatterOptions): string {
   const { entity, matches, suggestion } = result;
   const hasContent = result.content?.length > 0;
   const hasConversation = result.conversation_messages?.length > 0;
+  const hasVirtual = result.virtual_feeds?.length > 0;
 
   let md: string;
 
-  if (!entity && matches.length === 0 && (hasContent || hasConversation)) {
+  if (!entity && matches.length === 0 && (hasContent || hasConversation || hasVirtual)) {
     // Recall hits with no entity match — don't claim "No Results"; the content
     // and channel-conversation sections appended below carry the answer.
     md = '# 🔍 Search Results\n\n';
@@ -366,7 +367,39 @@ function formatSearchResult(result: any, options: FormatterOptions): string {
   if (hasConversation) {
     md += formatConversationMessages(result.conversation_messages);
   }
+  if (hasVirtual) {
+    md += formatVirtualFeeds(result.virtual_feeds);
+  }
 
+  return md;
+}
+
+/** Render live virtual-feed recall blocks (one per opt-in feed). Rows are
+ * arbitrary connector columns, so each feed prints its own compact table under a
+ * feed-keyed heading — keeps default (non-JSON) MCP clients from seeing "No
+ * Results" when search_memory matched only a live source. */
+function formatVirtualFeeds(feeds: any[]): string {
+  let md = '';
+  for (const feed of feeds) {
+    const cols: { name: string }[] = feed.columns ?? [];
+    const rows: Record<string, unknown>[] = feed.rows ?? [];
+    const heading = feed.feed_key ? `${feed.feed_key} (live)` : 'Live Feed';
+    md += `## ${heading} (${rows.length})\n\n`;
+    if (cols.length === 0 || rows.length === 0) continue;
+    const names = cols.map((c) => c.name);
+    md += `| ${names.join(' | ')} |\n`;
+    md += `| ${names.map(() => '---').join(' | ')} |\n`;
+    for (const row of rows) {
+      const cells = names.map((n) => {
+        const v = row[n];
+        const s = v == null ? '' : String(v);
+        const flat = s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+        return flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
+      });
+      md += `| ${cells.join(' | ')} |\n`;
+    }
+    md += '\n';
+  }
   return md;
 }
 

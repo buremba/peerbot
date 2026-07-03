@@ -7,9 +7,10 @@
  */
 
 import { type Static, Type } from '@sinclair/typebox';
-import { authzScopeFromToolContext } from '../../authz/scope';
+import { type AuthzScope, authzScopeFromToolContext } from '../../authz/scope';
+import { compileConnectionRowVisibility } from '../../authz/connection-visibility';
 import { getDb } from '../../db/client';
-import { runConnectorQuery } from '../../lib/connector-pushdown';
+import { readVirtualFeed, runConnectorQuery } from '../../lib/connector-pushdown';
 import { validateAndScopeQuery } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { raceAbort } from '../../utils/race-abort';
@@ -22,14 +23,22 @@ import { isAdminOrOwnerRole } from '../access-control';
 import { getErrorMessage } from "@lobu/core";
 
 export const QuerySqlSchema = Type.Object({
-  sql: Type.String({
-    description:
-      'Base SELECT query. Table references are auto-scoped to your organization. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.',
-  }),
+  sql: Type.Optional(
+    Type.String({
+      description:
+        'Base SELECT query. Required unless `feed` is set (a virtual feed runs its OWN stored query, so `sql` is ignored there). Table references are auto-scoped to your organization. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.',
+    })
+  ),
   connection: Type.Optional(
     Type.String({
       description:
         'Optional connection slug. When set, `sql` runs LIVE (read-only) against that connection’s external database via its connector (pushdown), and the internal org-scoping is skipped. When unset, the query runs over your org’s internal tables.',
+    })
+  ),
+  feed: Type.Optional(
+    Type.String({
+      description:
+        'Optional virtual-feed reference (numeric feed id, or "connection_slug/feed_key"). When set, the feed’s STORED query runs LIVE against its source (no `sql` needed — it is ignored); `search_term` narrows via the connector’s search(). Mutually exclusive with `connection`.',
     })
   ),
   org_slug: Type.Optional(
@@ -128,6 +137,48 @@ function coercePageBounds(
   };
 }
 
+/**
+ * Resolve a `feed` reference to a numeric virtual-feed id under `scope`. Accepts
+ * a bare numeric id or "connection_slug/feed_key". Applies the SAME
+ * connection-visibility gate every read seam uses, so a member can only address a
+ * feed on an org-visible or self-owned connection. readVirtualFeed re-checks
+ * visibility + asserts virtual=true, so this only needs to disambiguate the ref.
+ */
+async function resolveVirtualFeedId(ref: string, scope: AuthzScope): Promise<number> {
+  const trimmed = ref.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+
+  const slash = trimmed.indexOf('/');
+  if (slash <= 0 || slash === trimmed.length - 1) {
+    throw new Error(
+      `invalid feed reference '${ref}' — use a numeric feed id or "connection_slug/feed_key"`
+    );
+  }
+  const connectionSlug = trimmed.slice(0, slash);
+  const feedKey = trimmed.slice(slash + 1);
+
+  const sql = getDb();
+  // $1 org, $2 slug, $3 feed_key → visibility principal is $4.
+  const vis = compileConnectionRowVisibility(scope, 4, 'c');
+  const rows = (await sql.unsafe(
+    `SELECT f.id
+     FROM feeds f
+     JOIN connections c ON c.id = f.connection_id
+     WHERE f.organization_id = $1
+       AND c.slug = $2
+       AND f.feed_key = $3
+       AND f.deleted_at IS NULL
+       AND c.deleted_at IS NULL
+       ${vis.sql}
+     LIMIT 1`,
+    [scope.organizationId, connectionSlug, feedKey, ...vis.params],
+  )) as unknown as Array<{ id: number }>;
+  if (rows.length === 0) {
+    throw new Error(`virtual feed '${ref}' not found or not accessible`);
+  }
+  return rows[0].id;
+}
+
 function errorResult(message: string, startTime: number): QuerySqlResult {
   return {
     rows: [],
@@ -148,8 +199,10 @@ export async function querySqlImpl(
 ): Promise<QuerySqlResult> {
   const startTime = Date.now();
 
-  const baseSql = args.sql.trim();
-  if (!baseSql) return errorResult('SQL query is required.', startTime);
+  const baseSql = (args.sql ?? '').trim();
+  // `feed` runs a STORED query, so caller `sql` is optional there; every other
+  // path requires it.
+  if (!baseSql && !args.feed) return errorResult('SQL query is required.', startTime);
 
   // The base query is wrapped as `SELECT * FROM (<sql>) _t [ORDER BY …] LIMIT …`,
   // so an ORDER BY / LIMIT / window inside the caller's SQL is valid (it sits in
@@ -220,6 +273,45 @@ export async function querySqlImpl(
       callerIsAdmin = true; // cross-org already required owner/admin in the target
     } else {
       callerIsAdmin = isAdminOrOwnerRole(role);
+    }
+  }
+
+  if (args.feed && args.connection) {
+    return errorResult('Pass either `feed` or `connection`, not both.', startTime);
+  }
+
+  // Virtual-feed pushdown: `feed` names a virtual feed whose STORED query runs
+  // LIVE against its source (caller `sql` is ignored — the query is authored on
+  // the feed). `search_term` narrows via the connector's search(). Same
+  // AuthzScope connection-visibility gate readVirtualFeed re-checks; the feed-ref
+  // resolution below applies it too. This is strictly tighter than the
+  // `connection` pushdown — no arbitrary caller SQL.
+  if (args.feed) {
+    const bounds = coercePageBounds(args);
+    if ('error' in bounds) return errorResult(bounds.error, startTime);
+    const { limit, offset } = bounds;
+    const scope = authzScopeFromToolContext({ organizationId: targetOrgId, userId: ctx.userId });
+    try {
+      const feedId = await resolveVirtualFeedId(args.feed, scope);
+      const r = await readVirtualFeed({
+        scope,
+        feedId,
+        terms: args.search_term ? [args.search_term] : undefined,
+        limit,
+        offset,
+        sort: args.sort_by
+          ? { column: args.sort_by, order: args.sort_order === 'desc' ? 'desc' : 'asc' }
+          : undefined,
+      });
+      return {
+        rows: r.rows,
+        columns: r.columns,
+        total_count: r.total ?? r.rows.length,
+        has_more: r.total !== undefined ? offset + limit < r.total : r.rows.length >= limit,
+        execution_time_ms: Date.now() - startTime,
+      };
+    } catch (err) {
+      return errorResult(getErrorMessage(err), startTime);
     }
   }
 

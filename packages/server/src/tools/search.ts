@@ -10,9 +10,11 @@
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
+import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import type { FeedReader } from '../lib/feed-reader';
+import { readVirtualFeed } from '../lib/connector-pushdown';
 import { entityLinkMatchSql, searchContentByText } from '../utils/content-search';
 import { resolveBoundChannelRows, stripPlatformPrefix } from '../gateway/channels/bound-channels';
 import { filterChannelsForRequester } from '../authz/channel-visibility';
@@ -231,6 +233,19 @@ interface ConversationSnippet {
   occurred_at: string | null;
 }
 
+// A live block of rows recalled from ONE virtual feed (read via readVirtualFeed's
+// search() pushdown). Distinct from ContentSnippet/ConversationSnippet on purpose:
+// virtual rows are arbitrary connector columns (Gmail: id/subject/from/date/…),
+// so they carry their own `columns` header rather than being coerced into a fixed
+// snippet shape that would drop or mislabel columns. Nothing is persisted — these
+// are read live from the source at recall time. See project_conversation_feeds_virtual.
+interface VirtualFeedRows {
+  feed_id: number;
+  feed_key: string;
+  columns: { name: string; type: string }[];
+  rows: Record<string, unknown>[];
+}
+
 interface UnifiedSearchResult {
   entity_type: string | null;
   entity: Entity | null;
@@ -248,6 +263,10 @@ interface UnifiedSearchResult {
    * bound channels. Replaces the get_channel_history tool — read past convos
    * through the same search call. */
   conversation_messages?: ConversationSnippet[];
+  /** Live rows recalled from opt-in virtual feeds (`config.recall === true`) —
+   * one block per feed, read via the connector's `search()` pushdown at request
+   * time. Never persisted. */
+  virtual_feeds?: VirtualFeedRows[];
   discovery_status?: 'not_found' | 'complete' | 'discovering';
   suggestion?: string;
   view_url?: string;
@@ -453,12 +472,22 @@ export interface RecallContext {
 }
 
 /**
- * The consolidated recall types. We landed on TWO: `knowledge` (the `events`
- * store — where data feeds and promoted memory live) and `conversation` (the
- * `channel_messages` chat transcript). Both are read through ONE abstraction.
- * Add a type here + a RECALL_SOURCES entry; nothing branches on the kind.
+ * The consolidated recall types. `knowledge` (the `events` store — where data
+ * feeds and promoted memory live), `conversation` (the `channel_messages` chat
+ * transcript), and `virtual` (opt-in virtual feeds read LIVE at request time).
+ * All read through ONE abstraction — add a type here + a RECALL_SOURCES entry;
+ * nothing branches on the kind.
  */
-export type RecallKind = 'knowledge' | 'conversation';
+export type RecallKind = 'knowledge' | 'conversation' | 'virtual';
+
+/**
+ * Max virtual feeds fanned out on a single recall. Each virtual feed spawns a
+ * connector subprocess + a live external API round-trip, so unlike the
+ * single-query knowledge/conversation sources this one has real per-feed cost.
+ * A org with more opt-in feeds than this gets the first N (by id) and a logged
+ * truncation — never a silent drop.
+ */
+const MAX_VIRTUAL_RECALL_FEEDS = 5;
 
 /**
  * A recall source is a {@link FeedReader}: it owns exactly one kind and
@@ -503,7 +532,78 @@ const conversationSource: RecallSource = {
   },
 };
 
-export const RECALL_SOURCES: RecallSource[] = [knowledgeSource, conversationSource];
+/**
+ * `virtual` — live rows from opt-in virtual feeds. A virtual feed participates
+ * in ambient recall ONLY when its `config.recall === true`; most virtual feeds
+ * exist to be SQL-addressable (query_sql) and must NOT tax every search_memory
+ * call with a live external round-trip. For each opted-in feed we run
+ * `readVirtualFeed` with the query as a recall term (its `search()` pushdown),
+ * fenced by the SAME connection-visibility gate readVirtualFeed re-checks — the
+ * enumeration below applies it too so we never spawn a subprocess for a feed the
+ * caller can't see. Feeds fail INDEPENDENTLY: one feed's live error (expired
+ * token, source down) never drops another's rows.
+ */
+const virtualSource: RecallSource = {
+  kind: 'virtual',
+  read: async (gate, ctx) => {
+    // Recall over a virtual feed is a keyword `search()` — it needs query text.
+    if (!ctx.query) return {};
+
+    // Candidate opt-in feeds, gated by the same connection visibility every read
+    // seam uses. Params: $1 organizationId, $2 principal (compiler). Ordered by
+    // id and capped so an org with many feeds gets a bounded, logged fan-out.
+    const sql = getDb();
+    const vis = compileConnectionRowVisibility(gate, 2, 'c');
+    const feedRows = (await sql.unsafe(
+      `SELECT f.id, f.feed_key
+       FROM feeds f
+       JOIN connections c ON c.id = f.connection_id
+       WHERE f.organization_id = $1
+         AND f.virtual = true
+         AND f.status = 'active'
+         AND f.deleted_at IS NULL
+         AND (f.config->>'recall') = 'true'
+         AND c.deleted_at IS NULL
+         AND c.status = 'active'
+         ${vis.sql}
+       ORDER BY f.id
+       LIMIT ${MAX_VIRTUAL_RECALL_FEEDS + 1}`,
+      [gate.organizationId, ...vis.params],
+    )) as unknown as Array<{ id: number; feed_key: string }>;
+
+    if (feedRows.length === 0) return {};
+    let candidates = feedRows;
+    if (candidates.length > MAX_VIRTUAL_RECALL_FEEDS) {
+      candidates = candidates.slice(0, MAX_VIRTUAL_RECALL_FEEDS);
+      logger.warn(
+        `[search] virtual recall fan-out capped at ${MAX_VIRTUAL_RECALL_FEEDS} feeds ` +
+          `for org ${gate.organizationId}; ${feedRows.length - MAX_VIRTUAL_RECALL_FEEDS}+ opted-in feed(s) skipped`
+      );
+    }
+
+    const blocks = await Promise.all(
+      candidates.map(async (f): Promise<VirtualFeedRows | null> => {
+        try {
+          const live = await readVirtualFeed({
+            scope: gate,
+            feedId: f.id,
+            terms: [ctx.query as string],
+            limit: ctx.contentLimit,
+          });
+          if (live.rows.length === 0) return null;
+          return { feed_id: f.id, feed_key: f.feed_key, columns: live.columns, rows: live.rows };
+        } catch (err) {
+          logger.warn(`[search] virtual feed ${f.id} recall failed: ${getErrorMessage(err)}`);
+          return null;
+        }
+      })
+    );
+    const virtual_feeds = blocks.filter((b): b is VirtualFeedRows => b !== null);
+    return virtual_feeds.length > 0 ? { virtual_feeds } : {};
+  },
+};
+
+export const RECALL_SOURCES: RecallSource[] = [knowledgeSource, conversationSource, virtualSource];
 
 /** Run every recall reader under `gate` and merge their facets into one
  * fragment. Readers fail independently — one reader's error never drops

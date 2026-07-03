@@ -21,6 +21,7 @@ import { withValidatedArgs } from '../validate-args';
 import { SortOrderField } from './schemas/common-fields';
 import { isAdminOrOwnerRole } from '../access-control';
 import { getErrorMessage } from "@lobu/core";
+import { ToolUserError } from '../../utils/errors';
 
 export const QuerySqlSchema = Type.Object({
   sql: Type.Optional(
@@ -201,8 +202,13 @@ export async function querySqlImpl(
 
   const baseSql = (args.sql ?? '').trim();
   // `feed` runs a STORED query, so caller `sql` is optional there; every other
-  // path requires it.
-  if (!baseSql && !args.feed) return errorResult('SQL query is required.', startTime);
+  // path requires it. `sql` is optional at the SCHEMA level (so a feed call needs
+  // no dummy sql), so this presence check moved here from the typebox boundary —
+  // but it stays a hard REJECT (throw), not a structured { error }, preserving the
+  // "missing sql rejects at the tool boundary, naming the field" contract.
+  if (!baseSql && !args.feed) {
+    throw new ToolUserError('query_sql requires `sql` (or a `feed` to read).', 400);
+  }
 
   // The base query is wrapped as `SELECT * FROM (<sql>) _t [ORDER BY …] LIMIT …`,
   // so an ORDER BY / LIMIT / window inside the caller's SQL is valid (it sits in

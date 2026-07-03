@@ -1,4 +1,4 @@
-import type { ConfigProviderMeta, ModelOption } from "@lobu/core";
+import type { ConfigProviderMeta, ModelOption, SdkCompat } from "@lobu/core";
 import { BaseProviderModule } from "./base-provider-module.js";
 import type { AuthProfilesManager } from "./settings/auth-profiles-manager.js";
 import { fetchModelOptions } from "./utils/fetch-model-options.js";
@@ -19,8 +19,10 @@ interface ApiKeyProviderConfig {
   baseUrlEnvVarName?: string;
   /** Relative path to fetch model list (e.g. "/v1/models"). Enables generic model fetching. */
   modelsEndpoint?: string;
-  /** SDK compatibility — "openai" means OpenAI-compatible format. Also maps OPENAI_BASE_URL in proxy. */
-  sdkCompat?: "openai";
+  /** Wire protocol (see SDK_COMPAT_PROTOCOLS). "openai" also maps OPENAI_BASE_URL in proxy. */
+  sdkCompat?: SdkCompat;
+  /** How the API key is presented upstream ("x-api-key" for Anthropic; Bearer otherwise). */
+  apiKeyHeader?: "authorization" | "x-api-key";
   /** Default model ID when none is configured */
   defaultModel?: string;
   /** Override provider name for model registry lookup */
@@ -59,6 +61,8 @@ export class ApiKeyProviderModule extends BaseProviderModule {
         apiKeyInstructions: config.apiKeyInstructions,
         apiKeyPlaceholder: config.apiKeyPlaceholder,
         catalogVisible: config.catalogVisible,
+        sdkCompat: config.sdkCompat,
+        apiKeyHeader: config.apiKeyHeader,
       },
       config.authProfilesManager
     );

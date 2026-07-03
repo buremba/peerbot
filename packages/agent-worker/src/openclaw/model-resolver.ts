@@ -5,7 +5,13 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { type ConfigProviderMeta, createLogger } from "@lobu/core";
+import {
+  type ConfigProviderMeta,
+  createLogger,
+  type PiAiApi,
+  resolveSdkCompat,
+  SDK_COMPAT_PROTOCOLS,
+} from "@lobu/core";
 import { getModel, type Model } from "@mariozechner/pi-ai";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 
@@ -76,6 +82,20 @@ export const PROVIDER_REGISTRY_ALIASES: Record<string, string> = {
 };
 
 /**
+ * Registry alias → pi-ai adapter, derived from the protocol registry. Lets the
+ * model builder pick the right wire adapter for a dynamic model from just the
+ * resolved registry alias. When an alias maps to multiple protocols (e.g.
+ * "openai" ← openai + openai-responses), the first wins — openai-completions,
+ * the correct default for the common OpenAI-compatible case.
+ */
+export const PIAI_API_BY_REGISTRY_ALIAS: Record<string, PiAiApi> =
+  Object.fromEntries(
+    Object.values(SDK_COMPAT_PROTOCOLS)
+      .reverse()
+      .map((p) => [p.registryAlias, p.api])
+  );
+
+/**
  * Register a config-driven provider at runtime.
  * Extends the base URL env, default model, and registry alias maps
  * so resolveModelRef() and the worker can handle the provider.
@@ -95,11 +115,11 @@ export function registerDynamicProvider(
     DEFAULT_PROVIDER_MODELS[id] = config.defaultModel;
   }
 
-  // Map to model registry name: explicit alias, or "openai" for sdkCompat providers
+  // Map to model registry name: explicit alias, else the protocol's registry
+  // alias (e.g. openai-compatible → "openai", anthropic → "anthropic").
   if (!PROVIDER_REGISTRY_ALIASES[id]) {
     const alias =
-      config.registryAlias ||
-      (config.sdkCompat === "openai" ? "openai" : undefined);
+      config.registryAlias || resolveSdkCompat(config.sdkCompat)?.registryAlias;
     if (alias) {
       PROVIDER_REGISTRY_ALIASES[id] = alias;
     }
@@ -112,11 +132,11 @@ export function registerDynamicProvider(
   );
 }
 
-/** Shape of a dynamically-built openai-completions model entry. */
-interface DynamicOpenAIModel {
+/** Shape of a dynamically-built model entry (any pi-ai wire protocol). */
+interface DynamicModel {
   id: string;
   name: string;
-  api: "openai-completions";
+  api: PiAiApi;
   provider: string;
   baseUrl: string;
   reasoning: boolean;
@@ -133,40 +153,43 @@ interface DynamicOpenAIModel {
 }
 
 /**
- * Build a dynamic openai-completions model entry for a config-driven provider
- * whose model isn't in pi-ai's static registry (gemini, nvidia, together-ai,
- * z.ai, …).
+ * Build a dynamic model entry for a config-driven provider whose model isn't in
+ * pi-ai's static registry (gemini, nvidia, together-ai, z.ai, org BYO providers,
+ * …). The `api` selects the pi-ai adapter that speaks the provider's protocol —
+ * defaults to openai-completions for the common OpenAI-compatible case.
  *
  * `rawProvider` is the gateway provider slug; `registryProvider` is the
- * model-registry name it maps to (usually "openai" for sdkCompat providers).
+ * model-registry name it maps to.
  *
  * Reliability invariant: only REAL OpenAI may default to OpenAI's public
  * endpoint. For every other provider an unresolved `providerBaseUrl` means the
- * gateway failed to supply a proxy mapping — routing such a request to
- * api.openai.com would silently mis-deliver it to OpenAI with a model ID it
- * doesn't know, surfacing as a confusing "400 <model> is not a valid model
- * ID". We throw instead so the real cause (no proxy base URL) is visible.
+ * gateway failed to supply a proxy mapping — routing such a request to a public
+ * endpoint would silently mis-deliver it with a model ID that endpoint doesn't
+ * know, surfacing as a confusing "400 <model> is not a valid model ID". We throw
+ * instead so the real cause (no proxy base URL) is visible.
  */
 export function buildDynamicOpenAIModel(args: {
   rawProvider: string;
   registryProvider: string;
   modelId: string;
   providerBaseUrl: string | undefined;
-}): DynamicOpenAIModel {
+  api?: PiAiApi;
+}): DynamicModel {
   const { rawProvider, registryProvider, modelId, providerBaseUrl } = args;
+  const api = args.api ?? "openai-completions";
   const isRealOpenAI = rawProvider === "openai";
   if (!isRealOpenAI && !providerBaseUrl) {
     throw new Error(
       `Could not resolve a base URL for provider "${rawProvider}". ` +
         `The gateway did not supply a proxy mapping for its base-URL env ` +
         `var (${DEFAULT_PROVIDER_BASE_URL_ENV[rawProvider] ?? "unknown"}). ` +
-        `Refusing to route "${modelId}" to OpenAI's public endpoint.`
+        `Refusing to route "${modelId}" to a public endpoint.`
     );
   }
   return {
     id: modelId,
     name: modelId,
-    api: "openai-completions",
+    api,
     provider: registryProvider,
     baseUrl: providerBaseUrl || "https://api.openai.com/v1",
     reasoning: false,

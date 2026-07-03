@@ -42,6 +42,7 @@ import {
   DEFAULT_PROVIDER_BASE_URL_ENV,
   getModelDynamic,
   openOrCreateSessionManager,
+  PIAI_API_BY_REGISTRY_ALIAS,
   PROVIDER_REGISTRY_ALIASES,
   registerDynamicProvider,
   resolveModelRef,
@@ -604,23 +605,14 @@ export async function runAISession(
 
   let baseModel: Model<any> | undefined = getModelDynamic(provider, modelId);
   if (!baseModel) {
-    // For OpenAI-compatible providers (e.g. nvidia, together-ai), create a
-    // dynamic model entry since these models aren't in the static registry.
+    // The model isn't in pi-ai's static registry — build a dynamic entry. Which
+    // path depends on the provider's wire protocol (the registry alias, set from
+    // sdkCompat by registerDynamicProvider): anthropic clones a known Claude
+    // shape (pi-ai's static Anthropic registry lags newest models); every other
+    // protocol builds a generic dynamic model with the matching pi-ai adapter.
     const registryProvider =
       PROVIDER_REGISTRY_ALIASES[rawProvider] || rawProvider;
-    if (registryProvider === "openai" || rawProvider !== provider) {
-      logger.info(
-        `Creating dynamic model entry for ${rawProvider}/${modelId} (openai-compatible)`
-      );
-      // Throws if a non-OpenAI provider's base URL is unresolved, rather
-      // than silently routing to OpenAI's public endpoint.
-      baseModel = buildDynamicOpenAIModel({
-        rawProvider,
-        registryProvider,
-        modelId,
-        providerBaseUrl,
-      });
-    } else if (provider === "anthropic") {
+    if (provider === "anthropic") {
       // The newest Claude models (resolved live from the provider for auto-mode
       // agents) lag pi-ai's static registry. Clone a known Claude model's shape
       // and override the id so the agent still runs — Anthropic / the
@@ -644,6 +636,23 @@ export async function runAISession(
           `Model "${modelId}" not found for provider "${provider}". Check that the model ID is valid and registered in the model registry.`
         );
       }
+    } else if (registryProvider === "openai" || rawProvider !== provider) {
+      // OpenAI-compatible (openai, nvidia, together-ai, z.ai, …) or any org BYO
+      // provider whose slug differs from its registry alias. Resolve the pi-ai
+      // adapter from the provider's protocol; default to openai-completions.
+      const api = PIAI_API_BY_REGISTRY_ALIAS[registryProvider];
+      logger.info(
+        `Creating dynamic model entry for ${rawProvider}/${modelId} (${api ?? "openai-completions"})`
+      );
+      // Throws if a non-OpenAI provider's base URL is unresolved, rather
+      // than silently routing to a public endpoint.
+      baseModel = buildDynamicOpenAIModel({
+        rawProvider,
+        registryProvider,
+        modelId,
+        providerBaseUrl,
+        api,
+      });
     } else {
       throw new Error(
         `Model "${modelId}" not found for provider "${provider}". Check that the model ID is valid and registered in the model registry.`

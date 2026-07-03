@@ -88,6 +88,15 @@ export type {
   ConfigProviderMeta,
   ProviderConfigEntry,
 } from "./provider-config-types";
+// Wire-protocol registry (sdkCompat → pi-ai adapter)
+export {
+  isSdkCompat,
+  type PiAiApi,
+  resolveSdkCompat,
+  SDK_COMPAT_PROTOCOLS,
+  type SdkCompat,
+  type SdkCompatProtocol,
+} from "./sdk-compat";
 export * from "./secret-refs";
 // Observability
 export { getSentry, initSentry } from "./sentry";

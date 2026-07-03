@@ -260,6 +260,29 @@ describe("buildDynamicOpenAIModel — never silently route to OpenAI", () => {
     );
   });
 
+  test("uses the passed pi-ai api for non-openai protocols (generic)", () => {
+    const model = buildDynamicOpenAIModel({
+      rawProvider: "my-claude",
+      registryProvider: "anthropic",
+      modelId: "claude-opus-4-8",
+      providerBaseUrl: "http://localhost:8118/api/proxy/my-claude/a/agent-1",
+      api: "anthropic-messages",
+    });
+    expect(model.api).toBe("anthropic-messages");
+    expect(model.provider).toBe("anthropic");
+    expect(model.id).toBe("claude-opus-4-8");
+  });
+
+  test("defaults to openai-completions when no api is passed", () => {
+    const model = buildDynamicOpenAIModel({
+      rawProvider: "groq",
+      registryProvider: "openai",
+      modelId: "llama-3.3-70b",
+      providerBaseUrl: "http://localhost:8118/api/proxy/groq/a/agent-1",
+    });
+    expect(model.api).toBe("openai-completions");
+  });
+
   test("THROWS for a third-party provider with no resolved base URL", () => {
     // Regression for the silent-misroute bug: an unresolved proxy base URL
     // previously fell back to api.openai.com, shipping the request to OpenAI
@@ -283,7 +306,7 @@ describe("buildDynamicOpenAIModel — never silently route to OpenAI", () => {
           modelId: "some-model",
           providerBaseUrl: undefined,
         })
-      ).toThrow(/Refusing to route .* to OpenAI's public endpoint/);
+      ).toThrow(/Refusing to route .* to a public endpoint/);
     }
   });
 

@@ -1,4 +1,4 @@
-import { createLogger } from "@lobu/core";
+import { createLogger, type SdkCompat } from "@lobu/core";
 import { Hono } from "hono";
 import { resolveOrgId } from "../../lobu/stores/org-context.js";
 import { readOrgSharedProviderApiKey } from "../../lobu/stores/provider-secrets.js";
@@ -68,6 +68,8 @@ interface BaseProviderConfig {
   apiKeyPlaceholder?: string;
   catalogDescription?: string;
   catalogVisible?: boolean;
+  /** Wire protocol this provider speaks (see SDK_COMPAT_PROTOCOLS). */
+  sdkCompat?: SdkCompat;
 }
 
 /**
@@ -96,6 +98,7 @@ export abstract class BaseProviderModule
   apiKeyPlaceholder?: string;
   catalogDescription?: string;
   catalogVisible?: boolean;
+  sdkCompat?: SdkCompat;
 
   protected readonly providerConfig: BaseProviderConfig;
   protected readonly authProfilesManager: AuthProfilesManager;
@@ -119,6 +122,7 @@ export abstract class BaseProviderModule
     this.apiKeyPlaceholder = config.apiKeyPlaceholder;
     this.catalogDescription = config.catalogDescription;
     this.catalogVisible = config.catalogVisible;
+    this.sdkCompat = config.sdkCompat;
 
     this.app = new Hono();
     this.setupRoutes();

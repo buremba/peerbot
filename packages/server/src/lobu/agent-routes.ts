@@ -4,7 +4,7 @@
  * All routes are org-scoped via mcpAuth middleware and orgContext.
  */
 
-import { encrypt, type AuthProfile } from '@lobu/core';
+import { encrypt, isSdkCompat, type AuthProfile } from '@lobu/core';
 import { Hono } from 'hono';
 import { mcpAuth } from '../auth/middleware';
 import { ensureBuilderAgent } from '../auth/builder-provisioning';
@@ -494,19 +494,20 @@ routes.post('/inference-providers', async (c) => {
   const capErr = validateCapabilitiesMap(body.capabilities);
   if (capErr) return c.json({ error: capErr }, 400);
 
-  // Gate: only OpenAI-compatible providers are routable via a pasted API key
-  // today. `kind` is the catalog slug the user picked; look up its wire
-  // protocol and reject non-openai ones (Claude/ChatGPT) — they sign in via
-  // OAuth and their routing is wired in a later phase. Without this, an
-  // api-key Claude row would be created but silently fail to route.
+  // Gate: a provider is addable via a pasted API key only if its wire protocol
+  // is one we can route (present in SDK_COMPAT_PROTOCOLS). `kind` is the catalog
+  // slug the user picked; a known catalog entry whose sdkCompat isn't routable
+  // (e.g. a subscription-only OAuth provider) is rejected so an unroutable row
+  // can't be created. Unknown kinds (custom endpoints) pass — they're treated as
+  // OpenAI-compatible by the synthesize path.
   try {
     const registry = new ProviderRegistryService(resolveProviderRegistryPath());
     const catalog = buildProviderCatalog(await registry.getProviderConfigs());
     const entry = catalog.find((e) => e.slug === kind);
-    if (entry && entry.sdkCompat !== 'openai') {
+    if (entry && !isSdkCompat(entry.sdkCompat)) {
       return c.json(
         {
-          error: `Provider '${kind}' can't be added with an API key yet — only OpenAI-compatible providers are supported for now.`,
+          error: `Provider '${kind}' can't be added with an API key — it signs in instead.`,
         },
         400
       );

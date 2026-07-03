@@ -1,4 +1,4 @@
-import type { CliBackendConfig, ModelOption } from "@lobu/core";
+import type { CliBackendConfig, ModelOption, SdkCompat } from "@lobu/core";
 import { type ModuleInterface, moduleRegistry } from "@lobu/core";
 import type { ProviderCredentialContext } from "../embedded.js";
 
@@ -33,6 +33,12 @@ export interface ModelProviderModule extends OrchestratorModule {
   apiKeyPlaceholder?: string;
   catalogDescription?: string;
   catalogVisible?: boolean;
+  /**
+   * Wire protocol this provider speaks (see SDK_COMPAT_PROTOCOLS). Lets the
+   * catalog know a module's protocol uniformly — including OAuth modules like
+   * Claude (anthropic) that aren't config-driven. Omitted ⇒ unknown/openai.
+   */
+  sdkCompat?: SdkCompat;
   getSecretEnvVarNames(): string[];
   getCredentialEnvVarName(): string;
   /**

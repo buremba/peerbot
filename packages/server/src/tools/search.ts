@@ -639,24 +639,29 @@ export const RECALL_SOURCES: RecallSource[] = [knowledgeSource, conversationSour
 /** Run every recall reader that CAN serve `ctx` under `gate` and merge their
  * facets into one fragment. A source that returns `false` from `canRead` is
  * skipped BRANCH-FREE — the "needs query text" guard lives on the reader, not in
- * a caller-side type-switch. Readers fail independently — one reader's error
- * never drops another's results. The `sources` param is injectable so the
- * registry can be tested generically. The gate is a required, explicit argument:
- * it is the ACL boundary every reader compiles against, never buried in `ctx`. */
+ * a caller-side type-switch. Readers fail INDEPENDENTLY: BOTH `canRead` and
+ * `read` run inside the per-source isolation boundary, so a throw from either one
+ * drops only that source's facet (logged), never another's. The `sources` param
+ * is injectable so the registry can be tested generically. The gate is a
+ * required, explicit argument: it is the ACL boundary every reader compiles
+ * against, never buried in `ctx`. */
 export async function gatherRecall(
   gate: AuthzScope,
   ctx: RecallContext,
   sources: RecallSource[] = RECALL_SOURCES
 ): Promise<Partial<UnifiedSearchResult>> {
   const fragments = await Promise.all(
-    sources
-      .filter((source) => source.canRead(ctx))
-      .map((source) =>
-        source.read(gate, ctx).catch((err) => {
-          logger.warn(`[search] recall source '${source.kind}' failed: ${getErrorMessage(err)}`);
-          return {} as Partial<UnifiedSearchResult>;
-        })
-      )
+    sources.map(async (source) => {
+      try {
+        // canRead is inside the try so a throwing predicate isolates to this
+        // source (skipped + logged) instead of rejecting the whole gather.
+        if (!source.canRead(ctx)) return {} as Partial<UnifiedSearchResult>;
+        return await source.read(gate, ctx);
+      } catch (err) {
+        logger.warn(`[search] recall source '${source.kind}' failed: ${getErrorMessage(err)}`);
+        return {} as Partial<UnifiedSearchResult>;
+      }
+    })
   );
   return Object.assign({}, ...fragments);
 }

@@ -74,6 +74,25 @@ describe('recall source registry (generic contract)', () => {
     expect(merged).toEqual({});
   });
 
+  it('isolates a source whose canRead THROWS — the others still contribute', async () => {
+    // canRead is part of a reader's surface, so a throwing predicate must be
+    // isolated the same way a throwing read is — it must NOT reject the whole
+    // gather and wipe every source's facet.
+    const throwsInCanRead: RecallSource = {
+      kind: 'conversation',
+      source: 'chat-channel',
+      lens: 'recall',
+      canRead: () => {
+        throw new Error('canRead blew up');
+      },
+      read: vi.fn(async () => ({ conversation_messages: [{ text: 'hi' }] as never })),
+    };
+    const merged = await gatherRecall(gate, ctx, [knowledgeHit, throwsInCanRead]);
+    expect(merged.content).toHaveLength(1); // knowledge survived
+    expect(merged.conversation_messages).toBeUndefined();
+    expect(throwsInCanRead.read).not.toHaveBeenCalled(); // never reached read
+  });
+
   it('skips a source whose canRead returns false — read is never called', async () => {
     const declines: RecallSource = {
       kind: 'virtual',
@@ -95,6 +114,19 @@ describe('recall source registry (generic contract)', () => {
     expect(RECALL_SOURCES.length).toBeGreaterThanOrEqual(2);
     // The registry is the `lens = recall` row of the matrix — every entry agrees.
     expect(RECALL_SOURCES.every((s) => s.lens === 'recall')).toBe(true);
+  });
+
+  it('each production source maps its kind to the right source-kind axis value', () => {
+    // Pins the kind ↔ source correspondence the code documents (the tuple's
+    // `source` is typed as the union, so a wrong pairing would still compile).
+    const expected: Record<string, string> = {
+      knowledge: 'collected',
+      conversation: 'chat-channel',
+      virtual: 'virtual-live-dataset',
+    };
+    for (const s of RECALL_SOURCES) {
+      expect(s.source).toBe(expected[s.kind]);
+    }
   });
 });
 
@@ -129,16 +161,19 @@ describe('recall gate is a REQUIRED, typed argument (the contract)', () => {
     expect(seen).toEqual([gate, gate]);
   });
 
-  it('the registry type CANNOT hold a reader that omits the gate', () => {
-    // A reader on the OLD `recall(ctx)` shape (no gate) is structurally
-    // incompatible with FeedReader<…> — the compiler rejects it.
-    // @ts-expect-error — `read` MUST accept the AuthzScope gate as its first arg.
+  it('the registry type CANNOT hold a reader whose read omits the gate', () => {
+    // A reader whose `read` takes only ctx (the OLD gate-less shape) is
+    // structurally incompatible with FeedReader<…>: RecallContext and AuthzScope
+    // are unrelated, so the first-arg mismatch is what the compiler rejects here
+    // — NOT a missing property. This pins the exact claim (gate-first signature),
+    // so adding fields to the reader shape can't silently satisfy the suppression.
+    // @ts-expect-error — `read`'s first arg MUST be the AuthzScope gate, not ctx.
     const leaky: RecallSource = {
       kind: 'knowledge',
       source: 'collected',
       lens: 'recall',
       canRead: () => true,
-      recall: async (_ctx: RecallContext) => ({}),
+      read: async (_ctx: RecallContext) => ({}),
     };
     // Sanity: a correctly-typed reader IS assignable.
     const ok: FeedReader<'collected', 'recall', RecallContext, Record<string, never>> = {

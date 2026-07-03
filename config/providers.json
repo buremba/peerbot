@@ -13,6 +13,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://console.groq.com/keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Groq Console</a>",
           "apiKeyPlaceholder": "gsk_...",
           "sdkCompat": "openai",
+          "modalities": ["text", "stt"],
           "defaultModel": "llama-3.3-70b-versatile",
           "modelsEndpoint": "/models",
           "stt": {
@@ -37,6 +38,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://aistudio.google.com/apikey\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Google AI Studio</a>",
           "apiKeyPlaceholder": "AIza...",
           "sdkCompat": "openai",
+          "modalities": ["text", "image", "tts"],
           "defaultModel": "gemini-2.5-flash"
         }
       ]
@@ -54,6 +56,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://api.together.ai/settings/api-keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Together AI Dashboard</a>",
           "apiKeyPlaceholder": "tok_...",
           "sdkCompat": "openai",
+          "modalities": ["text"],
           "defaultModel": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
           "modelsEndpoint": "/models"
         }
@@ -72,6 +75,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://build.nvidia.com/settings/api-keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">NVIDIA Build</a>",
           "apiKeyPlaceholder": "nvapi-...",
           "sdkCompat": "openai",
+          "modalities": ["text"],
           "modelsEndpoint": "/models",
           "defaultModel": "nvidia/moonshotai/kimi-k2.6"
         }
@@ -89,7 +93,8 @@
           "upstreamBaseUrl": "https://api.z.ai/api/coding/paas/v4",
           "apiKeyInstructions": "Get your API key from <a href=\"https://z.ai/manage-apikey/apikey-list\" target=\"_blank\" class=\"text-blue-600 hover:underline\">z.ai</a>",
           "apiKeyPlaceholder": "zai-...",
-          "sdkCompat": "openai"
+          "sdkCompat": "openai",
+          "modalities": ["text"]
         }
       ]
     },
@@ -105,7 +110,8 @@
           "upstreamBaseUrl": "https://api.elevenlabs.io",
           "apiKeyInstructions": "Get your API key from <a href=\"https://elevenlabs.io/app/api-keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">ElevenLabs</a>",
           "apiKeyPlaceholder": "sk_...",
-          "sdkCompat": "openai"
+          "sdkCompat": "openai",
+          "modalities": ["tts"]
         }
       ]
     },
@@ -122,6 +128,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://fireworks.ai/account/api-keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Fireworks Dashboard</a>",
           "apiKeyPlaceholder": "fw_...",
           "sdkCompat": "openai",
+          "modalities": ["text"],
           "defaultModel": "accounts/fireworks/models/llama-v3p3-70b-instruct",
           "modelsEndpoint": "/models"
         }
@@ -140,6 +147,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://console.mistral.ai/api-keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Mistral Console</a>",
           "apiKeyPlaceholder": "sk-...",
           "sdkCompat": "openai",
+          "modalities": ["text"],
           "defaultModel": "mistral-large-latest",
           "modelsEndpoint": "/models"
         }
@@ -148,7 +156,7 @@
     {
       "id": "deepseek",
       "name": "DeepSeek",
-      "description": "DeepSeek V4 models — fast and reasoning variants",
+      "description": "DeepSeek V4 models \u2014 fast and reasoning variants",
       "providers": [
         {
           "displayName": "DeepSeek",
@@ -158,6 +166,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://platform.deepseek.com/api_keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">DeepSeek Platform</a>",
           "apiKeyPlaceholder": "sk-...",
           "sdkCompat": "openai",
+          "modalities": ["text"],
           "defaultModel": "deepseek-v4-flash",
           "modelsEndpoint": "/v1/models"
         }
@@ -176,6 +185,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://openrouter.ai/keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">OpenRouter</a>, or connect via OAuth for per-user billing",
           "apiKeyPlaceholder": "sk-or-...",
           "sdkCompat": "openai",
+          "modalities": ["text", "stt"],
           "defaultModel": "anthropic/claude-sonnet-4",
           "modelsEndpoint": "/models",
           "stt": {
@@ -200,6 +210,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://cloud.cerebras.ai/\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Cerebras Cloud</a>",
           "apiKeyPlaceholder": "csk-...",
           "sdkCompat": "openai",
+          "modalities": ["text"],
           "defaultModel": "llama-3.3-70b",
           "modelsEndpoint": "/models"
         }
@@ -218,6 +229,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://opencode.ai/auth\" target=\"_blank\" class=\"text-blue-600 hover:underline\">OpenCode Zen</a>",
           "apiKeyPlaceholder": "zen-...",
           "sdkCompat": "openai",
+          "modalities": ["text"],
           "defaultModel": "claude-sonnet-4-6",
           "modelsEndpoint": "/models"
         }
@@ -236,6 +248,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://console.x.ai/\" target=\"_blank\" class=\"text-blue-600 hover:underline\">xAI Console</a>",
           "apiKeyPlaceholder": "xai-...",
           "sdkCompat": "openai",
+          "modalities": ["text"],
           "defaultModel": "grok-3",
           "modelsEndpoint": "/models"
         }
@@ -254,6 +267,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://www.perplexity.ai/settings/api\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Perplexity Settings</a>",
           "apiKeyPlaceholder": "pplx-...",
           "sdkCompat": "openai",
+          "modalities": ["text"],
           "defaultModel": "sonar",
           "modelsEndpoint": "/v1/models"
         }
@@ -272,6 +286,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://dashboard.cohere.com/api-keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Cohere Dashboard</a>",
           "apiKeyPlaceholder": "co-...",
           "sdkCompat": "openai",
+          "modalities": ["text"],
           "defaultModel": "command-r-plus",
           "modelsEndpoint": "/models"
         }
@@ -290,6 +305,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://platform.openai.com/api-keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">OpenAI Dashboard</a>",
           "apiKeyPlaceholder": "sk-...",
           "sdkCompat": "openai",
+          "modalities": ["text", "image", "tts"],
           "defaultModel": "gpt-4o",
           "modelsEndpoint": "/models"
         }

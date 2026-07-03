@@ -1,7 +1,32 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { type ModuleInterface, moduleRegistry } from "@lobu/core";
 import type { InferenceProviderListItem } from "../../../lobu/stores/provider-secrets.js";
 import type { ApiKeyProviderModule } from "../api-key-provider-module.js";
 import { ProviderCatalogService } from "../provider-catalog.js";
+
+/**
+ * Register a fake catalog module so buildProviderCatalog() (called inside
+ * getInstalledModules to map an org row's `kind` → protocol) can resolve it.
+ * Keyed by `name`; the registry only stores enabled modules.
+ */
+function registerFakeModule(providerId: string, sdkCompat: string): void {
+  moduleRegistry.register({
+    name: `${providerId}-provider`,
+    isEnabled: () => true,
+    providerId,
+    providerDisplayName: providerId,
+    providerIconUrl: "",
+    authType: "oauth",
+    sdkCompat,
+    getSecretEnvVarNames: () => [],
+  } as unknown as ModuleInterface);
+}
+
+function clearRegistry(): void {
+  (
+    moduleRegistry as unknown as { modules: Map<string, ModuleInterface> }
+  ).modules = new Map();
+}
 
 /**
  * Org-owned inference-provider slugs (rows in `inference_providers`) must become
@@ -71,6 +96,8 @@ function customUpstreamRow(
 }
 
 describe("ProviderCatalogService.getInstalledModules — org inference providers", () => {
+  afterEach(() => clearRegistry());
+
   test("synthesizes a routable module for a custom-upstream org slug + registers its upstream", async () => {
     const registered: Array<{ slug: string; providerId: string; url: string }> =
       [];
@@ -114,6 +141,26 @@ describe("ProviderCatalogService.getInstalledModules — org inference providers
 
     // Never surfaced in the "Add Provider" catalog.
     expect(mod.catalogVisible).toBe(false);
+  });
+
+  test("an org row whose kind is an anthropic provider routes as anthropic (x-api-key)", async () => {
+    // Claude-like catalog module so kind "claude" resolves to sdkCompat anthropic.
+    registerFakeModule("claude", "anthropic");
+    const catalog = makeCatalog({
+      installedProviderIds: ["my-claude"],
+      orgRows: [customUpstreamRow("my-claude", { kind: "claude" })],
+      registerUpstream: () => {},
+    });
+
+    const modules = await catalog.getInstalledModules("agent-1", "org-1");
+    expect(modules).toHaveLength(1);
+    const mod = modules[0] as ApiKeyProviderModule;
+
+    // Protocol resolved from the row's kind → anthropic, not the default openai.
+    expect(mod.getProviderMetadata()?.sdkCompat).toBe("anthropic");
+    // Anthropic keys must present as x-api-key, not Bearer — the proxy reads
+    // this off the upstream config at egress.
+    expect(mod.getUpstreamConfig()?.apiKeyHeader).toBe("x-api-key");
   });
 
   test("does NOT synthesize when the org row has no custom text base_url", async () => {

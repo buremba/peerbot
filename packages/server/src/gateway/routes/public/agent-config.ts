@@ -7,7 +7,10 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import type { AgentConfigStore, ModelOption, SkillConfig } from "@lobu/core";
 import type { Context } from "hono";
-import type { ProviderCatalogService } from "../../auth/provider-catalog.js";
+import {
+	buildProviderCatalog,
+	type ProviderCatalogService,
+} from "../../auth/provider-catalog.js";
 import { collectProviderModelOptions } from "../../auth/provider-model-options.js";
 
 import type {
@@ -27,10 +30,6 @@ import type { SettingsTokenPayload } from "../../auth/settings/token-service.js"
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
 import type { IMessageQueue } from "../../infrastructure/queue/index.js";
-import {
-	getModelProviderModules,
-	type ModelProviderModule,
-} from "../../modules/module-system.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
 import { createTokenVerifier } from "../shared/agent-ownership.js";
 import { errorResponse } from "../shared/helpers.js";
@@ -211,28 +210,19 @@ async function buildResolvedConfigResponse(
 		}
 	}
 
-	const allModules = getModelProviderModules();
-	const allProviderMeta = allModules
-		.filter((module) => module.catalogVisible !== false)
-		.map((module: ModelProviderModule) => ({
-			id: module.providerId,
-			name: module.providerDisplayName,
-			iconUrl: module.providerIconUrl || "",
-			authType: (module.authType || "oauth") as
-				| "oauth"
-				| "device-code"
-				| "api-key",
-			supportedAuthTypes: (module.supportedAuthTypes as (
-				| "oauth"
-				| "device-code"
-				| "api-key"
-			)[]) || [
-				(module.authType || "oauth") as "oauth" | "device-code" | "api-key",
-			],
-			apiKeyInstructions: module.apiKeyInstructions || "",
-			apiKeyPlaceholder: module.apiKeyPlaceholder || "",
-			capabilities: [] as string[],
-		}));
+	// Shared catalog builder (same source as the org inference-providers catalog
+	// route) so Claude/ChatGPT and their auth metadata stay consistent across
+	// both surfaces. agent-config only needs the auth fields, so it maps a subset.
+	const allProviderMeta = buildProviderCatalog().map((entry) => ({
+		id: entry.slug,
+		name: entry.displayName,
+		iconUrl: entry.iconUrl,
+		authType: entry.authType,
+		supportedAuthTypes: entry.supportedAuthTypes,
+		apiKeyInstructions: entry.apiKeyInstructions,
+		apiKeyPlaceholder: entry.apiKeyPlaceholder,
+		capabilities: [] as string[],
+	}));
 
 	const installedIds = (settings?.installedProviders || []).map(
 		(provider) => provider.providerId,

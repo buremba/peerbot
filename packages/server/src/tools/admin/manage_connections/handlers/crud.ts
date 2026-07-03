@@ -59,7 +59,9 @@ import {
 	ensureEnvBackedOAuthAppProfile,
   getInteractiveMethods,
   isPersonalCredentialKind,
+  isPersonalCredVisibilityViolation,
   mapConnectionStatusToFeedStatus,
+  PERSONAL_CRED_ORG_VISIBILITY_ERROR,
   resolveConnectionAuthSelection,
   resolveConnectionDisplayName,
   resolveConnectionVisibility,
@@ -1096,6 +1098,7 @@ export async function handleCreate(
   } catch (err) {
 		if (err instanceof ConnectionSlugConflictError)
 			return { error: err.message };
+    if (isPersonalCredVisibilityViolation(err)) return { error: PERSONAL_CRED_ORG_VISIBILITY_ERROR };
     throw err;
   }
 
@@ -1566,6 +1569,7 @@ export async function handleUpdate(
 				error: `Connection slug '${updateExplicitSlug}' already exists for this organization.`,
 			};
     }
+    if (isPersonalCredVisibilityViolation(err)) return { error: PERSONAL_CRED_ORG_VISIBILITY_ERROR };
     throw err;
   }
 

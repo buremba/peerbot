@@ -125,7 +125,12 @@ describe("TranscriptionService provider fallback", () => {
     }
   });
 
-  test("uses sdkCompat openai STT by default when stt block is missing", async () => {
+  test("does NOT treat an OpenAI-compatible provider as STT when it declares no stt modality", async () => {
+    // OpenRouter (and Cerebras, z.ai, Mistral, …) speak the OpenAI chat protocol
+    // but have no /audio/transcriptions endpoint. Previously STT defaulted ON for
+    // every openai-compatible provider, so these were wrongly listed as
+    // transcription candidates and 404'd. With no `stt` in modalities and no `stt`
+    // block, the provider must be skipped and fetch never called.
     const authProfilesManager = {
       getBestProfile: mock(async (_agentId: string, providerId: string) => {
         if (providerId === "openrouter") {
@@ -144,6 +149,7 @@ describe("TranscriptionService provider fallback", () => {
         apiKeyInstructions: "x",
         apiKeyPlaceholder: "x",
         sdkCompat: "openai",
+        modalities: ["text"],
       },
     }));
 
@@ -153,14 +159,10 @@ describe("TranscriptionService provider fallback", () => {
     );
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      expect(url).toBe("https://openrouter.ai/api/v1/audio/transcriptions");
-      return new Response(JSON.stringify({ text: "default stt works" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }) as any;
+    const fetchMock = mock(async () => {
+      throw new Error("fetch should not be called for a non-STT provider");
+    });
+    globalThis.fetch = fetchMock as any;
 
     try {
       const result = await service.transcribe(
@@ -168,11 +170,11 @@ describe("TranscriptionService provider fallback", () => {
         "agent-4",
         "audio/ogg"
       );
-      expect("text" in result).toBe(true);
-      if ("text" in result) {
-        expect(result.text).toBe("default stt works");
-        expect(result.provider).toBe("openai");
+      expect("error" in result).toBe(true);
+      if ("error" in result) {
+        expect(result.error).toContain("No transcription provider configured");
       }
+      expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       globalThis.fetch = originalFetch;
     }

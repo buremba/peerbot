@@ -4,15 +4,21 @@
  * All routes are org-scoped via mcpAuth middleware and orgContext.
  */
 
-import { type AuthProfile, encrypt } from "@lobu/core";
+import { type AuthProfile, encrypt, isSdkCompat } from "@lobu/core";
 import { Hono } from "hono";
 import { ensureBuilderAgent } from "../auth/builder-provisioning";
 import { mcpAuth } from "../auth/middleware";
 import { getDb } from "../db/client";
 import { OAuthClient } from "../gateway/auth/oauth/client";
 import { CLAUDE_PROVIDER } from "../gateway/auth/oauth/providers";
+import { buildProviderCatalog } from "../gateway/auth/provider-catalog";
 import { createAuthProfileLabel } from "../gateway/auth/settings/auth-profiles-manager";
+import {
+	ProviderRegistryService,
+	resolveProviderRegistryPath,
+} from "../gateway/services/provider-registry-service";
 import type { Env } from "../index";
+import logger from "../utils/logger";
 import { countRuntimeMessagingClientsByAgent } from "./client-routes";
 import { getLobuCoreServices } from "./gateway";
 import { orgContext } from "./stores/org-context";
@@ -21,17 +27,18 @@ import {
 	createPostgresAgentConfigStore,
 } from "./stores/postgres-stores";
 import {
-  createInferenceProvider,
+	createInferenceProvider,
 	type InferenceCapabilities,
 	type InferenceCapabilityBlock,
 	isInferenceModality,
 	isValidInferenceProviderSlug,
-  listInferenceProviders,
+	listInferenceProviders,
 	providerOrgSecretName,
-  rotateInferenceProviderKey,
-  softDeleteInferenceProvider,
+	rotateInferenceProviderKey,
+	softDeleteInferenceProvider,
 	updateInferenceProviderCapabilities,
-  validateCapabilityBlock,
+	updateInferenceProviderCoreFields,
+	validateCapabilityBlock,
 } from "./stores/provider-secrets";
 
 const routes = new Hono<{ Bindings: Env }>();
@@ -441,7 +448,28 @@ routes.get("/inference-providers", async (c) => {
   return c.json({ providers });
 });
 
-routes.post("/inference-providers", async (c) => {
+// Bundled provider catalog (PUBLIC metadata only — no secrets). Renders the
+// default "Available" add-cards on the inference-providers page; each entry
+// carries enough pre-fill data that adopting a bundled provider needs only an
+// API key. Registered before any `/:agentId` route so the literal path matches.
+routes.get('/inference-providers/catalog', async (c) => {
+  try {
+    const registry = new ProviderRegistryService(resolveProviderRegistryPath());
+    const configs = await registry.getProviderConfigs();
+    // Built from the module registry (not just providers.json) so Claude /
+    // ChatGPT (OAuth modules) appear too, each carrying its auth metadata.
+    const catalog = buildProviderCatalog(configs);
+    return c.json({ catalog });
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      '[inference-providers/catalog] failed to load bundled provider catalog',
+    );
+    return c.json({ catalog: [] });
+  }
+});
+
+routes.post('/inference-providers', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
   const orgId = requireOrgId(c);
@@ -483,7 +511,34 @@ routes.post("/inference-providers", async (c) => {
   const capErr = validateCapabilitiesMap(body.capabilities);
   if (capErr) return c.json({ error: capErr }, 400);
 
-	const createdBy = c.get("user")?.id ?? null;
+  // Gate: a provider is addable via a pasted API key only if its wire protocol
+  // is one we can route (present in SDK_COMPAT_PROTOCOLS). `kind` is the catalog
+  // slug the user picked; a known catalog entry whose sdkCompat isn't routable
+  // (e.g. a subscription-only OAuth provider) is rejected so an unroutable row
+  // can't be created. Unknown kinds (custom endpoints) pass — they're treated as
+  // OpenAI-compatible by the synthesize path.
+  try {
+    const registry = new ProviderRegistryService(resolveProviderRegistryPath());
+    const catalog = buildProviderCatalog(await registry.getProviderConfigs());
+    const entry = catalog.find((e) => e.slug === kind);
+    if (entry && !isSdkCompat(entry.sdkCompat)) {
+      return c.json(
+        {
+          error: `Provider '${kind}' can't be added with an API key — it signs in instead.`,
+        },
+        400
+      );
+    }
+  } catch (err) {
+    // Fail open on catalog-load errors: don't block creation on a metadata
+    // read. The synthesize path still gates routing downstream.
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      '[inference-providers POST] catalog gate check failed; allowing',
+    );
+  }
+
+  const createdBy = c.get('user')?.id ?? null;
 
   const result = await createInferenceProvider({
     organizationId: orgId,
@@ -518,7 +573,47 @@ routes.post("/inference-providers", async (c) => {
   );
 });
 
-routes.put("/inference-providers/:slug/capabilities/:modality", async (c) => {
+// Edit a provider's core fields. Only displayName is mutable — slug (agents
+// reference it) and kind (catalog linkage) are immutable. Key rotation and
+// per-modality capability edits keep their dedicated routes below; the Edit UI
+// calls whichever it needs.
+routes.put('/inference-providers/:slug', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const { slug } = c.req.param();
+
+  let body: { displayName?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+
+  // Empty / whitespace-only name means "leave unchanged" (pass undefined).
+  const rawName = typeof body.displayName === 'string' ? body.displayName : '';
+  const displayName = rawName.trim() ? rawName.trim() : undefined;
+
+  const updated = await updateInferenceProviderCoreFields(orgId, slug, {
+    displayName,
+  });
+  if (!updated) return c.json({ error: 'Provider not found' }, 404);
+  return c.json({
+    provider: {
+      id: updated.id,
+      slug: updated.slug,
+      kind: updated.kind,
+      displayName: updated.displayName,
+      capabilities: updated.capabilities,
+      hasCustomUpstream: updated.hasCustomUpstream,
+      status: updated.status,
+      createdAt: updated.createdAt,
+    },
+  });
+});
+
+routes.put('/inference-providers/:slug/capabilities/:modality', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
   const orgId = requireOrgId(c);
@@ -527,8 +622,8 @@ routes.put("/inference-providers/:slug/capabilities/:modality", async (c) => {
 
   if (!isInferenceModality(modality)) {
     return c.json(
-			{ error: "modality must be one of: text, image, stt, tts, embedding" },
-			400,
+      { error: 'modality must be one of: text, image, stt, tts' },
+      400
     );
   }
 

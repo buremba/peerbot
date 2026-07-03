@@ -249,16 +249,20 @@ async function seedManagedConnection(
 
 	// Connection OWNED by the member (created_by), wiring the grant + managed app.
 	// Consent-only managed grant-holders carry `config.consent_only = true`.
+	// A managed oauth_account grant is owner-scoped (the connection-token endpoint
+	// gates on created_by), so it is NOT org-visible — production's create path
+	// resolves it to 'private', and the personal-credential DB guard forbids
+	// 'org'. Seed 'private' to match (was relying on the old 'org' schema default).
 	const connRows = (await sql`
     INSERT INTO connections (
       organization_id, connector_key, slug, display_name, status,
       account_id, auth_profile_id, app_auth_profile_id, created_by, config,
-      created_at, updated_at
+      visibility, created_at, updated_at
     ) VALUES (
       ${org.id}, ${connectorKey}, ${`demo-${org.id}`}, 'Demo Connection', 'active',
       ${accountId}, ${accountProfile.id}, ${appProfile.id}, ${owner.id},
       ${consentOnly ? sql.json({ consent_only: true }) : null},
-      NOW(), NOW()
+      'private', NOW(), NOW()
     )
     RETURNING id
   `) as unknown as Array<{ id: number }>;

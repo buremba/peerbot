@@ -37,14 +37,13 @@ const logger = createLogger("provider-secrets");
 // soft-delete→recreate never inherits a deleted row's ciphertext (the TOTAL
 // keyref unique index keeps the name reserved even after soft-delete).
 
-export type InferenceModality = "text" | "image" | "stt" | "tts" | "embedding";
+export type InferenceModality = "text" | "image" | "stt" | "tts";
 
 export const INFERENCE_MODALITIES: ReadonlySet<InferenceModality> = new Set([
 	"text",
 	"image",
 	"stt",
 	"tts",
-	"embedding",
 ]);
 
 /** Type guard: is `m` a known inference modality? */
@@ -146,7 +145,7 @@ export function validateCapabilityBlock(
 	block: unknown,
 ): string | null {
 	if (!isInferenceModality(modality)) {
-		return `Unknown modality '${modality}' (expected text|image|stt|tts|embedding)`;
+		return `Unknown modality '${modality}' (expected text|image|stt|tts)`;
 	}
 	if (typeof block !== "object" || block === null || Array.isArray(block)) {
 		return `capabilities.${modality} must be an object`;
@@ -480,6 +479,31 @@ export async function updateInferenceProviderCapabilities(
 		          capabilities, has_custom_upstream, status, created_at
 	`) as RawInferenceProviderRow[];
 
+	return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/**
+ * Update a provider's editable core fields. Only `display_name` is editable —
+ * `slug` (agents reference it) and `kind` (catalog linkage) are immutable.
+ * `COALESCE` leaves the column unchanged when `displayName` is null/undefined,
+ * so the route can pass undefined for "no change". Returns the updated row, or
+ * null when no live row exists for the slug.
+ */
+export async function updateInferenceProviderCoreFields(
+	organizationId: string,
+	slug: string,
+	fields: { displayName?: string | null },
+): Promise<InferenceProviderRow | null> {
+	const sql = getDb();
+	const rows = (await sql`
+		UPDATE inference_providers
+		SET display_name = COALESCE(${fields.displayName ?? null}, display_name),
+		    updated_at = now()
+		WHERE organization_id = ${organizationId} AND slug = ${slug}
+		  AND deleted_at IS NULL
+		RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
+		          capabilities, has_custom_upstream, status, created_at
+	`) as RawInferenceProviderRow[];
 	return rows[0] ? mapRow(rows[0]) : null;
 }
 

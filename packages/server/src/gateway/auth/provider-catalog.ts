@@ -1,4 +1,11 @@
-import { createLogger, type InstalledProvider } from "@lobu/core";
+import {
+  createLogger,
+  type InstalledProvider,
+  isSdkCompat,
+  type ProviderConfigEntry,
+  SDK_COMPAT_PROTOCOLS,
+  type SdkCompat,
+} from "@lobu/core";
 import type { InferenceProviderListItem } from "../../lobu/stores/provider-secrets.js";
 import {
   getModelProviderModules,
@@ -12,6 +19,115 @@ import type { AuthProfilesManager } from "./settings/auth-profiles-manager.js";
 import { reconcileModelSelectionForInstalledProviders } from "./settings/model-selection.js";
 
 const logger = createLogger("provider-catalog");
+
+/** Auth mechanism a provider supports. */
+export type ProviderAuthType = "oauth" | "device-code" | "api-key";
+
+/**
+ * One provider as seen in the "Add provider" catalog: its identity, auth
+ * options (OAuth sign-in vs API key), wire protocol (`sdkCompat`), and upstream
+ * pre-fill. Built from the module registry so EVERY registered provider appears
+ * — the config-driven api-key ones AND the hardcoded OAuth ones (Claude,
+ * ChatGPT) — not just the providers.json subset.
+ */
+export interface ProviderCatalogEntry {
+  /** Provider id; also the default slug pre-fill. */
+  slug: string;
+  displayName: string;
+  iconUrl: string;
+  authType: ProviderAuthType;
+  supportedAuthTypes: ProviderAuthType[];
+  /**
+   * Wire protocol the provider speaks. "openai" for the config-driven OpenAI-
+   * compatible providers; null when unknown/not-yet-routable (the OAuth
+   * providers — their real protocol is wired in a later phase).
+   */
+  sdkCompat: string | null;
+  /** Upstream base URL pre-fill ("" when the module doesn't expose one). */
+  baseUrl: string;
+  defaultModel: string | null;
+  modelsEndpoint: string | null;
+  apiKeyPlaceholder: string;
+  apiKeyInstructions: string;
+  /** Modalities served; drives which per-modality overrides the UI offers. */
+  modalities: ("text" | "image" | "stt" | "tts")[];
+}
+
+/**
+ * Build the provider catalog from the module registry. This is the single
+ * source of truth both the org inference-providers catalog route and the
+ * per-agent agent-config catalog map from — so Claude/ChatGPT (OAuth modules)
+ * appear everywhere, carrying their auth metadata.
+ *
+ * `configs` (the flattened providers.json map, keyed by providerId) enriches
+ * the config-driven entries with sdkCompat/defaultModel/modelsEndpoint/
+ * modalities. It's optional: callers without a registry handle (agent-config,
+ * which only needs the auth fields) may omit it — those entries then fall back
+ * to the module's own metadata and default to text-only.
+ */
+export function buildProviderCatalog(
+  configs?: Record<string, ProviderConfigEntry>
+): ProviderCatalogEntry[] {
+  const entries: ProviderCatalogEntry[] = [];
+  for (const module of getModelProviderModules()) {
+    if (module.catalogVisible === false) continue;
+    try {
+      const config = configs?.[module.providerId];
+
+      const authType = (module.authType || "oauth") as ProviderAuthType;
+      const supportedAuthTypes =
+        (module.supportedAuthTypes as ProviderAuthType[] | undefined) ?? [
+          authType,
+        ];
+
+      // sdkCompat/defaultModel come from providers.json when we have it, else
+      // from the module's own metadata (config-driven modules expose it), else
+      // from the module's declared protocol (OAuth modules like Claude set
+      // `sdkCompat` directly since they aren't config-driven).
+      const moduleMeta =
+        module instanceof ApiKeyProviderModule
+          ? module.getProviderMetadata()
+          : null;
+      const sdkCompat =
+        config?.sdkCompat ?? moduleMeta?.sdkCompat ?? module.sdkCompat ?? null;
+      const defaultModel =
+        config?.defaultModel ?? moduleMeta?.defaultModel ?? null;
+
+      const upstream =
+        module instanceof ApiKeyProviderModule
+          ? module.getUpstreamConfig()
+          : null;
+      const baseUrl = config?.upstreamBaseUrl ?? upstream?.upstreamBaseUrl ?? "";
+
+      entries.push({
+        slug: module.providerId,
+        displayName: config?.displayName || module.providerDisplayName,
+        iconUrl: config?.iconUrl || module.providerIconUrl || "",
+        authType,
+        supportedAuthTypes,
+        sdkCompat,
+        baseUrl,
+        defaultModel,
+        modelsEndpoint: config?.modelsEndpoint ?? null,
+        apiKeyPlaceholder:
+          config?.apiKeyPlaceholder ?? module.apiKeyPlaceholder ?? "",
+        apiKeyInstructions:
+          config?.apiKeyInstructions ?? module.apiKeyInstructions ?? "",
+        modalities: config?.modalities ?? ["text"],
+      });
+    } catch (err) {
+      logger.warn(
+        {
+          providerId: module.providerId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "[buildProviderCatalog] skipping malformed provider module"
+      );
+    }
+  }
+  entries.sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  return entries;
+}
 
 /**
  * Reads an org's inference-provider rows (slug + custom-upstream capabilities).
@@ -91,7 +207,8 @@ export class ProviderCatalogService {
    * `capabilities.text.base_url` (nothing to route to).
    */
   private synthesizeOrgProviderModule(
-    row: InferenceProviderListItem
+    row: InferenceProviderListItem,
+    sdkCompat: SdkCompat
   ): ApiKeyProviderModule | null {
     const textUpstream = row.capabilities.text?.base_url;
     if (!textUpstream) return null;
@@ -99,7 +216,12 @@ export class ProviderCatalogService {
     const module = new ApiKeyProviderModule({
       providerId: row.slug,
       slug: row.slug,
-      sdkCompat: "openai",
+      // The protocol comes from the row's catalog `kind` (resolved by the
+      // caller), NOT hardcoded — so an org Claude provider routes as anthropic,
+      // an org OpenAI-compatible one as openai, etc. The protocol also decides
+      // the auth header (Anthropic needs x-api-key, not Bearer).
+      sdkCompat,
+      apiKeyHeader: SDK_COMPAT_PROTOCOLS[sdkCompat].apiKeyHeader,
       upstreamBaseUrl: textUpstream,
       defaultModel: row.capabilities.text?.model,
       envVarName: orgProviderKeyEnvVarName(row.slug),
@@ -163,6 +285,9 @@ export class ProviderCatalogService {
     // providers. Load the org's rows once and index by slug so each unmatched
     // installed slug can be synthesized in install order.
     let orgRowsBySlug: Map<string, InferenceProviderListItem> | undefined;
+    // Protocol per catalog slug, so a synthesized org row routes with the wire
+    // protocol its `kind` declares (openai/anthropic/…), not a hardcoded one.
+    let sdkCompatByKind: Map<string, SdkCompat> | undefined;
     if (
       organizationId &&
       this.listOrgInferenceProviders &&
@@ -170,6 +295,12 @@ export class ProviderCatalogService {
     ) {
       const rows = await this.listOrgInferenceProviders(organizationId);
       orgRowsBySlug = new Map(rows.map((r) => [r.slug, r]));
+      sdkCompatByKind = new Map();
+      for (const entry of buildProviderCatalog()) {
+        if (isSdkCompat(entry.sdkCompat)) {
+          sdkCompatByKind.set(entry.slug, entry.sdkCompat);
+        }
+      }
     }
 
     const resolved: ModelProviderModule[] = [];
@@ -181,7 +312,11 @@ export class ProviderCatalogService {
       }
       const row = orgRowsBySlug?.get(ip.providerId);
       if (row) {
-        const synthesized = this.synthesizeOrgProviderModule(row);
+        // Resolve the row's protocol from its catalog `kind`. Unknown/absent ⇒
+        // default to openai (legacy rows created before kind carried a
+        // protocol, and custom endpoints, are OpenAI-compatible).
+        const sdkCompat = sdkCompatByKind?.get(row.kind) ?? "openai";
+        const synthesized = this.synthesizeOrgProviderModule(row, sdkCompat);
         if (synthesized) resolved.push(synthesized);
       }
     }

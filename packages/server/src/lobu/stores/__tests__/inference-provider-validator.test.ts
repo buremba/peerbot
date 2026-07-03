@@ -104,7 +104,7 @@ describe('validateCapabilityBlock', () => {
     });
 
     it('accepts an empty block for a known modality', () => {
-      expect(validateCapabilityBlock('embedding', {})).toBeNull();
+      expect(validateCapabilityBlock('text', {})).toBeNull();
     });
 
     it('accepts a full valid block', () => {

@@ -498,6 +498,22 @@ export function isPersonalCredentialKind(profileKind?: string | null): boolean {
   return profileKind === 'oauth_account';
 }
 
+/** The message the DB guard trigger raises when a personal-credential connection
+ * is written with visibility='org'. Matched to translate the raw DB exception
+ * into a clean tool error. Kept in sync with the migration
+ * `20260703200000_connection_personal_cred_private_guard.sql`. */
+export const PERSONAL_CRED_ORG_VISIBILITY_ERROR =
+  'A personal-credential (oauth_account) connection cannot be org-visible — set its visibility to private.';
+
+/** Does this DB error come from the personal-credential visibility guard trigger?
+ * The trigger raises with a distinctive substring + check_violation SQLSTATE so
+ * any write path (create/update/future set-visibility API) surfaces a friendly
+ * 400 instead of a raw 500. */
+export function isPersonalCredVisibilityViolation(err: unknown): boolean {
+  const message = (err as { message?: string })?.message ?? '';
+  return message.includes('cannot be org-visible');
+}
+
 export async function resolveConnectionDisplayName(params: {
   explicitName?: string | null;
   connectorName: string;

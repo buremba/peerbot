@@ -259,4 +259,39 @@ describe('connection visibility default depends on credential kind', () => {
     expect(p.visibility).toBe('private'); // personal attach → downgraded
     expect(s.visibility).toBe('org'); // non-personal attach → untouched
   });
+
+  it('the DB guard REJECTS any write leaving an oauth_account connection org-visible', async () => {
+    // The hard backstop: no code path (tool, API, or raw SQL) can widen a
+    // personal-credential connection to 'org'. Proven at the DB level — this is
+    // what makes "the API cannot allow it" true regardless of the app layer.
+    const org = await createTestOrganization({ name: 'Vis Org E' });
+    const user = await createTestUser({ name: 'Owner E' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const sql = getTestDb();
+    await makeConnectors(org.id);
+
+    const [prof] = (await sql`
+      INSERT INTO auth_profiles (organization_id, slug, display_name, connector_key, profile_kind, status, created_by)
+      VALUES (${org.id}, 'guard-acct', 'Guard Account', 'vis.oauth', 'oauth_account', 'active', ${user.id})
+      RETURNING id
+    `) as Array<{ id: number }>;
+
+    // INSERT of an oauth_account connection at 'org' must be rejected.
+    await expect(
+      sql`
+        INSERT INTO connections (organization_id, connector_key, slug, display_name, status, visibility, created_by, auth_profile_id)
+        VALUES (${org.id}, 'vis.oauth', 'guard-conn', 'Guard Conn', 'active', 'org', ${user.id}, ${prof.id})
+      `
+    ).rejects.toThrow(/cannot be org-visible/);
+
+    // A valid private one, then re-widening it to 'org' must also be rejected.
+    const [ok] = (await sql`
+      INSERT INTO connections (organization_id, connector_key, slug, display_name, status, visibility, created_by, auth_profile_id)
+      VALUES (${org.id}, 'vis.oauth', 'guard-conn2', 'Guard Conn 2', 'active', 'private', ${user.id}, ${prof.id})
+      RETURNING id
+    `) as Array<{ id: number }>;
+    await expect(
+      sql`UPDATE connections SET visibility = 'org' WHERE id = ${ok.id}`
+    ).rejects.toThrow(/cannot be org-visible/);
+  });
 });

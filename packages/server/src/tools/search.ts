@@ -277,6 +277,55 @@ interface UnifiedSearchResult {
   };
 }
 
+/**
+ * Output schema for `search_memory`. A permissive projection of
+ * `UnifiedSearchResult`: the envelope + the simple nested shapes (children,
+ * existing_entities, metadata, discovery_status) are precise, while the
+ * `Entity` / `ContentSnippet` / `ConversationSnippet` / `ConnectionInfo`
+ * arrays are `unknown` — those types live across the codebase (and
+ * `ContentItem` in `@lobu/connector-sdk`) and are wide snapshots, not a
+ * contract the MCP client introspects field-by-field. Honest over brittle.
+ */
+export const UnifiedSearchResultSchema = Type.Object({
+  entity_type: Type.Union([Type.String(), Type.Null()]),
+  entity: Type.Union([Type.Unknown(), Type.Null()]),
+  matches: Type.Array(Type.Unknown()),
+  connections: Type.Optional(Type.Array(Type.Unknown())),
+  children: Type.Optional(
+    Type.Array(
+      Type.Object({
+        id: Type.Integer(),
+        name: Type.String(),
+        type: Type.String(),
+        market: Type.Union([Type.String(), Type.Null()]),
+        content_count: Type.Integer(),
+      })
+    )
+  ),
+  content: Type.Optional(Type.Array(Type.Unknown())),
+  conversation_messages: Type.Optional(Type.Array(Type.Unknown())),
+  virtual_feeds: Type.Optional(Type.Array(Type.Unknown())),
+  discovery_status: Type.Optional(
+    Type.Union([Type.Literal('not_found'), Type.Literal('complete'), Type.Literal('discovering')])
+  ),
+  suggestion: Type.Optional(Type.String()),
+  view_url: Type.Optional(Type.String()),
+  existing_entities: Type.Optional(
+    Type.Array(
+      Type.Object({
+        entity_type: Type.String(),
+        entities: Type.Array(
+          Type.Object({ id: Type.Integer(), name: Type.String() })
+        ),
+      })
+    )
+  ),
+  metadata: Type.Object({
+    total_matches: Type.Integer(),
+    page_size: Type.Integer(),
+  }),
+});
+
 // ============================================
 // Result Helpers
 // ============================================

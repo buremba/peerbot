@@ -141,12 +141,18 @@ export const ManageClassifiersSchema = Type.Object({
 
 type ManageClassifiersArgs = Static<typeof ManageClassifiersSchema>;
 
-type ManageClassifiersResult = {
-  success: boolean;
-  action: string;
-  message?: string;
-  data?: any;
-};
+/**
+ * Result of `manage_classifiers`. TypeBox-first: `Static<>` derives the TS type
+ * from the same schema exposed as the tool's `outputSchema`. `data` is an
+ * arbitrary payload (varies by action) so it's honestly `unknown`.
+ */
+export const ManageClassifiersResultSchema = Type.Object({
+  success: Type.Boolean(),
+  action: Type.String(),
+  message: Type.Optional(Type.String()),
+  data: Type.Optional(Type.Unknown()),
+});
+type ManageClassifiersResult = Static<typeof ManageClassifiersResultSchema>;
 
 // ============================================
 // Helpers

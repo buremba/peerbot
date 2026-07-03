@@ -151,35 +151,59 @@ const SetDefaultAuthProfileAction = Type.Object({
 // Result Types
 // ============================================
 
-type ManageAuthProfilesResult =
-  | { error: string }
-  | { action: 'list_auth_profiles'; auth_profiles: any[] }
-  | { action: 'get_auth_profile'; auth_profile: any }
-  | {
-      action: 'test_auth_profile';
-      status: 'ok' | 'warning' | 'error';
-      message: string;
-      expires_at?: string | null;
-      cookie_count?: number;
-      auth_cookie_name?: string | null;
-      is_expired?: boolean;
-      cdp_url?: string | null;
-      auth_mode?: 'cdp' | 'cookies' | 'empty';
-    }
-  | {
-      action: 'create_auth_profile';
-      auth_profile?: any;
-      pending_slug?: string;
-      connect_url?: string;
-      connect_token?: string;
-    }
-  | { action: 'update_auth_profile'; auth_profile: any; connect_url?: string }
-  | { action: 'delete_auth_profile'; deleted: true; auth_profile_slug: string }
-  | {
-      action: 'set_default_auth_profile';
-      connector_key: string;
-      auth_profile: any | null;
-    };
+/**
+ * Result of `manage_auth_profiles` — discriminated union (on `action`, plus an
+ * error variant). TypeBox-first: `Static<>` derives the TS type from the same
+ * schema exposed as the tool's `outputSchema`. Auth-profile rows are wide
+ * snapshots (varied by connector), so they're honestly `Record<string, unknown>`.
+ */
+export const ManageAuthProfilesResultSchema = Type.Union([
+  Type.Object({ error: Type.String() }),
+  Type.Object({
+    action: Type.Literal('list_auth_profiles'),
+    auth_profiles: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+  }),
+  Type.Object({
+    action: Type.Literal('get_auth_profile'),
+    auth_profile: Type.Record(Type.String(), Type.Unknown()),
+  }),
+  Type.Object({
+    action: Type.Literal('test_auth_profile'),
+    status: Type.Union([Type.Literal('ok'), Type.Literal('warning'), Type.Literal('error')]),
+    message: Type.String(),
+    expires_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    cookie_count: Type.Optional(Type.Integer()),
+    auth_cookie_name: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    is_expired: Type.Optional(Type.Boolean()),
+    cdp_url: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    auth_mode: Type.Optional(
+      Type.Union([Type.Literal('cdp'), Type.Literal('cookies'), Type.Literal('empty')])
+    ),
+  }),
+  Type.Object({
+    action: Type.Literal('create_auth_profile'),
+    auth_profile: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    pending_slug: Type.Optional(Type.String()),
+    connect_url: Type.Optional(Type.String()),
+    connect_token: Type.Optional(Type.String()),
+  }),
+  Type.Object({
+    action: Type.Literal('update_auth_profile'),
+    auth_profile: Type.Record(Type.String(), Type.Unknown()),
+    connect_url: Type.Optional(Type.String()),
+  }),
+  Type.Object({
+    action: Type.Literal('delete_auth_profile'),
+    deleted: Type.Literal(true),
+    auth_profile_slug: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal('set_default_auth_profile'),
+    connector_key: Type.String(),
+    auth_profile: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+  }),
+]);
+type ManageAuthProfilesResult = Static<typeof ManageAuthProfilesResultSchema>;
 
 /**
  * Standard "auth profile not found" error result. Centralizes the message that

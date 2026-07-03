@@ -35,9 +35,9 @@ import {
   mcpSessionMap,
 } from './mcp-session-state';
 import { type AuthContext, executeTool, extractAuthContext } from './tools/execute';
-import { getAllTools } from './tools/registry';
+import { getAllTools, getTool } from './tools/registry';
 import { formatToolResult } from './formatting/markdown-formatter';
-import { getConfiguredPublicOrigin } from './utils/public-origin';
+import { resolvePublicOrigin } from './utils/public-origin';
 import { buildWorkspaceInstructions } from './utils/workspace-instructions';
 
 // ---------------------------------------------------------------------------
@@ -125,8 +125,27 @@ const formatRef = { rawJson: false };
  * a deliberate follow-up, so we don't stamp it today.) Adding an app = one
  * entry + its owletto `src/mcp-apps/<dir>` build — no gateway change.
  */
-const MCP_APP_RESOURCES: Record<string, { name: string; appDir: string }> = {
-  'ui://lobu/interaction': { name: 'Interaction', appDir: 'interaction' },
+const MCP_APP_RESOURCES: Record<string, {
+  name: string;
+  /** Surfaced on `resources/list` — clients show it in resource browsers. */
+  description: string;
+  appDir: string;
+  /**
+   * CSP the host should apply to the rendered iframe. The interaction bundle is
+   * postMessage-only (no fetch/XHR/import/remote assets; verified in
+   * `_shared/host.tsx` + `interaction-card.tsx`), so the policy is strict: no
+   * network, scripts/styles same-origin only. Tailwind's runtime style
+   * injection needs `'unsafe-inline'` on `style-src`.
+   */
+  csp: string;
+}> = {
+  'ui://lobu/interaction': {
+    name: 'Interaction',
+    description:
+      'Interactive approval/question/tool-grant cards rendered in a sandboxed iframe; actions ride a `tools/call` back to the host.',
+    appDir: 'interaction',
+    csp: "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+  },
 };
 
 /**
@@ -139,7 +158,11 @@ export const MCP_APP_DIRS: ReadonlySet<string> = new Set(
   Object.values(MCP_APP_RESOURCES).map((r) => r.appDir)
 );
 
-function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
+function createServerForContext(
+  env: Env,
+  authCtx: SessionAuthContext,
+  resolvedOrigin: string
+): Server {
   const server = new Server(
     { name: 'lobu-mcp', version: '0.2.0' },
     {
@@ -184,6 +207,7 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
       description: t.description,
       inputSchema: t.inputSchema,
       ...(t.annotations && { annotations: t.annotations }),
+      ...(t.outputSchema && { outputSchema: t.outputSchema }),
     }));
 
     return { tools: allTools };
@@ -195,7 +219,16 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
     resources: Object.entries(MCP_APP_RESOURCES).map(([uri, meta]) => ({
       uri,
       name: meta.name,
+      description: meta.description,
       mimeType: 'text/html',
+      _meta: {
+        ui: {
+          csp: meta.csp,
+          // Origin the host should associate with this UI (the gateway that
+          // serves the bundle + brokers the `tools/call` actions).
+          domain: resolvedOrigin,
+        },
+      },
     })),
   }));
 
@@ -237,6 +270,17 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
       // MCP hosts (Slack/Claude) needs the SERVER to author that view and stamp
       // it here; that is a deliberate follow-up. Until then we return plain text
       // rather than pointing an external host at a bundle it can't feed.
+      // When the tool declares an `outputSchema`, also return the raw result as
+      // `structuredContent` (MCP spec: declaring outputSchema implies the result
+      // is structured). Tools without one (manage_agents, save_memory, ...) stay
+      // text-only — the schema is coupled to emission, never declared alone.
+      const tool = getTool(name);
+      if (tool?.outputSchema && result && typeof result === 'object') {
+        return {
+          content: [{ type: 'text' as const, text }],
+          structuredContent: result as Record<string, unknown>,
+        };
+      }
       return { content: [{ type: 'text' as const, text }] };
     } catch (error: any) {
       return {
@@ -250,7 +294,7 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
 }
 
 function getProtectedResourceUrl(req: Request): string {
-  const baseUrl = getConfiguredPublicOrigin() ?? new URL(req.url).origin;
+  const baseUrl = resolvePublicOrigin(req.url);
   return `${baseUrl}/.well-known/oauth-protected-resource`;
 }
 
@@ -692,7 +736,8 @@ async function syncAgentBinding(
 function createSessionTransport(
   env: Env,
   authCtx: SessionAuthContext,
-  sessionIdGenerator: () => string
+  sessionIdGenerator: () => string,
+  resolvedOrigin: string
 ): { transport: WebStandardStreamableHTTPServerTransport; server: Server } {
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator,
@@ -706,7 +751,7 @@ function createSessionTransport(
       void deletePersistedSession(transport.sessionId);
     }
   };
-  const server = createServerForContext(env, authCtx);
+  const server = createServerForContext(env, authCtx, resolvedOrigin);
   return { transport, server };
 }
 
@@ -882,7 +927,8 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
           const { transport, server } = createSessionTransport(
             c.env,
             recoveredAuthCtx,
-            () => sessionId
+            () => sessionId,
+            resolvePublicOrigin(req.url)
           );
           await server.connect(transport);
           await initializeRecoveredSession(transport, sessionId, req.url);
@@ -927,7 +973,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
       authCtx.tokenType !== 'anonymous' &&
       !authCtx.tokenOrganizationId
     ) {
-      const reauthOrigin = getConfiguredPublicOrigin() ?? new URL(req.url).origin;
+      const reauthOrigin = resolvePublicOrigin(req.url);
       const remediation =
         authCtx.tokenType === 'pat'
           ? `Reissue this PAT bound to a workspace with \`lobu token create --org <workspace>\` against ${reauthOrigin}.`
@@ -944,7 +990,12 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
       return buildJsonRpcErrorResponse(bindingError, initialize?.id ?? null, 400);
     }
     await recordMcpClientActivity(c.env, authCtx, req, initialize);
-    const { transport, server } = createSessionTransport(c.env, authCtx, () => randomUUID());
+    const { transport, server } = createSessionTransport(
+      c.env,
+      authCtx,
+      () => randomUUID(),
+      resolvePublicOrigin(req.url)
+    );
     await server.connect(transport);
     const response = await handleAndMaybeConvert(transport, req, wantsSSE);
     await persistSessionState(transport.sessionId, authCtx);

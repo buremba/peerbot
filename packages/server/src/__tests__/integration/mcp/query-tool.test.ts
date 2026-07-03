@@ -46,19 +46,32 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     const result = await mcpListTools({ token, orgSlug: ownerSlug });
     const byName = new Map<string, any>(result.tools.map((t: any) => [t.name, t]));
     expect(byName.has('execute')).toBe(false);
-    expect(byName.get('query_sdk')?.annotations).toEqual({ readOnlyHint: true, idempotentHint: true });
-    expect(byName.get('run_sdk')?.annotations).toEqual({ destructiveHint: true });
+    // Assert the behavior-relevant hints specifically (not the whole object) so
+    // adding display metadata like `title` doesn't couple this test to it.
+    expect(byName.get('query_sdk')?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.get('query_sdk')?.annotations?.idempotentHint).toBe(true);
+    expect(byName.get('run_sdk')?.annotations?.destructiveHint).toBe(true);
     expect(byName.get('run_sdk')?.inputSchema?.properties?.dry_run).toBeTruthy();
-    expect(byName.get('search_memory')?.annotations).toEqual({
-      readOnlyHint: true,
-      idempotentHint: true,
-    });
-    expect(byName.get('save_memory')?.annotations).toEqual({ destructiveHint: false });
+    expect(byName.get('search_memory')?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.get('search_memory')?.annotations?.idempotentHint).toBe(true);
+    expect(byName.get('save_memory')?.annotations?.destructiveHint).toBe(false);
     expect(byName.has('search_knowledge')).toBe(false);
     expect(byName.has('save_knowledge')).toBe(false);
     expect(byName.has('search')).toBe(false);
     expect(byName.has('query')).toBe(false);
     expect(byName.has('run')).toBe(false);
+  });
+
+  it('surfaces outputSchema on structured tools', async () => {
+    const result = await mcpListTools({ token, orgSlug: ownerSlug });
+    const byName = new Map<string, any>(result.tools.map((t: any) => [t.name, t]));
+
+    // Tools that declare an outputSchema carry it through to the listing...
+    expect(byName.get('search_sdk')?.outputSchema?.type).toBe('object');
+    expect(byName.get('search_memory')?.outputSchema?.type).toBe('object');
+    expect(byName.get('manage_watchers')?.outputSchema).toBeTruthy();
+    // ...while tools without one (text-only results) omit it.
+    expect(byName.get('save_memory')?.outputSchema).toBeUndefined();
   });
 
   it('records query_sql audit rows in the append-only events ledger', async () => {

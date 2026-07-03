@@ -49,6 +49,16 @@ export function getConfiguredPublicOrigin(): string | undefined {
   return new URL(gatewayUrl).origin;
 }
 
+/**
+ * Public-facing origin for a request: the configured `PUBLIC_GATEWAY_URL`
+ * override when set, otherwise the actual serving origin derived from the
+ * request URL. Single source for every "what origin should we stamp here?"
+ * call site (OAuth metadata, MCP view-resource domain, reauth links).
+ */
+export function resolvePublicOrigin(requestUrl?: string): string {
+  return getConfiguredPublicOrigin() ?? new URL(requestUrl ?? '').origin;
+}
+
 /** Configured gateway base, or loopback default for embedded/local boot. */
 export function resolvePublicGatewayUrl(): string {
   const configured = getConfiguredPublicGatewayUrl();

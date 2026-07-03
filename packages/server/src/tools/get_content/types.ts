@@ -2,6 +2,7 @@
  * Tool: read_knowledge — result/row type definitions and small parse helpers.
  */
 
+import { Type } from '@sinclair/typebox';
 import type { ContentItem } from '@lobu/connector-sdk';
 import type { UnprocessedRange } from '../../types/watchers';
 
@@ -86,6 +87,68 @@ export interface GetContentResult {
   // Hints for the client
   hints?: string[];
 }
+
+/**
+ * Result of `read_knowledge`. TypeBox-first: `Static<>` derives a TS type from
+ * the same schema exposed as the tool's `outputSchema`. `ContentItem` is a
+ * 90-field type in `@lobu/connector-sdk` (a published package consumed
+ * platform-wide), so rather than mirror it — a brittle second source of truth —
+ * the `content`/`sources` arrays are honestly `unknown`. The top-level shape
+ * (content list, total, pagination, watcher-mode fields) is precise.
+ */
+export const GetContentResultSchema = Type.Object({
+  content: Type.Array(Type.Unknown()),
+  total: Type.Integer(),
+  page: Type.Object({
+    limit: Type.Integer(),
+    offset: Type.Integer(),
+    has_more: Type.Boolean(),
+    has_older: Type.Optional(Type.Boolean()),
+    has_newer: Type.Optional(Type.Boolean()),
+    next_cursor: Type.Optional(
+      Type.Object({ occurred_at: Type.String(), id: Type.Integer() })
+    ),
+  }),
+  classification_stats: Type.Optional(
+    Type.Record(Type.String(), Type.Record(Type.String(), Type.Integer()))
+  ),
+  view_url: Type.Optional(Type.String()),
+  window_token: Type.Optional(Type.String()),
+  window_start: Type.Optional(Type.String()),
+  window_end: Type.Optional(Type.String()),
+  prompt_rendered: Type.Optional(Type.String()),
+  extraction_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  sources: Type.Optional(Type.Record(Type.String(), Type.Array(Type.Unknown()))),
+  classifiers: Type.Optional(Type.Array(Type.Unknown())),
+  unprocessed_ranges: Type.Optional(Type.Array(Type.Unknown())),
+  reactions_guidance: Type.Optional(Type.String()),
+  available_operations: Type.Optional(
+    Type.Array(
+      Type.Object({
+        connection_id: Type.Integer(),
+        operation_key: Type.String(),
+        name: Type.String(),
+        kind: Type.Union([Type.Literal('read'), Type.Literal('write')]),
+        requires_approval: Type.Boolean(),
+      })
+    )
+  ),
+  total_count: Type.Optional(Type.Integer()),
+  total_count_chars: Type.Optional(Type.Integer()),
+  estimated_tokens: Type.Optional(Type.Integer()),
+  token_warning: Type.Optional(Type.String()),
+  entity_summary: Type.Optional(
+    Type.Array(
+      Type.Object({
+        entity_id: Type.Integer(),
+        name: Type.String(),
+        entity_type: Type.String(),
+        result_count: Type.Integer(),
+      })
+    )
+  ),
+  hints: Type.Optional(Type.Array(Type.String())),
+});
 
 // ============================================
 // Database Row Types (for query result typing)

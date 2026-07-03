@@ -185,91 +185,158 @@ type ManageEntitySchemaArgs = Static<typeof ManageEntitySchemaSchema>;
 // Result Types
 // ============================================
 
-interface EntityTypeRow {
-  id: number;
-  slug: string;
-  name: string;
-  description?: string | null;
-  icon?: string | null;
-  color?: string | null;
-  metadata_schema?: Record<string, unknown> | null;
-  event_kinds?: Record<string, unknown> | null;
-  backing_sql?: string | null;
+const EntityTypeRowSchema = Type.Object({
+  id: Type.Integer(),
+  slug: Type.String(),
+  name: Type.String(),
+  description: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  icon: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  color: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  metadata_schema: Type.Optional(Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()])),
+  event_kinds: Type.Optional(Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()])),
+  backing_sql: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   /** Connection slug an external-backed derived view runs against; null ⇒ internal. */
-  backing_source?: string | null;
+  backing_source: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   /** Declared metric contract (eventSets/measures/dimensions/segments), stored verbatim; null ⇒ none. */
-  metrics_config?: Record<string, unknown> | null;
-  is_system: boolean;
-  created_by?: string | null;
-  organization_id?: string | null;
-  organization_slug?: string | null;
-  created_at: Date;
-  updated_at: Date;
-  entity_count?: number;
-  current_view_template_version_id?: number | null;
+  metrics_config: Type.Optional(Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()])),
+  is_system: Type.Boolean(),
+  created_by: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  organization_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  organization_slug: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  // `Date` in the row; serialized to ISO over the wire. Accept either.
+  created_at: Type.Union([Type.String(), Type.Unknown()]),
+  updated_at: Type.Union([Type.String(), Type.Unknown()]),
+  entity_count: Type.Optional(Type.Integer()),
+  current_view_template_version_id: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   /** Derived types only — the view's aggregate columns, classified on read. */
-  measure_columns?: string[];
-}
+  measure_columns: Type.Optional(Type.Array(Type.String())),
+});
+type EntityTypeRow = Static<typeof EntityTypeRowSchema>;
 
-interface AuditEntry {
-  id: number;
-  entity_type_id: number;
-  action: string;
-  actor: string | null;
-  before_payload: Record<string, unknown> | null;
-  after_payload: Record<string, unknown> | null;
-  created_at: string;
-}
+const AuditEntrySchema = Type.Object({
+  id: Type.Integer(),
+  entity_type_id: Type.Integer(),
+  action: Type.String(),
+  actor: Type.Union([Type.String(), Type.Null()]),
+  before_payload: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+  after_payload: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+  created_at: Type.String(),
+});
+type AuditEntry = Static<typeof AuditEntrySchema>;
 
-interface RelationshipTypeRow {
-  id: number;
-  slug: string;
-  name: string;
-  description?: string | null;
-  organization_id?: string | null;
-  organization_slug?: string | null;
-  created_by?: string | null;
-  metadata_schema?: Record<string, unknown> | null;
-  metadata?: Record<string, unknown> | null;
-  is_symmetric: boolean;
-  inverse_type_id?: number | null;
-  inverse_type_slug?: string | null;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  deleted_at?: string | null;
-  relationship_count?: number;
-}
+const RelationshipTypeRowSchema = Type.Object({
+  id: Type.Integer(),
+  slug: Type.String(),
+  name: Type.String(),
+  description: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  organization_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  organization_slug: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  created_by: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  metadata_schema: Type.Optional(Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()])),
+  metadata: Type.Optional(Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()])),
+  is_symmetric: Type.Boolean(),
+  inverse_type_id: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  inverse_type_slug: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  status: Type.String(),
+  created_at: Type.String(),
+  updated_at: Type.String(),
+  deleted_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  relationship_count: Type.Optional(Type.Integer()),
+});
+type RelationshipTypeRow = Static<typeof RelationshipTypeRowSchema>;
 
-interface RelationshipTypeRuleRow {
-  id: number;
-  relationship_type_id: number;
-  source_entity_type_slug: string;
-  target_entity_type_slug: string;
-  created_at: string;
-}
+const RelationshipTypeRuleRowSchema = Type.Object({
+  id: Type.Integer(),
+  relationship_type_id: Type.Integer(),
+  source_entity_type_slug: Type.String(),
+  target_entity_type_slug: Type.String(),
+  created_at: Type.String(),
+});
+type RelationshipTypeRuleRow = Static<typeof RelationshipTypeRuleRowSchema>;
 
-type ManageEntitySchemaResult =
+/**
+ * Result of `manage_entity_schema` — discriminated union keyed on
+ * `schema_type` + `action`. TypeBox-first: `Static<>` derives the TS type from
+ * the same schema exposed as the tool's `outputSchema`.
+ */
+export const ManageEntitySchemaResultSchema = Type.Union([
   // Entity type results
-  | { schema_type: 'entity_type'; action: 'list'; entity_types: EntityTypeRow[] }
-  | { schema_type: 'entity_type'; action: 'get'; entity_type: EntityTypeRow | null }
-  | { schema_type: 'entity_type'; action: 'create'; entity_type: EntityTypeRow }
-  | { schema_type: 'entity_type'; action: 'update'; entity_type: EntityTypeRow }
-  | { schema_type: 'entity_type'; action: 'delete'; success: boolean; message: string }
-  | { schema_type: 'entity_type'; action: 'audit'; audit_entries: AuditEntry[] }
+  Type.Object({
+    schema_type: Type.Literal('entity_type'),
+    action: Type.Literal('list'),
+    entity_types: Type.Array(EntityTypeRowSchema),
+  }),
+  Type.Object({
+    schema_type: Type.Literal('entity_type'),
+    action: Type.Literal('get'),
+    entity_type: Type.Union([EntityTypeRowSchema, Type.Null()]),
+  }),
+  Type.Object({
+    schema_type: Type.Literal('entity_type'),
+    action: Type.Literal('create'),
+    entity_type: EntityTypeRowSchema,
+  }),
+  Type.Object({
+    schema_type: Type.Literal('entity_type'),
+    action: Type.Literal('update'),
+    entity_type: EntityTypeRowSchema,
+  }),
+  Type.Object({
+    schema_type: Type.Literal('entity_type'),
+    action: Type.Literal('delete'),
+    success: Type.Boolean(),
+    message: Type.String(),
+  }),
+  Type.Object({
+    schema_type: Type.Literal('entity_type'),
+    action: Type.Literal('audit'),
+    audit_entries: Type.Array(AuditEntrySchema),
+  }),
   // Relationship type results
-  | { schema_type: 'relationship_type'; action: 'list'; relationship_types: RelationshipTypeRow[] }
-  | {
-      schema_type: 'relationship_type';
-      action: 'get';
-      relationship_type: RelationshipTypeRow | null;
-    }
-  | { schema_type: 'relationship_type'; action: 'create'; relationship_type: RelationshipTypeRow }
-  | { schema_type: 'relationship_type'; action: 'update'; relationship_type: RelationshipTypeRow }
-  | { schema_type: 'relationship_type'; action: 'delete'; success: boolean; message: string }
-  | { schema_type: 'relationship_type'; action: 'add_rule'; rule: RelationshipTypeRuleRow }
-  | { schema_type: 'relationship_type'; action: 'remove_rule'; success: boolean; message: string }
-  | { schema_type: 'relationship_type'; action: 'list_rules'; rules: RelationshipTypeRuleRow[] };
+  Type.Object({
+    schema_type: Type.Literal('relationship_type'),
+    action: Type.Literal('list'),
+    relationship_types: Type.Array(RelationshipTypeRowSchema),
+  }),
+  Type.Object({
+    schema_type: Type.Literal('relationship_type'),
+    action: Type.Literal('get'),
+    relationship_type: Type.Union([RelationshipTypeRowSchema, Type.Null()]),
+  }),
+  Type.Object({
+    schema_type: Type.Literal('relationship_type'),
+    action: Type.Literal('create'),
+    relationship_type: RelationshipTypeRowSchema,
+  }),
+  Type.Object({
+    schema_type: Type.Literal('relationship_type'),
+    action: Type.Literal('update'),
+    relationship_type: RelationshipTypeRowSchema,
+  }),
+  Type.Object({
+    schema_type: Type.Literal('relationship_type'),
+    action: Type.Literal('delete'),
+    success: Type.Boolean(),
+    message: Type.String(),
+  }),
+  Type.Object({
+    schema_type: Type.Literal('relationship_type'),
+    action: Type.Literal('add_rule'),
+    rule: RelationshipTypeRuleRowSchema,
+  }),
+  Type.Object({
+    schema_type: Type.Literal('relationship_type'),
+    action: Type.Literal('remove_rule'),
+    success: Type.Boolean(),
+    message: Type.String(),
+  }),
+  Type.Object({
+    schema_type: Type.Literal('relationship_type'),
+    action: Type.Literal('list_rules'),
+    rules: Type.Array(RelationshipTypeRuleRowSchema),
+  }),
+]);
+type ManageEntitySchemaResult = Static<typeof ManageEntitySchemaResultSchema>;
 
 // ============================================
 // Main Function (Action Router)

@@ -19,25 +19,26 @@ import { defineFlatActionTool, flatAction } from './action-tool';
 // View template versioning types + helpers
 // ============================================
 
-interface ViewTemplateVersionRow {
-  id: number;
-  version: number;
-  tab_name: string | null;
-  tab_order: number;
-  json_template: Record<string, unknown>;
-  change_notes: string | null;
-  created_by: string;
-  created_by_username: string | null;
-  created_at: string;
-}
+const ViewTemplateVersionRowSchema = Type.Object({
+  id: Type.Integer(),
+  version: Type.Integer(),
+  tab_name: Type.Union([Type.String(), Type.Null()]),
+  tab_order: Type.Integer(),
+  json_template: Type.Record(Type.String(), Type.Unknown()),
+  change_notes: Type.Union([Type.String(), Type.Null()]),
+  created_by: Type.String(),
+  created_by_username: Type.Union([Type.String(), Type.Null()]),
+  created_at: Type.String(),
+});
+type ViewTemplateVersionRow = Static<typeof ViewTemplateVersionRowSchema>;
 
-interface ViewTemplateTabInfo {
-  tab_name: string;
-  tab_order: number;
-  current_version: number;
-  current_version_id: number;
-  json_template: Record<string, unknown>;
-}
+const ViewTemplateTabInfoSchema = Type.Object({
+  tab_name: Type.String(),
+  tab_order: Type.Integer(),
+  current_version: Type.Integer(),
+  current_version_id: Type.Integer(),
+  json_template: Type.Record(Type.String(), Type.Unknown()),
+});
 
 function mapVersionRow(row: Record<string, unknown>): ViewTemplateVersionRow {
   return {
@@ -98,16 +99,42 @@ type ManageViewTemplatesArgs = Static<typeof ManageViewTemplatesSchema>;
 // Result Types
 // ============================================
 
-type ManageViewTemplatesResult =
-  | { action: 'set'; version: ViewTemplateVersionRow; message: string }
-  | {
-      action: 'get';
-      default_tab: { current: ViewTemplateVersionRow | null; history: ViewTemplateVersionRow[] };
-      tabs: ViewTemplateTabInfo[];
-    }
-  | { action: 'rollback'; version: ViewTemplateVersionRow; message: string }
-  | { action: 'remove_tab'; success: boolean; message: string }
-  | { action: 'clear'; success: boolean; message: string };
+/**
+ * Result of `manage_view_templates` — discriminated union keyed on `action`.
+ * TypeBox-first: `Static<>` derives the TS type from the same schema exposed as
+ * the tool's `outputSchema`.
+ */
+export const ManageViewTemplatesResultSchema = Type.Union([
+  Type.Object({
+    action: Type.Literal('set'),
+    version: ViewTemplateVersionRowSchema,
+    message: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal('get'),
+    default_tab: Type.Object({
+      current: Type.Union([ViewTemplateVersionRowSchema, Type.Null()]),
+      history: Type.Array(ViewTemplateVersionRowSchema),
+    }),
+    tabs: Type.Array(ViewTemplateTabInfoSchema),
+  }),
+  Type.Object({
+    action: Type.Literal('rollback'),
+    version: ViewTemplateVersionRowSchema,
+    message: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal('remove_tab'),
+    success: Type.Boolean(),
+    message: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal('clear'),
+    success: Type.Boolean(),
+    message: Type.String(),
+  }),
+]);
+type ManageViewTemplatesResult = Static<typeof ManageViewTemplatesResultSchema>;
 
 // ============================================
 // Main Function

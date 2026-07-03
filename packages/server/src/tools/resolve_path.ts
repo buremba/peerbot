@@ -130,6 +130,27 @@ export interface ResolvePathResult {
   bootstrap: ResolvePathBootstrap | null;
 }
 
+/**
+ * Output schema for `resolve_path`. A permissive projection of
+ * `ResolvePathResult`: the top-level envelope (workspace / segments / path /
+ * entity / children / siblings / bootstrap) is precise, while the deep nested
+ * entity/detail/bootstrap types are `unknown` — they're wide, view-driven
+ * snapshots assembled from many joins (see the 13 interfaces below), not a
+ * stable contract the MCP client introspects field-by-field. Mirrors the
+ * `read_knowledge` / ContentItem approach: honest over brittle.
+ */
+export const ResolvePathResultSchema = Type.Object({
+  workspace: Type.Unknown(),
+  segments: Type.Array(
+    Type.Object({ entity_type: Type.String(), slug: Type.String() })
+  ),
+  path: Type.Array(Type.Unknown()),
+  entity: Type.Union([Type.Unknown(), Type.Null()]),
+  children: Type.Array(Type.Unknown()),
+  siblings: Type.Array(Type.Unknown()),
+  bootstrap: Type.Union([Type.Unknown(), Type.Null()]),
+});
+
 interface BootstrapEntityTypeSummary {
   id: number;
   slug: string;

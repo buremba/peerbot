@@ -1,4 +1,4 @@
-import { Type } from "@sinclair/typebox";
+import { type Static, Type } from "@sinclair/typebox";
 import { listAgentInstalled, listOrgInstalled } from "../../catalog/installed";
 import { listCatalogEntries } from "../../catalog/load";
 import { buildCatalogListResponse } from "../../catalog/responses";
@@ -53,6 +53,31 @@ export const ManageCatalogSchema = Type.Union([
 	ListInstalledAction,
 ]);
 
+/**
+ * Result of `manage_catalog` — discriminated union (on `action`, plus an error
+ * variant). TypeBox-first: `Static<>` derives the TS type from the same schema
+ * exposed as the tool's `outputSchema`. Catalog/installed entries are
+ * descriptor-shaped and vary by kind, so they're honestly `unknown`.
+ */
+export const ManageCatalogResultSchema = Type.Union([
+	Type.Object({ error: Type.String() }),
+	Type.Object({
+		action: Type.Literal("list_catalog"),
+		catalogs: Type.Record(
+			Type.String(),
+			Type.Object({
+				kind: Type.String(),
+				entries: Type.Array(Type.Unknown()),
+			})
+		),
+	}),
+	Type.Object({
+		action: Type.Literal("list_installed"),
+		installed: Type.Record(Type.String(), Type.Unknown()),
+	}),
+]);
+export type ManageCatalogResult = Static<typeof ManageCatalogResultSchema>;
+
 export type ListCatalogArgs = {
 	action: "list_catalog";
 	kinds?: CatalogKind[];
@@ -65,7 +90,7 @@ export type ListInstalledArgs = {
 	include_catalog?: boolean;
 };
 
-async function handleListCatalog(args: ListCatalogArgs): Promise<unknown> {
+async function handleListCatalog(args: ListCatalogArgs): Promise<ManageCatalogResult> {
 	const kinds = args.kinds?.length ? args.kinds : [...CATALOG_KINDS];
 	const all = await listCatalogEntries(kinds);
 	return {
@@ -77,7 +102,7 @@ async function handleListCatalog(args: ListCatalogArgs): Promise<unknown> {
 async function handleListInstalled(
 	args: ListInstalledArgs,
 	ctx: ToolContext,
-): Promise<unknown> {
+): Promise<ManageCatalogResult> {
 	const requestedKinds = args.kinds?.length ? args.kinds : undefined;
 	const isAgentKind = (k: string): k is AgentInstalledKind =>
 		(AGENT_INSTALLED_KINDS as readonly string[]).includes(k);

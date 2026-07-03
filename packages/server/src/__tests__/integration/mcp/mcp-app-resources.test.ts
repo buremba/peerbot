@@ -105,6 +105,32 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(content?.text).toContain('mcp-app-interaction-stub');
   });
 
+  it('advertises description, csp, and domain metadata on resources/list', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'resources/list',
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const resource = body.result?.resources?.find(
+      (r: { uri: string }) => r.uri === 'ui://lobu/interaction'
+    );
+    expect(resource).toBeDefined();
+    // description is a typed resource field surfaced in client browsers.
+    expect(typeof resource.description).toBe('string');
+    expect(resource.description.length).toBeGreaterThan(0);
+    // CSP + domain ride the _meta.ui passthrough (host conventions, SDK $loose).
+    expect(resource._meta?.ui?.csp).toMatch(/script-src/);
+    expect(resource._meta?.ui?.domain).toMatch(/^https?:\/\//);
+  });
+
   it('returns a pending manage_agents approval as plain text, without tool-result _meta', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
@@ -136,6 +162,38 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     // that points a host at a bundle it can't feed from raw data.
     expect(body.result?._meta?.ui).toBeUndefined();
     expect(body.result?.structuredContent).toBeUndefined();
+    expect(typeof body.result?.content?.[0]?.text).toBe('string');
+  });
+
+  it('emits structuredContent for a tool that declares an outputSchema', async () => {
+    // Contrast with the manage_agents case above: a tool WITH an outputSchema
+    // returns matching structuredContent alongside its text content (MCP spec:
+    // declaring outputSchema implies the result is structured). search_sdk is a
+    // self-contained leaf, so its structuredContent shape is stable.
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'search_sdk', arguments: { query: 'watchers' } },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?.structuredContent).toEqual(
+      expect.objectContaining({
+        query: 'watchers',
+        match_count: expect.any(Number),
+        results: expect.any(Array),
+      })
+    );
+    // The text content is still present (clients that ignore structuredContent
+    // get the same data as text).
     expect(typeof body.result?.content?.[0]?.text).toBe('string');
   });
 });

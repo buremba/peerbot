@@ -25,6 +25,11 @@ import type {
   WatcherWindowReaction,
 } from '../types/watchers';
 import {
+  PendingAnalysisSchema,
+  WatcherMetadataSchema,
+  WatcherWindowSchema,
+} from '../types/watchers';
+import {
   buildEntityLinkUnion,
   STANDARD_IDENTITY_NAMESPACES,
   type EntityIdentityScope,
@@ -130,34 +135,41 @@ export const GetWatcherSchema = Type.Object({
 
 type GetWatcherArgs = Static<typeof GetWatcherSchema>;
 
-interface WindowGap {
-  start: string;
-  end: string;
-}
+const WindowGapSchema = Type.Object({
+  start: Type.String(),
+  end: Type.String(),
+});
+type WindowGap = Static<typeof WindowGapSchema>;
 
-interface GetWatcherResult {
-  windows: WatcherWindow[];
-  watcher?: WatcherMetadata;
-  pending_analysis?: PendingAnalysis;
-  gaps?: WindowGap[];
-  pagination: {
-    page: number;
-    page_size: number;
-    total: number;
-  };
-  metadata: {
-    query_type: 'specific' | 'all_for_entity';
-    date_range: {
-      content_since: string | null;
-      content_until: string | null;
-    };
-    granularity_filter: string | null;
-    granularity_actual: string | null;
-    granularity_fallback_used: boolean;
-  };
-  warnings?: string[];
-  view_url?: string;
-}
+/**
+ * Result of `get_watcher`. TypeBox-first (single source of truth): the handler's
+ * return type is `Static<>`-derived, and the same schema is the tool's
+ * `outputSchema`. Nested watcher types come from `types/watchers.ts`.
+ */
+export const GetWatcherResultSchema = Type.Object({
+  windows: Type.Array(WatcherWindowSchema),
+  watcher: Type.Optional(WatcherMetadataSchema),
+  pending_analysis: Type.Optional(PendingAnalysisSchema),
+  gaps: Type.Optional(Type.Array(WindowGapSchema)),
+  pagination: Type.Object({
+    page: Type.Integer(),
+    page_size: Type.Integer(),
+    total: Type.Integer(),
+  }),
+  metadata: Type.Object({
+    query_type: Type.Union([Type.Literal('specific'), Type.Literal('all_for_entity')]),
+    date_range: Type.Object({
+      content_since: Type.Union([Type.String(), Type.Null()]),
+      content_until: Type.Union([Type.String(), Type.Null()]),
+    }),
+    granularity_filter: Type.Union([Type.String(), Type.Null()]),
+    granularity_actual: Type.Union([Type.String(), Type.Null()]),
+    granularity_fallback_used: Type.Boolean(),
+  }),
+  warnings: Type.Optional(Type.Array(Type.String())),
+  view_url: Type.Optional(Type.String()),
+});
+export type GetWatcherResult = Static<typeof GetWatcherResultSchema>;
 
 // ============================================
 // Database Row Types (for query result typing)

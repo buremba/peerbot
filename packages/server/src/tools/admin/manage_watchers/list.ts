@@ -2,6 +2,7 @@
  * list_watchers handler for manage_watchers.
  */
 
+import { type Static, Type } from "@sinclair/typebox";
 import { getDb } from "../../../db/client";
 import type { Env } from "../../../index";
 import logger from "../../../utils/logger";
@@ -27,7 +28,17 @@ export type ListWatchersArgs = {
 	limit?: number;
 };
 
-export type ListWatchersResult = { watchers: any[] };
+/**
+ * Result of `list_watchers`. TypeBox-first: the watcher rows are intentionally
+ * loose (each row is a wide, join-driven snapshot shaped by the query, not a
+ * stable contract), so the schema is honest about that — a record of
+ * string→unknown — rather than mirroring a brittle shape. `Static<>` derives
+ * the TS type from the same schema.
+ */
+export const ListWatchersResultSchema = Type.Object({
+	watchers: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+});
+export type ListWatchersResult = Static<typeof ListWatchersResultSchema>;
 
 // ============================================
 // handleList

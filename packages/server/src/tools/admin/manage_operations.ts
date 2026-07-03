@@ -15,7 +15,7 @@ import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { resolveActionMode } from '../../operations/action-modes';
 import { getOperationForConnection, listOperations } from '../../operations/connector-operations';
 import { validateOperationInput } from '../../operations/input-validation';
-import type { AvailableOperation, OperationDescriptor } from '../../operations/types';
+import type { OperationDescriptor } from '../../operations/types';
 import { resolveConnectorCode } from '../../utils/ensure-connector-installed';
 import { resolveExecutionAuth } from '../../utils/execution-context';
 import { insertEvent } from '../../utils/insert-event';
@@ -111,48 +111,78 @@ const RejectAction = Type.Object({
 });
 
 
-type ManageOperationsResult =
-  | { error: string }
-  | {
-      action: 'list_available';
-      operations: Array<Record<string, unknown>> | AvailableOperation[];
-      total: number;
-      limit: number;
-      offset: number;
-    }
-  | {
-      action: 'execute';
-      run_id: number;
-      event_id?: number;
-      approval_url?: string;
-      status: 'pending_approval';
-      message: string;
-    }
-  | {
-      action: 'execute';
-      run_id: number;
-      status: 'completed';
-      output: Record<string, unknown>;
-      metadata?: Record<string, unknown>;
-    }
-  | { action: 'execute'; run_id: number; status: 'failed'; error_message: string }
-  | {
-      action: 'execute';
-      run_id: number;
-      status: 'timeout';
-      error_message: string;
-    }
-  | {
-      action: 'list_runs';
-      runs: any[];
-      total: number;
-      limit: number;
-      offset: number;
-      has_more: boolean;
-    }
-  | { action: 'get_run'; run: any }
-  | { action: 'approve'; approved: true; run_id: number; event_id?: number; message: string }
-  | { action: 'reject'; rejected: true; run_id: number; event_id?: number };
+/**
+ * Result of `manage_operations` — discriminated union (on `action`/`status`,
+ * plus an error variant). TypeBox-first: `Static<>` derives the TS type from
+ * the same schema exposed as the tool's `outputSchema`. Operation/run rows are
+ * wide snapshots, so they're honestly `Record<string, unknown>`.
+ */
+export const ManageOperationsResultSchema = Type.Union([
+  Type.Object({ error: Type.String() }),
+  Type.Object({
+    action: Type.Literal('list_available'),
+    // AvailableOperation is a typed descriptor; modeled as unknown so the
+    // handler's typed array satisfies the schema without forcing an index
+    // signature onto the interface.
+    operations: Type.Array(Type.Unknown()),
+    total: Type.Integer(),
+    limit: Type.Integer(),
+    offset: Type.Integer(),
+  }),
+  Type.Object({
+    action: Type.Literal('execute'),
+    run_id: Type.Integer(),
+    event_id: Type.Optional(Type.Integer()),
+    approval_url: Type.Optional(Type.String()),
+    status: Type.Literal('pending_approval'),
+    message: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal('execute'),
+    run_id: Type.Integer(),
+    status: Type.Literal('completed'),
+    output: Type.Record(Type.String(), Type.Unknown()),
+    metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  }),
+  Type.Object({
+    action: Type.Literal('execute'),
+    run_id: Type.Integer(),
+    status: Type.Literal('failed'),
+    error_message: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal('execute'),
+    run_id: Type.Integer(),
+    status: Type.Literal('timeout'),
+    error_message: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal('list_runs'),
+    runs: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+    total: Type.Integer(),
+    limit: Type.Integer(),
+    offset: Type.Integer(),
+    has_more: Type.Boolean(),
+  }),
+  Type.Object({
+    action: Type.Literal('get_run'),
+    run: Type.Record(Type.String(), Type.Unknown()),
+  }),
+  Type.Object({
+    action: Type.Literal('approve'),
+    approved: Type.Literal(true),
+    run_id: Type.Integer(),
+    event_id: Type.Optional(Type.Integer()),
+    message: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal('reject'),
+    rejected: Type.Literal(true),
+    run_id: Type.Integer(),
+    event_id: Type.Optional(Type.Integer()),
+  }),
+]);
+type ManageOperationsResult = Static<typeof ManageOperationsResultSchema>;
 
 
 type InlineExecutionResult =

@@ -137,3 +137,5 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 
 export const ManageConnectionsSchema = manageConnectionsTool.schema;
 export const manageConnections = manageConnectionsTool.run;
+// Re-export so the admin registry entry can wire `outputSchema`.
+export { ManageConnectionsResultSchema } from "./manage_connections/schemas";

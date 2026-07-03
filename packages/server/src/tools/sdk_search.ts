@@ -27,6 +27,29 @@ export const SdkSearchSchema = Type.Object({
 
 type SdkSearchArgs = Static<typeof SdkSearchSchema>;
 
+/**
+ * Result of `search_sdk`. TypeBox is the single source of truth: the handler's
+ * return type is derived from this via `Static<>`, and the same schema is handed
+ * to the registry as the tool's `outputSchema` (so the listing, the result
+ * shape, and the TS type can't drift).
+ */
+export const SdkSearchResultSchema = Type.Object({
+  query: Type.String({ description: 'The query that was searched.' }),
+  match_count: Type.Integer({
+    description: 'Number of matches returned.',
+  }),
+  results: Type.Array(Type.String(), {
+    description: 'Rendered method-documentation strings, one per match.',
+  }),
+  notes: Type.Optional(
+    Type.String({
+      description: 'Free-text hints (e.g. ambiguity, suggestions) when relevant.',
+    })
+  ),
+});
+
+export type SdkSearchResult = Static<typeof SdkSearchResultSchema>;
+
 interface MatchRow {
   path: string;
   summary: string;
@@ -69,12 +92,7 @@ async function sdkSearchImpl(
   args: SdkSearchArgs,
   _env: Env,
   _ctx: ToolContext,
-): Promise<{
-  query: string;
-  match_count: number;
-  results: string[];
-  notes?: string;
-}> {
+): Promise<SdkSearchResult> {
   const limit = Math.min(args.limit ?? 20, 100);
   const query = args.query.trim();
   const lower = query.toLowerCase();

@@ -2,8 +2,12 @@
  * Shared Watcher Types
  *
  * Single source of truth for watcher-related types used across
- * backend tools, utils, and frontend components.
+ * backend tools, utils, and frontend components. TypeBox-first: each type is
+ * derived from its schema via `Static<>`, so the runtime JSON Schema (surfaced
+ * as MCP tool `outputSchema`) and the TS type cannot drift.
  */
+
+import { type Static, Type } from '@sinclair/typebox';
 
 // ============================================
 // Watcher Sources
@@ -14,10 +18,11 @@
  * If the query references the `events` table, time window bounds are
  * automatically applied (incremental mode).
  */
-export interface WatcherSource {
-  name: string;
-  query: string;
-}
+export const WatcherSourceSchema = Type.Object({
+  name: Type.String(),
+  query: Type.String(),
+});
+export type WatcherSource = Static<typeof WatcherSourceSchema>;
 
 // ============================================
 // Watcher Version
@@ -31,38 +36,42 @@ export interface WatcherSource {
  * One reaction-log entry for a window (from watcher_reactions). Surfaced on
  * get_watcher windows so the UI can show what the reaction script did.
  */
-export interface WatcherWindowReaction {
-  id: number;
-  reaction_type: string;
-  tool_name: string;
-  tool_args?: Record<string, unknown>;
-  tool_result?: Record<string, unknown>;
-  created_at: string;
-}
+export const WatcherWindowReactionSchema = Type.Object({
+  id: Type.Integer(),
+  reaction_type: Type.String(),
+  tool_name: Type.String(),
+  tool_args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  tool_result: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  created_at: Type.String(),
+});
+export type WatcherWindowReaction = Static<typeof WatcherWindowReactionSchema>;
 
 /**
  * Watcher window data as returned by get_watcher
  */
-export interface WatcherWindow {
-  window_id: number;
-  watcher_id: string;
-  watcher_name: string;
-  granularity: string;
-  window_start: string;
-  window_end: string;
-  content_analyzed: number;
-  extracted_data: Record<string, unknown>;
-  previous_extracted_data?: Record<string, unknown>;
-  classification_stats?: Record<string, Record<string, number>>;
-  model_used: string;
-  client_id?: string;
-  run_metadata?: Record<string, unknown>;
-  execution_time_ms: number;
-  created_at: string;
-  version_id?: number;
+export const WatcherWindowSchema = Type.Object({
+  window_id: Type.Integer(),
+  watcher_id: Type.String(),
+  watcher_name: Type.String(),
+  granularity: Type.String(),
+  window_start: Type.String(),
+  window_end: Type.String(),
+  content_analyzed: Type.Integer(),
+  extracted_data: Type.Record(Type.String(), Type.Unknown()),
+  previous_extracted_data: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  classification_stats: Type.Optional(
+    Type.Record(Type.String(), Type.Record(Type.String(), Type.Integer()))
+  ),
+  model_used: Type.String(),
+  client_id: Type.Optional(Type.String()),
+  run_metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  execution_time_ms: Type.Integer(),
+  created_at: Type.String(),
+  version_id: Type.Optional(Type.Integer()),
   /** Reaction-script execution log for this window (newest first). */
-  reactions?: WatcherWindowReaction[];
-}
+  reactions: Type.Optional(Type.Array(WatcherWindowReactionSchema)),
+});
+export type WatcherWindow = Static<typeof WatcherWindowSchema>;
 
 // ============================================
 // Keying Config
@@ -72,10 +81,10 @@ export interface WatcherWindow {
  * Configuration for computing stable entity keys.
  * Used to generate deterministic keys for merging entities across windows.
  */
-export interface KeyingConfig {
-  entity_path: string;
-  key_fields: string[];
-  key_output_field: string;
+export const KeyingConfigSchema = Type.Object({
+  entity_path: Type.String(),
+  key_fields: Type.Array(Type.String()),
+  key_output_field: Type.String(),
   /**
    * Entity-type slug the keyed rows are promoted into (P2 phase 1). When
    * omitted, promotion derives a slug from the last segment of `entity_path`
@@ -84,87 +93,109 @@ export interface KeyingConfig {
    * resolved, promotion is skipped for this window rather than failing the
    * completion.
    */
-  entity_type?: string;
-}
+  entity_type: Type.Optional(Type.String()),
+});
+export type KeyingConfig = Static<typeof KeyingConfigSchema>;
 
 // ============================================
 // Version Info (for listing available versions)
 // ============================================
 
-export interface WatcherVersionInfo {
-  version: number;
-  name: string;
-  created_at: string;
-  is_current: boolean;
-}
+export const WatcherVersionInfoSchema = Type.Object({
+  version: Type.Integer(),
+  name: Type.String(),
+  created_at: Type.String(),
+  is_current: Type.Boolean(),
+});
+export type WatcherVersionInfo = Static<typeof WatcherVersionInfoSchema>;
 
 // ============================================
 // Watcher Metadata (returned by get_watcher)
 // ============================================
 
-export interface WatcherMetadata {
-  watcher_id: string;
-  watcher_name: string;
-  slug: string;
-  status: 'active' | 'archived';
-  schedule?: string | null;
-  next_run_at?: string | null;
-  agent_id?: string | null;
+const WatcherRunSchema = Type.Object({
+  run_id: Type.Integer(),
+  status: Type.Union([
+    Type.Literal('pending'),
+    Type.Literal('claimed'),
+    Type.Literal('running'),
+    Type.Literal('completed'),
+    Type.Literal('failed'),
+    Type.Literal('cancelled'),
+    Type.Literal('timeout'),
+  ]),
+  error_message: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  created_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  completed_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+});
+
+export const WatcherMetadataSchema = Type.Object({
+  watcher_id: Type.String(),
+  watcher_name: Type.String(),
+  slug: Type.String(),
+  status: Type.Union([Type.Literal('active'), Type.Literal('archived')]),
+  schedule: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  next_run_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  agent_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   /**
    * Optional FK into `device_workers.id` pinning this watcher (and its run)
    * to a specific device worker. NULL/undefined means any worker can claim.
    */
-  device_worker_id?: string | null;
-  scheduler_client_id?: string | null;
-  version: number;
-  sources: WatcherSource[];
-  prompt?: string;
-  description?: string;
-  keying_config?: KeyingConfig | null;
+  device_worker_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  scheduler_client_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  version: Type.Integer(),
+  sources: Type.Array(WatcherSourceSchema),
+  prompt: Type.Optional(Type.String()),
+  description: Type.Optional(Type.String()),
+  keying_config: Type.Optional(Type.Union([KeyingConfigSchema, Type.Null()])),
   /** Version-owned config surfaced so the edit form can round-trip them
    *  (create_version preserves prev values on omit, but prefilling avoids
    *  the empty-form-state clobber). */
-  classifiers?: unknown[];
-  reactions_guidance?: string;
-  rendered_prompt?: string;
-  available_versions?: WatcherVersionInfo[];
-  reaction_script?: string;
-  watcher_run?: {
-    run_id: number;
-    status: 'pending' | 'claimed' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timeout';
-    error_message?: string | null;
-    created_at?: string | null;
-    completed_at?: string | null;
-  };
-}
+  classifiers: Type.Optional(Type.Array(Type.Unknown())),
+  reactions_guidance: Type.Optional(Type.String()),
+  rendered_prompt: Type.Optional(Type.String()),
+  available_versions: Type.Optional(Type.Array(WatcherVersionInfoSchema)),
+  reaction_script: Type.Optional(Type.String()),
+  watcher_run: Type.Optional(WatcherRunSchema),
+});
+export type WatcherMetadata = Static<typeof WatcherMetadataSchema>;
 
 // ============================================
 // Pending Analysis
 // ============================================
 
-interface NextAction {
-  tool: string;
-  params: Record<string, unknown>;
-  description: string;
-}
+const NextActionSchema = Type.Object({
+  tool: Type.String(),
+  params: Type.Record(Type.String(), Type.Unknown()),
+  description: Type.String(),
+});
 
-export interface UnprocessedRange {
-  month: string;
-  window_start: string;
-  window_end: string;
-  total_content: number;
-  processed_content: number;
-  unprocessed_content: number;
-  status: 'unprocessed' | 'partial' | 'complete';
-}
+export const UnprocessedRangeSchema = Type.Object({
+  month: Type.String(),
+  window_start: Type.String(),
+  window_end: Type.String(),
+  total_content: Type.Integer(),
+  processed_content: Type.Integer(),
+  unprocessed_content: Type.Integer(),
+  status: Type.Union([
+    Type.Literal('unprocessed'),
+    Type.Literal('partial'),
+    Type.Literal('complete'),
+  ]),
+});
+export type UnprocessedRange = Static<typeof UnprocessedRangeSchema>;
 
-export interface PendingAnalysis {
-  unprocessed_count: number;
-  next_window: {
-    start: string;
-    end: string;
-    granularity: string;
-  } | null;
-  next_action: NextAction | null;
-  unprocessed_ranges?: UnprocessedRange[];
-}
+export const PendingAnalysisSchema = Type.Object({
+  unprocessed_count: Type.Integer(),
+  next_window: Type.Union([
+    Type.Object({
+      start: Type.String(),
+      end: Type.String(),
+      granularity: Type.String(),
+    }),
+    Type.Null(),
+  ]),
+  next_action: Type.Union([NextActionSchema, Type.Null()]),
+  unprocessed_ranges: Type.Optional(Type.Array(UnprocessedRangeSchema)),
+});
+export type PendingAnalysis = Static<typeof PendingAnalysisSchema>;

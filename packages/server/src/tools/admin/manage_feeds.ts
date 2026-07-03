@@ -124,34 +124,75 @@ const TriggerFeedAction = Type.Object({
 // Result Types
 // ============================================
 
-type ManageFeedsResult =
-  | { error: string }
-  | { action: 'list_feeds'; feeds: any[]; total: number; limit: number; offset: number }
-  | { action: 'read_feed'; kind: string; feed: any; recent_runs: any[] }
-  | {
-      action: 'read_feed';
-      kind: 'streaming';
-      feed: any;
-      messages: Array<{
-        timestamp: string;
-        user: string;
-        text: string;
-        isBot: boolean;
-      }>;
-    }
-  | {
-      action: 'read_feed';
-      kind: 'virtual';
-      feed: any;
-      rows: Record<string, unknown>[];
-      columns: { name: string; type: string }[];
-      total?: number;
-    }
-  | { action: 'create_feed'; feed: any }
-  | { action: 'update_feed'; feed: any }
-  | { action: 'delete_feed'; deleted: true; feed_id: number }
-  | { action: 'trigger_feed'; triggered: true; run_id: number; feed_id: number }
-  | { action: 'trigger_feed'; message: string };
+/**
+ * Result of `manage_feeds` — discriminated union (on `action`, plus an error
+ * variant). TypeBox-first: `Static<>` derives the TS type from the same schema
+ * exposed as the tool's `outputSchema`. Feed rows are wide, join-driven
+ * snapshots (no stable contract), so they're honestly `Record<string, unknown>`.
+ */
+export const ManageFeedsResultSchema = Type.Union([
+  Type.Object({ error: Type.String() }),
+  Type.Object({
+    action: Type.Literal('list_feeds'),
+    feeds: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+    total: Type.Integer(),
+    limit: Type.Integer(),
+    offset: Type.Integer(),
+  }),
+  Type.Object({
+    action: Type.Literal('read_feed'),
+    kind: Type.String(),
+    feed: Type.Record(Type.String(), Type.Unknown()),
+    recent_runs: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+  }),
+  Type.Object({
+    action: Type.Literal('read_feed'),
+    kind: Type.Literal('streaming'),
+    feed: Type.Record(Type.String(), Type.Unknown()),
+    messages: Type.Array(
+      Type.Object({
+        timestamp: Type.String(),
+        user: Type.String(),
+        text: Type.String(),
+        isBot: Type.Boolean(),
+      })
+    ),
+  }),
+  Type.Object({
+    action: Type.Literal('read_feed'),
+    kind: Type.Literal('virtual'),
+    feed: Type.Record(Type.String(), Type.Unknown()),
+    rows: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+    columns: Type.Array(
+      Type.Object({ name: Type.String(), type: Type.String() })
+    ),
+    total: Type.Optional(Type.Integer()),
+  }),
+  Type.Object({
+    action: Type.Literal('create_feed'),
+    feed: Type.Record(Type.String(), Type.Unknown()),
+  }),
+  Type.Object({
+    action: Type.Literal('update_feed'),
+    feed: Type.Record(Type.String(), Type.Unknown()),
+  }),
+  Type.Object({
+    action: Type.Literal('delete_feed'),
+    deleted: Type.Literal(true),
+    feed_id: Type.Integer(),
+  }),
+  Type.Object({
+    action: Type.Literal('trigger_feed'),
+    triggered: Type.Literal(true),
+    run_id: Type.Integer(),
+    feed_id: Type.Integer(),
+  }),
+  Type.Object({
+    action: Type.Literal('trigger_feed'),
+    message: Type.String(),
+  }),
+]);
+type ManageFeedsResult = Static<typeof ManageFeedsResultSchema>;
 
 // ============================================
 // Main Function (Action Router)

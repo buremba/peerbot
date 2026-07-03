@@ -225,155 +225,169 @@ type ManageEntityArgs = Static<typeof ManageEntitySchema>;
 // ============================================
 
 // Relationship row shape (used by link actions)
-interface RelationshipRow {
-  id: number;
-  organization_id: string;
-  from_entity_id: number;
-  to_entity_id: number;
-  relationship_type_id: number;
-  relationship_type_slug: string;
-  relationship_type_name: string;
-  is_symmetric: boolean;
-  from_entity_name?: string;
-  from_entity_type?: string;
-  to_entity_name?: string;
-  to_entity_type?: string;
-  metadata?: Record<string, unknown> | null;
-  confidence: number;
-  source: string;
-  created_by?: string | null;
-  updated_by?: string | null;
-  created_at: string;
-  updated_at: string;
-  deleted_at?: string | null;
-}
+const RelationshipRowSchema = Type.Object({
+  id: Type.Integer(),
+  organization_id: Type.String(),
+  from_entity_id: Type.Integer(),
+  to_entity_id: Type.Integer(),
+  relationship_type_id: Type.Integer(),
+  relationship_type_slug: Type.String(),
+  relationship_type_name: Type.String(),
+  is_symmetric: Type.Boolean(),
+  from_entity_name: Type.Optional(Type.String()),
+  from_entity_type: Type.Optional(Type.String()),
+  to_entity_name: Type.Optional(Type.String()),
+  to_entity_type: Type.Optional(Type.String()),
+  metadata: Type.Optional(Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()])),
+  confidence: Type.Number(),
+  source: Type.String(),
+  created_by: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  updated_by: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  created_at: Type.String(),
+  updated_at: Type.String(),
+  deleted_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+});
+type RelationshipRow = Static<typeof RelationshipRowSchema>;
 
-interface RelationshipCountByType {
-  relationship_type_slug: string;
-  relationship_type_name: string;
-  count: number;
-}
+const RelationshipCountByTypeSchema = Type.Object({
+  relationship_type_slug: Type.String(),
+  relationship_type_name: Type.String(),
+  count: Type.Integer(),
+});
+type RelationshipCountByType = Static<typeof RelationshipCountByTypeSchema>;
 
-type ManageEntityResult =
-  | {
-      action: 'create';
-      entity: {
-        id: number;
-        entity_type: string;
-        name: string;
-        slug: string;
-        parent_id?: number | null;
-        parent_name?: string | null;
-        parent_slug?: string | null;
-        metadata?: Record<string, any>;
-        enabled_classifiers?: string[] | null;
-        created_at: string;
-        view_url?: string;
-      };
-      warnings?: string[];
-      next_steps: string[];
-    }
-  | {
-      action: 'update';
-      entity: {
-        id: number;
-        entity_type: string;
-        name: string;
-        slug: string;
-        parent_id?: number | null;
-        parent_name?: string | null;
-        parent_slug?: string | null;
-        metadata?: Record<string, any>;
-        enabled_classifiers?: string[] | null;
-        view_url?: string;
-      };
-      /** Fields the ownership-aware merge wrote (unowned for a watcher-source edit). */
-      applied_fields?: string[];
-      /** Human-owned fields the edit was blocked from writing — queued for approval. */
-      blocked_fields?: string[];
-      /** True when a blocked-field approval was queued this call. */
-      approval_queued?: boolean;
-      /** Permalink to the approval card, when one was queued. */
-      approval_url?: string;
-      /** Pending approval run id — the worker bridges this into a live chat
-       *  approval card (parity with manage_agents' `pending_approval`). */
-      approval_run_id?: number;
-      /** Blocked field_path -> proposed value, for the live card diff. */
-      approval_fields?: Record<string, unknown>;
-      /** Blocked field_path -> current human-owned value, for the diff. */
-      approval_current?: Record<string, unknown>;
-      /** Who proposed the blocked change: 'agent' | 'watcher'. */
-      approval_attribution?: 'agent' | 'watcher';
-    }
-  | {
-      action: 'list';
-      entities: Array<{
-        id: number;
-        entity_type: string;
-        name: string;
-        slug: string;
-        parent_id?: number | null;
-        parent_name?: string | null;
-        parent_slug?: string | null;
-        parent_entity_type?: string | null;
-        metadata?: Record<string, any>;
-        enabled_classifiers?: string[] | null;
-        created_at?: Date;
-        total_content?: number | null;
-        active_connections?: number | null;
-        watchers_count?: number | null;
-        children_count?: number | null;
-        space_name?: string | null;
-        view_url?: string;
-      }>;
-      // Server-side resolution of every `x-link-entity-type` column referenced
-      // by the page. Keyed by `${entityType}:${lookupField}`, then by the
-      // lookup value from the row's metadata. Previously each entity-list page
-      // fanned out one `manage_entity.list` per linked column (4× ~2.5 s on
-      // the Company page); the FE now reads from this map instead.
-      linked_entities?: Record<string, Record<string, { slug: string; entity_type: string; name: string }>>;
-      metadata: {
-        page_size: number;
-        has_more: boolean;
-        filtered_by_type?: string;
-        total_count?: number;
-        limit?: number;
-        offset?: number;
-        sort_by?: string;
-        sort_order?: 'asc' | 'desc';
-      };
-    }
-  | {
-      action: 'get';
-      entity: {
-        id: number;
-        entity_type: string;
-        name: string;
-        slug: string;
-        parent_id?: number | null;
-        parent_name?: string | null;
-        parent_slug?: string | null;
-        metadata?: Record<string, any>;
-        enabled_classifiers?: string[] | null;
-        created_at: string;
-        view_url?: string;
-      };
-    }
-  | {
-      action: 'delete';
-      success: boolean;
-      message: string;
-      deleted_count: number;
-    }
-  | { action: 'link'; relationship: RelationshipRow }
-  | { action: 'update_link'; relationship: RelationshipRow }
-  | { action: 'unlink'; success: boolean; message: string }
-  | {
-      action: 'list_links';
-      relationships: RelationshipRow[];
-      counts_by_type: RelationshipCountByType[];
-      metadata: { total: number; limit: number; offset: number; has_more: boolean };
-    };
+/**
+ * Shared entity shape across the create/update/get/list variants (the superset
+ * of fields; each variant marks its extras optional). `metadata` and the
+ * classifier/parent fields are loose on purpose — entities carry arbitrary
+ * user/workspace metadata.
+ */
+const ManageEntityItemSchema = Type.Object({
+  id: Type.Integer(),
+  entity_type: Type.String(),
+  name: Type.String(),
+  slug: Type.String(),
+  parent_id: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  parent_name: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  parent_slug: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  parent_entity_type: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  enabled_classifiers: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),
+  // `Date` in the list variant is serialized to ISO string over the wire; the
+  // schema models the on-the-wire shape.
+  created_at: Type.Optional(Type.Union([Type.String(), Type.Unknown()])),
+  total_content: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  active_connections: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  watchers_count: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  children_count: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  space_name: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  view_url: Type.Optional(Type.String()),
+});
+
+/**
+ * Result of `manage_entity` — discriminated union keyed on `action`.
+ * TypeBox-first: `Static<>` derives the TS type from the same schema exposed as
+ * the tool's `outputSchema`.
+ */
+const ManageEntityResultSchema = Type.Union([
+  Type.Object({
+    action: Type.Literal('create'),
+    entity: ManageEntityItemSchema,
+    warnings: Type.Optional(Type.Array(Type.String())),
+    next_steps: Type.Array(Type.String()),
+  }),
+  Type.Object({
+    action: Type.Literal('update'),
+    entity: ManageEntityItemSchema,
+    /** Fields the ownership-aware merge wrote (unowned for a watcher-source edit). */
+    applied_fields: Type.Optional(Type.Array(Type.String())),
+    /** Human-owned fields the edit was blocked from writing — queued for approval. */
+    blocked_fields: Type.Optional(Type.Array(Type.String())),
+    /** True when a blocked-field approval was queued this call. */
+    approval_queued: Type.Optional(Type.Boolean()),
+    /** Permalink to the approval card, when one was queued. */
+    approval_url: Type.Optional(Type.String()),
+    /** Pending approval run id — the worker bridges this into a live chat
+     *  approval card (parity with manage_agents' `pending_approval`). */
+    approval_run_id: Type.Optional(Type.Integer()),
+    /** Blocked field_path -> proposed value, for the live card diff. */
+    approval_fields: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    /** Blocked field_path -> current human-owned value, for the diff. */
+    approval_current: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    /** Who proposed the blocked change: 'agent' | 'watcher'. */
+    approval_attribution: Type.Optional(
+      Type.Union([Type.Literal('agent'), Type.Literal('watcher')])
+    ),
+  }),
+  Type.Object({
+    action: Type.Literal('list'),
+    entities: Type.Array(ManageEntityItemSchema),
+    // Server-side resolution of every `x-link-entity-type` column referenced
+    // by the page. Keyed by `${entityType}:${lookupField}`, then by the
+    // lookup value from the row's metadata. Previously each entity-list page
+    // fanned out one `manage_entity.list` per linked column (4× ~2.5 s on
+    // the Company page); the FE now reads from this map instead.
+    linked_entities: Type.Optional(
+      Type.Record(
+        Type.String(),
+        Type.Record(
+          Type.String(),
+          Type.Object({
+            slug: Type.String(),
+            entity_type: Type.String(),
+            name: Type.String(),
+          })
+        )
+      )
+    ),
+    metadata: Type.Object({
+      page_size: Type.Integer(),
+      has_more: Type.Boolean(),
+      filtered_by_type: Type.Optional(Type.String()),
+      total_count: Type.Optional(Type.Integer()),
+      limit: Type.Optional(Type.Integer()),
+      offset: Type.Optional(Type.Integer()),
+      sort_by: Type.Optional(Type.String()),
+      sort_order: Type.Optional(Type.Union([Type.Literal('asc'), Type.Literal('desc')])),
+    }),
+  }),
+  Type.Object({
+    action: Type.Literal('get'),
+    entity: ManageEntityItemSchema,
+  }),
+  Type.Object({
+    action: Type.Literal('delete'),
+    success: Type.Boolean(),
+    message: Type.String(),
+    deleted_count: Type.Integer(),
+  }),
+  Type.Object({
+    action: Type.Literal('link'),
+    relationship: RelationshipRowSchema,
+  }),
+  Type.Object({
+    action: Type.Literal('update_link'),
+    relationship: RelationshipRowSchema,
+  }),
+  Type.Object({
+    action: Type.Literal('unlink'),
+    success: Type.Boolean(),
+    message: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal('list_links'),
+    relationships: Type.Array(RelationshipRowSchema),
+    counts_by_type: Type.Array(RelationshipCountByTypeSchema),
+    metadata: Type.Object({
+      total: Type.Integer(),
+      limit: Type.Integer(),
+      offset: Type.Integer(),
+      has_more: Type.Boolean(),
+    }),
+  }),
+]);
+export type ManageEntityResult = Static<typeof ManageEntityResultSchema>;
+export { ManageEntityResultSchema };
 
 function toIsoStringOrNow(value: Date | string | null | undefined): string {
   if (!value) return new Date().toISOString();

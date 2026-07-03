@@ -14,6 +14,20 @@ export interface ChannelBindingDto {
 	createdAt: number;
 }
 
+const ChannelBindingDtoSchema = Type.Object({
+	platform: Type.String(),
+	channelId: Type.String(),
+	teamId: Type.Optional(Type.String()),
+	createdAt: Type.Integer(),
+});
+
+const ConnectionFacetsSchema = Type.Object({
+	data: Type.Boolean(),
+	chat: Type.Boolean(),
+	actions: Type.Boolean(),
+	audience: Type.Boolean(),
+});
+
 // ============================================
 // Schema
 // ============================================
@@ -415,125 +429,183 @@ export interface ConnectionFacets {
 	audience: boolean;
 }
 
-export type ManageConnectionsResult =
-	| { error: string; setup_url?: string }
-	| {
-			action: "list";
-			connections: ConnectionRow[];
-			total: number;
-			limit: number;
-			offset: number;
-			view_url?: string;
-	  }
-	| {
-			action: "list_connector_groups";
-			groups: Array<{
-				connector_key: string;
-				connector_name: string | null;
-				favicon_domain: string | null;
-				connection_count: number;
-				facets: ConnectionFacets;
-				connections: Array<{
-					id: number;
-					display_name: string | null;
-					feed_count: number;
-				}>;
-			}>;
-	  }
-	| { action: "get"; connection: ConnectionRow; view_url?: string }
-	| {
-			action: "create";
-			connection: ConnectionRow;
-			connector: Record<string, unknown>;
-			view_url?: string;
-			auth_run_id?: number;
-	  }
-	| {
-			action: "connect";
-			connection_id: number;
-			slug?: string;
-			status: "active";
-			message: string;
-			view_url?: string;
-	  }
-	| {
-			action: "connect";
-			connection_id: number;
-			slug?: string;
-			status: "pending_auth";
-			auth_type: string;
-			instructions: string;
-			connect_url?: string;
-			connect_token?: string;
-			auth_profile_slug?: string;
-			view_url?: string;
-	  }
-	| { action: "update"; connection: ConnectionRow }
-	| {
-			action: "apply_chat_connection";
-			connection: ConnectionRow;
-			created: boolean;
-			changed: boolean;
-	  }
-	| { action: "delete"; deleted: true; connection_id: number; slug: string }
-	| { action: "reauthenticate"; connection_id: number; auth_run_id: number }
-	| {
-			action: "test";
-			status: string;
-			message: string;
-			has_token?: boolean;
-			has_refresh?: boolean;
-			expires_at?: string | null;
-	  }
-	| {
-			action: "install_connector";
-			installed: true;
-			connector_key: string;
-			name: string;
-			version: string;
-			code_hash: string;
-			updated: boolean;
-	  }
-	| { action: "uninstall_connector"; uninstalled: true; connector_key: string }
-	| ConnectorActionOk<"toggle_connector_login", { login_enabled: boolean }>
-	| ConnectorActionOk<"update_connector_auth", { keys_updated: string[] }>
-	| ConnectorActionOk<"update_connector_default_config">
-	| ConnectorActionOk<
-			"update_connector_default_repair_agent",
-			{ default_repair_agent_id: string | null }
-	  >
-	| ConnectorActionOk<
-			"set_connector_entity_link_overrides",
-			{ overrides: Record<string, unknown> | null }
-	  >
-	| {
-			action: "list_channel_bindings";
-			agent_id: string;
-			bindings: ChannelBindingDto[];
-	  }
-	| {
-			action: "bind_channel";
-			success: true;
-			agent_id: string;
-			connection_id: number;
-			platform: string;
-			channel_id: string;
-			team_id?: string;
-	  }
-	| { action: "unbind_channel"; success: true }
-	| {
-			action: "sync_channel_bindings";
-			success: true;
-			bound: string[];
-			removed: string[];
-	  }
-	| {
-			action: "connect_channel_dm";
-			success: true;
-			platform: "slack";
-			channel_id: string;
-			team_id: string | null;
-	  };
+/**
+ * Result of `manage_connections` — discriminated union keyed on `action`
+ * (plus an error variant). TypeBox-first: `Static<>` derives the TS type from
+ * the same schema exposed as the tool's `outputSchema`. Connection rows are
+ * wide snapshots, so `ConnectionRow` stays `Record<string, unknown>`.
+ */
+const ConnectorGroupSchema = Type.Object({
+	connector_key: Type.String(),
+	connector_name: Type.Union([Type.String(), Type.Null()]),
+	favicon_domain: Type.Union([Type.String(), Type.Null()]),
+	connection_count: Type.Integer(),
+	facets: ConnectionFacetsSchema,
+	connections: Type.Array(
+		Type.Object({
+			id: Type.Integer(),
+			display_name: Type.Union([Type.String(), Type.Null()]),
+			feed_count: Type.Integer(),
+		})
+	),
+});
+
+export const ManageConnectionsResultSchema = Type.Union([
+	Type.Object({ error: Type.String(), setup_url: Type.Optional(Type.String()) }),
+	Type.Object({
+		action: Type.Literal("list"),
+		connections: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+		total: Type.Integer(),
+		limit: Type.Integer(),
+		offset: Type.Integer(),
+		view_url: Type.Optional(Type.String()),
+	}),
+	Type.Object({
+		action: Type.Literal("list_connector_groups"),
+		groups: Type.Array(ConnectorGroupSchema),
+	}),
+	Type.Object({
+		action: Type.Literal("get"),
+		connection: Type.Record(Type.String(), Type.Unknown()),
+		view_url: Type.Optional(Type.String()),
+	}),
+	Type.Object({
+		action: Type.Literal("create"),
+		connection: Type.Record(Type.String(), Type.Unknown()),
+		connector: Type.Record(Type.String(), Type.Unknown()),
+		view_url: Type.Optional(Type.String()),
+		auth_run_id: Type.Optional(Type.Integer()),
+	}),
+	Type.Object({
+		action: Type.Literal("connect"),
+		connection_id: Type.Integer(),
+		slug: Type.Optional(Type.String()),
+		status: Type.Literal("active"),
+		message: Type.String(),
+		view_url: Type.Optional(Type.String()),
+	}),
+	Type.Object({
+		action: Type.Literal("connect"),
+		connection_id: Type.Integer(),
+		slug: Type.Optional(Type.String()),
+		status: Type.Literal("pending_auth"),
+		auth_type: Type.String(),
+		instructions: Type.String(),
+		connect_url: Type.Optional(Type.String()),
+		connect_token: Type.Optional(Type.String()),
+		auth_profile_slug: Type.Optional(Type.String()),
+		view_url: Type.Optional(Type.String()),
+	}),
+	Type.Object({
+		action: Type.Literal("update"),
+		connection: Type.Record(Type.String(), Type.Unknown()),
+	}),
+	Type.Object({
+		action: Type.Literal("apply_chat_connection"),
+		connection: Type.Record(Type.String(), Type.Unknown()),
+		created: Type.Boolean(),
+		changed: Type.Boolean(),
+	}),
+	Type.Object({
+		action: Type.Literal("delete"),
+		deleted: Type.Literal(true),
+		connection_id: Type.Integer(),
+		slug: Type.String(),
+	}),
+	Type.Object({
+		action: Type.Literal("reauthenticate"),
+		connection_id: Type.Integer(),
+		auth_run_id: Type.Integer(),
+	}),
+	Type.Object({
+		action: Type.Literal("test"),
+		status: Type.String(),
+		message: Type.String(),
+		has_token: Type.Optional(Type.Boolean()),
+		has_refresh: Type.Optional(Type.Boolean()),
+		expires_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+	}),
+	Type.Object({
+		action: Type.Literal("install_connector"),
+		installed: Type.Literal(true),
+		connector_key: Type.String(),
+		name: Type.String(),
+		version: Type.String(),
+		code_hash: Type.String(),
+		updated: Type.Boolean(),
+	}),
+	Type.Object({
+		action: Type.Literal("uninstall_connector"),
+		uninstalled: Type.Literal(true),
+		connector_key: Type.String(),
+	}),
+	// ConnectorActionOk<"toggle_connector_login", { login_enabled: boolean }>
+	Type.Object({
+		action: Type.Literal("toggle_connector_login"),
+		success: Type.Literal(true),
+		connector_key: Type.String(),
+		login_enabled: Type.Boolean(),
+	}),
+	// ConnectorActionOk<"update_connector_auth", { keys_updated: string[] }>
+	Type.Object({
+		action: Type.Literal("update_connector_auth"),
+		success: Type.Literal(true),
+		connector_key: Type.String(),
+		keys_updated: Type.Array(Type.String()),
+	}),
+	// ConnectorActionOk<"update_connector_default_config">
+	Type.Object({
+		action: Type.Literal("update_connector_default_config"),
+		success: Type.Literal(true),
+		connector_key: Type.String(),
+	}),
+	// ConnectorActionOk<"update_connector_default_repair_agent", { default_repair_agent_id: string | null }>
+	Type.Object({
+		action: Type.Literal("update_connector_default_repair_agent"),
+		success: Type.Literal(true),
+		connector_key: Type.String(),
+		default_repair_agent_id: Type.Union([Type.String(), Type.Null()]),
+	}),
+	// ConnectorActionOk<"set_connector_entity_link_overrides", { overrides: Record<string, unknown> | null }>
+	Type.Object({
+		action: Type.Literal("set_connector_entity_link_overrides"),
+		success: Type.Literal(true),
+		connector_key: Type.String(),
+		overrides: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+	}),
+	Type.Object({
+		action: Type.Literal("list_channel_bindings"),
+		agent_id: Type.String(),
+		bindings: Type.Array(ChannelBindingDtoSchema),
+	}),
+	Type.Object({
+		action: Type.Literal("bind_channel"),
+		success: Type.Literal(true),
+		agent_id: Type.String(),
+		connection_id: Type.Integer(),
+		platform: Type.String(),
+		channel_id: Type.String(),
+		team_id: Type.Optional(Type.String()),
+	}),
+	Type.Object({
+		action: Type.Literal("unbind_channel"),
+		success: Type.Literal(true),
+	}),
+	Type.Object({
+		action: Type.Literal("sync_channel_bindings"),
+		success: Type.Literal(true),
+		bound: Type.Array(Type.String()),
+		removed: Type.Array(Type.String()),
+	}),
+	Type.Object({
+		action: Type.Literal("connect_channel_dm"),
+		success: Type.Literal(true),
+		platform: Type.Literal("slack"),
+		channel_id: Type.String(),
+		team_id: Type.Union([Type.String(), Type.Null()]),
+	}),
+]);
+export type ManageConnectionsResult = Static<typeof ManageConnectionsResultSchema>;
 
 /**
  * Union of all action variants. Defined from the variants directly (rather

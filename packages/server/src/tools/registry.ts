@@ -25,11 +25,11 @@ import { MetricSeriesSchema, metricSeries } from './admin/metric_series';
 import { QueryMetricSchema, queryMetric } from './admin/query_metric';
 import { QuerySqlSchema, querySql } from './admin/query_sql';
 import { ListOrganizationsSchema } from './organizations';
-import { ResolvePathSchema, resolvePath } from './resolve_path';
+import { ResolvePathSchema, ResolvePathResultSchema, resolvePath } from './resolve_path';
 import { SaveContentSchema, saveContent } from './save_content';
-import { SearchSchema, search } from './search';
+import { SearchSchema, UnifiedSearchResultSchema, search } from './search';
 import { QuerySchema, RunSchema, querySdkScript, runSdkScript } from './sdk_run';
-import { SdkSearchSchema, sdkSearch } from './sdk_search';
+import { SdkSearchSchema, SdkSearchResultSchema, sdkSearch } from './sdk_search';
 
 // ============================================
 // Tool Definitions
@@ -112,6 +112,15 @@ export interface ToolDefinition<T = any> {
   description: string;
   inputSchema: any; // JSON Schema
   annotations?: ToolAnnotations;
+  /**
+   * JSON Schema describing the tool's structured result. When present, the
+   * `tools/call` response carries matching `structuredContent` alongside the
+   * text `content` (MCP spec: declaring `outputSchema` implies the result is
+   * structured). TypeBox schemas carry their JSON Schema at runtime, so a tool
+   * that derives its result type via `Static<typeof ResultSchema>` can hand the
+   * same schema object here — one source of truth, no drift.
+   */
+  outputSchema?: any; // JSON Schema
   handler: (args: T, env: Env, ctx: ToolContext) => Promise<any>;
 }
 
@@ -126,6 +135,7 @@ const TOOLS: ToolDefinition[] = [
     description:
       'Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” Pair writes with `save_memory`; use `search_sdk` / `query_sdk` only when you need SDK capabilities or programmable reads.',
     inputSchema: SearchSchema,
+    outputSchema: UnifiedSearchResultSchema,
     annotations: { ...READ_ONLY, title: 'Search memory' },
     handler: search,
   },
@@ -153,6 +163,7 @@ const TOOLS: ToolDefinition[] = [
     description:
       "Search ClientSDK documentation and method metadata. Use this to discover which SDK method exists and how to call it; it does not query workspace data. Pass a namespace ('watchers', 'entities', etc.), a dotted path ('watchers.create'), or a free-text query. Pair with `query_sdk` (read-only) or `run_sdk` (full SDK) to actually call methods.",
     inputSchema: SdkSearchSchema,
+    outputSchema: SdkSearchResultSchema,
     annotations: { ...READ_ONLY, title: 'Search SDK docs' },
     handler: sdkSearch,
   },
@@ -213,6 +224,7 @@ const TOOLS: ToolDefinition[] = [
     description:
       'Resolve a namespace-based URL path like /acme/entity-type/entity-slug into namespace and entity details. Returns template_data with executed data source query results when templates define data_sources.',
     inputSchema: ResolvePathSchema,
+    outputSchema: ResolvePathResultSchema,
     annotations: { ...READ_ONLY, title: 'Resolve path' },
     handler: resolvePath,
   },
@@ -389,6 +401,11 @@ function computeAllTools(
         description: tool.description,
         inputSchema,
         ...(tool.annotations && { annotations: tool.annotations }),
+        // outputSchema is emitted as-is: it describes the result shape, not the
+        // Claude-API-constrained input. The `action` discriminator tells the
+        // client which union variant applied, so the full union is correct here
+        // (no flattening, no access-level filtering — those are input concerns).
+        ...(tool.outputSchema && { outputSchema: tool.outputSchema }),
       };
     })
     .filter((tool): tool is NonNullable<typeof tool> => tool !== null);

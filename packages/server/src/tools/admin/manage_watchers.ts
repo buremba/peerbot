@@ -24,7 +24,7 @@
 import { type Static, Type } from '@sinclair/typebox';
 import { createDbClientFromEnv } from '../../db/client';
 import type { Env } from '../../index';
-import type { ComponentReferenceDocumentation } from '../../types/templates';
+import { WatcherSourceSchema } from '../../types/watchers';
 import {
   requireOrgReadAccess,
   requireOrgWriteAccess,
@@ -46,7 +46,7 @@ import {
   handleListPromoted,
 } from './manage_watchers/feedback';
 import { handleGetComponentReference } from './manage_watchers/reference';
-import { handleList, type ListWatchersArgs, type ListWatchersResult } from './manage_watchers/list';
+import { handleList, ListWatchersResultSchema, type ListWatchersArgs, type ListWatchersResult } from './manage_watchers/list';
 
 // ============================================
 // Typebox Schema (Flattened for MCP)
@@ -352,85 +352,154 @@ export const ManageWatchersSchema = Type.Object({
 
 export type ManageWatchersArgs = Static<typeof ManageWatchersSchema>;
 
-export type ManageWatchersResult =
-  | {
-      action: 'create';
-      watcher_id: string;
-      version: number;
-      status: string;
-      sources?: Array<{ name: string; query: string }>;
-      view_url?: string;
-    }
-  | { action: 'update'; watcher_id: string; updated_fields: string[] }
-  | {
-      action: 'create_version';
-      watcher_id: string;
-      version_id: string;
-      version: number;
-      previous_version: number;
-    }
-  | {
-      action: 'complete_window';
-      watcher_id: string;
-      window_id: number;
-      window_start: string;
-      window_end: string;
-      content_linked: number;
-    }
-  | {
-      action: 'trigger';
-      watcher_id: string;
-      run_id: number;
-      status: string;
-    }
-  | {
-      action: 'delete';
-      results: Array<{ watcher_id: string; success: boolean; message: string; version?: number }>;
-      summary: { total: number; successful: number; failed: number };
-    }
-  | { action: 'set_reaction_script'; watcher_id: string; has_script: boolean; message: string }
-  | { action: 'get_versions'; watcher_id: string; versions: any[] }
-  | { action: 'get_version_details'; watcher_id: string; [key: string]: any }
-  | { action: 'get_component_reference'; documentation: ComponentReferenceDocumentation }
-  | {
-      action: 'submit_feedback';
-      watcher_id: string;
-      window_id: number;
-      feedback_ids: number[];
-    }
-  | {
-      action: 'get_feedback';
-      watcher_id: string;
-      feedback: Array<{
-        id: number;
-        window_id: number;
-        field_path: string;
-        mutation: 'set' | 'remove' | 'add';
-        corrected_value: unknown;
-        note: string | null;
-        created_by: string;
-        created_at: string;
-        window_start?: string;
-        window_end?: string;
-      }>;
-    }
-  | {
-      action: 'list_promoted';
-      watcher_id: string;
-      entities: Array<{
-        id: number;
-        name: string;
-        entity_type: string;
-        metadata: Record<string, unknown>;
-        field_controls: Record<string, unknown>;
-        window_id: number | null;
-        stable_key: string | null;
-      }>;
-    }
-  | {
-      action: 'create_from_version';
-      created: Array<{ watcher_id: string; entity_id: number; name: string }>;
-    };
+/**
+ * Result of `manage_watchers` — a discriminated union keyed on `action`.
+ * TypeBox-first: the TS type is `Static<>`-derived, and the same schema is the
+ * tool's `outputSchema`. Well-structured variants are precise; the genuinely
+ * dynamic variants (`get_version_details` carries an open index signature,
+ * `get_versions` returns arbitrary version rows, `get_component_reference`
+ * embeds a large doc tree) use permissive object shapes so the schema is
+ * honest rather than a brittle mirror of shapes that are intentionally open.
+ */
+const ManageWatchersDeleteResultSchema = Type.Object({
+  watcher_id: Type.String(),
+  success: Type.Boolean(),
+  message: Type.String(),
+  version: Type.Optional(Type.Integer()),
+});
+
+const ManageWatchersFeedbackItemSchema = Type.Object({
+  id: Type.Integer(),
+  window_id: Type.Integer(),
+  field_path: Type.String(),
+  mutation: Type.Union([
+    Type.Literal('set'),
+    Type.Literal('remove'),
+    Type.Literal('add'),
+  ]),
+  corrected_value: Type.Unknown(),
+  note: Type.Union([Type.String(), Type.Null()]),
+  created_by: Type.String(),
+  created_at: Type.String(),
+  window_start: Type.Optional(Type.String()),
+  window_end: Type.Optional(Type.String()),
+});
+
+const ManageWatchersPromotedEntitySchema = Type.Object({
+  id: Type.Integer(),
+  name: Type.String(),
+  entity_type: Type.String(),
+  metadata: Type.Record(Type.String(), Type.Unknown()),
+  field_controls: Type.Record(Type.String(), Type.Unknown()),
+  window_id: Type.Union([Type.Integer(), Type.Null()]),
+  stable_key: Type.Union([Type.String(), Type.Null()]),
+});
+
+export const ManageWatchersResultSchema = Type.Union([
+  Type.Object({
+    action: Type.Literal('create'),
+    watcher_id: Type.String(),
+    version: Type.Integer(),
+    status: Type.String(),
+    sources: Type.Optional(Type.Array(WatcherSourceSchema)),
+    view_url: Type.Optional(Type.String()),
+  }),
+  Type.Object({
+    action: Type.Literal('update'),
+    watcher_id: Type.String(),
+    updated_fields: Type.Array(Type.String()),
+  }),
+  Type.Object({
+    action: Type.Literal('create_version'),
+    watcher_id: Type.String(),
+    version_id: Type.String(),
+    version: Type.Integer(),
+    previous_version: Type.Integer(),
+  }),
+  Type.Object({
+    action: Type.Literal('complete_window'),
+    watcher_id: Type.String(),
+    window_id: Type.Integer(),
+    window_start: Type.String(),
+    window_end: Type.String(),
+    content_linked: Type.Integer(),
+  }),
+  Type.Object({
+    action: Type.Literal('trigger'),
+    watcher_id: Type.String(),
+    run_id: Type.Integer(),
+    status: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal('delete'),
+    results: Type.Array(ManageWatchersDeleteResultSchema),
+    summary: Type.Object({
+      total: Type.Integer(),
+      successful: Type.Integer(),
+      failed: Type.Integer(),
+    }),
+  }),
+  Type.Object({
+    action: Type.Literal('set_reaction_script'),
+    watcher_id: Type.String(),
+    has_script: Type.Boolean(),
+    message: Type.String(),
+  }),
+  // Intentionally permissive: version rows are arbitrary config snapshots.
+  Type.Object({
+    action: Type.Literal('get_versions'),
+    watcher_id: Type.String(),
+    versions: Type.Array(Type.Unknown()),
+  }),
+  // Intentionally permissive: carries an open `[key: string]: any` index sig
+  // (the full version config snapshot). Intersecting a string→unknown record
+  // gives the derived TS type an index signature AND emits
+  // `additionalProperties: true` in the JSON Schema.
+  Type.Intersect([
+    Type.Object({
+      action: Type.Literal('get_version_details'),
+      watcher_id: Type.String(),
+    }),
+    Type.Record(Type.String(), Type.Unknown()),
+  ]),
+  // Intentionally permissive: embeds a large documentation tree
+  // (ComponentReferenceDocumentation); the action literal + presence of
+  // `documentation` is what clients key on.
+  Type.Object({
+    action: Type.Literal('get_component_reference'),
+    documentation: Type.Unknown(),
+  }),
+  Type.Object({
+    action: Type.Literal('submit_feedback'),
+    watcher_id: Type.String(),
+    window_id: Type.Integer(),
+    feedback_ids: Type.Array(Type.Integer()),
+  }),
+  Type.Object({
+    action: Type.Literal('get_feedback'),
+    watcher_id: Type.String(),
+    feedback: Type.Array(ManageWatchersFeedbackItemSchema),
+  }),
+  Type.Object({
+    action: Type.Literal('list_promoted'),
+    watcher_id: Type.String(),
+    entities: Type.Array(ManageWatchersPromotedEntitySchema),
+  }),
+  Type.Object({
+    action: Type.Literal('create_from_version'),
+    created: Type.Array(
+      Type.Object({
+        watcher_id: Type.String(),
+        entity_id: Type.Integer(),
+        name: Type.String(),
+      })
+    ),
+  }),
+]);
+
+export type ManageWatchersResult = Static<typeof ManageWatchersResultSchema>;
+// Re-export so the admin registry entry can wire `list_watchers` outputSchema.
+export { ListWatchersResultSchema };
 
 export const ListWatchersSchema = Type.Object({
   watcher_id: Type.Optional(

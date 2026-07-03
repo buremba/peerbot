@@ -37,6 +37,11 @@ import {
 } from './stores/postgres-stores';
 import { orgContext } from './stores/org-context';
 import { runtimeConnectionIdToSlug } from './stores/connections-projection';
+import {
+  ProviderRegistryService,
+  resolveProviderRegistryPath,
+} from '../gateway/services/provider-registry-service';
+import logger from '../utils/logger';
 
 const routes = new Hono<{ Bindings: Env }>();
 
@@ -425,6 +430,38 @@ routes.get('/inference-providers', async (c) => {
   if (typeof orgId !== 'string') return orgId;
   const providers = await listInferenceProviders(orgId);
   return c.json({ providers });
+});
+
+// Bundled provider catalog (PUBLIC metadata only — no secrets). Renders the
+// default "Available" add-cards on the inference-providers page; each entry
+// carries enough pre-fill data that adopting a bundled provider needs only an
+// API key. Registered before any `/:agentId` route so the literal path matches.
+routes.get('/inference-providers/catalog', async (c) => {
+  try {
+    const registry = new ProviderRegistryService(resolveProviderRegistryPath());
+    const configs = await registry.getProviderConfigs();
+    const catalog = Object.entries(configs)
+      .filter(([, entry]) => entry.catalogVisible !== false)
+      .map(([slug, entry]) => ({
+        slug,
+        displayName: entry.displayName,
+        iconUrl: entry.iconUrl,
+        kind: entry.sdkCompat === 'openai' ? 'openai' : 'anthropic',
+        baseUrl: entry.upstreamBaseUrl,
+        defaultModel: entry.defaultModel ?? null,
+        modelsEndpoint: entry.modelsEndpoint ?? null,
+        apiKeyPlaceholder: entry.apiKeyPlaceholder,
+        apiKeyInstructions: entry.apiKeyInstructions,
+      }))
+      .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+    return c.json({ catalog });
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      '[inference-providers/catalog] failed to load bundled provider catalog',
+    );
+    return c.json({ catalog: [] });
+  }
 });
 
 routes.post('/inference-providers', async (c) => {

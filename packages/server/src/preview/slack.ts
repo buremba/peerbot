@@ -644,8 +644,13 @@ export async function workspaceUnlinkedNotice(
 		if (channel.channelName) params.set("label", `#${channel.channelName}`);
 		return `${base}/new?${params.toString()}`;
 	};
+	// Render each agent as a Slack mrkdwn inline link (`<url|label>`). The notice
+	// is posted via thread.post(string) → chat.postMessage({ text }), which Slack
+	// always interprets as mrkdwn; with unfurl_links disabled a bare URL renders
+	// as flat text, but `<url|label>` renders as a clickable link. The adapter's
+	// plain-text path only rewrites @mentions, so the `<>` survive intact.
 	const agentLines = agents.map((a) =>
-		canLink ? `   • ${a.name} — ${behaviorsUrl(a.agentId)}` : `   • ${a.name}`,
+		canLink ? `   • <${behaviorsUrl(a.agentId)}|${a.name}>` : `   • ${a.name}`,
 	);
 
 	if (agentLines.length > 0) {

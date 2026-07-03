@@ -3,32 +3,20 @@
  * Gmail via the fresh OAuth flow must end up `private`.
  *
  * The fresh connect inserts the connection with visibility='org' (no
- * oauth_account profile exists yet, so resolveConnectionVisibility sees no kind).
- * The OAuth callback then CREATES the oauth_account profile, attaches it, and
- * DOWNGRADES the connection to 'private'. This drives the REAL callback route
- * (connectRoutes GET /oauth/callback) with the external provider calls mocked,
- * so it covers the route wiring that the SQL-invariant test in
+ * oauth_account profile exists yet). The OAuth callback then CREATES the
+ * oauth_account profile, attaches it, and DOWNGRADES the connection to 'private'.
+ * This drives the REAL callback route (connectRoutes GET /oauth/callback) against
+ * a LOCAL fake OAuth provider (real HTTP round-trip for /token + /userinfo) — no
+ * module mocking, so it is safe under this suite's shared module graph
+ * (vitest `isolate: false`). It covers the route wiring the SQL-invariant test in
  * connection-visibility-default.test.ts could not.
  */
 
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-
-// Mock ONLY the external OAuth provider round-trips; everything else (token row,
-// profile insert, connection UPDATE, the visibility downgrade) runs for real.
-vi.mock('../../../connect/oauth-providers', () => ({
-  buildAuthorizationUrl: vi.fn(),
-  exchangeCodeForTokens: vi.fn(async () => ({
-    accessToken: 'fake-access-token',
-    refreshToken: 'fake-refresh-token',
-    scope: 'https://www.googleapis.com/auth/gmail.readonly',
-  })),
-  fetchUserInfoWithRaw: vi.fn(async () => ({
-    raw: { email: 'owner@example.com', name: 'Owner D' },
-    normalized: { email: 'owner@example.com', name: 'Owner D' },
-  })),
-}));
-
+import { serve } from '@hono/node-server';
+import { Hono } from 'hono';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { connectRoutes } from '../../../connect/routes';
+import type { Env } from '../../../index';
 import { createConnectToken } from '../../../utils/connect-tokens';
 import { getTestDb, cleanupTestDatabase } from '../../setup/test-db';
 import { initWorkspaceProvider } from '../../../workspace';
@@ -39,9 +27,41 @@ import {
   createTestUser,
 } from '../../setup/test-fixtures';
 
+const TEST_ENV = {} as Env;
+
+// biome-ignore lint/suspicious/noExplicitAny: node-server handle
+let providerServer: any;
+let providerTokenUrl = '';
+let providerUserinfoUrl = '';
+
 describe('OAuth callback downgrades a fresh personal connection to private (e2e)', () => {
   beforeAll(async () => {
     await initWorkspaceProvider();
+    // Local fake OAuth provider: real HTTP endpoints the callback exchanges
+    // against (no module mocking — safe under isolate:false).
+    const provider = new Hono();
+    provider.post('/token', (c) =>
+      c.json({
+        access_token: 'fake-access-token',
+        refresh_token: 'fake-refresh-token',
+        expires_in: 3600,
+        scope: 'https://www.googleapis.com/auth/gmail.readonly',
+      })
+    );
+    provider.get('/userinfo', (c) =>
+      c.json({ email: 'owner@example.com', name: 'Owner D', id: 'acct-123' })
+    );
+    providerServer = await new Promise((resolve) => {
+      const s = serve({ fetch: provider.fetch, hostname: '127.0.0.1', port: 0 }, (info) => {
+        providerTokenUrl = `http://127.0.0.1:${info.port}/token`;
+        providerUserinfoUrl = `http://127.0.0.1:${info.port}/userinfo`;
+        resolve(s);
+      });
+    });
+  });
+
+  afterAll(() => {
+    providerServer?.close?.();
   });
 
   beforeEach(async () => {
@@ -68,6 +88,8 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
             requiredScopes: ['read'],
             clientIdKey: 'CBOAUTH_CLIENT_ID',
             clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
+            tokenUrl: providerTokenUrl,
+            userinfoUrl: providerUserinfoUrl,
           },
         ],
       },
@@ -83,7 +105,8 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
     `) as Array<{ id: number }>;
 
     // Connect token carrying pendingProfileMeta → the callback creates the
-    // oauth_account profile and attaches it to this connection.
+    // oauth_account profile and attaches it. tokenUrl/userinfoUrl point at the
+    // local fake so the real exchange succeeds.
     const tokenRow = await createConnectToken({
       connectionId: conn.id,
       organizationId: org.id,
@@ -94,6 +117,8 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
         provider: 'cboauth',
         clientIdKey: 'CBOAUTH_CLIENT_ID',
         clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
+        tokenUrl: providerTokenUrl,
+        userinfoUrl: providerUserinfoUrl,
         requestedScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
         pendingProfileMeta: {
           displayName: 'CB Account',
@@ -108,7 +133,6 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
     const res = await connectRoutes.request(
       `/oauth/callback?state=${encodeURIComponent(tokenRow.token)}&code=fake-auth-code`
     );
-    // The route redirects back to the connect page on success (not an error).
     expect(res.status).toBeGreaterThanOrEqual(200);
     expect(res.status).toBeLessThan(400);
 

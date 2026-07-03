@@ -48,6 +48,11 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- DROP first so the migration is re-runnable: the embedded runtime applies the
+-- SQL and writes the schema_migrations ledger row in two separate statements, so
+-- a crash between them replays this file on next boot — a bare CREATE TRIGGER
+-- would then fail 42710 and wedge boot.
+DROP TRIGGER IF EXISTS connections_personal_cred_visibility_guard ON public.connections;
 CREATE TRIGGER connections_personal_cred_visibility_guard
   BEFORE INSERT OR UPDATE OF visibility, auth_profile_id ON public.connections
   FOR EACH ROW

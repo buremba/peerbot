@@ -506,12 +506,13 @@ export const PERSONAL_CRED_ORG_VISIBILITY_ERROR =
   'A personal-credential (oauth_account) connection cannot be org-visible — set its visibility to private.';
 
 /** Does this DB error come from the personal-credential visibility guard trigger?
- * The trigger raises with a distinctive substring + check_violation SQLSTATE so
- * any write path (create/update/future set-visibility API) surfaces a friendly
- * 400 instead of a raw 500. */
+ * The trigger raises the distinctive substring under the check_violation SQLSTATE
+ * (23514). We require BOTH the code AND the substring: 23514 alone is shared by
+ * every real CHECK constraint (too broad), and the substring pins it to this
+ * trigger. Lets any write path surface a friendly 400 instead of a raw 500. */
 export function isPersonalCredVisibilityViolation(err: unknown): boolean {
-  const message = (err as { message?: string })?.message ?? '';
-  return message.includes('cannot be org-visible');
+  const e = err as { message?: string; code?: string };
+  return e?.code === '23514' && (e?.message ?? '').includes('cannot be org-visible');
 }
 
 export async function resolveConnectionDisplayName(params: {

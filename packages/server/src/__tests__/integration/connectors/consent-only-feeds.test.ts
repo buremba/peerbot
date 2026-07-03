@@ -275,11 +275,11 @@ describe('consent-only connections — feed creation is rejected by construction
       INSERT INTO connections (
         organization_id, connector_key, slug, display_name, status,
         account_id, auth_profile_id, app_auth_profile_id, created_by, config,
-        created_at, updated_at
+        visibility, created_at, updated_at
       ) VALUES (
         ${org.id}, ${connectorKey}, ${`demo-${org.id}`}, 'Demo Connection', 'active',
         ${accountId}, ${accountProfile.id}, ${appProfile.id}, ${owner.id},
-        ${sql.json({ consent_only: true })}, NOW(), NOW()
+        ${sql.json({ consent_only: true })}, 'private', NOW(), NOW()
       )
     `;
 

@@ -2,9 +2,8 @@
  * Tool: read_knowledge — result/row type definitions and small parse helpers.
  */
 
-import { Type } from '@sinclair/typebox';
+import { type Static, Type } from '@sinclair/typebox';
 import type { ContentItem } from '@lobu/connector-sdk';
-import type { UnprocessedRange } from '../../types/watchers';
 
 // ============================================
 // Type Definitions
@@ -26,75 +25,15 @@ export interface ClassifierConfig {
   >;
 }
 
-export interface GetContentResult {
-  content: ContentItem[];
-  total: number;
-  page: {
-    limit: number;
-    offset: number;
-    has_more: boolean;
-    has_older?: boolean;
-    has_newer?: boolean;
-    next_cursor?: {
-      occurred_at: string;
-      id: number;
-    };
-  };
-  classification_stats?: {
-    [classifierSlug: string]: {
-      [value: string]: number;
-    };
-  };
-  /**
-   * Permalink for the entity-scoped events listing in the public web app.
-   * LLM agents calling `read_knowledge` over MCP read this from the response
-   * and format it into chat replies; there is no programmatic consumer in
-   * this repo, but removing the field breaks that user-facing behavior.
-   */
-  view_url?: string;
-  // Watcher-mode fields (only present when watcher_id is provided)
-  window_token?: string;
-  window_start?: string;
-  window_end?: string;
-  prompt_rendered?: string;
-  extraction_schema?: Record<string, any>; // JSON Schema for expected LLM output
-  sources?: Record<string, ContentItem[]>;
-  classifiers?: ClassifierConfig[]; // Only present when watcher_id is provided
-  // Unprocessed content summary (only when watcher_id provided without since/until)
-  unprocessed_ranges?: UnprocessedRange[];
-  // Reaction data (watcher-mode only)
-  reactions_guidance?: string; // Template-defined guidance for reactions
-  available_operations?: Array<{
-    connection_id: number;
-    operation_key: string;
-    name: string;
-    kind: 'read' | 'write';
-    requires_approval: boolean;
-  }>;
-  // Total content stats for the full date range (watcher-mode only)
-  // Helps agents estimate token requirements: ~4 chars per token
-  total_count?: number;
-  total_count_chars?: number;
-  estimated_tokens?: number;
-  token_warning?: string;
-  // Entity summary: shows which entities results cluster around (org-wide search only)
-  entity_summary?: Array<{
-    entity_id: number;
-    name: string;
-    entity_type: string;
-    result_count: number;
-  }>;
-  // Hints for the client
-  hints?: string[];
-}
-
 /**
- * Result of `read_knowledge`. TypeBox-first: `Static<>` derives a TS type from
- * the same schema exposed as the tool's `outputSchema`. `ContentItem` is a
- * 90-field type in `@lobu/connector-sdk` (a published package consumed
- * platform-wide), so rather than mirror it — a brittle second source of truth —
- * the `content`/`sources` arrays are honestly `unknown`. The top-level shape
- * (content list, total, pagination, watcher-mode fields) is precise.
+ * Result of `read_knowledge`. TypeBox-first and the SINGLE source of truth:
+ * `GetContentResult` is `Static<>`-derived from this schema, which is also the
+ * tool's `outputSchema`. `ContentItem` (a 90-field type in
+ * `@lobu/connector-sdk`, a published package) and the watcher-mode
+ * `ClassifierConfig`/`UnprocessedRange` payloads are modeled as `unknown`
+ * inline — they're opaque over the wire, and mirroring them here would be a
+ * brittle second source that drifts from the SDK. The envelope (content list,
+ * total, pagination, watcher-mode flags) is precise.
  */
 export const GetContentResultSchema = Type.Object({
   content: Type.Array(Type.Unknown()),
@@ -112,7 +51,14 @@ export const GetContentResultSchema = Type.Object({
   classification_stats: Type.Optional(
     Type.Record(Type.String(), Type.Record(Type.String(), Type.Integer()))
   ),
+  /**
+   * Permalink for the entity-scoped events listing in the public web app.
+   * LLM agents calling `read_knowledge` over MCP read this from the response
+   * and format it into chat replies; there is no programmatic consumer in
+   * this repo, but removing the field breaks that user-facing behavior.
+   */
   view_url: Type.Optional(Type.String()),
+  // Watcher-mode fields (only present when watcher_id is provided)
   window_token: Type.Optional(Type.String()),
   window_start: Type.Optional(Type.String()),
   window_end: Type.Optional(Type.String()),
@@ -149,6 +95,7 @@ export const GetContentResultSchema = Type.Object({
   ),
   hints: Type.Optional(Type.Array(Type.String())),
 });
+export type GetContentResult = Static<typeof GetContentResultSchema>;
 
 // ============================================
 // Database Row Types (for query result typing)

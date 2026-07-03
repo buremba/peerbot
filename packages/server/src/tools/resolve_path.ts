@@ -47,59 +47,82 @@ export const ResolvePathSchema = Type.Object({
 
 type ResolvePathArgs = Static<typeof ResolvePathSchema>;
 
-export interface ResolvedWorkspace {
-  slug: string;
-  type: 'user' | 'organization';
-  id: string;
-  name: string | null;
-}
+export const ResolvedWorkspaceSchema = Type.Object({
+  slug: Type.String(),
+  type: Type.Union([Type.Literal('user'), Type.Literal('organization')]),
+  id: Type.String(),
+  name: Type.Union([Type.String(), Type.Null()]),
+});
+export type ResolvedWorkspace = Static<typeof ResolvedWorkspaceSchema>;
 
-export interface ResolvedPathEntity {
-  id: number;
-  entity_type: string;
-  slug: string;
-  name: string;
-}
+export const ResolvedPathEntitySchema = Type.Object({
+  id: Type.Integer(),
+  entity_type: Type.String(),
+  slug: Type.String(),
+  name: Type.String(),
+});
+export type ResolvedPathEntity = Static<typeof ResolvedPathEntitySchema>;
 
-interface ViewTemplateTab {
-  tab_name: string;
-  tab_order: number;
-  json_template: Record<string, any>;
-  version: number;
-  version_id: number;
-  template_data: Record<string, unknown[]> | null;
-}
+const ViewTemplateTabSchema = Type.Object({
+  tab_name: Type.String(),
+  tab_order: Type.Integer(),
+  json_template: Type.Record(Type.String(), Type.Unknown()),
+  version: Type.Integer(),
+  version_id: Type.Integer(),
+  template_data: Type.Union([
+    Type.Record(Type.String(), Type.Array(Type.Unknown())),
+    Type.Null(),
+  ]),
+});
+type ViewTemplateTab = Static<typeof ViewTemplateTabSchema>;
 
-export interface ResolvedEntityDetails extends ResolvedPathEntity {
-  parent_id: number | null;
-  metadata: Record<string, any>;
-  /** Per-field human-ownership markers (key present = a human set that field).
-   *  Lets the UI badge owned fields + show the correction note. */
-  field_controls: Record<string, { note?: string | null; set_by?: string | null; set_at?: string }>;
-  json_template: Record<string, any> | null;
-  json_template_version: number | null;
-  template_data: Record<string, unknown[]> | null;
-  tabs: ViewTemplateTab[];
-  created_at: string;
-  // Stats
-  total_content: number;
-  active_connections: number;
-  watchers_count: number;
-  // Derived ("view") entity: synthesized from the type's `backing_sql` filtered
-  // to this slug, not a stored `entities` row. `metadata` holds the full view
-  // row; `measure_columns` are its aggregate columns. Stored entities omit both.
-  is_derived?: boolean;
-  measure_columns?: string[];
-}
+// ResolvedEntityDetails = ResolvedPathEntity + detail fields. TypeBox has no
+// `extends`; compose via intersect so the derived type stays a single source.
+export const ResolvedEntityDetailsSchema = Type.Intersect([
+  ResolvedPathEntitySchema,
+  Type.Object({
+    parent_id: Type.Union([Type.Integer(), Type.Null()]),
+    metadata: Type.Record(Type.String(), Type.Unknown()),
+    /** Per-field human-ownership markers (key present = a human set that field).
+     *  Lets the UI badge owned fields + show the correction note. */
+    field_controls: Type.Record(
+      Type.String(),
+      Type.Object({
+        note: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+        set_by: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+        set_at: Type.Optional(Type.String()),
+      })
+    ),
+    json_template: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+    json_template_version: Type.Union([Type.Integer(), Type.Null()]),
+    template_data: Type.Union([
+      Type.Record(Type.String(), Type.Array(Type.Unknown())),
+      Type.Null(),
+    ]),
+    tabs: Type.Array(ViewTemplateTabSchema),
+    created_at: Type.String(),
+    // Stats
+    total_content: Type.Integer(),
+    active_connections: Type.Integer(),
+    watchers_count: Type.Integer(),
+    // Derived ("view") entity: synthesized from the type's `backing_sql` filtered
+    // to this slug, not a stored `entities` row. `metadata` holds the full view
+    // row; `measure_columns` are its aggregate columns. Stored entities omit both.
+    is_derived: Type.Optional(Type.Boolean()),
+    measure_columns: Type.Optional(Type.Array(Type.String())),
+  }),
+]);
+export type ResolvedEntityDetails = Static<typeof ResolvedEntityDetailsSchema>;
 
-export interface ChildEntity {
-  id: number;
-  entity_type: string;
-  slug: string;
-  name: string;
-  market: string | null;
-  content_count: number;
-}
+export const ChildEntitySchema = Type.Object({
+  id: Type.Integer(),
+  entity_type: Type.String(),
+  slug: Type.String(),
+  name: Type.String(),
+  market: Type.Union([Type.String(), Type.Null()]),
+  content_count: Type.Integer(),
+});
+export type ChildEntity = Static<typeof ChildEntitySchema>;
 
 interface ResolvedEntityRow {
   id: number;
@@ -112,125 +135,122 @@ interface ResolvedEntityRow {
   created_at: Date;
 }
 
-export interface SiblingEntity {
-  id: number;
-  entity_type: string;
-  slug: string;
-  name: string;
-  content_count: number;
-}
+export const SiblingEntitySchema = Type.Object({
+  id: Type.Integer(),
+  entity_type: Type.String(),
+  slug: Type.String(),
+  name: Type.String(),
+  content_count: Type.Integer(),
+});
+export type SiblingEntity = Static<typeof SiblingEntitySchema>;
 
-export interface ResolvePathResult {
-  workspace: ResolvedWorkspace;
-  segments: Array<{ entity_type: string; slug: string }>;
-  path: ResolvedPathEntity[];
-  entity: ResolvedEntityDetails | null;
-  children: ChildEntity[];
-  siblings: SiblingEntity[];
-  bootstrap: ResolvePathBootstrap | null;
-}
+const BootstrapEntityTypeSummarySchema = Type.Object({
+  id: Type.Integer(),
+  slug: Type.String(),
+  name: Type.String(),
+  description: Type.Union([Type.String(), Type.Null()]),
+  icon: Type.Union([Type.String(), Type.Null()]),
+  color: Type.Union([Type.String(), Type.Null()]),
+  entity_count: Type.Integer(),
+});
+
+const BootstrapScopeSummarySchema = Type.Object({
+  total_content: Type.Integer(),
+  active_connections: Type.Integer(),
+  watchers_count: Type.Integer(),
+  // Org-level regardless of the focused entity (sidebar nav badges).
+  agents_count: Type.Integer(),
+  // Devices are owned by the requesting user, not the org — count is per-user.
+  devices_count: Type.Integer(),
+});
+
+const BootstrapContentItemSchema = Type.Object({
+  id: Type.Integer(),
+  entity_ids: Type.Array(Type.Integer()),
+  platform: Type.String(),
+  entity_name: Type.Union([Type.String(), Type.Null()]),
+  title: Type.Union([Type.String(), Type.Null()]),
+  text_content: Type.String(),
+  source_url: Type.Union([Type.String(), Type.Null()]),
+  author_name: Type.Union([Type.String(), Type.Null()]),
+  created_at: Type.String(),
+  occurred_at: Type.Union([Type.String(), Type.Null()]),
+});
+
+const BootstrapFeedItemSchema = Type.Object({
+  id: Type.Integer(),
+  connection_id: Type.Integer(),
+  connector_key: Type.String(),
+  display_name: Type.Union([Type.String(), Type.Null()]),
+  status: Type.String(),
+  entity_ids: Type.Array(Type.Integer()),
+  connector_name: Type.Union([Type.String(), Type.Null()]),
+  connection_name: Type.Union([Type.String(), Type.Null()]),
+  event_count: Type.Integer(),
+  created_at: Type.String(),
+  updated_at: Type.String(),
+});
+
+const BootstrapWatcherItemSchema = Type.Object({
+  watcher_id: Type.String(),
+  name: Type.String(),
+  status: Type.String(),
+  schedule: Type.String(),
+  entity_id: Type.Union([Type.Integer(), Type.Null()]),
+  entity_type: Type.Union([Type.String(), Type.Null()]),
+  entity_name: Type.Union([Type.String(), Type.Null()]),
+  entity_slug: Type.Union([Type.String(), Type.Null()]),
+  parent_slug: Type.Union([Type.String(), Type.Null()]),
+  parent_entity_type: Type.Union([Type.String(), Type.Null()]),
+  organization_slug: Type.String(),
+  windows_count: Type.Integer(),
+  created_at: Type.String(),
+  updated_at: Type.String(),
+});
+
+const BootstrapConnectorDefinitionSchema = Type.Object({
+  key: Type.String(),
+  name: Type.String(),
+  description: Type.Union([Type.String(), Type.Null()]),
+  icon: Type.Union([Type.String(), Type.Null()]),
+  favicon_domain: Type.Union([Type.String(), Type.Null()]),
+});
+
+export const ResolvePathBootstrapSchema = Type.Object({
+  entity_types: Type.Array(BootstrapEntityTypeSummarySchema),
+  summary: BootstrapScopeSummarySchema,
+  recent_content: Type.Array(BootstrapContentItemSchema),
+  recent_feeds: Type.Array(BootstrapFeedItemSchema),
+  recent_watchers: Type.Array(BootstrapWatcherItemSchema),
+  connector_definitions: Type.Array(BootstrapConnectorDefinitionSchema),
+});
+export type ResolvePathBootstrap = Static<typeof ResolvePathBootstrapSchema>;
+// Handlers reference these by name; alias each from its schema.
+type BootstrapEntityTypeSummary = Static<typeof BootstrapEntityTypeSummarySchema>;
+type BootstrapScopeSummary = Static<typeof BootstrapScopeSummarySchema>;
+type BootstrapContentItem = Static<typeof BootstrapContentItemSchema>;
+type BootstrapFeedItem = Static<typeof BootstrapFeedItemSchema>;
+type BootstrapWatcherItem = Static<typeof BootstrapWatcherItemSchema>;
+type BootstrapConnectorDefinition = Static<typeof BootstrapConnectorDefinitionSchema>;
 
 /**
- * Output schema for `resolve_path`. A permissive projection of
- * `ResolvePathResult`: the top-level envelope (workspace / segments / path /
- * entity / children / siblings / bootstrap) is precise, while the deep nested
- * entity/detail/bootstrap types are `unknown` — they're wide, view-driven
- * snapshots assembled from many joins (see the 13 interfaces below), not a
- * stable contract the MCP client introspects field-by-field. Mirrors the
- * `read_knowledge` / ContentItem approach: honest over brittle.
+ * Output schema for `resolve_path`. TypeBox-first: every nested type is
+ * `Static<>`-derived from its schema, so this object composes them into one
+ * source of truth for both the TS type (`ResolvePathResult`) and the MCP
+ * `outputSchema`. No hand-written interface mirrors it.
  */
 export const ResolvePathResultSchema = Type.Object({
-  workspace: Type.Unknown(),
+  workspace: ResolvedWorkspaceSchema,
   segments: Type.Array(
     Type.Object({ entity_type: Type.String(), slug: Type.String() })
   ),
-  path: Type.Array(Type.Unknown()),
-  entity: Type.Union([Type.Unknown(), Type.Null()]),
-  children: Type.Array(Type.Unknown()),
-  siblings: Type.Array(Type.Unknown()),
-  bootstrap: Type.Union([Type.Unknown(), Type.Null()]),
+  path: Type.Array(ResolvedPathEntitySchema),
+  entity: Type.Union([ResolvedEntityDetailsSchema, Type.Null()]),
+  children: Type.Array(ChildEntitySchema),
+  siblings: Type.Array(SiblingEntitySchema),
+  bootstrap: Type.Union([ResolvePathBootstrapSchema, Type.Null()]),
 });
-
-interface BootstrapEntityTypeSummary {
-  id: number;
-  slug: string;
-  name: string;
-  description: string | null;
-  icon: string | null;
-  color: string | null;
-  entity_count: number;
-}
-
-interface BootstrapScopeSummary {
-  total_content: number;
-  active_connections: number;
-  watchers_count: number;
-  // Org-level regardless of the focused entity (sidebar nav badges).
-  agents_count: number;
-  // Devices are owned by the requesting user, not the org — count is per-user.
-  devices_count: number;
-}
-
-interface BootstrapContentItem {
-  id: number;
-  entity_ids: number[];
-  platform: string;
-  entity_name: string | null;
-  title: string | null;
-  text_content: string;
-  source_url: string | null;
-  author_name: string | null;
-  created_at: string;
-  occurred_at: string | null;
-}
-
-interface BootstrapFeedItem {
-  id: number;
-  connection_id: number;
-  connector_key: string;
-  display_name: string | null;
-  status: string;
-  entity_ids: number[];
-  connector_name: string | null;
-  connection_name: string | null;
-  event_count: number;
-  created_at: string;
-  updated_at: string;
-}
-
-interface BootstrapWatcherItem {
-  watcher_id: string;
-  name: string;
-  status: string;
-  schedule: string;
-  entity_id: number | null;
-  entity_type: string | null;
-  entity_name: string | null;
-  entity_slug: string | null;
-  parent_slug: string | null;
-  parent_entity_type: string | null;
-  organization_slug: string;
-  windows_count: number;
-  created_at: string;
-  updated_at: string;
-}
-
-interface BootstrapConnectorDefinition {
-  key: string;
-  name: string;
-  description: string | null;
-  icon: string | null;
-  favicon_domain: string | null;
-}
-
-export interface ResolvePathBootstrap {
-  entity_types: BootstrapEntityTypeSummary[];
-  summary: BootstrapScopeSummary;
-  recent_content: BootstrapContentItem[];
-  recent_feeds: BootstrapFeedItem[];
-  recent_watchers: BootstrapWatcherItem[];
-  connector_definitions: BootstrapConnectorDefinition[];
-}
+export type ResolvePathResult = Static<typeof ResolvePathResultSchema>;
 
 const BOOTSTRAP_RECENT_LIMIT = 8;
 

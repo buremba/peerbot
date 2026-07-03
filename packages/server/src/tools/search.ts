@@ -140,39 +140,41 @@ type SearchArgs = Static<typeof SearchSchema>;
 // ============================================
 
 // Unified entity with all fields (nulls where not applicable)
-export interface Entity {
-  id: number;
-  type: string;
-  name: string;
-  slug: string;
-  metadata: Record<string, any>;
-  parent_id: number | null;
-  parent_name: string | null;
-  parent_slug: string | null;
-  parent_entity_type: string | null;
-  organization_slug: string | null;
-  stats: {
-    content_count: number;
-    connection_count: number;
-    active_connection_count: number;
-    children_count: number; // child count for root entities
-    watcher_count: number;
-  };
-  match_score: number;
-  match_reason: string;
-}
+export const EntitySchema = Type.Object({
+  id: Type.Integer(),
+  type: Type.String(),
+  name: Type.String(),
+  slug: Type.String(),
+  metadata: Type.Record(Type.String(), Type.Unknown()),
+  parent_id: Type.Union([Type.Integer(), Type.Null()]),
+  parent_name: Type.Union([Type.String(), Type.Null()]),
+  parent_slug: Type.Union([Type.String(), Type.Null()]),
+  parent_entity_type: Type.Union([Type.String(), Type.Null()]),
+  organization_slug: Type.Union([Type.String(), Type.Null()]),
+  stats: Type.Object({
+    content_count: Type.Integer(),
+    connection_count: Type.Integer(),
+    active_connection_count: Type.Integer(),
+    children_count: Type.Integer(), // child count for root entities
+    watcher_count: Type.Integer(),
+  }),
+  match_score: Type.Number(),
+  match_reason: Type.String(),
+});
+export type Entity = Static<typeof EntitySchema>;
 
-interface ConnectionInfo {
-  connection_id: number;
-  connector_key: string;
-  display_name: string | null;
-  status: string;
-  config: Record<string, unknown>;
-  entity_names?: string | null;
-  created_at: string;
-  updated_at: string | null;
-  content_count: number;
-}
+const ConnectionInfoSchema = Type.Object({
+  connection_id: Type.Integer(),
+  connector_key: Type.String(),
+  display_name: Type.Union([Type.String(), Type.Null()]),
+  status: Type.String(),
+  config: Type.Record(Type.String(), Type.Unknown()),
+  entity_names: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  created_at: Type.String(),
+  updated_at: Type.Union([Type.String(), Type.Null()]),
+  content_count: Type.Integer(),
+});
+type ConnectionInfo = Static<typeof ConnectionInfoSchema>;
 
 interface EntityQueryRow {
   id: number;
@@ -204,34 +206,36 @@ interface ChildEntityRow {
   content_count: number;
 }
 
-interface ContentSnippet {
-  id: number;
-  title: string | null;
-  text_content: string;
-  author_name: string | null;
-  source_url: string | null;
-  platform: string;
-  occurred_at: string | null;
-  similarity?: number;
-  entity_ids: number[];
-}
+const ContentSnippetSchema = Type.Object({
+  id: Type.Integer(),
+  title: Type.Union([Type.String(), Type.Null()]),
+  text_content: Type.String(),
+  author_name: Type.Union([Type.String(), Type.Null()]),
+  source_url: Type.Union([Type.String(), Type.Null()]),
+  platform: Type.String(),
+  occurred_at: Type.Union([Type.String(), Type.Null()]),
+  similarity: Type.Optional(Type.Number()),
+  entity_ids: Type.Array(Type.Integer()),
+});
+type ContentSnippet = Static<typeof ContentSnippetSchema>;
 
 // A keyword/recency hit from the chat transcript (`channel_messages`). Distinct
 // from ContentSnippet on purpose: these are NOT `events`, so they carry no
 // event id (their `id` would mislead a get_content follow-up) and no embedding
 // similarity. They let search_memory surface past channel conversation without
 // a separate get_channel_history tool — see project_conversation_feeds_virtual.
-interface ConversationSnippet {
-  platform: string;
-  channel_id: string;
-  thread_id: string | null;
-  author_name: string | null;
+const ConversationSnippetSchema = Type.Object({
+  platform: Type.String(),
+  channel_id: Type.String(),
+  thread_id: Type.Union([Type.String(), Type.Null()]),
+  author_name: Type.Union([Type.String(), Type.Null()]),
   /** The sender's resolved person/$member entity id (store-only attribution),
    * or null when unattributed (bot post / no team / unresolved). */
-  author_entity_id: number | null;
-  text: string;
-  occurred_at: string | null;
-}
+  author_entity_id: Type.Union([Type.Integer(), Type.Null()]),
+  text: Type.String(),
+  occurred_at: Type.Union([Type.String(), Type.Null()]),
+});
+type ConversationSnippet = Static<typeof ConversationSnippetSchema>;
 
 // A live block of rows recalled from ONE virtual feed (read via readVirtualFeed's
 // search() pushdown). Distinct from ContentSnippet/ConversationSnippet on purpose:
@@ -239,58 +243,26 @@ interface ConversationSnippet {
 // so they carry their own `columns` header rather than being coerced into a fixed
 // snippet shape that would drop or mislabel columns. Nothing is persisted — these
 // are read live from the source at recall time. See project_conversation_feeds_virtual.
-interface VirtualFeedRows {
-  feed_id: number;
-  feed_key: string;
-  columns: { name: string; type: string }[];
-  rows: Record<string, unknown>[];
-}
-
-interface UnifiedSearchResult {
-  entity_type: string | null;
-  entity: Entity | null;
-  matches: Entity[];
-  connections?: ConnectionInfo[];
-  children?: Array<{
-    id: number;
-    name: string;
-    type: string;
-    market: string | null;
-    content_count: number;
-  }>;
-  content?: ContentSnippet[];
-  /** Past chat-channel messages matching the query, scoped to the agent's own
-   * bound channels. Replaces the get_channel_history tool — read past convos
-   * through the same search call. */
-  conversation_messages?: ConversationSnippet[];
-  /** Live rows recalled from opt-in virtual feeds (`config.recall === true`) —
-   * one block per feed, read via the connector's `search()` pushdown at request
-   * time. Never persisted. */
-  virtual_feeds?: VirtualFeedRows[];
-  discovery_status?: 'not_found' | 'complete' | 'discovering';
-  suggestion?: string;
-  view_url?: string;
-  existing_entities?: Array<{ entity_type: string; entities: Array<{ id: number; name: string }> }>;
-  metadata: {
-    total_matches: number;
-    page_size: number;
-  };
-}
+const VirtualFeedRowsSchema = Type.Object({
+  feed_id: Type.Integer(),
+  feed_key: Type.String(),
+  columns: Type.Array(Type.Object({ name: Type.String(), type: Type.String() })),
+  rows: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+});
+type VirtualFeedRows = Static<typeof VirtualFeedRowsSchema>;
 
 /**
- * Output schema for `search_memory`. A permissive projection of
- * `UnifiedSearchResult`: the envelope + the simple nested shapes (children,
- * existing_entities, metadata, discovery_status) are precise, while the
- * `Entity` / `ContentSnippet` / `ConversationSnippet` / `ConnectionInfo`
- * arrays are `unknown` — those types live across the codebase (and
- * `ContentItem` in `@lobu/connector-sdk`) and are wide snapshots, not a
- * contract the MCP client introspects field-by-field. Honest over brittle.
+ * Result of `search_memory`. TypeBox-first and the SINGLE source of truth:
+ * `UnifiedSearchResult` is `Static<>`-derived from this schema, which is also
+ * the tool's `outputSchema`. Every nested type (Entity, ConnectionInfo,
+ * ContentSnippet, ConversationSnippet, VirtualFeedRows) is itself
+ * schema-derived, so there is no hand-written interface that can drift.
  */
 export const UnifiedSearchResultSchema = Type.Object({
   entity_type: Type.Union([Type.String(), Type.Null()]),
-  entity: Type.Union([Type.Unknown(), Type.Null()]),
-  matches: Type.Array(Type.Unknown()),
-  connections: Type.Optional(Type.Array(Type.Unknown())),
+  entity: Type.Union([EntitySchema, Type.Null()]),
+  matches: Type.Array(EntitySchema),
+  connections: Type.Optional(Type.Array(ConnectionInfoSchema)),
   children: Type.Optional(
     Type.Array(
       Type.Object({
@@ -302,9 +274,15 @@ export const UnifiedSearchResultSchema = Type.Object({
       })
     )
   ),
-  content: Type.Optional(Type.Array(Type.Unknown())),
-  conversation_messages: Type.Optional(Type.Array(Type.Unknown())),
-  virtual_feeds: Type.Optional(Type.Array(Type.Unknown())),
+  content: Type.Optional(Type.Array(ContentSnippetSchema)),
+  /** Past chat-channel messages matching the query, scoped to the agent's own
+   * bound channels. Replaces the get_channel_history tool — read past convos
+   * through the same search call. */
+  conversation_messages: Type.Optional(Type.Array(ConversationSnippetSchema)),
+  /** Live rows recalled from opt-in virtual feeds (`config.recall === true`) —
+   * one block per feed, read via the connector's `search()` pushdown at request
+   * time. Never persisted. */
+  virtual_feeds: Type.Optional(Type.Array(VirtualFeedRowsSchema)),
   discovery_status: Type.Optional(
     Type.Union([Type.Literal('not_found'), Type.Literal('complete'), Type.Literal('discovering')])
   ),
@@ -325,6 +303,7 @@ export const UnifiedSearchResultSchema = Type.Object({
     page_size: Type.Integer(),
   }),
 });
+export type UnifiedSearchResult = Static<typeof UnifiedSearchResultSchema>;
 
 // ============================================
 // Result Helpers

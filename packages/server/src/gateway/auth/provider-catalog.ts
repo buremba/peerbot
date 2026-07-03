@@ -1,4 +1,8 @@
-import { createLogger, type InstalledProvider } from "@lobu/core";
+import {
+  createLogger,
+  type InstalledProvider,
+  type ProviderConfigEntry,
+} from "@lobu/core";
 import type { InferenceProviderListItem } from "../../lobu/stores/provider-secrets.js";
 import {
   getModelProviderModules,
@@ -12,6 +16,113 @@ import type { AuthProfilesManager } from "./settings/auth-profiles-manager.js";
 import { reconcileModelSelectionForInstalledProviders } from "./settings/model-selection.js";
 
 const logger = createLogger("provider-catalog");
+
+/** Auth mechanism a provider supports. */
+export type ProviderAuthType = "oauth" | "device-code" | "api-key";
+
+/**
+ * One provider as seen in the "Add provider" catalog: its identity, auth
+ * options (OAuth sign-in vs API key), wire protocol (`sdkCompat`), and upstream
+ * pre-fill. Built from the module registry so EVERY registered provider appears
+ * — the config-driven api-key ones AND the hardcoded OAuth ones (Claude,
+ * ChatGPT) — not just the providers.json subset.
+ */
+export interface ProviderCatalogEntry {
+  /** Provider id; also the default slug pre-fill. */
+  slug: string;
+  displayName: string;
+  iconUrl: string;
+  authType: ProviderAuthType;
+  supportedAuthTypes: ProviderAuthType[];
+  /**
+   * Wire protocol the provider speaks. "openai" for the config-driven OpenAI-
+   * compatible providers; null when unknown/not-yet-routable (the OAuth
+   * providers — their real protocol is wired in a later phase).
+   */
+  sdkCompat: string | null;
+  /** Upstream base URL pre-fill ("" when the module doesn't expose one). */
+  baseUrl: string;
+  defaultModel: string | null;
+  modelsEndpoint: string | null;
+  apiKeyPlaceholder: string;
+  apiKeyInstructions: string;
+  /** Modalities served; drives which per-modality overrides the UI offers. */
+  modalities: ("text" | "image" | "stt" | "tts")[];
+}
+
+/**
+ * Build the provider catalog from the module registry. This is the single
+ * source of truth both the org inference-providers catalog route and the
+ * per-agent agent-config catalog map from — so Claude/ChatGPT (OAuth modules)
+ * appear everywhere, carrying their auth metadata.
+ *
+ * `configs` (the flattened providers.json map, keyed by providerId) enriches
+ * the config-driven entries with sdkCompat/defaultModel/modelsEndpoint/
+ * modalities. It's optional: callers without a registry handle (agent-config,
+ * which only needs the auth fields) may omit it — those entries then fall back
+ * to the module's own metadata and default to text-only.
+ */
+export function buildProviderCatalog(
+  configs?: Record<string, ProviderConfigEntry>
+): ProviderCatalogEntry[] {
+  const entries: ProviderCatalogEntry[] = [];
+  for (const module of getModelProviderModules()) {
+    if (module.catalogVisible === false) continue;
+    try {
+      const config = configs?.[module.providerId];
+
+      const authType = (module.authType || "oauth") as ProviderAuthType;
+      const supportedAuthTypes =
+        (module.supportedAuthTypes as ProviderAuthType[] | undefined) ?? [
+          authType,
+        ];
+
+      // sdkCompat/defaultModel come from providers.json when we have it, else
+      // from the module's own metadata (config-driven modules expose it).
+      const moduleMeta =
+        module instanceof ApiKeyProviderModule
+          ? module.getProviderMetadata()
+          : null;
+      const sdkCompat =
+        config?.sdkCompat ?? moduleMeta?.sdkCompat ?? null;
+      const defaultModel =
+        config?.defaultModel ?? moduleMeta?.defaultModel ?? null;
+
+      const upstream =
+        module instanceof ApiKeyProviderModule
+          ? module.getUpstreamConfig()
+          : null;
+      const baseUrl = config?.upstreamBaseUrl ?? upstream?.upstreamBaseUrl ?? "";
+
+      entries.push({
+        slug: module.providerId,
+        displayName: config?.displayName || module.providerDisplayName,
+        iconUrl: config?.iconUrl || module.providerIconUrl || "",
+        authType,
+        supportedAuthTypes,
+        sdkCompat,
+        baseUrl,
+        defaultModel,
+        modelsEndpoint: config?.modelsEndpoint ?? null,
+        apiKeyPlaceholder:
+          config?.apiKeyPlaceholder ?? module.apiKeyPlaceholder ?? "",
+        apiKeyInstructions:
+          config?.apiKeyInstructions ?? module.apiKeyInstructions ?? "",
+        modalities: config?.modalities ?? ["text"],
+      });
+    } catch (err) {
+      logger.warn(
+        {
+          providerId: module.providerId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "[buildProviderCatalog] skipping malformed provider module"
+      );
+    }
+  }
+  entries.sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  return entries;
+}
 
 /**
  * Reads an org's inference-provider rows (slug + custom-upstream capabilities).

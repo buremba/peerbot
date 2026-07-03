@@ -483,6 +483,31 @@ export async function updateInferenceProviderCapabilities(
 }
 
 /**
+ * Update a provider's editable core fields. Only `display_name` is editable —
+ * `slug` (agents reference it) and `kind` (catalog linkage) are immutable.
+ * `COALESCE` leaves the column unchanged when `displayName` is null/undefined,
+ * so the route can pass undefined for "no change". Returns the updated row, or
+ * null when no live row exists for the slug.
+ */
+export async function updateInferenceProviderCoreFields(
+	organizationId: string,
+	slug: string,
+	fields: { displayName?: string | null },
+): Promise<InferenceProviderRow | null> {
+	const sql = getDb();
+	const rows = (await sql`
+		UPDATE inference_providers
+		SET display_name = COALESCE(${fields.displayName ?? null}, display_name),
+		    updated_at = now()
+		WHERE organization_id = ${organizationId} AND slug = ${slug}
+		  AND deleted_at IS NULL
+		RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
+		          capabilities, has_custom_upstream, status, created_at
+	`) as RawInferenceProviderRow[];
+	return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/**
  * Rotate a provider's api key: re-encrypt into the SAME api_key_ref name (the
  * ref is immutable). Returns false when no live row exists for the slug.
  */

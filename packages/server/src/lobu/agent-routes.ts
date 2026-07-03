@@ -14,6 +14,7 @@ import {
   createInferenceProvider,
   listInferenceProviders,
   updateInferenceProviderCapabilities,
+  updateInferenceProviderCoreFields,
   rotateInferenceProviderKey,
   softDeleteInferenceProvider,
   validateCapabilityBlock,
@@ -41,6 +42,7 @@ import {
   ProviderRegistryService,
   resolveProviderRegistryPath,
 } from '../gateway/services/provider-registry-service';
+import { buildProviderCatalog } from '../gateway/auth/provider-catalog';
 import logger from '../utils/logger';
 
 const routes = new Hono<{ Bindings: Env }>();
@@ -440,23 +442,9 @@ routes.get('/inference-providers/catalog', async (c) => {
   try {
     const registry = new ProviderRegistryService(resolveProviderRegistryPath());
     const configs = await registry.getProviderConfigs();
-    const catalog = Object.entries(configs)
-      .filter(([, entry]) => entry.catalogVisible !== false)
-      .map(([slug, entry]) => ({
-        slug,
-        displayName: entry.displayName,
-        iconUrl: entry.iconUrl,
-        kind: entry.sdkCompat === 'openai' ? 'openai' : 'anthropic',
-        baseUrl: entry.upstreamBaseUrl,
-        defaultModel: entry.defaultModel ?? null,
-        modelsEndpoint: entry.modelsEndpoint ?? null,
-        apiKeyPlaceholder: entry.apiKeyPlaceholder,
-        apiKeyInstructions: entry.apiKeyInstructions,
-        // Which modalities this provider serves (omitted ⇒ text only). Lets the
-        // UI offer per-modality overrides only where they make sense.
-        modalities: entry.modalities ?? ['text'],
-      }))
-      .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+    // Built from the module registry (not just providers.json) so Claude /
+    // ChatGPT (OAuth modules) appear too, each carrying its auth metadata.
+    const catalog = buildProviderCatalog(configs);
     return c.json({ catalog });
   } catch (err) {
     logger.warn(
@@ -506,6 +494,32 @@ routes.post('/inference-providers', async (c) => {
   const capErr = validateCapabilitiesMap(body.capabilities);
   if (capErr) return c.json({ error: capErr }, 400);
 
+  // Gate: only OpenAI-compatible providers are routable via a pasted API key
+  // today. `kind` is the catalog slug the user picked; look up its wire
+  // protocol and reject non-openai ones (Claude/ChatGPT) — they sign in via
+  // OAuth and their routing is wired in a later phase. Without this, an
+  // api-key Claude row would be created but silently fail to route.
+  try {
+    const registry = new ProviderRegistryService(resolveProviderRegistryPath());
+    const catalog = buildProviderCatalog(await registry.getProviderConfigs());
+    const entry = catalog.find((e) => e.slug === kind);
+    if (entry && entry.sdkCompat !== 'openai') {
+      return c.json(
+        {
+          error: `Provider '${kind}' can't be added with an API key yet — only OpenAI-compatible providers are supported for now.`,
+        },
+        400
+      );
+    }
+  } catch (err) {
+    // Fail open on catalog-load errors: don't block creation on a metadata
+    // read. The synthesize path still gates routing downstream.
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      '[inference-providers POST] catalog gate check failed; allowing',
+    );
+  }
+
   const createdBy = c.get('user')?.id ?? null;
 
   const result = await createInferenceProvider({
@@ -539,6 +553,46 @@ routes.post('/inference-providers', async (c) => {
     },
     201
   );
+});
+
+// Edit a provider's core fields. Only displayName is mutable — slug (agents
+// reference it) and kind (catalog linkage) are immutable. Key rotation and
+// per-modality capability edits keep their dedicated routes below; the Edit UI
+// calls whichever it needs.
+routes.put('/inference-providers/:slug', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const { slug } = c.req.param();
+
+  let body: { displayName?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+
+  // Empty / whitespace-only name means "leave unchanged" (pass undefined).
+  const rawName = typeof body.displayName === 'string' ? body.displayName : '';
+  const displayName = rawName.trim() ? rawName.trim() : undefined;
+
+  const updated = await updateInferenceProviderCoreFields(orgId, slug, {
+    displayName,
+  });
+  if (!updated) return c.json({ error: 'Provider not found' }, 404);
+  return c.json({
+    provider: {
+      id: updated.id,
+      slug: updated.slug,
+      kind: updated.kind,
+      displayName: updated.displayName,
+      capabilities: updated.capabilities,
+      hasCustomUpstream: updated.hasCustomUpstream,
+      status: updated.status,
+      createdAt: updated.createdAt,
+    },
+  });
 });
 
 routes.put('/inference-providers/:slug/capabilities/:modality', async (c) => {

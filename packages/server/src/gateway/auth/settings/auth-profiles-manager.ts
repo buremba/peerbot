@@ -11,7 +11,10 @@ import type {
 import type { WritableSecretStore } from "../../secrets/index.js";
 import type { DeclaredAgentRegistry } from "../../services/declared-agent-registry.js";
 import type { EphemeralAuthProfileRegistry } from "./agent-settings-store.js";
-import type { UserAuthProfileStore } from "./user-auth-profile-store.js";
+import {
+  orgBucketAgentId,
+  type UserAuthProfileStore,
+} from "./user-auth-profile-store.js";
 
 const logger = createLogger("auth-profiles-manager");
 
@@ -48,6 +51,14 @@ interface UpsertAuthProfileInput {
   metadata?: AuthProfile["metadata"];
   makePrimary?: boolean;
   id?: string;
+  /**
+   * Set ONLY for org-bucket writes (`agentId = "__org_oauth__:<orgId>"`), which
+   * have no `agents` row to derive the org from. Threads into the
+   * `user_auth_profiles.organization_id` column so the token-refresh scan keeps
+   * these profiles alive. Omit for ordinary per-agent writes (column stays NULL,
+   * org derived via the agents join).
+   */
+  organizationId?: string;
 }
 
 interface AuthProfilesManagerOptions {
@@ -317,6 +328,18 @@ export class AuthProfilesManager {
       ? await this.userAuthProfiles.list(userId, agentId)
       : [];
 
+    // Org bucket: one subscription sign-in on the org inference-providers page
+    // is stored under `(userId, "__org_oauth__:<orgId>")` and covers all of
+    // this user's agents in the org. Merge it in at LOWER precedence than the
+    // agent-specific user profile (an explicit per-agent sign-in still wins) but
+    // ABOVE owner-fallback / ephemeral / declared. The org id is the ambient
+    // context (this method runs inside the agent's org scope), so no slug lookup.
+    const orgId = tryGetOrgId();
+    const orgBucketProfiles =
+      userId && orgId
+        ? await this.userAuthProfiles.list(userId, orgBucketAgentId(orgId))
+        : [];
+
     // Agent runs execute as a synthetic/platform user, not the operator who
     // connected the provider in the agent settings UI. Fall back to the agent
     // owner's user-scoped profiles so a UI-connected API key actually resolves
@@ -329,6 +352,7 @@ export class AuthProfilesManager {
 
     const merged = this.dedupeByScope([
       ...this.normalizeProfiles(userProfiles),
+      ...this.normalizeProfiles(orgBucketProfiles),
       ...this.normalizeProfiles(ownerProfiles),
       ...this.normalizeProfiles(ephemeral),
       ...declared,
@@ -463,7 +487,12 @@ export class AuthProfilesManager {
       input.userId,
       input.agentId,
       profile,
-      { makePrimary: input.makePrimary }
+      {
+        makePrimary: input.makePrimary,
+        ...(input.organizationId
+          ? { organizationId: input.organizationId }
+          : {}),
+      }
     );
 
     logger.info(

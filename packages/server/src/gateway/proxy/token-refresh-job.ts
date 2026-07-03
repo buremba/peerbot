@@ -3,14 +3,18 @@ import { type DbClient, getDb } from "../../db/client.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import type { OAuthCredentials } from "../auth/oauth/credentials.js";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
+import { isOrgBucketAgentId } from "../auth/settings/user-auth-profile-store.js";
 
 const logger = createLogger("token-refresh-job");
 
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000; // Refresh tokens expiring within 5 minutes
 
 // Profile auth types that carry a refresh token we can rotate. "oauth" =
-// Claude (authorization-code), "device-code" = ChatGPT/Codex.
-const REFRESHABLE_AUTH_TYPES = new Set(["oauth", "device-code"]);
+// Claude (authorization-code), "device-code" = ChatGPT/Codex. Exported so the
+// refresh-eligibility regression test can assert BOTH literals are still
+// selected after the OAuth-flow consolidation — a silent rename here breaks
+// refresh for already-signed-in users ~1h later, invisibly.
+export const REFRESHABLE_AUTH_TYPES = new Set(["oauth", "device-code"]);
 
 /**
  * Anything that can swap a refresh token for fresh credentials. Both the
@@ -105,7 +109,7 @@ export class TokenRefreshJob {
    * AsyncLocalStorage scope by the time they land here.
    */
   async refreshForUserAgent(userId: string, agentId: string): Promise<void> {
-    const organizationId = await this.lookupAgentOrg(agentId);
+    const organizationId = await this.lookupAgentOrg(userId, agentId);
     if (organizationId === null) {
       logger.warn(
         { userId, agentId },
@@ -118,7 +122,19 @@ export class TokenRefreshJob {
     );
   }
 
-  private async lookupAgentOrg(agentId: string): Promise<string | null> {
+  /** Org-bucket agentIds (`__org_oauth__:<orgId>`, from an org-page sign-in)
+   *  have no `agents` row — their org lives on the `user_auth_profiles` row's
+   *  `organization_id` column (set at upsert). Read it from the store for those;
+   *  ordinary per-agent ids resolve via the agents table. */
+  private async lookupAgentOrg(
+    userId: string,
+    agentId: string
+  ): Promise<string | null> {
+    if (isOrgBucketAgentId(agentId)) {
+      return this.authProfilesManager
+        .getUserAuthProfileStore()
+        .getOrganizationId(userId, agentId);
+    }
     const sql = this.getDbFn();
     const rows = await sql<{ organization_id: string }>`
       SELECT organization_id FROM agents WHERE id = ${agentId} LIMIT 1

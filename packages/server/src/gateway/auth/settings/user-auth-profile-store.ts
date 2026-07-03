@@ -11,6 +11,24 @@ import {
 
 const logger = createLogger("user-auth-profile-store");
 
+/**
+ * Prefix for the per-user ORG BUCKET agentId. One subscription sign-in on the
+ * org inference-providers page is stored under `(userId, orgBucketAgentId(org))`
+ * and covers every one of that user's agents in the org (merged at resolution
+ * time by `AuthProfilesManager`). The discriminator is the organization id — the
+ * same value the routes read from `c.get('organizationId')` and the resolver
+ * reads from `resolveAgentOrgId`, so no slug→id lookup is needed on either path.
+ */
+export const ORG_BUCKET_AGENT_PREFIX = "__org_oauth__:";
+
+export function orgBucketAgentId(organizationId: string): string {
+  return `${ORG_BUCKET_AGENT_PREFIX}${organizationId}`;
+}
+
+export function isOrgBucketAgentId(agentId: string): boolean {
+  return agentId.startsWith(ORG_BUCKET_AGENT_PREFIX);
+}
+
 function buildSecretName(
   userId: string,
   agentId: string,
@@ -88,7 +106,7 @@ export class UserAuthProfileStore {
     userId: string,
     agentId: string,
     profile: AuthProfile,
-    options: { makePrimary?: boolean } = {}
+    options: { makePrimary?: boolean; organizationId?: string } = {}
   ): Promise<AuthProfile> {
     const persisted = await this.persistSecrets(userId, agentId, profile);
     const current = await this.list(userId, agentId);
@@ -125,12 +143,19 @@ export class UserAuthProfileStore {
         ? [...sameProvider, next, ...others]
         : [next, ...sameProvider, ...others];
 
+    // `organization_id` is only set for org-bucket rows (agent_id
+    // `__org_oauth__:<slug>`, which has no agents row to derive org from). Pass
+    // undefined for ordinary per-agent rows so the column stays NULL and org is
+    // derived via the agents join in `scanAllOAuth`. COALESCE keeps an already
+    // stored org id if a later upsert omits it.
+    const organizationId = options.organizationId ?? null;
     const sql = getDb();
     await sql`
-      INSERT INTO user_auth_profiles (user_id, agent_id, profiles, updated_at)
-      VALUES (${userId}, ${agentId}, ${sql.json(ordered)}, now())
+      INSERT INTO user_auth_profiles (user_id, agent_id, profiles, organization_id, updated_at)
+      VALUES (${userId}, ${agentId}, ${sql.json(ordered)}, ${organizationId}, now())
       ON CONFLICT (user_id, agent_id) DO UPDATE SET
         profiles = EXCLUDED.profiles,
+        organization_id = COALESCE(EXCLUDED.organization_id, user_auth_profiles.organization_id),
         updated_at = now()
     `;
     return next;
@@ -201,14 +226,23 @@ export class UserAuthProfileStore {
    * profiles exist. Used by `TokenRefreshJob` to scan refreshable tokens —
    * the org id is needed so the refresh path can establish org context
    * before reading/writing org-scoped secrets via PostgresSecretStore.
-   * Profiles whose agent has been deleted are skipped (INNER JOIN).
+   *
+   * LEFT JOIN (not INNER) so org-bucket rows — `agent_id =
+   * '__org_oauth__:<slug>'`, which have no `agents` row — are NOT dropped: their
+   * org comes from the row's own `organization_id` column. `COALESCE(a.org,
+   * uap.org)` derives per-agent rows from the join and org-bucket rows from the
+   * column. The WHERE guards against orphan rows carrying neither (an agent
+   * deleted out from under a plain row with a NULL column) — those are skipped.
    */
   async *scanAllOAuth(): AsyncIterable<UserAgentRef> {
     const sql = getDb();
     const rows = await sql`
-      SELECT uap.user_id, uap.agent_id, a.organization_id
+      SELECT uap.user_id,
+             uap.agent_id,
+             COALESCE(a.organization_id, uap.organization_id) AS organization_id
       FROM user_auth_profiles uap
-      INNER JOIN agents a ON a.id = uap.agent_id
+      LEFT JOIN agents a ON a.id = uap.agent_id
+      WHERE COALESCE(a.organization_id, uap.organization_id) IS NOT NULL
     `;
     for (const row of rows as Array<Record<string, any>>) {
       yield {
@@ -216,6 +250,36 @@ export class UserAuthProfileStore {
         agentId: row.agent_id as string,
         organizationId: row.organization_id as string,
       };
+    }
+  }
+
+  /**
+   * The `organization_id` stored on a `(userId, agentId)` row, or null. Used by
+   * the token-refresh job's direct entrypoint for org-bucket agentIds
+   * (`__org_oauth__:<slug>`), which have no `agents` row to look the org up in —
+   * the column is the only source of org context for that path.
+   */
+  async getOrganizationId(
+    userId: string,
+    agentId: string
+  ): Promise<string | null> {
+    if (!userId || !agentId) return null;
+    const sql = getDb();
+    try {
+      const rows = await sql`
+        SELECT organization_id
+        FROM user_auth_profiles
+        WHERE user_id = ${userId} AND agent_id = ${agentId}
+        LIMIT 1
+      `;
+      return (rows[0]?.organization_id as string | null) ?? null;
+    } catch (error) {
+      logger.warn("Failed to read org id for user auth profile row", {
+        userId,
+        agentId,
+        error: getErrorMessage(error),
+      });
+      return null;
     }
   }
 

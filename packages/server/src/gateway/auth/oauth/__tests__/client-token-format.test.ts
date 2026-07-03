@@ -83,7 +83,6 @@ describe("OAuthClient token-request encoding", () => {
       tokenUrl: "https://provider.example/token",
       redirectUri: "https://app.example/callback",
       scope: "openid",
-      usePKCE: true,
       requireRefreshToken: false,
     };
     const client = new OAuthClient(jsonProvider);
@@ -96,5 +95,23 @@ describe("OAuthClient token-request encoding", () => {
     const parsed = JSON.parse(req.rawBody);
     expect(parsed.grant_type).toBe("authorization_code");
     expect(parsed.client_id).toBe("client_json");
+  });
+
+  // #3 extraAuthParams echo: buildAuthUrl must surface CLAUDE_PROVIDER's
+  // `extraAuthParams: { code: "true" }` in the authorize URL. The genuine
+  // claude-code login sends `code=true`; dropping it changes the flow Anthropic
+  // runs and breaks the paste-code exchange.
+  test("buildAuthUrl echoes extraAuthParams (code=true) into the authorize URL", () => {
+    const client = new OAuthClient(CLAUDE_PROVIDER);
+    const url = new URL(client.buildAuthUrl("state_x", "verifier_y"));
+
+    expect(url.searchParams.get("code")).toBe("true");
+    // Sanity: the standard PKCE params are present alongside it.
+    expect(url.searchParams.get("client_id")).toBe(CLAUDE_PROVIDER.clientId);
+    expect(url.searchParams.get("redirect_uri")).toBe(
+      CLAUDE_PROVIDER.redirectUri
+    );
+    expect(url.searchParams.get("state")).toBe("state_x");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 });

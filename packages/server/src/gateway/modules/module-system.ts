@@ -69,21 +69,6 @@ export interface ModelProviderModule extends OrchestratorModule {
     agentId: string,
     context?: ProviderCredentialContext
   ): Promise<string> | string;
-  startDeviceCode?(agentId: string): Promise<{
-    userCode: string;
-    deviceAuthId: string;
-    interval: number;
-    verificationUrl?: string;
-  }>;
-  pollDeviceCode?(
-    agentId: string,
-    userId: string,
-    payload: { deviceAuthId: string; userCode: string }
-  ): Promise<{
-    status: "pending" | "success";
-    error?: string;
-    accountId?: string;
-  }>;
 }
 
 export abstract class BaseModule implements OrchestratorModule {

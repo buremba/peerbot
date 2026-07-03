@@ -421,34 +421,6 @@ export function createGatewayApp(
           }
         };
 
-      const requireDeviceCode = (
-        c: any,
-        mod: ReturnType<typeof getModelProviderModules>[number],
-				method: "startDeviceCode" | "pollDeviceCode",
-      ): Response | null => {
-        const supportsDeviceCode =
-          mod.authType === "device-code" ||
-          mod.supportedAuthTypes?.includes("device-code");
-        if (!supportsDeviceCode) {
-          return c.json(
-            { error: "Provider does not support device code" },
-						400,
-          );
-        }
-        if (typeof mod[method] !== "function") {
-          return c.json(
-            {
-              error:
-                method === "startDeviceCode"
-                  ? "Device code start not implemented"
-                  : "Device code poll not implemented",
-            },
-						501,
-          );
-        }
-        return null;
-      };
-
       authRouter.post(
         "/:provider/save-key",
         withProviderAndAuth(
@@ -482,71 +454,6 @@ export function createGatewayApp(
             });
 
             return c.json({ success: true });
-					},
-				),
-      );
-
-      authRouter.post(
-        "/:provider/start",
-        withProviderAndAuth(
-          "Failed to start device code flow",
-          async ({ c, mod }) => {
-            const unsupported = requireDeviceCode(c, mod, "startDeviceCode");
-            if (unsupported) return unsupported;
-
-            const body = (await c.req.json().catch(() => ({}))) as {
-              agentId?: string;
-            };
-            const agentId = body.agentId?.trim();
-            if (!agentId) return c.json({ error: "Missing agentId" }, 400);
-
-            if (!(await verifyProviderAuth(c, agentId))) {
-              return c.json({ error: "Unauthorized" }, 401);
-            }
-
-            const result = await mod.startDeviceCode!(agentId);
-            return c.json(result);
-					},
-				),
-      );
-
-      authRouter.post(
-        "/:provider/poll",
-        withProviderAndAuth(
-          "Failed to poll device code flow",
-          async ({ c, mod }) => {
-            const unsupported = requireDeviceCode(c, mod, "pollDeviceCode");
-            if (unsupported) return unsupported;
-
-            const body = (await c.req.json().catch(() => ({}))) as {
-              agentId?: string;
-              deviceAuthId?: string;
-              userCode?: string;
-            };
-            const agentId = body.agentId?.trim();
-            const deviceAuthId = body.deviceAuthId?.trim();
-            const userCode = body.userCode?.trim();
-            if (!agentId || !deviceAuthId || !userCode) {
-              return c.json(
-                { error: "Missing agentId, deviceAuthId, or userCode" },
-								400,
-              );
-            }
-
-            const principal = await verifyProviderAuth(c, agentId);
-            if (!principal) {
-              return c.json({ error: "Unauthorized" }, 401);
-            }
-
-						const result = await mod.pollDeviceCode!(
-							agentId,
-							principal.userId,
-							{
-              deviceAuthId,
-              userCode,
-							},
-						);
-            return c.json(result);
 					},
 				),
       );

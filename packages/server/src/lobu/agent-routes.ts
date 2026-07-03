@@ -9,8 +9,11 @@ import { Hono } from "hono";
 import { ensureBuilderAgent } from "../auth/builder-provisioning";
 import { mcpAuth } from "../auth/middleware";
 import { getDb } from "../db/client";
-import { OAuthClient } from "../gateway/auth/oauth/client";
-import { CLAUDE_PROVIDER } from "../gateway/auth/oauth/providers";
+import {
+	CHATGPT_PROVIDER,
+	CLAUDE_PROVIDER,
+	type OAuthProviderConfig,
+} from "../gateway/auth/oauth/providers";
 import { buildProviderCatalog } from "../gateway/auth/provider-catalog";
 import { createAuthProfileLabel } from "../gateway/auth/settings/auth-profiles-manager";
 import {
@@ -22,6 +25,9 @@ import logger from "../utils/logger";
 import { countRuntimeMessagingClientsByAgent } from "./client-routes";
 import { getLobuCoreServices } from "./gateway";
 import { orgContext } from "./stores/org-context";
+import { grantStrategyFor } from "../gateway/auth/oauth/grant-strategy";
+import { orgBucketAgentId } from "../gateway/auth/settings/user-auth-profile-store";
+import { generateCodeVerifier } from "../utils/pkce";
 import {
 	AGENT_ID_PATTERN,
 	createPostgresAgentConfigStore,
@@ -469,6 +475,210 @@ routes.get('/inference-providers/catalog', async (c) => {
   }
 });
 
+// ── Org-scoped LLM-provider OAuth (subscription login) ───────────────────────
+//
+// ONE generic pair for both live flows. Claude runs authorization-code (redirect
+// + paste `code#state`); ChatGPT runs device-code (show a user code + poll). The
+// resulting profile lands in the per-user ORG BUCKET
+// (`(userId, "__org_oauth__:<orgId>")`, with `organization_id` set) so ONE
+// sign-in covers all of this user's agents in the org — the org bucket is the
+// OAuth-sharing mechanism. Behavior is dispatched by the config's `grant`
+// discriminator via `grantStrategyFor`; config rows carry no functions.
+//
+// Auth: interactive session only. A headless caller (PAT/OAuth bearer, no
+// session user) HARD-FAILS — OAuth sign-in has no non-interactive path.
+
+const OAUTH_PROVIDER_CONFIGS: Record<string, OAuthProviderConfig> = {
+  claude: CLAUDE_PROVIDER,
+  chatgpt: CHATGPT_PROVIDER,
+};
+
+/** Resolve the OAuth provider config, or a 400 Response if unknown. */
+function resolveOAuthProvider(
+  c: any,
+  providerId: unknown
+): OAuthProviderConfig | Response {
+  const id = typeof providerId === 'string' ? providerId : '';
+  const config = OAUTH_PROVIDER_CONFIGS[id];
+  if (!config) {
+    return c.json({ error: `Provider '${id}' does not support OAuth sign-in` }, 400);
+  }
+  return config;
+}
+
+/**
+ * Interactive-session guard for OAuth. OAuth providers require a real user to
+ * complete the browser round-trip; a headless PAT/OAuth-bearer caller cannot.
+ * Returns the session user, or a Response (403 headless, 401 unauthenticated).
+ */
+function requireInteractiveUser(c: any): { id: string } | Response {
+  const user = c.get('user') as { id: string } | undefined;
+  const authSource = c.get('authSource') as string | null;
+  if (authSource !== 'session' || !user) {
+    return c.json(
+      { error: 'OAuth providers require interactive sign-in' },
+      403
+    );
+  }
+  return user;
+}
+
+routes.post('/inference-providers/oauth/start', async (c) => {
+  const config = resolveOAuthProvider(c, await readProviderId(c));
+  if (config instanceof Response) return config;
+  const user = requireInteractiveUser(c);
+  if (user instanceof Response) return user;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+
+  const strategy = grantStrategyFor(config);
+  const bucketAgentId = orgBucketAgentId(orgId);
+
+  if ((config.grant ?? 'authorization-code') === 'authorization-code') {
+    const oauthStateStore = getLobuCoreServices()?.getOAuthStateStore?.();
+    if (!oauthStateStore) {
+      return c.json({ error: 'Embedded Lobu auth is not available' }, 503);
+    }
+    // Mint the PKCE verifier + state row FIRST, then build the authorize URL
+    // around that exact state so `complete` can validate it and recover the
+    // verifier. The bucket agentId rides the state so complete stores to the
+    // same org bucket even though no agents row exists for it.
+    const codeVerifier = generateCodeVerifier();
+    const stateToken = await oauthStateStore.create({
+      userId: user.id,
+      agentId: bucketAgentId,
+      codeVerifier,
+      context: { platform: 'web', channelId: bucketAgentId },
+    });
+    const result = await strategy.start(
+      config,
+      { kind: 'org', slug: orgId, organizationId: orgId, userId: user.id },
+      { stateToken, codeVerifier }
+    );
+    return c.json(result);
+  }
+
+  // device-code (ChatGPT): no state store — deviceAuthId + userCode round-trip
+  // directly through the client on poll.
+  const result = await strategy.start(config, {
+    kind: 'org',
+    slug: orgId,
+    organizationId: orgId,
+    userId: user.id,
+  });
+  return c.json(result);
+});
+
+routes.post('/inference-providers/oauth/complete', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    providerId?: unknown;
+    code?: unknown;
+    deviceAuthId?: unknown;
+    userCode?: unknown;
+  };
+  const config = resolveOAuthProvider(c, body.providerId);
+  if (config instanceof Response) return config;
+  const user = requireInteractiveUser(c);
+  if (user instanceof Response) return user;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+
+  const authProfilesManager = getLobuCoreServices()?.getAuthProfilesManager?.();
+  if (!authProfilesManager) {
+    return c.json({ error: 'Embedded Lobu auth is not available' }, 503);
+  }
+
+  const strategy = grantStrategyFor(config);
+  const scope = {
+    kind: 'org' as const,
+    slug: orgId,
+    organizationId: orgId,
+    userId: user.id,
+  };
+  const bucketAgentId = orgBucketAgentId(orgId);
+
+  try {
+    let stored: Awaited<ReturnType<typeof strategy.complete>>;
+    if ((config.grant ?? 'authorization-code') === 'authorization-code') {
+      const input = typeof body.code === 'string' ? body.code.trim() : '';
+      if (!input) return c.json({ error: 'Missing OAuth code' }, 400);
+      const parts = input.split('#');
+      if (parts.length !== 2 || !parts[0] || !parts[1]) {
+        return c.json({ error: 'OAuth code must be in code#state format' }, 400);
+      }
+      const oauthStateStore = getLobuCoreServices()?.getOAuthStateStore?.();
+      if (!oauthStateStore) {
+        return c.json({ error: 'Embedded Lobu auth is not available' }, 503);
+      }
+      const stateData = await oauthStateStore.consume(parts[1].trim());
+      if (!stateData) {
+        return c.json({ error: 'OAuth state expired or is invalid' }, 400);
+      }
+      if (stateData.userId !== user.id || stateData.agentId !== bucketAgentId) {
+        return c.json({ error: 'OAuth state does not match this session' }, 403);
+      }
+      stored = await strategy.complete(config, scope, {
+        mode: 'redirect',
+        code: parts[0].trim(),
+        state: parts[1].trim(),
+        codeVerifier: stateData.codeVerifier,
+      });
+    } else {
+      const deviceAuthId =
+        typeof body.deviceAuthId === 'string' ? body.deviceAuthId.trim() : '';
+      const userCode =
+        typeof body.userCode === 'string' ? body.userCode.trim() : '';
+      if (!deviceAuthId || !userCode) {
+        return c.json({ error: 'Missing deviceAuthId or userCode' }, 400);
+      }
+      stored = await strategy.complete(config, scope, {
+        mode: 'device',
+        deviceAuthId,
+        userCode,
+      });
+      if (!stored) return c.json({ status: 'pending' });
+    }
+
+    // authorization-code never returns null (it either exchanges or throws); the
+    // device branch already handled its pending case. This guards the type.
+    if (!stored) return c.json({ status: 'pending' });
+
+    // Persist to the org bucket. `organizationId` on the row is what keeps these
+    // tokens refreshing (scanAllOAuth COALESCE + refreshForUserAgent branch);
+    // the profile's providerId must be the config id so the refresh job's
+    // `doRefresh` matches it to the right refresher.
+    await authProfilesManager.upsertProfile({
+      agentId: bucketAgentId,
+      userId: user.id,
+      provider: config.id,
+      credential: stored.accessToken,
+      authType: stored.authType,
+      label: createAuthProfileLabel(config.name, stored.accessToken, stored.accountId),
+      metadata: {
+        ...(stored.refreshToken ? { refreshToken: stored.refreshToken } : {}),
+        expiresAt: stored.expiresAt,
+        ...(stored.accountId ? { accountId: stored.accountId } : {}),
+      },
+      makePrimary: true,
+      organizationId: orgId,
+    });
+
+    return c.json({ status: 'success' });
+  } catch (error) {
+    return c.json(
+      { error: error instanceof Error ? error.message : 'OAuth exchange failed' },
+      400
+    );
+  }
+});
+
+/** Read `providerId` from the JSON body (start route). Kept tiny so the two
+ *  OAuth handlers share the parse without duplicating the try/catch. */
+async function readProviderId(c: any): Promise<unknown> {
+  const body = (await c.req.json().catch(() => ({}))) as { providerId?: unknown };
+  return body.providerId;
+}
+
 routes.post('/inference-providers', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
@@ -874,138 +1084,6 @@ routes.get("/:agentId/guardrail-judge-default", async (c) => {
 	return c.json({
 		defaultModel: process.env.EGRESS_JUDGE_MODEL?.trim() || null,
 	});
-});
-
-// ── Start provider OAuth login ───────────────────────────────────────────────
-
-routes.get("/:agentId/providers/:providerId/oauth/start", async (c) => {
-  const denied = requireSessionOrAdminPat(c);
-  if (denied) return denied;
-  const { agentId, providerId } = c.req.param();
-	const user = c.get("user");
-	if (!user) return c.json({ error: "Authentication required" }, 401);
-
-  if (!(await configStore.hasAgent(agentId))) {
-		return c.json({ error: "Agent not found" }, 404);
-  }
-
-	if (providerId !== "claude") {
-		return c.json(
-			{ error: "OAuth start is not supported for this provider" },
-			400,
-		);
-  }
-
-  const coreServices = getLobuCoreServices();
-  const oauthStateStore = coreServices?.getOAuthStateStore?.();
-  if (!oauthStateStore) {
-		return c.json({ error: "Embedded Lobu auth is not available" }, 503);
-  }
-
-  const oauthClient = new OAuthClient(CLAUDE_PROVIDER);
-  const codeVerifier = oauthClient.generateCodeVerifier();
-  const state = await oauthStateStore.create({
-    userId: user.id,
-    agentId,
-    codeVerifier,
-		context: { platform: "web", channelId: agentId },
-  });
-
-  return c.redirect(oauthClient.buildAuthUrl(state, codeVerifier));
-});
-
-// ── Complete provider OAuth login ────────────────────────────────────────────
-
-routes.post("/:agentId/providers/:providerId/oauth/code", async (c) => {
-  const denied = requireSessionOrAdminPat(c);
-  if (denied) return denied;
-  const { agentId, providerId } = c.req.param();
-	const user = c.get("user");
-	if (!user) return c.json({ error: "Authentication required" }, 401);
-
-  if (!(await configStore.hasAgent(agentId))) {
-		return c.json({ error: "Agent not found" }, 404);
-  }
-
-	if (providerId !== "claude") {
-		return c.json(
-			{ error: "OAuth code exchange is not supported for this provider" },
-			400,
-		);
-  }
-
-	const body = (await c.req.json<{ code?: string }>().catch(() => ({}))) as {
-		code?: string;
-	};
-  const input = body.code?.trim();
-	if (!input) return c.json({ error: "Missing OAuth code" }, 400);
-
-	const parts = input.split("#");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-		return c.json({ error: "OAuth code must be in code#state format" }, 400);
-  }
-
-  const coreServices = getLobuCoreServices();
-  const authProfilesManager = coreServices?.getAuthProfilesManager?.();
-  const oauthStateStore = coreServices?.getOAuthStateStore?.();
-  if (!authProfilesManager || !oauthStateStore) {
-		return c.json({ error: "Embedded Lobu auth is not available" }, 503);
-  }
-
-  const stateData = await oauthStateStore.consume(parts[1].trim());
-  if (!stateData) {
-		return c.json({ error: "OAuth state expired or is invalid" }, 400);
-  }
-
-  if (stateData.agentId !== agentId || stateData.userId !== user.id) {
-		return c.json(
-			{ error: "OAuth state does not match this agent session" },
-			403,
-		);
-  }
-  const oauthClient = new OAuthClient(CLAUDE_PROVIDER);
-
-  try {
-    const credentials = await oauthClient.exchangeCodeForToken(
-      parts[0].trim(),
-      stateData.codeVerifier,
-      // No redirect_uri override: the exchange MUST reuse the exact redirect_uri
-      // the authorize step sent (CLAUDE_PROVIDER.redirectUri, via buildAuthUrl in
-      // the /start handler above). Passing a different value here — the old
-      // `console.anthropic.com` callback — makes Anthropic reject the exchange
-      // with `invalid_grant: Invalid 'redirect_uri'`.
-      undefined,
-			parts[1].trim(),
-    );
-
-    await authProfilesManager.upsertProfile({
-      agentId,
-      // The profile is owned by the authenticated session user (the same
-      // principal whose id was checked against the OAuth state above).
-      // upsertProfile requires it — without it the persist throws
-      // "upsertProfile requires userId" and the whole login fails AFTER a
-      // successful token exchange.
-      userId: user.id,
-      provider: providerId,
-      credential: credentials.accessToken,
-			authType: "oauth",
-			label: createAuthProfileLabel("Claude", credentials.accessToken),
-      metadata: {
-        refreshToken: credentials.refreshToken,
-        expiresAt: credentials.expiresAt,
-      },
-      makePrimary: true,
-    });
-
-    return c.json({ success: true });
-  } catch (error) {
-    return c.json(
-      {
-				error: error instanceof Error ? error.message : "OAuth exchange failed",
-      },
-			400,
-    );
-  }
 });
 
 // ── Set the org-shared API key for a provider ────────────────────────────────

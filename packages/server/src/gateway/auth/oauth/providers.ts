@@ -22,8 +22,6 @@ export interface OAuthProviderConfig {
   redirectUri: string;
   /** OAuth scopes (space-separated) */
   scope: string;
-  /** Use PKCE for public clients (RFC 7636) */
-  usePKCE: boolean;
   /** Response type (default: "code") */
   responseType?: string;
   /** Grant type (default: "authorization_code") */
@@ -48,6 +46,46 @@ export interface OAuthProviderConfig {
    * providers not explicitly set.
    */
   tokenRequestFormat?: "json" | "form";
+  /**
+   * The OAuth grant kind for this provider. Dispatches which grant strategy
+   * runs the interactive flow: `authorization-code` (Claude — redirect + paste
+   * `code#state`) or `device-code` (ChatGPT — show a user code + poll). This is
+   * a pure DATA discriminator; the grant behavior lives behind `GrantStrategy`,
+   * keyed on this value. Defaults to `authorization-code`.
+   */
+  grant?: "authorization-code" | "device-code";
+  /**
+   * The EXACT `authType` string persisted on the resulting profile. Must never
+   * drift — `token-refresh-job.ts` matches refreshable profiles via a Set
+   * membership on these literals (`"oauth"` = Claude, `"device-code"` =
+   * ChatGPT). Defaults to `"oauth"`.
+   */
+  authType?: "oauth" | "device-code";
+  /** Device-auth code-request endpoint (device-code grant only). */
+  deviceCodeUrl?: string;
+  /** Device-auth token-poll endpoint (device-code grant only). */
+  deviceTokenUrl?: string;
+  /** Device-flow redirect URI baked into the code exchange (device-code grant). */
+  deviceRedirectUri?: string;
+  /**
+   * Poll HTTP status codes that mean "user hasn't authorized yet" (device-code
+   * grant). Defaults to `[403, 404, 429]`.
+   */
+  pendingStatusCodes?: number[];
+  /** Send `scope` in the refresh body (OpenAI requires it; Claude does not). */
+  includeScopeInRefresh?: boolean;
+  /**
+   * What to do when a token response omits `refresh_token`. `preserve` keeps the
+   * existing one (OpenAI doesn't always rotate); `require` throws (Claude — a
+   * missing refresh token is a hard error). Defaults to `require`.
+   */
+  missingRefreshTokenPolicy?: "preserve" | "require";
+  /** JWT claim path the accountId is decoded from (device-code grant). */
+  accountIdClaimPath?: string;
+  /** Env var that overrides `scope` at runtime (e.g. `OPENAI_OAUTH_SCOPE`). */
+  scopeEnvVar?: string;
+  /** Static `User-Agent` sent on token requests (OpenAI expects `reqwest/…`). */
+  userAgent?: string;
 }
 
 /**
@@ -77,11 +115,62 @@ export const CLAUDE_PROVIDER: OAuthProviderConfig = {
   tokenUrl: "https://platform.claude.com/v1/oauth/token",
   redirectUri: "https://platform.claude.com/oauth/code/callback",
   scope: "user:inference",
-  usePKCE: true,
   responseType: "code",
   grantType: "authorization_code",
   tokenEndpointAuthMethod: "none",
   requireRefreshToken: true,
   extraAuthParams: { code: "true" },
   tokenRequestFormat: "form",
+  grant: "authorization-code",
+  authType: "oauth",
+};
+
+/**
+ * ChatGPT (subscription login) OAuth configuration — DATA ONLY.
+ *
+ * OpenAI's device-auth handshake (`/api/accounts/deviceauth/*`) is its own JSON
+ * API, not RFC 6749, so the device-code grant strategy drives
+ * `ChatGPTDeviceCodeClient.requestDeviceCode` / `pollForToken` (which keep their
+ * bespoke request shapes as subclass methods). Only the constants that used to
+ * live as module-level literals in `device-code-client.ts` are migrated here so
+ * the config is the single source of truth; the client still owns the handshake
+ * METHODS.
+ *
+ * `authType: "device-code"` is the EXACT stored string — `token-refresh-job.ts`
+ * keys refresh eligibility on it. `missingRefreshTokenPolicy: "preserve"` keeps
+ * the stored refresh token when OpenAI omits it on a refresh (it doesn't always
+ * rotate). `scopeEnvVar` mirrors the client's `OPENAI_OAUTH_SCOPE` override.
+ */
+export const CHATGPT_PROVIDER: OAuthProviderConfig = {
+  id: "chatgpt",
+  name: "ChatGPT",
+  clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
+  authUrl: "https://auth.openai.com/oauth/authorize",
+  tokenUrl: "https://auth.openai.com/oauth/token",
+  redirectUri: "https://auth.openai.com/deviceauth/callback",
+  scope: [
+    "openid",
+    "profile",
+    "email",
+    "offline_access",
+    "api.model.read",
+    "api.model.request",
+    "api.model.image.request",
+    "api.model.audio.request",
+  ].join(" "),
+  responseType: "code",
+  grantType: "authorization_code",
+  tokenEndpointAuthMethod: "none",
+  tokenRequestFormat: "form",
+  grant: "device-code",
+  authType: "device-code",
+  deviceCodeUrl: "https://auth.openai.com/api/accounts/deviceauth/usercode",
+  deviceTokenUrl: "https://auth.openai.com/api/accounts/deviceauth/token",
+  deviceRedirectUri: "https://auth.openai.com/deviceauth/callback",
+  pendingStatusCodes: [403, 404, 429],
+  includeScopeInRefresh: true,
+  missingRefreshTokenPolicy: "preserve",
+  accountIdClaimPath: "https://api.openai.com/auth",
+  scopeEnvVar: "OPENAI_OAUTH_SCOPE",
+  userAgent: "reqwest/0.12.24",
 };

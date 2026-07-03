@@ -345,7 +345,6 @@ export class ExternalAuthClient {
       tokenUrl: resolved.tokenUrl!,
       redirectUri: this.config.redirectUri,
       scope: this.config.scope || DEFAULT_SCOPE,
-      usePKCE: true,
       responseType: "code",
       grantType: "authorization_code",
       tokenEndpointAuthMethod: resolved.tokenEndpointAuthMethod,

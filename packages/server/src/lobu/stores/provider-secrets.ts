@@ -37,14 +37,13 @@ const logger = createLogger("provider-secrets");
 // soft-delete→recreate never inherits a deleted row's ciphertext (the TOTAL
 // keyref unique index keeps the name reserved even after soft-delete).
 
-export type InferenceModality = "text" | "image" | "stt" | "tts" | "embedding";
+export type InferenceModality = "text" | "image" | "stt" | "tts";
 
 export const INFERENCE_MODALITIES: ReadonlySet<InferenceModality> = new Set([
 	"text",
 	"image",
 	"stt",
 	"tts",
-	"embedding",
 ]);
 
 /** Type guard: is `m` a known inference modality? */

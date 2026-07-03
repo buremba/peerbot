@@ -90,7 +90,7 @@ export class ChannelBindingService {
     agentId: string,
     platform: string,
     channelId: string,
-    teamId?: string,
+    teamId: string | undefined,
 		options: {
 			configuredBy?: string;
 			wasAdmin?: boolean;

@@ -640,7 +640,7 @@ export async function handleCreate(
 				{ action: "get", connection_id: created.connectionId },
 				ctx,
 			);
-			if ("error" in read) return read;
+			if ("error" in read || read.action !== "get") return read;
 			return {
 				action: "create",
 				connection: read.connection,
@@ -1167,7 +1167,7 @@ export async function handleApplyChatConnection(
 			{ action: "get", connection_id: result.connectionId },
 			ctx,
 		);
-		if ("error" in read) return read;
+		if ("error" in read || read.action !== "get") return read;
 		return {
 			action: "apply_chat_connection",
 			connection: read.connection,
@@ -1258,7 +1258,7 @@ export async function handleUpdate(
 				{ action: "get", connection_id: args.connection_id },
 				ctx,
 			);
-			if ("error" in read) return read;
+			if ("error" in read || read.action !== "get") return read;
 			return { action: "update", connection: read.connection };
 		} catch (error) {
 			return { error: getErrorMessage(error) };

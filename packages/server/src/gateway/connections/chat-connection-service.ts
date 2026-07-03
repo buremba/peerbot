@@ -9,7 +9,7 @@ import { PlatformAdapterConfigSchema } from "../routes/schemas/platform-config.j
 import { isAdapterlessPlatform } from "./chat-instance-manager.js";
 import { getPlatformDescriptor } from "./platforms/index.js";
 import { createSlackWebApi } from "./slack-web.js";
-import type { PlatformAdapterConfig } from "./types.js";
+import { isSlackConfig, type PlatformAdapterConfig } from "./types.js";
 
 const CHAT_LOCK_NAMESPACE = 0x63686174; // "chat"
 
@@ -124,15 +124,17 @@ function parseConfig(
 		);
 	}
 	validateRequiredCredentials(platform, parsed.data);
-	return parsed.data;
+	// The Zod discriminated union and the hand-written `PlatformAdapterConfig`
+	// union are member-for-member equivalent; TS treats the inferred schema type
+	// as distinct only because of declaration order / optional-field variance.
+	return parsed.data as PlatformAdapterConfig;
 }
 
 async function validateProviderIdentity(
-	platform: string,
 	config: PlatformAdapterConfig,
 ): Promise<Record<string, unknown>> {
 	const metadata: Record<string, unknown> = {};
-	if (platform === "slack") {
+	if (isSlackConfig(config)) {
 		const botToken = config.botToken;
 		if (!botToken) throw new Error("Slack bot token is required");
 		const identity = await createSlackWebApi().authTest(botToken);
@@ -193,10 +195,7 @@ export async function upsertByoChatConnection(
 		const settings = { allowGroups: true, ...(input.settings ?? {}) };
 		const existing = existingRows[0];
 		if (!existing) {
-			const providerMetadata = await validateProviderIdentity(
-				input.platform,
-				config,
-			);
+			const providerMetadata = await validateProviderIdentity(config);
 			await orgContext.run({ organizationId: input.organizationId }, () =>
 				manager.addConnection(
 					input.platform,
@@ -264,7 +263,7 @@ export async function upsertByoChatConnection(
 
 		const providerMetadata = matches
 			? {}
-			: await validateProviderIdentity(input.platform, config);
+			: await validateProviderIdentity(config);
 		await orgContext.run({ organizationId: input.organizationId }, () =>
 			manager.updateConnection(input.stableId, {
 				agentId: agentId ?? null,
@@ -321,10 +320,7 @@ export async function updateChatConnection(input: {
 		} as PlatformAdapterConfig;
 		const resolved = await manager.resolveConnectionConfig(runtimeId, merged);
 		const config = parseConfig(row.connector_key, resolved);
-		const providerMetadata = await validateProviderIdentity(
-			row.connector_key,
-			config,
-		);
+		const providerMetadata = await validateProviderIdentity(config);
 		await orgContext.run({ organizationId: input.organizationId }, () =>
 			manager.updateConnection(runtimeId, {
 				config,

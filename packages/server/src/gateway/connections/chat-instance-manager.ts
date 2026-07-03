@@ -821,9 +821,14 @@ export class ChatInstanceManager {
 		for (const key of stamped) {
 			if (!(key in config)) delete comparable[key];
 		}
+		// `configsEqual` only reads keys; widen the typed union/interface args to
+		// the plain record shape it compares over.
 		return (
-			configsEqual(comparable, config) &&
-			configsEqual(connection.settings ?? {}, settings) &&
+			configsEqual(comparable, config as Record<string, unknown>) &&
+			configsEqual(
+				(connection.settings ?? {}) as Record<string, unknown>,
+				settings as Record<string, unknown>,
+			) &&
 			(connection.agentId ?? undefined) === (agentId ?? undefined)
 		);
 	}

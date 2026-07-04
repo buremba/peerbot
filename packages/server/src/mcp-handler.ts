@@ -29,6 +29,7 @@ import { createDbClientFromEnv } from './db/client';
 import type { Env } from './index';
 import { agentExistsInOrganization, isValidAgentId, touchAgentLastUsed } from './lobu/stores/postgres-stores';
 import { readMcpAppBundle } from './utils/mcp-app-bundle';
+import { LOBU_SKILL_MARKDOWN } from './skills/lobu-skill.generated';
 import { McpSessionStore, type PersistedMcpSession } from './mcp-session-store';
 import {
   clearInMemoryMcpSessionsForTests as clearInMemoryMcpSessionsForTestsShared,
@@ -159,6 +160,27 @@ export const MCP_APP_DIRS: ReadonlySet<string> = new Set(
   Object.values(MCP_APP_RESOURCES).map((r) => r.appDir)
 );
 
+/**
+ * Skill resources served over `resources/list` + `resources/read` as plain
+ * markdown reference material (NOT interactive `ui://` bundles). Slackbot and
+ * other MCP clients can read these to learn how to work with Lobu. The content
+ * is embedded at build time (see scripts/gen-skill-resource.ts) so it ships
+ * identically in prod and local dev — `skills/` is not copied into the server
+ * image, so a runtime file read would 404 in prod.
+ */
+const MCP_SKILL_RESOURCES: Record<string, {
+  name: string;
+  description: string;
+  text: string;
+}> = {
+  'skill://lobu': {
+    name: 'Lobu',
+    description:
+      'How to work with a Lobu project and Lobu memory: run/validate/evaluate/connect, MCP client setup, knowledge search/save, watchers, and connectors.',
+    text: LOBU_SKILL_MARKDOWN,
+  },
+};
+
 function createServerForContext(
   env: Env,
   authCtx: SessionAuthContext,
@@ -217,25 +239,39 @@ function createServerForContext(
   // resources/list — advertise the MCP App UI resources (interactive iframe
   // surfaces a host renders in place of flat text; see MCP Apps).
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: Object.entries(MCP_APP_RESOURCES).map(([uri, meta]) => ({
-      uri,
-      name: meta.name,
-      description: meta.description,
-      mimeType: 'text/html',
-      _meta: {
-        ui: {
-          csp: meta.csp,
-          // Origin the host should associate with this UI (the gateway that
-          // serves the bundle + brokers the `tools/call` actions).
-          domain: resolvedOrigin,
+    resources: [
+      ...Object.entries(MCP_APP_RESOURCES).map(([uri, meta]) => ({
+        uri,
+        name: meta.name,
+        description: meta.description,
+        mimeType: 'text/html',
+        _meta: {
+          ui: {
+            csp: meta.csp,
+            // Origin the host should associate with this UI (the gateway that
+            // serves the bundle + brokers the `tools/call` actions).
+            domain: resolvedOrigin,
+          },
         },
-      },
-    })),
+      })),
+      ...Object.entries(MCP_SKILL_RESOURCES).map(([uri, meta]) => ({
+        uri,
+        name: meta.name,
+        description: meta.description,
+        mimeType: 'text/markdown',
+      })),
+    ],
   }));
 
   // resources/read — return the built bundle HTML for a `ui://` app resource.
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const uri = request.params.uri;
+    const skill = MCP_SKILL_RESOURCES[uri];
+    if (skill) {
+      return {
+        contents: [{ uri, mimeType: 'text/markdown', text: skill.text }],
+      };
+    }
     const app = MCP_APP_RESOURCES[uri];
     if (!app) throw new Error(`Unknown resource: ${uri}`);
     const html = await readMcpAppBundle(app.appDir);

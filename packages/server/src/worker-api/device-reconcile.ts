@@ -10,6 +10,7 @@
  */
 
 import { getDb, pgTextArray } from '../db/client';
+import { findExistingPersonalOrg } from '../auth/personal-org-provisioning';
 import {
   type BundledDeviceConnector,
   bundledConnectorSourcePath,
@@ -337,20 +338,37 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
   }
   if (deviceConnectors.length === 0) return;
 
-  // deviceId → { capabilities it advertises, org it's attached to } (fresh
-  // devices only). A device connector is wired into the device's org; a user
-  // with devices in two orgs auto-wires the connector into each.
-  const deviceCaps = new Map<string, { caps: Set<string>; orgId: string | null }>();
+  // Device data ALWAYS lands in the user's personal org — device tokens are
+  // force-bound there (see oauth/device/approve + mint-child-token), and a
+  // team org reaches a device by pinning a watcher/connection to it
+  // (resolveDeviceClaimableOrgs), not by re-binding the device. So auto-wire
+  // targets the personal org regardless of where a legacy device_workers row
+  // is still homed (older pairings may still carry a team org_id; they
+  // converge here on the next poll).
+  const personalOrg = await findExistingPersonalOrg(userId, sql);
+  if (!personalOrg) {
+    // No personal org → nothing to auto-wire. Don't touch team-org connectors
+    // a user may have created manually; those survive on their own pins.
+    return;
+  }
+  const personalOrgId = personalOrg.id;
+
+  // deviceId → capabilities it advertises (fresh devices only). We no longer
+  // partition by the device's stored org_id: under the personal-org
+  // invariant every device serves the personal workspace, so the fleet's
+  // combined capabilities decide what gets wired, irrespective of legacy
+  // per-device home rows.
+  const deviceCaps = new Map<string, Set<string>>();
   try {
     const rows = (await sql`
-      SELECT id, capabilities, organization_id
+      SELECT id, capabilities
       FROM device_workers
       WHERE user_id = ${userId}
         AND last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
-    `) as unknown as Array<{ id: string; capabilities: unknown; organization_id: string | null }>;
+    `) as unknown as Array<{ id: string; capabilities: unknown }>;
     for (const r of rows) {
       const caps = Array.isArray(r.capabilities) ? (r.capabilities as string[]) : [];
-      deviceCaps.set(r.id, { caps: new Set(caps), orgId: r.organization_id });
+      deviceCaps.set(r.id, new Set(caps));
     }
   } catch (err) {
     logger.warn(
@@ -359,26 +377,18 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
     );
     return;
   }
-
-  const orgsWithDevices = [
-    ...new Set(
-      [...deviceCaps.values()].map((d) => d.orgId).filter((o): o is string => Boolean(o))
-    ),
-  ];
-  if (orgsWithDevices.length === 0) return;
-  const devicesWithCapabilityInOrg = (capability: string, orgId: string): string[] =>
-    [...deviceCaps.entries()]
-      .filter(([, d]) => d.orgId === orgId && d.caps.has(capability))
+  if (deviceCaps.size === 0) return;
+  const devicesWithCapability = (capability: string): string[] =>
+    [...deviceCaps.entries()].
+      filter(([, caps]) => caps.has(capability))
       .map(([id]) => id);
 
   await Promise.allSettled(
-    deviceConnectors.flatMap((dc) =>
-      orgsWithDevices.map((orgId) => {
-        const matchingDeviceIds = devicesWithCapabilityInOrg(dc.requiredCapability, orgId);
-        return matchingDeviceIds.length > 0
-          ? ensureDeviceConnectorWired(userId, orgId, dc.key, dc.feedKeys, matchingDeviceIds)
-          : pauseStaleDeviceFeeds(userId, orgId, dc.key);
-      })
-    )
+    deviceConnectors.map((dc) => {
+      const matchingDeviceIds = devicesWithCapability(dc.requiredCapability);
+      return matchingDeviceIds.length > 0
+        ? ensureDeviceConnectorWired(userId, personalOrgId, dc.key, dc.feedKeys, matchingDeviceIds)
+        : pauseStaleDeviceFeeds(userId, personalOrgId, dc.key);
+    })
   );
 }

@@ -132,6 +132,24 @@ function patchManifestGatewayUrls(
     }
   }
 
+  // MCP server endpoint Slackbot connects to. `/mcp` is mounted at the app
+  // ROOT (app.all("/mcp", handleMcp) in index.ts), NOT under the gateway's
+  // `/lobu` mount — the server's own discovery doc at `<base>/mcp` reports
+  // `mcp_endpoint: <origin>/mcp`. So derive from the ORIGIN, stripping any
+  // `/lobu` (or other) path in PUBLIC_GATEWAY_URL; `${base}/mcp` would yield a
+  // 404-ing `/lobu/mcp`. Unscoped (no per-connection path) — the gateway
+  // resolves the org from the OAuth token (dynamic_client_registration), and
+  // Slackbot auto-discovers the server's tools once connected.
+  const mcpUrl = `${new URL(base).origin}/mcp`;
+  const mcpServers = manifest.mcp_servers as
+    | Record<string, Record<string, unknown>>
+    | undefined;
+  if (mcpServers) {
+    for (const server of Object.values(mcpServers)) {
+      if (server && typeof server === "object") server.url = mcpUrl;
+    }
+  }
+
   // OAuth redirect URL is only needed for public-install apps that do the
   // full OAuth flow. Self-install manifests (SLACK_CONNECTION_ID set) should
   // not advertise a redirect URL.

@@ -27,7 +27,7 @@ import { QuerySqlSchema, querySql } from './admin/query_sql';
 import { ListOrganizationsSchema } from './organizations';
 import { ResolvePathSchema, ResolvePathResultSchema, resolvePath } from './resolve_path';
 import { SaveContentSchema, saveContent } from './save_content';
-import { SearchSchema, UnifiedSearchResultSchema, search } from './search';
+import { PublicSearchSchema, SearchSchema, UnifiedSearchResultSchema, search } from './search';
 import { QuerySchema, RunSchema, querySdkScript, runSdkScript } from './sdk_run';
 import { SdkSearchSchema, SdkSearchResultSchema, sdkSearch } from './sdk_search';
 
@@ -111,6 +111,14 @@ export interface ToolDefinition<T = any> {
   name: string;
   description: string;
   inputSchema: any; // JSON Schema
+  /**
+   * Narrower schema advertised on `tools/list` when the tool accepts fields
+   * that are server-internal (e.g. pre-computed embeddings, identity-bound
+   * filters the server populates from auth context). Validation still runs
+   * against the full `inputSchema`, so internal callers and tests keep working;
+   * only the client-facing listing is narrowed. Falls back to `inputSchema`.
+   */
+  publicInputSchema?: any; // JSON Schema
   annotations?: ToolAnnotations;
   /**
    * JSON Schema describing the tool's structured result. When present, the
@@ -135,6 +143,10 @@ const TOOLS: ToolDefinition[] = [
     description:
       'Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” Pair writes with `save_memory`; use `search_sdk` / `query_sdk` only when you need SDK capabilities or programmable reads.',
     inputSchema: SearchSchema,
+    // Advertise the narrower public schema: query_embedding (server pre-compute
+    // optimization) and agent_id (auth-bound) are server-internal, not client
+    // affordances. See search.ts → PublicSearchSchema.
+    publicInputSchema: PublicSearchSchema,
     outputSchema: UnifiedSearchResultSchema,
     annotations: { ...READ_ONLY, title: 'Search memory' },
     handler: search,
@@ -388,7 +400,11 @@ function computeAllTools(
   return TOOLS
     .filter((tool) => !publicOnly || getPublicReadableActions(tool.name) !== undefined)
     .map((tool) => {
-      let inputSchema = tool.inputSchema;
+      // Advertise the narrower `publicInputSchema` when a tool declares one;
+      // validation still runs against the full `inputSchema` so internal
+      // server-supplied fields (e.g. embeddings, auth-bound filters) are
+      // accepted at the handler boundary but never advertised to clients.
+      let inputSchema = tool.publicInputSchema ?? tool.inputSchema;
       const readOnlyHint = tool.annotations?.readOnlyHint === true;
 
       if (publicOnly) {

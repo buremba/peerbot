@@ -13,6 +13,7 @@
 import { isKnownPlatform } from '@lobu/core';
 import type { Context } from 'hono';
 import { createAuth } from '../auth';
+import { findExistingPersonalOrg } from '../auth/personal-org-provisioning';
 import { PersonalAccessTokenService } from '../auth/tokens';
 import { getDb, pgBigintArray } from '../db/client';
 import type { Env } from '../index';
@@ -199,15 +200,22 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
 
   try {
     const sql = getDb();
-    // Same org-resolution rule as /api/workers/poll: prefer the calling
-    // token's org, fall back to the user's personal org.
-    const orgRows = (await sql`
-      SELECT id FROM organization
-      WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${userId}
-      LIMIT 1
-    `) as unknown as Array<{ id: string }>;
-    const organizationId =
-      (c.var.organizationId as string | null | undefined) ?? orgRows[0]?.id ?? null;
+    // Device clients (Owletto Chrome extension via the Mac bridge) ALWAYS bind
+    // to the user's personal org — never the calling token's org. Personal
+    // device data (browser context, captured pages, …) belongs in the user's
+    // private workspace; a team org reaches the device by pinning a watcher /
+    // connection to it (see resolveDeviceClaimableOrgs), not by re-binding the
+    // device token. Ignoring `c.var.organizationId` here is what makes a Mac
+    // app whose own token is bound to a team org still land Chrome's data in
+    // the personal org.
+    const personalOrg = await findExistingPersonalOrg(userId, sql);
+    const organizationId: string | null = personalOrg?.id ?? null;
+    if (!organizationId) {
+      return c.json(
+        { error: 'personal_org_missing', error_description: 'User has no personal org to bind the device to.' },
+        403
+      );
+    }
 
     // Identity reuse: when the sibling forwards its existing worker_id AND it
     // already belongs to this user as a chrome-extension device, keep that

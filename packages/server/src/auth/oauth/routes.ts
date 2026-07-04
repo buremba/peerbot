@@ -585,6 +585,24 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
 
   const consentHasMcpScopes = hasMcpScopes(body.scope);
 
+  // `device_worker:run` is device-code-only — it mints a personal-device
+  // credential that the Owletto Mac app / Chrome extension / local runner
+  // authenticate `/api/workers/*` with, and device tokens are force-bound to
+  // the personal org in the device/approve handler below. Letting it slip in
+  // via the authorization-code consent path would bypass that invariant and
+  // bind a team-org token a device client could mistake for its identity.
+  // Third-party MCP clients (the only consent-path users) never need it.
+  const requestedConsentScopes = (body.scope ?? '').split(/\s+/).filter(Boolean);
+  if (requestedConsentScopes.includes('device_worker:run')) {
+    return c.json(
+      createOAuthError(
+        'invalid_scope',
+        '`device_worker:run` is only available via the device-authorization flow'
+      ),
+      400
+    );
+  }
+
   // User denied consent
   if (!body.approved) {
     const redirectUrl = new URL(body.redirect_uri);
@@ -902,10 +920,58 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
   }
 
   const deviceHasMcpScopes = hasMcpScopes(deviceCode.scope);
+  const requestedScopes = (deviceCode.scope ?? '').split(/\s+/).filter(Boolean);
+  // `device_worker:run` tokens drive personal devices — the Owletto Mac app,
+  // the Chrome extension, and the local `lobu run` worker. Device data
+  // (WhatsApp, Photos, browser context, …) always belongs in the user's
+  // personal org; team orgs reach a device by pinning a watcher/connection
+  // (see resolveDeviceClaimableOrgs), not by re-binding the device token.
+  // So a device-worker grant is FORCE-bound to the personal org, ignoring
+  // the resource slug, the active org, and the consent picker.
+  const isDeviceWorkerGrant = requestedScopes.includes('device_worker:run');
   let organizationId: string | null = null;
   let scopeOverride: string | null | undefined;
 
-  if (deviceHasMcpScopes) {
+  if (isDeviceWorkerGrant) {
+    const sql = createDbClientFromEnv(c.env);
+    const personalOrg = await findExistingPersonalOrg(user.id, sql);
+    if (!personalOrg) {
+      return c.json(
+        createOAuthError(
+          'access_denied',
+          'No personal organization is provisioned for this account; cannot bind a device token.'
+        ),
+        403
+      );
+    }
+    const memberRow = (await sql`
+      SELECT role FROM "member"
+      WHERE "organizationId" = ${personalOrg.id} AND "userId" = ${user.id}
+      LIMIT 1
+    `) as unknown as Array<{ role: string | null }>;
+    if (memberRow.length === 0) {
+      // The personal-org marker exists but the user isn't a member (legacy /
+      // partially-migrated data). Mirrors resolveOrganizationForGrant's
+      // membership gate so we never bind a token to an org the user can't act
+      // on.
+      return c.json(
+        createOAuthError('access_denied', 'Not a member of the personal organization'),
+        403
+      );
+    }
+    const memberRole = memberRow[0]?.role ?? null;
+    organizationId = personalOrg.id;
+    scopeOverride = filterScopeByRole(deviceCode.scope, memberRole);
+    if (scopeOverride === null) {
+      return c.json(
+        createOAuthError(
+          'invalid_scope',
+          'Your role is not authorized for any of the requested scopes'
+        ),
+        400
+      );
+    }
+  } else if (deviceHasMcpScopes) {
     const sql = createDbClientFromEnv(c.env);
     const orgResult = await resolveOrganizationForGrant({
       sql,

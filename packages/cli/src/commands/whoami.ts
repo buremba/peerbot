@@ -36,6 +36,12 @@ interface WhoamiJson {
   expiresAt?: number;
   /** Active org slug bound to this context, when set. */
   orgSlug?: string;
+  /**
+   * The user's personal-org slug. Device clients (Owletto Mac + Chrome) bind
+   * here regardless of `orgSlug` (the active/CLI-selected org) — personal
+   * device data always lands in the private workspace.
+   */
+  personalOrgSlug?: string;
   organizations: Array<{ slug: string; name?: string }>;
 }
 
@@ -120,10 +126,11 @@ async function emitJson(
   const effective = creds ?? (await loadCredentials(target.name));
 
   let organizations: Array<{ slug: string; name?: string }> = [];
+  let personalOrgSlug: string | undefined;
   try {
-    organizations = (await listOrganizations({ context: target.name })).map(
-      (org) => ({ slug: org.slug, name: org.name })
-    );
+    const full = await listOrganizations({ context: target.name });
+    organizations = full.map((org) => ({ slug: org.slug, name: org.name }));
+    personalOrgSlug = full.find((org) => org.personal)?.slug;
   } catch {
     organizations = [];
   }
@@ -142,6 +149,7 @@ async function emitJson(
     workerToken: workerToken ?? effective?.accessToken,
     expiresAt: effective?.expiresAt,
     orgSlug,
+    personalOrgSlug,
     organizations,
   };
 

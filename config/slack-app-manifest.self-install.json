@@ -44,12 +44,19 @@
         "im:history",
         "im:read",
         "im:write",
+        "mcp:connect",
         "mpim:history",
         "mpim:read",
         "reactions:read",
         "reactions:write",
         "users:read"
       ]
+    }
+  },
+  "mcp_servers": {
+    "lobu": {
+      "url": "https://PUBLIC_GATEWAY_URL/mcp",
+      "auth_type": "dynamic_client_registration"
     }
   },
   "settings": {

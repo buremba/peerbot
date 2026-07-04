@@ -585,6 +585,24 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
 
   const consentHasMcpScopes = hasMcpScopes(body.scope);
 
+  // `device_worker:run` is device-code-only — it mints a personal-device
+  // credential that the Owletto Mac app / Chrome extension / local runner
+  // authenticate `/api/workers/*` with, and device tokens are force-bound to
+  // the personal org in the device/approve handler below. Letting it slip in
+  // via the authorization-code consent path would bypass that invariant and
+  // bind a team-org token a device client could mistake for its identity.
+  // Third-party MCP clients (the only consent-path users) never need it.
+  const requestedConsentScopes = (body.scope ?? '').split(/\s+/).filter(Boolean);
+  if (requestedConsentScopes.includes('device_worker:run')) {
+    return c.json(
+      createOAuthError(
+        'invalid_scope',
+        '`device_worker:run` is only available via the device-authorization flow'
+      ),
+      400
+    );
+  }
+
   // User denied consent
   if (!body.approved) {
     const redirectUrl = new URL(body.redirect_uri);
@@ -931,6 +949,16 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
       WHERE "organizationId" = ${personalOrg.id} AND "userId" = ${user.id}
       LIMIT 1
     `) as unknown as Array<{ role: string | null }>;
+    if (memberRow.length === 0) {
+      // The personal-org marker exists but the user isn't a member (legacy /
+      // partially-migrated data). Mirrors resolveOrganizationForGrant's
+      // membership gate so we never bind a token to an org the user can't act
+      // on.
+      return c.json(
+        createOAuthError('access_denied', 'Not a member of the personal organization'),
+        403
+      );
+    }
     const memberRole = memberRow[0]?.role ?? null;
     organizationId = personalOrg.id;
     scopeOverride = filterScopeByRole(deviceCode.scope, memberRole);

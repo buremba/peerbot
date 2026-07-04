@@ -34,6 +34,11 @@ export interface ModelProviderModule extends OrchestratorModule {
   catalogDescription?: string;
   catalogVisible?: boolean;
   /**
+   * Static model shortlist for the picker — for OAuth modules (Claude/ChatGPT/
+   * Gemini) that have no `config/providers.json` entry to carry a `models` list.
+   */
+  catalogModels?: string[];
+  /**
    * Wire protocol this provider speaks (see SDK_COMPAT_PROTOCOLS). Lets the
    * catalog know a module's protocol uniformly — including OAuth modules like
    * Claude (anthropic) that aren't config-driven. Omitted ⇒ unknown/openai.

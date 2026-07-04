@@ -40,7 +40,7 @@
           "apiKeyPlaceholder": "AIza...",
           "sdkCompat": "openai",
           "modalities": ["text", "image", "tts"],
-          "defaultModel": "gemini-2.5-flash",
+          "defaultModel": "gemini-2.5-pro",
           "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
         }
       ]
@@ -81,7 +81,7 @@
           "modalities": ["text"],
           "modelsEndpoint": "/models",
           "defaultModel": "nvidia/moonshotai/kimi-k2.6",
-          "models": ["meta/llama-3.3-70b-instruct", "deepseek-ai/deepseek-r1", "nvidia/llama-3.1-nemotron-70b-instruct"]
+          "models": ["nvidia/moonshotai/kimi-k2.6", "meta/llama-3.3-70b-instruct", "deepseek-ai/deepseek-r1"]
         }
       ]
     },
@@ -98,7 +98,9 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://z.ai/manage-apikey/apikey-list\" target=\"_blank\" class=\"text-blue-600 hover:underline\">z.ai</a>",
           "apiKeyPlaceholder": "zai-...",
           "sdkCompat": "openai",
-          "modalities": ["text"]
+          "modalities": ["text"],
+          "models": ["glm-5.2", "glm-4.6", "glm-4.5-air"],
+          "defaultModel": "glm-5.2"
         }
       ]
     },
@@ -175,7 +177,7 @@
           "modalities": ["text"],
           "defaultModel": "deepseek-v4-flash",
           "modelsEndpoint": "/v1/models",
-          "models": ["deepseek-chat", "deepseek-reasoner"]
+          "models": ["deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"]
         }
       ]
     },
@@ -193,7 +195,7 @@
           "apiKeyPlaceholder": "sk-or-...",
           "sdkCompat": "openai",
           "modalities": ["text", "stt"],
-          "defaultModel": "anthropic/claude-sonnet-4",
+          "defaultModel": "anthropic/claude-sonnet-5",
           "modelsEndpoint": "/models",
           "stt": {
             "enabled": true,
@@ -201,7 +203,7 @@
             "transcriptionPath": "/audio/transcriptions",
             "model": "whisper-1"
           },
-          "models": ["anthropic/claude-sonnet-4", "openai/gpt-4o", "google/gemini-2.5-pro"]
+          "models": ["anthropic/claude-sonnet-5", "openai/gpt-5.5", "google/gemini-2.5-pro"]
         }
       ]
     },
@@ -258,7 +260,7 @@
           "apiKeyPlaceholder": "xai-...",
           "sdkCompat": "openai",
           "modalities": ["text"],
-          "defaultModel": "grok-3",
+          "defaultModel": "grok-4",
           "modelsEndpoint": "/models",
           "models": ["grok-4", "grok-3", "grok-3-mini"]
         }
@@ -298,7 +300,7 @@
           "apiKeyPlaceholder": "co-...",
           "sdkCompat": "openai",
           "modalities": ["text"],
-          "defaultModel": "command-r-plus",
+          "defaultModel": "command-a-03-2025",
           "modelsEndpoint": "/models",
           "models": ["command-a-03-2025", "command-r-plus", "command-r"]
         }
@@ -318,9 +320,9 @@
           "apiKeyPlaceholder": "sk-...",
           "sdkCompat": "openai",
           "modalities": ["text", "image", "tts"],
-          "defaultModel": "gpt-4o",
+          "defaultModel": "gpt-5.5",
           "modelsEndpoint": "/models",
-          "models": ["gpt-4o", "gpt-4o-mini", "o4-mini"]
+          "models": ["gpt-5.5", "gpt-5.5-mini", "gpt-5-nano"]
         }
       ]
     }

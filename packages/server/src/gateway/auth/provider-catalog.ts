@@ -112,7 +112,7 @@ export function buildProviderCatalog(
         baseUrl,
         defaultModel,
         modelsEndpoint: config?.modelsEndpoint ?? null,
-        models: config?.models ?? [],
+        models: config?.models ?? module.catalogModels ?? [],
         apiKeyPlaceholder:
           config?.apiKeyPlaceholder ?? module.apiKeyPlaceholder ?? "",
         apiKeyInstructions:

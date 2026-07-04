@@ -1906,18 +1906,25 @@ function mountOAuthCodeExchangeRoutes(
 						pendingRedirectUri,
 					);
 					if (pending) {
+						// Send the installer straight into the app-native claim flow
+						// (`<origin>/slack/claim?team=…`) instead of a dead-end HTML card.
+						// Use the public ORIGIN, not the gateway base: the SPA router
+						// mounts `/slack/claim` at basepath `/` (origin root), so a
+						// `/lobu`-prefixed URL resolves to the SPA's Not-Found. This mirrors
+						// the DM claim link (dmSlackClaimLink), which uses the same origin.
+						const appBase = getConfiguredPublicOrigin()?.replace(/\/+$/, "");
+						if (appBase) {
+							return c.redirect(
+								`${appBase}/slack/claim?team=${encodeURIComponent(pending.teamId)}`,
+								302,
+							);
+						}
 						return c.html(
-							renderOAuthSuccessPage(
-								pending.teamName || pending.teamId,
-								undefined,
-								{
-									title: `${display} added`,
-									description:
-										"Almost done — check your Slack DMs to connect this workspace to your Lobu account.",
-									details:
-										"We sent the person who installed the app a link to finish setup.",
-								},
+							renderOAuthErrorPage(
+								`${provider}_web_origin_unresolved`,
+								`${display} was installed, but this gateway has no public web origin configured to open the claim page. Set PUBLIC_GATEWAY_URL and use the claim link from your Slack DMs.`,
 							),
+							500,
 						);
 					}
 				} catch (error) {

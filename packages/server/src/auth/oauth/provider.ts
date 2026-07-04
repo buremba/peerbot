@@ -339,7 +339,12 @@ export class OAuthProvider {
       return createOAuthError('invalid_client', 'client_secret is required for this client');
     }
 
-    if (clientSecret !== undefined) {
+    // Public clients (token_endpoint_auth_method: none) authenticate with PKCE,
+    // not a secret — per OAuth 2.1 §2.2/§9.4. Some clients (e.g. Slack's MCP
+    // client) still echo back a client_secret they were issued at registration;
+    // ignore it for public clients rather than verifying, since PKCE is the
+    // binding. Only confidential clients (client_secret_* auth) verify a secret.
+    if (requiresSecret && clientSecret !== undefined) {
       const isValid = await this.clientsStore.verifyClientCredentials(clientId, clientSecret);
       if (!isValid) {
         return createOAuthError('invalid_client', 'Invalid client credentials');

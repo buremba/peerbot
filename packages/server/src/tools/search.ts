@@ -133,6 +133,23 @@ export const SearchSchema = Type.Object({
   ),
 });
 
+/**
+ * Schema advertised on `tools/list`. Drops the server-internal fields that
+ * `SearchSchema` still accepts (so validation passes for internal callers and
+ * tests): `query_embedding` (a pre-computed vector the content-search layer
+ * re-derives itself when absent) and `agent_id` (the caller's bound agent,
+ * resolved from auth context — clients asserting it cross-agent within an org
+ * is a footgun, not an affordance). See `ToolDefinition.publicInputSchema`.
+ */
+const PUBLIC_SEARCH_SCHEMA_INTERNAL_FIELDS = ['query_embedding', 'agent_id'];
+export const PublicSearchSchema = Type.Object(
+  Object.fromEntries(
+    Object.entries(SearchSchema.properties).filter(
+      ([key]) => !PUBLIC_SEARCH_SCHEMA_INTERNAL_FIELDS.includes(key)
+    )
+  )
+);
+
 type SearchArgs = Static<typeof SearchSchema>;
 
 // ============================================
@@ -734,8 +751,11 @@ async function searchImpl(
   // query or a pre-computed embedding — forwarding the embedding lets the
   // content layer skip regenerating it from text.
   const hasContentSignal = Boolean(args.query || args.query_embedding?.length);
+  // The caller's bound agent (from auth context) scopes recall by default; an
+  // explicit `agent_id` arg is still honored for server-internal cross-agent
+  // recall, but is no longer advertised to clients (see PublicSearchSchema).
   const agentIdScope =
-    args.agent_id ?? (args.metadata_filter?.agent_id as string | undefined);
+    args.agent_id ?? (args.metadata_filter?.agent_id as string | undefined) ?? ctx.agentId ?? undefined;
   // Channel recall is fenced to the CALLING agent's own bindings (ctx.agentId),
   // never a caller-supplied filter — that's the tenant boundary for transcript
   // rows, which have no agent_id of their own. gatherRecall catches per source.

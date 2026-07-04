@@ -75,8 +75,13 @@ interface AdminToolEntry {
 
 const READ_ONLY: ToolAnnotations = { readOnlyHint: true, idempotentHint: true };
 const WRITE: ToolAnnotations = { destructiveHint: false, idempotentHint: false };
+// Tools whose action union includes an irreversible action (delete / remove /
+// clear / cancel). MCP hints are per-tool, not per-action, so the conservative
+// correct answer for any tool that can destroy data is destructiveHint: true.
+const DESTRUCTIVE: ToolAnnotations = { destructiveHint: true, idempotentHint: false };
 
 const WRITE_WITH_TITLE = (title: string): ToolAnnotations => ({ ...WRITE, title });
+const DESTRUCTIVE_WITH_TITLE = (title: string): ToolAnnotations => ({ ...DESTRUCTIVE, title });
 const READ_ONLY_WITH_TITLE = (title: string): ToolAnnotations => ({ ...READ_ONLY, title });
 
 const ENTRIES: AdminToolEntry[] = [
@@ -86,7 +91,7 @@ const ENTRIES: AdminToolEntry[] = [
 		schema: ManageEntitySchema,
 		resultSchema: ManageEntityResultSchema,
 		handler: manageEntity,
-		annotations: WRITE_WITH_TITLE("Manage entities"),
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage entities"),
 	},
 	{
 		name: "manage_entity_schema",
@@ -95,7 +100,7 @@ const ENTRIES: AdminToolEntry[] = [
 		schema: ManageEntitySchemaSchema,
 		resultSchema: ManageEntitySchemaResultSchema,
 		handler: manageEntitySchema,
-		annotations: WRITE_WITH_TITLE("Manage entity schemas"),
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage entity schemas"),
 	},
 	{
 		name: "manage_connections",
@@ -103,7 +108,7 @@ const ENTRIES: AdminToolEntry[] = [
 		schema: ManageConnectionsSchema,
 		resultSchema: ManageConnectionsResultSchema,
 		handler: manageConnections,
-		annotations: WRITE_WITH_TITLE("Manage connections"),
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage connections"),
 	},
 	{
 		name: "manage_catalog",
@@ -111,6 +116,10 @@ const ENTRIES: AdminToolEntry[] = [
 		schema: ManageCatalogSchema,
 		resultSchema: ManageCatalogResultSchema,
 		handler: manageCatalog,
+		// Read-only today (only list_catalog / list_installed actions). If a
+		// write action (install / uninstall / purge) is added here, drop
+		// READ_ONLY and pick WRITE or DESTRUCTIVE to match — clients and approval
+		// UIs trust readOnlyHint to skip confirmation.
 		annotations: READ_ONLY_WITH_TITLE("Manage catalog"),
 	},
 	{
@@ -118,7 +127,7 @@ const ENTRIES: AdminToolEntry[] = [
 		description: "Agent management (incl. the org system agent pointer).",
 		schema: ManageAgentsSchema,
 		handler: manageAgents,
-		annotations: WRITE_WITH_TITLE("Manage agents"),
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage agents"),
 	},
 	{
 		name: "manage_feeds",
@@ -126,7 +135,7 @@ const ENTRIES: AdminToolEntry[] = [
 		schema: ManageFeedsSchema,
 		resultSchema: ManageFeedsResultSchema,
 		handler: manageFeeds,
-		annotations: WRITE_WITH_TITLE("Manage feeds"),
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage feeds"),
 	},
 	{
 		name: "manage_auth_profiles",
@@ -135,7 +144,7 @@ const ENTRIES: AdminToolEntry[] = [
 		schema: ManageAuthProfilesSchema,
 		resultSchema: ManageAuthProfilesResultSchema,
 		handler: manageAuthProfiles,
-		annotations: WRITE_WITH_TITLE("Manage auth profiles"),
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage auth profiles"),
 	},
 	{
 		name: "manage_operations",
@@ -160,7 +169,7 @@ const ENTRIES: AdminToolEntry[] = [
 			"Create / list / pause / cancel recurring or one-shot scheduled jobs. Supports send_notification and wake_agent action types. Per-row attribution lets you trace what scheduled it and from where.",
 		schema: ManageSchedulesSchema,
 		handler: manageSchedules,
-		annotations: WRITE_WITH_TITLE("Manage schedules"),
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage schedules"),
 	},
 	{
 		name: "manage_watchers",
@@ -168,7 +177,7 @@ const ENTRIES: AdminToolEntry[] = [
 		schema: ManageWatchersSchema,
 		resultSchema: ManageWatchersResultSchema,
 		handler: manageWatchers,
-		annotations: WRITE_WITH_TITLE("Manage watchers"),
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage watchers"),
 	},
 	{
 		name: "list_watchers",
@@ -202,7 +211,7 @@ const ENTRIES: AdminToolEntry[] = [
 		schema: ManageClassifiersSchema,
 		resultSchema: ManageClassifiersResultSchema,
 		handler: manageClassifiers,
-		annotations: WRITE_WITH_TITLE("Manage classifiers"),
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage classifiers"),
 	},
 	{
 		name: "manage_view_templates",
@@ -211,7 +220,7 @@ const ENTRIES: AdminToolEntry[] = [
 		schema: ManageViewTemplatesSchema,
 		resultSchema: ManageViewTemplatesResultSchema,
 		handler: manageViewTemplates,
-		annotations: WRITE_WITH_TITLE("Manage view templates"),
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage view templates"),
 	},
 ];
 

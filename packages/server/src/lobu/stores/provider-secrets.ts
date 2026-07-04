@@ -365,24 +365,35 @@ export async function listInferenceProviders(
 
 /**
  * The org's default model — the fallback tail of `behavior → agent → org`. Reads
- * the `is_default` inference-provider row and returns its text-modality model
- * (`capabilities.text.model`), or null when the org has no default (or the
- * default row carries no text model). Callers fall through to the worker's
- * hard "no model selected" error only when this is null.
+ * the `is_default` inference-provider row and returns a ROUTABLE `slug/model`
+ * ref built from the row's slug + text-modality model (`capabilities.text.model`),
+ * or null when the org has no default (or the default row carries no text model).
+ *
+ * The `slug/` prefix is load-bearing: the worker derives the provider from a
+ * model ref's first segment (`model-resolver.ts` auto path). A bare model like
+ * `gpt-4o` throws "No provider specified" there, so an agent with no installed
+ * providers (the exact case the org default exists to serve) could never route
+ * a bare org default. Returning `openai/gpt-4o` lets the worker route it with no
+ * installed-provider module. Callers fall through to the worker's hard "no model
+ * resolved" error only when this is null.
  */
 export async function getOrgDefaultModel(
 	organizationId: string,
 ): Promise<string | null> {
 	const sql = getDb();
 	const rows = (await sql`
-		SELECT capabilities
+		SELECT slug, capabilities
 		FROM inference_providers
 		WHERE organization_id = ${organizationId}
 		  AND is_default AND deleted_at IS NULL
 		LIMIT 1
-	`) as Array<{ capabilities: InferenceCapabilities }>;
-	const model = rows[0]?.capabilities?.text?.model?.trim();
-	return model ? model : null;
+	`) as Array<{ slug: string; capabilities: InferenceCapabilities }>;
+	const row = rows[0];
+	const model = row?.capabilities?.text?.model?.trim();
+	if (!model || !row?.slug) return null;
+	// Already a routable ref (defensive — a stored capability model shouldn't
+	// carry a slug, but never double-prefix if it does).
+	return model.includes("/") ? model : `${row.slug}/${model}`;
 }
 
 /**

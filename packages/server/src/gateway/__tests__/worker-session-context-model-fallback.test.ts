@@ -77,14 +77,17 @@ describe("worker model fallback (real DB, both channels)", () => {
 
   beforeEach(async () => {
     await resetTestDatabase();
+    // Seed a bare model id under slug "openai"; getOrgDefaultModel prefixes it
+    // to the routable "openai/gpt-5". (The slug must match the model's intended
+    // provider prefix — a bare id gets `${slug}/` prepended.)
     await createInferenceProvider({
       organizationId: ORG,
-      slug: "org-default-openai",
+      slug: "openai",
       kind: "openai",
       apiKey: "sk-e2e",
-      capabilities: { text: { model: "openai/gpt-5" } },
+      capabilities: { text: { model: "gpt-5" } },
     });
-    await setInferenceProviderDefault(ORG, "org-default-openai");
+    await setInferenceProviderDefault(ORG, "openai");
   }, 60_000);
 
   test("org default is readable via the real DB reader", async () => {

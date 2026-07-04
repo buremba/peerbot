@@ -174,6 +174,36 @@ describe('inference-provider store', () => {
     expect(after.find((p) => p.slug === 'groq')?.isDefault).toBe(true);
   });
 
+  it('org default: prefixes a provider-native model id that already contains a slash', async () => {
+    // openrouter/nvidia-style model ids carry slashes (`anthropic/claude-sonnet-5`).
+    // The prefix must still be applied — otherwise the worker derives the wrong
+    // provider from the first segment and misroutes. Only a `${slug}/…` ref is
+    // already routable and left untouched.
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: 'openrouter',
+      kind: 'openrouter',
+      apiKey: 'k1',
+      capabilities: { text: { model: 'anthropic/claude-sonnet-5' } },
+    });
+    expect(await setInferenceProviderDefault(ORG, 'openrouter')).toBe(true);
+    expect(await getOrgDefaultModel(ORG)).toBe(
+      'openrouter/anthropic/claude-sonnet-5'
+    );
+  });
+
+  it('org default: does not double-prefix a model already carrying its own slug', async () => {
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: 'openai',
+      kind: 'openai',
+      apiKey: 'k1',
+      capabilities: { text: { model: 'openai/gpt-x' } },
+    });
+    expect(await setInferenceProviderDefault(ORG, 'openai')).toBe(true);
+    expect(await getOrgDefaultModel(ORG)).toBe('openai/gpt-x');
+  });
+
   it('setInferenceProviderDefault returns false for a missing slug', async () => {
     expect(await setInferenceProviderDefault(ORG, 'does-not-exist')).toBe(false);
   });

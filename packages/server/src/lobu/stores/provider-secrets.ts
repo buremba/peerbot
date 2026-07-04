@@ -391,9 +391,12 @@ export async function getOrgDefaultModel(
 	const row = rows[0];
 	const model = row?.capabilities?.text?.model?.trim();
 	if (!model || !row?.slug) return null;
-	// Already a routable ref (defensive — a stored capability model shouldn't
-	// carry a slug, but never double-prefix if it does).
-	return model.includes("/") ? model : `${row.slug}/${model}`;
+	// Prefix with the provider slug unless it's ALREADY prefixed with THIS
+	// slug. Checking for a bare `/` is wrong: provider-native model ids often
+	// contain slashes (openrouter `anthropic/claude-sonnet-5`, nvidia
+	// `nvidia/moonshotai/kimi-k2.6`), and returning those bare would misroute
+	// them to the wrong provider. Only `${slug}/…` is already routable.
+	return model.startsWith(`${row.slug}/`) ? model : `${row.slug}/${model}`;
 }
 
 /**

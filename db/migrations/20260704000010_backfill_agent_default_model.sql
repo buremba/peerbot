@@ -15,6 +15,7 @@
 WITH resolved AS (
     SELECT
         a.id,
+        a.organization_id,
         COALESCE(
             -- (1) pinned model, if its provider prefix is installed ANYWHERE (not
             -- just installed_providers[0]). A pinned model whose provider is
@@ -46,7 +47,10 @@ UPDATE agents a
 SET model = r.resolved_model,
     updated_at = now()
 FROM resolved r
+-- agents has a composite PK (organization_id, id): the same `id` can exist in
+-- multiple orgs, so joining on id alone would cross-org overwrite defaults.
 WHERE a.id = r.id
+  AND a.organization_id = r.organization_id
   AND r.resolved_model IS NOT NULL;
 
 -- migrate:down

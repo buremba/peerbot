@@ -22,7 +22,11 @@
             "transcriptionPath": "/audio/transcriptions",
             "model": "whisper-large-v3-turbo"
           },
-          "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"]
+          "models": [
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768"
+          ]
         }
       ]
     },
@@ -61,7 +65,11 @@
           "modalities": ["text"],
           "defaultModel": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
           "modelsEndpoint": "/models",
-          "models": ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo", "deepseek-ai/DeepSeek-V3"]
+          "models": [
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            "Qwen/Qwen2.5-72B-Instruct-Turbo",
+            "deepseek-ai/DeepSeek-V3"
+          ]
         }
       ]
     },
@@ -81,7 +89,11 @@
           "modalities": ["text"],
           "modelsEndpoint": "/models",
           "defaultModel": "nvidia/moonshotai/kimi-k2.6",
-          "models": ["nvidia/moonshotai/kimi-k2.6", "meta/llama-3.3-70b-instruct", "deepseek-ai/deepseek-r1"]
+          "models": [
+            "nvidia/moonshotai/kimi-k2.6",
+            "meta/llama-3.3-70b-instruct",
+            "deepseek-ai/deepseek-r1"
+          ]
         }
       ]
     },
@@ -137,7 +149,11 @@
           "modalities": ["text"],
           "defaultModel": "accounts/fireworks/models/llama-v3p3-70b-instruct",
           "modelsEndpoint": "/models",
-          "models": ["accounts/fireworks/models/llama-v3p3-70b-instruct", "accounts/fireworks/models/deepseek-v3", "accounts/fireworks/models/qwen2p5-72b-instruct"]
+          "models": [
+            "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            "accounts/fireworks/models/deepseek-v3",
+            "accounts/fireworks/models/qwen2p5-72b-instruct"
+          ]
         }
       ]
     },
@@ -157,7 +173,11 @@
           "modalities": ["text"],
           "defaultModel": "mistral-large-latest",
           "modelsEndpoint": "/models",
-          "models": ["mistral-large-latest", "mistral-small-latest", "codestral-latest"]
+          "models": [
+            "mistral-large-latest",
+            "mistral-small-latest",
+            "codestral-latest"
+          ]
         }
       ]
     },
@@ -203,7 +223,11 @@
             "transcriptionPath": "/audio/transcriptions",
             "model": "whisper-1"
           },
-          "models": ["anthropic/claude-sonnet-5", "openai/gpt-5.5", "google/gemini-2.5-pro"]
+          "models": [
+            "anthropic/claude-sonnet-5",
+            "openai/gpt-5.5",
+            "google/gemini-2.5-pro"
+          ]
         }
       ]
     },

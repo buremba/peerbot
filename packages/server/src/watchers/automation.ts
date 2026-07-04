@@ -915,7 +915,7 @@ async function dispatchWatcherRun(
     return 'failed';
   }
 
-  // Per-watcher model override lives in watchers.model_config.model (a
+  // Per-watcher model override lives in watchers.execution_config.model (a
   // `provider/model` ref or "auto"). When set it rides the dispatch message so
   // agent.ts reads it into baseOptions.model and it wins the layered fallback
   // (behavior → agent → org default); when absent the agent/org default resolves.

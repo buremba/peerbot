@@ -56,7 +56,6 @@ import {
 } from "./plugin-loader";
 import type { OpenClawProgressProcessor } from "./processor";
 import { activeToolNames } from "./active-tool-names";
-import { buildRefContextHint } from "./lobu-refs";
 import { getOpenClawSessionContext } from "./session-context";
 import {
   buildToolPolicy,
@@ -1503,13 +1502,14 @@ user references earlier discussion or you need prior context.`);
           ).trim()
         : "";
 
-    // Turn any inline LobuRef tokens (@[kind:label](path)) the composer
-    // serialized into a short "these objects were referenced" hint, so the
-    // agent knows to resolve them with its tools. (Full pre-resolution is a
-    // planned follow-up needing gateway access in the plugin hook.)
-    const refContextHint = buildRefContextHint(userPrompt);
-
-    const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${refContextHint ? `${refContextHint}\n\n` : ""}${userPrompt}`;
+    // Inline LobuRef tokens (@[kind:id:label](path)) the composer serialized
+    // stay in the user prompt verbatim: the agent sees exactly what was
+    // referenced and resolves any it needs on demand with its own tools
+    // (resolve_path etc.). We deliberately do NOT prepend a "these objects were
+    // referenced, go resolve them" hint — as an instruction-shaped preamble in
+    // the user turn the model tended to echo it back into its reply. (Full
+    // pre-resolution of refs into injected data is a possible future follow-up.)
+    const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${userPrompt}`;
 
     // Load image attachments for vision-capable models
     const images = await loadImageAttachments();

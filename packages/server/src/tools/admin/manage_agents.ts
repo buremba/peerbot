@@ -49,12 +49,12 @@ export const MANAGE_AGENTS_ACTION_KEY = 'manage_agents';
 export const ManageAgentsSchema = Type.Object({
   action: Type.Union(
     [
-      Type.Literal('list'),
-      Type.Literal('get'),
-      Type.Literal('create'),
-      Type.Literal('update'),
-      Type.Literal('delete'),
-      Type.Literal('set_system_agent'),
+      Type.Literal('list', { description: 'List org agents (marks the system agent).' }),
+      Type.Literal('get', { description: 'Fetch one agent.' }),
+      Type.Literal('create', { description: 'Create an agent owned by the caller (queued for approval).' }),
+      Type.Literal('update', { description: 'Patch agent fields (queued for approval).' }),
+      Type.Literal('delete', { description: 'Delete an agent (queued for approval).' }),
+      Type.Literal('set_system_agent', { description: 'Point the org system_agent_id at an agent.' }),
     ],
     { description: 'Action to perform' }
   ),

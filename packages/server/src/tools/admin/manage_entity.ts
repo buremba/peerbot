@@ -60,15 +60,15 @@ import { SortOrderField } from './schemas/common-fields';
 export const ManageEntitySchema = Type.Object({
   action: Type.Union(
     [
-      Type.Literal('create'),
-      Type.Literal('update'),
-      Type.Literal('list'),
-      Type.Literal('get'),
-      Type.Literal('delete'),
-      Type.Literal('link'),
-      Type.Literal('unlink'),
-      Type.Literal('update_link'),
-      Type.Literal('list_links'),
+      Type.Literal('create', { description: 'Create an entity of a given type.' }),
+      Type.Literal('update', { description: 'Patch entity fields (human-owned fields queued for approval).' }),
+      Type.Literal('list', { description: 'Paginated entity list with filters.' }),
+      Type.Literal('get', { description: 'Fetch one entity.' }),
+      Type.Literal('delete', { description: 'Delete an entity (force_delete_tree for cascading).' }),
+      Type.Literal('link', { description: 'Create a relationship edge between two entities.' }),
+      Type.Literal('unlink', { description: 'Soft-delete a relationship.' }),
+      Type.Literal('update_link', { description: 'Patch relationship metadata/confidence/source.' }),
+      Type.Literal('list_links', { description: 'List relationships for an entity with filters + counts.' }),
     ],
     { description: 'Action to perform' }
   ),

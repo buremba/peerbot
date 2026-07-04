@@ -73,7 +73,9 @@ const WakeAgentArgs = Type.Object({
 const ActionUnion = Type.Union([SendNotificationArgs, WakeAgentArgs]);
 
 const CreateAction = Type.Object({
-  action: Type.Literal('create'),
+  action: Type.Literal('create', {
+    description: 'Create a scheduled job (one-shot via run_at, or recurring with cron).',
+  }),
   description: Type.String({ minLength: 1, maxLength: 200 }),
   /**
    * RFC3339 timestamp for the first (or only) firing. Required.
@@ -99,7 +101,9 @@ const CreateAction = Type.Object({
 });
 
 const ListAction = Type.Object({
-  action: Type.Literal('list'),
+  action: Type.Literal('list', {
+    description: 'List scheduled jobs with optional filters.',
+  }),
   agent_id: Type.Optional(Type.String()),
   user_id: Type.Optional(Type.String()),
   action_type: Type.Optional(Type.String()),
@@ -107,7 +111,9 @@ const ListAction = Type.Object({
 });
 
 const UpdateAction = Type.Object({
-  action: Type.Literal('update'),
+  action: Type.Literal('update', {
+    description: 'Patch a schedule (next firing, cron, wake_agent prompt).',
+  }),
   id: Type.String({ format: 'uuid' }),
   description: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   /** RFC3339 timestamp to reschedule the next firing. */
@@ -128,13 +134,17 @@ const UpdateAction = Type.Object({
 });
 
 const PauseAction = Type.Object({
-  action: Type.Literal('pause'),
+  action: Type.Literal('pause', {
+    description: 'Pause or resume a schedule.',
+  }),
   id: Type.String({ format: 'uuid' }),
   paused: Type.Optional(Type.Boolean({ default: true })),
 });
 
 const CancelAction = Type.Object({
-  action: Type.Literal('cancel'),
+  action: Type.Literal('cancel', {
+    description: 'Permanently delete a schedule.',
+  }),
   id: Type.String({ format: 'uuid' }),
 });
 

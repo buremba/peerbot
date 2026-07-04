@@ -67,17 +67,17 @@ export const ManageEntitySchemaSchema = Type.Object({
   action: Type.Union(
     [
       // Shared actions
-      Type.Literal('list'),
-      Type.Literal('get'),
-      Type.Literal('create'),
-      Type.Literal('update'),
-      Type.Literal('delete'),
+      Type.Literal('list', { description: 'List entity types or relationship types.' }),
+      Type.Literal('get', { description: 'Fetch one type by slug.' }),
+      Type.Literal('create', { description: 'Create an entity type or relationship type (queued for approval).' }),
+      Type.Literal('update', { description: 'Patch a type (queued for approval).' }),
+      Type.Literal('delete', { description: 'Soft-delete a type; refuses if rows still reference it.' }),
       // Entity type only
-      Type.Literal('audit'),
+      Type.Literal('audit', { description: 'Fetch entity_type_audit rows (entity_type only).' }),
       // Relationship type only
-      Type.Literal('add_rule'),
-      Type.Literal('remove_rule'),
-      Type.Literal('list_rules'),
+      Type.Literal('add_rule', { description: 'Add an allowed source→target type rule (relationship_type only).' }),
+      Type.Literal('remove_rule', { description: 'Soft-delete a rule (relationship_type only).' }),
+      Type.Literal('list_rules', { description: 'List allowed type rules (relationship_type only).' }),
     ],
     { description: 'Action to perform' }
   ),

@@ -43,7 +43,9 @@ import { PaginationFields } from './schemas/common-fields';
 // ============================================
 
 const ListFeedsAction = Type.Object({
-  action: Type.Literal('list_feeds'),
+  action: Type.Literal('list_feeds', {
+    description: 'Paginated list of feeds with filters.',
+  }),
   connection_id: Type.Optional(Type.Number({ description: 'Filter by connection ID' })),
   feed_ids: Type.Optional(
     Type.Array(Type.Integer({ minimum: 1 }), { description: 'Filter to specific feed IDs' })
@@ -59,7 +61,9 @@ const ListFeedsAction = Type.Object({
 // that instead, read through the same primitive read_conversation uses. The
 // caller never has to know the kind up front; the response carries it.
 const ReadFeedAction = Type.Object({
-  action: Type.Literal('read_feed'),
+  action: Type.Literal('read_feed', {
+    description: 'Read one feed (metadata + recent runs, or live transcript for streaming feeds).',
+  }),
   feed_id: Type.Number({ description: 'Feed ID' }),
   limit: Type.Optional(
     Type.Number({ description: 'Max transcript messages for a streaming feed (default 50)' })
@@ -67,7 +71,9 @@ const ReadFeedAction = Type.Object({
 });
 
 const CreateFeedAction = Type.Object({
-  action: Type.Literal('create_feed'),
+  action: Type.Literal('create_feed', {
+    description: 'Create a feed on a connection.',
+  }),
   connection_id: Type.Number({ description: 'Connection ID this feed belongs to' }),
   feed_key: Type.String({ description: 'Feed key from connector definition (e.g. threads)' }),
   display_name: Type.Optional(Type.String({ description: 'Human-readable name for this feed' })),
@@ -89,7 +95,9 @@ const CreateFeedAction = Type.Object({
 });
 
 const UpdateFeedAction = Type.Object({
-  action: Type.Literal('update_feed'),
+  action: Type.Literal('update_feed', {
+    description: 'Patch a feed (status, config, schedule, repair agent).',
+  }),
   feed_id: Type.Number({ description: 'Feed ID' }),
   status: Type.Optional(Type.String({ description: 'active, paused, error' })),
   display_name: Type.Optional(Type.String()),
@@ -111,12 +119,16 @@ const UpdateFeedAction = Type.Object({
 });
 
 const DeleteFeedAction = Type.Object({
-  action: Type.Literal('delete_feed'),
+  action: Type.Literal('delete_feed', {
+    description: 'Soft-delete a feed and cancel its active runs.',
+  }),
   feed_id: Type.Number({ description: 'Feed ID' }),
 });
 
 const TriggerFeedAction = Type.Object({
-  action: Type.Literal('trigger_feed'),
+  action: Type.Literal('trigger_feed', {
+    description: 'Trigger an immediate sync run for a collected feed.',
+  }),
   feed_id: Type.Number({ description: 'Feed ID to trigger sync for' }),
 });
 

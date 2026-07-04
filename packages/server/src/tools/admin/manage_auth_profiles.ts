@@ -52,7 +52,9 @@ import {
 // ============================================
 
 const ListAuthProfilesAction = Type.Object({
-  action: Type.Literal('list_auth_profiles'),
+  action: Type.Literal('list_auth_profiles', {
+    description: 'List reusable auth profiles with filters.',
+  }),
   connector_key: Type.Optional(Type.String({ description: 'Filter by connector key' })),
   provider: Type.Optional(Type.String({ description: 'Filter by OAuth provider (e.g. "google")' })),
   profile_kind: Type.Optional(
@@ -66,17 +68,23 @@ const ListAuthProfilesAction = Type.Object({
 });
 
 const GetAuthProfileAction = Type.Object({
-  action: Type.Literal('get_auth_profile'),
+  action: Type.Literal('get_auth_profile', {
+    description: 'Fetch one auth profile by slug.',
+  }),
   auth_profile_slug: Type.String({ description: 'Auth profile slug' }),
 });
 
 const TestAuthProfileAction = Type.Object({
-  action: Type.Literal('test_auth_profile'),
+  action: Type.Literal('test_auth_profile', {
+    description: 'Probe an auth profile\u2019s credentials/token/cookies.',
+  }),
   auth_profile_slug: Type.String({ description: 'Auth profile slug' }),
 });
 
 const CreateAuthProfileAction = Type.Object({
-  action: Type.Literal('create_auth_profile'),
+  action: Type.Literal('create_auth_profile', {
+    description: 'Create an auth profile; issues a connect URL for OAuth profiles.',
+  }),
   connector_key: Type.Optional(
     Type.String({
       description:
@@ -111,7 +119,9 @@ const CreateAuthProfileAction = Type.Object({
 });
 
 const UpdateAuthProfileAction = Type.Object({
-  action: Type.Literal('update_auth_profile'),
+  action: Type.Literal('update_auth_profile', {
+    description: 'Patch a profile; use reconnect to re-issue a connect token for OAuth.',
+  }),
   auth_profile_slug: Type.String({ description: 'Existing auth profile slug' }),
   display_name: Type.Optional(Type.String()),
   slug: Type.Optional(Type.String({ description: 'New auth profile slug' })),
@@ -132,7 +142,10 @@ const UpdateAuthProfileAction = Type.Object({
 });
 
 const DeleteAuthProfileAction = Type.Object({
-  action: Type.Literal('delete_auth_profile'),
+  action: Type.Literal('delete_auth_profile', {
+    description:
+      'Delete a profile; fails while active connections reference it unless force=true (force pauses dependents to pending_auth, it does not delete them).',
+  }),
   auth_profile_slug: Type.String({ description: 'Auth profile slug to delete' }),
   force: Type.Optional(
     Type.Boolean({ description: 'Force delete even if active connections reference this profile' })
@@ -140,7 +153,9 @@ const DeleteAuthProfileAction = Type.Object({
 });
 
 const SetDefaultAuthProfileAction = Type.Object({
-  action: Type.Literal('set_default_auth_profile'),
+  action: Type.Literal('set_default_auth_profile', {
+    description: 'Pin/clear the org default OAuth-app profile for a connector.',
+  }),
   connector_key: Type.String({ description: 'Connector key to pin the default for' }),
   auth_profile_slug: Type.Union([Type.String(), Type.Null()], {
     description: 'OAuth app profile slug to pin as the org default, or null to clear.',

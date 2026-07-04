@@ -34,12 +34,12 @@ export const ManageClassifiersSchema = Type.Object({
   action: Type.Union(
     [
       // Template CRUD
-      Type.Literal('create'),
-      Type.Literal('list'),
-      Type.Literal('generate_embeddings'),
-      Type.Literal('delete'),
+      Type.Literal('create', { description: 'Create a classifier (must belong to a watcher).' }),
+      Type.Literal('list', { description: 'List classifiers with filters.' }),
+      Type.Literal('generate_embeddings', { description: 'Generate/regenerate attribute-value embeddings.' }),
+      Type.Literal('delete', { description: 'Archive a classifier (status -> deprecated).' }),
       // Manual classification
-      Type.Literal('classify'),
+      Type.Literal('classify', { description: 'Manual single/batch classification.' }),
     ],
     { description: 'Action to perform' }
   ),

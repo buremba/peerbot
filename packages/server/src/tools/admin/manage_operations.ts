@@ -49,7 +49,9 @@ const BackendLiteral = Type.Union([
 const KindLiteral = Type.Union([Type.Literal('read'), Type.Literal('write')], { description: 'Filter by operation kind (read/write)' });
 
 const ListAvailableAction = Type.Object({
-  action: Type.Literal('list_available'),
+  action: Type.Literal('list_available', {
+    description: 'List connector/MCP/HTTP operations available for execution.',
+  }),
   connector_key: Type.Optional(Type.String({ description: 'Filter by connector key' })),
   connection_id: Type.Optional(Type.Number({ description: 'Filter by connection ID' })),
   entity_id: Type.Optional(Type.Number({ description: 'Filter by entity ID' })),
@@ -64,7 +66,9 @@ const ListAvailableAction = Type.Object({
 });
 
 const ExecuteAction = Type.Object({
-  action: Type.Literal('execute'),
+  action: Type.Literal('execute', {
+    description: 'Execute an operation; may queue for approval / device / inline.',
+  }),
   connection_id: Type.Number({ description: 'Connection ID to execute on' }),
   operation_key: Type.String({ description: 'Connector-local operation key' }),
   input: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: 'Operation input' })),
@@ -77,7 +81,9 @@ const ExecuteAction = Type.Object({
 });
 
 const ListRunsAction = Type.Object({
-  action: Type.Literal('list_runs'),
+  action: Type.Literal('list_runs', {
+    description: 'Paginated run list with keyset cursor support.',
+  }),
   connection_id: Type.Optional(Type.Number({ description: 'Filter by connection ID' })),
   connection_ids: Type.Optional(Type.Array(Type.Number({ description: 'Filter by connection IDs' }))),
   feed_ids: Type.Optional(Type.Array(Type.Number({ description: 'Filter by feed IDs' }))),
@@ -96,18 +102,24 @@ const ListRunsAction = Type.Object({
 });
 
 const GetRunAction = Type.Object({
-  action: Type.Literal('get_run'),
+  action: Type.Literal('get_run', {
+    description: 'Fetch one action run.',
+  }),
   run_id: Type.Number(),
 });
 
 const ApproveAction = Type.Object({
-  action: Type.Literal('approve'),
+  action: Type.Literal('approve', {
+    description: 'Approve a pending run (also handles agent + entity_field_change gates).',
+  }),
   run_id: Type.Number(),
   input: Type.Optional(Type.Record(Type.String(), Type.Any())),
 });
 
 const RejectAction = Type.Object({
-  action: Type.Literal('reject'),
+  action: Type.Literal('reject', {
+    description: 'Reject a pending run.',
+  }),
   run_id: Type.Number(),
   reason: Type.Optional(Type.String()),
 });

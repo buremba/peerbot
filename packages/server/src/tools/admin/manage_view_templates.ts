@@ -61,11 +61,11 @@ function mapVersionRow(row: Record<string, unknown>): ViewTemplateVersionRow {
 export const ManageViewTemplatesSchema = Type.Object({
   action: Type.Union(
     [
-      Type.Literal('set'),
-      Type.Literal('get'),
-      Type.Literal('rollback'),
-      Type.Literal('remove_tab'),
-      Type.Literal('clear'),
+      Type.Literal('set', { description: 'Create a new version of a view template / tab.' }),
+      Type.Literal('get', { description: 'Fetch current default + tabs + history.' }),
+      Type.Literal('rollback', { description: 'Roll back to a prior version.' }),
+      Type.Literal('remove_tab', { description: 'Delete a named tab.' }),
+      Type.Literal('clear', { description: 'Null the default (non-tab) template.' }),
     ],
     { description: 'Action to perform' }
   ),

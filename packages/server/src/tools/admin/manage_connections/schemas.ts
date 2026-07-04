@@ -36,7 +36,9 @@ const ConnectionFacetsSchema = Type.Object({
 // ============================================
 
 export const ListConnectorGroupsAction = Type.Object({
-	action: Type.Literal("list_connector_groups"),
+	action: Type.Literal("list_connector_groups", {
+		description: "List connectors grouped with their connection + feed counts.",
+	}),
 	entity_id: Type.Optional(
 		Type.Number({
 			description:
@@ -46,7 +48,9 @@ export const ListConnectorGroupsAction = Type.Object({
 });
 
 export const ListAction = Type.Object({
-	action: Type.Literal("list"),
+	action: Type.Literal("list", {
+		description: "Paginated list of connections with filters.",
+	}),
 	connector_key: Type.Optional(
 		Type.String({ description: "Filter by connector key (e.g. google.gmail)" }),
 	),
@@ -72,7 +76,9 @@ export const ListAction = Type.Object({
 });
 
 export const GetAction = Type.Object({
-	action: Type.Literal("get"),
+	action: Type.Literal("get", {
+		description: "Fetch one connection by id.",
+	}),
 	connection_id: Type.Number({ description: "Connection ID" }),
 });
 
@@ -96,7 +102,10 @@ const EntityLinkOverridesSchema = Type.Union(
 );
 
 export const CreateAction = Type.Object({
-	action: Type.Literal("create"),
+	action: Type.Literal("create", {
+		description:
+			"Create a connection from a pre-existing auth profile (prefer `connect` to create + auth in one call).",
+	}),
 	connector_key: Type.String({
 		description: "Connector key (e.g. google.gmail)",
 	}),
@@ -150,7 +159,9 @@ export const CreateAction = Type.Object({
 });
 
 export const UpdateAction = Type.Object({
-	action: Type.Literal("update"),
+	action: Type.Literal("update", {
+		description: "Patch a connection's settings, status, slug, or device binding.",
+	}),
 	connection_id: Type.Number({ description: "Connection ID" }),
 	display_name: Type.Optional(Type.String()),
 	slug: Type.Optional(
@@ -188,7 +199,10 @@ export const UpdateAction = Type.Object({
 });
 
 export const ApplyChatConnectionAction = Type.Object({
-	action: Type.Literal("apply_chat_connection"),
+	action: Type.Literal("apply_chat_connection", {
+		description:
+			"Declaratively upsert a chat connection keyed by stable_id (used by `lobu apply`).",
+	}),
 	stable_id: Type.String({
 		description: "Stable declarative connection id used by lobu apply.",
 	}),
@@ -205,12 +219,14 @@ export const ApplyChatConnectionAction = Type.Object({
 });
 
 export const DeleteAction = Type.Object({
-	action: Type.Literal("delete"),
+	action: Type.Literal("delete", { description: "Delete a connection." }),
 	connection_id: Type.Number({ description: "Connection ID" }),
 });
 
 export const ReauthenticateAction = Type.Object({
-	action: Type.Literal("reauthenticate"),
+	action: Type.Literal("reauthenticate", {
+		description: "Re-pair a connection's interactive auth via a new auth run.",
+	}),
 	connection_id: Type.Number({
 		description:
 			"Connection ID whose interactive auth profile should be re-paired via a new auth run.",
@@ -218,23 +234,33 @@ export const ReauthenticateAction = Type.Object({
 });
 
 export const TestAction = Type.Object({
-	action: Type.Literal("test"),
+	action: Type.Literal("test", {
+		description: "Probe a connection's credentials/token validity.",
+	}),
 	connection_id: Type.Number({ description: "Connection ID to test" }),
 });
 
 export const InstallConnectorAction = Type.Object({
-	action: Type.Literal("install_connector"),
+	action: Type.Literal("install_connector", {
+		description:
+			"Install a connector into this org from a source. Provide EXACTLY ONE of source_url / source_uri / source_code / mcp_url (mutually exclusive). To browse available connectors and their source_uri, call `manage_catalog` action `list_catalog`.",
+	}),
 	source_url: Type.Optional(
-		Type.String({ description: "Direct URL to connector source file" }),
+		Type.String({
+			description:
+				"For action=install_connector. Mutually exclusive with source_uri/source_code/mcp_url — provide exactly one. Direct URL to a connector source file.",
+		}),
 	),
 	source_uri: Type.Optional(
 		Type.String({
-			description: "Local file source URI or path for connector installation",
+			description:
+				"For action=install_connector. Mutually exclusive with source_url/source_code/mcp_url — provide exactly one. Local file source URI or path (e.g. the source_uri from a manage_catalog list_catalog entry).",
 		}),
 	),
 	source_code: Type.Optional(
 		Type.String({
-			description: "Inline TypeScript or pre-compiled JavaScript source code",
+			description:
+				"For action=install_connector. Mutually exclusive with source_url/source_uri/mcp_url — provide exactly one. Inline TypeScript or pre-compiled JavaScript source code.",
 		}),
 	),
 	compiled: Type.Optional(
@@ -246,7 +272,7 @@ export const InstallConnectorAction = Type.Object({
 	mcp_url: Type.Optional(
 		Type.String({
 			description:
-				"URL to a remote MCP server (Streamable HTTP). Probes the server directly, no compilation needed.",
+				"For action=install_connector. Mutually exclusive with source_url/source_uri/source_code — provide exactly one. URL to a remote MCP server (Streamable HTTP). Probes the server directly, no compilation needed.",
 		}),
 	),
 	auth_values: Type.Optional(
@@ -259,12 +285,18 @@ export const InstallConnectorAction = Type.Object({
 });
 
 export const UninstallConnectorAction = Type.Object({
-	action: Type.Literal("uninstall_connector"),
+	action: Type.Literal("uninstall_connector", {
+		description:
+			"Archive an installed connector definition. Blocked while connections reference it.",
+	}),
 	connector_key: Type.String({ description: "Connector key to uninstall" }),
 });
 
 export const ConnectAction = Type.Object({
-	action: Type.Literal("connect"),
+	action: Type.Literal("connect", {
+		description:
+			"Recommended way to add a connection: creates the connection + auth link in one call. Returns a connect_url for the user; poll `get` until status='active'.",
+	}),
 	connector_key: Type.String({
 		description: "Connector key (e.g. google.gmail)",
 	}),
@@ -309,7 +341,10 @@ export const ConnectAction = Type.Object({
 });
 
 export const ToggleConnectorLoginAction = Type.Object({
-	action: Type.Literal("toggle_connector_login"),
+	action: Type.Literal("toggle_connector_login", {
+		description:
+			"Enable/disable an installed connector as a login provider (requires OAuth auth_schema).",
+	}),
 	connector_key: Type.String({
 		description: "Connector key (e.g. github, google.gmail)",
 	}),
@@ -319,7 +354,10 @@ export const ToggleConnectorLoginAction = Type.Object({
 });
 
 export const UpdateConnectorAuthAction = Type.Object({
-	action: Type.Literal("update_connector_auth"),
+	action: Type.Literal("update_connector_auth", {
+		description:
+			"Upsert reusable default auth values (env_keys / OAuth client keys) for an installed connector.",
+	}),
 	connector_key: Type.String({
 		description: "Connector key (e.g. reddit, google.gmail)",
 	}),
@@ -329,7 +367,9 @@ export const UpdateConnectorAuthAction = Type.Object({
 });
 
 export const UpdateConnectorDefaultConfigAction = Type.Object({
-	action: Type.Literal("update_connector_default_config"),
+	action: Type.Literal("update_connector_default_config", {
+		description: "Set an installed connector's default connection config.",
+	}),
 	connector_key: Type.String({ description: "Connector key" }),
 	default_connection_config: Type.Record(Type.String(), Type.Any(), {
 		description: "Default connection config (action_modes, etc.)",
@@ -337,13 +377,17 @@ export const UpdateConnectorDefaultConfigAction = Type.Object({
 });
 
 export const SetConnectorEntityLinkOverridesAction = Type.Object({
-	action: Type.Literal("set_connector_entity_link_overrides"),
+	action: Type.Literal("set_connector_entity_link_overrides", {
+		description: "Set per-entityType entityLink overrides for a connector.",
+	}),
 	connector_key: Type.String({ description: "Connector key" }),
 	overrides: EntityLinkOverridesSchema,
 });
 
 export const UpdateConnectorDefaultRepairAgentAction = Type.Object({
-	action: Type.Literal("update_connector_default_repair_agent"),
+	action: Type.Literal("update_connector_default_repair_agent", {
+		description: "Set/clear the default repair agent for feeds of a connector.",
+	}),
 	connector_key: Type.String({ description: "Connector key" }),
 	default_repair_agent_id: Type.Union([Type.String(), Type.Null()], {
 		description:
@@ -362,14 +406,18 @@ const CHANNEL_ID_DESC =
 	"Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').";
 
 export const ListChannelBindingsAction = Type.Object({
-	action: Type.Literal("list_channel_bindings"),
+	action: Type.Literal("list_channel_bindings", {
+		description: "List chat channels bound to an agent.",
+	}),
 	agent_id: Type.String({
 		description: "Agent whose channel bindings to list.",
 	}),
 });
 
 export const BindChannelAction = Type.Object({
-	action: Type.Literal("bind_channel"),
+	action: Type.Literal("bind_channel", {
+		description: "Bind a chat channel to an agent through a chat connection.",
+	}),
 	agent_id: Type.String({ description: "Agent to bind the channel to." }),
 	connection_id: Type.Number({
 		description: "Chat connection that receives this channel's messages.",
@@ -386,7 +434,9 @@ export const BindChannelAction = Type.Object({
 });
 
 export const UnbindChannelAction = Type.Object({
-	action: Type.Literal("unbind_channel"),
+	action: Type.Literal("unbind_channel", {
+		description: "Remove a channel binding from an agent.",
+	}),
 	agent_id: Type.String({ description: "Agent to unbind the channel from." }),
 	connection_id: Type.Number({
 		description: "Chat connection owning the binding.",
@@ -395,7 +445,9 @@ export const UnbindChannelAction = Type.Object({
 });
 
 export const SyncChannelBindingsAction = Type.Object({
-	action: Type.Literal("sync_channel_bindings"),
+	action: Type.Literal("sync_channel_bindings", {
+		description: "Declaratively reconcile an agent's channel bindings to a desired set.",
+	}),
 	agent_id: Type.String({
 		description: "Agent whose declarative bindings to reconcile.",
 	}),
@@ -410,7 +462,9 @@ export const SyncChannelBindingsAction = Type.Object({
 });
 
 export const ConnectChannelDmAction = Type.Object({
-	action: Type.Literal("connect_channel_dm"),
+	action: Type.Literal("connect_channel_dm", {
+		description: "Open + bind the caller's Slack DM to an agent.",
+	}),
 	agent_id: Type.String({ description: "Agent to wire the caller's DM to." }),
 	connection_id: Type.Number({
 		description: "Slack connection to open and bind the caller's DM through.",

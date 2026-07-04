@@ -104,7 +104,8 @@ const ENTRIES: AdminToolEntry[] = [
 	},
 	{
 		name: "manage_connections",
-		description: "Connection management. SDK alternative: client.connections.",
+		description:
+			"Connection and connector lifecycle. Workflow: browse via `manage_catalog`, install with action `install_connector`, then `connect` (creates a connection + auth link in one call; returns a connect_url for the user — poll `get` until status='active'). Also: list/get/update/delete connections, channel binding, connector config. Note: some connectors auto-register from a paired device (Chrome extension / Mac app advertising a capability) and appear in `list` without an explicit install. SDK alternative: client.connections.",
 		schema: ManageConnectionsSchema,
 		resultSchema: ManageConnectionsResultSchema,
 		handler: manageConnections,
@@ -112,7 +113,8 @@ const ENTRIES: AdminToolEntry[] = [
 	},
 	{
 		name: "manage_catalog",
-		description: "Global catalog manifests and org/agent installed inventory.",
+		description:
+			"Browse installable connectors, skills, and watcher templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`. Use `list_installed` with `include_catalog: true` to see installed + available with `installed`/`installable` flags. Read-only. SDK alternative: client.catalog.",
 		schema: ManageCatalogSchema,
 		resultSchema: ManageCatalogResultSchema,
 		handler: manageCatalog,

@@ -16,11 +16,21 @@ WITH resolved AS (
     SELECT
         a.id,
         COALESCE(
-            -- (1) pinned model, if its provider prefix is the primary installed one
+            -- (1) pinned model, if its provider prefix is installed ANYWHERE (not
+            -- just installed_providers[0]). A pinned model whose provider is
+            -- installed but not primary was routable under the old resolver, so
+            -- it must be backfilled before the legacy columns are dropped —
+            -- otherwise it's silently lost.
             CASE
                 WHEN NULLIF(a.model_selection->>'pinnedModel', '') IS NOT NULL
-                     AND split_part(a.model_selection->>'pinnedModel', '/', 1)
-                         = (a.installed_providers->0->>'providerId')
+                     AND EXISTS (
+                         SELECT 1
+                         FROM jsonb_array_elements(
+                             COALESCE(a.installed_providers, '[]'::jsonb)
+                         ) AS ip
+                         WHERE ip->>'providerId'
+                             = split_part(a.model_selection->>'pinnedModel', '/', 1)
+                     )
                 THEN a.model_selection->>'pinnedModel'
             END,
             -- (2) the primary installed provider's stored preference

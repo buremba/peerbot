@@ -13,6 +13,8 @@
  */
 import { describe, expect, it } from "bun:test";
 import { getAllTools } from "../../tools/registry";
+import { SdkScriptResultSchema } from "../../tools/sdk_run";
+import { validateToolResult } from "../../tools/validate-args";
 
 const TOOLS = getAllTools({ publicOnly: false, maxAccessLevel: "admin" });
 const byName = new Map(TOOLS.map((t) => [t.name, t]));
@@ -163,6 +165,59 @@ describe("manage_connections × manage_catalog: the browse → install link", ()
 			connsDesc.includes("manage_catalog"),
 			"manage_connections description should point to manage_catalog",
 		).toBe(true);
+	});
+});
+
+describe("run_sdk / query_sdk: script contract on the wire", () => {
+	it("both tools advertise the sandbox result outputSchema", () => {
+		for (const name of ["run_sdk", "query_sdk"]) {
+			const tool = byName.get(name);
+			expect(tool?.outputSchema, `${name} must declare outputSchema`).toBeDefined();
+			const out = JSON.stringify(tool?.outputSchema);
+			expect(out.includes("return_value"), `${name} outputSchema must declare return_value`).toBe(true);
+		}
+	});
+
+	it("a representative runSandbox result validates against SdkScriptResultSchema", () => {
+		// Mirrors the object assembled in sdk_run.ts runSandbox(). If this
+		// drifts (renamed field, changed type), structuredContent silently
+		// degrades to text-only — catch it here instead.
+		const sample = {
+			success: false,
+			return_value: { anything: [1, "two", null] },
+			logs: [{ level: "warn", message: "m", data: { k: 1 }, ts: 123 }],
+			error: { name: "TypeError", message: "boom", stack: "s", line: 3, column: 7 },
+			duration_ms: 42,
+			sdk_calls: 2,
+			sdk_call_trace: [
+				{ path: "entities.list", orgPath: [], access: "read", args: [{}], skipped: false },
+			],
+			side_effect_preview: [
+				{ path: "entities.create", orgPath: ["acme"], access: "write", args: [{}], skipped: true },
+			],
+			dry_run: true,
+		};
+		expect(validateToolResult(SdkScriptResultSchema, sample)).not.toBeNull();
+		// Success path: optional fields absent (undefined is dropped on the wire).
+		const minimal = {
+			success: true,
+			logs: [],
+			duration_ms: 1,
+			sdk_calls: 0,
+			sdk_call_trace: [],
+			side_effect_preview: [],
+			dry_run: false,
+		};
+		expect(validateToolResult(SdkScriptResultSchema, minimal)).not.toBeNull();
+	});
+
+	it("the script field documents ctx and where the return value lands", () => {
+		for (const name of ["run_sdk", "query_sdk"]) {
+			const script = (byName.get(name)?.inputSchema as any)?.properties?.script;
+			expect(script?.description?.includes("organization_id"), `${name} script must document ctx`).toBe(true);
+			expect(script?.description?.includes("return_value"), `${name} script must document return_value`).toBe(true);
+			expect(script?.description?.includes("search_sdk"), `${name} script must point at search_sdk`).toBe(true);
+		}
 	});
 });
 

@@ -34,6 +34,65 @@ export const QuerySchema = Type.Object(SCRIPT_FIELDS);
 type RunArgs = Static<typeof RunSchema>;
 type QueryArgs = Static<typeof QuerySchema>;
 
+const SdkCallTraceEntrySchema = Type.Object({
+  path: Type.String({ description: "Dotted SDK method path (e.g. entities.list)." }),
+  orgPath: Type.Array(Type.String(), {
+    description: "Org slugs traversed via client.org(...) before the call, if any.",
+  }),
+  access: Type.Union(
+    [Type.Literal("read"), Type.Literal("write"), Type.Literal("external"), Type.Literal("unknown")],
+    { description: "Access class of the method." },
+  ),
+  args: Type.Array(Type.Unknown(), { description: "Call arguments (redacted + truncated)." }),
+  skipped: Type.Boolean({
+    description: "true when dry_run skipped this write/external call.",
+  }),
+});
+
+/**
+ * Result of `run_sdk` / `query_sdk` — mirrors the object assembled in
+ * `runSandbox` from `RunScriptResult` (run-script.ts). Advertised as the
+ * tools' `outputSchema` so clients know where the script's return value and
+ * the dry-run preview land; a runtime mismatch degrades to text-only
+ * (`validateToolResult`), never a failed call.
+ */
+export const SdkScriptResultSchema = Type.Object({
+  success: Type.Boolean({ description: "Whether the script ran to completion." }),
+  return_value: Type.Optional(
+    Type.Unknown({ description: "The script's default-export return value." }),
+  ),
+  logs: Type.Array(
+    Type.Object({
+      level: Type.Union([Type.Literal("log"), Type.Literal("warn"), Type.Literal("error")]),
+      message: Type.String(),
+      data: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+      ts: Type.Number(),
+    }),
+    { description: "console.log/warn/error output captured from the script." },
+  ),
+  error: Type.Optional(
+    Type.Object(
+      {
+        name: Type.String(),
+        message: Type.String(),
+        stack: Type.Optional(Type.String()),
+        line: Type.Optional(Type.Number()),
+        column: Type.Optional(Type.Number()),
+      },
+      { description: "Present when success=false: the thrown error, with script position." },
+    ),
+  ),
+  duration_ms: Type.Number(),
+  sdk_calls: Type.Integer({ description: "Number of SDK calls the script made." }),
+  sdk_call_trace: Type.Array(SdkCallTraceEntrySchema, {
+    description: "Every SDK call the script made, in order.",
+  }),
+  side_effect_preview: Type.Array(SdkCallTraceEntrySchema, {
+    description: "Write/external calls that were skipped because dry_run=true.",
+  }),
+  dry_run: Type.Boolean(),
+});
+
 async function runSandbox(
   mode: SDKMode,
   args: RunArgs | QueryArgs,

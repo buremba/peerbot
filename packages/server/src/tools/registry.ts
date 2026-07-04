@@ -28,7 +28,7 @@ import { ListOrganizationsSchema } from './organizations';
 import { ResolvePathSchema, ResolvePathResultSchema, resolvePath } from './resolve_path';
 import { SaveContentSchema, saveContent } from './save_content';
 import { PublicSearchSchema, SearchSchema, UnifiedSearchResultSchema, search } from './search';
-import { QuerySchema, RunSchema, querySdkScript, runSdkScript } from './sdk_run';
+import { QuerySchema, RunSchema, SdkScriptResultSchema, querySdkScript, runSdkScript } from './sdk_run';
 import { SdkSearchSchema, SdkSearchResultSchema, sdkSearch } from './sdk_search';
 
 // ============================================
@@ -185,6 +185,7 @@ const TOOLS: ToolDefinition[] = [
     description:
       'Run read-only TypeScript in a sandboxed isolate over the ClientSDK. Use this to fetch workspace data through typed SDK methods. The script signature is `export default async (ctx, client) => ...`. Mutating methods are absent from `client` — attempts surface as undefined methods; use `run_sdk` for writes. Output capped at 1 MB. Use `search_sdk` to find method names. Example: `export default async (_ctx, client) => client.entities.list({ entity_type: "company" });`',
     inputSchema: QuerySchema,
+    outputSchema: SdkScriptResultSchema,
     annotations: { ...READ_ONLY, title: 'Query SDK (read-only)' },
     handler: querySdkScript,
   },
@@ -225,6 +226,7 @@ const TOOLS: ToolDefinition[] = [
     description:
       'Destructive — confirm before running. Runs TypeScript in a sandboxed isolate over the FULL ClientSDK. Use this for SDK writes or multi-step workflows. Signature: `export default async (ctx, client) => ...`. Can mutate entities, watchers, memory, classifiers, connections, etc. Use `query_sdk` for reads. Pass `dry_run: true` to execute reads while skipping write/external SDK calls and returning `side_effect_preview`. Output capped at 1 MB. Example: `export default async (_ctx, client) => client.entities.create({ type: "company", name: "Acme" });`',
     inputSchema: RunSchema,
+    outputSchema: SdkScriptResultSchema,
     annotations: { destructiveHint: true, idempotentHint: false, title: 'Run SDK' },
     handler: runSdkScript,
   },

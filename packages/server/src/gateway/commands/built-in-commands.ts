@@ -10,7 +10,6 @@ import {
 } from "../../preview/slack.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import {
-  getModelSelectionState,
   resolveEffectiveModelRef,
 } from "../auth/settings/model-selection.js";
 
@@ -66,16 +65,15 @@ export function registerBuiltInCommands(
 
       const settings = await deps.agentSettingsStore.getSettings(ctx.agentId);
 
-      const modelSelection = getModelSelectionState(settings);
       const effectiveModel = resolveEffectiveModelRef(settings);
-      const model = effectiveModel || "auto";
+      const model = effectiveModel || "auto (org default)";
       const skillsCount = settings?.skillsConfig?.skills
         ? Object.keys(settings.skillsConfig.skills).length
         : 0;
 
       const parts = [
         `Agent: ${ctx.agentId}`,
-        `Model: ${model} (${modelSelection.mode})`,
+        `Model: ${model}`,
         `Skills: ${skillsCount}`,
       ];
 

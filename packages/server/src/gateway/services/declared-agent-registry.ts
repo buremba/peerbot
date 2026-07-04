@@ -59,19 +59,17 @@ export function entryFromAgentConfig(agent: AgentConfig): DeclaredAgentEntry {
   if (agent.userMd) settings.userMd = agent.userMd;
 
   if (agent.providers?.length) {
+    // installedProviders stays the credential/catalog list (routes org
+    // providers). The agent's model collapses to a single defaultModel: the
+    // primary provider's declared model, or "<providerId>/auto" so the worker
+    // resolves that provider's newest live model.
     settings.installedProviders = agent.providers.map((p) => ({
       providerId: p.id,
       installedAt: Date.now(),
     }));
-    settings.modelSelection = { mode: "auto" };
-    const providerModelPreferences = Object.fromEntries(
-      agent.providers
-        .filter((p) => !!p.model?.trim())
-        .map((p) => [p.id, p.model!.trim()])
-    );
-    if (Object.keys(providerModelPreferences).length > 0) {
-      settings.providerModelPreferences = providerModelPreferences;
-    }
+    const primary = agent.providers[0];
+    const primaryModel = primary.model?.trim();
+    settings.defaultModel = primaryModel || `${primary.id}/auto`;
   }
 
   if (agent.network) {

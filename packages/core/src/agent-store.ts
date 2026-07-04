@@ -11,10 +11,8 @@ import type {
   AgentInlineGuardrail,
   AuthProfile,
   InstalledProvider,
-  ModelSelectionState,
   NetworkConfig,
   NixConfig,
-  ProviderModelPreferences,
   SkillsConfig,
   ToolsConfig,
 } from "./types";
@@ -28,12 +26,14 @@ import type {
  * interface.
  */
 export interface AgentSettings {
-  /** Display-only model reference (legacy; prefer modelSelection). */
-  model?: string;
-  /** Model selection mode (auto provider/default model vs pinned provider/model). */
-  modelSelection?: ModelSelectionState;
-  /** Per-provider preferred model for auto mode. */
-  providerModelPreferences?: ProviderModelPreferences;
+  /**
+   * The agent's default model — a `provider/model` ref (e.g.
+   * "claude/claude-sonnet-4-6") or the literal "auto" (newest live model for the
+   * provider). Optional: when unset, model resolution falls through to the org's
+   * default inference provider (`inference_providers.is_default` →
+   * `capabilities.text.model`). A behavior may override this per-run.
+   */
+  defaultModel?: string;
   /** Network access configuration */
   networkConfig?: NetworkConfig;
   /** Nix environment configuration */

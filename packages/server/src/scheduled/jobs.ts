@@ -393,6 +393,12 @@ export interface WakeAgentTaskPayload {
   prompt?: string;
   thread_id?: string | null;
   reason?: string | null;
+  /**
+   * Optional per-schedule model override (a `provider/model` ref or "auto").
+   * Injected into agentOptions.model at dispatch so the layered fallback
+   * (behavior → agent → org default) resolves it as the winning override.
+   */
+  model?: string | null;
 }
 
 /**
@@ -436,6 +442,12 @@ export async function runWakeAgentTask(
   const sessionManager = coreServices.getSessionManager();
   const queueProducer = coreServices.getQueueProducer();
 
+  // Per-schedule model override (a `provider/model` ref or "auto"). Injected
+  // into agentOptions.model on both dispatch paths so `resolveAgentOptions`
+  // treats it as the winning override in the layered fallback.
+  const behaviorModel =
+    typeof p.model === 'string' && p.model.trim() ? p.model.trim() : undefined;
+
   // When the schedule carries trusted gateway-owned delivery context, dispatch
   // a real platform message so the reply posts back into the originating chat
   // channel. User action_args never supply this value; the ticker injects it
@@ -474,7 +486,7 @@ export async function runWakeAgentTask(
           organizationId: orgId,
           source: 'scheduled-job',
         },
-        agentOptions: {},
+        agentOptions: behaviorModel ? { model: behaviorModel } : {},
       })
     );
     return;
@@ -505,6 +517,7 @@ export async function runWakeAgentTask(
       threadId,
       messageText: p.prompt,
       source: 'scheduled-job',
+      model: behaviorModel,
     }
   );
 }

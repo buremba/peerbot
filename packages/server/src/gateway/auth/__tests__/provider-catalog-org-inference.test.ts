@@ -62,7 +62,6 @@ function makeCatalog(opts: {
     }),
   } as never;
   const authProfilesManager = {} as never;
-  const declaredAgents = { has: () => false } as never;
   const listOrgInferenceProviders =
     opts.withOrgReader === false
       ? undefined
@@ -70,7 +69,6 @@ function makeCatalog(opts: {
   return new ProviderCatalogService(
     agentSettingsStore,
     authProfilesManager,
-    declaredAgents,
     listOrgInferenceProviders as never,
     opts.registerUpstream as never
   );

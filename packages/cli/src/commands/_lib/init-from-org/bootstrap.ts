@@ -277,13 +277,19 @@ function emitAgent(
   const files: Array<{ relPath: string; body: string }> = [];
   const dir = `agents/${agent.agentId}`;
 
-  // providers ← installedProviders + providerModelPreferences (+ secret key).
+  // providers ← installedProviders (+ secret key). The agent's single
+  // defaultModel attaches to the PRIMARY provider (installedProviders[0]); a
+  // bare "<id>/auto" is the implicit default, so it's not emitted.
   const providers = settings?.installedProviders ?? [];
   if (providers.length > 0) {
-    const prefs = settings?.providerModelPreferences ?? {};
+    const defaultModel = settings?.defaultModel?.trim();
+    const primaryId = providers[0]?.providerId;
     const items = providers.map((p) => {
       const id = p.providerId;
-      const model = prefs[id];
+      const model =
+        id === primaryId && defaultModel && defaultModel !== `${id}/auto`
+          ? defaultModel
+          : undefined;
       const envVar = envVarFor(id, "API_KEY");
       const provFields = [
         `id: ${str(id)}`,

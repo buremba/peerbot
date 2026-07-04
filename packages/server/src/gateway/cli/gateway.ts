@@ -745,11 +745,7 @@ export function createGatewayApp(
         agentId: a.agentId,
         name: a.name,
         providers,
-        model:
-          settings?.modelSelection?.mode === "pinned"
-            ? (settings.modelSelection as { pinnedModel?: string })
-                .pinnedModel || "pinned"
-            : settings?.modelSelection?.mode || "auto",
+        model: settings?.defaultModel || "auto",
       });
     }
 

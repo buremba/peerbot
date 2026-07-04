@@ -108,6 +108,13 @@ const SendMessageRequestSchema = z
       .optional()
       .describe("Message content (alias for content)"),
     messageId: z.string().optional(),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        "Optional per-message model override (a `provider/model` ref or \"auto\"). " +
+          "Wins over the agent/org default. Used by behavior dispatch (e.g. watcher runs)."
+      ),
     platform: z
       .string()
       .optional()
@@ -1223,6 +1230,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         content: formData.get("content") as string | null,
         message: formData.get("message") as string | null,
         messageId: formData.get("messageId") as string | null,
+        model: formData.get("model") as string | null,
         platform: formData.get("platform") as string | null,
       };
 
@@ -1434,14 +1442,23 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     try {
       const channelId = session.channelId || `api_${session.userId}`;
 
+      // A per-message model override (behavior dispatch, e.g. watcher runs)
+      // wins over the session's model; otherwise the session model (already the
+      // agent/org resolution) carries through. resolveAgentOptions then applies
+      // the layered fallback for the empty case.
+      const behaviorModel =
+        typeof body.model === "string" && body.model.trim()
+          ? body.model.trim()
+          : undefined;
       const baseOptions: Record<string, any> = {
         provider: session.provider || "claude",
-        model: session.model,
+        model: behaviorModel ?? session.model,
       };
       const agentOptions = await resolveAgentOptions(
         realAgentId,
         baseOptions,
-        agentSettingsStore
+        agentSettingsStore,
+        session.organizationId
       );
 
       const {

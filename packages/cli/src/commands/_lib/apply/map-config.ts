@@ -279,18 +279,17 @@ function mapAgent(
   const settings: Partial<AgentSettings> = {};
 
   if (agent.providers?.length) {
+    // installedProviders stays the provider-install/catalog list; the model
+    // collapses to a single defaultModel — the primary provider's declared
+    // model, or "<providerId>/auto" for its newest live model.
     settings.installedProviders = agent.providers.map((p) => ({
       providerId: providerId(p),
       installedAt: Date.now(),
     }));
-    settings.modelSelection = { mode: "auto" };
-    const preferences = Object.fromEntries(
-      agent.providers
-        .filter((p) => !!p.model?.trim())
-        .map((p) => [providerId(p), p.model.trim()])
-    );
-    if (Object.keys(preferences).length > 0) {
-      settings.providerModelPreferences = preferences;
+    const primary = agent.providers[0];
+    if (primary) {
+      const primaryModel = primary.model?.trim();
+      settings.defaultModel = primaryModel || `${providerId(primary)}/auto`;
     }
   }
 

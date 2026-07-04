@@ -44,9 +44,7 @@ describe("mapProjectToDesiredState", () => {
     expect(agent?.settings.installedProviders?.[0]?.providerId).toBe(
       "anthropic"
     );
-    expect(agent?.settings.providerModelPreferences).toEqual({
-      anthropic: "claude-sonnet-4-6",
-    });
+    expect(agent?.settings.defaultModel).toBe("claude-sonnet-4-6");
     expect(agent?.settings.networkConfig?.allowedDomains).toEqual([
       "github.com",
     ]);

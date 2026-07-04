@@ -11,6 +11,8 @@ export interface ChannelBindingDto {
 	platform: string;
 	channelId: string;
 	teamId?: string;
+	/** Per-binding model override (a `provider/model` ref or "auto"), if set. */
+	model?: string;
 	createdAt: number;
 }
 
@@ -18,6 +20,7 @@ const ChannelBindingDtoSchema = Type.Object({
 	platform: Type.String(),
 	channelId: Type.String(),
 	teamId: Type.Optional(Type.String()),
+	model: Type.Optional(Type.String()),
 	createdAt: Type.Integer(),
 });
 
@@ -372,6 +375,14 @@ export const BindChannelAction = Type.Object({
 		description: "Chat connection that receives this channel's messages.",
 	}),
 	channel_id: Type.String({ description: CHANNEL_ID_DESC }),
+	model: Type.Optional(
+		Type.String({
+			maxLength: 200,
+			description:
+				"Optional per-binding model override (a `provider/model` ref or \"auto\"). " +
+				"Wins over the agent/org default for messages on this channel.",
+		}),
+	),
 });
 
 export const UnbindChannelAction = Type.Object({

@@ -62,6 +62,12 @@ const WakeAgentArgs = Type.Object({
   prompt: Type.String({ minLength: 1, maxLength: 4000 }),
   thread_id: Type.Optional(Type.String()),
   reason: Type.Optional(Type.String({ maxLength: 200 })),
+  /**
+   * Optional per-schedule model override (a `provider/model` ref or "auto").
+   * When set it wins over the agent's default and the org default at run
+   * enqueue; when omitted the layered fallback (agent → org) resolves it.
+   */
+  model: Type.Optional(Type.String({ maxLength: 200 })),
 });
 
 const ActionUnion = Type.Union([SendNotificationArgs, WakeAgentArgs]);
@@ -113,6 +119,12 @@ const UpdateAction = Type.Object({
   cron: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   /** New `wake_agent` prompt (the only editable payload field). */
   prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
+  /**
+   * New per-schedule model override (a `provider/model` ref or "auto"), or an
+   * empty string to clear it (fall back to agent/org default). Omit to leave
+   * the model unchanged.
+   */
+  model: Type.Optional(Type.String({ maxLength: 200 })),
 });
 
 const PauseAction = Type.Object({
@@ -233,18 +245,26 @@ async function handleUpdate(
     }
   }
 
-  // A new prompt merges into the existing durable payload (keeping agent_id /
-  // thread_id / reason) rather than replacing it wholesale.
+  // A new prompt / model merges into the existing durable payload (keeping
+  // agent_id / thread_id / reason) rather than replacing it wholesale. An
+  // empty-string model clears the override (falls back to agent/org default).
   let actionArgs: Record<string, unknown> | undefined;
-  if (args.prompt !== undefined) {
+  if (args.prompt !== undefined || args.model !== undefined) {
     const existing = await getScheduledJob(ctx.organizationId, args.id);
     if (!existing) {
       return { error: `Schedule '${args.id}' not found in this organization.` };
     }
     if (existing.action_type !== 'wake_agent') {
-      return { error: 'prompt can only be updated on a wake_agent schedule.' };
+      return { error: 'prompt/model can only be updated on a wake_agent schedule.' };
     }
-    actionArgs = { ...existing.action_args, prompt: args.prompt };
+    const merged: Record<string, unknown> = { ...existing.action_args };
+    if (args.prompt !== undefined) merged.prompt = args.prompt;
+    if (args.model !== undefined) {
+      const model = args.model.trim();
+      if (model) merged.model = model;
+      else delete merged.model;
+    }
+    actionArgs = merged;
   }
 
   const job = await updateScheduledJob({

@@ -1,21 +1,6 @@
 import type { GuardrailStage } from "./guardrails/types";
 import type { SecretRef } from "./secret-refs";
 
-export type ModelSelectionMode = "auto" | "pinned";
-
-/**
- * Model selection state for an agent.
- * `auto` lets the worker pick a default from installed providers;
- * `pinned` forces a specific model reference (e.g. "openai/gpt-5").
- */
-export interface ModelSelectionState {
-  mode: ModelSelectionMode;
-  pinnedModel?: string;
-}
-
-/** Per-provider preferred model for auto mode, keyed by provider id. */
-export type ProviderModelPreferences = Record<string, string>;
-
 /**
  * Represents a provider installed for a specific agent.
  * Stored in AgentSettings.installedProviders as an ordered array (index 0 = primary).

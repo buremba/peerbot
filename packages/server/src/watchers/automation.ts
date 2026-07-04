@@ -774,6 +774,28 @@ async function claimWatcherRun(
   });
 }
 
+/**
+ * Read a watcher's optional per-watcher model override from
+ * `watchers.execution_config.model` (a `provider/model` ref or "auto"). This is
+ * the SAME field the device-worker lane already reads as the CLI `--model` flag
+ * (WatcherExecutionConfigSchema.model), so the server-side dispatch lane and the
+ * device lane share one storage location. Returns undefined when unset so the
+ * caller falls through to the agent/org default.
+ */
+async function getWatcherModelOverride(
+  sql: DbClient,
+  watcherId: number
+): Promise<string | undefined> {
+  const rows = await sql`
+    SELECT execution_config->>'model' AS model
+    FROM watchers
+    WHERE id = ${watcherId}
+    LIMIT 1
+  `;
+  const model = rows[0]?.model as string | null | undefined;
+  return typeof model === 'string' && model.trim() ? model.trim() : undefined;
+}
+
 async function ensureWatcherAgentExists(
   sql: DbClient,
   organizationId: string,
@@ -893,6 +915,12 @@ async function dispatchWatcherRun(
     return 'failed';
   }
 
+  // Per-watcher model override lives in watchers.model_config.model (a
+  // `provider/model` ref or "auto"). When set it rides the dispatch message so
+  // agent.ts reads it into baseOptions.model and it wins the layered fallback
+  // (behavior → agent → org default); when absent the agent/org default resolves.
+  const watcherModel = await getWatcherModelOverride(sql, run.watcher_id);
+
   const baseUrl = `${getInternalGatewayUrl()}/api/v1/agents`;
   const headers = {
     Authorization: `Bearer ${serviceToken}`,
@@ -952,6 +980,7 @@ async function dispatchWatcherRun(
       headers,
       body: JSON.stringify({
         messageId,
+        ...(watcherModel ? { model: watcherModel } : {}),
         content: buildDispatchMessage({
           watcherId: run.watcher_id,
           runId: run.id,

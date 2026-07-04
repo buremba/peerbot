@@ -732,6 +732,7 @@ export class MessageHandlerBridge {
       thread,
       teamId,
       payloadTeamId: isGroup ? channelId : platform,
+      model: resolved.model,
       senderUsername: message.author?.userName,
       senderDisplayName: message.author?.fullName,
       responseThreadId: thread.id,
@@ -773,6 +774,12 @@ export class MessageHandlerBridge {
     teamId: string | undefined;
     /** The `teamId` field passed to `buildMessagePayload` (routing key). */
     payloadTeamId: string;
+    /**
+     * Per-binding (Listen behavior) model override — a `provider/model` ref or
+     * "auto". When set it wins the layered fallback at enqueue; undefined =
+     * fall back to the agent, then org, default.
+     */
+    model?: string;
     senderUsername?: string;
     senderDisplayName?: string;
     responseThreadId?: string;
@@ -793,6 +800,7 @@ export class MessageHandlerBridge {
       thread,
       teamId,
       payloadTeamId,
+      model,
       senderUsername,
       senderDisplayName,
       responseThreadId,
@@ -836,10 +844,15 @@ export class MessageHandlerBridge {
     });
 
     try {
+      // A per-binding (Listen behavior) model override arrives on the resolved
+      // channel binding and wins the layered fallback; otherwise the agent/org
+      // default resolves inside resolveAgentOptions. organizationId lets the org
+      // default tail fire on this path.
       const agentOptions = await resolveAgentOptions(
         agentId,
-        {},
-        agentSettingsStore
+        model ? { model } : {},
+        agentSettingsStore,
+        organizationId
       );
 
       const payload = buildMessagePayload({
@@ -989,6 +1002,7 @@ export class MessageHandlerBridge {
       thread,
       teamId,
       payloadTeamId: teamId || platform,
+      model: resolved.model,
       senderUsername: authorUsername,
       senderDisplayName: authorName,
       responseThreadId: responseThreadId ?? thread.id,

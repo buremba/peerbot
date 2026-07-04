@@ -228,7 +228,8 @@ export function resolveModelRef(
   // an actionable error so the operator selects a concrete model.
   if (!modelRef) {
     throw new Error(
-      "No model selected for this agent. Choose a model in the agent's Providers settings."
+      "No model resolved for this run. Set the agent's default model, a " +
+        "per-behavior model, or an org default inference provider."
     );
   }
 

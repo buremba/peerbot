@@ -25,7 +25,7 @@ describe("DeclaredAgentRegistry", () => {
 });
 
 describe("entryFromAgentConfig", () => {
-  test("expands providers into installed list, credentials, and model preferences", () => {
+  test("expands providers into installed list, credentials, and the primary model", () => {
     const entry = entryFromAgentConfig({
       id: "agent-1",
       name: "Agent 1",
@@ -41,10 +41,8 @@ describe("entryFromAgentConfig", () => {
       { providerId: "openai", installedAt: expect.any(Number) },
       { providerId: "anthropic", installedAt: expect.any(Number) },
     ]);
-    expect(entry.settings.providerModelPreferences).toEqual({
-      openai: "gpt-4o",
-    });
-    expect(entry.settings.modelSelection).toEqual({ mode: "auto" });
+    // The primary provider's declared model becomes the agent's defaultModel.
+    expect(entry.settings.defaultModel).toBe("gpt-4o");
     expect(entry.settings.networkConfig).toEqual({
       allowedDomains: ["github.com"],
       deniedDomains: undefined,
@@ -54,6 +52,17 @@ describe("entryFromAgentConfig", () => {
       { provider: "openai", key: "sk-1" },
       { provider: "anthropic", secretRef: "vault://anth" },
     ]);
+  });
+
+  test("defaults to '<primary>/auto' when the primary declares no model", () => {
+    const entry = entryFromAgentConfig({
+      id: "agent-2",
+      name: "Agent 2",
+      providers: [{ id: "claude" }, { id: "openai", model: "gpt-4o" }],
+    } as any);
+
+    // Primary (claude) has no model → auto; the non-primary model is ignored.
+    expect(entry.settings.defaultModel).toBe("claude/auto");
   });
 });
 

@@ -116,6 +116,12 @@ interface EnqueueAgentMessageArgs {
   messageId?: string;
   /** Free-form source tag for log lines / platformMetadata. */
   source?: string;
+  /**
+   * Optional per-behavior model override (a `provider/model` ref or "auto").
+   * When set it wins over the thread session's model; when omitted the
+   * session's model is used (which itself resolves the agent/org fallback).
+   */
+  model?: string;
 }
 
 interface EnqueueAgentMessageResult {
@@ -171,7 +177,7 @@ export async function enqueueAgentMessage(
     },
     agentOptions: {
       provider: session.provider || "claude",
-      model: session.model,
+      model: args.model ?? session.model,
     },
     networkConfig: session.networkConfig,
   });

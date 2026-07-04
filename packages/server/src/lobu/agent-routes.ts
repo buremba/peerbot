@@ -41,6 +41,7 @@ import {
 	listInferenceProviders,
 	providerOrgSecretName,
 	rotateInferenceProviderKey,
+	setInferenceProviderDefault,
 	softDeleteInferenceProvider,
 	updateInferenceProviderCapabilities,
 	updateInferenceProviderCoreFields,
@@ -821,6 +822,22 @@ routes.put('/inference-providers/:slug', async (c) => {
       createdAt: updated.createdAt,
     },
   });
+});
+
+// Mark one org inference provider as THE org default. Its `capabilities.text.model`
+// becomes the org-default model — the tail of the layered fallback
+// (behavior → agent → org default). Exactly one live default per org (enforced
+// by a partial unique index); setting a new one clears the prior in one txn.
+routes.put('/inference-providers/:slug/default', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const { slug } = c.req.param();
+
+  const ok = await setInferenceProviderDefault(orgId, slug);
+  if (!ok) return c.json({ error: 'Provider not found' }, 404);
+  return c.json({ success: true, slug, isDefault: true });
 });
 
 routes.put('/inference-providers/:slug/capabilities/:modality', async (c) => {

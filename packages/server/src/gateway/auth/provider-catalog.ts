@@ -12,11 +12,9 @@ import {
   type ModelProviderModule,
   type ProviderUpstreamConfig,
 } from "../modules/module-system.js";
-import type { DeclaredAgentRegistry } from "../services/declared-agent-registry.js";
 import { ApiKeyProviderModule } from "./api-key-provider-module.js";
 import type { AgentSettingsStore } from "./settings/agent-settings-store.js";
 import type { AuthProfilesManager } from "./settings/auth-profiles-manager.js";
-import { reconcileModelSelectionForInstalledProviders } from "./settings/model-selection.js";
 
 const logger = createLogger("provider-catalog");
 
@@ -175,14 +173,10 @@ async function resolveInstalledProviders(
  * Providers are registered globally in the module registry,
  * but each agent chooses which providers to install from the catalog.
  */
-const DECLARED_AGENT_MUTATION_ERROR =
-  "provider list is declared in lobu.config.ts; edit the file and restart";
-
 export class ProviderCatalogService {
   constructor(
     private agentSettingsStore: AgentSettingsStore,
     private authProfilesManager: AuthProfilesManager,
-    private declaredAgents: DeclaredAgentRegistry,
     /**
      * Reads the org's inference_providers rows. When present, an installed
      * provider slug that isn't a providers.json module is synthesized from a
@@ -242,12 +236,6 @@ export class ProviderCatalogService {
       this.registerUpstream(upstream, module.providerId);
     }
     return module;
-  }
-
-  private guardDeclared(agentId: string): void {
-    if (this.declaredAgents.has(agentId)) {
-      throw new Error(DECLARED_AGENT_MUTATION_ERROR);
-    }
   }
 
   /**
@@ -331,83 +319,6 @@ export class ProviderCatalogService {
   }
 
   /**
-   * Install a provider for an agent. Appends to the end of the list.
-   */
-  async installProvider(agentId: string, providerId: string): Promise<void> {
-    this.guardDeclared(agentId);
-    const allModules = getModelProviderModules();
-    const module = allModules.find((m) => m.providerId === providerId);
-    if (!module) {
-      throw new Error(`Unknown provider: ${providerId}`);
-    }
-
-    const settings = await this.agentSettingsStore.getSettings(agentId);
-    const installed = settings?.installedProviders || [];
-
-    if (installed.some((ip) => ip.providerId === providerId)) {
-      logger.info(
-        `Provider ${providerId} already installed for agent ${agentId}`
-      );
-      return;
-    }
-
-    const entry: InstalledProvider = {
-      providerId,
-      installedAt: Date.now(),
-    };
-    const nextInstalledProviders = [...installed, entry];
-    const reconciled = reconcileModelSelectionForInstalledProviders({
-      model: settings?.model,
-      modelSelection: settings?.modelSelection,
-      providerModelPreferences: settings?.providerModelPreferences,
-      installedProviders: nextInstalledProviders,
-    });
-
-    await this.agentSettingsStore.updateSettings(agentId, {
-      installedProviders: nextInstalledProviders,
-      ...reconciled,
-    });
-
-    logger.info(`Installed provider ${providerId} for agent ${agentId}`);
-  }
-
-  /**
-   * Uninstall a provider from an agent. Also cleans up auth profiles.
-   */
-  async uninstallProvider(agentId: string, providerId: string): Promise<void> {
-    this.guardDeclared(agentId);
-    const settings = await this.agentSettingsStore.getSettings(agentId);
-    const installed = settings?.installedProviders || [];
-
-    const filtered = installed.filter((ip) => ip.providerId !== providerId);
-    if (filtered.length === installed.length) {
-      logger.info(
-        `Provider ${providerId} not installed for agent ${agentId}, nothing to uninstall`
-      );
-      return;
-    }
-
-    // Clean up ephemeral auth profiles. User-scoped profiles in
-    // UserAuthProfileStore stay put — uninstalling a provider on a
-    // runtime agent shouldn't cascade-delete every user's tokens; users
-    // remove their own credentials from the per-user UI.
-    await this.authProfilesManager.deleteProviderProfiles(agentId, providerId);
-    const reconciled = reconcileModelSelectionForInstalledProviders({
-      model: settings?.model,
-      modelSelection: settings?.modelSelection,
-      providerModelPreferences: settings?.providerModelPreferences,
-      installedProviders: filtered,
-    });
-
-    await this.agentSettingsStore.updateSettings(agentId, {
-      installedProviders: filtered,
-      ...reconciled,
-    });
-
-    logger.info(`Uninstalled provider ${providerId} for agent ${agentId}`);
-  }
-
-  /**
    * Find the provider module whose model options include the given model string.
    */
   async findProviderForModel(
@@ -439,50 +350,5 @@ export class ProviderCatalogService {
       }
     }
     return undefined;
-  }
-
-  /**
-   * Reorder installed providers. The orderedIds must contain
-   * exactly the same provider IDs as currently installed.
-   */
-  async reorderProviders(agentId: string, orderedIds: string[]): Promise<void> {
-    this.guardDeclared(agentId);
-    const settings = await this.agentSettingsStore.getSettings(agentId);
-    const installed = settings?.installedProviders || [];
-
-    const installedMap = new Map(installed.map((ip) => [ip.providerId, ip]));
-
-    // Validate all ordered IDs exist in installed
-    for (const id of orderedIds) {
-      if (!installedMap.has(id)) {
-        throw new Error(`Provider ${id} is not installed`);
-      }
-    }
-
-    const reordered = orderedIds
-      .map((id) => installedMap.get(id))
-      .filter((ip): ip is InstalledProvider => ip !== undefined);
-
-    // Append any installed providers not in orderedIds (shouldn't happen but safety)
-    for (const ip of installed) {
-      if (!orderedIds.includes(ip.providerId)) {
-        reordered.push(ip);
-      }
-    }
-    const reconciled = reconcileModelSelectionForInstalledProviders({
-      model: settings?.model,
-      modelSelection: settings?.modelSelection,
-      providerModelPreferences: settings?.providerModelPreferences,
-      installedProviders: reordered,
-    });
-
-    await this.agentSettingsStore.updateSettings(agentId, {
-      installedProviders: reordered,
-      ...reconciled,
-    });
-
-    logger.info(
-      `Reordered providers for agent ${agentId}: ${orderedIds.join(", ")}`
-    );
   }
 }

@@ -110,6 +110,7 @@ export async function handleListChannelBindings(
 			platform: b.platform,
 			channelId: b.channelId,
 			teamId: b.teamId,
+			model: b.model,
 			createdAt: b.createdAt,
 		})),
 	};
@@ -156,6 +157,7 @@ export async function handleBindChannel(
 			configuredBy: userId ?? undefined,
 			organizationId,
 			connectionId: String(connection.id),
+			model: args.model,
 		},
 	);
 	logger.info(

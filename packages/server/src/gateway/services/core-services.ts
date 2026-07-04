@@ -704,7 +704,6 @@ export class CoreServices {
 		this.providerCatalogService = new ProviderCatalogService(
 			this.agentSettingsStore,
 			this.authProfilesManager,
-			this.declaredAgentRegistry,
 			(organizationId) => listInferenceProviders(organizationId),
 			(upstream, providerId) =>
 				this.secretProxy?.registerUpstream(upstream, providerId),

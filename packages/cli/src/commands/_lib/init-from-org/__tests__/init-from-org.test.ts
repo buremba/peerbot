@@ -88,8 +88,7 @@ function fullOrgRoutes(): Record<string, () => unknown> {
     }),
     "/agents/sales/config": () => ({
       installedProviders: [{ providerId: "anthropic", installedAt: 111 }],
-      providerModelPreferences: { anthropic: "claude/sonnet-4-5" },
-      modelSelection: { mode: "auto" },
+      defaultModel: "claude/sonnet-4-5",
       networkConfig: {
         allowedDomains: ["github.com", ".github.com"],
         deniedDomains: ["evil.com"],
@@ -255,9 +254,7 @@ describe("lobu init --from-org", () => {
     expect(agent?.settings.installedProviders?.[0]?.providerId).toBe(
       "anthropic"
     );
-    expect(agent?.settings.providerModelPreferences).toEqual({
-      anthropic: "claude/sonnet-4-5",
-    });
+    expect(agent?.settings.defaultModel).toBe("claude/sonnet-4-5");
     expect(agent?.settings.networkConfig).toEqual({
       allowedDomains: ["github.com", ".github.com"],
       deniedDomains: ["evil.com"],

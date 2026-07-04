@@ -16,11 +16,7 @@ import { ProviderCatalogService } from "../provider-catalog.js";
  * wiring required.
  */
 describe("ProviderCatalogService.findProviderForModel — prefix routing", () => {
-  const catalog = new ProviderCatalogService(
-    {} as never,
-    {} as never,
-    {} as never
-  );
+  const catalog = new ProviderCatalogService({} as never, {} as never);
 
   // Mirrors the bug's provider set: gemini is credentialed FIRST, claude lists
   // BARE ids (no "claude/" prefix), and the stored model is PREFIXED.

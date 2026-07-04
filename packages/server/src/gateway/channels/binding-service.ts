@@ -14,7 +14,7 @@ const logger = createLogger("channel-binding-service");
  *
  * Backed by `public.agent_channel_bindings`; only the columns that exist on
  * that table are persisted today (`platform`, `channel_id`, `team_id`,
- * `agent_id`, `created_at`).
+ * `agent_id`, `model`, `created_at`).
  */
 interface ChannelBinding {
   platform: string;
@@ -28,6 +28,10 @@ interface ChannelBinding {
    * Set once the binding is linked; used to materialize / soft-delete the
    * channel's streaming feed. */
   connectionId?: string;
+  /** Optional per-binding (Listen behavior) model override — a `provider/model`
+   * ref or "auto". When set it wins the layered fallback at inbound enqueue;
+   * undefined = fall back to the agent, then org, default. */
+  model?: string;
   createdAt: number;
 }
 
@@ -40,6 +44,10 @@ function rowToBinding(row: Record<string, any>): ChannelBinding {
     organizationId: row.organization_id ?? undefined,
 		connectionId:
 			row.connection_id != null ? String(row.connection_id) : undefined,
+    model:
+      typeof row.model === "string" && row.model.trim()
+        ? row.model.trim()
+        : undefined,
 		createdAt: tsTime(row.created_at),
   };
 }
@@ -97,6 +105,9 @@ export class ChannelBindingService {
 			organizationId?: string;
 			/** Authoritative unified connection row. */
 			connectionId: string;
+			/** Optional per-binding model override (a `provider/model` ref or
+			 *  "auto"). Undefined leaves it NULL (falls back to agent/org default). */
+			model?: string;
 		},
   ): Promise<void> {
     const sql = getDb();
@@ -104,14 +115,18 @@ export class ChannelBindingService {
       options?.organizationId,
       "ChannelBindingService.createBinding",
     );
+    const model =
+      typeof options.model === "string" && options.model.trim()
+        ? options.model.trim()
+        : null;
 		// A physical channel is scoped by the concrete bot connection, not by a
 		// provider tuple. Two Slack apps in one workspace may independently bind
 		// the same channel without overwriting each other.
       const rows = await sql`
-        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id, created_at)
+        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id, model, created_at)
         VALUES (
           ${orgId}, ${agentId}, ${platform}, ${channelId}, ${teamId ?? null},
-		  ${options.connectionId}::bigint,
+		  ${options.connectionId}::bigint, ${model},
           now()
         )
         ON CONFLICT (organization_id, connection_id, channel_id)
@@ -119,6 +134,7 @@ export class ChannelBindingService {
           DO UPDATE SET agent_id = EXCLUDED.agent_id,
 		    platform = EXCLUDED.platform,
 		    team_id = EXCLUDED.team_id,
+		    model = EXCLUDED.model,
             created_at = EXCLUDED.created_at
         RETURNING connection_id
       `;

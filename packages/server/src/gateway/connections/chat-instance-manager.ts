@@ -2403,6 +2403,7 @@ export class ChatInstanceManager {
       options.agentId,
       {},
 			agentSettingsStore,
+      connection.organizationId,
     );
 
     await sessionManager.setSession({

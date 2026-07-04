@@ -50,9 +50,11 @@ export async function touchAgentLastUsed(
 
 function rowToSettings(row: Record<string, any>): AgentSettings {
 	return {
-		model: row.model ?? undefined,
-		modelSelection: row.model_selection ?? undefined,
-		providerModelPreferences: row.provider_model_preferences ?? undefined,
+		// The `model` column is the agent's single defaultModel ref (a
+		// `provider/model` string or "auto"). The legacy `model_selection` /
+		// `provider_model_preferences` columns are no longer read (dropped in a
+		// follow-up migration after backfill).
+		defaultModel: row.model ?? undefined,
 		networkConfig: row.network_config ?? undefined,
 		nixConfig: row.nix_config ?? undefined,
 		soulMd: row.soul_md ?? undefined,
@@ -109,7 +111,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const orgId = tryGetOrgId();
 			const rows = orgId
 				? await sql`
-            SELECT model, model_selection, provider_model_preferences,
+            SELECT model,
                    network_config, nix_config,
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
@@ -120,7 +122,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
             WHERE id = ${agentId} AND organization_id = ${orgId}
           `
 				: await sql`
-            SELECT model, model_selection, provider_model_preferences,
+            SELECT model,
                    network_config, nix_config,
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
@@ -139,9 +141,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const now = new Date();
 			await sql`
         UPDATE agents SET
-          model = ${settings.model ?? null},
-          model_selection = ${sql.json(settings.modelSelection ?? {})},
-          provider_model_preferences = ${sql.json(settings.providerModelPreferences ?? {})},
+          model = ${settings.defaultModel ?? null},
           network_config = ${sql.json(settings.networkConfig ?? {})},
           nix_config = ${sql.json(settings.nixConfig ?? {})},
           soul_md = ${settings.soulMd ?? ""},
@@ -175,7 +175,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const orgId = getOrgId();
 			await sql`
         UPDATE agents SET
-          model = NULL, model_selection = '{}', provider_model_preferences = '{}',
+          model = NULL,
           network_config = '{}', nix_config = '{}',
           soul_md = '', user_md = '', identity_md = '',
           skills_config = '{"skills": []}', tools_config = '{}', plugins_config = '{}',

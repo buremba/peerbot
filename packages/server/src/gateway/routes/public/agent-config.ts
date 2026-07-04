@@ -18,7 +18,7 @@ import type {
 	AgentSettingsStore,
 } from "../../auth/settings/agent-settings-store.js";
 import type { AuthProfilesManager } from "../../auth/settings/auth-profiles-manager.js";
-import { getModelSelectionState } from "../../auth/settings/model-selection.js";
+import { resolveEffectiveModelRef } from "../../auth/settings/model-selection.js";
 import {
 	canEditSettingsSection,
 	type ResolvedProviderView,
@@ -102,16 +102,6 @@ function getViewer(payload: SettingsTokenPayload | null | undefined): {
 		allowedScopes: payload?.allowedScopes,
 		isAdmin: payload?.isAdmin,
 	};
-}
-
-function getProviderModelPreferencesFromSettings(
-	settings: AgentSettings | null | undefined,
-): Record<string, string> {
-	return Object.fromEntries(
-		Object.entries(settings?.providerModelPreferences || {})
-			.map(([providerId, modelRef]) => [providerId.trim(), modelRef.trim()])
-			.filter(([providerId, modelRef]) => providerId && modelRef),
-	);
 }
 
 async function resolveSettingsView(
@@ -266,11 +256,12 @@ async function buildResolvedConfigResponse(
 			catalog: catalogProviders,
 			meta: providerMeta,
 			models: providerModels,
-			preferences: getProviderModelPreferencesFromSettings(settings),
 			icons: providerIconUrls,
-			modelSelection: getModelSelectionState(settings || undefined),
 			configManaged: [] as string[],
 		},
+		// The agent's model (middle of the layered fallback behavior → agent →
+		// org default). Empty string ⇒ inherit the org default.
+		defaultModel: resolveEffectiveModelRef(settings) || "",
 		skills: sanitized.skillsConfig?.skills || [],
 		tools: {
 			nixPackages: sanitized.nixConfig?.packages || [],

@@ -10,7 +10,8 @@ import {
   type PluginsConfig,
 } from "@lobu/core";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
-import { resolveEffectiveModelRef } from "../auth/settings/model-selection.js";
+import { composeEffectiveModelRef } from "../auth/settings/model-selection.js";
+import { getOrgDefaultModel } from "../../lobu/stores/provider-secrets.js";
 import type { ChannelBindingService } from "../channels/binding-service.js";
 import { buildMemoryPlugins, getInternalGatewayUrl } from "../config/index.js";
 
@@ -88,6 +89,7 @@ export async function resolveAgentOptions(
   agentId: string,
   baseOptions: Record<string, any>,
 	agentSettingsStore?: AgentSettingsStore,
+	organizationId?: string,
 ): Promise<Record<string, any>> {
   if (!agentSettingsStore) {
     return { ...baseOptions };
@@ -98,23 +100,30 @@ export async function resolveAgentOptions(
     return { ...baseOptions };
   }
 
-  const effectiveProviders = settings.installedProviders || [];
-
   const mergedOptions: Record<string, any> = { ...baseOptions };
-  const effectiveModelRef = resolveEffectiveModelRef(settings);
+
+  // Layered model fallback: behavior override → agent default → org default.
+  // A per-behavior override arrives as baseOptions.model (injected at enqueue)
+  // and wins; otherwise resolve agent.defaultModel, then the org default. Only
+  // when all three are empty do we leave model unset (worker surfaces an
+  // actionable "no model" error).
+  const behaviorOverride =
+    typeof baseOptions.model === "string" ? baseOptions.model.trim() : "";
+  const effectiveModelRef =
+    behaviorOverride ||
+    (await composeEffectiveModelRef(
+      settings,
+      organizationId,
+      getOrgDefaultModel,
+    ));
   logger.info(
-    {
-      agentId,
-      configuredModel: settings.model,
-      effectiveModel: effectiveModelRef,
-    },
+    { agentId, behaviorOverride: behaviorOverride || undefined, effectiveModel: effectiveModelRef },
 		"Applying agent settings",
   );
 
   if (effectiveModelRef) {
     mergedOptions.model = effectiveModelRef;
-  } else if (effectiveProviders.length > 0) {
-    // Auto mode with installed providers: let worker resolve default model.
+  } else {
     delete mergedOptions.model;
   }
 
@@ -227,6 +236,8 @@ export async function resolveAgentId(params: {
   agentId: string;
   source: "binding" | "connection";
   organizationId?: string;
+  /** Per-binding model override (Listen behavior), when routed via a binding. */
+  model?: string;
 } | null> {
   const {
     platform,
@@ -266,6 +277,7 @@ export async function resolveAgentId(params: {
         agentId: binding.agentId,
         source: "binding",
         organizationId: binding.organizationId,
+        model: binding.model,
       };
     }
   }

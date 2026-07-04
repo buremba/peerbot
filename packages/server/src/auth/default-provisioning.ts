@@ -139,7 +139,7 @@ async function backfillDefaultAgent(
 	client: DbClient,
 ): Promise<void> {
 	const rows = (await client`
-    SELECT owner_platform, owner_user_id, installed_providers, model, model_selection
+    SELECT owner_platform, owner_user_id, installed_providers, model
       FROM agents
      WHERE organization_id = ${organizationId}
        AND id = ${DEFAULT_AGENT_ID}
@@ -149,7 +149,6 @@ async function backfillDefaultAgent(
 		owner_user_id: string | null;
 		installed_providers: unknown;
 		model: string | null;
-		model_selection: { mode?: string; pinnedModel?: string } | null;
 	}>;
 	const row = rows[0];
 	if (!row) return;
@@ -168,20 +167,13 @@ async function backfillDefaultAgent(
 
 	const modelEmpty = !row.model || String(row.model).trim() === "";
 	const configuredModel = modelEmpty ? null : String(row.model).trim();
-	const selectionMode = row.model_selection?.mode;
-	const needsSelectionFix = !!configuredModel && selectionMode === "auto";
 	const needsOwnerFix =
 		ownerUserId &&
 		(row.owner_user_id !== ownerUserId || row.owner_platform !== "external");
 	const needsProvidersFix = providersEmpty;
 	const needsModelFix = modelEmpty;
 
-	if (
-		needsOwnerFix ||
-		needsProvidersFix ||
-		needsModelFix ||
-		needsSelectionFix
-	) {
+	if (needsOwnerFix || needsProvidersFix || needsModelFix) {
 		const resolved =
 			needsModelFix || needsProvidersFix
 				? await resolveSystemKeyProvidersAndModel()
@@ -218,11 +210,7 @@ async function backfillDefaultAgent(
 		const writeProviders =
 			needsProvidersFix || nextProviders.length !== existingProviders.length;
 		const writeModel = modelEmpty && !!newModel;
-		const writeSelection = (writeModel || needsSelectionFix) && !!newModel;
 
-		const pinnedSelection = newModel
-			? { mode: "pinned" as const, pinnedModel: newModel }
-			: null;
 		await client`
       UPDATE agents SET
         owner_platform = ${needsOwnerFix ? "external" : row.owner_platform},
@@ -231,8 +219,6 @@ async function backfillDefaultAgent(
           THEN ${client.json(nextProviders)} ELSE installed_providers END,
         model = CASE WHEN ${writeModel}
           THEN ${newModel} ELSE model END,
-        model_selection = CASE WHEN ${writeSelection}
-          THEN ${client.json(pinnedSelection!)} ELSE model_selection END,
         updated_at = NOW()
       WHERE organization_id = ${organizationId}
         AND id = ${DEFAULT_AGENT_ID}
@@ -245,8 +231,7 @@ async function backfillDefaultAgent(
 				providersAdded: writeProviders
 					? nextProviders.map((p) => p.providerId)
 					: [],
-				modelPinned: writeModel ? newModel : undefined,
-				selectionFixed: writeSelection,
+				modelSet: writeModel ? newModel : undefined,
 			},
 			"[default-provisioning] Backfilled default agent",
 		);
@@ -345,21 +330,19 @@ export async function ensureDefaultAgent(
 				: null;
 
 		// Insert the default agent. The PK is (organization_id, id) so we can
-		// ON CONFLICT DO NOTHING to guard against a parallel boot.
-		const pinnedSelection = resolved.model
-			? { mode: "pinned" as const, pinnedModel: resolved.model }
-			: {};
+		// ON CONFLICT DO NOTHING to guard against a parallel boot. `model` is the
+		// agent's single defaultModel ref (a `provider/model` string or "auto");
+		// the old model_selection/provider_model_preferences fields are gone.
 		await client`
       INSERT INTO agents (
         id, organization_id, name, identity_md,
         owner_platform, owner_user_id,
-        installed_providers, model, model_selection,
+        installed_providers, model,
         created_at, updated_at
       ) VALUES (
         ${DEFAULT_AGENT_ID}, ${organizationId}, ${DEFAULT_AGENT_NAME}, ${DEFAULT_AGENT_IDENTITY},
         'external', ${ownerUserId},
         ${client.json(resolved.providers)}, ${resolved.model},
-        ${client.json(pinnedSelection)},
         NOW(), NOW()
       )
       ON CONFLICT (organization_id, id) DO NOTHING

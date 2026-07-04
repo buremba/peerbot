@@ -13,9 +13,11 @@ import {
 import {
   createInferenceProvider,
   getInferenceProviderBySlug,
+  getOrgDefaultModel,
   listInferenceProviders,
   resolveInferenceProviderConfig,
   rotateInferenceProviderKey,
+  setInferenceProviderDefault,
   softDeleteInferenceProvider,
   updateInferenceProviderCapabilities,
 } from '../provider-secrets';
@@ -133,5 +135,44 @@ describe('inference-provider store', () => {
       { model: 'x' }
     );
     expect(res).toBeNull();
+  });
+
+  it('org default: flags one row and getOrgDefaultModel reads its text model', async () => {
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: 'openai',
+      kind: 'openai',
+      apiKey: 'k1',
+      capabilities: { text: { model: 'gpt-x' } },
+    });
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: 'groq',
+      kind: 'groq',
+      apiKey: 'k2',
+      capabilities: { text: { model: 'llama-y' } },
+    });
+
+    // No default yet → no org default model.
+    expect(await getOrgDefaultModel(ORG)).toBeNull();
+
+    // Mark openai the default → its text model is the org default.
+    expect(await setInferenceProviderDefault(ORG, 'openai')).toBe(true);
+    expect(await getOrgDefaultModel(ORG)).toBe('gpt-x');
+    expect(
+      (await listInferenceProviders(ORG)).find((p) => p.slug === 'openai')
+        ?.isDefault
+    ).toBe(true);
+
+    // Switching the default clears the prior one (one live default per org).
+    expect(await setInferenceProviderDefault(ORG, 'groq')).toBe(true);
+    expect(await getOrgDefaultModel(ORG)).toBe('llama-y');
+    const after = await listInferenceProviders(ORG);
+    expect(after.find((p) => p.slug === 'openai')?.isDefault).toBe(false);
+    expect(after.find((p) => p.slug === 'groq')?.isDefault).toBe(true);
+  });
+
+  it('setInferenceProviderDefault returns false for a missing slug', async () => {
+    expect(await setInferenceProviderDefault(ORG, 'does-not-exist')).toBe(false);
   });
 });

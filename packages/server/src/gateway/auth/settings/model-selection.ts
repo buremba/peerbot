@@ -1,130 +1,46 @@
-import type {
-  AgentSettings,
-  ModelSelectionState,
-  ProviderModelPreferences,
-} from "@lobu/core";
+import type { AgentSettings } from "@lobu/core";
 
-function normalizePreferenceMap(
-  map: ProviderModelPreferences | undefined
-): ProviderModelPreferences {
-  const normalized: ProviderModelPreferences = {};
-  for (const [providerId, modelRef] of Object.entries(map || {})) {
-    const cleanProviderId = providerId.trim();
-    const cleanModelRef = modelRef.trim();
-    if (!cleanProviderId || !cleanModelRef) continue;
-    normalized[cleanProviderId] = cleanModelRef;
-  }
-  return normalized;
-}
+/**
+ * Reads the org's default model — the fallback tail. Injected (not imported) so
+ * the resolver stays pure and DB-agnostic; the runtime passes
+ * `getOrgDefaultModel` from the provider-secrets store.
+ */
+export type OrgDefaultModelReader = (
+  organizationId: string,
+) => Promise<string | null>;
 
-function extractProviderIdFromModelRef(
-  modelRef: string | undefined
-): string | undefined {
-  const clean = modelRef?.trim();
-  if (!clean) return undefined;
-  const slashIndex = clean.indexOf("/");
-  if (slashIndex <= 0) return undefined;
-  return clean.slice(0, slashIndex);
-}
-
-export function getModelSelectionState(
-  settings: Pick<AgentSettings, "model" | "modelSelection"> | null | undefined
-): ModelSelectionState {
-  const mode = settings?.modelSelection?.mode;
-  const explicitPinnedModel = settings?.modelSelection?.pinnedModel?.trim();
-  const legacyModel = settings?.model?.trim();
-
-  if (mode === "auto") {
-    return { mode: "auto" };
-  }
-
-  if (mode === "pinned" && explicitPinnedModel) {
-    return { mode: "pinned", pinnedModel: explicitPinnedModel };
-  }
-
-  if (legacyModel) {
-    return { mode: "pinned", pinnedModel: legacyModel };
-  }
-
-  return { mode: "auto" };
-}
-
+/**
+ * The agent-layer model ref — the middle of the layered fallback
+ * `behavior → agent → org default`. Pure and synchronous: it returns the agent's
+ * own `defaultModel` (a `provider/model` ref or the literal "auto"), or undefined
+ * when the agent pins no model. The caller composes the tail:
+ * `resolveEffectiveModelRef(settings) ?? await getOrgDefaultModel(orgId)`.
+ *
+ * The per-behavior override sits ABOVE this and is injected at run-enqueue into
+ * `agentOptions.model` (so it wins before this is consulted).
+ */
 export function resolveEffectiveModelRef(
-  settings:
-    | Pick<
-        AgentSettings,
-        | "model"
-        | "modelSelection"
-        | "installedProviders"
-        | "providerModelPreferences"
-      >
-    | null
-    | undefined
+  settings: Pick<AgentSettings, "defaultModel"> | null | undefined,
 ): string | undefined {
-  if (!settings) return undefined;
-
-  const state = getModelSelectionState(settings);
-  const installedProviderIds = new Set(
-    (settings.installedProviders || []).map((p) => p.providerId)
-  );
-
-  if (state.mode === "pinned" && state.pinnedModel) {
-    const pinnedProviderId = extractProviderIdFromModelRef(state.pinnedModel);
-    if (pinnedProviderId && installedProviderIds.has(pinnedProviderId)) {
-      return state.pinnedModel;
-    }
-  }
-
-  const primaryProviderId = settings.installedProviders?.[0]?.providerId;
-  if (!primaryProviderId) return undefined;
-
-  const preferences = normalizePreferenceMap(settings.providerModelPreferences);
-  return preferences[primaryProviderId];
+  const model = settings?.defaultModel?.trim();
+  return model ? model : undefined;
 }
 
-export function reconcileModelSelectionForInstalledProviders(
-  settings: Pick<
-    AgentSettings,
-    | "model"
-    | "modelSelection"
-    | "installedProviders"
-    | "providerModelPreferences"
-  >
-): Pick<
-  AgentSettings,
-  "model" | "modelSelection" | "providerModelPreferences"
-> {
-  const installedProviderIds = new Set(
-    (settings.installedProviders || []).map((p) => p.providerId)
-  );
-  const currentState = getModelSelectionState(settings);
-  const normalizedPrefs = normalizePreferenceMap(
-    settings.providerModelPreferences
-  );
-  const filteredPrefs: ProviderModelPreferences = {};
-
-  for (const [providerId, modelRef] of Object.entries(normalizedPrefs)) {
-    if (installedProviderIds.has(providerId)) {
-      filteredPrefs[providerId] = modelRef;
-    }
-  }
-
-  const pinnedProviderId = extractProviderIdFromModelRef(
-    currentState.pinnedModel
-  );
-  const hasPinnedProvider =
-    currentState.mode === "pinned" &&
-    !!pinnedProviderId &&
-    installedProviderIds.has(pinnedProviderId);
-
-  const nextState: ModelSelectionState = hasPinnedProvider
-    ? { mode: "pinned", pinnedModel: currentState.pinnedModel }
-    : { mode: "auto" };
-
-  return {
-    modelSelection: nextState,
-    model: nextState.mode === "pinned" ? nextState.pinnedModel : undefined,
-    providerModelPreferences:
-      Object.keys(filteredPrefs).length > 0 ? filteredPrefs : undefined,
-  };
+/**
+ * Compose the full layered fallback for a run: the caller has already applied any
+ * per-behavior override (it wins upstream, injected into the run's `model`
+ * option), so this resolves `agent.defaultModel → org default`. Returns undefined
+ * only when the agent pins nothing AND the org has no default — the worker then
+ * surfaces its actionable "no model" error. `organizationId` may be undefined
+ * (org-agnostic contexts), in which case only the agent layer is consulted.
+ */
+export async function composeEffectiveModelRef(
+  settings: Pick<AgentSettings, "defaultModel"> | null | undefined,
+  organizationId: string | undefined,
+  getOrgDefaultModel: OrgDefaultModelReader,
+): Promise<string | undefined> {
+  const agentModel = resolveEffectiveModelRef(settings);
+  if (agentModel) return agentModel;
+  if (!organizationId) return undefined;
+  return (await getOrgDefaultModel(organizationId)) ?? undefined;
 }

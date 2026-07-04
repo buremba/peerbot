@@ -114,6 +114,49 @@ describe("runWakeAgentTask chat delivery dispatch", () => {
     expect(msg.platformMetadata.source).toBe("scheduled-job");
   });
 
+  test("injects the per-schedule model override into agentOptions", async () => {
+    await seedChatConnection({ id: "conn-real" });
+    const enqueued: MessagePayload[] = [];
+
+    await runWakeAgentTask(
+      fakeCoreServices(enqueued),
+      payload(
+        {
+          platform: "slack",
+          connectionId: "conn-real",
+          channelId: "C-real",
+          conversationId: "slack:C-real:123",
+          teamId: null,
+          userId: USER,
+        },
+        { model: "openai/gpt-5" }
+      )
+    );
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0].agentOptions).toEqual({ model: "openai/gpt-5" });
+  });
+
+  test("leaves agentOptions empty when no per-schedule model is set", async () => {
+    await seedChatConnection({ id: "conn-real" });
+    const enqueued: MessagePayload[] = [];
+
+    await runWakeAgentTask(
+      fakeCoreServices(enqueued),
+      payload({
+        platform: "slack",
+        connectionId: "conn-real",
+        channelId: "C-real",
+        conversationId: "slack:C-real:123",
+        teamId: null,
+        userId: USER,
+      })
+    );
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0].agentOptions).toEqual({});
+  });
+
   test("forwards a real teamId through to the message payload", async () => {
     await seedChatConnection({ id: "conn-real", externalTenantId: "T-real" });
     const enqueued: MessagePayload[] = [];

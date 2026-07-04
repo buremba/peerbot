@@ -4,70 +4,49 @@ import {
   resolveAgentOptions,
 } from "../services/platform-helpers.js";
 
-describe("resolveAgentOptions model resolution", () => {
-  test("uses pinned model when pinned provider is installed", async () => {
+describe("resolveAgentOptions model resolution (layered fallback)", () => {
+  test("behavior override (baseOptions.model) wins over the agent default", async () => {
     const settingsStore = {
-      getSettings: async () =>
-        ({
-          modelSelection: {
-            mode: "pinned",
-            pinnedModel: "openai/gpt-5",
-          },
-          installedProviders: [{ providerId: "openai", installedAt: 1 }],
-        }) as any,
+      getSettings: async () => ({ defaultModel: "openai/gpt-5" }) as any,
     };
 
     const resolved = await resolveAgentOptions(
       "agent-1",
-      { model: "fallback-model" },
+      { model: "claude/claude-opus-4-8" },
 			settingsStore as any,
+      "org-1",
+    );
+
+    // The per-behavior override is highest priority.
+    expect(resolved.model).toBe("claude/claude-opus-4-8");
+  });
+
+  test("uses the agent defaultModel when no behavior override", async () => {
+    const settingsStore = {
+      getSettings: async () => ({ defaultModel: "openai/gpt-5" }) as any,
+    };
+
+    const resolved = await resolveAgentOptions(
+      "agent-1",
+      {},
+			settingsStore as any,
+      "org-1",
     );
 
     expect(resolved.model).toBe("openai/gpt-5");
   });
 
-  test("uses primary provider preference in auto mode", async () => {
+  test("clears model when neither behavior nor agent nor org sets one (worker throws)", async () => {
     const settingsStore = {
-      getSettings: async () =>
-        ({
-          modelSelection: {
-            mode: "auto",
-          },
-          installedProviders: [
-            { providerId: "chatgpt", installedAt: 1 },
-            { providerId: "claude", installedAt: 2 },
-          ],
-          providerModelPreferences: {
-            chatgpt: "chatgpt/gpt-5",
-            claude: "claude/sonnet",
-          },
-        }) as any,
+      getSettings: async () => ({}) as any,
     };
 
+    // organizationId undefined ⇒ no org lookup ⇒ nothing resolved.
     const resolved = await resolveAgentOptions(
       "agent-1",
-      { model: "fallback-model" },
+      { model: "" },
 			settingsStore as any,
-    );
-
-    expect(resolved.model).toBe("chatgpt/gpt-5");
-  });
-
-  test("clears model in auto mode when providers exist but no preference", async () => {
-    const settingsStore = {
-      getSettings: async () =>
-        ({
-          modelSelection: {
-            mode: "auto",
-          },
-          installedProviders: [{ providerId: "chatgpt", installedAt: 1 }],
-        }) as any,
-    };
-
-    const resolved = await resolveAgentOptions(
-      "agent-1",
-      { model: "fallback-model" },
-			settingsStore as any,
+      undefined,
     );
 
     expect(resolved.model).toBeUndefined();
@@ -236,6 +215,37 @@ describe("resolveAgentId", () => {
     expect(resolved).toEqual({
       agentId: "bound-agent",
       source: "binding",
+    });
+  });
+
+  test("per-binding model override propagates from the binding (Listen behavior)", async () => {
+    const bindingService = {
+      getBindingForConnection: async (
+        _connectionId: string,
+        channelId: string,
+      ) => ({
+        agentId: "bound-agent",
+        platform: "slack",
+        channelId,
+        organizationId: "org-1",
+        model: "openai/gpt-5",
+      }),
+    };
+
+    const resolved = await resolveAgentId({
+      platform: "slack",
+      channelId: "C1",
+      agentId: "connection-agent",
+      connectionId: "conn-1",
+      organizationId: "org-1",
+      channelBindingService: bindingService as any,
+    });
+
+    expect(resolved).toEqual({
+      agentId: "bound-agent",
+      source: "binding",
+      organizationId: "org-1",
+      model: "openai/gpt-5",
     });
   });
 

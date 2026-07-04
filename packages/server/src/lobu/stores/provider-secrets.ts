@@ -105,6 +105,8 @@ export interface InferenceProviderListItem {
 	hasCustomUpstream: boolean;
 	status: string;
 	createdAt: string;
+	/** This row is the org's default inference provider (the model-resolution tail). */
+	isDefault: boolean;
 }
 
 export interface InferenceProviderRow {
@@ -232,6 +234,7 @@ interface RawInferenceProviderRow {
 	has_custom_upstream: boolean;
 	status: string;
 	created_at: string | Date;
+	is_default: boolean;
 }
 
 function mapRow(r: RawInferenceProviderRow): InferenceProviderRow {
@@ -337,7 +340,7 @@ export async function listInferenceProviders(
 	const sql = getDb();
 	const rows = (await sql`
 		SELECT id, slug, kind, display_name, capabilities, has_custom_upstream,
-		       status, created_at
+		       status, created_at, is_default
 		FROM inference_providers
 		WHERE organization_id = ${organizationId} AND deleted_at IS NULL
 		ORDER BY slug
@@ -356,7 +359,59 @@ export async function listInferenceProviders(
 			r.created_at instanceof Date
 				? r.created_at.toISOString()
 				: String(r.created_at),
+		isDefault: r.is_default ?? false,
 	}));
+}
+
+/**
+ * The org's default model — the fallback tail of `behavior → agent → org`. Reads
+ * the `is_default` inference-provider row and returns its text-modality model
+ * (`capabilities.text.model`), or null when the org has no default (or the
+ * default row carries no text model). Callers fall through to the worker's
+ * hard "no model selected" error only when this is null.
+ */
+export async function getOrgDefaultModel(
+	organizationId: string,
+): Promise<string | null> {
+	const sql = getDb();
+	const rows = (await sql`
+		SELECT capabilities
+		FROM inference_providers
+		WHERE organization_id = ${organizationId}
+		  AND is_default AND deleted_at IS NULL
+		LIMIT 1
+	`) as Array<{ capabilities: InferenceCapabilities }>;
+	const model = rows[0]?.capabilities?.text?.model?.trim();
+	return model ? model : null;
+}
+
+/**
+ * Mark one live provider as the org default (clearing any prior default in the
+ * same transaction). The partial unique index guarantees at most one live
+ * default per org; clearing first keeps the switch atomic. Returns false when
+ * the slug has no live row.
+ */
+export async function setInferenceProviderDefault(
+	organizationId: string,
+	slug: string,
+): Promise<boolean> {
+	const sql = getDb();
+	return await sql.begin(async (tx) => {
+		await tx`
+			UPDATE inference_providers
+			SET is_default = false, updated_at = now()
+			WHERE organization_id = ${organizationId}
+			  AND is_default AND deleted_at IS NULL
+		`;
+		const updated = (await tx`
+			UPDATE inference_providers
+			SET is_default = true, updated_at = now()
+			WHERE organization_id = ${organizationId}
+			  AND slug = ${slug} AND deleted_at IS NULL
+			RETURNING id
+		`) as Array<{ id: string | number }>;
+		return updated.length > 0;
+	});
 }
 
 /**

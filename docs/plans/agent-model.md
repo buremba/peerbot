@@ -268,3 +268,83 @@ No new admin/MCP tool is introduced; writes reuse `manage_watchers` /
   from GPT‑5.5.
 - Option A over a workflow builder: GPT‑5.5 ("users should think 'this is a
   behavior that sometimes pauses'"), with the versioned‑step invariant (§6.3).
+
+---
+
+## 10. Model selection — layered fallback (delta, 2026‑07‑04)
+
+Status: **locked; new backend + one migration.** This section is a *delta* to the
+consolidation above — the consolidation itself was zero‑migration; model
+selection is separate work with its own schema change.
+
+### The problem
+Today "what model runs?" is answered by **four interdependent per‑agent fields** —
+`installedProviders` (ordered; `[0]` = primary anchor), `modelSelection`
+(auto|pinned), `providerModelPreferences` (per‑provider preferred model), and
+legacy `model` — reconciled at turn time by `resolveEffectiveModelRef`
+(`gateway/auth/settings/model-selection.ts`). The per‑agent **Providers page**
+edits them and doubles as the credential‑connect surface. Four fields for one
+question is confusing, and the page is heavy. Meanwhile the org **inference‑providers**
+registry (`inference_providers`, #1710) is where infra maps providers — and each
+row already carries a per‑modality model at `capabilities.text.model`.
+
+### The model — three optional layers, one chokepoint
+Model choice becomes a **fallback chain**, mapped where infra already lives:
+
+- **Infra (org inference‑providers)** — infra maps providers/models; a user marks
+  one provider row as the org **default**. Its `capabilities.text.model` is the
+  org default model. This is the tail.
+- **Agent** — an optional `defaultModel` (a `provider/model` ref, or `auto`).
+- **Behavior** (Listen/Watch/Schedule) — an optional per‑behavior model.
+
+Resolution: **`behavior.model → agent.defaultModel → org default`.** Nothing is
+required at the agent or behavior level; each layer is an optional override of the
+one below. This *replaces* the four‑field machinery — `installedProviders` /
+`providerModelPreferences` / `modelSelection` / legacy `model` collapse into the
+single agent `defaultModel` plus the org tail.
+
+Both worker channels — the run payload (`mergedOptions.model`) and the
+session‑context `providerConfig.defaultModel` — already derive from the one
+server function `resolveEffectiveModelRef`. So the whole chain is composed there
+(agent → org tail) plus a per‑run injection of `behavior.model` at enqueue. This
+is the resolver cutover the `TODO(inference-providers): remove after resolver
+cutover` marker (`agent-routes.ts`) anticipated.
+
+**Verified channel behavior (E2E, real DB — 2026‑07‑04).** The resolved model
+reaches the worker via **Channel 1** (`resolveAgentOptions` → `agentOptions.model`
+→ `rawOptions.model`) *unconditionally* — it carries `behavior → agent → org`
+regardless of the agent's installed‑provider catalog. **Channel 2**
+(`providerConfig.defaultModel` at `/session-context`) only *surfaces* a
+`defaultModel` when the agent has a routable installed/synthesized provider
+(`getInstalledModules` returns `[]` for an empty catalog → `resolveProviderConfig`
+returns `{}`). So the org‑default takes effect through Channel 1; Channel 2 echoes
+it only when a provider is installed to route through. Both were driven against a
+seeded org default in `worker-session-context-model-fallback.test.ts`.
+
+### The Providers page goes away
+The per‑agent Providers page is removed. Its **model‑selection** half is deleted;
+its **credential‑connect** half (OAuth / API‑key — already org‑scoped after #1715)
+relocates to a Credentials surface. The API surface consolidates: the fused
+`PATCH /:agentId/config` splits so credentials and the lone `defaultModel` write
+are distinct, and the dead `installProvider`/`uninstallProvider`/`reorderProviders`
+catalog methods are removed.
+
+### Decisions & their basis
+- **`auto` survives** as a valid value at every layer — it means "newest live
+  model for this provider" (Claude auto‑tracks the newest release via the OAuth
+  module's live model list). Dropping it would force a manual re‑pick on every
+  model release; the resolution logic already exists.
+- **Org default = a flagged provider row** (`inference_providers.is_default`, one
+  live default per org), not a new `org_settings.defaultModel` string. It reuses
+  the per‑modality `model` field the row already has and adds no new table. An
+  explicit org‑settings model ref was considered and deferred as heavier.
+- **Behavior override storage** rides existing surfaces where possible: Watch
+  reuses the dormant `watchers.model_config`; Schedule rides
+  `scheduled_jobs.action_args`; Listen needs a new `agent_channel_bindings.model`
+  column (it has no config blob today).
+
+### Fail‑closed tail
+Today an unresolved model **hard‑throws** ("No model selected… Providers
+settings") — there is no default tail. The org default becomes that tail; the
+throw remains only when the org itself has no default, with an updated message
+(the Providers page it names no longer exists).

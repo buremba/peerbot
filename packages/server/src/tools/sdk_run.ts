@@ -8,7 +8,7 @@ import { withValidatedArgs } from "./validate-args";
 const SCRIPT_FIELDS = {
   script: Type.String({
     description:
-      "TypeScript source. Must `export default async (ctx, client) => { ... }`. Use `search_sdk` to discover SDK methods.",
+      "TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode }`, `client` is the ClientSDK. The script's return value comes back as `return_value` in the result. Use `search_sdk` to discover SDK methods.",
     minLength: 1,
     maxLength: 100_000,
   }),

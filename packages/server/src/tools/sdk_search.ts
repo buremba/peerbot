@@ -10,10 +10,24 @@ import { METHOD_METADATA, type MethodMetadata } from "../sandbox/method-metadata
 import type { ToolContext } from "./registry";
 import { withValidatedArgs } from "./validate-args";
 
+/**
+ * Namespace index derived from the metadata keys at module load — advertised
+ * in the query description and the no-match hint so a cold client can
+ * enumerate the SDK surface without guessing. Parity with the runtime SDK is
+ * guarded by `sandbox/method-metadata.test.ts`, so this list can't drift.
+ */
+const NAMESPACES = [
+  ...new Set(
+    Object.keys(METHOD_METADATA)
+      .filter((path) => path.includes("."))
+      .map((path) => path.split(".")[0]),
+  ),
+].sort();
+
 export const SdkSearchSchema = Type.Object({
   query: Type.String({
     description:
-      "Method-discovery query. Use a namespace name (e.g. 'watchers') for a listing, a dotted path (e.g. 'watchers.create') for a drill-down, or a free-text term to substring-match across paths and summaries.",
+      `Method-discovery query. Use a namespace name (e.g. 'watchers') for a listing, a dotted path (e.g. 'watchers.create') for a drill-down, or a free-text term to substring-match across paths and summaries. Namespaces: ${NAMESPACES.join(", ")}.`,
     minLength: 1,
   }),
   limit: Type.Optional(
@@ -154,8 +168,7 @@ async function sdkSearchImpl(
       query,
       match_count: 0,
       results: [],
-      notes:
-        "No matches. Try a top-level namespace (entities, watchers, knowledge, organizations) or a verb (create, list, search).",
+      notes: `No matches. Try a namespace (${NAMESPACES.join(", ")}) or a verb (create, list, search).`,
     };
   }
 

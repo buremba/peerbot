@@ -8,9 +8,12 @@ import { getDb } from "../../db/client.js";
 import {
   createInferenceProvider,
   getOrgDefaultModel,
+  listInferenceProviders,
   setInferenceProviderDefault,
+  updateInferenceProviderCapabilities,
 } from "../../lobu/stores/provider-secrets.js";
 import { resolveAgentOptions } from "../services/platform-helpers.js";
+import { ProviderCatalogService } from "../auth/provider-catalog.js";
 import { WorkerGateway } from "../gateway/index.js";
 
 /**
@@ -134,6 +137,41 @@ describe("worker model fallback (real DB, both channels)", () => {
     // Accurate contract: with no ProviderCatalogService, Channel 2 surfaces no
     // defaultModel (the worker uses Channel 1's agentOptions.model instead).
     expect(await sessionContextModel(gateway)).toBeUndefined();
+  });
+
+  test("org default reaches an agent with NO installed providers (custom upstream synthesized)", async () => {
+    // The layered fallback's headline case: an agent that pins nothing and has
+    // NO installedProviders must still get the org default provider synthesized
+    // into its modules — otherwise a custom-upstream org default reaches the
+    // worker as a bare model ref with no base_url/credentials and can't route.
+    const sql = getDb();
+    await sql`DELETE FROM inference_providers WHERE organization_id = ${ORG}`;
+    // A BYO/custom-upstream provider, marked the org default.
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: "byo-default",
+      kind: "openai",
+      apiKey: "sk-byo",
+      capabilities: {
+        text: { base_url: "https://api.byo.example.com", model: "byo-model" },
+      },
+    });
+    await updateInferenceProviderCapabilities(ORG, "byo-default", "text", {
+      base_url: "https://api.byo.example.com",
+      model: "byo-model",
+    });
+    expect(await setInferenceProviderDefault(ORG, "byo-default")).toBe(true);
+
+    const catalog = new ProviderCatalogService(
+      // Agent settings with EMPTY installedProviders — the exact gap.
+      { getSettings: async () => ({ installedProviders: [] }) } as any,
+      {} as any,
+      (org: string) => listInferenceProviders(org),
+    );
+
+    const modules = await catalog.getInstalledModules(AGENT, ORG);
+    // The org default provider must be synthesized despite empty installed set.
+    expect(modules.some((m) => m.providerId === "byo-default")).toBe(true);
   });
 
   afterAll(async () => {

@@ -270,25 +270,22 @@ export class ProviderCatalogService {
       this.agentSettingsStore,
       agentId
     );
-    if (installed.length === 0) return [];
 
     const allModules = getModelProviderModules();
     const moduleMap = new Map(allModules.map((m) => [m.providerId, m]));
 
     // Slugs not backed by a providers.json module may be org-defined inference
     // providers. Load the org's rows once and index by slug so each unmatched
-    // installed slug can be synthesized in install order.
+    // installed slug — AND the org DEFAULT provider — can be synthesized.
     let orgRowsBySlug: Map<string, InferenceProviderListItem> | undefined;
+    let orgDefaultSlug: string | undefined;
     // Protocol per catalog slug, so a synthesized org row routes with the wire
     // protocol its `kind` declares (openai/anthropic/…), not a hardcoded one.
     let sdkCompatByKind: Map<string, SdkCompat> | undefined;
-    if (
-      organizationId &&
-      this.listOrgInferenceProviders &&
-      installed.some((ip) => !moduleMap.has(ip.providerId))
-    ) {
+    if (organizationId && this.listOrgInferenceProviders) {
       const rows = await this.listOrgInferenceProviders(organizationId);
       orgRowsBySlug = new Map(rows.map((r) => [r.slug, r]));
+      orgDefaultSlug = rows.find((r) => r.isDefault)?.slug;
       sdkCompatByKind = new Map();
       for (const entry of buildProviderCatalog()) {
         if (isSdkCompat(entry.sdkCompat)) {
@@ -297,14 +294,25 @@ export class ProviderCatalogService {
       }
     }
 
+    // Resolve providers in install order, then append the org default when it
+    // isn't already covered. The default must reach the worker even for an agent
+    // with NO installed providers — that is the exact case the org-default
+    // fallback exists to serve (behavior → agent → ORG default). Without this a
+    // bare-config agent gets a routable model ref (`slug/model`) but no provider
+    // config/credentials, so the run can't route to a custom upstream.
+    const providerIds = installed.map((ip) => ip.providerId);
+    if (orgDefaultSlug && !providerIds.includes(orgDefaultSlug)) {
+      providerIds.push(orgDefaultSlug);
+    }
+
     const resolved: ModelProviderModule[] = [];
-    for (const ip of installed) {
-      const staticModule = moduleMap.get(ip.providerId);
+    for (const providerId of providerIds) {
+      const staticModule = moduleMap.get(providerId);
       if (staticModule) {
         resolved.push(staticModule);
         continue;
       }
-      const row = orgRowsBySlug?.get(ip.providerId);
+      const row = orgRowsBySlug?.get(providerId);
       if (row) {
         // Resolve the row's protocol from its catalog `kind`. Unknown/absent ⇒
         // default to openai (legacy rows created before kind carried a

@@ -11,5 +11,5 @@ ALTER TABLE agents DROP COLUMN IF EXISTS model_selection;
 ALTER TABLE agents DROP COLUMN IF EXISTS provider_model_preferences;
 
 -- migrate:down
-ALTER TABLE agents ADD COLUMN model_selection jsonb DEFAULT '{}'::jsonb;
-ALTER TABLE agents ADD COLUMN provider_model_preferences jsonb DEFAULT '{}'::jsonb;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS model_selection jsonb DEFAULT '{}'::jsonb;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS provider_model_preferences jsonb DEFAULT '{}'::jsonb;

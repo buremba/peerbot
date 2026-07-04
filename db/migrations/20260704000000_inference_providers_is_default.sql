@@ -10,7 +10,7 @@
 -- path (app, backfill, raw update) can leave two defaults live.
 
 ALTER TABLE public.inference_providers
-    ADD COLUMN is_default boolean NOT NULL DEFAULT false;
+    ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false;
 
 -- squawk-ignore require-concurrent-index-creation -- partial unique over a tiny per-org table; dbmate wraps in a transaction
 CREATE UNIQUE INDEX IF NOT EXISTS inference_providers_org_default_live
@@ -19,6 +19,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS inference_providers_org_default_live
 
 -- migrate:down
 
+-- squawk-ignore require-concurrent-index-deletion -- down runs inside dbmate's txn; CONCURRENTLY can't run in a transaction
 DROP INDEX IF EXISTS inference_providers_org_default_live;
 
 ALTER TABLE public.inference_providers

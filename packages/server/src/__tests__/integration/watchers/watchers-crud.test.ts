@@ -105,6 +105,109 @@ describe('watcher CRUD', () => {
     expect(got.watcher?.entity_id ?? null).toBeNull();
   });
 
+  it('derives sources[] from @-mention tokens in the prompt (no sources sent)', async () => {
+    // The owletto composer serializes a picked reference into the prompt as an
+    // inline `@[kind:id:label](path)` token and sends ONLY the raw prompt — the
+    // backend derives sources[]. A `sql` token carries its query URL-encoded in
+    // the path (`#sql=…`); we use it here because it resolves without any seeded
+    // feed/connection (a raw-SQL source is a valid custom source).
+    const query = 'SELECT id, payload_text FROM events ORDER BY occurred_at DESC';
+    const sqlPath = `#sql=${encodeURIComponent(query).replace(
+      /[()'!*~]/g,
+      (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+    )}`;
+    const prompt = `Summarize @[sql:recent:Recent events](${sqlPath}) each morning.`;
+
+    const created = (await owner.watchers.create({
+      entity_id: entityId,
+      slug: 'prompt-derived-sources-watcher',
+      name: 'Prompt Derived Sources Watcher',
+      prompt,
+      agent_id: agentId,
+      // NOTE: no `sources` — the backend must derive them from the prompt token.
+    })) as { watcher_id: string };
+
+    const got = (await owner.watchers.get(created.watcher_id)) as {
+      watcher?: { sources?: Array<{ name: string; query: string }> | null };
+    };
+    expect(got.watcher?.sources).toEqual([
+      { name: 'recent_events', query },
+    ]);
+
+    await owner.watchers.delete([created.watcher_id]);
+  });
+
+  it('re-derives sources on a version bump — an edited SQL chip replaces (not strands) the old query', async () => {
+    // Regression: create_version used to UNION prompt-derived sources with the
+    // stored ones, so editing a SQL chip left the OLD query running under the
+    // original name and added the new one under a suffixed name. The prompt must
+    // be the single source of truth: the new prompt's tokens are authoritative.
+    const enc = (q: string) =>
+      `#sql=${encodeURIComponent(q).replace(
+        /[()'!*~]/g,
+        (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+      )}`;
+    const oldQuery = 'SELECT id FROM events WHERE payload_type = \'a\'';
+    const newQuery = 'SELECT id FROM events WHERE payload_type = \'b\'';
+
+    const created = (await owner.watchers.create({
+      entity_id: entityId,
+      slug: 'sql-edit-rederive-watcher',
+      name: 'SQL Edit Rederive Watcher',
+      prompt: `Watch @[sql:recent:Recent](${enc(oldQuery)}).`,
+      agent_id: agentId,
+    })) as { watcher_id: string };
+
+    // Edit the SQL chip: same label/name, new query — a new prompt version.
+    await owner.watchers.createVersion({
+      watcher_id: created.watcher_id,
+      prompt: `Watch @[sql:recent:Recent](${enc(newQuery)}).`,
+      change_notes: 'edit sql',
+    });
+
+    const got = (await owner.watchers.get(created.watcher_id)) as {
+      watcher?: { sources?: Array<{ name: string; query: string }> | null };
+    };
+    // Exactly one source, carrying the NEW query — the old one is gone, not
+    // stranded under `recent`, and there is no `recent_2`.
+    expect(got.watcher?.sources).toEqual([{ name: 'recent', query: newQuery }]);
+
+    await owner.watchers.delete([created.watcher_id]);
+  });
+
+  it('clears sources when an edited prompt removes every @-mention chip', async () => {
+    // Regression: an edited prompt (args.prompt provided) with NO source tokens
+    // must yield an empty sources[] — removing all chips clears sources. It must
+    // NOT fall back to the stored sources (that fallback is only for a bump that
+    // did not touch the prompt, e.g. a schedule-only change).
+    const enc = (q: string) =>
+      `#sql=${encodeURIComponent(q).replace(
+        /[()'!*~]/g,
+        (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+      )}`;
+    const created = (await owner.watchers.create({
+      entity_id: entityId,
+      slug: 'clear-sources-on-edit-watcher',
+      name: 'Clear Sources On Edit Watcher',
+      prompt: `Watch @[sql:recent:Recent](${enc('SELECT id FROM events')}).`,
+      agent_id: agentId,
+    })) as { watcher_id: string };
+
+    // New prompt with the chip removed → sources must become empty.
+    await owner.watchers.createVersion({
+      watcher_id: created.watcher_id,
+      prompt: 'Just watch everything, no specific source.',
+      change_notes: 'remove chip',
+    });
+
+    const got = (await owner.watchers.get(created.watcher_id)) as {
+      watcher?: { sources?: Array<{ name: string; query: string }> | null };
+    };
+    expect(got.watcher?.sources ?? []).toEqual([]);
+
+    await owner.watchers.delete([created.watcher_id]);
+  });
+
   it('round-trips execution_config through create → list → update', async () => {
     const created = (await owner.watchers.create({
       entity_id: entityId,

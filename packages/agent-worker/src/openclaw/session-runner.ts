@@ -56,6 +56,7 @@ import {
 } from "./plugin-loader";
 import type { OpenClawProgressProcessor } from "./processor";
 import { activeToolNames } from "./active-tool-names";
+import { buildRefContextHint } from "./lobu-refs";
 import { getOpenClawSessionContext } from "./session-context";
 import {
   buildToolPolicy,
@@ -1502,7 +1503,13 @@ user references earlier discussion or you need prior context.`);
           ).trim()
         : "";
 
-    const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${userPrompt}`;
+    // Turn any inline LobuRef tokens (@[kind:label](path)) the composer
+    // serialized into a short "these objects were referenced" hint, so the
+    // agent knows to resolve them with its tools. (Full pre-resolution is a
+    // planned follow-up needing gateway access in the plugin hook.)
+    const refContextHint = buildRefContextHint(userPrompt);
+
+    const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${refContextHint ? `${refContextHint}\n\n` : ""}${userPrompt}`;
 
     // Load image attachments for vision-capable models
     const images = await loadImageAttachments();

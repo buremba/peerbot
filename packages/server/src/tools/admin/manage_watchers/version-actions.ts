@@ -7,6 +7,10 @@ import { getDb } from '../../../db/client';
 import { nextRunAt, validateSchedule } from '../../../utils/cron';
 import { resolveUsernames } from '../../../utils/resolve-usernames';
 import { getNextNumericId } from '../helpers/db-helpers';
+import {
+  extractSourcesFromPromptTokens,
+  mergePromptSources,
+} from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
 import type { ManageWatchersArgs, ManageWatchersResult } from '../manage_watchers';
 import {
@@ -75,17 +79,31 @@ export async function handleCreateVersion(
   }
   const prev = prevRows[0] as Record<string, unknown>;
 
+  const promptEdited = args.prompt !== undefined;
   const prompt = args.prompt ?? (prev.prompt as string);
-  // Sources are per-assignment now. When the caller omits args.sources we
-  // keep the seed watcher's existing sources; we deliberately do not fall
-  // back to prev.version_sources from the prior version row, because
-  // version_sources is no longer written and is a vestigial column.
+  // Sources derivation on a version bump. The prompt is the single source of
+  // truth for prompt-derived sources: the current prompt's `@`-mention tokens
+  // are authoritative, so we derive fresh from `prompt` and do NOT union with
+  // the stored sources — otherwise a deleted chip's source would linger forever
+  // and an edited SQL chip would leave its OLD query running under the original
+  // name (union-merge is monotonic; it can only add). We union ONLY explicit
+  // `args.sources` (an API caller that passes sources directly, not the UI which
+  // sends just the prompt).
+  const promptSources = extractSourcesFromPromptTokens(prompt);
+  const explicitSources = args.sources ?? [];
+  const derived = mergePromptSources(explicitSources, promptSources);
+  // When the caller EDITED the prompt, the derived set is authoritative even if
+  // empty — removing every source chip must clear the sources, not silently keep
+  // the stale stored ones. Only fall back to the stored sources for a bump that
+  // did NOT touch the prompt (e.g. a schedule-only change), so a legacy watcher's
+  // sources survive a metadata edit.
   const sources =
-    args.sources ??
-    normalizeStoredJsonField(
-      watcherRows[0].sources,
-      [] as Array<{ name: string; query: string }>
-    );
+    promptEdited || derived.length > 0
+      ? derived
+      : normalizeStoredJsonField(
+          watcherRows[0].sources,
+          [] as Array<{ name: string; query: string }>
+        );
   const keyingConfig =
     parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config') ??
     normalizeStoredJsonField(prev.keying_config, undefined as Record<string, unknown> | undefined);

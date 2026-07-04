@@ -99,6 +99,119 @@ export function parseWatcherSourceRef(query: string): WatcherSourceRef | null {
   }
 }
 
+// ── Prompt-token extraction ────────────────────────────────────────────────
+// The owletto composer serializes a picked reference into the watcher prompt as
+// an inline token `@[kind:id:label](path)` (see owletto's src/lib/references.ts,
+// mirrored in agent-worker's lobu-refs.ts). The backend — not the frontend —
+// derives the watcher's `sources[]` from these tokens, so the UI just sends the
+// raw prompt and there is no client/server gap. This is a small local mirror of
+// the codec because the server cannot import the owletto submodule.
+const PROMPT_REF_TOKEN = /@\[([a-z]+):([^:\]]*):([^\]]*)\]\(([^)\s]*)\)/g;
+const SQL_PATH_PREFIX = '#sql=';
+
+/** Which prompt-token kinds become a watcher source, and the `@mode` each uses.
+ *  `entity` scopes the watcher (not a source); `sql` is handled separately (its
+ *  query rides inline in the path). watcher/member/event never become sources. */
+const PROMPT_KIND_TO_MODE: Record<string, string> = {
+  feed: 'feed',
+  connection: 'connection',
+  connector: 'connector',
+  channel: 'channel',
+  metric: 'metric',
+};
+
+/** Slugify a token label into a safe output-field name. */
+function promptSourceSlug(value: string): string {
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'source'
+  );
+}
+
+/**
+ * Derive watcher `sources[]` from the `@`-mention tokens in a prompt. Each
+ * feed/connection/connector/metric token becomes `{ name, query: '@mode:id' }`;
+ * a `sql` token carries its raw query URL-encoded in the path (`#sql=…`), which
+ * is decoded to the SELECT itself. Entities are excluded (they scope the
+ * watcher). De-dupes by query; names are made unique with a numeric suffix.
+ *
+ * Returns [] for a prompt with no source tokens. Malformed tokens are skipped
+ * rather than thrown — the downstream `assertWatcherSourcesResolve` is what
+ * enforces that every derived source actually resolves against the org.
+ */
+export function extractSourcesFromPromptTokens(prompt: string): WatcherSource[] {
+  const sources: WatcherSource[] = [];
+  const seenQuery = new Set<string>();
+  const usedNames = new Set<string>();
+
+  const push = (label: string, fallback: string, query: string) => {
+    if (seenQuery.has(query)) return;
+    seenQuery.add(query);
+    let name = promptSourceSlug(label || fallback);
+    if (usedNames.has(name)) {
+      let i = 2;
+      while (usedNames.has(`${name}_${i}`)) i += 1;
+      name = `${name}_${i}`;
+    }
+    usedNames.add(name);
+    sources.push({ name, query });
+  };
+
+  for (const m of prompt.matchAll(PROMPT_REF_TOKEN)) {
+    const [, kind, id, label, path] = m;
+    if (!kind) continue;
+    if (kind === 'sql') {
+      if (!path?.startsWith(SQL_PATH_PREFIX)) continue;
+      let query: string;
+      try {
+        query = decodeURIComponent(path.slice(SQL_PATH_PREFIX.length)).trim();
+      } catch {
+        continue;
+      }
+      if (!query) continue;
+      push(label ?? '', 'sql_source', query);
+      continue;
+    }
+    const mode = PROMPT_KIND_TO_MODE[kind];
+    if (!mode) continue;
+    const value = (id ?? '').trim();
+    if (!value) continue;
+    push(label ?? '', value, `@${mode}:${value}`);
+  }
+
+  return sources;
+}
+
+/**
+ * Merge prompt-derived sources into an explicit sources list, de-duping by
+ * query and keeping output-field names unique. Explicit sources win (they keep
+ * their names/order); prompt sources fill in the rest.
+ */
+export function mergePromptSources(
+  explicit: WatcherSource[],
+  fromPrompt: WatcherSource[]
+): WatcherSource[] {
+  const merged = [...explicit];
+  const seenQuery = new Set(explicit.map((s) => s.query.trim()));
+  const usedNames = new Set(explicit.map((s) => s.name));
+  for (const src of fromPrompt) {
+    if (seenQuery.has(src.query.trim())) continue;
+    seenQuery.add(src.query.trim());
+    let name = src.name;
+    if (usedNames.has(name)) {
+      let i = 2;
+      while (usedNames.has(`${name}_${i}`)) i += 1;
+      name = `${name}_${i}`;
+    }
+    usedNames.add(name);
+    merged.push({ name, query: src.query });
+  }
+  return merged;
+}
+
 export function watcherSourceKindForRef(ref: WatcherSourceRef | null): WatcherSourceKind {
   if (!ref) return 'event';
   if (ref.type === 'entity') return 'entity';

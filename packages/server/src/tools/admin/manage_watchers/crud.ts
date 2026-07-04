@@ -30,6 +30,10 @@ import {
   type WatcherOperationResult,
 } from './shared';
 import { getErrorMessage } from "@lobu/core";
+import {
+  extractSourcesFromPromptTokens,
+  mergePromptSources,
+} from '../../../watchers/source-refs';
 
 // ============================================
 // handleCreate
@@ -72,10 +76,17 @@ export async function handleCreate(
   const keyingConfig = parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config');
   const classifiers = parseJsonInput<unknown[]>(args.classifiers, 'classifiers');
 
-  // Build sources array - use provided sources or create default
+  // Build sources array. Sources are authored two ways and merged here:
+  //   1. `@`-mention tokens in the prompt (the owletto composer's primary path)
+  //      — the backend derives them so the UI sends only the raw prompt.
+  //   2. explicit `args.sources` (API callers / legacy).
+  // If neither yields anything, fall back to a default all-events source.
+  const promptSources = extractSourcesFromPromptTokens(args.prompt);
+  const explicitSources = args.sources ?? [];
+  const merged = mergePromptSources(explicitSources, promptSources);
   const sources: Array<{ name: string; query: string }> =
-    args.sources && args.sources.length > 0
-      ? args.sources
+    merged.length > 0
+      ? merged
       : [{ name: 'content', query: 'SELECT * FROM events ORDER BY occurred_at DESC' }];
 
   // Validate watcher config

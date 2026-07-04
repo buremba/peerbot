@@ -38,6 +38,7 @@ import {
 	type InferenceCapabilityBlock,
 	isInferenceModality,
 	isValidInferenceProviderSlug,
+	listInferenceProviderModels,
 	listInferenceProviders,
 	providerOrgSecretName,
 	rotateInferenceProviderKey,
@@ -474,6 +475,23 @@ routes.get('/inference-providers/catalog', async (c) => {
     );
     return c.json({ catalog: [] });
   }
+});
+
+// Live model list for ONE org provider — GET its upstream `/models` endpoint
+// (BYO / OpenAI-compatible providers only) so the model picker can offer every
+// model the provider serves, as `slug/model` refs. Returns `{ models: [] }` for
+// providers with no custom upstream / models_endpoint, or on any upstream
+// failure (the picker then falls back to the provider's single pinned model).
+// Registered before any `/:agentId` route so the literal path matches.
+routes.get('/inference-providers/:slug/models', async (c) => {
+  const orgId = requireOrgId(c);
+  if (typeof orgId !== 'string') return orgId;
+  const slug = c.req.param('slug');
+  if (!isValidInferenceProviderSlug(slug)) {
+    return c.json({ error: 'invalid_slug', models: [] }, 400);
+  }
+  const models = await listInferenceProviderModels(orgId, slug);
+  return c.json({ models });
 });
 
 // ── Org-scoped LLM-provider OAuth (subscription login) ───────────────────────

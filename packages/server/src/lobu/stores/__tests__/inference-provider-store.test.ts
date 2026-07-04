@@ -5,7 +5,7 @@
  * list → read-key → merge-capabilities → soft-delete → recreate cycle.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   cleanupTestDatabase,
   getTestDb,
@@ -14,6 +14,7 @@ import {
   createInferenceProvider,
   getInferenceProviderBySlug,
   getOrgDefaultModel,
+  listInferenceProviderModels,
   listInferenceProviders,
   resolveInferenceProviderConfig,
   rotateInferenceProviderKey,
@@ -192,5 +193,88 @@ describe('inference-provider store', () => {
     // A no-op on a missing slug must leave the current default intact.
     expect(await setInferenceProviderDefault(ORG, 'ghost')).toBe(false);
     expect(await getOrgDefaultModel(ORG)).toBe('openai/gpt-x');
+  });
+
+  it('listInferenceProviderModels fetches a BYO provider\'s /models as slug/model refs', async () => {
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: 'byo',
+      kind: 'openai',
+      apiKey: 'sk-byo',
+      capabilities: {
+        text: {
+          base_url: 'https://api.example.com',
+          model: 'default-model',
+          models_endpoint: '/models',
+        },
+      },
+    });
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            object: 'list',
+            data: [{ id: 'model-a' }, { id: 'model-b' }, { id: '' }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      );
+
+    try {
+      const models = await listInferenceProviderModels(ORG, 'byo');
+      // base_url + models_endpoint joined, Bearer key sent.
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.example.com/models',
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: 'Bearer sk-byo' }),
+        })
+      );
+      // Empty ids dropped; the rest become routable `slug/model` refs.
+      expect(models).toEqual([
+        { value: 'byo/model-a', label: 'model-a' },
+        { value: 'byo/model-b', label: 'model-b' },
+      ]);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('listInferenceProviderModels returns [] for a provider with no custom upstream', async () => {
+    // A catalog-style provider (no base_url / models_endpoint) can't be enumerated
+    // org-scoped — the picker falls back to its single pinned capability model.
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: 'catalogish',
+      kind: 'openai',
+      apiKey: 'k',
+      capabilities: { text: { model: 'gpt-x' } },
+    });
+    expect(await listInferenceProviderModels(ORG, 'catalogish')).toEqual([]);
+  });
+
+  it('listInferenceProviderModels returns [] on an upstream non-2xx', async () => {
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: 'byo2',
+      kind: 'openai',
+      apiKey: 'k',
+      capabilities: {
+        text: {
+          base_url: 'https://api.example.com',
+          model: 'm',
+          models_endpoint: '/models',
+        },
+      },
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('nope', { status: 500 }));
+    try {
+      expect(await listInferenceProviderModels(ORG, 'byo2')).toEqual([]);
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 });

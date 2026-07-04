@@ -54,9 +54,13 @@ export function getConfiguredPublicOrigin(): string | undefined {
  * override when set, otherwise the actual serving origin derived from the
  * request URL. Single source for every "what origin should we stamp here?"
  * call site (OAuth metadata, MCP view-resource domain, reauth links).
+ *
+ * `requestUrl` is required: it is the fallback when no override is configured,
+ * and every caller has a `req.url` to pass. An optional param invited a
+ * `new URL('')` that throws `TypeError: Invalid URL` — a trap, not a default.
  */
-export function resolvePublicOrigin(requestUrl?: string): string {
-  return getConfiguredPublicOrigin() ?? new URL(requestUrl ?? '').origin;
+export function resolvePublicOrigin(requestUrl: string): string {
+  return getConfiguredPublicOrigin() ?? new URL(requestUrl).origin;
 }
 
 /** Configured gateway base, or loopback default for embedded/local boot. */

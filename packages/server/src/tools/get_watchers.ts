@@ -48,6 +48,7 @@ import { buildWatchersUrl, type EntityInfo, getPublicWebUrl } from '../utils/url
 import {
   buildWindowsCountFromClause,
   buildWindowsSelectClause,
+  ensureIsoString,
   ensureNumber,
   foldUnprocessedRanges,
   parseBigintArray,
@@ -763,9 +764,13 @@ async function getWatcherImpl(
       watcher_id: w.watcher_id,
       watcher_name: w.watcher_name,
       granularity: w.granularity,
-      window_start: w.window_start,
-      window_end: w.window_end,
-      content_analyzed: w.content_analyzed,
+      // window_start/end and created_at come back from postgres.js as Date
+      // objects (raw timestamp columns, no ::text cast), while the outputSchema
+      // declares Type.String(). Coerce to ISO so structuredContent validates;
+      // window_start/end are NOT NULL, created_at falls back to window_end.
+      window_start: ensureIsoString(w.window_start) ?? '',
+      window_end: ensureIsoString(w.window_end) ?? '',
+      content_analyzed: ensureNumber(w.content_analyzed),
       extracted_data: extractedData,
       previous_extracted_data: previousExtractedData,
       classification_stats: stats,
@@ -773,7 +778,7 @@ async function getWatcherImpl(
       client_id: w.client_id ?? undefined,
       run_metadata: w.run_metadata ?? undefined,
       execution_time_ms: w.execution_time_ms ?? 0,
-      created_at: w.created_at ?? w.window_end,
+      created_at: ensureIsoString(w.created_at, w.window_end) ?? '',
       version_id: w.version_id ?? undefined,
       reactions: reactionsMap.get(windowIdNum),
     };

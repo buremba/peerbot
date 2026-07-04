@@ -69,7 +69,14 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     // Tools that declare an outputSchema carry it through to the listing...
     expect(byName.get('search_sdk')?.outputSchema?.type).toBe('object');
     expect(byName.get('search_memory')?.outputSchema?.type).toBe('object');
-    expect(byName.get('manage_watchers')?.outputSchema).toBeTruthy();
+    // ...including union-result tools: the MCP spec requires outputSchema to be
+    // an OBJECT schema, so even a discriminated `Type.Union` result must carry
+    // top-level `type: "object"` (a bare `anyOf` — TypeBox's default union
+    // serialization — is what a validating host rejects). The variants stay in
+    // `anyOf` so the client can still tell which one applied.
+    const watchersOut = byName.get('manage_watchers')?.outputSchema;
+    expect(watchersOut?.type).toBe('object');
+    expect(Array.isArray(watchersOut?.anyOf)).toBe(true);
     // ...while tools without one (text-only results) omit it.
     expect(byName.get('save_memory')?.outputSchema).toBeUndefined();
   });

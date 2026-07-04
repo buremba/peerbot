@@ -158,6 +158,45 @@ export function validateToolArgs(toolName: string, schema: TSchema, args: unknow
   return checkAgainst(toolName, schema, args);
 }
 
+/**
+ * Validate (and coerce) a tool's RESULT against its TypeBox output schema,
+ * for the `structuredContent` emission path (MCP spec: declaring `outputSchema`
+ * means the client validates the returned structured result against it).
+ *
+ * Returns the coerced result to emit as `structuredContent`, or `null` when the
+ * result cannot be made to satisfy the schema — the caller then falls back to
+ * text-only so a schema/runtime drift degrades gracefully instead of turning a
+ * successful tool call into a client-side validation error.
+ *
+ * The result is first JSON-normalized (`JSON.parse(JSON.stringify(...))`): this
+ * is exactly the transform the transport applies before the client sees the
+ * `structuredContent`, so we validate the shape the client will actually
+ * receive — and it is load-bearing, because handler results are assembled from
+ * raw SQL rows where a timestamp column is a `Date` (which `Value.Check` against
+ * `Type.String()` REJECTS, but whose JSON form is the ISO string the schema
+ * wants) and a `bigint` count needs its numeric form. A trailing `Value.Convert`
+ * still catches the residual numeric-string drift.
+ *
+ * Unlike the input side there is no per-variant dispatch: result unions are not
+ * uniformly `action`-keyed (e.g. manage_operations splits `execute` by `status`,
+ * and has an `error`-only variant), and `Value.Check` against a `Type.Union`
+ * already passes when ANY member matches — the exact semantics we want here.
+ */
+export function validateToolResult(schema: TSchema, result: unknown): unknown | null {
+  const validator = compileSchema(schema);
+  let normalized: unknown;
+  try {
+    // Mirror the wire transform: Dates → ISO strings, undefined keys dropped,
+    // non-JSON values surfaced. A result that cannot be serialized cannot be
+    // emitted as structuredContent anyway, so fall back to text-only.
+    normalized = JSON.parse(JSON.stringify(result));
+  } catch {
+    return null;
+  }
+  const coerced = Value.Convert(schema, normalized);
+  return validator.Check(coerced) ? coerced : null;
+}
+
 const VALIDATED_BRAND = Symbol.for('lobu.validated-tool-handler');
 
 interface BrandedHandler {

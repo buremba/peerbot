@@ -36,6 +36,7 @@ import {
 } from './mcp-session-state';
 import { type AuthContext, executeTool, extractAuthContext } from './tools/execute';
 import { getAllTools, getTool } from './tools/registry';
+import { validateToolResult } from './tools/validate-args';
 import { formatToolResult } from './formatting/markdown-formatter';
 import { resolvePublicOrigin } from './utils/public-origin';
 import { buildWorkspaceInstructions } from './utils/workspace-instructions';
@@ -270,16 +271,28 @@ function createServerForContext(
       // MCP hosts (Slack/Claude) needs the SERVER to author that view and stamp
       // it here; that is a deliberate follow-up. Until then we return plain text
       // rather than pointing an external host at a bundle it can't feed.
-      // When the tool declares an `outputSchema`, also return the raw result as
+      // When the tool declares an `outputSchema`, also return the result as
       // `structuredContent` (MCP spec: declaring outputSchema implies the result
-      // is structured). Tools without one (manage_agents, save_memory, ...) stay
-      // text-only — the schema is coupled to emission, never declared alone.
+      // is structured — and a spec-compliant client validates it against the
+      // declared schema). Tools without one (manage_agents, save_memory, ...)
+      // stay text-only — the schema is coupled to emission, never declared alone.
+      //
+      // Validate + coerce the result against the schema before emitting: result
+      // types are hand-authored TypeBox schemas but the values are assembled from
+      // raw SQL rows (Dates where the schema says String, counts as bigint, a
+      // NULL where the schema says non-null). `validateToolResult` coerces the
+      // fixable drift and, on an unfixable mismatch, returns null so we fall back
+      // to text-only rather than shipping structuredContent the client rejects —
+      // a successful tool call must never surface as a validation error.
       const tool = getTool(name);
       if (tool?.outputSchema && result && typeof result === 'object') {
-        return {
-          content: [{ type: 'text' as const, text }],
-          structuredContent: result as Record<string, unknown>,
-        };
+        const structured = validateToolResult(tool.outputSchema, result);
+        if (structured !== null) {
+          return {
+            content: [{ type: 'text' as const, text }],
+            structuredContent: structured as Record<string, unknown>,
+          };
+        }
       }
       return { content: [{ type: 'text' as const, text }] };
     } catch (error: any) {

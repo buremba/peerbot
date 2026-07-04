@@ -186,7 +186,16 @@ export async function dispatchChromeActionToExtension(params: {
   );
 
   // (3) Wait for the chrome extension to claim and complete.
-  return waitForDeviceActionRun(runId, organizationId, abortSignal);
+  const result = await waitForDeviceActionRun(runId, organizationId, abortSignal);
+  // `waitForDeviceActionRun` returns `output: unknown` (a device/connector run
+  // can produce any JSON). Chrome actions return object results and this
+  // result's `output` feeds `completeRunInline`, which requires an object, so
+  // narrow here: a non-object output is a protocol violation, floored to `{}`.
+  const output =
+    result.output && typeof result.output === 'object' && !Array.isArray(result.output)
+      ? (result.output as Record<string, unknown>)
+      : undefined;
+  return { ...result, output };
 }
 
 export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {

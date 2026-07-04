@@ -218,6 +218,29 @@ export function ensureNumber(value: bigint | number | string | null | undefined)
 }
 
 /**
+ * Safely convert a timestamp value from a SQL row to an ISO string.
+ *
+ * postgres.js returns `timestamp`/`timestamptz` columns as JS `Date` objects
+ * (not strings) unless the projection casts them to text, so a field typed
+ * `string` in the row interface is a `Date` at runtime. Emitting that raw Date
+ * as `structuredContent` fails a `Type.String()` outputSchema check. Normalize
+ * Date | string to ISO here; `fallback` covers a nullable column (e.g. a window
+ * `created_at` that defaults to its `window_end`). Returns null when neither is
+ * a usable timestamp — callers map that to a nullable schema field.
+ */
+export function ensureIsoString(
+  value: Date | string | null | undefined,
+  fallback?: Date | string | null | undefined
+): string | null {
+  for (const candidate of [value, fallback]) {
+    if (candidate == null) continue;
+    const date = candidate instanceof Date ? candidate : new Date(candidate);
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  }
+  return null;
+}
+
+/**
  * Parse a PostgreSQL bigint[] column that may come back as a raw string
  * like "{9}" or "{1,2,3}" when fetch_types is disabled.
  * Returns an array of numbers.

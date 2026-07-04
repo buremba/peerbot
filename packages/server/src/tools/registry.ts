@@ -281,6 +281,22 @@ function flattenUnionSchema(schema: any): any {
   };
 }
 
+/**
+ * Ensure an outputSchema is advertised as an OBJECT schema, as the MCP spec
+ * requires. TypeBox serializes `Type.Union([Type.Object(...), ...])` to a bare
+ * `{ anyOf: [...] }` with no top-level `type`; a validating host rejects that
+ * (or the paired structuredContent). Unlike inputSchema we do NOT flatten the
+ * union into a single merged object — the discriminated variants are the
+ * correct description of a result — we only add the missing `type: "object"`.
+ * A schema that is already an object (or otherwise typed) is returned as-is.
+ */
+function normalizeOutputSchema(schema: any): any {
+  if (schema && (schema.anyOf || schema.oneOf) && schema.type === undefined) {
+    return { type: 'object' as const, ...schema };
+  }
+  return schema;
+}
+
 function filterSchemaForPublicActions(toolName: string, schema: any): any | null {
   const allowedActions = getPublicReadableActions(toolName);
   if (allowedActions === undefined) return null;
@@ -401,11 +417,14 @@ function computeAllTools(
         description: tool.description,
         inputSchema,
         ...(tool.annotations && { annotations: tool.annotations }),
-        // outputSchema is emitted as-is: it describes the result shape, not the
-        // Claude-API-constrained input. The `action` discriminator tells the
-        // client which union variant applied, so the full union is correct here
-        // (no flattening, no access-level filtering — those are input concerns).
-        ...(tool.outputSchema && { outputSchema: tool.outputSchema }),
+        // outputSchema keeps its discriminated variants (no flattening, no
+        // access-level filtering — those are input concerns) but the MCP spec
+        // requires a tool's outputSchema to be an OBJECT schema. TypeBox
+        // serializes a `Type.Union` of object variants to a bare `{ anyOf: [...] }`
+        // with no top-level `type`, which a validating host rejects. Stamp
+        // `type: "object"` on top so the union is advertised as a valid object
+        // schema while the `anyOf` still tells the client which variant applied.
+        ...(tool.outputSchema && { outputSchema: normalizeOutputSchema(tool.outputSchema) }),
       };
     })
     .filter((tool): tool is NonNullable<typeof tool> => tool !== null);

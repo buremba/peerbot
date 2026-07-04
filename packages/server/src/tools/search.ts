@@ -364,18 +364,24 @@ async function fetchContentSnippets(
     env
   );
 
-  return result.content.map((c) => ({
-    id: c.id,
-    title: c.title,
-    text_content:
-      c.payload_text.length > 500 ? c.payload_text.slice(0, 500) + '...' : c.payload_text,
-    author_name: c.author_name,
-    source_url: c.source_url,
-    platform: c.platform,
-    occurred_at: c.occurred_at,
-    similarity: c.similarity,
-    entity_ids: Array.isArray(c.entity_ids) ? c.entity_ids.map(Number) : [],
-  }));
+  return result.content.map((c) => {
+    // payload_text is `string | null` (a content row can have no text body).
+    // Coalesce to '' — both to avoid `.length`/`.slice` throwing on null and to
+    // keep the (non-nullable) `text_content` schema field honest: "" is the
+    // correct representation of no text, so structuredContent stays valid.
+    const text = c.payload_text ?? '';
+    return {
+      id: c.id,
+      title: c.title,
+      text_content: text.length > 500 ? text.slice(0, 500) + '...' : text,
+      author_name: c.author_name,
+      source_url: c.source_url,
+      platform: c.platform,
+      occurred_at: c.occurred_at,
+      similarity: c.similarity,
+      entity_ids: Array.isArray(c.entity_ids) ? c.entity_ids.map(Number) : [],
+    };
+  });
 }
 
 // Generic "what did we talk about" recall words carry no signal against a

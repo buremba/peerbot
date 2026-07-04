@@ -57,8 +57,10 @@ const ListAvailableAction = Type.Object({
   backend: Type.Optional(BackendLiteral),
   include_input_schema: Type.Optional(Type.Boolean({ default: true, description: 'Include input schema in response' })),
   include_output_schema: Type.Optional(Type.Boolean({ default: false, description: 'Include output schema in response' })),
-  limit: Type.Optional(Type.Number({ description: 'Maximum number of results to return' })),
-  offset: Type.Optional(Type.Number({ description: 'Number of results to skip' })),
+  // Shared with list_runs — same limit/offset defaults + descriptions, and a
+  // future PaginationFields edit reaches both actions instead of silently
+  // skipping this hand-inlined copy.
+  ...PaginationFields,
 });
 
 const ExecuteAction = Type.Object({
@@ -141,7 +143,12 @@ export const ManageOperationsResultSchema = Type.Union([
     action: Type.Literal('execute'),
     run_id: Type.Integer(),
     status: Type.Literal('completed'),
-    output: Type.Record(Type.String(), Type.Unknown()),
+    // A connector/device operation's `action_output` is arbitrary JSON — it can
+    // be an array or a scalar, not just an object. Declaring `output` as an
+    // object-only Record made a non-object body fail structuredContent
+    // validation (no variant matched), turning a SUCCESSFUL run into a client
+    // error. `Type.Unknown()` accepts any JSON shape the run actually produced.
+    output: Type.Unknown(),
     metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   }),
   Type.Object({
@@ -594,7 +601,9 @@ export async function waitForDeviceActionRun(
   abortSignal?: AbortSignal,
 ): Promise<{
   status: 'completed' | 'failed' | 'timeout';
-  output?: Record<string, unknown>;
+  // `action_output` is arbitrary connector/device JSON — object, array, or
+  // scalar — so the completed output is `unknown`, not an object.
+  output?: unknown;
   error_message?: string;
 }> {
   const sql = getDb();
@@ -612,7 +621,7 @@ export async function waitForDeviceActionRun(
       LIMIT 1
     `) as Array<{
       status: string;
-      action_output: Record<string, unknown> | null;
+      action_output: unknown;
       error_message: string | null;
       claimed_at: Date | string | null;
     }>;
@@ -626,7 +635,7 @@ export async function waitForDeviceActionRun(
     if (row.status === 'completed') {
       return {
         status: 'completed',
-        output: (row.action_output ?? {}) as Record<string, unknown>,
+        output: row.action_output ?? {},
       };
     }
     if (row.status === 'failed' || row.status === 'timeout') {

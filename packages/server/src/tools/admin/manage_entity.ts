@@ -273,9 +273,12 @@ const ManageEntityItemSchema = Type.Object({
   parent_entity_type: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   enabled_classifiers: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),
-  // `Date` in the list variant is serialized to ISO string over the wire; the
-  // schema models the on-the-wire shape.
-  created_at: Type.Optional(Type.Union([Type.String(), Type.Unknown()])),
+  // `created_at` arrives from the row as a `Date`; the structuredContent
+  // validation layer coerces it to an ISO string before the check (Value.Convert
+  // on Type.String() converts Date → ISO), so the schema declares the honest
+  // on-the-wire shape — a string. (The former `Type.Unknown()` union arm made
+  // this field accept ANY value, silently voiding its type.)
+  created_at: Type.Optional(Type.String()),
   total_content: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   active_connections: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   watchers_count: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
@@ -857,7 +860,10 @@ async function handleList(
         parent_entity_type: e.parent_entity_type,
         metadata,
         enabled_classifiers: e.enabled_classifiers,
-        created_at: e.created_at,
+        // Row `created_at` is a Date; the schema (and wire shape) is an ISO
+        // string, so convert at the source rather than leaning on the emission
+        // layer's coercion.
+        created_at: toIsoStringOrNow(e.created_at),
         total_content: e.total_content,
         active_connections: e.active_connections,
         watchers_count: e.watchers_count,

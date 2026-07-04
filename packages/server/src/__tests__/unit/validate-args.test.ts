@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Type } from "@sinclair/typebox";
 import { getAllTools, getTool } from "../../tools/registry";
-import { validateToolArgs, withValidatedArgs } from "../../tools/validate-args";
+import { validateToolArgs, validateToolResult, withValidatedArgs } from "../../tools/validate-args";
 import { ToolUserError } from "../../utils/errors";
 
 describe("validateToolArgs coercion", () => {
@@ -163,5 +163,57 @@ describe("registry completeness", () => {
       .filter((name) => !exempt.has(name))
       .filter((name) => brandedName(getTool(name)?.handler) !== name);
     expect(unwrapped).toEqual([]);
+  });
+});
+
+describe("validateToolResult (structuredContent emission)", () => {
+  const schema = Type.Object({
+    created_at: Type.String(),
+    count: Type.Integer(),
+    text: Type.String(),
+  });
+
+  it("coerces a Date to an ISO string so a raw SQL row satisfies Type.String()", () => {
+    const when = new Date("2026-07-04T00:00:00.000Z");
+    const out = validateToolResult(schema, { created_at: when, count: 3, text: "hi" }) as Record<
+      string,
+      unknown
+    >;
+    expect(out).not.toBeNull();
+    expect(out.created_at).toBe("2026-07-04T00:00:00.000Z");
+  });
+
+  it("returns null (→ text-only fallback) when the result cannot satisfy the schema", () => {
+    // text_content NULL where the schema demands a non-null string — the exact
+    // drift that used to reach the client as a validation error. Now: no
+    // structuredContent, not a failed call.
+    expect(validateToolResult(schema, { created_at: "x", count: 1, text: null })).toBeNull();
+  });
+
+  it("accepts any variant of a discriminated result union", () => {
+    const union = Type.Union([
+      Type.Object({ status: Type.Literal("completed"), output: Type.Unknown() }),
+      Type.Object({ status: Type.Literal("failed"), error_message: Type.String() }),
+    ]);
+    // A non-object `output` (array) must still validate — manage_operations #9.
+    expect(validateToolResult(union, { status: "completed", output: [1, 2] })).not.toBeNull();
+    expect(validateToolResult(union, { status: "failed", error_message: "boom" })).not.toBeNull();
+  });
+});
+
+describe("registry outputSchema normalization (MCP spec: must be an object schema)", () => {
+  it("stamps type:'object' on union result schemas while keeping the anyOf variants", () => {
+    // The 8 admin tools declare Type.Union result schemas → bare `{ anyOf }`.
+    // A spec-strict host rejects an outputSchema without top-level type:object.
+    const byName = new Map(getAllTools().map((t) => [t.name, t]));
+    const watchers = byName.get("manage_watchers") as { outputSchema?: any } | undefined;
+    expect(watchers?.outputSchema?.type).toBe("object");
+    expect(Array.isArray(watchers?.outputSchema?.anyOf)).toBe(true);
+  });
+
+  it("leaves an already-object result schema (search_memory) untouched", () => {
+    const byName = new Map(getAllTools().map((t) => [t.name, t]));
+    const search = byName.get("search_memory") as { outputSchema?: any } | undefined;
+    expect(search?.outputSchema?.type).toBe("object");
   });
 });

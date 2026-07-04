@@ -234,6 +234,25 @@ type BootstrapWatcherItem = Static<typeof BootstrapWatcherItemSchema>;
 type BootstrapConnectorDefinition = Static<typeof BootstrapConnectorDefinitionSchema>;
 
 /**
+ * Coerce a timestamp value from a SQL row to an ISO string, tolerating NULL.
+ * `new Date(String(null)).toISOString()` throws (`new Date('null')` is Invalid
+ * Date → RangeError), and the feed/watcher queries ORDER BY
+ * `COALESCE(updated_at, created_at)` precisely because `updated_at` can be NULL.
+ * `fallback` supplies that same coalesced value so a non-null `updated_at`
+ * column stays a non-null string in the result. If both are absent, returns the
+ * epoch — a valid ISO string keeps the (non-nullable) schema field satisfied
+ * rather than throwing or emitting an invalid `structuredContent`.
+ */
+function toIso(value: unknown, fallback?: unknown): string {
+  for (const candidate of [value, fallback]) {
+    if (candidate == null) continue;
+    const date = new Date(String(candidate));
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  }
+  return new Date(0).toISOString();
+}
+
+/**
  * Output schema for `resolve_path`. TypeBox-first: every nested type is
  * `Static<>`-derived from its schema, so this object composes them into one
  * source of truth for both the TS type (`ResolvePathResult`) and the MCP
@@ -1005,8 +1024,8 @@ async function fetchRecentContent(
     payload_template: row.payload_template as Record<string, unknown> | null | undefined,
     source_url: row.source_url ? String(row.source_url) : null,
     author_name: row.author_name ? String(row.author_name) : null,
-    created_at: new Date(String(row.created_at)).toISOString(),
-    occurred_at: row.occurred_at ? new Date(String(row.occurred_at)).toISOString() : null,
+    created_at: toIso(row.created_at),
+    occurred_at: row.occurred_at ? toIso(row.occurred_at) : null,
   }));
 }
 
@@ -1082,8 +1101,8 @@ async function fetchRecentFeeds(
     connector_name: row.connector_name ? String(row.connector_name) : null,
     connection_name: row.connection_name ? String(row.connection_name) : null,
     event_count: Number(row.event_count) || 0,
-    created_at: new Date(String(row.created_at)).toISOString(),
-    updated_at: new Date(String(row.updated_at)).toISOString(),
+    created_at: toIso(row.created_at),
+    updated_at: toIso(row.updated_at, row.created_at),
   }));
 }
 
@@ -1158,8 +1177,8 @@ async function fetchRecentWatchers(
     parent_entity_type: row.parent_entity_type ? String(row.parent_entity_type) : null,
     organization_slug: organizationSlug,
     windows_count: Number(row.windows_count) || 0,
-    created_at: new Date(String(row.created_at)).toISOString(),
-    updated_at: new Date(String(row.updated_at)).toISOString(),
+    created_at: toIso(row.created_at),
+    updated_at: toIso(row.updated_at, row.created_at),
   }));
 }
 

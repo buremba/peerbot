@@ -91,7 +91,7 @@ describe("resolveModelRef — edge cases", () => {
   });
 
   test("throws when everything is empty and no defaults", () => {
-    expect(() => resolveModelRef("")).toThrow("No model selected");
+    expect(() => resolveModelRef("")).toThrow("No model resolved");
   });
 });
 
@@ -207,7 +207,7 @@ describe("registerDynamicProvider — idempotency and precedence", () => {
       defaultModel: "dynamic-default",
     });
     expect(() => resolveModelRef("", { defaultProvider: id })).toThrow(
-      "No model selected"
+      "No model resolved"
     );
     const result = resolveModelRef("auto", { defaultProvider: id });
     expect(result.provider).toBe(id);

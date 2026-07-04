@@ -30,10 +30,10 @@ describe("AgentSettingsStore", () => {
     test("saveSettings stores and getSettings retrieves", async () => {
       await withOrg(async () => {
         await seedAgentRow("agent-1", { organizationId: ORG_ID });
-        await store.saveSettings("agent-1", { model: "claude-sonnet-4" });
+        await store.saveSettings("agent-1", { defaultModel: "claude-sonnet-4" });
         const result = await store.getSettings("agent-1");
         expect(result).not.toBeNull();
-        expect(result!.model).toBe("claude-sonnet-4");
+        expect(result!.defaultModel).toBe("claude-sonnet-4");
         expect(result!.updatedAt).toBeGreaterThan(0);
       });
     });
@@ -48,10 +48,10 @@ describe("AgentSettingsStore", () => {
     test("updateSettings merges with existing", async () => {
       await withOrg(async () => {
         await seedAgentRow("agent-1", { organizationId: ORG_ID });
-        await store.saveSettings("agent-1", { model: "claude-sonnet-4" });
+        await store.saveSettings("agent-1", { defaultModel: "claude-sonnet-4" });
         await store.updateSettings("agent-1", { soulMd: "Be helpful" });
         const result = await store.getSettings("agent-1");
-        expect(result!.model).toBe("claude-sonnet-4");
+        expect(result!.defaultModel).toBe("claude-sonnet-4");
         expect(result!.soulMd).toBe("Be helpful");
       });
     });
@@ -59,13 +59,13 @@ describe("AgentSettingsStore", () => {
     test("deleteSettings removes settings", async () => {
       await withOrg(async () => {
         await seedAgentRow("agent-1", { organizationId: ORG_ID });
-        await store.saveSettings("agent-1", { model: "claude-sonnet-4" });
+        await store.saveSettings("agent-1", { defaultModel: "claude-sonnet-4" });
         await store.deleteSettings("agent-1");
         const result = await store.getSettings("agent-1");
         // After deleteSettings the row still exists but settings columns are
         // reset; getSettings returns a default-shaped object with no model.
         expect(result).not.toBeNull();
-        expect(result!.model).toBeUndefined();
+        expect(result!.defaultModel).toBeUndefined();
       });
     });
 
@@ -82,12 +82,12 @@ describe("AgentSettingsStore", () => {
       await withOrg(async () => {
         await seedAgentRow("agent-1", { organizationId: ORG_ID });
         await store.saveSettings("agent-1", {
-          model: "claude-sonnet-4",
+          defaultModel: "claude-sonnet-4",
           soulMd: "Original",
         });
         await store.updateSettings("agent-1", { userMd: "New field" });
         const result = await store.getSettings("agent-1");
-        expect(result!.model).toBe("claude-sonnet-4");
+        expect(result!.defaultModel).toBe("claude-sonnet-4");
         expect(result!.soulMd).toBe("Original");
         expect(result!.userMd).toBe("New field");
       });
@@ -96,10 +96,10 @@ describe("AgentSettingsStore", () => {
     test("overwrites overlapping fields", async () => {
       await withOrg(async () => {
         await seedAgentRow("agent-1", { organizationId: ORG_ID });
-        await store.saveSettings("agent-1", { model: "claude-sonnet-4" });
-        await store.updateSettings("agent-1", { model: "claude-opus-4" });
+        await store.saveSettings("agent-1", { defaultModel: "claude-sonnet-4" });
+        await store.updateSettings("agent-1", { defaultModel: "claude-opus-4" });
         const result = await store.getSettings("agent-1");
-        expect(result!.model).toBe("claude-opus-4");
+        expect(result!.defaultModel).toBe("claude-opus-4");
       });
     });
   });

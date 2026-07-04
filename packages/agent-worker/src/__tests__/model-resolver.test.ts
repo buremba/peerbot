@@ -86,12 +86,12 @@ describe("resolveModelRef", () => {
     // Lobu no longer silently substitutes the provider's default model — a
     // concrete model must be configured (chosen via the model picker).
     expect(() => resolveModelRef("", { defaultProvider: "gemini" })).toThrow(
-      "No model selected"
+      "No model resolved"
     );
   });
 
   test("throws when no model can be determined", () => {
-    expect(() => resolveModelRef("")).toThrow("No model selected");
+    expect(() => resolveModelRef("")).toThrow("No model resolved");
   });
 
   test("throws when bare model ID and no default provider", () => {

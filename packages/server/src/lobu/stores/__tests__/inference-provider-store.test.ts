@@ -175,4 +175,20 @@ describe('inference-provider store', () => {
   it('setInferenceProviderDefault returns false for a missing slug', async () => {
     expect(await setInferenceProviderDefault(ORG, 'does-not-exist')).toBe(false);
   });
+
+  it('setting a missing slug default does NOT clear the existing default', async () => {
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: 'openai',
+      kind: 'openai',
+      apiKey: 'k1',
+      capabilities: { text: { model: 'gpt-x' } },
+    });
+    expect(await setInferenceProviderDefault(ORG, 'openai')).toBe(true);
+    expect(await getOrgDefaultModel(ORG)).toBe('gpt-x');
+
+    // A no-op on a missing slug must leave the current default intact.
+    expect(await setInferenceProviderDefault(ORG, 'ghost')).toBe(false);
+    expect(await getOrgDefaultModel(ORG)).toBe('gpt-x');
+  });
 });

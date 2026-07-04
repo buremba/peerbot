@@ -397,20 +397,30 @@ export async function setInferenceProviderDefault(
 ): Promise<boolean> {
 	const sql = getDb();
 	return await sql.begin(async (tx) => {
+		// Confirm the target exists BEFORE clearing the current default —
+		// otherwise a missing slug would commit the clear and leave the org with
+		// no default at all.
+		const target = (await tx`
+			SELECT id FROM inference_providers
+			WHERE organization_id = ${organizationId}
+			  AND slug = ${slug} AND deleted_at IS NULL
+			LIMIT 1
+		`) as Array<{ id: string | number }>;
+		if (target.length === 0) return false;
+
 		await tx`
 			UPDATE inference_providers
 			SET is_default = false, updated_at = now()
 			WHERE organization_id = ${organizationId}
 			  AND is_default AND deleted_at IS NULL
 		`;
-		const updated = (await tx`
+		await tx`
 			UPDATE inference_providers
 			SET is_default = true, updated_at = now()
 			WHERE organization_id = ${organizationId}
 			  AND slug = ${slug} AND deleted_at IS NULL
-			RETURNING id
-		`) as Array<{ id: string | number }>;
-		return updated.length > 0;
+		`;
+		return true;
 	});
 }
 

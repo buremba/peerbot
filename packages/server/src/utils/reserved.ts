@@ -7,6 +7,7 @@ const OWNER_ROUTE_SEGMENTS = [
   'connectors',
   'devices',
   'environments',
+  'infrastructure',
   'memory',
   'members',
   'settings',

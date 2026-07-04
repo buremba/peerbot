@@ -112,6 +112,51 @@ describe("whoamiCommand --json", () => {
     expect(result.loggedIn).toBe(true);
   });
 
+  test("emits personalOrgSlug from the personal-flagged org", async () => {
+    spyOn(internal, "refreshCredentials").mockResolvedValue({
+      accessToken: "token",
+      oauth: {
+        clientId: "client-id",
+        tokenEndpoint: "https://issuer.example.com/token",
+      },
+    });
+    spyOn(internal, "getAgentApiToken").mockResolvedValue("token");
+    // The active org is a team org, but the personal one is buremba — the
+    // device client must target the personal org regardless of `orgSlug`.
+    spyOn(internal, "listOrganizations").mockResolvedValue([
+      { slug: "lobu-team", name: "Lobu Team" },
+      { slug: "buremba", name: "buremba", personal: true },
+    ]);
+    spyOn(internal, "getActiveOrg").mockResolvedValue("lobu-team");
+
+    await whoamiCommand({ json: true });
+
+    const result = parseJsonOutput();
+    expect(result.orgSlug).toBe("lobu-team");
+    expect(result.personalOrgSlug).toBe("buremba");
+  });
+
+  test("emits personalOrgSlug=undefined when no org is marked personal", async () => {
+    spyOn(internal, "refreshCredentials").mockResolvedValue({
+      accessToken: "token",
+      oauth: {
+        clientId: "client-id",
+        tokenEndpoint: "https://issuer.example.com/token",
+      },
+    });
+    spyOn(internal, "getAgentApiToken").mockResolvedValue("token");
+    spyOn(internal, "listOrganizations").mockResolvedValue([
+      { slug: "acme", name: "Acme" },
+    ]);
+    spyOn(internal, "getActiveOrg").mockResolvedValue("acme");
+
+    await whoamiCommand({ json: true });
+
+    const result = parseJsonOutput();
+    expect(result.personalOrgSlug).toBeUndefined();
+    expect(result.orgSlug).toBe("acme");
+  });
+
   test("falls back to accessToken when getAgentApiToken fails", async () => {
     spyOn(internal, "refreshCredentials").mockResolvedValue({
       accessToken: "fallback-token",

@@ -902,10 +902,48 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
   }
 
   const deviceHasMcpScopes = hasMcpScopes(deviceCode.scope);
+  const requestedScopes = (deviceCode.scope ?? '').split(/\s+/).filter(Boolean);
+  // `device_worker:run` tokens drive personal devices — the Owletto Mac app,
+  // the Chrome extension, and the local `lobu run` worker. Device data
+  // (WhatsApp, Photos, browser context, …) always belongs in the user's
+  // personal org; team orgs reach a device by pinning a watcher/connection
+  // (see resolveDeviceClaimableOrgs), not by re-binding the device token.
+  // So a device-worker grant is FORCE-bound to the personal org, ignoring
+  // the resource slug, the active org, and the consent picker.
+  const isDeviceWorkerGrant = requestedScopes.includes('device_worker:run');
   let organizationId: string | null = null;
   let scopeOverride: string | null | undefined;
 
-  if (deviceHasMcpScopes) {
+  if (isDeviceWorkerGrant) {
+    const sql = createDbClientFromEnv(c.env);
+    const personalOrg = await findExistingPersonalOrg(user.id, sql);
+    if (!personalOrg) {
+      return c.json(
+        createOAuthError(
+          'access_denied',
+          'No personal organization is provisioned for this account; cannot bind a device token.'
+        ),
+        403
+      );
+    }
+    const memberRow = (await sql`
+      SELECT role FROM "member"
+      WHERE "organizationId" = ${personalOrg.id} AND "userId" = ${user.id}
+      LIMIT 1
+    `) as unknown as Array<{ role: string | null }>;
+    const memberRole = memberRow[0]?.role ?? null;
+    organizationId = personalOrg.id;
+    scopeOverride = filterScopeByRole(deviceCode.scope, memberRole);
+    if (scopeOverride === null) {
+      return c.json(
+        createOAuthError(
+          'invalid_scope',
+          'Your role is not authorized for any of the requested scopes'
+        ),
+        400
+      );
+    }
+  } else if (deviceHasMcpScopes) {
     const sql = createDbClientFromEnv(c.env);
     const orgResult = await resolveOrganizationForGrant({
       sql,

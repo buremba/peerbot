@@ -27,6 +27,8 @@ interface ResolvedApiClient {
 interface OrganizationInfo {
   slug: string;
   name?: string;
+  /** True for the user's personal org (server marks it via `personal_org_slug`). */
+  personal?: boolean;
 }
 
 /** HTTP verbs the CLI's REST clients issue. */
@@ -289,15 +291,23 @@ async function getOrganizationsFromUserInfo(
   > | null;
   if (!data) return [];
   const orgs = Array.isArray(data.organizations) ? data.organizations : [];
+  // The server exposes the personal-org slug both top-level and per-entry; use
+  // whichever is present so device clients (Owletto Mac/Chrome) can target the
+  // personal workspace regardless of the active org.
+  const personalSlug =
+    typeof data.personal_org_slug === "string" ? data.personal_org_slug : "";
   const result: OrganizationInfo[] = [];
   for (const entry of orgs) {
     if (!entry || typeof entry !== "object") continue;
     const value = entry as Record<string, unknown>;
     const slug = typeof value.slug === "string" ? value.slug : "";
     if (!slug) continue;
+    const isPersonal =
+      value.personal === true || (personalSlug !== "" && slug === personalSlug);
     result.push({
       slug,
       ...(typeof value.name === "string" ? { name: value.name } : {}),
+      ...(isPersonal ? { personal: true } : {}),
     });
   }
   return result;

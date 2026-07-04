@@ -414,10 +414,20 @@ export class OAuthProvider {
     name: string | null;
     picture: string | null;
     organization_slug: string | null;
+    /**
+     * The user's personal-org slug (the org marked
+     * `metadata.personal_org_for_user_id`). Device clients (Owletto Mac +
+     * Chrome) bind here regardless of the active/selected org, so the menubar
+     * and device-data uploads always land in the user's private workspace.
+     * Null only when provisioning hasn't completed.
+     */
+    personal_org_slug: string | null;
     organizations: {
       id: string;
       slug: string;
       name: string;
+      /** True for the user's personal org (matches {@link personal_org_slug}). */
+      personal: boolean;
     }[];
   } | null> {
     const authInfo = await this.verifyAccessToken(token);
@@ -433,11 +443,18 @@ export class OAuthProvider {
 
     if (result.length === 0) return null;
 
-    // Return the token-bound org (if any) and the full list of orgs. For
-    // tokens with no org binding — e.g. `device_worker:run` issued via the
-    // device-flow consent, which skips org resolution — fall back to the
-    // user's personal org, matching where the worker upload path actually
-    // delivers data (see worker-api.ts:184).
+    // Resolve the user's personal org once. Two consumers need it:
+    //   - `organization_slug` falls back to it for tokens with no org binding
+    //     (e.g. `device_worker:run` issued via the device-flow consent, which
+    //     historically skipped org resolution) — matching where the worker
+    //     upload path actually delivers data (see worker-api.ts:184).
+    //   - `personal_org_slug` is exposed so device clients (Owletto Mac +
+    //     Chrome) can target the personal workspace directly, independent of
+    //     whatever org the token is bound to or the CLI has selected as active.
+    const personalOrg = await findExistingPersonalOrg(authInfo.userId, this.sql);
+
+    // Return the token-bound org (if any). For tokens with no org binding, fall
+    // back to the personal org.
     let organizationSlug: string | null = null;
     if (authInfo.organizationId) {
       const orgResult = await this.sql`
@@ -445,10 +462,6 @@ export class OAuthProvider {
       `;
       organizationSlug = (orgResult[0]?.slug as string) ?? null;
     } else {
-      const personalOrg = await findExistingPersonalOrg(
-        authInfo.userId,
-        this.sql
-      );
       organizationSlug = personalOrg?.slug ?? null;
     }
 
@@ -466,16 +479,19 @@ export class OAuthProvider {
       name: string | null;
       image: string | null;
     };
+    const personalOrgId = personalOrg?.id ?? null;
     return {
       sub: user.id,
       email: user.email,
       name: user.name,
       picture: user.image,
       organization_slug: organizationSlug,
+      personal_org_slug: personalOrg?.slug ?? null,
       organizations: orgs.map((o) => ({
         id: o.id as string,
         slug: o.slug as string,
         name: o.name as string,
+        personal: personalOrgId !== null && o.id === personalOrgId,
       })),
     };
   }

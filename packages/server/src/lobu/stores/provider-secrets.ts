@@ -19,10 +19,8 @@ import {
 	decrypt,
 	encrypt,
 	getErrorMessage,
-	type ModelOption,
 } from "@lobu/core";
 import { getDb } from "../../db/client.js";
-import { fetchModelOptions } from "../../gateway/auth/utils/fetch-model-options.js";
 
 const logger = createLogger("provider-secrets");
 
@@ -396,46 +394,6 @@ export async function getOrgDefaultModel(
 	// Already a routable ref (defensive — a stored capability model shouldn't
 	// carry a slug, but never double-prefix if it does).
 	return model.includes("/") ? model : `${row.slug}/${model}`;
-}
-
-/**
- * OpenAI-style `/models` list shape: `{ data: [{ id }, …] }`.
- */
-interface OpenAiModelsPayload {
-	data?: Array<{ id?: string }>;
-}
-
-/**
- * Live model list for ONE org inference-provider, fetched from its text-modality
- * upstream (`base_url` + `models_endpoint`, authenticated with the row's stored
- * key). Returns options as `slug/model` refs — the SAME routable shape the org
- * default and the worker resolver use — so the model picker can offer every
- * model the provider actually serves, not just the one pinned at create time.
- *
- * Only meaningful for BYO / OpenAI-compatible providers that declare a
- * `models_endpoint` and `base_url`. Returns `[]` for providers without a custom
- * upstream (catalog OAuth providers list their models via `getModelOptions` on
- * the agent-scoped path instead) or on any fetch/parse failure — the caller
- * falls back to the provider's single capability model.
- */
-export async function listInferenceProviderModels(
-	organizationId: string,
-	slug: string,
-): Promise<ModelOption[]> {
-	const cfg = await resolveInferenceProviderConfig(organizationId, slug, "text");
-	// Need a custom upstream (base_url) + a models endpoint + a key to enumerate.
-	if (!cfg?.baseUrl || !cfg.modelsEndpoint || !cfg.apiKey) return [];
-	const base = cfg.baseUrl.replace(/\/+$/, "");
-	const path = cfg.modelsEndpoint.startsWith("/")
-		? cfg.modelsEndpoint
-		: `/${cfg.modelsEndpoint}`;
-	return fetchModelOptions<OpenAiModelsPayload>({
-		url: `${base}${path}`,
-		headers: { Authorization: `Bearer ${cfg.apiKey}` },
-		prefix: slug,
-		pick: (payload) =>
-			(payload.data ?? []).map((m) => (m?.id ? { id: m.id } : null)),
-	});
 }
 
 /**

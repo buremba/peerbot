@@ -45,6 +45,11 @@ export interface ProviderCatalogEntry {
   baseUrl: string;
   defaultModel: string | null;
   modelsEndpoint: string | null;
+  /**
+   * Static fallback model IDs (from providers.json), used by the model picker
+   * when a provider has no live `modelsEndpoint` or the live fetch is empty.
+   */
+  models: string[];
   apiKeyPlaceholder: string;
   apiKeyInstructions: string;
   /** Modalities served; drives which per-modality overrides the UI offers. */
@@ -107,6 +112,7 @@ export function buildProviderCatalog(
         baseUrl,
         defaultModel,
         modelsEndpoint: config?.modelsEndpoint ?? null,
+        models: config?.models ?? [],
         apiKeyPlaceholder:
           config?.apiKeyPlaceholder ?? module.apiKeyPlaceholder ?? "",
         apiKeyInstructions:

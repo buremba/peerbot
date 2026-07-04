@@ -21,7 +21,8 @@
             "sdkCompat": "openai",
             "transcriptionPath": "/audio/transcriptions",
             "model": "whisper-large-v3-turbo"
-          }
+          },
+          "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"]
         }
       ]
     },
@@ -39,7 +40,8 @@
           "apiKeyPlaceholder": "AIza...",
           "sdkCompat": "openai",
           "modalities": ["text", "image", "tts"],
-          "defaultModel": "gemini-2.5-flash"
+          "defaultModel": "gemini-2.5-flash",
+          "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
         }
       ]
     },
@@ -58,7 +60,8 @@
           "sdkCompat": "openai",
           "modalities": ["text"],
           "defaultModel": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-          "modelsEndpoint": "/models"
+          "modelsEndpoint": "/models",
+          "models": ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo", "deepseek-ai/DeepSeek-V3"]
         }
       ]
     },
@@ -77,7 +80,8 @@
           "sdkCompat": "openai",
           "modalities": ["text"],
           "modelsEndpoint": "/models",
-          "defaultModel": "nvidia/moonshotai/kimi-k2.6"
+          "defaultModel": "nvidia/moonshotai/kimi-k2.6",
+          "models": ["meta/llama-3.3-70b-instruct", "deepseek-ai/deepseek-r1", "nvidia/llama-3.1-nemotron-70b-instruct"]
         }
       ]
     },
@@ -130,7 +134,8 @@
           "sdkCompat": "openai",
           "modalities": ["text"],
           "defaultModel": "accounts/fireworks/models/llama-v3p3-70b-instruct",
-          "modelsEndpoint": "/models"
+          "modelsEndpoint": "/models",
+          "models": ["accounts/fireworks/models/llama-v3p3-70b-instruct", "accounts/fireworks/models/deepseek-v3", "accounts/fireworks/models/qwen2p5-72b-instruct"]
         }
       ]
     },
@@ -149,14 +154,15 @@
           "sdkCompat": "openai",
           "modalities": ["text"],
           "defaultModel": "mistral-large-latest",
-          "modelsEndpoint": "/models"
+          "modelsEndpoint": "/models",
+          "models": ["mistral-large-latest", "mistral-small-latest", "codestral-latest", "ministral-8b-latest"]
         }
       ]
     },
     {
       "id": "deepseek",
       "name": "DeepSeek",
-      "description": "DeepSeek V4 models \u2014 fast and reasoning variants",
+      "description": "DeepSeek V4 models — fast and reasoning variants",
       "providers": [
         {
           "displayName": "DeepSeek",
@@ -168,7 +174,8 @@
           "sdkCompat": "openai",
           "modalities": ["text"],
           "defaultModel": "deepseek-v4-flash",
-          "modelsEndpoint": "/v1/models"
+          "modelsEndpoint": "/v1/models",
+          "models": ["deepseek-chat", "deepseek-reasoner"]
         }
       ]
     },
@@ -193,7 +200,8 @@
             "sdkCompat": "openai",
             "transcriptionPath": "/audio/transcriptions",
             "model": "whisper-1"
-          }
+          },
+          "models": ["anthropic/claude-sonnet-4", "openai/gpt-4o", "google/gemini-2.5-pro"]
         }
       ]
     },
@@ -212,7 +220,8 @@
           "sdkCompat": "openai",
           "modalities": ["text"],
           "defaultModel": "llama-3.3-70b",
-          "modelsEndpoint": "/models"
+          "modelsEndpoint": "/models",
+          "models": ["llama-3.3-70b", "llama3.1-8b", "qwen-3-32b"]
         }
       ]
     },
@@ -250,7 +259,8 @@
           "sdkCompat": "openai",
           "modalities": ["text"],
           "defaultModel": "grok-3",
-          "modelsEndpoint": "/models"
+          "modelsEndpoint": "/models",
+          "models": ["grok-4", "grok-3", "grok-3-mini", "grok-2-vision"]
         }
       ]
     },
@@ -269,7 +279,8 @@
           "sdkCompat": "openai",
           "modalities": ["text"],
           "defaultModel": "sonar",
-          "modelsEndpoint": "/v1/models"
+          "modelsEndpoint": "/v1/models",
+          "models": ["sonar", "sonar-pro", "sonar-reasoning", "sonar-reasoning-pro"]
         }
       ]
     },
@@ -288,7 +299,8 @@
           "sdkCompat": "openai",
           "modalities": ["text"],
           "defaultModel": "command-r-plus",
-          "modelsEndpoint": "/models"
+          "modelsEndpoint": "/models",
+          "models": ["command-r-plus", "command-r", "command-a-03-2025"]
         }
       ]
     },
@@ -307,7 +319,8 @@
           "sdkCompat": "openai",
           "modalities": ["text", "image", "tts"],
           "defaultModel": "gpt-4o",
-          "modelsEndpoint": "/models"
+          "modelsEndpoint": "/models",
+          "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3", "o4-mini", "gpt-3.5-turbo"]
         }
       ]
     }

@@ -40,6 +40,13 @@ export interface ProviderConfigEntry {
   defaultModel?: string;
   /** Relative path to fetch model list (e.g. "/v1/models") */
   modelsEndpoint?: string;
+  /**
+   * Static fallback model IDs for the model picker, used when a provider has no
+   * live `modelsEndpoint` (e.g. OAuth providers like Anthropic) or the live
+   * fetch is empty/fails. Curated in `config/providers.json`; the live list
+   * takes precedence when available, so this only needs to be roughly current.
+   */
+  models?: string[];
   /** Override provider name for model registry lookup */
   registryAlias?: string;
   /** Whether to show in "Add Provider" catalog (default: true) */

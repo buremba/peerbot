@@ -308,6 +308,7 @@ function actionArgsForPayload(
       prompt: payload.prompt,
       ...(payload.thread_id ? { thread_id: payload.thread_id } : {}),
       ...(payload.reason ? { reason: payload.reason } : {}),
+      ...(payload.model?.trim() ? { model: payload.model.trim() } : {}),
     };
   }
   return {

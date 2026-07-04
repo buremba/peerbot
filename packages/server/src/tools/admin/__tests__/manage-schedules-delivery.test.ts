@@ -92,6 +92,50 @@ describe("manage_schedules wake_agent chat delivery", () => {
     expect(rows[0].delivery_context).toBeNull();
   });
 
+  test("persists a per-schedule model override into action_args on create", async () => {
+    const result = await manageSchedules(
+      {
+        action: "create",
+        description: "with model override",
+        run_at: new Date(Date.now() + 60_000).toISOString(),
+        payload: {
+          type: "wake_agent",
+          agent_id: AGENT,
+          prompt: "wake up",
+          model: "openai/gpt-4o",
+        },
+      },
+      {} as any,
+      ctx(),
+    );
+
+    expect(result.error).toBeUndefined();
+    const id = (result as { schedule?: { id: string } }).schedule?.id;
+    expect(id).toBeTruthy();
+    const rows =
+      await getDb()`SELECT action_args FROM scheduled_jobs WHERE id = ${id}`;
+    expect(rows[0].action_args.model).toBe("openai/gpt-4o");
+
+    // Update with an empty model clears the override; a real model replaces it.
+    await manageSchedules(
+      { action: "update", id: id as string, model: "anthropic/claude-sonnet-4-6" },
+      {} as any,
+      ctx(),
+    );
+    const afterSet =
+      await getDb()`SELECT action_args FROM scheduled_jobs WHERE id = ${id}`;
+    expect(afterSet[0].action_args.model).toBe("anthropic/claude-sonnet-4-6");
+
+    await manageSchedules(
+      { action: "update", id: id as string, model: "" },
+      {} as any,
+      ctx(),
+    );
+    const afterClear =
+      await getDb()`SELECT action_args FROM scheduled_jobs WHERE id = ${id}`;
+    expect(afterClear[0].action_args.model).toBeUndefined();
+  });
+
   test("stores trusted delivery context from the worker source context", async () => {
     await seedChatConnection({ id: "conn-real" });
 

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { authorizeCapabilities, isKnownPlatform } from '@lobu/core';
-import type { SqlClient } from '../db/client';
+import type { DbClient } from '../db/client';
 import type { ConnectorMetadata } from '../utils/connector-compiler';
 import logger from '../utils/logger';
 
@@ -138,7 +138,7 @@ export function validateDeviceConnectorManifests(params: {
 }
 
 export async function getDeviceManifestSourcesForUser(params: {
-  sql: SqlClient;
+  sql: DbClient;
   userId: string;
   liveCapabilities: Map<string, Set<string>>;
 }): Promise<DeviceConnectorSource[]> {

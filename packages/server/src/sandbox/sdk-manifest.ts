@@ -4,10 +4,7 @@
  * runtime — the run-script-runtime.test.ts CI guard depends on this.
  */
 
-import {
-	resolveMaxAccessLevel,
-	type ToolAccessLevel,
-} from "../auth/tool-access";
+import type { ToolAccessLevel } from "../auth/tool-access";
 import { METHOD_METADATA } from "./method-metadata";
 import { sdkMethodVisible } from "./sdk-method-access";
 
@@ -47,8 +44,11 @@ export function enumerateSDKManifest(
 	options?: { allowCrossOrg?: boolean; maxAccessLevel?: ToolAccessLevel },
 ): SDKManifest {
 	const allowCrossOrg = options?.allowCrossOrg !== false;
+	// Callers that omit maxAccessLevel (reaction scripts, tests) expect the
+	// historical full manifest. MCP entry points pass the caller tier explicitly.
 	const callerMax =
-		options?.maxAccessLevel ?? resolveMaxAccessLevel(null, null);
+		options?.maxAccessLevel ??
+		(mode === "read" ? "read" : "admin");
 	const key = `${mode}:${allowCrossOrg ? "1" : "0"}:${callerMax}`;
 	let manifest = manifestCache.get(key);
 	if (!manifest) {

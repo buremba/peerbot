@@ -679,14 +679,6 @@ function buildDispatchMessage(params: {
     .toISOString()
     .split('T')[0];
 
-  // The version snapshot taken at run-creation time pins this run to a
-  // specific watcher_template_versions row. Pass it to read_knowledge AND
-  // complete_window so a group edit landing mid-run can't make the agent
-  // extract with prompt v1 and have its output validated against schema v2.
-  const versionPin = params.payload.version_id != null
-    ? `, "template_version_id": ${params.payload.version_id}`
-    : '';
-
   return [
     'Run this watcher now using the lobu-memory MCP tools.',
     '',

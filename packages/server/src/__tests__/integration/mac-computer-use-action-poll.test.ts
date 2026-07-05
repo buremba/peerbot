@@ -1,0 +1,135 @@
+/**
+ * Mac bridge action runs: poll must surface the operation under both
+ * `action_key` (chrome convention) and `operation_key` (Mac/iOS decode name).
+ */
+
+import { readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { generateSecureToken } from '../../auth/oauth/utils';
+import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
+import { post } from '../setup/test-helpers';
+
+const CONNECTOR_KEY = 'apple.computer_use';
+const OPERATION_KEY = 'permissions';
+
+function loadComputerUseManifest(): Record<string, unknown> {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const path = resolve(
+    here,
+    '../../../../owletto/apps/mac/Owletto/ConnectorManifests/apple_computer_use.json',
+  );
+  return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+}
+
+async function seedDeviceOwner() {
+  const sql = getTestDb();
+  const userId = `user_${generateSecureToken(4)}`;
+  const orgId = `org-mac-cu-${generateSecureToken(4)}`;
+  const workerId = `mac-${generateSecureToken(6)}`;
+  await sql`
+    INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+    VALUES (${userId}, 'Mac CU Owner', ${`${userId}@test.local`}, true, NOW(), NOW())
+  `;
+  await sql`
+    INSERT INTO "organization" (id, name, slug, visibility, metadata, "createdAt")
+    VALUES (
+      ${orgId}, 'Mac CU Org', ${orgId}, 'private',
+      ${sql.json({ personal_org_for_user_id: userId })}, NOW()
+    )
+  `;
+  await sql`
+    INSERT INTO member (id, "organizationId", "userId", role, "createdAt")
+    VALUES (${`mem_${generateSecureToken(4)}`}, ${orgId}, ${userId}, 'owner', NOW())
+  `;
+  const deviceRows = (await sql`
+    INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id)
+    VALUES (${userId}, ${workerId}, 'macos', '0.1.0', ${sql.json(['computer_use'])}, 'Test Mac', ${orgId})
+    RETURNING id
+  `) as unknown as Array<{ id: string }>;
+  return { userId, orgId, workerId, deviceWorkerId: deviceRows[0].id };
+}
+
+async function pollMac(
+  workerId: string,
+  capabilities: Record<string, boolean>,
+  connectorManifests: unknown[],
+) {
+  return post('/api/workers/poll', {
+    body: {
+      worker_id: workerId,
+      platform: 'macos',
+      app_version: '0.1.0',
+      label: 'Test Mac',
+      capabilities,
+      connector_manifests: connectorManifests,
+    },
+  });
+}
+
+describe('mac computer_use action poll', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+    delete process.env.LOBU_CLOUD_MODE;
+    delete process.env.WORKER_API_TOKEN;
+  });
+  afterEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  it('claims a pinned action run and returns operation_key alongside action_key', async () => {
+    const { orgId, workerId, deviceWorkerId } = await seedDeviceOwner();
+    const manifest = loadComputerUseManifest();
+
+    const install = await pollMac(workerId, { computer_use: true }, []);
+    expect(install.status).toBe(200);
+
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO connector_definitions (
+        key, name, organization_id, version, status, runtime, required_capability, feeds_schema
+      ) VALUES (
+        ${CONNECTOR_KEY}, 'Mac Computer Use', ${orgId}, '0.1.0', 'active',
+        ${sql.json({ platforms: ['macos'] })}, 'computer_use', ${sql.json({})}
+      )
+      ON CONFLICT DO NOTHING
+    `;
+    const connInserted = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        created_by, visibility, device_worker_id, created_at, updated_at
+      ) VALUES (
+        ${orgId}, ${CONNECTOR_KEY}, 'mac-computer-use', 'Mac Computer Use', 'active',
+        (SELECT "userId" FROM member WHERE "organizationId" = ${orgId} LIMIT 1),
+        'private', ${deviceWorkerId}::uuid, NOW(), NOW()
+      )
+      RETURNING id, device_worker_id
+    `) as unknown as Array<{ id: number; device_worker_id: string }>;
+    expect(connInserted[0]?.id).toBeTruthy();
+    expect(connInserted[0]?.device_worker_id).toBe(deviceWorkerId);
+
+    const inserted = (await sql`
+      INSERT INTO runs (
+        organization_id, run_type, connection_id, connector_key, connector_version,
+        action_key, action_input, approval_status, status, created_at
+      ) VALUES (
+        ${orgId}, 'action', ${connInserted[0].id}, ${CONNECTOR_KEY}, '0.1.0',
+        ${OPERATION_KEY}, ${sql.json({})}, 'auto', 'pending', current_timestamp
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const runId = Number(inserted[0].id);
+
+    const claim = await pollMac(workerId, { computer_use: true }, []);
+    expect(claim.status).toBe(200);
+    const body = (await claim.json()) as Record<string, unknown>;
+
+    expect(body.run_id).toBe(runId);
+    expect(body.run_type).toBe('action');
+    expect(body.connector_key).toBe(CONNECTOR_KEY);
+    expect(body.action_key).toBe(OPERATION_KEY);
+    expect(body.operation_key).toBe(OPERATION_KEY);
+    expect(body.compiled_code).toBeUndefined();
+  });
+});

@@ -1,7 +1,8 @@
 /**
  * Compiles a TypeScript user-script via esbuild, runs it in a V8 isolate, and
  * bridges SDK calls back to the host. Caps: 1 MB output, 200 SDK calls,
- * 60s wall-clock. `client.org()` is stateless — each guest call carries
+ * 180s wall-clock max (device-bound operations may wait up to ~155s).
+ * `client.org()` is stateless — each guest call carries
  * `orgPath` so the host re-walks org swaps without holding refs.
  */
 
@@ -89,6 +90,8 @@ const DEFAULT_LIMITS: Required<RunLimits> = {
 	sdkCallQuota: 200,
 	outputBytes: 1_048_576,
 };
+/** Device action waits allow 60s queue + 95s post-claim; sandbox must outlive that. */
+const MAX_SCRIPT_TIMEOUT_MS = 180_000;
 const MAX_TRACE_ARGS_BYTES = 8192;
 const SENSITIVE_TRACE_KEY =
 	/(api[_-]?key|apikey|auth[_-]?data|auth[_-]?values|authorization|cookie|credential|password|private[_-]?key|secret|token)/i;
@@ -139,7 +142,7 @@ function clampLimits(limits?: RunLimits): Required<RunLimits> {
 			limits?.timeoutMs,
 			DEFAULT_LIMITS.timeoutMs,
 			1,
-			DEFAULT_LIMITS.timeoutMs,
+			MAX_SCRIPT_TIMEOUT_MS,
 		),
 		sdkCallQuota: clampNumber(
 			limits?.sdkCallQuota,

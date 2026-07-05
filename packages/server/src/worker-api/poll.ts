@@ -319,6 +319,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         '[pollWorkerJob] device_workers upsert failed (non-fatal)'
       );
     }
+    if (!deviceWorkerId) {
+      const existing = (await sql`
+        SELECT id FROM device_workers
+        WHERE user_id = ${registrationUserId} AND worker_id = ${worker_id}
+        LIMIT 1
+      `) as unknown as Array<{ id: string }>;
+      deviceWorkerId = existing[0]?.id ?? null;
+    }
   }
 
   // User-scoped workers (e.g. Lobu for Mac) can only claim runs in the
@@ -805,6 +813,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     compiled_code: compiledCode,
     session_state: sessionState ?? undefined,
     action_key: row.action_key ?? undefined,
+    // Mac/iOS bridge decodes `operation_key`; chrome uses `action_key` directly.
+    operation_key: row.action_key ?? undefined,
     action_input: (row as any).approved_input ?? row.action_input ?? undefined,
     auth_profile_id: deliverConnectionAuth ? (row.run_auth_profile_id ?? undefined) : undefined,
     previous_credentials: deliverConnectionAuth ? (row.auth_profile_auth_data ?? undefined) : undefined,

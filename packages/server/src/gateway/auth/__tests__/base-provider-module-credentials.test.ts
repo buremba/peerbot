@@ -8,11 +8,16 @@ const TEST_ENCRYPTION_KEY = Buffer.from(
 // Controls what the mocked org context and db return per-test.
 let mockOrgId: string | null = null;
 let orgSharedSecretRows: Array<{ ciphertext: string }> = [];
+let inferenceProviderRows: Array<{
+  block: { base_url?: string } | null;
+  ciphertext: string | null;
+}> = [];
 
 // Mock the org-context AsyncLocalStorage lookup so we can simulate a worker
 // request that does (or doesn't) carry an org.
 mock.module("../../../lobu/stores/org-context.js", () => ({
   tryGetOrgId: () => mockOrgId,
+  resolveOrgId: (explicit?: string | null) => explicit ?? mockOrgId,
   getOrgId: () => {
     if (!mockOrgId) throw new Error("no org");
     return mockOrgId;
@@ -23,7 +28,12 @@ mock.module("../../../lobu/stores/org-context.js", () => ({
 // template (`sql\`SELECT ...\``); a tagged-template call invokes the function
 // with (strings, ...values), so returning the rows array satisfies it.
 mock.module("../../../db/client.js", () => ({
-  getDb: () => () => Promise.resolve(orgSharedSecretRows),
+  getDb: () => (strings: TemplateStringsArray) =>
+    Promise.resolve(
+      strings.join(" ").includes("FROM inference_providers")
+        ? inferenceProviderRows
+        : orgSharedSecretRows
+    ),
 }));
 
 // Import AFTER mocks so the module graph picks them up.
@@ -54,6 +64,7 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     delete process.env.Z_AI_API_KEY;
     mockOrgId = null;
     orgSharedSecretRows = [];
+    inferenceProviderRows = [];
   });
 
   afterEach(() => {
@@ -80,6 +91,35 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
       await mod.hasCredentials("agent-1", { organizationId: "org-1" })
     ).toBe(true);
     expect(await mod.hasCredentials("agent-1")).toBe(true);
+  });
+
+  test("returns true when the org inference-provider row owns the custom upstream key", async () => {
+    mockOrgId = "org-1";
+    inferenceProviderRows = [
+      {
+        block: { base_url: "https://api.z.ai/api/paas/v4" },
+        ciphertext: encrypt("zai-inference-provider-key"),
+      },
+    ];
+
+    const mod = makeModule(false);
+    expect(
+      await mod.hasCredentials("agent-1", { organizationId: "org-1" })
+    ).toBe(true);
+  });
+
+  test("returns false when a custom upstream has no usable org key, even with a profile", async () => {
+    inferenceProviderRows = [
+      {
+        block: { base_url: "https://custom.example.com/v1" },
+        ciphertext: null,
+      },
+    ];
+
+    const mod = makeModule(true);
+    expect(
+      await mod.hasCredentials("agent-1", { organizationId: "org-1" })
+    ).toBe(false);
   });
 
   test("returns false when neither profile nor org-shared key exists", async () => {

@@ -23,6 +23,11 @@ export interface FeedsNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
 	list(input?: { connection_id?: number; feed_ids?: number[] }): Promise<unknown>;
 	get(feed_id: number): Promise<unknown>;
+	readMany(input: {
+		feed_ids: number[];
+		limit?: number;
+		timeout_ms?: number;
+	}): Promise<unknown>;
 	create(input: FeedsCreateInput): Promise<unknown>;
 	update(input: {
 		feed_id: number;
@@ -46,6 +51,7 @@ export function buildFeedsNamespace(
 		manage,
 		list: (input) => action("list_feeds", input),
 		get: (feed_id) => action("read_feed", { feed_id }),
+		readMany: (input) => action("read_feeds", input),
 		create: (input) => action("create_feed", input),
 		update: (input) => action("update_feed", input),
 		delete: (feed_id) => action("delete_feed", { feed_id }),

@@ -9,6 +9,7 @@
  *   returns its metadata + recent sync runs; a virtual feed returns LIVE rows
  *   via the connector query()/search() pushdown (never synced); a streaming
  *   (chat-channel) feed returns its live transcript from channel_messages.
+ * - read_feeds: Read several feeds in parallel with per-feed failures.
  * - create_feed: Create a new feed for a connection
  * - update_feed: Update feed settings
  * - delete_feed: Delete a feed
@@ -68,6 +69,30 @@ const ReadFeedAction = Type.Object({
   feed_id: Type.Number({ description: 'Feed ID' }),
   limit: Type.Optional(
     Type.Number({ description: 'Max transcript messages for a streaming feed (default 50)' })
+  ),
+});
+
+const ReadFeedsAction = Type.Object({
+  action: Type.Literal('read_feeds', {
+    description:
+      'Read several feeds in parallel. Each feed returns independently as { ok, result } or { ok:false, error }.',
+  }),
+  feed_ids: Type.Array(Type.Integer({ minimum: 1 }), {
+    minItems: 1,
+    maxItems: 10,
+    description: 'Feed IDs to read in parallel (max 10).',
+  }),
+  limit: Type.Optional(
+    Type.Number({
+      description: 'Per-feed row/message limit for live feed kinds (default 50)',
+    })
+  ),
+  timeout_ms: Type.Optional(
+    Type.Number({
+      description: 'Per-feed timeout in milliseconds (default 10000, max 30000).',
+      minimum: 1000,
+      maximum: 30000,
+    })
   ),
 });
 
@@ -182,6 +207,19 @@ export const ManageFeedsResultSchema = Type.Union([
     total: Type.Optional(Type.Integer()),
   }),
   Type.Object({
+    action: Type.Literal('read_feeds'),
+    results: Type.Array(
+      Type.Object({
+        feed_id: Type.Integer(),
+        ok: Type.Boolean(),
+        result: Type.Optional(Type.Unknown()),
+        error: Type.Optional(Type.String()),
+      })
+    ),
+    failures: Type.Integer(),
+    timeout_ms: Type.Integer(),
+  }),
+  Type.Object({
     action: Type.Literal('create_feed'),
     feed: Type.Record(Type.String(), Type.Unknown()),
   }),
@@ -207,6 +245,9 @@ export const ManageFeedsResultSchema = Type.Union([
 ]);
 type ManageFeedsResult = Static<typeof ManageFeedsResultSchema>;
 
+const DEFAULT_BATCH_READ_TIMEOUT_MS = 10_000;
+const MAX_BATCH_READ_TIMEOUT_MS = 30_000;
+
 // ============================================
 // Main Function (Action Router)
 // ============================================
@@ -214,6 +255,7 @@ type ManageFeedsResult = Static<typeof ManageFeedsResultSchema>;
 const manageFeedsTool = defineActionTool('manage_feeds', {
   list_feeds: action(ListFeedsAction, handleListFeeds),
   read_feed: action(ReadFeedAction, handleReadFeed),
+  read_feeds: action(ReadFeedsAction, handleReadFeeds),
   create_feed: action(CreateFeedAction, handleCreateFeed),
   update_feed: action(UpdateFeedAction, handleUpdateFeed),
   delete_feed: action(DeleteFeedAction, handleDeleteFeed),
@@ -442,6 +484,57 @@ async function handleReadFeed(
   `;
 
   return { action: 'read_feed', kind: String(feed.kind), feed, recent_runs: runs };
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function handleReadFeeds(
+  args: Static<typeof ReadFeedsAction>,
+  ctx: ToolContext
+): Promise<ManageFeedsResult> {
+  const rawTimeoutMs = Number(args.timeout_ms ?? DEFAULT_BATCH_READ_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(rawTimeoutMs)
+    ? Math.max(1000, Math.min(MAX_BATCH_READ_TIMEOUT_MS, Math.trunc(rawTimeoutMs)))
+    : DEFAULT_BATCH_READ_TIMEOUT_MS;
+  const feedIds = [...new Set(args.feed_ids.map((id) => Number(id)))].slice(0, 10);
+  const results = await Promise.all(
+    feedIds.map(async (feedId) => {
+      try {
+        const result = await withTimeout(
+          handleReadFeed({ action: 'read_feed', feed_id: feedId, limit: args.limit }, ctx),
+          timeoutMs,
+          `read_feed ${feedId} timed out after ${timeoutMs}ms`
+        );
+        if ('error' in result) {
+          return { feed_id: feedId, ok: false, error: result.error };
+        }
+        return { feed_id: feedId, ok: true, result };
+      } catch (err) {
+        return { feed_id: feedId, ok: false, error: getErrorMessage(err) };
+      }
+    })
+  );
+
+  return {
+    action: 'read_feeds',
+    results,
+    failures: results.filter((r) => !r.ok).length,
+    timeout_ms: timeoutMs,
+  };
 }
 
 async function handleCreateFeed(

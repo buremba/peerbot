@@ -143,7 +143,7 @@ const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 		"list_channel_bindings",
 	]),
 	manage_catalog: new Set(["list_catalog", "list_installed"]),
-	manage_feeds: new Set(["list_feeds", "read_feed"]),
+	manage_feeds: new Set(["list_feeds", "read_feed", "read_feeds"]),
 	manage_auth_profiles: new Set(["list_auth_profiles"]),
 	manage_operations: new Set(["list_available", "list_runs", "get_run"]),
 	manage_watchers: new Set([

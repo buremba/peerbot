@@ -12,7 +12,7 @@ same registry — today they live in separate code paths. Reviewed with an exter
 model (Q: collapse the axes? → "keep them orthogonal").
 
 **Related docs (authoritative for the kinds/lenses below):**
-[`docs/database-connectors.md`](./database-connectors.md) — the PostgreSQL
+[`docs/database-connectors.md`](../database-connectors.md) — the PostgreSQL
 connector, live-read `query()`, connection-backed entities, and the `virtual`
 feed-flag roadmap. [`docs/define-metric-design.md`](../define-metric-design.md) —
 the entity-bound metric lens. This doc is the *cross-cutting* model that ties the
@@ -38,7 +38,7 @@ bytes live" and "how the caller wants to read them" are different concerns.
 | kind | backing | status |
 | --- | --- | --- |
 | `chat-channel` | local transcript table `channel_messages` (live conversation) | exists |
-| `virtual-live-dataset` | external source queried **live**, nothing copied locally — PostgreSQL connector (`packages/connectors/src/postgres.ts`) `query()` live-read + `QueryContext` (`connector-types.ts:842`). **Live-read infra + connection-backed live entities ship** (#1182), metrics run live against them; the user-facing `virtual` **feed flag** (+ `search()` + fan-out) is **Slice 2 / next** — see `database-connectors.md`. | **partial** |
+| `virtual-live-dataset` | external source queried **live**, nothing copied locally — PostgreSQL connector (`packages/connectors/src/postgres.ts`) `query()` live-read + `search()` recall pushdown. User-configured live feeds are `feeds.kind = 'virtual'` (`virtual` boolean retained as a transitional compatibility flag). | exists |
 | `collected` | sync materializes rows into `events` (the classic data feed = real row in `feeds`) | exists |
 
 ### Axis 2 — Read lens (how you query)
@@ -121,3 +121,9 @@ it (e.g. a new lens that must share the source-adapter layer), per the "design
 the seam, not the framework" discipline. The recall registry was shaped as the
 tuple `(source, lens)` precisely so that fold is additive when it lands: a metric
 reader is just another `FeedReader<S, 'metric', …>` registered by tuple key.
+
+`query_sql` coverage hints do **not** mean the raw-sql lens now federates virtual
+feeds. They are advisory metadata: an `events` SQL result can say "these live
+virtual feeds are accessible but missing from persisted events" and provide a
+`client.feeds.readMany` example. The live reads still happen explicitly through
+feed addressing or the batch feed-read API.

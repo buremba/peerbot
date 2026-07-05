@@ -514,6 +514,11 @@ export default async (_ctx, client) => {
 	},
 	"feeds.list": { summary: "List data-sync feeds.", access: "read" },
 	"feeds.get": { summary: "Get a feed by id.", access: "read" },
+	"feeds.readMany": {
+		summary:
+			"Read several feeds in parallel with per-feed successes/failures. Useful for live virtual feeds suggested by query_sql coverage hints.",
+		access: "read",
+	},
 	"feeds.create": {
 		summary: "Create a data-sync feed for a connection.",
 		access: "write",

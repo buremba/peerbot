@@ -113,7 +113,18 @@ if [[ $force -eq 0 ]]; then
 fi
 
 echo "→ removing worktree $worktree_dir"
-git -C "$repo" worktree remove "$worktree_dir" --force
+if git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qF "worktree $worktree_dir"; then
+  git -C "$repo" worktree remove "$worktree_dir" --force
+else
+  echo "→ worktree path already gone from git (e.g. closed via Herdr)"
+  rm -rf "$worktree_dir" 2>/dev/null || true
+fi
+
+# shellcheck source=scripts/lib/herdr-task.sh
+. "$script_dir/lib/herdr-task.sh"
+if herdr_task_close "$worktree_dir"; then
+  echo "→ closed Herdr workspace for $worktree_dir"
+fi
 
 # Returns 0 if branch <b> in <gitdir> carries no local-only commits (its tip is
 # reachable from origin/main, or equals its pushed remote ref). Used to protect

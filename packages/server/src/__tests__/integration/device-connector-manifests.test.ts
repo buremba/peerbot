@@ -67,6 +67,19 @@ function manifest(overrides: Record<string, unknown> = {}) {
   };
 }
 
+async function readFeedStatus(orgId: string, key = CONNECTOR_KEY) {
+  const sql = getTestDb();
+  const rows = (await sql`
+    SELECT f.status
+    FROM feeds f
+    JOIN connections c ON c.id = f.connection_id
+    WHERE c.organization_id = ${orgId} AND c.connector_key = ${key}
+    ORDER BY f.id ASC
+    LIMIT 1
+  `) as unknown as Array<{ status: string }>;
+  return rows[0]?.status ?? null;
+}
+
 async function readDefinition(orgId: string, key = CONNECTOR_KEY) {
   const sql = getTestDb();
   const rows = (await sql`
@@ -165,6 +178,19 @@ describe('device connector manifests', () => {
     expect(res.status).toBe(200);
 
     expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
+  });
+
+  it('keeps manifest inventory separate from live permission state so revoked capabilities pause feeds', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const connectorManifest = manifest();
+
+    const first = await poll(workerId, [connectorManifest], 'macos', { screentime: true });
+    expect(first.status).toBe(200);
+    expect(await readFeedStatus(orgId)).toBe('active');
+
+    const second = await poll(workerId, [connectorManifest], 'macos', {});
+    expect(second.status).toBe(200);
+    expect(await readFeedStatus(orgId)).toBe('paused');
   });
 
   it('accepts the actual Owletto Mac manifests and installs their connector definitions', async () => {

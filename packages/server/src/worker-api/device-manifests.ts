@@ -83,7 +83,7 @@ export function validateDeviceConnectorManifests(params: {
   capabilities: readonly string[];
   manifests: unknown;
 }): StoredDeviceManifest[] {
-  const { platform, capabilities, manifests } = params;
+  const { platform, manifests } = params;
   if (!Array.isArray(manifests)) return [];
   if (!platform || !isKnownPlatform(platform)) return [];
   if (manifests.length > MAX_MANIFESTS_PER_POLL) {
@@ -96,7 +96,6 @@ export function validateDeviceConnectorManifests(params: {
     return [];
   }
 
-  const authorizedCaps = new Set(capabilities);
   const seen = new Set<string>();
   const valid: StoredDeviceManifest[] = [];
   for (const raw of manifests) {
@@ -110,9 +109,6 @@ export function validateDeviceConnectorManifests(params: {
       }
       if (!manifest.runtime.platforms.includes(platform)) {
         throw new Error(`runtime.platforms must include '${platform}'`);
-      }
-      if (!authorizedCaps.has(manifest.required_capability)) {
-        throw new Error(`required_capability '${manifest.required_capability}' is not advertised by this poll`);
       }
       const capAuth = authorizeCapabilities(platform, [manifest.required_capability]);
       if (!capAuth.authorized.includes(manifest.required_capability)) {
@@ -155,12 +151,10 @@ export async function getDeviceManifestSourcesForUser(params: {
 
   const winners = new Map<string, { stored: StoredDeviceManifest; deviceId: string }>();
   for (const row of rows) {
-    const caps = params.liveCapabilities.get(row.id) ?? new Set<string>();
     const map = isRecord(row.connector_manifests) ? row.connector_manifests : {};
     for (const value of Object.values(map)) {
       const stored = parseStoredManifest(value);
       if (!stored) continue;
-      if (!caps.has(stored.manifest.required_capability)) continue;
       const existing = winners.get(stored.manifest.key);
       if (!existing || compareManifestWinner(stored, existing.stored) > 0) {
         winners.set(stored.manifest.key, { stored, deviceId: row.id });

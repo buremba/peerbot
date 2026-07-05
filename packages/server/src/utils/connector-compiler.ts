@@ -26,7 +26,7 @@ export interface ConnectorMetadata {
   openapiConfig?: Record<string, unknown> | null;
   requiredCapability?: string | null;
   runtime?: {
-    platforms: Array<'ios' | 'android' | 'macos' | 'windows' | 'linux'>;
+    platforms: Array<'ios' | 'android' | 'macos' | 'windows' | 'linux' | 'chrome-extension'>;
     scopes?: string[];
   } | null;
 }

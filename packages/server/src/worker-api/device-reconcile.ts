@@ -18,11 +18,12 @@ import {
   findBundledConnectorFile,
   getBundledDeviceConnectors,
 } from '../utils/connector-catalog';
-import { extractConnectorMetadata } from '../utils/connector-compiler';
+import { extractConnectorMetadata, type ConnectorMetadata } from '../utils/connector-compiler';
 import { upsertConnectorDefinitionRecords } from '../utils/connector-definition-install';
 import { ensureUniqueConnectionSlug } from '../utils/connections';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
+import { getDeviceManifestSourcesForUser, type DeviceConnectorSource } from './device-manifests';
 
 /** A device worker counts toward "serves capability X" only if seen this recently. */
 const DEVICE_WORKER_FRESH_INTERVAL = '7 days';
@@ -52,7 +53,8 @@ async function ensureDeviceConnectorWired(
   organizationId: string,
   connectorKey: string,
   declaredFeedKeys: string[],
-  matchingDeviceIds: string[]
+  matchingDeviceIds: string[],
+  source?: { metadata: ConnectorMetadata; sourcePath: string }
 ): Promise<void> {
   const sql = getDb();
 
@@ -134,26 +136,35 @@ async function ensureDeviceConnectorWired(
       return;
     }
 
-    // Compile metadata outside the lock (pure CPU + a child process — slow).
-    const filePath = findBundledConnectorFile(connectorKey);
-    if (!filePath) {
-      logger.warn({ connectorKey }, '[auto-wire] Bundled connector file not found');
-      return;
+    let metadata: ConnectorMetadata;
+    let sourcePath: string;
+    let feedKeys = declaredFeedKeys;
+    if (source) {
+      metadata = source.metadata;
+      sourcePath = source.sourcePath;
+    } else {
+      // Compile metadata outside the lock (pure CPU + a child process — slow).
+      const filePath = findBundledConnectorFile(connectorKey);
+      if (!filePath) {
+        logger.warn({ connectorKey }, '[auto-wire] Bundled connector file not found');
+        return;
+      }
+      const compiledCode = await compileConnectorFromFile(filePath);
+      metadata = await extractConnectorMetadata(compiledCode);
+      sourcePath = bundledConnectorSourcePath(filePath);
+      if (!metadata.key || !metadata.name || !metadata.version) return;
+      const feedsSchema = metadata.feeds as Record<
+        string,
+        { configSchema?: unknown; userManaged?: boolean }
+      > | null;
+      // Skip feeds the connector marks `userManaged` — they need per-instance
+      // config (e.g. local.directory.files needs a folder_id per folder) that
+      // auto-wire can't supply. The Mac app creates them explicitly via
+      // /api/workers/me/feeds once it has the folder bookmark.
+      feedKeys = feedsSchema
+        ? Object.keys(feedsSchema).filter((k) => !feedsSchema[k]?.userManaged)
+        : [];
     }
-    const compiledCode = await compileConnectorFromFile(filePath);
-    const metadata = await extractConnectorMetadata(compiledCode);
-    if (!metadata.key || !metadata.name || !metadata.version) return;
-    const feedsSchema = metadata.feeds as Record<
-      string,
-      { configSchema?: unknown; userManaged?: boolean }
-    > | null;
-    // Skip feeds the connector marks `userManaged` — they need per-instance
-    // config (e.g. local.directory.files needs a folder_id per folder) that
-    // auto-wire can't supply. The Mac app creates them explicitly via
-    // /api/workers/me/feeds once it has the folder bookmark.
-    const feedKeys = feedsSchema
-      ? Object.keys(feedsSchema).filter((k) => !feedsSchema[k]?.userManaged)
-      : [];
 
     let connectionId: number | undefined;
     await sql.begin(async (tx) => {
@@ -171,7 +182,7 @@ async function ensureDeviceConnectorWired(
           compiledCode: null,
           compiledCodeHash: null,
           sourceCode: null,
-          sourcePath: bundledConnectorSourcePath(filePath),
+          sourcePath,
         },
       });
 
@@ -326,17 +337,16 @@ async function pauseStaleDeviceFeeds(userId: string, organizationId: string, con
 export async function reconcileDeviceCapabilities(userId: string): Promise<void> {
   const sql = getDb();
 
-  let deviceConnectors: BundledDeviceConnector[];
+  let bundledDeviceConnectors: BundledDeviceConnector[];
   try {
-    deviceConnectors = await getBundledDeviceConnectors();
+    bundledDeviceConnectors = await getBundledDeviceConnectors();
   } catch (err) {
     logger.warn(
       { userId, err: errorMessage(err) },
       '[device-connectors] Failed to read device connector catalog'
     );
-    return;
+    bundledDeviceConnectors = [];
   }
-  if (deviceConnectors.length === 0) return;
 
   // Device data ALWAYS lands in the user's personal org — device tokens are
   // force-bound there (see oauth/device/approve + mint-child-token), and a
@@ -383,11 +393,43 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
       filter(([, caps]) => caps.has(capability))
       .map(([id]) => id);
 
+  let manifestSources: DeviceConnectorSource[] = [];
+  try {
+    manifestSources = await getDeviceManifestSourcesForUser({
+      sql,
+      userId,
+      liveCapabilities: deviceCaps,
+    });
+  } catch (err) {
+    logger.warn(
+      { userId, err: errorMessage(err) },
+      '[device-connectors] Failed to read device connector manifests'
+    );
+  }
+
+  const byKey = new Map<
+    string,
+    | (BundledDeviceConnector & { source?: undefined })
+    | (DeviceConnectorSource & { source: 'device-manifest' })
+  >();
+  for (const dc of bundledDeviceConnectors) byKey.set(dc.key, dc);
+  for (const src of manifestSources) byKey.set(src.key, { ...src, source: 'device-manifest' });
+  if (byKey.size === 0) return;
+
   await Promise.allSettled(
-    deviceConnectors.map((dc) => {
+    [...byKey.values()].map((dc) => {
       const matchingDeviceIds = devicesWithCapability(dc.requiredCapability);
       return matchingDeviceIds.length > 0
-        ? ensureDeviceConnectorWired(userId, personalOrgId, dc.key, dc.feedKeys, matchingDeviceIds)
+        ? ensureDeviceConnectorWired(
+            userId,
+            personalOrgId,
+            dc.key,
+            dc.feedKeys,
+            matchingDeviceIds,
+            'source' in dc && dc.source === 'device-manifest'
+              ? { metadata: dc.metadata, sourcePath: dc.sourcePath }
+              : undefined
+          )
         : pauseStaleDeviceFeeds(userId, personalOrgId, dc.key);
     })
   );

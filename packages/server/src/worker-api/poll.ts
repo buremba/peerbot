@@ -31,6 +31,7 @@ import logger from '../utils/logger';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';
 import { normalizeAdvertisedCapabilities } from './shared';
+import { storedManifestMap, validateDeviceConnectorManifests } from './device-manifests';
 
 const DUE_FEEDS_LOCK_KEY = 71001;
 const DUE_FEED_MATERIALIZE_COOLDOWN_MS = 5000;
@@ -65,6 +66,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   let platform: string | null = null;
   let app_version: string | null = null;
   let label: string | null = null;
+  let connectorManifestsProvided = false;
+  let connectorManifestsRaw: unknown;
   try {
     const body = await c.req.json<{
       worker_id: string;
@@ -72,12 +75,15 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       platform?: string;
       app_version?: string;
       label?: string;
+      connector_manifests?: unknown;
     }>();
     worker_id = body.worker_id;
     capabilities = body.capabilities ?? {};
     platform = body.platform ?? null;
     app_version = body.app_version ?? null;
     label = body.label ?? null;
+    connectorManifestsProvided = Object.hasOwn(body, 'connector_manifests');
+    connectorManifestsRaw = body.connector_manifests;
   } catch {
     return c.json({ error: 'Invalid or missing JSON body' }, 400);
   }
@@ -217,19 +223,28 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   if (registrationUserId) {
     try {
       const incomingCaps = authorizedCapabilities;
+      const validConnectorManifests = connectorManifestsProvided
+        ? validateDeviceConnectorManifests({
+            platform: effectivePlatform,
+            capabilities: incomingCaps,
+            manifests: connectorManifestsRaw,
+          })
+        : null;
+      const connectorManifestMap = validConnectorManifests ? storedManifestMap(validConnectorManifests) : null;
 
       // `xmax = 0` on the RETURNING row distinguishes a brand-new device
       // registration from a routine poll-update so we only emit the
       // `device:created` lifecycle event once per device.
       const upserted = (await sql`
-        INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id)
+        INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id, connector_manifests)
         VALUES (
           ${registrationUserId}, ${worker_id}, ${platform}, ${app_version},
           ${sql.json(incomingCaps)}, ${label},
           COALESCE(
             ${registrationOrgId}::text,
             (SELECT id FROM organization WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${registrationUserId} LIMIT 1)
-          )
+          ),
+          ${sql.json(connectorManifestMap ?? {})}
         )
         ON CONFLICT (user_id, worker_id) DO UPDATE SET
           -- platform is set-once: COALESCE preserves the original value,
@@ -242,6 +257,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           capabilities = EXCLUDED.capabilities,
           label = COALESCE(EXCLUDED.label, device_workers.label),
           organization_id = COALESCE(device_workers.organization_id, EXCLUDED.organization_id),
+          connector_manifests = CASE
+            WHEN ${connectorManifestsProvided} THEN EXCLUDED.connector_manifests
+            ELSE device_workers.connector_manifests
+          END,
           last_seen_at = now()
         RETURNING id, organization_id, (xmax = 0) AS inserted
       `) as unknown as Array<{ id: string; organization_id: string | null; inserted: boolean }>;
@@ -482,6 +501,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         conn.device_worker_id AS connection_device_worker_id,
         cv.compiled_code,
         cd.runtime AS connector_runtime,
+        cd.required_capability AS connector_required_capability,
         ap.auth_data AS auth_profile_auth_data,
         w.name AS watcher_name,
         w.slug AS watcher_slug,
@@ -558,6 +578,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connection_device_worker_id: string | null;
     compiled_code: string | null;
     connector_runtime: { nix?: { packages?: string[] } | null } | null;
+    connector_required_capability: string | null;
     run_created_at: string | Date | null;
     // Watcher run fields (populated via LEFT JOINs)
     watcher_id: number | null;
@@ -706,7 +727,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     ? findBundledConnectorFile(row.connector_key) !== null
     : false;
   const workerWillResolveLocally = !isUserScopedWorker && gatewayHasLocalSource;
-  if (row.connector_key && !workerWillResolveLocally) {
+  const deviceWillExecuteBridgeOnlyConnector =
+    isUserScopedWorker &&
+    row.connector_required_capability != null &&
+    authorizedCapabilities.includes(row.connector_required_capability);
+  if (row.connector_key && !workerWillResolveLocally && !deviceWillExecuteBridgeOnlyConnector) {
     try {
       compiledCode = await resolveConnectorCode(row.connector_key, row.compiled_code);
     } catch (err) {

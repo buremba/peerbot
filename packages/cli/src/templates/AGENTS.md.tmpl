@@ -139,10 +139,9 @@ const gh = defineConnection({
 `google.gmail`, not `gmail` or `google_gmail`): `github`, `slack`, `linear`, `jira`, `google.gmail`,
 `google.calendar`, `microsoft.outlook`, `discord`, `teams`, `telegram`, `webhook`,
 `whatsapp`, `gchat`, `rss`, `postgres`,
-`hackernews`, `reddit`, `x`, `youtube`, `producthunt`, plus on-device connectors (`apple.health`,
-`apple.photos`, `apple.screen_time`, `apple.calendar`, `apple.reminders`,
-`apple.system_audio`, `chrome`, `chrome.history`, `chrome.bookmarks`,
-`chrome.downloads`, `local.directory`, `whatsapp.local`).
+`hackernews`, `reddit`, `x`, `youtube`, `producthunt`.
+
+Mac/Chrome device connectors are advertised by Owletto at poll time and appear after the relevant device grants permission.
 
 Each connector defines its own `config` keys and feed keys — don't guess them. If
 you're unsure of a connector's config shape, ask the user or read its definition;

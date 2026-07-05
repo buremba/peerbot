@@ -50,6 +50,7 @@ export const MAC_DEVICE_CAPABILITIES = [
   "calendar",
   "reminders",
   "system_audio",
+  "computer_use",
 ] as const;
 
 const PLATFORM_ALLOWLIST: Record<string, readonly string[]> = {

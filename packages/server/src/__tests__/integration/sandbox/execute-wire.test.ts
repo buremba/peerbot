@@ -91,32 +91,6 @@ describe('sandbox run (wire)', () => {
     expect(json).toContain('"count":1');
   });
 
-  it('query_sdk can list agents via client.agents.list', async (testCtx) => {
-    if (!isolatedAvailable) return testCtx.skip();
-    const client = new TestMcpClient({ token, orgSlug });
-    const result = await client.querySdk<unknown>(
-      `export default async (_ctx, client) => {
-         const out = await client.agents.list();
-         return { action: out.action, n: out.agents?.length ?? 0 };
-       };`
-    );
-    const json = JSON.stringify(result);
-    expect(json).toContain('"action":"list"');
-    expect(json).toMatch(/"n":\d+/);
-  });
-
-  it('query_sdk can list schedules via client.schedules.list', async (testCtx) => {
-    if (!isolatedAvailable) return testCtx.skip();
-    const client = new TestMcpClient({ token, orgSlug });
-    const result = await client.querySdk<unknown>(
-      `export default async (_ctx, client) => {
-         const out = await client.schedules.list();
-         return { hasSchedules: Array.isArray(out.schedules) };
-       };`
-    );
-    expect(JSON.stringify(result)).toContain('"hasSchedules":true');
-  });
-
   it('run_sdk can list schedules via client.schedules.list', async (testCtx) => {
     if (!isolatedAvailable) return testCtx.skip();
     const client = new TestMcpClient({ token, orgSlug });

@@ -673,13 +673,9 @@ describe('first-party tool-name coverage', () => {
 const ACCESS_SURFACE = `
 search_memory: read+public ?=read+public
 save_memory: write ?=write
-list_organizations: read ?=read
 search_sdk: read+public ?=read+public
 query_sdk: read ?=read
-list_metrics: read ?=read
-query_metric: read ?=read
 query_sql: read ?=read
-metric_series: read ?=read
 run_sdk: write ?=write
 manage_entity: create=write update=write list=read+public get=read+public delete=admin link=write unlink=write update_link=write list_links=read+public ?=read
 manage_entity_schema: list=read+public get=read+public create=admin update=admin delete=admin audit=read+public add_rule=admin remove_rule=admin list_rules=read+public ?=read
@@ -697,6 +693,10 @@ get_watcher: read+public ?=read+public
 read_knowledge: read+public ?=read+public
 manage_classifiers: create=admin list=read+public generate_embeddings=admin delete=admin classify=admin ?=read
 manage_view_templates: set=admin get=read+public rollback=admin remove_tab=admin clear=admin ?=read
+list_organizations: read ?=read
+list_metrics: read ?=read
+query_metric: read ?=read
+metric_series: read ?=read
 resolve_path: read+public ?=read+public
 `.trim();
 

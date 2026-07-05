@@ -181,8 +181,8 @@ export async function resolveWatcherRunsByMessageIds(
         runId,
         'Agent reply finished without calling manage_watchers(action="complete_window")' +
           (budget > 0 ? ` after ${budget + 1} attempt(s)` : '') +
-          '. Check that the assigned agent has the lobu-memory MCP attached and that read_knowledge / ' +
-          'manage_watchers tools are approved for it.'
+          '. Check that the assigned agent has the lobu-memory MCP attached and that query_sdk / ' +
+          'run_sdk tools are approved for it.'
       );
       resolved++;
       continue;

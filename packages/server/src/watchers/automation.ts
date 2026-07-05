@@ -702,9 +702,9 @@ function buildDispatchMessage(params: {
       : []),
     '',
     'Required steps:',
-    `1. Call read_knowledge with {"watcher_id": ${params.watcherId}, "since": "${readKnowledgeSince}", "until": "${readKnowledgeUntil}"${versionPin}}.`,
+    `1. Call query_sdk with a script that runs client.knowledge.read({ watcher_id: ${params.watcherId}, since: "${readKnowledgeSince}", until: "${readKnowledgeUntil}"${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ''} }).`,
     '2. Analyze the returned content using prompt_rendered and extraction_schema.',
-    `3. Call manage_watchers(action="complete_window") with the returned window_token, extracted_data, and "watcher_run_id": ${params.runId}${params.payload.version_id != null ? `, including "template_version_id": ${params.payload.version_id}` : ''}.`,
+    `3. Call run_sdk with a script that runs client.watchers.completeWindow({ window_token, extracted_data, watcher_run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ''} }) using the window_token from step 1.`,
     '4. Include this run_metadata object in complete_window exactly, and add any extra provider/job fields you know:',
     JSON.stringify(
       {
@@ -813,7 +813,9 @@ async function ensureWatcherAgentExists(
 }
 
 const LOBU_MEMORY_MCP_ID = 'lobu-memory';
-const WATCHER_REQUIRED_TOOLS = ['read_knowledge', 'manage_watchers'];
+// Watcher agents reach knowledge reads + complete_window via query_sdk / run_sdk
+// now that flat admin tools are omitted from MCP tools/list.
+const WATCHER_REQUIRED_TOOLS = ['query_sdk', 'run_sdk'];
 
 async function preflightWatcherMemoryTools(params: {
   organizationId: string;

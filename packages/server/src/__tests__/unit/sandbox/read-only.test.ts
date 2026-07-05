@@ -1,9 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import type { ToolAccessLevel } from "../../../auth/tool-access";
 import {
   buildClientSDK,
   enumerateSDKManifest,
 } from "../../../sandbox/client-sdk";
 import { METHOD_METADATA } from "../../../sandbox/method-metadata";
+import { sdkMethodVisible } from "../../../sandbox/sdk-method-access";
 import { baseCtx, expectReturnValue, runOrSkip, stubSDK } from "./_helpers";
 
 const stubEntitiesList = stubSDK({
@@ -12,16 +14,18 @@ const stubEntitiesList = stubSDK({
 
 describe("enumerateSDKManifest", () => {
   it("read mode mirrors METHOD_METADATA access classification", () => {
-    const read = enumerateSDKManifest("read");
-    const full = enumerateSDKManifest("full");
+    const callerMax: ToolAccessLevel = "admin";
+    const read = enumerateSDKManifest("read", { maxAccessLevel: callerMax });
+    const full = enumerateSDKManifest("full", { maxAccessLevel: callerMax });
     for (const [path, meta] of Object.entries(METHOD_METADATA)) {
       const dot = path.indexOf(".");
       if (dot === -1) continue;
       const ns = path.slice(0, dot);
       const method = path.slice(dot + 1);
-      expect(full.byNamespace[ns]).toContain(method);
+      const inFull = full.byNamespace[ns]?.includes(method) ?? false;
+      expect(inFull).toBe(sdkMethodVisible(meta.access, callerMax, "full"));
       const inRead = read.byNamespace[ns]?.includes(method) ?? false;
-      expect(inRead).toBe(meta.access === "read");
+      expect(inRead).toBe(sdkMethodVisible(meta.access, callerMax, "read"));
     }
   });
 

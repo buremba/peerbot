@@ -91,7 +91,7 @@ const DEFAULT_LIMITS: Required<RunLimits> = {
 	outputBytes: 1_048_576,
 };
 /** Device action waits allow 60s queue + 95s post-claim; sandbox must outlive that. */
-const MAX_SCRIPT_TIMEOUT_MS = 180_000;
+export const MAX_SCRIPT_TIMEOUT_MS = 180_000;
 const MAX_TRACE_ARGS_BYTES = 8192;
 const SENSITIVE_TRACE_KEY =
 	/(api[_-]?key|apikey|auth[_-]?data|auth[_-]?values|authorization|cookie|credential|password|private[_-]?key|secret|token)/i;

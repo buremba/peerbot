@@ -320,12 +320,19 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       );
     }
     if (!deviceWorkerId) {
-      const existing = (await sql`
-        SELECT id FROM device_workers
-        WHERE user_id = ${registrationUserId} AND worker_id = ${worker_id}
-        LIMIT 1
-      `) as unknown as Array<{ id: string }>;
-      deviceWorkerId = existing[0]?.id ?? null;
+      try {
+        const existing = (await sql`
+          SELECT id FROM device_workers
+          WHERE user_id = ${registrationUserId} AND worker_id = ${worker_id}
+          LIMIT 1
+        `) as unknown as Array<{ id: string }>;
+        deviceWorkerId = existing[0]?.id ?? null;
+      } catch (err) {
+        logger.error(
+          { worker_id, err: errorMessage(err) },
+          '[pollWorkerJob] deviceWorkerId fallback lookup failed (non-fatal)'
+        );
+      }
     }
   }
 

@@ -40,6 +40,13 @@ import {
   renderPostApplyPunchList,
   renderProgress,
 } from "./render.js";
+import {
+  buildCountsByKind,
+  collectGitInfo,
+  computeManifestHash,
+  type DeploymentSummary,
+  mintApplyId,
+} from "./deployment.js";
 import { declaredConnectorKeys, referencedConnectorKeys } from "./shared.js";
 
 interface ApplyOptions {
@@ -51,6 +58,8 @@ interface ApplyOptions {
   url?: string;
   /** Bypass the project-link guard. */
   force?: boolean;
+  /** CLI version stamped into the deployment summary. */
+  cliVersion?: string;
   /** Test seam — inject a stubbed fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -1148,6 +1157,26 @@ function slugToTitle(slug: string): string {
   );
 }
 
+/**
+ * Best-effort deployment record. The apply's outcome is already decided when
+ * this runs, so a failed post (older server, network blip) is a warning —
+ * never a second failure. The server dedupes on apply_id.
+ */
+async function postDeploymentSummarySafe(
+  client: ApplyClient,
+  summary: DeploymentSummary
+): Promise<void> {
+  try {
+    await client.postDeploymentSummary(summary);
+  } catch (err) {
+    printText(
+      chalk.yellow(
+        `Warning: could not record the deployment (${err instanceof Error ? err.message : String(err)}). The apply itself was unaffected.`
+      )
+    );
+  }
+}
+
 export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   const cwd = opts.cwd ?? process.cwd();
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -1179,9 +1208,14 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // Org slug resolution: explicit --org ▸ active-session org ▸ `org` from
   // defineConfig. The config slug is the declarative default — if no org with
   // that slug exists yet, `lobu apply` offers to provision it (below).
+  // One deployment identity per run: sent as `x-lobu-apply-id` on every
+  // mutation so the server groups this run's config-audit events; the summary
+  // posted at the end closes the deployment record.
+  const applyId = mintApplyId();
   const { client, orgSlug, apiBaseUrl } = await resolveApplyClient({
     url: opts.url,
     org: opts.org ?? state.memory?.org,
+    applyId,
     fetchImpl: opts.fetchImpl,
   });
   printText(chalk.dim(`Org: ${orgSlug}`));
@@ -1351,6 +1385,21 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       printText(chalk.bold("\nApplying provider keys:"));
       await pushProviderApiKeys(client, state.agents);
       printText(chalk.green("\nProvider keys applied; nothing else to apply."));
+      const gitInfo = collectGitInfo(cwd);
+      await postDeploymentSummarySafe(client, {
+        apply_id: applyId,
+        status: "succeeded",
+        counts: plan.counts,
+        counts_by_kind: {
+          "provider-key": {
+            update: state.agents.reduce((n, a) => n + a.providerKeys.length, 0),
+          },
+        },
+        manifest_hash: computeManifestHash(state),
+        git_sha: gitInfo.sha,
+        git_dirty: gitInfo.dirty,
+        cli_version: opts.cliVersion ?? null,
+      });
     } else {
       printText(chalk.green("\nNothing to apply."));
     }
@@ -1411,6 +1460,29 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     printError(
       "Apply halted on first failure. Re-run `lobu apply` once the underlying issue is resolved — every endpoint is idempotent."
     );
+  }
+
+  // Record the deployment (success or partial failure — a cancelled or
+  // dry-run apply never reaches here). Mutations already carried the
+  // x-lobu-apply-id header; this summary row is what groups them in the UI.
+  {
+    const gitInfo = collectGitInfo(cwd);
+    await postDeploymentSummarySafe(client, {
+      apply_id: applyId,
+      status: applyErr ? "partial_failure" : "succeeded",
+      counts: plan.counts,
+      counts_by_kind: buildCountsByKind(plan.rows),
+      manifest_hash: computeManifestHash(state),
+      git_sha: gitInfo.sha,
+      git_dirty: gitInfo.dirty,
+      cli_version: opts.cliVersion ?? null,
+      ...(applyErr
+        ? {
+            error:
+              applyErr instanceof Error ? applyErr.message : String(applyErr),
+          }
+        : {}),
+    });
   }
 
   // Always render the punch-list — even on partial failure, so the operator

@@ -6,6 +6,7 @@ import type {
 } from "../../../config/define.js";
 import { ApiClient, type HttpMethod } from "../../../internal/api-client.js";
 import { resolveApiClient } from "../../../internal/index.js";
+import type { DeploymentSummary } from "./deployment.js";
 import { ApiError } from "../../memory/_lib/errors.js";
 import type {
   DesiredAgentMetadata,
@@ -281,6 +282,8 @@ interface ApplyClientConfig {
   apiBaseUrl: string;
   orgSlug: string;
   token: string;
+  /** Sent as `x-lobu-apply-id` on every request so the server can group this run's config-audit events into one deployment. */
+  applyId?: string;
 }
 
 /**
@@ -296,7 +299,12 @@ export class ApplyClient {
 
   constructor(cfg: ApplyClientConfig, fetchImpl: typeof fetch = fetch) {
     this.orgSlug = cfg.orgSlug;
-    this.http = new ApiClient(cfg.apiBaseUrl, cfg.token, fetchImpl);
+    this.http = new ApiClient(
+      cfg.apiBaseUrl,
+      cfg.token,
+      fetchImpl,
+      cfg.applyId ? { "x-lobu-apply-id": cfg.applyId } : {}
+    );
   }
 
   /**
@@ -434,6 +442,16 @@ export class ApplyClient {
       `/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/config`,
       settings
     );
+  }
+
+  /**
+   * Record this apply run as a deployment (`POST /api/<org>/deployments`).
+   * The server dedupes on apply_id, so a retried post is safe. Callers treat
+   * failure as a warning — the apply itself already succeeded (or already
+   * failed) independently of the audit record.
+   */
+  async postDeploymentSummary(summary: DeploymentSummary): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/deployments`, summary);
   }
 
   /**
@@ -1515,6 +1533,7 @@ interface ResolvedClient {
 export async function resolveApplyClient(opts: {
   url?: string;
   org?: string;
+  applyId?: string;
   fetchImpl?: typeof fetch;
 }): Promise<ResolvedClient> {
   const { token, apiBaseUrl, orgSlug } = await resolveApiClient({
@@ -1523,7 +1542,7 @@ export async function resolveApplyClient(opts: {
     fetchImpl: opts.fetchImpl,
   });
   const client = new ApplyClient(
-    { apiBaseUrl, orgSlug, token },
+    { apiBaseUrl, orgSlug, token, applyId: opts.applyId },
     opts.fetchImpl
   );
   return { client, apiBaseUrl, orgSlug };

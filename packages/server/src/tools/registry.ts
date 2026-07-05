@@ -79,6 +79,8 @@ export interface ToolContext {
   agentId?: string | null;
   /** Verified source conversation for worker-originated tool calls, when any. */
   sourceContext?: ToolSourceContext | null;
+  /** `x-lobu-apply-id` when this call belongs to a `lobu apply` run (REST proxy only). */
+  applyId?: string | null;
   /** Whether request was authenticated */
   isAuthenticated: boolean;
   /** OAuth client ID that created this request (null for session/anonymous) */

@@ -322,6 +322,7 @@ Memory:
           org: options.org,
           url: options.url,
           force: options.force,
+          cliVersion: version,
         });
       }
     );

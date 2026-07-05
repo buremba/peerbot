@@ -8,6 +8,8 @@
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
 import { emit } from '../../events/emitter';
+import { deriveToolActorSource } from '../../utils/apply-context';
+import { recordConfigChangeEvent } from '../../utils/insert-event';
 import { ToolUserError } from '../../utils/errors';
 import { validateDataSourceQuery } from '../../utils/execute-data-sources';
 import { resolveUsernames } from '../../utils/resolve-usernames';
@@ -171,6 +173,35 @@ function rid(args: ManageViewTemplatesArgs): string {
   return String(args.resource_id);
 }
 
+/**
+ * Config-audit emission for view-template mutations. Only entity-type
+ * templates are org config (the audit trail has no 'entity' resource kind —
+ * per-entity templates are runtime data), so entity-scoped mutations are
+ * skipped. The audit kind stays 'entity-type' with changedFields
+ * ['view_template'] per the ConfigResourceKind union.
+ */
+function recordViewTemplateChange(
+  args: ManageViewTemplatesArgs,
+  ctx: ToolContext,
+  summary: string,
+  state: Record<string, unknown> | null
+): void {
+  if (args.resource_type !== 'entity_type') return;
+  recordConfigChangeEvent({
+    organizationId: ctx.organizationId,
+    resourceKind: 'entity-type',
+    resourceId: rid(args),
+    op: 'updated',
+    summary,
+    state,
+    changedFields: ['view_template'],
+    applyId: ctx.applyId ?? null,
+    actorSource: deriveToolActorSource(ctx),
+    createdBy: ctx.userId ?? null,
+    clientId: ctx.clientId ?? null,
+  });
+}
+
 /** Verify the resource exists and the caller has access. Returns the numeric row id. */
 async function verifyAccess(
   sql: ReturnType<typeof getDb>,
@@ -311,6 +342,22 @@ async function handleSet(
 
   const [resolved] = await resolveUsernames([versionRow as Record<string, unknown>], 'created_by');
 
+  recordViewTemplateChange(
+    args,
+    ctx,
+    `Entity type '${rid(args)}' view template${tabName ? ` tab '${tabName}'` : ''} set to v${v}`,
+    {
+      slug: rid(args),
+      view_template: {
+        tab_name: tabName,
+        tab_order: tabOrder,
+        version: v,
+        json_template: args.json_template,
+        change_notes: args.change_notes ?? null,
+      },
+    }
+  );
+
   return {
     action: 'set',
     version: mapVersionRow(resolved),
@@ -415,6 +462,13 @@ async function handleClear(
     keys: ['resolve-path', 'entity-types', 'view-template-history'],
   });
 
+  recordViewTemplateChange(
+    args,
+    ctx,
+    `Entity type '${rid(args)}' default view template cleared`,
+    { slug: rid(args), view_template: null }
+  );
+
   return {
     action: 'clear',
     success: true,
@@ -485,6 +539,20 @@ async function handleRollback(
     'created_by'
   );
 
+  recordViewTemplateChange(
+    args,
+    ctx,
+    `Entity type '${rid(args)}' view template${tabName ? ` tab '${tabName}'` : ''} rolled back to v${args.version}`,
+    {
+      slug: rid(args),
+      view_template: {
+        tab_name: tabName,
+        version: args.version,
+        json_template: (versionRow as Record<string, unknown>).json_template ?? null,
+      },
+    }
+  );
+
   return {
     action: 'rollback',
     version: mapVersionRow(resolvedVersion),
@@ -518,6 +586,13 @@ async function handleRemoveTab(
   emit(ctx.organizationId, {
     keys: ['resolve-path', 'entity-types', 'view-template-history'],
   });
+
+  recordViewTemplateChange(
+    args,
+    ctx,
+    `Entity type '${rid(args)}' view template tab '${args.tab_name}' removed`,
+    { slug: rid(args), view_template: { tab_removed: args.tab_name } }
+  );
 
   return {
     action: 'remove_tab',

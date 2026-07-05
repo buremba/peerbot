@@ -7,7 +7,12 @@ import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { nextRunAt, validateSchedule } from '../../../utils/cron';
-import { recordChangeEvent, recordLifecycleEvent } from '../../../utils/insert-event';
+import {
+  recordChangeEvent,
+  recordConfigChangeEvent,
+  recordLifecycleEvent,
+} from '../../../utils/insert-event';
+import { deriveToolActorSource } from '../../../utils/apply-context';
 import logger from '../../../utils/logger';
 import { getOrganizationSlug, getPublicWebUrl, buildWatchersUrl } from '../../../utils/url-builder';
 import { toEntityInfo } from '../../view-urls';
@@ -268,6 +273,46 @@ export async function handleCreate(
       summary: `Watcher "${args.name ?? args.slug}" created`,
       extra: { slug: args.slug, agent_id: args.agent_id ?? null },
     });
+
+    recordConfigChangeEvent({
+      organizationId,
+      resourceKind: 'watcher',
+      resourceId: watcherId,
+      op: 'created',
+      summary: `Watcher '${args.name ?? args.slug}' created`,
+      // Post-insert state composed from the inserted values (the row is not
+      // refetched); includes the v1 version-bound fields (prompt, sources, …).
+      state: {
+        id: watcherId,
+        name: args.name ?? args.slug,
+        slug: args.slug,
+        status: 'active',
+        version: 1,
+        current_version_id: versionId,
+        entity_ids: entityId ? [entityId] : [],
+        schedule: args.schedule ?? null,
+        agent_id: args.agent_id ?? null,
+        agent_kind: args.agent_kind ?? null,
+        scheduler_client_id: args.scheduler_client_id ?? null,
+        device_worker_id: args.device_worker_id ?? null,
+        model_config: args.model_config ?? {},
+        execution_config: args.execution_config ?? null,
+        sources,
+        tags: args.tags ?? [],
+        notification_channel: args.notification_channel ?? 'canvas',
+        notification_priority: args.notification_priority ?? 'normal',
+        min_cooldown_seconds: args.min_cooldown_seconds ?? 0,
+        prompt: args.prompt,
+        description: args.description ?? null,
+        keying_config: keyingConfig ?? null,
+        classifiers: classifiers ?? null,
+        reactions_guidance: args.reactions_guidance ?? null,
+      },
+      applyId: ctx.applyId ?? null,
+      actorSource: deriveToolActorSource(ctx),
+      createdBy: ctx.userId ?? null,
+      clientId: ctx.clientId ?? null,
+    });
   }
 
   return {
@@ -355,7 +400,7 @@ export async function handleUpdate(
   const scheduleValue = args.schedule || null;
   const nextRunAtVal = scheduleValue ? nextRunAt(scheduleValue) : null;
 
-  await sql`
+  const updatedRows = await sql`
     UPDATE watchers SET
       updated_at = NOW(),
       model_config = CASE WHEN ${args.model_config !== undefined} THEN ${sql.json(args.model_config ?? {})} ELSE model_config END,
@@ -371,9 +416,25 @@ export async function handleUpdate(
       notification_priority = CASE WHEN ${args.notification_priority !== undefined} THEN ${args.notification_priority ?? 'normal'} ELSE notification_priority END,
       min_cooldown_seconds = CASE WHEN ${args.min_cooldown_seconds !== undefined} THEN ${args.min_cooldown_seconds ?? 0} ELSE min_cooldown_seconds END
     WHERE id = ${args.watcher_id}
+    RETURNING *
   `;
 
   logger.info(`[manage_watchers] Updated watcher ${args.watcher_id}: ${updatedFields.join(', ')}`);
+
+  const updatedRow = (updatedRows[0] ?? null) as Record<string, unknown> | null;
+  recordConfigChangeEvent({
+    organizationId: (updatedRow?.organization_id as string | null) ?? ctx.organizationId,
+    resourceKind: 'watcher',
+    resourceId: args.watcher_id,
+    op: 'updated',
+    summary: `Watcher '${updatedRow?.name ?? args.watcher_id}' updated`,
+    state: updatedRow,
+    changedFields: updatedFields,
+    applyId: ctx.applyId ?? null,
+    actorSource: deriveToolActorSource(ctx),
+    createdBy: ctx.userId ?? null,
+    clientId: ctx.clientId ?? null,
+  });
 
   return {
     action: 'update',
@@ -386,7 +447,10 @@ export async function handleUpdate(
 // handleDelete
 // ============================================
 
-export async function handleDelete(args: ManageWatchersArgs): Promise<{
+export async function handleDelete(
+  args: ManageWatchersArgs,
+  ctx: ToolContext
+): Promise<{
   action: 'delete';
   results: WatcherOperationResult[];
   summary: { total: number; successful: number; failed: number };
@@ -439,6 +503,19 @@ export async function handleDelete(args: ManageWatchersArgs): Promise<{
             op: 'deleted',
             entityId: watcherId,
             summary: `Watcher "${watcher.name || watcherId}" archived`,
+          });
+
+          recordConfigChangeEvent({
+            organizationId: watcher.organization_id as string,
+            resourceKind: 'watcher',
+            resourceId: watcherId,
+            op: 'deleted',
+            summary: `Watcher '${watcher.name || watcherId}' archived`,
+            state: null,
+            applyId: ctx.applyId ?? null,
+            actorSource: deriveToolActorSource(ctx),
+            createdBy: ctx.userId ?? null,
+            clientId: ctx.clientId ?? null,
           });
         }
 
@@ -582,6 +659,39 @@ export async function handleCreateFromVersion(
       entityId: watcherId,
       summary: `Watcher "${watcherName}" created`,
       extra: { slug: watcherSlug, via: 'create_from_version' },
+    });
+
+    recordConfigChangeEvent({
+      organizationId,
+      resourceKind: 'watcher',
+      resourceId: watcherId,
+      op: 'created',
+      summary: `Watcher '${watcherName}' created from version ${args.version_id}`,
+      // Composed from the cloned insert values (row not refetched); the
+      // version-bound fields come from the shared source version row.
+      state: {
+        id: watcherId,
+        name: watcherName,
+        slug: watcherSlug,
+        status: 'active',
+        entity_ids: [entityId],
+        schedule: version.schedule ?? null,
+        agent_id: version.agent_id ?? null,
+        scheduler_client_id: version.scheduler_client_id ?? null,
+        version: (version.version as number) ?? 1,
+        current_version_id: sharedVersionId,
+        watcher_group_id: groupId,
+        source_watcher_id: version.watcher_id,
+        sources,
+        prompt: version.prompt ?? null,
+        keying_config: version.keying_config ?? null,
+        classifiers: version.classifiers ?? null,
+        reactions_guidance: version.reactions_guidance ?? null,
+      },
+      applyId: ctx.applyId ?? null,
+      actorSource: deriveToolActorSource(ctx),
+      createdBy: ctx.userId ?? null,
+      clientId: ctx.clientId ?? null,
     });
   }
 

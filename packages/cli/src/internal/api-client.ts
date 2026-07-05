@@ -49,7 +49,9 @@ export class ApiClient {
   constructor(
     private readonly apiBaseUrl: string,
     private readonly token: string,
-    private readonly fetchImpl: typeof fetch = fetch
+    private readonly fetchImpl: typeof fetch = fetch,
+    /** Extra headers sent on EVERY request (e.g. `x-lobu-apply-id`). */
+    private readonly extraHeaders: Record<string, string> = {}
   ) {}
 
   /**
@@ -66,6 +68,7 @@ export class ApiClient {
   ): Promise<{ status: number; body: T }> {
     const url = path.startsWith("http") ? path : `${this.apiBaseUrl}${path}`;
     const headers: Record<string, string> = {
+      ...this.extraHeaders,
       Authorization: `Bearer ${this.token}`,
     };
     if (options.sendAccept !== false) headers.Accept = "application/json";

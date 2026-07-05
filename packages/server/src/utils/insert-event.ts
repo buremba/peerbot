@@ -7,6 +7,7 @@
 
 import { retryWithBackoff } from '@lobu/core';
 import { getDb } from '../db/client';
+import { type ConfigResourceKind, redactConfigState } from './config-redaction';
 import {
   lookupGeoEnrichment,
   mergeEnrichedMetadata,
@@ -568,6 +569,88 @@ interface LifecycleEventParams {
  *     "extra": { ... }    // optional
  *   }
  */
+// ============================================
+// Config Change Event (settings/deployment audit trail)
+// ============================================
+
+type ConfigOp = 'created' | 'updated' | 'deleted';
+type ConfigActorSource = 'cli' | 'ui' | 'api' | 'agent';
+
+interface ConfigChangeEventParams {
+  organizationId: string;
+  /** DiffRow-kind slug (`agent`, `agent-settings`, `connection`, ...). */
+  resourceKind: ConfigResourceKind;
+  resourceId: string | number;
+  op: ConfigOp;
+  /** Human-readable summary (e.g. "Agent 'Marketing' settings updated"). */
+  summary: string;
+  /**
+   * Full post-change resource state (the row as written, including
+   * server-merged fields — not the request body). Null for deletes and for
+   * secret-only endpoints. Redacted by this writer before insert.
+   */
+  state: Record<string, unknown> | null;
+  changedFields?: string[];
+  /** `x-lobu-apply-id` when the mutation came from a `lobu apply` run. */
+  applyId?: string | null;
+  actorSource?: ConfigActorSource;
+  createdBy?: string | null;
+  clientId?: string | null;
+}
+
+/**
+ * Record a config mutation as a `semantic_type='change'` event with
+ * `metadata.category='config'` and the full (redacted) post-change state in
+ * `payload_data.state`. This is the settings audit trail behind the
+ * Deployments feed; distinct from `category='lifecycle'` rows, which carry no
+ * state and feed dashboard metric_series — handlers that emit lifecycle
+ * events dual-write this one. Fire-and-forget, same retry/ERROR contract as
+ * the writers above.
+ */
+export function recordConfigChangeEvent(params: ConfigChangeEventParams): void {
+  const externalId = `config_${params.resourceKind}_${params.op}_${params.resourceId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const state = redactConfigState(params.resourceKind, params.state);
+
+  retryWithBackoff(
+    () =>
+      insertEvent({
+        entityIds: [],
+        organizationId: params.organizationId,
+        originId: externalId,
+        title: params.summary,
+        semanticType: 'change',
+        originType: `config_${params.resourceKind}_${params.op}`,
+        payloadType: 'empty',
+        payloadData: { state },
+        metadata: {
+          category: 'config',
+          resource_kind: params.resourceKind,
+          resource_id: String(params.resourceId),
+          op: params.op,
+          ...(params.changedFields?.length ? { changed_fields: params.changedFields } : {}),
+          ...(params.applyId ? { apply_id: params.applyId } : {}),
+          ...(params.actorSource ? { actor_source: params.actorSource } : {}),
+        },
+        createdBy: params.createdBy ?? null,
+        clientId: params.clientId ?? null,
+      }),
+    AUDIT_EVENT_RETRY
+  ).catch((err) => {
+    logger.error(
+      {
+        err,
+        originId: externalId,
+        organizationId: params.organizationId,
+        resourceKind: params.resourceKind,
+        op: params.op,
+        resourceId: String(params.resourceId),
+        summary: params.summary,
+      },
+      '[insert-event] config audit event DROPPED after retry — audit trail is missing this row'
+    );
+  });
+}
+
 export function recordLifecycleEvent(params: LifecycleEventParams): void {
   const externalId = `lifecycle_${params.entityType}_${params.op}_${params.entityId}_${Date.now()}`;
 

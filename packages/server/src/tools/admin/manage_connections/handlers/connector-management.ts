@@ -7,8 +7,10 @@
 
 import { getErrorMessage } from "@lobu/core";
 import { getDb } from "../../../../db/client";
+import { deriveToolActorSource } from "../../../../utils/apply-context";
 import { normalizeAuthValues } from "../../../../utils/auth-profiles";
 import { applyEntityLinkOverrides } from "../../../../utils/entity-link-validation";
+import { recordConfigChangeEvent } from "../../../../utils/insert-event";
 import logger from "../../../../utils/logger";
 import type { ToolContext } from "../../../registry";
 import {
@@ -57,6 +59,28 @@ export async function handleInstallConnector(
 			if (err) return { error: err };
 		}
 
+		recordConfigChangeEvent({
+			organizationId: ctx.organizationId,
+			resourceKind: "connector-definition",
+			resourceId: installed.connectorKey,
+			op: installed.updated ? "updated" : "created",
+			summary: `Connector '${installed.name ?? installed.connectorKey}' ${installed.updated ? "updated" : "installed"} (v${installed.version})`,
+			// Intentionally small: key/version/source only — never compiled code.
+			state: {
+				connector_key: installed.connectorKey,
+				name: installed.name,
+				version: installed.version,
+				code_hash: installed.codeHash,
+				...(args.mcp_url ? { mcp_url: args.mcp_url } : {}),
+				...(args.source_url ? { source_url: args.source_url } : {}),
+				...(args.source_uri ? { source_uri: args.source_uri } : {}),
+			},
+			applyId: ctx.applyId ?? null,
+			actorSource: deriveToolActorSource(ctx),
+			createdBy: ctx.userId ?? null,
+			clientId: ctx.clientId ?? null,
+		});
+
 		return {
 			action: "install_connector",
 			installed: true,
@@ -94,6 +118,19 @@ export async function handleUninstallConnector(
 	} catch (error) {
 		return { error: getErrorMessage(error) };
 	}
+
+	recordConfigChangeEvent({
+		organizationId: ctx.organizationId,
+		resourceKind: "connector-definition",
+		resourceId: args.connector_key,
+		op: "deleted",
+		summary: `Connector '${args.connector_key}' uninstalled`,
+		state: null,
+		applyId: ctx.applyId ?? null,
+		actorSource: deriveToolActorSource(ctx),
+		createdBy: ctx.userId ?? null,
+		clientId: ctx.clientId ?? null,
+	});
 
 	return {
 		action: "uninstall_connector",

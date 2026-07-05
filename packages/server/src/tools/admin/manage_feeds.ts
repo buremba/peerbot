@@ -26,7 +26,8 @@ import type { Env } from '../../index';
 import { getAuthProfileById } from '../../utils/auth-profiles';
 import { nextRunAt, validateSchedule } from '../../utils/cron';
 import { getWorkspaceRole } from '../../utils/organization-access';
-import { recordChangeEvent } from '../../utils/insert-event';
+import { recordChangeEvent, recordConfigChangeEvent } from '../../utils/insert-event';
+import { deriveToolActorSource } from '../../utils/apply-context';
 import logger from '../../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../../utils/oauth-connection-state';
 import { createSyncRun } from '../../runs/queue-service';
@@ -569,6 +570,19 @@ async function handleCreateFeed(
     'Feed created'
   );
 
+  recordConfigChangeEvent({
+    organizationId,
+    resourceKind: 'feed',
+    resourceId: inserted[0].id as number,
+    op: 'created',
+    summary: `Feed '${displayName}' created`,
+    state: inserted[0] as Record<string, unknown>,
+    applyId: ctx.applyId ?? null,
+    actorSource: deriveToolActorSource(ctx),
+    createdBy: ctx.userId ?? null,
+    clientId: ctx.clientId ?? null,
+  });
+
   return { action: 'create_feed', feed: inserted[0] };
 }
 
@@ -647,6 +661,29 @@ async function handleUpdateFeed(
     }
   }
 
+  const updatedFeed = updated[0] as Record<string, unknown>;
+  const changedFields = [
+    ...(args.display_name !== undefined ? ['display_name'] : []),
+    ...(args.status !== undefined ? ['status'] : []),
+    ...(args.entity_ids !== undefined ? ['entity_ids'] : []),
+    ...(args.config !== undefined ? ['config'] : []),
+    ...(args.schedule !== undefined ? ['schedule'] : []),
+    ...(hasRepairAgentArg ? ['repair_agent_id'] : []),
+  ];
+  recordConfigChangeEvent({
+    organizationId,
+    resourceKind: 'feed',
+    resourceId: args.feed_id,
+    op: 'updated',
+    summary: `Feed '${updatedFeed.display_name ?? updatedFeed.feed_key ?? args.feed_id}' updated`,
+    state: updatedFeed,
+    ...(changedFields.length > 0 ? { changedFields } : {}),
+    applyId: ctx.applyId ?? null,
+    actorSource: deriveToolActorSource(ctx),
+    createdBy: ctx.userId ?? null,
+    clientId: ctx.clientId ?? null,
+  });
+
   return { action: 'update_feed', feed: updated[0] };
 }
 
@@ -693,6 +730,19 @@ async function handleDeleteFeed(
       feed_key: feed.feed_key,
       connection_id: feed.connection_id,
     },
+  });
+
+  recordConfigChangeEvent({
+    organizationId,
+    resourceKind: 'feed',
+    resourceId: args.feed_id,
+    op: 'deleted',
+    summary: `Feed '${feed.feed_key}' deleted`,
+    state: null,
+    applyId: ctx.applyId ?? null,
+    actorSource: deriveToolActorSource(ctx),
+    createdBy: ctx.userId ?? null,
+    clientId: ctx.clientId ?? null,
   });
 
   return { action: 'delete_feed', deleted: true, feed_id: args.feed_id };

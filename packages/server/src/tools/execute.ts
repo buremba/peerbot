@@ -13,6 +13,7 @@ import {
 } from '../auth/tool-access';
 import type { Env } from '../index';
 import { trackMCPToolCall } from '../sentry';
+import { parseApplyId } from '../utils/apply-context';
 import { ToolNotRegisteredError } from '../utils/errors';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { enforceRoleScopeAccess } from './access-control';
@@ -44,6 +45,8 @@ export interface AuthContext {
   scopedToOrg: boolean;
   allowCrossOrg: boolean;
   instructions?: string;
+  /** `x-lobu-apply-id` when the call belongs to a `lobu apply` run. */
+  applyId?: string | null;
   /**
    * Per-turn LIMIT on which tools may execute admin-tier actions. Carried on
    * the builder/system agent's per-run worker token (see
@@ -88,6 +91,7 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     baseUrl: getConfiguredPublicOrigin() ?? '',
     scopedToOrg,
     allowCrossOrg: tokenType === 'oauth' && !scopedToOrg,
+    applyId: parseApplyId(c.req.header('x-lobu-apply-id')),
     // Builder admin-tool LIMIT: only the verified worker token's per-turn
     // allowlist (the builder/system agent run) carries this. External
     // `mcp:admin` callers need no grant — every tool is reachable uniformly
@@ -250,5 +254,6 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     allowCrossOrg: authCtx.allowCrossOrg,
     requestUrl: authCtx.requestUrl,
     baseUrl: authCtx.baseUrl,
+    applyId: authCtx.applyId ?? null,
   };
 }

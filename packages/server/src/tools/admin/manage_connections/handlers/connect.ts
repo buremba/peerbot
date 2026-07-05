@@ -12,7 +12,8 @@ import {
   resolveNewConnectionSlug,
 } from '../../../../utils/connections';
 import { applyEntityLinkOverrides } from '../../../../utils/entity-link-validation';
-import { recordLifecycleEvent } from '../../../../utils/insert-event';
+import { recordConfigChangeEvent, recordLifecycleEvent } from '../../../../utils/insert-event';
+import { deriveToolActorSource } from '../../../../utils/apply-context';
 import logger from '../../../../utils/logger';
 import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';
 import {
@@ -386,6 +387,19 @@ export async function handleConnect(
     entityId: connection.id,
     summary: `Connection "${connectDisplayName}" created`,
     extra: { connector_key: args.connector_key, slug: connection.slug, via: 'connect' },
+  });
+
+  recordConfigChangeEvent({
+    organizationId,
+    resourceKind: 'connection',
+    resourceId: connection.id,
+    op: 'created',
+    summary: `Connection '${connectDisplayName}' created`,
+    state: insertedConn[0] as Record<string, unknown>,
+    applyId: ctx.applyId ?? null,
+    actorSource: deriveToolActorSource(ctx),
+    createdBy: ctx.userId ?? null,
+    clientId: ctx.clientId ?? null,
   });
 
   // If active immediately, return simple result

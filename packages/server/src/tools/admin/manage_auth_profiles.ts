@@ -31,7 +31,9 @@ import {
   summarizeBrowserSessionAuthData,
   updateAuthProfile,
 } from '../../utils/auth-profiles';
+import { deriveToolActorSource } from '../../utils/apply-context';
 import { createConnectToken } from '../../utils/connect-tokens';
+import { recordConfigChangeEvent } from '../../utils/insert-event';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 import { getScopedConnectorDefinition } from "../../catalog/connector-definitions";
@@ -228,6 +230,33 @@ type ManageAuthProfilesResult = Static<typeof ManageAuthProfilesResultSchema>;
  */
 function authProfileNotFound(slug: string): { error: string } {
   return { error: `Auth profile '${slug}' not found` };
+}
+
+/**
+ * Config-audit emission for auth-profile mutations. `state` is the
+ * serializeAuthProfile shape — the sanitized snapshot already used for tool
+ * responses (no raw credentials/auth_data) — and the writer redacts again on
+ * top of that.
+ */
+function recordAuthProfileConfigChange(
+  ctx: ToolContext,
+  params: {
+    resourceId: string | number;
+    op: 'created' | 'updated' | 'deleted';
+    summary: string;
+    state: Record<string, unknown> | null;
+    changedFields?: string[];
+  }
+): void {
+  recordConfigChangeEvent({
+    organizationId: ctx.organizationId,
+    resourceKind: 'auth-profile',
+    ...params,
+    applyId: ctx.applyId ?? null,
+    actorSource: deriveToolActorSource(ctx),
+    createdBy: ctx.userId ?? null,
+    clientId: ctx.clientId ?? null,
+  });
 }
 
 // ============================================
@@ -616,6 +645,13 @@ async function handleCreateAuthProfile(
       throw err;
     }
 
+    recordAuthProfileConfigChange(ctx, {
+      resourceId: authProfile.slug,
+      op: 'created',
+      summary: `Auth profile '${authProfile.display_name ?? authProfile.slug}' created`,
+      state: serializeAuthProfile(authProfile),
+    });
+
     return {
       action: 'create_auth_profile',
       auth_profile: serializeAuthProfile(authProfile),
@@ -661,6 +697,13 @@ async function handleCreateAuthProfile(
     createdBy: ctx.userId ?? 'api',
   });
 
+  recordAuthProfileConfigChange(ctx, {
+    resourceId: authProfile.slug,
+    op: 'created',
+    summary: `Auth profile '${authProfile.display_name ?? authProfile.slug}' created`,
+    state: serializeAuthProfile(authProfile),
+  });
+
   return { action: 'create_auth_profile', auth_profile: serializeAuthProfile(authProfile) };
 }
 
@@ -701,6 +744,13 @@ async function handleCreateBrowserSessionProfile(
     authData,
     status: browserSessionReady ? 'active' : 'pending_auth',
     createdBy: ctx.userId ?? 'api',
+  });
+
+  recordAuthProfileConfigChange(ctx, {
+    resourceId: authProfile.slug,
+    op: 'created',
+    summary: `Auth profile '${authProfile.display_name ?? authProfile.slug}' created`,
+    state: serializeAuthProfile(authProfile),
   });
 
   return { action: 'create_auth_profile', auth_profile: serializeAuthProfile(authProfile) };
@@ -759,6 +809,22 @@ async function handleUpdateAuthProfile(
   if (!authProfile) {
     return { error: `Auth profile '${args.auth_profile_slug}' not found` };
   }
+
+  const updateChangedFields = [
+    ...(args.display_name !== undefined ? ['display_name'] : []),
+    ...(args.slug !== undefined ? ['slug'] : []),
+    ...(updateAuthDataPayload !== undefined ? ['credentials'] : []),
+    ...(args.requested_scopes !== undefined ? ['requested_scopes'] : []),
+    ...(args.status !== undefined ? ['status'] : []),
+  ];
+  const emitUpdateConfigChange = (profile: NonNullable<typeof authProfile>) =>
+    recordAuthProfileConfigChange(ctx, {
+      resourceId: profile.slug,
+      op: 'updated',
+      summary: `Auth profile '${profile.display_name ?? profile.slug}' updated`,
+      state: serializeAuthProfile(profile),
+      ...(updateChangedFields.length > 0 ? { changedFields: updateChangedFields } : {}),
+    });
 
   const authProfileProvider = authProfile.provider;
 
@@ -835,6 +901,8 @@ async function handleUpdateAuthProfile(
         createdBy: ctx.userId,
       });
 
+      emitUpdateConfigChange(authProfile);
+
       return {
         action: 'update_auth_profile',
         auth_profile: serializeAuthProfile(authProfile),
@@ -885,6 +953,8 @@ async function handleUpdateAuthProfile(
       await syncConnectionsForOAuthAppProfile(ctx.organizationId, authProfile.id, true);
     }
   }
+
+  emitUpdateConfigChange(authProfile);
 
   return { action: 'update_auth_profile', auth_profile: serializeAuthProfile(authProfile) };
 }
@@ -998,6 +1068,13 @@ async function handleDeleteAuthProfile(
     return { error: `Failed to delete auth profile '${args.auth_profile_slug}'` };
   }
 
+  recordAuthProfileConfigChange(ctx, {
+    resourceId: args.auth_profile_slug,
+    op: 'deleted',
+    summary: `Auth profile '${existing.display_name ?? args.auth_profile_slug}' deleted`,
+    state: null,
+  });
+
   return {
     action: 'delete_auth_profile',
     deleted: true,
@@ -1035,6 +1112,18 @@ async function handleSetDefaultAuthProfile(
     organizationId: ctx.organizationId,
     connectorKey: args.connector_key,
     slug: args.auth_profile_slug,
+  });
+
+  recordAuthProfileConfigChange(ctx, {
+    resourceId: args.auth_profile_slug ?? args.connector_key,
+    op: 'updated',
+    summary: args.auth_profile_slug
+      ? `Auth profile '${args.auth_profile_slug}' pinned as default for connector '${args.connector_key}'`
+      : `Default auth profile cleared for connector '${args.connector_key}'`,
+    state: pinned
+      ? serializeAuthProfile(pinned)
+      : { connector_key: args.connector_key, default_cleared: true },
+    changedFields: ['is_default_for_connector'],
   });
 
   return {

@@ -194,7 +194,12 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return canonical(a) === canonical(b);
 }
 
-function canonical(value: unknown): string {
+/**
+ * Deterministic serialization (sorted keys, undefined dropped). Exported for
+ * the deployment manifest hash (deployment.ts), which must be stable across
+ * key-insertion order.
+ */
+export function canonical(value: unknown): string {
   if (value === undefined || value === null) return "null";
   if (Array.isArray(value)) {
     return `[${value.map(canonical).join(",")}]`;

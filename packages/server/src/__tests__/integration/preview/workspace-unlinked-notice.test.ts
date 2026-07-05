@@ -85,6 +85,27 @@ describe("workspaceUnlinkedNotice", () => {
 		expect(text).toContain("/lobu link");
 	});
 
+	it("escapes mrkdwn control chars in the link label so a name can't break the inline link", async () => {
+		setOrigin("https://app.lobu.ai");
+		const org = await createTestOrganization({ slug: "acme" });
+		await createTestAgent({
+			organizationId: org.id,
+			agentId: "odd",
+			name: "A&B <Co>",
+		});
+
+		const text = (await workspaceUnlinkedNotice("slack", org.id, {
+			channelId: "slack:C0ABC123",
+			teamId: "T0TEAM",
+			channelName: "general",
+		})) as string;
+
+		// The label inside `<url|label>` is entity-escaped; the raw name never
+		// reaches Slack, so a `>` can't prematurely close the inline link.
+		expect(text).toContain("|A&amp;B &lt;Co&gt;>");
+		expect(text).not.toContain("|A&B <Co>>");
+	});
+
 	it("deep-links to the plain Behaviors page when no channel context is given", async () => {
 		setOrigin("https://app.lobu.ai");
 		const org = await createTestOrganization({ slug: "acme" });

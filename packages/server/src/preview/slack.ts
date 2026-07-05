@@ -402,9 +402,7 @@ interface PreviewAgent {
  * owning agent), plus that owning agent's id (excluded from the demo list).
  * Returns null when the connection or its owning agent can't be resolved.
  */
-async function resolvePreviewConnectionOrg(
-	connectionId: string,
-): Promise<{
+async function resolvePreviewConnectionOrg(connectionId: string): Promise<{
 	organizationId: string;
 	owningAgentId: string;
 	connectionDatabaseId: number;
@@ -599,6 +597,20 @@ async function listOrgAgentsForNotice(organizationId: string): Promise<{
  * source); also gives the CLI `lobu run` / `/lobu link <code>` path. Returns
  * null for non-Slack platforms (OAuth install is Slack-only today).
  */
+/**
+ * Escape the Slack mrkdwn chars that break an inline `<url|label>` link label.
+ * Agent names are user-controlled; a `>`, `<`, or `&` in a name would otherwise
+ * terminate/mangle the link (Slack reads `text` as mrkdwn, and `&` is the entity
+ * escape prefix). Mirrors the private `escapeMrkdwn` in slack-platform-bridge.ts;
+ * kept local because preview and gateway/connections are separate modules.
+ */
+function escapeMrkdwnLabel(text: string): string {
+	return text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+}
+
 export async function workspaceUnlinkedNotice(
 	platform: string,
 	organizationId: string,
@@ -648,9 +660,13 @@ export async function workspaceUnlinkedNotice(
 	// is posted via thread.post(string) → chat.postMessage({ text }), which Slack
 	// always interprets as mrkdwn; with unfurl_links disabled a bare URL renders
 	// as flat text, but `<url|label>` renders as a clickable link. The adapter's
-	// plain-text path only rewrites @mentions, so the `<>` survive intact.
+	// plain-text path only rewrites @mentions, so the `<>` survive intact. The
+	// label is escaped because agent names are user-controlled and a raw `>`/`<`/`&`
+	// would terminate or corrupt the inline link.
 	const agentLines = agents.map((a) =>
-		canLink ? `   • <${behaviorsUrl(a.agentId)}|${a.name}>` : `   • ${a.name}`,
+		canLink
+			? `   • <${behaviorsUrl(a.agentId)}|${escapeMrkdwnLabel(a.name)}>`
+			: `   • ${a.name}`,
 	);
 
 	if (agentLines.length > 0) {

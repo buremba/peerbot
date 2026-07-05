@@ -12,6 +12,7 @@ import { recordToolConfigChange } from './helpers/config-audit';
 import { ToolUserError } from '../../utils/errors';
 import { validateDataSourceQuery } from '../../utils/execute-data-sources';
 import { resolveUsernames } from '../../utils/resolve-usernames';
+import { validateJsonTemplate } from '../../utils/validate-json-template';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { defineFlatActionTool, flatAction } from './action-tool';
@@ -275,6 +276,10 @@ async function handleSet(
   if (!args.json_template) throw new Error('json_template is required for set action');
 
   validateDataSources(args.json_template.data_sources);
+  // Structural DSL validation: fail fast at authoring on a malformed node tree
+  // (bad node shape / missing required field / unknown `format`) rather than
+  // storing it opaque and breaking silently at render time.
+  validateJsonTemplate(args.json_template);
 
   const sql = getDb();
   const rowId = await verifyAccess(sql, args, ctx, true);

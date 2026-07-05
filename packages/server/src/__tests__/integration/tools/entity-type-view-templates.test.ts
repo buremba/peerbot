@@ -138,10 +138,9 @@ describe('manage_entity_schema get → view_templates', () => {
 
   it('round-trips a format directive verbatim (SDK-authored template → get)', async () => {
     // The SDK path (client.viewTemplates.set) and manage_view_templates store
-    // json_template as opaque JSONB — no DSL-node validation — so a `format`
-    // directive an SDK user authors must survive set → get untouched, reaching
-    // the renderer's data node. This is the contract the owletto format feature
-    // depends on for authored views.
+    // json_template as opaque JSONB, so a (valid) `format` directive an SDK user
+    // authors must survive set → get untouched, reaching the renderer's data
+    // node. This is the contract the owletto format feature depends on.
     await manageViewTemplates(
       {
         action: 'set',
@@ -174,5 +173,47 @@ describe('manage_entity_schema get → view_templates', () => {
       fallback: '—',
     });
     expect(children[1]).toMatchObject({ format: 'date', path: 'x.when' });
+  });
+
+  it('rejects a malformed template at set (fails fast, not at render)', async () => {
+    // The set handler validates the DSL node tree. An unknown `format` (the exact
+    // silent-render bug this guards) must be rejected at authoring — via the tool,
+    // the API, and the SDK, which all funnel through this same handler.
+    await expect(
+      manageViewTemplates(
+        {
+          action: 'set',
+          resource_type: 'entity_type',
+          resource_id: 'ticket',
+          tab_name: 'Bad',
+          json_template: {
+            type: 'div',
+            children: [{ type: 'data', path: 'x', format: 'moneys' }],
+          },
+        } as never,
+        {} as never,
+        ctx
+      )
+    ).rejects.toThrow(/unknown format "moneys"/);
+
+    // And a data node with no path is rejected too.
+    await expect(
+      manageViewTemplates(
+        {
+          action: 'set',
+          resource_type: 'entity_type',
+          resource_id: 'ticket',
+          tab_name: 'Bad2',
+          json_template: { type: 'each', items: 'xs', as: 'x' },
+        } as never,
+        {} as never,
+        ctx
+      )
+    ).rejects.toThrow(/requires a `render`/);
+
+    // Neither malformed tab was stored.
+    const templates = await getTemplates();
+    expect(templates.find((t) => t.tab_name === 'Bad')).toBeUndefined();
+    expect(templates.find((t) => t.tab_name === 'Bad2')).toBeUndefined();
   });
 });

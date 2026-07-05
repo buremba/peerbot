@@ -127,6 +127,9 @@ export LOBU_WORKSPACE_ROOT="${LOBU_WORKSPACE_ROOT:-$REPO_ROOT/workspaces}"
 
 mkdir -p "$LOBU_WORKSPACE_ROOT"
 
+# shellcheck source=scripts/lib/dev-app-url.sh
+. "$REPO_ROOT/scripts/lib/dev-app-url.sh"
+
 # --- Run -------------------------------------------------------------------
 
 # Backend is selected by the DATABASE_URL *scheme*, not its mere presence: only
@@ -158,9 +161,13 @@ if [ "$_LOBU_EMBEDDED" = 1 ]; then
   mkdir -p "$DEV_DATA_ROOT"
   echo "→ embedded Postgres   cluster: $DEV_DATA_ROOT/.lobu/pgdata"
   echo "→ server on http://${HOST}:${PORT}   (Vite HMR in-process)"
+  lobu_dev_print_app_url
   echo "→ first run seeds a web login: dev@lobu.local / lobudev123   (org 'dev')"
   echo "→ then run \`lobu apply\` from a project dir to sync its lobu.config.ts"
   echo ""
+  if [[ "${OPEN:-}" == "1" || "${OPEN:-}" == "true" ]]; then
+    lobu_dev_schedule_open
+  fi
   exec bun run --filter '@lobu/server' dev:local
 fi
 
@@ -189,6 +196,10 @@ echo "→ external Postgres (sslmode=${PGSSLMODE})"
 echo "→ server on http://${HOST}:${PORT}"
 echo "→ embedded gateway proxy on :${WORKER_PROXY_PORT}"
 echo "→ Vite HMR in-process (same port)"
+lobu_dev_print_app_url
 echo ""
+if [[ "${OPEN:-}" == "1" || "${OPEN:-}" == "true" ]]; then
+  lobu_dev_schedule_open
+fi
 
 exec bun run --filter '@lobu/server' dev

@@ -326,7 +326,7 @@ export function validateAndScopeQuery(
      */
     userId?: string | null;
   }
-): { sql: string; params: unknown[] } {
+): { sql: string; params: unknown[]; tableRefs: string[] } {
   const trimmed = rawSql.trim();
   if (!trimmed) {
     throw new Error('SQL query is required');
@@ -365,12 +365,15 @@ export function validateAndScopeQuery(
     }
   }
 
-  return buildScopedQuery(
-    trimmed,
+  return {
+    ...buildScopedQuery(
+      trimmed,
+      tableRefs,
+      { organizationId, userId: options?.userId ?? null },
+      options
+    ),
     tableRefs,
-    { organizationId, userId: options?.userId ?? null },
-    options
-  );
+  };
 }
 
 // ============================================

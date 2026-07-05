@@ -682,7 +682,7 @@ manage_entity_schema: list=read+public get=read+public create=admin update=admin
 manage_connections: list_connector_groups=read+public list=read+public get=read+public create=write connect=admin update=write apply_chat_connection=admin delete=admin reauthenticate=write test=admin install_connector=admin uninstall_connector=admin toggle_connector_login=admin update_connector_auth=admin update_connector_default_config=admin update_connector_default_repair_agent=admin set_connector_entity_link_overrides=admin list_channel_bindings=read+public bind_channel=admin unbind_channel=admin sync_channel_bindings=admin connect_channel_dm=admin ?=read
 manage_catalog: list_catalog=read+public list_installed=read+public ?=read
 manage_agents: list=admin get=admin create=admin update=admin delete=admin set_system_agent=admin ?=read
-manage_feeds: list_feeds=read+public read_feed=read+public create_feed=admin update_feed=admin delete_feed=admin trigger_feed=admin ?=read
+manage_feeds: list_feeds=read+public read_feed=read+public read_feeds=read+public create_feed=admin update_feed=admin delete_feed=admin trigger_feed=admin ?=read
 manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=admin test_auth_profile=admin create_auth_profile=write update_auth_profile=write delete_auth_profile=admin set_default_auth_profile=admin ?=read
 manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public approve=admin reject=admin ?=read
 notify: send=admin ?=admin

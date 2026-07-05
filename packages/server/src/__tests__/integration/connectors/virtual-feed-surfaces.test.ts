@@ -24,6 +24,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AuthzScope } from '../../../authz/scope';
 import type { Env } from '../../../index';
+import { manageFeeds } from '../../../tools/admin/manage_feeds';
 import { querySql } from '../../../tools/admin/query_sql';
 import type { ToolContext } from '../../../tools/registry';
 import { gatherRecall, type RecallContext } from '../../../tools/search';
@@ -57,6 +58,7 @@ describe('virtual feed surfaces (recall + query_sql)', () => {
     tokenType: 'oauth',
     scopedToOrg: false,
     allowCrossOrg: false,
+    scopes: ['mcp:read'],
   });
 
   const recallCtx = (query: string): RecallContext => ({
@@ -114,24 +116,24 @@ describe('virtual feed surfaces (recall + query_sql)', () => {
     const orgConnId = Number((orgConn as { id: number }).id);
 
     const [recallFeed] = await db`
-      INSERT INTO feeds (organization_id, connection_id, feed_key, status, virtual, config, created_at, updated_at)
-      VALUES (${orgId}, ${orgConnId}, 'inbox', 'active', true,
+      INSERT INTO feeds (organization_id, connection_id, feed_key, status, kind, virtual, config, created_at, updated_at)
+      VALUES (${orgId}, ${orgConnId}, 'inbox', 'active', 'virtual', true,
         ${db.json({ query: VFEED_SQL, primary_key: 'id', cursor_column: 'id', recall: true })}, NOW(), NOW())
       RETURNING id
     `;
     recallFeedId = Number((recallFeed as { id: number }).id);
 
     const [plainFeed] = await db`
-      INSERT INTO feeds (organization_id, connection_id, feed_key, status, virtual, config, created_at, updated_at)
-      VALUES (${orgId}, ${orgConnId}, 'plain', 'active', true,
+      INSERT INTO feeds (organization_id, connection_id, feed_key, status, kind, virtual, config, created_at, updated_at)
+      VALUES (${orgId}, ${orgConnId}, 'plain', 'active', 'virtual', true,
         ${db.json({ query: VFEED_SQL, primary_key: 'id', cursor_column: 'id' })}, NOW(), NOW())
       RETURNING id
     `;
     plainFeedId = Number((plainFeed as { id: number }).id);
 
     const [normalFeed] = await db`
-      INSERT INTO feeds (organization_id, connection_id, feed_key, status, virtual, config, created_at, updated_at)
-      VALUES (${orgId}, ${orgConnId}, 'synced', 'active', false,
+      INSERT INTO feeds (organization_id, connection_id, feed_key, status, kind, virtual, config, created_at, updated_at)
+      VALUES (${orgId}, ${orgConnId}, 'synced', 'active', 'collected', false,
         ${db.json({ query: VFEED_SQL, primary_key: 'id', cursor_column: 'id' })}, NOW(), NOW())
       RETURNING id
     `;
@@ -148,8 +150,8 @@ describe('virtual feed surfaces (recall + query_sql)', () => {
     `;
     const privConnId = Number((privConn as { id: number }).id);
     const [privRecallFeed] = await db`
-      INSERT INTO feeds (organization_id, connection_id, feed_key, status, virtual, config, created_at, updated_at)
-      VALUES (${orgId}, ${privConnId}, 'priv-inbox', 'active', true,
+      INSERT INTO feeds (organization_id, connection_id, feed_key, status, kind, virtual, config, created_at, updated_at)
+      VALUES (${orgId}, ${privConnId}, 'priv-inbox', 'active', 'virtual', true,
         ${db.json({ query: VFEED_SQL, primary_key: 'id', cursor_column: 'id', recall: true })}, NOW(), NOW())
       RETURNING id
     `;
@@ -210,6 +212,26 @@ describe('virtual feed surfaces (recall + query_sql)', () => {
     expect(res.rows.map((r) => r.name).sort()).toEqual(['apple', 'apricot', 'banana']);
   }, 60_000);
 
+  it('(2) query_sql warns that events SQL omits accessible virtual feeds', async () => {
+    const ownerRes = await querySql({ sql: 'SELECT id FROM events LIMIT 1' }, {}, ownerCtx);
+    expect(ownerRes.error).toBeUndefined();
+    expect(ownerRes.coverage?.source).toBe('persisted_events_only');
+    expect(ownerRes.coverage?.suggested_virtual_feeds.map((f) => f.feed).sort()).toEqual([
+      'vfsurf-org-db/inbox',
+      'vfsurf-org-db/plain',
+      'vfsurf-priv-db/priv-inbox',
+    ]);
+    expect(ownerRes.coverage?.suggested_execution.example).toContain(
+      'client.feeds.readMany'
+    );
+
+    const memberRes = await querySql({ sql: 'SELECT id FROM events LIMIT 1' }, {}, memberCtx());
+    expect(memberRes.coverage?.suggested_virtual_feeds.map((f) => f.feed).sort()).toEqual([
+      'vfsurf-org-db/inbox',
+      'vfsurf-org-db/plain',
+    ]);
+  }, 60_000);
+
   it('(2) query_sql addresses a virtual feed by "connection_slug/feed_key"', async () => {
     const res = await querySql({ feed: 'vfsurf-org-db/inbox', limit: 10 }, {}, ownerCtx);
     expect(res.error).toBeUndefined();
@@ -246,5 +268,59 @@ describe('virtual feed surfaces (recall + query_sql)', () => {
     const ok = await querySql({ feed: String(privRecallFeedId) }, {}, ownerCtx);
     expect(ok.error).toBeUndefined();
     expect(ok.rows.length).toBe(3);
+  }, 60_000);
+
+  // ---- (3) manage_feeds read_feeds ---------------------------------------
+
+  it('(3) read_feeds returns per-feed successes and failures', async () => {
+    const res = (await manageFeeds(
+      {
+        action: 'read_feeds',
+        feed_ids: [recallFeedId, 999_999_999],
+        limit: 2,
+      },
+      {},
+      ownerCtx
+    )) as {
+      action: 'read_feeds';
+      failures: number;
+      results: Array<{
+        feed_id: number;
+        ok: boolean;
+        result?: any;
+        error?: string;
+      }>;
+    };
+
+    expect(res.action).toBe('read_feeds');
+    expect(res.failures).toBe(1);
+    const ok = res.results.find((r) => r.feed_id === recallFeedId);
+    expect(ok?.ok).toBe(true);
+    expect(ok?.result?.kind).toBe('virtual');
+    expect(ok?.result?.rows).toHaveLength(2);
+    const missing = res.results.find((r) => r.feed_id === 999_999_999);
+    expect(missing).toMatchObject({ ok: false, error: 'Feed not found' });
+  }, 60_000);
+
+  it('(3) read_feeds preserves per-feed visibility failures', async () => {
+    const res = (await manageFeeds(
+      {
+        action: 'read_feeds',
+        feed_ids: [recallFeedId, privRecallFeedId],
+        limit: 2,
+      },
+      {},
+      memberCtx()
+    )) as {
+      failures: number;
+      results: Array<{ feed_id: number; ok: boolean; error?: string }>;
+    };
+
+    expect(res.failures).toBe(1);
+    expect(res.results.find((r) => r.feed_id === recallFeedId)?.ok).toBe(true);
+    expect(res.results.find((r) => r.feed_id === privRecallFeedId)).toMatchObject({
+      ok: false,
+      error: 'Feed not found',
+    });
   }, 60_000);
 });

@@ -12,7 +12,8 @@
 #   <name>  kebab-case task slug (e.g. fix-sse-leak)
 #
 # Companion: `make task-clean NAME=<name> [FORCE=1]` removes the worktree,
-# its branches in both repos, and the Lobu CLI context.
+# its branches in both repos, the Lobu CLI context, and the Herdr workspace
+# (when `herdr` is on PATH; set HERDR=0 to skip).
 #
 # Behavior (idempotent — re-running on an existing worktree refreshes .env
 # and .env.local only):
@@ -220,6 +221,17 @@ else
   echo "→ skipped Lobu context registration (pass CONTEXT=1 or --context to register)"
 fi
 
+# shellcheck source=scripts/lib/herdr-task.sh
+. "$script_dir/lib/herdr-task.sh"
+herdr_ws=""
+if herdr_ws="$(herdr_task_open "$repo" "$worktree_dir" "$name")"; then
+  echo "→ opened Herdr workspace '$herdr_ws' (label: $name)"
+else
+  if herdr_task_enabled; then
+    echo "warning: Herdr is installed but worktree open failed (run manually: herdr worktree open --cwd $repo --path $worktree_dir --label $name)" >&2
+  fi
+fi
+
 cat <<EOF
 
 ✓ Worktree ready: $worktree_dir
@@ -228,6 +240,10 @@ cat <<EOF
   owletto branch:    $branch (real named branch, not detached HEAD)
   PORT:              $port
   WORKER_PROXY_PORT: $proxy
+  App (browser):     http://127.0.0.1:$port/lobu
+
+  make dev              # in this worktree (or Herdr pane)
+  OPEN=1 make dev       # same, opens the app URL in your browser after ~5s
 
 When pushing owletto changes:
   1. Push owletto FIRST so the SHA is reachable on origin:
@@ -238,5 +254,5 @@ When pushing owletto changes:
        git -C $worktree_dir push -u origin $branch
 
 Launch via the task-start shell function (recommended; see script header),
-or manually: cd $worktree_dir && claude
+or manually: cd $worktree_dir && claude$(if [[ -n "${herdr_ws:-}" ]]; then printf '\n\nHerdr: herdr workspace focus %s  (pane cwd is already this worktree)' "$herdr_ws"; fi)
 EOF

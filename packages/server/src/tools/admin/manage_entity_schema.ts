@@ -13,6 +13,11 @@ import type { AutoCreateWhenRule } from '@lobu/connector-sdk';
 import { validateEntityMetrics } from '@lobu/connector-sdk';
 import { type DbClient, getDb } from '../../db/client';
 import { recordToolConfigChange } from './helpers/config-audit';
+import {
+  type DataSourceContext,
+  type DataSourceInput,
+  executeDataSources,
+} from '../../utils/execute-data-sources';
 import { measureColumns } from '../../utils/infer-measures';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
@@ -186,6 +191,22 @@ type ManageEntitySchemaArgs = Static<typeof ManageEntitySchemaSchema>;
 // Result Types
 // ============================================
 
+// An authored view template + its live data. Same shape resolve_path returns for
+// entity-detail tabs; duplicated (not imported) to avoid coupling this admin tool
+// to resolve_path's module-private schema.
+const ViewTemplateTabSchema = Type.Object({
+  tab_name: Type.String(),
+  tab_order: Type.Integer(),
+  json_template: Type.Record(Type.String(), Type.Unknown()),
+  version: Type.Integer(),
+  version_id: Type.Integer(),
+  template_data: Type.Union([
+    Type.Record(Type.String(), Type.Array(Type.Unknown())),
+    Type.Null(),
+  ]),
+});
+type ViewTemplateTab = Static<typeof ViewTemplateTabSchema>;
+
 const EntityTypeRowSchema = Type.Object({
   id: Type.Integer(),
   slug: Type.String(),
@@ -211,6 +232,13 @@ const EntityTypeRowSchema = Type.Object({
   current_view_template_version_id: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   /** Derived types only — the view's aggregate columns, classified on read. */
   measure_columns: Type.Optional(Type.Array(Type.String())),
+  /**
+   * Authored TYPE-level list view templates (view_template_active_tabs for
+   * resource_type='entity_type'), each with its `data_sources` run LIVE on read.
+   * Populated only by `get`; the list-view switcher lists these alongside the
+   * built-in Table/Board/Gallery. Same shape as resolve_path's tab payload.
+   */
+  view_templates: Type.Optional(Type.Array(ViewTemplateTabSchema)),
 });
 type EntityTypeRow = Static<typeof EntityTypeRowSchema>;
 
@@ -580,6 +608,72 @@ async function etHandleList(ctx: ToolContext): Promise<ManageEntitySchemaResult>
   return { schema_type: 'entity_type', action: 'list', entity_types: entityTypes };
 }
 
+/**
+ * Fetch the entity-TYPE-scoped authored view templates for a type and run each
+ * template's `data_sources` LIVE (mirrors resolve_path's fetchTabs +
+ * processTabsDataSources, for the list scope). The list context has no specific
+ * entity, so `entityIds` is unset — a data source that references `{{entityId}}`
+ * simply resolves empty. `data_sources` is stripped from the returned
+ * `json_template`; the results ride on `template_data`. Fails soft per-tab: a
+ * broken data source yields `template_data: null` rather than failing `get`.
+ */
+async function fetchTypeViewTemplates(
+  sql: DbClient,
+  // The entity-type SLUG. view_template_active_tabs keys entity_type-scoped rows
+  // by slug (matching manage_view_templates' `resource_id` and resolve_path's
+  // fetchTabs('entity_type', entityRow.entity_type)), NOT the numeric id.
+  entityTypeSlug: string,
+  organizationId: string,
+  userId: string | null
+): Promise<ViewTemplateTab[]> {
+  const rows = await sql`
+    SELECT
+      vtat.tab_name,
+      vtat.tab_order,
+      vtv.json_template,
+      vtv.version,
+      vtv.id as version_id
+    FROM view_template_active_tabs vtat
+    JOIN view_template_versions vtv ON vtv.id = vtat.current_version_id
+    WHERE vtat.resource_type = 'entity_type'
+      AND vtat.resource_id = ${entityTypeSlug}
+      AND vtat.organization_id = ${organizationId}
+    ORDER BY vtat.tab_order ASC, vtat.tab_name ASC
+  `;
+
+  const context: DataSourceContext = { organizationId, userId };
+
+  return Promise.all(
+    rows.map(async (row) => {
+      const jsonTemplate = row.json_template as Record<string, unknown>;
+      const dataSources = jsonTemplate.data_sources as DataSourceInput | undefined;
+      let cleanTemplate = jsonTemplate;
+      let templateData: Record<string, unknown[]> | null = null;
+      if (dataSources) {
+        const { data_sources: _dropped, ...rest } = jsonTemplate;
+        cleanTemplate = rest;
+        try {
+          templateData = await executeDataSources(dataSources, context, sql);
+        } catch (err) {
+          logger.warn(
+            { err, tab: String(row.tab_name), entityTypeSlug },
+            'view-template data source failed; returning tab without data'
+          );
+          templateData = null;
+        }
+      }
+      return {
+        tab_name: String(row.tab_name),
+        tab_order: Number(row.tab_order),
+        json_template: cleanTemplate,
+        version: Number(row.version),
+        version_id: Number(row.version_id),
+        template_data: templateData,
+      };
+    })
+  );
+}
+
 async function etHandleGet(
   slug: string | undefined,
   ctx: ToolContext
@@ -620,6 +714,13 @@ async function etHandleGet(
   mapped.entity_count = await getEntityCountForType(Number(mapped.id), ctx.organizationId);
   // Classify the view's measure columns on read (never persisted).
   if (mapped.backing_sql) mapped.measure_columns = measureColumns(mapped.backing_sql);
+  // Authored type-level list-view templates, with their data_sources run live.
+  mapped.view_templates = await fetchTypeViewTemplates(
+    sql,
+    mapped.slug,
+    ctx.organizationId,
+    ctx.userId
+  );
 
   return { schema_type: 'entity_type', action: 'get', entity_type: mapped };
 }

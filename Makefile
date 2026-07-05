@@ -6,7 +6,7 @@
 help:
 	@echo "Available commands:"
 	@echo "  make setup                                 - Setup development environment (run once)"
-	@echo "  make dev [NAME=<x>] [FROM=<db>]            - Local dev against the shared brew Postgres@18, one database per branch (NAME defaults to the branch; FROM=<db> forks a dataset)"
+	@echo "  make dev [NAME=<x>] [FROM=<db>] [OPEN=1]   - Local dev (brew Postgres@18); prints App URL; OPEN=1 opens it in the system browser after boot"
 	@echo "  make dev-embedded                          - Dev against the zero-dependency embedded per-worktree Postgres (the lobu run / CI runtime); == LOBU_EMBEDDED=1 make dev"
 	@echo "  make build-packages                        - Build all TypeScript packages"
 	@echo "  make test                                  - Run test bot"
@@ -19,7 +19,7 @@ help:
 	@echo "  make dev-recover [RESTART=1]               - Free this checkout's dev ports + clean workers; RESTART=1 also boots make dev"
 	@echo "  make clean-test-pg                         - Reap orphaned lobu-test-pg embedded-Postgres clusters (frees macOS shm slots)"
 	@echo "  make typecheck                             - Strict typecheck (same as Dockerfile) for server + owletto"
-	@echo "  make task-setup NAME=<name> [CONTEXT=1]    - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule on real branch, .env copied, ports auto-assigned; CONTEXT=1 registers a Lobu CLI context for the Mac menubar)"
+	@echo "  make task-setup NAME=<name> [CONTEXT=1]    - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule, .env/ports; opens a Herdr workspace when herdr is on PATH; HERDR=0 to skip; CONTEXT=1 registers Lobu CLI context)"
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 	@echo "  make e2e-browser [RESTART=1]               - Launch/reuse the stable 'owletto' Chrome harness (extension from this worktree) for Chrome e2e"
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"

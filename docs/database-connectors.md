@@ -15,11 +15,22 @@ gateway never opens an external pool.
   source and returns rows, persisting nothing. The platform reaches it through one
   primitive: `runConnectorQuery` (`packages/server/src/lib/connector-pushdown.ts`),
   which invokes the connector in the worker `query` run-mode (the same inline-run
-  path as `operations.execute`).
+  path as `operations.execute`). Virtual feeds use the same connector pushdown via
+  `readVirtualFeed`: a stored feed query is read live and still persists nothing.
 - **`query_sql({ connection })`** is the single door: with a `connection` slug it
   pushes the SQL down via `runConnectorQuery` (internal org-scoping skipped — it's
   the org's own DB); without, it runs the internal org-scoped path. There is no
   separate `query_entity_type` tool.
+- **`query_sql({ feed })`** reads one virtual feed live by numeric feed id or
+  `"connection_slug/feed_key"`. The feed's stored `config.query` is the source
+  query; caller `sql` is ignored. `search_term` narrows through the connector
+  `search()` pushdown when available.
+- **`SELECT FROM events` is persisted-only.** It reads synced/materialized content,
+  not live virtual feeds. When the internal SQL references `events`, `query_sql`
+  best-effort returns `coverage.source = 'persisted_events_only'` with up to five
+  visibility-fenced `suggested_virtual_feeds`, `more_available`, and a ready
+  `query_sdk` example using `client.feeds.readMany`. Coverage lookup failures log
+  and omit the block; they never fail the SQL query.
 - **Derived entity** — `defineEntityType({ backing: { sql, connection? } })`. With
   `connection`, the read is `get_type → query_sql({ sql: backing_sql, connection })`
   → pushdown. Without, it's the shipped internal view over `events`/`entities`.
@@ -27,10 +38,29 @@ gateway never opens an external pool.
 Single-database only: every query targets one database; no cross-source joins
 (that's a later DuckDB-class engine).
 
-Slice 2 (next): **virtual feeds** (a `virtual` feed flag → live reads, no events)
-and **federated search** (a connector `search()` the platform fans out to and
-merges with the vector index). Only the `query()` live-read primitive is in place
-today; the `virtual` feed flag, `search()`, and the fan-out are the remaining work.
+Slice 2 (shipped): **virtual feeds** (`feeds.kind = 'virtual'` / legacy
+`virtual = true` → live reads, no events) and connector `search()` for live recall.
+What is still not built is transparent SQL federation or server-side cross-source
+fan-out for `events` queries. Agents decompose explicitly: use `query_sql` for
+persisted rows, then read suggested live feeds in parallel with `query_sdk` or
+`manage_feeds`.
+
+## Agent-facing live feed reads
+
+Agents can batch live feed reads through `manage_feeds({ action: 'read_feeds' })`
+or the read-only SDK method:
+
+```ts
+export default async (_ctx, client) => {
+  return client.feeds.readMany({ feed_ids: [123, 456], limit: 25 });
+};
+```
+
+`readMany` reads up to 10 feeds in parallel. Each feed returns independently as
+`{ ok: true, result }` or `{ ok: false, error }`, so a missing or visibility-fenced
+feed does not fail the whole batch. The per-feed response timeout defaults to 10s
+and clamps at 30s; it bounds the batch response, not necessarily the underlying
+connector work.
 
 ## SSRF / egress trust model
 

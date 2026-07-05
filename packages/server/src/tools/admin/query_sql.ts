@@ -27,7 +27,7 @@ export const QuerySqlSchema = Type.Object({
   sql: Type.Optional(
     Type.String({
       description:
-        'Base SELECT query. Required unless `feed` is set (a virtual feed runs its OWN stored query, so `sql` is ignored there). Table references are auto-scoped to your organization. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.',
+        'Base SELECT query. Required unless `feed` is set. Table references are auto-scoped to your organization. `SELECT FROM events` reads persisted/synced content only; virtual feeds are live-only and are not included. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.',
     })
   ),
   connection: Type.Optional(
@@ -115,8 +115,35 @@ interface QuerySqlResult {
   total_count: number;
   has_more: boolean;
   execution_time_ms: number;
+  coverage?: QuerySqlCoverage;
   error?: string;
 }
+
+interface SuggestedVirtualFeed {
+  feed_id: number;
+  feed: string;
+  connection_slug: string;
+  feed_key: string;
+  display_name: string | null;
+  connector_key: string;
+  suggested_limit: number;
+}
+
+interface QuerySqlCoverage {
+  source: 'persisted_events_only';
+  warning: string;
+  suggested_virtual_feeds: SuggestedVirtualFeed[];
+  more_available: boolean;
+  suggested_execution: {
+    tool: 'query_sdk';
+    method: 'client.feeds.readMany';
+    latency_note: string;
+    example: string;
+  };
+}
+
+const MAX_SUGGESTED_VIRTUAL_FEEDS = 5;
+const VIRTUAL_FEED_SUGGESTED_LIMIT = 25;
 
 /**
  * Coerce + clamp the page bounds. TypeBox schemas aren't runtime-validated in
@@ -189,6 +216,81 @@ function errorResult(message: string, startTime: number): QuerySqlResult {
     execution_time_ms: Date.now() - startTime,
     error: message,
   };
+}
+
+function querySdkExample(feeds: SuggestedVirtualFeed[]): string {
+  const ids = feeds.map((feed) => feed.feed_id).join(', ');
+  // Keep this shape in sync with FeedsNamespace.readMany.
+  return `export default async (_ctx, client) => {
+  return client.feeds.readMany({ feed_ids: [${ids}], limit: ${VIRTUAL_FEED_SUGGESTED_LIMIT} });
+};`;
+}
+
+async function virtualFeedCoverageForEventsQuery(
+  tableRefs: string[],
+  scope: AuthzScope
+): Promise<QuerySqlCoverage | undefined> {
+  if (!tableRefs.includes('events')) return undefined;
+
+  try {
+    const sql = getDb();
+    const vis = compileConnectionRowVisibility(scope, 2, 'c');
+    const rows = (await sql.unsafe(
+      `SELECT
+         f.id AS feed_id,
+         f.feed_key,
+         f.display_name,
+         c.slug AS connection_slug,
+         c.connector_key
+       FROM feeds f
+       JOIN connections c ON c.id = f.connection_id
+       WHERE f.organization_id = $1
+         AND f.deleted_at IS NULL
+         AND c.deleted_at IS NULL
+         AND f.status = 'active'
+         AND c.status = 'active'
+         AND (f.kind = 'virtual' OR f.virtual IS TRUE)
+         ${vis.sql}
+       ORDER BY f.id ASC
+       LIMIT ${MAX_SUGGESTED_VIRTUAL_FEEDS + 1}`,
+      [scope.organizationId, ...vis.params],
+    )) as unknown as Array<{
+      feed_id: number;
+      feed_key: string;
+      display_name: string | null;
+      connection_slug: string;
+      connector_key: string;
+    }>;
+
+    if (rows.length === 0) return undefined;
+    const suggested = rows.slice(0, MAX_SUGGESTED_VIRTUAL_FEEDS).map((row) => ({
+      feed_id: Number(row.feed_id),
+      feed: `${row.connection_slug}/${row.feed_key}`,
+      connection_slug: row.connection_slug,
+      feed_key: row.feed_key,
+      display_name: row.display_name,
+      connector_key: row.connector_key,
+      suggested_limit: VIRTUAL_FEED_SUGGESTED_LIMIT,
+    }));
+
+    return {
+      source: 'persisted_events_only',
+      warning:
+        'SELECT FROM events reads persisted/synced content only. Virtual feeds are live-only and are not included.',
+      suggested_virtual_feeds: suggested,
+      more_available: rows.length > MAX_SUGGESTED_VIRTUAL_FEEDS,
+      suggested_execution: {
+        tool: 'query_sdk',
+        method: 'client.feeds.readMany',
+        latency_note:
+          'Live feed reads are network-bound; run independent feeds in parallel and keep per-feed limits small.',
+        example: querySdkExample(suggested),
+      },
+    };
+  } catch (err) {
+    logger.warn({ err }, 'query_sql virtual feed coverage lookup failed');
+    return undefined;
+  }
 }
 
 export const querySql = withValidatedArgs('query_sql', QuerySqlSchema, querySqlImpl);
@@ -362,6 +464,7 @@ export async function querySqlImpl(
   // Validate, parse, and org-scope the query
   let scopedSql: string;
   let params: unknown[];
+  let tableRefs: string[];
   try {
     const scoped = validateAndScopeQuery(baseSql, targetOrgId, {
       safeColumns: SAFE_COLUMN_DEFS,
@@ -373,6 +476,7 @@ export async function querySqlImpl(
     });
     scopedSql = scoped.sql;
     params = scoped.params;
+    tableRefs = scoped.tableRefs;
   } catch (err) {
     return errorResult(getErrorMessage(err), startTime);
   }
@@ -433,6 +537,10 @@ export async function querySqlImpl(
       total_count: totalCount,
       has_more: offset + limit < totalCount,
       execution_time_ms: Date.now() - startTime,
+      coverage: await virtualFeedCoverageForEventsQuery(
+        tableRefs,
+        authzScopeFromToolContext({ organizationId: targetOrgId, userId: ctx.userId }),
+      ),
     };
   } catch (error) {
     const msg = getErrorMessage(error);

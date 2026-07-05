@@ -5,6 +5,11 @@ Status: implemented (this PR). Conflict-safe slice of the larger "Conversation f
 that lets a feed be *read live* instead of synced; the FeedReader registry + feed
 enumeration that consume it land in a sibling stream (Stream A, owned separately).
 
+Follow-up shipped: `query_sql` now warns that `events` queries are persisted-only
+and suggests accessible live virtual feeds; `manage_feeds.read_feeds` /
+`client.feeds.readMany` batch those live reads with per-feed partial failures.
+See `docs/database-connectors.md` for the current agent-facing contract.
+
 ## Goal
 
 Make a feed *declarable as virtual*: read LIVE against its source at request time via

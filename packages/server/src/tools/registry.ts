@@ -184,7 +184,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'query_sql',
     description:
-      'Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org. Supports connection pushdown and virtual feeds. Prefer client.metrics.query for declared measures; use client.query in query_sdk for simple one-shot SQL. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects to another member org.',
+      'Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org. SELECT FROM events reads persisted/synced content only; virtual feeds are live-only and must be read explicitly with feed or via query_sdk client.feeds.readMany. Results may include coverage.suggested_virtual_feeds. Prefer client.metrics.query for declared measures; use client.query in query_sdk for simple one-shot SQL. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects to another member org.',
     inputSchema: QuerySqlSchema,
     annotations: { ...READ_ONLY, title: 'Query SQL' },
     handler: querySql,
@@ -533,4 +533,3 @@ function computeListedTools(
     })
     .filter((tool): tool is NonNullable<typeof tool> => tool !== null);
 }
-

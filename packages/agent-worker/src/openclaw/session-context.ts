@@ -32,6 +32,8 @@ interface ProviderConfig {
   providerBaseUrlMappings?: Record<string, string>;
   /** Dynamic provider metadata from config-driven providers */
   configProviders?: Record<string, ConfigProviderMeta>;
+  /** Installed Lobu provider ID → upstream runtime provider slug. */
+  installedProviderRoutes?: Record<string, string>;
   /** Credential env var placeholders for proxy mode (e.g. Z_AI_API_KEY → "lobu-proxy") */
   credentialPlaceholders?: Record<string, string>;
 }

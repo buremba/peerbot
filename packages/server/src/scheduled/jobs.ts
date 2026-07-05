@@ -486,7 +486,9 @@ export async function runWakeAgentTask(
           organizationId: orgId,
           source: 'scheduled-job',
         },
-        agentOptions: behaviorModel ? { model: behaviorModel } : {},
+        agentOptions: behaviorModel
+          ? { model: behaviorModel, behaviorModelOverride: true }
+          : {},
       })
     );
     return;

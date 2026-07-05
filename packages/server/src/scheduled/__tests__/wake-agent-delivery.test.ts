@@ -7,6 +7,7 @@ import {
   seedAgentRow,
 } from "../../gateway/__tests__/helpers/db-setup";
 import type { CoreServices } from "../../gateway/services/core-services";
+import { enqueueAgentMessage } from "../../gateway/services/agent-threads";
 import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection";
 import { runWakeAgentTask, type WakeAgentTaskPayload } from "../jobs";
 
@@ -134,7 +135,10 @@ describe("runWakeAgentTask chat delivery dispatch", () => {
     );
 
     expect(enqueued).toHaveLength(1);
-    expect(enqueued[0].agentOptions).toEqual({ model: "openai/gpt-5" });
+    expect(enqueued[0].agentOptions).toEqual({
+      model: "openai/gpt-5",
+      behaviorModelOverride: true,
+    });
   });
 
   test("leaves agentOptions empty when no per-schedule model is set", async () => {
@@ -219,5 +223,41 @@ describe("runWakeAgentTask chat delivery dispatch", () => {
       )
     ).rejects.toThrow("API_PATH_REACHED");
     expect(enqueued).toHaveLength(0);
+  });
+});
+
+test("internal API-thread dispatch marks a supplied model as a behavior override", async () => {
+  const enqueued: MessagePayload[] = [];
+  const deps = {
+    sessionManager: {
+      getSession: async () => ({
+        userId: USER,
+        conversationId: "thread-1",
+        agentId: AGENT,
+        provider: "claude",
+        model: "claude/claude-sonnet-4-5",
+      }),
+      touchSession: async () => {},
+    },
+    queueProducer: {
+      enqueueMessage: async (message: MessagePayload) => {
+        enqueued.push(message);
+        return "queued";
+      },
+    },
+  } as unknown as Parameters<typeof enqueueAgentMessage>[0];
+
+  await enqueueAgentMessage(
+    deps,
+    {
+      threadId: "thread-1",
+      messageText: "wake up",
+      model: "z-ai/glm-5.2",
+    }
+  );
+
+  expect(enqueued[0].agentOptions).toMatchObject({
+    model: "z-ai/glm-5.2",
+    behaviorModelOverride: true,
   });
 });

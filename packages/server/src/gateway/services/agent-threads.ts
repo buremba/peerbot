@@ -178,6 +178,7 @@ export async function enqueueAgentMessage(
     agentOptions: {
       provider: session.provider || "claude",
       model: args.model ?? session.model,
+      ...(args.model ? { behaviorModelOverride: true } : {}),
     },
     networkConfig: session.networkConfig,
   });

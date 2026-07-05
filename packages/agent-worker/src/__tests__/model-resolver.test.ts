@@ -74,6 +74,44 @@ describe("resolveModelRef", () => {
     expect(result.modelId).toBe("anthropic/claude-sonnet-4");
   });
 
+  test("behavior override switches to another installed provider", () => {
+    const result = resolveModelRef("z-ai/glm-5.2", {
+      defaultModel: "claude/claude-sonnet-4-5",
+      defaultProvider: "anthropic",
+      defaultProviderSlug: "claude",
+      installedProviderRoutes: { claude: "anthropic", "z-ai": "z-ai" },
+      allowInstalledProviderOverride: true,
+    });
+
+    expect(result.provider).toBe("z-ai");
+    expect(result.modelId).toBe("glm-5.2");
+  });
+
+  test("behavior override resolves auto against the selected installed provider", () => {
+    const result = resolveModelRef("z-ai/auto", {
+      defaultModel: "claude/claude-sonnet-4-5",
+      defaultProvider: "anthropic",
+      defaultProviderSlug: "claude",
+      installedProviderRoutes: { claude: "anthropic", "z-ai": "z-ai" },
+      allowInstalledProviderOverride: true,
+    });
+
+    expect(result.provider).toBe("z-ai");
+    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS["z-ai"]);
+  });
+
+  test("behavior override routes a Lobu provider ID to its upstream runtime slug", () => {
+    const result = resolveModelRef("claude/claude-sonnet-4-5", {
+      defaultModel: "z-ai/glm-5.2",
+      defaultProvider: "z-ai",
+      installedProviderRoutes: { claude: "anthropic", "z-ai": "z-ai" },
+      allowInstalledProviderOverride: true,
+    });
+
+    expect(result.provider).toBe("anthropic");
+    expect(result.modelId).toBe("claude-sonnet-4-5");
+  });
+
   test("falls back to overrides.defaultModel when rawModelRef is empty", () => {
     const result = resolveModelRef("", {
       defaultModel: "anthropic/claude-sonnet-4-20250514",
@@ -115,6 +153,38 @@ describe("resolveModelRef", () => {
     });
     expect(result.provider).toBe("openrouter");
     expect(result.modelId).toBe("anthropic/claude-sonnet-4");
+  });
+
+  test("installed providers do not reinterpret an OpenRouter vendor namespace", () => {
+    const result = resolveModelRef("anthropic/claude-sonnet-4", {
+      defaultProvider: "openrouter",
+      installedProviderRoutes: { openrouter: "openrouter", "z-ai": "z-ai" },
+    });
+
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("anthropic/claude-sonnet-4");
+  });
+
+  test("base model stays on OpenRouter when its vendor prefix is also an installed provider", () => {
+    const result = resolveModelRef("openai/gpt-4o", {
+      defaultModel: "openai/gpt-4o",
+      defaultProvider: "openrouter",
+      installedProviderRoutes: { openrouter: "openrouter", openai: "openai" },
+    });
+
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("openai/gpt-4o");
+  });
+
+  test("OpenRouter vendor model changes do not switch providers without an explicit behavior signal", () => {
+    const result = resolveModelRef("openai/gpt-4o-mini", {
+      defaultModel: "openai/gpt-4o",
+      defaultProvider: "openrouter",
+      installedProviderRoutes: { openrouter: "openrouter", openai: "openai" },
+    });
+
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("openai/gpt-4o-mini");
   });
 
   test("configured provider: a redundant self-prefix is stripped (z-ai/glm-4.7 → glm-4.7)", () => {

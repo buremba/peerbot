@@ -825,6 +825,7 @@ export class WorkerGateway {
     }>;
     providerBaseUrlMappings?: Record<string, string>;
     configProviders?: Record<string, ConfigProviderMeta>;
+    installedProviderRoutes?: Record<string, string>;
   }> {
     if (!this.providerCatalogService || !agentId) {
       return {};
@@ -922,6 +923,7 @@ export class WorkerGateway {
       cliBackends?: typeof cliBackends;
       providerBaseUrlMappings?: Record<string, string>;
       configProviders?: typeof configProviders;
+      installedProviderRoutes?: Record<string, string>;
       credentialPlaceholders?: Record<string, string>;
     } = {};
 
@@ -960,6 +962,13 @@ export class WorkerGateway {
     if (Object.keys(configProviders).length > 0) {
       result.configProviders = configProviders;
     }
+
+    result.installedProviderRoutes = Object.fromEntries(
+      effectiveProviders.map((provider) => [
+        provider.providerId,
+        provider.getUpstreamConfig?.()?.slug || provider.providerId,
+      ])
+    );
 
     if (Object.keys(credentialPlaceholders).length > 0) {
       result.credentialPlaceholders = credentialPlaceholders;

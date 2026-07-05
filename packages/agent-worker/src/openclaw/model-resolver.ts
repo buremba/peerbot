@@ -206,6 +206,8 @@ export function resolveModelRef(
     defaultModel?: string;
     defaultProvider?: string;
     defaultProviderSlug?: string;
+    installedProviderRoutes?: Record<string, string>;
+    allowInstalledProviderOverride?: boolean;
   }
 ): {
   provider: string;
@@ -231,6 +233,38 @@ export function resolveModelRef(
       "No model resolved for this run. Set the agent's default model, a " +
         "per-behavior model, or an org default inference provider."
     );
+  }
+
+  // A per-behavior model override can deliberately select another installed
+  // provider (for example, a watcher using z-ai while its base agent uses
+  // Claude). Prefer that explicit provider only when the prefix names a real
+  // installed provider, and route its Lobu ID to the upstream runtime slug
+  // (for example, claude → anthropic). This preserves model namespaces such as
+  // OpenRouter's "anthropic/claude-sonnet-4", where "anthropic" is not a
+  // separately installed provider and the configured OpenRouter route must win.
+  // Switching also requires an explicit behavior-override signal from the
+  // gateway. A slash prefix alone is ambiguous: OpenRouter model namespaces
+  // such as "openai/gpt-4o" must stay on OpenRouter even when standalone OpenAI
+  // is installed alongside it.
+  const explicitParts = normalizedRaw?.split("/").filter(Boolean) ?? [];
+  const explicitProvider = explicitParts[0];
+  if (
+    explicitParts.length >= 2 &&
+    explicitProvider &&
+    overrides?.allowInstalledProviderOverride === true &&
+    overrides?.installedProviderRoutes?.[explicitProvider] &&
+    explicitProvider !== defaultProvider &&
+    explicitProvider !== defaultProviderSlug
+  ) {
+    const routedProvider = overrides.installedProviderRoutes[explicitProvider];
+    let modelId = explicitParts.slice(1).join("/");
+    if (modelId === "auto") {
+      modelId =
+        DEFAULT_PROVIDER_MODELS[explicitProvider] ??
+        DEFAULT_PROVIDER_MODELS[routedProvider] ??
+        modelId;
+    }
+    return { provider: routedProvider, modelId };
   }
 
   // When the agent has an explicitly configured provider, route to it and pass

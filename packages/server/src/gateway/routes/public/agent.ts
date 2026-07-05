@@ -1453,6 +1453,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       const baseOptions: Record<string, any> = {
         provider: session.provider || "claude",
         model: behaviorModel ?? session.model,
+        ...(behaviorModel ? { behaviorModelOverride: true } : {}),
       };
       const agentOptions = await resolveAgentOptions(
         realAgentId,

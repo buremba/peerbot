@@ -566,6 +566,8 @@ export async function runAISession(
     defaultModel: pc.defaultModel,
     defaultProvider: pc.defaultProvider,
     defaultProviderSlug: pc.defaultProviderSlug,
+    installedProviderRoutes: pc.installedProviderRoutes,
+    allowInstalledProviderOverride: rawOptions.behaviorModelOverride === true,
   });
   // Map gateway slug to model-registry provider name (e.g. "z-ai" → "zai")
   const provider = PROVIDER_REGISTRY_ALIASES[rawProvider] || rawProvider;

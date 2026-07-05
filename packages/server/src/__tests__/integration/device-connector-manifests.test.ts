@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { generateSecureToken } from '../../auth/oauth/utils';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
@@ -5,7 +8,7 @@ import { post } from '../setup/test-helpers';
 
 const CONNECTOR_KEY = 'apple.test_device_manifest';
 
-async function seedDeviceOwner() {
+async function seedDeviceOwner(platform = 'macos') {
   const sql = getTestDb();
   const userId = `user_${generateSecureToken(4)}`;
   const orgId = `org-device-manifest-${generateSecureToken(4)}`;
@@ -27,7 +30,7 @@ async function seedDeviceOwner() {
   `;
   await sql`
     INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id)
-    VALUES (${userId}, ${workerId}, 'macos', '0.1.0', ${sql.json([])}, 'Test Mac', ${orgId})
+    VALUES (${userId}, ${workerId}, ${platform}, '0.1.0', ${sql.json([])}, 'Test Device', ${orgId})
   `;
   return { userId, orgId, workerId };
 }
@@ -81,17 +84,43 @@ async function readDefinition(orgId: string, key = CONNECTOR_KEY) {
   return rows[0] ?? null;
 }
 
-async function poll(workerId: string, connectorManifests: unknown[]) {
+async function poll(
+  workerId: string,
+  connectorManifests: unknown[],
+  platform = 'macos',
+  capabilities: Record<string, boolean> = { screentime: true },
+) {
   return post('/api/workers/poll', {
     body: {
       worker_id: workerId,
-      platform: 'macos',
+      platform,
       app_version: '9.9.0',
-      label: 'Test Mac',
-      capabilities: { screentime: true },
+      label: 'Test Device',
+      capabilities,
       connector_manifests: connectorManifests,
     },
   });
+}
+
+function loadOwlettoManifests(kind: 'mac' | 'chrome'): Array<Record<string, unknown>> {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const dir =
+    kind === 'mac'
+      ? resolve(here, '../../../../owletto/apps/mac/Owletto/ConnectorManifests')
+      : resolve(here, '../../../../owletto/apps/chrome/connector-manifests');
+  return readdirSync(dir)
+    .filter((file) => file.endsWith('.json'))
+    .sort()
+    .map((file) => JSON.parse(readFileSync(join(dir, file), 'utf8')) as Record<string, unknown>);
+}
+
+function capabilitiesFor(manifests: Array<Record<string, unknown>>): Record<string, boolean> {
+  return Object.fromEntries(
+    manifests
+      .map((manifest) => manifest.required_capability)
+      .filter((cap): cap is string => typeof cap === 'string')
+      .map((cap) => [cap, true]),
+  );
 }
 
 describe('device connector manifests', () => {
@@ -136,5 +165,36 @@ describe('device connector manifests', () => {
     expect(res.status).toBe(200);
 
     expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
+  });
+
+  it('accepts the actual Owletto Mac manifests and installs their connector definitions', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('macos');
+    const manifests = loadOwlettoManifests('mac');
+
+    const res = await poll(workerId, manifests, 'macos', capabilitiesFor(manifests));
+    expect(res.status).toBe(200);
+
+    expect(await readDefinition(orgId, 'apple.screen_time')).not.toBeNull();
+    expect(await readDefinition(orgId, 'apple.computer_use')).not.toBeNull();
+    expect(await readDefinition(orgId, 'local.directory')).not.toBeNull();
+    expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
+  });
+
+  it('accepts the actual Owletto Chrome manifests and installs their connector definitions', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
+    const manifests = loadOwlettoManifests('chrome');
+
+    const res = await poll(
+      workerId,
+      manifests,
+      'chrome-extension',
+      capabilitiesFor(manifests),
+    );
+    expect(res.status).toBe(200);
+
+    expect(await readDefinition(orgId, 'chrome')).not.toBeNull();
+    expect(await readDefinition(orgId, 'chrome.history')).not.toBeNull();
+    expect(await readDefinition(orgId, 'chrome.bookmarks')).not.toBeNull();
+    expect(await readDefinition(orgId, 'apple.screen_time')).toBeNull();
   });
 });

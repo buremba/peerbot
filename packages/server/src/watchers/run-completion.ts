@@ -1,7 +1,7 @@
-import type { DbClient } from '../db/client';
-import { getDb, pgTextArray } from '../db/client';
-import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
-import logger from '../utils/logger';
+import type { DbClient } from "../db/client";
+import { getDb, pgTextArray } from "../db/client";
+import logger from "../utils/logger";
+import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
 
 type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
 
@@ -22,10 +22,10 @@ type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
  * the remaining follow-up (the CLI doesn't expose execution_config yet).
  */
 const MAX_FINALIZE_NUDGES: number = (() => {
-  const raw = process.env.LOBU_WATCHER_FINALIZE_NUDGES;
-  if (raw === undefined) return 1;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 1;
+	const raw = process.env.LOBU_WATCHER_FINALIZE_NUDGES;
+	if (raw === undefined) return 1;
+	const n = Number(raw);
+	return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 1;
 })();
 
 /**
@@ -34,24 +34,27 @@ const MAX_FINALIZE_NUDGES: number = (() => {
  * Clamped defensively in case a raw DB value sits outside the schema's range.
  */
 function resolveFinalizeNudgeBudget(
-  executionConfig: Record<string, unknown> | null | undefined
+	executionConfig: Record<string, unknown> | null | undefined,
 ): number {
-  const override = executionConfig?.finalize_nudges;
-  if (typeof override === 'number' && Number.isFinite(override)) {
-    return Math.min(5, Math.max(0, Math.floor(override)));
-  }
-  return MAX_FINALIZE_NUDGES;
+	const override = executionConfig?.finalize_nudges;
+	if (typeof override === "number" && Number.isFinite(override)) {
+		return Math.min(5, Math.max(0, Math.floor(override)));
+	}
+	return MAX_FINALIZE_NUDGES;
 }
 
-export async function findWindowIdForRun(sql: DbClient, runId: number): Promise<number | null> {
-  // Canvas-on-events: a run produced a window iff a canvas chain member carries
-  // this run_id (stamped atomically inside complete_window's tx). A fresh
-  // completion stamps the ROOT; a replace_existing completion stamps the
-  // superseding HEAD — so match ANY member and resolve the window identity via
-  // metadata.root_event_id (a root omits it → its own id). Scoped to
-  // canvas_state so it never matches tab_event/tab_snapshot BROWSER rows that
-  // also carry run_id.
-  const rows = await sql`
+export async function findWindowIdForRun(
+	sql: DbClient,
+	runId: number,
+): Promise<number | null> {
+	// Canvas-on-events: a run produced a window iff a canvas chain member carries
+	// this run_id (stamped atomically inside complete_window's tx). A fresh
+	// completion stamps the ROOT; a replace_existing completion stamps the
+	// superseding HEAD — so match ANY member and resolve the window identity via
+	// metadata.root_event_id (a root omits it → its own id). Scoped to
+	// canvas_state so it never matches tab_event/tab_snapshot BROWSER rows that
+	// also carry run_id.
+	const rows = await sql`
     SELECT COALESCE((metadata->>'root_event_id')::bigint, id) AS id
     FROM events
     WHERE run_id = ${runId}
@@ -60,15 +63,15 @@ export async function findWindowIdForRun(sql: DbClient, runId: number): Promise<
     LIMIT 1
   `;
 
-  return rows.length > 0 ? Number((rows[0] as { id: unknown }).id) : null;
+	return rows.length > 0 ? Number((rows[0] as { id: unknown }).id) : null;
 }
 
 export async function markWatcherRunCompleted(
-  sql: DbClient,
-  runId: number,
-  windowId: number | null
+	sql: DbClient,
+	runId: number,
+	windowId: number | null,
 ): Promise<void> {
-  await sql`
+	await sql`
     UPDATE runs
     SET status = 'completed',
         window_id = ${windowId},
@@ -80,11 +83,11 @@ export async function markWatcherRunCompleted(
 }
 
 async function markWatcherRunFailed(
-  sql: DbClient,
-  runId: number,
-  message: string
+	sql: DbClient,
+	runId: number,
+	message: string,
 ): Promise<void> {
-  await sql`
+	await sql`
     UPDATE runs
     SET status = 'failed',
         completed_at = current_timestamp,
@@ -103,11 +106,11 @@ async function markWatcherRunFailed(
  * guarded so it can't resurrect an already-terminal run (replica-safe).
  */
 async function requeueWatcherRunForFinalizeNudge(
-  sql: DbClient,
-  runId: number,
-  nextNudgeCount: number
+	sql: DbClient,
+	runId: number,
+	nextNudgeCount: number,
 ): Promise<void> {
-  await sql`
+	await sql`
     UPDATE runs
     SET status = 'pending',
         claimed_by = NULL,
@@ -125,15 +128,15 @@ async function requeueWatcherRunForFinalizeNudge(
 }
 
 export async function resolveWatcherRunsByMessageIds(
-  messageIds: Iterable<string>,
-  result: WatcherTerminalResult,
-  db?: DbClient
+	messageIds: Iterable<string>,
+	result: WatcherTerminalResult,
+	db?: DbClient,
 ): Promise<{ resolved: number }> {
-  const ids = Array.from(new Set(Array.from(messageIds).filter(Boolean)));
-  if (ids.length === 0) return { resolved: 0 };
+	const ids = Array.from(new Set(Array.from(messageIds).filter(Boolean)));
+	if (ids.length === 0) return { resolved: 0 };
 
-  const sql = db ?? getDb();
-  const rows = await sql`
+	const sql = db ?? getDb();
+	const rows = await sql`
     SELECT r.id, r.approved_input, w.execution_config
     FROM runs r
     LEFT JOIN watchers w ON w.id = r.watcher_id
@@ -142,55 +145,57 @@ export async function resolveWatcherRunsByMessageIds(
       AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
   `;
 
-  let resolved = 0;
-  for (const row of rows) {
-    const typedRow = row as {
-      id: unknown;
-      approved_input: Record<string, unknown> | null;
-      execution_config: Record<string, unknown> | null;
-    };
-    const runId = Number(typedRow.id);
-    if (!Number.isFinite(runId)) continue;
+	let resolved = 0;
+	for (const row of rows) {
+		const typedRow = row as {
+			id: unknown;
+			approved_input: Record<string, unknown> | null;
+			execution_config: Record<string, unknown> | null;
+		};
+		const runId = Number(typedRow.id);
+		if (!Number.isFinite(runId)) continue;
 
-    if (!result.ok) {
-      await markWatcherRunFailed(sql, runId, result.error);
-      resolved++;
-      continue;
-    }
+		if (!result.ok) {
+			await markWatcherRunFailed(sql, runId, result.error);
+			resolved++;
+			continue;
+		}
 
-    const windowId = await findWindowIdForRun(sql, runId);
-    if (windowId === null) {
-      // The agent replied but never called complete_window — a soft, usually
-      // non-deterministic miss. Re-dispatch for one more turn (bounded by
-      // finalize_nudge_count) before giving up. The budget is per-watcher
-      // (execution_config.finalize_nudges) with a global fallback.
-      const budget = resolveFinalizeNudgeBudget(typedRow.execution_config);
-      const nudgeCount = Number(typedRow.approved_input?.finalize_nudge_count ?? 0);
-      if (Number.isFinite(nudgeCount) && nudgeCount < budget) {
-        await requeueWatcherRunForFinalizeNudge(sql, runId, nudgeCount + 1);
-        logger.info(
-          { run_id: runId, attempt: nudgeCount + 1, max: budget },
-          '[watchers] Agent finished without complete_window — re-dispatching for finalize nudge'
-        );
-        resolved++;
-        continue;
-      }
+		const windowId = await findWindowIdForRun(sql, runId);
+		if (windowId === null) {
+			// The agent replied but never called complete_window — a soft, usually
+			// non-deterministic miss. Re-dispatch for one more turn (bounded by
+			// finalize_nudge_count) before giving up. The budget is per-watcher
+			// (execution_config.finalize_nudges) with a global fallback.
+			const budget = resolveFinalizeNudgeBudget(typedRow.execution_config);
+			const nudgeCount = Number(
+				typedRow.approved_input?.finalize_nudge_count ?? 0,
+			);
+			if (Number.isFinite(nudgeCount) && nudgeCount < budget) {
+				await requeueWatcherRunForFinalizeNudge(sql, runId, nudgeCount + 1);
+				logger.info(
+					{ run_id: runId, attempt: nudgeCount + 1, max: budget },
+					"[watchers] Agent finished without complete_window — re-dispatching for finalize nudge",
+				);
+				resolved++;
+				continue;
+			}
 
-      await markWatcherRunFailed(
-        sql,
-        runId,
-        'Agent reply finished without calling manage_watchers(action="complete_window")' +
-          (budget > 0 ? ` after ${budget + 1} attempt(s)` : '') +
-          '. Check that the assigned agent has the lobu-memory MCP attached and that query_sdk / ' +
-          'run_sdk tools are approved for it.'
-      );
-      resolved++;
-      continue;
-    }
+			await markWatcherRunFailed(
+				sql,
+				runId,
+				"Agent reply finished without calling run_sdk (client.watchers.completeWindow)" +
+					(budget > 0 ? ` after ${budget + 1} attempt(s)` : "") +
+					". Check that the assigned agent has the lobu-memory MCP attached and that query_sdk / " +
+					"run_sdk tools are approved for it.",
+			);
+			resolved++;
+			continue;
+		}
 
-    await markWatcherRunCompleted(sql, runId, windowId);
-    resolved++;
-  }
+		await markWatcherRunCompleted(sql, runId, windowId);
+		resolved++;
+	}
 
-  return { resolved };
+	return { resolved };
 }

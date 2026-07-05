@@ -4,9 +4,9 @@
  * `allowCrossOrg: false` makes `client.org(...)` throw `CrossOrgAccessDenied`.
  */
 
-import { hasRequiredMcpScope } from "../auth/tool-access";
 import type { Env } from "../index";
-import { isSystemContext } from "../tools/access-control";
+import { isAdminOrOwnerRole, isSystemContext } from "../tools/access-control";
+import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from "../utils/table-schema";
 import type { ToolContext } from "../tools/registry";
 import { raceAbort } from "../utils/race-abort";
 import {
@@ -20,6 +20,7 @@ import type { SDKMode } from "./sdk-manifest";
 export { enumerateSDKManifest, type SDKMode } from "./sdk-manifest";
 
 import {
+	buildAgentsNamespace,
 	buildAuthProfilesNamespace,
 	buildCatalogNamespace,
 	buildClassifiersNamespace,
@@ -28,12 +29,15 @@ import {
 	buildEntitySchemaNamespace,
 	buildFeedsNamespace,
 	buildKnowledgeNamespace,
+	buildMetricsNamespace,
 	buildNotificationsNamespace,
 	buildOperationsNamespace,
 	buildOrganizationsNamespace,
+	buildSchedulesNamespace,
 	buildViewTemplatesNamespace,
 	buildWatchersNamespace,
 } from "./namespaces";
+import type { AgentsNamespace } from "./namespaces/agents";
 import type { AuthProfilesNamespace } from "./namespaces/auth-profiles";
 import type { CatalogNamespace } from "./namespaces/catalog";
 import type { ClassifiersNamespace } from "./namespaces/classifiers";
@@ -42,13 +46,16 @@ import type { EntitiesNamespace } from "./namespaces/entities";
 import type { EntitySchemaNamespace } from "./namespaces/entity-schema";
 import type { FeedsNamespace } from "./namespaces/feeds";
 import type { KnowledgeNamespace } from "./namespaces/knowledge";
+import type { MetricsNamespace } from "./namespaces/metrics";
 import type { NotificationsNamespace } from "./namespaces/notifications";
 import type { OperationsNamespace } from "./namespaces/operations";
 import type { OrganizationsNamespace } from "./namespaces/organizations";
 import type { ViewTemplatesNamespace } from "./namespaces/view-templates";
+import type { SchedulesNamespace } from "./namespaces/schedules";
 import type { WatchersNamespace } from "./namespaces/watchers";
 
 export interface ClientSDK {
+	agents: AgentsNamespace;
 	entities: EntitiesNamespace;
 	entitySchema: EntitySchemaNamespace;
 	catalog: CatalogNamespace;
@@ -60,8 +67,10 @@ export interface ClientSDK {
 	classifiers: ClassifiersNamespace;
 	viewTemplates: ViewTemplatesNamespace;
 	knowledge: KnowledgeNamespace;
+	metrics: MetricsNamespace;
 	notifications: NotificationsNamespace;
 	organizations: OrganizationsNamespace;
+	schedules: SchedulesNamespace;
 
 	org(slugOrId: string): Promise<ClientSDK>;
 	query(sql: string): Promise<unknown[]>;
@@ -162,6 +171,7 @@ export function buildClientSDK(
 	ctx = ctxWithSignal;
 
 	const namespaces = {
+		agents: buildAgentsNamespace(ctx, env),
 		entities: buildEntitiesNamespace(ctx, env),
 		entitySchema: buildEntitySchemaNamespace(ctx, env),
 		catalog: buildCatalogNamespace(ctx, env),
@@ -173,8 +183,10 @@ export function buildClientSDK(
 		classifiers: buildClassifiersNamespace(ctx, env),
 		viewTemplates: buildViewTemplatesNamespace(ctx, env),
 		knowledge: buildKnowledgeNamespace(ctx, env),
+		metrics: buildMetricsNamespace(ctx, env),
 		notifications: buildNotificationsNamespace(ctx, env),
 		organizations: buildOrganizationsNamespace(ctx),
+		schedules: buildSchedulesNamespace(ctx, env),
 	};
 
 	if (mode === "read") {
@@ -209,26 +221,19 @@ export function buildClientSDK(
 		},
 
 		async query(querySql) {
-			// The SQL allowlist exposes audit/event tables — admin/owner only for
-			// user sessions; system contexts (watcher reactions) bypass this gate.
-			if (!isSystemContext(ctx)) {
-				if (ctx.memberRole !== "owner" && ctx.memberRole !== "admin") {
-					throw new AccessDeniedError(
-						"client.query requires admin or owner access in the current organization.",
-					);
-				}
-				if (!hasRequiredMcpScope("admin", ctx.scopes)) {
-					throw new AccessDeniedError(
-						"client.query requires an MCP session with admin access.",
-					);
-				}
-			}
+			// Read-tier parity with `query_sql` / `metric_series`: members may query
+			// operational tables; auth/identity tables stay admin-only per-query.
+			const isAdmin = isAdminOrOwnerRole(ctx.memberRole);
 			const [{ getDb }, { validateAndScopeQuery }] = await Promise.all([
 				import("../db/client"),
 				import("../utils/execute-data-sources"),
 			]);
 			const scoped = validateAndScopeQuery(querySql, ctx.organizationId, {
 				userId: ctx.userId,
+				safeColumns: isSystemContext(ctx) ? undefined : SAFE_COLUMN_DEFS,
+				restrictedTables: isSystemContext(ctx) || isAdmin
+					? undefined
+					: ADMIN_ONLY_QUERYABLE_TABLES,
 			});
 			const rows = await raceAbort(
 				getDb().begin(async (tx) => {

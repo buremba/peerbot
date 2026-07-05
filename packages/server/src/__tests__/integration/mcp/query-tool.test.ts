@@ -74,9 +74,8 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     // top-level `type: "object"` (a bare `anyOf` — TypeBox's default union
     // serialization — is what a validating host rejects). The variants stay in
     // `anyOf` so the client can still tell which one applied.
-    const watchersOut = byName.get('manage_watchers')?.outputSchema;
-    expect(watchersOut?.type).toBe('object');
-    expect(Array.isArray(watchersOut?.anyOf)).toBe(true);
+    const querySdkOut = byName.get('query_sdk')?.outputSchema;
+    expect(querySdkOut?.type).toBe('object');
     // ...while tools without one (text-only results) omit it.
     expect(byName.get('save_memory')?.outputSchema).toBeUndefined();
   });

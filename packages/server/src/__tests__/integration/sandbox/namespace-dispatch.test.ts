@@ -97,6 +97,16 @@ describe("ClientSDK namespace dispatch (read paths)", () => {
 	// above; operations.listRuns result-shape is covered by the operations
 	// suite, not duplicated here.
 
+	it("agents.list dispatches cleanly", async () => {
+		const out = await sdk.agents.list();
+		expect(out).toMatchObject({ action: "list", agents: expect.any(Array) });
+	});
+
+	it("schedules.list dispatches cleanly", async () => {
+		const out = await sdk.schedules.list();
+		expect(out).toMatchObject({ schedules: expect.any(Array) });
+	});
+
 	it("watchers.list dispatches cleanly", async () => {
 		await expect(sdk.watchers.list()).resolves.toBeDefined();
 	});
@@ -113,6 +123,11 @@ describe("ClientSDK namespace dispatch (read paths)", () => {
 	it("organizations.current returns the session org", async () => {
 		const current = await sdk.organizations.current();
 		expect(current.slug).toBe("dispatch-sdk");
+	});
+
+	it("metrics.list dispatches cleanly", async () => {
+		const out = await sdk.metrics.list();
+		expect(out).toMatchObject({ entity_types: expect.any(Array) });
 	});
 
 	it("knowledge.search dispatches cleanly", async () => {

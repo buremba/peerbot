@@ -4,7 +4,7 @@
  * Dynamically generates OpenAPI specification from tool registry TypeBox schemas
  */
 
-import { getAllTools } from '../tools/registry';
+import { getMcpTools } from '../tools/registry';
 
 /**
  * Recursively deep copies schema properties while filtering out hidden ones
@@ -166,7 +166,7 @@ function truncateDescription(text: string, maxLength: number = 300): string {
  * Generates OpenAPI 3.1.0 spec from tool registry
  */
 export function generateOpenAPISpec(serverUrl: string) {
-  const tools = getAllTools();
+  const tools = getMcpTools();
   const paths: Record<string, any> = {};
 
   for (const tool of tools) {

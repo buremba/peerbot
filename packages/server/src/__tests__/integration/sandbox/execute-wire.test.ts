@@ -9,6 +9,9 @@
  * matching prebuilds); CI pins Node 22 where the abi127 prebuild ships.
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   addUserToOrganization,
@@ -21,12 +24,18 @@ import { TestApiClient, TestMcpClient } from '../../setup/test-mcp-client';
 import { cleanupTestDatabase } from '../../setup/test-db';
 
 function isolatedVmAvailable(): boolean {
-  // isolated-vm ships prebuilds for abi127 (Node 22) and abi137 (Node 24).
-  // We can't actually try `new Isolate()` to detect — on a wrong ABI it
-  // segfaults, which we can't recover from. So gate on `process.versions.modules`
-  // matching a known-good value. CI pins Node 22 explicitly.
+  // isolated-vm ships prebuilds for abi127 (Node 22), abi137 (Node 24), and
+  // isolated-vm-next for Node 26+. We can't actually try `new Isolate()` to
+  // detect — on a wrong ABI it segfaults. Gate on ABI + the package being on
+  // disk (bun install optional dep).
   const abi = process.versions.modules;
-  return abi === '127' || abi === '137';
+  const abiOk = abi === '127' || abi === '137' || abi === '147';
+  if (!abiOk) return false;
+  const root = fileURLToPath(new URL('../../../../../../', import.meta.url));
+  return (
+    existsSync(join(root, 'node_modules/isolated-vm')) ||
+    existsSync(join(root, 'node_modules/isolated-vm-next'))
+  );
 }
 
 describe('sandbox run (wire)', () => {
@@ -41,7 +50,9 @@ describe('sandbox run (wire)', () => {
     const user = await createTestUser({ email: 'sandbox-wire@test.com' });
     await addUserToOrganization(user.id, org.id, 'owner');
     const oauthClient = await createTestOAuthClient();
-    const oauthResult = await createTestAccessToken(user.id, org.id, oauthClient.client_id);
+    const oauthResult = await createTestAccessToken(user.id, org.id, oauthClient.client_id, {
+      scope: 'mcp:read mcp:write mcp:admin',
+    });
 
     orgSlug = org.slug;
     token = oauthResult.token;
@@ -79,4 +90,97 @@ describe('sandbox run (wire)', () => {
     // We seeded one company; the script should see it.
     expect(json).toContain('"count":1');
   });
+
+  it('query_sdk can list agents via client.agents.list', async (testCtx) => {
+    if (!isolatedAvailable) return testCtx.skip();
+    const client = new TestMcpClient({ token, orgSlug });
+    const result = await client.querySdk<unknown>(
+      `export default async (_ctx, client) => {
+         const out = await client.agents.list();
+         return { action: out.action, n: out.agents?.length ?? 0 };
+       };`
+    );
+    const json = JSON.stringify(result);
+    expect(json).toContain('"action":"list"');
+    expect(json).toMatch(/"n":\d+/);
+  });
+
+  it('query_sdk can list schedules via client.schedules.list', async (testCtx) => {
+    if (!isolatedAvailable) return testCtx.skip();
+    const client = new TestMcpClient({ token, orgSlug });
+    const result = await client.querySdk<unknown>(
+      `export default async (_ctx, client) => {
+         const out = await client.schedules.list();
+         return { hasSchedules: Array.isArray(out.schedules) };
+       };`
+    );
+    expect(JSON.stringify(result)).toContain('"hasSchedules":true');
+  });
+
+  it('run_sdk can list schedules via client.schedules.list', async (testCtx) => {
+    if (!isolatedAvailable) return testCtx.skip();
+    const client = new TestMcpClient({ token, orgSlug });
+    const result = await client.runSdk<unknown>(
+      `export default async (_ctx, client) => {
+         const out = await client.schedules.list();
+         return { hasSchedules: Array.isArray(out.schedules) };
+       };`
+    );
+    expect(JSON.stringify(result)).toContain('"hasSchedules":true');
+  });
+
+  it('query_sdk can list watchers via client.watchers.list (replaces list_watchers)', async (testCtx) => {
+    if (!isolatedAvailable) return testCtx.skip();
+    const client = new TestMcpClient({ token, orgSlug });
+    const result = await client.querySdk<unknown>(
+      `export default async (_ctx, client) => {
+         const out = await client.watchers.list({ status: 'active' });
+         return { hasWatchers: Array.isArray(out.watchers) };
+       };`
+    );
+    expect(JSON.stringify(result)).toContain('"hasWatchers":true');
+  });
+
+  it('run_sdk can create an agent via client.agents.create', async (testCtx) => {
+    if (!isolatedAvailable) return testCtx.skip();
+    const client = new TestMcpClient({ token, orgSlug });
+    const result = await client.runSdk<unknown>(
+      `export default async (_ctx, client) => {
+         const out = await client.agents.create({
+           agent_id: 'wire-test-agent',
+           name: 'Wire Test Agent',
+         });
+         return out;
+       };`,
+      { timeout_ms: 15_000 }
+    );
+    expect(JSON.stringify(result)).toContain('"action":"create"');
+  });
+
+  it('query_sdk can list metrics via client.metrics.list', async (testCtx) => {
+    if (!isolatedAvailable) return testCtx.skip();
+    const client = new TestMcpClient({ token, orgSlug });
+    const result = await client.querySdk<unknown>(
+      `export default async (_ctx, client) => {
+         const out = await client.metrics.list();
+         return { hasCatalog: Array.isArray(out.entity_types) };
+       };`
+    );
+    expect(JSON.stringify(result)).toContain('"hasCatalog":true');
+  });
+
+  it('run_sdk can list agents via client.agents.list', async (testCtx) => {
+    if (!isolatedAvailable) return testCtx.skip();
+    const client = new TestMcpClient({ token, orgSlug });
+    const result = await client.runSdk<unknown>(
+      `export default async (_ctx, client) => {
+         const out = await client.agents.list();
+         return { action: out.action, n: out.agents?.length ?? 0 };
+       };`
+    );
+    const json = JSON.stringify(result);
+    expect(json).toContain('"action":"list"');
+    expect(json).toMatch(/"n":\d+/);
+  });
+
 });

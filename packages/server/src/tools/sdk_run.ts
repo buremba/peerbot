@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import { resolveMaxAccessLevel } from "../auth/tool-access";
 import type { Env } from "../index";
 import { buildClientSDK, type SDKMode } from "../sandbox/client-sdk";
 import { runScript } from "../sandbox/run-script";
@@ -105,6 +106,7 @@ async function runSandbox(
     sdk: (abortSignal) => buildClientSDK(ctx, env, { mode, allowCrossOrg, abortSignal }),
     sdkMode: mode,
     allowCrossOrg,
+    maxAccessLevel: resolveMaxAccessLevel(ctx.memberRole, ctx.scopes),
     dryRun: mode === "full" && "dry_run" in args && args.dry_run === true,
     context: {
       organization_id: ctx.organizationId,

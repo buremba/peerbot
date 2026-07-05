@@ -263,11 +263,8 @@ export async function mcpRequest<T = any>(
 /**
  * Make an MCP tools/call request with JSON format for raw results.
  *
- * After PR-2 the legacy `manage_*`/`list_watchers`/`get_watcher`/
- * `read_knowledge` tools are gone from the MCP surface. Historical tests
- * that call those names still go through this function and will get
- * `Tool not found` — those tests are tracked for migration to either
- * direct handler imports or `executeScript` script form.
+ * Admin flat tools are omitted from MCP `tools/list` but remain dispatchable
+ * by name here and via REST. Prefer `query_sdk` / `run_sdk` for new agent tests.
  */
 export async function mcpToolsCall<T = any>(
   toolName: string,

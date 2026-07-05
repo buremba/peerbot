@@ -65,7 +65,7 @@ describe("method-metadata", () => {
   });
 
   it("has valid access levels on every entry", () => {
-    const valid: MethodAccess[] = ["read", "write", "external"];
+    const valid: MethodAccess[] = ["read", "write", "external", "admin"];
     for (const [path, meta] of Object.entries(METHOD_METADATA)) {
       expect(valid).toContain(meta.access);
       expect(meta.summary.length).toBeGreaterThan(0);

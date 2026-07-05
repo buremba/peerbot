@@ -1,10 +1,10 @@
 /**
  * Admin tool surface (manage_*, watcher reads, knowledge reads, notify).
  *
- * Exposed uniformly on every surface — MCP `tools/list`, the REST proxy
- * (`POST /api/:orgSlug/:toolName`), the ClientSDK namespaces, and the CLI.
- * There is no visibility flag: reach is decided purely by per-action access
- * tier x member role x `mcp:*` scope (see `auth/tool-access.ts`).
+ * REST + MCP `tools/call` dispatch surface (`POST /api/:orgSlug/:toolName`).
+ * Omitted from MCP `tools/list` — agents reach these via `query_sdk` / `run_sdk`
+ * and the ClientSDK namespaces. Per-action access tier x member role x `mcp:*`
+ * scope still governs execution (`auth/tool-access.ts`).
  */
 
 import type { TSchema } from "@sinclair/typebox";
@@ -126,7 +126,8 @@ const ENTRIES: AdminToolEntry[] = [
 	},
 	{
 		name: "manage_agents",
-		description: "Agent management (incl. the org system agent pointer).",
+		description:
+			"Agent management (incl. the org system agent pointer). SDK alternative: client.agents.",
 		schema: ManageAgentsSchema,
 		handler: manageAgents,
 		annotations: DESTRUCTIVE_WITH_TITLE("Manage agents"),
@@ -168,7 +169,7 @@ const ENTRIES: AdminToolEntry[] = [
 	{
 		name: "manage_schedules",
 		description:
-			"Create / list / pause / cancel recurring or one-shot scheduled jobs. Supports send_notification and wake_agent action types. Per-row attribution lets you trace what scheduled it and from where.",
+			"Create / list / pause / cancel recurring or one-shot scheduled jobs. Supports send_notification and wake_agent action types. Per-row attribution lets you trace what scheduled it and from where. SDK alternative: client.schedules.",
 		schema: ManageSchedulesSchema,
 		handler: manageSchedules,
 		annotations: DESTRUCTIVE_WITH_TITLE("Manage schedules"),

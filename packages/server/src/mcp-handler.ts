@@ -36,7 +36,7 @@ import {
   mcpSessionMap,
 } from './mcp-session-state';
 import { type AuthContext, executeTool, extractAuthContext } from './tools/execute';
-import { getAllTools, getTool } from './tools/registry';
+import { getMcpTools, getTool } from './tools/registry';
 import { validateToolResult } from './tools/validate-args';
 import { formatToolResult } from './formatting/markdown-formatter';
 import { resolvePublicOrigin } from './utils/public-origin';
@@ -194,38 +194,16 @@ function createServerForContext(
     }
   );
 
-  // tools/list — return our TypeBox JSON Schemas
-  // Read auth state dynamically so the list updates after auth upgrades.
-  // Every registered tool is listed uniformly; the caller's access level
-  // (role × scope) and public-workspace readability are the only filters.
+  // tools/list — agent-facing surface only (memory + SDK scripting + SQL/metrics).
+  // Admin flat tools stay dispatchable via tools/call and REST but are omitted
+  // here so agents compose through query_sdk / run_sdk instead.
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const adminAllowlist = authCtx.adminTools ?? null;
-    const hasAdminAllowlist = !!adminAllowlist && adminAllowlist.length > 0;
     const publicOnly = !!authCtx.organizationId && !authCtx.memberRole;
     const maxAccessLevel = resolveMaxAccessLevel(authCtx.memberRole, authCtx.scopes);
-    const staticTools = getAllTools({
+    const allTools = getMcpTools({
       publicOnly,
       maxAccessLevel,
-    });
-    // System-agent (builder) run: the per-turn allowlist LIMITS which tools may
-    // exercise admin-tier actions (see checkToolAccess). Mirror that here so
-    // the listing matches the execute gate: non-allowlisted tools are shown at
-    // write-tier (their admin-only action variants filtered out; tools with
-    // nothing left below admin disappear).
-    let visibleTools = staticTools;
-    if (hasAdminAllowlist && maxAccessLevel === 'admin') {
-      const allowed = new Set(adminAllowlist);
-      const writeTier = new Map(
-        getAllTools({ publicOnly, maxAccessLevel: 'write' }).map((t) => [
-          t.name,
-          t,
-        ])
-      );
-      visibleTools = staticTools
-        .map((t) => (allowed.has(t.name) ? t : writeTier.get(t.name)))
-        .filter((t): t is NonNullable<typeof t> => t !== undefined);
-    }
-    const allTools = visibleTools.map((t) => ({
+    }).map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,

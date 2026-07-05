@@ -10,7 +10,6 @@
       "lobu_login_check",
       "lobu_search_memory",
       "lobu_save_memory",
-      "lobu_list_organizations",
       "lobu_search_sdk",
       "lobu_query_sdk",
       "lobu_query_sql",

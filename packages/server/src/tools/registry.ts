@@ -136,7 +136,8 @@ const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const;
 
 const WRITE_WITHOUT_CONFIRM: ToolAnnotations = { destructiveHint: false, idempotentHint: false };
 
-const TOOLS: ToolDefinition[] = [
+/** Tools advertised on MCP `tools/list` and external OpenAPI. */
+const AGENT_TOOLS: ToolDefinition[] = [
   // ─── Memory hot path — read ───────────────────────────────────────────────
   {
     name: 'search_memory',
@@ -159,21 +160,10 @@ const TOOLS: ToolDefinition[] = [
     annotations: { ...WRITE_WITHOUT_CONFIRM, title: 'Save memory' },
     handler: saveContent,
   },
-  // ─── Discovery ────────────────────────────────────────────────────────────
-  {
-    name: 'list_organizations',
-    description:
-      'List organizations the authenticated user belongs to, plus any public workspaces the session can read. The response marks the bound org with `is_current: true` — that is the default target for memory and SDK calls. Use the slug with `client.org(slug)` from `query_sdk` / `run_sdk` for cross-org reads on /mcp + OAuth, or reconnect to /mcp/{slug} to pin a different default.',
-    inputSchema: ListOrganizationsSchema,
-    annotations: { ...READ_ONLY, title: 'List organizations' },
-    handler: async () => {
-      throw new Error('Handled directly in executeTool');
-    },
-  },
   {
     name: 'search_sdk',
     description:
-      "Search ClientSDK documentation and method metadata. Use this to discover which SDK method exists and how to call it; it does not query workspace data. Pass a namespace ('watchers', 'entities', etc.), a dotted path ('watchers.create'), or a free-text query. Pair with `query_sdk` (read-only) or `run_sdk` (full SDK) to actually call methods.",
+      "Search ClientSDK documentation and method metadata. Results are filtered to what you can call: pass mode='read' for query_sdk-safe methods, or omit mode for your full run_sdk tier (write/admin methods appear only when your role and scopes allow). Does not query workspace data — pair with `query_sdk` or `run_sdk` to execute. For flat SQL with pagination/feeds use `query_sql`; for governed metrics use client.metrics.* via query_sdk.",
     inputSchema: SdkSearchSchema,
     outputSchema: SdkSearchResultSchema,
     annotations: { ...READ_ONLY, title: 'Search SDK docs' },
@@ -190,36 +180,12 @@ const TOOLS: ToolDefinition[] = [
     handler: querySdkScript,
   },
   {
-    name: 'list_metrics',
-    description:
-      'List the DECLARED, governed metrics — measures / dimensions / segments (with descriptions) per entity type. Use this FIRST to discover what metrics exist; pass `q` to keyword-search. Then run one with `query_metric`. Prefer governed metrics over hand-written `query_sql` so numbers stay consistent.',
-    inputSchema: ListMetricsSchema,
-    annotations: { ...READ_ONLY, title: 'List metrics' },
-    handler: listMetrics,
-  },
-  {
-    name: 'query_metric',
-    description:
-      'Run a DECLARED metric (discover them via `list_metrics`) and get its rows: pass entity_type + measure, optional `by` dimensions / `segment` / `entity_id`. The metric layer enforces resolution, dedupe, segment, and aggregation, so results are consistent and governed. PREFER this over `query_sql` whenever a declared measure answers the question; fall back to `query_sql` only when no metric covers the ask.',
-    inputSchema: QueryMetricSchema,
-    annotations: { ...READ_ONLY, title: 'Query metric' },
-    handler: queryMetric,
-  },
-  {
     name: 'query_sql',
     description:
-      'Run a paginated, sortable, searchable read-only SQL query. Table references auto-scope to the bound org. The query is wrapped as a subquery, so inner ORDER BY / LIMIT / window functions are fine; pagination + sort come from the sort_by/limit/offset args. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects the query to a different member org; rejected on /mcp/{slug} and on PAT auth. NOTE: this is the FALLBACK — if a declared metric covers the ask, use `query_metric` (see `list_metrics`) instead, so numbers match the governed definitions.',
+      'Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org. Supports connection pushdown and virtual feeds. Prefer client.metrics.query for declared measures; use client.query in query_sdk for simple one-shot SQL. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects to another member org.',
     inputSchema: QuerySqlSchema,
     annotations: { ...READ_ONLY, title: 'Query SQL' },
     handler: querySql,
-  },
-  {
-    name: 'metric_series',
-    description:
-      'Run a read-only time-series SQL for dashboard sparklines. Caller passes a single SELECT returning a bucket column + N numeric stat columns; the same validator/auto-scoper that powers `query_sql` injects `$1 = organization_id`. Returns `{ columns, rows }` for direct frontend consumption.',
-    inputSchema: MetricSeriesSchema,
-    annotations: { ...READ_ONLY, title: 'Metric series' },
-    handler: metricSeries,
   },
   {
     name: 'run_sdk',
@@ -230,9 +196,49 @@ const TOOLS: ToolDefinition[] = [
     annotations: { destructiveHint: true, idempotentHint: false, title: 'Run SDK' },
     handler: runSdkScript,
   },
-  // ─── Admin surface (manage_*, list_watchers, get_watcher, ...) ────────────
+];
+
+/**
+ * Admin + first-party REST dispatch tools. Callable via `POST /api/:org/:toolName`
+ * and MCP `tools/call` by name, but omitted from MCP `tools/list` — agents use
+ * `search_sdk` → `query_sdk` / `run_sdk` instead.
+ */
+const INTERNAL_DISPATCH_TOOLS: ToolDefinition[] = [
   ...ADMIN_TOOLS,
-  // ─── Path resolution (frontend internal) ──────────────────────────────────
+  {
+    name: 'list_organizations',
+    description:
+      'List organizations the authenticated user belongs to, plus any public workspaces the session can read. SDK alternative: client.organizations.list via `query_sdk` / `run_sdk`.',
+    inputSchema: ListOrganizationsSchema,
+    annotations: { ...READ_ONLY, title: 'List organizations' },
+    handler: async () => {
+      throw new Error('Handled directly in executeTool');
+    },
+  },
+  {
+    name: 'list_metrics',
+    description:
+      'List declared governed metrics per entity type. SDK alternative: client.metrics.list.',
+    inputSchema: ListMetricsSchema,
+    annotations: { ...READ_ONLY, title: 'List metrics' },
+    handler: listMetrics,
+  },
+  {
+    name: 'query_metric',
+    description:
+      'Run a declared metric. SDK alternative: client.metrics.query.',
+    inputSchema: QueryMetricSchema,
+    annotations: { ...READ_ONLY, title: 'Query metric' },
+    handler: queryMetric,
+  },
+  {
+    name: 'metric_series',
+    description:
+      'Read-only time-series SQL for dashboard sparklines. SDK alternative: client.metrics.series.',
+    inputSchema: MetricSeriesSchema,
+    annotations: { ...READ_ONLY, title: 'Metric series' },
+    handler: metricSeries,
+  },
   {
     name: 'resolve_path',
     description:
@@ -244,20 +250,36 @@ const TOOLS: ToolDefinition[] = [
   },
 ];
 
+const ALL_DISPATCH_TOOLS: ToolDefinition[] = [
+  ...AGENT_TOOLS,
+  ...INTERNAL_DISPATCH_TOOLS,
+];
+
+export const AGENT_TOOL_NAMES: ReadonlySet<string> = new Set(
+  AGENT_TOOLS.map((tool) => tool.name),
+);
+
+const INTERNAL_TOOL_NAMES: ReadonlySet<string> = new Set(
+  INTERNAL_DISPATCH_TOOLS.map((tool) => tool.name),
+);
+
 // ============================================
 // Helper Functions
 // ============================================
 
-// TOOLS is a module constant with no runtime mutation — index it once.
-const TOOLS_BY_NAME: Map<string, ToolDefinition> = new Map(
-  TOOLS.map((tool) => [tool.name, tool])
+const DISPATCH_BY_NAME: Map<string, ToolDefinition> = new Map(
+  ALL_DISPATCH_TOOLS.map((tool) => [tool.name, tool]),
 );
 
 /**
  * Get tool by name
  */
 export function getTool(name: string): ToolDefinition | undefined {
-  return TOOLS_BY_NAME.get(name);
+  return DISPATCH_BY_NAME.get(name);
+}
+
+export function isInternalDispatchTool(name: string): boolean {
+  return INTERNAL_TOOL_NAMES.has(name);
 }
 
 /**
@@ -415,37 +437,53 @@ function filterSchemaForAccessLevel(
   return null;
 }
 
-// The tool registry + its schemas are static after module load, so the
-// computed tool list depends only on the two options. Memoize per option
-// tuple (a handful of distinct values in practice).
-const allToolsCache = new Map<string, ReturnType<typeof computeAllTools>>();
+// Memoize listed tool shapes per (surface × filter tuple).
+const listedToolsCache = new Map<string, ReturnType<typeof computeListedTools>>();
 
-/**
- * Get all tool definitions for MCP tools/list.
- *
- * Every registered tool is listed on every surface; the only filters are the
- * caller's access level (role × scope) and public-workspace readability.
- */
-export function getAllTools(options?: {
+type ListedToolOptions = {
   publicOnly?: boolean;
   maxAccessLevel?: 'read' | 'write' | 'admin';
-}) {
+};
+
+/**
+ * Agent-facing tools for MCP `tools/list` and external OpenAPI.
+ */
+export function getMcpTools(options?: ListedToolOptions) {
+  return getListedTools(AGENT_TOOLS, options);
+}
+
+/**
+ * All dispatch tools for REST `GET /api/:org/tools` (admin entries carry
+ * `internal: true` for CLI filtering). Execution uses `getTool` across both sets.
+ */
+export function getAllTools(options?: ListedToolOptions) {
+  const listed = getListedTools(ALL_DISPATCH_TOOLS, options);
+  return listed.map((tool) =>
+    INTERNAL_TOOL_NAMES.has(tool.name) ? { ...tool, internal: true as const } : tool,
+  );
+}
+
+function getListedTools(
+  source: ToolDefinition[],
+  options?: ListedToolOptions,
+) {
   const publicOnly = options?.publicOnly ?? false;
   const maxAccessLevel = options?.maxAccessLevel ?? 'admin';
-  const cacheKey = `${publicOnly ? 1 : 0}:${maxAccessLevel}`;
-  let cached = allToolsCache.get(cacheKey);
+  const cacheKey = `${source === AGENT_TOOLS ? 'mcp' : 'all'}:${publicOnly ? 1 : 0}:${maxAccessLevel}`;
+  let cached = listedToolsCache.get(cacheKey);
   if (!cached) {
-    cached = computeAllTools(publicOnly, maxAccessLevel);
-    allToolsCache.set(cacheKey, cached);
+    cached = computeListedTools(source, publicOnly, maxAccessLevel);
+    listedToolsCache.set(cacheKey, cached);
   }
   return cached;
 }
 
-function computeAllTools(
+function computeListedTools(
+  source: ToolDefinition[],
   publicOnly: boolean,
   maxAccessLevel: 'read' | 'write' | 'admin'
 ) {
-  return TOOLS
+  return source
     .filter((tool) => !publicOnly || getPublicReadableActions(tool.name) !== undefined)
     .map((tool) => {
       // Advertise the narrower `publicInputSchema` when a tool declares one;

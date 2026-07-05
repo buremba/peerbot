@@ -7,6 +7,7 @@
 
 import type { ClientSDK } from "./client-sdk";
 import { METHOD_METADATA, type MethodAccess } from "./method-metadata";
+import type { ToolAccessLevel } from "../auth/tool-access";
 import { enumerateSDKManifest, type SDKMode } from "./sdk-manifest";
 
 export interface RunLimits {
@@ -35,6 +36,8 @@ export interface RunScriptOptions {
 	sdkMode?: SDKMode;
 	/** Whether `client.org` is reachable inside the guest. Defaults to false. */
 	allowCrossOrg?: boolean;
+	/** Caller access tier — filters the dispatch manifest (defaults to read). */
+	maxAccessLevel?: ToolAccessLevel;
 	limits?: RunLimits;
 	/** Forwarded to the script entry point after `(ctx, client)`. */
 	extraArgs?: unknown[];
@@ -337,7 +340,10 @@ export async function runScript(
 	const limits = clampLimits(options.limits);
 	const sdkMode: SDKMode = options.sdkMode ?? "full";
 	const allowCrossOrg = options.allowCrossOrg ?? false;
-	const manifest = enumerateSDKManifest(sdkMode, { allowCrossOrg });
+	const manifest = enumerateSDKManifest(sdkMode, {
+		allowCrossOrg,
+		maxAccessLevel: options.maxAccessLevel,
+	});
 
 	// Host-side mirror of the manifest's dispatchable paths. `__sdk_dispatch` is a
 	// guest-visible global, so a malicious script can call it with an un-manifested

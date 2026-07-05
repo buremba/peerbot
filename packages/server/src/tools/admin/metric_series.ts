@@ -14,9 +14,9 @@
  *   - server-injected `$1`: caller can't choose which org to query
  *   - statement timeout: 5s, enforced via SET LOCAL inside a transaction
  *   - hard row cap: queries returning more than MAX_ROWS rows are rejected
- *   - `internal: true`: hidden from external MCP clients (REST/session only)
  *
- * Returns `{ columns: string[], rows: unknown[][] }`.
+ * Returns `{ columns: string[], rows: unknown[][] }`. Also exposed as
+ * `client.metrics.series` in the ClientSDK and on the MCP agent surface.
  */
 
 import { type Static, Type } from '@sinclair/typebox';

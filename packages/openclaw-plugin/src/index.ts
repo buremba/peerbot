@@ -38,7 +38,6 @@ const DEFAULT_RECALL_LIMIT = 6;
 export const KNOWN_MCP_TOOL_NAMES = new Set([
   'search_memory',
   'save_memory',
-  'list_organizations',
   'search_sdk',
   'query_sdk',
   'query_sql',

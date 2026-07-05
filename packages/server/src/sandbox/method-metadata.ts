@@ -3,7 +3,7 @@
  * tool, the read-only SDK filter (`access`), and the BANNED_PATHS guard.
  */
 
-export type MethodAccess = "read" | "write" | "external";
+export type MethodAccess = "read" | "write" | "external" | "admin";
 
 export interface MethodMetadata {
 	summary: string;
@@ -210,6 +210,76 @@ export default async (_ctx, client) => {
   });
   return result;
 };`,
+	},
+
+	// agents
+	"agents.manage": {
+		summary: "Raw manage_agents action wrapper. Prefer named methods.",
+		access: "admin",
+	},
+	"agents.list": {
+		summary: "List agents in the org (marks the system agent). Requires admin.",
+		access: "admin",
+		example: "const { agents } = await client.agents.list();",
+	},
+	"agents.get": {
+		summary: "Fetch one agent by id. Requires admin.",
+		access: "admin",
+		example: "const { agent } = await client.agents.get('builder');",
+	},
+	"agents.create": {
+		summary:
+			"Create an agent (queued for approval when invoked by the builder agent). Requires admin.",
+		access: "admin",
+		example:
+			"await client.agents.create({ agent_id: 'researcher', name: 'Researcher' });",
+	},
+	"agents.update": {
+		summary: "Update agent fields (may queue for approval). Requires admin.",
+		access: "admin",
+	},
+	"agents.delete": {
+		summary: "Delete an agent (may queue for approval). Requires admin.",
+		access: "admin",
+	},
+	"agents.setSystemAgent": {
+		summary: "Point organization.system_agent_id at an agent. Requires admin.",
+		access: "admin",
+		example: "await client.agents.setSystemAgent('builder');",
+	},
+
+	// schedules
+	"schedules.manage": {
+		summary: "Raw manage_schedules action wrapper. Prefer named methods.",
+		access: "admin",
+	},
+	"schedules.list": {
+		summary: "List scheduled jobs with optional filters. Requires admin.",
+		access: "admin",
+		example:
+			"const { schedules } = await client.schedules.list({ agent_id: 'builder' });",
+	},
+	"schedules.create": {
+		summary:
+			"Create a one-shot or recurring schedule (send_notification or wake_agent). Requires admin.",
+		access: "admin",
+		example: `await client.schedules.create({
+  description: 'Follow up in 1h',
+  run_at: '2026-07-05T12:00:00Z',
+  payload: { type: 'wake_agent', agent_id: 'builder', prompt: 'Check inbox' },
+});`,
+	},
+	"schedules.update": {
+		summary: "Patch a schedule (next run, cron, wake_agent prompt). Requires admin.",
+		access: "admin",
+	},
+	"schedules.pause": {
+		summary: "Pause or resume a schedule. Requires admin.",
+		access: "admin",
+	},
+	"schedules.cancel": {
+		summary: "Permanently delete a schedule. Requires admin.",
+		access: "admin",
 	},
 
 	// notifications
@@ -541,14 +611,49 @@ export default async (_ctx, client) => {
 		access: "write",
 	},
 
+	// metrics — governed measures (prefer over client.query / query_sql)
+	"metrics.list": {
+		summary:
+			"List declared metrics per entity type: measures, dimensions, and segments with descriptions. Keyword-search with `q`. Pair with `metrics.query`.",
+		access: "read",
+		example: "const { entity_types } = await client.metrics.list({ q: 'spend' });",
+		usageExample: `// Discover governed measures before running one.
+export default async (_ctx, client) => {
+  const { entity_types } = await client.metrics.list({ entity_type: 'company' });
+  return { types: entity_types.map((t) => t.entity_type) };
+};`,
+	},
+	"metrics.query": {
+		summary:
+			"Run a declared measure for an entity type. Pass entity_type + measure; optional by, segment, entity_id. Prefer this over client.query when a measure exists.",
+		access: "read",
+		example:
+			"await client.metrics.query({ entity_type: 'company', measure: 'spend', by: ['month'] });",
+		usageExample: `export default async (_ctx, client) => {
+  const { rows, row_count } = await client.metrics.query({
+    entity_type: 'company',
+    measure: 'spend',
+    by: ['month'],
+  });
+  return { row_count, sample: rows[0] };
+};`,
+	},
+	"metrics.series": {
+		summary:
+			"Run read-only time-bucketed SQL for sparklines. Returns { columns, rows } tabular output. Member-safe column allowlist; 5s timeout, 2000-row cap.",
+		access: "read",
+		example:
+			'await client.metrics.series({ sql: "SELECT date_trunc(\\\'day\\\', created_at) AS bucket, COUNT(*)::int AS n FROM events GROUP BY 1 ORDER BY 1" });',
+	},
+
 	// top-level
 	query: {
 		summary:
-			"Run a read-only SQL query against the organization-scoped virtual tables. No positional parameters — use Handlebars {{query.name}} substitutions inside the SQL when you need values.",
+			"Run a simple read-only SQL string scoped to the org (member-safe column allowlist). For pagination, connection pushdown, or virtual feeds use the `query_sql` MCP tool instead. Prefer `client.metrics.query` for declared measures.",
 		access: "read",
 		example:
-			"const rows = await client.query(\"SELECT id, name FROM entities WHERE entity_type = 'company'\");",
-		usageExample: `// Run a one-off SQL read scoped to the bound organization.
+			"const rows = await client.query(\"SELECT id, name FROM entities WHERE entity_type = 'company' LIMIT 10\");",
+		usageExample: `// Simple SQL read — use query_sql for pagination/feeds.
 export default async (_ctx, client) => {
   return client.query("SELECT id, name FROM entities WHERE entity_type = 'company' LIMIT 10");
 };`,

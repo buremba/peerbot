@@ -154,7 +154,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
     sections.push(
       '',
       '### Tool surface',
-      'External MCP tools: `search_memory`, `save_memory`, `list_organizations`, `search_sdk` (SDK method discovery), `query_sdk` (read-only TS over the typed client SDK), `query_sql` (admin/debug read-only SQL), `run_sdk` (full TS — destructive; supports `dry_run: true`).',
+      'External MCP tools: `search_memory`, `save_memory`, `search_sdk` (SDK discovery — pass mode=read for query_sdk methods), `query_sdk` (read-only TS), `query_sql` (paginated SQL for all members), `run_sdk` (full TS writes). Discover SDK methods with `search_sdk`, then call via `query_sdk` / `run_sdk`. Prefer `client.metrics.*` for governed metrics.',
       'For reads beyond search_memory, prefer `query_sdk` with a TS script. For writes (entity CRUD, watchers, classifiers, connections, feeds, view templates, operations), use `run_sdk`. Use `search_sdk` to discover method names.',
       '',
       '### Saving (do this automatically)',

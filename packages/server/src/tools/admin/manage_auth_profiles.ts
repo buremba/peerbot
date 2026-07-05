@@ -31,9 +31,8 @@ import {
   summarizeBrowserSessionAuthData,
   updateAuthProfile,
 } from '../../utils/auth-profiles';
-import { deriveToolActorSource } from '../../utils/apply-context';
+import { recordToolConfigChange } from "./helpers/config-audit";
 import { createConnectToken } from '../../utils/connect-tokens';
-import { recordConfigChangeEvent } from '../../utils/insert-event';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 import { getScopedConnectorDefinition } from "../../catalog/connector-definitions";
@@ -248,14 +247,9 @@ function recordAuthProfileConfigChange(
     changedFields?: string[];
   }
 ): void {
-  recordConfigChangeEvent({
-    organizationId: ctx.organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: 'auth-profile',
     ...params,
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 }
 

@@ -6,8 +6,7 @@
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { isLobuGatewayRunning } from '../../../lobu/gateway';
-import { deriveToolActorSource } from '../../../utils/apply-context';
-import { recordConfigChangeEvent } from '../../../utils/insert-event';
+import { recordToolConfigChange } from '../helpers/config-audit';
 import logger from '../../../utils/logger';
 import { getWatcherRunInfo, queueAndDispatchWatcherRun } from '../../../watchers/automation';
 import {
@@ -94,8 +93,7 @@ export async function handleSetReactionScript(
           reaction_input_schema = NULL
       WHERE watcher_group_id = ${groupId}
     `;
-    recordConfigChangeEvent({
-      organizationId: ctx.organizationId,
+    recordToolConfigChange(ctx, {
       resourceKind: 'watcher',
       resourceId: args.watcher_id,
       op: 'updated',
@@ -107,10 +105,6 @@ export async function handleSetReactionScript(
         reaction_input_schema: null,
       },
       changedFields: ['reaction_script'],
-      applyId: ctx.applyId ?? null,
-      actorSource: deriveToolActorSource(ctx),
-      createdBy: ctx.userId ?? null,
-      clientId: ctx.clientId ?? null,
     });
     return {
       action: 'set_reaction_script',
@@ -135,8 +129,7 @@ export async function handleSetReactionScript(
 
   logger.info(`[manage_watchers] Set reaction script for watcher ${args.watcher_id}`);
 
-  recordConfigChangeEvent({
-    organizationId: ctx.organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: 'watcher',
     resourceId: args.watcher_id,
     op: 'updated',
@@ -150,10 +143,6 @@ export async function handleSetReactionScript(
       reaction_input_schema: reactionInputSchema ?? null,
     },
     changedFields: ['reaction_script'],
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return {

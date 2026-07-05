@@ -10,6 +10,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { deepRedactSecrets, REDACTED_SENTINEL } from "@lobu/core";
 import type { DiffPlan, DiffRow } from "./diff.js";
 import { canonical } from "./diff.js";
 import type { DesiredState } from "./desired-state.js";
@@ -44,29 +45,6 @@ export function collectGitInfo(cwd: string): GitInfo {
   }
 }
 
-// Mirrors the server-side denylist (config-redaction.ts): whole key or
-// `_`-suffix, singular/plural, any case after camelCase→snake normalization.
-const SECRET_KEY_RE =
-  /(^|_)(token|secret|password|api_?key|credential|private_?key|refresh_?token|access_?token)s?$/i;
-
-function isSecretKey(key: string): boolean {
-  return SECRET_KEY_RE.test(key.replace(/([a-z0-9])([A-Z])/g, "$1_$2"));
-}
-
-const REDACTED = "__LOBU_REDACTED__";
-
-function deepRedact(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(deepRedact);
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = isSecretKey(key) && v != null ? REDACTED : deepRedact(v);
-    }
-    return out;
-  }
-  return value;
-}
-
 /**
  * sha256 of the redacted, canonicalized desired state. Beyond the key-name
  * denylist, the fields that hold RESOLVED secret values in process memory are
@@ -77,13 +55,13 @@ function deepRedact(value: unknown): unknown {
  * secret VALUES never participate.
  */
 export function computeManifestHash(state: DesiredState): string {
-  const redacted = deepRedact({
+  const redacted = deepRedactSecrets({
     ...state,
     agents: state.agents.map((agent) => ({
       ...agent,
       providerKeys: agent.providerKeys.map((k) => ({
         providerId: k.providerId,
-        value: REDACTED,
+        value: REDACTED_SENTINEL,
       })),
       // Platform config values are resolved plaintext at this point; deep-
       // redact (not wholesale) so a NON-secret config change (e.g. a channel
@@ -92,20 +70,20 @@ export function computeManifestHash(state: DesiredState): string {
       // it, so the cost is hash-changes-on-rotation for that field, not a leak.
       platforms: agent.platforms.map((p) => ({
         ...(p as unknown as Record<string, unknown>),
-        config: deepRedact(
+        config: deepRedactSecrets(
           (p as unknown as { config?: unknown }).config ?? null
         ),
       })),
     })),
     providers: (state.providers ?? []).map((p) => ({
       ...p,
-      apiKey: REDACTED,
+      apiKey: REDACTED_SENTINEL,
     })),
     connectors: {
       ...state.connectors,
       authProfiles: state.connectors.authProfiles.map((profile) => ({
         ...(profile as unknown as Record<string, unknown>),
-        credentials: REDACTED,
+        credentials: REDACTED_SENTINEL,
       })),
     },
   });

@@ -4,9 +4,8 @@
  */
 
 import { getDb } from '../../../db/client';
-import { deriveToolActorSource } from '../../../utils/apply-context';
+import { recordToolConfigChange } from '../helpers/config-audit';
 import { nextRunAt, validateSchedule } from '../../../utils/cron';
-import { recordConfigChangeEvent } from '../../../utils/insert-event';
 import { resolveUsernames } from '../../../utils/resolve-usernames';
 import { getNextNumericId } from '../helpers/db-helpers';
 import {
@@ -216,7 +215,7 @@ export async function handleCreateVersion(
 
   if (versionOrganizationId) {
     const setAsCurrent = args.set_as_current !== false;
-    recordConfigChangeEvent({
+    recordToolConfigChange(ctx, {
       organizationId: versionOrganizationId,
       resourceKind: 'watcher',
       resourceId: args.watcher_id,
@@ -246,10 +245,6 @@ export async function handleCreateVersion(
         ...(args.reactions_guidance !== undefined ? ['reactions_guidance'] : []),
         ...(args.schedule !== undefined ? ['schedule'] : []),
       ],
-      applyId: ctx.applyId ?? null,
-      actorSource: deriveToolActorSource(ctx),
-      createdBy: ctx.userId ?? null,
-      clientId: ctx.clientId ?? null,
     });
   }
 

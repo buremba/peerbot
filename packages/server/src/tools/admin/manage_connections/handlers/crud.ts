@@ -12,7 +12,7 @@ import {
 	parsePgNumberArray,
 	pgBigintArray,
 } from "../../../../db/client";
-import { deriveToolActorSource } from "../../../../utils/apply-context";
+import { recordToolConfigChange } from "../../helpers/config-audit";
 import {
 	deleteChatConnection,
 	updateChatConnection,
@@ -42,7 +42,6 @@ import { ensureConnectorInstalled } from "../../../../utils/ensure-connector-ins
 import { applyEntityLinkOverrides } from "../../../../utils/entity-link-validation";
 import {
 	recordChangeEvent,
-	recordConfigChangeEvent,
 	recordLifecycleEvent,
 } from "../../../../utils/insert-event";
 import logger from "../../../../utils/logger";
@@ -643,17 +642,12 @@ export async function handleCreate(
 				ctx,
 			);
 			if ("error" in read || read.action !== "get") return read;
-			recordConfigChangeEvent({
-				organizationId,
+			recordToolConfigChange(ctx, {
 				resourceKind: "connection",
 				resourceId: created.connectionId,
 				op: created.created ? "created" : "updated",
 				summary: `Connection '${args.display_name ?? args.connector_key}' ${created.created ? "created" : "updated"}`,
 				state: read.connection as Record<string, unknown>,
-				applyId: ctx.applyId ?? null,
-				actorSource: deriveToolActorSource(ctx),
-				createdBy: ctx.userId ?? null,
-				clientId: ctx.clientId ?? null,
 			});
 			return {
 				action: "create",
@@ -1141,17 +1135,12 @@ export async function handleCreate(
     extra: { connector_key: args.connector_key, slug: inserted[0].slug },
   });
 
-  recordConfigChangeEvent({
-    organizationId,
+  recordToolConfigChange(ctx, {
 		resourceKind: "connection",
     resourceId: inserted[0].id,
 		op: "created",
     summary: `Connection '${displayName}' created`,
     state: inserted[0] as Record<string, unknown>,
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return {
@@ -1196,17 +1185,12 @@ export async function handleApplyChatConnection(
 		);
 		if ("error" in read || read.action !== "get") return read;
 		if (result.created || result.changed) {
-			recordConfigChangeEvent({
-				organizationId,
+			recordToolConfigChange(ctx, {
 				resourceKind: "connection",
 				resourceId: result.connectionId,
 				op: result.created ? "created" : "updated",
 				summary: `Connection '${args.display_name ?? args.stable_id}' ${result.created ? "created" : "updated"}`,
 				state: read.connection as Record<string, unknown>,
-				applyId: ctx.applyId ?? null,
-				actorSource: deriveToolActorSource(ctx),
-				createdBy: ctx.userId ?? null,
-				clientId: ctx.clientId ?? null,
 			});
 		}
 		return {
@@ -1300,8 +1284,7 @@ export async function handleUpdate(
 				ctx,
 			);
 			if ("error" in read || read.action !== "get") return read;
-			recordConfigChangeEvent({
-				organizationId,
+			recordToolConfigChange(ctx, {
 				resourceKind: "connection",
 				resourceId: args.connection_id,
 				op: "updated",
@@ -1312,10 +1295,6 @@ export async function handleUpdate(
 					...(args.config !== undefined ? ["config"] : []),
 					...(args.status !== undefined ? ["status"] : []),
 				],
-				applyId: ctx.applyId ?? null,
-				actorSource: deriveToolActorSource(ctx),
-				createdBy: ctx.userId ?? null,
-				clientId: ctx.clientId ?? null,
 			});
 			return { action: "update", connection: read.connection };
 		} catch (error) {
@@ -1684,18 +1663,13 @@ export async function handleUpdate(
     ...(args.entity_ids !== undefined ? ["entity_ids"] : []),
     ...(args.config !== undefined ? ["config"] : []),
   ];
-  recordConfigChangeEvent({
-    organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: "connection",
     resourceId: args.connection_id,
     op: "updated",
     summary: `Connection '${updatedRow.display_name ?? updatedRow.slug ?? args.connection_id}' updated`,
     state: updatedRow,
     ...(changedFields.length > 0 ? { changedFields } : {}),
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return {
@@ -1805,17 +1779,12 @@ export async function handleDelete(
     extra: { connector_key: conn.connector_key, slug: conn.slug },
   });
 
-  recordConfigChangeEvent({
-    organizationId,
+  recordToolConfigChange(ctx, {
 		resourceKind: "connection",
     resourceId: args.connection_id,
 		op: "deleted",
     summary: `Connection '${connName}' deleted`,
     state: null,
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return {

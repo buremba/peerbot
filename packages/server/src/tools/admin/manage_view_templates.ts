@@ -8,8 +8,7 @@
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
 import { emit } from '../../events/emitter';
-import { deriveToolActorSource } from '../../utils/apply-context';
-import { recordConfigChangeEvent } from '../../utils/insert-event';
+import { recordToolConfigChange } from './helpers/config-audit';
 import { ToolUserError } from '../../utils/errors';
 import { validateDataSourceQuery } from '../../utils/execute-data-sources';
 import { resolveUsernames } from '../../utils/resolve-usernames';
@@ -187,18 +186,13 @@ function recordViewTemplateChange(
   state: Record<string, unknown> | null
 ): void {
   if (args.resource_type !== 'entity_type') return;
-  recordConfigChangeEvent({
-    organizationId: ctx.organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: 'entity-type',
     resourceId: rid(args),
     op: 'updated',
     summary,
     state,
     changedFields: ['view_template'],
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 }
 

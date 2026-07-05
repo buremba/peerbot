@@ -12,8 +12,7 @@ import { type Static, Type } from '@sinclair/typebox';
 import type { AutoCreateWhenRule } from '@lobu/connector-sdk';
 import { validateEntityMetrics } from '@lobu/connector-sdk';
 import { type DbClient, getDb } from '../../db/client';
-import { deriveToolActorSource } from '../../utils/apply-context';
-import { recordConfigChangeEvent } from '../../utils/insert-event';
+import { recordToolConfigChange } from './helpers/config-audit';
 import { measureColumns } from '../../utils/infer-measures';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
@@ -711,17 +710,12 @@ async function etHandleCreate(
     inserted[0] as Record<string, unknown>
   );
 
-  recordConfigChangeEvent({
-    organizationId: ctx.organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: 'entity-type',
     resourceId: slug,
     op: 'created',
     summary: `Entity type '${args.name}' created`,
     state: inserted[0] as Record<string, unknown>,
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return { schema_type: 'entity_type', action: 'create', entity_type: created };
@@ -838,18 +832,13 @@ async function etHandleUpdate(
     ...(hasBacking ? ['backing'] : []),
     ...(hasMetricsConfig ? ['metrics_config'] : []),
   ];
-  recordConfigChangeEvent({
-    organizationId: ctx.organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: 'entity-type',
     resourceId: args.slug,
     op: 'updated',
     summary: `Entity type '${result.name ?? args.slug}' updated`,
     state: updated[0] as Record<string, unknown>,
     ...(etChangedFields.length > 0 ? { changedFields: etChangedFields } : {}),
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return { schema_type: 'entity_type', action: 'update', entity_type: result };
@@ -899,17 +888,12 @@ async function etHandleDelete(
     null
   );
 
-  recordConfigChangeEvent({
-    organizationId: ctx.organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: 'entity-type',
     resourceId: slug,
     op: 'deleted',
     summary: `Entity type '${slug}' deleted`,
     state: null,
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return {
@@ -1256,17 +1240,12 @@ async function rtHandleCreate(
     WHERE rt.id = ${typeId}
   `;
 
-  recordConfigChangeEvent({
-    organizationId: ctx.organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: 'relationship-type',
     resourceId: args.slug,
     op: 'created',
     summary: `Relationship type '${args.name}' created`,
     state: created[0] as unknown as Record<string, unknown>,
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return {
@@ -1344,18 +1323,13 @@ async function rtHandleUpdate(
     ...(args.inverse_type_slug !== undefined ? ['inverse_type_id'] : []),
     ...(args.status !== undefined ? ['status'] : []),
   ];
-  recordConfigChangeEvent({
-    organizationId: ctx.organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: 'relationship-type',
     resourceId: args.slug ?? typeId,
     op: 'updated',
     summary: `Relationship type '${args.slug ?? typeId}' updated`,
     state: updated[0] as unknown as Record<string, unknown>,
     ...(rtChangedFields.length > 0 ? { changedFields: rtChangedFields } : {}),
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return {
@@ -1401,17 +1375,12 @@ async function rtHandleDelete(
     WHERE relationship_type_id = ${typeId} AND deleted_at IS NULL
   `;
 
-  recordConfigChangeEvent({
-    organizationId: ctx.organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: 'relationship-type',
     resourceId: args.slug ?? typeId,
     op: 'deleted',
     summary: `Relationship type '${args.slug ?? typeId}' deleted`,
     state: null,
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return {
@@ -1470,8 +1439,7 @@ async function rtHandleAddRule(
     WHERE id = ${ruleId}
   `;
 
-  recordConfigChangeEvent({
-    organizationId: ctx.organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: 'relationship-type',
     resourceId: args.slug ?? typeId,
     op: 'updated',
@@ -1482,10 +1450,6 @@ async function rtHandleAddRule(
       rule_added: created[0] as unknown as Record<string, unknown>,
     },
     changedFields: ['rules'],
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return {
@@ -1524,8 +1488,7 @@ async function rtHandleRemoveRule(
   `;
 
   const removedRuleTypeSlug = String(ruleRows[0].relationship_type_slug ?? '');
-  recordConfigChangeEvent({
-    organizationId: ctx.organizationId,
+  recordToolConfigChange(ctx, {
     resourceKind: 'relationship-type',
     resourceId: removedRuleTypeSlug || args.rule_id,
     op: 'updated',
@@ -1536,10 +1499,6 @@ async function rtHandleRemoveRule(
       rule_removed: args.rule_id,
     },
     changedFields: ['rules'],
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return {

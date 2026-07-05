@@ -5,45 +5,14 @@
  * resolved to plaintext — so every state snapshot is passed through here
  * before it is persisted into `events.payload_data`.
  *
- * Redacted values are replaced with REDACTED_SENTINEL (not dropped): the
- * future `lobu apply --from-revision` fold uses the sentinel to know which
- * paths the CLI must re-resolve from the local environment.
+ * The denylist walk and sentinel live in @lobu/core (`secret-redaction`),
+ * shared with the CLI's manifest hashing; this module adds the per-kind
+ * rules that only the server needs.
  */
 
-export const REDACTED_SENTINEL = '__LOBU_REDACTED__';
+import { deepRedactSecrets, REDACTED_SENTINEL } from '@lobu/core';
 
-/**
- * Key-name denylist applied on a deep walk of every snapshot. Matches the
- * whole key or a `_`-separated suffix, singular or plural, any case:
- * `token`, `apiKey`, `api_key`, `refresh_tokens`, `clientSecret`, ...
- */
-const SECRET_KEY_RE =
-  /(^|_)(token|secret|password|api_?key|credential|private_?key|refresh_?token|access_?token)s?$/i;
-
-/** camelCase → snake_case so `apiKey`/`privateKey` hit the `_`-anchored regex. */
-function normalizeKey(key: string): string {
-  return key.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
-}
-
-function isSecretKey(key: string): boolean {
-  return SECRET_KEY_RE.test(normalizeKey(key));
-}
-
-function deepRedact(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(deepRedact);
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-      if (isSecretKey(key) && v != null) {
-        out[key] = REDACTED_SENTINEL;
-      } else {
-        out[key] = deepRedact(v);
-      }
-    }
-    return out;
-  }
-  return value;
-}
+export { REDACTED_SENTINEL };
 
 /**
  * Resource kinds for config-change events. Mirrors the CLI apply DiffRow
@@ -83,7 +52,7 @@ export function redactConfigState(
   if (state === null) return null;
   if (kind === 'provider-key') return null;
 
-  const redacted = deepRedact(state) as Record<string, unknown>;
+  const redacted = deepRedactSecrets(state) as Record<string, unknown>;
 
   if (kind === 'auth-profile' && redacted.credentials != null) {
     redacted.credentials = REDACTED_SENTINEL;

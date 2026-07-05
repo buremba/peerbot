@@ -9,10 +9,9 @@ import { ToolUserError } from '../../../utils/errors';
 import { nextRunAt, validateSchedule } from '../../../utils/cron';
 import {
   recordChangeEvent,
-  recordConfigChangeEvent,
   recordLifecycleEvent,
 } from '../../../utils/insert-event';
-import { deriveToolActorSource } from '../../../utils/apply-context';
+import { recordToolConfigChange } from '../helpers/config-audit';
 import logger from '../../../utils/logger';
 import { getOrganizationSlug, getPublicWebUrl, buildWatchersUrl } from '../../../utils/url-builder';
 import { toEntityInfo } from '../../view-urls';
@@ -274,7 +273,7 @@ export async function handleCreate(
       extra: { slug: args.slug, agent_id: args.agent_id ?? null },
     });
 
-    recordConfigChangeEvent({
+    recordToolConfigChange(ctx, {
       organizationId,
       resourceKind: 'watcher',
       resourceId: watcherId,
@@ -308,10 +307,6 @@ export async function handleCreate(
         classifiers: classifiers ?? null,
         reactions_guidance: args.reactions_guidance ?? null,
       },
-      applyId: ctx.applyId ?? null,
-      actorSource: deriveToolActorSource(ctx),
-      createdBy: ctx.userId ?? null,
-      clientId: ctx.clientId ?? null,
     });
   }
 
@@ -422,7 +417,7 @@ export async function handleUpdate(
   logger.info(`[manage_watchers] Updated watcher ${args.watcher_id}: ${updatedFields.join(', ')}`);
 
   const updatedRow = (updatedRows[0] ?? null) as Record<string, unknown> | null;
-  recordConfigChangeEvent({
+  recordToolConfigChange(ctx, {
     organizationId: (updatedRow?.organization_id as string | null) ?? ctx.organizationId,
     resourceKind: 'watcher',
     resourceId: args.watcher_id,
@@ -430,10 +425,6 @@ export async function handleUpdate(
     summary: `Watcher '${updatedRow?.name ?? args.watcher_id}' updated`,
     state: updatedRow,
     changedFields: updatedFields,
-    applyId: ctx.applyId ?? null,
-    actorSource: deriveToolActorSource(ctx),
-    createdBy: ctx.userId ?? null,
-    clientId: ctx.clientId ?? null,
   });
 
   return {
@@ -505,17 +496,13 @@ export async function handleDelete(
             summary: `Watcher "${watcher.name || watcherId}" archived`,
           });
 
-          recordConfigChangeEvent({
+          recordToolConfigChange(ctx, {
             organizationId: watcher.organization_id as string,
             resourceKind: 'watcher',
             resourceId: watcherId,
             op: 'deleted',
             summary: `Watcher '${watcher.name || watcherId}' archived`,
             state: null,
-            applyId: ctx.applyId ?? null,
-            actorSource: deriveToolActorSource(ctx),
-            createdBy: ctx.userId ?? null,
-            clientId: ctx.clientId ?? null,
           });
         }
 
@@ -661,7 +648,7 @@ export async function handleCreateFromVersion(
       extra: { slug: watcherSlug, via: 'create_from_version' },
     });
 
-    recordConfigChangeEvent({
+    recordToolConfigChange(ctx, {
       organizationId,
       resourceKind: 'watcher',
       resourceId: watcherId,
@@ -688,10 +675,6 @@ export async function handleCreateFromVersion(
         classifiers: version.classifiers ?? null,
         reactions_guidance: version.reactions_guidance ?? null,
       },
-      applyId: ctx.applyId ?? null,
-      actorSource: deriveToolActorSource(ctx),
-      createdBy: ctx.userId ?? null,
-      clientId: ctx.clientId ?? null,
     });
   }
 

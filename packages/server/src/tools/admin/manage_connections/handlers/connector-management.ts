@@ -7,10 +7,9 @@
 
 import { getErrorMessage } from "@lobu/core";
 import { getDb } from "../../../../db/client";
-import { deriveToolActorSource } from "../../../../utils/apply-context";
+import { recordToolConfigChange } from "../../helpers/config-audit";
 import { normalizeAuthValues } from "../../../../utils/auth-profiles";
 import { applyEntityLinkOverrides } from "../../../../utils/entity-link-validation";
-import { recordConfigChangeEvent } from "../../../../utils/insert-event";
 import logger from "../../../../utils/logger";
 import type { ToolContext } from "../../../registry";
 import {
@@ -59,8 +58,7 @@ export async function handleInstallConnector(
 			if (err) return { error: err };
 		}
 
-		recordConfigChangeEvent({
-			organizationId: ctx.organizationId,
+		recordToolConfigChange(ctx, {
 			resourceKind: "connector-definition",
 			resourceId: installed.connectorKey,
 			op: installed.updated ? "updated" : "created",
@@ -75,10 +73,6 @@ export async function handleInstallConnector(
 				...(args.source_url ? { source_url: args.source_url } : {}),
 				...(args.source_uri ? { source_uri: args.source_uri } : {}),
 			},
-			applyId: ctx.applyId ?? null,
-			actorSource: deriveToolActorSource(ctx),
-			createdBy: ctx.userId ?? null,
-			clientId: ctx.clientId ?? null,
 		});
 
 		return {
@@ -119,17 +113,12 @@ export async function handleUninstallConnector(
 		return { error: getErrorMessage(error) };
 	}
 
-	recordConfigChangeEvent({
-		organizationId: ctx.organizationId,
+	recordToolConfigChange(ctx, {
 		resourceKind: "connector-definition",
 		resourceId: args.connector_key,
 		op: "deleted",
 		summary: `Connector '${args.connector_key}' uninstalled`,
 		state: null,
-		applyId: ctx.applyId ?? null,
-		actorSource: deriveToolActorSource(ctx),
-		createdBy: ctx.userId ?? null,
-		clientId: ctx.clientId ?? null,
 	});
 
 	return {
@@ -168,6 +157,15 @@ export async function handleToggleConnectorLogin(
 			{ connector_key: args.connector_key, login_enabled: args.enabled },
 			"Connector login provider toggled",
 		);
+
+		recordToolConfigChange(ctx, {
+			resourceKind: "connector-definition",
+			resourceId: args.connector_key,
+			op: "updated",
+			summary: `Connector '${args.connector_key}' login provider ${args.enabled ? "enabled" : "disabled"}`,
+			state: { connector_key: args.connector_key, login_enabled: args.enabled },
+			changedFields: ["login_enabled"],
+		});
 
 		return {
 			action: "toggle_connector_login",
@@ -230,6 +228,17 @@ export async function handleUpdateConnectorAuth(
 		"Connector auth profiles updated",
 	);
 
+	// Metadata-only (state null): auth values are secret material, and the
+	// key NAMES alone already say which credentials were rotated.
+	recordToolConfigChange(ctx, {
+		resourceKind: "connector-definition",
+		resourceId: args.connector_key,
+		op: "updated",
+		summary: `Connector '${args.connector_key}' auth updated (${Object.keys(authValues).join(", ")})`,
+		state: null,
+		changedFields: ["auth_profiles"],
+	});
+
 	return {
 		action: "update_connector_auth",
 		success: true,
@@ -256,6 +265,18 @@ export async function handleUpdateConnectorDefaultConfig(
 	if (!updated) {
 		return { error: `Connector '${args.connector_key}' not found` };
 	}
+
+	recordToolConfigChange(ctx, {
+		resourceKind: "connector-definition",
+		resourceId: args.connector_key,
+		op: "updated",
+		summary: `Connector '${args.connector_key}' default connection config updated`,
+		state: {
+			connector_key: args.connector_key,
+			default_connection_config: args.default_connection_config,
+		},
+		changedFields: ["default_connection_config"],
+	});
 
 	return {
 		action: "update_connector_default_config",
@@ -286,6 +307,18 @@ export async function handleUpdateConnectorDefaultRepairAgent(
 		return { error: `Connector '${args.connector_key}' not found` };
 	}
 
+	recordToolConfigChange(ctx, {
+		resourceKind: "connector-definition",
+		resourceId: args.connector_key,
+		op: "updated",
+		summary: `Connector '${args.connector_key}' default repair agent updated`,
+		state: {
+			connector_key: args.connector_key,
+			default_repair_agent_id: args.default_repair_agent_id,
+		},
+		changedFields: ["default_repair_agent_id"],
+	});
+
 	return {
 		action: "update_connector_default_repair_agent",
 		success: true,
@@ -311,6 +344,21 @@ export async function handleSetConnectorEntityLinkOverrides(
 		args.overrides,
 	);
 	if (err) return { error: err };
+
+	recordToolConfigChange(ctx, {
+		resourceKind: "connector-definition",
+		resourceId: args.connector_key,
+		op: "updated",
+		summary: `Connector '${args.connector_key}' entity link overrides updated`,
+		state: {
+			connector_key: args.connector_key,
+			entity_link_overrides: (args.overrides ?? null) as Record<
+				string,
+				unknown
+			> | null,
+		},
+		changedFields: ["entity_link_overrides"],
+	});
 
 	return {
 		action: "set_connector_entity_link_overrides",

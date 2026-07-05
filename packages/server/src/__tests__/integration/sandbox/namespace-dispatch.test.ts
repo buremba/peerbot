@@ -85,6 +85,22 @@ describe("ClientSDK namespace dispatch (read paths)", () => {
 		await expect(sdk.feeds.list()).resolves.toBeDefined();
 	});
 
+	it("feeds.readMany dispatches cleanly with per-feed failures", async () => {
+		const out = (await sdk.feeds.readMany({
+			feed_ids: [999_999_999],
+			limit: 1,
+		})) as {
+			action: string;
+			failures: number;
+			results: Array<{ feed_id: number; ok: boolean; error?: string }>;
+		};
+		expect(out).toMatchObject({
+			action: "read_feeds",
+			failures: 1,
+			results: [{ feed_id: 999_999_999, ok: false, error: "Feed not found" }],
+		});
+	});
+
 	it("authProfiles.list dispatches cleanly", async () => {
 		await expect(sdk.authProfiles.list()).resolves.toBeDefined();
 	});

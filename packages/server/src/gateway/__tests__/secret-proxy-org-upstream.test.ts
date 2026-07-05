@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { SecretStore } from "../secrets/index.js";
 
 /**
@@ -14,6 +14,12 @@ import type { SecretStore } from "../secrets/index.js";
  * exercises the full secret-proxy egress path.
  */
 
+let inferenceConfig: {
+  baseUrl?: string;
+  apiKey?: string;
+  custom: boolean;
+};
+
 // Custom upstream + usable org key ⇒ resolveUrlInvariant returns org-only.
 // Spread the real module so secret-proxy's other imports from it (e.g.
 // readOrgSharedProviderApiKey) still resolve; override only the resolver.
@@ -22,11 +28,7 @@ const realProviderSecrets = await import(
 );
 mock.module("../../lobu/stores/provider-secrets.js", () => ({
   ...realProviderSecrets,
-  resolveInferenceProviderConfig: async () => ({
-    baseUrl: "https://myzai.example.com/v1",
-    apiKey: "org-myzai-key",
-    custom: true,
-  }),
+  resolveInferenceProviderConfig: async () => inferenceConfig,
 }));
 
 // Import AFTER the mock so secret-proxy's transitive import of the invariant
@@ -34,6 +36,14 @@ mock.module("../../lobu/stores/provider-secrets.js", () => ({
 const { SecretProxy } = await import("../proxy/secret-proxy.js");
 
 describe("SecretProxy — org custom-upstream slug routing (URL invariant)", () => {
+  beforeEach(() => {
+    inferenceConfig = {
+      baseUrl: "https://myzai.example.com/v1",
+      apiKey: "org-myzai-key",
+      custom: true,
+    };
+  });
+
   test("registered org slug routes to the row base_url with the org key", async () => {
     const proxy = new SecretProxy(
       { defaultUpstreamUrl: "https://default.example.com" },
@@ -90,6 +100,62 @@ describe("SecretProxy — org custom-upstream slug routing (URL invariant)", () 
       );
       // Authenticated with the org row's key (Bearer for openai-compat).
       expect(capturedAuth).toBe("Bearer org-myzai-key");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("catalog upstream uses the inference-provider row key", async () => {
+    inferenceConfig = {
+      apiKey: "org-zai-key",
+      custom: false,
+    };
+    const proxy = new SecretProxy(
+      { defaultUpstreamUrl: "https://default.example.com" },
+      { get: async () => null } satisfies SecretStore
+    );
+    proxy.registerUpstream(
+      { slug: "z-ai", upstreamBaseUrl: "https://api.z.ai/api/paas/v4" },
+      "z-ai"
+    );
+    proxy.setAuthProfilesManager({
+      getBestProfile: async () => {
+        throw new Error("profile lookup must not run when the org row has a key");
+      },
+      ensureFreshCredential: async () => undefined,
+    } as never);
+    proxy.setAgentOrgResolver(async () => "org-1");
+
+    let capturedUrl: string | null = null;
+    let capturedAuth: string | null = null;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      capturedUrl = typeof input === "string" ? input : String(input);
+      capturedAuth =
+        (init?.headers as Record<string, string>)?.authorization ?? null;
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    try {
+      const res = await proxy
+        .getApp()
+        .request("/api/proxy/z-ai/a/agent-1/chat/completions", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer worker-token-test",
+          },
+          body: JSON.stringify({ model: "glm-5.2", prompt: "hi" }),
+        });
+
+      expect(res.status).toBe(200);
+      expect(capturedUrl).toBe(
+        "https://api.z.ai/api/paas/v4/chat/completions"
+      );
+      expect(capturedAuth).toBe("Bearer org-zai-key");
     } finally {
       globalThis.fetch = originalFetch;
     }

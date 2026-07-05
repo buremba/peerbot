@@ -15,8 +15,9 @@ const logger = createLogger("inference-invariant");
  * NEVER travel to a tenant-defined URL (credential exfiltration).
  *
  * So: custom upstream present ⇒ org-row-key-ONLY (skip profile, skip env).
- * No custom upstream ⇒ the caller walks its normal profile→org→env chain
- * against the static providers.json URL (unchanged).
+ * A row using the static catalog upstream still owns a valid org credential;
+ * use it before the legacy profile→org→env chain. If that row has no usable
+ * key, the static URL remains safe for the normal fallback chain.
  *
  * The row is read ONCE per call — base_url presence and the key come from the
  * same read — so there is no window to flip the base_url between the gate and
@@ -27,8 +28,10 @@ const logger = createLogger("inference-invariant");
  * So the invariant here keys on `capabilities.text.base_url`.
  */
 export type InvariantVerdict =
-  /** No custom upstream for this provider/org — caller walks its normal chain. */
+  /** No inference-provider key/upstream override — caller walks its normal chain. */
   | { kind: "no-custom-upstream" }
+  /** Org-row key for the static catalog upstream. */
+  | { kind: "org-credential"; credential: string }
   /**
    * Custom upstream + usable org key. The caller MUST use this key and nothing
    * else, AND route to `baseUrl` (the tenant-defined URL) — never the static
@@ -56,10 +59,19 @@ export async function resolveUrlInvariant(
     providerSlug,
     "text"
   );
-  if (!config?.custom || !config.baseUrl) {
-    // No custom text upstream — the request goes to the static providers.json
-    // URL, so the normal profile→org→env chain is safe.
+  if (!config) {
     return { kind: "no-custom-upstream" };
+  }
+
+  if (!config.custom || !config.baseUrl) {
+    // The org can store a key while keeping the catalog provider's static URL
+    // (the common setup for providers such as Z.AI). That row key is still the
+    // org's configured credential and must not be ignored. A missing key may
+    // safely fall through because the destination remains the trusted catalog
+    // URL rather than a tenant-defined upstream.
+    return config.apiKey
+      ? { kind: "org-credential", credential: config.apiKey }
+      : { kind: "no-custom-upstream" };
   }
 
   if (!config.apiKey) {

@@ -9,7 +9,7 @@ const TEST_ENCRYPTION_KEY = Buffer.from(
 let mockOrgId: string | null = null;
 let orgSharedSecretRows: Array<{ ciphertext: string }> = [];
 let inferenceProviderRows: Array<{
-  block: { base_url?: string } | null;
+  block: { base_url?: string; model?: string } | null;
   ciphertext: string | null;
 }> = [];
 
@@ -50,6 +50,7 @@ function makeModule(hasProfile: boolean) {
     sdkCompat: "openai",
     authProfilesManager: {
       hasProviderProfiles: async () => hasProfile,
+      getBestProfile: async () => null,
     } as any,
   });
 }
@@ -106,6 +107,23 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     expect(
       await mod.hasCredentials("agent-1", { organizationId: "org-1" })
     ).toBe(true);
+  });
+
+  test("uses the org inference-provider key with the catalog upstream", async () => {
+    mockOrgId = "org-1";
+    inferenceProviderRows = [
+      {
+        block: { model: "glm-5.2" },
+        ciphertext: encrypt("zai-inference-provider-key"),
+      },
+    ];
+
+    const mod = makeModule(false);
+    const context = { organizationId: "org-1" };
+    expect(await mod.hasCredentials("agent-1", context)).toBe(true);
+    expect(await mod.buildEnvVars("agent-1", {}, context)).toEqual({
+      Z_AI_API_KEY: "zai-inference-provider-key",
+    });
   });
 
   test("returns false when a custom upstream has no usable org key, even with a profile", async () => {

@@ -883,6 +883,9 @@ export class SecretProxy {
           resolvedCredential = { value: invariant.credential, kind: "api-key" };
           // Route to the tenant-defined URL from the SAME row read as the key.
           resolvedUpstreamBaseUrl = invariant.baseUrl;
+        } else if (invariant.kind === "org-credential") {
+          // The org row owns the credential but keeps the trusted catalog URL.
+          resolvedCredential = { value: invariant.credential, kind: "api-key" };
         } else if (invariant.kind === "org-only-unavailable") {
           // Custom upstream but no usable org key: fail CLOSED, never fall
           // through to a profile/env key bound for a tenant URL.

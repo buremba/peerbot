@@ -36,8 +36,17 @@ describe("resolveUrlInvariant", () => {
     expect(v.kind).toBe("no-custom-upstream");
   });
 
-  test("text block without base_url ⇒ no-custom-upstream", async () => {
+  test("text block without base_url uses its org credential with the catalog upstream", async () => {
     configResult = { apiKey: "org-key", custom: false };
+    const v = await resolveUrlInvariant("openai", "org-1");
+    expect(v.kind).toBe("org-credential");
+    if (v.kind === "org-credential") {
+      expect(v.credential).toBe("org-key");
+    }
+  });
+
+  test("text block without base_url and without a key falls through safely", async () => {
+    configResult = { custom: false };
     const v = await resolveUrlInvariant("openai", "org-1");
     expect(v.kind).toBe("no-custom-upstream");
   });

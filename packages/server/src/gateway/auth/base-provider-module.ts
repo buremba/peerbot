@@ -170,18 +170,24 @@ export abstract class BaseProviderModule
     context?: ProviderCredentialContext
   ): Promise<boolean> {
     // Keep this availability check aligned with resolveCredential(). An org
-    // inference-provider row can own both a custom upstream and its key; that
-    // key is intentionally absent from per-agent auth profiles and the legacy
-    // org-shared provider secret. Treat it as available so proxy-mode workers
-    // receive an opaque credential placeholder and can reach the gateway,
-    // where the URL invariant resolves the real key at egress. Conversely, a
-    // custom upstream with an unavailable key must fail closed even when a
-    // profile exists, because that profile is not consented for the custom URL.
+    // inference-provider row owns its key whether it uses the catalog URL or a
+    // custom upstream; that key is intentionally absent from per-agent auth
+    // profiles and the legacy org-shared provider secret. Treat it as available
+    // so proxy-mode workers receive an opaque credential placeholder and can
+    // reach the gateway, where the invariant resolves the real key at egress.
+    // Conversely, a custom upstream with an unavailable key must fail closed
+    // even when a profile exists, because that profile is not consented for the
+    // custom URL.
     const invariant = await resolveUrlInvariant(
       this.providerId,
       resolveOrgId(context?.organizationId) ?? undefined
     );
-    if (invariant.kind === "org-only") return true;
+    if (
+      invariant.kind === "org-only" ||
+      invariant.kind === "org-credential"
+    ) {
+      return true;
+    }
     if (invariant.kind === "org-only-unavailable") return false;
 
     const hasProfile = await this.authProfilesManager.hasProviderProfiles(
@@ -285,7 +291,10 @@ export abstract class BaseProviderModule
       this.providerId,
       resolveOrgId(context?.organizationId) ?? undefined
     );
-    if (invariant.kind === "org-only") {
+    if (
+      invariant.kind === "org-only" ||
+      invariant.kind === "org-credential"
+    ) {
       return { credential: invariant.credential, source: "org" };
     }
     if (invariant.kind === "org-only-unavailable") {

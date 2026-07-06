@@ -33,7 +33,6 @@
  * this runs, so any failure is logged and surfaced in the result, never thrown.
  */
 
-import { IDENTITY } from "@lobu/connector-sdk";
 import { getDb } from "../../../db/client.js";
 import { createLogger } from "@lobu/core";
 import { resolveEntityLinksForItems } from "../../../utils/entity-link-upsert.js";
@@ -42,6 +41,8 @@ const logger = createLogger("github-team-graph");
 
 const GITHUB_CONNECTOR_KEY = "github";
 const MEMBER_OF_TYPE_SLUG = "member_of";
+const GITHUB_LOGIN_NS = "github_login";
+const GITHUB_USER_ID_NS = "github_user_id";
 
 /** A GitHub org member as the org-members API reports it. */
 export interface GithubOrgMember {
@@ -176,11 +177,11 @@ async function ensureOrgCompany(params: {
 					identities: [
 						// PRIMARY: the org's immutable numeric id is authoritative (rename-safe).
 						{
-							namespace: IDENTITY.GITHUB_USER_ID,
+							namespace: GITHUB_USER_ID_NS,
 							eventPath: "metadata.org_id",
 							primary: true,
 						},
-						{ namespace: IDENTITY.GITHUB_LOGIN, eventPath: "metadata.org_login" },
+						{ namespace: GITHUB_LOGIN_NS, eventPath: "metadata.org_login" },
 					],
 					traits: {
 						github_login: {
@@ -273,11 +274,11 @@ export async function buildGithubTeamGraph(params: {
 					identities: [
 						// PRIMARY: immutable id governs resolution when present (rename-safe).
 						{
-							namespace: IDENTITY.GITHUB_USER_ID,
+							namespace: GITHUB_USER_ID_NS,
 							eventPath: "metadata.author_id",
 							primary: true,
 						},
-						{ namespace: IDENTITY.GITHUB_LOGIN, eventPath: "metadata.author_login" },
+						{ namespace: GITHUB_LOGIN_NS, eventPath: "metadata.author_login" },
 					],
 					traits: {
 						github_login: {

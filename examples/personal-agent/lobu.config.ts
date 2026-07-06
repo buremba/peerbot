@@ -64,7 +64,8 @@ const person = defineEntityType({
       by: "alias",
       field: "metadata->>'author_handle'",
       against: "aliases",
-      where: "connector_key='x' AND origin_type IN ('tweet','reply','liked_tweet','bookmark')",
+      where:
+        "connector_key='x' AND origin_type IN ('tweet','reply','liked_tweet','bookmark')",
     },
     x_dms: {
       by: "alias",

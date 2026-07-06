@@ -32,7 +32,6 @@ import {
 	type ConnectorDefinition,
 	type EntityLinkRule,
 	ConnectorRuntime,
-	IDENTITY,
 	calculateEngagementScore,
 	createHttpClient,
 	type EventEnvelope,
@@ -44,6 +43,19 @@ import {
 	type SyncContext,
 	type SyncResult,
 } from "@lobu/connector-sdk";
+
+/** Connector-owned identity namespaces for the person graph (not SDK-global). */
+const X_IDENTITY = {
+	USER_ID: "x_user_id",
+	HANDLE: "x_handle",
+} as const;
+
+function normalizeXHandle(raw: string | undefined | null): string | undefined {
+	if (!raw) return undefined;
+	const trimmed = raw.trim().replace(/^@+/, "").toLowerCase();
+	if (!trimmed || !/^[a-z0-9_]{1,15}$/.test(trimmed)) return undefined;
+	return trimmed;
+}
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -156,11 +168,11 @@ const X_PERSON_AUTHOR_LINK: EntityLinkRule = {
 	titlePath: "metadata.author_name",
 	identities: [
 		{
-			namespace: IDENTITY.X_USER_ID,
+			namespace: X_IDENTITY.USER_ID,
 			eventPath: "metadata.author_id",
 			primary: true,
 		},
-		{ namespace: IDENTITY.X_HANDLE, eventPath: "metadata.author_handle" },
+		{ namespace: X_IDENTITY.HANDLE, eventPath: "metadata.author_handle" },
 	],
 	traits: {
 		x_handle: {
@@ -186,12 +198,12 @@ const X_PERSON_DM_COUNTERPARTY_LINK: EntityLinkRule = {
 	titlePath: "metadata.participant_name",
 	identities: [
 		{
-			namespace: IDENTITY.X_USER_ID,
+			namespace: X_IDENTITY.USER_ID,
 			eventPath: "metadata.participant_id",
 			primary: true,
 		},
 		{
-			namespace: IDENTITY.X_HANDLE,
+			namespace: X_IDENTITY.HANDLE,
 			eventPath: "metadata.participant_handle",
 		},
 	],
@@ -544,7 +556,9 @@ function tweetToEvent(tweet: XTweet, originType?: string): EventEnvelope {
 			is_reply: tweet.isReply,
 			is_quote: tweet.isQuote,
 			...(tweet.authorId ? { author_id: tweet.authorId } : {}),
-			...(tweet.username ? { author_handle: tweet.username } : {}),
+			...(tweet.username
+				? { author_handle: normalizeXHandle(tweet.username) ?? tweet.username }
+				: {}),
 			...(tweet.authorDisplayName
 				? { author_name: tweet.authorDisplayName }
 				: {}),

@@ -5,8 +5,10 @@
  * Org-scoped via the caller's resolved install; resolution never crosses orgs.
  */
 
-import { IDENTITY } from "@lobu/connector-sdk";
 import type { DbClient } from "../../../db/client.js";
+
+const GITHUB_LOGIN_NS = "github_login";
+const GITHUB_USER_ID_NS = "github_user_id";
 import {
 	loadEntityLinkRuleByType,
 	resolveEntityLinksForItems,
@@ -146,7 +148,7 @@ export async function resolveGithubWebhookActor(params: {
 	// resolveEntityLinksForItems stamped the canonical namespace slots onto
 	// item.metadata; forward only those onto the landed row.
 	const metadata: Record<string, string> = {};
-	for (const ns of [IDENTITY.GITHUB_LOGIN, IDENTITY.GITHUB_USER_ID]) {
+	for (const ns of [GITHUB_LOGIN_NS, GITHUB_USER_ID_NS]) {
 		const value = item.metadata[ns];
 		if (typeof value === "string" && value.length > 0) metadata[ns] = value;
 	}

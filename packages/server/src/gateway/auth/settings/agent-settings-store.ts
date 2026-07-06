@@ -5,6 +5,7 @@ import {
   type AuthProfile,
   createLogger,
 } from "@lobu/core";
+import { orgContext } from "../../../lobu/stores/org-context.js";
 import type { DeclaredAgentRegistry } from "../../services/declared-agent-registry.js";
 
 // Re-export so existing imports from this module keep working.
@@ -69,10 +70,18 @@ export class AgentSettingsStore {
     this.declaredAgents = registry;
   }
 
-  async getSettings(agentId: string): Promise<AgentSettings | null> {
+  async getSettings(
+    agentId: string,
+    context?: { organizationId?: string }
+  ): Promise<AgentSettings | null> {
     const declared = this.declaredAgents?.get(agentId);
     if (declared) {
       return declared.settings as AgentSettings;
+    }
+    if (context?.organizationId) {
+      return orgContext.run({ organizationId: context.organizationId }, () =>
+        this.configStore.getSettings(agentId)
+      );
     }
     return this.configStore.getSettings(agentId);
   }

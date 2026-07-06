@@ -595,7 +595,9 @@ export class WorkerGateway {
       // Resolve dynamic provider configuration
       const agentSettings =
         this.agentSettingsStore && agentId
-          ? await this.agentSettingsStore.getSettings(agentId)
+          ? await this.agentSettingsStore.getSettings(agentId, {
+              organizationId: auth.tokenData.organizationId,
+            })
           : null;
       const providerConfig = await this.resolveProviderConfig(
         agentId || "",
@@ -616,7 +618,9 @@ export class WorkerGateway {
       if (this.agentSettingsStore && agentId) {
         try {
           const settings =
-            await this.agentSettingsStore.getSettings(agentId);
+            await this.agentSettingsStore.getSettings(agentId, {
+              organizationId: auth.tokenData.organizationId,
+            });
           const skills = settings?.skillsConfig?.skills || [];
           skillsConfig = skills
             .filter((s) => s.enabled && s.content)
@@ -910,7 +914,7 @@ export class WorkerGateway {
     for (const provider of effectiveProviders) {
       if (
         provider.hasSystemKey() ||
-        (await provider.hasCredentials(agentId, { organizationId }))
+        (await provider.hasCredentials(agentId, { organizationId, userId }))
       ) {
         const credVar = provider.getCredentialEnvVarName();
         const placeholder = provider.buildCredentialPlaceholder

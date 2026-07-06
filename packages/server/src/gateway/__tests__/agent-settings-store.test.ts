@@ -27,6 +27,28 @@ describe("AgentSettingsStore", () => {
   }
 
   describe("CRUD basics", () => {
+    test("getSettings uses explicit organization context when agent ids collide", async () => {
+      const otherOrg = `${ORG_ID}-other`;
+      await orgContext.run({ organizationId: ORG_ID }, async () => {
+        await seedAgentRow("shared-agent", { organizationId: ORG_ID });
+        await store.saveSettings("shared-agent", {
+          defaultModel: "openai/gpt-4o-mini",
+        });
+      });
+      await orgContext.run({ organizationId: otherOrg }, async () => {
+        await seedAgentRow("shared-agent", { organizationId: otherOrg });
+        await store.saveSettings("shared-agent", {
+          defaultModel: "z-ai/glm-5.2",
+        });
+      });
+
+      const settings = await store.getSettings("shared-agent", {
+        organizationId: ORG_ID,
+      });
+
+      expect(settings?.defaultModel).toBe("openai/gpt-4o-mini");
+    });
+
     test("saveSettings stores and getSettings retrieves", async () => {
       await withOrg(async () => {
         await seedAgentRow("agent-1", { organizationId: ORG_ID });

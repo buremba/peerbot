@@ -11,6 +11,7 @@
 
 import dotenv from 'dotenv';
 import * as Sentry from '@sentry/node';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 // .env is the single source of truth for secrets. This module reads SENTRY_DSN
 // (and ENVIRONMENT / SENTRY_RELEASE) at load time and is imported before any
@@ -55,4 +56,50 @@ if (dsn) {
     // LOBU-36.)
     integrations: (defaults) => defaults.filter((i) => i.name !== 'NodeSystemError'),
   });
+}
+
+// ── Event-loop stall detector ────────────────────────────────────────────────
+// The "worker stopped responding" incident was a ~70s event-loop freeze that we
+// could only reverse-engineer from gaps in the ping/`/health` logs — there was
+// no instrumentation to TAG the stall with its real duration or cause. This
+// closes that gap: a native perf_hooks delay monitor whose `max` we sample
+// periodically. A hard synchronous block stops the sampling timer too, so the
+// tick that fires AFTER the block sees the accumulated `max` — that's the stall
+// duration. On a stall past the threshold we log loudly and (if Sentry is
+// configured) capture a tagged message so the next freeze names itself instead
+// of being reconstructed from ping gaps. Zero new deps; the timer is unref'd so
+// it never keeps the process alive.
+{
+  const thresholdMs = Number.parseInt(
+    process.env.LOBU_EVENT_LOOP_STALL_MS || '2000',
+    10
+  );
+  const h = monitorEventLoopDelay({ resolution: 20 });
+  h.enable();
+  const timer = setInterval(() => {
+    const maxMs = h.max / 1e6; // nanoseconds → ms
+    if (maxMs >= thresholdMs) {
+      const rounded = Math.round(maxMs);
+      // Loud log so it's visible in pod logs even without Sentry.
+      console.error(
+        `[event-loop] STALL detected: loop blocked ~${rounded}ms ` +
+          `(threshold ${thresholdMs}ms). The loop could not run timers/IO for ` +
+          `this long — a synchronous block, GC pause, or CPU starvation.`
+      );
+      if (dsn) {
+        Sentry.captureMessage(`Event loop stalled ~${rounded}ms`, {
+          level: 'warning',
+          tags: { subsystem: 'event-loop', stall: 'true' },
+          extra: {
+            stallMs: rounded,
+            thresholdMs,
+            p99Ms: Math.round(h.percentile(99) / 1e6),
+            meanMs: Math.round(h.mean / 1e6),
+          },
+        });
+      }
+    }
+    h.reset(); // reset the window so each tick reports only the latest interval
+  }, 1000);
+  timer.unref();
 }

@@ -26,11 +26,16 @@ app:
 
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      # The app pod embeds the orchestrator AND spawns agent-worker subprocesses
+      # in-pod, so this container does far more than serve HTTP — yet it was
+      # capped at 1 core (the connector worker, which does comparable work, gets
+      # 2-4). Under-resourced regardless of the exact stall mechanism; give the
+      # event loop real headroom. Request stays modest so it isn't over-reserved.
+      cpu: 500m
+      memory: 512Mi
     limits:
-      cpu: 1000m
-      memory: 1Gi
+      cpu: 3000m
+      memory: 2Gi
 
   # Non-secret environment variables
   env:

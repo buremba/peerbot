@@ -1180,6 +1180,11 @@ export interface ContentItem {
   interaction_output?: Record<string, unknown> | null;
   interaction_error?: string | null;
   supersedes_event_id?: number | null;
+  /** The run this event belongs to, when it originated from one (operation
+   *  chains, approval notifications). Lets the client group a run's satellite
+   *  events (the "needs approval" notification) onto the same timeline node as
+   *  its operation chain, and surface a "Run #N" identity. */
+  run_id?: number | null;
   /** Entity display info (only present in some responses) */
   entity_name?: string;
   entity_type?: string;

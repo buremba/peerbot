@@ -148,6 +148,7 @@ export interface ContentRow {
   interaction_output?: Record<string, unknown> | null;
   interaction_error?: string | null;
   supersedes_event_id?: number | null;
+  run_id?: number | string | null;
   parent_context?: Record<string, unknown> | null;
   root_context?: Record<string, unknown> | null;
   client_name?: string | null;

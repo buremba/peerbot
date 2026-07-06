@@ -73,6 +73,7 @@ function buildContentQuery(opts: {
       ${a}.interaction_output,
       ${a}.interaction_error,
       ${a}.supersedes_event_id,
+      ${a}.run_id,
       oc.client_name,
       -- classifications was sourced from latest_event_classifications, a denormalized cache that was
       -- never populated (no writer) — so this field has always been '{}'. Kept empty for response-shape

@@ -172,6 +172,7 @@ export async function buildContentItems(opts: {
         : undefined,
       interaction_error: f.interaction_error ?? undefined,
       supersedes_event_id: f.supersedes_event_id == null ? null : Number(f.supersedes_event_id),
+      run_id: f.run_id == null ? null : Number(f.run_id),
       parent_context:
         parentContextMap.get(f.origin_parent_id as string) ??
         (f.parent_context as ContentItem['parent_context']) ??

@@ -892,13 +892,27 @@ async function handleGetRun(
   return { action: 'get_run', run: rows[0] };
 }
 
+/**
+ * The human who decided an approval. Threaded from the approve/reject handler
+ * (a web session — `ctx.userId` is the acting user) into every event of the
+ * post-decision chain (approved → completed/failed), so each state records who
+ * authorized it. `null` for system-driven supersessions with no acting user
+ * (e.g. a worker completing a device action it was told to run).
+ */
+export interface ApprovalReviewer {
+  userId: string;
+  /** Display name resolved at decision time; falls back to userId when unknown. */
+  name: string | null;
+}
+
 export async function supersedeActionEvent(
   runId: number,
   organizationId: string,
   status: string,
   title: string,
   content: string,
-  extraMetadata: Record<string, unknown> = {}
+  extraMetadata: Record<string, unknown> = {},
+  reviewer: ApprovalReviewer | null = null
 ): Promise<number | undefined> {
   const sql = getDb();
   const originalEvent = await sql`
@@ -913,6 +927,16 @@ export async function supersedeActionEvent(
   if (originalEvent.length === 0) return undefined;
 
   const orig = originalEvent[0] as any;
+  // Carry the reviewer forward. A decision (approve/reject) supplies one; the
+  // later system transitions (completed/failed) don't re-supply it, so inherit
+  // the reviewer already stamped on the prior state — the person who authorized
+  // the run owns its whole outcome in the audit trail.
+  const priorMetadata = (orig.metadata ?? {}) as Record<string, unknown>;
+  const reviewedById =
+    reviewer?.userId ?? (priorMetadata.reviewed_by_id as string | undefined) ?? null;
+  const reviewedByName =
+    reviewer?.name ?? (priorMetadata.reviewed_by_name as string | undefined) ?? null;
+
   const nextEvent = await insertEvent({
     entityIds: Array.isArray(orig.entity_ids) ? orig.entity_ids.map(Number) : [],
     organizationId,
@@ -943,9 +967,14 @@ export async function supersedeActionEvent(
         | undefined) ?? null,
     interactionError: (extraMetadata.error_message as string | undefined) ?? null,
     supersedesEventId: Number(orig.id),
+    // The durable identity (FK → user); set on the first decision event and
+    // preserved down the chain.
+    createdBy: reviewedById,
     metadata: {
-      ...(orig.metadata ?? {}),
+      ...priorMetadata,
       status,
+      ...(reviewedById ? { reviewed_by_id: reviewedById } : {}),
+      ...(reviewedByName ? { reviewed_by_name: reviewedByName } : {}),
       ...(extraMetadata.output ? { action_output: extraMetadata.output } : {}),
       ...(extraMetadata.error_message ? { error_message: extraMetadata.error_message } : {}),
       ...extraMetadata,
@@ -954,6 +983,19 @@ export async function supersedeActionEvent(
   });
 
   return Number(nextEvent.id);
+}
+
+/**
+ * Resolve the acting user's display name for the approval audit trail. Approvals
+ * are web-session only (`ctx.clientId` is rejected upstream), so `ctx.userId` is
+ * always a real human here; we still guard on null for safety.
+ */
+async function resolveReviewer(ctx: ToolContext): Promise<ApprovalReviewer | null> {
+  if (!ctx.userId) return null;
+  const rows = await getDb()<{ name: string | null }>`
+    SELECT name FROM "user" WHERE id = ${ctx.userId} LIMIT 1
+  `;
+  return { userId: ctx.userId, name: rows[0]?.name ?? null };
 }
 
 /**
@@ -1022,13 +1064,15 @@ async function tryApproveManageAgentsRun(
   if (!claimed) return null;
 
   const { proposal, requesterUserId } = claimed;
+  const reviewer = await resolveReviewer(ctx);
   await supersedeActionEvent(
     args.run_id,
     ctx.organizationId,
     'confirmed',
     `manage_agents.${proposal.action} — executing`,
     `Builder action confirmed: ${proposal.action} ${proposal.agent_id}`,
-    {}
+    {},
+    reviewer
   );
 
   try {
@@ -1049,7 +1093,8 @@ async function tryApproveManageAgentsRun(
       'completed',
       `manage_agents.${proposal.action} — completed`,
       `Builder action completed: ${proposal.action} ${proposal.agent_id}`,
-      { output: output as unknown as Record<string, unknown> }
+      { output: output as unknown as Record<string, unknown> },
+      reviewer
     );
     return {
       action: 'approve',
@@ -1070,7 +1115,8 @@ async function tryApproveManageAgentsRun(
       'failed',
       `manage_agents.${proposal.action} — failed`,
       `Builder action failed: ${proposal.action} ${proposal.agent_id} — ${errorMessage}`,
-      { error_message: errorMessage }
+      { error_message: errorMessage },
+      reviewer
     );
     return {
       action: 'approve',
@@ -1135,6 +1181,7 @@ async function tryApproveEntityFieldChangeRun(
   if (!claimed) return null;
   const { proposal } = claimed;
   const fieldList = Object.keys(proposal.fields).join(', ');
+  const reviewer = await resolveReviewer(ctx);
 
   await supersedeActionEvent(
     args.run_id,
@@ -1142,7 +1189,8 @@ async function tryApproveEntityFieldChangeRun(
     'confirmed',
     'entity_field_change — applying',
     `Field change confirmed: ${fieldList}`,
-    {}
+    {},
+    reviewer
   );
 
   try {
@@ -1165,7 +1213,8 @@ async function tryApproveEntityFieldChangeRun(
       'completed',
       allStale ? 'entity_field_change — skipped (stale)' : 'entity_field_change — completed',
       summary,
-      { output: result as unknown as Record<string, unknown> }
+      { output: result as unknown as Record<string, unknown> },
+      reviewer
     );
     return {
       action: 'approve',
@@ -1188,7 +1237,8 @@ async function tryApproveEntityFieldChangeRun(
       'failed',
       'entity_field_change — failed',
       `Field change failed: ${errorMessage}`,
-      { error_message: errorMessage }
+      { error_message: errorMessage },
+      reviewer
     );
     return { error: `Failed to apply field change: ${errorMessage}` };
   }
@@ -1211,13 +1261,15 @@ async function tryRejectEntityFieldChangeRun(
   );
   if (!claimed) return null;
   const fieldList = Object.keys(claimed.proposal.fields).join(', ');
+  const reviewer = await resolveReviewer(ctx);
   const eventId = await supersedeActionEvent(
     args.run_id,
     ctx.organizationId,
     'rejected',
     'entity_field_change — rejected',
     `Field change rejected: ${fieldList}${args.reason ? ` — ${args.reason}` : ''}`,
-    { reason }
+    { reason },
+    reviewer
   );
   return { action: 'reject', rejected: true, run_id: args.run_id, event_id: eventId };
 }
@@ -1305,13 +1357,15 @@ async function handleApprove(
     action_input: Record<string, unknown> | null;
   };
 
+  const reviewer = await resolveReviewer(ctx);
   const eventId = await supersedeActionEvent(
     args.run_id,
     ctx.organizationId,
     'confirmed',
     `${run.action_key} — executing`,
     `Operation confirmed: ${run.action_key} — waiting for execution`,
-    args.input ? { approved_input: args.input } : {}
+    args.input ? { approved_input: args.input } : {},
+    reviewer
   );
 
   if (resolved.operation.backend === 'local_action') {
@@ -1341,7 +1395,8 @@ async function handleApprove(
       'completed',
       `${run.action_key} — completed`,
       `Operation completed: ${run.action_key}`,
-      { output: result.output }
+      { output: result.output },
+      reviewer
     );
     return {
       action: 'approve',
@@ -1358,7 +1413,8 @@ async function handleApprove(
     'failed',
     `${run.action_key} — failed`,
     `Operation failed: ${run.action_key}${result.error_message ? ` — ${result.error_message}` : ''}`,
-    { error_message: result.error_message }
+    { error_message: result.error_message },
+    reviewer
   );
   return {
     action: 'approve',
@@ -1381,6 +1437,7 @@ async function handleReject(
 
   const sql = getDb();
   const reason = args.reason ?? 'Rejected by user';
+  const reviewer = await resolveReviewer(ctx);
 
   // Builder-gate run? Cancel it without touching the agents table.
   const claimedBuilder = await claimManageAgentsRun(
@@ -1396,7 +1453,8 @@ async function handleReject(
       'rejected',
       `manage_agents.${claimedBuilder.proposal.action} — rejected`,
       `Builder action rejected: ${claimedBuilder.proposal.action} ${claimedBuilder.proposal.agent_id}${args.reason ? ` — ${args.reason}` : ''}`,
-      { reason }
+      { reason },
+      reviewer
     );
     return { action: 'reject', rejected: true, run_id: args.run_id, event_id: eventId };
   }
@@ -1425,7 +1483,8 @@ async function handleReject(
     'rejected',
     `${operationKey} — rejected`,
     `Operation rejected: ${operationKey}${args.reason ? ` — ${args.reason}` : ''}`,
-    { reason }
+    { reason },
+    reviewer
   );
 
   return { action: 'reject', rejected: true, run_id: args.run_id, event_id: eventId };

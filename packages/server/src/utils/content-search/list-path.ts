@@ -297,6 +297,12 @@ export async function listContentInternal(
         `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = f.id AND iwf.window_id = $${baseParams.length})`
       );
     }
+    if (options.analyzed_by_watcher_id != null) {
+      baseParams.push(options.analyzed_by_watcher_id);
+      baseConditions.push(
+        `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = f.id AND iwf.watcher_id = $${baseParams.length})`
+      );
+    }
     if (options.engagement_min != null) {
       baseParams.push(options.engagement_min);
       baseConditions.push(`f.score >= $${baseParams.length}`);

@@ -26,6 +26,8 @@ export interface ContentSearchOptions {
    */
   visibility_scope?: { organizationId: string; userId: string | null };
   window_id?: number; // Filter by watcher window ID
+  /** Events linked in any window for this watcher (`watcher_window_events`). */
+  analyzed_by_watcher_id?: number;
   exclude_watcher_id?: number; // Exclude content already in any window for this watcher
   platform?: string;
   since?: string; // ISO date or relative ("7d", "30d")

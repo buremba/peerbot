@@ -280,6 +280,9 @@ async function getContentImpl(
         ...(args.engagement_min !== undefined && { engagement_min: args.engagement_min }),
         ...(args.engagement_max !== undefined && { engagement_max: args.engagement_max }),
         ...(args.window_id !== undefined && { window_id: args.window_id }),
+        ...(args.analyzed_by_watcher_id !== undefined && {
+          analyzed_by_watcher_id: args.analyzed_by_watcher_id,
+        }),
         ...(args.exclude_watcher_id !== undefined && {
           exclude_watcher_id: args.exclude_watcher_id,
         }),
@@ -311,8 +314,10 @@ async function getContentImpl(
         connection_ids: effectiveConnectionIds,
         feed_ids: args.feed_ids,
         run_ids: args.run_ids,
+        ...(args.agent_id && { agent_id: args.agent_id }),
         visibility_scope: visibilityScope,
         window_id: args.window_id,
+        analyzed_by_watcher_id: args.analyzed_by_watcher_id,
         exclude_watcher_id: args.exclude_watcher_id,
         platform: effectivePlatform,
         since: args.since,

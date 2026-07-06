@@ -48,6 +48,12 @@ export const GetContentSchema = Type.Object({
       description: 'Run IDs to filter by (events.run_id — the run that produced the event)',
     })
   ),
+  agent_id: Type.Optional(
+    Type.String({
+      description:
+        'Limit results to memory written by this agent. Filters events where metadata.agent_id matches.',
+    })
+  ),
   platforms: Type.Optional(
     Type.Array(Type.String(), {
       description: 'Platform types to filter by (reddit, trustpilot, etc.)',
@@ -56,6 +62,12 @@ export const GetContentSchema = Type.Object({
   window_id: Type.Optional(
     Type.Number({
       description: 'Watcher window ID to filter by (shows only content analyzed in this window)',
+    })
+  ),
+  analyzed_by_watcher_id: Type.Optional(
+    Type.Number({
+      description:
+        'Limit results to events this watcher has analyzed (any window). Distinct from watcher_id, which enters watcher read mode.',
     })
   ),
   since: Type.Optional(

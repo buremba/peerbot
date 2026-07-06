@@ -121,6 +121,15 @@ export function normalizeGithubLogin(raw: string | null | undefined): string | n
   return trimmed;
 }
 
+/** X @handles: 1–15 chars, letters/digits/underscore; case-insensitive. */
+export function normalizeXHandle(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim().replace(/^@+/, '').toLowerCase();
+  if (!trimmed) return null;
+  if (!/^[a-z0-9_]{1,15}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 export function normalizeNumericId(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
@@ -178,8 +187,11 @@ export function normalizeIdentifier(
       return normalizeSlackUserIdCombined(raw);
     case 'github_login':
       return normalizeGithubLogin(raw);
+    case 'x_handle':
+      return normalizeXHandle(raw);
     case 'github_user_id':
     case 'github_repo_id':
+    case 'x_user_id':
       return normalizeNumericId(raw);
     case 'github_repo_full_name':
       return normalizeGithubRepoFullName(raw);

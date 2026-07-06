@@ -19,8 +19,9 @@
  *   - tweets:        search by query or track a handle (API v2 or extension search)
  *   - my_tweets:     authenticated user's posts and replies (API v2 or extension)
  *   - liked_tweets:  posts the user has liked (API v2 or extension)
- *   - bookmarks:     posts the user has bookmarked (API v2 or extension)
- *   - home_feed:     personalized x.com home timeline (extension only — there
+ *   - bookmarks:        posts the user has bookmarked (API v2 or extension)
+ *   - direct_messages:  1:1 and group DMs (OAuth API; extension fallback on /messages)
+ *   - home_feed:        personalized x.com home timeline (extension only — there
  *                    is no public API for the "For you" / "Following" timeline;
  *                    read via content-script scrape because CDP network capture
  *                    blocks the feed from rendering, same as LinkedIn home_feed)
@@ -29,7 +30,9 @@
 import {
 	type ChromeActionDispatcher,
 	type ConnectorDefinition,
+	type EntityLinkRule,
 	ConnectorRuntime,
+	IDENTITY,
 	calculateEngagementScore,
 	createHttpClient,
 	type EventEnvelope,
@@ -46,12 +49,15 @@ import {
 interface XCheckpoint {
 	last_tweet_id?: string;
 	last_timestamp?: Date | string;
+	last_dm_event_id?: string;
 }
 
 interface XTweet {
 	id: string;
 	text: string;
 	username: string;
+	authorId?: string;
+	authorDisplayName?: string;
 	likes: number;
 	retweets: number;
 	replies: number;
@@ -64,6 +70,21 @@ interface XTweet {
 	inReplyToId?: string;
 	/** True for promoted/ad tweets — dropped before emit, like LinkedIn's "Promoted" filter. */
 	promoted?: boolean;
+}
+
+interface XDmMessage {
+	id: string;
+	text: string;
+	senderId: string;
+	senderHandle: string;
+	senderName?: string;
+	conversationId: string;
+	isGroup: boolean;
+	fromMe: boolean;
+	participantId?: string;
+	participantHandle?: string;
+	participantName?: string;
+	publishedAt: Date;
 }
 
 interface XApiTweetRecord {
@@ -99,8 +120,98 @@ interface XApiListResponse {
 	errors?: Array<{ detail?: string; message?: string }>;
 }
 
+interface XApiDmEventRecord {
+	id: string;
+	text?: string;
+	created_at?: string;
+	sender_id?: string;
+	dm_conversation_id?: string;
+	event_type?: string;
+}
+
+interface XApiDmListResponse {
+	data?: XApiDmEventRecord[];
+	includes?: {
+		users?: XApiUserRecord[];
+	};
+	meta?: {
+		next_token?: string;
+		result_count?: number;
+	};
+	errors?: Array<{ detail?: string; message?: string }>;
+}
+
 /** x.com origins the dispatched chrome actions are allowed to touch. */
 const X_ALLOWED_ORIGINS = ["x.com", "*.x.com", "twitter.com", "*.twitter.com"];
+
+/**
+ * Link tweet-like X events to `person` rows via immutable `x_user_id` + `x_handle`.
+ * Match-only by default (like Gmail): identities accrete onto existing contacts,
+ * but we do not mint a person per random timeline author.
+ */
+const X_PERSON_AUTHOR_LINK: EntityLinkRule = {
+	entityType: "person",
+	autoCreate: false,
+	titlePath: "metadata.author_name",
+	identities: [
+		{
+			namespace: IDENTITY.X_USER_ID,
+			eventPath: "metadata.author_id",
+			primary: true,
+		},
+		{ namespace: IDENTITY.X_HANDLE, eventPath: "metadata.author_handle" },
+	],
+	traits: {
+		x_handle: {
+			eventPath: "metadata.author_handle",
+			behavior: "prefer_non_empty",
+		},
+		x_display_name: {
+			eventPath: "metadata.author_name",
+			behavior: "prefer_non_empty",
+		},
+		last_x_interaction_at: {
+			eventPath: "occurred_at",
+			behavior: "overwrite",
+		},
+	},
+};
+
+/** Mint/link the 1:1 DM counterparty (never the connected account itself). */
+const X_PERSON_DM_COUNTERPARTY_LINK: EntityLinkRule = {
+	entityType: "person",
+	autoCreate: true,
+	createWhen: { path: "metadata.is_group", equals: false },
+	titlePath: "metadata.participant_name",
+	identities: [
+		{
+			namespace: IDENTITY.X_USER_ID,
+			eventPath: "metadata.participant_id",
+			primary: true,
+		},
+		{
+			namespace: IDENTITY.X_HANDLE,
+			eventPath: "metadata.participant_handle",
+		},
+	],
+	traits: {
+		x_handle: {
+			eventPath: "metadata.participant_handle",
+			behavior: "prefer_non_empty",
+		},
+		x_display_name: {
+			eventPath: "metadata.participant_name",
+			behavior: "prefer_non_empty",
+		},
+		last_x_dm_at: {
+			eventPath: "occurred_at",
+			behavior: "overwrite",
+		},
+	},
+};
+
+const TWEET_ENTITY_LINKS = [X_PERSON_AUTHOR_LINK];
+const DM_ENTITY_LINKS = [X_PERSON_DM_COUNTERPARTY_LINK];
 
 // ── Home-feed content-script scrape contract ────────────────────
 //
@@ -241,10 +352,15 @@ function buildApiTweet(
 	const publicMetrics = tweet.public_metrics ?? {};
 	const inReplyToId = referenced.find((ref) => ref.type === "replied_to")?.id;
 
+	const authorId = tweet.author_id;
+	const username =
+		usernameById.get(authorId ?? "") ?? defaultUsername ?? "";
+
 	return {
 		id: tweet.id,
 		text: tweet.text,
-		username: usernameById.get(tweet.author_id ?? "") ?? defaultUsername ?? "",
+		username,
+		authorId,
 		likes: publicMetrics.like_count ?? 0,
 		retweets: publicMetrics.retweet_count ?? 0,
 		replies: publicMetrics.reply_count ?? 0,
@@ -294,11 +410,16 @@ function extractTweetFromGraphqlResult(result: any): XTweet | null {
 		tweetNode?.core?.user_results?.result ?? result.core?.user_results?.result;
 	const screenName =
 		userResult?.core?.screen_name ?? userResult?.legacy?.screen_name ?? "";
+	const authorId = userResult?.rest_id ?? userResult?.id;
+	const authorDisplayName =
+		userResult?.core?.name ?? userResult?.legacy?.name ?? undefined;
 
 	return {
 		id: restId,
 		text: legacy.full_text,
 		username: screenName,
+		authorId: authorId ? String(authorId) : undefined,
+		authorDisplayName,
 		likes: legacy.favorite_count ?? 0,
 		retweets: legacy.retweet_count ?? 0,
 		replies: legacy.reply_count ?? 0,
@@ -421,9 +542,160 @@ function tweetToEvent(tweet: XTweet, originType?: string): EventEnvelope {
 			is_retweet: tweet.isRetweet,
 			is_reply: tweet.isReply,
 			is_quote: tweet.isQuote,
+			...(tweet.authorId ? { author_id: tweet.authorId } : {}),
+			...(tweet.username ? { author_handle: tweet.username } : {}),
+			...(tweet.authorDisplayName
+				? { author_name: tweet.authorDisplayName }
+				: {}),
 			...(tweet.conversationId
 				? { conversation_id: tweet.conversationId }
 				: {}),
+		},
+	};
+}
+
+function dmConversationIsGroup(conversationId: string): boolean {
+	return !conversationId.includes("-");
+}
+
+function resolveDmCounterparty(
+	conversationId: string,
+	authUserId: string,
+	senderId: string,
+	usernameById: Map<string, string>,
+	nameById: Map<string, string>,
+): {
+	participantId?: string;
+	participantHandle?: string;
+	participantName?: string;
+} {
+	if (dmConversationIsGroup(conversationId)) {
+		return {};
+	}
+
+	const parts = conversationId.split("-").filter(Boolean);
+	if (parts.length !== 2) {
+		return {};
+	}
+
+	const participantId = parts.find((id) => id !== authUserId) ?? senderId;
+	if (!participantId || participantId === authUserId) {
+		return {};
+	}
+
+	return {
+		participantId,
+		participantHandle: usernameById.get(participantId),
+		participantName: nameById.get(participantId),
+	};
+}
+
+function buildDmMessage(
+	event: XApiDmEventRecord,
+	authUserId: string,
+	usernameById: Map<string, string>,
+	nameById: Map<string, string>,
+): XDmMessage | null {
+	if (event.event_type && event.event_type !== "MessageCreate") return null;
+	if (!event.id || !event.text || !event.created_at || !event.sender_id) {
+		return null;
+	}
+	if (!event.dm_conversation_id) return null;
+
+	const senderId = event.sender_id;
+	const conversationId = event.dm_conversation_id;
+	const isGroup = dmConversationIsGroup(conversationId);
+	const fromMe = senderId === authUserId;
+	const counterparty = resolveDmCounterparty(
+		conversationId,
+		authUserId,
+		senderId,
+		usernameById,
+		nameById,
+	);
+
+	return {
+		id: event.id,
+		text: event.text,
+		senderId,
+		senderHandle: usernameById.get(senderId) ?? "",
+		senderName: nameById.get(senderId),
+		conversationId,
+		isGroup,
+		fromMe,
+		participantId: counterparty.participantId,
+		participantHandle: counterparty.participantHandle,
+		participantName: counterparty.participantName,
+		publishedAt: new Date(event.created_at),
+	};
+}
+
+function dmToEvent(message: XDmMessage): EventEnvelope {
+	return {
+		origin_id: message.id,
+		payload_text: message.text,
+		author_name: message.senderHandle ? `@${message.senderHandle}` : undefined,
+		occurred_at: message.publishedAt,
+		origin_type: "dm_message",
+		origin_parent_id: message.conversationId,
+		metadata: {
+			sender_id: message.senderId,
+			sender_handle: message.senderHandle,
+			...(message.senderName ? { sender_name: message.senderName } : {}),
+			from_me: message.fromMe,
+			is_group: message.isGroup,
+			dm_conversation_id: message.conversationId,
+			...(message.participantId
+				? { participant_id: message.participantId }
+				: {}),
+			...(message.participantHandle
+				? { participant_handle: message.participantHandle }
+				: {}),
+			...(message.participantName
+				? { participant_name: message.participantName }
+				: {}),
+		},
+	};
+}
+
+export function finalizeDmSyncResult(
+	messages: XDmMessage[],
+	checkpoint: XCheckpoint,
+	metadata: Record<string, unknown>,
+): SyncResult {
+	const seenIds = new Set<string>();
+	const deduped = messages.filter((message) => {
+		if (!message.id || !message.text || seenIds.has(message.id)) return false;
+		seenIds.add(message.id);
+		if (
+			checkpoint.last_dm_event_id &&
+			message.id === checkpoint.last_dm_event_id
+		) {
+			return false;
+		}
+		return true;
+	});
+
+	const events: EventEnvelope[] = deduped.map(dmToEvent);
+	events.sort(
+		(a, b) =>
+			new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime(),
+	);
+
+	const newestId =
+		events.length > 0 ? events[0].origin_id : checkpoint.last_dm_event_id;
+	const newCheckpoint: XCheckpoint = {
+		...checkpoint,
+		last_dm_event_id: newestId,
+	};
+
+	return {
+		events,
+		checkpoint: newCheckpoint as unknown as Record<string, unknown>,
+		metadata: {
+			items_found: events.length,
+			items_skipped: messages.length - deduped.length,
+			...metadata,
 		},
 	};
 }
@@ -934,6 +1206,79 @@ async function syncBookmarksViaExtension(
 	});
 }
 
+function parseApiDmListResponse(
+	json: XApiDmListResponse,
+	authUserId: string,
+): XDmMessage[] {
+	const users = json.includes?.users ?? [];
+	const usernameById = new Map(
+		users.map((user) => [user.id, user.username ?? ""]),
+	);
+	const nameById = new Map(
+		users.map((user) => [user.id, user.name ?? ""]),
+	);
+
+	return (json.data ?? [])
+		.map((event) =>
+			buildDmMessage(event, authUserId, usernameById, nameById),
+		)
+		.filter((message): message is XDmMessage => message !== null);
+}
+
+async function syncDirectMessagesViaOAuthApi(
+	ctx: SyncContext,
+	config: Record<string, unknown>,
+	checkpoint: XCheckpoint,
+): Promise<SyncResult> {
+	const accessToken = ctx.credentials?.accessToken;
+	if (!accessToken) {
+		throw new Error(
+			"OAuth access token missing for direct_messages feed (requires dm.read)",
+		);
+	}
+
+	const http = createOAuthHttpClient(accessToken);
+	const maxPages = readMaxPages(config);
+	const authUser = await resolveAuthenticatedUser(http);
+	const messages: XDmMessage[] = [];
+	let pageCount = 0;
+
+	const pages = paginateByCursor<XDmMessage, string>(
+		async (nextToken) => {
+			const url = new URL("https://api.x.com/2/dm_events");
+			url.searchParams.set("max_results", "100");
+			url.searchParams.set(
+				"dm_event.fields",
+				"id,text,created_at,sender_id,dm_conversation_id,event_type",
+			);
+			url.searchParams.set("event_types", "MessageCreate");
+			url.searchParams.set("expansions", "sender_id,participant_ids");
+			url.searchParams.set("user.fields", "username,name");
+			if (nextToken) {
+				url.searchParams.set("pagination_token", nextToken);
+			}
+
+			const json = await http.get<XApiDmListResponse>(url.toString());
+			pageCount += 1;
+			return {
+				items: parseApiDmListResponse(json, authUser.id),
+				nextCursor: json.meta?.next_token,
+			};
+		},
+		{ maxPages },
+	);
+
+	for await (const items of pages) {
+		messages.push(...items);
+	}
+
+	return finalizeDmSyncResult(messages, checkpoint, {
+		backend: "oauth_api",
+		api_calls: pageCount,
+		feed: "direct_messages",
+	});
+}
+
 /**
  * Personalized home timeline via the extension's content-script scrape.
  * Network capture can't read it (the CDP debugger stops the feed rendering).
@@ -1067,6 +1412,24 @@ const engagementMetadataSchema = {
 		is_retweet: { type: "boolean" },
 		is_reply: { type: "boolean" },
 		is_quote: { type: "boolean" },
+		author_id: { type: "string", description: "X numeric user id" },
+		author_handle: { type: "string", description: "X @handle without @" },
+		author_name: { type: "string", description: "Display name" },
+	},
+};
+
+const dmMetadataSchema = {
+	type: "object",
+	properties: {
+		sender_id: { type: "string" },
+		sender_handle: { type: "string" },
+		sender_name: { type: "string" },
+		participant_id: { type: "string" },
+		participant_handle: { type: "string" },
+		participant_name: { type: "string" },
+		from_me: { type: "boolean" },
+		is_group: { type: "boolean" },
+		dm_conversation_id: { type: "string" },
 	},
 };
 
@@ -1077,8 +1440,8 @@ export default class XConnector extends ConnectorRuntime {
 		key: "x",
 		name: "X (Twitter)",
 		description:
-			"Fetches tweets via the X API v2 or the paired Owletto Chrome extension. Includes home timeline, your posts, likes, and bookmarks.",
-		version: "3.1.0",
+			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
+		version: "3.2.0",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [
@@ -1091,12 +1454,14 @@ export default class XConnector extends ConnectorRuntime {
 						"follows.read",
 						"like.read",
 						"bookmark.read",
+						"dm.read",
 					],
 					loginScopes: [
 						"users.read",
 						"tweet.read",
 						"like.read",
 						"bookmark.read",
+						"dm.read",
 						"offline.access",
 						"users.email",
 					],
@@ -1136,6 +1501,7 @@ export default class XConnector extends ConnectorRuntime {
 					tweet: {
 						description: "A tweet (original post)",
 						metadataSchema: engagementMetadataSchema,
+						entityLinks: TWEET_ENTITY_LINKS,
 					},
 					reply: {
 						description: "A reply to a tweet",
@@ -1146,6 +1512,7 @@ export default class XConnector extends ConnectorRuntime {
 								conversation_id: { type: "string" },
 							},
 						},
+						entityLinks: TWEET_ENTITY_LINKS,
 					},
 				},
 			},
@@ -1160,6 +1527,7 @@ export default class XConnector extends ConnectorRuntime {
 					tweet: {
 						description: "An original post by the connected account",
 						metadataSchema: engagementMetadataSchema,
+						entityLinks: TWEET_ENTITY_LINKS,
 					},
 					reply: {
 						description: "A reply posted by the connected account",
@@ -1170,6 +1538,7 @@ export default class XConnector extends ConnectorRuntime {
 								conversation_id: { type: "string" },
 							},
 						},
+						entityLinks: TWEET_ENTITY_LINKS,
 					},
 				},
 			},
@@ -1184,6 +1553,7 @@ export default class XConnector extends ConnectorRuntime {
 					liked_tweet: {
 						description: "A post liked by the connected account",
 						metadataSchema: engagementMetadataSchema,
+						entityLinks: TWEET_ENTITY_LINKS,
 					},
 				},
 			},
@@ -1198,6 +1568,22 @@ export default class XConnector extends ConnectorRuntime {
 					bookmark: {
 						description: "A post bookmarked by the connected account",
 						metadataSchema: engagementMetadataSchema,
+						entityLinks: TWEET_ENTITY_LINKS,
+					},
+				},
+			},
+			direct_messages: {
+				key: "direct_messages",
+				name: "Direct Messages",
+				requiredScopes: ["dm.read", "tweet.read", "users.read"],
+				description:
+					"Direct message events across all conversations. OAuth-only (dm.read). Auto-creates person entities for 1:1 counterparts.",
+				configSchema: bookmarksConfigSchema,
+				eventKinds: {
+					dm_message: {
+						description: "A direct message in a 1:1 or group conversation",
+						metadataSchema: dmMetadataSchema,
+						entityLinks: DM_ENTITY_LINKS,
 					},
 				},
 			},
@@ -1211,6 +1597,7 @@ export default class XConnector extends ConnectorRuntime {
 					tweet: {
 						description: "A tweet from your personalized home timeline",
 						metadataSchema: engagementMetadataSchema,
+						entityLinks: TWEET_ENTITY_LINKS,
 					},
 				},
 			},
@@ -1247,6 +1634,10 @@ export default class XConnector extends ConnectorRuntime {
 				return syncBookmarksViaOAuthApi(ctx, config, checkpoint);
 			}
 			return syncBookmarksViaExtension(ctx, config, checkpoint);
+		}
+
+		if (feedKey === "direct_messages") {
+			return syncDirectMessagesViaOAuthApi(ctx, config, checkpoint);
 		}
 
 		// `tweets` feed: prefer the official API when we have a token, fall back

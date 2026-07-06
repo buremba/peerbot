@@ -14,6 +14,8 @@ let extractTweetsFromInstructions: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let finalizeSyncResult: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let finalizeDmSyncResult: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let buildHomeFeedTweets: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let parseUsernameFromStatusPath: any;
@@ -28,6 +30,7 @@ beforeAll(async () => {
 	parseBrowserTimelineResponse = mod.parseBrowserTimelineResponse;
 	extractTweetsFromInstructions = mod.extractTweetsFromInstructions;
 	finalizeSyncResult = mod.finalizeSyncResult;
+	finalizeDmSyncResult = mod.finalizeDmSyncResult;
 	buildHomeFeedTweets = mod.buildHomeFeedTweets;
 	parseUsernameFromStatusPath = mod.parseUsernameFromStatusPath;
 	isHomeFeedNoise = mod.isHomeFeedNoise;
@@ -415,11 +418,18 @@ describe("XConnector definition", () => {
 		expect(def.key).toBe("x");
 		expect(Object.keys(def.feeds).sort()).toEqual([
 			"bookmarks",
+			"direct_messages",
 			"home_feed",
 			"liked_tweets",
 			"my_tweets",
 			"tweets",
 		]);
+		expect(def.feeds.direct_messages.requiredScopes).toContain("dm.read");
+		expect(
+			def.feeds.tweets.eventKinds.tweet.entityLinks?.[0]?.identities?.map(
+				(i: { namespace: string }) => i.namespace,
+			),
+		).toEqual(["x_user_id", "x_handle"]);
 		expect(def.feeds.my_tweets.requiredScopes).toContain("tweet.read");
 		expect(def.feeds.liked_tweets.requiredScopes).toContain("like.read");
 		expect(def.feeds.bookmarks.requiredScopes).toContain("bookmark.read");
@@ -429,6 +439,39 @@ describe("XConnector definition", () => {
 			(m: any) => m.type === "browser",
 		);
 		expect(browserMethod).toBeDefined();
+	});
+});
+
+describe("finalizeDmSyncResult", () => {
+	test("emits dm_message events with participant metadata", () => {
+		const res = finalizeDmSyncResult(
+			[
+				{
+					id: "9001",
+					text: "hey there",
+					senderId: "111",
+					senderHandle: "alice",
+					conversationId: "111-222",
+					isGroup: false,
+					fromMe: false,
+					participantId: "111",
+					participantHandle: "alice",
+					participantName: "Alice",
+					publishedAt: new Date("2025-06-01T00:00:00Z"),
+				},
+			],
+			{},
+			{ backend: "oauth_api" },
+		);
+		expect(res.events).toHaveLength(1);
+		expect(res.events[0].origin_type).toBe("dm_message");
+		expect(res.events[0].metadata).toMatchObject({
+			participant_id: "111",
+			participant_handle: "alice",
+			from_me: false,
+			is_group: false,
+		});
+		expect(res.checkpoint.last_dm_event_id).toBe("9001");
 	});
 });
 

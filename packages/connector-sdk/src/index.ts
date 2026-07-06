@@ -137,6 +137,7 @@ export {
   normalizeSlackUserId,
   normalizeSlackUserIdCombined,
   normalizeWaJid,
+  normalizeXHandle,
 } from './identity-normalize.js';
 // HTTP client (auth + retry + 429 Retry-After)
 export type {

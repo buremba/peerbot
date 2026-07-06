@@ -628,6 +628,8 @@ export const IDENTITY = {
   GITHUB_USER_ID: 'github_user_id',
   GITHUB_REPO_ID: 'github_repo_id',
   GITHUB_REPO_FULL_NAME: 'github_repo_full_name',
+  X_USER_ID: 'x_user_id',
+  X_HANDLE: 'x_handle',
   AUTH_USER_ID: 'auth_user_id',
   GOOGLE_CONTACT_ID: 'google_contact_id',
 } as const;

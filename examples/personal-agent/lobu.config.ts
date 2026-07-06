@@ -49,16 +49,28 @@ const person = defineEntityType({
     email: { type: "string" },
     company: { type: "string" },
     session_prefix: { type: "string" },
+    x_handle: { type: "string", description: "X @handle (without @)" },
   },
-  // WhatsApp message metric (already live in prod). Declared here so `apply`
-  // preserves it rather than pruning it — a person aliases their `sender_jid`,
-  // and inbound messages on the local WhatsApp connector resolve to them.
+  // WhatsApp + X identity metrics. Declared here so `apply` preserves them
+  // rather than pruning — persons alias connector identities (wa_jid, x_handle).
   eventSets: {
     wa_messages: {
       by: "alias",
       field: "metadata->>'sender_jid'",
       against: "aliases",
       where: "connector_key='whatsapp.local'",
+    },
+    x_posts: {
+      by: "alias",
+      field: "metadata->>'author_handle'",
+      against: "aliases",
+      where: "connector_key='x' AND origin_type IN ('tweet','reply','liked_tweet','bookmark')",
+    },
+    x_dms: {
+      by: "alias",
+      field: "metadata->>'participant_handle'",
+      against: "aliases",
+      where: "connector_key='x' AND origin_type='dm_message'",
     },
   },
   measures: {
@@ -67,6 +79,20 @@ const person = defineEntityType({
       agg: "count",
       where: "metadata->>'from_me'='false'",
       description: "WhatsApp messages received from this person.",
+      tier: "silver",
+    },
+    x_posts_seen: {
+      eventSet: "x_posts",
+      agg: "count",
+      description:
+        "X posts involving this person as author (timeline, likes, bookmarks).",
+      tier: "silver",
+    },
+    x_dms_received: {
+      eventSet: "x_dms",
+      agg: "count",
+      where: "metadata->>'from_me'='false'",
+      description: "Inbound X DMs with this person.",
       tier: "silver",
     },
   },

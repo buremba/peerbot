@@ -16,11 +16,8 @@
  * lacked.
  */
 
-import {
-  normalizeGithubLogin,
-  normalizeGithubRepoFullName,
-  normalizeNumericId,
-} from '@lobu/connector-sdk';
+import { normalizeNumericId } from '@lobu/connector-sdk';
+import { normalizeGithubLogin, normalizeGithubRepoFullName } from './github-normalize.js';
 import {
   type AccessGraphResult,
   type AccessMember,

@@ -17,7 +17,6 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
-  IDENTITY,
   type SyncContext,
   type SyncResult,
 } from "@lobu/connector-sdk";
@@ -189,11 +188,11 @@ export default class WhatsAppConnector extends ConnectorRuntime {
                 titlePath: "metadata.push_name",
                 identities: [
                   {
-                    namespace: IDENTITY.WA_JID,
+                    namespace: "wa_jid",
                     eventPath: "metadata.sender_jid",
                   },
                   {
-                    namespace: IDENTITY.PHONE,
+                    namespace: "phone",
                     eventPath: "metadata.sender_phone",
                   },
                 ],

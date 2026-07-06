@@ -113,38 +113,11 @@ export function normalizeSlackUserIdCombined(
   return normalizeSlackUserId(trimmed.slice(0, sep), trimmed.slice(sep + 1));
 }
 
-export function normalizeGithubLogin(raw: string | null | undefined): string | null {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim().toLowerCase();
-  if (!trimmed) return null;
-  if (!/^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,38}$/.test(trimmed)) return null;
-  return trimmed;
-}
-
 export function normalizeNumericId(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   if (!/^\d+$/.test(trimmed)) return null;
   return trimmed.replace(/^0+(?=\d)/, '');
-}
-
-export function normalizeGithubRepoFullName(raw: string | null | undefined): string | null {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim().toLowerCase();
-  if (!trimmed) return null;
-  const parts = trimmed.split('/');
-  if (parts.length !== 2) return null;
-  const [owner, repo] = parts;
-  const githubName = /^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9])?$/;
-  if (!githubName.test(owner) || !githubName.test(repo)) return null;
-  return `${owner}/${repo}`;
-}
-
-export function normalizeGoogleContactId(raw: string | null | undefined): string | null {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  return trimmed;
 }
 
 /**
@@ -172,19 +145,6 @@ export function normalizeIdentifier(
       return normalizePhone(raw);
     case 'email':
       return normalizeEmail(raw);
-    case 'wa_jid':
-      return normalizeWaJid(raw);
-    case 'slack_user_id':
-      return normalizeSlackUserIdCombined(raw);
-    case 'github_login':
-      return normalizeGithubLogin(raw);
-    case 'github_user_id':
-    case 'github_repo_id':
-      return normalizeNumericId(raw);
-    case 'github_repo_full_name':
-      return normalizeGithubRepoFullName(raw);
-    case 'google_contact_id':
-      return normalizeGoogleContactId(raw);
     case 'auth_user_id':
       return normalizeAuthUserId(raw);
     default: {

@@ -8,7 +8,7 @@
  * `authz_source_acl_state`.
  */
 
-import { normalizeGithubRepoFullName } from '@lobu/connector-sdk';
+import { normalizeGithubRepoFullName } from '../../../authz/github-normalize.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { buildGithubRepoGraph } from '../../../authz/github-repo-graph';
 import { clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';

@@ -1,8 +1,6 @@
 import {
   normalizeAuthUserId,
   normalizeEmail,
-  normalizeGithubLogin,
-  normalizeGithubRepoFullName,
   normalizeIdentifier,
   normalizeNumericId,
   normalizePhone,
@@ -105,21 +103,6 @@ describe('normalizeSlackUserIdCombined', () => {
   });
 });
 
-describe('normalizeGithubLogin', () => {
-  it('lowercases valid logins', () => {
-    expect(normalizeGithubLogin('Burak-Emre')).toBe('burak-emre');
-    expect(normalizeGithubLogin('octocat')).toBe('octocat');
-  });
-
-  it('rejects logins that violate GitHub rules', () => {
-    expect(normalizeGithubLogin('-leading-dash')).toBeNull();
-    expect(normalizeGithubLogin('double--dash')).toBeNull();
-    expect(normalizeGithubLogin('trailing-')).toBeNull();
-    expect(normalizeGithubLogin('a'.repeat(40))).toBeNull();
-    expect(normalizeGithubLogin('')).toBeNull();
-  });
-});
-
 describe('normalizeNumericId', () => {
   it('normalizes positive numeric ids', () => {
     expect(normalizeNumericId('82745')).toBe('82745');
@@ -130,18 +113,6 @@ describe('normalizeNumericId', () => {
     expect(normalizeNumericId('abc')).toBeNull();
     expect(normalizeNumericId('12.3')).toBeNull();
     expect(normalizeNumericId('')).toBeNull();
-  });
-});
-
-describe('normalizeGithubRepoFullName', () => {
-  it('lowercases owner/repo full names', () => {
-    expect(normalizeGithubRepoFullName('Lobu-AI/Lobu')).toBe('lobu-ai/lobu');
-  });
-
-  it('rejects invalid full names', () => {
-    expect(normalizeGithubRepoFullName('missing-repo')).toBeNull();
-    expect(normalizeGithubRepoFullName('/repo')).toBeNull();
-    expect(normalizeGithubRepoFullName('owner/')).toBeNull();
   });
 });
 
@@ -158,19 +129,18 @@ describe('normalizeAuthUserId', () => {
 });
 
 describe('normalizeIdentifier dispatcher', () => {
-  it('dispatches to the correct per-namespace normalizer', () => {
+  it('dispatches generic cross-channel namespaces', () => {
     expect(normalizeIdentifier('phone', '+1 (415) 555-1234')).toBe('14155551234');
     expect(normalizeIdentifier('email', 'Foo@Bar.COM')).toBe('foo@bar.com');
+    expect(normalizeIdentifier('auth_user_id', '  abc123 ')).toBe('abc123');
+  });
+
+  it('falls back to trim-only for connector-owned namespaces', () => {
     expect(normalizeIdentifier('wa_jid', '14155551234@S.WhatsApp.Net')).toBe(
-      '14155551234@s.whatsapp.net'
+      '14155551234@S.WhatsApp.Net'
     );
-    expect(normalizeIdentifier('github_login', 'Octocat')).toBe('octocat');
-    expect(normalizeIdentifier('github_user_id', '  82745 ')).toBe('82745');
-    expect(normalizeIdentifier('github_repo_full_name', 'Lobu-AI/Lobu')).toBe('lobu-ai/lobu');
-    // slack_user_id was barrel-exported but had no dispatch case (dead, like
-    // github_login once was) — it now canonicalizes the combined TEAM:USER form.
-    expect(normalizeIdentifier('slack_user_id', 't0abc:u123')).toBe('T0ABC:U123');
-    expect(normalizeIdentifier('slack_user_id', 'no-team-prefix')).toBeNull();
+    expect(normalizeIdentifier('github_login', 'Octocat')).toBe('Octocat');
+    expect(normalizeIdentifier('slack_user_id', 't0abc:u123')).toBe('t0abc:u123');
   });
 
   it('falls back to trim-only for unknown namespaces so custom identities still get hygiene', () => {

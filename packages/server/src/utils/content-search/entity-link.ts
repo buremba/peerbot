@@ -6,15 +6,14 @@
 import { type DbClient, pgTextArray } from '../../db/client';
 
 /**
- * Standard identity namespaces (mirror of IDENTITY in @lobu/connector-sdk).
+ * Identity namespaces backed by partial BTREE indexes on `events.metadata`.
  * Kept local so content-search.ts doesn't take a build-time dep on the SDK.
  *
- * Adding a namespace here is a three-step change:
- *   1. Add the key to `IDENTITY` in @lobu/connector-sdk so connectors can reference it.
- *   2. Add a partial BTREE index `idx_events_metadata_<ns>` in a migration
+ * Adding a namespace here is a two-step change:
+ *   1. Add a partial BTREE index `idx_events_metadata_<ns>` in a migration
  *      (see db/migrations/20260419120000_add_event_identity_indexes.sql).
- *   3. Add the string to this list — `entityLinkMatchSql` will emit a UNION
- *      branch that uses the new index.
+ *   2. Add the string to this list — `entityLinkMatchSql` will emit a UNION
+ *      branch that uses the new index. Connectors own their namespace strings.
  *
  * Non-standard namespaces are intentionally unsupported at read time: without
  * a matching index the identity branch seq-scans `events`, which blows up the

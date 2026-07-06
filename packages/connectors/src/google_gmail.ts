@@ -13,7 +13,6 @@ import {
   createHttpClient,
   type EventEnvelope,
   type HttpClient,
-  IDENTITY,
   paginateByCursor,
   type QueryContext,
   type QueryResult,
@@ -171,7 +170,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                 // contacts-source bridge), handled outside ingest.
                 autoCreate: false,
                 titlePath: 'metadata.from_name',
-                identities: [{ namespace: IDENTITY.EMAIL, eventPath: 'metadata.from_email' }],
+                identities: [{ namespace: 'email', eventPath: 'metadata.from_email' }],
                 traits: {
                   from_name: {
                     eventPath: 'metadata.from_name',

@@ -31,6 +31,26 @@ const GITHUB_IDENTITY = {
   REPO_FULL_NAME: 'github_repo_full_name',
 } as const;
 
+function normalizeGithubLogin(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed) return null;
+  if (!/^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,38}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function normalizeGithubRepoFullName(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed) return null;
+  const parts = trimmed.split('/');
+  if (parts.length !== 2) return null;
+  const [owner, repo] = parts;
+  const githubName = /^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9])?$/;
+  if (!githubName.test(owner) || !githubName.test(repo)) return null;
+  return `${owner}/${repo}`;
+}
+
 type GitHubContentType =
   | 'issues'
   | 'pull_requests'
@@ -1038,10 +1058,12 @@ export default class GitHubConnector extends ConnectorRuntime {
    * Stamp `metadata.github_repo_full_name` (lowercased `owner/repo`) on every
    * event so the authz resource gate can link it to its `repo` entity (via
    * GITHUB_REPO_ENTITY_LINK) and restrict recall to repos the requester belongs
-   * to. Lowercased to match `normalizeGithubRepoFullName` / the repo graph.
+   * to. Normalized to match the repo graph ACL keys.
    */
   private stampRepoAttribution(events: EventEnvelope[], repo: RepoRef): void {
-    const fullName = `${repo.owner}/${repo.repo}`.toLowerCase();
+    const fullName =
+      normalizeGithubRepoFullName(`${repo.owner}/${repo.repo}`) ??
+      `${repo.owner}/${repo.repo}`.toLowerCase();
     for (const event of events) {
       event.metadata = {
         ...(event.metadata ?? {}),
@@ -1656,7 +1678,10 @@ export default class GitHubConnector extends ConnectorRuntime {
   }
 
   private githubUserKey(user: Pick<GitHubUserProfile, 'id'>, login: string): string {
-    return user.id ? `${GITHUB_IDENTITY.USER_ID}:${user.id}` : `${GITHUB_IDENTITY.LOGIN}:${login.toLowerCase()}`;
+    const normalizedLogin = normalizeGithubLogin(login) ?? login.toLowerCase();
+    return user.id
+      ? `${GITHUB_IDENTITY.USER_ID}:${user.id}`
+      : `${GITHUB_IDENTITY.LOGIN}:${normalizedLogin}`;
   }
 
   private keyForOriginId(key: string): string {
@@ -1675,11 +1700,14 @@ export default class GitHubConnector extends ConnectorRuntime {
         verification_status: 'observed',
       });
     }
-    identities.push({
-      namespace: GITHUB_IDENTITY.LOGIN,
-      identifier: login.toLowerCase(),
-      verification_status: 'observed',
-    });
+    const normalizedLogin = normalizeGithubLogin(login);
+    if (normalizedLogin) {
+      identities.push({
+        namespace: GITHUB_IDENTITY.LOGIN,
+        identifier: normalizedLogin,
+        verification_status: 'observed',
+      });
+    }
     return identities;
   }
 
@@ -1695,7 +1723,7 @@ export default class GitHubConnector extends ConnectorRuntime {
     user: { login?: string; id?: number } | undefined | null
   ): Record<string, string> {
     const out: Record<string, string> = {};
-    const login = asString(user?.login);
+    const login = normalizeGithubLogin(asString(user?.login));
     if (login) out.author_login = login;
     if (typeof user?.id === 'number' && Number.isFinite(user.id)) {
       out.author_id = String(user.id);
@@ -1713,12 +1741,13 @@ export default class GitHubConnector extends ConnectorRuntime {
   }
 
   private buildActor(user: GitHubStargazerLike['user'] | GitHubStargazerLike, login: string) {
+    const normalizedLogin = normalizeGithubLogin(login) ?? login.toLowerCase();
     return {
       provider: 'github',
       identity: user?.id
         ? { namespace: GITHUB_IDENTITY.USER_ID, identifier: String(user.id) }
-        : { namespace: GITHUB_IDENTITY.LOGIN, identifier: login.toLowerCase() },
-      handle: { namespace: GITHUB_IDENTITY.LOGIN, identifier: login.toLowerCase() },
+        : { namespace: GITHUB_IDENTITY.LOGIN, identifier: normalizedLogin },
+      handle: { namespace: GITHUB_IDENTITY.LOGIN, identifier: normalizedLogin },
       profile_url: user?.html_url ?? `https://github.com/${login}`,
       user_type: user?.type ?? null,
     };
@@ -1730,14 +1759,19 @@ export default class GitHubConnector extends ConnectorRuntime {
     return {
       provider: 'github',
       identity: { namespace, identifier },
-      handle: { namespace: GITHUB_IDENTITY.LOGIN, identifier: stargazer.login.toLowerCase() },
+      handle: {
+        namespace: GITHUB_IDENTITY.LOGIN,
+        identifier: normalizeGithubLogin(stargazer.login) ?? stargazer.login.toLowerCase(),
+      },
       profile_url: stargazer.html_url ?? `https://github.com/${stargazer.login}`,
       user_type: stargazer.user_type ?? null,
     };
   }
 
   private buildRepoTarget(repo: RepoRef, repoInfo: GitHubRepositoryLike) {
-    const fullName = (repoInfo.full_name ?? `${repo.owner}/${repo.repo}`).toLowerCase();
+    const fullName =
+      normalizeGithubRepoFullName(repoInfo.full_name ?? `${repo.owner}/${repo.repo}`) ??
+      `${repo.owner}/${repo.repo}`.toLowerCase();
     return {
       provider: 'github',
       identity: repoInfo.id
@@ -1761,7 +1795,12 @@ export default class GitHubConnector extends ConnectorRuntime {
         const login = asString(value.login);
         if (!login) return null;
         const userId = typeof value.user_id === 'number' ? value.user_id : null;
-        const key = asString(value.key) ?? (userId ? `${GITHUB_IDENTITY.USER_ID}:${userId}` : `${GITHUB_IDENTITY.LOGIN}:${login.toLowerCase()}`);
+        const normalizedLogin = normalizeGithubLogin(login) ?? login.toLowerCase();
+        const key =
+          asString(value.key) ??
+          (userId
+            ? `${GITHUB_IDENTITY.USER_ID}:${userId}`
+            : `${GITHUB_IDENTITY.LOGIN}:${normalizedLogin}`);
 
         return {
           key,

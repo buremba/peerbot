@@ -128,14 +128,6 @@ export function connectorSdkMock() {
     paginateByOffset,
     ConnectorRuntime: class {},
     calculateEngagementScore: () => 0,
-    IDENTITY: {
-      PHONE: 'phone',
-      EMAIL: 'email',
-      WA_JID: 'wa_jid',
-      SLACK_USER_ID: 'slack_user_id',
-      AUTH_USER_ID: 'auth_user_id',
-      GOOGLE_CONTACT_ID: 'google_contact_id',
-    },
     extensionDomScrape: async (opts: DomScrapeOpts) => {
       const observation = await opts.dispatcher.dispatch('navigate', {
         cs_scrape: true,

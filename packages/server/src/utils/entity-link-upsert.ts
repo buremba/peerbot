@@ -22,11 +22,7 @@ import type {
   EntityLinkPredicate,
   EntityLinkRule,
 } from '@lobu/connector-sdk';
-import {
-  IDENTITY,
-  normalizeIdentifier,
-  normalizeSlackUserId,
-} from '@lobu/connector-sdk';
+import { normalizeIdentifier, normalizeSlackUserId } from '@lobu/connector-sdk';
 import { type DbClient, getDb, pgTextArray } from '../db/client';
 import { resolveEntityLinkRules } from './entity-link-validation';
 import logger from './logger';
@@ -839,7 +835,7 @@ export async function resolveChannelMessageSender(
   if (!slackId) return null;
 
   const identities: ExtractedLink['identities'] = [
-    { namespace: IDENTITY.SLACK_USER_ID, identifier: slackId, matchOnly: false, primary: false },
+    { namespace: 'slack_user_id', identifier: slackId, matchOnly: false, primary: false },
   ];
 
   const firstHit = (matches: Map<string, number>): number | null => {

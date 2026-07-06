@@ -489,9 +489,9 @@ export interface FeedDefinition {
  */
 export interface EntityIdentitySpec {
   /**
-   * Identifier namespace. Use values from the `IDENTITY` constants
-   * whenever possible (phone, email, wa_jid, ...); custom namespaces are
-   * allowed but connectors sharing a namespace must agree on its format.
+   * Identifier namespace string (e.g. `email`, `github_login`). Each
+   * connector owns its namespace constants; connectors sharing a namespace
+   * must agree on its format.
    */
   namespace: string;
   /** Dot path into the event to extract the raw identifier. */
@@ -614,21 +614,6 @@ export interface EntityLinkOverride {
 }
 
 export type EntityLinkOverrides = Record<string, EntityLinkOverride>;
-
-/**
- * Canonical namespaces for cross-connector identity. Connectors targeting
- * `$member` should use these so identities align automatically.
- */
-export const IDENTITY = {
-  PHONE: 'phone',
-  EMAIL: 'email',
-  WA_JID: 'wa_jid',
-  SLACK_USER_ID: 'slack_user_id',
-  AUTH_USER_ID: 'auth_user_id',
-  GOOGLE_CONTACT_ID: 'google_contact_id',
-} as const;
-
-export type IdentityNamespace = (typeof IDENTITY)[keyof typeof IDENTITY];
 
 // =============================================================================
 // Action Definition

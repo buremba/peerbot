@@ -72,7 +72,6 @@ export type {
   Feed,
   FeedDefinition,
   EntityTypeContribution,
-  IdentityNamespace,
   QueryContext,
   QueryResult,
   ReflectContext,
@@ -88,7 +87,6 @@ export type {
   WebhookRegistration,
   WebhookRegistrationContext,
 } from './connector-types.js';
-export { IDENTITY } from './connector-types.js';
 // Identity-engine SDK contracts. Each schema export is both a TypeBox
 // runtime validator (value) AND a TypeScript type via declaration merging.
 // We import then re-export locally instead of `export { … } from
@@ -128,9 +126,6 @@ export {
 export {
   normalizeAuthUserId,
   normalizeEmail,
-  normalizeGithubLogin,
-  normalizeGithubRepoFullName,
-  normalizeGoogleContactId,
   normalizeNumericId,
   normalizeIdentifier,
   normalizePhone,

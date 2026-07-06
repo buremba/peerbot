@@ -3,9 +3,20 @@
  * Exposes basic gateway metrics in Prometheus text format
  */
 
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createLogger } from "@lobu/core";
 
 const logger = createLogger("metrics");
+
+// Event-loop delay histogram, sampled continuously. Exposed as a Prometheus
+// gauge at scrape time so the "worker stopped responding" freeze — a total
+// event-loop stall — shows up on Grafana as a lag spike, instead of only being
+// reconstructable from ping-log gaps after the fact. `instrument.ts` runs a
+// separate monitor that fires a Sentry event on a hard stall; this one feeds the
+// metrics scrape. Zero deps (native perf_hooks). We read `.max` since the last
+// scrape and then reset, so each scrape window reports its own peak lag.
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+eventLoopDelay.enable();
 
 interface MetricValue {
   value: number;
@@ -233,6 +244,28 @@ export function getMetricsText(): string {
   );
   lines.push("# TYPE nodejs_external_memory_bytes gauge");
   lines.push(`nodejs_external_memory_bytes ${memUsage.external}`);
+
+  // Resident set size: the whole process's memory. On the app pod this runs far
+  // above heapUsed because agent-worker child subprocesses' memory counts toward
+  // the pod cgroup — the gap between RSS and heap is what OOM-kills the pod.
+  lines.push("# HELP nodejs_rss_bytes Node.js resident set size in bytes");
+  lines.push("# TYPE nodejs_rss_bytes gauge");
+  lines.push(`nodejs_rss_bytes ${memUsage.rss}`);
+
+  // Event-loop lag. `.max` (ns → seconds) is the worst stall since the last
+  // scrape; `.mean` is the baseline. A total freeze surfaces here as a max close
+  // to the scrape interval. Reset after reading so each window reports its peak.
+  lines.push(
+    "# HELP nodejs_eventloop_lag_seconds Event loop delay since last scrape"
+  );
+  lines.push("# TYPE nodejs_eventloop_lag_seconds gauge");
+  // `.mean` is NaN on an empty histogram (no samples since the last reset, e.g. a
+  // scrape immediately after startup). Fall back to 0 so the series stays numeric.
+  const lagMax = Number.isFinite(eventLoopDelay.max) ? eventLoopDelay.max : 0;
+  const lagMean = Number.isFinite(eventLoopDelay.mean) ? eventLoopDelay.mean : 0;
+  lines.push(`nodejs_eventloop_lag_seconds{quantile="max"} ${lagMax / 1e9}`);
+  lines.push(`nodejs_eventloop_lag_seconds{quantile="mean"} ${lagMean / 1e9}`);
+  eventLoopDelay.reset();
 
   return `${lines.join("\n")}\n`;
 }

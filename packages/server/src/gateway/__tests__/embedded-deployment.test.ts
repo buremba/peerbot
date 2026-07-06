@@ -188,7 +188,10 @@ describe("DeploymentManager", () => {
         ? process.execPath
         : "node";
       expect(mockSpawn.mock.calls.at(-1)?.[0]).toBe(expectedNode);
+      // The compiled (Node) worker is spawned with a V8 heap cap so a runaway
+      // turn OOMs itself instead of the whole pod (buildWorkerInvocation).
       expect(mockSpawn.mock.calls.at(-1)?.[1]).toEqual([
+        "--max-old-space-size=512",
         "/test/packages/agent-worker/dist/index.js",
       ]);
     });

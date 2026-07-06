@@ -16,11 +16,14 @@
  * with a clear "no paired Owletto extension" error.
  *
  * Feeds:
- *   - tweets:   search by query or track a handle (API v2 or extension search)
- *   - home_feed: your personalized x.com home timeline (extension only — there
- *                is no public API for the "For you" / "Following" timeline;
- *                read via content-script scrape because CDP network capture
- *                blocks the feed from rendering, same as LinkedIn home_feed)
+ *   - tweets:        search by query or track a handle (API v2 or extension search)
+ *   - my_tweets:     authenticated user's posts and replies (API v2 or extension)
+ *   - liked_tweets:  posts the user has liked (API v2 or extension)
+ *   - bookmarks:     posts the user has bookmarked (API v2 or extension)
+ *   - home_feed:     personalized x.com home timeline (extension only — there
+ *                    is no public API for the "For you" / "Following" timeline;
+ *                    read via content-script scrape because CDP network capture
+ *                    blocks the feed from rendering, same as LinkedIn home_feed)
  */
 
 import {
@@ -367,7 +370,35 @@ export function parseBrowserSearchResponse(
 	return extractTweetsFromInstructions(instructions);
 }
 
-function tweetToEvent(tweet: XTweet): EventEnvelope {
+/**
+ * Parse x.com GraphQL timeline responses (profile tweets, likes, bookmarks).
+ * Tries the common instruction-array shapes emitted by UserTweets, Likes, and
+ * BookmarkTimeline endpoints.
+ */
+export function parseBrowserTimelineResponse(
+	_url: string,
+	json: unknown,
+): XTweet[] {
+	const data = json as any;
+	const candidates = [
+		data?.data?.user?.result?.timeline_v2?.timeline?.instructions,
+		data?.data?.user?.result?.timeline?.timeline?.instructions,
+		data?.data?.bookmark_timeline_v2?.timeline?.instructions,
+		data?.data?.bookmarks_timeline?.timeline?.instructions,
+		data?.data?.viewer?.bookmarks_timeline?.timeline?.instructions,
+	];
+	for (const instructions of candidates) {
+		if (Array.isArray(instructions) && instructions.length > 0) {
+			return extractTweetsFromInstructions(instructions);
+		}
+	}
+	return [];
+}
+
+const TWEET_FIELDS =
+	"author_id,conversation_id,created_at,public_metrics,referenced_tweets";
+
+function tweetToEvent(tweet: XTweet, originType?: string): EventEnvelope {
 	const engagementData = {
 		reply_count: tweet.replies,
 		upvotes: tweet.likes,
@@ -379,7 +410,7 @@ function tweetToEvent(tweet: XTweet): EventEnvelope {
 		payload_text: tweet.text,
 		author_name: tweet.username ? `@${tweet.username}` : undefined,
 		occurred_at: tweet.publishedAt,
-		origin_type: tweet.isReply ? "reply" : "tweet",
+		origin_type: originType ?? (tweet.isReply ? "reply" : "tweet"),
 		score: calculateEngagementScore("x", engagementData),
 		source_url: `https://x.com/${tweet.username || "i"}/status/${tweet.id}`,
 		origin_parent_id: tweet.inReplyToId || undefined,
@@ -401,6 +432,7 @@ export function finalizeSyncResult(
 	tweets: XTweet[],
 	checkpoint: XCheckpoint,
 	metadata: Record<string, unknown>,
+	options?: { originType?: string },
 ): SyncResult {
 	const seenIds = new Set<string>();
 	const deduped = tweets.filter((tweet) => {
@@ -411,7 +443,9 @@ export function finalizeSyncResult(
 		return true;
 	});
 
-	const events: EventEnvelope[] = deduped.map(tweetToEvent);
+	const events: EventEnvelope[] = deduped.map((tweet) =>
+		tweetToEvent(tweet, options?.originType),
+	);
 	events.sort(
 		(a, b) =>
 			new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime(),
@@ -458,6 +492,23 @@ function requireExtensionDispatcher(ctx: SyncContext): ChromeActionDispatcher {
 
 // ── Sync paths ─────────────────────────────────────────────────
 
+interface XAuthenticatedUser {
+	id: string;
+	username: string;
+}
+
+function createOAuthHttpClient(accessToken: string): HttpClient {
+	return createHttpClient({
+		token: accessToken,
+		headers: { "Content-Type": "application/json" },
+		errorPrefix: "X API",
+	});
+}
+
+function readMaxPages(config: Record<string, unknown>, cap = 50): number {
+	return Math.max(1, Math.min(cap, Number(config.max_scrolls ?? 10) || 10));
+}
+
 async function resolveUserId(
 	handle: string,
 	http: HttpClient,
@@ -473,6 +524,68 @@ async function resolveUserId(
 	return userId;
 }
 
+async function resolveAuthenticatedUser(
+	http: HttpClient,
+): Promise<XAuthenticatedUser> {
+	const json = await http.get<{ data?: { id?: string; username?: string } }>(
+		"https://api.x.com/2/users/me?user.fields=username",
+	);
+	const id = json.data?.id;
+	const username = json.data?.username;
+	if (!id || !username) {
+		throw new Error("Could not resolve authenticated X user via /2/users/me");
+	}
+	return { id, username };
+}
+
+async function resolveAccountHandle(
+	config: Record<string, unknown>,
+	http?: HttpClient,
+): Promise<string> {
+	const configured = normalizeHandle(
+		typeof config.account_handle === "string"
+			? config.account_handle
+			: undefined,
+	);
+	if (configured) return configured;
+	if (!http) {
+		throw new Error(
+			"account_handle is required when OAuth is unavailable for this feed",
+		);
+	}
+	const user = await resolveAuthenticatedUser(http);
+	return user.username;
+}
+
+async function paginateTweetEndpoint(
+	http: HttpClient,
+	buildUrl: (nextToken?: string) => URL,
+	maxPages: number,
+	defaultUsername?: string,
+): Promise<{ tweets: XTweet[]; pageCount: number }> {
+	const tweets: XTweet[] = [];
+	let pageCount = 0;
+
+	const pages = paginateByCursor<XTweet, string>(
+		async (nextToken) => {
+			const url = buildUrl(nextToken ?? undefined);
+			const json = await http.get<XApiListResponse>(url.toString());
+			pageCount += 1;
+			return {
+				items: parseApiListResponse(json, defaultUsername),
+				nextCursor: json.meta?.next_token,
+			};
+		},
+		{ maxPages },
+	);
+
+	for await (const items of pages) {
+		tweets.push(...items);
+	}
+
+	return { tweets, pageCount };
+}
+
 async function syncViaOAuthApi(
 	ctx: SyncContext,
 	config: Record<string, unknown>,
@@ -483,16 +596,8 @@ async function syncViaOAuthApi(
 		throw new Error("OAuth access token missing for X connector");
 	}
 
-	const http = createHttpClient({
-		token: accessToken,
-		headers: { "Content-Type": "application/json" },
-		errorPrefix: "X API",
-	});
-
-	const maxPages = Math.max(
-		1,
-		Math.min(50, Number(config.max_scrolls ?? 10) || 10),
-	);
+	const http = createOAuthHttpClient(accessToken);
+	const maxPages = readMaxPages(config);
 	const accountHandle = normalizeHandle(
 		typeof config.account_handle === "string"
 			? config.account_handle
@@ -513,10 +618,7 @@ async function syncViaOAuthApi(
 					`https://api.x.com/2/users/${encodeURIComponent(userId)}/tweets`,
 				);
 				url.searchParams.set("max_results", "100");
-				url.searchParams.set(
-					"tweet.fields",
-					"author_id,conversation_id,created_at,public_metrics,referenced_tweets",
-				);
+				url.searchParams.set("tweet.fields", TWEET_FIELDS);
 				if (checkpoint.last_tweet_id) {
 					url.searchParams.set("since_id", checkpoint.last_tweet_id);
 				}
@@ -545,10 +647,7 @@ async function syncViaOAuthApi(
 				const url = new URL("https://api.x.com/2/tweets/search/recent");
 				url.searchParams.set("query", searchQuery);
 				url.searchParams.set("max_results", "100");
-				url.searchParams.set(
-					"tweet.fields",
-					"author_id,conversation_id,created_at,public_metrics,referenced_tweets",
-				);
+				url.searchParams.set("tweet.fields", TWEET_FIELDS);
 				url.searchParams.set("expansions", "author_id");
 				url.searchParams.set("user.fields", "username");
 				if (checkpoint.last_tweet_id) {
@@ -592,6 +691,7 @@ async function syncViaExtension(args: {
 	checkpoint: XCheckpoint;
 	/** Extra metadata to fold into the result (e.g. which timeline tab). */
 	metadata?: Record<string, unknown>;
+	originType?: string;
 }): Promise<SyncResult> {
 	const { ctx, url, interceptPatterns, parseResponse, maxScrolls, checkpoint } =
 		args;
@@ -610,11 +710,16 @@ async function syncViaExtension(args: {
 			!currentUrl.includes("/login") && !currentUrl.includes("/i/flow/login"),
 	});
 
-	return finalizeSyncResult(result.items, checkpoint, {
-		backend: result.backend,
-		api_calls: result.apiCallCount,
-		...(args.metadata ?? {}),
-	});
+	return finalizeSyncResult(
+		result.items,
+		checkpoint,
+		{
+			backend: result.backend,
+			api_calls: result.apiCallCount,
+			...(args.metadata ?? {}),
+		},
+		args.originType ? { originType: args.originType } : undefined,
+	);
 }
 
 async function syncSearchViaExtension(
@@ -623,10 +728,7 @@ async function syncSearchViaExtension(
 	checkpoint: XCheckpoint,
 ): Promise<SyncResult> {
 	const searchQuery = buildSearchQuery(config);
-	const maxScrolls = Math.max(
-		1,
-		Math.min(50, Number(config.max_scrolls ?? 10) || 10),
-	);
+	const maxScrolls = readMaxPages(config);
 	const searchFilter = (config.search_filter as string) ?? "live";
 	const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query&f=${searchFilter}`;
 
@@ -638,6 +740,197 @@ async function syncSearchViaExtension(
 		maxScrolls,
 		checkpoint,
 		metadata: { search_query: searchQuery, search_filter: searchFilter },
+	});
+}
+
+async function syncMyTweetsViaOAuthApi(
+	ctx: SyncContext,
+	config: Record<string, unknown>,
+	checkpoint: XCheckpoint,
+): Promise<SyncResult> {
+	const accessToken = ctx.credentials?.accessToken;
+	if (!accessToken) {
+		throw new Error("OAuth access token missing for my_tweets feed");
+	}
+
+	const http = createOAuthHttpClient(accessToken);
+	const maxPages = readMaxPages(config);
+	const authUser = await resolveAuthenticatedUser(http);
+	const accountHandle = await resolveAccountHandle(config, http);
+	const userId =
+		accountHandle === authUser.username
+			? authUser.id
+			: await resolveUserId(accountHandle, http);
+
+	const { tweets, pageCount } = await paginateTweetEndpoint(
+		http,
+		(nextToken) => {
+			const url = new URL(
+				`https://api.x.com/2/users/${encodeURIComponent(userId)}/tweets`,
+			);
+			url.searchParams.set("max_results", "100");
+			url.searchParams.set("tweet.fields", TWEET_FIELDS);
+			if (checkpoint.last_tweet_id) {
+				url.searchParams.set("since_id", checkpoint.last_tweet_id);
+			}
+			if (nextToken) {
+				url.searchParams.set("pagination_token", nextToken);
+			}
+			return url;
+		},
+		maxPages,
+		accountHandle,
+	);
+
+	return finalizeSyncResult(tweets, checkpoint, {
+		backend: "oauth_api",
+		api_calls: pageCount,
+		account_handle: accountHandle,
+		feed: "my_tweets",
+	});
+}
+
+async function syncMyTweetsViaExtension(
+	ctx: SyncContext,
+	config: Record<string, unknown>,
+	checkpoint: XCheckpoint,
+): Promise<SyncResult> {
+	const accountHandle = await resolveAccountHandle(config);
+	const maxScrolls = readMaxPages(config);
+	const profileUrl = `https://x.com/${encodeURIComponent(accountHandle)}`;
+
+	return syncViaExtension({
+		ctx,
+		url: profileUrl,
+		interceptPatterns: [{ regex: "/i/api/graphql/\\w+/.*UserTweets" }],
+		parseResponse: parseBrowserTimelineResponse,
+		maxScrolls,
+		checkpoint,
+		metadata: { account_handle: accountHandle, feed: "my_tweets" },
+	});
+}
+
+async function syncLikedTweetsViaOAuthApi(
+	ctx: SyncContext,
+	config: Record<string, unknown>,
+	checkpoint: XCheckpoint,
+): Promise<SyncResult> {
+	const accessToken = ctx.credentials?.accessToken;
+	if (!accessToken) {
+		throw new Error("OAuth access token missing for liked_tweets feed");
+	}
+
+	const http = createOAuthHttpClient(accessToken);
+	const maxPages = readMaxPages(config);
+	const authUser = await resolveAuthenticatedUser(http);
+	const accountHandle = await resolveAccountHandle(config, http);
+	const userId =
+		accountHandle === authUser.username
+			? authUser.id
+			: await resolveUserId(accountHandle, http);
+
+	const { tweets, pageCount } = await paginateTweetEndpoint(
+		http,
+		(nextToken) => {
+			const url = new URL(
+				`https://api.x.com/2/users/${encodeURIComponent(userId)}/liked_tweets`,
+			);
+			url.searchParams.set("max_results", "100");
+			url.searchParams.set("tweet.fields", TWEET_FIELDS);
+			url.searchParams.set("expansions", "author_id");
+			url.searchParams.set("user.fields", "username");
+			if (nextToken) {
+				url.searchParams.set("pagination_token", nextToken);
+			}
+			return url;
+		},
+		maxPages,
+	);
+
+	return finalizeSyncResult(tweets, checkpoint, {
+		backend: "oauth_api",
+		api_calls: pageCount,
+		account_handle: accountHandle,
+		feed: "liked_tweets",
+	}, { originType: "liked_tweet" });
+}
+
+async function syncLikedTweetsViaExtension(
+	ctx: SyncContext,
+	config: Record<string, unknown>,
+	checkpoint: XCheckpoint,
+): Promise<SyncResult> {
+	const accountHandle = await resolveAccountHandle(config);
+	const maxScrolls = readMaxPages(config);
+	const likesUrl = `https://x.com/${encodeURIComponent(accountHandle)}/likes`;
+
+	return syncViaExtension({
+		ctx,
+		url: likesUrl,
+		interceptPatterns: [{ regex: "/i/api/graphql/\\w+/.*Like" }],
+		parseResponse: parseBrowserTimelineResponse,
+		maxScrolls,
+		checkpoint,
+		metadata: { account_handle: accountHandle, feed: "liked_tweets" },
+		originType: "liked_tweet",
+	});
+}
+
+async function syncBookmarksViaOAuthApi(
+	ctx: SyncContext,
+	config: Record<string, unknown>,
+	checkpoint: XCheckpoint,
+): Promise<SyncResult> {
+	const accessToken = ctx.credentials?.accessToken;
+	if (!accessToken) {
+		throw new Error("OAuth access token missing for bookmarks feed");
+	}
+
+	const http = createOAuthHttpClient(accessToken);
+	const maxPages = readMaxPages(config);
+	const authUser = await resolveAuthenticatedUser(http);
+
+	const { tweets, pageCount } = await paginateTweetEndpoint(
+		http,
+		(nextToken) => {
+			const url = new URL(
+				`https://api.x.com/2/users/${encodeURIComponent(authUser.id)}/bookmarks`,
+			);
+			url.searchParams.set("max_results", "100");
+			url.searchParams.set("tweet.fields", TWEET_FIELDS);
+			url.searchParams.set("expansions", "author_id");
+			url.searchParams.set("user.fields", "username");
+			if (nextToken) {
+				url.searchParams.set("pagination_token", nextToken);
+			}
+			return url;
+		},
+		maxPages,
+	);
+
+	return finalizeSyncResult(tweets, checkpoint, {
+		backend: "oauth_api",
+		api_calls: pageCount,
+		feed: "bookmarks",
+	}, { originType: "bookmark" });
+}
+
+async function syncBookmarksViaExtension(
+	ctx: SyncContext,
+	config: Record<string, unknown>,
+	checkpoint: XCheckpoint,
+): Promise<SyncResult> {
+	const maxScrolls = readMaxPages(config);
+
+	return syncViaExtension({
+		ctx,
+		url: "https://x.com/i/bookmarks",
+		interceptPatterns: [{ regex: "/i/api/graphql/\\w+/.*Bookmark" }],
+		parseResponse: parseBrowserTimelineResponse,
+		maxScrolls,
+		checkpoint,
+		metadata: { feed: "bookmarks" },
+		originType: "bookmark",
 	});
 }
 
@@ -729,6 +1022,40 @@ const homeFeedConfigSchema = {
 	},
 };
 
+const accountTimelineConfigSchema = {
+	type: "object",
+	properties: {
+		account_handle: {
+			type: "string",
+			minLength: 1,
+			description:
+				'Optional X handle (e.g. "buremba"). Defaults to the authenticated account when OAuth is available.',
+		},
+		max_scrolls: {
+			type: "integer",
+			minimum: 1,
+			maximum: 50,
+			default: 10,
+			description:
+				"Maximum pagination iterations (default: 10, API pages or browser scrolls)",
+		},
+	},
+};
+
+const bookmarksConfigSchema = {
+	type: "object",
+	properties: {
+		max_scrolls: {
+			type: "integer",
+			minimum: 1,
+			maximum: 50,
+			default: 10,
+			description:
+				"Maximum pagination iterations (default: 10, API pages or browser scrolls)",
+		},
+	},
+};
+
 const engagementMetadataSchema = {
 	type: "object",
 	properties: {
@@ -750,8 +1077,8 @@ export default class XConnector extends ConnectorRuntime {
 		key: "x",
 		name: "X (Twitter)",
 		description:
-			"Fetches tweets via the X API v2 or the paired Owletto Chrome extension. Includes a home-timeline feed scraped from your signed-in x.com session.",
-		version: "3.0.0",
+			"Fetches tweets via the X API v2 or the paired Owletto Chrome extension. Includes home timeline, your posts, likes, and bookmarks.",
+		version: "3.1.0",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [
@@ -768,6 +1095,8 @@ export default class XConnector extends ConnectorRuntime {
 					loginScopes: [
 						"users.read",
 						"tweet.read",
+						"like.read",
+						"bookmark.read",
 						"offline.access",
 						"users.email",
 					],
@@ -820,6 +1149,58 @@ export default class XConnector extends ConnectorRuntime {
 					},
 				},
 			},
+			my_tweets: {
+				key: "my_tweets",
+				name: "My Posts",
+				requiredScopes: ["tweet.read", "users.read"],
+				description:
+					"Posts and replies authored by the connected account. Uses the X API when OAuth is available, otherwise the paired Chrome extension.",
+				configSchema: accountTimelineConfigSchema,
+				eventKinds: {
+					tweet: {
+						description: "An original post by the connected account",
+						metadataSchema: engagementMetadataSchema,
+					},
+					reply: {
+						description: "A reply posted by the connected account",
+						metadataSchema: {
+							...engagementMetadataSchema,
+							properties: {
+								...engagementMetadataSchema.properties,
+								conversation_id: { type: "string" },
+							},
+						},
+					},
+				},
+			},
+			liked_tweets: {
+				key: "liked_tweets",
+				name: "Liked Posts",
+				requiredScopes: ["like.read", "tweet.read", "users.read"],
+				description:
+					"Posts the connected account has liked. Uses the X API when OAuth is available, otherwise the paired Chrome extension.",
+				configSchema: accountTimelineConfigSchema,
+				eventKinds: {
+					liked_tweet: {
+						description: "A post liked by the connected account",
+						metadataSchema: engagementMetadataSchema,
+					},
+				},
+			},
+			bookmarks: {
+				key: "bookmarks",
+				name: "Bookmarks",
+				requiredScopes: ["bookmark.read", "tweet.read", "users.read"],
+				description:
+					"Posts bookmarked by the connected account. Uses the X API when OAuth is available, otherwise the paired Chrome extension.",
+				configSchema: bookmarksConfigSchema,
+				eventKinds: {
+					bookmark: {
+						description: "A post bookmarked by the connected account",
+						metadataSchema: engagementMetadataSchema,
+					},
+				},
+			},
 			home_feed: {
 				key: "home_feed",
 				name: "Home Timeline",
@@ -845,6 +1226,27 @@ export default class XConnector extends ConnectorRuntime {
 		// extension, regardless of whether an OAuth token is present.
 		if (feedKey === "home_feed") {
 			return syncHomeFeedViaDomScrape(ctx, config, checkpoint);
+		}
+
+		if (feedKey === "my_tweets") {
+			if (ctx.credentials?.accessToken) {
+				return syncMyTweetsViaOAuthApi(ctx, config, checkpoint);
+			}
+			return syncMyTweetsViaExtension(ctx, config, checkpoint);
+		}
+
+		if (feedKey === "liked_tweets") {
+			if (ctx.credentials?.accessToken) {
+				return syncLikedTweetsViaOAuthApi(ctx, config, checkpoint);
+			}
+			return syncLikedTweetsViaExtension(ctx, config, checkpoint);
+		}
+
+		if (feedKey === "bookmarks") {
+			if (ctx.credentials?.accessToken) {
+				return syncBookmarksViaOAuthApi(ctx, config, checkpoint);
+			}
+			return syncBookmarksViaExtension(ctx, config, checkpoint);
 		}
 
 		// `tweets` feed: prefer the official API when we have a token, fall back

@@ -33,7 +33,7 @@ import { insertEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
 import { createConnectorOperationRun } from '../../runs/queue-service';
 import { dispatchChromeActionToExtension } from '../../worker-api/dispatch-chrome-action';
-import { buildEventPermalink } from '../../utils/url-builder';
+import { buildRunPermalink } from '../../utils/url-builder';
 import { trackWatcherReaction } from '../../utils/watcher-reactions';
 import type { ToolContext } from '../registry';
 import { getOrgUrlContext } from '../view-urls';
@@ -704,8 +704,12 @@ async function handleExecute(
     });
     const eventId = Number(event.id);
     const { ownerSlug: orgSlug, baseUrl } = await getOrgUrlContext(ctx);
+    // Run-scoped, not event-scoped: the pending event is superseded on
+    // approve→complete and drops out of the live view, but a run_ids permalink
+    // reads the whole chain and stays valid across the lifecycle. (The read-side
+    // content_ids resolver also covers already-minted event-scoped links.)
     const approvalUrl =
-      orgSlug && baseUrl ? buildEventPermalink(orgSlug, eventId, baseUrl) : undefined;
+      orgSlug && baseUrl ? buildRunPermalink(orgSlug, runId, baseUrl) : undefined;
 
     notifyActionApprovalNeeded({
       orgId: ctx.organizationId,

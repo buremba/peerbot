@@ -102,6 +102,24 @@ export function buildEventPermalink(ownerSlug: string, eventId: number, baseUrl?
 }
 
 /**
+ * Build permalink URL scoped to a run.
+ * Pattern: /{ownerSlug}/memory?run_ids={runId}
+ *
+ * Prefer this over {@link buildEventPermalink} when the link's identity is the
+ * run, not a single event snapshot — e.g. an operation's approval_url. A run's
+ * events form a supersede chain (pending→executing→completed) that shares one
+ * run_id, and run-scoped reads were never masked by `superseded_by IS NULL`, so
+ * this URL stays valid across the whole lifecycle by construction — no read-side
+ * chain resolution required.
+ */
+export function buildRunPermalink(ownerSlug: string, runId: number, baseUrl?: string): string {
+  return withBaseUrl(
+    normalizeBaseUrl(baseUrl),
+    `/${ownerSlug}/memory?run_ids=${runId}`
+  );
+}
+
+/**
  * Build URL to view entity content
  */
 export function buildContentUrl(

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildEntityUrl, getPublicWebUrl } from '../url-builder';
+import { buildEntityUrl, buildRunPermalink, getPublicWebUrl } from '../url-builder';
 import {
   HOSTED_UI_FALLBACK_ORIGIN,
   __resetPublicOriginCachesForTests,
@@ -85,5 +85,18 @@ describe('buildEntityUrl', () => {
       undefined
     );
     expect(url).toBe('/acme/topic/test-topic');
+  });
+});
+
+describe('buildRunPermalink', () => {
+  it('scopes the memory permalink to run_ids (survives the supersede chain)', () => {
+    const url = buildRunPermalink('acme', 536620, 'https://app.lobu.com');
+    expect(url).toBe('https://app.lobu.com/acme/memory?run_ids=536620');
+  });
+
+  it('builds a relative URL when no base is provided', () => {
+    expect(buildRunPermalink('acme', 536620, undefined)).toBe(
+      '/acme/memory?run_ids=536620'
+    );
   });
 });

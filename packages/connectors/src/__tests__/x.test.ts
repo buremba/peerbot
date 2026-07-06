@@ -427,15 +427,14 @@ describe("XConnector definition", () => {
 			"my_tweets",
 			"tweets",
 		]);
-		expect(def.feeds.direct_messages.requiredScopes).toContain("dm.read");
+		expect(def.feeds.direct_messages.requiredScopes).toBeUndefined();
 		expect(
 			def.feeds.tweets.eventKinds.tweet.entityLinks?.[0]?.identities?.map(
 				(i: { namespace: string }) => i.namespace,
 			),
 		).toEqual(["x_user_id", "x_handle"]);
-		expect(def.feeds.my_tweets.requiredScopes).toContain("tweet.read");
-		expect(def.feeds.liked_tweets.requiredScopes).toContain("like.read");
-		expect(def.feeds.bookmarks.requiredScopes).toContain("bookmark.read");
+		expect(def.feeds.liked_tweets.requiredScopes).toBeUndefined();
+		expect(def.feeds.bookmarks.requiredScopes).toBeUndefined();
 		expect(def.feeds.home_feed.description).toMatch(/home timeline/i);
 		// Extension is the browser fallback method (no public API for the timeline).
 		const browserMethod = def.authSchema.methods.find(

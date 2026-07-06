@@ -50,6 +50,15 @@ const X_IDENTITY = {
 	HANDLE: "x_handle",
 } as const;
 
+/** OAuth scopes needed per feed for the API path (not used to pause browser-capable feeds). */
+const X_OAUTH_FEED_SCOPES: Record<string, readonly string[]> = {
+	tweets: ["tweet.read", "users.read"],
+	my_tweets: ["tweet.read", "users.read"],
+	liked_tweets: ["like.read", "tweet.read", "users.read"],
+	bookmarks: ["bookmark.read", "tweet.read", "users.read"],
+	direct_messages: ["dm.read", "tweet.read", "users.read"],
+};
+
 function normalizeXHandle(raw: string | undefined | null): string | undefined {
 	if (!raw) return undefined;
 	const trimmed = raw.trim().replace(/^@+/, "").toLowerCase();
@@ -1773,7 +1782,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.3.0",
+		version: "3.3.1",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [
@@ -1825,7 +1834,6 @@ export default class XConnector extends ConnectorRuntime {
 			tweets: {
 				key: "tweets",
 				name: "Tweets",
-				requiredScopes: ["tweet.read", "users.read"],
 				description:
 					"Search and sync tweets matching a query or a specific account handle.",
 				configSchema: searchConfigSchema,
@@ -1851,7 +1859,6 @@ export default class XConnector extends ConnectorRuntime {
 			my_tweets: {
 				key: "my_tweets",
 				name: "My Posts",
-				requiredScopes: ["tweet.read", "users.read"],
 				description:
 					"Posts and replies authored by the connected account. Uses the X API when OAuth is available, otherwise the paired Chrome extension.",
 				configSchema: accountTimelineConfigSchema,
@@ -1877,7 +1884,6 @@ export default class XConnector extends ConnectorRuntime {
 			liked_tweets: {
 				key: "liked_tweets",
 				name: "Liked Posts",
-				requiredScopes: ["like.read", "tweet.read", "users.read"],
 				description:
 					"Posts the connected account has liked. Uses the X API when OAuth is available, otherwise the paired Chrome extension.",
 				configSchema: accountTimelineConfigSchema,
@@ -1892,7 +1898,6 @@ export default class XConnector extends ConnectorRuntime {
 			bookmarks: {
 				key: "bookmarks",
 				name: "Bookmarks",
-				requiredScopes: ["bookmark.read", "tweet.read", "users.read"],
 				description:
 					"Posts bookmarked by the connected account. Uses the X API when OAuth is available, otherwise the paired Chrome extension.",
 				configSchema: bookmarksConfigSchema,
@@ -1907,7 +1912,6 @@ export default class XConnector extends ConnectorRuntime {
 			direct_messages: {
 				key: "direct_messages",
 				name: "Direct Messages",
-				requiredScopes: ["dm.read", "tweet.read", "users.read"],
 				description:
 					"Direct message events across all conversations. Uses the X API when dm.read is granted, otherwise the paired Chrome extension on /messages. Auto-creates person entities for 1:1 counterparts.",
 				configSchema: bookmarksConfigSchema,
@@ -1940,7 +1944,7 @@ export default class XConnector extends ConnectorRuntime {
 		const config = ctx.config as Record<string, unknown>;
 		const checkpoint = (ctx.checkpoint ?? {}) as XCheckpoint;
 		const feedKey = ctx.feedKey ?? "tweets";
-		const feedDef = this.definition.feeds[feedKey];
+		const oauthScopes = X_OAUTH_FEED_SCOPES[feedKey];
 
 		// The home timeline has no public API — it is always served by the
 		// extension, regardless of whether an OAuth token is present.
@@ -1950,8 +1954,7 @@ export default class XConnector extends ConnectorRuntime {
 
 		if (feedKey === "my_tweets") {
 			if (
-				resolveSyncBackend(ctx, config, feedDef?.requiredScopes) ===
-				"oauth_api"
+				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
 			) {
 				return syncWithOAuthFallback(
 					() => syncMyTweetsViaOAuthApi(ctx, config, checkpoint),
@@ -1963,8 +1966,7 @@ export default class XConnector extends ConnectorRuntime {
 
 		if (feedKey === "liked_tweets") {
 			if (
-				resolveSyncBackend(ctx, config, feedDef?.requiredScopes) ===
-				"oauth_api"
+				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
 			) {
 				return syncWithOAuthFallback(
 					() => syncLikedTweetsViaOAuthApi(ctx, config, checkpoint),
@@ -1976,8 +1978,7 @@ export default class XConnector extends ConnectorRuntime {
 
 		if (feedKey === "bookmarks") {
 			if (
-				resolveSyncBackend(ctx, config, feedDef?.requiredScopes) ===
-				"oauth_api"
+				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
 			) {
 				return syncWithOAuthFallback(
 					() => syncBookmarksViaOAuthApi(ctx, config, checkpoint),
@@ -1989,8 +1990,7 @@ export default class XConnector extends ConnectorRuntime {
 
 		if (feedKey === "direct_messages") {
 			if (
-				resolveSyncBackend(ctx, config, feedDef?.requiredScopes) ===
-				"oauth_api"
+				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
 			) {
 				return syncWithOAuthFallback(
 					() => syncDirectMessagesViaOAuthApi(ctx, config, checkpoint),
@@ -2003,7 +2003,7 @@ export default class XConnector extends ConnectorRuntime {
 		// `tweets` feed: prefer the official API when scopes are sufficient,
 		// otherwise the extension's signed-in search.
 		if (
-			resolveSyncBackend(ctx, config, feedDef?.requiredScopes) === "oauth_api"
+			resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
 		) {
 			return syncWithOAuthFallback(
 				() => syncViaOAuthApi(ctx, config, checkpoint),

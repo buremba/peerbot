@@ -562,6 +562,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       tryHandleSlashText?: (...args: any[]) => Promise<boolean>;
       tryHandle?: (...args: any[]) => Promise<boolean>;
     };
+    providerCatalog?: unknown;
   }) {
     const state = new InMemoryStateAdapter();
     const conversationState = new ConversationStateStore(state);
@@ -596,6 +597,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       getAgentSettingsStore: () => undefined,
       getDeclaredAgentRegistry: () => undefined,
       getQueueProducer: () => ({ enqueueMessage }),
+      getProviderCatalogService: () => opts.providerCatalog,
     } as any;
     const manager = {
       has: () => true,
@@ -659,6 +661,31 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     expect(thread.post).toHaveBeenCalledTimes(1);
     expect(String(thread.post.mock.calls[0]?.[0])).toContain("/lobu link");
     expect(enqueueMessage).not.toHaveBeenCalled();
+  });
+
+  test("unroutable model provider posts a plain Slack text fallback and skips enqueue", async () => {
+    const providerCatalog = {
+      getInstalledModules: mock(async () => []),
+      findProviderForModel: mock(async () => null),
+    };
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      binding: {
+        agentId: "lobu-builder",
+        organizationId: "org-bound",
+        model: "z-ai/glm-5.2",
+      },
+      providerCatalog,
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(thread, makeMessage(), "mention");
+
+    expect(enqueueMessage).not.toHaveBeenCalled();
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    const posted = thread.post.mock.calls[0]?.[0];
+    expect(typeof posted).toBe("string");
+    expect(posted).toContain("selected model (z-ai/glm-5.2)");
+    expect(posted).toContain("/api/proxy/z-ai/a/lobu-builder");
   });
 
   test("cross-org: routes the worker turn under the BOUND agent's org, not the connection's", async () => {

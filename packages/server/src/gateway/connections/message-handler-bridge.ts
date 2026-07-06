@@ -953,7 +953,7 @@ export class MessageHandlerBridge {
           { traceId, agentId, organizationId, model: agentOptions.model },
           "Rejecting inbound message before enqueue because model provider is not routable"
         );
-        await thread.post({ text: modelProviderError });
+        await thread.post(modelProviderError);
         return;
       }
 

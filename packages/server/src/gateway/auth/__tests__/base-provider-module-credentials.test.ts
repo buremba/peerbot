@@ -140,6 +140,19 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     ).toBe(false);
   });
 
+  test("credential placeholder uses signed worker token when available", async () => {
+    const mod = makeModule(false);
+
+    expect(
+      await Promise.resolve(
+        mod.buildCredentialPlaceholder("agent-1", { workerToken: "worker-jwt" })
+      )
+    ).toBe("worker-jwt");
+    expect(await Promise.resolve(mod.buildCredentialPlaceholder("agent-1"))).toBe(
+      "lobu-proxy"
+    );
+  });
+
   test("proxy base URL carries org scope when credential context has organizationId", () => {
     const mod = makeModule(false);
 

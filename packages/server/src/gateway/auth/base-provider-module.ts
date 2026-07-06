@@ -376,12 +376,16 @@ export abstract class BaseProviderModule
     return resolved?.credential ?? null;
   }
 
-  /** Build a structured placeholder for proxy mode (default: "lobu-proxy"). */
+  /**
+   * Build the proxy-mode credential placeholder. When available, use the signed
+   * worker token so the egress proxy can bind the request to the worker's
+   * agent/org claims instead of resolving org context from a per-org agent id.
+   */
   buildCredentialPlaceholder(
     _agentId: string,
-    _context?: ProviderCredentialContext
+    context?: ProviderCredentialContext
   ): Promise<string> | string {
-    return "lobu-proxy";
+    return context?.workerToken || "lobu-proxy";
   }
 
   /** Override in subclasses to add provider-specific routes. */

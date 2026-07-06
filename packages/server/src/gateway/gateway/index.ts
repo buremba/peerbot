@@ -918,7 +918,11 @@ export class WorkerGateway {
       ) {
         const credVar = provider.getCredentialEnvVarName();
         const placeholder = provider.buildCredentialPlaceholder
-          ? await provider.buildCredentialPlaceholder(agentId, { workerToken })
+          ? await provider.buildCredentialPlaceholder(agentId, {
+              organizationId,
+              userId,
+              workerToken,
+            })
           : "lobu-proxy";
         credentialPlaceholders[credVar] = placeholder;
       }

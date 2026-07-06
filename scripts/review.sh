@@ -158,7 +158,7 @@ UNIT_EXIT=0
   # one compiler (authz/connection-visibility.ts), not be re-derived inline —
   # that is how the authz gate silently drifts and leaks private-connection data.
   node scripts/check-connection-visibility-compiler.mjs;            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  bun test packages/core packages/cli;                              ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  bun test packages/core packages/cli packages/connectors;          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   bun test packages/agent-worker;                                   ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   bun test packages/server/src/__tests__/unit;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   bun test packages/server/src/auth/__tests__/tool-access.test.ts;  ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec

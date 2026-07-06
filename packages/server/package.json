@@ -36,6 +36,7 @@
 		"@hono/zod-openapi": "^1.2.1",
 		"@lobu/core": "workspace:*",
 		"@lobu/connector-sdk": "workspace:*",
+		"@lobu/connectors": "workspace:*",
 		"@lobu/connector-worker": "workspace:*",
 		"@mariozechner/pi-ai": "^0.73.1",
 		"@modelcontextprotocol/sdk": "^1.27.1",

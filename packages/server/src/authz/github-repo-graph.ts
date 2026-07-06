@@ -16,8 +16,12 @@
  * lacked.
  */
 
+import {
+  GITHUB_IDENTITY,
+  normalizeGithubLogin,
+  normalizeGithubRepoFullName,
+} from '@lobu/connectors/github-identity';
 import { normalizeNumericId } from '@lobu/connector-sdk';
-import { normalizeGithubLogin, normalizeGithubRepoFullName } from './github-normalize.js';
 import {
   type AccessGraphResult,
   type AccessMember,
@@ -25,9 +29,6 @@ import {
   buildAccessGraph,
 } from './access-graph.js';
 import { GITHUB_SOURCE } from './sources.js';
-
-const GITHUB_USER_ID_NS = 'github_user_id';
-const GITHUB_LOGIN_NS = 'github_login';
 
 /** A repo collaborator as the GitHub collaborators API reports it. */
 export interface GithubRepoCollaborator {
@@ -61,8 +62,8 @@ export async function buildGithubRepoGraph(params: {
       const login = normalizeGithubLogin(c.login);
       const idValue = c.id != null ? normalizeNumericId(String(c.id)) : null;
       const identities: { namespace: string; value: string }[] = [];
-      if (idValue) identities.push({ namespace: GITHUB_USER_ID_NS, value: idValue });
-      if (login) identities.push({ namespace: GITHUB_LOGIN_NS, value: login });
+      if (idValue) identities.push({ namespace: GITHUB_IDENTITY.USER_ID, value: idValue });
+      if (login) identities.push({ namespace: GITHUB_IDENTITY.LOGIN, value: login });
       if (identities.length === 0) continue;
       members.push({ key: idValue ?? (login as string), name: c.login, identities });
     }

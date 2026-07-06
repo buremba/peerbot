@@ -22,6 +22,7 @@ For durable facts, ingest into `learning` entities or `save_memory` — not as f
 | Spotify | `spotify` | Recently played, playlists, top tracks |
 | WhatsApp | `whatsapp` | Messages (`whatsapp.local` on a paired device) |
 | Gmail | `gmail` | Indexed sync and/or virtual `threads` feed. Optional `config.query` scope; agents pass `query_sql` `search_term` (Gmail connector merges as search syntax). Default: unbounded mailbox |
+| X | `x` | `my_tweets`, `liked_tweets`, `bookmarks`, `direct_messages`, `home_feed` — OAuth when scopes allow, otherwise paired Owletto Chrome |
 | YouTube | `youtube` | `liked_videos`, `playlists` (OAuth). **Watch history** is not in the YouTube API — use Google Takeout |
 | Chrome | `chrome`, `chrome-history`, `chrome-downloads`, `chrome-bookmarks` | Browsing + downloads |
 | Apple Photos / Calendar / Reminders / Screen Time | `apple-photos`, `calendar`, `reminders`, `apple-screen-time` | Device data |
@@ -183,11 +184,13 @@ Live `home_feed` keeps your timeline current; the zip **backfills** graph and ca
 
 ### X / Twitter
 
+**Live connector** (`x`): OAuth + paired Chrome for `my_tweets`, `liked_tweets`, `bookmarks`, `direct_messages`, and `home_feed`. Use feeds for ongoing memory; Takeout below is for deep history the live path does not reach.
+
 | | |
 |---|---|
 | **Download** | https://x.com/settings/download_your_data |
 | **Format** | `twitter-YYYY-MM-DD-<hash>.zip` → `data/tweets.js`, DMs, media |
-| **Ingest** | No bundled connector; summarise into learnings or episodic memory |
+| **Ingest** | Backfill only — summarise into learnings or episodic memory |
 | **Status** | _Not started_ |
 
 ---

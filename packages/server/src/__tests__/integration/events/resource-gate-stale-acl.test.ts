@@ -17,7 +17,7 @@
  * deterministic without a live embedding service (mirrors github-repo-visibility).
  */
 
-import { normalizeGithubRepoFullName } from '../../../authz/github-normalize.js';
+import { normalizeGithubRepoFullName } from '@lobu/connectors/github-identity';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildGithubRepoGraph } from '../../../authz/github-repo-graph';
 import type { ToolContext } from '../../../tools/registry';

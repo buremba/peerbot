@@ -14,7 +14,7 @@
  * events/search-content-visibility.test.ts).
  */
 
-import { normalizeGithubRepoFullName } from '../../../authz/github-normalize.js';
+import { normalizeGithubRepoFullName } from '@lobu/connectors/github-identity';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { syncGithubConnectionAcl } from '../../../authz/github-acl-sync';
 import { buildGithubRepoGraph } from '../../../authz/github-repo-graph';

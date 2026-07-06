@@ -49,6 +49,10 @@ import {
 import type { SecretStore } from "../../secrets/index.js";
 import type { AppInstallationStore } from "../../../lobu/stores/app-installation-store.js";
 import { insertEvent } from "../../../utils/insert-event.js";
+import {
+	githubKeyForOriginId,
+	githubUserIdentityKey,
+} from "@lobu/connectors/github-identity";
 import { extractGithubActor, resolveGithubWebhookActor } from "./github-webhook-actor.js";
 
 const logger = createLogger("app-webhook-routes");
@@ -682,11 +686,12 @@ async function storeGithubWebhookEvent(params: {
 	if (!target) return false;
 	const { owner, name } = target;
 
-	// origin_id mirrors the connector: key on the immutable user id when present.
-	const key = actor.author_id
-		? `github_user_id:${actor.author_id}`
-		: `github_login:${actor.author_login.toLowerCase()}`;
-	const originId = `stargazer_${owner}_${name}_${key.replace(/[^a-z0-9]+/gi, "_")}`;
+	// origin_id mirrors the connector poll path (githubUserIdentityKey + sanitizer).
+	const key = githubUserIdentityKey({
+		userId: actor.author_id,
+		login: actor.author_login,
+	});
+	const originId = `stargazer_${owner}_${name}_${githubKeyForOriginId(key)}`;
 	const starredAt = strField(root, "starred_at") ?? new Date().toISOString();
 	const profileUrl =
 		strField(root.sender, "html_url") ??

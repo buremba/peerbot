@@ -5,15 +5,15 @@
  * Org-scoped via the caller's resolved install; resolution never crosses orgs.
  */
 
+import {
+	GITHUB_IDENTITY,
+	normalizeGithubLogin,
+} from "@lobu/connectors/github-identity";
 import type { DbClient } from "../../../db/client.js";
-import { normalizeGithubLogin } from "../../../authz/github-normalize.js";
 import {
 	loadEntityLinkRuleByType,
 	resolveEntityLinksForItems,
 } from "../../../utils/entity-link-upsert.js";
-
-const GITHUB_LOGIN_NS = "github_login";
-const GITHUB_USER_ID_NS = "github_user_id";
 
 interface GithubActor {
 	login?: unknown;
@@ -152,7 +152,7 @@ export async function resolveGithubWebhookActor(params: {
 	// resolveEntityLinksForItems stamped the canonical namespace slots onto
 	// item.metadata; forward only those onto the landed row.
 	const metadata: Record<string, string> = {};
-	for (const ns of [GITHUB_LOGIN_NS, GITHUB_USER_ID_NS]) {
+	for (const ns of [GITHUB_IDENTITY.LOGIN, GITHUB_IDENTITY.USER_ID]) {
 		const value = item.metadata[ns];
 		if (typeof value === "string" && value.length > 0) metadata[ns] = value;
 	}

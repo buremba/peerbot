@@ -117,6 +117,9 @@ jobs:
         # Checkpoint/watermark + url-guards moved here from bundled scraper-utils.
         run: bun test packages/connector-sdk
 
+      - name: connectors (bun:test)
+        run: bun test packages/connectors
+
       - name: example connectors (bun:test)
         # Unbundled connectors live under examples/; mock @lobu/connector-sdk
         # so Playwright/Baileys never load in CI.

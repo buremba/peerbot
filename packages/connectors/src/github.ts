@@ -22,34 +22,13 @@ import {
   type WebhookRegistration,
   type WebhookRegistrationContext,
 } from '@lobu/connector-sdk';
-
-/** Connector-owned identity namespaces (not SDK-global). */
-const GITHUB_IDENTITY = {
-  USER_ID: 'github_user_id',
-  LOGIN: 'github_login',
-  REPO_ID: 'github_repo_id',
-  REPO_FULL_NAME: 'github_repo_full_name',
-} as const;
-
-function normalizeGithubLogin(raw: string | null | undefined): string | null {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim().toLowerCase();
-  if (!trimmed) return null;
-  if (!/^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,38}$/.test(trimmed)) return null;
-  return trimmed;
-}
-
-function normalizeGithubRepoFullName(raw: string | null | undefined): string | null {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim().toLowerCase();
-  if (!trimmed) return null;
-  const parts = trimmed.split('/');
-  if (parts.length !== 2) return null;
-  const [owner, repo] = parts;
-  const githubName = /^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9])?$/;
-  if (!githubName.test(owner) || !githubName.test(repo)) return null;
-  return `${owner}/${repo}`;
-}
+import {
+  GITHUB_IDENTITY,
+  githubKeyForOriginId,
+  githubUserIdentityKey,
+  normalizeGithubLogin,
+  normalizeGithubRepoFullName,
+} from './github-identity.js';
 
 type GitHubContentType =
   | 'issues'
@@ -1492,7 +1471,7 @@ export default class GitHubConnector extends ConnectorRuntime {
         const login = user.login;
         if (!login) continue;
 
-        const key = this.githubUserKey(user, login);
+        const key = githubUserIdentityKey({ userId: user.id, login });
         const starredAtIso = toIsoOrUndefined(stargazer.starred_at) ?? now.toISOString();
         const starredAt = new Date(starredAtIso);
         if (Number.isNaN(starredAt.getTime())) continue;
@@ -1522,7 +1501,7 @@ export default class GitHubConnector extends ConnectorRuntime {
 
         if (!previousStargazer) {
           events.push({
-            origin_id: `stargazer_${repo.owner}_${repo.repo}_${this.keyForOriginId(key)}`,
+            origin_id: `stargazer_${repo.owner}_${repo.repo}_${githubKeyForOriginId(key)}`,
             title: `${login} starred ${repo.owner}/${repo.repo}`,
             payload_text: `${login} starred ${repo.owner}/${repo.repo}.`,
             author_name: login,
@@ -1548,7 +1527,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       if (currentKeys.has(previousStargazer.key)) continue;
 
       events.push({
-        origin_id: `stargazer_unstarred_${repo.owner}_${repo.repo}_${this.keyForOriginId(previousStargazer.key)}_${now.getTime()}`,
+        origin_id: `stargazer_unstarred_${repo.owner}_${repo.repo}_${githubKeyForOriginId(previousStargazer.key)}_${now.getTime()}`,
         title: `${previousStargazer.login} unstarred ${repo.owner}/${repo.repo}`,
         payload_text: `${previousStargazer.login} unstarred ${repo.owner}/${repo.repo}.`,
         author_name: previousStargazer.login,
@@ -1595,7 +1574,7 @@ export default class GitHubConnector extends ConnectorRuntime {
     const identities = this.githubUserIdentities(profile, params.login);
 
     params.events.push({
-      origin_id: `stargazer_profile_${this.keyForOriginId(this.githubUserKey(profile, params.login))}`,
+      origin_id: `stargazer_profile_${githubKeyForOriginId(githubUserIdentityKey({ userId: profile.id, login: params.login }))}`,
       title: profile.name || params.login,
       payload_text: profile.bio || `GitHub profile for ${params.login}.`,
       author_name: params.login,
@@ -1675,17 +1654,6 @@ export default class GitHubConnector extends ConnectorRuntime {
         html_url: `https://github.com/${repo.owner}/${repo.repo}`,
       };
     }
-  }
-
-  private githubUserKey(user: Pick<GitHubUserProfile, 'id'>, login: string): string {
-    const normalizedLogin = normalizeGithubLogin(login) ?? login.toLowerCase();
-    return user.id
-      ? `${GITHUB_IDENTITY.USER_ID}:${user.id}`
-      : `${GITHUB_IDENTITY.LOGIN}:${normalizedLogin}`;
-  }
-
-  private keyForOriginId(key: string): string {
-    return key.replace(/[^a-z0-9]+/gi, '_');
   }
 
   private githubUserIdentities(

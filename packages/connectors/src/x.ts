@@ -825,11 +825,15 @@ function hasGrantedScopes(
 	return required.every((entry) => granted.has(entry));
 }
 
+function isTruthyConfigFlag(value: unknown): boolean {
+	return value === true || value === "true" || value === 1 || value === "1";
+}
+
 function readSyncBackendPreference(
 	config: Record<string, unknown>,
 ): XSyncBackend | null {
-	if (config.use_extension === true) return "extension";
-	if (config.use_oauth === true) return "oauth_api";
+	if (isTruthyConfigFlag(config.use_extension)) return "extension";
+	if (isTruthyConfigFlag(config.use_oauth)) return "oauth_api";
 	return null;
 }
 
@@ -864,6 +868,20 @@ function isOAuthScopeOrAuthError(error: unknown): boolean {
 	);
 }
 
+/** OAuth lookup failures that should defer to the paired extension on browser-first feeds. */
+function isOAuthLookupFallbackError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	return (
+		error.message.startsWith("Could not resolve X user id for @") ||
+		error.message.startsWith("Could not resolve authenticated X user") ||
+		error.message === "OAuth access token missing for X connector"
+	);
+}
+
+function shouldFallbackToExtension(error: unknown): boolean {
+	return isOAuthScopeOrAuthError(error) || isOAuthLookupFallbackError(error);
+}
+
 async function syncWithOAuthFallback<T extends SyncResult>(
 	oauthFn: () => Promise<T>,
 	extensionFn: () => Promise<T>,
@@ -871,7 +889,7 @@ async function syncWithOAuthFallback<T extends SyncResult>(
 	try {
 		return await oauthFn();
 	} catch (error) {
-		if (!isOAuthScopeOrAuthError(error)) throw error;
+		if (!shouldFallbackToExtension(error)) throw error;
 		return extensionFn();
 	}
 }
@@ -1782,7 +1800,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.3.1",
+		version: "3.3.2",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [

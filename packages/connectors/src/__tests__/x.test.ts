@@ -536,6 +536,34 @@ describe("XConnector browser-first routing", () => {
 		expect(res.metadata.backend).toBe("extension-network");
 	});
 
+	test("honors use_extension even when OAuth scopes are sufficient", async () => {
+		const calls: Array<{ action: string; input: Record<string, unknown> }> =
+			[];
+		const dispatcher = {
+			dispatch: async (action: string, input: Record<string, unknown>) => {
+				calls.push({ action, input });
+				return { result: { responses: [] } };
+			},
+		};
+
+		const connector = new XConnector();
+		await connector.sync({
+			feedKey: "my_tweets",
+			config: { use_extension: "true", account_handle: "buremba" },
+			checkpoint: {},
+			credentials: {
+				provider: "twitter",
+				accessToken: "token-with-full-scope",
+				scope: "users.read tweet.read offline.access",
+			},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0].input.url).toBe("https://x.com/buremba");
+	});
+
 	test("uses extension for direct_messages when OAuth lacks dm.read", async () => {
 		const calls: Array<{ action: string; input: Record<string, unknown> }> =
 			[];

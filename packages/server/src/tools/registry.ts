@@ -192,7 +192,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'run_sdk',
     description:
-      'Destructive — confirm before running. Runs TypeScript in a sandboxed isolate over the FULL ClientSDK. Use this for SDK writes or multi-step workflows. Signature: `export default async (ctx, client) => ...`. Can mutate entities, watchers, memory, classifiers, connections, etc. Use `query_sdk` for reads. Pass `dry_run: true` to execute reads while skipping write/external SDK calls and returning `side_effect_preview`. Output capped at 1 MB. Example: `export default async (_ctx, client) => client.entities.create({ type: "company", name: "Acme" });`',
+      'Potentially mutating — confirm before running. Runs TypeScript over the full ClientSDK: `export default async (ctx, client) => ...`. Use `query_sdk` for reads. `dry_run: true` executes reads but skips write/admin/external SDK calls into `side_effect_preview`; skipped handlers are not executed, so their payloads are not fully validated. Output capped at 1 MB.',
     inputSchema: RunSchema,
     outputSchema: SdkScriptResultSchema,
     annotations: { destructiveHint: true, idempotentHint: false, title: 'Run SDK' },

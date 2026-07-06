@@ -1,71 +1,13 @@
-import { Type } from '@sinclair/typebox';
+import { WatcherExecutionConfigSchema } from '@lobu/core/contracts/tools/manage-watchers';
 import { ToolUserError } from '../../utils/errors';
 import { isAdminOrOwnerRole } from '../access-control';
 
 /**
- * Per-watcher device-worker CLI execution settings (stored as the
- * `watchers.execution_config` jsonb). Standalone so the shape can feed
- * ManageWatchersSchema (where boundary validation enforces it) while the
- * authorization gate below stays callable from the CRUD handlers. A
- * type-wrong value would silently fail the device-worker's strict payload
- * decode (bricking every run of that watcher), hence `additionalProperties:
- * false` — a typo'd setting must be rejected, not stored and ignored.
+ * Per-watcher device-worker CLI execution settings. The pure TypeBox schema
+ * lives in @lobu/core with the manage_watchers contract; this server module
+ * keeps the authorization/runtime helpers colocated with their callers.
  */
-export const WatcherExecutionConfigSchema = Type.Object(
-  {
-    timeout_seconds: Type.Optional(
-      Type.Integer({
-        minimum: 1,
-        // Bounded: the device dispatcher runs one CLI at a time, so an
-        // unbounded value could wedge a device's watcher queue. 24h ceiling.
-        maximum: 86_400,
-        description: 'Wall-clock cap in seconds for the device-worker CLI run (default 600).',
-      })
-    ),
-    max_budget_usd: Type.Optional(
-      Type.Number({
-        minimum: 0,
-        description: 'Per-run dollar ceiling (claude only: --max-budget-usd). No-op on other CLIs.',
-      })
-    ),
-    model: Type.Optional(Type.String({ description: 'Model alias/id passed to the CLI (--model).' })),
-    permission_mode: Type.Optional(
-      Type.Union(
-        [
-          Type.Literal('acceptEdits'),
-          Type.Literal('auto'),
-          Type.Literal('bypassPermissions'),
-          Type.Literal('default'),
-          Type.Literal('dontAsk'),
-          Type.Literal('plan'),
-        ],
-        { description: 'Tool permission mode (claude only: --permission-mode).' }
-      )
-    ),
-    effort: Type.Optional(
-      Type.Union([Type.Literal('low'), Type.Literal('medium'), Type.Literal('high')], {
-        description: 'Reasoning effort (claude only: --effort).',
-      })
-    ),
-    finalize_nudges: Type.Optional(
-      Type.Integer({
-        minimum: 0,
-        // Each nudge is a full re-dispatched agent turn ($), so keep the ceiling
-        // low. SERVER-ONLY (see SERVER_ONLY_EXECUTION_CONFIG_KEYS) — stripped
-        // before the device payload so an older device-worker's strict decode
-        // never sees it.
-        maximum: 5,
-        description:
-          'How many extra times to re-dispatch a server-side watcher run that finished WITHOUT calling complete_window (a soft, non-deterministic finalize miss) before failing it. 0 disables; omitted = global default (LOBU_WATCHER_FINALIZE_NUDGES, default 1).',
-      })
-    ),
-  },
-  {
-    additionalProperties: false,
-    description:
-      '[create/update] Per-watcher execution settings: device-worker CLI flags plus the server-side finalize-nudge budget. Omitted fields fall back to dispatcher/CLI/global defaults; pass null to clear.',
-  }
-);
+export { WatcherExecutionConfigSchema };
 
 /**
  * execution_config keys that are SERVER-ONLY and must never reach a

@@ -25,6 +25,78 @@
       "bun": "./src/__tests__/fixtures/index.ts",
       "import": "./dist/__tests__/fixtures/index.js",
       "require": "./dist/__tests__/fixtures/index.js"
+    },
+    "./contracts/tools/manage-connections": {
+      "types": "./dist/contracts/tools/manage-connections.d.ts",
+      "bun": "./src/contracts/tools/manage-connections.ts",
+      "import": "./dist/contracts/tools/manage-connections.js",
+      "require": "./dist/contracts/tools/manage-connections.js"
+    },
+    "./contracts/tools/manage-catalog": {
+      "types": "./dist/contracts/tools/manage-catalog.d.ts",
+      "bun": "./src/contracts/tools/manage-catalog.ts",
+      "import": "./dist/contracts/tools/manage-catalog.js",
+      "require": "./dist/contracts/tools/manage-catalog.js"
+    },
+    "./contracts/tools/manage-classifiers": {
+      "types": "./dist/contracts/tools/manage-classifiers.d.ts",
+      "bun": "./src/contracts/tools/manage-classifiers.ts",
+      "import": "./dist/contracts/tools/manage-classifiers.js",
+      "require": "./dist/contracts/tools/manage-classifiers.js"
+    },
+    "./contracts/tools/manage-agents": {
+      "types": "./dist/contracts/tools/manage-agents.d.ts",
+      "bun": "./src/contracts/tools/manage-agents.ts",
+      "import": "./dist/contracts/tools/manage-agents.js",
+      "require": "./dist/contracts/tools/manage-agents.js"
+    },
+    "./contracts/tools/manage-schedules": {
+      "types": "./dist/contracts/tools/manage-schedules.d.ts",
+      "bun": "./src/contracts/tools/manage-schedules.ts",
+      "import": "./dist/contracts/tools/manage-schedules.js",
+      "require": "./dist/contracts/tools/manage-schedules.js"
+    },
+    "./contracts/tools/manage-view-templates": {
+      "types": "./dist/contracts/tools/manage-view-templates.d.ts",
+      "bun": "./src/contracts/tools/manage-view-templates.ts",
+      "import": "./dist/contracts/tools/manage-view-templates.js",
+      "require": "./dist/contracts/tools/manage-view-templates.js"
+    },
+    "./contracts/tools/manage-auth-profiles": {
+      "types": "./dist/contracts/tools/manage-auth-profiles.d.ts",
+      "bun": "./src/contracts/tools/manage-auth-profiles.ts",
+      "import": "./dist/contracts/tools/manage-auth-profiles.js",
+      "require": "./dist/contracts/tools/manage-auth-profiles.js"
+    },
+    "./contracts/tools/manage-feeds": {
+      "types": "./dist/contracts/tools/manage-feeds.d.ts",
+      "bun": "./src/contracts/tools/manage-feeds.ts",
+      "import": "./dist/contracts/tools/manage-feeds.js",
+      "require": "./dist/contracts/tools/manage-feeds.js"
+    },
+    "./contracts/tools/manage-operations": {
+      "types": "./dist/contracts/tools/manage-operations.d.ts",
+      "bun": "./src/contracts/tools/manage-operations.ts",
+      "import": "./dist/contracts/tools/manage-operations.js",
+      "require": "./dist/contracts/tools/manage-operations.js"
+    },
+    "./contracts/tools/manage-entity-schema": {
+      "types": "./dist/contracts/tools/manage-entity-schema.d.ts",
+      "bun": "./src/contracts/tools/manage-entity-schema.ts",
+      "import": "./dist/contracts/tools/manage-entity-schema.js",
+      "require": "./dist/contracts/tools/manage-entity-schema.js"
+    },
+    "./contracts/tools/manage-entity": {
+      "types": "./dist/contracts/tools/manage-entity.d.ts",
+      "bun": "./src/contracts/tools/manage-entity.ts",
+      "import": "./dist/contracts/tools/manage-entity.js",
+      "require": "./dist/contracts/tools/manage-entity.js"
+    },
+    "./contracts/tools/manage-watchers": {
+      "types": "./dist/contracts/tools/manage-watchers.d.ts",
+      "bun": "./src/contracts/tools/manage-watchers.ts",
+      "import": "./dist/contracts/tools/manage-watchers.js",
+      "require": "./dist/contracts/tools/manage-watchers.js"
     }
   },
   "scripts": {
@@ -34,6 +106,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.34.41",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/sdk-trace-node": "^1.30.0",
     "@opentelemetry/exporter-trace-otlp-grpc": "^0.57.0",

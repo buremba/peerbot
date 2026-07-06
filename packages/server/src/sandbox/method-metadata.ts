@@ -434,8 +434,8 @@ export default async (_ctx, client) => {
 	},
 	"connections.connect": {
 		summary:
-			"Start an OAuth / auth-profile flow. Returns a connect_url to share with the user.",
-		access: "write",
+			"Create a pending connection and temporary OAuth authorization URL. The user must open the returned connect_url and approve access before Lobu can access the external account.",
+		access: "admin",
 	},
 	"connections.update": {
 		summary: "Update connection config or auth profile.",
@@ -451,8 +451,9 @@ export default async (_ctx, client) => {
 		access: "external",
 	},
 	"connections.installConnector": {
-		summary: "Install a connector definition into this organization.",
-		access: "write",
+		summary:
+			"Enable a reviewed catalog connector with connector_id, or install a connector definition from an explicit source.",
+		access: "admin",
 	},
 	"connections.uninstallConnector": {
 		summary: "Uninstall a connector definition.",

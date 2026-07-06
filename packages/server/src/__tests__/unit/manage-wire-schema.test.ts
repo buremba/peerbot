@@ -128,10 +128,16 @@ describe("manage_connections × manage_catalog: the browse → install link", ()
 		).toBe(true);
 	});
 
-	it("manage_connections inputSchema has source_uri whose description names install_connector", () => {
+	it("manage_connections inputSchema has connector_id and source_uri install paths", () => {
 		const conns = byName.get("manage_connections");
+		const connectorId = (conns?.inputSchema as any)?.properties?.connector_id;
 		const sourceUri = (conns?.inputSchema as any)?.properties?.source_uri;
+		expect(connectorId, "manage_connections must accept connector_id").toBeDefined();
 		expect(sourceUri, "manage_connections must accept source_uri").toBeDefined();
+		expect(
+			connectorId?.description?.includes("install_connector"),
+			`connector_id description must name install_connector; got: ${connectorId?.description}`,
+		).toBe(true);
 		expect(
 			sourceUri?.description?.includes("install_connector"),
 			`source_uri description must name install_connector; got: ${sourceUri?.description}`,
@@ -142,10 +148,14 @@ describe("manage_connections × manage_catalog: the browse → install link", ()
 		const conns = byName.get("manage_connections");
 		const description: string =
 			(conns?.inputSchema as any)?.properties?.action?.description ?? "";
-		// The variant description names the four mutually-exclusive sources.
+		// The variant description names the mutually-exclusive install inputs.
 		expect(
 			description.includes("install_connector"),
 			"action enum must describe install_connector",
+		).toBe(true);
+		expect(
+			description.includes("connector_id"),
+			"install_connector description must mention catalog connector_id",
 		).toBe(true);
 		expect(
 			description.toLowerCase().includes("exactly one") ||
@@ -194,6 +204,7 @@ describe("run_sdk / query_sdk: script contract on the wire", () => {
 			],
 			side_effect_preview: [
 				{ path: "entities.create", orgPath: ["acme"], access: "write", args: [{}], skipped: true },
+				{ path: "connections.connect", orgPath: ["acme"], access: "admin", args: [{}], skipped: true },
 			],
 			dry_run: true,
 		};

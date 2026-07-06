@@ -134,7 +134,7 @@ export async function handleConnect(
   // a connection under the wrong stable identity, so fall through and create a
   // fresh row with the requested slug instead.
   const pendingRows = await sql`
-    SELECT c.id, c.slug, ct.token
+    SELECT c.id, c.slug, ct.token, ct.expires_at
     FROM connections c
     JOIN connect_tokens ct ON ct.connection_id = c.id
       AND ct.status = 'pending' AND ct.expires_at > NOW()
@@ -149,7 +149,12 @@ export async function handleConnect(
     LIMIT 1
   `;
   if (pendingRows.length > 0) {
-    const pending = pendingRows[0] as { id: number; slug: string; token: string };
+    const pending = pendingRows[0] as {
+      id: number;
+      slug: string;
+      token: string;
+      expires_at: Date | string;
+    };
     const connectUrl = `${getConnectBaseUrl(ctx)}/connect/${pending.token}/oauth/start`;
     return {
       action: 'connect',
@@ -159,6 +164,7 @@ export async function handleConnect(
       auth_type: 'oauth',
       connect_url: connectUrl,
       connect_token: pending.token,
+      expires_at: new Date(pending.expires_at).toISOString(),
       instructions: `A pending connection already exists. Send the connect_url to the user to complete OAuth authorization. Poll with action='get' until status='active'.`,
     };
   }
@@ -519,6 +525,7 @@ export async function handleConnect(
     auth_type: 'oauth',
     connect_url: connectUrl,
     connect_token: connectToken.token,
+    expires_at: new Date(connectToken.expires_at).toISOString(),
     instructions: `Send the connect_url to the user to complete OAuth authorization with ${oauthMethod.provider}. Poll this connection with action='get' until status='active'.`,
   };
 }

@@ -2,7 +2,11 @@
  * list_watchers handler for manage_watchers.
  */
 
-import { type Static, Type } from "@sinclair/typebox";
+import {
+	ListWatchersResultSchema,
+	type ListWatchersArgs,
+	type ListWatchersResult,
+} from "@lobu/core/contracts/tools/manage-watchers";
 import { getDb } from "../../../db/client";
 import type { Env } from "../../../index";
 import logger from "../../../utils/logger";
@@ -16,29 +20,7 @@ import type { ToolContext } from "../../registry";
 import { toEntityInfo } from "../../view-urls";
 import { batchCountUnanalyzedContent } from "./shared";
 
-export type ListWatchersArgs = {
-	watcher_id?: string;
-	entity_id?: number;
-	agent_id?: string;
-	watcher_group_id?: number;
-	status?: string;
-	include_details?: boolean;
-	order_by?: "last_fired_at" | "created_at";
-	order_dir?: "asc" | "desc";
-	limit?: number;
-};
-
-/**
- * Result of `list_watchers`. TypeBox-first: the watcher rows are intentionally
- * loose (each row is a wide, join-driven snapshot shaped by the query, not a
- * stable contract), so the schema is honest about that — a record of
- * string→unknown — rather than mirroring a brittle shape. `Static<>` derives
- * the TS type from the same schema.
- */
-export const ListWatchersResultSchema = Type.Object({
-	watchers: Type.Array(Type.Record(Type.String(), Type.Unknown())),
-});
-export type ListWatchersResult = Static<typeof ListWatchersResultSchema>;
+export { ListWatchersResultSchema };
 
 // ============================================
 // handleList

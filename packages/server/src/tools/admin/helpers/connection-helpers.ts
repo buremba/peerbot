@@ -253,6 +253,9 @@ export function resolveRequestedOAuthScopes(
   method: OAuthAuthMethod,
   requestedScopes?: string[] | null
 ): string[] {
+  const loginScopes = Array.isArray(method.loginScopes)
+    ? method.loginScopes.filter((scope): scope is string => typeof scope === 'string')
+    : [];
   const requiredScopes = Array.isArray(method.requiredScopes)
     ? method.requiredScopes.filter((scope): scope is string => typeof scope === 'string')
     : [];
@@ -264,7 +267,7 @@ export function resolveRequestedOAuthScopes(
   const requestedOptionalScopes = (requestedScopes ?? []).filter(
     (scope): scope is string => typeof scope === 'string' && optionalScopes.has(scope)
   );
-  return Array.from(new Set([...requiredScopes, ...requestedOptionalScopes]));
+  return Array.from(new Set([...loginScopes, ...requiredScopes, ...requestedOptionalScopes]));
 }
 
 export function buildOAuthConnectConfig(

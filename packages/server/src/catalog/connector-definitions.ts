@@ -7,6 +7,8 @@ import {
 	resolveConnectorInstallSource,
 	upsertConnectorDefinitionRecords,
 } from "../utils/connector-definition-install";
+import { listCatalogConnectorDefinitions } from "../utils/connector-catalog";
+import { upsertBundledConnectorForOrg } from "../utils/ensure-connector-installed";
 import logger from "../utils/logger";
 
 type AuthSchema =
@@ -173,6 +175,29 @@ export async function installConnectorDefinitionFromSource(params: {
 		mcpConfig: resolved.metadata.mcpConfig ?? null,
 		openapiConfig: resolved.metadata.openapiConfig ?? null,
 	};
+}
+
+export async function installCatalogConnectorDefinition(params: {
+	organizationId: string;
+	connectorId: string;
+}): Promise<ConnectorInstallResult> {
+	const catalog = await listCatalogConnectorDefinitions();
+	const entry = catalog.find((item) => item.key === params.connectorId);
+	if (!entry) {
+		throw new Error(
+			`Catalog connector '${params.connectorId}' was not found or is not available in this environment.`,
+		);
+	}
+	const installed = await upsertBundledConnectorForOrg({
+		organizationId: params.organizationId,
+		connectorKey: entry.key,
+	});
+	if (!installed) {
+		throw new Error(
+			`Catalog connector '${params.connectorId}' does not resolve to a bundled connector source.`,
+		);
+	}
+	return installed;
 }
 
 export async function installConnectorFromMcpUrl(params: {

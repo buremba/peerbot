@@ -6,49 +6,21 @@
  * the user. Field names follow the handler schema.
  */
 
+import type {
+	ConnectionConnectInput,
+	ConnectionCreateInput,
+	ConnectionUpdateInput,
+	InstallConnectorInput,
+} from "@lobu/core/contracts/tools/manage-connections";
 import type { Env } from "../../index";
 import { manageConnections } from "../../tools/admin/manage_connections";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
-export interface ConnectionsConnectInput {
-	connector_key: string;
-	display_name?: string;
-	auth_profile_slug?: string;
-	app_auth_profile_slug?: string;
-	config?: Record<string, unknown>;
-	entity_ids?: number[];
-	entity_link_overrides?: Record<string, unknown> | null;
-}
-
-export interface ConnectionsCreateInput extends ConnectionsConnectInput {
-	created_by?: string;
-}
-
-export interface ConnectionsUpdateInput {
-	connection_id: number;
-	display_name?: string;
-	status?: string;
-	auth_profile_slug?: string | null;
-	app_auth_profile_slug?: string | null;
-	config?: Record<string, unknown>;
-	entity_ids?: number[] | null;
-}
-
-/**
- * `install_connector` accepts any of `source_url`, `source_uri`, `source_code`,
- * or `mcp_url`. The handler picks the first non-null source. `auth_values` is
- * an optional key-value map the handler stores as auth profiles.
- */
-export interface ConnectionsInstallConnectorInput {
-	source_url?: string;
-	source_uri?: string;
-	source_code?: string;
-	compiled?: boolean;
-	mcp_url?: string;
-	auth_values?: Record<string, string>;
-	entity_link_overrides?: Record<string, unknown> | null;
-}
+export type ConnectionsConnectInput = ConnectionConnectInput;
+export type ConnectionsCreateInput = ConnectionCreateInput;
+export type ConnectionsUpdateInput = ConnectionUpdateInput;
+export type ConnectionsInstallConnectorInput = InstallConnectorInput;
 
 export interface ConnectionsNamespace {
 	/** Raw escape hatch for any manage_connections action. Prefer named methods. */

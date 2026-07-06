@@ -16,7 +16,11 @@ import {
   findBundledConnectorFile,
 } from './connector-catalog';
 import { extractConnectorMetadata, validateConnectorMetadata } from './connector-compiler';
-import { upsertConnectorDefinitionRecords } from './connector-definition-install';
+import {
+  type ConnectorInstallResult,
+  upsertConnectorDefinitionRecords,
+} from './connector-definition-install';
+import { computeCodeHash } from './compiler-core';
 import logger from './logger';
 
 /**
@@ -53,16 +57,16 @@ export async function resolveConnectorCode(
  * source on demand (`resolveConnectorCode`); the shared upsert preserves
  * org-specific config (`login_enabled`, `default_connection_config`).
  *
- * Returns false when the key has no bundled source on disk (a genuinely
+ * Returns null when the key has no bundled source on disk (a genuinely
  * user-uploaded connector — nothing to sync from). Throws on
  * compile/extract/validate/write failure; callers decide how to handle it.
  */
 export async function upsertBundledConnectorForOrg(params: {
   organizationId: string;
   connectorKey: string;
-}): Promise<boolean> {
+}): Promise<ConnectorInstallResult | null> {
   const filePath = findBundledConnectorFile(params.connectorKey);
-  if (!filePath) return false;
+  if (!filePath) return null;
 
   // Compile to extract metadata (key, name, feeds, auth schema, etc.).
   const compiledCode = await compileConnectorFromFile(filePath);
@@ -70,7 +74,7 @@ export async function upsertBundledConnectorForOrg(params: {
   validateConnectorMetadata(metadata);
 
   const sourcePath = bundledConnectorSourcePath(filePath);
-  await upsertConnectorDefinitionRecords({
+  const { updated } = await upsertConnectorDefinitionRecords({
     sql: getDb(),
     organizationId: params.organizationId,
     metadata,
@@ -81,7 +85,16 @@ export async function upsertBundledConnectorForOrg(params: {
       sourcePath,
     },
   });
-  return true;
+  return {
+    connectorKey: metadata.key,
+    name: metadata.name,
+    version: metadata.version,
+    codeHash: computeCodeHash(compiledCode),
+    updated,
+    authSchema: metadata.authSchema ?? null,
+    mcpConfig: metadata.mcpConfig ?? null,
+    openapiConfig: metadata.openapiConfig ?? null,
+  };
 }
 
 export async function ensureConnectorInstalled(params: {

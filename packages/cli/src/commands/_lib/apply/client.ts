@@ -1,5 +1,6 @@
 import type { EntityMetrics } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
+import type { InstallConnectorInput } from "@lobu/core/contracts/tools/manage-connections";
 import type {
   InferenceCapabilityBlock,
   InferenceModality,
@@ -184,6 +185,14 @@ interface InstallConnectorResult {
   updated: boolean;
   version?: string;
 }
+
+type CliInstallConnectorPayload = {
+  connectorId?: InstallConnectorInput["connector_id"];
+  sourceCode?: InstallConnectorInput["source_code"];
+  sourceUrl?: InstallConnectorInput["source_url"];
+  sourceUri?: InstallConnectorInput["source_uri"];
+  compiled?: InstallConnectorInput["compiled"];
+};
 
 /**
  * Result of ensuring an auth profile exists. For interactive kinds
@@ -1190,19 +1199,13 @@ export class ApplyClient {
   }
 
   /**
-   * Idempotent connector install. The CLI passes raw TypeScript source
-   * (`compiled: false`) or a `source_url`; the server compiles + extracts
-   * metadata and returns the resolved `connectorKey` plus `updated` (false
-   * when the installed code is byte-identical).
+   * Idempotent connector install. The CLI can enable a reviewed catalog
+   * connector by id or pass connector source; server returns the resolved
+   * connectorKey plus updated.
    */
-  async installConnector(payload: {
-    sourceCode?: string;
-    sourceUrl?: string;
-    /** `file://` URI of a bundled connector source on the server host. */
-    sourceUri?: string;
-    /** `sourceCode` is already a compiled bundle (CLI-side compile) — skip server compile. */
-    compiled?: boolean;
-  }): Promise<InstallConnectorResult> {
+  async installConnector(
+    payload: CliInstallConnectorPayload
+  ): Promise<InstallConnectorResult> {
     const body = await this.connectionsTool<{
       installed?: boolean;
       connector_key?: string;
@@ -1210,6 +1213,7 @@ export class ApplyClient {
       updated?: boolean;
     }>({
       action: "install_connector",
+      ...(payload.connectorId ? { connector_id: payload.connectorId } : {}),
       ...(payload.sourceCode !== undefined
         ? {
             source_code: payload.sourceCode,

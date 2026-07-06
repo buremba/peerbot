@@ -28,7 +28,7 @@ export const RunSchema = Type.Object({
   dry_run: Type.Optional(
     Type.Boolean({
       description:
-        "Preview mode. Read SDK calls still execute, but write/external SDK calls are skipped and returned in side_effect_preview.",
+        "Preview mode. Read SDK calls still execute, but write/admin/external SDK calls are skipped and returned in side_effect_preview. Dry-run validates the SDK method path and access tier, but it does not execute the skipped handler or fully validate that handler's payload shape.",
     }),
   ),
 });
@@ -42,7 +42,13 @@ const SdkCallTraceEntrySchema = Type.Object({
     description: "Org slugs traversed via client.org(...) before the call, if any.",
   }),
   access: Type.Union(
-    [Type.Literal("read"), Type.Literal("write"), Type.Literal("external"), Type.Literal("unknown")],
+    [
+      Type.Literal("read"),
+      Type.Literal("write"),
+      Type.Literal("external"),
+      Type.Literal("admin"),
+      Type.Literal("unknown"),
+    ],
     { description: "Access class of the method." },
   ),
   args: Type.Array(Type.Unknown(), { description: "Call arguments (redacted + truncated)." }),
@@ -90,7 +96,8 @@ export const SdkScriptResultSchema = Type.Object({
     description: "Every SDK call the script made, in order.",
   }),
   side_effect_preview: Type.Array(SdkCallTraceEntrySchema, {
-    description: "Write/external calls that were skipped because dry_run=true.",
+    description:
+      "Write/admin/external calls that were skipped because dry_run=true. This is a method-level side-effect preview, not proof that the skipped handler would accept the payload.",
   }),
   dry_run: Type.Boolean(),
 });

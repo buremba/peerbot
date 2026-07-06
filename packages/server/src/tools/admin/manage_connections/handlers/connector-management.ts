@@ -13,6 +13,7 @@ import { applyEntityLinkOverrides } from "../../../../utils/entity-link-validati
 import logger from "../../../../utils/logger";
 import type { ToolContext } from "../../../registry";
 import {
+	installCatalogConnectorDefinition,
 	installConnectorDefinitionFromSource,
 	installConnectorFromMcpUrl,
 	toggleConnectorLoginEnabled,
@@ -34,18 +35,41 @@ export async function handleInstallConnector(
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
 	try {
-		const installed = args.mcp_url
-			? await installConnectorFromMcpUrl({
+		const connectorId = args.connector_id?.trim();
+		const mcpUrl = args.mcp_url?.trim();
+		const sourceUrl = args.source_url?.trim();
+		const sourceUri = args.source_uri?.trim();
+		const sourceCode = args.source_code;
+		const sourceCodeProvided =
+			typeof sourceCode === "string" && sourceCode.trim().length > 0;
+		const sources = [connectorId, mcpUrl, sourceUrl, sourceUri].filter(
+			(value): value is string => typeof value === "string" && value.length > 0,
+		);
+		if (sourceCodeProvided) sources.push(sourceCode);
+		if (sources.length !== 1) {
+			return {
+				error:
+					"Provide exactly one of connector_id, source_url, source_uri, source_code, or mcp_url.",
+			};
+		}
+
+		const installed = connectorId
+			? await installCatalogConnectorDefinition({
 					organizationId: ctx.organizationId,
-					mcpUrl: args.mcp_url,
+					connectorId,
 				})
-			: await installConnectorDefinitionFromSource({
-					organizationId: ctx.organizationId,
-					sourceUrl: args.source_url,
-					sourceUri: args.source_uri,
-					sourceCode: args.source_code,
-					compiled: args.compiled,
-				});
+			: mcpUrl
+				? await installConnectorFromMcpUrl({
+						organizationId: ctx.organizationId,
+						mcpUrl,
+					})
+				: await installConnectorDefinitionFromSource({
+						organizationId: ctx.organizationId,
+						sourceUrl,
+						sourceUri,
+						sourceCode,
+						compiled: args.compiled,
+					});
 
 		await maybeUpsertAuthAfterInstall(installed, args.auth_values, ctx);
 
@@ -69,9 +93,10 @@ export async function handleInstallConnector(
 				name: installed.name,
 				version: installed.version,
 				code_hash: installed.codeHash,
-				...(args.mcp_url ? { mcp_url: args.mcp_url } : {}),
-				...(args.source_url ? { source_url: args.source_url } : {}),
-				...(args.source_uri ? { source_uri: args.source_uri } : {}),
+				...(connectorId ? { connector_id: connectorId } : {}),
+				...(mcpUrl ? { mcp_url: mcpUrl } : {}),
+				...(sourceUrl ? { source_url: sourceUrl } : {}),
+				...(sourceUri ? { source_uri: sourceUri } : {}),
 			},
 		});
 

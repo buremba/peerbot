@@ -17,7 +17,10 @@ import type { Env } from '../../../index';
 import type { ToolContext } from '../../../tools/registry';
 import { manageAuthProfiles } from '../../../tools/admin/manage_auth_profiles';
 import { manageConnections } from '../../../tools/admin/manage_connections';
-import { resolveOAuthAppClientCredentials } from '../../../tools/admin/helpers/connection-helpers';
+import {
+  resolveOAuthAppClientCredentials,
+  resolveRequestedOAuthScopes,
+} from '../../../tools/admin/helpers/connection-helpers';
 import { getTestDb, cleanupTestDatabase } from '../../setup/test-db';
 import { initWorkspaceProvider } from '../../../workspace';
 import {
@@ -65,6 +68,29 @@ async function makeOAuthConnector(orgId: string) {
     feeds_schema: { items: {} },
   });
 }
+
+describe('connector OAuth scope resolution (pure)', () => {
+  it('includes login identity scopes alongside required connector scopes', () => {
+    expect(
+      resolveRequestedOAuthScopes(
+        {
+          type: 'oauth',
+          provider: 'google',
+          loginScopes: ['openid', 'email', 'profile'],
+          requiredScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+          optionalScopes: ['https://www.googleapis.com/auth/gmail.send'],
+        },
+        ['https://www.googleapis.com/auth/gmail.send']
+      )
+    ).toEqual([
+      'openid',
+      'email',
+      'profile',
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.send',
+    ]);
+  });
+});
 
 describe('resolveOAuthAppClientCredentials — env fallback (pure)', () => {
   afterEach(() => {

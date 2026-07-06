@@ -8,21 +8,12 @@
  */
 
 import { type Static, Type } from '@sinclair/typebox';
+import {
+  WatcherSourceSchema,
+  type WatcherSource,
+} from '@lobu/core/contracts/tools/manage-watchers';
 
-// ============================================
-// Watcher Sources
-// ============================================
-
-/**
- * Watcher source — a named SQL query that feeds data into the prompt.
- * If the query references the `events` table, time window bounds are
- * automatically applied (incremental mode).
- */
-export const WatcherSourceSchema = Type.Object({
-  name: Type.String(),
-  query: Type.String(),
-});
-export type WatcherSource = Static<typeof WatcherSourceSchema>;
+export { WatcherSourceSchema, type WatcherSource };
 
 // ============================================
 // Watcher Version

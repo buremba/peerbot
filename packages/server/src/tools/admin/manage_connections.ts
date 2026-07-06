@@ -35,7 +35,6 @@ import {
 import { handleConnect } from "./manage_connections/handlers/connect";
 import {
 	handleInstallConnector,
-	handleSetConnectorEntityLinkOverrides,
 	handleToggleConnectorLogin,
 	handleUninstallConnector,
 	handleUpdateConnectorAuth,
@@ -64,7 +63,6 @@ import {
 	ListChannelBindingsAction,
 	ListConnectorGroupsAction,
 	ReauthenticateAction,
-	SetConnectorEntityLinkOverridesAction,
 	SyncChannelBindingsAction,
 	TestAction,
 	ToggleConnectorLoginAction,
@@ -117,10 +115,6 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 	update_connector_default_repair_agent: action(
 		UpdateConnectorDefaultRepairAgentAction,
 		handleUpdateConnectorDefaultRepairAgent,
-	),
-	set_connector_entity_link_overrides: action(
-		SetConnectorEntityLinkOverridesAction,
-		handleSetConnectorEntityLinkOverrides,
 	),
 	list_channel_bindings: action(
 		ListChannelBindingsAction,

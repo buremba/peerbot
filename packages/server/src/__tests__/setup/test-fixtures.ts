@@ -593,7 +593,6 @@ export async function createTestConnectorDefinition(options: {
   feeds_schema?: Record<string, any>;
   auth_schema?: Record<string, any>;
   organization_id?: string | null;
-  entity_link_overrides?: Record<string, any> | null;
 }): Promise<TestConnectorDefinition> {
   const sql = getTestDb();
   const version = options.version ?? '1.0.0';
@@ -601,7 +600,7 @@ export async function createTestConnectorDefinition(options: {
   await sql`
     INSERT INTO connector_definitions (
       key, name, version, feeds_schema, auth_schema,
-      organization_id, entity_link_overrides,
+      organization_id,
       status, created_at, updated_at
     ) VALUES (
       ${options.key},
@@ -610,7 +609,6 @@ export async function createTestConnectorDefinition(options: {
       ${sql.json(options.feeds_schema ?? { default: {} })},
       ${sql.json(options.auth_schema ?? {})},
       ${options.organization_id ?? null},
-      ${options.entity_link_overrides ? sql.json(options.entity_link_overrides) : null},
       'active',
       NOW(), NOW()
     )

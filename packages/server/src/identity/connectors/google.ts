@@ -12,8 +12,8 @@
 import type {
 	ConnectorFact,
 	ConnectorIdentityCapability,
-} from "@lobu/connector-sdk";
-import { normalizeEmail } from "@lobu/connector-sdk";
+} from "@lobu/connector-sdk/identity-types";
+import { normalizeEmail } from "@lobu/connector-sdk/identity-normalize";
 import { fetchUserInfoWithRaw } from "../../connect/oauth-providers";
 import logger from "../../utils/logger";
 import {

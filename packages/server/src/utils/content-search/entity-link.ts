@@ -1,37 +1,26 @@
 /**
- * Entity-link SQL helpers: STANDARD_IDENTITY_NAMESPACES, entityLinkMatchSql,
- * EntityIdentityScope, fetchEntityIdentityScopes, buildEntityLinkUnion.
+ * Entity-link SQL helpers: event-recall identity namespaces,
+ * entityLinkMatchSql, EntityIdentityScope, fetchEntityIdentityScopes,
+ * buildEntityLinkUnion.
  */
 
+import { EVENT_RECALL_IDENTITY_NAMESPACES } from '@lobu/connector-sdk/identity-namespaces';
 import { type DbClient, pgTextArray } from '../../db/client';
 
 /**
  * Identity namespaces backed by partial BTREE indexes on `events.metadata`.
- * Kept local so content-search.ts doesn't take a build-time dep on the SDK.
  *
- * Adding a namespace here is a two-step change:
- *   1. Add a partial BTREE index `idx_events_metadata_<ns>` in a migration
- *      (see db/migrations/20260419120000_add_event_identity_indexes.sql).
- *   2. Add the string to this list — `entityLinkMatchSql` will emit a UNION
- *      branch that uses the new index. Connectors own their namespace strings.
+ * The canonical registry lives in connector-sdk so connectors, the identity
+ * engine, and read-time recall share one vocabulary. This server-side export is
+ * kept for compatibility with existing imports while the legacy entityLinks
+ * path is migrated to the identity engine + event attribution pipeline.
  *
- * Non-standard namespaces are intentionally unsupported at read time: without
- * a matching index the identity branch seq-scans `events`, which blows up the
- * entire content query. If a connector needs a new namespace, add the index.
+ * Non-recall namespaces are intentionally unsupported here: without a matching
+ * index the identity branch seq-scans `events`, which blows up the entire
+ * content query. If a connector needs a new recall namespace, add it to the
+ * registry and add the matching DB index migration.
  */
-export const STANDARD_IDENTITY_NAMESPACES = [
-  'email',
-  'phone',
-  'wa_jid',
-  'slack_user_id',
-  'github_login',
-  // Immutable id — read-time github attribution rides this so a reused login
-  // (freed by a rename, reclaimed by another account) can't JOIN to the old
-  // person. Backed by idx_events_metadata_github_user_id.
-  'github_user_id',
-  'auth_user_id',
-  'google_contact_id',
-] as const;
+export const STANDARD_IDENTITY_NAMESPACES = EVENT_RECALL_IDENTITY_NAMESPACES;
 
 /**
  * SQL predicate: "event `<alias>` is linked to entity `<paramRef>`".
@@ -40,7 +29,7 @@ export const STANDARD_IDENTITY_NAMESPACES = [
  *   1. Legacy / feed-pinned attribution: entity id appears in `events.entity_ids`.
  *   2. Identity-graph attribution: a live `entity_identities` row claims an
  *      identifier that the event carries in `metadata->>namespace` (stamped
- *      there by `applyEntityLinks` at ingestion; see src/utils/entity-link-upsert.ts).
+ *      there by `applyEventAttributions` at ingestion; see src/utils/entity-link-upsert.ts).
  *
  * Events are append-only, so (2) is how connector-driven auto-linking is
  * surfaced at read time — `entity_ids` is never mutated post-insert.
@@ -146,7 +135,7 @@ export function buildEntityLinkUnion(opts: {
     if (!indexed.has(scope.namespace)) continue;
     params.push(scope.identifier);
     scopeBranches.push(
-      `SELECT e2.id FROM events e2 WHERE e2.metadata->>'${scope.namespace}' = $${paramIndex}`
+      `SELECT e2.id FROM events e2 WHERE e2.metadata ? '${scope.namespace}' AND e2.metadata->>'${scope.namespace}' = $${paramIndex}`
     );
     paramIndex += 1;
   }

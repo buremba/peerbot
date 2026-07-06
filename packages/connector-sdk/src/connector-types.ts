@@ -470,15 +470,44 @@ export interface FeedDefinition {
       description?: string;
       metadataSchema?: Record<string, unknown>;
       /**
-       * Declarative entity links — identifiers live in a normalized
-       * `entity_identities` table; traits live on `entities.metadata`.
-       *
-       * Iceberg-friendly: no mutation of events.entity_ids, JOIN at read
-       * time via entity_identities on (org, namespace, identifier).
+       * Generic event attribution declarations. New connector work should model
+       * "who authored / what resource this event belongs to / what it is about"
+       * here, and model durable cross-connector identity as ConnectorFact(s).
        */
-      entityLinks?: EntityLinkRule[];
+      attributions?: EventAttributionRule[];
     }
   >;
+}
+
+export type EventAttributionRole = 'authored_by' | 'about' | 'mentions' | 'belongs_to';
+
+/**
+ * Declarative event attribution target. The identity selectors are normalized
+ * and resolved against the identity graph/projection; directEntityIdPath is for
+ * trusted server-generated events that already carry an entity id.
+ */
+export interface EventAttributionTargetSpec {
+  entityType?: string;
+  identities?: EntityIdentitySpec[];
+  directEntityIdPath?: string;
+  titlePath?: string;
+  createWhen?: EntityLinkPredicate;
+}
+
+/**
+ * Event-to-entity attribution surface.
+ *
+ * Identity facts answer "who is this account/person across connectors"; event
+ * attribution answers "what resolved entity should this particular event be
+ * connected to for recall, ACL, and world-model traversal".
+ */
+export interface EventAttributionRule {
+  role: EventAttributionRole;
+  target: EventAttributionTargetSpec;
+  /** Whether an unmatched target may be materialized by the attribution engine. */
+  autoCreate?: boolean;
+  /** Optional descriptive fields to merge onto the target entity when resolved. */
+  traits?: Record<string, EntityTraitSpec>;
 }
 
 /**
@@ -531,50 +560,12 @@ export interface EntityTraitSpec {
 }
 
 /**
- * Declares how events link to dimension entities.
- *
- * - Identifiers are normalized on write and stored in `entity_identities`
- *   so matching is constraint-safe (UNIQUE per namespace+identifier).
- * - Ambiguity (same event's identifiers resolve to multiple distinct
- *   entities) is logged as a merge candidate; the platform never
- *   auto-picks a winner or cross-contaminates entities.
- * - Traits are descriptive fields merged onto entities.metadata per
- *   the declared `behavior`.
- */
-export interface EntityLinkRule {
-  /** Target entity type slug (e.g. '$member', 'chat_group'). The type must exist in the org. */
-  entityType: string;
-  /**
-   * Create the entity if no existing entity matches any identifier.
-   * When false, unmatched events stay unlinked and no entity is created.
-   */
-  autoCreate?: boolean;
-  /**
-   * Gate `autoCreate` on a per-event signal. Matching an EXISTING entity is
-   * unaffected; this only decides whether a NEW entity is minted on a miss.
-   * Omitted → create whenever `autoCreate` is true (the historical behavior).
-   *
-   * Lets a connector ingest every event into `entity_identities` aliases but
-   * only materialize a typed entity for senders that clear an interaction bar —
-   * e.g. WhatsApp mints a `person` only for 1:1 chats
-   * (`{ path: 'metadata.is_group', equals: false }`), never for the group flood.
-   */
-  createWhen?: EntityLinkPredicate;
-  /** Dot path used for `entities.name` on create. */
-  titlePath?: string;
-  /** Identifier specs. At least one is required. */
-  identities: EntityIdentitySpec[];
-  /** Optional descriptive fields written to entities.metadata. */
-  traits?: Record<string, EntityTraitSpec>;
-}
-
-/**
  * A small, JSON-serializable predicate evaluated against the ingested event
  * item (`{ metadata, title, origin_type }`) to gate `autoCreate`. All declared
  * conditions are ANDed; an omitted condition is ignored. `path` is a dot-path
  * resolved the same way as identity `eventPath` (e.g. `metadata.is_group`).
  * Deliberately closed — no expressions, no SQL — so it stays cheap to evaluate
- * inline at ingest and safe to persist as untrusted JSON in an install override.
+ * inline at ingest.
  */
 export interface EntityLinkPredicate {
   /** Dot-path into the event item, e.g. `metadata.is_group`. */
@@ -586,34 +577,6 @@ export interface EntityLinkPredicate {
   /** `true` → value must be present (not null/undefined/`''`); `false` → must be absent. */
   exists?: boolean;
 }
-
-/**
- * Per-install override for a connector's entityLinks rules, keyed by the
- * rule's `entityType`. Stored as JSONB on `connector_definitions` and
- * shallow-merged at rule-resolve time. Lets an org retarget, disable rules,
- * flip autoCreate, or mask specific identifier namespaces without forking
- * the connector source.
- *
- * Storage shape:
- *   { "$member": { autoCreate: false, maskIdentities: ["phone"] }, ... }
- */
-export interface EntityLinkOverride {
-  /** Drop the rule entirely. Other fields are ignored when true. */
-  disable?: boolean;
-  /** Rewrite the target entity type (e.g. retarget to a custom type). */
-  retargetEntityType?: string;
-  /** Override autoCreate on the matched rule. */
-  autoCreate?: boolean;
-  /**
-   * Override the createWhen gate on the matched rule. `null` clears it (mint on
-   * every miss); an object replaces it. Omitted leaves the connector's gate.
-   */
-  createWhen?: EntityLinkPredicate | null;
-  /** Filter out identity specs by namespace before matching/persisting. */
-  maskIdentities?: string[];
-}
-
-export type EntityLinkOverrides = Record<string, EntityLinkOverride>;
 
 // =============================================================================
 // Action Definition

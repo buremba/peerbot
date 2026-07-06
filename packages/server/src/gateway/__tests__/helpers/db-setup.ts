@@ -138,9 +138,9 @@ export async function seedAgentRow(
 
 /**
  * Seed a `github` connector_definitions row whose feeds_schema carries the
- * webhook routing (`webhook: { events, mode }`) + the person entity-link rule —
+ * webhook routing (`webhook: { events, mode }`) + the person attribution rule —
  * the exact persisted surface the app-webhook router reads (routing via
- * loadGithubWebhookRoutes, the rule via loadEntityLinkRuleByType). Mirrors the
+ * loadGithubWebhookRoutes, the rule via loadAttributionRuleByType). Mirrors the
  * real github connector's declarations so the gateway tests exercise the
  * DB-driven path, not a server-side hardcode.
  */
@@ -151,20 +151,23 @@ export async function seedGithubConnectorDef(orgId: string): Promise<void> {
     VALUES (${orgId}, ${orgId}, ${orgId})
     ON CONFLICT (id) DO NOTHING
   `;
-  const personRule = {
-    entityType: "person",
+  const personAttribution = {
+    role: "authored_by",
     autoCreate: true,
-    titlePath: "metadata.author_login",
-    identities: [
-      { namespace: "github_user_id", eventPath: "metadata.author_id", primary: true },
-      { namespace: "github_login", eventPath: "metadata.author_login" },
-    ],
+    target: {
+      entityType: "person",
+      titlePath: "metadata.author_login",
+      identities: [
+        { namespace: "github_user_id", eventPath: "metadata.author_id", primary: true },
+        { namespace: "github_login", eventPath: "metadata.author_login" },
+      ],
+    },
     traits: {
       github_login: { eventPath: "metadata.author_login", behavior: "prefer_non_empty" },
       last_authored_at: { eventPath: "occurred_at", behavior: "overwrite" },
     },
   };
-  const kind = (k: string) => ({ eventKinds: { [k]: { entityLinks: [personRule] } } });
+  const kind = (k: string) => ({ eventKinds: { [k]: { attributions: [personAttribution] } } });
   const feedsSchema = {
     issues: { key: "issues", name: "Issues", webhook: { events: ["issues"] }, ...kind("issue") },
     pull_requests: {

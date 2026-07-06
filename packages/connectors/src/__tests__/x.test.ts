@@ -429,10 +429,20 @@ describe("XConnector definition", () => {
 		]);
 		expect(def.feeds.direct_messages.requiredScopes).toBeUndefined();
 		expect(
-			def.feeds.tweets.eventKinds.tweet.entityLinks?.[0]?.identities?.map(
+			def.feeds.tweets.eventKinds.tweet.attributions?.[0]?.target.identities?.map(
 				(i: { namespace: string }) => i.namespace,
 			),
 		).toEqual(["x_user_id", "x_handle"]);
+		expect(def.feeds.tweets.eventKinds.tweet.attributions?.[0]).toMatchObject({
+			role: "authored_by",
+			target: { entityType: "person" },
+		});
+		expect(def.feeds.direct_messages.eventKinds.dm_message.attributions).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ role: "authored_by" }),
+				expect.objectContaining({ role: "about" }),
+			]),
+		);
 		expect(def.feeds.liked_tweets.requiredScopes).toBeUndefined();
 		expect(def.feeds.bookmarks.requiredScopes).toBeUndefined();
 		expect(def.feeds.home_feed.description).toMatch(/home timeline/i);

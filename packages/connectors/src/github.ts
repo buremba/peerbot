@@ -14,7 +14,7 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   createHttpClient,
-  type EntityLinkRule,
+  type EventAttributionRule,
   type EventEnvelope,
   paginateByOffset,
   type SyncContext,
@@ -255,27 +255,30 @@ const LABELS_PROP = {
 } as const;
 
 /**
- * Person entity-link rule for any authored GitHub event. Attribution is keyed
+ * Person attribution for any authored GitHub event. Attribution is keyed
  * PRIMARY on the immutable numeric `github_user_id` (a renamed login still
  * resolves to the same person) and SECONDARY on `github_login` (the indexed
  * read-time namespace + the human-legible name on auto-create). The ingestion
- * pipeline (`applyEntityLinks`, run-lifecycle poll/sync path) extracts these
+ * attribution resolver extracts these
  * from `metadata.author_id` / `metadata.author_login` — both stamped by
  * `buildAuthorMetadata` — normalizes them, and looks them up / auto-creates a
  * `person` in the SAME organization (entity_identities are per-org, never
  * cross-tenant). `last_authored_at` tracks the most recent contribution.
  */
-const GITHUB_PERSON_ENTITY_LINK: EntityLinkRule = {
-  entityType: 'person',
+const GITHUB_PERSON_ATTRIBUTION: EventAttributionRule = {
+  role: 'authored_by',
   autoCreate: true,
-  titlePath: 'metadata.author_login',
-  identities: [
+  target: {
+    entityType: 'person',
+    titlePath: 'metadata.author_login',
+    identities: [
     // PRIMARY: the immutable numeric id is authoritative — when present it
     // governs resolution, so a renamed-then-reused login can't conflate a new
-    // account into the old person (see entity-link-upsert resolution).
+    // account into the old person (see event-attribution resolver resolution).
     { namespace: GITHUB_IDENTITY.USER_ID, eventPath: 'metadata.author_id', primary: true },
     { namespace: GITHUB_IDENTITY.LOGIN, eventPath: 'metadata.author_login' },
-  ],
+    ],
+  },
   traits: {
     github_login: {
       eventPath: 'metadata.author_login',
@@ -294,17 +297,20 @@ const GITHUB_PERSON_ENTITY_LINK: EntityLinkRule = {
 // entities `buildGithubRepoGraph` materializes from collaborators — both sides
 // resolve to ONE repo entity. The full name is stamped on every event in
 // `sync()` (see stampRepoAttribution).
-const GITHUB_REPO_ENTITY_LINK: EntityLinkRule = {
-  entityType: 'repo',
+const GITHUB_REPO_ATTRIBUTION: EventAttributionRule = {
+  role: 'belongs_to',
   autoCreate: true,
-  titlePath: 'metadata.github_repo_full_name',
-  identities: [
+  target: {
+    entityType: 'repo',
+    titlePath: 'metadata.github_repo_full_name',
+    identities: [
     {
       namespace: GITHUB_IDENTITY.REPO_FULL_NAME,
       eventPath: 'metadata.github_repo_full_name',
       primary: true,
     },
-  ],
+    ],
+  },
 };
 
 export default class GitHubConnector extends ConnectorRuntime {
@@ -449,7 +455,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
+            attributions: [GITHUB_PERSON_ATTRIBUTION, GITHUB_REPO_ATTRIBUTION],
           },
         },
       },
@@ -481,7 +487,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
+            attributions: [GITHUB_PERSON_ATTRIBUTION, GITHUB_REPO_ATTRIBUTION],
           },
         },
       },
@@ -509,7 +515,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
+            attributions: [GITHUB_PERSON_ATTRIBUTION, GITHUB_REPO_ATTRIBUTION],
           },
         },
       },
@@ -537,7 +543,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
+            attributions: [GITHUB_PERSON_ATTRIBUTION, GITHUB_REPO_ATTRIBUTION],
           },
         },
       },
@@ -568,7 +574,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
+            attributions: [GITHUB_PERSON_ATTRIBUTION, GITHUB_REPO_ATTRIBUTION],
           },
         },
       },
@@ -597,7 +603,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
+            attributions: [GITHUB_PERSON_ATTRIBUTION, GITHUB_REPO_ATTRIBUTION],
           },
         },
       },
@@ -627,7 +633,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
+            attributions: [GITHUB_PERSON_ATTRIBUTION, GITHUB_REPO_ATTRIBUTION],
           },
         },
       },
@@ -658,7 +664,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
+            attributions: [GITHUB_PERSON_ATTRIBUTION, GITHUB_REPO_ATTRIBUTION],
           },
           stargazer_unstarred: {
             description: 'A GitHub user unstarred the repository',
@@ -677,7 +683,7 @@ export default class GitHubConnector extends ConnectorRuntime {
             // Repo-scoped: link to the repo so the ACL gate treats it like every
             // other repo event (visible to collaborators) instead of dropping it
             // — these kinds have no person link of their own.
-            entityLinks: [GITHUB_REPO_ENTITY_LINK],
+            attributions: [GITHUB_REPO_ATTRIBUTION],
           },
           stargazer_profile: {
             description: 'A public GitHub profile observation for a stargazer',
@@ -690,7 +696,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 account: { type: 'object' },
               },
             },
-            entityLinks: [GITHUB_REPO_ENTITY_LINK],
+            attributions: [GITHUB_REPO_ATTRIBUTION],
           },
         },
       },
@@ -1680,7 +1686,7 @@ export default class GitHubConnector extends ConnectorRuntime {
   }
 
   /**
-   * Canonical author identity slot for entityLinks. Stamps `author_login`
+   * Canonical author identity slot for attributions. Stamps `author_login`
    * (the mutable handle, indexed for read-time attribution) and `author_id`
    * (the immutable numeric GitHub user id, the PRIMARY match/dedupe key) into
    * event metadata so the ingestion pipeline's `applyEntityLinks` resolves a

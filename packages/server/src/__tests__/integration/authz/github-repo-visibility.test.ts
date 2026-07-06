@@ -22,7 +22,7 @@ import type { ToolContext } from '../../../tools/registry';
 import { search } from '../../../tools/search';
 import {
   clearEntityLinkRulesCache,
-  resolveEntityLinksForItems,
+  resolveEventAttributionsForItems,
 } from '../../../utils/entity-link-upsert';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -264,7 +264,7 @@ describe('github repo visibility gate (e2e via search_memory content)', () => {
         { namespace: 'github_repo_full_name', eventPath: 'metadata.github_repo_full_name', primary: true },
       ],
     };
-    const resolved = await resolveEntityLinksForItems({
+    const resolved = await resolveEventAttributionsForItems({
       connectorKey: 'github',
       orgId: org.id,
       items: [{ origin_type: 'issue', metadata: { github_repo_full_name: 'acme/repo-a' } }],

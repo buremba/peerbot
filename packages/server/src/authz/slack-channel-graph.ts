@@ -19,7 +19,7 @@
  * a deliberate follow-up; gating on membership only ever UNDER-shares.)
  */
 
-import { normalizeSlackUserId } from '@lobu/connector-sdk';
+import { normalizeSlackUserId } from '@lobu/connector-sdk/identity-normalize';
 import { type AccessResource, buildAccessGraph } from './access-graph.js';
 import { SLACK_SOURCE } from './sources.js';
 

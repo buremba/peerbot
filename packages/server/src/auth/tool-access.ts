@@ -68,7 +68,6 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"update_connector_auth",
 		"update_connector_default_config",
 		"update_connector_default_repair_agent",
-		"set_connector_entity_link_overrides",
 		"apply_chat_connection",
 		// Channel management (folded from the retired /channels routes): mutating
 		// a binding / wiring a DM is administration. list_channel_bindings is

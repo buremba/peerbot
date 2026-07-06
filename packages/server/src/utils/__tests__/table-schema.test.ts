@@ -134,7 +134,6 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
       'api_config',
       'openapi_config',
       'default_connection_config',
-      'entity_link_overrides',
     ]),
     oauth_clients: new Set(['client_secret', 'client_secret_expires_at']),
     oauth_tokens: new Set(['token_hash']),

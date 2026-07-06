@@ -35,6 +35,22 @@
     "./identity-types": {
       "types": "./dist/identity-types.d.ts",
       "import": "./dist/identity-types.js"
+    },
+    "./identity-namespaces": {
+      "types": "./dist/identity-namespaces.d.ts",
+      "import": "./dist/identity-namespaces.js"
+    },
+    "./identity-normalize": {
+      "types": "./dist/identity-normalize.d.ts",
+      "import": "./dist/identity-normalize.js"
+    },
+    "./metrics": {
+      "types": "./dist/metrics.d.ts",
+      "import": "./dist/metrics.js"
+    },
+    "./browser/cdp": {
+      "types": "./dist/browser/cdp.d.ts",
+      "import": "./dist/browser/cdp.js"
     }
   },
   "files": [

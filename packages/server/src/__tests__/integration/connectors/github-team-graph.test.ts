@@ -10,7 +10,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  applyEntityLinks,
+  applyEventAttributions,
   clearEntityLinkRulesCache,
 } from '../../../utils/entity-link-upsert';
 import { buildGithubTeamGraph } from '../../../gateway/routes/public/github-team-graph';
@@ -141,15 +141,18 @@ describe('github team graph', () => {
         issues: {
           eventKinds: {
             issue: {
-              entityLinks: [
+              attributions: [
                 {
-                  entityType: 'person',
+                  role: 'authored_by',
                   autoCreate: true,
-                  titlePath: 'metadata.author_login',
-                  identities: [
-                    { namespace: 'github_user_id', eventPath: 'metadata.author_id' },
-                    { namespace: 'github_login', eventPath: 'metadata.author_login' },
-                  ],
+                  target: {
+                    entityType: 'person',
+                    titlePath: 'metadata.author_login',
+                    identities: [
+                      { namespace: 'github_user_id', eventPath: 'metadata.author_id' },
+                      { namespace: 'github_login', eventPath: 'metadata.author_login' },
+                    ],
+                  },
                 },
               ],
             },
@@ -158,7 +161,7 @@ describe('github team graph', () => {
       },
     });
     clearEntityLinkRulesCache();
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey: 'github',
       feedKey: 'issues',
       orgId: org.id,

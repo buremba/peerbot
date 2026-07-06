@@ -30,7 +30,7 @@ import {
 	type DerivedFromProvenance,
 	IDENTITY_FACT_SEMANTIC_TYPE,
 	assuranceMeets,
-} from "@lobu/connector-sdk";
+} from "@lobu/connector-sdk/identity-types";
 import type { EngineOptions, IngestResult } from "./types";
 import { validateTypeRule } from "../utils/relationship-validation";
 import { connectorCapabilityRegistry } from "./capability-registry";

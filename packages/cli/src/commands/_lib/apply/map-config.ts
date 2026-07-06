@@ -8,7 +8,7 @@
  * unit-tested without importing `lobu.config.ts`.
  */
 
-import { validateEntityMetrics } from "@lobu/connector-sdk";
+import { validateEntityMetrics } from "@lobu/connector-sdk/metrics";
 import { type AgentSettings, isHostedChatEntry } from "@lobu/core";
 import { CronExpressionParser } from "cron-parser";
 import type {

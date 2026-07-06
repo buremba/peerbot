@@ -7,7 +7,7 @@
  * Embeddings are left null for background worker backfill.
  */
 
-import { normalizeAuthUserId, normalizeEmail } from '@lobu/connector-sdk';
+import { normalizeAuthUserId, normalizeEmail } from '@lobu/connector-sdk/identity-normalize';
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
 import { resolveChannelEntityId } from '../authz/channel-entity';

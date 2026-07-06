@@ -8,7 +8,6 @@
  *
  * Usage:
  *   pnpm tsx --env-file=.env scripts/lobu/install-connectors.ts --org buremba --file examples/personal-agent/spotify.connector.ts
- *   pnpm tsx --env-file=.env scripts/lobu/install-connectors.ts --org market --file examples/brand-intelligence/website.connector.ts --target-entity-type company
  */
 
 import { basename, resolve } from 'node:path';
@@ -17,14 +16,11 @@ import { getDb } from '../../packages/server/src/db/client';
 import { compileConnectorFromFile } from '../../packages/server/src/utils/connector-catalog';
 import { extractConnectorMetadata } from '../../packages/server/src/utils/connector-compiler';
 import { upsertConnectorDefinitionRecords } from '../../packages/server/src/utils/connector-definition-install';
-import { applyEntityLinkOverrides } from '../../packages/server/src/utils/entity-link-validation';
 
 const { values } = parseArgs({
   options: {
     org: { type: 'string' },
     file: { type: 'string', multiple: true },
-    'target-entity-type': { type: 'string' },
-    'entity-link-overrides': { type: 'string' },
     help: { type: 'boolean' },
   },
 });
@@ -39,29 +35,8 @@ Usage:
 Options:
   --org                      Organization slug (required)
   --file                     Path to connector .ts file (repeatable)
-  --target-entity-type       Entity type slug to retarget the connector's $member
-                             entityLink rule to (e.g. "contact"). The type must
-                             already exist in the org.
-  --entity-link-overrides    Full JSON entity_link_overrides payload (advanced;
-                             overrides --target-entity-type when both are set).
 `);
   process.exit(values.help ? 0 : 1);
-}
-
-let parsedOverrides: Record<string, unknown> | null = null;
-if (values['entity-link-overrides']) {
-  try {
-    parsedOverrides = JSON.parse(values['entity-link-overrides']) as Record<string, unknown>;
-  } catch (err) {
-    console.error(
-      `Invalid --entity-link-overrides JSON: ${err instanceof Error ? err.message : String(err)}`
-    );
-    process.exit(1);
-  }
-} else if (values['target-entity-type']) {
-  parsedOverrides = {
-    $member: { retargetEntityType: values['target-entity-type'] },
-  };
 }
 
 const sql = getDb();
@@ -98,10 +73,6 @@ for (const file of values.file ?? []) {
       },
     });
 
-    if (parsedOverrides !== null) {
-      const err = await applyEntityLinkOverrides(organizationId, metadata.key, parsedOverrides);
-      if (err) throw new Error(err);
-    }
 
     console.log(`✓ ${metadata.key} v${metadata.version} (${updated ? 'updated' : 'created'})`);
   } catch (err) {

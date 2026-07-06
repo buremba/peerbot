@@ -5,7 +5,7 @@
  * `person`, keyed PRIMARY on the immutable `github_user_id` and SECONDARY on
  * `github_login`:
  *
- *   1. poll/sync — `applyEntityLinks` reads the connector's `entityLinks` rules
+ *   1. poll/sync — `applyEventAttributions` reads the connector's `attributions` rules
  *      from `connector_definitions` and resolves/creates the person.
  *   2. live webhook — `resolveGithubWebhookActor` (App-webhook path, no feed)
  *      extracts the actor and resolves the SAME person, returning the entity
@@ -18,7 +18,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  applyEntityLinks,
+  applyEventAttributions,
   clearEntityLinkRulesCache,
 } from '../../../utils/entity-link-upsert';
 import { resolveGithubWebhookActor } from '../../../gateway/routes/public/github-webhook-actor';
@@ -35,15 +35,18 @@ import {
 const connectorKey = 'github';
 const feedKey = 'issues';
 
-/** The github person entity-link rule, mirrored from the github connector. */
-const githubPersonRule = {
-  entityType: 'person',
+/** The github person attribution rule, mirrored from the github connector. */
+const githubPersonAttribution = {
+  role: 'authored_by',
   autoCreate: true,
-  titlePath: 'metadata.author_login',
-  identities: [
-    { namespace: 'github_user_id', eventPath: 'metadata.author_id', primary: true },
-    { namespace: 'github_login', eventPath: 'metadata.author_login' },
-  ],
+  target: {
+    entityType: 'person',
+    titlePath: 'metadata.author_login',
+    identities: [
+      { namespace: 'github_user_id', eventPath: 'metadata.author_id', primary: true },
+      { namespace: 'github_login', eventPath: 'metadata.author_login' },
+    ],
+  },
   traits: {
     github_login: { eventPath: 'metadata.author_login', behavior: 'prefer_non_empty' },
     last_authored_at: { eventPath: 'occurred_at', behavior: 'overwrite' },
@@ -81,7 +84,7 @@ async function seedGithubConnector(orgId: string) {
     feeds_schema: {
       [feedKey]: {
         eventKinds: {
-          issue: { entityLinks: [githubPersonRule] },
+          issue: { attributions: [githubPersonAttribution] },
         },
       },
     },
@@ -137,7 +140,7 @@ describe('github member-identity attribution', () => {
       },
     };
 
-    await applyEntityLinks({ connectorKey, feedKey, orgId: org.id, items: [item] });
+    await applyEventAttributions({ connectorKey, feedKey, orgId: org.id, items: [item] });
 
     const people = await members(org.id);
     expect(people).toHaveLength(1);
@@ -163,7 +166,7 @@ describe('github member-identity attribution', () => {
     await seedGithubConnector(org.id);
     clearEntityLinkRulesCache();
 
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey,
       feedKey,
       orgId: org.id,
@@ -175,7 +178,7 @@ describe('github member-identity attribution', () => {
       ],
     });
     // Same user id, new login → must NOT create a second person.
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey,
       feedKey,
       orgId: org.id,
@@ -204,7 +207,7 @@ describe('github member-identity attribution', () => {
     clearEntityLinkRulesCache();
 
     // Login "shared" was user_id 1 → person-1 created and claims github_login:shared.
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey,
       feedKey,
       orgId: org.id,
@@ -218,7 +221,7 @@ describe('github member-identity attribution', () => {
     // now uses the login "shared". The immutable github_user_id is PRIMARY and
     // present (=2, unmatched), so resolution must NOT fall through to the stale
     // github_login:shared match → a distinct person-2 is created.
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey,
       feedKey,
       orgId: org.id,
@@ -245,7 +248,7 @@ describe('github member-identity attribution', () => {
     clearEntityLinkRulesCache();
 
     // Pre-seed person-1 owning github_login:shared + github_user_id:1.
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey,
       feedKey,
       orgId: org.id,
@@ -259,7 +262,7 @@ describe('github member-identity attribution', () => {
     //       github_login:shared for person-2.
     //   (b) a login-only "shared" event → must resolve to person-1 (the real
     //       owner of that login), proving the map wasn't mis-claimed for person-2.
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey,
       feedKey,
       orgId: org.id,
@@ -300,13 +303,13 @@ describe('github member-identity attribution', () => {
       return rows.map((r) => Number(r.id));
     };
 
-    // Event 1: login "shared" + user_id 1 → person-1. applyEntityLinks stamps
+    // Event 1: login "shared" + user_id 1 → person-1. applyEventAttributions stamps
     // the attached identifier slots onto item1.metadata.
     const item1: { origin_type: string; metadata: Record<string, unknown> } = {
       origin_type: 'issue',
       metadata: { author_login: 'shared', author_id: '1' },
     };
-    await applyEntityLinks({ connectorKey, feedKey, orgId: org.id, items: [item1] });
+    await applyEventAttributions({ connectorKey, feedKey, orgId: org.id, items: [item1] });
     const personOneId = (await members(org.id))[0].id;
     const e1 = await insertEvent({
       entityIds: [],
@@ -320,13 +323,13 @@ describe('github member-identity attribution', () => {
     });
 
     // Event 2: same login "shared" reclaimed by a DIFFERENT account (user_id 2)
-    // → person-2 (immutable id primary). applyEntityLinks stamps ONLY the
+    // → person-2 (immutable id primary). applyEventAttributions stamps ONLY the
     // attached identifier (github_user_id:2), not the stale github_login:shared.
     const item2: { origin_type: string; metadata: Record<string, unknown> } = {
       origin_type: 'issue',
       metadata: { author_login: 'shared', author_id: '2' },
     };
-    await applyEntityLinks({ connectorKey, feedKey, orgId: org.id, items: [item2] });
+    await applyEventAttributions({ connectorKey, feedKey, orgId: org.id, items: [item2] });
     const people = await members(org.id);
     expect(people).toHaveLength(2);
     const personTwoId = people.find((p) => p.id !== personOneId)!.id;

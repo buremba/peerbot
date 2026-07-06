@@ -55,10 +55,6 @@ export interface ConnectionsNamespace {
 		connector_key: string;
 		default_connection_config: Record<string, unknown>;
 	}): Promise<unknown>;
-	setConnectorEntityLinkOverrides(input: {
-		connector_key: string;
-		overrides: Record<string, unknown> | null;
-	}): Promise<unknown>;
 	updateConnectorDefaultRepairAgent(input: {
 		connector_key: string;
 		default_repair_agent_id: string | null;
@@ -89,8 +85,6 @@ export function buildConnectionsNamespace(
 		updateConnectorAuth: (input) => action("update_connector_auth", input),
 		updateConnectorDefaultConfig: (input) =>
 			action("update_connector_default_config", input),
-		setConnectorEntityLinkOverrides: (input) =>
-			action("set_connector_entity_link_overrides", input),
 		updateConnectorDefaultRepairAgent: (input) =>
 			action("update_connector_default_repair_agent", input),
 	};

@@ -21,7 +21,7 @@ import {
 	type AssuranceLevel,
 	type ConnectorFact,
 	type ConnectorIdentityCapability,
-} from "@lobu/connector-sdk";
+} from "@lobu/connector-sdk/identity-types";
 
 /**
  * Successful emit result. `facts` may be empty when the user's account is

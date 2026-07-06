@@ -39,7 +39,6 @@ import {
 } from "../../../../utils/connections";
 import { assertConnectorAllowedInCloud } from "../../../../utils/connector-cloud-gate";
 import { ensureConnectorInstalled } from "../../../../utils/ensure-connector-installed";
-import { applyEntityLinkOverrides } from "../../../../utils/entity-link-validation";
 import {
 	recordChangeEvent,
 	recordLifecycleEvent,
@@ -569,17 +568,6 @@ export async function handleCreate(
     effectiveCreatedBy = args.created_by;
   }
 
-  // `entity_link_overrides` writes to `connector_definitions` for the entire
-  // org. Even though `create` is now member-write, that mutation must stay
-  // admin-only — otherwise a member could change connector-level entity
-  // mapping while ostensibly installing their own connection.
-  if (!callerIsAdmin && args.entity_link_overrides !== undefined) {
-    return {
-      error:
-				"Only admins can change connector entity-link overrides. Omit `entity_link_overrides`, or ask an admin to update them via `set_connector_entity_link_overrides`.",
-    };
-  }
-
   // Non-admins must accept the org-default app profile — they can't pick or
   // bring an alternate OAuth client. If they explicitly pass a slug, it has
   // to match the admin-pinned default for the connector.
@@ -695,15 +683,6 @@ export async function handleCreate(
         error: `A ${connector.name} connection (id: ${dup[0].id}) is already assigned to that device in this org.`,
       };
     }
-  }
-
-  if (args.entity_link_overrides !== undefined) {
-    const err = await applyEntityLinkOverrides(
-      organizationId,
-      args.connector_key,
-			args.entity_link_overrides,
-    );
-    if (err) return { error: err };
   }
 
   // No-auth connectors are limited to one connection per user — except when the

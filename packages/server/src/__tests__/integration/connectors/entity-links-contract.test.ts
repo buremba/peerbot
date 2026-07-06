@@ -1,15 +1,14 @@
 /**
- * Connector entity-link contract.
+ * Connector event-attribution contract.
  *
  * Uses a minimal WhatsApp-shaped connector definition instead of importing the
  * real connector runtime, so the test is stable under raw CI runners while
- * preserving the important ingestion behavior: auto-create $member identities
- * and honor per-install overrides.
+ * preserving the important ingestion behavior: auto-create $member identities.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
+import { applyEventAttributions, clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';
 import { ensureMemberEntityType } from '../../../utils/member-entity-type';
-import { applyEntityLinks, clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -21,11 +20,11 @@ import {
 const connectorKey = 'whatsapp-contract';
 const feedKey = 'messages';
 
-async function seedConnector(options: { disableMemberRule?: boolean } = {}) {
+async function seedConnector() {
   await cleanupTestDatabase();
   clearEntityLinkRulesCache();
 
-  const org = await createTestOrganization({ name: 'Entity Link Contract Org' });
+  const org = await createTestOrganization({ name: 'Event Attribution Contract Org' });
   const user = await createTestUser();
   await addUserToOrganization(user.id, org.id, 'owner');
   await ensureMemberEntityType(org.id);
@@ -34,20 +33,22 @@ async function seedConnector(options: { disableMemberRule?: boolean } = {}) {
     key: connectorKey,
     name: 'WhatsApp Contract',
     organization_id: org.id,
-    entity_link_overrides: options.disableMemberRule ? { $member: { disable: true } } : null,
     feeds_schema: {
       [feedKey]: {
         eventKinds: {
           message: {
-            entityLinks: [
+            attributions: [
               {
-                entityType: '$member',
+                role: 'authored_by',
                 autoCreate: true,
-                titlePath: 'metadata.push_name',
-                identities: [
-                  { namespace: 'wa_jid', eventPath: 'metadata.sender_jid' },
-                  { namespace: 'phone', eventPath: 'metadata.sender_phone' },
-                ],
+                target: {
+                  entityType: '$member',
+                  titlePath: 'metadata.push_name',
+                  identities: [
+                    { namespace: 'wa_jid', eventPath: 'metadata.sender_jid' },
+                    { namespace: 'phone', eventPath: 'metadata.sender_phone' },
+                  ],
+                },
                 traits: {
                   push_name: {
                     eventPath: 'metadata.push_name',
@@ -66,7 +67,7 @@ async function seedConnector(options: { disableMemberRule?: boolean } = {}) {
   return { org };
 }
 
-describe('connector entity-link contract', () => {
+describe('connector event-attribution contract', () => {
   beforeEach(() => {
     clearEntityLinkRulesCache();
   });
@@ -75,7 +76,7 @@ describe('connector entity-link contract', () => {
     const { org } = await seedConnector();
     const sql = getTestDb();
 
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey,
       feedKey,
       orgId: org.id,
@@ -113,36 +114,5 @@ describe('connector entity-link contract', () => {
       'phone:14155551234',
       'wa_jid:14155551234@s.whatsapp.net',
     ]);
-  });
-
-  it('honors connector entity-link overrides that disable a rule', async () => {
-    const { org } = await seedConnector({ disableMemberRule: true });
-    const sql = getTestDb();
-
-    await applyEntityLinks({
-      connectorKey,
-      feedKey,
-      orgId: org.id,
-      items: [
-        {
-          origin_type: 'message',
-          metadata: {
-            sender_jid: '14155551234@s.whatsapp.net',
-            sender_phone: '14155551234',
-            push_name: 'Alex',
-          },
-        },
-      ],
-    });
-
-    const count = await sql<{ count: string }[]>`
-      SELECT COUNT(*)::text AS count
-      FROM entities e
-      JOIN entity_types et ON et.id = e.entity_type_id
-      WHERE e.organization_id = ${org.id}
-        AND et.slug = '$member'
-        AND e.deleted_at IS NULL
-    `;
-    expect(count[0].count).toBe('0');
   });
 });

@@ -18,7 +18,7 @@ import {
 	DerivedRelationshipMetadata,
 	FactEventMetadata,
 	RelationshipTypeIdentityMetadata,
-} from "@lobu/connector-sdk";
+} from "@lobu/connector-sdk/identity-types";
 
 const compiledFact = TypeCompiler.Compile(ConnectorFact);
 const compiledFactEventMetadata = TypeCompiler.Compile(FactEventMetadata);

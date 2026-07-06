@@ -158,9 +158,9 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                 from_name: { type: 'string' },
               },
             },
-            entityLinks: [
+            attributions: [
               {
-                entityType: 'person',
+                role: 'authored_by',
                 // Don't mint a contact per inbound sender. Every from-address is a
                 // sender — overwhelmingly brands, newsletters, and no-reply system
                 // addresses, all of which carry a from_name, so no per-event signal
@@ -169,8 +169,11 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                 // promoting a real email contact is interaction-driven (a reply /
                 // contacts-source bridge), handled outside ingest.
                 autoCreate: false,
-                titlePath: 'metadata.from_name',
-                identities: [{ namespace: 'email', eventPath: 'metadata.from_email' }],
+                target: {
+                  entityType: 'person',
+                  titlePath: 'metadata.from_name',
+                  identities: [{ namespace: 'email', eventPath: 'metadata.from_email' }],
+                },
                 traits: {
                   from_name: {
                     eventPath: 'metadata.from_name',

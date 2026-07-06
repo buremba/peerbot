@@ -2,14 +2,13 @@
  * Connector management action handlers:
  * install_connector, uninstall_connector, toggle_connector_login,
  * update_connector_auth, update_connector_default_config,
- * update_connector_default_repair_agent, set_connector_entity_link_overrides,
+ * update_connector_default_repair_agent,
  */
 
 import { getErrorMessage } from "@lobu/core";
 import { getDb } from "../../../../db/client";
 import { recordToolConfigChange } from "../../helpers/config-audit";
 import { normalizeAuthValues } from "../../../../utils/auth-profiles";
-import { applyEntityLinkOverrides } from "../../../../utils/entity-link-validation";
 import logger from "../../../../utils/logger";
 import type { ToolContext } from "../../../registry";
 import {
@@ -72,15 +71,6 @@ export async function handleInstallConnector(
 					});
 
 		await maybeUpsertAuthAfterInstall(installed, args.auth_values, ctx);
-
-		if (args.entity_link_overrides !== undefined) {
-			const err = await applyEntityLinkOverrides(
-				ctx.organizationId,
-				installed.connectorKey,
-				args.entity_link_overrides,
-			);
-			if (err) return { error: err };
-		}
 
 		recordToolConfigChange(ctx, {
 			resourceKind: "connector-definition",
@@ -349,46 +339,5 @@ export async function handleUpdateConnectorDefaultRepairAgent(
 		success: true,
 		connector_key: args.connector_key,
 		default_repair_agent_id: args.default_repair_agent_id,
-	};
-}
-
-// ============================================
-// handleSetConnectorEntityLinkOverrides
-// ============================================
-
-export async function handleSetConnectorEntityLinkOverrides(
-	args: Extract<
-		ConnectionsArgs,
-		{ action: "set_connector_entity_link_overrides" }
-	>,
-	ctx: ToolContext,
-): Promise<ManageConnectionsResult> {
-	const err = await applyEntityLinkOverrides(
-		ctx.organizationId,
-		args.connector_key,
-		args.overrides,
-	);
-	if (err) return { error: err };
-
-	recordToolConfigChange(ctx, {
-		resourceKind: "connector-definition",
-		resourceId: args.connector_key,
-		op: "updated",
-		summary: `Connector '${args.connector_key}' entity link overrides updated`,
-		state: {
-			connector_key: args.connector_key,
-			entity_link_overrides: (args.overrides ?? null) as Record<
-				string,
-				unknown
-			> | null,
-		},
-		changedFields: ["entity_link_overrides"],
-	});
-
-	return {
-		action: "set_connector_entity_link_overrides",
-		success: true,
-		connector_key: args.connector_key,
-		overrides: (args.overrides ?? null) as Record<string, unknown> | null,
 	};
 }

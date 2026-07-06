@@ -7,7 +7,7 @@ import {
   normalizeSlackUserId,
   normalizeSlackUserIdCombined,
   normalizeWaJid,
-} from '@lobu/connector-sdk';
+} from '@lobu/connector-sdk/identity-normalize';
 import { describe, expect, it } from 'vitest';
 
 describe('normalizePhone', () => {
@@ -135,12 +135,17 @@ describe('normalizeIdentifier dispatcher', () => {
     expect(normalizeIdentifier('auth_user_id', '  abc123 ')).toBe('abc123');
   });
 
-  it('falls back to trim-only for connector-owned namespaces', () => {
+  it('preserves legacy trim-only behavior for existing connector namespaces until backfill', () => {
     expect(normalizeIdentifier('wa_jid', '14155551234@S.WhatsApp.Net')).toBe(
       '14155551234@S.WhatsApp.Net'
     );
     expect(normalizeIdentifier('github_login', 'Octocat')).toBe('Octocat');
     expect(normalizeIdentifier('slack_user_id', 't0abc:u123')).toBe('t0abc:u123');
+  });
+
+  it('dispatches newly registered X namespaces', () => {
+    expect(normalizeIdentifier('x_user_id', '00123')).toBe('123');
+    expect(normalizeIdentifier('x_handle', '@Alice')).toBe('alice');
   });
 
   it('falls back to trim-only for unknown namespaces so custom identities still get hygiene', () => {

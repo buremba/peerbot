@@ -25,7 +25,7 @@ import {
 import { autoLinkEvent } from "../utils/auto-linker";
 import { nextRunAt as nextRunAtFromCron } from "../utils/cron";
 import { needsEmbeddingSql } from "../utils/embeddings";
-import { applyEntityLinks } from "../utils/entity-link-upsert";
+import { applyEventAttributions } from "../utils/entity-link-upsert";
 import { errorMessage } from "../utils/errors";
 import { validateConnectorEventSemanticType } from "../utils/event-kind-validation";
 import {
@@ -228,7 +228,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		// Auto-create dimension entities declared via eventKinds[kind].entityLinks
 		// before inserting events. One query per (entityType, matchField) per
 		// batch — cheap compared to the per-event inserts that follow.
-		await applyEntityLinks({
+		await applyEventAttributions({
 			connectorKey: run.connector_key,
 			feedKey: run.feed_key,
 			orgId: run.organization_id,

@@ -11,7 +11,6 @@ import {
   insertConnectionWithSlug,
   resolveNewConnectionSlug,
 } from '../../../../utils/connections';
-import { applyEntityLinkOverrides } from '../../../../utils/entity-link-validation';
 import { recordLifecycleEvent } from '../../../../utils/insert-event';
 import { recordToolConfigChange } from '../../helpers/config-audit';
 import logger from '../../../../utils/logger';
@@ -108,15 +107,6 @@ export async function handleConnect(
         error: `A ${connector.name} connection (id: ${dup[0].id}) is already assigned to that device in this org.`,
       };
     }
-  }
-
-  if (args.entity_link_overrides !== undefined) {
-    const err = await applyEntityLinkOverrides(
-      organizationId,
-      args.connector_key,
-      args.entity_link_overrides
-    );
-    if (err) return { error: err };
   }
 
   const setupUrl = buildSetupUrl({ connectorKey: args.connector_key });

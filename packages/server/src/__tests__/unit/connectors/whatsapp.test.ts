@@ -5,7 +5,7 @@
  * objects and the EventEnvelope metadata the entityLinks rule reads —
  * multi-device JID suffix handling, group participant attribution, and
  * from_me suppression. The integration test (whatsapp-entity-links.test.ts)
- * only exercises applyEntityLinks with synthetic metadata, so regressions
+ * only exercises applyEventAttributions with synthetic metadata, so regressions
  * in toEvent would otherwise pass undetected.
  *
  * Uses a string-built path for the dynamic import so tsc doesn't follow the

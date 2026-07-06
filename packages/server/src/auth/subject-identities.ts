@@ -6,7 +6,7 @@
  * single entity_identities lookup.
  */
 
-import { normalizeSlackUserId } from "@lobu/connector-sdk";
+import { normalizeSlackUserId } from "@lobu/connector-sdk/identity-normalize";
 import { fetchUserInfoWithRaw } from "../connect/oauth-providers";
 import { getDb } from "../db/client";
 import {

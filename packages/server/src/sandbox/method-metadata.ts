@@ -471,10 +471,6 @@ export default async (_ctx, client) => {
 		summary: "Update a connector definition's default connection config.",
 		access: "write",
 	},
-	"connections.setConnectorEntityLinkOverrides": {
-		summary: "Set connector-level entity-link overrides.",
-		access: "write",
-	},
 	"connections.updateConnectorDefaultRepairAgent": {
 		summary: "Set or clear the connector's default repair agent.",
 		access: "write",

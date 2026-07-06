@@ -90,25 +90,6 @@ export const GetAction = Type.Object({
   connection_id: Type.Number({ description: "Connection ID" }),
 });
 
-const EntityLinkOverridesSchema = Type.Union(
-  [
-    Type.Null(),
-    Type.Record(
-      Type.String(),
-      Type.Object({
-        disable: Type.Optional(Type.Boolean()),
-        retargetEntityType: Type.Optional(Type.String()),
-        autoCreate: Type.Optional(Type.Boolean()),
-        maskIdentities: Type.Optional(Type.Array(Type.String())),
-      })
-    ),
-  ],
-  {
-    description:
-      "Per-entityType override of the connector's declared entityLinks rules (keyed by the rule's entityType). Applies at the connector-definition level for this org.",
-  }
-);
-
 export const CreateAction = Type.Object({
   action: Type.Literal("create", {
     description:
@@ -163,7 +144,6 @@ export const CreateAction = Type.Object({
         "Entity IDs to tag this connection with (links the connection to entities)",
     })
   ),
-  entity_link_overrides: Type.Optional(EntityLinkOverridesSchema),
 });
 
 export const UpdateAction = Type.Object({
@@ -296,7 +276,6 @@ export const InstallConnectorAction = Type.Object({
         "Reusable auth values for env_keys and OAuth client keys. Stored as auth profiles.",
     })
   ),
-  entity_link_overrides: Type.Optional(EntityLinkOverridesSchema),
 });
 
 export const UninstallConnectorAction = Type.Object({
@@ -352,7 +331,6 @@ export const ConnectAction = Type.Object({
         "Entity IDs to tag this connection with (links the connection to entities)",
     })
   ),
-  entity_link_overrides: Type.Optional(EntityLinkOverridesSchema),
 });
 
 export const ToggleConnectorLoginAction = Type.Object({
@@ -389,14 +367,6 @@ export const UpdateConnectorDefaultConfigAction = Type.Object({
   default_connection_config: Type.Record(Type.String(), Type.Any(), {
     description: "Default connection config (action_modes, etc.)",
   }),
-});
-
-export const SetConnectorEntityLinkOverridesAction = Type.Object({
-  action: Type.Literal("set_connector_entity_link_overrides", {
-    description: "Set per-entityType entityLink overrides for a connector.",
-  }),
-  connector_key: Type.String({ description: "Connector key" }),
-  overrides: EntityLinkOverridesSchema,
 });
 
 export const UpdateConnectorDefaultRepairAgentAction = Type.Object({
@@ -651,9 +621,7 @@ export const ManageConnectionsResultSchema = Type.Union([
     connector_key: Type.String(),
     default_repair_agent_id: Type.Union([Type.String(), Type.Null()]),
   }),
-  // ConnectorActionOk<"set_connector_entity_link_overrides", { overrides: Record<string, unknown> | null }>
   Type.Object({
-    action: Type.Literal("set_connector_entity_link_overrides"),
     success: Type.Literal(true),
     connector_key: Type.String(),
     overrides: Type.Union([
@@ -730,7 +698,6 @@ export type ConnectionsArgs =
   | Static<typeof UpdateConnectorAuthAction>
   | Static<typeof UpdateConnectorDefaultConfigAction>
   | Static<typeof UpdateConnectorDefaultRepairAgentAction>
-  | Static<typeof SetConnectorEntityLinkOverridesAction>
   | Static<typeof ListChannelBindingsAction>
   | Static<typeof BindChannelAction>
   | Static<typeof UnbindChannelAction>

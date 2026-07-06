@@ -17,7 +17,7 @@ import {
   type CdpVersionInfo,
   fetchCdpVersionInfo,
   resolveCdpUrl,
-} from "@lobu/connector-sdk";
+} from "@lobu/connector-sdk/browser/cdp";
 import { printText } from "../../../internal/output.js";
 import { resolveMcpEndpoint, restToolCall } from "./mcp.js";
 

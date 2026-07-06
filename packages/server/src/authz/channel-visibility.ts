@@ -24,7 +24,7 @@
  * or no `$member` in this org) sees NONE of an enforced connection's channels.
  */
 
-import { normalizeSlackUserId } from '@lobu/connector-sdk';
+import { normalizeSlackUserId } from '@lobu/connector-sdk/identity-normalize';
 import { type DbClient, pgTextArray } from '../db/client.js';
 import { getConnectionEnforcement, rowToChannelKey } from './acl-state.js';
 

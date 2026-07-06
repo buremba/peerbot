@@ -120,6 +120,19 @@ export function normalizeNumericId(raw: string | null | undefined): string | nul
   return trimmed.replace(/^0+(?=\d)/, '');
 }
 
+export function normalizeLowercaseTrim(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim().toLowerCase();
+  return trimmed ? trimmed : null;
+}
+
+export function normalizeXHandle(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim().replace(/^@+/, '').toLowerCase();
+  if (!trimmed || !/^[a-z0-9_]{1,15}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 /**
  * Normalize `auth_user_id` (Better Auth user id). Trim + lowercase so the
  * same user id from different clients collapses consistently.
@@ -145,6 +158,10 @@ export function normalizeIdentifier(
       return normalizePhone(raw);
     case 'email':
       return normalizeEmail(raw);
+    case 'x_user_id':
+      return normalizeNumericId(raw);
+    case 'x_handle':
+      return normalizeXHandle(raw);
     case 'auth_user_id':
       return normalizeAuthUserId(raw);
     default: {

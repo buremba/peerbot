@@ -1,4 +1,4 @@
-import type { EntityLinkRule } from '@lobu/connector-sdk';
+import type { EntityIdentitySpec, EntityLinkPredicate, EntityTraitSpec, EventAttributionRule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import {
@@ -8,9 +8,9 @@ import {
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
 import {
-  applyEntityLinks,
+  applyEventAttributions,
   clearEntityLinkRulesCache,
-  resolveEntityLinksForItems,
+  resolveEventAttributionsForItems,
 } from '../entity-link-upsert';
 import { ensureMemberEntityType } from '../member-entity-type';
 
@@ -25,12 +25,34 @@ async function setupOrg(name: string) {
   return { org, user };
 }
 
+type TestAttributionRule = {
+  entityType: string;
+  autoCreate?: boolean;
+  createWhen?: EntityLinkPredicate;
+  titlePath?: string;
+  identities: EntityIdentitySpec[];
+  traits?: Record<string, EntityTraitSpec>;
+};
+
+function toAttribution(rule: TestAttributionRule): EventAttributionRule {
+  return {
+    role: 'authored_by',
+    autoCreate: rule.autoCreate,
+    target: {
+      entityType: rule.entityType,
+      createWhen: rule.createWhen,
+      titlePath: rule.titlePath,
+      identities: rule.identities,
+    },
+    traits: rule.traits,
+  };
+}
+
 async function installRule(
   orgId: string,
   connectorKey: string,
   originType: string,
-  rule: EntityLinkRule,
-  overrides?: Record<string, unknown>
+  rule: TestAttributionRule
 ) {
   await createTestConnectorDefinition({
     key: connectorKey,
@@ -39,16 +61,36 @@ async function installRule(
     feeds_schema: {
       [FEED_KEY]: {
         eventKinds: {
-          [originType]: { entityLinks: [rule] },
+          [originType]: { attributions: [toAttribution(rule)] },
         },
       },
     },
-    entity_link_overrides: overrides ?? null,
   });
   clearEntityLinkRulesCache();
 }
 
-describe('applyEntityLinks', () => {
+async function installAttributionRule(
+  orgId: string,
+  connectorKey: string,
+  originType: string,
+  rule: EventAttributionRule
+) {
+  await createTestConnectorDefinition({
+    key: connectorKey,
+    name: connectorKey,
+    organization_id: orgId,
+    feeds_schema: {
+      [FEED_KEY]: {
+        eventKinds: {
+          [originType]: { attributions: [rule] },
+        },
+      },
+    },
+  });
+  clearEntityLinkRulesCache();
+}
+
+describe('applyEventAttributions', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
     clearEntityLinkRulesCache();
@@ -70,7 +112,7 @@ describe('applyEntityLinks', () => {
       },
     });
 
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey: 'whatsapp',
       feedKey: FEED_KEY,
       orgId: org.id,
@@ -107,6 +149,51 @@ describe('applyEntityLinks', () => {
     ]);
   });
 
+  it('consumes event attributions directly', async () => {
+    const { org } = await setupOrg('attribution org');
+
+    await installAttributionRule(org.id, 'x', 'tweet', {
+      role: 'authored_by',
+      autoCreate: true,
+      target: {
+        entityType: '$member',
+        titlePath: 'metadata.author_name',
+        identities: [{ namespace: 'x_user_id', eventPath: 'metadata.author_id' }],
+      },
+      traits: {
+        x_handle: { eventPath: 'metadata.author_handle', behavior: 'prefer_non_empty' },
+      },
+    });
+
+    await applyEventAttributions({
+      connectorKey: 'x',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [
+        {
+          origin_type: 'tweet',
+          metadata: { author_id: '00123', author_name: 'Alice', author_handle: 'alice' },
+        },
+      ],
+    });
+
+    const sql = getTestDb();
+    const entities = await sql`
+      SELECT e.id, e.name, e.metadata FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
+    `;
+    expect(entities).toHaveLength(1);
+    expect(entities[0].name).toBe('Alice');
+    expect((entities[0].metadata as { x_handle?: string }).x_handle).toBe('alice');
+
+    const idents = await sql<{ namespace: string; identifier: string }[]>`
+      SELECT namespace, identifier FROM entity_identities
+      WHERE organization_id = ${org.id} AND entity_id = ${entities[0].id}
+    `;
+    expect(idents).toEqual([{ namespace: 'x_user_id', identifier: '123' }]);
+  });
+
   it('reuses an existing entity and accretes a newly-seen identifier', async () => {
     const { org, user } = await setupOrg('reuse org');
 
@@ -134,7 +221,7 @@ describe('applyEntityLinks', () => {
       ],
     });
 
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey: 'whatsapp',
       feedKey: FEED_KEY,
       orgId: org.id,
@@ -198,7 +285,7 @@ describe('applyEntityLinks', () => {
       ],
     });
 
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey: 'hypo',
       feedKey: FEED_KEY,
       orgId: org.id,
@@ -222,43 +309,6 @@ describe('applyEntityLinks', () => {
       SELECT namespace FROM entity_identities WHERE entity_id = ${Number(entA[0].id)}
     `;
     expect(aIdents.map((r) => r.namespace)).toEqual(['phone']);
-  });
-
-  it('applies per-install overrides end-to-end (loadEntityLinkRules wiring)', async () => {
-    const { org } = await setupOrg('override org');
-
-    await installRule(
-      org.id,
-      'whatsapp',
-      'message',
-      {
-        entityType: '$member',
-        autoCreate: true,
-        identities: [
-          { namespace: 'phone', eventPath: 'metadata.phone' },
-          { namespace: 'wa_jid', eventPath: 'metadata.jid' },
-        ],
-      },
-      { $member: { maskIdentities: ['phone'] } }
-    );
-
-    await applyEntityLinks({
-      connectorKey: 'whatsapp',
-      feedKey: FEED_KEY,
-      orgId: org.id,
-      items: [
-        {
-          origin_type: 'message',
-          metadata: { phone: '14155551234', jid: '14155551234@s.whatsapp.net' },
-        },
-      ],
-    });
-
-    const sql = getTestDb();
-    const idents = await sql<{ namespace: string }[]>`
-      SELECT namespace FROM entity_identities WHERE organization_id = ${org.id}
-    `;
-    expect(idents.map((r) => r.namespace)).toEqual(['wa_jid']);
   });
 
   it('honors matchOnly: uses the identifier for lookup but does not persist it', async () => {
@@ -288,7 +338,7 @@ describe('applyEntityLinks', () => {
       ],
     });
 
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey: 'crm',
       feedKey: FEED_KEY,
       orgId: org.id,
@@ -312,7 +362,7 @@ describe('applyEntityLinks', () => {
     const { org } = await setupOrg('concurrent autocreate org');
     const sql = getTestDb();
 
-    const rule: EntityLinkRule = {
+    const rule: TestAttributionRule = {
       entityType: '$member',
       autoCreate: true,
       titlePath: 'metadata.push_name',
@@ -330,13 +380,13 @@ describe('applyEntityLinks', () => {
     // identity insert; the loser's freshly-inserted entity row gets zero
     // identities (ON CONFLICT) and must be discarded (no orphan), not used.
     await Promise.all([
-      resolveEntityLinksForItems({
+      resolveEventAttributionsForItems({
         connectorKey: 'whatsapp',
         orgId: org.id,
         items: [{ ...item, metadata: { ...item.metadata } }],
         rules: { msg: [rule] },
       }),
-      resolveEntityLinksForItems({
+      resolveEventAttributionsForItems({
         connectorKey: 'whatsapp',
         orgId: org.id,
         items: [{ ...item, metadata: { ...item.metadata } }],
@@ -384,7 +434,7 @@ describe('applyEntityLinks', () => {
       identities: [{ namespace: 'wa_jid', eventPath: 'metadata.sender_jid' }],
     });
 
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey: 'whatsapp',
       feedKey: FEED_KEY,
       orgId: org.id,
@@ -446,7 +496,7 @@ describe('applyEntityLinks', () => {
     });
 
     // A GROUP message from the known contact, carrying a new phone identifier.
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey: 'whatsapp',
       feedKey: FEED_KEY,
       orgId: org.id,
@@ -490,7 +540,7 @@ describe('applyEntityLinks', () => {
       ],
     });
 
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey: 'whatsapp',
       feedKey: FEED_KEY,
       orgId: org.id,
@@ -541,7 +591,7 @@ describe('applyEntityLinks', () => {
       ],
     });
 
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey: 'whatsapp',
       feedKey: FEED_KEY,
       orgId: org.id,
@@ -592,7 +642,7 @@ describe('applyEntityLinks', () => {
       ],
     });
 
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey: 'whatsapp',
       feedKey: FEED_KEY,
       orgId: org.id,
@@ -618,11 +668,11 @@ describe('applyEntityLinks', () => {
     ]);
   });
 
-  it('resolveEntityLinksForItems writes through the passed transaction handle', async () => {
+  it('resolveEventAttributionsForItems writes through the passed transaction handle', async () => {
     const { org } = await setupOrg('tx-threaded org');
     const sql = getTestDb();
 
-    const rule: EntityLinkRule = {
+    const rule: TestAttributionRule = {
       entityType: '$member',
       autoCreate: true,
       identities: [{ namespace: 'phone', eventPath: 'metadata.phone' }],
@@ -632,7 +682,7 @@ describe('applyEntityLinks', () => {
     // through the passed handle, the entity must NOT survive the rollback.
     await sql
       .begin(async (tx) => {
-        await resolveEntityLinksForItems(
+        await resolveEventAttributionsForItems(
           {
             connectorKey: 'whatsapp',
             orgId: org.id,

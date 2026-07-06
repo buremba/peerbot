@@ -5,7 +5,6 @@
  * same slug).
  */
 
-import type { EntityLinkRule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import {
@@ -14,7 +13,7 @@ import {
   createTestOrganization,
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
-import { applyEntityLinks, clearEntityLinkRulesCache } from '../entity-link-upsert';
+import { applyEventAttributions, clearEntityLinkRulesCache } from '../entity-link-upsert';
 import { createEntity } from '../entity-management';
 
 async function seedEntityType(orgId: string, slug: string) {
@@ -124,9 +123,9 @@ describe('entity-management schema search path', () => {
     ).rejects.toThrow(/Unknown entity type/i);
   });
 
-  // The same resolver lives in entity-link-upsert.ts (auto-link path). Drift
+  // The same resolver lives in the event-attribution ingestion path. Drift
   // here would be caught by this test.
-  it('entity-link-upsert resolves a public-catalog type when no tenant type matches', async () => {
+  it('event attribution resolves a public-catalog type when no tenant type matches', async () => {
     const tenant = await createTestOrganization({ name: 'Tenant Auto-Link' });
     const publicCatalog = await createTestOrganization({
       name: 'Public Catalog C',
@@ -140,23 +139,26 @@ describe('entity-management schema search path', () => {
     const connectorKey = 'auto-link-cross-org';
     const feedKey = 'msgs';
     const originType = 'msg';
-    const rule: EntityLinkRule = {
-      entityType: 'public_actor',
+    const attribution = {
+      role: 'authored_by',
       autoCreate: true,
-      titlePath: 'metadata.name',
-      identities: [{ namespace: 'phone', eventPath: 'metadata.phone' }],
+      target: {
+        entityType: 'public_actor',
+        titlePath: 'metadata.name',
+        identities: [{ namespace: 'phone', eventPath: 'metadata.phone' }],
+      },
     };
     await createTestConnectorDefinition({
       key: connectorKey,
       name: connectorKey,
       organization_id: tenant.id,
       feeds_schema: {
-        [feedKey]: { eventKinds: { [originType]: { entityLinks: [rule] } } },
+        [feedKey]: { eventKinds: { [originType]: { attributions: [attribution] } } },
       },
     });
     clearEntityLinkRulesCache();
 
-    await applyEntityLinks({
+    await applyEventAttributions({
       connectorKey,
       feedKey,
       orgId: tenant.id,

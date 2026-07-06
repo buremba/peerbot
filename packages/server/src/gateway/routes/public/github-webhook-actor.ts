@@ -11,8 +11,8 @@ import {
 } from "@lobu/connectors/github-identity";
 import type { DbClient } from "../../../db/client.js";
 import {
-	loadEntityLinkRuleByType,
-	resolveEntityLinksForItems,
+	loadAttributionRuleByType,
+	resolveEventAttributionsForItems,
 } from "../../../utils/entity-link-upsert.js";
 
 interface GithubActor {
@@ -116,7 +116,7 @@ export async function resolveGithubWebhookActor(params: {
 	// The person entity-link rule is read from the connector definition (same
 	// source the poll path uses) — not mirrored here. Absent def/rule → no
 	// attribution (best-effort).
-	const rule = await loadEntityLinkRuleByType({
+	const rule = await loadAttributionRuleByType({
 		connectorKey: "github",
 		orgId: params.organizationId,
 		entityType: "person",
@@ -138,7 +138,7 @@ export async function resolveGithubWebhookActor(params: {
 		},
 	};
 
-	const resolved = await resolveEntityLinksForItems(
+	const resolved = await resolveEventAttributionsForItems(
 		{
 			connectorKey: "github",
 			orgId: params.organizationId,
@@ -149,7 +149,7 @@ export async function resolveGithubWebhookActor(params: {
 	);
 
 	const entityIds = resolved.get(0) ?? [];
-	// resolveEntityLinksForItems stamped the canonical namespace slots onto
+	// resolveEventAttributionsForItems stamped the canonical namespace slots onto
 	// item.metadata; forward only those onto the landed row.
 	const metadata: Record<string, string> = {};
 	for (const ns of [GITHUB_IDENTITY.LOGIN, GITHUB_IDENTITY.USER_ID]) {

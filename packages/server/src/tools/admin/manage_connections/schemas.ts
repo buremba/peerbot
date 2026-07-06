@@ -12,7 +12,6 @@ export {
 	ListConnectorGroupsAction,
 	ManageConnectionsResultSchema,
 	ReauthenticateAction,
-	SetConnectorEntityLinkOverridesAction,
 	SyncChannelBindingsAction,
 	TestAction,
 	ToggleConnectorLoginAction,

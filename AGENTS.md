@@ -22,4 +22,5 @@
 - Never `git stash`; use WIP commits and squash later.
 - Subagents that may switch/commit/push/destroy must run in a worktree; read-only research may share the parent.
 - Slack link pasted (`slack.com/archives/…?thread_ts=`) → run `scripts/slack-thread-viewer.js "<link>"` first.
+- To drive the user's paired Owletto Chrome extension/browser, use Lobu Cloud `manage_operations` on the active `chrome` connection (usually org `buremba`, connection id from `lobu call manage_connections --org buremba --arg action=list --raw`). Useful operations include `navigate`, `get_accessibility_tree`, `type_ref`, `click_ref`, `evaluate`, and `screenshot`; do **not** assume CDP/browser-auth is required. Example: `lobu call manage_operations --org buremba --arg action=execute --arg connection_id:=<chrome-connection-id> --arg operation_key=navigate --arg input:='{"url":"https://app.slack.com/...","wait_for_load":true,"open_in_new_tab":true}' --raw`.
 - Unsure in planning → ask before making conflicting or irreversible choices.

@@ -49,7 +49,11 @@ const person = defineEntityType({
     email: { type: "string" },
     company: { type: "string" },
     session_prefix: { type: "string" },
-    x_handle: { type: "string", description: "X @handle (without @)" },
+    first_name: { type: "string" },
+    last_name: { type: "string" },
+    linkedin_url: { type: "string" },
+    twitter_handle: { type: "string" },
+    instagram_handle: { type: "string" },
   },
   // WhatsApp + X identity metrics. Declared here so `apply` preserves them
   // rather than pruning — persons alias connector identities (wa_jid, x_handle).
@@ -704,8 +708,8 @@ export default defineConfig({
       "./whatsapp.cloud.connector.ts"
     ),
   ],
-  org: "personal-agent",
-  orgName: "Personal Agent",
+  org: "buremba",
+  orgName: "Buremba Org",
   orgDescription:
     "Personal agent tracking finances, people, companies, subscriptions, trips, and topics.",
   agents: [personalAgent],

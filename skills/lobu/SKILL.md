@@ -148,3 +148,28 @@ Use `--dedicated-profile` only when you want a non-default dedicated Chrome prof
 - Use canonical MCP tool names only.
 - Prefer read-only operations before mutations when validating connectivity.
 - `events` is append-only: never delete rows directly; use tombstone/supersede flows.
+
+## Advanced Data Integration & Ingestion Patterns
+
+### 1. Connectors, Feeds & Federation
+Connectors are the primary way to integrate third-party services.
+- **Connections (`manage_connections`)**: Instantiate an installed connector. They can require user OAuth (`connect_url`), API keys, or browser-auth.
+- **Federation vs. Sync (`manage_feeds`)**: Lobu supports two data integration models via Feeds:
+  - **Virtual Feeds (Federation)**: Data is queried live from the third-party service at read-time and is *not* stored in Lobu's database. Use `query_sdk` to read virtual feeds directly (e.g., `client.feeds.readMany(...)`).
+  - **Synced Feeds (Persistence)**: Data is periodically pulled and written into Lobu's memory graph as true entities, enabling global search and fast relational queries.
+
+### 2. Bulk Ingestion (`run_sdk` vs `seed`)
+- **`lobu memory seed`**: Parses `./data/**/*.yaml` against `lobu.config.ts`. Note: It executes sequentially (one HTTP POST per record). Excellent for initial static configs, but very slow for massive data backfills.
+- **`run_sdk` Bulk Inserts**: For massive backfills (thousands of rows) from local files, bypass sequential HTTP latency by sending chunked arrays (e.g., 100 rows) via `lobu call run_sdk`. The v8 isolate executes them in parallel directly next to the DB:
+  ```ts
+  // Example run_sdk bulk-insert payload:
+  export default async (ctx, client) => {
+    const records = [{ type: "person", ... }, /* ... 100 items ... */ ];
+    return await Promise.allSettled(records.map(r => client.entities.create(r)));
+  }
+  ```
+
+### 3. Advanced SDK Patterns
+- **`search_sdk`**: Always use this first to discover available SDK methods (e.g., `lobu call search_sdk --arg query=entities`).
+- **`query_sdk`**: Used for read-only sandboxed TS scripts.
+- **`run_sdk`**: Used for mutating scripts. Set `dry_run: true` to test logic before committing writes.

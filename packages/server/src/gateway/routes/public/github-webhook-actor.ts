@@ -6,13 +6,14 @@
  */
 
 import type { DbClient } from "../../../db/client.js";
-
-const GITHUB_LOGIN_NS = "github_login";
-const GITHUB_USER_ID_NS = "github_user_id";
+import { normalizeGithubLogin } from "../../../authz/github-normalize.js";
 import {
 	loadEntityLinkRuleByType,
 	resolveEntityLinksForItems,
 } from "../../../utils/entity-link-upsert.js";
+
+const GITHUB_LOGIN_NS = "github_login";
+const GITHUB_USER_ID_NS = "github_user_id";
 
 interface GithubActor {
 	login?: unknown;
@@ -108,6 +109,8 @@ export async function resolveGithubWebhookActor(params: {
 
 	const actor = extractGithubActor(params.payload);
 	if (!actor) return null;
+	const authorLogin = normalizeGithubLogin(actor.author_login);
+	if (!authorLogin) return null;
 
 	// The person entity-link rule is read from the connector definition (same
 	// source the poll path uses) — not mirrored here. Absent def/rule → no
@@ -129,7 +132,7 @@ export async function resolveGithubWebhookActor(params: {
 		origin_type: kind,
 		occurred_at: new Date().toISOString(),
 		metadata: {
-			author_login: actor.author_login,
+			author_login: authorLogin,
 			...(actor.author_id ? { author_id: actor.author_id } : {}),
 		},
 	};

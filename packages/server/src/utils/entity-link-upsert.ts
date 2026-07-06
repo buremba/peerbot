@@ -22,7 +22,11 @@ import type {
   EntityLinkPredicate,
   EntityLinkRule,
 } from '@lobu/connector-sdk';
-import { normalizeIdentifier, normalizeSlackUserId } from '@lobu/connector-sdk';
+import { normalizeIdentifier, normalizeNumericId, normalizeSlackUserId } from '@lobu/connector-sdk';
+import {
+  normalizeGithubLogin,
+  normalizeGithubRepoFullName,
+} from '../authz/github-normalize.js';
 import { type DbClient, getDb, pgTextArray } from '../db/client';
 import { resolveEntityLinkRules } from './entity-link-validation';
 import logger from './logger';
@@ -227,12 +231,27 @@ async function ensureAliases(
   `;
 }
 
+/** GitHub namespaces are connector-owned; normalize via server-local helpers. */
+function normalizeIdentityValue(namespace: string, raw: string): string | null {
+  switch (namespace) {
+    case 'github_login':
+      return normalizeGithubLogin(raw);
+    case 'github_user_id':
+    case 'github_repo_id':
+      return normalizeNumericId(raw);
+    case 'github_repo_full_name':
+      return normalizeGithubRepoFullName(raw);
+    default:
+      return normalizeIdentifier(namespace, raw);
+  }
+}
+
 function extractLink(item: BatchItem, rule: EntityLinkRule): ExtractedLink | null {
   const identities: ExtractedLink['identities'] = [];
   for (const spec of rule.identities) {
     const raw = getValueAtPath(item, spec.eventPath);
     if (typeof raw !== 'string' || raw.length === 0) continue;
-    const normalized = normalizeIdentifier(spec.namespace, raw);
+    const normalized = normalizeIdentityValue(spec.namespace, raw);
     if (!normalized) continue;
     identities.push({
       namespace: spec.namespace,

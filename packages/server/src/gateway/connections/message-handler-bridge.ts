@@ -52,6 +52,92 @@ function sanitizeRefLabel(name: string): string {
   return name.replace(/[[\]()\r\n]+/g, " ").replace(/\s+/g, " ").trim() || "file";
 }
 
+function parseProviderFromModelRef(modelRef: string): string | null {
+  const trimmed = modelRef.trim();
+  if (!trimmed || trimmed === "auto") return null;
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0) return null;
+  return trimmed.slice(0, slash);
+}
+
+function expectedProxyUrlFor(params: {
+  publicGatewayUrl: string;
+  providerId: string;
+  agentId: string;
+}): string {
+  const base = params.publicGatewayUrl.replace(/\/$/, "");
+  const origin = base.endsWith("/lobu") ? base.slice(0, -"/lobu".length) : base;
+  return `${origin}/api/proxy/${params.providerId}/a/${encodeURIComponent(params.agentId)}`;
+}
+
+async function validateMessageModelProvider(params: {
+  services: CoreServices;
+  agentId: string;
+  organizationId?: string;
+  userId: string;
+  modelRef?: unknown;
+}): Promise<string | null> {
+  if (typeof params.modelRef !== "string") return null;
+  const modelRef = params.modelRef.trim();
+  const providerId = parseProviderFromModelRef(modelRef);
+  if (!providerId) return null;
+
+  const catalog = params.services.getProviderCatalogService?.();
+  if (!catalog || !params.organizationId) return null;
+
+  const providers = await catalog.getInstalledModules(
+    params.agentId,
+    params.organizationId
+  );
+  const provider = await catalog.findProviderForModel(modelRef, providers);
+  const expectedProxyUrl = expectedProxyUrlFor({
+    publicGatewayUrl: params.services.getPublicGatewayUrl(),
+    providerId,
+    agentId: params.agentId,
+  });
+
+  if (!provider) {
+    return (
+      `I can't run this yet: the selected model (${modelRef}) uses provider "${providerId}", ` +
+      `but that provider is not connected to this agent. Ask an admin to open this agent's Settings → Providers, ` +
+      `connect "${providerId}", and try again. Expected gateway proxy URL after setup: ${expectedProxyUrl}`
+    );
+  }
+
+  const hasCredentials =
+    provider.hasSystemKey() ||
+    (await provider.hasCredentials(params.agentId, {
+      organizationId: params.organizationId,
+      userId: params.userId,
+    }));
+  if (!hasCredentials) {
+    return (
+      `I can't run this yet: the selected model (${modelRef}) uses provider "${provider.providerId}", ` +
+      `but Lobu has no credentials for that provider. Ask an admin to connect or add credentials for ` +
+      `"${provider.providerId}" in this agent's Settings → Providers, then try again. ` +
+      `Expected gateway proxy URL after setup: ${expectedProxyUrl}`
+    );
+  }
+
+  const proxyBaseUrl = expectedProxyUrl.replace(
+    new RegExp(`/${providerId}/a/${encodeURIComponent(params.agentId)}$`),
+    ""
+  );
+  const mappings = provider.getProxyBaseUrlMappings(proxyBaseUrl, params.agentId, {
+    organizationId: params.organizationId,
+    userId: params.userId,
+  });
+  if (Object.keys(mappings).length === 0) {
+    return (
+      `I can't run this yet: the selected model (${modelRef}) uses provider "${provider.providerId}", ` +
+      `but Lobu could not build a gateway route for it. Ask an admin to reconnect the provider or redeploy the gateway. ` +
+      `Expected gateway proxy URL: ${expectedProxyUrl}`
+    );
+  }
+
+  return null;
+}
+
 /**
  * Append a tokenless artifact-route reference (`[name](/api/v1/files/:id)`) for
  * each non-image attachment to the user's message text, so non-image uploads
@@ -854,6 +940,22 @@ export class MessageHandlerBridge {
         agentSettingsStore,
         organizationId
       );
+
+      const modelProviderError = await validateMessageModelProvider({
+        services: this.services,
+        agentId,
+        organizationId,
+        userId,
+        modelRef: agentOptions.model,
+      });
+      if (modelProviderError) {
+        logger.warn(
+          { traceId, agentId, organizationId, model: agentOptions.model },
+          "Rejecting inbound message before enqueue because model provider is not routable"
+        );
+        await thread.post({ text: modelProviderError });
+        return;
+      }
 
       const payload = buildMessagePayload({
         platform,

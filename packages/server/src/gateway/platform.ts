@@ -9,6 +9,7 @@ import type { AgentMetadataStore } from "./auth/agent-metadata-store.js";
 import type { McpConfigService } from "./auth/mcp/config-service.js";
 import type { McpProxy } from "./auth/mcp/proxy.js";
 import type { ProviderOAuthStateStore } from "./auth/oauth/state-store.js";
+import type { ProviderCatalogService } from "./auth/provider-catalog.js";
 import type { AgentSettingsStore } from "./auth/settings/agent-settings-store.js";
 import type { ModelPreferenceStore } from "./auth/settings/model-preference-store.js";
 import type { UserAgentsStore } from "./auth/user-agents-store.js";
@@ -66,6 +67,7 @@ export interface CoreServices {
   getDeclaredAgentRegistry(): DeclaredAgentRegistry | undefined;
   getConnectionStore(): AgentConnectionStore | undefined;
   getAppInstallationStore(): AppInstallationStore;
+  getProviderCatalogService?(): ProviderCatalogService;
 }
 
 // ============================================================================

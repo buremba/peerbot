@@ -9,7 +9,7 @@
  *     `slack:<id>` binding key. The Slack Web API is mocked (no live Slack).
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb } from "../../../db/client";
 import {
 	persistSecretValue,
@@ -17,6 +17,7 @@ import {
 } from "../../../gateway/secrets";
 import { orgContext } from "../../../lobu/stores/org-context";
 import { PostgresSecretStore } from "../../../lobu/stores/postgres-secret-store";
+import { __setBindChannelNotifyDepsForTests } from "../../../gateway/channels/bind-channel-notify";
 import { __setSlackWebApiForTests } from "../../../tools/admin/manage_connections/handlers/channel-bindings";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -70,6 +71,47 @@ describe("manage_connections channel-binding actions", () => {
     await sql`DELETE FROM connections WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM app_installations WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM account WHERE "userId" = ${workspace.users.owner.id}`;
+    __setBindChannelNotifyDepsForTests({
+      gatewayRunning: () => false,
+      getManager: () => null,
+    });
+  });
+
+  it("bind_channel schedules a generic channel confirmation when the gateway is up", async () => {
+    const connectionId = await makeManagedSlackConnection({
+      orgId,
+      slug: "slackinst-notify",
+      teamId: TEAM,
+    });
+    const postMessageToChannel = vi.fn(async () => {});
+    __setBindChannelNotifyDepsForTests({
+      gatewayRunning: () => true,
+      getManager: () => ({ postMessageToChannel }),
+    });
+
+    const bound = (await workspace.owner.connections.manage({
+      action: "bind_channel",
+      agent_id: agentId,
+      connection_id: connectionId,
+      channel_id: "slack:C222",
+    })) as { success?: boolean };
+    expect(bound.success).toBe(true);
+    expect(postMessageToChannel).toHaveBeenCalledTimes(1);
+    expect(postMessageToChannel).toHaveBeenCalledWith(
+      "slackinst-notify",
+      "slack:C222",
+      expect.objectContaining({
+        markdown: expect.stringContaining("Linked to"),
+      }),
+    );
+
+    await workspace.owner.connections.manage({
+      action: "bind_channel",
+      agent_id: agentId,
+      connection_id: connectionId,
+      channel_id: "slack:C222",
+    });
+    expect(postMessageToChannel).toHaveBeenCalledTimes(1);
   });
 
   it("bind_channel → list_channel_bindings → unbind_channel round-trips", async () => {

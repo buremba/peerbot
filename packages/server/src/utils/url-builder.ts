@@ -91,31 +91,54 @@ export function buildConnectionsUrl(
 }
 
 /**
- * Build permalink URL for a single knowledge item
- * Pattern: /{ownerSlug}/memory?content_ids={eventId}
+ * A slice of the memory/events log to permalink into. One discriminated union
+ * so every caller (approval_url, notification resourceUrl, agent output) picks a
+ * *kind* and the URL shape is decided in exactly one place — no caller
+ * hand-assembles `?content_ids=`/`?run_ids=`/`?feed_ids=` strings.
+ *
+ * Which kind to use:
+ *  - `run`   — the link's identity is one execution (an operation approval, a
+ *    watcher/scheduled run). Survives the supersede chain by construction: a
+ *    run's events share one run_id and run-scoped reads were never masked by
+ *    `superseded_by IS NULL`.
+ *  - `event` — a point in the log (a specific card). Read-side chain resolution
+ *    (get_content) resolves a superseded id to its full lineage, so a frozen
+ *    event permalink still lands even after it's superseded.
+ *  - `feed`  — a channel / conversational stream (all activity in #leads).
  */
-export function buildEventPermalink(ownerSlug: string, eventId: number, baseUrl?: string): string {
-  return withBaseUrl(
-    normalizeBaseUrl(baseUrl),
-    `/${ownerSlug}/memory?content_ids=${eventId}`
-  );
+export type MemoryResource =
+  | { kind: 'run'; runId: number }
+  | { kind: 'event'; eventId: number }
+  | { kind: 'feed'; feedId: number };
+
+/** The `?param=value` query for a {@link MemoryResource}. */
+function memoryResourceQuery(resource: MemoryResource): string {
+  switch (resource.kind) {
+    case 'run':
+      return `run_ids=${resource.runId}`;
+    case 'event':
+      return `content_ids=${resource.eventId}`;
+    case 'feed':
+      return `feed_ids=${resource.feedId}`;
+  }
 }
 
 /**
- * Build permalink URL scoped to a run.
- * Pattern: /{ownerSlug}/memory?run_ids={runId}
+ * Build a permalink into the memory/events log for a {@link MemoryResource}.
+ * Pattern: /{ownerSlug}/memory?{run_ids|content_ids|feed_ids}={id}
  *
- * Prefer this over {@link buildEventPermalink} when the link's identity is the
- * run, not a single event snapshot — e.g. an operation's approval_url. A run's
- * events form a supersede chain (pending→executing→completed) that shares one
- * run_id, and run-scoped reads were never masked by `superseded_by IS NULL`, so
- * this URL stays valid across the whole lifecycle by construction — no read-side
- * chain resolution required.
+ * This is the ONE place a memory permalink is assembled. `ownerSlug` empty →
+ * returns undefined (no org context, can't build a usable link).
  */
-export function buildRunPermalink(ownerSlug: string, runId: number, baseUrl?: string): string {
+export function buildResourcePermalink(
+  ownerSlug: string | null | undefined,
+  resource: MemoryResource,
+  baseUrl?: string
+): string | undefined {
+  if (!ownerSlug) return undefined;
   return withBaseUrl(
     normalizeBaseUrl(baseUrl),
-    `/${ownerSlug}/memory?run_ids=${runId}`
+    `/${ownerSlug}/memory?${memoryResourceQuery(resource)}`
   );
 }
 

@@ -8,7 +8,7 @@
 
 import {
   buildEntityUrl,
-  buildEventPermalink,
+  buildResourcePermalink,
   type EntityInfo,
   getOrganizationSlug,
   getPublicWebUrl,
@@ -64,6 +64,5 @@ export async function buildEventViewUrl(
   eventId: number
 ): Promise<string | undefined> {
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
-  if (!ownerSlug) return undefined;
-  return buildEventPermalink(ownerSlug, eventId, baseUrl);
+  return buildResourcePermalink(ownerSlug, { kind: 'event', eventId }, baseUrl);
 }

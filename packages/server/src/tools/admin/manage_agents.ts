@@ -30,7 +30,7 @@ import { isValidAgentId } from '../../lobu/stores/postgres-stores';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { insertEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
-import { buildEventPermalink } from '../../utils/url-builder';
+import { buildResourcePermalink } from '../../utils/url-builder';
 import { ToolUserError } from '../../utils/errors';
 import { requireOrgReadAccess, requireOrgWriteAccess } from '../../utils/organization-access';
 import type { ToolContext } from '../registry';
@@ -398,8 +398,10 @@ async function queueWriteForApproval(
   const eventId = Number(event.id);
 
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
-  const approvalUrl =
-    ownerSlug && baseUrl ? buildEventPermalink(ownerSlug, eventId, baseUrl) : undefined;
+  // Run-scoped: the pending event is superseded on approve→complete; a run link
+  // stays valid across the chain. (Read-side content_ids resolution also covers
+  // the event id below, carried for the notification's resourceId.)
+  const approvalUrl = buildResourcePermalink(ownerSlug, { kind: 'run', runId }, baseUrl);
 
   notifyActionApprovalNeeded({
     orgId: ctx.organizationId,

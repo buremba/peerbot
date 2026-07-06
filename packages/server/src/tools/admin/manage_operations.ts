@@ -33,7 +33,7 @@ import { insertEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
 import { createConnectorOperationRun } from '../../runs/queue-service';
 import { dispatchChromeActionToExtension } from '../../worker-api/dispatch-chrome-action';
-import { buildRunPermalink } from '../../utils/url-builder';
+import { buildResourcePermalink } from '../../utils/url-builder';
 import { trackWatcherReaction } from '../../utils/watcher-reactions';
 import type { ToolContext } from '../registry';
 import { getOrgUrlContext } from '../view-urls';
@@ -708,8 +708,7 @@ async function handleExecute(
     // approve→complete and drops out of the live view, but a run_ids permalink
     // reads the whole chain and stays valid across the lifecycle. (The read-side
     // content_ids resolver also covers already-minted event-scoped links.)
-    const approvalUrl =
-      orgSlug && baseUrl ? buildRunPermalink(orgSlug, runId, baseUrl) : undefined;
+    const approvalUrl = buildResourcePermalink(orgSlug, { kind: 'run', runId }, baseUrl);
 
     notifyActionApprovalNeeded({
       orgId: ctx.organizationId,

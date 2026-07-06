@@ -16,7 +16,7 @@ import { getDb } from '../../db/client';
 import { mergeEntityFields, type FieldMergeResult } from '../../utils/entity-field-merge';
 import { insertEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
-import { buildEventPermalink } from '../../utils/url-builder';
+import { buildResourcePermalink } from '../../utils/url-builder';
 import type { ToolContext } from '../registry';
 import { getOrgUrlContext } from '../view-urls';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
@@ -119,8 +119,10 @@ export async function proposeEntityFieldChange(
   const eventId = Number(event.id);
 
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
-  const approvalUrl =
-    ownerSlug && baseUrl ? buildEventPermalink(ownerSlug, eventId, baseUrl) : undefined;
+  // Run-scoped: the pending event is superseded on approve→complete; a run link
+  // stays valid across the chain. (Read-side content_ids resolution also covers
+  // the event id below, carried for the notification's resourceId.)
+  const approvalUrl = buildResourcePermalink(ownerSlug, { kind: 'run', runId }, baseUrl);
 
   notifyActionApprovalNeeded({
     orgId: ctx.organizationId,

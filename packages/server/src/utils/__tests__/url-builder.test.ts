@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildEntityUrl, buildRunPermalink, getPublicWebUrl } from '../url-builder';
+import { buildEntityUrl, buildResourcePermalink, getPublicWebUrl } from '../url-builder';
 import {
   HOSTED_UI_FALLBACK_ORIGIN,
   __resetPublicOriginCachesForTests,
@@ -88,15 +88,33 @@ describe('buildEntityUrl', () => {
   });
 });
 
-describe('buildRunPermalink', () => {
-  it('scopes the memory permalink to run_ids (survives the supersede chain)', () => {
-    const url = buildRunPermalink('acme', 536620, 'https://app.lobu.com');
-    expect(url).toBe('https://app.lobu.com/acme/memory?run_ids=536620');
+describe('buildResourcePermalink', () => {
+  it('run kind → ?run_ids (survives the supersede chain by construction)', () => {
+    expect(
+      buildResourcePermalink('acme', { kind: 'run', runId: 536620 }, 'https://app.lobu.com')
+    ).toBe('https://app.lobu.com/acme/memory?run_ids=536620');
+  });
+
+  it('event kind → ?content_ids (chain-resolved on read)', () => {
+    expect(
+      buildResourcePermalink('acme', { kind: 'event', eventId: 4309390 }, 'https://app.lobu.com')
+    ).toBe('https://app.lobu.com/acme/memory?content_ids=4309390');
+  });
+
+  it('feed kind → ?feed_ids (all activity in a channel)', () => {
+    expect(
+      buildResourcePermalink('acme', { kind: 'feed', feedId: 42 }, 'https://app.lobu.com')
+    ).toBe('https://app.lobu.com/acme/memory?feed_ids=42');
   });
 
   it('builds a relative URL when no base is provided', () => {
-    expect(buildRunPermalink('acme', 536620, undefined)).toBe(
+    expect(buildResourcePermalink('acme', { kind: 'run', runId: 536620 })).toBe(
       '/acme/memory?run_ids=536620'
     );
+  });
+
+  it('returns undefined when the org slug is missing (no usable link)', () => {
+    expect(buildResourcePermalink(null, { kind: 'run', runId: 1 })).toBeUndefined();
+    expect(buildResourcePermalink(undefined, { kind: 'event', eventId: 1 })).toBeUndefined();
   });
 });

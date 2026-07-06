@@ -1,5 +1,6 @@
 import { getDb } from '../db/client';
 import { emit } from '../events/emitter';
+import { buildResourcePermalink } from '../utils/url-builder';
 import { createNotificationForUsers } from './service';
 
 /** Notification content minus the org id (the dispatch helpers stamp it). */
@@ -65,12 +66,11 @@ export async function notifyActionApprovalNeeded(params: {
 }): Promise<void> {
   await notifyOrgAdmins(params.orgId, (orgSlug) => {
     const connLabel = params.connectionName ? ` on ${params.connectionName}` : '';
-    const resourceUrl =
-      params.eventId && orgSlug
-        ? `/${orgSlug}/memory?content_ids=${params.eventId}`
-        : orgSlug
-          ? `/${orgSlug}/memory?run_ids=${params.runId}`
-          : undefined;
+    // Run-scoped, via the shared permalink resolver — same reasoning as the
+    // approval_url: the pending event is superseded on approve→complete, but the
+    // run link stays valid across the chain. (baseUrl omitted → relative link,
+    // which the inbox resolves against the current origin.)
+    const resourceUrl = buildResourcePermalink(orgSlug, { kind: 'run', runId: params.runId });
     const urlLine = params.approvalUrl ? `\n\nReview: ${params.approvalUrl}` : '';
     return {
       type: 'action_approval_needed',

@@ -518,7 +518,16 @@ export async function getAuthConfig(
 
 	const social: AuthConfig["social"] = {};
 
+	const envRecord = env as Record<string, string | undefined>;
+	const allowedGlobalProviders = hasValue(envRecord.LOBU_GLOBAL_LOGIN_PROVIDERS)
+		? envRecord.LOBU_GLOBAL_LOGIN_PROVIDERS!.split(",").map((s) => s.trim().toLowerCase())
+		: null;
+
 	for (const config of providerConfigs) {
+		if (allowedGlobalProviders && !organizationId && !allowedGlobalProviders.includes(config.provider)) {
+			continue;
+		}
+
 		const { clientId, clientSecret } = await resolveLoginProviderCredentials({
 			env,
 			provider: config.provider,

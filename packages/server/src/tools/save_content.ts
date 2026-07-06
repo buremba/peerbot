@@ -343,7 +343,10 @@ async function saveContentImpl(
       attachments: args.attachments,
       authorName: args.author,
       sourceUrl: args.source_url ?? null,
-      occurredAt: args.occurred_at ?? null,
+      // The schema promises "Defaults to now if omitted" — honor it. A NULL
+      // occurred_at makes the event invisible to watcher windows (window
+      // content filters on occurred_at within [window_start, window_end)).
+      occurredAt: args.occurred_at ?? new Date().toISOString(),
       semanticType,
       metadata: args.metadata,
       createdBy: ctx.userId,

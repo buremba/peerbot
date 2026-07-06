@@ -260,10 +260,17 @@ async function markWatcherRunFailedIdempotent(
 }
 
 /**
- * Move a watcher's `next_run_at` forward by one cron tick. Reused by:
+ * Move a watcher's `next_run_at` forward to the next cron tick after now.
+ * Reused by:
  *   - terminal-failure paths in this module (broken watcher shouldn't re-fire each minute)
  *   - client.watchers.completeWindow on successful completion
  *   - the device-side `/api/workers/me/runs/:id/complete-watcher` endpoint
+ *
+ * Idempotent: the target is always `nextRunAt(schedule, now)`, so duplicate
+ * completions and manually-triggered runs converge to the same upcoming tick.
+ * (Basing it on `max(now, next_run_at)` instead compounded the schedule: each
+ * manual trigger's completion pushed an already-future `next_run_at` one more
+ * tick out, so N manual runs silently skipped N cron slots.)
  *
  * Pass either the singleton `sql` client or a transaction handle from
  * `sql.begin(...)` to advance inside the caller's transaction. Schedule-less
@@ -277,20 +284,16 @@ export async function advanceWatcherSchedule(
 	if (watcherId === undefined || watcherId === null) return;
 	try {
 		const rows = await sql`
-      SELECT schedule, next_run_at
+      SELECT schedule
       FROM watchers
       WHERE id = ${watcherId}
       LIMIT 1
     `;
 		const schedule = (rows[0]?.schedule as string | null) ?? null;
 		if (!schedule) return;
-		const currentNextRunAt = (rows[0]?.next_run_at as string | null) ?? null;
-		const base = currentNextRunAt
-			? new Date(Math.max(Date.now(), new Date(currentNextRunAt).getTime()))
-			: new Date();
 		await sql`
       UPDATE watchers
-      SET next_run_at = ${nextRunAt(schedule, base)}::timestamptz,
+      SET next_run_at = ${nextRunAt(schedule, new Date())}::timestamptz,
           updated_at = NOW()
       WHERE id = ${watcherId}
     `;

@@ -60,6 +60,25 @@ async function getEntityTypeSchema(
 // ============================================
 
 /**
+ * Metadata keys stamped by watcher promotion (`promote-keyed-entities.ts`):
+ * platform provenance, not part of any entity-type schema. Excluded from
+ * validation so a promoted entity's metadata round-trips — read it, edit a
+ * domain field, write it back — under an `additionalProperties: false`
+ * schema. `source` is deliberately NOT here: it is a plausible domain field,
+ * so it stays subject to the type's schema.
+ */
+const WATCHER_PROVENANCE_KEYS = ['watcher_id', 'stable_key', 'window_id'];
+
+function withoutWatcherProvenanceKeys(
+  metadata: Record<string, unknown>
+): Record<string, unknown> {
+  if (!WATCHER_PROVENANCE_KEYS.some((key) => key in metadata)) return metadata;
+  return Object.fromEntries(
+    Object.entries(metadata).filter(([key]) => !WATCHER_PROVENANCE_KEYS.includes(key))
+  );
+}
+
+/**
  * Validate entity metadata against the entity type's JSON schema.
  *
  * Returns { valid: true } if:
@@ -101,10 +120,22 @@ export async function validateEntityMetadata(
     return { valid: true };
   }
 
-  // Validate metadata against schema
+  // Validate metadata against schema, ignoring platform provenance keys —
+  // they are stamped by watcher promotion outside this validator and would
+  // otherwise fail every round-trip under additionalProperties: false.
   const ajv = getAjv();
   const validate = ajv.compile(schema);
-  const isValid = validate(metadata);
+  const candidate = withoutWatcherProvenanceKeys(metadata);
+  const isValid = validate(candidate);
+  if (candidate !== metadata) {
+    // The AJV singleton runs with coerceTypes, mutating the validated object
+    // in place — callers persist those coercions. When we validated a stripped
+    // copy, propagate its top-level coercions back (nested objects are shared
+    // by reference, so deeper coercions already landed).
+    for (const [key, value] of Object.entries(candidate)) {
+      metadata[key] = value;
+    }
+  }
 
   if (isValid) {
     return { valid: true };

@@ -19,7 +19,9 @@ import type { Env } from "../../../index";
 import { createWatcherRun } from "../../../runs/queue-service";
 import { generateWindowToken } from "../../../utils/jwt";
 import { computePendingWindow } from "../../../utils/window-utils";
+import { nextRunAt } from "../../../utils/cron";
 import {
+	advanceWatcherSchedule,
 	dispatchPendingWatcherRuns,
 	materializeDueWatcherRuns,
 	reconcileWatcherRuns,
@@ -1988,6 +1990,32 @@ describe("canvas-on-events window completion", () => {
 		expect(current).toHaveLength(1);
 		expect((current[0].payload_data as Record<string, unknown>).summary).toBe(
 			"v2",
+		);
+	});
+
+	// Manual triggers complete through the same advanceWatcherSchedule as
+	// scheduled runs, but with next_run_at already sitting on the upcoming cron
+	// tick. Advancing from max(now, next_run_at) compounded that: every manual
+	// run's completion pushed the schedule one more tick out, so N manual runs
+	// silently skipped N cron slots. The advance must converge on the next tick
+	// after now, no matter how many completions land while the schedule is
+	// already current.
+	it("advanceWatcherSchedule is idempotent when next_run_at is already the upcoming tick", async () => {
+		const { sql, dbClient, watcherId } = await createAutomatedWatcher();
+
+		const upcomingTick = nextRunAt("0 9 * * *", new Date());
+		await sql`
+      UPDATE watchers SET next_run_at = ${upcomingTick}::timestamptz
+      WHERE id = ${watcherId}
+    `;
+
+		await advanceWatcherSchedule(dbClient, watcherId);
+		await advanceWatcherSchedule(dbClient, watcherId);
+
+		const [after] =
+			await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+		expect(new Date(after.next_run_at as string).getTime()).toBe(
+			new Date(upcomingTick).getTime(),
 		);
 	});
 });

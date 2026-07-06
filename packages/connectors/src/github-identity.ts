@@ -6,8 +6,6 @@
  * entity-link ingestion all import from here — not from connector-sdk.
  */
 
-import { normalizeNumericId } from '@lobu/connector-sdk';
-
 /** Connector-owned identity namespaces (not SDK-global). */
 export const GITHUB_IDENTITY = {
   USER_ID: 'github_user_id',
@@ -25,6 +23,13 @@ export function normalizeGithubLogin(raw: string | null | undefined): string | n
   if (!trimmed) return null;
   if (!/^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,38}$/.test(trimmed)) return null;
   return trimmed;
+}
+
+function normalizeNumericId(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  return trimmed.replace(/^0+(?=\d)/, '');
 }
 
 export function normalizeGithubRepoFullName(raw: string | null | undefined): string | null {

@@ -32,8 +32,22 @@ export function __setBindChannelNotifyDepsForTests(
 	deps = { ...deps, ...next };
 }
 
-export function channelBindConfirmationText(agentName: string): string {
-	return `✅ Linked to **${agentName}**. I'll reply here from now on.`;
+/** Escape chars that would break a markdown `[label](url)` link label. */
+function escapeMarkdownLinkLabel(text: string): string {
+	return text
+		.replace(/\\/g, "\\\\")
+		.replace(/\[/g, "\\[")
+		.replace(/\]/g, "\\]");
+}
+
+export function channelBindConfirmationText(
+	agentName: string,
+	agentUrl?: string,
+): string {
+	const agentRef = agentUrl
+		? `[${escapeMarkdownLinkLabel(agentName)}](${agentUrl})`
+		: `**${agentName}**`;
+	return `✅ Linked to ${agentRef}. I'll reply here from now on.`;
 }
 
 function channelKey(platform: string, channelId: string): string {
@@ -46,6 +60,8 @@ export type PostChannelBindConfirmationParams = {
 	channelId: string;
 	agentId: string;
 	agentName: string;
+	/** Owletto Behaviors page — rendered as the link label when set. */
+	agentUrl?: string;
 	/** When equal to `agentId`, skip — rebinding the same agent (e.g. model tweak). */
 	previousAgentId?: string | null;
 };
@@ -65,6 +81,7 @@ export async function postChannelBindConfirmation(
 		channelId,
 		agentId,
 		agentName,
+		agentUrl,
 		previousAgentId,
 	} = params;
 
@@ -78,7 +95,7 @@ export async function postChannelBindConfirmation(
 
 	try {
 		await manager.postMessageToChannel(runtimeConnectionId, key, {
-			markdown: channelBindConfirmationText(agentName),
+			markdown: channelBindConfirmationText(agentName, agentUrl),
 		});
 	} catch (err) {
 		logger.warn(

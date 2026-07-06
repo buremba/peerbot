@@ -15,9 +15,20 @@ afterEach(() => {
 });
 
 describe("channelBindConfirmationText", () => {
-	it("names the agent in the ack", () => {
+	it("bolds the agent name when no dashboard URL is available", () => {
 		expect(channelBindConfirmationText("Finance Bot")).toBe(
 			"✅ Linked to **Finance Bot**. I'll reply here from now on.",
+		);
+	});
+
+	it("links the agent name to the Behaviors page when a URL is set", () => {
+		expect(
+			channelBindConfirmationText(
+				"Finance Bot",
+				"https://app.lobu.ai/acme/agents/agent-1/behaviors",
+			),
+		).toBe(
+			"✅ Linked to [Finance Bot](https://app.lobu.ai/acme/agents/agent-1/behaviors). I'll reply here from now on.",
 		);
 	});
 });
@@ -73,6 +84,7 @@ describe("postChannelBindConfirmation", () => {
 			channelId: "-100123",
 			agentId: "agent-a",
 			agentName: "Finance Bot",
+			agentUrl: "https://app.lobu.ai/acme/agents/agent-a/behaviors",
 		});
 
 		expect(postMessageToChannel).toHaveBeenCalledTimes(1);
@@ -81,7 +93,7 @@ describe("postChannelBindConfirmation", () => {
 			"telegram:-100123",
 			{
 				markdown:
-					"✅ Linked to **Finance Bot**. I'll reply here from now on.",
+					"✅ Linked to [Finance Bot](https://app.lobu.ai/acme/agents/agent-a/behaviors). I'll reply here from now on.",
 			},
 		);
 	});

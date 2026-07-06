@@ -34,6 +34,7 @@ import {
 import { orgContext } from "../../../../lobu/stores/org-context";
 import { PostgresSecretStore } from "../../../../lobu/stores/postgres-secret-store";
 import { canonicalSlackChannelId } from "../../../../preview/slack";
+import { getConfiguredPublicOrigin } from "../../../../utils/public-origin";
 import type { ToolContext } from "../../../registry";
 import type { ConnectionsArgs, ManageConnectionsResult } from "../schemas";
 
@@ -66,18 +67,27 @@ async function assertAgentInOrg(
 	return rows.length > 0;
 }
 
-async function resolveAgentName(
+async function resolveAgentBindNotice(
 	organizationId: string,
 	agentId: string,
-): Promise<string> {
+): Promise<{ name: string; url?: string }> {
 	const sql = getDb();
 	const rows = (await sql`
-		SELECT name FROM agents
-		WHERE id = ${agentId} AND organization_id = ${organizationId}
+		SELECT a.name, o.slug AS org_slug
+		FROM agents a
+		JOIN organization o ON o.id = a.organization_id
+		WHERE a.id = ${agentId} AND a.organization_id = ${organizationId}
 		LIMIT 1
-	`) as Array<{ name: string }>;
-	const name = rows[0]?.name?.trim();
-	return name || agentId;
+	`) as Array<{ name: string | null; org_slug: string | null }>;
+	const row = rows[0];
+	const name = row?.name?.trim() || agentId;
+	const origin = getConfiguredPublicOrigin()?.replace(/\/+$/, "");
+	const orgSlug = row?.org_slug?.trim();
+	const url =
+		origin && orgSlug
+			? `${origin}/${orgSlug}/agents/${agentId}/behaviors`
+			: undefined;
+	return { name, url };
 }
 
 /**
@@ -185,12 +195,17 @@ export async function handleBindChannel(
 			model: args.model,
 		},
 	);
+	const agentNotice = await resolveAgentBindNotice(
+		organizationId,
+		args.agent_id,
+	);
 	scheduleChannelBindConfirmation({
 		connectionSlug: connection.slug,
 		platform: connection.connector_key,
 		channelId,
 		agentId: args.agent_id,
-		agentName: await resolveAgentName(organizationId, args.agent_id),
+		agentName: agentNotice.name,
+		agentUrl: agentNotice.url,
 		previousAgentId: existing?.agentId,
 	});
 	logger.info(
@@ -425,12 +440,17 @@ export async function handleConnectChannelDm(
 			connectionId: String(connection.id),
 		},
 	);
+	const agentNotice = await resolveAgentBindNotice(
+		organizationId,
+		args.agent_id,
+	);
 	scheduleChannelBindConfirmation({
 		connectionSlug: connection.slug,
 		platform: "slack",
 		channelId: boundChannelId,
 		agentId: args.agent_id,
-		agentName: await resolveAgentName(organizationId, args.agent_id),
+		agentName: agentNotice.name,
+		agentUrl: agentNotice.url,
 		previousAgentId: existing?.agentId,
 	});
 

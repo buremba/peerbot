@@ -222,8 +222,11 @@ export abstract class BaseProviderModule
   ): string {
     if (!agentId) return "";
     const agentPath = `/a/${encodeURIComponent(agentId)}`;
-    if (!context?.userId) return agentPath;
-    return `${agentPath}/u/${encodeURIComponent(context.userId)}`;
+    const orgPath = context?.organizationId
+      ? `${agentPath}/o/${encodeURIComponent(context.organizationId)}`
+      : agentPath;
+    if (!context?.userId) return orgPath;
+    return `${orgPath}/u/${encodeURIComponent(context.userId)}`;
   }
 
   protected buildAgentScopedProxyUrl(

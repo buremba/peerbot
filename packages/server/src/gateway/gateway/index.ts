@@ -606,7 +606,8 @@ export class WorkerGateway {
         ),
         baseUrl,
         auth.token,
-        auth.tokenData.organizationId
+        auth.tokenData.organizationId,
+        userId
       );
 
       // Fetch enabled skills with content for worker filesystem sync
@@ -808,7 +809,8 @@ export class WorkerGateway {
     agentModel?: string,
     requestBaseUrl?: string,
     workerToken?: string,
-    organizationId?: string
+    organizationId?: string,
+    userId?: string
   ): Promise<{
     credentialEnvVarName?: string;
     defaultProvider?: string;
@@ -852,7 +854,7 @@ export class WorkerGateway {
       for (const candidate of effectiveProviders) {
         if (
           candidate.hasSystemKey() ||
-          (await candidate.hasCredentials(agentId, { organizationId }))
+          (await candidate.hasCredentials(agentId, { organizationId, userId }))
         ) {
           primaryProvider = candidate;
           break;
@@ -867,7 +869,10 @@ export class WorkerGateway {
     for (const provider of effectiveProviders) {
       Object.assign(
         providerBaseUrlMappings,
-        provider.getProxyBaseUrlMappings(proxyBaseUrl, agentId)
+        provider.getProxyBaseUrlMappings(proxyBaseUrl, agentId, {
+          organizationId,
+          userId,
+        })
       );
     }
 

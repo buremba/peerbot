@@ -1636,7 +1636,8 @@ export class DeploymentManager {
       const proxyBaseUrl = `${this.getDispatcherUrl()}/api/proxy`;
       const mappings = primaryProvider.getProxyBaseUrlMappings(
         proxyBaseUrl,
-        agentId
+        agentId,
+        providerContext
       );
       const providerBaseUrl = Object.values(mappings)[0];
       if (providerBaseUrl) {

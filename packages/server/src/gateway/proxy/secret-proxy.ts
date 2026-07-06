@@ -687,16 +687,21 @@ export class SecretProxy {
         forwardPath = slugMatch[2] || "";
         resolvedSlug = candidateSlug;
 
-        // Extract agentId from /a/{agentId} path segment if present.
-        // URL format: /api/proxy/{slug}/a/{agentId}/v1/chat/completions
+        // Extract agent/org/user scope from the provider proxy path if present.
+        // URL format: /api/proxy/{slug}/a/{agentId}/o/{organizationId}/u/{userId}/v1/chat/completions
+        // Legacy callers may omit /o/{organizationId} and/or /u/{userId}.
         const agentMatch = forwardPath.match(
-          /^\/a\/([^/]+)(?:\/u\/([^/]+))?(\/.*)?$/
+          /^\/a\/([^/]+)(?:\/o\/([^/]+))?(?:\/u\/([^/]+))?(\/.*)?$/
         );
         if (agentMatch) {
           urlAgentId = safeDecodePathSegment(agentMatch[1]);
-          const userId = safeDecodePathSegment(agentMatch[2]);
-          forwardPath = agentMatch[3] || "";
-          providerContext = userId ? { userId } : undefined;
+          const organizationId = safeDecodePathSegment(agentMatch[2]);
+          const userId = safeDecodePathSegment(agentMatch[3]);
+          forwardPath = agentMatch[4] || "";
+          providerContext = {
+            ...(organizationId ? { organizationId } : {}),
+            ...(userId ? { userId } : {}),
+          };
         }
       }
     }
@@ -720,8 +725,17 @@ export class SecretProxy {
     // we hand to placeholder + secret lookups so a worker bearing org A's
     // placeholder cannot resolve it under org B's URL.
     const callerToken = this.extractCallerToken(c);
+    const workerTokenOrganizationId = this.extractWorkerTokenOrg(c);
+    // Trust the URL-carried org only for placeholder-authenticated workers: the
+    // placeholder mapping is itself org-tagged and is checked against this value
+    // immediately below. Legacy non-placeholder callers keep using the signed
+    // worker-token org or DB resolver so a spoofed /o/{org} segment can't spend
+    // another tenant's org-shared provider key.
+    const pathOrganizationId = callerToken?.includes(PLACEHOLDER_PREFIX)
+      ? providerContext?.organizationId
+      : undefined;
     let expectedOrganizationId: string | undefined =
-      this.extractWorkerTokenOrg(c);
+      workerTokenOrganizationId || pathOrganizationId;
     if (!expectedOrganizationId && urlAgentId && this.agentOrgResolver) {
       try {
         const orgId = await this.agentOrgResolver(urlAgentId);

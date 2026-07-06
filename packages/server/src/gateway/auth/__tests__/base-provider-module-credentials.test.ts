@@ -140,6 +140,34 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     ).toBe(false);
   });
 
+  test("proxy base URL carries org scope when credential context has organizationId", () => {
+    const mod = makeModule(false);
+
+    const mappings = mod.getProxyBaseUrlMappings(
+      "http://proxy.internal/api/proxy",
+      "agent-1",
+      { organizationId: "org-1", userId: "user-1" }
+    );
+
+    expect(mappings.Z_AI_API_BASE_URL).toBe(
+      "http://proxy.internal/api/proxy/z-ai/a/agent-1/o/org-1/u/user-1"
+    );
+  });
+
+  test("proxy base URL carries org scope without user segment when userId is absent", () => {
+    const mod = makeModule(false);
+
+    const mappings = mod.getProxyBaseUrlMappings(
+      "http://proxy.internal/api/proxy",
+      "agent-1",
+      { organizationId: "org-1" }
+    );
+
+    expect(mappings.Z_AI_API_BASE_URL).toBe(
+      "http://proxy.internal/api/proxy/z-ai/a/agent-1/o/org-1"
+    );
+  });
+
   test("returns false when neither profile nor org-shared key exists", async () => {
     mockOrgId = "org-1";
     orgSharedSecretRows = [];

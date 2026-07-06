@@ -192,6 +192,7 @@ describe("SecretProxy user-scoped provider routing", () => {
         calls.push({
           agentId,
           provider,
+          organizationId: context?.organizationId,
           userId: context?.userId,
         });
         return {
@@ -222,7 +223,7 @@ describe("SecretProxy user-scoped provider routing", () => {
     try {
       const res = await proxy
         .getApp()
-        .request("/api/proxy/openai/a/agent-1/u/user-42/v1/chat/completions", {
+        .request("/api/proxy/openai/a/agent-1/o/org-1/u/user-42/v1/chat/completions", {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -241,6 +242,7 @@ describe("SecretProxy user-scoped provider routing", () => {
         {
           agentId: "agent-1",
           provider: "openai",
+          organizationId: "org-1",
           userId: "user-42",
         },
       ]);

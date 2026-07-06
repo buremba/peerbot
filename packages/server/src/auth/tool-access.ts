@@ -76,6 +76,7 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"bind_channel",
 		"unbind_channel",
 		"sync_channel_bindings",
+		"set_channel_about",
 		"connect_channel_dm",
 	]),
 	manage_feeds: new Set([

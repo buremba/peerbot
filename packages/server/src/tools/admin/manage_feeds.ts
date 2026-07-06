@@ -32,6 +32,11 @@ import {
 } from '@lobu/core/contracts/tools/manage-feeds';
 import { getDb, pgBigintArray } from '../../db/client';
 import { authzScopeFromToolContext } from '../../authz/scope';
+import {
+  feedLinkedEntityIdsSql,
+  feedLinkedToBusinessEntitySql,
+  listChannelAboutEntities,
+} from '../../authz/channel-about';
 import { filterChannelsForRequester } from '../../authz/channel-visibility';
 import { readVirtualFeed } from '../../lib/connector-pushdown';
 import { readChannelTranscript } from '../../gateway/connections/channel-transcript';
@@ -102,7 +107,9 @@ async function handleListFeeds(
     pageQuery = sql`${pageQuery} AND f.connection_id = ${args.connection_id}`;
   }
   if (args.entity_id) {
-    pageQuery = sql`${pageQuery} AND ${args.entity_id} = ANY(f.entity_ids)`;
+    pageQuery = sql`${pageQuery} AND ${sql.unsafe(
+      feedLinkedToBusinessEntitySql(String(args.entity_id), 'f', 'c', 'f.organization_id'),
+    )}`;
   }
   if (args.status) {
     pageQuery = sql`${pageQuery} AND f.status = ${args.status}`;
@@ -151,7 +158,8 @@ async function handleListFeeds(
            (
              SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)
              FROM entities ent
-             WHERE ent.id = ANY(p.entity_ids)
+             WHERE ent.deleted_at IS NULL
+               AND ent.id IN ${sql.unsafe(feedLinkedEntityIdsSql('p', 'c'))}
            ) AS entity_names,
            (SELECT COUNT(*) FROM runs r WHERE r.feed_id = p.id AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[]))::int AS active_runs,
            -- Agent this feed's channel is bound to (streaming feeds only), so the
@@ -214,7 +222,8 @@ async function handleReadFeed(
            (
              SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)
              FROM entities ent
-             WHERE ent.id = ANY(f.entity_ids)
+             WHERE ent.deleted_at IS NULL
+               AND ent.id IN ${sql.unsafe(feedLinkedEntityIdsSql('f', 'c'))}
            ) AS entity_names
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
@@ -265,7 +274,21 @@ async function handleReadFeed(
       channelId,
       args.limit ?? 50
     );
-    return { action: 'read_feed', kind: 'streaming', feed, messages };
+    const aboutEntities = await listChannelAboutEntities({
+      organizationId,
+      connectionId: feed.connection_id,
+      connectorKey: String(feed.connector_key ?? 'slack'),
+      teamId: (feed.external_tenant_id as string | null) ?? null,
+      channelId: feedKey,
+    });
+    return {
+      action: 'read_feed',
+      kind: 'streaming',
+      feed,
+      messages,
+      team_id: (feed.external_tenant_id as string | null) ?? null,
+      about_entities: aboutEntities,
+    };
   }
 
   // A virtual feed is never synced — its content is read LIVE at request time

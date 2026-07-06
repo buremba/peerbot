@@ -17,6 +17,7 @@ import {
 import type { Env } from '../index';
 import { querySqlImpl } from '../tools/admin/query_sql';
 import type { ToolContext } from '../tools/registry';
+import { feedLinkedToBusinessEntitySql } from '../authz/channel-about';
 import { entityLinkMatchSql } from './content-search';
 import { computeFieldMerge, type FieldControl } from './entity-field-merge';
 import { type EntityHookContext, getEntityHooks } from './entity-hooks';
@@ -526,10 +527,10 @@ export async function getEntity(
         SELECT COUNT(DISTINCT c.connector_key)
         FROM feeds f
         JOIN connections c ON c.id = f.connection_id
-        WHERE e.id = ANY(f.entity_ids)
-          AND f.organization_id = ${ctx.organizationId}
+        WHERE f.organization_id = ${ctx.organizationId}
           AND f.deleted_at IS NULL
           AND c.deleted_at IS NULL
+          AND ${sql.unsafe(feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id'))}
       ) as active_connections,
       (
         SELECT COUNT(*) FROM watchers i
@@ -956,9 +957,9 @@ export async function listEntities(
       SELECT COUNT(DISTINCT c.connector_key) as cnt
       FROM feeds f
       JOIN connections c ON c.id = f.connection_id
-      WHERE e.id = ANY(f.entity_ids)
-        AND f.deleted_at IS NULL
+      WHERE f.deleted_at IS NULL
         AND c.deleted_at IS NULL
+        AND ${feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id')}
     ) ac ON true
     LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM watchers i WHERE e.id = ANY(i.entity_ids)) ic ON true
     LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM entities c WHERE c.parent_id = e.id) cc ON true

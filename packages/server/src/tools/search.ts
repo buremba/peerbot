@@ -15,6 +15,10 @@ import { getDb } from '../db/client';
 import type { Env } from '../index';
 import type { FeedReader, SourceKind } from '../lib/feed-reader';
 import { readVirtualFeed } from '../lib/connector-pushdown';
+import {
+  connectionLinkedEntityIdsSql,
+  connectionLinkedToBusinessEntitySql,
+} from '../authz/channel-about';
 import { entityLinkMatchSql, searchContentByText } from '../utils/content-search';
 import { resolveBoundChannelRows, stripPlatformPrefix } from '../gateway/channels/bound-channels';
 import { filterChannelsForRequester } from '../authz/channel-visibility';
@@ -1266,22 +1270,16 @@ async function fetchConnectionsForEntity(entityId: number): Promise<ConnectionIn
       c.config,
       (
         SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)
-        FROM feeds f2
-        JOIN entities ent ON ent.id = ANY(f2.entity_ids)
-        WHERE f2.connection_id = c.id AND f2.deleted_at IS NULL
+        FROM entities ent
+        WHERE ent.deleted_at IS NULL
+          AND ent.id IN ${sql.unsafe(connectionLinkedEntityIdsSql('c'))}
       ) as entity_names,
       c.created_at,
       c.updated_at,
       COALESCE(COUNT(f.id), 0) as content_count
     FROM connections c
     LEFT JOIN current_event_records f ON f.connection_id = c.id
-    WHERE EXISTS (
-      SELECT 1
-      FROM feeds scoped_feed
-      WHERE scoped_feed.connection_id = c.id
-        AND scoped_feed.deleted_at IS NULL
-        AND ${entityId} = ANY(scoped_feed.entity_ids)
-    )
+    WHERE ${sql.unsafe(connectionLinkedToBusinessEntitySql(String(entityId), 'c', 'c.organization_id'))}
     GROUP BY c.id, c.connector_key, c.display_name, c.status, c.config, c.created_at, c.updated_at
     ORDER BY
       CASE c.status

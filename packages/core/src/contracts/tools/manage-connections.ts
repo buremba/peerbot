@@ -429,6 +429,25 @@ export const UnbindChannelAction = Type.Object({
   channel_id: Type.String({ description: CHANNEL_ID_DESC }),
 });
 
+export const ChannelBindingSpec = Type.Union([
+  Type.String({
+    description:
+      "Desired channel id. Slack also accepts the declarative <teamId>/<channelId> form.",
+  }),
+  Type.Object({
+    channel_id: Type.String({
+      description:
+        "Desired channel id. Slack also accepts the declarative <teamId>/<channelId> form.",
+    }),
+    about: Type.Optional(
+      Type.Array(Type.Union([Type.Number(), Type.String()]), {
+        description:
+          "Business entity ids or slugs this channel is about (config-sourced links).",
+      })
+    ),
+  }),
+]);
+
 export const SyncChannelBindingsAction = Type.Object({
   action: Type.Literal("sync_channel_bindings", {
     description:
@@ -441,9 +460,23 @@ export const SyncChannelBindingsAction = Type.Object({
     description:
       "Chat connection numeric id, or the stable declarative id used by lobu apply.",
   }),
-  channels: Type.Array(Type.String(), {
+  channels: Type.Array(ChannelBindingSpec, {
     description:
-      "Desired channel ids. Slack also accepts the declarative <teamId>/<channelId> form.",
+      "Desired channel bindings, optionally with per-channel about links.",
+  }),
+});
+
+export const SetChannelAboutAction = Type.Object({
+  action: Type.Literal("set_channel_about", {
+    description:
+      "Set manual business-entity links for a chat channel (UI / operator edits).",
+  }),
+  connection_id: Type.Number({
+    description: "Chat connection owning the channel.",
+  }),
+  channel_id: Type.String({ description: CHANNEL_ID_DESC }),
+  about_entity_ids: Type.Array(Type.Number(), {
+    description: "Business entity ids this channel is about.",
   }),
 });
 
@@ -644,6 +677,15 @@ export const ManageConnectionsResultSchema = Type.Union([
     success: Type.Literal(true),
     bound: Type.Array(Type.String()),
     removed: Type.Array(Type.String()),
+    about_linked: Type.Optional(Type.Integer()),
+    about_removed: Type.Optional(Type.Integer()),
+  }),
+  Type.Object({
+    action: Type.Literal("set_channel_about"),
+    success: Type.Literal(true),
+    connection_id: Type.Integer(),
+    channel_id: Type.String(),
+    about_entity_ids: Type.Array(Type.Integer()),
   }),
   Type.Object({
     action: Type.Literal("connect_channel_dm"),
@@ -694,4 +736,5 @@ export type ConnectionsArgs =
   | Static<typeof BindChannelAction>
   | Static<typeof UnbindChannelAction>
   | Static<typeof SyncChannelBindingsAction>
+  | Static<typeof SetChannelAboutAction>
   | Static<typeof ConnectChannelDmAction>;

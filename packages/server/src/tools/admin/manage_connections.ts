@@ -29,6 +29,7 @@ import {
 	handleBindChannel,
 	handleConnectChannelDm,
 	handleListChannelBindings,
+	handleSetChannelAbout,
 	handleSyncChannelBindings,
 	handleUnbindChannel,
 } from "./manage_connections/handlers/channel-bindings";
@@ -63,6 +64,7 @@ import {
 	ListChannelBindingsAction,
 	ListConnectorGroupsAction,
 	ReauthenticateAction,
+	SetChannelAboutAction,
 	SyncChannelBindingsAction,
 	TestAction,
 	ToggleConnectorLoginAction,
@@ -126,6 +128,7 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 		SyncChannelBindingsAction,
 		handleSyncChannelBindings,
 	),
+	set_channel_about: action(SetChannelAboutAction, handleSetChannelAbout),
 	connect_channel_dm: action(ConnectChannelDmAction, handleConnectChannelDm),
 });
 

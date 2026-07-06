@@ -40,6 +40,11 @@ import {
 import { assertConnectorAllowedInCloud } from "../../../../utils/connector-cloud-gate";
 import { ensureConnectorInstalled } from "../../../../utils/ensure-connector-installed";
 import {
+	connectionLinkedEntityIdsSql,
+	connectionLinkedToBusinessEntitySql,
+	resolveEntitySlugsToIds,
+} from "../../../../authz/channel-about";
+import {
 	recordChangeEvent,
 	recordLifecycleEvent,
 } from "../../../../utils/insert-event";
@@ -168,16 +173,9 @@ export async function handleListConnectorGroups(
   `;
 
   if (args.entity_id) {
-    query = sql`${query} AND (
-      ${args.entity_id} = ANY(c.entity_ids)
-      OR EXISTS (
-        SELECT 1
-        FROM feeds f
-        WHERE f.connection_id = c.id
-          AND f.deleted_at IS NULL
-          AND ${args.entity_id} = ANY(f.entity_ids)
-      )
-    )`;
+    query = sql`${query} AND ${sql.unsafe(
+      connectionLinkedToBusinessEntitySql(String(args.entity_id), "c", `'${organizationId}'`),
+    )}`;
   }
 
   if (!ctx.userId) {
@@ -276,18 +274,12 @@ export async function handleList(
            (SELECT ct.token FROM connect_tokens ct
             WHERE ct.connection_id = c.id AND ct.status = 'pending' AND ct.expires_at > NOW()
             ORDER BY ct.created_at DESC LIMIT 1) AS connect_token,
-           -- entity_names = UNION of the connection's own entity_ids and any of
-           -- its feeds' entity_ids (a connection counts under an entity if
-           -- either it is directly tagged OR one of its feeds is).
+           -- entity_names = connection tag, feed tags, and per-channel about links.
            (
              SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)
              FROM entities ent
-             WHERE ent.id = ANY(c.entity_ids)
-                OR ent.id IN (
-                  SELECT unnest(f.entity_ids)
-                  FROM feeds f
-                  WHERE f.connection_id = c.id AND f.deleted_at IS NULL
-                )
+             WHERE ent.deleted_at IS NULL
+               AND ent.id IN ${sql.unsafe(connectionLinkedEntityIdsSql('c'))}
            ) AS entity_names
     FROM connections c
     LEFT JOIN LATERAL (
@@ -315,16 +307,9 @@ export async function handleList(
     query = sql`${query} AND c.status = ${args.status}`;
   }
   if (args.entity_id) {
-    query = sql`${query} AND (
-      ${args.entity_id} = ANY(c.entity_ids)
-      OR EXISTS (
-        SELECT 1
-        FROM feeds f
-        WHERE f.connection_id = c.id
-          AND f.deleted_at IS NULL
-          AND ${args.entity_id} = ANY(f.entity_ids)
-      )
-    )`;
+    query = sql`${query} AND ${sql.unsafe(
+      connectionLinkedToBusinessEntitySql(String(args.entity_id), "c", `'${organizationId}'`),
+    )}`;
   }
   if (args.created_by) {
     query = sql`${query} AND c.created_by = ${args.created_by}`;

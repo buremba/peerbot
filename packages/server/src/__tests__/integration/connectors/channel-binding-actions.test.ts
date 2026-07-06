@@ -250,4 +250,108 @@ describe("manage_connections channel-binding actions", () => {
     `;
     expect(bound.map((r) => r.channel_id)).toContain("slack:D999");
   });
+
+  it("sync_channel_bindings writes config-sourced about edges from entity slugs", async () => {
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, orgId, "owner");
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${orgId}, 'company', 'Company', current_timestamp, current_timestamp)
+      ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
+      DO NOTHING
+    `;
+    const company = await createTestEntity({
+      name: "Acme",
+      entity_type: "company",
+      organization_id: orgId,
+      created_by: user.id,
+    });
+    const connectionId = await makeManagedSlackConnection({
+      orgId,
+      slug: "slackinst-about",
+      teamId: TEAM,
+    });
+
+    const synced = (await workspace.owner.connections.manage({
+      action: "sync_channel_bindings",
+      agent_id: agentId,
+      connection_id: connectionId,
+      channels: [
+        {
+          channel_id: `${TEAM}/CABOUT`,
+          about: ["acme"],
+        },
+      ],
+    })) as { success?: boolean; about_linked?: number; error?: string };
+    expect(synced.error).toBeUndefined();
+    expect(synced.success).toBe(true);
+    expect(synced.about_linked).toBe(1);
+
+    const edges = await sql<
+      { to_entity_id: number; source: string | null }[]
+    >`
+      SELECT r.to_entity_id, r.source
+      FROM entity_relationships r
+      JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
+      WHERE r.organization_id = ${orgId}
+        AND rt.slug = 'about'
+        AND r.deleted_at IS NULL
+    `;
+    expect(edges).toHaveLength(1);
+    expect(Number(edges[0].to_entity_id)).toBe(company.id);
+    expect(edges[0].source).toBe("config");
+  });
+
+  it("surfaces about-linked channels in entity_names and active_connections", async () => {
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, orgId, "owner");
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${orgId}, 'company', 'Company', current_timestamp, current_timestamp)
+      ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
+      DO NOTHING
+    `;
+    const customer = await createTestEntity({
+      name: "Acme Customer",
+      entity_type: "company",
+      organization_id: orgId,
+      created_by: user.id,
+    });
+    const connectionId = await makeManagedSlackConnection({
+      orgId,
+      slug: "slackinst-customer-context",
+      teamId: TEAM,
+    });
+
+    const synced = (await workspace.owner.connections.manage({
+      action: "sync_channel_bindings",
+      agent_id: agentId,
+      connection_id: connectionId,
+      channels: [
+        {
+          channel_id: `${TEAM}/CCUST`,
+          about: ["acme-customer"],
+        },
+      ],
+    })) as { success?: boolean; error?: string };
+    expect(synced.error).toBeUndefined();
+    expect(synced.success).toBe(true);
+
+    const listed = (await workspace.owner.connections.manage({
+      action: "list",
+      entity_id: customer.id,
+    })) as {
+      connections?: Array<{ id: number; entity_names?: string | null }>;
+    };
+    const match = listed.connections?.find((c) => c.id === connectionId);
+    expect(match).toBeDefined();
+    expect(match?.entity_names ?? "").toContain("Acme Customer");
+
+    const resolved = (await workspace.owner.resolvePath(
+      `/${workspace.org.slug}/company/acme-customer`,
+    )) as { entity?: { active_connections?: number } };
+    expect(resolved.entity?.active_connections ?? 0).toBeGreaterThanOrEqual(1);
+  });
 });

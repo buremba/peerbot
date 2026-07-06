@@ -11,6 +11,7 @@ import * as Sentry from '@sentry/node';
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
+import { feedLinkedToBusinessEntitySql } from '../authz/channel-about';
 import { entityLinkMatchSql } from '../utils/content-search';
 import {
   type DataSourceContext,
@@ -568,15 +569,16 @@ async function _resolvePath(
                AND ev.organization_id = $1`,
           [workspace.id]
         ),
-        sql`
-          SELECT COUNT(DISTINCT cn.connector_key) as cnt
-          FROM feeds f
-          JOIN connections cn ON cn.id = f.connection_id
-          WHERE ${Number(entityRow.id)}::int = ANY(f.entity_ids)
-            AND f.organization_id = ${workspace.id}
-            AND f.deleted_at IS NULL
-            AND cn.deleted_at IS NULL
-        `,
+        sql.unsafe<{ cnt: number }>(
+          `SELECT COUNT(DISTINCT cn.connector_key) as cnt
+           FROM feeds f
+           JOIN connections cn ON cn.id = f.connection_id
+           WHERE f.organization_id = $1
+             AND f.deleted_at IS NULL
+             AND cn.deleted_at IS NULL
+             AND ${feedLinkedToBusinessEntitySql('$2::int', 'f', 'cn', '$1')}`,
+          [workspace.id, Number(entityRow.id)],
+        ),
         sql`SELECT COUNT(*) as cnt FROM watchers i
               WHERE ${Number(entityRow.id)}::int = ANY(i.entity_ids)
                 AND i.organization_id = ${workspace.id}

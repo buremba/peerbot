@@ -34,10 +34,52 @@ import {
 } from "../../../../gateway/secrets";
 import { orgContext } from "../../../../lobu/stores/org-context";
 import { PostgresSecretStore } from "../../../../lobu/stores/postgres-secret-store";
+import {
+	resolveAboutEntityRefs,
+	setManualChannelAboutEdges,
+	syncConnectionChannelAboutEdges,
+} from "../../../../authz/channel-about";
 import { canonicalSlackChannelId } from "../../../../preview/slack";
 import { getConfiguredPublicOrigin } from "../../../../utils/public-origin";
+import { assertEntityIdsInOrg } from "../../helpers/db-helpers";
 import type { ToolContext } from "../../../registry";
 import type { ConnectionsArgs, ManageConnectionsResult } from "../schemas";
+
+type ChannelBindingInput =
+	| string
+	| { channel_id: string; about?: Array<number | string> };
+
+type NormalizedChannelSpec = {
+	channelId: string;
+	about?: Array<number | string>;
+};
+
+function normalizeChannelSpec(
+	input: ChannelBindingInput,
+	connectorKey: string,
+	externalTenantId: string | null,
+): NormalizedChannelSpec | { error: string } {
+	const raw =
+		typeof input === "string"
+			? { channel_id: input, about: undefined }
+			: input;
+	let channelId = raw.channel_id.trim();
+	if (!channelId) return { error: "Channel ids cannot be empty" };
+	if (connectorKey === "slack") {
+		const slash = channelId.indexOf("/");
+		if (slash >= 0) {
+			const teamId = channelId.slice(0, slash);
+			channelId = channelId.slice(slash + 1);
+			if (externalTenantId && teamId !== externalTenantId) {
+				return {
+					error: `Channel ${raw.channel_id} belongs to a different Slack workspace`,
+				};
+			}
+		}
+		channelId = canonicalSlackChannelId(channelId);
+	}
+	return { channelId, about: raw.about };
+}
 
 const logger = createLogger("manage-connections-channels");
 
@@ -319,28 +361,17 @@ export async function handleSyncChannelBindings(
 	const connection = rows[0];
 	if (!connection) return { error: "Chat connection not found" };
 
-	const desired = new Set<string>();
+	const normalized: NormalizedChannelSpec[] = [];
 	for (const input of args.channels) {
-		let channelId = input.trim();
-		if (!channelId) return { error: "Channel ids cannot be empty" };
-		if (connection.connector_key === "slack") {
-			const slash = channelId.indexOf("/");
-			if (slash >= 0) {
-				const teamId = channelId.slice(0, slash);
-				channelId = channelId.slice(slash + 1);
-				if (
-					connection.external_tenant_id &&
-					teamId !== connection.external_tenant_id
-				) {
-					return {
-						error: `Channel ${input} belongs to a different Slack workspace`,
-					};
-				}
-			}
-			channelId = canonicalSlackChannelId(channelId);
-		}
-		desired.add(channelId);
+		const spec = normalizeChannelSpec(
+			input,
+			connection.connector_key,
+			connection.external_tenant_id,
+		);
+		if ("error" in spec) return { error: spec.error };
+		normalized.push(spec);
 	}
+	const desired = new Set(normalized.map((c) => c.channelId));
 
 	const svc = new ChannelBindingService();
 	const existing = (
@@ -382,11 +413,105 @@ export async function handleSyncChannelBindings(
 			connection.external_tenant_id ?? undefined,
 		);
 	}
+
+	let aboutLinked = 0;
+	let aboutRemoved = 0;
+	try {
+		const aboutChannels: Array<{
+			channelId: string;
+			aboutEntityIds: number[];
+		}> = [];
+		for (const spec of normalized) {
+			if (!spec.about?.length) {
+				aboutChannels.push({ channelId: spec.channelId, aboutEntityIds: [] });
+				continue;
+			}
+			const aboutEntityIds = await resolveAboutEntityRefs(
+				organizationId,
+				spec.about,
+				sql,
+			);
+			await assertEntityIdsInOrg(sql, organizationId, aboutEntityIds);
+			aboutChannels.push({ channelId: spec.channelId, aboutEntityIds });
+		}
+		const aboutResult = await syncConnectionChannelAboutEdges({
+			organizationId,
+			connectionId: connection.id,
+			connectorKey: connection.connector_key,
+			teamId: connection.external_tenant_id,
+			channels: aboutChannels,
+			userId,
+			sql,
+		});
+		aboutLinked = aboutResult.linked;
+		aboutRemoved = aboutResult.removed;
+	} catch (error) {
+		return {
+			error:
+				error instanceof Error
+					? error.message
+					: "Failed to sync channel about links",
+		};
+	}
+
 	return {
 		action: "sync_channel_bindings",
 		success: true,
 		bound,
 		removed,
+		about_linked: aboutLinked,
+		about_removed: aboutRemoved,
+	};
+}
+
+/** Set manual business-entity links for a chat channel (UI picker). */
+export async function handleSetChannelAbout(
+	args: Extract<ConnectionsArgs, { action: "set_channel_about" }>,
+	ctx: ToolContext,
+): Promise<ManageConnectionsResult> {
+	const { organizationId, userId } = ctx;
+	const sql = getDb();
+	const rows = (await sql`
+		SELECT id, connector_key, external_tenant_id
+		FROM connections
+		WHERE id = ${args.connection_id}
+			AND organization_id = ${organizationId}
+			AND credential_mode IS NOT NULL
+			AND deleted_at IS NULL
+		LIMIT 1
+	`) as Array<{
+		id: number;
+		connector_key: string;
+		external_tenant_id: string | null;
+	}>;
+	const connection = rows[0];
+	if (!connection) return { error: "Chat connection not found" };
+	try {
+		await assertEntityIdsInOrg(sql, organizationId, args.about_entity_ids);
+		await setManualChannelAboutEdges({
+			organizationId,
+			connectionId: connection.id,
+			connectorKey: connection.connector_key,
+			teamId: connection.external_tenant_id,
+			channelId: args.channel_id,
+			aboutEntityIds: args.about_entity_ids,
+			userId,
+			sql,
+		});
+	} catch (error) {
+		return {
+			error:
+				error instanceof Error
+					? error.message
+					: "Failed to set channel about links",
+		};
+	}
+	return {
+		action: "set_channel_about",
+		success: true,
+		connection_id: connection.id,
+		channel_id: args.channel_id,
+		about_entity_ids: args.about_entity_ids,
 	};
 }
 

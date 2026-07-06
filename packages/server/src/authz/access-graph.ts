@@ -110,7 +110,7 @@ async function resolveOrgCreator(orgId: string): Promise<string | null> {
 }
 
 /** Find-or-create the org-scoped resource entity type (reuse, no migration). */
-async function ensureResourceEntityType(orgId: string, type: AccessResourceType): Promise<void> {
+export async function ensureResourceEntityType(orgId: string, type: AccessResourceType): Promise<void> {
   const sql = getDb();
   await sql`
 		INSERT INTO entity_types (slug, name, description, icon, organization_id, created_at, updated_at)

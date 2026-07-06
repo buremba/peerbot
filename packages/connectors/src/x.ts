@@ -894,6 +894,16 @@ async function syncWithOAuthFallback<T extends SyncResult>(
 	}
 }
 
+/** Browser-first feeds fall back to the extension unless `use_oauth` is set. */
+async function syncOAuthWithOptionalFallback<T extends SyncResult>(
+	config: Record<string, unknown>,
+	oauthFn: () => Promise<T>,
+	extensionFn: () => Promise<T>,
+): Promise<T> {
+	if (isTruthyConfigFlag(config.use_oauth)) return oauthFn();
+	return syncWithOAuthFallback(oauthFn, extensionFn);
+}
+
 function extractViewerUserId(json: unknown): string | undefined {
 	const data = json as Record<string, unknown>;
 	const candidates = [
@@ -1974,7 +1984,8 @@ export default class XConnector extends ConnectorRuntime {
 			if (
 				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
 			) {
-				return syncWithOAuthFallback(
+				return syncOAuthWithOptionalFallback(
+					config,
 					() => syncMyTweetsViaOAuthApi(ctx, config, checkpoint),
 					() => syncMyTweetsViaExtension(ctx, config, checkpoint),
 				);
@@ -1986,7 +1997,8 @@ export default class XConnector extends ConnectorRuntime {
 			if (
 				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
 			) {
-				return syncWithOAuthFallback(
+				return syncOAuthWithOptionalFallback(
+					config,
 					() => syncLikedTweetsViaOAuthApi(ctx, config, checkpoint),
 					() => syncLikedTweetsViaExtension(ctx, config, checkpoint),
 				);
@@ -1998,7 +2010,8 @@ export default class XConnector extends ConnectorRuntime {
 			if (
 				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
 			) {
-				return syncWithOAuthFallback(
+				return syncOAuthWithOptionalFallback(
+					config,
 					() => syncBookmarksViaOAuthApi(ctx, config, checkpoint),
 					() => syncBookmarksViaExtension(ctx, config, checkpoint),
 				);
@@ -2010,7 +2023,8 @@ export default class XConnector extends ConnectorRuntime {
 			if (
 				resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
 			) {
-				return syncWithOAuthFallback(
+				return syncOAuthWithOptionalFallback(
+					config,
 					() => syncDirectMessagesViaOAuthApi(ctx, config, checkpoint),
 					() => syncDirectMessagesViaExtension(ctx, config, checkpoint),
 				);
@@ -2023,7 +2037,8 @@ export default class XConnector extends ConnectorRuntime {
 		if (
 			resolveSyncBackend(ctx, config, oauthScopes) === "oauth_api"
 		) {
-			return syncWithOAuthFallback(
+			return syncOAuthWithOptionalFallback(
+				config,
 				() => syncViaOAuthApi(ctx, config, checkpoint),
 				() => syncSearchViaExtension(ctx, config, checkpoint),
 			);

@@ -76,7 +76,11 @@ export function connectorSdkMock() {
     createHttpClient: () => ({
       json: notUsed('http.json'),
       request: notUsed('http.request'),
+      raw: notUsed('http.raw'),
     }),
+    filterByCheckpoint: <T>(events: T[]) => events,
+    sleep: async () => {},
+    validatePublicUrl: (url: string) => url,
     requireBearerClient: notUsed('requireBearerClient'),
     paginateByCursor,
     paginateByOffset,

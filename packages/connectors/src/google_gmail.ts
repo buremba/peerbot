@@ -479,14 +479,12 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
       throw new Error('Gmail virtual-feed reads require Google OAuth credentials.');
     }
 
-    // Gmail's `q` is space-separated = AND. Each term is escaped so a term that
-    // contains Gmail operators/spaces (e.g. `from:a b`) is matched literally as a
-    // quoted phrase rather than reinterpreted as query syntax.
-    const parts = [baseQuery.trim(), ...terms.map((t) => this.escapeGmailTerm(t))].filter(Boolean);
+    // Gmail's `q` is space-separated = AND. Compose the feed's optional scope
+    // (config.query) with the caller's terms as raw Gmail search syntax — each
+    // connector interprets search() terms; we do not escape operators here.
+    // An empty string means no `q` filter — list the authenticated mailbox.
+    const parts = [baseQuery.trim(), ...terms.map((t) => t.trim())].filter(Boolean);
     const q = parts.join(' ');
-    if (!q) {
-      throw new Error('Gmail virtual feed has no `query` in its config and no search terms.');
-    }
 
     // Gmail search has no arbitrary sort — results are always reverse-chronological
     // (newest first). Reject a sort we can't honor rather than silently ignore it.
@@ -511,22 +509,6 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     return { rows, columns: GMAIL_SEARCH_COLUMNS };
   }
 
-  /**
-   * Quote a recall term so Gmail matches it LITERALLY. A bare word passes
-   * through; anything containing whitespace, a quote, or a Gmail query-operator
-   * character (`:` `(` `)` `{` `}`) is wrapped in quotes so it is not reparsed as
-   * query syntax (e.g. `from:alice@example.com` must match the text, not act as a
-   * `from:` operator). Embedded quotes are stripped — Gmail has no escape for a
-   * literal quote inside a phrase.
-   */
-  private escapeGmailTerm(term: string): string {
-    const t = term.trim();
-    if (!t) return '';
-    // Bare token with no whitespace, quotes, or operator characters → pass through.
-    if (!/[\s"():{}]/.test(t)) return t;
-    return `"${t.replace(/"/g, '')}"`;
-  }
-
   private async listMessageIds(
     http: HttpClient,
     q: string,
@@ -538,9 +520,9 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
       const remaining = want - out.length;
       if (remaining <= 0) break;
       const params = new URLSearchParams({
-        q,
         maxResults: String(Math.min(100, remaining)),
       });
+      if (q) params.set('q', q);
       if (pageToken) params.set('pageToken', pageToken);
       const res = await http.raw(`${this.BASE_URL}/messages?${params.toString()}`);
       if (!res.ok) {

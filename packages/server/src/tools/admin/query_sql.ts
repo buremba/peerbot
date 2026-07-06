@@ -39,7 +39,7 @@ export const QuerySqlSchema = Type.Object({
   feed: Type.Optional(
     Type.String({
       description:
-        'Optional virtual-feed reference (numeric feed id, or "connection_slug/feed_key"). When set, the feed’s STORED query runs LIVE against its source (no `sql` needed — it is ignored); `search_term` narrows via the connector’s search(). Mutually exclusive with `connection`.',
+        'Optional virtual-feed reference (numeric feed id, or "connection_slug/feed_key"). When set, the feed’s STORED config.query runs LIVE against its source (no `sql` needed — it is ignored). `search_term` is forwarded to the connector search() pushdown (each connector interprets it — e.g. Gmail query syntax AND-composed with config.query). Mutually exclusive with `connection`.',
     })
   ),
   org_slug: Type.Optional(
@@ -68,7 +68,10 @@ export const QuerySqlSchema = Type.Object({
     })
   ),
   search_term: Type.Optional(
-    Type.String({ description: 'ILIKE search value (wrapped in %...% automatically).' })
+    Type.String({
+      description:
+        'Internal SQL: ILIKE search value. Virtual feeds: forwarded to connector search() — interpretation is connector-specific (Gmail: search syntax merged with config.query).',
+    })
   ),
   search_columns: Type.Optional(
     Type.Array(Type.String(), {

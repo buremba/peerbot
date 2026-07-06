@@ -217,7 +217,7 @@ const asset = defineEntityType({
   },
   // Governed spend metrics over the Revolut transaction stream. The eventSet
   // resolves a transaction to an account by matching its `currency` against the
-  // account asset's aliases. The buremba org runs a single consolidated Revolut
+  // account asset's aliases. This example assumes a single consolidated Revolut
   // account, so that one asset is aliased with EVERY currency it transacts in
   // (GBP, USD, EUR, …) and owns all transactions; `currency` is then a
   // dimension, not a separate entity per pocket. Because the measure is
@@ -660,7 +660,7 @@ const learning = defineEntityType({
 // always timed out); 20 scrolls (~55s) reliably completes, and scheduled
 // incremental syncs keep history current from the top each run.
 const revolutConnection = defineConnection({
-  slug: "revolut-buremba",
+  slug: "revolut",
   connector: "revolut",
   name: "Revolut",
   feeds: [{ feed: "transactions", config: { max_scrolls: 20 } }],
@@ -677,8 +677,8 @@ export default defineConfig({
       "./whatsapp.cloud.connector.ts"
     ),
   ],
-  org: "buremba",
-  orgName: "Buremba",
+  org: "personal-agent",
+  orgName: "Personal Agent",
   orgDescription:
     "Personal agent tracking finances, people, companies, subscriptions, trips, and topics.",
   agents: [personalAgent],

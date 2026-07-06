@@ -174,21 +174,18 @@ describe('Gmail virtual-feed pushdown', () => {
     expect(cap.listQueries).toEqual(['in:inbox report urgent']);
   });
 
-  it('search() quotes a term containing spaces so it matches literally', async () => {
+  it('search() passes terms as raw Gmail syntax (phrases with spaces AND as tokens)', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
     await c.search({ ...CREDS, query: 'in:inbox', terms: ['weekly report'], config: {}, limit: 5 } as never);
-    expect(cap.listQueries).toEqual(['in:inbox "weekly report"']);
+    expect(cap.listQueries).toEqual(['in:inbox weekly report']);
   });
 
-  it('search() quotes an operator-like term so it is matched literally, not reparsed', async () => {
+  it('search() treats operator syntax in terms as Gmail operators', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
-    // A recall term is keyword text, not Gmail query syntax — `from:alice@x.com`
-    // must be a literal phrase, not activate the `from:` operator (operators
-    // belong in the base config.query, not in recall terms).
     await c.search({ ...CREDS, query: 'in:inbox', terms: ['from:alice@x.com'], config: {}, limit: 5 } as never);
-    expect(cap.listQueries).toEqual(['in:inbox "from:alice@x.com"']);
+    expect(cap.listQueries).toEqual(['in:inbox from:alice@x.com']);
   });
 
   it('clamps the limit and passes it as maxResults', async () => {
@@ -238,9 +235,24 @@ describe('Gmail virtual-feed pushdown', () => {
     await expect(c.query({ query: 'in:inbox', config: {} } as never)).rejects.toThrow(/OAuth credentials/i);
   });
 
-  it('throws when there is no q (empty base and no terms)', async () => {
+  it('lists without q when base and terms are empty (unbounded mailbox)', async () => {
     const cap: Capture = { listQueries: [], listMaxResults: [] };
     const c = connectorWith(cap);
-    await expect(c.query({ ...CREDS, query: '', config: {} } as never)).rejects.toThrow(/no `query`|no search terms/i);
+    const res = await c.query({ ...CREDS, query: '', config: {}, limit: 10 } as never);
+    expect(cap.listQueries).toEqual(['']);
+    expect(res.rows.length).toBeGreaterThan(0);
+  });
+
+  it('AND-composes feed scope (config.query) with agent search() terms', async () => {
+    const cap: Capture = { listQueries: [], listMaxResults: [] };
+    const c = connectorWith(cap);
+    await c.search({
+      ...CREDS,
+      query: 'in:all',
+      terms: ['after:2020/01/01 from:linkedin.com'],
+      config: {},
+      limit: 5,
+    } as never);
+    expect(cap.listQueries).toEqual(['in:all after:2020/01/01 from:linkedin.com']);
   });
 });

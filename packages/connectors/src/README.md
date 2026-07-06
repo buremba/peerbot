@@ -493,4 +493,4 @@ This means edits to `.ts` files in `connectors/` take effect on the next sync wi
 | `reddit` | oauth/none | posts, comments | - |
 | `rss` | none | articles | - |
 | `x` | browser (CLI) | tweets | - |
-| `youtube` | oauth (Google) | videos & comments | - |
+| `youtube` | oauth (Google) | liked videos, playlists, keyword search (sync) | search, get_video, search_liked_videos, list_playlists, get_playlist |

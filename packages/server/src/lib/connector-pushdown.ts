@@ -206,10 +206,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   }
 
   const feedConfig = (feed.config ?? {}) as Record<string, unknown>;
-  const liveQuery = typeof feedConfig.query === 'string' ? feedConfig.query : null;
-  if (!liveQuery) {
-    throw new Error(`virtual feed '${p.feedId}' has no \`query\` in its config`);
-  }
+  const storedQuery = typeof feedConfig.query === 'string' ? feedConfig.query : '';
 
   // Execution-time cloud gate, identical to the slug pushdown above.
   assertConnectorAllowedInCloud(feed.connector_key);
@@ -250,7 +247,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
         ? {
             mode: 'search',
             feedKey: feed.feed_key,
-            query: liveQuery,
+            query: storedQuery,
             terms,
             config,
             env: {},
@@ -263,7 +260,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
         : {
             mode: 'query',
             feedKey: feed.feed_key,
-            query: liveQuery,
+            query: storedQuery,
             config,
             env: {},
             sessionState,

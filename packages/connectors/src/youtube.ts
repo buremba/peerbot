@@ -1,12 +1,24 @@
 /**
  * YouTube Connector (V1 runtime)
  *
- * Fetches video metadata, comments, and transcripts from YouTube search results
- * via the YouTube Data API v3. Transcripts are extracted from YouTube's embedded
- * caption tracks (no third-party packages required).
+ * Feeds (indexed sync → events / search_memory):
+ *  - `liked_videos` — the authenticated user's liked videos (Likes playlist)
+ *  - `playlists` — the user's playlists and their items
+ *  - `videos` — optional scheduled ingest of a fixed public keyword search
+ *
+ * Actions (on-demand via operations.execute — not persisted):
+ *  - `search` — public YouTube keyword search
+ *  - `get_video` — one video's metadata (+ optional transcript/comments)
+ *  - `search_liked_videos` — filter your liked videos by title/channel
+ *  - `list_playlists` — list your playlists
+ *  - `get_playlist` — list videos in a playlist (optional title filter)
+ *
+ * Watch history is NOT exposed by the YouTube Data API; use Google Takeout for that.
  */
 
 import {
+  type ActionContext,
+  type ActionResult,
   type ConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
@@ -100,9 +112,87 @@ interface YouTubeCommentThreadResponse {
   items: YouTubeCommentThread[];
 }
 
+interface YouTubePlaylistItem {
+  snippet: {
+    publishedAt: string;
+    title: string;
+    channelTitle: string;
+    playlistId: string;
+    resourceId: {
+      kind: string;
+      videoId?: string;
+    };
+  };
+  contentDetails?: {
+    videoId?: string;
+    videoPublishedAt?: string;
+  };
+}
+
+interface YouTubePlaylistItemResponse {
+  nextPageToken?: string;
+  items: YouTubePlaylistItem[];
+}
+
+interface YouTubePlaylist {
+  id: string;
+  snippet: {
+    title: string;
+    description: string;
+    publishedAt: string;
+    channelTitle: string;
+  };
+  contentDetails: {
+    itemCount: number;
+  };
+}
+
+interface YouTubePlaylistResponse {
+  nextPageToken?: string;
+  items: YouTubePlaylist[];
+}
+
+interface YouTubeChannelResponse {
+  items: Array<{
+    contentDetails: {
+      relatedPlaylists: {
+        likes?: string;
+        uploads?: string;
+      };
+    };
+  }>;
+}
+
 interface CaptionTrack {
   baseUrl: string;
   languageCode: string;
+}
+
+type YouTubeAuth = { accessToken?: string; apiKey?: string };
+
+/** Compact video row returned by on-demand actions. */
+interface VideoSummary {
+  video_id: string;
+  title: string;
+  channel_title: string;
+  channel_id?: string;
+  published_at: string;
+  url: string;
+  view_count?: number;
+  like_count?: number;
+  comment_count?: number;
+  description?: string;
+  transcript?: string;
+  duration?: string;
+}
+
+interface PlaylistSummary {
+  playlist_id: string;
+  title: string;
+  description: string;
+  item_count: number;
+  channel_title: string;
+  url: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,8 +212,9 @@ export default class YouTubeConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: 'youtube',
     name: 'YouTube',
-    description: 'Fetches video metadata, comments, and transcripts from YouTube search results.',
-    version: '1.0.0',
+    description:
+      'Syncs liked videos, playlists, and optional keyword search; on-demand actions for public and library search.',
+    version: '1.2.0',
     faviconDomain: 'youtube.com',
     authSchema: {
       methods: [
@@ -143,11 +234,100 @@ export default class YouTubeConnector extends ConnectorRuntime {
       ],
     },
     feeds: {
+      liked_videos: {
+        key: 'liked_videos',
+        name: 'Liked Videos',
+        requiredScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
+        description:
+          "Videos the authenticated user has liked. Uses the account's Likes playlist.",
+        configSchema: {
+          type: 'object',
+          properties: {
+            max_results: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 5000,
+              default: 500,
+              description: 'Maximum liked videos to fetch per sync.',
+            },
+          },
+        },
+        eventKinds: {
+          liked_video: {
+            description: 'A video the user liked on YouTube',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                video_id: { type: 'string' },
+                channel_title: { type: 'string' },
+                playlist_id: { type: 'string' },
+                video_published_at: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+      playlists: {
+        key: 'playlists',
+        name: 'Playlists',
+        requiredScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
+        description: "The authenticated user's playlists and the videos in each playlist.",
+        configSchema: {
+          type: 'object',
+          properties: {
+            max_playlists: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 500,
+              default: 100,
+              description: 'Maximum playlists to fetch.',
+            },
+            include_items: {
+              type: 'boolean',
+              default: true,
+              description: 'Whether to fetch videos inside each playlist.',
+            },
+            max_items_per_playlist: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 5000,
+              default: 500,
+              description: 'Per-playlist cap on items fetched when include_items is true.',
+            },
+          },
+        },
+        eventKinds: {
+          playlist: {
+            description: 'A YouTube playlist owned by the user',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                item_count: { type: 'number' },
+                channel_title: { type: 'string' },
+              },
+            },
+          },
+          playlist_item: {
+            description: 'A video inside a YouTube playlist',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                playlist_id: { type: 'string' },
+                playlist_title: { type: 'string' },
+                video_id: { type: 'string' },
+                channel_title: { type: 'string' },
+                video_published_at: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
       videos: {
         key: 'videos',
         name: 'Videos',
         requiredScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
-        description: 'Search YouTube for videos and collect metadata, comments, and transcripts.',
+        description:
+          'Scheduled ingest of a fixed public keyword search (metadata, comments, transcripts). For agent-time search use the `search` action instead.',
         configSchema: {
           type: 'object',
           required: ['search_query'],
@@ -155,7 +335,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
             search_query: {
               type: 'string',
               minLength: 1,
-              description: 'Search term to query YouTube.',
+              description: 'Fixed search term synced on each run (e.g. a topic you monitor).',
             },
             max_results: {
               type: 'integer',
@@ -210,6 +390,121 @@ export default class YouTubeConnector extends ConnectorRuntime {
         },
       },
     },
+    actions: {
+      search: {
+        key: 'search',
+        name: 'Search Videos',
+        description: 'Search public YouTube by keyword and return matching videos.',
+        inputSchema: {
+          type: 'object',
+          required: ['query'],
+          properties: {
+            query: {
+              type: 'string',
+              minLength: 1,
+              description: 'YouTube search keywords (public catalog).',
+            },
+            max_results: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 50,
+              description: 'Maximum videos to return (default 10).',
+            },
+            include_transcript: {
+              type: 'boolean',
+              description: 'Fetch captions when available (default false).',
+            },
+          },
+        },
+      },
+      get_video: {
+        key: 'get_video',
+        name: 'Get Video',
+        description: 'Fetch metadata for one YouTube video by id or URL.',
+        inputSchema: {
+          type: 'object',
+          required: ['video_id'],
+          properties: {
+            video_id: {
+              type: 'string',
+              description: 'YouTube video id or watch URL.',
+            },
+            include_transcript: {
+              type: 'boolean',
+              description: 'Fetch captions when available (default true).',
+            },
+            include_comments: {
+              type: 'boolean',
+              description: 'Include top comment threads (default false).',
+            },
+          },
+        },
+      },
+      search_liked_videos: {
+        key: 'search_liked_videos',
+        name: 'Search Liked Videos',
+        description:
+          "Filter the authenticated user's liked videos by title or channel name (substring match).",
+        inputSchema: {
+          type: 'object',
+          required: ['query'],
+          properties: {
+            query: {
+              type: 'string',
+              minLength: 1,
+              description: 'Case-insensitive filter on video title or channel name.',
+            },
+            max_results: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 100,
+              description: 'Maximum matches to return (default 25).',
+            },
+          },
+        },
+      },
+      list_playlists: {
+        key: 'list_playlists',
+        name: 'List Playlists',
+        description: "List the authenticated user's YouTube playlists.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            max_results: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 100,
+              description: 'Maximum playlists to return (default 25).',
+            },
+          },
+        },
+      },
+      get_playlist: {
+        key: 'get_playlist',
+        name: 'Get Playlist',
+        description: 'List videos in one of your playlists, with an optional title filter.',
+        inputSchema: {
+          type: 'object',
+          required: ['playlist_id'],
+          properties: {
+            playlist_id: {
+              type: 'string',
+              description: 'Playlist id or youtube.com/playlist?list= URL.',
+            },
+            query: {
+              type: 'string',
+              description: 'Optional case-insensitive filter on video title or channel.',
+            },
+            max_results: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 100,
+              description: 'Maximum videos to return (default 50).',
+            },
+          },
+        },
+      },
+    },
   };
 
   private readonly BASE_URL = 'https://www.googleapis.com/youtube/v3';
@@ -222,12 +517,286 @@ export default class YouTubeConnector extends ConnectorRuntime {
   // -------------------------------------------------------------------------
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
+    const auth = this.resolveAuth(ctx);
+
+    switch (ctx.feedKey) {
+      case 'liked_videos':
+        return this.syncLikedVideos(ctx, auth);
+      case 'playlists':
+        return this.syncPlaylists(ctx, auth);
+      case 'videos':
+        return this.syncSearchVideos(ctx, auth);
+      default:
+        throw new Error(`Unknown feed: ${ctx.feedKey}`);
+    }
+  }
+
+  private resolveAuth(ctx: SyncContext): YouTubeAuth {
     const accessToken = ctx.credentials?.accessToken as string | undefined;
     const apiKey = (ctx.config.YOUTUBE_API_KEY as string) || undefined;
     if (!accessToken && !apiKey) {
       throw new Error('YouTube requires either OAuth (Google) or a YOUTUBE_API_KEY.');
     }
+    return { accessToken, apiKey };
+  }
 
+  private requireOAuth(auth: YouTubeAuth, feed: string): string {
+    if (!auth.accessToken) {
+      throw new Error(
+        `YouTube feed '${feed}' requires OAuth (youtube.readonly). Connect a Google account.`
+      );
+    }
+    return auth.accessToken;
+  }
+
+  // -------------------------------------------------------------------------
+  // execute (on-demand actions)
+  // -------------------------------------------------------------------------
+
+  async execute(ctx: ActionContext): Promise<ActionResult> {
+    try {
+      const auth = this.resolveAuthFromAction(ctx);
+      switch (ctx.actionKey) {
+        case 'search':
+          return await this.actionSearchPublic(auth, ctx.input);
+        case 'get_video':
+          return await this.actionGetVideo(auth, ctx.input);
+        case 'search_liked_videos':
+          return await this.actionSearchLikedVideos(auth, ctx.input);
+        case 'list_playlists':
+          return await this.actionListPlaylists(auth, ctx.input);
+        case 'get_playlist':
+          return await this.actionGetPlaylist(auth, ctx.input);
+        default:
+          return { success: false, error: `Unknown action: ${ctx.actionKey}` };
+      }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private resolveAuthFromAction(ctx: ActionContext): YouTubeAuth {
+    const accessToken = ctx.credentials?.accessToken as string | undefined;
+    const apiKey = (ctx.config?.YOUTUBE_API_KEY as string) || undefined;
+    if (!accessToken && !apiKey) {
+      throw new Error('YouTube requires either OAuth (Google) or a YOUTUBE_API_KEY.');
+    }
+    return { accessToken, apiKey };
+  }
+
+  private async actionSearchPublic(
+    auth: YouTubeAuth,
+    input: Record<string, unknown>
+  ): Promise<ActionResult> {
+    const query = (input.query as string)?.trim();
+    if (!query) {
+      return { success: false, error: 'query is required.' };
+    }
+    const maxResults = Math.min(Math.max((input.max_results as number) ?? 10, 1), 50);
+    const includeTranscript = (input.include_transcript as boolean) ?? false;
+    const videos = await this.searchPublicVideos(auth, query, maxResults, includeTranscript);
+    return { success: true, output: { videos } };
+  }
+
+  private async actionGetVideo(
+    auth: YouTubeAuth,
+    input: Record<string, unknown>
+  ): Promise<ActionResult> {
+    const videoId = this.parseVideoId(input.video_id as string);
+    if (!videoId) {
+      return { success: false, error: 'video_id is required.' };
+    }
+    const includeTranscript = (input.include_transcript as boolean) ?? true;
+    const includeComments = (input.include_comments as boolean) ?? false;
+    const details = await this.fetchVideoDetails(auth, [videoId]);
+    if (details.length === 0) {
+      return { success: false, error: `Video '${videoId}' not found.` };
+    }
+    const video = await this.videoToSummary(details[0], auth, {
+      includeTranscript,
+      includeComments,
+    });
+    return { success: true, output: { video } };
+  }
+
+  private async actionSearchLikedVideos(
+    auth: YouTubeAuth,
+    input: Record<string, unknown>
+  ): Promise<ActionResult> {
+    this.requireOAuth(auth, 'search_liked_videos');
+    const query = (input.query as string)?.trim();
+    if (!query) {
+      return { success: false, error: 'query is required.' };
+    }
+    const maxResults = Math.min(Math.max((input.max_results as number) ?? 25, 1), 100);
+    const likesPlaylistId = await this.fetchLikesPlaylistId(auth);
+    const videos = await this.searchPlaylistItemsByQuery({
+      auth,
+      playlistId: likesPlaylistId,
+      query,
+      maxResults,
+    });
+    return { success: true, output: { videos } };
+  }
+
+  private async actionListPlaylists(
+    auth: YouTubeAuth,
+    input: Record<string, unknown>
+  ): Promise<ActionResult> {
+    this.requireOAuth(auth, 'list_playlists');
+    const maxResults = Math.min(Math.max((input.max_results as number) ?? 25, 1), 100);
+    const playlists: PlaylistSummary[] = [];
+    const pages = paginateByCursor<YouTubePlaylist, string>(
+      async (cursor) => {
+        const params = new URLSearchParams({
+          part: 'snippet,contentDetails',
+          mine: 'true',
+          maxResults: '50',
+        });
+        if (cursor) params.set('pageToken', cursor);
+        const response = await this.apiGet(`${this.BASE_URL}/playlists?${params.toString()}`, auth);
+        if (!response.ok) {
+          throw new Error(
+            `YouTube Playlists API error (${response.status}): ${await response.text()}`
+          );
+        }
+        const data = (await response.json()) as YouTubePlaylistResponse;
+        return { items: data.items ?? [], nextCursor: data.nextPageToken };
+      },
+      { delayMs: this.RATE_LIMIT_MS }
+    );
+    for await (const batch of pages) {
+      for (const playlist of batch) {
+        if (playlists.length >= maxResults) break;
+        playlists.push(this.playlistToSummary(playlist));
+      }
+      if (playlists.length >= maxResults) break;
+    }
+    return { success: true, output: { playlists } };
+  }
+
+  private async actionGetPlaylist(
+    auth: YouTubeAuth,
+    input: Record<string, unknown>
+  ): Promise<ActionResult> {
+    this.requireOAuth(auth, 'get_playlist');
+    const playlistId = this.parsePlaylistId(input.playlist_id as string);
+    if (!playlistId) {
+      return { success: false, error: 'playlist_id is required.' };
+    }
+    const query = (input.query as string)?.trim();
+    const maxResults = Math.min(Math.max((input.max_results as number) ?? 50, 1), 100);
+    const videos = await this.searchPlaylistItemsByQuery({
+      auth,
+      playlistId,
+      query: query || undefined,
+      maxResults,
+    });
+    return { success: true, output: { playlist_id: playlistId, videos } };
+  }
+
+  // -------------------------------------------------------------------------
+  // Feed: liked_videos
+  // -------------------------------------------------------------------------
+
+  private async syncLikedVideos(ctx: SyncContext, auth: YouTubeAuth): Promise<SyncResult> {
+    this.requireOAuth(auth, 'liked_videos');
+    const maxResults = Math.min(Math.max((ctx.config.max_results as number) ?? 500, 1), 5000);
+    const likesPlaylistId = await this.fetchLikesPlaylistId(auth);
+    const events = await this.collectPlaylistVideoEvents({
+      auth,
+      playlistId: likesPlaylistId,
+      playlistTitle: 'Liked videos',
+      maxResults,
+      originType: 'liked_video',
+      originIdPrefix: 'yt_liked',
+    });
+
+    return this.buildListCheckpointResult(events);
+  }
+
+  // -------------------------------------------------------------------------
+  // Feed: playlists
+  // -------------------------------------------------------------------------
+
+  private async syncPlaylists(ctx: SyncContext, auth: YouTubeAuth): Promise<SyncResult> {
+    this.requireOAuth(auth, 'playlists');
+    const maxPlaylists = Math.min(Math.max((ctx.config.max_playlists as number) ?? 100, 1), 500);
+    const includeItems = (ctx.config.include_items as boolean) ?? true;
+    const maxItemsPerPlaylist = Math.min(
+      Math.max((ctx.config.max_items_per_playlist as number) ?? 500, 1),
+      5000
+    );
+
+    const events: EventEnvelope[] = [];
+    let collectedPlaylists = 0;
+
+    const playlistPages = paginateByCursor<YouTubePlaylist, string>(
+      async (cursor) => {
+        const params = new URLSearchParams({
+          part: 'snippet,contentDetails',
+          mine: 'true',
+          maxResults: '50',
+        });
+        if (cursor) params.set('pageToken', cursor);
+        const response = await this.apiGet(`${this.BASE_URL}/playlists?${params.toString()}`, auth);
+        if (!response.ok) {
+          throw new Error(
+            `YouTube Playlists API error (${response.status}): ${await response.text()}`
+          );
+        }
+        const data = (await response.json()) as YouTubePlaylistResponse;
+        return { items: data.items ?? [], nextCursor: data.nextPageToken };
+      },
+      { delayMs: this.RATE_LIMIT_MS }
+    );
+
+    for await (const playlists of playlistPages) {
+      for (const playlist of playlists) {
+        if (collectedPlaylists >= maxPlaylists) break;
+
+        events.push({
+          origin_id: `yt_playlist_${playlist.id}`,
+          title: playlist.snippet.title,
+          payload_text: (playlist.snippet.description ?? '').trim(),
+          author_name: playlist.snippet.channelTitle,
+          source_url: `https://www.youtube.com/playlist?list=${playlist.id}`,
+          occurred_at: new Date(playlist.snippet.publishedAt),
+          origin_type: 'playlist',
+          metadata: {
+            item_count: playlist.contentDetails.itemCount,
+            channel_title: playlist.snippet.channelTitle,
+          },
+        });
+
+        if (includeItems && playlist.contentDetails.itemCount > 0) {
+          const itemEvents = await this.collectPlaylistVideoEvents({
+            auth,
+            playlistId: playlist.id,
+            playlistTitle: playlist.snippet.title,
+            maxResults: maxItemsPerPlaylist,
+            originType: 'playlist_item',
+            originIdPrefix: `yt_playlist_item_${playlist.id}`,
+          });
+          events.push(...itemEvents);
+        }
+
+        collectedPlaylists += 1;
+      }
+      if (collectedPlaylists >= maxPlaylists) break;
+    }
+
+    return this.buildListCheckpointResult(events);
+  }
+
+  // -------------------------------------------------------------------------
+  // Feed: videos (keyword search)
+  // -------------------------------------------------------------------------
+
+  private async syncSearchVideos(ctx: SyncContext, auth: YouTubeAuth): Promise<SyncResult> {
     const searchQuery = ctx.config.search_query as string;
     if (!searchQuery) {
       throw new Error('search_query is required.');
@@ -241,11 +810,9 @@ export default class YouTubeConnector extends ConnectorRuntime {
     const events: EventEnvelope[] = [];
     const seenIds = new Set<string>();
 
-    const auth = { accessToken, apiKey };
     let pageToken: string | undefined = checkpoint.next_page_token;
     let totalCollected = 0;
 
-    // ----- Search & collect video IDs -----
     const searchPages = paginateByCursor<YouTubeSearchItem, string>(
       async (cursor) => {
         const pageSize = Math.min(50, maxResults - totalCollected);
@@ -268,7 +835,6 @@ export default class YouTubeConnector extends ConnectorRuntime {
     for await (const searchItems of searchPages) {
       if (searchItems.length === 0) break;
 
-      // Collect unique video IDs from this page
       const videoIds: string[] = [];
       for (const item of searchItems) {
         const videoId = item.id.videoId;
@@ -278,21 +844,16 @@ export default class YouTubeConnector extends ConnectorRuntime {
         }
       }
 
-      if (videoIds.length === 0) {
-        continue;
-      }
+      if (videoIds.length === 0) continue;
 
-      // ----- Fetch video details in batches of 50 -----
       const videoDetails = await this.fetchVideoDetails(auth, videoIds);
 
-      // ----- Process each video -----
       for (const video of videoDetails) {
         try {
           const viewCount = parseInt(video.statistics.viewCount ?? '0', 10);
           const likeCount = parseInt(video.statistics.likeCount ?? '0', 10);
           const commentCount = parseInt(video.statistics.commentCount ?? '0', 10);
 
-          // Fetch transcript if enabled
           let transcript: string | null = null;
           if (includeTranscripts) {
             try {
@@ -339,14 +900,13 @@ export default class YouTubeConnector extends ConnectorRuntime {
 
           events.push(videoEvent);
 
-          // ----- Fetch comments if enabled -----
           if (includeComments && commentCount > 0) {
             try {
               const comments = await this.fetchComments(auth, video.id);
               for (const comment of comments) {
                 const commentSnippet = comment.snippet.topLevelComment.snippet;
 
-                const commentEvent: EventEnvelope = {
+                events.push({
                   origin_id: `yt_comment_${comment.snippet.topLevelComment.id}`,
                   payload_text: commentSnippet.textOriginal,
                   author_name: commentSnippet.authorDisplayName,
@@ -359,9 +919,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
                     like_count: commentSnippet.likeCount,
                     reply_count: comment.snippet.totalReplyCount,
                   },
-                };
-
-                events.push(commentEvent);
+                });
               }
             } catch {
               /* comment fetch is best-effort */
@@ -376,12 +934,9 @@ export default class YouTubeConnector extends ConnectorRuntime {
       if (totalCollected >= maxResults) break;
     }
 
-    // Sort events by occurred_at descending
     events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
 
-    // Update checkpoint
     const latestPublishedAt = events.length > 0 ? events[0].occurred_at.toISOString() : undefined;
-
     const newCheckpoint: YouTubeCheckpoint = {
       last_published_at: latestPublishedAt ?? checkpoint.last_published_at,
       next_page_token: pageToken,
@@ -398,8 +953,297 @@ export default class YouTubeConnector extends ConnectorRuntime {
   }
 
   // -------------------------------------------------------------------------
-  // execute
+  // Shared playlist helpers
   // -------------------------------------------------------------------------
+
+  private async fetchLikesPlaylistId(auth: YouTubeAuth): Promise<string> {
+    const params = new URLSearchParams({
+      part: 'contentDetails',
+      mine: 'true',
+    });
+    const response = await this.apiGet(`${this.BASE_URL}/channels?${params.toString()}`, auth);
+    if (!response.ok) {
+      throw new Error(
+        `YouTube Channels API error (${response.status}): ${await response.text()}`
+      );
+    }
+    const data = (await response.json()) as YouTubeChannelResponse;
+    const likesPlaylistId = data.items?.[0]?.contentDetails?.relatedPlaylists?.likes;
+    if (!likesPlaylistId) {
+      throw new Error(
+        'Could not resolve the Likes playlist for this YouTube account. Ensure the Google account has a YouTube channel.'
+      );
+    }
+    return likesPlaylistId;
+  }
+
+  private async collectPlaylistVideoEvents(params: {
+    auth: YouTubeAuth;
+    playlistId: string;
+    playlistTitle: string;
+    maxResults: number;
+    originType: string;
+    originIdPrefix: string;
+  }): Promise<EventEnvelope[]> {
+    const events: EventEnvelope[] = [];
+    let collected = 0;
+
+    const itemPages = paginateByCursor<YouTubePlaylistItem, string>(
+      async (cursor) => {
+        const listParams = new URLSearchParams({
+          part: 'snippet,contentDetails',
+          playlistId: params.playlistId,
+          maxResults: '50',
+        });
+        if (cursor) listParams.set('pageToken', cursor);
+        const response = await this.apiGet(
+          `${this.BASE_URL}/playlistItems?${listParams.toString()}`,
+          params.auth
+        );
+        if (!response.ok) {
+          throw new Error(
+            `YouTube PlaylistItems API error (${response.status}): ${await response.text()}`
+          );
+        }
+        const data = (await response.json()) as YouTubePlaylistItemResponse;
+        return { items: data.items ?? [], nextCursor: data.nextPageToken };
+      },
+      { delayMs: this.RATE_LIMIT_MS }
+    );
+
+    for await (const items of itemPages) {
+      for (const item of items) {
+        if (collected >= params.maxResults) return events;
+        const videoId =
+          item.snippet.resourceId.videoId ?? item.contentDetails?.videoId ?? null;
+        if (!videoId) continue;
+
+        events.push({
+          origin_id: `${params.originIdPrefix}_${videoId}`,
+          title: item.snippet.title,
+          payload_text: `${item.snippet.title} — ${item.snippet.channelTitle}`,
+          author_name: item.snippet.channelTitle,
+          source_url: `https://www.youtube.com/watch?v=${videoId}`,
+          occurred_at: new Date(item.snippet.publishedAt),
+          origin_type: params.originType,
+          ...(params.originType === 'playlist_item' && {
+            origin_parent_id: `yt_playlist_${params.playlistId}`,
+          }),
+          metadata: {
+            video_id: videoId,
+            channel_title: item.snippet.channelTitle,
+            playlist_id: params.playlistId,
+            ...(params.originType === 'playlist_item' && {
+              playlist_title: params.playlistTitle,
+            }),
+            ...(item.contentDetails?.videoPublishedAt && {
+              video_published_at: item.contentDetails.videoPublishedAt,
+            }),
+          },
+        });
+        collected += 1;
+      }
+      if (collected >= params.maxResults) break;
+    }
+
+    return events;
+  }
+
+  private buildListCheckpointResult(events: EventEnvelope[]): SyncResult {
+    events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
+    const latest = events.length > 0 ? events[0].occurred_at.toISOString() : undefined;
+    return {
+      events,
+      checkpoint: {
+        last_published_at: latest,
+      } satisfies YouTubeCheckpoint as Record<string, unknown>,
+      metadata: {
+        items_found: events.length,
+      },
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Shared search / action helpers
+  // -------------------------------------------------------------------------
+
+  private parseVideoId(raw: string | undefined): string | null {
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const urlMatch = trimmed.match(
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([A-Za-z0-9_-]{11})/
+    );
+    if (urlMatch) return urlMatch[1];
+    if (/^[A-Za-z0-9_-]{11}$/.test(trimmed)) return trimmed;
+    return null;
+  }
+
+  private parsePlaylistId(raw: string | undefined): string | null {
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const urlMatch = trimmed.match(/[?&]list=([A-Za-z0-9_-]+)/);
+    if (urlMatch) return urlMatch[1];
+    if (/^[A-Za-z0-9_-]+$/.test(trimmed)) return trimmed;
+    return null;
+  }
+
+  private playlistToSummary(playlist: YouTubePlaylist): PlaylistSummary {
+    return {
+      playlist_id: playlist.id,
+      title: playlist.snippet.title,
+      description: (playlist.snippet.description ?? '').trim(),
+      item_count: playlist.contentDetails.itemCount,
+      channel_title: playlist.snippet.channelTitle,
+      url: `https://www.youtube.com/playlist?list=${playlist.id}`,
+    };
+  }
+
+  private async videoToSummary(
+    video: YouTubeVideoItem,
+    auth: YouTubeAuth,
+    options: { includeTranscript: boolean; includeComments: boolean }
+  ): Promise<VideoSummary & { comments?: Array<{ text: string; author: string; like_count: number }> }> {
+    let transcript: string | undefined;
+    if (options.includeTranscript) {
+      const text = await this.fetchTranscript(video.id);
+      if (text) transcript = text;
+    }
+    const summary: VideoSummary & {
+      comments?: Array<{ text: string; author: string; like_count: number }>;
+    } = {
+      video_id: video.id,
+      title: video.snippet.title,
+      channel_title: video.snippet.channelTitle,
+      channel_id: video.snippet.channelId,
+      published_at: video.snippet.publishedAt,
+      url: `https://www.youtube.com/watch?v=${video.id}`,
+      view_count: parseInt(video.statistics.viewCount ?? '0', 10),
+      like_count: parseInt(video.statistics.likeCount ?? '0', 10),
+      comment_count: parseInt(video.statistics.commentCount ?? '0', 10),
+      description: (video.snippet.description ?? '').trim() || undefined,
+      ...(video.contentDetails?.duration && { duration: video.contentDetails.duration }),
+      ...(transcript && { transcript }),
+    };
+    if (options.includeComments && summary.comment_count && summary.comment_count > 0) {
+      const threads = await this.fetchComments(auth, video.id);
+      summary.comments = threads.map((c) => ({
+        text: c.snippet.topLevelComment.snippet.textOriginal,
+        author: c.snippet.topLevelComment.snippet.authorDisplayName,
+        like_count: c.snippet.topLevelComment.snippet.likeCount,
+      }));
+    }
+    return summary;
+  }
+
+  private matchesLibraryQuery(
+    title: string,
+    channelTitle: string,
+    query: string | undefined
+  ): boolean {
+    if (!query) return true;
+    const needle = query.toLowerCase();
+    return (
+      title.toLowerCase().includes(needle) || channelTitle.toLowerCase().includes(needle)
+    );
+  }
+
+  private playlistItemToSummary(item: YouTubePlaylistItem): VideoSummary | null {
+    const videoId = item.snippet.resourceId.videoId ?? item.contentDetails?.videoId ?? null;
+    if (!videoId) return null;
+    return {
+      video_id: videoId,
+      title: item.snippet.title,
+      channel_title: item.snippet.channelTitle,
+      published_at: item.snippet.publishedAt,
+      url: `https://www.youtube.com/watch?v=${videoId}`,
+    };
+  }
+
+  private async searchPlaylistItemsByQuery(params: {
+    auth: YouTubeAuth;
+    playlistId: string;
+    query?: string;
+    maxResults: number;
+  }): Promise<VideoSummary[]> {
+    const videos: VideoSummary[] = [];
+    const pages = paginateByCursor<YouTubePlaylistItem, string>(
+      async (cursor) => {
+        const listParams = new URLSearchParams({
+          part: 'snippet,contentDetails',
+          playlistId: params.playlistId,
+          maxResults: '50',
+        });
+        if (cursor) listParams.set('pageToken', cursor);
+        const response = await this.apiGet(
+          `${this.BASE_URL}/playlistItems?${listParams.toString()}`,
+          params.auth
+        );
+        if (!response.ok) {
+          throw new Error(
+            `YouTube PlaylistItems API error (${response.status}): ${await response.text()}`
+          );
+        }
+        const data = (await response.json()) as YouTubePlaylistItemResponse;
+        return { items: data.items ?? [], nextCursor: data.nextPageToken };
+      },
+      { delayMs: this.RATE_LIMIT_MS }
+    );
+    for await (const items of pages) {
+      for (const item of items) {
+        if (videos.length >= params.maxResults) return videos;
+        if (
+          !this.matchesLibraryQuery(
+            item.snippet.title,
+            item.snippet.channelTitle,
+            params.query
+          )
+        ) {
+          continue;
+        }
+        const summary = this.playlistItemToSummary(item);
+        if (summary) videos.push(summary);
+      }
+      if (videos.length >= params.maxResults) break;
+    }
+    return videos;
+  }
+
+  private async searchPublicVideos(
+    auth: YouTubeAuth,
+    query: string,
+    maxResults: number,
+    includeTranscript: boolean
+  ): Promise<VideoSummary[]> {
+    const searchUrl = this.buildSearchUrl(query, Math.min(maxResults, 50));
+    const searchResponse = await this.apiGet(searchUrl, auth);
+    if (!searchResponse.ok) {
+      throw new Error(
+        `YouTube Search API error (${searchResponse.status}): ${await searchResponse.text()}`
+      );
+    }
+    const searchData = (await searchResponse.json()) as YouTubeSearchResponse;
+    const videoIds = (searchData.items ?? [])
+      .map((item) => item.id.videoId)
+      .filter((id): id is string => Boolean(id))
+      .slice(0, maxResults);
+    if (videoIds.length === 0) return [];
+
+    const details = await this.fetchVideoDetails(auth, videoIds);
+    const videos: VideoSummary[] = [];
+    for (const video of details) {
+      videos.push(
+        await this.videoToSummary(video, auth, {
+          includeTranscript,
+          includeComments: false,
+        })
+      );
+      if (includeTranscript) await sleep(this.RATE_LIMIT_MS);
+    }
+    return videos;
+  }
+
   // -------------------------------------------------------------------------
   // YouTube API helpers
   // -------------------------------------------------------------------------
@@ -419,12 +1263,11 @@ export default class YouTubeConnector extends ConnectorRuntime {
   }
 
   private async fetchVideoDetails(
-    auth: { accessToken?: string; apiKey?: string },
+    auth: YouTubeAuth,
     videoIds: string[]
   ): Promise<YouTubeVideoItem[]> {
     const results: YouTubeVideoItem[] = [];
 
-    // Batch in groups of 50 (YouTube API limit)
     for (let i = 0; i < videoIds.length; i += 50) {
       const batch = videoIds.slice(i, i + 50);
       const params = new URLSearchParams({
@@ -449,7 +1292,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
   }
 
   private async fetchComments(
-    auth: { accessToken?: string; apiKey?: string },
+    auth: YouTubeAuth,
     videoId: string
   ): Promise<YouTubeCommentThread[]> {
     const allComments: YouTubeCommentThread[] = [];
@@ -472,7 +1315,6 @@ export default class YouTubeConnector extends ConnectorRuntime {
         );
 
         if (!response.ok) {
-          // Comments may be disabled — not a fatal error
           if (response.status === 403) return { items: [], nextCursor: null };
           throw new Error(
             `YouTube Comments API error (${response.status}): ${await response.text()}`
@@ -498,7 +1340,6 @@ export default class YouTubeConnector extends ConnectorRuntime {
 
   private async fetchTranscript(videoId: string): Promise<string | null> {
     try {
-      // Fetch the YouTube watch page HTML
       const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
       const response = await fetch(watchUrl, {
         headers: {
@@ -511,18 +1352,14 @@ export default class YouTubeConnector extends ConnectorRuntime {
       if (!response.ok) return null;
 
       const html = await response.text();
-
-      // Extract captionTracks from ytInitialPlayerResponse
       const captionTracks = this.extractCaptionTracks(html);
       if (!captionTracks || captionTracks.length === 0) return null;
 
-      // Prefer English, fall back to first available
       const englishTrack = captionTracks.find(
         (t) => t.languageCode === 'en' || t.languageCode.startsWith('en-')
       );
       const track = englishTrack ?? captionTracks[0];
 
-      // Fetch the timedtext XML
       const captionResponse = await fetch(track.baseUrl);
       if (!captionResponse.ok) return null;
 
@@ -534,7 +1371,6 @@ export default class YouTubeConnector extends ConnectorRuntime {
   }
 
   private extractCaptionTracks(html: string): CaptionTrack[] | null {
-    // Look for ytInitialPlayerResponse in the page
     const playerResponseMatch = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});/s);
     if (!playerResponseMatch) return null;
 
@@ -563,15 +1399,12 @@ export default class YouTubeConnector extends ConnectorRuntime {
   }
 
   private parseTimedTextXml(xml: string): string | null {
-    // Extract text from <text> elements in the timedtext XML
-    // Format: <text start="0.0" dur="2.0">caption text here</text>
     const textSegments: string[] = [];
     const textRegex = /<text[^>]*>([\s\S]*?)<\/text>/g;
     let match: RegExpExecArray | null;
 
     while ((match = textRegex.exec(xml)) !== null) {
       let text = match[1];
-      // Decode HTML entities in a single pass so '&amp;lt;' does not become '<'.
       text = text.replace(
         /&(amp|lt|gt|quot|apos|#39|#(\d+));/g,
         (_match, name, numeric) => {
@@ -592,8 +1425,6 @@ export default class YouTubeConnector extends ConnectorRuntime {
           }
         }
       );
-      // Strip any remaining HTML tags (loop to handle nested/broken markup
-      // like '<<script>script>' that a single pass would leave behind).
       let previous: string;
       do {
         previous = text;
@@ -609,15 +1440,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
     return textSegments.join(' ');
   }
 
-  // -------------------------------------------------------------------------
-  // Utilities
-  // -------------------------------------------------------------------------
-
-  /** Fetch a YouTube API URL with auth (OAuth token or API key). */
-  private async apiGet(
-    url: string,
-    auth: { accessToken?: string; apiKey?: string }
-  ): Promise<Response> {
+  private async apiGet(url: string, auth: YouTubeAuth): Promise<Response> {
     const parsedUrl = new URL(url);
     if (auth.apiKey && !auth.accessToken) {
       parsedUrl.searchParams.set('key', auth.apiKey);

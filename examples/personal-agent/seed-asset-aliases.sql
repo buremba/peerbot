@@ -11,7 +11,7 @@
 -- transacts in and owns all transactions; `currency` is a metric dimension.
 -- The asset alias array is REPLACED (not appended) so re-running is idempotent.
 --
--- Scope to the buremba org if running against a shared database.
+-- Scope to the org slug from lobu.config.ts when running against a shared database.
 UPDATE entities AS e
 SET metadata = jsonb_set(
   coalesce(e.metadata, '{}'::jsonb),
@@ -31,4 +31,7 @@ WHERE e.entity_type_id = (
     WHERE et.organization_id = e.organization_id AND et.slug = 'asset'
   )
   AND e.name = 'Revolut'
-  AND e.deleted_at IS NULL;
+  AND e.deleted_at IS NULL
+  AND e.organization_id = (
+    SELECT id FROM organizations WHERE slug = 'personal-agent' LIMIT 1
+  );

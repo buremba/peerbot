@@ -115,7 +115,7 @@ const CreateFeedAction = Type.Object({
   virtual: Type.Optional(
     Type.Boolean({
       description:
-        'When true, create a VIRTUAL feed (kind=virtual): read LIVE via the connector query()/search() pushdown at request time, never synced — sync-lifecycle columns stay NULL. Requires config.query (a connector-specific read predicate, e.g. a Gmail search string) and the connector to implement the pushdown.',
+        'When true, create a VIRTUAL feed (kind=virtual): read LIVE via the connector query()/search() pushdown at request time, never synced — sync-lifecycle columns stay NULL. Optional config.query sets a default scope; agents narrow via query_sql search_term (connector interprets it).',
     })
   ),
 });
@@ -593,8 +593,8 @@ async function handleCreateFeed(
   }
 
   // A virtual feed is read LIVE at request time and never synced, so it has no
-  // schedule. It MUST carry config.query (the pushdown predicate readVirtualFeed
-  // reads) — without it the live read would always throw at request time.
+  // schedule. config.query is an optional scope fence; agents can compose further
+  // filters at read time (query_sql feed_query) or pass recall terms.
   const isVirtual = args.virtual === true;
   // Only validate the sync schedule for non-virtual feeds — a virtual feed
   // persists schedule = NULL, so a (possibly defaulted) schedule string must not
@@ -606,15 +606,7 @@ async function handleCreateFeed(
       return { error: scheduleError };
     }
   }
-  if (isVirtual) {
-    const configQuery = args.config?.query;
-    if (typeof configQuery !== 'string' || !configQuery.trim()) {
-      return {
-        error:
-          'A virtual feed requires config.query (a connector-specific read predicate, e.g. a Gmail search string).',
-      };
-    }
-  }
+
   // Don't schedule a first run for a feed whose connection is still pending auth,
   // or for a virtual feed (never synced — schedule is NULL).
   const nextRunAtVal =

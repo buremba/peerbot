@@ -2,7 +2,7 @@
  * manage_feeds create_feed — VIRTUAL feed creation (PR #1702).
  *
  * A virtual feed is read LIVE and never synced, so create_feed must:
- *  - require config.query (the pushdown predicate readVirtualFeed reads);
+ *  - allow optional config.query (empty = unbounded for connectors that support it);
  *  - persist kind='virtual', virtual=true, and schedule/next_run_at = NULL;
  *  - NOT validate the (irrelevant) sync schedule — a bad/absent schedule string
  *    must not gate a virtual feed's creation. This is the ordering fix: schedule
@@ -52,15 +52,18 @@ describe('manage_feeds create_feed (virtual)', () => {
     expect(result.feed?.next_run_at).toBeNull();
   });
 
-  it('rejects a virtual feed with no config.query', async () => {
+  it('allows a virtual feed with no config.query (unbounded live read)', async () => {
     const result = (await owner.feeds.create({
       connection_id: connectionId,
       feed_key: 'issues',
       virtual: true,
-    })) as { error?: string; feed?: unknown };
+      config: { recall: true },
+    })) as { error?: string; feed?: { kind: string; virtual: boolean; config?: { recall?: boolean } } };
 
-    expect(result.error).toMatch(/requires config\.query/i);
-    expect(result.feed).toBeUndefined();
+    expect(result.error).toBeUndefined();
+    expect(result.feed?.kind).toBe('virtual');
+    expect(result.feed?.virtual).toBe(true);
+    expect(result.feed?.config?.recall).toBe(true);
   });
 
   it('does NOT validate the sync schedule for a virtual feed (ordering fix)', async () => {

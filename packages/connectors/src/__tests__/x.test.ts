@@ -22,12 +22,15 @@ let parseUsernameFromStatusPath: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let isHomeFeedNoise: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let parseBrowserDmResponse: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let XConnector: any;
 
 beforeAll(async () => {
 	const mod = await import("../x");
 	parseBrowserSearchResponse = mod.parseBrowserSearchResponse;
 	parseBrowserTimelineResponse = mod.parseBrowserTimelineResponse;
+	parseBrowserDmResponse = mod.parseBrowserDmResponse;
 	extractTweetsFromInstructions = mod.extractTweetsFromInstructions;
 	finalizeSyncResult = mod.finalizeSyncResult;
 	finalizeDmSyncResult = mod.finalizeDmSyncResult;
@@ -439,6 +442,127 @@ describe("XConnector definition", () => {
 			(m: any) => m.type === "browser",
 		);
 		expect(browserMethod).toBeDefined();
+	});
+});
+
+describe("parseBrowserDmResponse", () => {
+	test("extracts DM messages from inbox timeline entries", () => {
+		const messages = parseBrowserDmResponse("https://x.com/messages", {
+			data: {
+				viewer_v2: {
+					user_results: { result: { rest_id: "999" } },
+				},
+				user_events: {
+					timeline: {
+						instructions: [
+							{
+								entries: [
+									{
+										content: {
+											message: {
+												id: "dm-1",
+												conversation_id: "111-999",
+												message_data: {
+													text: "hey there",
+													time: "Wed Jun 04 12:00:00 +0000 2025",
+													sender_id: "111",
+													sender_screen_name: "alice",
+													sender_name: "Alice",
+												},
+											},
+										},
+									},
+								],
+							},
+						],
+					},
+				},
+			},
+		});
+
+		expect(messages).toHaveLength(1);
+		expect(messages[0]).toMatchObject({
+			id: "dm-1",
+			text: "hey there",
+			senderId: "111",
+			senderHandle: "alice",
+			fromMe: false,
+			participantId: "111",
+			participantHandle: "alice",
+		});
+	});
+});
+
+describe("XConnector browser-first routing", () => {
+	test("uses extension for bookmarks when OAuth lacks bookmark.read", async () => {
+		const calls: Array<{ action: string; input: Record<string, unknown> }> =
+			[];
+		const dispatcher = {
+			dispatch: async (action: string, input: Record<string, unknown>) => {
+				calls.push({ action, input });
+				return {
+					result: {
+						responses: [
+							{
+								body: JSON.stringify({
+									data: {
+										bookmark_timeline_v2: {
+											timeline: { instructions: [] },
+										},
+									},
+								}),
+							},
+						],
+					},
+				};
+			},
+		};
+
+		const connector = new XConnector();
+		const res = await connector.sync({
+			feedKey: "bookmarks",
+			config: {},
+			checkpoint: {},
+			credentials: {
+				provider: "twitter",
+				accessToken: "token-without-bookmark-scope",
+				scope: "users.read tweet.read offline.access",
+			},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0].input.url).toBe("https://x.com/i/bookmarks");
+		expect(res.metadata.backend).toBe("extension-network");
+	});
+
+	test("uses extension for direct_messages when OAuth lacks dm.read", async () => {
+		const calls: Array<{ action: string; input: Record<string, unknown> }> =
+			[];
+		const dispatcher = {
+			dispatch: async (action: string, input: Record<string, unknown>) => {
+				calls.push({ action, input });
+				return { result: { responses: [] } };
+			},
+		};
+
+		const connector = new XConnector();
+		await connector.sync({
+			feedKey: "direct_messages",
+			config: {},
+			checkpoint: {},
+			credentials: {
+				provider: "twitter",
+				accessToken: "token-without-dm-scope",
+				scope: "users.read tweet.read offline.access",
+			},
+			entityIds: [],
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0].input.url).toBe("https://x.com/messages");
 	});
 });
 

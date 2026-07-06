@@ -38,6 +38,7 @@ import {
 	type EventEnvelope,
 	extensionDomScrape,
 	extensionNetworkSync,
+	HttpStatusError,
 	type HttpClient,
 	paginateByCursor,
 	type SyncContext,
@@ -781,6 +782,250 @@ function readMaxPages(config: Record<string, unknown>, cap = 50): number {
 	return Math.max(1, Math.min(cap, Number(config.max_scrolls ?? 10) || 10));
 }
 
+type XSyncBackend = "oauth_api" | "extension";
+
+function parseGrantedScopes(scope: string | null | undefined): Set<string> {
+	if (!scope) return new Set();
+	return new Set(
+		scope
+			.split(/\s+/)
+			.map((entry) => entry.trim())
+			.filter(Boolean),
+	);
+}
+
+function hasGrantedScopes(
+	granted: Set<string>,
+	required: readonly string[] | undefined,
+): boolean {
+	if (!required || required.length === 0) return true;
+	return required.every((entry) => granted.has(entry));
+}
+
+function readSyncBackendPreference(
+	config: Record<string, unknown>,
+): XSyncBackend | null {
+	if (config.use_extension === true) return "extension";
+	if (config.use_oauth === true) return "oauth_api";
+	return null;
+}
+
+/**
+ * Browser-first: when OAuth exists but the token lacks feed scopes, use the
+ * paired extension instead of failing against the API.
+ */
+function resolveSyncBackend(
+	ctx: SyncContext,
+	config: Record<string, unknown>,
+	requiredScopes: readonly string[] | undefined,
+): XSyncBackend {
+	const preference = readSyncBackendPreference(config);
+	if (preference === "extension") return "extension";
+	if (preference === "oauth_api" && ctx.credentials?.accessToken) {
+		return "oauth_api";
+	}
+
+	const accessToken = ctx.credentials?.accessToken;
+	if (!accessToken) return "extension";
+
+	const granted = parseGrantedScopes(ctx.credentials?.scope);
+	if (!hasGrantedScopes(granted, requiredScopes)) return "extension";
+
+	return "oauth_api";
+}
+
+function isOAuthScopeOrAuthError(error: unknown): boolean {
+	return (
+		error instanceof HttpStatusError &&
+		(error.status === 401 || error.status === 403)
+	);
+}
+
+async function syncWithOAuthFallback<T extends SyncResult>(
+	oauthFn: () => Promise<T>,
+	extensionFn: () => Promise<T>,
+): Promise<T> {
+	try {
+		return await oauthFn();
+	} catch (error) {
+		if (!isOAuthScopeOrAuthError(error)) throw error;
+		return extensionFn();
+	}
+}
+
+function extractViewerUserId(json: unknown): string | undefined {
+	const data = json as Record<string, unknown>;
+	const candidates = [
+		(data?.data as Record<string, unknown> | undefined)?.viewer_v2,
+		(data?.data as Record<string, unknown> | undefined)?.viewer,
+		(data?.data as Record<string, unknown> | undefined)?.user_result,
+	];
+	for (const node of candidates) {
+		const result = (node as { user_results?: { result?: { rest_id?: string } } })
+			?.user_results?.result;
+		if (result?.rest_id) return String(result.rest_id);
+	}
+	return undefined;
+}
+
+function buildBrowserDmMessage(
+	messageNode: Record<string, unknown>,
+	authUserId: string,
+): XDmMessage | null {
+	const messageData =
+		(messageNode.message_data as Record<string, unknown> | undefined) ??
+		(messageNode.legacy as Record<string, unknown> | undefined);
+	if (!messageData) return null;
+
+	const id = String(
+		messageNode.id ??
+			messageNode.message_id ??
+			messageData.id ??
+			messageData.message_id ??
+			"",
+	);
+	const text = String(messageData.text ?? messageData.full_text ?? "").trim();
+	const createdAt = String(
+		messageData.time ?? messageData.created_at ?? messageData.timestamp ?? "",
+	);
+	const senderId = String(
+		messageData.sender_id ?? messageNode.sender_id ?? "",
+	);
+	const conversationId = String(
+		messageNode.conversation_id ??
+			messageNode.conversationId ??
+			messageData.conversation_id ??
+			"",
+	);
+	if (!id || !text || !createdAt || !senderId || !conversationId) return null;
+
+	const senderHandle = String(
+		messageData.sender_screen_name ??
+			messageData.sender_handle ??
+			messageNode.sender_handle ??
+			"",
+	).replace(/^@+/, "");
+	const senderName =
+		typeof messageData.sender_name === "string"
+			? messageData.sender_name
+			: undefined;
+	const isGroup = dmConversationIsGroup(conversationId);
+	const fromMe = authUserId.length > 0 && senderId === authUserId;
+	const usernameById = new Map<string, string>(
+		senderHandle ? [[senderId, senderHandle]] : [],
+	);
+	const nameById = new Map<string, string>(
+		senderName ? [[senderId, senderName]] : [],
+	);
+	const counterparty = resolveDmCounterparty(
+		conversationId,
+		authUserId,
+		senderId,
+		usernameById,
+		nameById,
+	);
+
+	return {
+		id,
+		text,
+		senderId,
+		senderHandle,
+		senderName,
+		conversationId,
+		isGroup,
+		fromMe,
+		participantId: counterparty.participantId,
+		participantHandle: counterparty.participantHandle,
+		participantName: counterparty.participantName,
+		publishedAt: new Date(createdAt),
+	};
+}
+
+function extractDmMessagesFromNode(
+	node: unknown,
+	authUserId: string,
+	seen: Set<string>,
+): XDmMessage[] {
+	if (!node || typeof node !== "object") return [];
+
+	const messages: XDmMessage[] = [];
+	const record = node as Record<string, unknown>;
+
+	if (record.message_data || record.legacy) {
+		const message = buildBrowserDmMessage(record, authUserId);
+		if (message && !seen.has(message.id)) {
+			seen.add(message.id);
+			messages.push(message);
+		}
+	}
+
+	if (record.message && typeof record.message === "object") {
+		messages.push(
+			...extractDmMessagesFromNode(record.message, authUserId, seen),
+		);
+	}
+
+	const content = record.content;
+	if (content && typeof content === "object") {
+		messages.push(
+			...extractDmMessagesFromNode(content, authUserId, seen),
+		);
+	}
+
+	const entries = record.entries;
+	if (Array.isArray(entries)) {
+		for (const entry of entries) {
+			messages.push(
+				...extractDmMessagesFromNode(entry, authUserId, seen),
+			);
+		}
+	}
+
+	const instructions = record.instructions;
+	if (Array.isArray(instructions)) {
+		for (const instruction of instructions) {
+			messages.push(
+				...extractDmMessagesFromNode(instruction, authUserId, seen),
+			);
+		}
+	}
+
+	const conversations = record.conversations;
+	if (conversations && typeof conversations === "object") {
+		for (const conversation of Object.values(conversations)) {
+			messages.push(
+				...extractDmMessagesFromNode(conversation, authUserId, seen),
+			);
+		}
+	}
+
+	const nestedCandidates = [
+		record.data,
+		record.timeline,
+		record.inbox_initial_state,
+		record.inbox_timeline,
+		record.user_events,
+	];
+	for (const candidate of nestedCandidates) {
+		messages.push(
+			...extractDmMessagesFromNode(candidate, authUserId, seen),
+		);
+	}
+
+	return messages;
+}
+
+/** Parse x.com GraphQL DM inbox / conversation responses. */
+export function parseBrowserDmResponse(
+	_url: string,
+	json: unknown,
+	authUserId = "",
+): XDmMessage[] {
+	const seen = new Set<string>();
+	const resolvedAuthUserId = authUserId || extractViewerUserId(json) || "";
+	return extractDmMessagesFromNode(json, resolvedAuthUserId, seen);
+}
+
 async function resolveUserId(
 	handle: string,
 	http: HttpClient,
@@ -1279,6 +1524,49 @@ async function syncDirectMessagesViaOAuthApi(
 	});
 }
 
+async function syncDirectMessagesViaExtension(
+	ctx: SyncContext,
+	config: Record<string, unknown>,
+	checkpoint: XCheckpoint,
+): Promise<SyncResult> {
+	const maxScrolls = readMaxPages(config);
+	let authUserId =
+		typeof config.account_user_id === "string"
+			? config.account_user_id.trim()
+			: "";
+
+	const result = await extensionNetworkSync<XDmMessage>({
+		dispatcher: requireExtensionDispatcher(ctx),
+		config: {
+			interceptPatterns: [
+				{ regex: "/i/api/graphql/\\w+/.*DM" },
+				{ regex: "/i/api/graphql/\\w+/.*Dm" },
+				{ regex: "/i/api/graphql/\\w+/.*Message" },
+				{ regex: "/i/api/graphql/\\w+/.*Inbox" },
+			],
+			allowedOrigins: X_ALLOWED_ORIGINS,
+			maxScrolls,
+			scrollDelayMs: 2000,
+			responseTimeoutMs: 5000,
+		},
+		url: "https://x.com/messages",
+		parseResponse: (_url, json) => {
+			if (!authUserId) {
+				authUserId = extractViewerUserId(json) ?? authUserId;
+			}
+			return parseBrowserDmResponse(_url, json, authUserId);
+		},
+		checkAuth: (currentUrl) =>
+			!currentUrl.includes("/login") && !currentUrl.includes("/i/flow/login"),
+	});
+
+	return finalizeDmSyncResult(result.items, checkpoint, {
+		backend: result.backend,
+		api_calls: result.apiCallCount,
+		feed: "direct_messages",
+	});
+}
+
 /**
  * Personalized home timeline via the extension's content-script scrape.
  * Network capture can't read it (the CDP debugger stops the feed rendering).
@@ -1319,6 +1607,21 @@ async function syncHomeFeedViaDomScrape(
 
 // ── Config schemas ─────────────────────────────────────────────
 
+const backendPreferenceProperties = {
+	use_extension: {
+		type: "boolean",
+		default: false,
+		description:
+			"Force the paired Chrome extension even when OAuth is available.",
+	},
+	use_oauth: {
+		type: "boolean",
+		default: false,
+		description:
+			"Force the X API even when scopes are missing (will fail unless re-authorized).",
+	},
+} as const;
+
 const searchConfigSchema = {
 	type: "object",
 	anyOf: [{ required: ["search_query"] }, { required: ["account_handle"] }],
@@ -1350,6 +1653,7 @@ const searchConfigSchema = {
 			description:
 				"Maximum pagination iterations (default: 10, API pages or browser scrolls)",
 		},
+		...backendPreferenceProperties,
 	},
 };
 
@@ -1384,12 +1688,25 @@ const accountTimelineConfigSchema = {
 			description:
 				"Maximum pagination iterations (default: 10, API pages or browser scrolls)",
 		},
+		...backendPreferenceProperties,
 	},
 };
 
 const bookmarksConfigSchema = {
 	type: "object",
 	properties: {
+		account_handle: {
+			type: "string",
+			minLength: 1,
+			description:
+				'Optional X handle (e.g. "buremba") for DM counterparty resolution when the viewer id is unavailable.',
+		},
+		account_user_id: {
+			type: "string",
+			minLength: 1,
+			description:
+				"Optional numeric X user id for DM from_me / counterparty resolution on the extension path.",
+		},
 		max_scrolls: {
 			type: "integer",
 			minimum: 1,
@@ -1398,6 +1715,7 @@ const bookmarksConfigSchema = {
 			description:
 				"Maximum pagination iterations (default: 10, API pages or browser scrolls)",
 		},
+		...backendPreferenceProperties,
 	},
 };
 
@@ -1441,7 +1759,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.2.0",
+		version: "3.3.0",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [
@@ -1577,7 +1895,7 @@ export default class XConnector extends ConnectorRuntime {
 				name: "Direct Messages",
 				requiredScopes: ["dm.read", "tweet.read", "users.read"],
 				description:
-					"Direct message events across all conversations. OAuth-only (dm.read). Auto-creates person entities for 1:1 counterparts.",
+					"Direct message events across all conversations. Uses the X API when dm.read is granted, otherwise the paired Chrome extension on /messages. Auto-creates person entities for 1:1 counterparts.",
 				configSchema: bookmarksConfigSchema,
 				eventKinds: {
 					dm_message: {
@@ -1608,6 +1926,7 @@ export default class XConnector extends ConnectorRuntime {
 		const config = ctx.config as Record<string, unknown>;
 		const checkpoint = (ctx.checkpoint ?? {}) as XCheckpoint;
 		const feedKey = ctx.feedKey ?? "tweets";
+		const feedDef = this.definition.feeds[feedKey];
 
 		// The home timeline has no public API — it is always served by the
 		// extension, regardless of whether an OAuth token is present.
@@ -1616,34 +1935,66 @@ export default class XConnector extends ConnectorRuntime {
 		}
 
 		if (feedKey === "my_tweets") {
-			if (ctx.credentials?.accessToken) {
-				return syncMyTweetsViaOAuthApi(ctx, config, checkpoint);
+			if (
+				resolveSyncBackend(ctx, config, feedDef?.requiredScopes) ===
+				"oauth_api"
+			) {
+				return syncWithOAuthFallback(
+					() => syncMyTweetsViaOAuthApi(ctx, config, checkpoint),
+					() => syncMyTweetsViaExtension(ctx, config, checkpoint),
+				);
 			}
 			return syncMyTweetsViaExtension(ctx, config, checkpoint);
 		}
 
 		if (feedKey === "liked_tweets") {
-			if (ctx.credentials?.accessToken) {
-				return syncLikedTweetsViaOAuthApi(ctx, config, checkpoint);
+			if (
+				resolveSyncBackend(ctx, config, feedDef?.requiredScopes) ===
+				"oauth_api"
+			) {
+				return syncWithOAuthFallback(
+					() => syncLikedTweetsViaOAuthApi(ctx, config, checkpoint),
+					() => syncLikedTweetsViaExtension(ctx, config, checkpoint),
+				);
 			}
 			return syncLikedTweetsViaExtension(ctx, config, checkpoint);
 		}
 
 		if (feedKey === "bookmarks") {
-			if (ctx.credentials?.accessToken) {
-				return syncBookmarksViaOAuthApi(ctx, config, checkpoint);
+			if (
+				resolveSyncBackend(ctx, config, feedDef?.requiredScopes) ===
+				"oauth_api"
+			) {
+				return syncWithOAuthFallback(
+					() => syncBookmarksViaOAuthApi(ctx, config, checkpoint),
+					() => syncBookmarksViaExtension(ctx, config, checkpoint),
+				);
 			}
 			return syncBookmarksViaExtension(ctx, config, checkpoint);
 		}
 
 		if (feedKey === "direct_messages") {
-			return syncDirectMessagesViaOAuthApi(ctx, config, checkpoint);
+			if (
+				resolveSyncBackend(ctx, config, feedDef?.requiredScopes) ===
+				"oauth_api"
+			) {
+				return syncWithOAuthFallback(
+					() => syncDirectMessagesViaOAuthApi(ctx, config, checkpoint),
+					() => syncDirectMessagesViaExtension(ctx, config, checkpoint),
+				);
+			}
+			return syncDirectMessagesViaExtension(ctx, config, checkpoint);
 		}
 
-		// `tweets` feed: prefer the official API when we have a token, fall back
-		// to the extension's signed-in search otherwise.
-		if (ctx.credentials?.accessToken) {
-			return syncViaOAuthApi(ctx, config, checkpoint);
+		// `tweets` feed: prefer the official API when scopes are sufficient,
+		// otherwise the extension's signed-in search.
+		if (
+			resolveSyncBackend(ctx, config, feedDef?.requiredScopes) === "oauth_api"
+		) {
+			return syncWithOAuthFallback(
+				() => syncViaOAuthApi(ctx, config, checkpoint),
+				() => syncSearchViaExtension(ctx, config, checkpoint),
+			);
 		}
 
 		return syncSearchViaExtension(ctx, config, checkpoint);

@@ -685,7 +685,11 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     const posted = thread.post.mock.calls[0]?.[0];
     expect(typeof posted).toBe("string");
     expect(posted).toContain("selected model (z-ai/glm-5.2)");
-    expect(posted).toContain("/api/proxy/z-ai/a/lobu-builder");
+    expect(posted).toContain("Open this setup link");
+    expect(posted).toContain("https://gateway.example.com/inference-providers/new");
+    expect(posted).toContain("provider=z-ai");
+    expect(posted).toContain("agentId=lobu-builder");
+    expect(posted).not.toContain("api/proxy");
   });
 
   test("cross-org: routes the worker turn under the BOUND agent's org, not the connection's", async () => {

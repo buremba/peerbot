@@ -19,6 +19,7 @@ import {
   resolveAgentOptions,
 } from "../services/platform-helpers.js";
 import { resolveSlackBotIdentity } from "../../authz/slack-acl-sync.js";
+import { getOrganizationSlug } from "../../utils/url-builder.js";
 import { stripPlatformPrefix } from "../channels/bound-channels.js";
 import { captureChannelMessage } from "./channel-transcript.js";
 import { createSlackWebApi } from "./slack-web.js";
@@ -60,14 +61,28 @@ function parseProviderFromModelRef(modelRef: string): string | null {
   return trimmed.slice(0, slash);
 }
 
-function expectedProxyUrlFor(params: {
+function webOriginFromGateway(publicGatewayUrl: string): string {
+  const base = publicGatewayUrl.replace(/\/$/, "");
+  return base.endsWith("/lobu") ? base.slice(0, -"/lobu".length) : base;
+}
+
+async function buildProviderSetupUrl(params: {
   publicGatewayUrl: string;
-  providerId: string;
+  organizationId?: string;
   agentId: string;
-}): string {
-  const base = params.publicGatewayUrl.replace(/\/$/, "");
-  const origin = base.endsWith("/lobu") ? base.slice(0, -"/lobu".length) : base;
-  return `${origin}/api/proxy/${params.providerId}/a/${encodeURIComponent(params.agentId)}`;
+  providerId: string;
+  modelRef: string;
+  reason: string;
+}): Promise<string> {
+  const origin = webOriginFromGateway(params.publicGatewayUrl);
+  const orgSlug = await getOrganizationSlug(params.organizationId).catch(() => null);
+  const pathPrefix = orgSlug ? `/${encodeURIComponent(orgSlug)}` : "";
+  const url = new URL(`${pathPrefix}/inference-providers/new`, `${origin}/`);
+  url.searchParams.set("provider", params.providerId);
+  url.searchParams.set("model", params.modelRef);
+  url.searchParams.set("reason", params.reason);
+  url.searchParams.set("agentId", params.agentId);
+  return url.toString();
 }
 
 async function validateMessageModelProvider(params: {
@@ -90,17 +105,19 @@ async function validateMessageModelProvider(params: {
     params.organizationId
   );
   const provider = await catalog.findProviderForModel(modelRef, providers);
-  const expectedProxyUrl = expectedProxyUrlFor({
+  const setupUrl = await buildProviderSetupUrl({
     publicGatewayUrl: params.services.getPublicGatewayUrl(),
+    organizationId: params.organizationId,
     providerId,
     agentId: params.agentId,
+    modelRef,
+    reason: "model_provider_not_connected",
   });
 
   if (!provider) {
     return (
-      `I can't run this yet: the selected model (${modelRef}) uses provider "${providerId}", ` +
-      `but that provider is not connected to this agent. Ask an admin to open this agent's Settings → Providers, ` +
-      `connect "${providerId}", and try again. Expected gateway proxy URL after setup: ${expectedProxyUrl}`
+      `I can't run this yet: the selected model (${modelRef}) needs provider "${providerId}", ` +
+      `but it isn't connected for this agent. Open this setup link to connect it: ${setupUrl}`
     );
   }
 
@@ -112,26 +129,20 @@ async function validateMessageModelProvider(params: {
     }));
   if (!hasCredentials) {
     return (
-      `I can't run this yet: the selected model (${modelRef}) uses provider "${provider.providerId}", ` +
-      `but Lobu has no credentials for that provider. Ask an admin to connect or add credentials for ` +
-      `"${provider.providerId}" in this agent's Settings → Providers, then try again. ` +
-      `Expected gateway proxy URL after setup: ${expectedProxyUrl}`
+      `I can't run this yet: the selected model (${modelRef}) needs provider "${provider.providerId}", ` +
+      `but Lobu has no credentials for it. Open this setup link to connect or add credentials: ${setupUrl}`
     );
   }
 
-  const proxyBaseUrl = expectedProxyUrl.replace(
-    new RegExp(`/${providerId}/a/${encodeURIComponent(params.agentId)}$`),
-    ""
-  );
+  const proxyBaseUrl = `${webOriginFromGateway(params.services.getPublicGatewayUrl())}/api/proxy`;
   const mappings = provider.getProxyBaseUrlMappings(proxyBaseUrl, params.agentId, {
     organizationId: params.organizationId,
     userId: params.userId,
   });
   if (Object.keys(mappings).length === 0) {
     return (
-      `I can't run this yet: the selected model (${modelRef}) uses provider "${provider.providerId}", ` +
-      `but Lobu could not build a gateway route for it. Ask an admin to reconnect the provider or redeploy the gateway. ` +
-      `Expected gateway proxy URL: ${expectedProxyUrl}`
+      `I can't run this yet: the selected model (${modelRef}) needs provider "${provider.providerId}", ` +
+      `but Lobu could not build a route for it. Open this setup link to reconnect the provider: ${setupUrl}`
     );
   }
 

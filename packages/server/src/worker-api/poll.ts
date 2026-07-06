@@ -741,7 +741,13 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const gatewayHasLocalSource = row.connector_key
     ? findBundledConnectorFile(row.connector_key) !== null
     : false;
-  const workerWillResolveLocally = !isUserScopedWorker && gatewayHasLocalSource;
+  // Org-installed overrides (install_connector / source_url) persist
+  // compiled_code on the version row. Fleet workers normally compile bundled
+  // sources locally, but an explicit override must still ship inline so prod
+  // picks up connector code before the next image deploy.
+  const hasOrgCompiledOverride = Boolean(row.compiled_code);
+  const workerWillResolveLocally =
+    !isUserScopedWorker && gatewayHasLocalSource && !hasOrgCompiledOverride;
   const deviceWillExecuteBridgeOnlyConnector =
     isUserScopedWorker &&
     row.connector_required_capability != null &&

@@ -109,8 +109,9 @@ export async function resolveGithubWebhookActor(params: {
 
 	const actor = extractGithubActor(params.payload);
 	if (!actor) return null;
-	const authorLogin = normalizeGithubLogin(actor.author_login);
-	if (!authorLogin) return null;
+	// Validate shape; keep raw casing in metadata for display title/traits —
+	// entity-link-upsert normalizes github_login for identities + read-time slots.
+	if (!normalizeGithubLogin(actor.author_login)) return null;
 
 	// The person entity-link rule is read from the connector definition (same
 	// source the poll path uses) — not mirrored here. Absent def/rule → no
@@ -132,7 +133,7 @@ export async function resolveGithubWebhookActor(params: {
 		origin_type: kind,
 		occurred_at: new Date().toISOString(),
 		metadata: {
-			author_login: authorLogin,
+			author_login: actor.author_login,
 			...(actor.author_id ? { author_id: actor.author_id } : {}),
 		},
 	};

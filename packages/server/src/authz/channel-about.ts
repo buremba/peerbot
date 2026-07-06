@@ -42,7 +42,7 @@ export async function ensureAboutRelationshipType(
 	organizationId: string,
 	sql: DbClient = getDb(),
 ): Promise<number> {
-	const rows = await sql<{ id: number }[]>`
+	const rows = await sql<{ id: number }>`
     INSERT INTO entity_relationship_types
       (slug, name, description, organization_id, is_symmetric, created_by, created_at, updated_at)
     VALUES
@@ -146,7 +146,7 @@ export async function resolveEntitySlugsToIds(
 ): Promise<number[]> {
 	const requested = [...new Set(slugs.map((s) => s.trim()).filter(Boolean))];
 	if (requested.length === 0) return [];
-	const rows = await sql<{ id: number; slug: string }[]>`
+	const rows = await sql<{ id: number; slug: string }>`
     SELECT id, slug
     FROM entities
     WHERE organization_id = ${organizationId}
@@ -277,9 +277,11 @@ export async function syncConnectionChannelAboutEdges(opts: {
 		}
 	}
 
-	const existing = await sql<
-		{ id: number; from_entity_id: number; to_entity_id: number }[]
-	>`
+	const existing = await sql<{
+		id: number;
+		from_entity_id: number;
+		to_entity_id: number;
+	}>`
     SELECT r.id, r.from_entity_id, r.to_entity_id
     FROM entity_relationships r
     WHERE r.organization_id = ${opts.organizationId}
@@ -342,7 +344,7 @@ export async function setManualChannelAboutEdges(opts: {
 
 	const desired = new Set(opts.aboutEntityIds.map(Number));
 
-	const existing = await sql<{ id: number; to_entity_id: number }[]>`
+	const existing = await sql<{ id: number; to_entity_id: number }>`
     SELECT r.id, r.to_entity_id
     FROM entity_relationships r
     WHERE r.organization_id = ${opts.organizationId}
@@ -413,7 +415,7 @@ export async function listChannelAboutEntities(opts: {
 		sql,
 	});
 	if (ids.length === 0) return [];
-	const rows = await sql<{ id: number; name: string; slug: string | null }[]>`
+	const rows = await sql<{ id: number; name: string; slug: string | null }>`
     SELECT id, name, slug
     FROM entities
     WHERE organization_id = ${opts.organizationId}
@@ -436,7 +438,7 @@ export async function listChannelAboutEntityIds(opts: {
 }): Promise<number[]> {
 	const sql = opts.sql ?? getDb();
 	const typeId = await ensureAboutRelationshipType(opts.organizationId, sql);
-	const rows = await sql<{ to_entity_id: number }[]>`
+	const rows = await sql<{ to_entity_id: number }>`
     SELECT r.to_entity_id
     FROM entity_relationships r
     WHERE r.organization_id = ${opts.organizationId}
@@ -463,14 +465,12 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
 > {
 	const sql = opts.sql ?? getDb();
 	const typeId = await ensureAboutRelationshipType(opts.organizationId, sql);
-	const rows = await sql<
-		{
-			channel_entity_id: number;
-			channel_name: string | null;
-			connection_id: string | null;
-			channel_key: string | null;
-		}[]
-	>`
+	const rows = await sql<{
+		channel_entity_id: number;
+		channel_name: string | null;
+		connection_id: string | null;
+		channel_key: string | null;
+	}>`
     SELECT
       r.from_entity_id AS channel_entity_id,
       e.name AS channel_name,

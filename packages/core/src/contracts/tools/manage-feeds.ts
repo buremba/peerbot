@@ -201,6 +201,16 @@ export const ManageFeedsResultSchema = Type.Union([
         isBot: Type.Boolean(),
       })
     ),
+    team_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    about_entities: Type.Optional(
+      Type.Array(
+        Type.Object({
+          id: Type.Integer(),
+          name: Type.String(),
+          slug: Type.Union([Type.String(), Type.Null()]),
+        })
+      )
+    ),
   }),
   Type.Object({
     action: Type.Literal("read_feed"),

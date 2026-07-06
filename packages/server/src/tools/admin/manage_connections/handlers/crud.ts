@@ -42,7 +42,6 @@ import { ensureConnectorInstalled } from "../../../../utils/ensure-connector-ins
 import {
 	connectionLinkedEntityIdsSql,
 	connectionLinkedToBusinessEntitySql,
-	resolveEntitySlugsToIds,
 } from "../../../../authz/channel-about";
 import {
 	recordChangeEvent,

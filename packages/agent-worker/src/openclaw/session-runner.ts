@@ -605,6 +605,44 @@ export async function runAISession(
     }
   }
 
+  // Fail before pi-ai/model construction with an operator-facing explanation.
+  // A non-OpenAI provider must route through the Lobu gateway proxy; otherwise
+  // the SDK would hit a public endpoint with a tenant/org model id and return a
+  // confusing low-level error. The common real-world cause is a model selected
+  // from a provider that is not installed/connected on the agent.
+  if (!providerBaseUrl && rawProvider !== "openai") {
+    const baseUrlEnvVar = DEFAULT_PROVIDER_BASE_URL_ENV[rawProvider];
+    if (baseUrlEnvVar) {
+      const installedRoutes = pc.installedProviderRoutes ?? {};
+      const installedProviderIds = Object.keys(installedRoutes);
+      const providerIsInstalled =
+        installedRoutes[rawProvider] != null ||
+        Object.values(installedRoutes).includes(rawProvider);
+      const selectedModel = `${rawProvider}/${modelId}`;
+      const dispatcherUrl = process.env.DISPATCHER_URL?.replace(/\/$/, "");
+      const encodedAgentId = encodeURIComponent(agentId || "unknown-agent");
+      const expectedProxyUrl = dispatcherUrl
+        ? `${dispatcherUrl}/api/proxy/${rawProvider}/a/${encodedAgentId}`
+        : `/api/proxy/${rawProvider}/a/${encodedAgentId}`;
+
+      if (installedProviderIds.length === 0 || !providerIsInstalled) {
+        throw new Error(
+          `The selected model (${selectedModel}) uses provider "${rawProvider}", ` +
+            `but that provider is not connected to this agent. Connect "${rawProvider}" ` +
+            `in the agent's Providers settings, or choose a model from a connected provider, then try again. ` +
+            `Expected gateway proxy URL after setup: ${expectedProxyUrl}`
+        );
+      }
+
+      throw new Error(
+        `The selected model (${selectedModel}) uses provider "${rawProvider}", ` +
+          `but Lobu did not receive the gateway routing URL it needs (${baseUrlEnvVar}). ` +
+          `Expected gateway proxy URL: ${expectedProxyUrl}. ` +
+          `Restart the agent worker or redeploy the gateway; if this keeps happening, contact support.`
+      );
+    }
+  }
+
   let baseModel: Model<any> | undefined = getModelDynamic(provider, modelId);
   if (!baseModel) {
     // The model isn't in pi-ai's static registry — build a dynamic entry. Which

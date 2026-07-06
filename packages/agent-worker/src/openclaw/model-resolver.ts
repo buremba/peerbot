@@ -180,10 +180,11 @@ export function buildDynamicOpenAIModel(args: {
   const isRealOpenAI = rawProvider === "openai";
   if (!isRealOpenAI && !providerBaseUrl) {
     throw new Error(
-      `Could not resolve a base URL for provider "${rawProvider}". ` +
-        `The gateway did not supply a proxy mapping for its base-URL env ` +
-        `var (${DEFAULT_PROVIDER_BASE_URL_ENV[rawProvider] ?? "unknown"}). ` +
-        `Refusing to route "${modelId}" to a public endpoint.`
+      `The selected model (${rawProvider}/${modelId}) uses provider "${rawProvider}", ` +
+        `but Lobu did not receive the gateway routing URL it needs ` +
+        `(${DEFAULT_PROVIDER_BASE_URL_ENV[rawProvider] ?? "unknown"}). ` +
+        `Connect the provider in the agent's Providers settings, choose a model ` +
+        `from a connected provider, or restart/redeploy the gateway if the provider is already connected.`
     );
   }
   return {

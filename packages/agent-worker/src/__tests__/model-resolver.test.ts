@@ -364,7 +364,7 @@ describe("buildDynamicOpenAIModel — never silently route to OpenAI", () => {
         modelId: "gemini-2.5-flash",
         providerBaseUrl: undefined,
       })
-    ).toThrow(/Could not resolve a base URL for provider "gemini"/);
+    ).toThrow(/gateway routing URL.*GEMINI_API_BASE_URL/);
   });
 
   test("THROWS for nvidia/together/etc with no base URL (generic, all providers)", () => {
@@ -376,7 +376,7 @@ describe("buildDynamicOpenAIModel — never silently route to OpenAI", () => {
           modelId: "some-model",
           providerBaseUrl: undefined,
         })
-      ).toThrow(/Refusing to route .* to a public endpoint/);
+      ).toThrow(/Connect the provider in the agent's Providers settings/);
     }
   });
 

@@ -14,7 +14,10 @@ import {
 	CLAUDE_PROVIDER,
 	type OAuthProviderConfig,
 } from "../gateway/auth/oauth/providers";
-import { buildProviderCatalog } from "../gateway/auth/provider-catalog";
+import {
+	buildProviderCatalog,
+	type ProviderCatalogService,
+} from "../gateway/auth/provider-catalog";
 import { createAuthProfileLabel } from "../gateway/auth/settings/auth-profiles-manager";
 import {
 	ProviderRegistryService,
@@ -69,6 +72,108 @@ function toStringArray(value: unknown): string[] {
 }
 
 const configStore = createPostgresAgentConfigStore();
+
+function buildRequestBaseUrls(c: any, agentId: string, providerId: string) {
+	const url = new URL(c.req.url);
+	const apiIndex = url.pathname.indexOf("/api/");
+	const mountPath = apiIndex >= 0 ? url.pathname.slice(0, apiIndex) : "";
+	const origin = url.origin;
+	const orgSlug = c.req.param("orgSlug") as string | undefined;
+	const encodedAgent = encodeURIComponent(agentId);
+	return {
+		proxyBaseUrl: `${origin}${mountPath}/api/proxy`,
+		expectedProxyUrl: `${origin}${mountPath}/api/proxy/${providerId}/a/${encodedAgent}`,
+		settingsUrl: orgSlug
+			? `${origin}${mountPath}/${encodeURIComponent(orgSlug)}/agents/${encodedAgent}/settings`
+			: `${origin}${mountPath}/agents/${encodedAgent}/settings`,
+	};
+}
+
+function parseProviderFromModelRef(modelRef: string): string | null {
+	const trimmed = modelRef.trim();
+	if (!trimmed || trimmed === "auto") return null;
+	const slash = trimmed.indexOf("/");
+	if (slash <= 0) return null;
+	return trimmed.slice(0, slash);
+}
+
+async function validateModelProviderRoutable(params: {
+	catalog: ProviderCatalogService;
+	agentId: string;
+	modelRef: string;
+	organizationId: string;
+	userId?: string;
+	c: any;
+}): Promise<Record<string, unknown> | null> {
+	const providerId = parseProviderFromModelRef(params.modelRef);
+	if (!providerId) return null;
+
+	const providers = await params.catalog.getInstalledModules(
+		params.agentId,
+		params.organizationId,
+	);
+	const provider = await params.catalog.findProviderForModel(
+		params.modelRef,
+		providers,
+	);
+	const urls = buildRequestBaseUrls(params.c, params.agentId, providerId);
+
+	if (!provider) {
+		return {
+			error: "model_provider_not_connected",
+			error_description:
+				`The selected model (${params.modelRef}) uses provider "${providerId}", but that provider is not connected to this agent. ` +
+				`Open ${urls.settingsUrl}, connect "${providerId}" in Providers, then save again. ` +
+				`Expected gateway proxy URL after setup: ${urls.expectedProxyUrl}`,
+			model: params.modelRef,
+			provider: providerId,
+			settingsUrl: urls.settingsUrl,
+			expectedProxyUrl: urls.expectedProxyUrl,
+		};
+	}
+
+	const hasCredentials =
+		provider.hasSystemKey() ||
+		(await provider.hasCredentials(params.agentId, {
+			organizationId: params.organizationId,
+			userId: params.userId,
+		}));
+	if (!hasCredentials) {
+		return {
+			error: "model_provider_credentials_missing",
+			error_description:
+				`The selected model (${params.modelRef}) uses provider "${provider.providerId}", but Lobu has no credentials for that provider. ` +
+				`Open ${urls.settingsUrl}, connect or add credentials for "${provider.providerId}", then save again. ` +
+				`Expected gateway proxy URL after setup: ${urls.expectedProxyUrl}`,
+			model: params.modelRef,
+			provider: provider.providerId,
+			settingsUrl: urls.settingsUrl,
+			expectedProxyUrl: urls.expectedProxyUrl,
+		};
+	}
+
+	const mappings = provider.getProxyBaseUrlMappings(
+		urls.proxyBaseUrl,
+		params.agentId,
+		{ organizationId: params.organizationId, userId: params.userId },
+	);
+	const expectedProxyUrl = Object.values(mappings)[0] || urls.expectedProxyUrl;
+	if (Object.keys(mappings).length === 0) {
+		return {
+			error: "model_provider_route_missing",
+			error_description:
+				`The selected model (${params.modelRef}) uses provider "${provider.providerId}", but Lobu could not build a gateway route for it. ` +
+				`Open ${urls.settingsUrl} and reconnect the provider, or restart/redeploy the gateway. ` +
+				`Expected gateway proxy URL: ${expectedProxyUrl}`,
+			model: params.modelRef,
+			provider: provider.providerId,
+			settingsUrl: urls.settingsUrl,
+			expectedProxyUrl,
+		};
+	}
+
+	return null;
+}
 
 // ── Route-level middleware ───────────────────────────────────────────────────
 //
@@ -1397,6 +1502,7 @@ routes.patch("/:agentId/config", async (c) => {
   const { authProfiles, ...settingsUpdates } = updates as {
     authProfiles?: AuthProfile[];
   } & Record<string, unknown>;
+
   if (Array.isArray(authProfiles)) {
 		const user = c.get("user");
     if (!user?.id) {
@@ -1424,6 +1530,32 @@ routes.patch("/:agentId/config", async (c) => {
       }
     }
   }
+
+	if (typeof settingsUpdates.defaultModel === "string") {
+		const modelRef = settingsUpdates.defaultModel.trim();
+		if (modelRef) {
+			try {
+				const catalog = getLobuCoreServices()?.getProviderCatalogService?.();
+				const organizationId = c.get("organizationId") as string | undefined;
+				if (catalog && organizationId) {
+					const error = await validateModelProviderRoutable({
+						catalog,
+						agentId,
+						modelRef,
+						organizationId,
+						userId: c.get("user")?.id,
+						c,
+					});
+					if (error) return c.json(error, 400);
+				}
+			} catch (error) {
+				logger.warn(
+					{ agentId, modelRef, error },
+					"Failed to validate model/provider routability before saving agent settings",
+				);
+			}
+		}
+	}
 
   await configStore.updateSettings(agentId, settingsUpdates);
 	// Snapshot the merged settings row as stored (the store merges partial

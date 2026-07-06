@@ -14,9 +14,12 @@ interface ExecutionErrorContext {
   runId?: number | string;
 }
 
-function formatErrorMessage(error: unknown): string {
+function formatErrorMessage(error: unknown, code?: string): string {
   if (!(error instanceof Error)) {
     return `💥 Worker crashed: Unknown error`;
+  }
+  if (code === "PROVIDER_BASE_URL_UNRESOLVED") {
+    return `⚠️ ${error.message}`;
   }
   const name = error.constructor.name;
   const isGeneric = name === "Error" || name === "WorkspaceError";
@@ -75,9 +78,14 @@ export function classifyError(error: unknown): string | undefined {
   // upstream surface "<x> is not a valid model"/"unknown model"/"model ... not found".
   if (/not a valid model|unknown model|model .* not found/i.test(message))
     return "PROVIDER_UNKNOWN_MODEL";
-  // model-resolver.ts buildDynamicOpenAIModel throws this when the gateway
-  // failed to supply a proxy base URL for a non-OpenAI provider.
-  if (/Could not resolve a base URL for provider/i.test(message))
+  // model-resolver.ts / session-runner.ts throw this when a non-OpenAI
+  // provider cannot be routed through the Lobu gateway proxy. This is usually a
+  // provider/model configuration issue, not an agent crash.
+  if (
+    /Could not resolve a base URL for provider/i.test(message) ||
+    /provider is not connected to this agent/i.test(message) ||
+    /did not receive the gateway routing URL/i.test(message)
+  )
     return "PROVIDER_BASE_URL_UNRESOLVED";
   return undefined;
 }
@@ -118,7 +126,11 @@ export async function handleExecutionError(
     } else {
       // Unclassified crashes AND PROVIDER_* failures still show the user a
       // crash message; the classification rides along on signalError.
-      await transport.sendStreamDelta(formatErrorMessage(error), true, true);
+      await transport.sendStreamDelta(
+        formatErrorMessage(error, code),
+        true,
+        true
+      );
       await transport.signalError(errorInstance, code);
     }
   } catch (gatewayError) {

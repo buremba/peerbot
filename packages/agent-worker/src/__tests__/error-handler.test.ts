@@ -93,6 +93,23 @@ describe("handleExecutionError", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("PROVIDER_UNKNOWN_MODEL");
   });
+
+  test("provider routing failures are explanatory, not crash-branded", async () => {
+    const { transport, deltas, errors } = makeTransport();
+
+    await handleExecutionError(
+      new Error(
+        'The selected model (z-ai/glm-5.2) uses provider "z-ai", but that provider is not connected to this agent.'
+      ),
+      transport
+    );
+
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0].delta).toContain("⚠️ The selected model");
+    expect(deltas[0].delta).not.toContain("Worker crashed");
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe("PROVIDER_BASE_URL_UNRESOLVED");
+  });
 });
 
 describe("classifyError", () => {
@@ -138,6 +155,13 @@ describe("classifyError", () => {
     expect(
       classifyError(
         new Error('Could not resolve a base URL for provider "z-ai".')
+      )
+    ).toBe("PROVIDER_BASE_URL_UNRESOLVED");
+    expect(
+      classifyError(
+        new Error(
+          'The selected model (z-ai/glm-5.2) uses provider "z-ai", but that provider is not connected to this agent.'
+        )
       )
     ).toBe("PROVIDER_BASE_URL_UNRESOLVED");
   });

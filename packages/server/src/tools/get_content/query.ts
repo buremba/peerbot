@@ -4,7 +4,7 @@
  * stats aggregation).
  */
 
-import { type DbClient, pgTextArray } from '../../db/client';
+import { type DbClient, pgBigintArray, pgTextArray } from '../../db/client';
 import {
   buildConnectionVisibilityClause,
   buildEntityLinkUnion,
@@ -35,12 +35,14 @@ interface ListPageResult {
 function buildContentQuery(opts: {
   table: string;
   alias: string;
+  /** Extra JOIN clause(s) spliced in before the fixed connection/oauth joins. */
+  join?: string;
   where: string;
   orderBy: string;
   limit: number;
   offset: number;
 }): string {
-  const { table, alias: a, where, orderBy, limit, offset } = opts;
+  const { table, alias: a, join = '', where, orderBy, limit, offset } = opts;
   return `
     SELECT
       ${a}.id,
@@ -77,6 +79,7 @@ function buildContentQuery(opts: {
       -- stability now that the dead table is dropped.
       '{}'::jsonb as classifications
     FROM ${table} ${a}
+    ${join}
     LEFT JOIN connections c ON c.id = ${a}.connection_id
     LEFT JOIN oauth_clients oc ON oc.id = ${a}.client_id
     WHERE ${where}
@@ -87,8 +90,68 @@ function buildContentQuery(opts: {
 }
 
 /**
- * Direct query by content IDs — simple and fast. Bypasses other filters
- * except entity_id. Caller dispatches here only when content_ids is non-empty.
+ * Chain-resolution CTE. Expands each requested content id to its full supersede
+ * lineage so a permalink minted at pending-approval time (its id is later
+ * superseded and hidden from `current_event_records`) still resolves — and
+ * shows the whole pending→executing→completed history, not just the head.
+ *
+ * Reads from `events` (not the masked view) because superseded rows are the
+ * whole point. Two arms, UNIONed:
+ *  - run arm: operation/approval chains all share one `run_id`, so a single
+ *    indexed lookup returns pending + executing + completed together.
+ *  - walk arm: seeds with `run_id IS NULL` (e.g. an edited note) have no run to
+ *    key on, so we walk the `superseded_by` / `supersedes_event_id` linked list
+ *    out from the seed in both directions. Bounded (chains are 2–3 hops; the
+ *    forward edge is uniquely indexed), so the recursion terminates cheaply.
+ *
+ * `$1` must be a bigint[] bind param of the requested ids. Emits a CTE named
+ * `resolved_ids(id, chain_key)` — `id` is an event id in a resolved chain and
+ * `chain_key` is a stable per-chain identifier shared by every row of the same
+ * lineage, so the caller can `COUNT(DISTINCT chain_key)` to count chains (an
+ * atomic unit) rather than expanded rows. The caller filters the final read to
+ * `f.id IN (SELECT id FROM resolved_ids)`.
+ */
+const RESOLVED_IDS_CTE = `
+  resolved_ids AS (
+    -- run arm: every row of the seed's run (the common approval/operation case).
+    -- Chain key is the run id, text-prefixed so it can't collide with the walk
+    -- arm's event-id keys.
+    SELECT run_ev.id, 'run:' || seed.run_id AS chain_key
+    FROM events seed
+    JOIN events run_ev ON run_ev.run_id = seed.run_id
+    WHERE seed.id = ANY($1::bigint[]) AND seed.run_id IS NOT NULL
+    UNION
+    -- walk arm: run_id-less chains, transitive closure both directions. Chain
+    -- key is the lineage root (oldest ancestor), which every row in the chain
+    -- shares regardless of which id the caller entered from.
+    SELECT walked.id, 'ev:' || walked.root AS chain_key
+    FROM (
+      WITH RECURSIVE lineage(id, root) AS (
+        -- Seed each run_id-less requested id with its own oldest ancestor as
+        -- the provisional root; MIN() over the component finalizes it below.
+        SELECT s.id, s.id AS root
+        FROM events s
+        WHERE s.id = ANY($1::bigint[]) AND s.run_id IS NULL
+        UNION
+        SELECT nxt.id, LEAST(l.root, nxt.id)
+        FROM lineage l
+        JOIN events cur ON cur.id = l.id
+        JOIN events nxt
+          ON nxt.id = cur.superseded_by        -- forward: newer
+          OR nxt.id = cur.supersedes_event_id  -- backward: older
+      )
+      -- A component can be reached from multiple seeds / hop orders; collapse to
+      -- one row per event with the smallest root so the chain key is stable.
+      SELECT id, MIN(root) AS root FROM lineage GROUP BY id
+    ) walked
+  )
+`;
+
+/**
+ * Direct query by content IDs. Each requested id is expanded to its full
+ * supersede chain (see {@link RESOLVED_IDS_CTE}) so stale permalinks resolve and
+ * the caller sees the pending→completed history. Bypasses other filters except
+ * entity_id. Caller dispatches here only when content_ids is non-empty.
  */
 export async function fetchByContentIds(opts: {
   args: GetContentArgs;
@@ -106,9 +169,11 @@ export async function fetchByContentIds(opts: {
 
   logger.info(`[get_content] Filtering by ${contentIdsArray.length} specific content IDs`);
 
-  // Build parameterized IN clause for content IDs
-  const idPlaceholders = contentIdsArray.map((_, i) => `$${i + 1}`).join(',');
-  const queryParams: Array<string | number | null> = [...contentIdsArray];
+  // $1 is the requested-id array, consumed by RESOLVED_IDS_CTE. All later
+  // filters bind from $2 onward and read the expanded chain set, so org scope,
+  // entity link, and visibility apply to every resolved row, not just the seed.
+  const queryParams: Array<string | number | null> = [pgBigintArray(contentIdsArray)];
+  const idFilter = 'f.id IN (SELECT id FROM resolved_ids)';
 
   queryParams.push(organizationId);
   const orgScope = `AND f.organization_id = $${queryParams.length}::text`;
@@ -140,27 +205,40 @@ export async function fetchByContentIds(opts: {
   });
   queryParams.push(...visibility.params);
 
-  // Query content by IDs with classifications
+  const where = `${idFilter} ${orgScope}${entityFilter} ${visibility.sql}`;
+
+  // Read the full chain from `events` (not the masked view — superseded rows are
+  // what we're here for). The list query JOINs resolved_ids so it can order by
+  // the resolver's stable `chain_key`: lineages never interleave, and within a
+  // chain rows read pending→completed top-to-bottom by occurred_at.
   const result = await sql.unsafe(
-    buildContentQuery({
-      table: 'current_event_records',
+    `
+    WITH ${RESOLVED_IDS_CTE}
+    ${buildContentQuery({
+      table: 'events',
       alias: 'f',
-      where: `f.id IN (${idPlaceholders}) ${orgScope}${entityFilter} ${visibility.sql}`,
-      orderBy: 'f.occurred_at DESC',
+      join: 'JOIN resolved_ids ri ON ri.id = f.id',
+      where,
+      orderBy: 'ri.chain_key ASC, f.occurred_at ASC, f.id ASC',
       limit,
       offset,
-    }),
+    })}
+  `,
     queryParams
   );
 
+  // Count distinct chains via the resolver's stable `chain_key`, not expanded
+  // rows: a chain is an atomic unit and paging must never split it. Joining
+  // resolved_ids also re-applies the same org/entity/visibility WHERE to the
+  // counted set, so it can't drift from the list above.
   const countResult = await sql.unsafe(
     `
-    SELECT COUNT(*) as total
-    FROM current_event_records f
-    WHERE f.id IN (${idPlaceholders})
-      ${orgScope}
-      ${entityFilter}
-      ${visibility.sql}
+    WITH ${RESOLVED_IDS_CTE}
+    SELECT COUNT(DISTINCT ri.chain_key) as total
+    FROM events f
+    JOIN resolved_ids ri ON ri.id = f.id
+    LEFT JOIN connections c ON c.id = f.connection_id
+    WHERE ${where}
   `,
     queryParams
   );

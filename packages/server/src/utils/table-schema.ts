@@ -45,6 +45,7 @@ export const QUERYABLE_SCHEMA = {
         'created_by',
         'content',
         'deleted_at',
+        'merged_into',
         'current_view_template_version_id'
       ),
     },

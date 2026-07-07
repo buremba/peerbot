@@ -46,7 +46,7 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 };
 
 const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
-	manage_entity: new Set(["delete"]),
+	manage_entity: new Set(["delete", "merge", "unmerge"]),
 	manage_entity_schema: new Set([
 		"create",
 		"update",

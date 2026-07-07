@@ -190,7 +190,7 @@ attributable to the diff. Style nits and naming preferences don't count.
 ### Suggested fixes
 
 Suggested fixes are read by the local Claude Code agent and applied between
-review iterations — not by pi itself. Be specific (file path + line number +
+review iterations — not by the review subprocess itself. Be specific (file path + line number +
 concrete change). Don't include vibe suggestions like "consider refactoring
 this" or "this could be cleaner" — the agent can't act on those. If you
 can't name the file, line, and the exact change, leave it out and put it in

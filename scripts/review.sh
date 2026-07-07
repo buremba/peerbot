@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Local review runner: typecheck + unit + integration in cwd, then `pi` with
-# the diff against the base branch. Prints a JSON verdict on the last line.
+# Local review runner: typecheck + unit + integration in cwd, then Claude CLI
+# with the diff against the base branch. Prints a JSON verdict on the last line.
 #
 # Usage:
 #   ./scripts/review.sh                 # base = main
@@ -16,11 +16,10 @@
 # available, so branch protection can require the local agent review.
 # If there's no PR, the verdict still prints locally.
 #
-# Auth: uses the operator's ~/.pi/agent state for pi, `gh auth token` for
-# GitHub (optional — missing auth just skips posting). Pi is pinned to the
-# ChatGPT/Codex GPT-5.5 high-reasoning model family via PI_REVIEW_MODELS;
-# the default model scope includes all three local ChatGPT account providers so
-# the multi-account extension can pick/switch among linked account slots.
+# Auth: uses the operator's Claude CLI auth for the local review verdict, and
+# `gh auth token` for GitHub (optional — missing auth just skips posting).
+# Do not route the verdict through Codex/OpenAI providers here: the gate should
+# work from Codex sessions even when Codex provider quota is exhausted.
 # Commit statuses use the legacy Statuses API because `gh api check-runs`
 # requires GitHub App auth, and a user PAT cannot create check-runs.
 
@@ -28,7 +27,7 @@ set -euo pipefail
 
 # --- preflight --------------------------------------------------------------
 
-for cmd in pi jq git; do
+for cmd in claude jq git; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "$cmd not found on PATH." >&2; exit 2; }
 done
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "Not inside a git work tree." >&2; exit 2; }
@@ -42,7 +41,8 @@ fi
 # --- args -------------------------------------------------------------------
 
 BASE_BRANCH="${BASE:-main}"
-PI_REVIEW_MODELS="${PI_REVIEW_MODELS:-openai-codex/gpt-5.5:high,openai-codex-2/gpt-5.5:high,openai-codex-3/gpt-5.5:high}"
+CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-opus}"
+CLAUDE_REVIEW_EFFORT="${CLAUDE_REVIEW_EFFORT:-high}"
 PI_REVIEW_STATUS_CONTEXT="${PI_REVIEW_STATUS_CONTEXT:-pi-review}"
 PI_REVIEW_MIN_BUG_FREE="${PI_REVIEW_MIN_BUG_FREE:-80}"
 PI_REVIEW_MAX_SLOP="${PI_REVIEW_MAX_SLOP:-15}"
@@ -90,9 +90,9 @@ finalize_review_status() {
   REVIEW_STATUS_FINALIZED=1
 }
 
-trap 'ec=$?; if [ $ec -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then post_review_status error "pi review failed before verdict (exit $ec)"; fi' EXIT
+trap 'ec=$?; if [ $ec -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then post_review_status error "Claude review failed before verdict (exit $ec)"; fi' EXIT
 
-post_review_status pending "pi review running"
+post_review_status pending "Claude review running"
 
 # --- env --------------------------------------------------------------------
 
@@ -128,7 +128,7 @@ make build-packages > "$BUILD_LOG" 2>&1
 BUILD_EXIT=$?
 set -e
 if [ $BUILD_EXIT -ne 0 ]; then
-  echo "!! build failed (exit $BUILD_EXIT) — proceeding so pi can review the diff, but unit tests will likely fail" >&2
+  echo "!! build failed (exit $BUILD_EXIT) — proceeding so Claude can review the diff, but unit tests will likely fail" >&2
 fi
 
 # --- test suites ------------------------------------------------------------
@@ -136,10 +136,18 @@ fi
 TYPECHECK_LOG="/tmp/lobu-review-typecheck.log"
 UNIT_LOG="/tmp/lobu-review-unit.log"
 INTEGRATION_LOG="/tmp/lobu-review-integration.log"
+DETERMINISTIC_TEST_ENV=(
+  env
+  ANTHROPIC_API_KEY=
+  ANTHROPIC_AUTH_TOKEN=
+  CLAUDE_CODE_OAUTH_TOKEN=
+  OPENAI_API_KEY=
+  OPENAI_AUTH_TOKEN=
+)
 
 echo ">> typecheck → $TYPECHECK_LOG"
 set +e
-bun run typecheck > "$TYPECHECK_LOG" 2>&1
+"${DETERMINISTIC_TEST_ENV[@]}" bun run typecheck > "$TYPECHECK_LOG" 2>&1
 TYPECHECK_EXIT=$?
 set -e
 
@@ -150,21 +158,21 @@ UNIT_EXIT=0
   # Guard: every packages/server *.test.ts must run in >=1 runner (vitest or a
   # bun job). Fails loudly if a file drifts into running nowhere — the
   # silent-skip class this change fixes.
-  node scripts/check-test-runner-coverage.mjs;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  "${DETERMINISTIC_TEST_ENV[@]}" node scripts/check-test-runner-coverage.mjs;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # Guard: no raw JS array bound as a SQL param (the fetch_types:false trap —
   # a malformed array literal that Postgres rejects, historically silent).
-  node scripts/check-raw-array-params.mjs;                          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  "${DETERMINISTIC_TEST_ENV[@]}" node scripts/check-raw-array-params.mjs;                          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # Guard: the per-user connection-visibility READ-SEAM gate must come from the
   # one compiler (authz/connection-visibility.ts), not be re-derived inline —
   # that is how the authz gate silently drifts and leaks private-connection data.
-  node scripts/check-connection-visibility-compiler.mjs;            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  bun test packages/core packages/cli packages/connectors;          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  bun test packages/agent-worker;                                   ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  bun test packages/server/src/__tests__/unit;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  bun test packages/server/src/auth/__tests__/tool-access.test.ts;  ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  "${DETERMINISTIC_TEST_ENV[@]}" node scripts/check-connection-visibility-compiler.mjs;            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/core packages/cli packages/connectors;          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/agent-worker;                                   ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/server/src/__tests__/unit;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/server/src/auth/__tests__/tool-access.test.ts;  ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # NOTE: src/gateway/infrastructure/queue runs in the gateway integration loop
   # below (not here) — see #1238; running it in both jobs double-executes it.
-  bun test packages/connector-worker;                               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/connector-worker;                               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
 } > "$UNIT_LOG" 2>&1
 set -e
 
@@ -175,7 +183,7 @@ echo ">> integration tests → $INTEGRATION_LOG"
 set +e
 INTEGRATION_EXIT=0
 {
-  (cd packages/server && node ../../node_modules/.bin/vitest run --reporter=default); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
+  (cd packages/server && "${DETERMINISTIC_TEST_ENV[@]}" node ../../node_modules/.bin/vitest run --reporter=default); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
   # Each gateway test file runs in its own bun process: bun has no per-file
   # isolation and the gateway suites aren't mutually hermetic, so co-running a
   # whole __tests__ dir in one process leaks DB/module state across files (see
@@ -189,22 +197,22 @@ INTEGRATION_EXIT=0
     for d in $dirs; do
       files=$(find "$d" -maxdepth 1 -type f -name '*.test.ts' | sort)
       for f in $files; do
-        bun test "$f" || rc=1
+        "${DETERMINISTIC_TEST_ENV[@]}" bun test "$f" || rc=1
       done
     done
     exit $rc );                                                                        ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
-  (cd packages/server && bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
+  (cd packages/server && "${DETERMINISTIC_TEST_ENV[@]}" bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
 } > "$INTEGRATION_LOG" 2>&1
 set -e
 
 echo ">> suite exit codes: typecheck=$TYPECHECK_EXIT unit=$UNIT_EXIT integration=$INTEGRATION_EXIT"
 
-# --- pi ---------------------------------------------------------------------
+# --- Claude review ----------------------------------------------------------
 
 PROMPT_FILE="$(pwd)/prompts/review-prompt.md"
 [ -f "$PROMPT_FILE" ] || { echo "prompt not found: $PROMPT_FILE" >&2; exit 2; }
 
-echo ">> invoking pi (models: $PI_REVIEW_MODELS)"
+echo ">> invoking Claude CLI (model: $CLAUDE_REVIEW_MODEL, effort: $CLAUDE_REVIEW_EFFORT)"
 GH_TOKEN_VAL=""
 [ "$GH_AVAILABLE" = "1" ] && GH_TOKEN_VAL="$(gh auth token)"
 
@@ -217,24 +225,20 @@ RAW="$(
   INTEGRATION_LOG="$INTEGRATION_LOG" INTEGRATION_EXIT="$INTEGRATION_EXIT" \
   GH_TOKEN="$GH_TOKEN_VAL" \
   DATABASE_URL="${DATABASE_URL:-}" \
-  pi --mode json --no-session --models "$PI_REVIEW_MODELS" -p "@${PROMPT_FILE}" "Review the diff. Emit only the JSON verdict." < /dev/null
+  claude -p "$(cat "$PROMPT_FILE")
+
+Review the diff. Emit only the JSON verdict." \
+    --model "$CLAUDE_REVIEW_MODEL" \
+    --effort "$CLAUDE_REVIEW_EFFORT" \
+    --output-format text \
+    --no-session-persistence \
+    --tools Bash,Read,Grep,LS \
+    --permission-mode bypassPermissions < /dev/null
 )"
-PI_EXIT=$?
+CLAUDE_EXIT=$?
 set -e
 
-# pi --mode json emits a stream of NDJSON envelopes. The last `agent_end`
-# event has .messages[] with role+content; we want the LAST assistant
-# message's last `text` content item — that's the verdict JSON string.
-# Fall back to scanning all events for assistant messages if the agent_end
-# envelope isn't present, then fall back to RAW.
-VERDICT="$(printf '%s\n' "$RAW" | jq -rs '
-  ( [.[] | select(.type == "agent_end") | .messages[]?] +
-    [.[] | select(.role == "assistant")] )
-  | map(select(.role == "assistant" and (.content | type) == "array"))
-  | last
-  | (.content // []) | map(select(.type == "text")) | last | .text // empty
-' 2>/dev/null || true)"
-[ -n "$VERDICT" ] || VERDICT="$RAW"
+VERDICT="$RAW"
 VERDICT="$(printf '%s\n' "$VERDICT" | sed -e 's/^```json//' -e 's/^```//' -e 's/```$//')"
 
 if ! echo "$VERDICT" | jq -e '
@@ -250,8 +254,8 @@ if ! echo "$VERDICT" | jq -e '
   (.notes | type == "string") and
   (.categories | type == "object")
 ' >/dev/null 2>&1; then
-  finalize_review_status error "pi review did not produce a valid JSON verdict"
-  echo "pi did not produce a valid JSON verdict. pi exit=$PI_EXIT" >&2
+  finalize_review_status error "Claude review did not produce a valid JSON verdict"
+  echo "Claude review did not produce a valid JSON verdict. claude exit=$CLAUDE_EXIT" >&2
   echo "logs: $TYPECHECK_LOG $UNIT_LOG $INTEGRATION_LOG" >&2
   echo "raw output:" >&2
   printf '%s\n' "$RAW" >&2

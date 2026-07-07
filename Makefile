@@ -23,7 +23,7 @@ help:
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 	@echo "  make e2e-browser [RESTART=1]               - Launch/reuse the stable 'owletto' Chrome harness (extension from this worktree) for Chrome e2e"
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
-	@echo "  make review [BASE=<branch>]                - Run local review (typecheck+unit+integration + pi); posts pi-review status and PR comment"
+	@echo "  make review [BASE=<branch>]                - Run local review (typecheck+unit+integration + Claude); posts pi-review status and PR comment"
 
 # Strict typecheck — mirrors the Dockerfile so local matches CI. Catches
 # what `build-packages` (relaxed, bundler-only) misses.
@@ -253,7 +253,7 @@ clean-test-pg:
 	@echo "✅ Test-PG clusters + dirs reaped"
 
 # --- Local AI review gate ---------------------------------------------------
-# Local-only: runs the deterministic suites in cwd, then invokes pi against
+# Local-only: runs the deterministic suites in cwd, then invokes Claude CLI against
 # `git diff <BASE>...HEAD` (BASE defaults to main; override with BASE=<branch>
 # env or `--base <branch>` arg). Prints a JSON verdict on the last line. If
 # GitHub auth is available, posts a pi-review commit status; if the current

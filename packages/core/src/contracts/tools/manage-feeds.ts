@@ -50,6 +50,12 @@ export const ReadFeedAction = Type.Object({
       description: "Max transcript messages for a streaming feed (default 50)",
     })
   ),
+  search_term: Type.Optional(
+    Type.String({
+      description:
+        "For a VIRTUAL feed: term pushed to the connector's search() pushdown (e.g. Gmail query syntax AND-composed with the feed's config.query). Ignored for non-virtual feeds.",
+    })
+  ),
 });
 
 export const ReadFeedsAction = Type.Object({
@@ -66,6 +72,12 @@ export const ReadFeedsAction = Type.Object({
     Type.Number({
       description:
         "Per-feed row/message limit for live feed kinds (default 50)",
+    })
+  ),
+  search_term: Type.Optional(
+    Type.String({
+      description:
+        "For VIRTUAL feeds: term pushed to each connector's search() pushdown (e.g. Gmail query syntax AND-composed with config.query). Applies to every virtual feed in the batch; ignored for non-virtual feeds.",
     })
   ),
   timeout_ms: Type.Optional(

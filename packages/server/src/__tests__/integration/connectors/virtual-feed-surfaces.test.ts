@@ -302,6 +302,40 @@ describe('virtual feed surfaces (recall + query_sql)', () => {
     expect(missing).toMatchObject({ ok: false, error: 'Feed not found' });
   }, 60_000);
 
+  it('(3) read_feeds pushes search_term down to the connector search() (ILIKE at source)', async () => {
+    type ReadFeedsResult = {
+      results: Array<{
+        feed_id: number;
+        ok: boolean;
+        result?: { kind?: string; rows?: Array<{ name: string }> };
+      }>;
+    };
+    const namesOf = (res: ReadFeedsResult) =>
+      (res.results.find((r) => r.feed_id === recallFeedId)?.result?.rows ?? [])
+        .map((r) => r.name)
+        .sort();
+
+    // Without search_term the virtual feed returns all three rows via query().
+    const unscoped = (await manageFeeds(
+      { action: 'read_feeds', feed_ids: [recallFeedId] },
+      {},
+      ownerCtx
+    )) as ReadFeedsResult;
+    expect(namesOf(unscoped)).toEqual(['apple', 'apricot', 'banana']);
+
+    // With search_term the term reaches the connector's search() → ILIKE pushdown,
+    // so 'apple'+'apricot' match 'ap' and 'banana' is excluded AT THE SOURCE.
+    const scoped = (await manageFeeds(
+      { action: 'read_feeds', feed_ids: [recallFeedId], search_term: 'ap' },
+      {},
+      ownerCtx
+    )) as ReadFeedsResult;
+    const okScoped = scoped.results.find((r) => r.feed_id === recallFeedId);
+    expect(okScoped?.ok).toBe(true);
+    expect(okScoped?.result?.kind).toBe('virtual');
+    expect(namesOf(scoped)).toEqual(['apple', 'apricot']);
+  }, 60_000);
+
   it('(3) read_feeds preserves per-feed visibility failures', async () => {
     const res = (await manageFeeds(
       {

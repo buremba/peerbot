@@ -23,12 +23,14 @@ import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
 	createTestAgent,
+	createTestAccessToken,
 	createTestConnection,
 	createTestEntity,
+	createTestOAuthClient,
 	createTestOrganization,
 	createTestUser,
 } from "../../setup/test-fixtures";
-import { TestWorkspace } from "../../setup/test-mcp-client";
+import { TestMcpClient, TestWorkspace } from "../../setup/test-mcp-client";
 
 const TEAM = "TACME";
 
@@ -55,6 +57,7 @@ async function makeManagedSlackConnection(opts: {
 
 describe("manage_connections channel-binding actions", () => {
 	let workspace: TestWorkspace;
+	let mcpClient: TestMcpClient;
 	let orgId: string;
 	let agentId: string;
 
@@ -62,6 +65,16 @@ describe("manage_connections channel-binding actions", () => {
 		await cleanupTestDatabase();
 		workspace = await TestWorkspace.create({ name: "Channel Actions Org" });
 		orgId = workspace.org.id;
+		const oauthClient = await createTestOAuthClient();
+		const oauthResult = await createTestAccessToken(
+			workspace.users.owner.id,
+			orgId,
+			oauthClient.client_id,
+		);
+		mcpClient = new TestMcpClient({
+			token: oauthResult.token,
+			orgSlug: workspace.org.slug,
+		});
 		({ agentId } = await createTestAgent({ organizationId: orgId }));
 	});
 
@@ -350,7 +363,7 @@ describe("manage_connections channel-binding actions", () => {
 		expect(match).toBeDefined();
 		expect(match?.entity_names ?? "").toContain("Acme Customer");
 
-		const resolved = (await workspace.owner.resolvePath(
+		const resolved = (await mcpClient.resolvePath(
 			`/${workspace.org.slug}/company/acme-customer`,
 		)) as { entity?: { active_connections?: number } };
 		expect(resolved.entity?.active_connections ?? 0).toBeGreaterThanOrEqual(1);

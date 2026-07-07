@@ -128,25 +128,15 @@ import {
   normalizeAuthUserId,
   normalizeEmail,
   normalizeEmailDomain,
-  normalizeNumericId,
   normalizeIdentifier,
   normalizePhone,
-  normalizeSlackUserId,
-  normalizeSlackUserIdCombined,
-  normalizeWaJid,
-  normalizeXHandle,
 } from './identity-normalize.js';
 export {
   normalizeAuthUserId,
   normalizeEmail,
   normalizeEmailDomain,
-  normalizeNumericId,
   normalizeIdentifier,
   normalizePhone,
-  normalizeSlackUserId,
-  normalizeSlackUserIdCombined,
-  normalizeWaJid,
-  normalizeXHandle,
 };
 export type {
   IdentityNamespace,
@@ -154,6 +144,14 @@ export type {
   IdentityNormalizerKind,
   IdentitySubjectKind,
 } from './identity-namespaces.js';
+export type {
+  AccessIdentitySpec,
+  AccessMember,
+  AccessResource,
+  AccessResourceType,
+  AclSourceDef,
+  ChannelReadIdentity,
+} from './acl-source.js';
 import {
   EVENT_RECALL_IDENTITY_NAMESPACES,
   getIdentityNamespaceDefinition,

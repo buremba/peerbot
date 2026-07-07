@@ -1,58 +1,20 @@
 /**
- * The ACL source registry — the ONE place a new access-controlled source is
- * declared. Each entry says "this connector produces resources of THIS entity
- * type, keyed on THIS identity namespace, whose members are identified by THESE
- * namespaces." Everything else is generic:
- *   - the graph builders (`./slack-channel-graph`, `./github-repo-graph`) hand
- *     their normalized resources to `buildAccessGraph` with the entry's descriptor;
- *   - the read gate (`./resource-visibility`) gates events by membership of any
- *     resource whose type is in {@link RESOURCE_TYPE_SLUGS};
- *   - (next) the sync tick loops the registry to re-materialize each source.
+ * The ACL source registry — the ONE place core code COLLECTS the
+ * access-controlled sources. Each descriptor is owned by its connector
+ * (`@lobu/connectors/<key>-identity` exports the `AclSourceDef`); this file only
+ * gathers them so the generic read gate (`./resource-visibility`) and sync loop
+ * (`./acl-sync`) can iterate every source without naming a connector.
  *
- * Adding Linear/Jira/Drive = ONE entry here + a connector that stamps the
- * resource identity on its events. No new gate code, no new engine code.
+ * Adding Linear/Jira/Drive = a connector that exports an `AclSourceDef` +
+ * appending it here. No new gate code, no new engine code.
  */
 
-import type { AccessIdentitySpec, AccessResourceType } from './access-graph.js';
+import type { AclSourceDef, ChannelReadIdentity } from '@lobu/connector-sdk';
+import { githubAclSource } from '@lobu/connectors/github-identity';
+import { slackAclSource, slackChannelReadIdentity } from '@lobu/connectors/slack-identity';
 
-export interface AclSourceDef {
-  /** Connector/platform key (`slack`, `github`, …). */
-  key: string;
-  /** The resource entity type this source's resources materialize as. */
-  resourceType: AccessResourceType;
-  /** How a member of one of this source's resources is identified. */
-  memberIdentities: AccessIdentitySpec[];
-}
-
-export const SLACK_SOURCE: AclSourceDef = {
-  key: 'slack',
-  resourceType: {
-    slug: 'channel',
-    name: 'Channel',
-    description: 'A chat channel (Slack channel, etc.) — the unit of conversation access control',
-    icon: 'hash',
-    namespace: 'slack_channel_id',
-  },
-  memberIdentities: [{ namespace: 'slack_user_id', primary: true }],
-};
-
-export const GITHUB_SOURCE: AclSourceDef = {
-  key: 'github',
-  resourceType: {
-    slug: 'repo',
-    name: 'Repository',
-    description: 'A code repository — the unit of repo access control',
-    icon: 'git-branch',
-    namespace: 'github_repo_full_name',
-  },
-  memberIdentities: [
-    { namespace: 'github_user_id', primary: true },
-    { namespace: 'github_login' },
-  ],
-};
-
-/** Every registered ACL source. */
-export const ACL_SOURCES: AclSourceDef[] = [SLACK_SOURCE, GITHUB_SOURCE];
+/** Every registered ACL source (contributed by its connector package). */
+export const ACL_SOURCES: AclSourceDef[] = [slackAclSource, githubAclSource];
 
 /** Resource entity-type slugs that the read gate treats as access-controlled.
  * Validated to simple identifiers so they can be inlined as SQL literals. */
@@ -63,3 +25,29 @@ export const RESOURCE_TYPE_SLUGS: string[] = ACL_SOURCES.map((s) => {
   }
   return slug;
 });
+
+/**
+ * Chat platforms whose per-channel read gate is enforced, keyed by `platform`.
+ * Each descriptor (owned by its connector) tells the gate how to key a channel
+ * and a requester for that platform, so `channel-visibility` /
+ * `channel-messages-visibility` / `channel-entity` / `acl-state` name no
+ * connector. GitHub is NOT here — its resource gate is repo-based, not the
+ * team-scoped chat-channel model.
+ *
+ * Adding Telegram/Discord chat ACL = the connector exports a
+ * `ChannelReadIdentity` + appending it here. No gate code changes.
+ */
+export const CHANNEL_READ_IDENTITIES: ChannelReadIdentity[] = [slackChannelReadIdentity];
+
+const CHANNEL_READ_IDENTITY_BY_PLATFORM = new Map<string, ChannelReadIdentity>(
+  CHANNEL_READ_IDENTITIES.map((c) => [c.platform, c]),
+);
+
+/**
+ * The read-gate identity model for a chat platform, or null when that platform
+ * has no enforced channel gate (→ the caller falls back to non-enforced /
+ * passthrough behavior). Never throws.
+ */
+export function channelReadIdentityFor(platform: string): ChannelReadIdentity | null {
+  return CHANNEL_READ_IDENTITY_BY_PLATFORM.get(platform) ?? null;
+}

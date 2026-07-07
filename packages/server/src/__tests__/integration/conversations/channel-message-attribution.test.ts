@@ -11,7 +11,7 @@
  *      same slack_user_id, so attribution lands on the $member — no dup person.
  */
 
-import { normalizeSlackUserId } from '@lobu/connector-sdk';
+import { normalizeSlackUserId } from '@lobu/connectors/slack-identity';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { persistChannelMessage } from '../../../gateway/connections/channel-transcript';
 import { clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';

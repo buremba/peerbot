@@ -6,6 +6,13 @@
  * entity-link ingestion all import from here — not from connector-sdk.
  */
 
+import type {
+  AccessMember,
+  AccessResource,
+  AclSourceDef,
+} from '@lobu/connector-sdk';
+import type { ConnectorIdentityModule } from './connector-identity-module.js';
+
 /** Connector-owned identity namespaces (not SDK-global). */
 export const GITHUB_IDENTITY = {
   USER_ID: 'github_user_id',
@@ -81,4 +88,77 @@ export function githubUserIdentityKey(params: {
 /** Sanitize an identity key for inclusion in `origin_id` (connector + webhook). */
 export function githubKeyForOriginId(key: string): string {
   return key.replace(/[^a-z0-9]+/gi, '_');
+}
+
+/** The GitHub connector's contribution to the server identity wiring. */
+export const githubIdentityModule: ConnectorIdentityModule = {
+  key: 'github',
+  // github_login + github_user_id are recall-indexed
+  // (idx_events_metadata_github_login / _github_user_id). The repo_* namespaces
+  // are ACL resource keys, not event-recall namespaces.
+  recallNamespaces: [GITHUB_IDENTITY.LOGIN, GITHUB_IDENTITY.USER_ID],
+  normalize: normalizeGithubIdentityValue,
+};
+
+// ── ACL source ────────────────────────────────────────────────────────────
+//
+// A repo's read audience is its COLLABORATORS. Each repo becomes a `repo`
+// entity keyed on its normalized `github_repo_full_name` (`owner/repo`) — the
+// same key the connector stamps on ingested data — so the resource gate joins
+// an event's repo to these member_of edges. Each collaborator resolves
+// identity-first on github_user_id (+ github_login).
+
+/** A repo collaborator as the GitHub collaborators API reports it. */
+export interface GithubRepoCollaborator {
+  login: string;
+  id?: number;
+}
+
+/** A repository and the collaborators who may read it. */
+export interface GithubRepoInput {
+  /** `owner/repo`. */
+  fullName: string;
+  collaborators: GithubRepoCollaborator[];
+}
+
+/** The GitHub connector's ACL-source descriptor. */
+export const githubAclSource: AclSourceDef = {
+  key: 'github',
+  resourceType: {
+    slug: 'repo',
+    name: 'Repository',
+    description: 'A code repository — the unit of repo access control',
+    icon: 'git-branch',
+    namespace: GITHUB_IDENTITY.REPO_FULL_NAME,
+  },
+  memberIdentities: [
+    { namespace: GITHUB_IDENTITY.USER_ID, primary: true },
+    { namespace: GITHUB_IDENTITY.LOGIN },
+  ],
+};
+
+/**
+ * Normalize GitHub repos + collaborators into engine resources. Each repo keyed
+ * on its normalized `owner/repo`; each collaborator claims github_user_id (+
+ * github_login). Repos with an unparseable full name, and collaborators with no
+ * valid identity, are dropped.
+ */
+export function githubReposToResources(repos: GithubRepoInput[]): AccessResource[] {
+  const resources: AccessResource[] = [];
+  for (const repo of repos) {
+    const key = normalizeGithubRepoFullName(repo.fullName);
+    if (!key) continue;
+    const members: AccessMember[] = [];
+    for (const c of repo.collaborators) {
+      const login = normalizeGithubLogin(c.login);
+      const idValue = c.id != null ? normalizeNumericId(String(c.id)) : null;
+      const identities: { namespace: string; value: string }[] = [];
+      if (idValue) identities.push({ namespace: GITHUB_IDENTITY.USER_ID, value: idValue });
+      if (login) identities.push({ namespace: GITHUB_IDENTITY.LOGIN, value: login });
+      if (identities.length === 0) continue;
+      members.push({ key: idValue ?? (login as string), name: c.login, identities });
+    }
+    resources.push({ key, name: repo.fullName, members });
+  }
+  return resources;
 }

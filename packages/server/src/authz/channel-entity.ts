@@ -7,36 +7,41 @@
  * of the channel recalls it, a non-member never does. Without the stamp,
  * distilled channel knowhow would be org-visible and leak across channels.
  *
- * Keyed on the TEAM-SCOPED `slack_channel_id` (`T…:C…`, upper-cased — the exact
- * identity `slack-channel-graph` writes), so two workspaces never collapse onto
- * one channel entity.
+ * Keyed on the platform's team-scoped channel identity (Slack: `slack_channel_id`
+ * = `T…:C…` upper-cased — the exact identity the ACL sync writes), so two
+ * workspaces never collapse onto one channel entity. The platform's key model is
+ * looked up in the channel-read-identity registry; this file names no connector.
  */
 
 import { type DbClient, getDb } from '../db/client.js';
 import { stripPlatformPrefix } from '../gateway/channels/bound-channels.js';
-import { slackChannelKey } from './slack-channel-graph.js';
+import { channelReadIdentityFor } from './sources.js';
 
 /**
- * Resolve the `channel` resource-entity id for a (team, channel) pair in an org,
- * or null when the channel has no graphed entity (never synced / not a Slack
- * channel). Returns null rather than throwing — a missing entity must NOT block
- * the save; it just means the memory is saved without the channel stamp (falls
- * back to the caller's existing org/$member scoping).
+ * Resolve the `channel` resource-entity id for a (platform, team, channel) in an
+ * org, or null when the platform has no enforced channel gate or the channel has
+ * no graphed entity (never synced). Returns null rather than throwing — a missing
+ * entity must NOT block the save; the memory is saved without the channel stamp
+ * (falls back to the caller's existing org/$member scoping).
  */
 export async function resolveChannelEntityId(
   organizationId: string,
+  platform: string | null | undefined,
   teamId: string | null | undefined,
   channelId: string | null | undefined,
   sql: DbClient = getDb(),
 ): Promise<number | null> {
-  if (!teamId || !channelId) return null;
+  if (!platform || !teamId || !channelId) return null;
+  const identity = channelReadIdentityFor(platform);
+  if (!identity) return null;
   // The worker-token / sourceContext channelId arrives platform-PREFIXED
-  // (`slack:C0ENG`) — the Chat SDK's canonical form — while the graphed
-  // `slack_channel_id` identity is the BARE team-scoped id (`T…:C…`). Strip
-  // the prefix so the key matches; without this the lookup always misses and
-  // the stamp silently never fires (channel memory would leak org-wide).
-  const bareChannelId = stripPlatformPrefix('slack', channelId);
-  const key = slackChannelKey(teamId, bareChannelId);
+  // (`slack:C0ENG`) — the Chat SDK's canonical form — while the graphed channel
+  // identity is the BARE team-scoped id (`T…:C…`). Strip the prefix so the key
+  // matches; without this the lookup always misses and the stamp silently never
+  // fires (channel memory would leak org-wide).
+  const bareChannelId = stripPlatformPrefix(platform, channelId);
+  const key = identity.buildChannelKey(teamId, bareChannelId);
+  if (!key) return null;
   const rows = await sql<{ entity_id: number }>`
     SELECT ei.entity_id
     FROM entity_identities ei
@@ -49,7 +54,7 @@ export async function resolveChannelEntityId(
      AND et.organization_id = e.organization_id
      AND et.slug = 'channel'
     WHERE ei.organization_id = ${organizationId}
-      AND ei.namespace = 'slack_channel_id'
+      AND ei.namespace = ${identity.channelNamespace}
       AND ei.identifier = ${key}
       AND ei.deleted_at IS NULL
     LIMIT 1

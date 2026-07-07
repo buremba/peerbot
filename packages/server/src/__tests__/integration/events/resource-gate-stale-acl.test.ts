@@ -17,9 +17,30 @@
  * deterministic without a live embedding service (mirrors github-repo-visibility).
  */
 
-import { normalizeGithubRepoFullName } from '@lobu/connectors/github-identity';
+import {
+  type GithubRepoInput,
+  githubAclSource,
+  githubReposToResources,
+  normalizeGithubRepoFullName,
+} from '@lobu/connectors/github-identity';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { buildGithubRepoGraph } from '../../../authz/github-repo-graph';
+import { buildAccessGraph } from '../../../authz/access-graph';
+
+/** Test helper mirroring the GitHub ACL sync's normalize + generic-engine call. */
+function buildGithubRepoGraph(params: {
+  organizationId: string;
+  connectionId: string;
+  repos: GithubRepoInput[];
+}) {
+  return buildAccessGraph({
+    organizationId: params.organizationId,
+    connectionId: params.connectionId,
+    connectorKey: githubAclSource.key,
+    resourceType: githubAclSource.resourceType,
+    memberIdentities: githubAclSource.memberIdentities,
+    resources: githubReposToResources(params.repos),
+  });
+}
 import type { ToolContext } from '../../../tools/registry';
 import { search } from '../../../tools/search';
 import { clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';

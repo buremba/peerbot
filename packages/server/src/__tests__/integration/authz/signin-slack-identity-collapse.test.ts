@@ -20,7 +20,11 @@ import {
 	persistLoginSlackIdentity,
 	provisionMemberAndCoreIdentities,
 } from "../../../auth/subject-identities";
-import { buildSlackChannelGraph } from "../../../authz/slack-channel-graph";
+import {
+	slackAclSource,
+	slackChannelsToResources,
+} from "@lobu/connectors/slack-identity";
+import { buildAccessGraph } from "../../../authz/access-graph";
 import { resolveTenantMember } from "../../../identity/auth-hook";
 import { clearEntityLinkRulesCache } from "../../../utils/entity-link-upsert";
 import { initWorkspaceProvider } from "../../../workspace";
@@ -128,13 +132,15 @@ describe("sign-in slack_user_id collapse (e2e via channel graph)", () => {
 		);
 
 		// Build the channel graph with Alice as a member of #eng.
-		const result = await buildSlackChannelGraph({
+		const result = await buildAccessGraph({
 			organizationId: org.id,
 			connectionId: CONN,
-			teamId: TEAM,
-			channels: [
+			connectorKey: slackAclSource.key,
+			resourceType: slackAclSource.resourceType,
+			memberIdentities: slackAclSource.memberIdentities,
+			resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: [SLACK_USER] },
-			],
+			]),
 		});
 
 		// The member edge lands on the EXISTING $member — not a fresh person.

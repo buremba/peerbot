@@ -1,4 +1,4 @@
-import { IDENTITY } from '@lobu/connector-sdk/identity-namespaces';
+import { X_IDENTITY } from '@lobu/connectors/x-identity';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   addUserToOrganization,
@@ -29,7 +29,7 @@ describe('content-search X identity recall', () => {
 
     await sql`
       INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, created_at, updated_at)
-      VALUES (${org.id}, ${person.id}, ${IDENTITY.X_USER_ID}, '12345', NOW(), NOW())
+      VALUES (${org.id}, ${person.id}, ${X_IDENTITY.USER_ID}, '12345', NOW(), NOW())
     `;
     const event = await createTestEvent({
       organization_id: org.id,
@@ -47,7 +47,7 @@ describe('content-search X identity recall', () => {
     });
 
     const scopes = await fetchEntityIdentityScopes(sql, person.id);
-    expect(scopes).toContainEqual({ namespace: IDENTITY.X_USER_ID, identifier: '12345' });
+    expect(scopes).toContainEqual({ namespace: X_IDENTITY.USER_ID, identifier: '12345' });
 
     const predicate = buildEntityLinkUnion({
       entityIdLiteral: person.id,

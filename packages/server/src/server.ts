@@ -47,6 +47,7 @@ import { externalDbBootstrapHooks } from "./local-bootstrap";
 import { getEnvFromProcess } from "./utils/env";
 import { deriveJwtSecret } from "./utils/jwt";
 import logger from "./utils/logger";
+import { assertRecallIndexInvariant } from "./identity/recall-index-invariant";
 import { assertSchemaUpToDate } from "./utils/schema-version-check";
 
 const PACKAGE_REPO_ROOT = path.resolve(
@@ -152,6 +153,10 @@ async function main(): Promise<void> {
 					resolveMigrationsDir() ||
 					path.join(PACKAGE_REPO_ROOT, "db", "migrations");
 				await assertSchemaUpToDate(getDb(), { migrationsDir });
+				// Every connector-declared recall namespace must have its
+				// idx_events_metadata_<ns> index (and vice-versa), or recall
+				// seq-scans the events table. Fail fast at boot on drift.
+				await assertRecallIndexInvariant(getDb());
 			} else {
 				logger.warn(
 					"[schema-check] SKIP_SCHEMA_VERSION_CHECK=1 — skipping boot-time assertion",

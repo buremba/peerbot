@@ -38,7 +38,12 @@ import {
 } from '../lobu/stores/connections-projection.js';
 import { getSlackInstallByTeamId } from '../lobu/stores/slack-installations.js';
 import { orgContext } from '../lobu/stores/org-context.js';
-import { buildSlackChannelGraph, type SlackChannelInput } from './slack-channel-graph.js';
+import {
+  type SlackChannelInput,
+  slackAclSource,
+  slackChannelsToResources,
+} from '@lobu/connectors/slack-identity';
+import { buildAccessGraph } from './access-graph.js';
 
 const logger = createLogger('slack-acl-sync');
 
@@ -218,11 +223,13 @@ export async function syncSlackConnectionAcl(
         }
         channels.push({ channelId, name, isPrivate, memberSlackUserIds });
       }
-      await buildSlackChannelGraph({
+      await buildAccessGraph({
         organizationId,
         connectionId,
-        teamId,
-        channels,
+        connectorKey: slackAclSource.key,
+        resourceType: slackAclSource.resourceType,
+        memberIdentities: slackAclSource.memberIdentities,
+        resources: slackChannelsToResources(teamId, channels),
       });
       teamsSynced += 1;
       channelsSynced += channels.length;

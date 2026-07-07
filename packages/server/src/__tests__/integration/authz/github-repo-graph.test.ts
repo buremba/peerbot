@@ -8,10 +8,34 @@
  * `authz_source_acl_state`.
  */
 
-import { normalizeGithubRepoFullName } from '@lobu/connectors/github-identity';
+import {
+  type GithubRepoInput,
+  githubAclSource,
+  githubReposToResources,
+  normalizeGithubRepoFullName,
+} from '@lobu/connectors/github-identity';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { buildGithubRepoGraph } from '../../../authz/github-repo-graph';
+import { buildAccessGraph } from '../../../authz/access-graph';
 import { clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';
+
+/**
+ * Test helper: materialize a GitHub repo graph via the connector normalizer +
+ * the generic engine — the same composition the GitHub ACL sync now does.
+ */
+function buildGithubRepoGraph(params: {
+  organizationId: string;
+  connectionId: string;
+  repos: GithubRepoInput[];
+}) {
+  return buildAccessGraph({
+    organizationId: params.organizationId,
+    connectionId: params.connectionId,
+    connectorKey: githubAclSource.key,
+    resourceType: githubAclSource.resourceType,
+    memberIdentities: githubAclSource.memberIdentities,
+    resources: githubReposToResources(params.repos),
+  });
+}
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,

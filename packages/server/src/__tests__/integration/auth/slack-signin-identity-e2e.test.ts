@@ -36,7 +36,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { clearLoginProviderCachesForTests } from "../../../auth/config";
 import { clearAuthCacheForTests, createAuth } from "../../../auth/index";
 import { provisionMemberAndCoreIdentities } from "../../../auth/subject-identities";
-import { buildSlackChannelGraph } from "../../../authz/slack-channel-graph";
+import {
+	slackAclSource,
+	slackChannelsToResources,
+} from "@lobu/connectors/slack-identity";
+import { buildAccessGraph } from "../../../authz/access-graph";
 import { clearEntityLinkRulesCache } from "../../../utils/entity-link-upsert";
 import { getEnvFromProcess } from "../../../utils/env";
 import { initWorkspaceProvider } from "../../../workspace";
@@ -332,13 +336,15 @@ describe("slack sign-in slack_user_id e2e (real BetterAuth handler)", () => {
 
 		// 5) The ACL channel-graph collapses the workspace member onto the SAME
 		//    $member — no forked person.
-		const graph = await buildSlackChannelGraph({
+		const graph = await buildAccessGraph({
 			organizationId: org.id,
 			connectionId: CONN,
-			teamId: TEAM,
-			channels: [
+			connectorKey: slackAclSource.key,
+			resourceType: slackAclSource.resourceType,
+			memberIdentities: slackAclSource.memberIdentities,
+			resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: [SLACK_USER] },
-			],
+			]),
 		});
 		expect(graph.memberEntityIds).toContain(memberEntityId);
 

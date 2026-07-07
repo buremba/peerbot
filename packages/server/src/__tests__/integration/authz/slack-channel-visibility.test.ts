@@ -10,10 +10,14 @@
  * legacy per-agent behavior (no regression until a workspace is graphed).
  */
 
-import { normalizeSlackUserId } from "@lobu/connector-sdk";
+import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { syncSlackConnectionAcl } from "../../../authz/slack-acl-sync";
-import { buildSlackChannelGraph } from "../../../authz/slack-channel-graph";
+import {
+	slackAclSource,
+	slackChannelsToResources,
+} from "@lobu/connectors/slack-identity";
+import { buildAccessGraph } from "../../../authz/access-graph";
 import {
 	gatherRecall,
 	RECALL_SOURCES,
@@ -154,11 +158,13 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     const { org, alice, agent } = await setupWorkspace();
 
     // Alice is a member of #eng only. Bob is the lone member of #secret.
-    await buildSlackChannelGraph({
+    await buildAccessGraph({
       organizationId: org.id,
       connectionId: CONN,
-      teamId: TEAM,
-      channels: [
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+      resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
         {
 					channelId: "C01SEC",
@@ -166,7 +172,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
           isPrivate: true,
 					memberSlackUserIds: ["U01BOB"],
         },
-      ],
+      ]),
     });
 
     const result = await searchAs(org.id, alice.id, agent.agentId);
@@ -179,11 +185,13 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 
 	it("fails closed: an unresolved requester sees NONE of an enforced connection", async () => {
     const { org, agent } = await setupWorkspace();
-    await buildSlackChannelGraph({
+    await buildAccessGraph({
       organizationId: org.id,
       connectionId: CONN,
-      teamId: TEAM,
-      channels: [
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+      resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
         {
 					channelId: "C01SEC",
@@ -191,7 +199,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
           isPrivate: true,
 					memberSlackUserIds: ["U01BOB"],
         },
-      ],
+      ]),
     });
 
     // A user with no $member in this org → resolves to nothing → fail closed.
@@ -202,13 +210,15 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 	it("revokes on departure: a member who leaves #eng loses recall on the next sync", async () => {
     const { org, alice, agent } = await setupWorkspace();
     // Alice is in #eng → can recall it.
-    await buildSlackChannelGraph({
+    await buildAccessGraph({
       organizationId: org.id,
       connectionId: CONN,
-      teamId: TEAM,
-			channels: [
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+			resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
-			],
+			]),
     });
     const before = await searchAs(org.id, alice.id, agent.agentId);
 		expect(
@@ -216,13 +226,15 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 		).toContain("C01ENG");
 
     // Alice leaves #eng → re-sync with the new membership (just Bob).
-    await buildSlackChannelGraph({
+    await buildAccessGraph({
       organizationId: org.id,
       connectionId: CONN,
-      teamId: TEAM,
-			channels: [
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+			resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01BOB"] },
-			],
+			]),
     });
     const after = await searchAs(org.id, alice.id, agent.agentId);
 		expect(
@@ -244,13 +256,15 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 	it("fails closed when the graph ages past the freshness window (no stale-membership re-exposure)", async () => {
     const { org, alice, agent } = await setupWorkspace();
     // Alice is a member of #eng → a FRESH graph lets her recall it.
-    await buildSlackChannelGraph({
+    await buildAccessGraph({
       organizationId: org.id,
       connectionId: CONN,
-      teamId: TEAM,
-			channels: [
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+			resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
-			],
+			]),
     });
     const fresh = await searchAs(org.id, alice.id, agent.agentId);
 		expect(
@@ -406,11 +420,13 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     `;
 
     // Carol is a member of #eng only.
-    await buildSlackChannelGraph({
+    await buildAccessGraph({
       organizationId: org.id,
       connectionId: CONN,
-      teamId: TEAM,
-      channels: [
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+      resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01CAROL"] },
 				{
 					channelId: "C01SEC",
@@ -418,7 +434,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 					isPrivate: true,
 					memberSlackUserIds: ["U01BOB"],
 				},
-      ],
+      ]),
     });
 
     const result = await searchAs(org.id, carol.id, agent.agentId);
@@ -552,11 +568,13 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     // Dave is a Slack-only user (never signed in to the web app → no auth_user_id).
     // The graph auto-creates his person entity with a slack_user_id claim + a
     // member_of edge to #eng.
-    await buildSlackChannelGraph({
+    await buildAccessGraph({
       organizationId: org.id,
       connectionId: CONN,
-      teamId: TEAM,
-      channels: [
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+      resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01DAVE"] },
 				{
 					channelId: "C01SEC",
@@ -564,7 +582,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 					isPrivate: true,
 					memberSlackUserIds: ["U01BOB"],
 				},
-      ],
+      ]),
     });
 
     // ctx.userId is Dave's bare Slack id (the in-Slack message author), NOT an
@@ -584,11 +602,13 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
   // direct-`gatherRecall` counterpart to the search()-level tests above.
 	it("gatherRecall denies a non-member principal but serves a member (real conversationSource)", async () => {
     const { org, alice, agent } = await setupWorkspace();
-    await buildSlackChannelGraph({
+    await buildAccessGraph({
       organizationId: org.id,
       connectionId: CONN,
-      teamId: TEAM,
-      channels: [
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+      resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
 				{
 					channelId: "C01SEC",
@@ -596,7 +616,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 					isPrivate: true,
 					memberSlackUserIds: ["U01BOB"],
 				},
-      ],
+      ]),
     });
 
 		const conversationOnly = RECALL_SOURCES.filter(

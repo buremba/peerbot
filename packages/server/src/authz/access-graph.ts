@@ -32,6 +32,12 @@
  */
 
 import { createLogger } from '@lobu/core';
+import type {
+  AccessIdentitySpec,
+  AccessMember,
+  AccessResource,
+  AccessResourceType,
+} from '@lobu/connector-sdk';
 import { getDb, pgBigintArray, pgTextArray } from '../db/client.js';
 import { resolveEventAttributionsForItems } from '../utils/entity-link-upsert.js';
 
@@ -39,44 +45,7 @@ const logger = createLogger('access-graph');
 
 const MEMBER_OF_TYPE_SLUG = 'member_of';
 
-/** A claim that identifies a member, e.g. `{namespace:'slack_user_id', primary:true}`.
- * The engine collapses a member onto any existing entity carrying ANY of their
- * identities; `primary` ones additionally govern creation. */
-export interface AccessIdentitySpec {
-  namespace: string;
-  primary?: boolean;
-}
-
-/** One member of a resource's audience. */
-export interface AccessMember {
-  /** Stable dedupe key for this member across resources (the primary identity
-   * value is the natural choice: `T…:U…` for Slack, the numeric id for GitHub). */
-  key: string;
-  /** Display name for an auto-created `person`. Falls back to `key`. */
-  name?: string;
-  /** This member's identity claims (namespaces declared in `memberIdentities`). */
-  identities: { namespace: string; value: string }[];
-}
-
-/** One resource (channel/repo/…) and the members who may read it. */
-export interface AccessResource {
-  /** Stored as the resource entity's identity under `resourceType.namespace`
-   * (`T…:C…` for Slack, `owner/repo` or the numeric id for GitHub). */
-  key: string;
-  name?: string;
-  members: AccessMember[];
-}
-
-/** The resource entity type to find-or-create and key resources under. */
-export interface AccessResourceType {
-  /** Entity-type slug, e.g. `channel` / `repo`. */
-  slug: string;
-  name: string;
-  description: string;
-  icon: string;
-  /** Identity namespace the resource key is stored/looked-up under. */
-  namespace: string;
-}
+export type { AccessIdentitySpec, AccessMember, AccessResource, AccessResourceType };
 
 export interface AccessGraphResult {
   /** Resource key → the entity id that now represents it. */

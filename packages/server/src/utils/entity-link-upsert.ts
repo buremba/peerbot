@@ -23,8 +23,8 @@ import type {
   EntityTraitSpec,
   EventAttributionRule,
 } from '@lobu/connector-sdk';
-import { normalizeGithubIdentityValue } from '@lobu/connectors/github-identity';
-import { normalizeIdentifier, normalizeSlackUserId } from '@lobu/connector-sdk/identity-normalize';
+import { normalizeIdentifier } from '@lobu/connector-sdk/identity-normalize';
+import { normalizeConnectorIdentityValue } from '../identity/connector-identity-modules';
 import { type DbClient, getDb, pgTextArray } from '../db/client';
 import logger from './logger';
 import { getValueAtPath } from './object-path';
@@ -194,13 +194,21 @@ export function clearEntityLinkRulesCache(): void {
   creatorCache.clear();
 }
 
+/**
+ * A single already-normalized identity ready for lookup/create — the resolved
+ * counterpart of the declarative {@link EntityIdentitySpec} (which carries an
+ * `eventPath` to extract FROM an event). The store-only sender path hands these
+ * in directly, having normalized upstream.
+ */
+export type ResolvedIdentity = {
+  namespace: string;
+  identifier: string;
+  matchOnly: boolean;
+  primary: boolean;
+};
+
 type ExtractedLink = {
-  identities: Array<{
-    namespace: string;
-    identifier: string;
-    matchOnly: boolean;
-    primary: boolean;
-  }>;
+  identities: ResolvedIdentity[];
   traits: Map<string, unknown>;
   title: string;
 };
@@ -265,10 +273,14 @@ async function ensureAliases(
   `;
 }
 
-/** Connector-owned namespaces delegate to @lobu/connectors/github-identity. */
+/**
+ * Connector-owned namespaces are normalized by their own connector module
+ * (assembled in identity/connector-identity-modules.ts); generic namespaces
+ * fall back to the SDK's normalizer.
+ */
 function normalizeIdentityValue(namespace: string, raw: string): string | null {
-  const github = normalizeGithubIdentityValue(namespace, raw);
-  if (github !== undefined) return github;
+  const connector = normalizeConnectorIdentityValue(namespace, raw);
+  if (connector !== undefined) return connector;
   return normalizeIdentifier(namespace, raw);
 }
 
@@ -302,11 +314,23 @@ function extractLink(item: BatchItem, rule: ResolvedEventAttributionRule): Extra
   return { identities, traits, title };
 }
 
+/**
+ * Resolve identity keys to their owning entity — TYPE-AGNOSTIC.
+ *
+ * An identity value belongs to at most ONE entity org-wide (the
+ * `idx_entity_identities_live_unique` index on `(org, namespace, identifier)`),
+ * so a key resolves to a single entity of ANY type. We deliberately do NOT
+ * filter by the rule's target `entityType`: a `slack_user_id` owned by a
+ * signed-in `$member` must resolve to that `$member` even when a `person`-typed
+ * rule looks it up, so attribution and ACL converge on one entity instead of
+ * minting a duplicate `person` (the #1646 cross-source collapse, now automatic).
+ * Mirrors `access-graph.resolveMembers`, which is already identity-first +
+ * type-agnostic. The target `entityType` still governs CREATE-on-miss.
+ */
 async function lookupMatches(
   sql: DbClient,
   params: {
     orgId: string;
-    entityType: string;
     identities: ExtractedLink['identities'][];
   }
 ): Promise<Map<string, number>> {
@@ -328,11 +352,9 @@ async function lookupMatches(
     SELECT ei.entity_id, ei.namespace, ei.identifier
     FROM entity_identities ei
     JOIN entities e ON e.id = ei.entity_id
-    JOIN entity_types et ON et.id = e.entity_type_id
     WHERE ei.organization_id = ${params.orgId}
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
-      AND et.slug = ${params.entityType}
       AND (ei.namespace, ei.identifier) IN (
         SELECT ns, ident FROM unnest(${pgTextArray(namespaces)}::text[], ${pgTextArray(identifiers)}::text[]) AS u(ns, ident)
       )
@@ -670,7 +692,6 @@ async function resolveLinksByKind(
   for (const [rule, entries] of byRule) {
     const matches = await lookupMatches(sql, {
       orgId: params.orgId,
-      entityType: rule.entityType,
       identities: entries.map((e) => e.link.identities),
     });
 
@@ -789,7 +810,6 @@ async function resolveLinksByKind(
           `;
           const winner = await lookupMatches(sql, {
             orgId: params.orgId,
-            entityType: rule.entityType,
             identities: [link.identities],
           });
           const winnerIds = new Set<number>();
@@ -867,106 +887,82 @@ async function resolveLinksByKind(
 }
 
 /**
- * Resolve the SENDER of a captured chat message to a person/$member entity id —
- * STORE-ONLY attribution for `channel_messages.author_entity_id`.
+ * Resolve the SENDER of a captured chat message to an entity id — STORE-ONLY
+ * attribution for `channel_messages.author_entity_id`. Connector-AGNOSTIC: the
+ * caller hands over an already-normalized identity spec (it owns the platform's
+ * namespace + normalizer) and the entity type to mint on a miss; this function
+ * names no connector.
  *
  * Unlike {@link applyEventAttributions}, this writes NO event row, stamps no
  * `events.metadata`, and never enters the embed pipeline: it only reads the
- * normalized identity index and, on a miss, mints a `person` (gated). Transcript
- * is high-volume operational data, so the caller fire-and-forgets this — a
- * resolution failure must never block capture or a webhook ack.
+ * normalized identity index and, on a miss, mints the given type (gated).
+ * Transcript is high-volume operational data, so the caller fire-and-forgets
+ * this — a resolution failure must never block capture or a webhook ack.
  *
- * Resolution order (driven by the #1646 cross-source collapse — a signed-in
- * human is a `$member` carrying the team-scoped `slack_user_id`):
- *   1. an existing `$member` with this `slack_user_id` (the signed-in human) —
- *      return it; never create a `$member` here (membership provisioning owns
- *      that, so attribution and ACL converge on the SAME entity).
- *   2. else an existing `person` with it — return it.
- *   3. else mint a `person`, gated on a real (non-bot) human WITH a team id and a
- *      well-formed identity. Bots, team-less rows, and malformed ids → null.
- *
- * Identity is `slack_user_id = normalizeSlackUserId(teamId, authorId)` (`T…:U…`);
- * a bare `U…` with no team is dropped so a malformed (non-workspace-scoped) key
- * never poisons cross-workspace matching.
+ * Resolution (type-agnostic, driven by the #1646 cross-source collapse — a
+ * signed-in human is a `$member` carrying the same team-scoped chat identity):
+ *   1. the existing entity of ANY type owning this identity (a signed-in
+ *      `$member`, an already-attributed `person`, …) — return it. A single
+ *      {@link lookupMatches} covers all types because an identity value is
+ *      globally unique to one entity; no `$member`-before-`person` ordering.
+ *      Never mint a `$member` here (membership provisioning owns that, so
+ *      attribution and ACL converge on the SAME entity).
+ *   2. else mint `mintEntityType`, gated on a well-formed identity + a real org
+ *      member to attribute the create to. Callers drop bots and malformed ids
+ *      BEFORE calling (an empty `identities` list → null).
  */
-export async function resolveChannelMessageSender(
+export async function resolveSenderIdentity(
   sql: DbClient,
   params: {
     orgId: string;
-    teamId?: string | null;
-    authorId?: string | null;
-    authorName?: string | null;
-    isBot: boolean;
+    connectorKey: string;
+    mintEntityType: string;
+    identities: ResolvedIdentity[];
+    title?: string | null;
   }
 ): Promise<number | null> {
-  if (params.isBot) return null;
-
-  const slackId = normalizeSlackUserId(params.teamId, params.authorId);
-  // Drop a bare `U…` with no team — never store a malformed, team-less key.
-  if (!slackId) return null;
-
-  const identities: ExtractedLink['identities'] = [
-    { namespace: 'slack_user_id', identifier: slackId, matchOnly: false, primary: false },
-  ];
+  if (params.identities.length === 0) return null;
 
   const firstHit = (matches: Map<string, number>): number | null => {
-    for (const id of identities) {
+    for (const id of params.identities) {
       const hit = matches.get(`${id.namespace}\u0000${id.identifier}`);
       if (hit !== undefined) return hit;
     }
     return null;
   };
 
-  // 1) Signed-in human ($member, carrying slack_user_id from #1646). No create.
-  const memberHit = firstHit(
-    await lookupMatches(sql, {
-      orgId: params.orgId,
-      entityType: '$member',
-      identities: [identities],
-    })
+  // 1) Any existing entity owning this identity — $member (signed-in human,
+  // #1646) or person, resolved by one type-agnostic lookup. No create.
+  const hit = firstHit(
+    await lookupMatches(sql, { orgId: params.orgId, identities: [params.identities] })
   );
-  if (memberHit !== null) return memberHit;
+  if (hit !== null) return hit;
 
-  // 2) An existing person.
-  const personHit = firstHit(
-    await lookupMatches(sql, {
-      orgId: params.orgId,
-      entityType: 'person',
-      identities: [identities],
-    })
-  );
-  if (personHit !== null) return personHit;
-
-  // 3) Mint a person. Non-bot is already enforced by the early return above, so
-  // the only remaining gate is a real org member to attribute the create to.
+  // 2) Mint. The only remaining gate is a real org member to attribute to.
   const creatorUserId = await resolveOrgCreator(params.orgId);
   if (!creatorUserId) return null;
 
   const created = await createEntityWithIdentities(sql, {
     orgId: params.orgId,
-    connectorKey: 'slack',
-    entityType: 'person',
-    title: params.authorName?.trim() || '',
-    identities,
+    connectorKey: params.connectorKey,
+    entityType: params.mintEntityType,
+    title: params.title?.trim() || '',
+    identities: params.identities,
     traits: new Map(),
     creatorUserId,
   });
   if (created !== null && created.attached.length > 0) {
     return created.entityId;
   }
-  // Lost the identity create-race (a concurrent ingest minted the person first):
-  // drop the identity-less orphan and resolve to the winner instead.
+  // Lost the identity create-race (a concurrent ingest minted it first): drop
+  // the identity-less orphan and resolve to the winner instead.
   if (created !== null) {
     await sql`
       DELETE FROM entities
       WHERE id = ${created.entityId} AND organization_id = ${params.orgId}
     `;
     return firstHit(
-      await lookupMatches(sql, {
-        orgId: params.orgId,
-        entityType: 'person',
-        identities: [identities],
-      })
+      await lookupMatches(sql, { orgId: params.orgId, identities: [params.identities] })
     );
   }
   return null;

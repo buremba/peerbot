@@ -12,7 +12,8 @@
  */
 import { createLogger } from "@lobu/core";
 import { getDb } from "../../db/client.js";
-import { resolveChannelMessageSender } from "../../utils/entity-link-upsert.js";
+import { resolveSenderIdentity } from "../../utils/entity-link-upsert.js";
+import { buildSenderIdentity } from "./sender-identity.js";
 import { stripPlatformPrefix } from "../channels/bound-channels.js";
 
 const logger = createLogger("channel-transcript");
@@ -65,14 +66,20 @@ export async function persistChannelMessage(
   // embedding — channel_messages stays out of the knowledge pipeline. Best-effort
   // and isolated: a resolution failure must never block transcript capture.
   let authorEntityId: number | null = null;
-  if (!params.isBot && teamId && params.authorId) {
+  const senderIdentity = buildSenderIdentity({
+    platform: params.platform,
+    teamId,
+    authorId: params.authorId,
+    isBot: params.isBot,
+  });
+  if (senderIdentity) {
     try {
-      authorEntityId = await resolveChannelMessageSender(sql, {
+      authorEntityId = await resolveSenderIdentity(sql, {
         orgId: params.organizationId,
-        teamId,
-        authorId: params.authorId,
-        authorName: params.authorName ?? null,
-        isBot: params.isBot,
+        connectorKey: params.platform,
+        mintEntityType: senderIdentity.mintEntityType,
+        identities: senderIdentity.identities,
+        title: params.authorName ?? null,
       });
     } catch (err) {
       logger.warn(

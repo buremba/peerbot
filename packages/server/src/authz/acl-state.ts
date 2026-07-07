@@ -8,7 +8,7 @@
 
 import { type DbClient, pgTextArray } from "../db/client.js";
 import { stripPlatformPrefix } from "../gateway/channels/bound-channels.js";
-import { slackChannelKey } from "./slack-channel-graph.js";
+import { channelReadIdentityFor } from "./sources.js";
 
 /**
  * How long a `fresh` ACL graph stays trusted without a re-sync. The background
@@ -127,24 +127,27 @@ export async function getConnectionEnforcement(
   return out;
 }
 
-/** A row carrying the fields needed to form a team-scoped Slack channel key. */
+/** A row carrying the fields needed to form a team-scoped channel key. */
 export interface ChannelKeyRow {
   platform: string;
   /** As stored on the binding — may be platform-prefixed (`slack:C…`) or bare. */
   channel_id: string;
-  /** Slack workspace id (`T…`); required to form the key. */
+  /** Workspace/tenant id (Slack `T…`); required to form the key. */
   team_id: string | null;
 }
 
 /**
- * The team-scoped channel key (`T…:C…`) for a bound row, or null when the row
- * has no team id (can't be keyed → the gate drops it fail-closed, the audience
- * reports an empty member set). The ONE definition shared by the gate and the
- * audience so a key-format change can't desync them.
+ * The team-scoped channel key (`T…:C…`) for a bound row, or null when the row's
+ * platform has no enforced channel gate or has no team id (can't be keyed → the
+ * gate drops it fail-closed, the audience reports an empty member set). The ONE
+ * definition shared by the gate and the audience so a key-format change can't
+ * desync them; the platform's key model comes from the channel-read-identity
+ * registry so this file names no connector.
  */
 export function rowToChannelKey(row: ChannelKeyRow): string | null {
-  if (!row.team_id) return null;
-  return slackChannelKey(
+  const identity = channelReadIdentityFor(row.platform);
+  if (!identity) return null;
+  return identity.buildChannelKey(
     row.team_id,
     stripPlatformPrefix(row.platform, row.channel_id),
   );

@@ -6,7 +6,7 @@
  * single entity_identities lookup.
  */
 
-import { normalizeSlackUserId } from "@lobu/connector-sdk/identity-normalize";
+import { normalizeSlackUserId, SLACK_IDENTITY } from "@lobu/connectors/slack-identity";
 import { fetchUserInfoWithRaw } from "../connect/oauth-providers";
 import { getDb } from "../db/client";
 import {
@@ -262,7 +262,7 @@ export async function persistLoginSlackIdentity(
 			resolved.tenantOrganizationId,
 			resolved.memberEntityId,
 			"auth:signup",
-			[{ namespace: "slack_user_id", identifier: combined }],
+			[{ namespace: SLACK_IDENTITY.USER_ID, identifier: combined }],
 		);
 		log.debug(
 			{

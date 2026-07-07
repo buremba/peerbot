@@ -24,9 +24,15 @@
  *
  * Requester resolution is the auth-signup `$member` claim only (same as
  * `compileResourceVisibility`) — the recap/query_sql reader is a web/app user, not
- * an in-Slack author, so the `slack_user_id` fallback isn't needed on this seam.
+ * an in-chat author, so the platform user-id fallback isn't needed on this seam.
+ *
+ * Platform-parametric: the channel-key match is emitted once per registered chat
+ * platform (each contributes its `channelNamespace` + `channelKeySql` via the
+ * channel-read-identity registry), gated on the row's `platform`. This file names
+ * no connector; adding a chat platform is a registry entry, not a SQL edit.
  */
 
+import { CHANNEL_READ_IDENTITIES } from './sources.js';
 import { enforcedConnectionsSelectSql } from './acl-state.js';
 import type { AuthzScope } from './scope.js';
 
@@ -51,6 +57,76 @@ export function compileChannelMessagesVisibility(
   const orgParam = `$${baseParamIndex}::text`;
   const userParam = `$${baseParamIndex + 1}::text`;
 
+  // The requester's `$member` entity, resolved on the auth-signup claim only
+  // (same guard as compileResourceVisibility — server-written, unforgeable).
+  const requesterMemberSubquery = `(
+    SELECT mei.entity_id
+    FROM public.entity_identities mei
+    JOIN public.entities me
+      ON me.id = mei.entity_id
+     AND me.organization_id = mei.organization_id
+     AND me.deleted_at IS NULL
+    JOIN public.entity_types met
+      ON met.id = me.entity_type_id
+     AND met.organization_id = me.organization_id
+     AND met.slug = '$member'
+    WHERE mei.organization_id = ${orgParam}
+      AND mei.namespace = 'auth_user_id'
+      AND mei.identifier = ${userParam}
+      AND mei.source_connector = 'auth:signup'
+      AND mei.deleted_at IS NULL
+    LIMIT 1
+  )`;
+
+  // The tenant/team the channel key is scoped by, resolved from the row's
+  // connection (platform-neutral): the row's own team_id, else the connection's
+  // external tenant id / chatMetadata teamId. Passed as the team expression to
+  // each platform's channel-key builder.
+  const teamExpr = `COALESCE(
+    ${tableAlias}.team_id,
+    conn.external_tenant_id,
+    conn.config->'chatMetadata'->>'teamId'
+  )`;
+
+  // One channel-membership EXISTS branch per registered chat platform: the
+  // requester is `member_of` the `channel` entity keyed by THIS platform's
+  // channel identity + key expression, gated on the row's platform. OR-ed so a
+  // multi-platform transcript table is covered without naming any connector.
+  const membershipBranch = (
+    channelNamespace: string,
+    channelKeySql: string,
+  ): string => `EXISTS (
+          SELECT 1
+          FROM public.connections conn
+          JOIN public.entity_identities cei
+            ON cei.organization_id = ${orgParam}
+           AND cei.namespace = '${channelNamespace}'
+           AND cei.deleted_at IS NULL
+           AND cei.identifier = ${channelKeySql}
+          JOIN public.entity_relationships rr
+            ON rr.organization_id = ${orgParam}
+           AND rr.to_entity_id = cei.entity_id
+           AND rr.deleted_at IS NULL
+          JOIN public.entity_relationship_types rt
+            ON rt.id = rr.relationship_type_id
+           AND rt.organization_id = rr.organization_id
+           AND rt.slug = 'member_of'
+          WHERE conn.organization_id = ${orgParam}
+            AND conn.slug IN (${tableAlias}.connection_id, 'agentconn-' || ${tableAlias}.connection_id)
+            AND rr.from_entity_id = ${requesterMemberSubquery}
+        )`;
+
+  const platformBranches = CHANNEL_READ_IDENTITIES.map((identity) => {
+    const keySql = identity.channelKeySql(teamExpr, `${tableAlias}.channel_id`);
+    return `(${tableAlias}.platform = '${identity.platform}' AND ${membershipBranch(
+      identity.channelNamespace,
+      keySql,
+    )})`;
+  });
+  // No registered chat platform → nothing is member-visible; only the
+  // not-graphed passthrough can match. FALSE keeps the enforced branch closed.
+  const memberVisible = platformBranches.length > 0 ? platformBranches.join('\n        OR ') : 'FALSE';
+
   // Fail-closed on stale: a connection is visible ONLY when it has NO acl state
   // row at all (never onboarded → legacy fence, org-visible) OR it is
   // full+fresh-enforced AND the requester is a channel member. A connection whose
@@ -67,48 +143,8 @@ export function compileChannelMessagesVisibility(
       )
       OR (
         ${tableAlias}.connection_id IN (${enforcedConnectionsSelectSql(orgParam)})
-        AND EXISTS (
-          SELECT 1
-          FROM public.connections conn
-          JOIN public.entity_identities cei
-            ON cei.organization_id = ${orgParam}
-           AND cei.namespace = 'slack_channel_id'
-           AND cei.deleted_at IS NULL
-           AND cei.identifier = UPPER(
-             COALESCE(
-               ${tableAlias}.team_id,
-               conn.external_tenant_id,
-               conn.config->'chatMetadata'->>'teamId'
-             ) || ':' || ${tableAlias}.channel_id
-           )
-          JOIN public.entity_relationships rr
-            ON rr.organization_id = ${orgParam}
-           AND rr.to_entity_id = cei.entity_id
-           AND rr.deleted_at IS NULL
-          JOIN public.entity_relationship_types rt
-            ON rt.id = rr.relationship_type_id
-           AND rt.organization_id = rr.organization_id
-           AND rt.slug = 'member_of'
-          WHERE conn.organization_id = ${orgParam}
-            AND conn.slug IN (${tableAlias}.connection_id, 'agentconn-' || ${tableAlias}.connection_id)
-            AND rr.from_entity_id = (
-              SELECT mei.entity_id
-              FROM public.entity_identities mei
-              JOIN public.entities me
-                ON me.id = mei.entity_id
-               AND me.organization_id = mei.organization_id
-               AND me.deleted_at IS NULL
-              JOIN public.entity_types met
-                ON met.id = me.entity_type_id
-               AND met.organization_id = me.organization_id
-               AND met.slug = '$member'
-              WHERE mei.organization_id = ${orgParam}
-                AND mei.namespace = 'auth_user_id'
-                AND mei.identifier = ${userParam}
-                AND mei.source_connector = 'auth:signup'
-                AND mei.deleted_at IS NULL
-              LIMIT 1
-            )
+        AND (
+          ${memberVisible}
         )
       )
     )`;

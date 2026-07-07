@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Env } from "@lobu/connector-sdk";
+import { SLACK_IDENTITY } from "@lobu/connectors/slack-identity";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { compress } from "hono/compress";
@@ -1460,7 +1461,7 @@ async function resolveClaimingUserSlackIdentities(
 		JOIN entity_identities ei
 		  ON ei.organization_id = auth_ei.organization_id
 		 AND ei.entity_id = auth_ei.entity_id
-		 AND ei.namespace = 'slack_user_id'
+		 AND ei.namespace = ${SLACK_IDENTITY.USER_ID}
 		 AND ei.deleted_at IS NULL
 		WHERE m."userId" = ${userId}
 	`) as Array<{ identifier: string }>;

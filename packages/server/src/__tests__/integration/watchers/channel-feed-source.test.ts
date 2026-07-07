@@ -18,7 +18,12 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getTestDb } from "../../setup/test-db";
 import { createTestConnection } from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
-import { buildSlackChannelGraph } from "../../../authz/slack-channel-graph";
+import {
+  slackAclSource,
+  slackChannelKey,
+  slackChannelsToResources,
+} from "@lobu/connectors/slack-identity";
+import { buildAccessGraph } from "../../../authz/access-graph";
 import { ensureStreamingChannelFeed } from "../../../gateway/channels/channel-feed";
 import { slugToRuntimeConnectionId } from "../../../lobu/stores/connections-projection";
 import { normalizeWatcherSources } from "../../../watchers/source-refs";
@@ -170,11 +175,15 @@ describe("streaming feed as a watcher @feed source", () => {
     await seedTranscript(conn.runtimeId);
 
     // Materialize the membership graph → marks the connection ACL-enforced.
-    await buildSlackChannelGraph({
+    await buildAccessGraph({
       organizationId: orgId,
       connectionId: conn.runtimeId,
-      teamId: TEAM_ID,
-      channels: [{ channelId: CHANNEL, name: "general", memberSlackUserIds: ["UMEMBER"] }],
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+      resources: slackChannelsToResources(TEAM_ID, [
+        { channelId: CHANNEL, name: "general", memberSlackUserIds: ["UMEMBER"] },
+      ]),
     });
 
     // Headless run has no $member → fails closed on the enforced channel.
@@ -215,13 +224,18 @@ describe("streaming feed as a watcher @feed source", () => {
     });
     await seedTranscript(conn.runtimeId);
 
-    const graph = await buildSlackChannelGraph({
+    const graph = await buildAccessGraph({
       organizationId: orgId,
       connectionId: conn.runtimeId,
-      teamId: TEAM_ID,
-      channels: [{ channelId: CHANNEL, name: "general", memberSlackUserIds: [] }],
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+      resources: slackChannelsToResources(TEAM_ID, [
+        { channelId: CHANNEL, name: "general", memberSlackUserIds: [] },
+      ]),
     });
-    const channelEntityId = graph.channelEntityIds[CHANNEL];
+    const channelEntityId =
+      graph.resourceEntityIds[slackChannelKey(TEAM_ID, CHANNEL)];
     expect(typeof channelEntityId).toBe("number");
 
     // Provision the reader's $member (writes the auth_user_id/auth:signup identity

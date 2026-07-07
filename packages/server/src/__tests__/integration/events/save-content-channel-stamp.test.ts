@@ -13,7 +13,7 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
-import { slackChannelKey } from '../../../authz/slack-channel-graph';
+import { slackChannelKey } from '@lobu/connectors/slack-identity';
 import type { ToolContext } from '../../../tools/registry';
 import { saveContent } from '../../../tools/save_content';
 import { initWorkspaceProvider } from '../../../workspace';

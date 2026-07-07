@@ -9,10 +9,37 @@
  * starts enforcing the connection.
  */
 
-import { normalizeSlackUserId } from '@lobu/connector-sdk';
+import {
+  type SlackChannelInput,
+  normalizeSlackUserId,
+  slackAclSource,
+  slackChannelKey,
+  slackChannelsToResources,
+} from '@lobu/connectors/slack-identity';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { buildSlackChannelGraph, slackChannelKey } from '../../../authz/slack-channel-graph';
+import { buildAccessGraph } from '../../../authz/access-graph';
 import { clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';
+
+/**
+ * Test helper: materialize a Slack channel graph via the connector normalizer +
+ * the generic engine — the same composition the Slack ACL sync now does. Returns
+ * the generic AccessGraphResult (resourceEntityIds keyed by team-scoped `T:C`).
+ */
+function buildSlackChannelGraph(params: {
+  organizationId: string;
+  connectionId: string;
+  teamId: string;
+  channels: SlackChannelInput[];
+}) {
+  return buildAccessGraph({
+    organizationId: params.organizationId,
+    connectionId: params.connectionId,
+    connectorKey: slackAclSource.key,
+    resourceType: slackAclSource.resourceType,
+    memberIdentities: slackAclSource.memberIdentities,
+    resources: slackChannelsToResources(params.teamId, params.channels),
+  });
+}
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -121,7 +148,9 @@ describe('slack channel graph', () => {
       ],
     });
 
-    expect(Object.keys(result.channelEntityIds)).toEqual(['C01ENG', 'C01SEC']);
+    expect(Object.keys(result.resourceEntityIds).sort()).toEqual(
+      [slackChannelKey(TEAM, 'C01ENG'), slackChannelKey(TEAM, 'C01SEC')].sort()
+    );
     // 3 edges: (alice,eng), (bob,eng), (bob,secret).
     expect(result.createdEdges).toBe(3);
 
@@ -250,7 +279,7 @@ describe('slack channel graph', () => {
       channels: [{ channelId: 'C01ENG', memberSlackUserIds: ['U01ALICE'] }],
     });
     expect(noTeam.createdEdges).toBe(0);
-    expect(Object.keys(noTeam.channelEntityIds)).toHaveLength(0);
+    expect(Object.keys(noTeam.resourceEntityIds)).toHaveLength(0);
 
     const noChannels = await buildSlackChannelGraph({
       organizationId: org.id,

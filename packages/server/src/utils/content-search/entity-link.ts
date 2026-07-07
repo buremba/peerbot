@@ -6,6 +6,7 @@
 
 import { EVENT_RECALL_IDENTITY_NAMESPACES } from '@lobu/connector-sdk/identity-namespaces';
 import { type DbClient, pgTextArray } from '../../db/client';
+import { CONNECTOR_RECALL_NAMESPACES } from '../../identity/connector-identity-modules';
 
 /**
  * Identity namespaces backed by partial BTREE indexes on `events.metadata`.
@@ -17,10 +18,18 @@ import { type DbClient, pgTextArray } from '../../db/client';
  *
  * Non-recall namespaces are intentionally unsupported here: without a matching
  * index the identity branch seq-scans `events`, which blows up the entire
- * content query. If a connector needs a new recall namespace, add it to the
- * registry and add the matching DB index migration.
+ * content query. If a connector needs a new recall namespace, declare it in the
+ * connector's identity module (`recallNamespaces`) and add the matching
+ * `idx_events_metadata_<ns>` migration — a startup/CI invariant asserts the two
+ * stay in sync.
+ *
+ * The generic recall namespaces come from connector-sdk; the connector-specific
+ * ones are contributed by each connector module and assembled server-side.
  */
-export const STANDARD_IDENTITY_NAMESPACES = EVENT_RECALL_IDENTITY_NAMESPACES;
+export const STANDARD_IDENTITY_NAMESPACES: readonly string[] = [
+  ...EVENT_RECALL_IDENTITY_NAMESPACES,
+  ...CONNECTOR_RECALL_NAMESPACES,
+];
 
 /**
  * SQL predicate: "event `<alias>` is linked to entity `<paramRef>`".

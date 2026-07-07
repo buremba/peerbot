@@ -2,11 +2,7 @@ import {
   normalizeAuthUserId,
   normalizeEmail,
   normalizeIdentifier,
-  normalizeNumericId,
   normalizePhone,
-  normalizeSlackUserId,
-  normalizeSlackUserIdCombined,
-  normalizeWaJid,
 } from '@lobu/connector-sdk/identity-normalize';
 import { describe, expect, it } from 'vitest';
 
@@ -49,73 +45,6 @@ describe('normalizeEmail', () => {
   });
 });
 
-describe('normalizeWaJid', () => {
-  it('accepts the recognized JID suffixes and lowercases them', () => {
-    expect(normalizeWaJid('14155551234@s.whatsapp.net')).toBe('14155551234@s.whatsapp.net');
-    expect(normalizeWaJid('  14155551234@S.WhatsApp.Net  ')).toBe('14155551234@s.whatsapp.net');
-    expect(normalizeWaJid('123456@lid')).toBe('123456@lid');
-    expect(normalizeWaJid('abc-xyz@g.us')).toBe('abc-xyz@g.us');
-    expect(normalizeWaJid('999@broadcast')).toBe('999@broadcast');
-    expect(normalizeWaJid('abc@newsletter')).toBe('abc@newsletter');
-  });
-
-  it('collapses multi-device JIDs so the same person on phone + linked devices hashes to one identity', () => {
-    expect(normalizeWaJid('14155551234:5@s.whatsapp.net')).toBe('14155551234@s.whatsapp.net');
-    expect(normalizeWaJid('442071234567:12@s.whatsapp.net')).toBe('442071234567@s.whatsapp.net');
-    expect(normalizeWaJid('abc123:3@lid')).toBe('abc123@lid');
-  });
-
-  it('rejects values without a recognized suffix', () => {
-    expect(normalizeWaJid('14155551234@whatsapp.com')).toBeNull();
-    expect(normalizeWaJid('plain-string')).toBeNull();
-    expect(normalizeWaJid('')).toBeNull();
-    expect(normalizeWaJid(null)).toBeNull();
-  });
-});
-
-describe('normalizeSlackUserId', () => {
-  it('combines team and user id into TEAM:USER form, uppercase', () => {
-    expect(normalizeSlackUserId('T0abc', 'u123')).toBe('T0ABC:U123');
-    expect(normalizeSlackUserId(' T0ABC ', ' U123 ')).toBe('T0ABC:U123');
-  });
-
-  it('rejects missing or malformed parts', () => {
-    expect(normalizeSlackUserId(null, 'U123')).toBeNull();
-    expect(normalizeSlackUserId('T0ABC', null)).toBeNull();
-    expect(normalizeSlackUserId('T0 space', 'U123')).toBeNull();
-    expect(normalizeSlackUserId('T0ABC', '')).toBeNull();
-  });
-});
-
-describe('normalizeSlackUserIdCombined', () => {
-  it('canonicalizes an already-combined TEAM:USER value, uppercase', () => {
-    expect(normalizeSlackUserIdCombined('T0abc:u123')).toBe('T0ABC:U123');
-    expect(normalizeSlackUserIdCombined(' T0ABC:U123 ')).toBe('T0ABC:U123');
-  });
-
-  it('rejects values without a team prefix or with malformed parts', () => {
-    expect(normalizeSlackUserIdCombined('U123')).toBeNull();
-    expect(normalizeSlackUserIdCombined(':U123')).toBeNull();
-    expect(normalizeSlackUserIdCombined('T0ABC:')).toBeNull();
-    expect(normalizeSlackUserIdCombined('T0 space:U123')).toBeNull();
-    expect(normalizeSlackUserIdCombined('')).toBeNull();
-    expect(normalizeSlackUserIdCombined(null)).toBeNull();
-  });
-});
-
-describe('normalizeNumericId', () => {
-  it('normalizes positive numeric ids', () => {
-    expect(normalizeNumericId('82745')).toBe('82745');
-    expect(normalizeNumericId('  00123  ')).toBe('123');
-  });
-
-  it('rejects non-numeric ids', () => {
-    expect(normalizeNumericId('abc')).toBeNull();
-    expect(normalizeNumericId('12.3')).toBeNull();
-    expect(normalizeNumericId('')).toBeNull();
-  });
-});
-
 describe('normalizeAuthUserId', () => {
   it('trims but preserves case to match Better Auth ids', () => {
     expect(normalizeAuthUserId('  abc123 ')).toBe('abc123');
@@ -135,17 +64,15 @@ describe('normalizeIdentifier dispatcher', () => {
     expect(normalizeIdentifier('auth_user_id', '  abc123 ')).toBe('abc123');
   });
 
-  it('preserves legacy trim-only behavior for existing connector namespaces until backfill', () => {
-    expect(normalizeIdentifier('wa_jid', '14155551234@S.WhatsApp.Net')).toBe(
-      '14155551234@S.WhatsApp.Net'
-    );
+  it('trim-only falls back for connector-owned namespaces the SDK no longer registers', () => {
+    // These namespaces moved to their connector packages. The SDK generic
+    // dispatcher only knows the generic set, so it applies trim hygiene and
+    // leaves the real normalization to the connector module (chained upstream
+    // of this dispatcher at the server ingest seam).
     expect(normalizeIdentifier('github_login', 'Octocat')).toBe('Octocat');
     expect(normalizeIdentifier('slack_user_id', 't0abc:u123')).toBe('t0abc:u123');
-  });
-
-  it('dispatches newly registered X namespaces', () => {
-    expect(normalizeIdentifier('x_user_id', '00123')).toBe('123');
-    expect(normalizeIdentifier('x_handle', '@Alice')).toBe('alice');
+    expect(normalizeIdentifier('x_user_id', '00123')).toBe('00123');
+    expect(normalizeIdentifier('x_handle', '@Alice')).toBe('@Alice');
   });
 
   it('falls back to trim-only for unknown namespaces so custom identities still get hygiene', () => {

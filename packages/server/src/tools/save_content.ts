@@ -290,6 +290,7 @@ async function saveContentImpl(
   //     with the existing org/$member scoping.
   const channelEntityId = await resolveChannelEntityId(
     ctx.organizationId,
+    ctx.sourceContext?.platform,
     ctx.sourceContext?.teamId,
     ctx.sourceContext?.channelId,
     sql

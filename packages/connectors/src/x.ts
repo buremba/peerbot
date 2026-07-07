@@ -45,13 +45,7 @@ import {
 	type SyncContext,
 	type SyncResult,
 } from "@lobu/connector-sdk";
-import { IDENTITY } from "@lobu/connector-sdk/identity-namespaces";
-
-/** Canonical identity namespaces for the X person graph. */
-const X_IDENTITY = {
-	USER_ID: IDENTITY.X_USER_ID,
-	HANDLE: IDENTITY.X_HANDLE,
-} as const;
+import { X_IDENTITY, normalizeXHandle } from "./x-identity.js";
 
 /** OAuth scopes needed per feed for the API path (not used to pause browser-capable feeds). */
 const X_OAUTH_FEED_SCOPES: Record<string, readonly string[]> = {
@@ -61,13 +55,6 @@ const X_OAUTH_FEED_SCOPES: Record<string, readonly string[]> = {
 	bookmarks: ["bookmark.read", "tweet.read", "users.read"],
 	direct_messages: ["dm.read", "tweet.read", "users.read"],
 };
-
-function normalizeXHandle(raw: string | undefined | null): string | undefined {
-	if (!raw) return undefined;
-	const trimmed = raw.trim().replace(/^@+/, "").toLowerCase();
-	if (!trimmed || !/^[a-z0-9_]{1,15}$/.test(trimmed)) return undefined;
-	return trimmed;
-}
 
 // ── Types ──────────────────────────────────────────────────────
 

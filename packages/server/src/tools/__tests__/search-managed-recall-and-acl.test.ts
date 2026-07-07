@@ -18,7 +18,7 @@
  * still sees nothing, a member sees the channel WITH its author attribution.
  */
 
-import { normalizeSlackUserId } from "@lobu/connector-sdk";
+import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTestDatabase, getTestDb } from "../../__tests__/setup/test-db";
 import {
@@ -29,7 +29,11 @@ import {
   createTestUser,
   insertChatConnectionRow,
 } from "../../__tests__/setup/test-fixtures";
-import { buildSlackChannelGraph } from "../../authz/slack-channel-graph";
+import {
+  slackAclSource,
+  slackChannelsToResources,
+} from "@lobu/connectors/slack-identity";
+import { buildAccessGraph } from "../../authz/access-graph";
 import { ChannelBindingService } from "../../gateway/channels/binding-service";
 import { clearEntityLinkRulesCache } from "../../utils/entity-link-upsert";
 import { initWorkspaceProvider } from "../../workspace";
@@ -232,11 +236,13 @@ describe("managed-install recall (Item 2) + author attribution surfacing (Item 3
          'Secret: the quarterly revenue numbers are confidential', NOW())
     `;
 
-    await buildSlackChannelGraph({
+    await buildAccessGraph({
       organizationId: org.id,
       connectionId: CONN,
-      teamId: TEAM,
-      channels: [
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+      resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
 				{
 					channelId: "C01SEC",
@@ -244,7 +250,7 @@ describe("managed-install recall (Item 2) + author attribution surfacing (Item 3
 					isPrivate: true,
 					memberSlackUserIds: ["U01BOB"],
 				},
-      ],
+      ]),
     });
 
     // Member: sees #eng only (ACL fence intact) AND the snippet carries the

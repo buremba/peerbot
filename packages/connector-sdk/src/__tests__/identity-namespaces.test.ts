@@ -8,40 +8,42 @@ import {
   normalizeIdentifier,
 } from '../index';
 
-describe('identity namespace registry', () => {
-  it('is the canonical source for event-recall namespaces including X immutable ids', () => {
+describe('identity namespace registry (generic only)', () => {
+  it('registers only the generic, provider-agnostic namespaces', () => {
+    const namespaces = IDENTITY_NAMESPACE_REGISTRY.map((def) => def.namespace).sort();
+    expect(namespaces).toEqual(
+      ['auth_user_id', 'email', 'email_domain', 'phone'].sort()
+    );
+  });
+
+  it('does NOT contain any connector-specific namespace', () => {
+    const namespaces = new Set(IDENTITY_NAMESPACE_REGISTRY.map((def) => def.namespace));
+    for (const connectorNs of [
+      'slack_user_id',
+      'slack_channel_id',
+      'github_login',
+      'github_user_id',
+      'x_user_id',
+      'x_handle',
+      'wa_jid',
+      'google_contact_id',
+    ]) {
+      expect(namespaces.has(connectorNs)).toBe(false);
+      expect(getIdentityNamespaceDefinition(connectorNs)).toBeUndefined();
+    }
+  });
+
+  it('exposes the generic event-recall namespaces (email, phone, auth_user_id)', () => {
     expect(EVENT_RECALL_IDENTITY_NAMESPACES).toContain(IDENTITY.EMAIL);
-    expect(EVENT_RECALL_IDENTITY_NAMESPACES).toContain(IDENTITY.SLACK_USER_ID);
-    expect(EVENT_RECALL_IDENTITY_NAMESPACES).toContain(IDENTITY.GITHUB_USER_ID);
-    expect(EVENT_RECALL_IDENTITY_NAMESPACES).toContain(IDENTITY.X_USER_ID);
-    expect(EVENT_RECALL_IDENTITY_NAMESPACES).not.toContain(IDENTITY.X_HANDLE);
+    expect(EVENT_RECALL_IDENTITY_NAMESPACES).toContain(IDENTITY.PHONE);
+    expect(EVENT_RECALL_IDENTITY_NAMESPACES).toContain(IDENTITY.AUTH_USER_ID);
+    // email_domain is a derivation key, never a recall key.
+    expect(EVENT_RECALL_IDENTITY_NAMESPACES).not.toContain(IDENTITY.EMAIL_DOMAIN);
   });
 
   it('keeps registry namespaces unique', () => {
     const namespaces = IDENTITY_NAMESPACE_REGISTRY.map((def) => def.namespace);
     expect(new Set(namespaces).size).toBe(namespaces.length);
-  });
-
-  it('documents X id as searchable and handle as mutable/non-searchable', () => {
-    expect(getIdentityNamespaceDefinition(IDENTITY.X_USER_ID)).toMatchObject({
-      normalizer: 'numeric_id',
-      eventRecallIndexed: true,
-      uniquePerOrg: true,
-    });
-    expect(getIdentityNamespaceDefinition(IDENTITY.X_HANDLE)).toMatchObject({
-      normalizer: 'x_handle',
-      eventRecallIndexed: false,
-      uniquePerOrg: false,
-    });
-    expect(isEventRecallIdentityNamespace(IDENTITY.X_USER_ID)).toBe(true);
-    expect(isEventRecallIdentityNamespace(IDENTITY.X_HANDLE)).toBe(false);
-  });
-
-  it('normalizes newly registered X namespaces while existing legacy namespaces remain trim-only', () => {
-    expect(normalizeIdentifier(IDENTITY.X_USER_ID, '001234')).toBe('1234');
-    expect(normalizeIdentifier(IDENTITY.X_HANDLE, ' @Burak ')).toBe('burak');
-    expect(normalizeIdentifier(IDENTITY.GITHUB_LOGIN, ' Lobu-AI ')).toBe('Lobu-AI');
-    expect(normalizeIdentifier(IDENTITY.SLACK_USER_ID, 't1:u2')).toBe('t1:u2');
   });
 
   it('registers email_domain as a derived, non-recall, non-unique person namespace', () => {
@@ -51,26 +53,25 @@ describe('identity namespace registry', () => {
       eventRecallIndexed: false,
       uniquePerOrg: false,
     });
-    // Not a recall key — it exists only to power domain-keyed derivation rules.
     expect(isEventRecallIdentityNamespace(IDENTITY.EMAIL_DOMAIN)).toBe(false);
-    expect(EVENT_RECALL_IDENTITY_NAMESPACES).not.toContain(IDENTITY.EMAIL_DOMAIN);
   });
 
   it('normalizes email_domain from a full email or a bare domain, rejecting junk', () => {
-    // Full email → lowercased domain part.
     expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, 'Alice@Anthropic.com')).toBe(
       'anthropic.com'
     );
     expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, '  dev@ACME.CO.UK  ')).toBe(
       'acme.co.uk'
     );
-    // Bare domain passes through normalized.
-    expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, 'Example.COM')).toBe(
-      'example.com'
-    );
-    // Junk → null (no dot, empty, malformed).
+    expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, 'Example.COM')).toBe('example.com');
     expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, 'notadomain')).toBeNull();
     expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, 'a@b@c.com')).toBeNull();
     expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, '')).toBeNull();
+  });
+
+  it('falls back to trim for an unregistered (connector-owned) namespace', () => {
+    // A connector namespace the SDK no longer knows about gets basic hygiene,
+    // not a crash — the connector module does the real normalization upstream.
+    expect(normalizeIdentifier('x_user_id', '  001234  ')).toBe('001234');
   });
 });

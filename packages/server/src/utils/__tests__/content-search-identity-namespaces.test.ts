@@ -1,4 +1,4 @@
-import { IDENTITY } from '@lobu/connector-sdk/identity-namespaces';
+import { X_IDENTITY } from '@lobu/connectors/x-identity';
 import { describe, expect, it } from 'vitest';
 import {
   buildEntityLinkUnion,
@@ -7,9 +7,10 @@ import {
 } from '../content-search/entity-link';
 
 describe('content-search identity namespace registry bridge', () => {
-  it('uses the shared event-recall registry instead of a local allowlist', () => {
-    expect(STANDARD_IDENTITY_NAMESPACES).toContain(IDENTITY.X_USER_ID);
-    expect(STANDARD_IDENTITY_NAMESPACES).not.toContain(IDENTITY.X_HANDLE);
+  it('includes connector-contributed recall namespaces (x_user_id) but not mutable handles', () => {
+    // x_user_id is recall-indexed via the X connector module; x_handle is not.
+    expect(STANDARD_IDENTITY_NAMESPACES).toContain(X_IDENTITY.USER_ID);
+    expect(STANDARD_IDENTITY_NAMESPACES).not.toContain(X_IDENTITY.HANDLE);
   });
 
   it('emits an indexed x_user_id branch for entity-link matching', () => {
@@ -24,8 +25,8 @@ describe('content-search identity namespace registry bridge', () => {
       alias: 'f',
       baseParamIndex: 3,
       scopes: [
-        { namespace: IDENTITY.X_USER_ID, identifier: '123' },
-        { namespace: IDENTITY.X_HANDLE, identifier: 'alice' },
+        { namespace: X_IDENTITY.USER_ID, identifier: '123' },
+        { namespace: X_IDENTITY.HANDLE, identifier: 'alice' },
       ],
     });
 

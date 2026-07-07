@@ -16,7 +16,12 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { buildSlackChannelGraph } from "../../../authz/slack-channel-graph";
+import {
+  slackAclSource,
+  slackChannelKey,
+  slackChannelsToResources,
+} from "@lobu/connectors/slack-identity";
+import { buildAccessGraph } from "../../../authz/access-graph";
 import { getDb } from "../../../db/client";
 import { ChannelBindingService } from "../../../gateway/channels/binding-service";
 import {
@@ -371,11 +376,15 @@ describe("channel streaming feeds", () => {
     expect(before.messages?.length).toBe(1);
 
     // Enforce the connection's ACL; owner is NOT a channel member.
-    const graph = await buildSlackChannelGraph({
+    const graph = await buildAccessGraph({
       organizationId: orgId,
       connectionId: runtimeConnId,
-      teamId: "TENF",
-      channels: [{ channelId: "CENF", name: "secret", memberSlackUserIds: [] }],
+      connectorKey: slackAclSource.key,
+      resourceType: slackAclSource.resourceType,
+      memberIdentities: slackAclSource.memberIdentities,
+      resources: slackChannelsToResources("TENF", [
+        { channelId: "CENF", name: "secret", memberSlackUserIds: [] },
+      ]),
     });
 
     const blocked = (await workspace.owner.feeds.manage({
@@ -385,7 +394,8 @@ describe("channel streaming feeds", () => {
     expect(blocked.messages?.length).toBe(0); // membership gate fires
 
     // Make the owner a channel member → they can read it again.
-    const channelEntityId = graph.channelEntityIds.CENF;
+    const channelEntityId =
+      graph.resourceEntityIds[slackChannelKey("TENF", "CENF")];
     await ensureMemberEntity({
       organizationId: orgId,
       userId: workspace.users.owner.id,

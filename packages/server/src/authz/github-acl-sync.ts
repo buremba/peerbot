@@ -19,7 +19,12 @@ import { getDb } from '../db/client.js';
 import { getInstallationTokenRegistry } from '../gateway/installation/registry.js';
 import type { CoreServices } from '../gateway/services/core-services.js';
 import type { AppInstallationStore } from '../lobu/stores/app-installation-store.js';
-import { buildGithubRepoGraph, type GithubRepoCollaborator } from './github-repo-graph.js';
+import {
+  type GithubRepoCollaborator,
+  githubAclSource,
+  githubReposToResources,
+} from '@lobu/connectors/github-identity';
+import { buildAccessGraph } from './access-graph.js';
 
 const logger = createLogger('github-acl-sync');
 
@@ -83,7 +88,14 @@ export async function syncGithubConnectionAcl(
       const collaborators = await deps.fetchCollaborators({ organizationId, repo });
       repoInputs.push({ fullName: `${repo.owner}/${repo.repo}`, collaborators });
     }
-    await buildGithubRepoGraph({ organizationId, connectionId, repos: repoInputs });
+    await buildAccessGraph({
+      organizationId,
+      connectionId,
+      connectorKey: githubAclSource.key,
+      resourceType: githubAclSource.resourceType,
+      memberIdentities: githubAclSource.memberIdentities,
+      resources: githubReposToResources(repoInputs),
+    });
     return { ok: true, reposSynced: repoInputs.length };
   } catch (error) {
     logger.error(

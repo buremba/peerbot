@@ -2,30 +2,32 @@ import { readFileSync } from "fs";
 import { execSync } from "child_process";
 
 function parseCSV(text) {
-  const lines = text.split('\n').slice(3); // Skip first 3 lines (LinkedIn notes)
+  const lines = text.split("\n").slice(3); // Skip first 3 lines (LinkedIn notes)
   const result = [];
-  const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-  
+  const headers = lines[0]
+    .split(",")
+    .map((h) => h.trim().replace(/^"|"$/g, ""));
+
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    
+
     const values = [];
     let inQuotes = false;
-    let currentVal = '';
-    
+    let currentVal = "";
+
     for (let char of line) {
       if (char === '"') {
         inQuotes = !inQuotes;
-      } else if (char === ',' && !inQuotes) {
-        values.push(currentVal.trim().replace(/^"|"$/g, ''));
-        currentVal = '';
+      } else if (char === "," && !inQuotes) {
+        values.push(currentVal.trim().replace(/^"|"$/g, ""));
+        currentVal = "";
       } else {
         currentVal += char;
       }
     }
-    values.push(currentVal.trim().replace(/^"|"$/g, ''));
-    
+    values.push(currentVal.trim().replace(/^"|"$/g, ""));
+
     const obj = {};
     headers.forEach((header, index) => {
       obj[header] = values[index] || "";
@@ -37,25 +39,28 @@ function parseCSV(text) {
 
 async function ingestLinkedInConnections() {
   console.log("Loading Connections...");
-  const csv = readFileSync("Basic_LinkedInDataExport_07-05-2026.zip/Connections.csv", "utf-8");
+  const csv = readFileSync(
+    "Basic_LinkedInDataExport_07-05-2026.zip/Connections.csv",
+    "utf-8"
+  );
   const records = parseCSV(csv);
-  
+
   const entities = records
-    .filter(r => r["First Name"] || r["Last Name"])
-    .map(r => {
-       const fullName = `${r["First Name"]} ${r["Last Name"]}`.trim();
-       return {
-         entity_type: "person",
-         slug: `person-${fullName.replace(/[^a-zA-Z0-9]/g, "").toLowerCase()}`,
-         name: fullName,
-         metadata: {
-           first_name: r["First Name"],
-           last_name: r["Last Name"],
-           email: r["Email Address"],
-           company: r["Company"],
-           linkedin_url: r["URL"]
-         }
-       };
+    .filter((r) => r["First Name"] || r["Last Name"])
+    .map((r) => {
+      const fullName = `${r["First Name"]} ${r["Last Name"]}`.trim();
+      return {
+        entity_type: "person",
+        slug: `person-${fullName.replace(/[^a-zA-Z0-9]/g, "").toLowerCase()}`,
+        name: fullName,
+        metadata: {
+          first_name: r["First Name"],
+          last_name: r["Last Name"],
+          email: r["Email Address"],
+          company: r["Company"],
+          linkedin_url: r["URL"],
+        },
+      };
     });
 
   // Deduplicate by slug in memory first
@@ -71,7 +76,7 @@ async function ingestLinkedInConnections() {
   const CHUNK_SIZE = 100;
   for (let i = 0; i < uniqueEntities.length; i += CHUNK_SIZE) {
     const chunk = uniqueEntities.slice(i, i + CHUNK_SIZE);
-    
+
     const script = `export default async (ctx, client) => {
       const records = ${JSON.stringify(chunk)};
       const results = await Promise.allSettled(records.map(async (r) => {
@@ -93,9 +98,13 @@ async function ingestLinkedInConnections() {
       return \`Processed \${results.length} records in this batch\`;
     };`;
 
-    console.log(`Pushing LinkedIn Connections chunk ${Math.floor(i/CHUNK_SIZE) + 1} / ${Math.ceil(uniqueEntities.length/CHUNK_SIZE)}`);
+    console.log(
+      `Pushing LinkedIn Connections chunk ${Math.floor(i / CHUNK_SIZE) + 1} / ${Math.ceil(uniqueEntities.length / CHUNK_SIZE)}`
+    );
     try {
-      execSync(`lobu memory exec '${script.replace(/'/g, "'\\''")}'`, { stdio: "inherit" });
+      execSync(`lobu memory exec '${script.replace(/'/g, "'\\''")}'`, {
+        stdio: "inherit",
+      });
     } catch (e) {
       console.error(e);
     }

@@ -194,6 +194,14 @@ test-e2e:
 test-e2e-sdk:
 	@./scripts/sdk-e2e.sh
 
+# Error-taxonomy e2e: the failure-path companion to sdk-e2e. Boots `lobu run`
+# with the mock provider in 429 mode and drives a real turn through a spawned
+# worker, asserting the unified AGENT_ERRORS catalog prose reaches the user
+# (provider + reset time) with NO raw-429 or generic "stopped responding" leak.
+# Self-contained, no key. Guards the whole classify→signal→render chain.
+test-e2e-error:
+	@./scripts/sdk-e2e-error.sh
+
 # CLI command-coverage smoke: boots one `lobu run` (embedded Postgres + mock
 # provider) under an isolated HOME and walks EVERY `lobu` command/subcommand
 # once, asserting each runs (or fails gracefully). Self-contained, no key. This

@@ -1,6 +1,15 @@
 import { createServer } from "node:http";
 const PORT = Number(process.env.MOCK_PORT || 11434);
 const REPLY = process.env.MOCK_REPLY || "PONG";
+// MOCK_MODE=quota-429 makes /chat/completions answer with z.ai's exact
+// production 429 body so the error-taxonomy e2e can drive a real provider
+// quota failure through the whole worker→gateway→renderer chain. `/models`
+// still 200s so model resolution succeeds and the failure lands where a real
+// quota exhaustion does: on the chat call, mid-turn. Default ("") is the
+// happy-path reply the SDK lifecycle gate relies on — unchanged.
+const MODE = process.env.MOCK_MODE || "";
+const QUOTA_BODY =
+  "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47";
 const server = createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
@@ -17,6 +26,15 @@ const server = createServer((req, res) => {
       return;
     }
     if (url.includes("/chat/completions")) {
+      if (MODE === "quota-429") {
+        res.writeHead(429, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: { message: QUOTA_BODY, type: "rate_limit_exceeded" },
+          })
+        );
+        return;
+      }
       let stream = false;
       try {
         stream = JSON.parse(body || "{}").stream === true;

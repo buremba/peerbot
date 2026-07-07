@@ -189,6 +189,12 @@ jobs:
       - name: SDK lifecycle e2e (apply + prune + real worker turn)
         run: bash scripts/sdk-e2e.sh
 
+      # Failure-path companion: drives a real provider 429 through the worker
+      # and asserts the unified AGENT_ERRORS catalog prose reaches the user with
+      # no raw-429 / "stopped responding" leak. Reuses this job's build.
+      - name: Error-taxonomy e2e (provider 429 → catalog prose)
+        run: bash scripts/sdk-e2e-error.sh
+
   # CLI command-coverage smoke — the hard gate that EVERY `lobu` command runs,
   # not just the SDK lifecycle (sdk-e2e covers that). Boots one `lobu run`
   # (embedded Postgres + a deterministic mock provider, no key) under an isolated

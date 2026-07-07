@@ -99,6 +99,7 @@ packages/*/~/
 .lobu/
 .bench-hindsight/
 .sdk-e2e-run/
+.sdk-e2e-error-run/
 .managed-e2e-run/
 .cli-smoke-run/
 .mac-cli-auth-e2e/

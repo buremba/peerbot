@@ -423,7 +423,7 @@ jobs:
         # (src/lobu/stores/__tests__) that vitest owns, so we target
         # src/lobu/__tests__ specifically rather than the whole src/lobu tree.
         working-directory: packages/server
-        run: bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__
+        run: bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__
 
   format-lint:
     runs-on: ubuntu-latest

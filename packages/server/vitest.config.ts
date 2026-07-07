@@ -33,6 +33,9 @@ export default defineConfig({
       // src/tools/admin/__tests__ is bun:test (schedule-delivery suites), run via
       // the same `bun test … src/tools/admin/__tests__` job — keep it off vitest.
       "src/tools/admin/__tests__/**",
+      // src/auth/oauth/__tests__ is bun:test (OAuth scope suites), run via the
+      // same `bun test … src/auth/oauth/__tests__` job — keep it off vitest.
+      "src/auth/oauth/__tests__/**",
       "**/node_modules/**",
       "**/dist/**",
     ],

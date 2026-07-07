@@ -201,7 +201,7 @@ INTEGRATION_EXIT=0
       done
     done
     exit $rc );                                                                        ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
-  (cd packages/server && "${DETERMINISTIC_TEST_ENV[@]}" bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
+  (cd packages/server && "${DETERMINISTIC_TEST_ENV[@]}" bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
 } > "$INTEGRATION_LOG" 2>&1
 set -e
 

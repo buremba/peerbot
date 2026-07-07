@@ -102,7 +102,7 @@ describe("manage_connections and manage_feeds list filters", () => {
 				await createTestConnection({
 					organization_id: workspace.org.id,
 					connector_key: "slack",
-					display_name: "Org Slack",
+					display_name: `Org Slack ${workspace.org.id}`,
 					created_by: workspace.users.owner.id,
 					visibility: "org",
 				})

@@ -30,6 +30,8 @@ const TEAM_ID = "TACME";
 const CHANNEL = "C900";
 const FEED_KEY = `slack:${CHANNEL}`;
 
+let chatConnectionSeq = 0;
+
 describe("streaming feed as a watcher @feed source", () => {
   let workspace: TestWorkspace;
   let orgId: string;
@@ -60,10 +62,11 @@ describe("streaming feed as a watcher @feed source", () => {
   /** A chat (slack, managed) connection carrying the team id. Returns the id, the
    *  slug, and the runtime id that channel_messages + the ACL state key on. */
   async function makeChatConnection() {
+    chatConnectionSeq += 1;
     const conn = await createTestConnection({
       organization_id: orgId,
       connector_key: "slack",
-      display_name: "Org Slack",
+      display_name: `Org Slack ${orgId} ${TEAM_ID} ${chatConnectionSeq}`,
       createDefaultFeed: false,
     });
     const sql = getTestDb();
@@ -271,10 +274,11 @@ describe("streaming feed as a watcher @feed source", () => {
     // channel isn't ACL-enforced. The membership gate alone (not-graphed →
     // passthrough) would leak it to a headless watcher; connection visibility
     // must also apply.
+    chatConnectionSeq += 1;
     const priv = await createTestConnection({
       organization_id: orgId,
       connector_key: "slack",
-      display_name: "Private Slack",
+      display_name: `Private Slack ${orgId} ${TEAM_ID} ${chatConnectionSeq}`,
       visibility: "private",
       created_by: workspace.users.owner.id,
       createDefaultFeed: false,

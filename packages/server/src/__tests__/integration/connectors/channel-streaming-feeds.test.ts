@@ -31,16 +31,19 @@ import { getTestDb } from "../../setup/test-db";
 import { createTestAgent, createTestConnection } from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
 
+let chatConnectionSeq = 0;
+
 /** Stamp the Stage-2a chat marker + provider tenant on a connection so it reads
  *  as a live bot adapter and createBinding can resolve it as the serving conn. */
 async function makeChatConnection(opts: {
   orgId: string;
   teamId: string | null;
 }): Promise<{ id: number; slug: string }> {
+  chatConnectionSeq += 1;
   const conn = await createTestConnection({
     organization_id: opts.orgId,
     connector_key: "slack",
-    display_name: "Org Slack",
+    display_name: `Org Slack ${opts.orgId} ${opts.teamId ?? "none"} ${chatConnectionSeq}`,
     createDefaultFeed: false,
   });
   const sql = getTestDb();
@@ -421,10 +424,11 @@ describe("channel streaming feeds", () => {
 
   it("does not leak a PRIVATE connection's transcript to an anonymous caller", async () => {
     // A private chat connection: visible only to its creator / org admins.
+    chatConnectionSeq += 1;
     const priv = await createTestConnection({
       organization_id: orgId,
       connector_key: "slack",
-      display_name: "Private Slack",
+      display_name: `Private Slack ${orgId} TPRIV ${chatConnectionSeq}`,
       visibility: "private",
       created_by: workspace.users.owner.id,
       createDefaultFeed: false,

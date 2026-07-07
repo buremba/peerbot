@@ -278,6 +278,7 @@ async function handleReadFeed(
       scope: authzScopeFromToolContext({ organizationId, userId: userId ?? null }),
       feedId: args.feed_id,
       limit: args.limit,
+      terms: args.search_term ? [args.search_term] : undefined,
     });
     return { action: 'read_feed', kind: 'virtual', feed, ...live };
   }
@@ -322,7 +323,10 @@ async function handleReadFeeds(
     feedIds.map(async (feedId) => {
       try {
         const result = await withTimeout(
-          handleReadFeed({ action: 'read_feed', feed_id: feedId, limit: args.limit }, ctx),
+          handleReadFeed(
+            { action: 'read_feed', feed_id: feedId, limit: args.limit, search_term: args.search_term },
+            ctx
+          ),
           timeoutMs,
           `read_feed ${feedId} timed out after ${timeoutMs}ms`
         );

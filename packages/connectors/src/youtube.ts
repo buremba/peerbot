@@ -4,6 +4,7 @@
  * Feeds (indexed sync → events / search_memory):
  *  - `liked_videos` — the authenticated user's liked videos (Likes playlist)
  *  - `playlists` — the user's playlists and their items
+ *  - `subscriptions` — channels the authenticated user is subscribed to
  *  - `videos` — optional scheduled ingest of a fixed public keyword search
  *
  * Actions (on-demand via operations.execute — not persisted):
@@ -163,6 +164,30 @@ interface YouTubeChannelResponse {
   }>;
 }
 
+interface YouTubeSubscription {
+  id: string;
+  snippet: {
+    publishedAt: string;
+    title: string;
+    description?: string;
+    channelTitle?: string;
+    resourceId: {
+      kind: string;
+      channelId?: string;
+    };
+  };
+  contentDetails?: {
+    totalItemCount?: number;
+    newItemCount?: number;
+    activityType?: string;
+  };
+}
+
+interface YouTubeSubscriptionResponse {
+  nextPageToken?: string;
+  items: YouTubeSubscription[];
+}
+
 interface CaptionTrack {
   baseUrl: string;
   languageCode: string;
@@ -317,6 +342,39 @@ export default class YouTubeConnector extends ConnectorRuntime {
                 video_id: { type: 'string' },
                 channel_title: { type: 'string' },
                 video_published_at: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+      subscriptions: {
+        key: 'subscriptions',
+        name: 'Subscriptions',
+        requiredScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
+        description: "Channels the authenticated user's YouTube account subscribes to.",
+        configSchema: {
+          type: 'object',
+          properties: {
+            max_results: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 5000,
+              default: 1000,
+              description: 'Maximum subscribed channels to fetch per sync.',
+            },
+          },
+        },
+        eventKinds: {
+          channel_subscription: {
+            description: 'A YouTube channel the user is subscribed to',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                channel_id: { type: 'string' },
+                channel_title: { type: 'string' },
+                total_item_count: { type: 'number' },
+                new_item_count: { type: 'number' },
+                activity_type: { type: 'string' },
               },
             },
           },
@@ -524,6 +582,8 @@ export default class YouTubeConnector extends ConnectorRuntime {
         return this.syncLikedVideos(ctx, auth);
       case 'playlists':
         return this.syncPlaylists(ctx, auth);
+      case 'subscriptions':
+        return this.syncSubscriptions(ctx, auth);
       case 'videos':
         return this.syncSearchVideos(ctx, auth);
       default:
@@ -787,6 +847,76 @@ export default class YouTubeConnector extends ConnectorRuntime {
         collectedPlaylists += 1;
       }
       if (collectedPlaylists >= maxPlaylists) break;
+    }
+
+    return this.buildListCheckpointResult(events);
+  }
+
+  // -------------------------------------------------------------------------
+  // Feed: subscriptions
+  // -------------------------------------------------------------------------
+
+  private async syncSubscriptions(ctx: SyncContext, auth: YouTubeAuth): Promise<SyncResult> {
+    this.requireOAuth(auth, 'subscriptions');
+    const maxResults = Math.min(Math.max((ctx.config.max_results as number) ?? 1000, 1), 5000);
+    const events: EventEnvelope[] = [];
+
+    const pages = paginateByCursor<YouTubeSubscription, string>(
+      async (cursor) => {
+        const params = new URLSearchParams({
+          part: 'snippet,contentDetails',
+          mine: 'true',
+          maxResults: '50',
+          order: 'alphabetical',
+        });
+        if (cursor) params.set('pageToken', cursor);
+        const response = await this.apiGet(
+          `${this.BASE_URL}/subscriptions?${params.toString()}`,
+          auth
+        );
+        if (!response.ok) {
+          throw new Error(
+            `YouTube Subscriptions API error (${response.status}): ${await response.text()}`
+          );
+        }
+        const data = (await response.json()) as YouTubeSubscriptionResponse;
+        return { items: data.items ?? [], nextCursor: data.nextPageToken };
+      },
+      { delayMs: this.RATE_LIMIT_MS }
+    );
+
+    for await (const subscriptions of pages) {
+      for (const subscription of subscriptions) {
+        if (events.length >= maxResults) return this.buildListCheckpointResult(events);
+        const channelId = subscription.snippet.resourceId.channelId;
+        if (!channelId) continue;
+        const channelTitle = subscription.snippet.title;
+        events.push({
+          origin_id: `yt_subscription_${channelId}`,
+          title: channelTitle,
+          payload_text: [channelTitle, subscription.snippet.description]
+            .filter(Boolean)
+            .join('\n'),
+          author_name: channelTitle,
+          source_url: `https://www.youtube.com/channel/${channelId}`,
+          occurred_at: new Date(subscription.snippet.publishedAt),
+          origin_type: 'channel_subscription',
+          metadata: {
+            channel_id: channelId,
+            channel_title: channelTitle,
+            ...(subscription.contentDetails?.totalItemCount != null && {
+              total_item_count: subscription.contentDetails.totalItemCount,
+            }),
+            ...(subscription.contentDetails?.newItemCount != null && {
+              new_item_count: subscription.contentDetails.newItemCount,
+            }),
+            ...(subscription.contentDetails?.activityType && {
+              activity_type: subscription.contentDetails.activityType,
+            }),
+          },
+        });
+      }
+      if (events.length >= maxResults) break;
     }
 
     return this.buildListCheckpointResult(events);

@@ -28,6 +28,8 @@ mock.module("../../../lobu/stores/org-context.js", () => ({
 // template (`sql\`SELECT ...\``); a tagged-template call invokes the function
 // with (strings, ...values), so returning the rows array satisfies it.
 mock.module("../../../db/client.js", () => ({
+  PROD_PG_VALUE_OPTIONS: {},
+  closeDbSingleton: async () => undefined,
   getDb: () => (strings: TemplateStringsArray) =>
     Promise.resolve(
       strings.join(" ").includes("FROM inference_providers")

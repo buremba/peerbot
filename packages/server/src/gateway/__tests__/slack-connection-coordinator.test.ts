@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
 import { getDb } from "../../db/client.js";
 import {
   getSlackInstallByEnterpriseId,
@@ -9,6 +17,7 @@ import {
   SlackConnectionCoordinator,
 } from "../connections/slack-connection-coordinator.js";
 import type { PlatformConnection } from "../connections/types.js";
+import { ensureDbForGatewayTests } from "./helpers/db-setup.js";
 
 function createSlackConnection(
   id: string,
@@ -213,6 +222,10 @@ const SLACK_ENV_KEYS = [
 
 describe("SlackConnectionCoordinator", () => {
   const savedEnv: Record<string, string | undefined> = {};
+
+  beforeAll(async () => {
+    await ensureDbForGatewayTests();
+  });
 
   beforeEach(async () => {
     for (const key of SLACK_ENV_KEYS) {

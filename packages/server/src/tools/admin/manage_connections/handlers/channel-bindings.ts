@@ -27,6 +27,7 @@ import {
 	createSlackWebApi,
 	type SlackWebApi,
 } from "../../../../gateway/connections/slack-web";
+import { maybeSendSlackWorkspaceWelcome } from "../../../../gateway/connections/slack-connection-coordinator";
 import {
 	resolveSecretValue,
 	SecretStoreRegistry,
@@ -116,6 +117,31 @@ async function resolveCallerSlackUserId(
 function channelSecretStore(): SecretStoreRegistry {
 	const pg = new PostgresSecretStore();
 	return new SecretStoreRegistry(pg, { secret: pg });
+}
+
+/**
+ * After a Slack channel binding lands, best-effort fire the installer's one-time
+ * "you're all set" welcome DM. No-op for non-Slack platforms, for a bind with no
+ * team, or when the workspace isn't a claimed OAuth install / was already
+ * welcomed (the coordinator's atomic marker decides). Never throws — a welcome
+ * failure must not fail the bind.
+ */
+async function fireSlackWelcomeAfterBind(
+	platform: string,
+	teamId: string | undefined,
+): Promise<void> {
+	if (platform !== "slack" || !teamId) return;
+	try {
+		await maybeSendSlackWorkspaceWelcome({
+			teamId,
+			secretStore: channelSecretStore(),
+		});
+	} catch (error) {
+		logger.warn("Slack welcome DM after bind failed", {
+			teamId,
+			error: String(error),
+		});
+	}
 }
 
 /** List an agent's channel bindings (read tier). Fenced to agents in the
@@ -208,6 +234,7 @@ export async function handleBindChannel(
 		agentUrl: agentNotice.url,
 		previousAgentId: existing?.agentId,
 	});
+	await fireSlackWelcomeAfterBind(connection.connector_key, teamId);
 	logger.info(
 		`Bound ${connection.connector_key}/${channelId} → ${args.agent_id}`,
 	);
@@ -349,6 +376,12 @@ export async function handleSyncChannelBindings(
 		);
 		removed.push(binding.channelId);
 	}
+	if (bound.length > 0) {
+		await fireSlackWelcomeAfterBind(
+			connection.connector_key,
+			connection.external_tenant_id ?? undefined,
+		);
+	}
 	return {
 		action: "sync_channel_bindings",
 		success: true,
@@ -454,6 +487,10 @@ export async function handleConnectChannelDm(
 		previousAgentId: existing?.agentId,
 	});
 
+	await fireSlackWelcomeAfterBind(
+		"slack",
+		connection.external_tenant_id ?? undefined,
+	);
 	logger.info(
 		`Connected Slack DM ${dmChannelId} (team ${connection.external_tenant_id ?? "unknown"}) → ${args.agent_id}`,
 	);

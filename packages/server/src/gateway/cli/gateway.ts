@@ -59,6 +59,23 @@ import {
 
 const logger = createLogger("gateway-startup");
 
+/**
+ * Provider → pending-install completion registry. The generic install engine's
+ * chat callback dispatches through this map instead of a `provider === "slack"`
+ * branch, so adding a new chat provider's claim completion is one map entry, not
+ * a core-route edit. Unknown provider → no completion (the callback rejects).
+ */
+const chatPendingInstallCompletions: Record<
+  string,
+  (
+    request: Request,
+    redirectUri: string,
+    credsOrgHint: string | null,
+  ) => Promise<{ externalRef: string; subjectName: string | null } | null>
+> = {
+  slack: completeSlackPendingInstall,
+};
+
 interface CreateGatewayAppOptions {
   secretProxy: any;
   workerGateway: any;
@@ -679,19 +696,15 @@ export function createGatewayApp(
           method: integration.method,
           deliveryKind: integration.webhookSchema.deliveryKind ?? "data",
         })),
-        completeChatInstall: (provider, req, redirectUri, orgId) =>
-          chatInstanceManager.completeChatAppInstall(
-            provider,
-            req,
-            redirectUri,
-            orgId,
-          ),
-        // Marketplace / Slack-initiated installs (code, no Lobu state) → park as
-        // pending, unclaimed. Slack-only today; other providers dispatch here later.
-        completeChatPendingInstall: (provider, req, redirectUri) =>
-          provider === "slack"
-            ? completeSlackPendingInstall(req, redirectUri)
-            : Promise.resolve(null),
+        // EVERY oauth-code-exchange chat install (marketplace "Add to Slack" AND
+        // logged-in installs) parks as pending, unclaimed — the claim flow's org
+        // picker owns which tenant it binds to. `orgId` is the peeked state's org,
+        // passed ONLY as a BYO per-org creds hint for the code exchange (self-host);
+        // it never binds. Dispatched through the provider completion registry —
+        // an unknown provider has no completion, so the callback rejects.
+        completeChatPendingInstall: (provider, req, redirectUri, orgId) =>
+          chatPendingInstallCompletions[provider]?.(req, redirectUri, orgId) ??
+          Promise.resolve(null),
       }),
     );
     app.route("", createConnectionCrudRoutes(chatInstanceManager));

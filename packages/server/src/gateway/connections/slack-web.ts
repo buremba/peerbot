@@ -82,6 +82,14 @@ export interface SlackWebApi {
     botUserId: string | null;
     authedUserId: string | null;
     isEnterpriseInstall: boolean;
+    /**
+     * The Grid enterprise id (`enterprise.id`) when the workspace belongs to a
+     * Slack Grid/enterprise org, else null. NOTE: this is non-null even for a
+     * SINGLE-workspace Grid install (where `is_enterprise_install` is false) —
+     * the claim flow uses it to gate installer-identity claims, which are only
+     * a valid authority proof on Grid (enterprise-global `U…` ids).
+     */
+    enterpriseId: string | null;
   }>;
 }
 
@@ -216,6 +224,7 @@ export function createSlackWebApi(): SlackWebApi {
         );
       }
       const team = json.team as { id?: string; name?: string } | undefined;
+      const enterprise = json.enterprise as { id?: string } | undefined;
       const authedUser = json.authed_user as { id?: string } | undefined;
       const botToken = json.access_token;
       const teamId = team?.id;
@@ -234,6 +243,8 @@ export function createSlackWebApi(): SlackWebApi {
         authedUserId:
           typeof authedUser?.id === "string" ? authedUser.id : null,
         isEnterpriseInstall: json.is_enterprise_install === true,
+        enterpriseId:
+          typeof enterprise?.id === "string" ? enterprise.id : null,
       };
     },
   };

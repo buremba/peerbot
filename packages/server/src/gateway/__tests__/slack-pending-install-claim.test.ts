@@ -35,7 +35,7 @@ mock.module("../../lobu/stores/slack-installations.js", () => ({
 	// Also imported by the coordinator module (webhook routing); unused here.
 	getSlackInstallByTeamId: mock(async () => null),
 	resolveSlackPendingByTenant: mock(async () => null),
-	upsertSlackInstallByTeam: mock(async () => ({ id: "slackinst-x" })),
+	claimSlackWelcomeDm: mock(async () => null),
 }));
 
 // --- Hosted app credentials are configured (so the exchange path runs). ---
@@ -57,6 +57,7 @@ const exchangeOAuthCode = mock(
 		botUserId: string | null;
 		authedUserId: string | null;
 		isEnterpriseInstall: boolean;
+		enterpriseId: string | null;
 	}> => ({
 		botToken: "xoxb-installer-token",
 		teamId: "T-CLAIM",
@@ -64,6 +65,7 @@ const exchangeOAuthCode = mock(
 		botUserId: "B123",
 		authedUserId: "U-INSTALLER",
 		isEnterpriseInstall: false,
+		enterpriseId: null,
 	}),
 );
 const openDm = mock(async () => "D-INSTALLER");
@@ -133,12 +135,12 @@ describe("completeSlackPendingInstall — installer claim DM", () => {
 		const result = await completeSlackPendingInstall(
 			callbackRequest(),
 			"https://gateway.example.com/slack/oauth_callback",
+			null,
 		);
 
 		expect(result).toEqual({
-			teamId: "T-CLAIM",
-			teamName: "Acme",
-			installerUserId: "U-INSTALLER",
+			externalRef: "T-CLAIM",
+			subjectName: "Acme",
 		});
 
 		// The DM is opened with the installer and the message is posted into it.
@@ -153,14 +155,15 @@ describe("completeSlackPendingInstall — installer claim DM", () => {
 		expect(botToken).toBe("xoxb-installer-token");
 		expect(channel).toBe("D-INSTALLER");
 
-		// The posted text embeds the connect URL with the team id — no secret token
-		// (authority is the Slack workspace-admin check at claim time).
+		// The posted text embeds the provider-agnostic connect URL with the team id
+		// as the ref — no secret token (authority is the Slack workspace-admin
+		// check at claim time).
 		const match = text.match(
-			/https:\/\/app\.lobu\.ai\/slack\/claim\?team=([^&\s]+)/,
+			/https:\/\/app\.lobu\.ai\/connector\/slack\/connection\?ref=([^&\s]+)/,
 		);
 		expect(match).not.toBeNull();
-		const [, teamParam] = match as RegExpMatchArray;
-		expect(decodeURIComponent(teamParam)).toBe("T-CLAIM");
+		const [, refParam] = match as RegExpMatchArray;
+		expect(decodeURIComponent(refParam)).toBe("T-CLAIM");
 		expect(text).not.toContain("&t=");
 
 		// The pending row is parked with the installer id and no token material.
@@ -177,18 +180,19 @@ describe("completeSlackPendingInstall — installer claim DM", () => {
 			botUserId: null,
 			authedUserId: null,
 			isEnterpriseInstall: false,
+			enterpriseId: null,
 		});
 		const completeSlackPendingInstall = await loadCoordinator();
 
 		const result = await completeSlackPendingInstall(
 			callbackRequest(),
 			"https://gateway.example.com/slack/oauth_callback",
+			null,
 		);
 
 		expect(result).toEqual({
-			teamId: "T-NOINSTALLER",
-			teamName: null,
-			installerUserId: null,
+			externalRef: "T-NOINSTALLER",
+			subjectName: null,
 		});
 		// No DM without an installer to send it to.
 		expect(openDm).not.toHaveBeenCalled();

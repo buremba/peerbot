@@ -35,10 +35,14 @@ import { streamInvalidationEvents } from "./events/sse";
 import { invalidationSseAuth } from "./events/sse-invalidation-auth";
 import {
 	type ClaimEligibleOrg,
-	claimSlackWorkspace,
-	resolveSlackClaimContext,
-	type SlackClaimDeps,
-} from "./gateway/connections/slack-claim";
+	type ClaimEngineDeps,
+	type ClaimProvider,
+	claimHttpStatus,
+	claimPendingConnection,
+	resolveClaimContext,
+} from "./gateway/connections/connection-claim";
+import { slackClaimProvider } from "./gateway/connections/slack-claim";
+import { autoLinkBuilderAndWelcome } from "./gateway/connections/slack-claim-onboarding";
 import { createSlackWebApi } from "./gateway/connections/slack-web";
 import {
 	getMaxReservedLocks,
@@ -53,7 +57,6 @@ import { environmentRoutes } from "./lobu/environment-routes";
 import {
 	getLobuCoreServices,
 	isLobuGatewayRunning,
-	resolveDefaultOrgId,
 } from "./lobu/gateway";
 import {
 	claimSlackPendingInstall,
@@ -1430,19 +1433,20 @@ app.post("/api/:orgSlug/join", async (c) => {
 });
 
 /**
- * Resolve the signed-in user's team-scoped `slack_user_id` (`T…:U…`) for a Slack
- * workspace, returning the bare `U…` id or null when they never signed in with
- * Slack for that team. Reuses the canonical `entity_identities` shape the authz
- * layer writes on Slack sign-in (namespace `slack_user_id`, identifier stored
- * uppercased as `T…:U…` on the user's `$member`), joined to the user's memberships
- * via the guarded `auth_user_id`/`auth:signup` claim so a user-supplied identity
- * row can't hijack the lookup. Org-agnostic (the identity may live in any org the
- * user belongs to), so it runs BEFORE we resolve the org to bind into.
+ * Resolve ALL of the signed-in user's `slack_user_id` identities as
+ * `{teamId, slackUserId}` pairs — every workspace they've signed in with Slack
+ * for. Reuses the canonical `entity_identities` shape the authz layer writes on
+ * Slack sign-in (namespace `slack_user_id`, identifier stored uppercased as
+ * `T…:U…` on the user's `$member`), joined to the user's memberships via the
+ * guarded `auth_user_id`/`auth:signup` claim so a user-supplied identity row
+ * can't hijack the lookup. Org-agnostic (the identity may live in any org the
+ * user belongs to), so it runs BEFORE we resolve the org to bind into. The claim
+ * guard filters by team (workspace membership) or matches the bare `U…` against
+ * a Grid pending install's `installerUserId`.
  */
-async function resolveClaimingUserSlackId(
+async function resolveClaimingUserSlackIdentities(
 	userId: string,
-	teamId: string,
-): Promise<string | null> {
+): Promise<Array<{ teamId: string; slackUserId: string }>> {
 	const sql = getDb();
 	const rows = (await sql`
 		SELECT DISTINCT ei.identifier
@@ -1460,25 +1464,28 @@ async function resolveClaimingUserSlackId(
 		 AND ei.deleted_at IS NULL
 		WHERE m."userId" = ${userId}
 	`) as Array<{ identifier: string }>;
-	const teamPrefix = `${teamId.toUpperCase()}:`;
-	const combined = rows
+	// The identity is stored as `T…:U…` (team-scoped). Split into a team id and a
+	// bare `U…` id; the claim guard filters by team (membership) or matches the
+	// bare id against the pending install's installerUserId (Grid).
+	return rows
 		.map((r) => String(r.identifier))
-		.find((id) => id.startsWith(teamPrefix));
-	return combined ? combined.slice(teamPrefix.length) : null;
+		.map((id) => {
+			const sep = id.indexOf(":");
+			return sep === -1
+				? null
+				: { teamId: id.slice(0, sep), slackUserId: id.slice(sep + 1) };
+		})
+		.filter((x): x is { teamId: string; slackUserId: string } => x !== null);
 }
 
 /**
- * POST /api/slack/claim — claim a marketplace / Slack-initiated (pending) Slack
- * workspace into the signed-in user's org.
+ * The provider-agnostic connection "claim" routes bind a parked (pending)
+ * provider install to the signed-in user's org after the provider's authority
+ * check passes. Slack is the first consumer; other chat/data providers register
+ * a `ClaimProvider` in `claimProviders` and get the same two routes for free. No
+ * secret link token — authority is the provider's `authorize` verdict.
  *
- * Body: `{ team: string, token: string }` — the workspace id and the single-use
- * claim token from the installer's DM'd link. Binds the parked pending install
- * (see `writeSlackPendingInstall`) to the user's default org after proving the
- * caller (a) holds the single-use token, (b) signed in with Slack for this
- * workspace, and (c) is a workspace admin/owner. Neither the bot token nor the
- * plaintext claim token is ever logged or returned.
- *
- * Registered before the `/api/:orgSlug/:toolName` proxy so `slack`/`claim`
+ * Registered before the `/api/:orgSlug/:toolName` proxy so `connector`/`…`
  * doesn't get swallowed as an org tool call.
  */
 // The main app doesn't run the Lobu auth bridge, so resolve the session here
@@ -1496,10 +1503,42 @@ async function resolveClaimSessionUser(
 	}
 }
 
-// Wire the real stores/APIs behind the injectable SlackClaimDeps (shared by the
-// context + claim routes).
-function slackClaimDeps(): SlackClaimDeps {
+// Wire the real org-resolution stores behind the injectable ClaimEngineDeps —
+// provider-agnostic, shared by every claim provider.
+function claimEngineDeps(): ClaimEngineDeps {
 	return {
+		resolveMemberOrgs: async (userId) =>
+			(await getDb()`
+				SELECT o.id, o.slug, o.name,
+					(o.metadata::jsonb)->>'personal_org_for_user_id' IS NOT NULL
+						AS "isPersonal"
+				FROM "member" m JOIN "organization" o ON o.id = m."organizationId"
+				WHERE m."userId" = ${userId}
+				ORDER BY "isPersonal", o.name
+			`) as ClaimEligibleOrg[],
+		resolveOrgIfMember: async (userId, orgSlugOrId) => {
+			const rows = (await getDb()`
+				SELECT o.id
+				FROM "organization" o
+				JOIN "member" m ON m."organizationId" = o.id AND m."userId" = ${userId}
+				WHERE o.slug = ${orgSlugOrId} OR o.id = ${orgSlugOrId}
+				LIMIT 1
+			`) as Array<{ id: string }>;
+			return rows[0]?.id ?? null;
+		},
+		resolveOrgSlug: async (organizationId) => {
+			const orgRows = (await getDb()`
+				SELECT slug FROM "organization" WHERE id = ${organizationId} LIMIT 1
+			`) as Array<{ slug: string }>;
+			return orgRows[0]?.slug ?? null;
+		},
+	};
+}
+
+// Wire the Slack authority half (workspace-admin identity + usersInfo + bind)
+// behind the ClaimProvider the engine consumes.
+function buildSlackClaimProvider(): ClaimProvider {
+	return slackClaimProvider({
 		resolvePending: (t) => resolveSlackPendingByTenant(t),
 		resolveActiveOrgSlug: async (team) => {
 			const rows = (await getDb()`
@@ -1513,117 +1552,108 @@ function slackClaimDeps(): SlackClaimDeps {
 			`) as Array<{ slug: string }>;
 			return rows[0]?.slug ?? null;
 		},
-		resolveClaimerSlackId: resolveClaimingUserSlackId,
+		resolveClaimerSlackIdentities: resolveClaimingUserSlackIdentities,
 		usersInfo: (botToken, uid) => createSlackWebApi().usersInfo(botToken, uid),
-		resolveMemberOrgs: async (userId) =>
-			(await getDb()`
-				SELECT o.id, o.slug, o.name
-				FROM "member" m JOIN "organization" o ON o.id = m."organizationId"
-				WHERE m."userId" = ${userId}
-				ORDER BY o.name
-			`) as ClaimEligibleOrg[],
-		resolveOrgIfMember: async (userId, orgSlugOrId) => {
-			const rows = (await getDb()`
-				SELECT o.id
-				FROM "organization" o
-				JOIN "member" m ON m."organizationId" = o.id AND m."userId" = ${userId}
-				WHERE o.slug = ${orgSlugOrId} OR o.id = ${orgSlugOrId}
-				LIMIT 1
-			`) as Array<{ id: string }>;
-			return rows[0]?.id ?? null;
-		},
-		resolveDefaultOrgId: (uid) => resolveDefaultOrgId(uid),
-		claim: (pending, organizationId) => {
+		claim: async (pending, organizationId) => {
 			const core = getLobuCoreServices();
 			if (!core) throw new Error("Lobu core services unavailable");
-			return claimSlackPendingInstall(
+			const result = await claimSlackPendingInstall(
 				core.getAppInstallationStore(),
 				core.getSecretStore(),
 				pending,
 				organizationId,
 			);
+			// Post-claim, best-effort: auto-link the org's Builder agent to the
+			// installer's DM and fire the welcome DM. Never throws — a failure here
+			// must not fail the claim the user is waiting on (the workspace is
+			// already bound). This is the DM half of onboarding; named channels stay
+			// explicit (bot posts a bind link when added to a channel).
+			await autoLinkBuilderAndWelcome({
+				teamId: pending.teamId,
+				organizationId,
+				installerUserId: pending.installerUserId ?? null,
+				secretStore: core.getSecretStore(),
+			});
+			return result;
 		},
-		resolveOrgSlug: async (organizationId) => {
-			const orgRows = (await getDb()`
-				SELECT slug FROM "organization" WHERE id = ${organizationId} LIMIT 1
-			`) as Array<{ slug: string }>;
-			return orgRows[0]?.slug ?? null;
-		},
-	};
+	}) as ClaimProvider;
 }
 
-/** Map a claim/context status to its HTTP code (shared by both routes). */
-function slackClaimHttpStatus(
-	status: string,
-): 400 | 401 | 403 | 404 | 409 | 500 {
-	switch (status) {
-		case "unauthenticated":
-			return 401;
-		case "invalid_request":
-			return 400;
-		case "no_pending_install":
-			return 404;
-		case "slack_signin_required":
-		case "not_admin":
-		case "not_member_of_org":
-			return 403;
-		case "no_org":
-			return 409;
-		default:
-			return 500;
-	}
-}
+// Provider registry for the generic claim routes. Adding a claim provider is one
+// entry here — the two routes below dispatch through it; unknown → 404.
+const claimProviders = new Map<string, () => ClaimProvider>([
+	["slack", buildSlackClaimProvider],
+]);
 
-// GET /api/slack/claim/context — the confirm step's data. Runs the guards
-// (Slack workspace-admin) with NO write and returns the workspace name + the
-// claimer's orgs, so /slack/claim can render "Connect <workspace> to <org>"
-// before binding. Surfaces `already_connected` for a workspace already bound, so
-// the UI links to it instead of erroring on a re-visited/spent link.
-app.get("/api/slack/claim/context", async (c) => {
+// GET /api/connector/:connector/connection/claim-context?ref=… — the confirm
+// step's data. Runs the provider's authority guards with NO write and returns
+// the subject name + the claimer's orgs, so the SPA claim page can render
+// "Connect <subject> to <org>" before binding. Surfaces `already_connected` for
+// a subject already bound, so the UI links to it instead of erroring on a
+// re-visited/spent link. Registered before the `/api/:orgSlug/:toolName` proxy.
+app.get("/api/connector/:connector/connection/claim-context", async (c) => {
+	const buildProvider = claimProviders.get(c.req.param("connector"));
+	if (!buildProvider) return c.json({ error: "unknown_provider" }, 404);
+	const provider = buildProvider();
 	const userId = await resolveClaimSessionUser(c.env, c.req.raw);
-	const team = (c.req.query("team") ?? "").trim();
-	const ctx = await resolveSlackClaimContext(slackClaimDeps(), {
+	const ref = (c.req.query("ref") ?? "").trim();
+	const ctx = await resolveClaimContext(provider, claimEngineDeps(), {
 		userId,
-		team,
+		ref,
 	});
 	if (ctx.status === "ready") {
 		return c.json({
 			ok: true,
-			workspaceName: ctx.workspaceName,
+			subjectKind: provider.subjectKind,
+			subjectName: ctx.subjectName,
 			orgs: ctx.orgs,
 		});
 	}
 	if (ctx.status === "already_connected") {
 		return c.json({ ok: true, alreadyConnected: true, orgSlug: ctx.orgSlug });
 	}
-	return c.json({ error: ctx.status }, slackClaimHttpStatus(ctx.status));
+	if (ctx.status === "signin_required") {
+		return c.json(
+			{ error: ctx.status, signinProvider: ctx.signinProvider },
+			claimHttpStatus(ctx.status),
+		);
+	}
+	if (ctx.status === "not_authorized") {
+		return c.json(
+			{ error: ctx.status, code: ctx.code },
+			claimHttpStatus(ctx.status),
+		);
+	}
+	return c.json({ error: ctx.status }, claimHttpStatus(ctx.status));
 });
 
-app.post("/api/slack/claim", async (c) => {
+app.post("/api/connector/:connector/connection/claim", async (c) => {
+	const buildProvider = claimProviders.get(c.req.param("connector"));
+	if (!buildProvider) return c.json({ error: "unknown_provider" }, 404);
+	const provider = buildProvider();
 	const userId = await resolveClaimSessionUser(c.env, c.req.raw);
 
-	let body: { team?: unknown; org?: unknown };
+	let body: { ref?: unknown; org?: unknown };
 	try {
-		body = (await c.req.json()) as {
-			team?: unknown;
-			org?: unknown;
-		};
+		body = (await c.req.json()) as { ref?: unknown; org?: unknown };
 	} catch {
 		body = {};
 	}
-	const team = typeof body.team === "string" ? body.team.trim() : "";
-	// The org the user CONFIRMED on the /slack/claim page (slug or id). Optional
-	// for programmatic callers, who then fall back to the default org.
+	const ref = typeof body.ref === "string" ? body.ref.trim() : "";
+	// The org the user CONFIRMED on the claim page (slug or id). REQUIRED — an
+	// org-less claim is rejected by the engine (`invalid_request`), never routed
+	// to a default org. This flow creates a connection under an org from an
+	// external OAuth request, so the destination must be an explicit human choice.
 	const organizationId =
 		typeof body.org === "string" && body.org.trim()
 			? body.org.trim()
 			: undefined;
 
-	// All branching lives in the injectable `claimSlackWorkspace` so it stays
-	// unit-testable; the route only wires real deps + maps outcomes to HTTP.
-	const result = await claimSlackWorkspace(slackClaimDeps(), {
+	// All branching lives in the injectable engine so it stays unit-testable;
+	// the route only wires real deps + maps outcomes to HTTP.
+	const result = await claimPendingConnection(provider, claimEngineDeps(), {
 		userId,
-		team,
+		ref,
 		organizationId,
 	});
 
@@ -1631,15 +1661,30 @@ app.post("/api/slack/claim", async (c) => {
 		return c.json({
 			ok: true,
 			orgSlug: result.orgSlug,
-			provider: "slack",
+			provider: provider.provider,
 			alreadyConnected: result.alreadyConnected ?? false,
 		});
 	}
 	if (result.status === "claim_failed") {
-		logger.error({ team, err: result.message }, "Slack workspace claim failed");
+		logger.error(
+			{ connector: provider.provider, ref, err: result.message },
+			"Connection claim failed",
+		);
 		return c.json({ error: "claim_failed", message: result.message }, 500);
 	}
-	return c.json({ error: result.status }, slackClaimHttpStatus(result.status));
+	if (result.status === "signin_required") {
+		return c.json(
+			{ error: result.status, signinProvider: result.signinProvider },
+			claimHttpStatus(result.status),
+		);
+	}
+	if (result.status === "not_authorized") {
+		return c.json(
+			{ error: result.status, code: result.code },
+			claimHttpStatus(result.status),
+		);
+	}
+	return c.json({ error: result.status }, claimHttpStatus(result.status));
 });
 
 /**

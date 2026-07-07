@@ -138,39 +138,6 @@ describe("ChatInstanceManager Slack marketplace support", () => {
     }
   });
 
-  test("completeChatAppInstall delegates to the Slack coordinator", async () => {
-    const ChatInstanceManager = await loadChatInstanceManager();
-    const manager = new ChatInstanceManager() as any;
-    const request = new Request(
-      "https://gateway.example.com/slack/oauth_callback?code=test&state=test"
-    );
-    const completeOAuthInstall = mock(async () => ({
-      teamId: "T123",
-      teamName: "Acme",
-      installationId: "slackinst-abc",
-    }));
-    manager.slackCoordinator = {
-      completeOAuthInstall,
-    };
-
-    const result = await manager.completeChatAppInstall(
-      "slack",
-      request,
-      "https://gateway.example.com/slack/oauth_callback",
-      "org-1"
-    );
-
-    expect(result).toEqual({
-      teamId: "T123",
-      teamName: "Acme",
-      installationId: "slackinst-abc",
-    });
-    expect(completeOAuthInstall).toHaveBeenCalledWith(
-      request,
-      "https://gateway.example.com/slack/oauth_callback",
-      "org-1"
-    );
-  });
 });
 
 describe("ChatInstanceManager.postMessageToChannel", () => {

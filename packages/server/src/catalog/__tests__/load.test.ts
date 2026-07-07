@@ -2,6 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { MANAGED_CHAT_PLATFORMS } from "../../preview/managed-platforms";
 import { clearCatalogCacheForTests, listCatalogEntries } from "../load";
 
 describe("catalog/load", () => {
@@ -19,6 +20,27 @@ describe("catalog/load", () => {
 		expect(entries.skills.length).toBeGreaterThanOrEqual(0);
 		expect(entries.connectors[0]?.id).toBeTruthy();
 		expect(entries.connectors[0]?.name).toBeTruthy();
+
+		if (prev === undefined) delete process.env.LOBU_CATALOG_URIS;
+		else process.env.LOBU_CATALOG_URIS = prev;
+		clearCatalogCacheForTests();
+	});
+
+	it("includes the bundled managed-chat connectors in the connectors catalog", async () => {
+		// The connectors catalog is what `list_installed` with `include_catalog`
+		// merges against, so a fresh org (no connector_definitions row, no
+		// connection) can still reach the Slack/Telegram install affordance. If a
+		// managed-chat platform drops out of the bundled catalog, its install
+		// entry point becomes unreachable in the connectors picker.
+		const prev = process.env.LOBU_CATALOG_URIS;
+		delete process.env.LOBU_CATALOG_URIS;
+		clearCatalogCacheForTests();
+
+		const entries = await listCatalogEntries(["connectors"]);
+		const ids = new Set(entries.connectors.map((entry) => entry.id));
+		for (const platform of MANAGED_CHAT_PLATFORMS) {
+			expect(ids.has(platform)).toBe(true);
+		}
 
 		if (prev === undefined) delete process.env.LOBU_CATALOG_URIS;
 		else process.env.LOBU_CATALOG_URIS = prev;

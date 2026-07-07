@@ -14,6 +14,7 @@ import {
   verifyDeclaredWebhook,
 } from "../routes/public/app-webhooks.js";
 import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
+import { __resetPublicOriginCachesForTests } from "../../utils/public-origin.js";
 
 /** Slack's DECLARED webhook schema (mirror of the slack connector's block). */
 const SLACK_WEBHOOK_SCHEMA: ConnectorWebhookSchema = {
@@ -89,8 +90,10 @@ async function seedSlackConnectorDef(
 
 describe("slack OAuth install routes", () => {
   const originalClientId = process.env.SLACK_CLIENT_ID;
+  const originalPublicGatewayUrl = process.env.PUBLIC_GATEWAY_URL;
 
   let completeSlackOAuthInstall: ReturnType<typeof mock>;
+  let parkSlackPendingInstall: ReturnType<typeof mock>;
   let app: Hono;
   // Per-test org id injected into the Hono context — mirrors what
   // `lobuApp.use('*', ...)` sets in production (see lobu/gateway.ts). The
@@ -105,10 +108,20 @@ describe("slack OAuth install routes", () => {
   beforeEach(async () => {
     await resetTestDatabase();
 
+    // The claim redirect resolves the public web origin from PUBLIC_GATEWAY_URL
+    // (getConfiguredPublicOrigin), NOT the injected getPublicGatewayUrl dep, so
+    // the install callback can send the installer to the generic claim page.
+    process.env.PUBLIC_GATEWAY_URL = "https://gateway.example.com";
+    __resetPublicOriginCachesForTests();
+
     completeSlackOAuthInstall = mock(async () => ({
       teamId: "T123",
       teamName: "Acme",
       installationId: "slackinst-1",
+    }));
+    parkSlackPendingInstall = mock(async () => ({
+      externalRef: "T123",
+      subjectName: "Acme",
     }));
 
     sessionOrgId = "org-default";
@@ -129,8 +142,8 @@ describe("slack OAuth install routes", () => {
       },
       getPublicGatewayUrl: () => "https://gateway.example.com",
       // The generic engine mounts /slack/install + /slack/oauth_callback from
-      // this declared oauth-code-exchange integration; completion is dispatched
-      // by provider through completeChatInstall.
+      // this declared oauth-code-exchange integration; EVERY callback now parks
+      // pending via completeChatPendingInstall → the claim flow (no binding).
       integrations: [
         {
           connectorKey: "slack",
@@ -146,8 +159,11 @@ describe("slack OAuth install routes", () => {
           deliveryKind: "chat",
         },
       ],
-      completeChatInstall: (_provider, req, redirectUri, orgId) =>
-        completeSlackOAuthInstall(req, redirectUri, orgId),
+      // Both stateless AND state-carrying callbacks now park pending → claim.
+      // The org hint (peeked from state, when present) is passed for BYO
+      // per-org cred resolution, but NEVER binds the install.
+      completeChatPendingInstall: (_provider, req, redirectUri, orgId) =>
+        parkSlackPendingInstall(req, redirectUri, orgId),
     });
 
     app = new Hono();
@@ -164,6 +180,12 @@ describe("slack OAuth install routes", () => {
     } else {
       process.env.SLACK_CLIENT_ID = originalClientId;
     }
+    if (originalPublicGatewayUrl === undefined) {
+      delete process.env.PUBLIC_GATEWAY_URL;
+    } else {
+      process.env.PUBLIC_GATEWAY_URL = originalPublicGatewayUrl;
+    }
+    __resetPublicOriginCachesForTests();
   });
 
   test("GET /slack/install redirects to Slack OAuth and stores state", async () => {
@@ -200,27 +222,41 @@ describe("slack OAuth install routes", () => {
     expect(typeof payload.createdAt).toBe("number");
   });
 
-  test("GET /slack/install rejects when no session org is bound", async () => {
+  test("GET /slack/install no longer hard-401s a logged-out user; without resolvable creds it reports not_configured", async () => {
+    // Bug C fix: a bound org is NO LONGER a gate on starting the install — the
+    // claim flow owns sign-in and tenant selection. With no org AND no primed
+    // bundled (hosted) creds, there's simply nothing to build the authorize URL
+    // from, so we report `not_configured` (503) — NOT the old "Sign in to an
+    // organization" 401. When hosted bundled creds ARE primed at boot, this same
+    // logged-out request instead redirects to Slack (landing-page "Add to Slack").
     sessionOrgId = null;
     const response = await app.request("/slack/install");
     const body = await response.text();
-    expect(response.status).toBe(401);
-    expect(body).toContain("Sign in to an organization");
+    expect(response.status).toBe(503);
+    expect(body).not.toContain("Sign in to an organization");
+    expect(body).toContain("not configured");
   });
 
-  test("GET /slack/oauth_callback rejects invalid state", async () => {
+  test("GET /slack/oauth_callback (no state, marketplace) parks pending and redirects to claim", async () => {
+    // A Slack-INITIATED (marketplace) install: `code`, no Lobu state. Parks the
+    // workspace as an unclaimed pending install and sends the installer into the
+    // claim flow. No org hint to pass (no state), so hosted/bundled creds.
     const response = await app.request(
       "/slack/oauth_callback?code=test-code&state=missing"
     );
-    const body = await response.text();
 
-    expect(response.status).toBe(400);
-    expect(body).toContain("Authentication Failed");
-    expect(body).toContain("invalid or has expired");
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      "https://gateway.example.com/connector/slack/connection?ref=T123"
+    );
+    // Never binds via the completion adapter — no org to bind to.
     expect(completeSlackOAuthInstall).not.toHaveBeenCalled();
+    expect(parkSlackPendingInstall).toHaveBeenCalledTimes(1);
+    // No state peeked → no org hint.
+    expect(parkSlackPendingInstall.mock.calls[0]?.[2] ?? null).toBeNull();
   });
 
-  test("GET /slack/oauth_callback completes install and redirects into the web app", async () => {
+  test("BUG C: a state-carrying (logged-in) callback does NOT bind to the state's org; it parks pending and redirects to claim", async () => {
     const sql = getDb();
     const expiresAt = new Date(Date.now() + 600_000);
     await sql`
@@ -241,26 +277,26 @@ describe("slack OAuth install routes", () => {
       "/slack/oauth_callback?code=test-code&state=test-state"
     );
 
-    // Web-first onboarding: on success the callback redirects back into the
-    // Lobu web app (org's /agents list, ?connected=<provider>) so the user can
-    // wire an agent in one click — instead of the legacy success HTML page.
+    // Converged behavior: EVEN WITH state, the workspace lands in the claim
+    // flow (org picker), NOT silently bound to the state's org. This is the
+    // Bug C fix — no `/{orgSlug}/agents?connected=slack` redirect.
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe(
-      "https://gateway.example.com/org-default/agents?connected=slack"
+      "https://gateway.example.com/connector/slack/connection?ref=T123"
     );
-    expect(completeSlackOAuthInstall).toHaveBeenCalledTimes(1);
-    expect(completeSlackOAuthInstall.mock.calls[0]?.[1]).toBe(
-      "https://gateway.example.com/slack/oauth_callback"
-    );
-    // The validated install-state org is threaded as the 3rd arg.
-    expect(completeSlackOAuthInstall.mock.calls[0]?.[2]).toBe("org-default");
+    // The binding completion adapter must NOT be called.
+    expect(completeSlackOAuthInstall).not.toHaveBeenCalled();
+    // Pending parking runs; the state's org is passed ONLY as a creds hint.
+    expect(parkSlackPendingInstall).toHaveBeenCalledTimes(1);
+    expect(parkSlackPendingInstall.mock.calls[0]?.[2]).toBe("org-default");
+    // State may be consumed for replay hygiene, but binding must not depend on it.
     const remaining = await sql`
       SELECT 1 FROM oauth_states WHERE id = 'test-state'
     `;
     expect(remaining.length).toBe(0);
   });
 
-  test("GET /slack/oauth_callback rejects when callback session org differs from install state", async () => {
+  test("GET /slack/oauth_callback does NOT reject when callback session org differs from install state", async () => {
     const sql = getDb();
     const expiresAt = new Date(Date.now() + 600_000);
     await sql`
@@ -276,22 +312,21 @@ describe("slack OAuth install routes", () => {
         ${expiresAt}
       )
     `;
-    // Caller signs in to org-b — must be rejected with 403.
+    // Caller signs in to org-b. Previously a 403 org_mismatch; now membership is
+    // irrelevant — nothing binds to the state's org, so the callback converges to
+    // the claim flow like every other install. No org-mismatch page.
     sessionOrgId = "org-b";
     const response = await app.request(
       "/slack/oauth_callback?code=test-code&state=cross-org-state"
     );
-    const body = await response.text();
-    expect(response.status).toBe(403);
-    expect(body).toContain("different organization");
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      "https://gateway.example.com/connector/slack/connection?ref=T123"
+    );
     expect(completeSlackOAuthInstall).not.toHaveBeenCalled();
-    // State is preserved for the legitimate caller to retry (peek-before-
-    // consume). The previous behavior burned the row on every failed
-    // org check and forced the user to restart the OAuth flow.
-    const remaining = await sql`
-      SELECT 1 FROM oauth_states WHERE id = 'cross-org-state'
-    `;
-    expect(remaining.length).toBe(1);
+    expect(parkSlackPendingInstall).toHaveBeenCalledTimes(1);
+    // The peeked state's org (org-a) is passed as the creds hint.
+    expect(parkSlackPendingInstall.mock.calls[0]?.[2]).toBe("org-a");
   });
 });
 

@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { getDb } from "../../db/client.js";
 import { upsertSlackInstallByTeam } from "../../lobu/stores/slack-installations.js";
-import { SlackConnectionCoordinator } from "../connections/slack-connection-coordinator.js";
+import {
+  maybeSendSlackWorkspaceWelcome,
+  SlackConnectionCoordinator,
+} from "../connections/slack-connection-coordinator.js";
 import type { PlatformConnection } from "../connections/types.js";
 
 function createSlackConnection(
@@ -213,63 +216,6 @@ describe("SlackConnectionCoordinator", () => {
       else process.env[key] = savedEnv[key];
     }
     await getDb()`DELETE FROM connections WHERE organization_id = 'org-acme'`;
-  });
-
-  test("ensureWorkspaceInstallation persists an app_installations row with only tenant data", async () => {
-    // The OAuth install is an org/workspace-installation resource, not an agent
-    // connection — it's an app_installations row (provider=slack) keyed on the
-    // team tuple, never agent_connections. Only tenant data (bot token by ref +
-    // teamName/botUserId) is recorded; app-level creds stay env-sourced.
-    const appStore = makeAppInstallationStore();
-    const secretStore = makeSecretStore();
-    const coordinator = new SlackConnectionCoordinator(
-      makeDeps({
-        getAppInstallationStore: () => appStore,
-        getSecretStore: () => secretStore,
-			}),
-    );
-
-    const result = await coordinator.ensureWorkspaceInstallation(
-      "org-acme",
-      "T123",
-			{ botToken: "xoxb-tenant-token", botUserId: "U123", teamName: "Acme" },
-    );
-
-    expect(result.installationId.startsWith("slackinst-")).toBe(true);
-
-    // Token-first: the bot token is persisted to the secret store BEFORE the row
-    // is activated, so a persist failure can never leave an active row without a
-    // token. The happy path is a SINGLE activation upsert that already carries the
-    // token ref in config (no separate claim/write round-trip).
-		expect(secretStore.__putCalls).toHaveLength(1);
-		expect(secretStore.__putCalls[0]).toBe(
-			`installations/${result.installationId}/botToken`,
-    );
-		expect(appStore.__upsertCalls).toHaveLength(1);
-		const a = appStore.__upsertCalls[0] as Record<string, any>;
-    expect(a.provider).toBe("slack");
-    expect(a.providerInstance).toBe("cloud");
-    expect(a.providerAppId).toBe("cloud");
-    expect(a.externalTenantId).toBe("T123");
-    expect(a.organizationId).toBe("org-acme");
-    expect(a.status).toBe("active");
-    expect(a.authProfileId).toBeNull();
-    expect(a.metadata.external_id).toBe(result.installationId);
-    expect(a.preserveMetadataKeysOnUpdate).toEqual(["external_id"]);
-    // The single write carries the tenant data + the bot token as a secret ref
-    // (never plaintext).
-    expect(a.metadata.team_name).toBe("Acme");
-    expect(a.metadata.bot_user_id).toBe("U123");
-    expect(a.metadata.config.platform).toBe("slack");
-    expect(typeof a.metadata.config.botToken).toBe("string");
-    expect(a.metadata.config.botToken).not.toBe("xoxb-tenant-token");
-    // No app secrets anywhere in the recorded row.
-		expect(JSON.stringify(appStore.__upsertCalls)).not.toContain(
-			"signingSecret",
-		);
-		expect(JSON.stringify(appStore.__upsertCalls)).not.toContain(
-			"clientSecret",
-		);
   });
 
   test("handleAppWebhook routes a matched team to its OAuth installation", async () => {
@@ -535,5 +481,121 @@ describe("SlackConnectionCoordinator", () => {
     expect(post).toHaveBeenCalledWith(
 			"Welcome to Lobu, Ada. Mention me in a channel or send me a DM to start a thread. Use `/lobu help` to see the built-in commands.",
     );
+  });
+
+  describe("maybeSendSlackWorkspaceWelcome (first-agent-bound installer DM)", () => {
+    const TEAM = "T-WELCOME";
+
+    /** A SlackWebApi stub that records openDm/postMessage calls. */
+    function makeWelcomeWeb() {
+      const openDm = mock(async () => "D-WELCOME");
+      const postMessage = mock(async () => undefined);
+      return {
+        openDm,
+        postMessage,
+        conversationMembers: async () => [],
+        conversationInfo: async () => ({ name: null, isPrivate: false }),
+        usersInfo: async () => ({ isAdmin: false, isOwner: false }),
+        revokeToken: async () => true,
+        authTest: async () => ({ teamId: TEAM }),
+        exchangeOAuthCode: async () => {
+          throw new Error("not used");
+        },
+      };
+    }
+
+    /** A secret store whose get() resolves any ref to the installed bot token. */
+    function makeResolvingSecretStore() {
+      return {
+        get: async () => "xoxb-welcome-token",
+        put: async (name: string) => `secret://${encodeURIComponent(name)}`,
+        delete: async () => undefined,
+        list: async () => [],
+      } as unknown as ReturnType<Deps["getSecretStore"]>;
+    }
+
+    async function seedActiveInstall(installerUserId: string | null) {
+      await getDb()`DELETE FROM app_installations WHERE external_tenant_id = ${TEAM}`;
+      const metadata: Record<string, unknown> = {
+        external_id: `slackinst-${TEAM}`,
+        config: { platform: "slack", botToken: "secret://installations/x/botToken" },
+      };
+      if (installerUserId) metadata.installer_user_id = installerUserId;
+      await getDb()`
+        INSERT INTO app_installations
+          (organization_id, provider, provider_instance, provider_app_id,
+           external_tenant_id, status, metadata)
+        VALUES
+          ('org-acme', 'slack', 'cloud', 'cloud', ${TEAM}, 'active',
+           ${getDb().json(metadata)})
+      `;
+    }
+
+    afterEach(async () => {
+      await getDb()`DELETE FROM app_installations WHERE external_tenant_id = ${TEAM}`;
+    });
+
+    test("fires exactly once on the first binding, then never again", async () => {
+      await seedActiveInstall("U-INSTALLER");
+      const secretStore = makeResolvingSecretStore();
+
+      // First binding → one welcome DM to the installer.
+      const web1 = makeWelcomeWeb();
+      await maybeSendSlackWorkspaceWelcome({
+        teamId: TEAM,
+        secretStore,
+        web: web1,
+      });
+      expect(web1.openDm).toHaveBeenCalledTimes(1);
+      expect(web1.openDm.mock.calls[0]?.[0]).toBe("xoxb-welcome-token");
+      expect(web1.openDm.mock.calls[0]?.[1]).toBe("U-INSTALLER");
+      expect(web1.postMessage).toHaveBeenCalledTimes(1);
+      expect(web1.postMessage.mock.calls[0]?.[1]).toBe("D-WELCOME");
+
+      // Second binding → the persisted welcome_dm_sent marker is already set, so
+      // NO second DM (multi-replica-safe at-most-once).
+      const web2 = makeWelcomeWeb();
+      await maybeSendSlackWorkspaceWelcome({
+        teamId: TEAM,
+        secretStore,
+        web: web2,
+      });
+      expect(web2.openDm).not.toHaveBeenCalled();
+      expect(web2.postMessage).not.toHaveBeenCalled();
+    });
+
+    test("does not send for an unclaimed (non-active) workspace", async () => {
+      // A pending (unclaimed) install has installer id but is not active — the
+      // three preconditions are not all met, so no DM.
+      await getDb()`DELETE FROM app_installations WHERE external_tenant_id = ${TEAM}`;
+      await getDb()`
+        INSERT INTO app_installations
+          (organization_id, provider, provider_instance, provider_app_id,
+           external_tenant_id, status, metadata)
+        VALUES
+          (NULL, 'slack', 'cloud', 'cloud', ${TEAM}, 'pending',
+           ${getDb().json({ installer_user_id: "U-INSTALLER" })})
+      `;
+      const web = makeWelcomeWeb();
+      await maybeSendSlackWorkspaceWelcome({
+        teamId: TEAM,
+        secretStore: makeResolvingSecretStore(),
+        web,
+      });
+      expect(web.openDm).not.toHaveBeenCalled();
+      expect(web.postMessage).not.toHaveBeenCalled();
+    });
+
+    test("does not send when the install has no recorded installer id", async () => {
+      await seedActiveInstall(null);
+      const web = makeWelcomeWeb();
+      await maybeSendSlackWorkspaceWelcome({
+        teamId: TEAM,
+        secretStore: makeResolvingSecretStore(),
+        web,
+      });
+      expect(web.openDm).not.toHaveBeenCalled();
+      expect(web.postMessage).not.toHaveBeenCalled();
+    });
   });
 });

@@ -2,7 +2,10 @@ import { createHash, randomInt } from "node:crypto";
 import { slugify } from "@lobu/core";
 import type { Context } from "hono";
 import { getDb } from "../db/client";
+import { maybeSendSlackWorkspaceWelcome } from "../gateway/connections/slack-connection-coordinator";
 import { parseJsonBody } from "../gateway/routes/shared/helpers";
+import { SecretStoreRegistry } from "../gateway/secrets";
+import { PostgresSecretStore } from "../lobu/stores/postgres-secret-store";
 import type { Env } from "../index";
 import { runtimeConnectionIdToSlug } from "../lobu/stores/connections-projection";
 import { errorMessage } from "../utils/errors";
@@ -304,7 +307,7 @@ export async function consumePreviewClaim(args: {
 	} = args;
 	const sql = getDb();
 
-	return sql.begin(async (tx) => {
+	const result = await sql.begin(async (tx) => {
 		const claims = await tx<{ payload: ClaimPayload }>`
 			SELECT payload FROM oauth_states
 			WHERE id = ${codeHash(code)}
@@ -380,6 +383,26 @@ export async function consumePreviewClaim(args: {
 			organizationId: claim.organizationId,
 		};
 	});
+
+	// Post-commit, best-effort: a `/lobu link` inside the installer's OWN claimed
+	// Slack workspace is that workspace's first-agent mapping — fire the one-time
+	// installer welcome DM. No-op for the hosted-preview team (no active
+	// `app_installations` row) or when already sent; the coordinator's atomic
+	// marker decides. Runs only after the binding actually committed.
+	if (result.status === "bound" && platform === SLACK_PLATFORM && teamId) {
+		const pg = new PostgresSecretStore();
+		await maybeSendSlackWorkspaceWelcome({
+			teamId,
+			secretStore: new SecretStoreRegistry(pg, { secret: pg }),
+		}).catch((error) => {
+			logger.warn(
+				{ teamId, error: errorMessage(error) },
+				"[preview] slack welcome DM after link-bind failed",
+			);
+		});
+	}
+
+	return result;
 }
 
 // ── Public-preview "try a demo agent" ────────────────────────────────────────

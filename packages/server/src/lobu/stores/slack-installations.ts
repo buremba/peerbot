@@ -119,7 +119,19 @@ export async function upsertSlackInstallByTeam(
   secretStore: WritableSecretStore,
   organizationId: string,
   teamId: string,
-  data: { teamName?: string; botUserId?: string; botToken: string }
+  data: {
+    teamName?: string;
+    botUserId?: string;
+    botToken: string;
+    /**
+     * The Slack user who installed the workspace (`authed_user.id`). Persisted
+     * onto the installation row so the first-agent-binding welcome DM (see
+     * {@link maybeSendSlackWorkspaceWelcome}) can reach the installer long after
+     * the org-less pending row is retired. Undefined on a BYO/self-heal path
+     * that has no installer identity.
+     */
+    installerUserId?: string;
+  }
 ): Promise<SlackInstallationRow> {
   // Bind the org for the secret-store put + the row write so they land in the
   // same tenant bucket regardless of ambient context.
@@ -172,6 +184,9 @@ export async function upsertSlackInstallByTeam(
       const metadata: Record<string, any> = { external_id: extId, config };
       if (data.teamName) metadata.team_name = data.teamName;
       if (data.botUserId) metadata.bot_user_id = data.botUserId;
+      if (data.installerUserId) {
+        metadata.installer_user_id = data.installerUserId;
+      }
       if (process.env.SLACK_CLIENT_ID) {
         metadata.slack_client_id = process.env.SLACK_CLIENT_ID;
       }
@@ -187,7 +202,7 @@ export async function upsertSlackInstallByTeam(
       authProfileId: null,
       status: "active",
       metadata: buildMetadata(plannedId),
-      preserveMetadataKeysOnUpdate: ["external_id"],
+      preserveMetadataKeysOnUpdate: ["external_id", "welcome_dm_sent"],
     });
     const canonicalId = row.metadata.external_id as string;
 
@@ -214,7 +229,7 @@ export async function upsertSlackInstallByTeam(
         authProfileId: null,
         status: "active",
         metadata: buildMetadata(canonicalId),
-        preserveMetadataKeysOnUpdate: ["external_id"],
+        preserveMetadataKeysOnUpdate: ["external_id", "welcome_dm_sent"],
       });
       await deleteSecretsByPrefix(
         secretStore,
@@ -306,6 +321,71 @@ export async function getSlackInstallByTeamId(
   return row ? toSlackRow(row) : null;
 }
 
+/**
+ * The winning result of {@link claimSlackWelcomeDm} — the data the caller needs
+ * to actually deliver the one-time welcome DM to the installer.
+ */
+export interface SlackWelcomeDmClaim {
+  /** Stable `slackinst-<uuid>` external id (the secret prefix for the token). */
+  installationId: string;
+  organizationId: string;
+  /** The Slack user who installed the workspace — the DM recipient. */
+  installerUserId: string;
+  /** `secret://` ref for the workspace bot token, or null if the row has none. */
+  botTokenRef: string | null;
+}
+
+/**
+ * ATOMICALLY claim the right to send the workspace's one-time installer welcome
+ * DM. This is the multi-replica idempotency gate for
+ * {@link maybeSendSlackWorkspaceWelcome}: a single conditional UPDATE flips
+ * `metadata.welcome_dm_sent` from unset → true and RETURNS the row ONLY to the
+ * winner, so two pods racing the same first-agent binding both call this but at
+ * most one gets a non-null result (the other's WHERE no longer matches). No
+ * in-memory flag — the marker lives on the `app_installations` row in Postgres,
+ * visible to every replica.
+ *
+ * Returns null when: the workspace has no ACTIVE install (not installed/claimed
+ * yet), the install has no recorded installer id (nobody to DM), or the marker
+ * was already claimed (a prior binding / a racing pod already sent it). The
+ * caller only DMs on a non-null result.
+ *
+ * `welcome_dm_sent` is preserved across reinstalls (see
+ * `preserveMetadataKeysOnUpdate` in {@link upsertSlackInstallByTeam}), so a
+ * reinstall of an already-welcomed workspace never re-fires.
+ */
+export async function claimSlackWelcomeDm(
+  teamId: string
+): Promise<SlackWelcomeDmClaim | null> {
+  const sql = getDb();
+  const rows = (await sql`
+    UPDATE app_installations
+    SET metadata = jsonb_set(metadata, '{welcome_dm_sent}', 'true'::jsonb, true),
+        updated_at = now()
+    WHERE provider = ${SLACK_PROVIDER}
+      AND provider_app_id = ${SLACK_PROVIDER_APP_ID}
+      AND external_tenant_id = ${teamId}
+      AND status = 'active'
+      AND metadata ->> 'installer_user_id' IS NOT NULL
+      AND (metadata ->> 'welcome_dm_sent') IS DISTINCT FROM 'true'
+    RETURNING organization_id, metadata
+  `) as Array<{ organization_id: string; metadata: Record<string, unknown> }>;
+  const row = rows[0];
+  if (!row) return null;
+  const installerUserId = row.metadata.installer_user_id;
+  const externalId = row.metadata.external_id;
+  if (typeof installerUserId !== "string" || !installerUserId) return null;
+  if (typeof externalId !== "string" || !externalId) return null;
+  const config = row.metadata.config as { botToken?: unknown } | undefined;
+  return {
+    installationId: externalId,
+    organizationId: row.organization_id,
+    installerUserId,
+    botTokenRef:
+      typeof config?.botToken === "string" ? config.botToken : null,
+  };
+}
+
 /** All Slack installs for an org. */
 export async function listSlackInstalls(
   store: AppInstallationStore,
@@ -384,6 +464,12 @@ export interface SlackPendingInstallInput {
   /** The Slack user who clicked Allow (`authed_user.id`); the DM/claim target. */
   installerUserId: string | null;
   isEnterpriseInstall: boolean;
+  /**
+   * The Grid enterprise id (`enterprise.id`), or null for a plain workspace.
+   * Non-null even for a single-workspace Grid install (unlike
+   * `isEnterpriseInstall`). Gates installer-identity claims in the claim flow.
+   */
+  enterpriseId: string | null;
 }
 
 export interface SlackPendingInstall {
@@ -395,6 +481,8 @@ export interface SlackPendingInstall {
   /** Decrypted bot token. */
   botToken: string;
   isEnterpriseInstall: boolean;
+  /** The Grid enterprise id, or null for a plain workspace. */
+  enterpriseId: string | null;
 }
 
 /** Park (or refresh) the single pending install for a Slack workspace. */
@@ -407,6 +495,7 @@ export async function writeSlackPendingInstall(
     bot_user_id: install.botUserId,
     installer_user_id: install.installerUserId,
     is_enterprise_install: install.isEnterpriseInstall,
+    enterprise_id: install.enterpriseId,
     bot_token_enc: encrypt(install.botToken),
   };
   // Refresh: at most one pending row per team (a re-install replaces it).
@@ -470,6 +559,10 @@ export async function resolveSlackPendingByTenant(
         : null,
     botToken: decrypt(enc),
     isEnterpriseInstall: row.metadata.is_enterprise_install === true,
+    enterpriseId:
+      typeof row.metadata.enterprise_id === "string"
+        ? row.metadata.enterprise_id
+        : null,
   };
 }
 
@@ -501,6 +594,7 @@ export async function claimSlackPendingInstall(
       teamName: pending.teamName ?? undefined,
       botUserId: pending.botUserId ?? undefined,
       botToken: pending.botToken,
+      installerUserId: pending.installerUserId ?? undefined,
     }
   );
   // Retire the org-less pending row now that an active, org-owned install owns

@@ -103,6 +103,24 @@ export interface AppInstallationStore {
     key: AppInstallationTenantKey
   ): Promise<AppInstallationRow | null>;
 
+  /**
+   * Resolve the SOLE active install for a provider app whose `metadata[key]`
+   * (a JSONB key, not a column) equals `value` — but ONLY when the match is
+   * unambiguous. Returns the row when exactly one active install matches; null
+   * when none OR when two-or-more match (the caller must not guess between them).
+   *
+   * Generic, provider-neutral: no Slack/Grid concepts here. Its first consumer is
+   * Slack's Enterprise Grid fallback — a Grid enterprise can host many workspaces
+   * each with its own install, so an event's `enterprise_id` only identifies an
+   * install when the enterprise has exactly one (see `getSlackInstallByEnterpriseId`).
+   */
+  resolveSoleActiveByMetadata(
+    provider: string,
+    providerAppId: string,
+    key: string,
+    value: string
+  ): Promise<AppInstallationRow | null>;
+
   getById(id: number): Promise<AppInstallationRow | null>;
   listByOrg(organizationId: string): Promise<AppInstallationRow[]>;
   setStatus(id: number, status: AppInstallationStatus): Promise<void>;
@@ -303,6 +321,23 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
         LIMIT 1
       `;
       return rows.length ? rowToInstallation(rows[0]) : null;
+    },
+
+    async resolveSoleActiveByMetadata(provider, providerAppId, key, value) {
+      const sql = getDb();
+      // Only resolve when UNAMBIGUOUS: exactly one active install matches. Two+ ⇒
+      // null so the caller drops rather than guess (e.g. a Grid enterprise with
+      // multiple installs). `key` is bound as the `->>` text operand, not spliced
+      // into SQL. LIMIT 2 is enough to detect ambiguity.
+      const rows = await sql`
+        SELECT * FROM app_installations
+        WHERE provider = ${provider}
+          AND provider_app_id = ${providerAppId}
+          AND status = 'active'
+          AND metadata ->> ${key} = ${value}
+        LIMIT 2
+      `;
+      return rows.length === 1 ? rowToInstallation(rows[0]) : null;
     },
 
     async getById(id) {

@@ -131,6 +131,14 @@ export async function upsertSlackInstallByTeam(
      * that has no installer identity.
      */
     installerUserId?: string;
+    /**
+     * The Grid enterprise id (`enterprise.id`), persisted so a Grid workspace's
+     * `message.im` events — which arrive stamped with a SIBLING workspace's
+     * `team_id`, not the install's — still resolve to this install via the
+     * enterprise fallback (see {@link getSlackInstallByEnterpriseId}). Undefined /
+     * null for a plain (non-Grid) workspace.
+     */
+    enterpriseId?: string | null;
   }
 ): Promise<SlackInstallationRow> {
   // Bind the org for the secret-store put + the row write so they land in the
@@ -186,6 +194,9 @@ export async function upsertSlackInstallByTeam(
       if (data.botUserId) metadata.bot_user_id = data.botUserId;
       if (data.installerUserId) {
         metadata.installer_user_id = data.installerUserId;
+      }
+      if (data.enterpriseId) {
+        metadata.enterprise_id = data.enterpriseId;
       }
       if (process.env.SLACK_CLIENT_ID) {
         metadata.slack_client_id = process.env.SLACK_CLIENT_ID;
@@ -318,6 +329,39 @@ export async function getSlackInstallByTeamId(
     providerAppId: SLACK_PROVIDER_APP_ID,
     externalTenantId: teamId,
   });
+  return row ? toSlackRow(row) : null;
+}
+
+/**
+ * Resolve the ACTIVE install for a Slack Enterprise Grid ENTERPRISE id.
+ *
+ * A Grid workspace is installed against ONE workspace `team_id` (e.g. the one
+ * OAuth returned), but its `message.im` / channel events arrive stamped with a
+ * DIFFERENT sibling workspace's `team_id` (whichever workspace the message is
+ * homed in) — so {@link getSlackInstallByTeamId} misses. Both share the same
+ * `enterprise_id`, which the event carries (top-level `enterprise_id` /
+ * `context_enterprise_id` / `authorizations[].enterprise_id`). This is the
+ * coordinator's fallback: exact team id first, then the enterprise.
+ *
+ * Matches on `metadata->>'enterprise_id'` (persisted at claim time by
+ * {@link upsertSlackInstallByTeam}). A Grid enterprise can host MANY workspaces,
+ * each with its own install; the enterprise id alone can't say which one a
+ * sibling-workspace event belongs to, so this resolves ONLY when exactly one
+ * active install exists for the enterprise (see
+ * {@link AppInstallationStore.resolveActiveByEnterprise}). Ambiguous (2+) or none
+ * ⇒ null, and the caller falls through to the pending / default paths exactly as
+ * the team-id miss does.
+ */
+export async function getSlackInstallByEnterpriseId(
+  store: AppInstallationStore,
+  enterpriseId: string
+): Promise<SlackInstallationRow | null> {
+  const row = await store.resolveSoleActiveByMetadata(
+    SLACK_PROVIDER,
+    SLACK_PROVIDER_APP_ID,
+    "enterprise_id",
+    enterpriseId
+  );
   return row ? toSlackRow(row) : null;
 }
 
@@ -595,6 +639,7 @@ export async function claimSlackPendingInstall(
       botUserId: pending.botUserId ?? undefined,
       botToken: pending.botToken,
       installerUserId: pending.installerUserId ?? undefined,
+      enterpriseId: pending.enterpriseId,
     }
   );
   // Retire the org-less pending row now that an active, org-owned install owns

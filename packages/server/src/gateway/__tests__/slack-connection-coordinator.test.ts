@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { getDb } from "../../db/client.js";
-import { upsertSlackInstallByTeam } from "../../lobu/stores/slack-installations.js";
+import {
+  getSlackInstallByEnterpriseId,
+  upsertSlackInstallByTeam,
+} from "../../lobu/stores/slack-installations.js";
 import {
   maybeSendSlackWorkspaceWelcome,
   SlackConnectionCoordinator,
@@ -95,6 +98,22 @@ function makeAppInstallationStore(): TrackedAppStore {
 		},
 		resolveActiveByTenant: async (key: any) => {
 			return rows.find((r) => tupleEq(r, key) && r.status === "active") ?? null;
+		},
+		resolveSoleActiveByMetadata: async (
+			provider: string,
+			providerAppId: string,
+			key: string,
+			value: string,
+		) => {
+			const matches = rows.filter(
+				(r) =>
+					r.provider === provider &&
+					r.providerAppId === providerAppId &&
+					r.status === "active" &&
+					r.metadata[key] === value,
+			);
+			// Unambiguous only — 2+ matches ⇒ null (see resolveSoleActiveByMetadata).
+			return matches.length === 1 ? matches[0] : null;
 		},
 		getByTenantAndOrg: async (key: any, org: string) => {
       const matches = rows.filter(
@@ -253,6 +272,127 @@ describe("SlackConnectionCoordinator", () => {
 
     expect(response.status).toBe(200);
     expect(forwarded).toEqual([seeded.id]);
+  });
+
+  test("Grid: a DM stamped with a sibling team id routes via the enterprise fallback", async () => {
+    // A Slack Enterprise Grid workspace is installed against one team id, but its
+    // message.im events arrive stamped with a DIFFERENT sibling workspace's
+    // team_id — only the shared enterprise_id links them. The exact team-id
+    // lookup misses; routing must fall back to the enterprise id.
+    const forwarded: string[] = [];
+    const appStore = makeAppInstallationStore();
+    const secretStore = makeSecretStore();
+    const seeded = await upsertSlackInstallByTeam(
+      appStore,
+      secretStore,
+      "org-acme",
+      "T-INSTALL",
+      { botToken: "xoxb-grid", enterpriseId: "E-GRID" },
+    );
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({
+        listSlackConnections: async () => [],
+        getAppInstallationStore: () => appStore,
+        getSecretStore: () => secretStore,
+        forwardWebhook: mock(async (connectionId: string) => {
+          forwarded.push(connectionId);
+          return new Response("ok");
+        }),
+      }),
+    );
+
+    // Event's team_id is a SIBLING (T-SIBLING), not the install's (T-INSTALL);
+    // the shared enterprise id resolves it.
+    const response = await coordinator.handleAppWebhook(
+      new Request("https://gateway.example.com/slack/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "event_callback",
+          team_id: "T-SIBLING",
+          enterprise_id: "E-GRID",
+          event: { type: "message", channel_type: "im" },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(forwarded).toEqual([seeded.id]);
+  });
+
+  test("Grid: the enterprise fallback is exact — a foreign enterprise id misses", async () => {
+    // The fallback must not leak across Grids: an install for E-GRID must NOT be
+    // returned when resolving a different enterprise id.
+    const appStore = makeAppInstallationStore();
+    const secretStore = makeSecretStore();
+    const seeded = await upsertSlackInstallByTeam(
+      appStore,
+      secretStore,
+      "org-acme",
+      "T-INSTALL",
+      { botToken: "xoxb-grid", enterpriseId: "E-GRID" },
+    );
+    expect(await getSlackInstallByEnterpriseId(appStore, "E-GRID")).toMatchObject(
+      { id: seeded.id },
+    );
+    expect(await getSlackInstallByEnterpriseId(appStore, "E-OTHER")).toBeNull();
+  });
+
+  test("Grid: enterprise fallback is null when the enterprise has MULTIPLE installs", async () => {
+    // A Grid enterprise can host many workspaces, each with its own install
+    // (distinct org/bindings). The enterprise id alone can't say which one a
+    // sibling-workspace DM belongs to — resolving to an arbitrary install would
+    // cross-tenant misroute. So the fallback must return null when 2+ installs
+    // share the enterprise, and the coordinator must NOT forward.
+    const forwarded: string[] = [];
+    const appStore = makeAppInstallationStore();
+    const secretStore = makeSecretStore();
+    // Two workspaces of one Grid enterprise, each its own install (same seed org
+    // to satisfy the connections-projection FK; the ambiguity is on the shared
+    // enterprise id, which is what matters — 2 installs, 1 enterprise).
+    await upsertSlackInstallByTeam(appStore, secretStore, "org-acme", "T-AAA", {
+      botToken: "xoxb-a",
+      enterpriseId: "E-GRID",
+    });
+    await upsertSlackInstallByTeam(appStore, secretStore, "org-acme", "T-BBB", {
+      botToken: "xoxb-b",
+      enterpriseId: "E-GRID",
+    });
+    // Store-level: two installs share E-GRID ⇒ ambiguous ⇒ null.
+    expect(await getSlackInstallByEnterpriseId(appStore, "E-GRID")).toBeNull();
+
+    // Coordinator: a DM from a third sibling (T-CCC) must NOT be forwarded to
+    // either install.
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({
+        listSlackConnections: async () => [],
+        getAppInstallationStore: () => appStore,
+        getSecretStore: () => secretStore,
+        forwardWebhook: mock(async (connectionId: string) => {
+          forwarded.push(connectionId);
+          return new Response("ok");
+        }),
+      }),
+    );
+    // The DM matches no install (T-CCC) and the enterprise is ambiguous, so it
+    // falls through the install path. Downstream fallbacks (default connection /
+    // OAuth chat) aren't stubbed here and may throw — that's fine; the assertion
+    // is that it NEVER forwarded to one of the E-GRID installs.
+    await coordinator
+      .handleAppWebhook(
+        new Request("https://gateway.example.com/slack/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            type: "event_callback",
+            team_id: "T-CCC",
+            enterprise_id: "E-GRID",
+            event: { type: "message", channel_type: "im" },
+          }),
+        }),
+      )
+      .catch(() => undefined);
+    expect(forwarded).toEqual([]);
   });
 
   test("a stopped BYO connection does not preempt an active OAuth installation", async () => {

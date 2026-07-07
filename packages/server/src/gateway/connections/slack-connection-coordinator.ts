@@ -3,6 +3,7 @@ import { Chat } from "chat";
 import type { AppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import {
   claimSlackWelcomeDm,
+  getSlackInstallByEnterpriseId,
   getSlackInstallByTeamId,
   resolveSlackPendingByTenant,
   writeSlackPendingInstall,
@@ -406,6 +407,11 @@ export class SlackConnectionCoordinator {
     const contentType = request.headers.get("content-type") || "";
     const teamJoinEvent = parseSlackTeamJoinEvent(body, contentType);
     const teamId = this.extractTeamId(body, contentType);
+    // Grid: events for a workspace inside an Enterprise Grid arrive stamped with
+    // a SIBLING workspace's `team_id` (not the install's), but carry the shared
+    // `enterprise_id`. Captured so path 2 can fall back to an enterprise match
+    // when the exact team id misses.
+    const enterpriseId = this.extractEnterpriseId(body, contentType);
 
     if (teamId) {
       // 1) A BYO agent-owned Slack connection for this workspace (created via
@@ -431,10 +437,16 @@ export class SlackConnectionCoordinator {
       //    `slackinst-` id is namespaced, so `ensureConnectionRunning`/
       //    `forwardWebhook` resolve it via the Slack install projection). Per-message
       //    routing is via `/lobu link` bindings.
-      const installation = await getSlackInstallByTeamId(
-        this.deps.getAppInstallationStore(),
-        teamId
-      );
+      const store = this.deps.getAppInstallationStore();
+      // Exact team id first; on a Grid workspace the event's team id is a sibling
+      // of the install's, so fall back to the shared enterprise id — but only
+      // when that enterprise has a SINGLE install (else it's ambiguous and the
+      // fallback returns null rather than cross-tenant misroute).
+      const installation =
+        (await getSlackInstallByTeamId(store, teamId)) ??
+        (enterpriseId
+          ? await getSlackInstallByEnterpriseId(store, enterpriseId)
+          : null);
       if (installation && installation.status !== "stopped") {
         if (!(await this.deps.ensureConnectionRunning(installation.id))) {
           return new Response("Slack connection unavailable", { status: 503 });
@@ -622,6 +634,47 @@ export class SlackConnectionCoordinator {
         payload.event?.team ||
         null
       );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The Slack Enterprise Grid enterprise id for a delivery, or null for a plain
+   * workspace. Events on a Grid workspace arrive stamped with a SIBLING
+   * workspace's `team_id`, so the exact team-id install lookup misses; the
+   * enterprise id (shared across the Grid) is the fallback routing key. Read from
+   * top-level `enterprise_id` / `context_enterprise_id`, then the first
+   * authorization's `enterprise_id` (interactive `payload` for form posts).
+   */
+  extractEnterpriseId(body: string, contentType: string): string | null {
+    const fromPayload = (payload: {
+      enterprise_id?: string;
+      context_enterprise_id?: string;
+      enterprise?: { id?: string };
+      authorizations?: Array<{ enterprise_id?: string | null }>;
+    }): string | null =>
+      payload.enterprise_id ||
+      payload.context_enterprise_id ||
+      payload.enterprise?.id ||
+      payload.authorizations?.[0]?.enterprise_id ||
+      null;
+
+    if (contentType.includes("application/x-www-form-urlencoded")) {
+      const params = new URLSearchParams(body);
+      const direct = params.get("enterprise_id");
+      if (direct) return direct;
+      const payloadStr = params.get("payload");
+      if (!payloadStr) return null;
+      try {
+        return fromPayload(JSON.parse(payloadStr));
+      } catch {
+        return null;
+      }
+    }
+
+    try {
+      return fromPayload(JSON.parse(body));
     } catch {
       return null;
     }

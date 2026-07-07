@@ -5,9 +5,13 @@ import {
   defineConnection,
   defineEntityType,
 } from "@lobu/cli/config";
+import type GoogleTakeoutConnector from "./google-takeout.connector.ts";
+import type InstagramTakeoutConnector from "./instagram-takeout.connector.ts";
 import type LinkedInConnector from "./linkedin.connector.ts";
+import type LinkedInTakeoutConnector from "./linkedin-takeout.connector.ts";
 import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
 import type SpotifyConnector from "./spotify.connector.ts";
+import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
 import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 
 const personalAgent = defineAgent({
@@ -451,99 +455,17 @@ const topic = defineEntityType({
   },
 });
 
-// Trips are clusters of COMPLETED card payments in a NON-home country,
-// concentrated in time. We key on `merchant_country` (a single trip mixes
-// VND/USD/GBP, so the old currency-clustering was wrong) per calendar month.
-// The country denylist drops home (GB/GBR) plus the online-merchant domiciles
-// (IE/LU/EE) that surface as bogus "trips" spread across years.
-//
-// A real trip is a SHORT, VARIED burst — so beyond the >= 6 transaction count
-// we require span <= 16 days and >= 3 distinct categories. That distinguishes
-// travel (concentrated, restaurants + transport + shopping in a couple of
-// weeks) from steady online spend billed abroad (US-domiciled SaaS: spread
-// across the whole month, one or two service categories) which otherwise
-// surfaced as a monthly "US trip".
-//
-// GBP cost is the sum of two exact sources, never a guessed FX rate:
-//   • gbp_known  — native GBP + Revolut-booked GBP counterpart on the trip's
-//                  own card payments.
-//   • gbp_funded — GBP exchanged INTO the trip's local currency around the trip
-//                  window (a Revolut "Exchanged to <ccy>" event). This recovers
-//                  the cost of pocket spend, which carries no per-transaction
-//                  GBP (e.g. a VND-pocket Vietnam trip: £688 on cards + £1,500
-//                  exchanged to VND). gbp_cost = gbp_known + gbp_funded.
-const tripBackingSql = `
-WITH tx AS (
-  SELECT
-    metadata->>'merchant_country' AS country,
-    date_trunc('month', occurred_at) AS mon,
-    coalesce(metadata->>'currency', 'GBP') AS currency,
-    metadata->>'category' AS category,
-    nullif(metadata->>'amount', '')::numeric AS amount,
-    ${gbpAmountSql} AS gbp,
-    occurred_at::date AS d
-  FROM events
-  WHERE ${completedCardSpendWhere}
-    AND nullif(metadata->>'amount', '') IS NOT NULL
-    AND metadata->>'merchant_country' IS NOT NULL
-    AND metadata->>'merchant_country' NOT IN ('', 'GB', 'GBR', 'IE', 'LU', 'EE')
-)
-SELECT
-  'trip:' || country || ':' || to_char(mon, 'YYYY-MM') AS id,
-  country || ' trip (' || min(d)::text || ' to ' || max(d)::text || ')' AS name,
-  'trip-' || lower(country) || '-' || to_char(mon, 'YYYY-MM') AS slug,
-  country AS destination,
-  min(d)::text AS start_date,
-  max(d)::text AS end_date,
-  mode() WITHIN GROUP (ORDER BY currency) AS local_currency,
-  round(sum(gbp), 2) AS gbp_known,
-  nullif(
-    round(
-      -- exact card GBP (native + GBP counterpart)
-      coalesce(sum(gbp), 0)
-      -- plus the pocket-spend cost: the GBP exchanged into the local currency
-      -- around the trip (exact) when present, else the untraced pocket spend
-      -- valued at the user's realised rate (covers long-held USD/EUR pockets
-      -- with no in-window exchange).
-      + coalesce(
-          nullif((
-            SELECT coalesce(sum(nullif(e.metadata->>'amount', '')::numeric), 0)
-            FROM events e
-            WHERE e.semantic_type = 'transaction'
-              AND e.metadata->>'transaction_type' = 'EXCHANGE'
-              AND e.metadata->>'state' = 'COMPLETED'
-              AND e.metadata->>'currency' = 'GBP'
-              AND e.metadata->>'direction' = 'out'
-              AND e.metadata->>'description' = 'Exchanged to ' || mode() WITHIN GROUP (ORDER BY tx.currency)
-              AND e.occurred_at::date BETWEEN min(tx.d) - 21 AND max(tx.d) + 3
-          ), 0),
-          coalesce(sum(amount) FILTER (WHERE gbp IS NULL), 0)
-            * coalesce(${realizedGbpRateSql("mode() WITHIN GROUP (ORDER BY tx.currency)")}, 0)
-        ),
-      2
-    ),
-    0
-  ) AS gbp_cost,
-  string_agg(DISTINCT currency, ',' ORDER BY currency) AS currencies,
-  count(*)::int AS transaction_count,
-  CASE WHEN (max(d) - min(d)) <= 10 AND count(*) >= 12 THEN 'high' ELSE 'medium' END AS confidence
-FROM tx
-GROUP BY country, mon
-HAVING count(*) >= 6 AND (max(d) - min(d)) <= 16 AND count(DISTINCT category) >= 3
-ORDER BY start_date DESC
-`;
-
+// Trips are stored from explicit travel evidence such as passport stamps.
+// Related transaction/photo windows are attached through event sets below.
 const trip = defineEntityType({
   key: "trip",
   name: "Trip",
-  description:
-    "Travel derived from time-concentrated card spend in a non-home country",
+  description: "Travel derived from passport stamps",
   metadata: { icon: "✈️", color: "#F59E0B" },
-  backing: { sql: tripBackingSql },
   properties: {
     destination: {
       type: "string",
-      description: "Merchant country code (ISO 3166-1 alpha-2)",
+      description: "Destination of the trip",
       "x-table-column": true,
       "x-table-label": "Destination",
     },
@@ -559,39 +481,30 @@ const trip = defineEntityType({
       "x-table-column": true,
       "x-table-label": "End",
     },
-    local_currency: {
-      type: "string",
-      description: "Dominant currency spent on the trip",
+    event_type: { type: "string" },
+    notes: { type: "string" },
+  },
+  eventSets: {
+    transactions: {
+      by: "window",
+      start: "start_date",
+      end: "end_date",
+      where: completedCardSpendWhere,
     },
-    local_spend: {
-      type: "number",
-      description: "Spend in the dominant local currency (exact)",
-      "x-table-column": true,
-      "x-table-label": "Local spend",
+    photos: {
+      by: "window",
+      start: "start_date",
+      end: "end_date",
+      where: "connector_id = 'apple-photos'",
     },
-    gbp_cost: {
-      type: "number",
-      description:
-        "Best GBP estimate of the trip: exact card GBP, plus pocket cost — GBP exchanged into the local currency around the trip, or (for long-held pockets with no in-window exchange) pocket spend at the user's realised rate",
-      "x-table-column": true,
-      "x-table-label": "GBP cost",
+  },
+  measures: {
+    photo_count: {
+      eventSet: "photos",
+      agg: "count",
+      description: "Number of Apple photos taken during the trip window.",
+      tier: "silver",
     },
-    gbp_known: {
-      type: "number",
-      description:
-        "GBP spent directly on cards, known exactly (native GBP + GBP counterpart)",
-    },
-    gbp_funded: {
-      type: "number",
-      description:
-        "GBP exchanged into the local currency around the trip window (funds pocket spend)",
-    },
-    currencies: {
-      type: "string",
-      description: "All currencies spent on the trip, comma-separated",
-    },
-    transaction_count: { type: "integer" },
-    confidence: { type: "string", enum: ["low", "medium", "high"] },
   },
 });
 
@@ -691,10 +604,91 @@ const learning = defineEntityType({
 // always timed out); 20 scrolls (~55s) reliably completes, and scheduled
 // incremental syncs keep history current from the top each run.
 const revolutConnection = defineConnection({
-  slug: "revolut",
+  slug: "revolut-buremba",
   connector: "revolut",
   name: "Revolut",
   feeds: [{ feed: "transactions", config: { max_scrolls: 20 } }],
+});
+
+const localTakeoutRoot = process.env.LOCAL_TAKEOUT_ROOT ?? "./takeout";
+const localTakeoutDir = (envName: string, fallback: string): string =>
+  process.env[envName] ?? `${localTakeoutRoot}/${fallback}`;
+
+const googleYoutubeTakeoutDir = localTakeoutDir(
+  "GOOGLE_YOUTUBE_TAKEOUT_DIR",
+  "google-youtube"
+);
+const googleKeepTakeoutDir = localTakeoutDir(
+  "GOOGLE_KEEP_TAKEOUT_DIR",
+  "google-keep"
+);
+const twitterTakeoutDir = localTakeoutDir("TWITTER_TAKEOUT_DIR", "twitter");
+const instagramTakeoutDir = localTakeoutDir(
+  "INSTAGRAM_TAKEOUT_DIR",
+  "instagram"
+);
+const linkedinTakeoutDir = localTakeoutDir("LINKEDIN_TAKEOUT_DIR", "linkedin");
+
+const takeoutConnection = defineConnection({
+  slug: "google-takeout-buremba",
+  connector: "google.takeout",
+  name: "Google Takeout Local",
+  feeds: [
+    { feed: "youtube", config: { takeout_dir: googleYoutubeTakeoutDir } },
+    { feed: "keep", config: { takeout_dir: googleKeepTakeoutDir } },
+  ],
+});
+
+const twitterTakeoutConnection = defineConnection({
+  slug: "twitter-takeout-buremba",
+  connector: "twitter.takeout",
+  name: "X/Twitter Takeout Local",
+  feeds: [
+    { feed: "tweets", config: { takeout_dir: twitterTakeoutDir } },
+    { feed: "messages", config: { takeout_dir: twitterTakeoutDir } },
+    { feed: "likes", config: { takeout_dir: twitterTakeoutDir } },
+    { feed: "followers", config: { takeout_dir: twitterTakeoutDir } },
+    { feed: "following", config: { takeout_dir: twitterTakeoutDir } },
+  ],
+});
+
+const instagramTakeoutConnection = defineConnection({
+  slug: "instagram-takeout-buremba",
+  connector: "instagram.takeout",
+  name: "Instagram Takeout Local",
+  feeds: [
+    { feed: "messages", config: { takeout_dir: instagramTakeoutDir } },
+    { feed: "connections", config: { takeout_dir: instagramTakeoutDir } },
+    { feed: "saved", config: { takeout_dir: instagramTakeoutDir } },
+    { feed: "comments", config: { takeout_dir: instagramTakeoutDir } },
+    { feed: "likes", config: { takeout_dir: instagramTakeoutDir } },
+    { feed: "media", config: { takeout_dir: instagramTakeoutDir } },
+    {
+      feed: "story_interactions",
+      config: { takeout_dir: instagramTakeoutDir },
+    },
+    { feed: "searches", config: { takeout_dir: instagramTakeoutDir } },
+    { feed: "link_history", config: { takeout_dir: instagramTakeoutDir } },
+    { feed: "ads", config: { takeout_dir: instagramTakeoutDir } },
+  ],
+});
+
+const linkedinTakeoutConnection = defineConnection({
+  slug: "linkedin-takeout-buremba",
+  connector: "linkedin.takeout",
+  name: "LinkedIn Takeout Local",
+  feeds: [
+    { feed: "messages", config: { takeout_dir: linkedinTakeoutDir } },
+    { feed: "connections", config: { takeout_dir: linkedinTakeoutDir } },
+    { feed: "invitations", config: { takeout_dir: linkedinTakeoutDir } },
+    { feed: "jobs", config: { takeout_dir: linkedinTakeoutDir } },
+    { feed: "profile", config: { takeout_dir: linkedinTakeoutDir } },
+    { feed: "companies", config: { takeout_dir: linkedinTakeoutDir } },
+    { feed: "learning", config: { takeout_dir: linkedinTakeoutDir } },
+    { feed: "events", config: { takeout_dir: linkedinTakeoutDir } },
+    { feed: "endorsements", config: { takeout_dir: linkedinTakeoutDir } },
+    { feed: "media", config: { takeout_dir: linkedinTakeoutDir } },
+  ],
 });
 
 export default defineConfig({
@@ -707,6 +701,18 @@ export default defineConfig({
     connectorFromFile<typeof WhatsAppCloudConnector>(
       "./whatsapp.cloud.connector.ts"
     ),
+    connectorFromFile<typeof GoogleTakeoutConnector>(
+      "./google-takeout.connector.ts"
+    ),
+    connectorFromFile<typeof TwitterTakeoutConnector>(
+      "./twitter-takeout.connector.ts"
+    ),
+    connectorFromFile<typeof InstagramTakeoutConnector>(
+      "./instagram-takeout.connector.ts"
+    ),
+    connectorFromFile<typeof LinkedInTakeoutConnector>(
+      "./linkedin-takeout.connector.ts"
+    ),
   ],
   org: "buremba",
   orgName: "Buremba Org",
@@ -714,5 +720,11 @@ export default defineConfig({
     "Personal agent tracking finances, people, companies, subscriptions, trips, and topics.",
   agents: [personalAgent],
   entities: [person, company, asset, subscription, topic, trip, goal, learning],
-  connections: [revolutConnection],
+  connections: [
+    revolutConnection,
+    takeoutConnection,
+    twitterTakeoutConnection,
+    instagramTakeoutConnection,
+    linkedinTakeoutConnection,
+  ],
 });

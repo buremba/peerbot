@@ -126,11 +126,61 @@ describe('YouTubeConnector personal feeds', () => {
     ).toBe('yt_playlist_PL1');
   });
 
+  test('subscriptions emits channel_subscription events', async () => {
+    const connector = new YouTubeConnector();
+    connector.http = fakeHttp({
+      subscriptions: () => ({
+        items: [
+          {
+            id: 'sub1',
+            snippet: {
+              publishedAt: '2026-01-02T00:00:00Z',
+              title: 'Creator Channel',
+              description: 'Channel description',
+              resourceId: { kind: 'youtube#channel', channelId: 'UC123' },
+            },
+            contentDetails: {
+              totalItemCount: 42,
+              newItemCount: 2,
+              activityType: 'all',
+            },
+          },
+        ],
+      }),
+    });
+
+    const result = await connector.sync({
+      feedKey: 'subscriptions',
+      credentials: { accessToken: 'token' },
+      config: { max_results: 10 },
+      checkpoint: {},
+    });
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0].origin_type).toBe('channel_subscription');
+    expect(result.events[0].origin_id).toBe('yt_subscription_UC123');
+    expect(result.events[0].title).toBe('Creator Channel');
+    expect(result.events[0].source_url).toBe('https://www.youtube.com/channel/UC123');
+    expect(result.events[0].metadata?.channel_id).toBe('UC123');
+  });
+
   test('liked_videos requires OAuth', async () => {
     const connector = new YouTubeConnector();
     await expect(
       connector.sync({
         feedKey: 'liked_videos',
+        credentials: {},
+        config: { YOUTUBE_API_KEY: 'key-only' },
+        checkpoint: {},
+      })
+    ).rejects.toThrow(/requires OAuth/i);
+  });
+
+  test('subscriptions requires OAuth', async () => {
+    const connector = new YouTubeConnector();
+    await expect(
+      connector.sync({
+        feedKey: 'subscriptions',
         credentials: {},
         config: { YOUTUBE_API_KEY: 'key-only' },
         checkpoint: {},

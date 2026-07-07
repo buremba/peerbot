@@ -190,9 +190,10 @@ jobs:
         run: bash scripts/sdk-e2e.sh
 
       # Failure-path companion: drives a real provider 429 through the worker
-      # and asserts the unified AGENT_ERRORS catalog prose reaches the user with
-      # no raw-429 / "stopped responding" leak. Reuses this job's build.
-      - name: Error-taxonomy e2e (provider 429 → catalog prose)
+      # and asserts the provider's own message reaches the user verbatim (incl.
+      # reset time) with no generic "stopped responding" mask. Reuses this
+      # job's build.
+      - name: Error-taxonomy e2e (provider 429 → verbatim relay)
         run: bash scripts/sdk-e2e-error.sh
 
   # CLI command-coverage smoke — the hard gate that EVERY `lobu` command runs,

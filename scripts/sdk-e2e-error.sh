@@ -3,18 +3,19 @@
 # Error-taxonomy end-to-end gate.
 #
 # The companion to sdk-e2e.sh (happy path). Instead of asserting a successful
-# turn, it drives a real provider FAILURE end to end and asserts the unified
-# AGENT_ERRORS catalog prose reaches the user — proving the whole
-# worker→classifyAgentError→signalError(code,context)→gateway renderer chain,
-# not just that a unit test classifies a string.
+# turn, it drives a real provider FAILURE end to end and asserts the provider's
+# OWN message is relayed to the user verbatim — proving the whole
+# worker→classifyError→signalError(code)→gateway renderer chain, not just that
+# a unit test classifies a string.
 #
 # The mock provider answers /chat/completions with z.ai's exact production 429
 # body ("429 Weekly/Monthly Limit Exhausted. Your limit will reset at …"). A
-# real agent turn is spawned through the worker; the failure must render as:
-#     "Your mock provider's usage limit is used up. It resets 2026-07-10 …."
-# and must NOT surface either the raw "429 Weekly/Monthly Limit Exhausted"
-# (leaked provider text) or the generic "stopped responding" (sweep race
-# terminalization) — the two divergent masks the taxonomy was built to kill.
+# real agent turn is spawned through the worker; the failure must render the
+# provider's message VERBATIM — including the reset time, which rides inside
+# that message for free — and must NOT surface the generic "stopped responding"
+# sweep-race mask the taxonomy was built to kill. (Under the thin design the
+# raw 429 text reaching the user IS the intended body, not a leak — the code
+# only adds a CTA link.)
 #
 # Runs against embedded Postgres + the deterministic mock, so it needs no
 # provider key and is reproducible in CI. Self-contained, same boot flow as

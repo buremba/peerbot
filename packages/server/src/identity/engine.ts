@@ -18,23 +18,25 @@
  * real users before flipping derivations on.
  */
 
-import { getDb } from "../db/client";
-import { insertEvent } from "../utils/insert-event";
-import logger from "../utils/logger";
-import { TtlCache } from "../utils/ttl-cache";
+import { IDENTITY, normalizeEmailDomain } from "@lobu/connector-sdk";
 import {
 	type AssuranceLevel,
 	type AutoCreateWhenRule,
+	assuranceMeets,
 	CLAIM_COLLISION_SEMANTIC_TYPE,
 	type ConnectorFact,
 	type DerivedFromProvenance,
 	IDENTITY_FACT_SEMANTIC_TYPE,
-	assuranceMeets,
 } from "@lobu/connector-sdk/identity-types";
-import type { EngineOptions, IngestResult } from "./types";
+import { getDb } from "../db/client";
+import { insertEvent } from "../utils/insert-event";
+import logger from "../utils/logger";
 import { validateTypeRule } from "../utils/relationship-validation";
+import { TtlCache } from "../utils/ttl-cache";
 import { connectorCapabilityRegistry } from "./capability-registry";
 import { withAccountLock } from "./lock";
+import { ruleHashFor } from "./rules";
+import type { EngineOptions, IngestResult } from "./types";
 import {
 	IdentitySchemaError,
 	validateClaimCollisionPayload,
@@ -43,7 +45,6 @@ import {
 	validateFactEventMetadata,
 	validateRelationshipTypeIdentityMetadata,
 } from "./validate";
-import { ruleHashFor } from "./rules";
 
 type Sql = ReturnType<typeof getDb>;
 
@@ -126,6 +127,51 @@ function priorKey(p: { namespace: string; normalizedValue: string }): string {
 	// US (\x1f) delimiter banned by ConnectorFact field charset, so namespace
 	// and normalizedValue can never produce the same join as another pair.
 	return `${p.namespace}${p.normalizedValue}`;
+}
+
+/**
+ * Engine-derived companion facts for a connector batch.
+ *
+ * `email_domain` is a pure function of an `email` fact (the part after `@`),
+ * so the engine derives it centrally rather than asking every connector to
+ * emit it — one authoritative rule, and any connector that produces `email`
+ * gets domain-keyed matching (e.g. works_at → company.domain) for free. The
+ * derived fact inherits the source email's assurance, providerStableId, and
+ * sourceAccountId, so it supersedes/tombstones/revokes in lockstep with the
+ * email: if the email goes away on refresh, so does the domain and any edge
+ * it derived. Because it is engine-authored (not connector-declared) it is
+ * exempt from the per-connector capability cap — its trust is exactly the
+ * already-capped email fact's trust, never more.
+ */
+const ENGINE_DERIVED_NAMESPACES = new Set<string>([IDENTITY.EMAIL_DOMAIN]);
+
+function isEngineDerivedFact(namespace: string): boolean {
+	return ENGINE_DERIVED_NAMESPACES.has(namespace);
+}
+
+function deriveCompanionFacts(facts: ConnectorFact[]): ConnectorFact[] {
+	const derived: ConnectorFact[] = [];
+	const seen = new Set<string>();
+	for (const fact of facts) {
+		if (fact.namespace !== IDENTITY.EMAIL) continue;
+		const domain = normalizeEmailDomain(fact.normalizedValue);
+		if (!domain) continue;
+		const key = `${IDENTITY.EMAIL_DOMAIN}${domain}`;
+		// One domain fact per distinct domain, even if several emails share it.
+		if (seen.has(key)) continue;
+		seen.add(key);
+		derived.push({
+			namespace: IDENTITY.EMAIL_DOMAIN,
+			identifier: domain,
+			normalizedValue: domain,
+			assurance: fact.assurance,
+			providerStableId: fact.providerStableId,
+			sourceAccountId: fact.sourceAccountId,
+			validTo: fact.validTo,
+			notes: `derived from email ${fact.normalizedValue}`,
+		});
+	}
+	return derived;
 }
 
 function isSupersedeUniqueViolation(err: unknown): boolean {
@@ -269,7 +315,9 @@ const IDENTITY_FIELD_CACHE_TTL_MS = (() => {
 	return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
 })();
 
-const identityFieldCache = new TtlCache<Set<string>>(IDENTITY_FIELD_CACHE_TTL_MS);
+const identityFieldCache = new TtlCache<Set<string>>(
+	IDENTITY_FIELD_CACHE_TTL_MS,
+);
 
 /**
  * Drop the in-memory cache. Tests use this to refresh after declaring new
@@ -301,7 +349,7 @@ async function loadIdentityFields(
 						string,
 						{ "x-identity-namespace"?: boolean | Record<string, unknown> }
 					>;
-				}
+			  }
 			| null
 			| undefined;
 		if (!schema || typeof schema !== "object" || !schema.properties) continue;
@@ -501,9 +549,20 @@ async function ingestFactsLocked(params: IngestParams): Promise<IngestResult> {
 		memberEntityId,
 		userId,
 		accountIdentity,
-		facts,
+		facts: connectorFacts,
 	} = params;
 	const shadow = isShadow(params.options);
+
+	// Expand the connector batch with engine-derived companion facts (e.g. an
+	// `email_domain` fact for each `email`). These ride the same persist /
+	// supersede / tombstone / derive machinery as connector facts, so absence
+	// of the source email on a later refresh tombstones the domain too. Derived
+	// facts are appended (never replace connector facts) and are exempt from the
+	// per-connector capability cap below.
+	const facts: ConnectorFact[] = [
+		...connectorFacts,
+		...deriveCompanionFacts(connectorFacts),
+	];
 
 	// 1. Validate every fact up front. All-or-nothing — we do not partially
 	// ingest, since a partial write could leave derivations dangling.
@@ -543,6 +602,11 @@ async function ingestFactsLocked(params: IngestParams): Promise<IngestResult> {
 			);
 		}
 		seenFactKeys.add(key);
+		// Engine-derived companion facts (e.g. email_domain) are authored by the
+		// engine, not the connector, so no connector declares a capability for
+		// them. They inherit the source fact's already-capped assurance, so the
+		// cap is enforced upstream on the email fact — skip the connector cap here.
+		if (isEngineDerivedFact(fact.namespace)) continue;
 		// server-side capability cap: a connector may only emit
 		// (namespace, assurance) pairs it declared in its capability. Anything
 		// outside the declared cap is rejected before any side effect.
@@ -762,7 +826,10 @@ async function ingestFactsLocked(params: IngestParams): Promise<IngestResult> {
 						}
 						if (validMatches.length === 0) continue;
 
-						if (validMatches.length > 1 && rule.matchStrategy === "unique_only") {
+						if (
+							validMatches.length > 1 &&
+							rule.matchStrategy === "unique_only"
+						) {
 							// Surface as a collision event for admin / user resolution.
 							const collisionId = await recordCollision(
 								sql,
@@ -786,7 +853,9 @@ async function ingestFactsLocked(params: IngestParams): Promise<IngestResult> {
 						// unique_only with one match, or all_matches with N → derive each.
 						// (first_match is rejected at the schema layer in @lobu/connector-sdk.)
 						const targets =
-							rule.matchStrategy === "unique_only" ? [validMatches[0]] : validMatches;
+							rule.matchStrategy === "unique_only"
+								? [validMatches[0]]
+								: validMatches;
 						for (const target of targets) {
 							const existing = await findExistingRelationship(
 								sql,

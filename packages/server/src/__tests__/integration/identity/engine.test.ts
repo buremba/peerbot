@@ -13,19 +13,16 @@
  * tests pre-create the `$member` directly.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
-	clearIdentityFieldCache,
-	ingestFacts,
-} from "../../../identity/engine";
-import { compileRulesMetadata } from "../../../identity/rules";
-import { connectorCapabilityRegistry } from "../../../identity/capability-registry";
-import {
-	IDENTITY_FACT_SEMANTIC_TYPE,
-	CLAIM_COLLISION_SEMANTIC_TYPE,
 	type AutoCreateWhenRule,
+	CLAIM_COLLISION_SEMANTIC_TYPE,
 	type ConnectorFact,
+	IDENTITY_FACT_SEMANTIC_TYPE,
 } from "@lobu/connector-sdk";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { connectorCapabilityRegistry } from "../../../identity/capability-registry";
+import { clearIdentityFieldCache, ingestFacts } from "../../../identity/engine";
+import { compileRulesMetadata } from "../../../identity/rules";
 import { IdentitySchemaError } from "../../../identity/validate";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -716,7 +713,10 @@ describe("identity engine — facts ingestion", () => {
 				memberEntityId,
 				userId: user.id,
 				accountIdentity,
-				facts: [fact, { ...fact, identifier: "Dupe Fact <dupe-fact@example.com>" }],
+				facts: [
+					fact,
+					{ ...fact, identifier: "Dupe Fact <dupe-fact@example.com>" },
+				],
 			}),
 		).rejects.toThrow(/duplicate fact/);
 	});
@@ -1209,7 +1209,9 @@ describe("identity engine — facts ingestion", () => {
 			accountIdentity,
 			facts: factsBoth,
 		});
-		expect(first.factEventIds).toHaveLength(2);
+		// Two distinct email facts, plus one engine-derived email_domain companion
+		// (both emails share example.com, so the companion dedupes to a single fact).
+		expect(first.factEventIds).toHaveLength(3);
 
 		const second = await ingestFacts({
 			tenantOrganizationId: tenant.id,
@@ -1219,20 +1221,33 @@ describe("identity engine — facts ingestion", () => {
 			facts: [factsBoth[0]],
 		});
 		// The dropped value tombstones; the kept value either no-ops (same
-		// normalizedValue) or supersedes itself.
+		// normalizedValue) or supersedes itself. The shared domain stays live
+		// (one@example.com still yields example.com), so it is not tombstoned.
 		expect(second.supersededEventIds.length).toBeGreaterThanOrEqual(1);
 		const sql = getTestDb();
-		const liveFacts = await sql<{ normalized_value: string }[]>`
+		const liveEmails = await sql<{ normalized_value: string }[]>`
       SELECT metadata->>'normalizedValue' AS normalized_value
       FROM current_event_records
       WHERE semantic_type = ${IDENTITY_FACT_SEMANTIC_TYPE}
         AND connector_key = ${accountIdentity.connectorKey}
         AND metadata->>'providerStableId' = ${accountIdentity.providerStableId}
+        AND metadata->>'namespace' = 'email'
         AND COALESCE(metadata->>'normalizedValue', '') <> ''
     `;
-		expect(liveFacts.map((r) => r.normalized_value)).toEqual([
+		expect(liveEmails.map((r) => r.normalized_value)).toEqual([
 			"one@example.com",
 		]);
+		// The shared email_domain companion survives because one@example.com keeps it live.
+		const liveDomains = await sql<{ normalized_value: string }[]>`
+      SELECT metadata->>'normalizedValue' AS normalized_value
+      FROM current_event_records
+      WHERE semantic_type = ${IDENTITY_FACT_SEMANTIC_TYPE}
+        AND connector_key = ${accountIdentity.connectorKey}
+        AND metadata->>'providerStableId' = ${accountIdentity.providerStableId}
+        AND metadata->>'namespace' = 'email_domain'
+        AND COALESCE(metadata->>'normalizedValue', '') <> ''
+    `;
+		expect(liveDomains.map((r) => r.normalized_value)).toEqual(["example.com"]);
 	});
 
 	it("validTo: an expired fact is persisted but never derives a relationship", async () => {
@@ -1298,5 +1313,172 @@ describe("identity engine — facts ingestion", () => {
 		expect(result.skippedRules.some((s) => s.reason.includes("validTo"))).toBe(
 			true,
 		);
+	});
+
+	// ── email_domain: the engine derives an email_domain companion fact from
+	//    every email fact, so an email alone (no explicit hosted_domain) drives
+	//    works_at via the domain rule. This is the general path that fires for
+	//    any connector emitting email, not just Google Workspace `hd` sign-ins.
+	it("EMAIL_DOMAIN: an email fact alone derives the email_domain companion and a works_at edge", async () => {
+		const market = await createPublicCatalog("Market EmailDomain");
+		const tenant = await createTestOrganization({
+			name: "Tenant EmailDomain",
+			visibility: "private",
+		});
+		const user = await createTestUser({ email: "dev@acme.com" });
+		await addUserToOrganization(user.id, tenant.id, "owner");
+		const memberEntityId = await createMemberEntity({
+			organizationId: tenant.id,
+			userId: user.id,
+			email: user.email,
+			name: "Dev Acme",
+		});
+		const company = await createTestEntity({
+			name: "Acme",
+			entity_type: "company",
+			organization_id: market.id,
+			domain: "acme.com",
+			created_by: user.id,
+		});
+		await declareIdentityField(market.id, "company", "domain");
+		clearIdentityFieldCache();
+		const works_at = await createRelationshipTypeWithRules({
+			organizationId: market.id,
+			slug: "works_at",
+			name: "Works at",
+			rules: [
+				{
+					sourceNamespace: "email_domain",
+					targetField: "domain",
+					assuranceRequired: "oauth_verified",
+					matchStrategy: "unique_only",
+				},
+			],
+		});
+
+		// Only an email fact is emitted — no explicit email_domain/hosted_domain.
+		const emailFact: ConnectorFact = {
+			namespace: "email",
+			identifier: "dev@acme.com",
+			normalizedValue: "dev@acme.com",
+			assurance: "oauth_verified",
+			providerStableId: "google:sub:acme1",
+			sourceAccountId: "acct_emaildomain",
+		};
+
+		const result = await ingestFacts({
+			tenantOrganizationId: tenant.id,
+			memberEntityId,
+			userId: user.id,
+			accountIdentity: {
+				connectorKey: "google_workspace",
+				providerStableId: "google:sub:acme1",
+				sourceAccountId: "acct_emaildomain",
+			},
+			facts: [emailFact],
+			options: { shadow: false },
+		});
+
+		// Two fact events: the email, plus the engine-derived email_domain.
+		expect(result.factEventIds).toHaveLength(2);
+		const factEvents = await Promise.all(
+			result.factEventIds.map((id) => getEvent(id)),
+		);
+		const namespaces = factEvents.map((e) => e?.metadata.namespace).sort();
+		expect(namespaces).toEqual(["email", "email_domain"]);
+		const domainEvent = factEvents.find(
+			(e) => e?.metadata.namespace === "email_domain",
+		);
+		expect(domainEvent?.metadata.normalizedValue).toBe("acme.com");
+		// Companion inherits the source email's assurance (never higher).
+		expect(domainEvent?.metadata.assurance).toBe("oauth_verified");
+
+		// The domain fact matched the catalog company → works_at derived.
+		expect(result.derivedRelationshipIds).toHaveLength(1);
+		expect(result.collisionEventIds).toHaveLength(0);
+		const rel = await getRelationship(result.derivedRelationshipIds[0]);
+		expect(rel?.from_entity_id).toBe(memberEntityId);
+		expect(rel?.to_entity_id).toBe(company.id);
+		expect(rel?.relationship_type_id).toBe(works_at.id);
+		expect(rel?.deleted_at).toBeNull();
+	});
+
+	it("EMAIL_DOMAIN: dropping the email on refresh revokes the derived works_at edge", async () => {
+		const market = await createPublicCatalog("Market EmailDomainRevoke");
+		const tenant = await createTestOrganization({
+			name: "Tenant EmailDomainRevoke",
+			visibility: "private",
+		});
+		const user = await createTestUser({ email: "leaver@acme.com" });
+		await addUserToOrganization(user.id, tenant.id, "owner");
+		const memberEntityId = await createMemberEntity({
+			organizationId: tenant.id,
+			userId: user.id,
+			email: user.email,
+			name: "Leaver Acme",
+		});
+		// The company must exist so the domain match derives an edge; the row id
+		// isn't asserted directly (we assert via the derived relationship).
+		await createTestEntity({
+			name: "Acme",
+			entity_type: "company",
+			organization_id: market.id,
+			domain: "acme.com",
+			created_by: user.id,
+		});
+		await declareIdentityField(market.id, "company", "domain");
+		clearIdentityFieldCache();
+		await createRelationshipTypeWithRules({
+			organizationId: market.id,
+			slug: "works_at",
+			name: "Works at",
+			rules: [
+				{
+					sourceNamespace: "email_domain",
+					targetField: "domain",
+					assuranceRequired: "oauth_verified",
+					matchStrategy: "unique_only",
+				},
+			],
+		});
+
+		const accountIdentity = {
+			connectorKey: "google_workspace",
+			providerStableId: "google:sub:leaver",
+			sourceAccountId: "acct_leaver",
+		};
+		const first = await ingestFacts({
+			tenantOrganizationId: tenant.id,
+			memberEntityId,
+			userId: user.id,
+			accountIdentity,
+			facts: [
+				{
+					namespace: "email",
+					identifier: "leaver@acme.com",
+					normalizedValue: "leaver@acme.com",
+					assurance: "oauth_verified",
+					providerStableId: "google:sub:leaver",
+					sourceAccountId: "acct_leaver",
+				},
+			],
+			options: { shadow: false },
+		});
+		expect(first.derivedRelationshipIds).toHaveLength(1);
+		const relId = first.derivedRelationshipIds[0];
+		expect((await getRelationship(relId))?.deleted_at).toBeNull();
+
+		// Empty batch is authoritative: the email (and its derived email_domain)
+		// are dropped, which must revoke the works_at edge in lockstep.
+		const second = await ingestFacts({
+			tenantOrganizationId: tenant.id,
+			memberEntityId,
+			userId: user.id,
+			accountIdentity,
+			facts: [],
+			options: { shadow: false },
+		});
+		expect(second.revokedRelationshipIds).toContain(relId);
+		expect((await getRelationship(relId))?.deleted_at).not.toBeNull();
 	});
 });

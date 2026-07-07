@@ -58,6 +58,31 @@ export function normalizeEmail(raw: string | null | undefined): string | null {
 }
 
 /**
+ * Extract the canonical domain from an email address. Runs the full email
+ * validator first (so a malformed address yields null, never a bogus domain),
+ * then returns the lowercased part after `@`. This is what backs the derived
+ * `email_domain` identity namespace: `alice@Anthropic.com` → `anthropic.com`.
+ *
+ * Accepts either a full email or a bare domain — passing an already-extracted
+ * `anthropic.com` returns it normalized, so the engine can re-run this
+ * defensively over a value that may already be a domain.
+ */
+export function normalizeEmailDomain(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed || /\s/.test(trimmed)) return null;
+  const atIndex = trimmed.indexOf('@');
+  if (atIndex === -1) {
+    // Bare domain: must contain a dot and no other @-like junk.
+    if (trimmed.indexOf('.') === -1) return null;
+    return trimmed;
+  }
+  const email = normalizeEmail(trimmed);
+  if (!email) return null;
+  return email.slice(email.indexOf('@') + 1);
+}
+
+/**
  * WhatsApp JIDs carry one of these suffixes:
  *   @s.whatsapp.net   — individual, backed by an e164 phone
  *   @lid              — privacy-protected individual (no phone)
@@ -167,6 +192,8 @@ function applyNormalizer(
       return normalizePhone(raw);
     case 'email':
       return normalizeEmail(raw);
+    case 'email_domain':
+      return normalizeEmailDomain(raw);
     case 'numeric_id':
       return normalizeNumericId(raw);
     case 'x_handle':

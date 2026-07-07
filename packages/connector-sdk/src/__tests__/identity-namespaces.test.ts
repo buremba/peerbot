@@ -43,4 +43,34 @@ describe('identity namespace registry', () => {
     expect(normalizeIdentifier(IDENTITY.GITHUB_LOGIN, ' Lobu-AI ')).toBe('Lobu-AI');
     expect(normalizeIdentifier(IDENTITY.SLACK_USER_ID, 't1:u2')).toBe('t1:u2');
   });
+
+  it('registers email_domain as a derived, non-recall, non-unique person namespace', () => {
+    expect(getIdentityNamespaceDefinition(IDENTITY.EMAIL_DOMAIN)).toMatchObject({
+      subjectKind: 'person',
+      normalizer: 'email_domain',
+      eventRecallIndexed: false,
+      uniquePerOrg: false,
+    });
+    // Not a recall key — it exists only to power domain-keyed derivation rules.
+    expect(isEventRecallIdentityNamespace(IDENTITY.EMAIL_DOMAIN)).toBe(false);
+    expect(EVENT_RECALL_IDENTITY_NAMESPACES).not.toContain(IDENTITY.EMAIL_DOMAIN);
+  });
+
+  it('normalizes email_domain from a full email or a bare domain, rejecting junk', () => {
+    // Full email → lowercased domain part.
+    expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, 'Alice@Anthropic.com')).toBe(
+      'anthropic.com'
+    );
+    expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, '  dev@ACME.CO.UK  ')).toBe(
+      'acme.co.uk'
+    );
+    // Bare domain passes through normalized.
+    expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, 'Example.COM')).toBe(
+      'example.com'
+    );
+    // Junk → null (no dot, empty, malformed).
+    expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, 'notadomain')).toBeNull();
+    expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, 'a@b@c.com')).toBeNull();
+    expect(normalizeIdentifier(IDENTITY.EMAIL_DOMAIN, '')).toBeNull();
+  });
 });

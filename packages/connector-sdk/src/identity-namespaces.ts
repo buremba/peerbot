@@ -9,6 +9,7 @@
 
 export type IdentityNormalizerKind =
   | 'email'
+  | 'email_domain'
   | 'phone'
   | 'wa_jid'
   | 'slack_user_id'
@@ -40,6 +41,7 @@ export const IDENTITY = {
   WA_JID: 'wa_jid',
   SLACK_USER_ID: 'slack_user_id',
   SLACK_CHANNEL_ID: 'slack_channel_id',
+  EMAIL_DOMAIN: 'email_domain',
   GITHUB_LOGIN: 'github_login',
   GITHUB_USER_ID: 'github_user_id',
   GITHUB_REPO_ID: 'github_repo_id',
@@ -59,6 +61,15 @@ export const IDENTITY_NAMESPACE_REGISTRY = [
     normalizer: 'email',
     eventRecallIndexed: true,
     uniquePerOrg: true,
+  },
+  {
+    namespace: IDENTITY.EMAIL_DOMAIN,
+    subjectKind: 'person',
+    normalizer: 'email_domain',
+    eventRecallIndexed: false,
+    uniquePerOrg: false,
+    notes:
+      "Derived from the person's email fact (the part after @); the engine emits it, connectors never supply it directly. Many people share a domain (not unique-per-org) and it isn't a recall key — its sole job is powering domain-keyed auto_create_when rules (e.g. works_at → company.domain).",
   },
   {
     namespace: IDENTITY.PHONE,

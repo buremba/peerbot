@@ -152,11 +152,19 @@ export class OutputGuardrailScanner {
    * guardrails never blocking on infra failure. Resolution rides the
    * AgentSettingsStore's own memoization (the chat bridge resolves per-delta the
    * same way), so no extra cache is kept here (avoids config-edit staleness).
+   * Pass `organizationId` so the read is org-scoped: a shared agent id exists in
+   * multiple orgs and the worker path has no ambient orgContext, so an unscoped
+   * read could resolve another org's guardrail config.
    */
-  async hasOutputGuardrails(agentId: string): Promise<boolean> {
+  async hasOutputGuardrails(
+    agentId: string,
+    organizationId?: string
+  ): Promise<boolean> {
     if (!this.enabled || !agentId) return false;
     try {
-      const settings = await this.settingsStore!.getSettings(agentId);
+      const settings = await this.settingsStore!.getSettings(agentId, {
+        organizationId,
+      });
       const resolved = resolveAgentGuardrails(
         settings ?? { guardrails: [] },
         (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),

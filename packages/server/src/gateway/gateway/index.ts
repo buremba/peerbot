@@ -518,6 +518,7 @@ export class WorkerGateway {
       const instructionContext: InstructionContext = {
         userId,
         agentId: agentId || "",
+        organizationId: auth.tokenData.organizationId,
         sessionKey: sessionKey || "",
         workingDirectory: "/workspace",
         availableProjects: [],

@@ -382,6 +382,13 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 export interface InstructionContext {
   userId: string;
   agentId: string;
+  /**
+   * Owning org of the agent. An agent id can exist in multiple orgs (PK is
+   * `(organization_id, id)`), so instruction providers must scope their
+   * settings reads by org — the worker-dispatch path has no ambient orgContext,
+   * so an unscoped read returns an arbitrary org's row.
+   */
+  organizationId?: string;
   sessionKey: string;
   workingDirectory: string;
   availableProjects?: string[];

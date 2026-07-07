@@ -178,7 +178,10 @@ export class ChatResponseBridge implements ResponseRenderer {
   ): Promise<boolean> {
     const agentId = this.resolveAgentId(payload, ctx);
     if (!agentId) return false;
-    return this.outputGuardrail.hasOutputGuardrails(agentId);
+    return this.outputGuardrail.hasOutputGuardrails(
+      agentId,
+      this.resolveOrganizationId(payload, ctx)
+    );
   }
 
   /**

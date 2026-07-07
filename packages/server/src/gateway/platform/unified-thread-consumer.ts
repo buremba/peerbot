@@ -448,7 +448,13 @@ export class UnifiedThreadResponseConsumer {
         // event instead (the SPA renders from it). Agents without output
         // guardrails stream normally — `hasOutputGuardrails` returns false.
         if (data.delta) {
-          if (await this.outputGuardrail.hasOutputGuardrails(agentId)) return;
+          if (
+            await this.outputGuardrail.hasOutputGuardrails(
+              agentId,
+              md.organizationId
+            )
+          )
+            return;
         } else if (data.error || data.processedMessageIds?.length) {
           // Terminal row: scan whichever authoritative text the renderer will
           // broadcast — the reply (`finalText`, via handleCompletion) OR the

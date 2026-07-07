@@ -67,7 +67,8 @@ class SkillsInstructionProvider extends BaseInstructionProvider {
     }> = [];
     try {
       const settings = await this.agentSettingsStore.getSettings(
-        context.agentId
+        context.agentId,
+        { organizationId: context.organizationId }
       );
       const skills = settings?.skillsConfig?.skills || [];
       enabledSkills = skills.filter((s) => s.enabled && s.content);
@@ -275,7 +276,8 @@ export class InstructionService {
     if (this.agentSettingsStore && context.agentId) {
       try {
         const settings = await this.agentSettingsStore.getSettings(
-          context.agentId
+          context.agentId,
+          { organizationId: context.organizationId }
         );
         if (settings) {
           const sections: string[] = [];

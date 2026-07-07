@@ -77,21 +77,27 @@ BEGIN
     END IF;
 
     -- 1. Declare company.domain as an identity-matchable field, preserving any
-    --    existing schema/props (idempotent: re-running just re-sets the marker).
+    --    existing schema/props. Only ADD the marker when it is absent — an
+    --    existing x-identity-namespace value (true OR the richer object form the
+    --    engine also accepts) is left untouched, so a reseed never downgrades a
+    --    hand-tuned declaration. Idempotent: with the marker present this is a
+    --    no-op on that key.
     schema := COALESCE(company_type.metadata_schema, '{"type":"object"}'::jsonb);
     props := COALESCE(schema -> 'properties', '{}'::jsonb);
-    domain_prop := COALESCE(props -> 'domain', '{"type":"string"}'::jsonb)
-      || '{"x-identity-namespace": true}'::jsonb;
-    props := props || jsonb_build_object('domain', domain_prop);
-    schema := schema || jsonb_build_object('properties', props);
-
-    UPDATE entity_types
-    SET metadata_schema = schema, updated_at = now()
-    WHERE id = company_type.id;
+    domain_prop := COALESCE(props -> 'domain', '{"type":"string"}'::jsonb);
+    IF NOT (domain_prop ? 'x-identity-namespace') THEN
+      domain_prop := domain_prop || '{"x-identity-namespace": true}'::jsonb;
+      props := props || jsonb_build_object('domain', domain_prop);
+      schema := schema || jsonb_build_object('properties', props);
+      UPDATE entity_types
+      SET metadata_schema = schema, updated_at = now()
+      WHERE id = company_type.id;
+    END IF;
 
     -- 2. Upsert the works_at type carrying the compiled rule. Idempotent on the
-    --    active (organization_id, slug) unique index; on conflict we refresh the
-    --    rule metadata so a reseed corrects any drift.
+    --    active (organization_id, slug) unique index; on conflict we MERGE the
+    --    rule keys into any existing metadata (never clobber other fields on an
+    --    already-defined works_at type) so a reseed corrects drift in place.
     INSERT INTO entity_relationship_types (
       organization_id, slug, name, description, is_symmetric, status, metadata,
       created_at, updated_at
@@ -101,7 +107,9 @@ BEGIN
       false, 'active', rule_metadata, now(), now()
     )
     ON CONFLICT (organization_id, slug) WHERE (status = 'active')
-    DO UPDATE SET metadata = EXCLUDED.metadata, updated_at = now();
+    DO UPDATE SET
+      metadata = COALESCE(entity_relationship_types.metadata, '{}'::jsonb) || rule_metadata,
+      updated_at = now();
   END LOOP;
 END $$;
 

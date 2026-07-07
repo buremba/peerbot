@@ -1403,6 +1403,134 @@ describe("identity engine — facts ingestion", () => {
 		expect(rel?.deleted_at).toBeNull();
 	});
 
+	it("EMAIL_DOMAIN: companion takes the STRONGEST assurance at a domain, not input order", async () => {
+		const market = await createPublicCatalog("Market EmailDomainAssurance");
+		const tenant = await createTestOrganization({
+			name: "Tenant EmailDomainAssurance",
+			visibility: "private",
+		});
+		const user = await createTestUser({ email: "weak@acme.com" });
+		await addUserToOrganization(user.id, tenant.id, "owner");
+		const memberEntityId = await createMemberEntity({
+			organizationId: tenant.id,
+			userId: user.id,
+			email: user.email,
+			name: "Weak First",
+		});
+		const company = await createTestEntity({
+			name: "Acme",
+			entity_type: "company",
+			organization_id: market.id,
+			domain: "acme.com",
+			created_by: user.id,
+		});
+		await declareIdentityField(market.id, "company", "domain");
+		clearIdentityFieldCache();
+		const works_at = await createRelationshipTypeWithRules({
+			organizationId: market.id,
+			slug: "works_at",
+			name: "Works at",
+			rules: [
+				{
+					sourceNamespace: "email_domain",
+					targetField: "domain",
+					assuranceRequired: "oauth_verified",
+					matchStrategy: "unique_only",
+				},
+			],
+		});
+
+		// Two emails at the SAME domain: the self_attested one comes FIRST. If the
+		// companion took input order it would be self_attested and fail the rule's
+		// oauth_verified floor. It must instead carry oauth_verified from the
+		// stronger email so the works_at edge still derives.
+		const result = await ingestFacts({
+			tenantOrganizationId: tenant.id,
+			memberEntityId,
+			userId: user.id,
+			accountIdentity: {
+				connectorKey: "google_workspace",
+				providerStableId: "google:sub:assurance",
+				sourceAccountId: "acct_assurance",
+			},
+			facts: [
+				{
+					namespace: "email",
+					identifier: "weak@acme.com",
+					normalizedValue: "weak@acme.com",
+					assurance: "self_attested",
+					providerStableId: "google:sub:assurance",
+					sourceAccountId: "acct_assurance",
+				},
+				{
+					namespace: "email",
+					identifier: "strong@acme.com",
+					normalizedValue: "strong@acme.com",
+					assurance: "oauth_verified",
+					providerStableId: "google:sub:assurance",
+					sourceAccountId: "acct_assurance",
+				},
+			],
+			options: { shadow: false },
+		});
+
+		const factEvents = await Promise.all(
+			result.factEventIds.map((id) => getEvent(id)),
+		);
+		const domainEvent = factEvents.find(
+			(e) => e?.metadata.namespace === "email_domain",
+		);
+		expect(domainEvent?.metadata.normalizedValue).toBe("acme.com");
+		expect(domainEvent?.metadata.assurance).toBe("oauth_verified");
+		expect(result.derivedRelationshipIds).toHaveLength(1);
+		const rel = await getRelationship(result.derivedRelationshipIds[0]);
+		expect(rel?.to_entity_id).toBe(company.id);
+		expect(rel?.relationship_type_id).toBe(works_at.id);
+	});
+
+	it("EMAIL_DOMAIN: a connector-supplied email_domain fact is rejected (capability cap)", async () => {
+		const tenant = await createTestOrganization({
+			name: "Tenant EmailDomainForge",
+			visibility: "private",
+		});
+		const user = await createTestUser({ email: "forge@acme.com" });
+		await addUserToOrganization(user.id, tenant.id, "owner");
+		const memberEntityId = await createMemberEntity({
+			organizationId: tenant.id,
+			userId: user.id,
+			email: user.email,
+			name: "Forger",
+		});
+
+		// A connector must not be able to forge an email_domain fact directly —
+		// only the engine derives it. No connector declares the capability, so the
+		// cap rejects it. This guards the privilege hole of skipping the cap by
+		// namespace instead of by engine-derived identity.
+		await expect(
+			ingestFacts({
+				tenantOrganizationId: tenant.id,
+				memberEntityId,
+				userId: user.id,
+				accountIdentity: {
+					connectorKey: "google_workspace",
+					providerStableId: "google:sub:forge",
+					sourceAccountId: "acct_forge",
+				},
+				facts: [
+					{
+						namespace: "email_domain",
+						identifier: "acme.com",
+						normalizedValue: "acme.com",
+						assurance: "oauth_verified",
+						providerStableId: "google:sub:forge",
+						sourceAccountId: "acct_forge",
+					},
+				],
+				options: { shadow: false },
+			}),
+		).rejects.toThrow(/no registered capability for namespace email_domain/);
+	});
+
 	it("EMAIL_DOMAIN: dropping the email on refresh revokes the derived works_at edge", async () => {
 		const market = await createPublicCatalog("Market EmailDomainRevoke");
 		const tenant = await createTestOrganization({

@@ -143,35 +143,31 @@ function priorKey(p: { namespace: string; normalizedValue: string }): string {
  * exempt from the per-connector capability cap — its trust is exactly the
  * already-capped email fact's trust, never more.
  */
-const ENGINE_DERIVED_NAMESPACES = new Set<string>([IDENTITY.EMAIL_DOMAIN]);
-
-function isEngineDerivedFact(namespace: string): boolean {
-	return ENGINE_DERIVED_NAMESPACES.has(namespace);
-}
-
 function deriveCompanionFacts(facts: ConnectorFact[]): ConnectorFact[] {
-	const derived: ConnectorFact[] = [];
-	const seen = new Set<string>();
+	// One companion per distinct domain, sourced from the STRONGEST-assurance
+	// email at that domain — not first-input-order. If a person supplies both a
+	// self_attested and an oauth_verified email at acme.com, the companion must
+	// carry oauth_verified so the works_at rule (which requires it) still fires;
+	// input order must not decide that.
+	const byDomain = new Map<string, ConnectorFact>();
 	for (const fact of facts) {
 		if (fact.namespace !== IDENTITY.EMAIL) continue;
 		const domain = normalizeEmailDomain(fact.normalizedValue);
 		if (!domain) continue;
-		const key = `${IDENTITY.EMAIL_DOMAIN}${domain}`;
-		// One domain fact per distinct domain, even if several emails share it.
-		if (seen.has(key)) continue;
-		seen.add(key);
-		derived.push({
-			namespace: IDENTITY.EMAIL_DOMAIN,
-			identifier: domain,
-			normalizedValue: domain,
-			assurance: fact.assurance,
-			providerStableId: fact.providerStableId,
-			sourceAccountId: fact.sourceAccountId,
-			validTo: fact.validTo,
-			notes: `derived from email ${fact.normalizedValue}`,
-		});
+		const prior = byDomain.get(domain);
+		if (prior && assuranceMeets(prior.assurance, fact.assurance)) continue;
+		byDomain.set(domain, fact);
 	}
-	return derived;
+	return Array.from(byDomain, ([domain, source]) => ({
+		namespace: IDENTITY.EMAIL_DOMAIN,
+		identifier: domain,
+		normalizedValue: domain,
+		assurance: source.assurance,
+		providerStableId: source.providerStableId,
+		sourceAccountId: source.sourceAccountId,
+		validTo: source.validTo,
+		notes: `derived from email ${source.normalizedValue}`,
+	}));
 }
 
 function isSupersedeUniqueViolation(err: unknown): boolean {
@@ -557,12 +553,17 @@ async function ingestFactsLocked(params: IngestParams): Promise<IngestResult> {
 	// `email_domain` fact for each `email`). These ride the same persist /
 	// supersede / tombstone / derive machinery as connector facts, so absence
 	// of the source email on a later refresh tombstones the domain too. Derived
-	// facts are appended (never replace connector facts) and are exempt from the
-	// per-connector capability cap below.
-	const facts: ConnectorFact[] = [
-		...connectorFacts,
-		...deriveCompanionFacts(connectorFacts),
-	];
+	// facts are appended (never replace connector facts).
+	//
+	// `engineDerived` holds the exact fact OBJECTS the engine synthesized, so
+	// the capability cap is skipped ONLY for those. A connector that itself
+	// supplies an email_domain fact is NOT in this set and is still subject to
+	// the cap — which no connector declares for email_domain, so a forged
+	// companion is rejected. Keying the exemption on identity (not namespace)
+	// is what closes that privilege hole.
+	const companions = deriveCompanionFacts(connectorFacts);
+	const engineDerived = new Set<ConnectorFact>(companions);
+	const facts: ConnectorFact[] = [...connectorFacts, ...companions];
 
 	// 1. Validate every fact up front. All-or-nothing — we do not partially
 	// ingest, since a partial write could leave derivations dangling.
@@ -605,8 +606,10 @@ async function ingestFactsLocked(params: IngestParams): Promise<IngestResult> {
 		// Engine-derived companion facts (e.g. email_domain) are authored by the
 		// engine, not the connector, so no connector declares a capability for
 		// them. They inherit the source fact's already-capped assurance, so the
-		// cap is enforced upstream on the email fact — skip the connector cap here.
-		if (isEngineDerivedFact(fact.namespace)) continue;
+		// cap is enforced upstream on the email fact — skip the connector cap for
+		// THESE specific objects only. A connector-supplied fact of the same
+		// namespace is not in the set and still faces the cap below.
+		if (engineDerived.has(fact)) continue;
 		// server-side capability cap: a connector may only emit
 		// (namespace, assurance) pairs it declared in its capability. Anything
 		// outside the declared cap is rejected before any side effect.

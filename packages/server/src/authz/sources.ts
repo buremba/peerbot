@@ -16,6 +16,17 @@ import { slackAclSource, slackChannelReadIdentity } from '@lobu/connectors/slack
 /** Every registered ACL source (contributed by its connector package). */
 export const ACL_SOURCES: AclSourceDef[] = [slackAclSource, githubAclSource];
 
+const ACL_SOURCE_BY_KEY = new Map<string, AclSourceDef>(ACL_SOURCES.map((s) => [s.key, s]));
+
+/**
+ * The ACL source descriptor for a connector key, or null when that connector
+ * contributes no access-controlled resource type. Lets a caller read a
+ * connector's `resourceType` (namespace + slug) without naming the connector.
+ */
+export function aclSourceFor(key: string): AclSourceDef | null {
+  return ACL_SOURCE_BY_KEY.get(key) ?? null;
+}
+
 /** Resource entity-type slugs that the read gate treats as access-controlled.
  * Validated to simple identifiers so they can be inlined as SQL literals. */
 export const RESOURCE_TYPE_SLUGS: string[] = ACL_SOURCES.map((s) => {

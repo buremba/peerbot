@@ -4,15 +4,17 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+	slackAclSource,
+	slackChannelKey,
+	slackChannelsToResources,
+} from "@lobu/connectors/slack-identity";
+import {
 	ABOUT_EDGE_SOURCE_CONFIG,
 	ensureAboutRelationshipType,
 	listChannelEntitiesAboutBusinessEntity,
 	syncConnectionChannelAboutEdges,
 } from "../../../authz/channel-about";
-import {
-	buildSlackChannelGraph,
-	slackChannelKey,
-} from "../../../authz/slack-channel-graph";
+import { buildAccessGraph } from "../../../authz/access-graph";
 import { clearEntityLinkRulesCache } from "../../../utils/entity-link-upsert";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -94,17 +96,19 @@ describe("channel about edges", () => {
 		expect(Number(before[0].to_entity_id)).toBe(company.id);
 		expect(before[0].source).toBe(ABOUT_EDGE_SOURCE_CONFIG);
 
-		await buildSlackChannelGraph({
+		await buildAccessGraph({
 			organizationId: org.id,
 			connectionId,
-			teamId: TEAM,
-			channels: [
+			connectorKey: slackAclSource.key,
+			resourceType: slackAclSource.resourceType,
+			memberIdentities: slackAclSource.memberIdentities,
+			resources: slackChannelsToResources(TEAM, [
 				{
 					channelId: CHANNEL,
 					name: "eng",
 					memberSlackUserIds: [],
 				},
-			],
+			]),
 		});
 
 		const after = await aboutEdges(org.id);

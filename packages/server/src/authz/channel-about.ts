@@ -16,8 +16,7 @@ import {
 } from "../db/client.js";
 import { resolveEventAttributionsForItems } from "../utils/entity-link-upsert.js";
 import { ensureResourceEntityType } from "./access-graph.js";
-import { slackChannelKey } from "./slack-channel-graph.js";
-import { SLACK_SOURCE } from "./sources.js";
+import { aclSourceFor, channelReadIdentityFor } from "./sources.js";
 
 const logger = createLogger("channel-about");
 
@@ -78,7 +77,12 @@ async function findAboutRelationshipTypeId(
 	return rows[0] ? Number(rows[0].id) : null;
 }
 
-/** Team-scoped resource key + identity namespace for a chat channel. */
+/** Team-scoped resource key + identity namespace for a chat channel.
+ *
+ * Connector-agnostic: a connector that registers a `ChannelReadIdentity`
+ * contributes both its channel identity namespace and the exact team-scoped key
+ * construction the ACL sync writes, so this names no platform. Connectors with
+ * no registered chat gate fall back to the generic `chat_channel_id` form. */
 export function channelResourceIdentity(
 	connectorKey: string,
 	teamId: string | null | undefined,
@@ -87,11 +91,10 @@ export function channelResourceIdentity(
 	const bare = channelId.includes(":")
 		? channelId.slice(channelId.indexOf(":") + 1)
 		: channelId;
-	if (connectorKey === "slack" && teamId) {
-		return {
-			namespace: SLACK_SOURCE.resourceType.namespace,
-			key: slackChannelKey(teamId, bare),
-		};
+	const readIdentity = channelReadIdentityFor(connectorKey);
+	const key = readIdentity?.buildChannelKey(teamId, bare);
+	if (readIdentity && key) {
+		return { namespace: readIdentity.channelNamespace, key };
 	}
 	const team = teamId?.trim() || "";
 	return {
@@ -102,7 +105,8 @@ export function channelResourceIdentity(
 
 /**
  * Ensure a channel resource entity exists (eager, before ACL sync). Returns the
- * entity id, or null when the key cannot be formed (missing team on Slack).
+ * entity id, or null when the key cannot be formed (e.g. a chat connector whose
+ * team-scoped key needs a team id that wasn't supplied).
  */
 export async function ensureChannelResourceEntity(opts: {
 	organizationId: string;
@@ -113,17 +117,28 @@ export async function ensureChannelResourceEntity(opts: {
 	sql?: DbClient;
 }): Promise<number | null> {
 	const sql = opts.sql ?? getDb();
+	const bare = opts.channelId.includes(":")
+		? opts.channelId.slice(opts.channelId.indexOf(":") + 1)
+		: opts.channelId;
+	// A registered chat connector's key construction can refuse (return null) when
+	// its team-scoped key can't be formed — bail rather than materialize a bad
+	// resource under the generic fallback namespace.
+	const readIdentity = channelReadIdentityFor(opts.connectorKey);
+	if (readIdentity && readIdentity.buildChannelKey(opts.teamId, bare) === null) {
+		return null;
+	}
+	// The resource entity type comes from the connector's ACL source. A connector
+	// that declares none produces no access-controlled channel resource, so there
+	// is nothing to materialize — skip rather than fabricate a type.
+	const resourceType = aclSourceFor(opts.connectorKey)?.resourceType;
+	if (!resourceType) return null;
+
 	const { namespace, key } = channelResourceIdentity(
 		opts.connectorKey,
 		opts.teamId,
 		opts.channelId,
 	);
-	if (opts.connectorKey === "slack" && !opts.teamId) return null;
-
-	await ensureResourceEntityType(
-		opts.organizationId,
-		SLACK_SOURCE.resourceType,
-	);
+	await ensureResourceEntityType(opts.organizationId, resourceType);
 
 	const resolved = await resolveEventAttributionsForItems(
 		{
@@ -142,7 +157,7 @@ export async function ensureChannelResourceEntity(opts: {
 				channel_about: [
 					{
 						role: "about",
-						entityType: SLACK_SOURCE.resourceType.slug,
+						entityType: resourceType.slug,
 						autoCreate: true,
 						titlePath: "metadata.resource_name",
 						identities: [

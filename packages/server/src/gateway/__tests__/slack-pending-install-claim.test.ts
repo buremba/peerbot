@@ -34,6 +34,7 @@ mock.module("../../lobu/stores/slack-installations.js", () => ({
 	}),
 	// Also imported by the coordinator module (webhook routing); unused here.
 	getSlackInstallByTeamId: mock(async () => null),
+	getSlackInstallByEnterpriseId: mock(async () => null),
 	resolveSlackPendingByTenant: mock(async () => null),
 	claimSlackWelcomeDm: mock(async () => null),
 }));

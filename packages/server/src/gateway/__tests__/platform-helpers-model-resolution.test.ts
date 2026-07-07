@@ -36,6 +36,38 @@ describe("resolveAgentOptions model resolution (layered fallback)", () => {
     expect(resolved.model).toBe("openai/gpt-5");
   });
 
+  test("reads the agent row scoped to the caller's org (shared agent id across orgs)", async () => {
+    // A shared agent id (e.g. "lobu-builder") exists in multiple orgs, each with
+    // its own defaultModel. The worker-dispatch path has no ambient orgContext,
+    // so getSettings MUST receive the org explicitly — otherwise it reads an
+    // arbitrary org's row and mis-resolves the model (the Gemini/Claude 404 bug).
+    const rowsByOrg: Record<string, { defaultModel: string }> = {
+      "org-a": { defaultModel: "claude/claude-sonnet-4-6" },
+      "org-b": { defaultModel: "gemini/gemini-2.5-flash" },
+    };
+    const settingsStore = {
+      getSettings: async (
+        _agentId: string,
+        context?: { organizationId?: string },
+      ) => {
+        // Mirror the store contract: an unscoped read is ambiguous. Simulate the
+        // real bug by returning the WRONG org's row when no org is passed.
+        const org = context?.organizationId ?? "org-a";
+        return rowsByOrg[org] as any;
+      },
+    };
+
+    const resolved = await resolveAgentOptions(
+      "lobu-builder",
+      {},
+      settingsStore as any,
+      "org-b",
+    );
+
+    // Must resolve org-b's model, not the default/first org's Claude model.
+    expect(resolved.model).toBe("gemini/gemini-2.5-flash");
+  });
+
   test("clears model when neither behavior nor agent nor org sets one (worker throws)", async () => {
     const settingsStore = {
       getSettings: async () => ({}) as any,

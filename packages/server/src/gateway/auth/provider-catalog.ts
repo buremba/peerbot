@@ -166,9 +166,16 @@ function orgProviderKeyEnvVarName(slug: string): string {
  */
 async function resolveInstalledProviders(
   agentSettingsStore: AgentSettingsStore,
-  agentId: string
+  agentId: string,
+  organizationId?: string
 ): Promise<InstalledProvider[]> {
-  const settings = await agentSettingsStore.getSettings(agentId);
+  // Org-scope the read: a shared agent id (e.g. "lobu-builder") lives in many
+  // orgs, and this runs on the worker-dispatch path with no ambient orgContext,
+  // so an unscoped read can return another org's installed-provider list. Pass
+  // the org explicitly so the agent's real providers resolve.
+  const settings = await agentSettingsStore.getSettings(agentId, {
+    organizationId,
+  });
   return settings?.installedProviders || [];
 }
 
@@ -268,7 +275,8 @@ export class ProviderCatalogService {
   ): Promise<ModelProviderModule[]> {
     const installed = await resolveInstalledProviders(
       this.agentSettingsStore,
-      agentId
+      agentId,
+      organizationId
     );
 
     const allModules = getModelProviderModules();

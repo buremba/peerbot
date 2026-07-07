@@ -95,7 +95,14 @@ export async function resolveAgentOptions(
     return { ...baseOptions };
   }
 
-  const settings = await agentSettingsStore.getSettings(agentId);
+  // Scope by org: an agent id can exist in multiple orgs (e.g. a shared
+  // system agent like "lobu-builder"), and the worker-dispatch path runs
+  // without ambient orgContext, so an unscoped read returns an arbitrary org's
+  // row — cross-tenant config bleed that mis-resolved the model to another
+  // org's `defaultModel`. Pass the org explicitly so the right row wins.
+  const settings = await agentSettingsStore.getSettings(agentId, {
+    organizationId,
+  });
   if (!settings) {
     return { ...baseOptions };
   }

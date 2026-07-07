@@ -8,13 +8,14 @@
  *
  * Mounts the real `createAgentApi` and authenticates with a real worker token
  * (encrypted with a test ENCRYPTION_KEY) scoped to a different agent, so
- * ownership is always denied. No DB: `RevokedTokenStore.isRevoked` fails open
- * to `false` when no pool is configured.
+ * ownership is always denied. Later default-agent tests exercise DB-backed
+ * org-system-agent resolution, so this file bootstraps the gateway test DB.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
 import { createAgentApi } from "../routes/public/agent.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
+import { ensureDbForGatewayTests } from "./helpers/db-setup.js";
 
 const TEST_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -23,6 +24,10 @@ const TEST_KEY =
 const EXISTING_AGENT = "agent-existing";
 
 let savedKey: string | undefined;
+beforeAll(async () => {
+  await ensureDbForGatewayTests();
+});
+
 beforeEach(() => {
   savedKey = process.env.ENCRYPTION_KEY;
   process.env.ENCRYPTION_KEY = TEST_KEY;

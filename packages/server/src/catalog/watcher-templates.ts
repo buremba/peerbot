@@ -82,4 +82,26 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			tags: ["tasks", "action-items"],
 		},
 	},
+	{
+		id: "duplicate-merge",
+		name: "Duplicate entity merge",
+		version: "1.0.0",
+		description:
+			"Find entities that are the same real-world thing and fold the duplicate into the original.",
+		detail: {
+			slug: "duplicate-merge",
+			schedule: "0 3 * * *",
+			// A cross-entity watcher: its source surfaces look-alike PEOPLE (shared
+			// alias / overlapping identity value) rather than events. The reader
+			// picks the pair; the agent decides confidence and calls the merge tool.
+			// `@entity:person` gives the agent the candidate set + their aliases so
+			// it can reason about which pairs are truly the same.
+			sources: [{ name: "people", query: "@entity:person" }],
+			prompt:
+				"Some of these person entities may be duplicates — the SAME real-world person captured twice (e.g. once from a chat handle, once from an email), each holding different identifiers or aliases. Compare them: shared aliases, matching names, overlapping identity values (email, phone, handle) are strong signals; a mere name similarity alone is NOT.\n\nFor each pair you are confident is the same person, merge the duplicate into the more complete record with manage_entity(action='merge', entity_id=<duplicate>, winner_entity_id=<keep>). The duplicate's identities, aliases, edges, and events will recall against the survivor; events are never rewritten, and the merge is reversible.\n\nReturn the merges you performed and, separately, any uncertain pairs you did NOT merge (with why) so a human can review them.\n",
+			reactions_guidance:
+				"Only merge when the evidence is strong (a shared identity value or alias, not just a similar name). When unsure, leave the pair unmerged and report it for human review rather than guessing — a wrong merge is costly to notice.",
+			tags: ["identity", "deduplication", "world-model"],
+		},
+	},
 ];

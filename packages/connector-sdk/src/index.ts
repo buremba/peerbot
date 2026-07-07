@@ -127,7 +127,6 @@ export {
 import {
   normalizeAuthUserId,
   normalizeEmail,
-  normalizeLowercaseTrim,
   normalizeNumericId,
   normalizeIdentifier,
   normalizePhone,
@@ -139,7 +138,6 @@ import {
 export {
   normalizeAuthUserId,
   normalizeEmail,
-  normalizeLowercaseTrim,
   normalizeNumericId,
   normalizeIdentifier,
   normalizePhone,

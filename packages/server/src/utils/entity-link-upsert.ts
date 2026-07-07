@@ -136,17 +136,25 @@ async function loadEventAttributionRules(params: {
 }
 
 /**
- * Load the FIRST attribution rule for `entityType` declared anywhere in the
- * connector's feeds_schema. The live app-webhook path resolves an actor without
- * a feed context (a delivery names an event, not a feed), and a connector's
- * person attribution is identical across its feeds — so any feed's rule serves.
+ * Load the FIRST attribution rule matching `entityType` (and `role`, when given)
+ * declared anywhere in the connector's feeds_schema. The live app-webhook path
+ * resolves an actor without a feed context (a delivery names an event, not a
+ * feed), and a connector's person attribution is identical across its feeds — so
+ * any feed's rule serves.
+ *
+ * `role` disambiguates when one entity type is targeted by several roles on the
+ * same kind (e.g. an X DM attributes `person` both `authored_by` and `about`):
+ * pass the role the caller actually wants ('authored_by' for a webhook actor)
+ * rather than relying on declaration order.
  */
 export async function loadAttributionRuleByType(params: {
   connectorKey: string;
   orgId: string;
   entityType: string;
+  role?: EventAttributionRule['role'];
 }): Promise<ResolvedEventAttributionRule | null> {
-  const cacheKey = `${params.orgId}:${params.connectorKey}:__bytype__:${params.entityType}`;
+  const roleKey = params.role ?? '__any__';
+  const cacheKey = `${params.orgId}:${params.connectorKey}:__bytype__:${params.entityType}:${roleKey}`;
   const map = await rulesCache.getOrSet(cacheKey, async () => {
     const sql = getDb();
     const rows = await sql`
@@ -165,7 +173,9 @@ export async function loadAttributionRuleByType(params: {
         if (!eventKinds) continue;
         for (const def of Object.values(eventKinds)) {
           const match = resolveEventAttributions(def).find(
-            (r) => r.entityType === params.entityType,
+            (r) =>
+              r.entityType === params.entityType &&
+              (params.role === undefined || r.role === params.role),
           );
           if (match) {
             result[params.entityType] = [match];
@@ -820,8 +830,34 @@ async function resolveLinksByKind(
 
       // Stamp metadata slots for attached identifiers only — read-time JOINs key
       // on events.metadata->>namespace, so a stale slot would mis-attribute.
+      //
+      // A namespace slot holds ONE value, but an event can carry multiple
+      // attribution rules that resolve the SAME namespace to DIFFERENT entities
+      // (e.g. an X DM stamps x_user_id for both the `authored_by` sender and the
+      // `about` counterparty). Read-time recall can only match one of them via
+      // this slot, so first-writer-wins: the earliest-declared rule (the primary
+      // author) keeps the slot, and we log the collision so the case that needs a
+      // richer, role-aware read model is observable rather than silently dropped.
+      // Making role queryable at read time is deliberately a separate change (it
+      // touches the shared recall SQL + every call site) — until then this is the
+      // honest boundary, not a workaround.
       const md = (item.metadata ??= {});
       for (const id of attached) {
+        const existing = md[id.namespace];
+        if (existing !== undefined && existing !== id.identifier) {
+          logger.warn(
+            {
+              orgId: params.orgId,
+              connectorKey: params.connectorKey,
+              namespace: id.namespace,
+              kept: existing,
+              dropped: id.identifier,
+              role: rule.role,
+            },
+            'attribution metadata slot collision — a later rule resolved the same namespace to a different identifier; keeping the first-stamped value (read-time recall matches only one)'
+          );
+          continue;
+        }
         md[id.namespace] = id.identifier;
       }
     }

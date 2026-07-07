@@ -240,6 +240,7 @@ async function resolveMembers(
     rules: {
       access_member: [
         {
+          role: 'authored_by',
           entityType: 'person',
           autoCreate: true,
           titlePath: 'metadata.display_name',
@@ -301,6 +302,7 @@ export async function buildAccessGraph(params: {
     rules: {
       access_resource: [
         {
+          role: 'belongs_to',
           entityType: resourceType.slug,
           autoCreate: true,
           titlePath: 'metadata.resource_name',

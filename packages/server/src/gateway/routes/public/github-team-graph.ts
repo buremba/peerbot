@@ -170,6 +170,7 @@ async function ensureOrgCompany(params: {
 		rules: {
 			org: [
 				{
+					role: "belongs_to",
 					entityType: "company",
 					autoCreate: true,
 					titlePath: "metadata.org_login",
@@ -267,6 +268,7 @@ export async function buildGithubTeamGraph(params: {
 		rules: {
 			org_member: [
 				{
+					role: "authored_by",
 					entityType: "person",
 					autoCreate: true,
 					titlePath: "metadata.author_login",

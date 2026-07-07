@@ -483,13 +483,11 @@ export type EventAttributionRole = 'authored_by' | 'about' | 'mentions' | 'belon
 
 /**
  * Declarative event attribution target. The identity selectors are normalized
- * and resolved against the identity graph/projection; directEntityIdPath is for
- * trusted server-generated events that already carry an entity id.
+ * and resolved against the identity graph/projection.
  */
 export interface EventAttributionTargetSpec {
   entityType?: string;
   identities?: EntityIdentitySpec[];
-  directEntityIdPath?: string;
   titlePath?: string;
   createWhen?: EntityLinkPredicate;
 }

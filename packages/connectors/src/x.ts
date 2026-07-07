@@ -31,6 +31,8 @@ import {
 	type ChromeActionDispatcher,
 	type ConnectorDefinition,
 	type EventAttributionRule,
+	type EventAttributionTargetSpec,
+	type EntityTraitSpec,
 	ConnectorRuntime,
 	calculateEngagementScore,
 	createHttpClient,
@@ -172,7 +174,7 @@ const X_ALLOWED_ORIGINS = ["x.com", "*.x.com", "twitter.com", "*.twitter.com"];
  * Match-only by default (like Gmail): identities accrete onto existing contacts,
  * but we do not mint a person per random timeline author.
  */
-const X_PERSON_AUTHOR_ATTRIBUTION_TARGET = {
+const X_PERSON_AUTHOR_TARGET: EventAttributionTargetSpec = {
 	entityType: "person",
 	titlePath: "metadata.author_name",
 	identities: [
@@ -183,24 +185,25 @@ const X_PERSON_AUTHOR_ATTRIBUTION_TARGET = {
 		},
 		{ namespace: X_IDENTITY.HANDLE, eventPath: "metadata.author_handle" },
 	],
-	traits: {
-		x_handle: {
-			eventPath: "metadata.author_handle",
-			behavior: "prefer_non_empty",
-		},
-		x_display_name: {
-			eventPath: "metadata.author_name",
-			behavior: "prefer_non_empty",
-		},
-		last_x_interaction_at: {
-			eventPath: "occurred_at",
-			behavior: "overwrite",
-		},
+};
+
+const X_PERSON_AUTHOR_TRAITS: Record<string, EntityTraitSpec> = {
+	x_handle: {
+		eventPath: "metadata.author_handle",
+		behavior: "prefer_non_empty",
+	},
+	x_display_name: {
+		eventPath: "metadata.author_name",
+		behavior: "prefer_non_empty",
+	},
+	last_x_interaction_at: {
+		eventPath: "occurred_at",
+		behavior: "overwrite",
 	},
 };
 
 /** Mint/link the 1:1 DM counterparty (never the connected account itself). */
-const X_PERSON_DM_COUNTERPARTY_ATTRIBUTION_TARGET = {
+const X_PERSON_DM_COUNTERPARTY_TARGET: EventAttributionTargetSpec = {
 	entityType: "person",
 	createWhen: { path: "metadata.is_group", equals: false },
 	titlePath: "metadata.participant_name",
@@ -215,19 +218,20 @@ const X_PERSON_DM_COUNTERPARTY_ATTRIBUTION_TARGET = {
 			eventPath: "metadata.participant_handle",
 		},
 	],
-	traits: {
-		x_handle: {
-			eventPath: "metadata.participant_handle",
-			behavior: "prefer_non_empty",
-		},
-		x_display_name: {
-			eventPath: "metadata.participant_name",
-			behavior: "prefer_non_empty",
-		},
-		last_x_dm_at: {
-			eventPath: "occurred_at",
-			behavior: "overwrite",
-		},
+};
+
+const X_PERSON_DM_COUNTERPARTY_TRAITS: Record<string, EntityTraitSpec> = {
+	x_handle: {
+		eventPath: "metadata.participant_handle",
+		behavior: "prefer_non_empty",
+	},
+	x_display_name: {
+		eventPath: "metadata.participant_name",
+		behavior: "prefer_non_empty",
+	},
+	last_x_dm_at: {
+		eventPath: "occurred_at",
+		behavior: "overwrite",
 	},
 };
 
@@ -235,11 +239,8 @@ const X_TWEET_AUTHOR_ATTRIBUTIONS: EventAttributionRule[] = [
 	{
 		role: "authored_by",
 		autoCreate: false,
-		target: {
-			entityType: "person",
-			...X_PERSON_AUTHOR_ATTRIBUTION_TARGET,
-		},
-		traits: X_PERSON_AUTHOR_ATTRIBUTION_TARGET.traits,
+		target: X_PERSON_AUTHOR_TARGET,
+		traits: X_PERSON_AUTHOR_TRAITS,
 	},
 ];
 
@@ -263,13 +264,8 @@ const X_DM_COUNTERPARTY_ATTRIBUTIONS: EventAttributionRule[] = [
 	{
 		role: "about",
 		autoCreate: true,
-		target: {
-			entityType: "person",
-			createWhen: { path: "metadata.is_group", equals: false },
-			titlePath: "metadata.participant_name",
-			identities: X_PERSON_DM_COUNTERPARTY_ATTRIBUTION_TARGET.identities,
-		},
-		traits: X_PERSON_DM_COUNTERPARTY_ATTRIBUTION_TARGET.traits,
+		target: X_PERSON_DM_COUNTERPARTY_TARGET,
+		traits: X_PERSON_DM_COUNTERPARTY_TRAITS,
 	},
 ];
 

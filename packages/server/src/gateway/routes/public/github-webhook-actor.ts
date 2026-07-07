@@ -120,6 +120,9 @@ export async function resolveGithubWebhookActor(params: {
 		connectorKey: "github",
 		orgId: params.organizationId,
 		entityType: "person",
+		// The webhook actor is the author of the delivered event; pin the role so
+		// a future non-author person rule on the same kind can't be picked instead.
+		role: "authored_by",
 	});
 	if (!rule) return null;
 

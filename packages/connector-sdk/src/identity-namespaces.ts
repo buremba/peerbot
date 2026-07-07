@@ -14,7 +14,6 @@ export type IdentityNormalizerKind =
   | 'slack_user_id'
   | 'numeric_id'
   | 'auth_user_id'
-  | 'lowercase_trim'
   | 'x_handle'
   | 'trim';
 

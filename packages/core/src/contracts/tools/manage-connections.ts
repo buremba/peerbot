@@ -622,14 +622,6 @@ export const ManageConnectionsResultSchema = Type.Union([
     default_repair_agent_id: Type.Union([Type.String(), Type.Null()]),
   }),
   Type.Object({
-    success: Type.Literal(true),
-    connector_key: Type.String(),
-    overrides: Type.Union([
-      Type.Record(Type.String(), Type.Unknown()),
-      Type.Null(),
-    ]),
-  }),
-  Type.Object({
     action: Type.Literal("list_channel_bindings"),
     agent_id: Type.String(),
     bindings: Type.Array(ChannelBindingDtoSchema),

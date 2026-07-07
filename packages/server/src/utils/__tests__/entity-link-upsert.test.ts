@@ -194,6 +194,70 @@ describe('applyEventAttributions', () => {
     expect(idents).toEqual([{ namespace: 'x_user_id', identifier: '123' }]);
   });
 
+  it('first-writer-wins when two rules stamp the same namespace on one event', async () => {
+    // An X DM carries two person attributions that both resolve `x_user_id`:
+    // the `authored_by` sender and the `about` counterparty. The event metadata
+    // has ONE `x_user_id` slot and read-time recall JOINs on it, so the earliest
+    // rule (the author, declared first) keeps the slot; a later rule must not
+    // overwrite it. Both people are still created/linked via entity_identities —
+    // only the single flat recall slot is contended. (Role-aware recall that would
+    // let the counterparty recall too is a separate, deliberate follow-up.)
+    const { org } = await setupOrg('slot collision org');
+    const sql = getTestDb();
+
+    await createTestConnectorDefinition({
+      key: 'x-dm',
+      name: 'x-dm',
+      organization_id: org.id,
+      feeds_schema: {
+        [FEED_KEY]: {
+          eventKinds: {
+            dm: {
+              attributions: [
+                {
+                  role: 'authored_by',
+                  autoCreate: true,
+                  target: {
+                    entityType: '$member',
+                    titlePath: 'metadata.sender_name',
+                    identities: [{ namespace: 'x_user_id', eventPath: 'metadata.sender_id' }],
+                  },
+                },
+                {
+                  role: 'about',
+                  autoCreate: true,
+                  target: {
+                    entityType: '$member',
+                    titlePath: 'metadata.participant_name',
+                    identities: [{ namespace: 'x_user_id', eventPath: 'metadata.participant_id' }],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    clearEntityLinkRulesCache();
+
+    const item: { origin_type: string; metadata: Record<string, unknown> } = {
+      origin_type: 'dm',
+      metadata: { sender_id: '111', sender_name: 'Sender', participant_id: '222', participant_name: 'Counterparty' },
+    };
+    await applyEventAttributions({ connectorKey: 'x-dm', feedKey: FEED_KEY, orgId: org.id, items: [item] });
+
+    // Both people are still created/linked (entity_identities is unaffected)...
+    const idents = await sql<{ identifier: string }[]>`
+      SELECT identifier FROM entity_identities
+      WHERE organization_id = ${org.id} AND namespace = 'x_user_id'
+      ORDER BY identifier
+    `;
+    expect(idents.map((r) => r.identifier)).toEqual(['111', '222']);
+
+    // ...but the single metadata slot keeps the FIRST (author) id.
+    expect(item.metadata.x_user_id).toBe('111');
+  });
+
   it('reuses an existing entity and accretes a newly-seen identifier', async () => {
     const { org, user } = await setupOrg('reuse org');
 

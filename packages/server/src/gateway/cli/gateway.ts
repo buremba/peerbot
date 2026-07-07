@@ -6,6 +6,7 @@ import { apiReference } from "@scalar/hono-api-reference";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
+import { orgContext } from "../../lobu/stores/org-context.js";
 import type { AgentMetadata } from "../auth/agent-metadata-store.js";
 import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
 import { setEnvResolver } from "../auth/mcp/string-substitution.js";
@@ -748,9 +749,17 @@ export function createGatewayApp(
 
     const agentDetails = [];
     for (const a of allAgents) {
-      const settings = agentConfigStore
-        ? await agentConfigStore.getSettings(a.agentId)
-        : null;
+      // This debug endpoint lists agents across ALL orgs, so there is no
+      // ambient orgContext. A shared agent id (e.g. "lobu-builder") exists once
+      // per org, so scope each read to the row's own org — otherwise the
+      // unscoped read returns an arbitrary org's model/providers and mislabels
+      // the row. The raw store reads the ambient org, so install it per agent.
+      const settings =
+        agentConfigStore && a.organizationId
+          ? await orgContext.run({ organizationId: a.organizationId }, () =>
+              agentConfigStore.getSettings(a.agentId),
+            )
+          : null;
       const providers = (settings?.installedProviders || []).map(
 				(p: { providerId: string }) => p.providerId,
       );

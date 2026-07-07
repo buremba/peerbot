@@ -20,7 +20,7 @@
  * replicas binding the same channel concurrently can't create duplicates.
  */
 import { createLogger } from "@lobu/core";
-import { getDb } from "../../db/client.js";
+import { type DbClient, getDb } from "../../db/client.js";
 
 const logger = createLogger("channel-feed");
 
@@ -28,11 +28,11 @@ const logger = createLogger("channel-feed");
 const CHANNEL_FEED_STORE = "channel_messages";
 
 async function findStreamingFeedId(
-  sql: ReturnType<typeof getDb>,
-  connectionId: string | number,
-  feedKey: string,
+	sql: DbClient,
+	connectionId: string | number,
+	feedKey: string,
 ): Promise<number | null> {
-  const rows = await sql`
+	const rows = await sql`
     SELECT id FROM feeds
     WHERE connection_id = ${connectionId}::bigint
       AND feed_key = ${feedKey}
@@ -40,7 +40,7 @@ async function findStreamingFeedId(
       AND deleted_at IS NULL
     LIMIT 1
   `;
-  return rows[0] ? Number(rows[0].id) : null;
+	return rows[0] ? Number(rows[0].id) : null;
 }
 
 /**
@@ -50,31 +50,29 @@ async function findStreamingFeedId(
  * (`read_feed`) maps back to the same `channel_messages` rows.
  */
 export async function ensureStreamingChannelFeed(opts: {
-  connectionId: string | number;
-  organizationId: string;
-  /** Channel id as stored on the binding — becomes the feed_key. */
-  channelKey: string;
-  /** Human label for the feed (channel handle when known; else the id). */
-  displayName?: string | null;
+	connectionId: string | number;
+	organizationId: string;
+	/** Channel id as stored on the binding — becomes the feed_key. */
+	channelKey: string;
+	/** Human label for the feed (channel handle when known; else the id). */
+	displayName?: string | null;
+	/** Transaction client for callers that need feed materialization rolled back with a larger operation. */
+	sql?: DbClient;
 }): Promise<number> {
-  const sql = getDb();
-  const { connectionId, organizationId, channelKey } = opts;
-  const displayName = opts.displayName ?? channelKey;
+	const sql = opts.sql ?? getDb();
+	const { connectionId, organizationId, channelKey } = opts;
+	const displayName = opts.displayName ?? channelKey;
 
-  const existing = await findStreamingFeedId(sql, connectionId, channelKey);
-  if (existing !== null) return existing;
+	const existing = await findStreamingFeedId(sql, connectionId, channelKey);
+	if (existing !== null) return existing;
 
-  return await sql.begin(async (tx) => {
-    await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
-      `channel-feed:${connectionId}:${channelKey}`,
-    ]);
-    const again = await findStreamingFeedId(
-      tx as ReturnType<typeof getDb>,
-      connectionId,
-      channelKey,
-    );
-    if (again !== null) return again;
-    const inserted = await tx`
+	const insertWithLock = async (tx: DbClient) => {
+		await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+			`channel-feed:${connectionId}:${channelKey}`,
+		]);
+		const again = await findStreamingFeedId(tx, connectionId, channelKey);
+		if (again !== null) return again;
+		const inserted = await tx`
       INSERT INTO feeds (
         organization_id, connection_id, feed_key, display_name,
         status, kind, virtual, config
@@ -84,28 +82,37 @@ export async function ensureStreamingChannelFeed(opts: {
       )
       RETURNING id
     `;
-    return Number(inserted[0].id);
-  });
+		return Number(inserted[0].id);
+	};
+
+	if (opts.sql) return await insertWithLock(sql);
+	return await sql.begin(insertWithLock);
 }
 
 /** Best-effort resolve/create — never throws. Feed materialization must not
  *  break the bind path; on failure the channel still binds (recall is unaffected)
  *  and the feed is created on the next bind, idempotently. */
 export async function resolveStreamingChannelFeedId(opts: {
-  connectionId: string | number;
-  organizationId: string;
-  channelKey: string;
-  displayName?: string | null;
+	connectionId: string | number;
+	organizationId: string;
+	channelKey: string;
+	displayName?: string | null;
+	sql?: DbClient;
 }): Promise<number | null> {
-  try {
-    return await ensureStreamingChannelFeed(opts);
-  } catch (err) {
-    logger.warn(
-      { connectionId: opts.connectionId, channelKey: opts.channelKey, err: String(err) },
-      "ensure streaming channel feed failed (non-fatal)",
-    );
-    return null;
-  }
+	if (opts.sql) return await ensureStreamingChannelFeed(opts);
+	try {
+		return await ensureStreamingChannelFeed(opts);
+	} catch (err) {
+		logger.warn(
+			{
+				connectionId: opts.connectionId,
+				channelKey: opts.channelKey,
+				err: String(err),
+			},
+			"ensure streaming channel feed failed (non-fatal)",
+		);
+		return null;
+	}
 }
 
 /**
@@ -114,12 +121,13 @@ export async function resolveStreamingChannelFeedId(opts: {
  * cosmetic, so a failure here never fails the unbind.
  */
 export async function softDeleteStreamingChannelFeed(opts: {
-  connectionId: string | number;
-  channelKey: string;
+	connectionId: string | number;
+	channelKey: string;
+	sql?: DbClient;
 }): Promise<void> {
-  const sql = getDb();
-  try {
-    await sql`
+	const sql = opts.sql ?? getDb();
+	if (opts.sql) {
+		await sql`
       UPDATE feeds
       SET deleted_at = now(), status = 'paused', updated_at = now()
       WHERE connection_id = ${opts.connectionId}::bigint
@@ -127,10 +135,25 @@ export async function softDeleteStreamingChannelFeed(opts: {
         AND kind = 'streaming'
         AND deleted_at IS NULL
     `;
-  } catch (err) {
-    logger.warn(
-      { connectionId: opts.connectionId, channelKey: opts.channelKey, err: String(err) },
-      "soft-delete streaming channel feed failed (non-fatal)",
-    );
-  }
+		return;
+	}
+	try {
+		await sql`
+      UPDATE feeds
+      SET deleted_at = now(), status = 'paused', updated_at = now()
+      WHERE connection_id = ${opts.connectionId}::bigint
+        AND feed_key = ${opts.channelKey}
+        AND kind = 'streaming'
+        AND deleted_at IS NULL
+    `;
+	} catch (err) {
+		logger.warn(
+			{
+				connectionId: opts.connectionId,
+				channelKey: opts.channelKey,
+				err: String(err),
+			},
+			"soft-delete streaming channel feed failed (non-fatal)",
+		);
+	}
 }

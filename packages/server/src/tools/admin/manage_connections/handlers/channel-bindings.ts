@@ -60,9 +60,7 @@ function normalizeChannelSpec(
 	externalTenantId: string | null,
 ): NormalizedChannelSpec | { error: string } {
 	const raw =
-		typeof input === "string"
-			? { channel_id: input, about: undefined }
-			: input;
+		typeof input === "string" ? { channel_id: input, about: undefined } : input;
 	let channelId = raw.channel_id.trim();
 	if (!channelId) return { error: "Channel ids cannot be empty" };
 	if (connectorKey === "slack") {
@@ -378,49 +376,11 @@ export async function handleSyncChannelBindings(
 		await svc.listBindings(args.agent_id, organizationId)
 	).filter((binding) => binding.connectionId === String(connection.id));
 	const existingIds = new Set(existing.map((binding) => binding.channelId));
-	const bound: string[] = [];
-	for (const channelId of desired) {
-		if (!existingIds.has(channelId)) {
-			await svc.createBinding(
-				args.agent_id,
-				connection.connector_key,
-				channelId,
-				connection.external_tenant_id ?? undefined,
-				{
-					configuredBy: userId ?? undefined,
-					organizationId,
-					connectionId: String(connection.id),
-				},
-			);
-		}
-		bound.push(channelId);
-	}
-
-	const removed: string[] = [];
-	for (const binding of existing) {
-		if (desired.has(binding.channelId)) continue;
-		await svc.deleteBinding(
-			args.agent_id,
-			binding.channelId,
-			String(connection.id),
-			organizationId,
-		);
-		removed.push(binding.channelId);
-	}
-	if (bound.length > 0) {
-		await fireSlackWelcomeAfterBind(
-			connection.connector_key,
-			connection.external_tenant_id ?? undefined,
-		);
-	}
-
-	let aboutLinked = 0;
-	let aboutRemoved = 0;
+	const aboutChannels: Array<{
+		channelId: string;
+		aboutEntityIds: number[];
+	}> = [];
 	try {
-		const aboutChannels: Array<{
-			channelId: string;
-			aboutEntityIds: number[];
-		}> = [];
 		for (const spec of normalized) {
 			if (!spec.about?.length) {
 				aboutChannels.push({ channelId: spec.channelId, aboutEntityIds: [] });
@@ -434,17 +394,71 @@ export async function handleSyncChannelBindings(
 			await assertEntityIdsInOrg(sql, organizationId, aboutEntityIds);
 			aboutChannels.push({ channelId: spec.channelId, aboutEntityIds });
 		}
-		const aboutResult = await syncConnectionChannelAboutEdges({
-			organizationId,
-			connectionId: connection.id,
-			connectorKey: connection.connector_key,
-			teamId: connection.external_tenant_id,
-			channels: aboutChannels,
-			userId,
-			sql,
+	} catch (error) {
+		return {
+			error:
+				error instanceof Error
+					? error.message
+					: "Failed to resolve channel about links",
+		};
+	}
+
+	let reconcileResult: {
+		bound: string[];
+		removed: string[];
+		aboutLinked: number;
+		aboutRemoved: number;
+	};
+	try {
+		reconcileResult = await sql.begin(async (tx) => {
+			const bound: string[] = [];
+			for (const channelId of desired) {
+				if (!existingIds.has(channelId)) {
+					await svc.createBinding(
+						args.agent_id,
+						connection.connector_key,
+						channelId,
+						connection.external_tenant_id ?? undefined,
+						{
+							configuredBy: userId ?? undefined,
+							organizationId,
+							connectionId: String(connection.id),
+							sql: tx,
+						},
+					);
+				}
+				bound.push(channelId);
+			}
+
+			const removed: string[] = [];
+			for (const binding of existing) {
+				if (desired.has(binding.channelId)) continue;
+				await svc.deleteBinding(
+					args.agent_id,
+					binding.channelId,
+					String(connection.id),
+					organizationId,
+					{ sql: tx },
+				);
+				removed.push(binding.channelId);
+			}
+
+			const aboutResult = await syncConnectionChannelAboutEdges({
+				organizationId,
+				connectionId: connection.id,
+				connectorKey: connection.connector_key,
+				teamId: connection.external_tenant_id,
+				channels: aboutChannels,
+				userId,
+				sql: tx,
+			});
+			return {
+				bound,
+				removed,
+				aboutLinked: aboutResult.linked,
+				aboutRemoved: aboutResult.removed,
+			};
 		});
-		aboutLinked = aboutResult.linked;
-		aboutRemoved = aboutResult.removed;
 	} catch (error) {
 		return {
 			error:
@@ -452,6 +466,13 @@ export async function handleSyncChannelBindings(
 					? error.message
 					: "Failed to sync channel about links",
 		};
+	}
+	const { bound, removed, aboutLinked, aboutRemoved } = reconcileResult;
+	if (bound.length > 0) {
+		await fireSlackWelcomeAfterBind(
+			connection.connector_key,
+			connection.external_tenant_id ?? undefined,
+		);
 	}
 
 	return {

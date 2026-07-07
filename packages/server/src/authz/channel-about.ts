@@ -42,17 +42,40 @@ export async function ensureAboutRelationshipType(
 	organizationId: string,
 	sql: DbClient = getDb(),
 ): Promise<number> {
+	const existing = await findAboutRelationshipTypeId(organizationId, sql);
+	if (existing !== null) return existing;
+
+	const inserted = await sql<{ id: number }>`
+	    INSERT INTO entity_relationship_types
+	      (slug, name, description, organization_id, is_symmetric, created_by, created_at, updated_at)
+	    VALUES
+	      (${ABOUT_RELATIONSHIP_SLUG}, 'About', 'A chat channel is about a business entity',
+	       ${organizationId}, false, NULL, current_timestamp, current_timestamp)
+	    ON CONFLICT (organization_id, slug) WHERE status = 'active'
+	    DO NOTHING
+	    RETURNING id
+	  `;
+	if (inserted[0]) return Number(inserted[0].id);
+
+	const raced = await findAboutRelationshipTypeId(organizationId, sql);
+	if (raced !== null) return raced;
+	throw new Error("Failed to initialize about relationship type");
+}
+
+async function findAboutRelationshipTypeId(
+	organizationId: string,
+	sql: DbClient,
+): Promise<number | null> {
 	const rows = await sql<{ id: number }>`
-    INSERT INTO entity_relationship_types
-      (slug, name, description, organization_id, is_symmetric, created_by, created_at, updated_at)
-    VALUES
-      (${ABOUT_RELATIONSHIP_SLUG}, 'About', 'A chat channel is about a business entity',
-       ${organizationId}, false, NULL, current_timestamp, current_timestamp)
-    ON CONFLICT (organization_id, slug) WHERE status = 'active'
-    DO UPDATE SET updated_at = EXCLUDED.updated_at
-    RETURNING id
+    SELECT id
+    FROM entity_relationship_types
+    WHERE organization_id = ${organizationId}
+      AND slug = ${ABOUT_RELATIONSHIP_SLUG}
+      AND status = 'active'
+      AND deleted_at IS NULL
+    LIMIT 1
   `;
-	return Number(rows[0].id);
+	return rows[0] ? Number(rows[0].id) : null;
 }
 
 /** Team-scoped resource key + identity namespace for a chat channel. */
@@ -136,6 +159,35 @@ export async function ensureChannelResourceEntity(opts: {
 	);
 	const ids = resolved.get(0);
 	return ids?.[0] ?? null;
+}
+
+async function findChannelResourceEntityId(opts: {
+	organizationId: string;
+	connectorKey: string;
+	teamId: string | null | undefined;
+	channelId: string;
+	sql: DbClient;
+}): Promise<number | null> {
+	if (opts.connectorKey === "slack" && !opts.teamId) return null;
+	const { namespace, key } = channelResourceIdentity(
+		opts.connectorKey,
+		opts.teamId,
+		opts.channelId,
+	);
+	const rows = await opts.sql<{ id: number }>`
+    SELECT e.id
+    FROM entity_identities ei
+    JOIN entities e
+      ON e.id = ei.entity_id
+     AND e.organization_id = ei.organization_id
+     AND e.deleted_at IS NULL
+    WHERE ei.organization_id = ${opts.organizationId}
+      AND ei.namespace = ${namespace}
+      AND ei.identifier = ${key}
+      AND ei.deleted_at IS NULL
+    LIMIT 1
+  `;
+	return rows[0] ? Number(rows[0].id) : null;
 }
 
 /** Resolve entity slugs to ids; throws when any slug is missing in the org. */
@@ -401,7 +453,7 @@ export async function listChannelAboutEntities(opts: {
 	const bareChannelId = opts.channelId.includes(":")
 		? opts.channelId.slice(opts.channelId.indexOf(":") + 1)
 		: opts.channelId;
-	const channelEntityId = await ensureChannelResourceEntity({
+	const channelEntityId = await findChannelResourceEntityId({
 		organizationId: opts.organizationId,
 		connectorKey: opts.connectorKey,
 		teamId: opts.teamId,
@@ -437,7 +489,8 @@ export async function listChannelAboutEntityIds(opts: {
 	sql?: DbClient;
 }): Promise<number[]> {
 	const sql = opts.sql ?? getDb();
-	const typeId = await ensureAboutRelationshipType(opts.organizationId, sql);
+	const typeId = await findAboutRelationshipTypeId(opts.organizationId, sql);
+	if (typeId === null) return [];
 	const rows = await sql<{ to_entity_id: number }>`
     SELECT r.to_entity_id
     FROM entity_relationships r
@@ -464,7 +517,8 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
 	}>
 > {
 	const sql = opts.sql ?? getDb();
-	const typeId = await ensureAboutRelationshipType(opts.organizationId, sql);
+	const typeId = await findAboutRelationshipTypeId(opts.organizationId, sql);
+	if (typeId === null) return [];
 	const rows = await sql<{
 		channel_entity_id: number;
 		channel_name: string | null;

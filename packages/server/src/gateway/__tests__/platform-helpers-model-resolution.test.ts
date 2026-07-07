@@ -45,11 +45,13 @@ describe("resolveAgentOptions model resolution (layered fallback)", () => {
       "org-a": { defaultModel: "claude/claude-sonnet-4-6" },
       "org-b": { defaultModel: "gemini/gemini-2.5-flash" },
     };
+    const seenAgentIds: string[] = [];
     const settingsStore = {
       getSettings: async (
-        _agentId: string,
+        agentId: string,
         context?: { organizationId?: string },
       ) => {
+        seenAgentIds.push(agentId);
         // Mirror the store contract: an unscoped read is ambiguous. Simulate the
         // real bug by returning the WRONG org's row when no org is passed.
         const org = context?.organizationId ?? "org-a";
@@ -64,7 +66,9 @@ describe("resolveAgentOptions model resolution (layered fallback)", () => {
       "org-b",
     );
 
-    // Must resolve org-b's model, not the default/first org's Claude model.
+    // The store was queried for the right agent, and org-b's model resolved —
+    // not the default/first org's Claude model.
+    expect(seenAgentIds).toEqual(["lobu-builder"]);
     expect(resolved.model).toBe("gemini/gemini-2.5-flash");
   });
 

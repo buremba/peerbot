@@ -114,12 +114,28 @@ export function normalizeScopeList(value: unknown): string[] {
   ).filter(Boolean);
 }
 
+function equivalentScopes(scope: string): string[] {
+  switch (scope) {
+    case 'email':
+    case 'https://www.googleapis.com/auth/userinfo.email':
+      return ['email', 'https://www.googleapis.com/auth/userinfo.email'];
+    case 'profile':
+    case 'https://www.googleapis.com/auth/userinfo.profile':
+      return ['profile', 'https://www.googleapis.com/auth/userinfo.profile'];
+    default:
+      return [scope];
+  }
+}
+
 export function hasAllScopes(granted: Iterable<string>, required: Iterable<string>): boolean {
-  const grantedSet = new Set(
-    Array.from(granted)
-      .map((scope) => scope.trim())
-      .filter(Boolean)
-  );
+  const grantedSet = new Set<string>();
+  for (const scope of granted) {
+    const normalized = scope.trim();
+    if (!normalized) continue;
+    for (const equivalent of equivalentScopes(normalized)) {
+      grantedSet.add(equivalent);
+    }
+  }
   for (const scope of required) {
     const normalized = scope.trim();
     if (!normalized) continue;

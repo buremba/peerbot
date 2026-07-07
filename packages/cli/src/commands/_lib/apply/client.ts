@@ -168,6 +168,7 @@ export interface RemoteConnection {
   device_worker_id?: string | null;
   agent_id?: string | null;
   credential_mode?: "managed" | "byo" | null;
+  effective_credential_mode?: "managed" | "byo" | null;
 }
 
 export interface RemoteFeed {

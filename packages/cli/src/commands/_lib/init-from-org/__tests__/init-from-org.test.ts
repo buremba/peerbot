@@ -636,6 +636,106 @@ describe("lobu init --from-org", () => {
     expect(source).not.toContain("rename credential keys");
   });
 
+  test("managed OAuth connections export as managedBy instead of local OAuth app credentials", async () => {
+    const dir = mkFixtureDir();
+    await initFromOrg({
+      targetDir: dir,
+      org: "lobu-team",
+      fetchImpl: buildFetch({
+        "/oauth/userinfo": () => ({
+          organizations: [
+            { id: "org-1", slug: "lobu-team", name: "Lobu Team" },
+          ],
+        }),
+        "/agents/lone/config": () => ({ updatedAt: 0 }),
+        "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
+        "watchers?include_details": () => ({ watchers: [] }),
+        manage_entity_schema: () => ({
+          entity_types: [],
+          relationship_types: [],
+        }),
+        manage_auth_profiles: () => ({
+          auth_profiles: [
+            {
+              slug: "gmail-account",
+              display_name: "Gmail account",
+              connector_key: "google.gmail",
+              profile_kind: "oauth_account",
+              status: "active",
+            },
+            {
+              slug: "gmail-app",
+              display_name: "Gmail OAuth app",
+              connector_key: "google.gmail",
+              profile_kind: "oauth_app",
+              status: "active",
+            },
+          ],
+        }),
+        manage_connections: () => ({
+          connections: [
+            {
+              id: 42,
+              slug: "gmail",
+              connector_key: "google.gmail",
+              display_name: "Gmail",
+              status: "active",
+              auth_profile_slug: "gmail-account",
+              app_auth_profile_slug: "gmail-app",
+              config: null,
+              device_worker_id: null,
+              effective_credential_mode: "managed",
+            },
+          ],
+        }),
+        manage_feeds: () => ({ feeds: [] }),
+        manage_catalog: (body) => {
+          const gmail = {
+            id: "google.gmail",
+            name: "Gmail",
+            detail: {
+              auth_schema: {
+                methods: [
+                  {
+                    type: "oauth",
+                    provider: "google",
+                    clientIdKey: "GOOGLE_CLIENT_ID",
+                    clientSecretKey: "GOOGLE_CLIENT_SECRET",
+                  },
+                ],
+              },
+            },
+          };
+          if (body.action === "list_catalog") {
+            return { catalogs: { connectors: { entries: [gmail] } } };
+          }
+          if (body.action === "list_installed") {
+            return { installed: { connectors: { items: [gmail] } } };
+          }
+          throw new Error(
+            `unexpected manage_catalog action: ${String(body.action)}`
+          );
+        },
+      }),
+    });
+
+    const source = readFileSync(join(dir, "lobu.config.ts"), "utf-8");
+    expect(source).toContain('managedBy: { org: "lobu-team" }');
+    expect(source).not.toContain("defineAuthProfile");
+    expect(source).not.toContain("gmailApp");
+    expect(source).not.toContain("gmailAccount");
+    expect(source).not.toContain("consent_only");
+    expect(source).not.toContain("GOOGLE_CLIENT_SECRET");
+
+    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
+    const conn = state.connectors.connections[0];
+    expect(conn?.slug).toBe("gmail");
+    expect(conn?.authProfileSlug).toBeUndefined();
+    expect(conn?.appAuthProfileSlug).toBeUndefined();
+    expect(conn?.config).toEqual({ managedBy: { org: "lobu-team" } });
+    expect(state.connectors.authProfiles).toEqual([]);
+  });
+
   test("relationship-type rules hydrate via list_rules (real list omits them)", async () => {
     const dir = mkFixtureDir();
     await initFromOrg({

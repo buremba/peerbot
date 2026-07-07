@@ -676,7 +676,8 @@ function emitConnection(
   authHandles: Map<string, string>,
   connectorHandles: Map<string, string>,
   imports: ImportTracker,
-  minter: IdentMinter
+  minter: IdentMinter,
+  managedByOrg?: string
 ): Handle {
   imports.use("defineConnection");
   const connectorRef =
@@ -686,18 +687,21 @@ function emitConnection(
     `connector: ${connectorRef}`,
   ];
   if (c.display_name) fields.push(`name: ${str(c.display_name)}`);
-  if (c.auth_profile_slug) {
+  if (managedByOrg) {
+    fields.push(`managedBy: { org: ${str(managedByOrg)} }`);
+  } else if (c.auth_profile_slug) {
     const ref =
       authHandles.get(c.auth_profile_slug) ?? str(c.auth_profile_slug);
     fields.push(`authProfile: ${ref}`);
   }
-  if (c.app_auth_profile_slug) {
+  if (!managedByOrg && c.app_auth_profile_slug) {
     const ref =
       authHandles.get(c.app_auth_profile_slug) ?? str(c.app_auth_profile_slug);
     fields.push(`appAuthProfile: ${ref}`);
   }
-  if (c.config && Object.keys(c.config).length > 0) {
-    fields.push(`config: ${emitValue(c.config, 1)}`);
+  const config = managedByOrg ? stripManagedGrantConfig(c.config) : c.config;
+  if (config && Object.keys(config).length > 0) {
+    fields.push(`config: ${emitValue(config, 1)}`);
   }
   if (c.device_worker_id) {
     fields.push(`deviceWorkerId: ${str(c.device_worker_id)}`);
@@ -722,6 +726,44 @@ function emitConnection(
     name,
     decl: `const ${name} = defineConnection(${objectLiteral(fields, 0)});`,
   };
+}
+
+function isManagedGrantHolderConnection(c: RemoteConnection): boolean {
+  const credentialMode = c.effective_credential_mode ?? c.credential_mode;
+  return (
+    !!c.app_auth_profile_slug &&
+    (c.config?.consent_only === true ||
+      c.config?.managedBy !== undefined ||
+      credentialMode === "managed")
+  );
+}
+
+function stripManagedGrantConfig(
+  config: RemoteConnection["config"]
+): RemoteConnection["config"] {
+  if (!config) return config;
+  const next = { ...config };
+  delete next.consent_only;
+  delete next.managedBy;
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+function managedOnlyAuthProfileSlugs(
+  connections: Array<{ connection: RemoteConnection; feeds: RemoteFeed[] }>
+): Set<string> {
+  const managedRefs = new Set<string>();
+  const nonManagedRefs = new Set<string>();
+  for (const { connection } of connections) {
+    const target = isManagedGrantHolderConnection(connection)
+      ? managedRefs
+      : nonManagedRefs;
+    if (connection.auth_profile_slug) target.add(connection.auth_profile_slug);
+    if (connection.app_auth_profile_slug) {
+      target.add(connection.app_auth_profile_slug);
+    }
+  }
+  for (const ref of nonManagedRefs) managedRefs.delete(ref);
+  return managedRefs;
 }
 
 // ── Fetch the org's full declared state ─────────────────────────────────────
@@ -925,7 +967,9 @@ function generateProject(
   }
   const authHandles = new Map<string, string>();
   const authDecls: string[] = [];
+  const authProfilesToSkip = managedOnlyAuthProfileSlugs(state.connections);
   for (const p of state.authProfiles) {
+    if (authProfilesToSkip.has(p.slug)) continue;
     const h = emitAuthProfile(
       p,
       secrets,
@@ -948,13 +992,17 @@ function generateProject(
   const connDecls: string[] = [];
   const connHandles: string[] = [];
   for (const { connection, feeds } of state.connections) {
+    const managedByOrg = isManagedGrantHolderConnection(connection)
+      ? orgSlug
+      : undefined;
     const h = emitConnection(
       connection,
       feeds,
       authHandles,
       connectorHandles,
       imports,
-      minter
+      minter,
+      managedByOrg
     );
     connDecls.push(h.decl);
     connHandles.push(h.name);

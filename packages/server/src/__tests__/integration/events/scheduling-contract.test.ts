@@ -9,6 +9,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
+import { materializeDueFeeds } from '../../../scheduled/check-due-feeds';
 import { triggerEmbedBackfill } from '../../../scheduled/trigger-embed-backfill';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -124,7 +125,7 @@ describe('scheduler and worker ingestion contracts', () => {
     expect(Number(events[0].run_id)).toBe(Number(run.id));
   });
 
-  it('materializes and claims a due sync run exactly once under concurrent polls', async () => {
+  it('claims a due sync run exactly once under concurrent polls', async () => {
     const sql = getTestDb();
     const org = await createTestOrganization({ name: 'Worker Poll Contract Org' });
 
@@ -149,6 +150,9 @@ describe('scheduler and worker ingestion contracts', () => {
       )
       RETURNING id
     `;
+
+    const materialized = await materializeDueFeeds({} as Env);
+    expect(materialized.runsCreated).toBe(1);
 
     const [responseA, responseB] = await Promise.all([
       post('/api/workers/poll', { body: { worker_id: 'worker-a', capabilities: {} } }),

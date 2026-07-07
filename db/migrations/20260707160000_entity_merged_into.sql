@@ -11,15 +11,28 @@
 -- other event population: rows stamped by raw `events.entity_ids` (save_content
 -- memories, feed-pinned + webhook events), which the identity graph can't cover.
 --
--- Idempotent: no-op on a DB that already has the column.
-ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS merged_into bigint REFERENCES public.entities(id);
+-- Columns + FK only (metadata-only, transaction-safe). The partial BTREE indexes
+-- that back the read redirect are built CONCURRENTLY in the two follow-on
+-- migrations (a CONCURRENTLY build can't run inside a transaction).
 
--- Partial index: the redirect gathers `{winner} ∪ {losers where merged_into = winner}`
--- for the `entity_ids @>` recall branch — a single indexed lookup per query, not
--- per event. Only merged rows are indexed (the column is null for live entities).
-CREATE INDEX IF NOT EXISTS idx_entities_merged_into
-  ON public.entities USING btree (merged_into)
-  WHERE merged_into IS NOT NULL;
+-- Nullable column add is metadata-only (no table rewrite / no default backfill).
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS merged_into bigint;
+
+-- Self-FK added NOT VALID: skips the validating full-table scan + the SHARE ROW
+-- EXCLUSIVE lock on `entities` at add time. The column was just introduced, so
+-- there are no pre-existing non-null values to validate — no VALIDATE pass is
+-- needed and none is emitted.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'entities_merged_into_fkey' AND conrelid = 'public.entities'::regclass
+  ) THEN
+    ALTER TABLE public.entities
+      ADD CONSTRAINT entities_merged_into_fkey
+      FOREIGN KEY (merged_into) REFERENCES public.entities(id) NOT VALID;
+  END IF;
+END $$;
 
 -- Undo marker: which loser an identity was moved FROM during a merge. Lets an
 -- agent/admin reverse a merge by reading live rows (move back every identity
@@ -29,13 +42,8 @@ CREATE INDEX IF NOT EXISTS idx_entities_merged_into
 -- break requester resolution in the ACL gate.
 ALTER TABLE public.entity_identities ADD COLUMN IF NOT EXISTS merged_from_entity_id bigint;
 
-CREATE INDEX IF NOT EXISTS idx_entity_identities_merged_from
-  ON public.entity_identities USING btree (merged_from_entity_id)
-  WHERE merged_from_entity_id IS NOT NULL;
-
 -- migrate:down
 
-DROP INDEX IF EXISTS public.idx_entity_identities_merged_from;
 ALTER TABLE public.entity_identities DROP COLUMN IF EXISTS merged_from_entity_id;
-DROP INDEX IF EXISTS public.idx_entities_merged_into;
+ALTER TABLE public.entities DROP CONSTRAINT IF EXISTS entities_merged_into_fkey;
 ALTER TABLE public.entities DROP COLUMN IF EXISTS merged_into;

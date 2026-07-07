@@ -41,6 +41,10 @@ export const ManageEntitySchema = Type.Object({
         description:
           "Fold a duplicate entity (entity_id) into the one it really is (winner_entity_id). The loser is tombstoned + forwarded; its identities, aliases, edges, and events recall against the winner. Events are never rewritten. Use when two entities are confirmed the same real-world thing.",
       }),
+      Type.Literal("unmerge", {
+        description:
+          "Reverse a merge: split a previously-merged loser (entity_id) back out of the winner it was folded into. Restores the loser's own identities and un-tombstones it. Use to correct a wrong merge. Works at any chain depth (each loser is independently reversible). Aliases and relationship edges absorbed by the merge are NOT un-done.",
+      }),
     ],
     { description: "Action to perform" }
   ),
@@ -433,8 +437,16 @@ export const ManageEntityResultSchema = Type.Union([
     winner_entity_id: Type.Integer(),
     loser_entity_id: Type.Integer(),
     moved_identities: Type.Integer(),
-    tombstoned_identities: Type.Integer(),
     repointed_edges: Type.Integer(),
+  }),
+  Type.Object({
+    action: Type.Literal("unmerge"),
+    success: Type.Boolean(),
+    message: Type.String(),
+    winner_entity_id: Type.Integer(),
+    loser_entity_id: Type.Integer(),
+    /** Identities moved back loser←winner (their merged_from marker cleared). */
+    restored_identities: Type.Integer(),
   }),
 ]);
 export type ManageEntityResult = Static<typeof ManageEntityResultSchema>;

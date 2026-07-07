@@ -34,6 +34,7 @@
 
 import { CHANNEL_READ_IDENTITIES } from './sources.js';
 import { enforcedConnectionsSelectSql } from './acl-state.js';
+import type { ChannelReadIdentity } from '@lobu/connector-sdk';
 import type { AuthzScope } from './scope.js';
 
 /**
@@ -53,6 +54,10 @@ export function compileChannelMessagesVisibility(
   scope: AuthzScope,
   baseParamIndex: number,
   tableAlias: string,
+  // The registered chat platforms whose channel gate is emitted. Defaults to the
+  // production registry; injectable so the multi-platform OR (≥2 branches) can be
+  // exercised without registering a real second connector.
+  identities: ChannelReadIdentity[] = CHANNEL_READ_IDENTITIES,
 ): { sql: string; params: Array<string | null> } {
   const orgParam = `$${baseParamIndex}::text`;
   const userParam = `$${baseParamIndex + 1}::text`;
@@ -116,7 +121,7 @@ export function compileChannelMessagesVisibility(
             AND rr.from_entity_id = ${requesterMemberSubquery}
         )`;
 
-  const platformBranches = CHANNEL_READ_IDENTITIES.map((identity) => {
+  const platformBranches = identities.map((identity) => {
     const keySql = identity.channelKeySql(teamExpr, `${tableAlias}.channel_id`);
     return `(${tableAlias}.platform = '${identity.platform}' AND ${membershipBranch(
       identity.channelNamespace,

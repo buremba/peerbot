@@ -37,7 +37,7 @@ import {
   updateEntity,
 } from '../../utils/entity-management';
 import { ToolUserError } from '../../utils/errors';
-import { applyMerge } from '../../utils/entity-merge';
+import { applyMerge, applyUnmerge } from '../../utils/entity-merge';
 import { recordChangeEvent } from '../../utils/insert-event';
 import {
   canonicalizeSymmetricEdge,
@@ -96,6 +96,9 @@ const runManageEntity = defineFlatActionTool<ManageEntityArgs, ManageEntityResul
     list_links: flatAction(handleListLinks),
     merge: flatAction((args, ctx) => handleMerge(args, ctx), {
       requires: ['entity_id', 'winner_entity_id'],
+    }),
+    unmerge: flatAction((args, ctx) => handleUnmerge(args, ctx), {
+      requires: ['entity_id'],
     }),
   }
 );
@@ -502,12 +505,59 @@ async function handleMerge(args: ManageEntityArgs, ctx: ToolContext): Promise<Ma
   return {
     action: 'merge',
     success: true,
-    message: `Merged entity ${loserId} into ${winnerId} (${result.movedIdentities} identities moved, ${result.tombstonedIdentities} tombstoned, ${result.repointedEdges} edges re-pointed).`,
+    message: `Merged entity ${loserId} into ${winnerId} (${result.movedIdentities} identities moved, ${result.repointedEdges} edges re-pointed).`,
     winner_entity_id: winnerId,
     loser_entity_id: loserId,
     moved_identities: result.movedIdentities,
-    tombstoned_identities: result.tombstonedIdentities,
     repointed_edges: result.repointedEdges,
+  };
+}
+
+/**
+ * Reverse a merge: split a tombstoned loser (`entity_id`) back out of the winner
+ * it was folded into. The winner is recovered from the loser's own `merged_into`
+ * pointer (not passed in). Admin/owner only, org-fenced. The reconstruction from
+ * the `merged_from_entity_id` markers + the one-hop chain guard live in
+ * `applyUnmerge`; this handler is the gate + validation.
+ */
+async function handleUnmerge(args: ManageEntityArgs, ctx: ToolContext): Promise<ManageEntityResult> {
+  if (!isAdminOrOwnerRole(ctx.memberRole)) {
+    throw new ToolUserError('Only an admin or owner may un-merge entities', 403);
+  }
+  const loserId = args.entity_id;
+  if (!loserId) throw new ToolUserError('entity_id (the merged loser to split out) is required for unmerge', 400);
+
+  const sql = getDb();
+  // The loser is a TOMBSTONE (deleted_at set by the merge), so we validate org
+  // membership without the live filter the merge handler uses. It must exist and
+  // currently be forwarded (merged_into set) — otherwise there's nothing to undo.
+  const [row] = (await sql`
+    SELECT id, merged_into FROM entities
+    WHERE organization_id = ${ctx.organizationId} AND id = ${loserId}
+  `) as Array<{ id: number; merged_into: number | null }>;
+  if (!row) throw new ToolUserError(`Entity ${loserId} not found in this workspace`, 404);
+  if (row.merged_into === null) {
+    throw new ToolUserError(`Entity ${loserId} is not merged into anything — nothing to un-merge`, 409);
+  }
+
+  let result: Awaited<ReturnType<typeof applyUnmerge>>;
+  try {
+    result = await applyUnmerge({
+      orgId: ctx.organizationId,
+      loserId,
+      unmergedBy: ctx.agentId ?? ctx.userId ?? 'system',
+    });
+  } catch (err) {
+    throw new ToolUserError(`Un-merge failed: ${err instanceof Error ? err.message : String(err)}`, 409);
+  }
+
+  return {
+    action: 'unmerge',
+    success: true,
+    message: `Un-merged entity ${loserId} out of ${result.winnerId} (${result.restoredIdentities} identities restored).`,
+    winner_entity_id: result.winnerId,
+    loser_entity_id: loserId,
+    restored_identities: result.restoredIdentities,
   };
 }
 

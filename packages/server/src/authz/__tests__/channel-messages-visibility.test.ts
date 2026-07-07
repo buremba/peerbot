@@ -8,12 +8,29 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import type { ChannelReadIdentity } from '@lobu/connector-sdk';
 import { SLACK_IDENTITY } from '@lobu/connectors/slack-identity';
 import { compileChannelMessagesVisibility } from '../channel-messages-visibility.js';
 import { CHANNEL_READ_IDENTITIES } from '../sources.js';
 import type { AuthzScope } from '../scope.js';
 
 const scope: AuthzScope = { organizationId: 'org_test', principal: 'user_test' };
+
+/**
+ * A synthetic second chat platform, structurally unlike Slack (different
+ * namespace + a distinct key SQL shape), used only to exercise the multi-platform
+ * OR that the single-registered-platform production registry never reaches. Its
+ * key builder is deliberately NOT `UPPER(t||':'||c)` so a leak of Slack's key
+ * expression into the other platform's branch would be caught.
+ */
+const discordIdentity: ChannelReadIdentity = {
+  platform: 'discord',
+  channelNamespace: 'discord_channel_id',
+  userNamespace: 'discord_user_id',
+  buildChannelKey: (team, channel) => `${team}/${channel}`,
+  buildUserKey: (_team, user) => user,
+  channelKeySql: (team, channel) => `LOWER(${team} || '/' || ${channel})`,
+};
 
 describe('compileChannelMessagesVisibility', () => {
   it('binds org + principal params from baseParamIndex, in order', () => {
@@ -65,5 +82,50 @@ describe('compileChannelMessagesVisibility', () => {
     const { sql } = compileChannelMessagesVisibility(scope, 1, 'cm');
     expect(sql).toContain("cm.platform = 'slack'");
     expect(sql).toContain(`cei.namespace = '${SLACK_IDENTITY.CHANNEL_ID}'`);
+  });
+
+  describe('multi-platform (≥2 registered) — the OR the production registry never reaches', () => {
+    const twoPlatforms = [...CHANNEL_READ_IDENTITIES, discordIdentity];
+
+    it('OR-joins one platform-gated branch per registered platform', () => {
+      const { sql } = compileChannelMessagesVisibility(scope, 1, 'cm', twoPlatforms);
+      // Both platforms are gated on the row's own platform value…
+      expect(sql).toContain("cm.platform = 'slack'");
+      expect(sql).toContain("cm.platform = 'discord'");
+      // …and the two branches are joined by OR (not AND — a message on EITHER
+      // platform is member-visible when the requester belongs to its channel).
+      expect(sql).toContain('OR');
+      // Exactly two platform gates ⇒ two `cm.platform =` occurrences.
+      const gateCount = (sql.match(/cm\.platform = '/g) ?? []).length;
+      expect(gateCount).toBe(2);
+    });
+
+    it('keeps each platform’s channel-key SQL inside its OWN branch (no cross-leak)', () => {
+      const { sql } = compileChannelMessagesVisibility(scope, 1, 'cm', twoPlatforms);
+      const teamExpr = `COALESCE(
+    cm.team_id,
+    conn.external_tenant_id,
+    conn.config->'chatMetadata'->>'teamId'
+  )`;
+      const slackKey = "UPPER(" + teamExpr + " || ':' || cm.channel_id)";
+      const discordKey = `LOWER(${teamExpr} || '/' || cm.channel_id)`;
+      // Slack's UPPER(...:...) and Discord's LOWER(.../...) each appear, keyed
+      // under their own namespace — proving the compiler doesn't hardcode one
+      // platform's key expression across every branch.
+      expect(sql).toContain(slackKey);
+      expect(sql).toContain(discordKey);
+      expect(sql).toContain(`cei.namespace = '${discordIdentity.channelNamespace}'`);
+      expect(sql).toContain(`cei.namespace = '${SLACK_IDENTITY.CHANNEL_ID}'`);
+    });
+
+    it('empty registry ⇒ enforced branch is closed (FALSE), only passthrough can match', () => {
+      const { sql } = compileChannelMessagesVisibility(scope, 1, 'cm', []);
+      // No registered platform → the member-visible disjunct is the literal FALSE,
+      // so an enforced connection matches neither branch and its rows are dropped.
+      expect(sql).toContain('FALSE');
+      expect(sql).not.toContain("cm.platform = '");
+      // The not-graphed passthrough is still present (org-open legacy fence).
+      expect(sql).toContain('NOT EXISTS');
+    });
   });
 });

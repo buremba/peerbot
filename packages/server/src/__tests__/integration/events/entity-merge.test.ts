@@ -12,7 +12,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { applyMerge } from '../../../utils/entity-merge';
+import { applyMerge, applyUnmerge } from '../../../utils/entity-merge';
 import {
   buildEntityLinkUnion,
   fetchEntityIdentityScopes,
@@ -132,13 +132,11 @@ describe('entity merge', () => {
     expect(Number(movedId.merged_from_entity_id)).toBe(loser.id);
   });
 
-  it('tombstones a colliding identity (winner live, loser soft-deleted dup) without index violation', async () => {
+  it('moves distinct live identities to the winner with no index violation', async () => {
     // The global unique index (org, namespace, identifier) WHERE deleted_at IS
     // NULL forbids two LIVE rows for the same value, so a live↔live collision
-    // can't exist pre-merge. The reachable collision: the winner owns `a@x.com`
-    // live and the loser owns it as a soft-deleted (superseded) row. The merge
-    // must tombstone-mark the loser's dup rather than blindly moving it into a
-    // second live row for the same value.
+    // can't exist pre-merge — the merge simply moves the loser's distinct live
+    // identities onto the winner, one row each, and the index is never at risk.
     const sql = getTestDb();
     const org = await createTestOrganization({ name: 'Collide Org' });
     const user = await createTestUser();
@@ -169,8 +167,8 @@ describe('entity merge', () => {
       winnerId: winner.id,
       mergedBy: user.id,
     });
-    // No collision on this pair → nothing tombstoned, the distinct phone moves.
-    expect(result.tombstonedIdentities).toBe(0);
+    // The distinct phone moves cleanly. A live↔live collision can't occur (global
+    // unique index), so the merge never needs to tombstone on collision.
     expect(result.movedIdentities).toBe(1);
 
     // The winner now owns both live identities, one row each (no index violation).
@@ -215,5 +213,149 @@ describe('entity merge', () => {
     await expect(
       applyMerge({ orgId: org.id, loserId: a.id, winnerId: c.id, mergedBy: user.id })
     ).rejects.toThrow(/already merged/);
+  });
+
+  it('un-merge round-trips a single merge from live markers (identity moves back, loser revived)', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Unmerge Org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const winner = await createTestEntity({ name: 'W', entity_type: 'person', organization_id: org.id, created_by: user.id });
+    const loser = await createTestEntity({ name: 'L', entity_type: 'person', organization_id: org.id, created_by: user.id });
+
+    // Loser owns a distinct identity that moves cleanly to the winner on merge.
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+      VALUES (${org.id}, ${loser.id}, 'phone', '15550001')
+    `;
+    const merged = await applyMerge({ orgId: org.id, loserId: loser.id, winnerId: winner.id, mergedBy: user.id });
+    expect(merged.movedIdentities).toBe(1);
+
+    // Sanity: post-merge the phone lives on the winner, marked from the loser.
+    const [mid] = (await sql`
+      SELECT entity_id, merged_from_entity_id FROM entity_identities
+      WHERE organization_id = ${org.id} AND namespace = 'phone' AND identifier = '15550001'
+    `) as Array<{ entity_id: number; merged_from_entity_id: number | null }>;
+    expect(Number(mid.entity_id)).toBe(winner.id);
+
+    const undo = await applyUnmerge({ orgId: org.id, loserId: loser.id, unmergedBy: user.id });
+    expect(undo.winnerId).toBe(winner.id);
+    expect(undo.restoredIdentities).toBe(1);
+
+    // The identity is back on the loser, marker cleared.
+    const [back] = (await sql`
+      SELECT entity_id, merged_from_entity_id FROM entity_identities
+      WHERE organization_id = ${org.id} AND namespace = 'phone' AND identifier = '15550001'
+    `) as Array<{ entity_id: number; merged_from_entity_id: number | null }>;
+    expect(Number(back.entity_id)).toBe(loser.id);
+    expect(back.merged_from_entity_id).toBeNull();
+
+    // The loser stands on its own again: no forward pointer, not tombstoned.
+    const [lRow] = (await sql`
+      SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+    `) as Array<{ merged_into: number | null; deleted_at: string | null }>;
+    expect(lRow.merged_into).toBeNull();
+    expect(lRow.deleted_at).toBeNull();
+  });
+
+  it('leaves a superseded (soft-deleted) loser identity untouched through merge + un-merge', async () => {
+    // A soft-deleted loser identity is NOT live, so the merge's move (live-only)
+    // never touches it and un-merge never claims it. It just stays on the loser as
+    // history — no revive machinery, because a live↔live collision can't happen.
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Superseded Org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const winner = await createTestEntity({ name: 'W', entity_type: 'person', organization_id: org.id, created_by: user.id });
+    const loser = await createTestEntity({ name: 'L', entity_type: 'person', organization_id: org.id, created_by: user.id });
+    // Winner live email; loser holds the SAME value only as a soft-deleted row.
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, deleted_at)
+      VALUES
+        (${org.id}, ${winner.id}, 'email', 'a@x.com', NULL),
+        (${org.id}, ${loser.id}, 'email', 'a@x.com', current_timestamp)
+    `;
+
+    const merged = await applyMerge({ orgId: org.id, loserId: loser.id, winnerId: winner.id, mergedBy: user.id });
+    // The loser had no LIVE identity to move; the soft-deleted dup is left alone.
+    expect(merged.movedIdentities).toBe(0);
+    const undo = await applyUnmerge({ orgId: org.id, loserId: loser.id, unmergedBy: user.id });
+    expect(undo.restoredIdentities).toBe(0);
+
+    // The loser's soft-deleted email is still soft-deleted on the loser, unmarked.
+    const [row] = (await sql`
+      SELECT entity_id, deleted_at, merged_from_entity_id FROM entity_identities
+      WHERE organization_id = ${org.id} AND entity_id = ${loser.id}
+        AND namespace = 'email' AND identifier = 'a@x.com'
+    `) as Array<{ entity_id: number; deleted_at: string | null; merged_from_entity_id: number | null }>;
+    expect(row.deleted_at).not.toBeNull();
+    expect(row.merged_from_entity_id).toBeNull();
+    // And the winner still live-owns the value (untouched).
+    const [w] = (await sql`
+      SELECT deleted_at FROM entity_identities
+      WHERE organization_id = ${org.id} AND entity_id = ${winner.id}
+        AND namespace = 'email' AND identifier = 'a@x.com'
+    `) as Array<{ deleted_at: string | null }>;
+    expect(w.deleted_at).toBeNull();
+  });
+
+  it('un-merges the innermost loser of a flattened chain, restoring ITS identity (COALESCE marker)', async () => {
+    // L→W then W→V flattens L straight to V, but COALESCE kept L's moved identity
+    // marked `merged_from = L` (not overwritten to W on the second merge). So
+    // un-merging L must restore L's OWN identity back to a revived L, while W→V
+    // stays intact — each loser is independently reversible even after flatten.
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Chain Undo Org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const v = await createTestEntity({ name: 'V', entity_type: 'person', organization_id: org.id, created_by: user.id });
+    const w = await createTestEntity({ name: 'W', entity_type: 'person', organization_id: org.id, created_by: user.id });
+    const l = await createTestEntity({ name: 'L', entity_type: 'person', organization_id: org.id, created_by: user.id });
+    // L owns a distinct identity that will chase the chain onto V.
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+      VALUES (${org.id}, ${l.id}, 'phone', '15557777')
+    `;
+
+    await applyMerge({ orgId: org.id, loserId: l.id, winnerId: w.id, mergedBy: user.id });
+    await applyMerge({ orgId: org.id, loserId: w.id, winnerId: v.id, mergedBy: user.id });
+
+    // After the chain: L's identity lives on V but is STILL marked merged_from = L
+    // (COALESCE preserved the innermost origin through the W→V merge).
+    const [onV] = (await sql`
+      SELECT entity_id, merged_from_entity_id FROM entity_identities
+      WHERE organization_id = ${org.id} AND namespace = 'phone' AND identifier = '15557777'
+    `) as Array<{ entity_id: number; merged_from_entity_id: number | null }>;
+    expect(Number(onV.entity_id)).toBe(v.id);
+    expect(Number(onV.merged_from_entity_id)).toBe(l.id);
+
+    // L points at the flattened terminal winner V; un-merging it restores L.
+    const [lForward] = (await sql`SELECT merged_into FROM entities WHERE id = ${l.id}`) as Array<{ merged_into: number | null }>;
+    expect(Number(lForward.merged_into)).toBe(v.id);
+
+    const undo = await applyUnmerge({ orgId: org.id, loserId: l.id, unmergedBy: user.id });
+    expect(undo.winnerId).toBe(v.id);
+    expect(undo.restoredIdentities).toBe(1);
+
+    // L's identity is back on a revived, un-tombstoned L; W→V is untouched.
+    const [back] = (await sql`
+      SELECT entity_id, merged_from_entity_id FROM entity_identities
+      WHERE organization_id = ${org.id} AND namespace = 'phone' AND identifier = '15557777'
+    `) as Array<{ entity_id: number; merged_from_entity_id: number | null }>;
+    expect(Number(back.entity_id)).toBe(l.id);
+    expect(back.merged_from_entity_id).toBeNull();
+    const [wRow] = (await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${w.id}`) as Array<{ merged_into: number | null; deleted_at: string | null }>;
+    expect(Number(wRow.merged_into)).toBe(v.id);
+    expect(wRow.deleted_at).not.toBeNull();
+  });
+
+  it('rejects un-merging an entity that was never merged', async () => {
+    const org = await createTestOrganization({ name: 'No Merge Org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const solo = await createTestEntity({ name: 'Solo', entity_type: 'person', organization_id: org.id, created_by: user.id });
+    await expect(
+      applyUnmerge({ orgId: org.id, loserId: solo.id, unmergedBy: user.id })
+    ).rejects.toThrow(/not merged into anything/i);
   });
 });

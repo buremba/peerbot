@@ -5,11 +5,11 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { createLogger, getSentry, type WorkerTransport } from "@lobu/core";
+import { createLogger, type WorkerTransport } from "@lobu/core";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import type { SettingsManager } from "@mariozechner/pi-coding-agent";
 import * as Sentry from "@sentry/node";
-import { classifyError, handleExecutionError } from "../core/error-handler";
+import { handleExecutionError } from "../core/error-handler";
 import { listAppDirectories } from "../core/project-scanner";
 import type {
   ProgressUpdate,
@@ -26,7 +26,6 @@ import {
 import { generateCustomInstructions } from "../instructions/builder";
 import { ProjectsInstructionProvider } from "../instructions/providers";
 import { fetchAudioProviderSuggestions } from "../shared/audio-provider-suggestions";
-import { getProviderAuthHintFromError } from "../shared/provider-auth-hints";
 import {
   OpenClawCoreInstructionProvider,
   OpenClawPromptIntentInstructionProvider,
@@ -311,32 +310,24 @@ export class OpenClawWorker implements WorkerExecutor {
           );
           throw new Error("SESSION_TIMEOUT");
         } else {
-          const isAuthError =
-            /no.credentials.configured|no_credentials|invalid.*api.key|incorrect.*api.key|token.*expired/i.test(
-              errorMsg
-            );
-          const userMessage = isAuthError
-            ? "Your AI provider credentials are invalid or expired. End-user provider setup is not available in chat yet. Ask an admin to reconnect the base agent provider."
-            : `❌ Session failed: ${errorMsg}`;
-          await this.workerTransport.sendStreamDelta(userMessage, true, true);
-          // These branches consume the `{success:false}` RESULT from
-          // runAISession — the session failed without throwing, so neither
-          // reaches execute()'s catch / handleExecutionError. Capture here or
-          // the failure is invisible to Sentry. Auth errors are an
-          // admin-config condition (level "warning"); other session failures
-          // are real faults (level "error").
-          this.reportSessionFailureToSentry(
-            errorMsg,
-            isAuthError ? "warning" : "error"
+          // A `{success:false}` RESULT (not a throw) still routes through the
+          // ONE classifier+renderer path so provider quota/auth/etc. get a
+          // catalog code, context, and a rendered CTA — identical to the
+          // thrown-error path in execute()'s catch. This deleted the historical
+          // second classifier here (ad-hoc isAuthError regex + raw
+          // "❌ Session failed: …"), which was a top source of divergent,
+          // link-less error text. handleExecutionError also reports to Sentry,
+          // so no separate reportSessionFailureToSentry call is needed.
+          await handleExecutionError(
+            new Error(errorMsg),
+            this.workerTransport,
+            {
+              provider: this.resolvedProvider,
+              model: this.resolvedModelId,
+              agentId: this.config.agentId,
+              runId: this.config.runId,
+            }
           );
-          if (isAuthError) {
-            await this.workerTransport.signalDone();
-          } else {
-            await this.workerTransport.signalError(
-              new Error(errorMsg),
-              classifyError(new Error(errorMsg))
-            );
-          }
         }
       }
 
@@ -364,30 +355,6 @@ export class OpenClawWorker implements WorkerExecutor {
       // next turn re-adopts a fresh per-run token and re-enables it.
       getWorkerTokenManager().disableAutoRefresh();
     }
-  }
-
-  /**
-   * Report a non-throwing session failure (the `{success:false}` result from
-   * runAISession) to Sentry Issues, tagged with the resolved provider/model so
-   * "openai doesn't work" is triageable. `getSentry()` is DSN-gated, so this is
-   * a safe no-op when the worker was spawned without SENTRY_DSN.
-   */
-  private reportSessionFailureToSentry(
-    errorMsg: string,
-    level: "warning" | "error"
-  ): void {
-    const error = new Error(errorMsg);
-    getSentry()?.captureException(error, {
-      tags: {
-        provider: this.resolvedProvider ?? "unknown",
-        model: this.resolvedModelId ?? "unknown",
-        agent_id: this.config.agentId ?? "unknown",
-        run_id:
-          this.config.runId != null ? String(this.config.runId) : "unknown",
-        classification: classifyError(error) ?? "unclassified",
-      },
-      level,
-    });
   }
 
   async cleanup(): Promise<void> {
@@ -571,8 +538,6 @@ export class OpenClawWorker implements WorkerExecutor {
       loadImageAttachments: () => this.loadImageAttachments(),
       maybeRunPreCompactionMemoryFlush: (p) =>
         this.maybeRunPreCompactionMemoryFlush(p),
-      maybeBuildAuthHintMessage: (msg, provider, modelId) =>
-        this.maybeBuildAuthHintMessage(msg, provider, modelId),
     });
   }
 
@@ -853,19 +818,6 @@ ${fileListing}
         "Session completed successfully - all content already streamed"
       );
     }
-  }
-
-  private maybeBuildAuthHintMessage(
-    errorMessage: string,
-    provider: string,
-    modelId: string
-  ): string {
-    const authHint = getProviderAuthHintFromError(errorMessage, provider);
-    if (!authHint) {
-      return errorMessage;
-    }
-
-    return `To use ${modelId}, an admin needs to connect ${authHint.providerName} on the base agent. Ask an admin to configure ${authHint.providerName} and then try again.`;
   }
 
   private async maybeBuildAudioPermissionHintMessage(

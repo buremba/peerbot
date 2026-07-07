@@ -5,7 +5,7 @@
  * Broadcasts worker responses to SSE connections for direct API clients
  */
 
-import { createLogger } from "@lobu/core";
+import { AGENT_ERRORS, createLogger, toAgentErrorCode } from "@lobu/core";
 import type { ThreadResponsePayload } from "../infrastructure/queue/types.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
 import type { SseManager } from "../services/sse-manager.js";
@@ -112,9 +112,30 @@ export class ApiResponseRenderer implements ResponseRenderer {
       return;
     }
 
+    // Render a coded error through the shared catalog so the browser sees the
+    // same user-facing sentence Slack does (e.g. "Your provider's limit is used
+    // up. It resets …") instead of a raw "429 Weekly/Monthly …". The catalog
+    // text needs no URL, so it's always safe here; the CTA link itself is a
+    // follow-up (this SSE surface lacks the org/agent ids to resolve it — the
+    // structured `errorCode` is forwarded so the frontend can build the button).
+    const code = toAgentErrorCode(payload.errorCode);
+    const spec = code ? AGENT_ERRORS[code] : undefined;
+    if (spec?.silent) {
+      // Silent codes (SESSION_TIMEOUT) are retried and must not surface.
+      await this.resolveWatcherRunsFromPayload(payload, {
+        ok: false,
+        error: "agent error",
+      });
+      return;
+    }
+    const errorText = spec
+      ? spec.userMessage(payload.errorContext ?? {})
+      : payload.error;
+
     const errorEvent = {
       type: "error",
-      error: payload.error,
+      error: errorText,
+      errorCode: code,
       messageId: payload.messageId,
       timestamp: payload.timestamp || Date.now(),
     };
@@ -125,11 +146,11 @@ export class ApiResponseRenderer implements ResponseRenderer {
     this.sseManager.broadcast(sessionId, "error", errorEvent);
     this.sseManager.broadcast(sessionId, "agent-error", errorEvent);
 
-    logger.error(`Broadcast error to session ${sessionId}: ${payload.error}`);
+    logger.error(`Broadcast error to session ${sessionId}: ${errorText}`);
 
     await this.resolveWatcherRunsFromPayload(payload, {
       ok: false,
-      error: typeof payload.error === "string" ? payload.error : "agent error",
+      error: typeof errorText === "string" ? errorText : "agent error",
     });
   }
 

@@ -1,4 +1,5 @@
 import {
+	AgentErrorCode,
 	ConversationOwnedElsewhereError,
 	createChildSpan,
 	createLogger,
@@ -882,17 +883,18 @@ export class MessageConsumer {
         "Deployment creation failed"
       );
 
-      const userMessage =
-        "Worker startup failed and your request could not be processed. Please retry in a moment.";
-
       // Emit the startup-failure notice through the first-writer-wins election
       // (atomic delete-marker + enqueue-error in one tx). This is gated on the
       // marker still being pending: if a still-attached worker raced a real
       // terminal reply (which discharged the marker), this no-ops instead of
-      // double-signalling the client. Routes via `error` (renders end-to-end:
-      // SSE error event + CLI exit 1; platforms post `Error: …`). If the marker
-      // was never armed (arm failed) it also no-ops — logged at arm time.
-      await failTurnIfPending(deploymentName, data.messageId, userMessage);
+      // double-signalling the client. Carries a code so it renders end-to-end
+      // through the AGENT_ERRORS catalog (SSE + CLI + platforms) with one
+      // source of prose. If the marker was never armed it also no-ops.
+      await failTurnIfPending(
+        deploymentName,
+        data.messageId,
+        AgentErrorCode.WORKER_STARTUP_FAILED
+      );
     } catch (trackError) {
       // Don't fail the main flow if tracking fails
       logger.error("Failed to track deployment failure:", trackError);

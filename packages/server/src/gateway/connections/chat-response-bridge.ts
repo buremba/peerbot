@@ -14,16 +14,24 @@
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createLogger, type GuardrailRegistry } from "@lobu/core";
+import { toAgentErrorCode } from "@lobu/core";
 import { Actions, Card, CardText, LinkButton } from "chat";
 import { getDb } from "../../db/client.js";
-import { getOrganizationSlug } from "../../utils/url-builder.js";
+import {
+  buildAgentSettingsUrl,
+  type RenderedAgentError,
+  renderAgentError,
+} from "../../utils/url-builder.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import {
   OutputGuardrailScanner,
   type OutputGuardrailTrip,
 } from "../guardrails/output-scan.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
-import { extractSettingsLinkButtons } from "../platform/link-buttons.js";
+import {
+  extractSettingsLinkButtons,
+  isLocalhostUrl,
+} from "../platform/link-buttons.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
 import { captureChannelMessage } from "./channel-transcript.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
@@ -40,31 +48,6 @@ import {
 import { resolveChatTarget } from "./platforms/shared.js";
 
 const logger = createLogger("chat-response-bridge");
-
-/**
- * Build the agent's admin-settings URL — `<publicWebUrl>/<orgSlug>/agents/<agentId>`
- * — for surfacing in user-facing error messages (e.g. NO_MODEL_CONFIGURED tells
- * the user where to connect a provider). Returns null when any required piece
- * is missing; callers fall back to non-linked guidance.
- *
- * `manager.publicGatewayUrl` is the gateway base, which in embedded mode
- * includes the `/lobu` path suffix (the gateway is mounted at `/lobu` under
- * the web app). Admin UI routes live at the web origin (`/<slug>/agents/...`)
- * NOT under `/lobu`, so strip a trailing `/lobu` before composing the link.
- */
-async function buildAgentSettingsUrl(
-  publicGatewayUrl: string | undefined,
-  organizationId: string | undefined,
-  agentId: string | undefined
-): Promise<string | null> {
-  if (!publicGatewayUrl || !organizationId || !agentId) return null;
-  const slug = await getOrganizationSlug(organizationId).catch(() => null);
-  if (!slug) return null;
-  const webOrigin = publicGatewayUrl
-    .replace(/\/+$/, "")
-    .replace(/\/lobu$/, "");
-  return `${webOrigin}/${slug}/agents/${encodeURIComponent(agentId)}`;
-}
 
 /**
  * Construct a minimal Chat SDK `Message`-shaped object from the inbound
@@ -568,18 +551,29 @@ export class ChatResponseBridge implements ResponseRenderer {
       return;
     }
 
-    // For known error codes, render user-facing guidance with a real link
-    // into the admin UI when we can resolve one. The settings page for an
-    // agent is `<publicWebUrl>/<orgSlug>/agents/<agentId>`.
-    if (payload.errorCode === "NO_MODEL_CONFIGURED") {
-      const settingsUrl = await buildAgentSettingsUrl(
-        this.manager.getPublicGatewayUrl(),
-        this.resolveOrganizationId(payload, ctx) ?? undefined,
-        this.resolveAgentId(payload, ctx) ?? undefined
+    // Known error code → render user-facing text + a real CTA link from the
+    // shared catalog (AGENT_ERRORS). This is the ONE place a coded error
+    // becomes Slack/Telegram output; adding a failure mode never touches this
+    // branch, only the catalog. Unknown/empty code falls through to the raw
+    // fallback below.
+    const code = toAgentErrorCode(payload.errorCode);
+    let ctaButton: RenderedAgentError | null = null;
+    if (code) {
+      const rendered = await renderAgentError(
+        code,
+        payload.errorContext,
+        () =>
+          buildAgentSettingsUrl(
+            this.manager.getPublicGatewayUrl(),
+            this.resolveOrganizationId(payload, ctx) ?? undefined,
+            this.resolveAgentId(payload, ctx) ?? undefined
+          )
       );
-      payload.error = settingsUrl
-        ? `No model configured. Connect a provider at ${settingsUrl}`
-        : "No model configured. Ask an admin to connect a provider for the base agent.";
+      if (rendered.silent) return;
+      // Overwrite the raw error with the catalog message so the guardrail scan
+      // and the plain-text fallback below both operate on the rendered text.
+      payload.error = rendered.text;
+      if (rendered.ctaUrl) ctaButton = rendered;
     }
 
     // Scan the error text before surfacing it — a provider/stack-trace error
@@ -596,7 +590,33 @@ export class ChatResponseBridge implements ResponseRenderer {
       return;
     }
 
-    // Fallback: plain text error via Chat SDK
+    // Coded error with a resolved CTA → post a Card with a native link button
+    // (same mechanism the ephemeral settings-link path uses) so the user gets a
+    // clickable action, not a bare URL in prose. Loopback URLs can't be
+    // rendered as inline buttons by some platforms, so fall through to text.
+    if (ctaButton?.ctaUrl && !isLocalhostUrl(ctaButton.ctaUrl)) {
+      const label = ctaButton.ctaLabel ?? "Open settings";
+      const card = Card({
+        children: [
+          CardText(ctaButton.text),
+          Actions([LinkButton({ url: ctaButton.ctaUrl, label })]),
+        ],
+      });
+      await this.postToPayloadTarget(
+        payload,
+        ctx,
+        {
+          card,
+          fallbackText: `${ctaButton.text}\n\n${label}: ${ctaButton.ctaUrl}`,
+        },
+        "Failed to send error card"
+      );
+      return;
+    }
+
+    // Fallback: plain text error via Chat SDK. For a coded error this is the
+    // catalog text (already assigned above); for an unclassified error it's the
+    // raw worker message — a signal to add a catalog entry.
     await this.postToPayloadTarget(
       payload,
       ctx,

@@ -14,6 +14,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { AgentErrorCode } from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import { RunsQueue } from "../infrastructure/queue/runs-queue.js";
 import {
@@ -86,6 +87,15 @@ async function threadResponseCount(): Promise<number> {
   return Number(rows[0]?.n ?? 0);
 }
 
+/** The `errorCode` on the most recently enqueued terminal error row, if any. */
+async function latestErrorCode(): Promise<string | null> {
+  const rows = await getDb()<{ code: string | null }>`
+    SELECT action_input->>'errorCode' AS code FROM public.runs
+    WHERE queue_name = 'thread_response' AND action_input->>'error' IS NOT NULL
+    ORDER BY id DESC LIMIT 1`;
+  return rows[0]?.code ?? null;
+}
+
 async function expireAllMarkers(): Promise<void> {
   await getDb()`
     UPDATE public.runs SET run_at = now() - interval '1 minute'
@@ -119,23 +129,23 @@ describe("turn-liveness", () => {
     await armTurnTimeout(queue, routing("dep-2", "a"));
     await armTurnTimeout(queue, routing("dep-2", "b"));
 
-    expect(await failTurnsForDeployment("dep-2", "worker died")).toBe(2);
+    expect(await failTurnsForDeployment("dep-2", AgentErrorCode.WORKER_DIED)).toBe(2);
     expect(await markerCount("dep-2")).toBe(0);
     expect(await errorRowCount()).toBe(2);
 
     // Re-running emits nothing (markers already gone) — exactly-once.
-    expect(await failTurnsForDeployment("dep-2", "worker died")).toBe(0);
+    expect(await failTurnsForDeployment("dep-2", AgentErrorCode.WORKER_DIED)).toBe(0);
     expect(await errorRowCount()).toBe(2);
   });
 
   test("failTurnIfPending emits once when the turn is still owed", async () => {
     await armTurnTimeout(queue, routing("dep-3", "m"));
 
-    expect(await failTurnIfPending("dep-3", "m", "startup failed")).toBe(true);
+    expect(await failTurnIfPending("dep-3", "m", AgentErrorCode.WORKER_STARTUP_FAILED)).toBe(true);
     expect(await errorRowCount()).toBe(1);
 
     // Marker is gone — a second call must not double-signal.
-    expect(await failTurnIfPending("dep-3", "m", "startup failed")).toBe(false);
+    expect(await failTurnIfPending("dep-3", "m", AgentErrorCode.WORKER_STARTUP_FAILED)).toBe(false);
     expect(await errorRowCount()).toBe(1);
   });
 
@@ -145,7 +155,7 @@ describe("turn-liveness", () => {
     // commitTerminalReply path.
     await commitTerminalReply("dep-4", ["m"], reply("dep-4", "m"), null);
 
-    expect(await failTurnIfPending("dep-4", "m", "startup failed")).toBe(false);
+    expect(await failTurnIfPending("dep-4", "m", AgentErrorCode.WORKER_STARTUP_FAILED)).toBe(false);
     // commitTerminalReply emitted a (non-error) reply; no error row.
     expect(await errorRowCount()).toBe(0);
   });
@@ -165,7 +175,7 @@ describe("turn-liveness", () => {
     await armTurnTimeout(queue, routing("dep-5b", "m"));
     await expireAllMarkers();
     // Deadline lapsed → sweep emits the terminal error and deletes the marker.
-    expect(await sweepExpiredTurns("worker unresponsive")).toBe(1);
+    expect(await sweepExpiredTurns()).toBe(1);
     expect(await errorRowCount()).toBe(1);
 
     // A worker reply that arrives AFTER the sweep must NOT double-signal: there
@@ -177,15 +187,27 @@ describe("turn-liveness", () => {
     expect(await errorRowCount()).toBe(1);
   });
 
+  test("sweep tags its terminal error WORKER_UNRESPONSIVE so it renders via the catalog", async () => {
+    await armTurnTimeout(queue, routing("dep-code", "m"));
+    await expireAllMarkers();
+
+    expect(await sweepExpiredTurns()).toBe(1);
+    expect(await errorRowCount()).toBe(1);
+    // The whole point: instead of a hardcoded "stopped responding" string with
+    // no code, the sweep now carries a code the gateway renderers turn into a
+    // proper message (and, where resolvable, a CTA).
+    expect(await latestErrorCode()).toBe("WORKER_UNRESPONSIVE");
+  });
+
   test("sweep fails lapsed turns (hung/pod-death) exactly once", async () => {
     await armTurnTimeout(queue, routing("dep-6", "m"));
     await expireAllMarkers();
 
-    expect(await sweepExpiredTurns("worker unresponsive")).toBe(1);
+    expect(await sweepExpiredTurns()).toBe(1);
     expect(await markerCount("dep-6")).toBe(0);
     expect(await errorRowCount()).toBe(1);
 
-    expect(await sweepExpiredTurns("worker unresponsive")).toBe(0);
+    expect(await sweepExpiredTurns()).toBe(0);
     expect(await errorRowCount()).toBe(1);
   });
 
@@ -195,7 +217,7 @@ describe("turn-liveness", () => {
 
     await extendTurnDeadlines("dep-7"); // heartbeat pushes it forward
 
-    expect(await sweepExpiredTurns("worker unresponsive")).toBe(0);
+    expect(await sweepExpiredTurns()).toBe(0);
     expect(await markerCount("dep-7")).toBe(1);
     expect(await errorRowCount()).toBe(0);
   });
@@ -251,7 +273,7 @@ describe("hasLiveTurnForMessage (token-refresh liveness gate)", () => {
     await armTurnTimeout(queue, routing("dep-dead", "m1"));
     expect(await hasLiveTurnForMessage("dep-dead", "m1")).toBe(true);
 
-    await failTurnsForDeployment("dep-dead", "worker died");
+    await failTurnsForDeployment("dep-dead", AgentErrorCode.WORKER_DIED);
     expect(await hasLiveTurnForMessage("dep-dead", "m1")).toBe(false);
   });
 

@@ -1,3 +1,4 @@
+import type { AgentErrorContext } from "./errors";
 import type { GuardrailStage } from "./guardrails/types";
 import type { SecretRef } from "./secret-refs";
 
@@ -438,6 +439,12 @@ export interface ThreadResponsePayload {
   finalText?: string;
   error?: string;
   errorCode?: string;
+  /**
+   * Structured context for `errorCode`, threaded from the worker's classifier
+   * so a renderer can build the full user message (e.g. the quota reset time)
+   * and CTA. See `AGENT_ERRORS` in ./errors.
+   */
+  errorContext?: AgentErrorContext;
   timestamp: number;
   originalMessageId?: string;
   botResponseId?: string;

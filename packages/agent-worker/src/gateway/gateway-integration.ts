@@ -4,6 +4,7 @@
  */
 
 import {
+  type AgentErrorContext,
   createLogger,
   retryWithBackoff,
   type WorkerTransport,
@@ -180,11 +181,16 @@ export class HttpWorkerTransport implements WorkerTransport {
     );
   }
 
-  async signalError(error: Error, errorCode?: string): Promise<void> {
+  async signalError(
+    error: Error,
+    errorCode?: string,
+    errorContext?: AgentErrorContext
+  ): Promise<void> {
     await this.sendResponse(
       this.buildBaseResponse({
         error: error.message,
         ...(errorCode && { errorCode }),
+        ...(errorContext && { errorContext }),
       })
     );
   }

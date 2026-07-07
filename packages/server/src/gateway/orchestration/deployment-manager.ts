@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
+	AGENT_ERRORS,
+	AgentErrorCode,
 	ConversationOwnedElsewhereError,
 	createLogger,
 	ErrorCode,
@@ -43,23 +45,6 @@ import { getInternalGatewayUrl } from "../config/index.js";
 
 const logger = createLogger("orchestrator");
 
-/** Surfaced to the client when a worker dies before producing a reply. */
-const WORKER_DIED_MESSAGE =
-  "The worker handling your request stopped unexpectedly before it could reply. Please retry in a moment.";
-
-/**
- * Surfaced only when the operator REQUIRES the systemd sandbox
- * (LOBU_REQUIRE_WORKER_SANDBOX=1) but it is unavailable on the host. By default
- * workers run unwrapped when no systemd user manager exists — that is exactly
- * how the prod container (which ships no `systemd-run`) runs today, with the
- * egress proxy as the network boundary — so failing closed is opt-in, never
- * the default (defaulting to fail-closed would take prod down instantly).
- */
-const WORKER_SANDBOX_REQUIRED_MESSAGE =
-  "LOBU_REQUIRE_WORKER_SANDBOX=1 but the systemd worker sandbox is unavailable on this host " +
-  "(no usable `systemd-run --user` manager). Refusing to run an un-sandboxed worker. Provide a " +
-  "user-level systemd manager, or unset LOBU_REQUIRE_WORKER_SANDBOX to allow unwrapped workers " +
-  "(the egress proxy still constrains network access).";
 
 /**
  * A `systemd-run --scope` that can't reach the user bus / start the scope
@@ -2195,7 +2180,7 @@ export class DeploymentManager {
         void releaseLockOnce();
         failTurnsForDeployment(
           deploymentName,
-          WORKER_SANDBOX_REQUIRED_MESSAGE
+          AgentErrorCode.WORKER_SANDBOX_REQUIRED
         ).catch((failErr) => {
           logger.error(
             `Failed to fail in-flight turns after refusing un-sandboxed worker ${deploymentName}: ${getErrorMessage(failErr)}`
@@ -2205,7 +2190,7 @@ export class DeploymentManager {
       }
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_CREATE_FAILED,
-        WORKER_SANDBOX_REQUIRED_MESSAGE
+        AGENT_ERRORS[AgentErrorCode.WORKER_SANDBOX_REQUIRED].userMessage({})
       );
     } else if (
       params.allowSystemd &&
@@ -2265,7 +2250,7 @@ export class DeploymentManager {
       // in-flight turn(s) were NOT failed and the client may hang until the
       // sweep backstop catches the lapsed marker — log it loudly.
       this.intentionalExits.delete(deploymentName);
-      failTurnsForDeployment(deploymentName, WORKER_DIED_MESSAGE).catch(
+      failTurnsForDeployment(deploymentName, AgentErrorCode.WORKER_DIED).catch(
         (failErr) => {
           logger.error(
             `Failed to fail in-flight turns after spawn error for ${deploymentName} (client may hang until the turn-liveness sweep): ${getErrorMessage(failErr)}`
@@ -2349,7 +2334,7 @@ export class DeploymentManager {
       // Fire-and-forget with a logging .catch — same rationale as the spawn
       // error handler above.
       if (!wasIntentional) {
-        failTurnsForDeployment(deploymentName, WORKER_DIED_MESSAGE).catch(
+        failTurnsForDeployment(deploymentName, AgentErrorCode.WORKER_DIED).catch(
           (failErr) => {
             logger.error(
               `Failed to fail in-flight turns after unexpected exit of ${deploymentName} (client may hang until the turn-liveness sweep): ${getErrorMessage(failErr)}`

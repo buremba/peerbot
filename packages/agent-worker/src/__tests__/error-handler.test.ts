@@ -6,8 +6,12 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { WorkerTransport } from "@lobu/core";
-import { classifyError, handleExecutionError } from "../core/error-handler";
+import type { AgentErrorContext, WorkerTransport } from "@lobu/core";
+import {
+  classifyAgentError,
+  classifyError,
+  handleExecutionError,
+} from "../core/error-handler";
 
 type Recorder = {
   transport: WorkerTransport;
@@ -16,7 +20,11 @@ type Recorder = {
     isFullReplacement?: boolean;
     isFinal?: boolean;
   }>;
-  errors: Array<{ message: string; code?: string }>;
+  errors: Array<{
+    message: string;
+    code?: string;
+    context?: AgentErrorContext;
+  }>;
 };
 
 function makeTransport(): Recorder {
@@ -31,8 +39,12 @@ function makeTransport(): Recorder {
     },
     signalDone: asyncNoop,
     signalCompletion: asyncNoop,
-    async signalError(error, errorCode) {
-      errors.push({ message: error.message, code: errorCode });
+    async signalError(error, errorCode, errorContext) {
+      errors.push({
+        message: error.message,
+        code: errorCode,
+        context: errorContext,
+      });
     },
     sendStatusUpdate: asyncNoop,
     sendCustomEvent: asyncNoop,
@@ -78,7 +90,7 @@ describe("handleExecutionError", () => {
     expect(errors[0].code).toBe("NO_MODEL_CONFIGURED");
   });
 
-  test("PROVIDER_* failures STILL emit a user-facing delta (not silent)", async () => {
+  test("classified PROVIDER_* failures signal code + context, NO worker delta", async () => {
     const { transport, deltas, errors } = makeTransport();
 
     await handleExecutionError(
@@ -86,15 +98,16 @@ describe("handleExecutionError", () => {
       transport
     );
 
-    // Unlike SESSION_TIMEOUT / NO_MODEL_CONFIGURED, a provider failure that
-    // reaches the catch-all must still tell the user something broke.
-    expect(deltas).toHaveLength(1);
-    expect(deltas[0].delta).toContain("💥 Worker crashed");
+    // New contract: the gateway renderer owns the user-facing text (via
+    // AGENT_ERRORS), so the worker must NOT also emit a formatted delta —
+    // that historical double-formatting is exactly what made the same error
+    // render differently across surfaces.
+    expect(deltas).toHaveLength(0);
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("PROVIDER_UNKNOWN_MODEL");
   });
 
-  test("provider routing failures are explanatory, not crash-branded", async () => {
+  test("provider routing failures signal a code, not a crash delta", async () => {
     const { transport, deltas, errors } = makeTransport();
 
     await handleExecutionError(
@@ -104,11 +117,32 @@ describe("handleExecutionError", () => {
       transport
     );
 
-    expect(deltas).toHaveLength(1);
-    expect(deltas[0].delta).toContain("⚠️ The selected model");
-    expect(deltas[0].delta).not.toContain("Worker crashed");
+    expect(deltas).toHaveLength(0);
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("PROVIDER_BASE_URL_UNRESOLVED");
+  });
+
+  test("provider QUOTA (z.ai 429) classifies + threads the reset time", async () => {
+    const { transport, deltas, errors } = makeTransport();
+
+    // The exact prod shape from the app pod logs.
+    await handleExecutionError(
+      new Error(
+        "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47"
+      ),
+      transport,
+      { provider: "z-ai" }
+    );
+
+    // No worker-formatted delta — the renderer builds the CTA'd message.
+    expect(deltas).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe("PROVIDER_QUOTA_EXHAUSTED");
+    // The reset time is parsed out of the raw provider text so the rendered
+    // message can tell the user when it resets — and the worker's provider is
+    // threaded in for "Your z-ai provider…".
+    expect(errors[0].context?.resetAt).toBe("2026-07-10 04:32:47");
+    expect(errors[0].context?.provider).toBe("z-ai");
   });
 });
 
@@ -126,15 +160,6 @@ describe("classifyError", () => {
       classifyError(
         new Error(
           "401 No provider credentials configured. End-user provider setup is not available in chat yet."
-        )
-      )
-    ).toBe("PROVIDER_AUTH");
-    // The admin-facing auth hint that session-runner substitutes for the raw
-    // provider 401 before the worker's capture sees it.
-    expect(
-      classifyError(
-        new Error(
-          "To use gpt-4o, an admin needs to connect openai on the base agent. Ask an admin to configure openai and then try again."
         )
       )
     ).toBe("PROVIDER_AUTH");
@@ -166,6 +191,43 @@ describe("classifyError", () => {
     ).toBe("PROVIDER_BASE_URL_UNRESOLVED");
   });
 
+  test("recognizes provider quota / rate-limit exhaustion", () => {
+    expect(
+      classifyError(
+        new Error(
+          "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47"
+        )
+      )
+    ).toBe("PROVIDER_QUOTA_EXHAUSTED");
+    expect(classifyError(new Error("429 Too Many Requests"))).toBe(
+      "PROVIDER_QUOTA_EXHAUSTED"
+    );
+    expect(classifyError(new Error("rate limit exceeded"))).toBe(
+      "PROVIDER_QUOTA_EXHAUSTED"
+    );
+    expect(classifyError(new Error("RESOURCE_EXHAUSTED: quota"))).toBe(
+      "PROVIDER_QUOTA_EXHAUSTED"
+    );
+  });
+
+  test("classifyAgentError extracts the reset time when present", () => {
+    const { code, context } = classifyAgentError(
+      new Error(
+        "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47"
+      )
+    );
+    expect(code).toBe("PROVIDER_QUOTA_EXHAUSTED");
+    expect(context.resetAt).toBe("2026-07-10 04:32:47");
+  });
+
+  test("quota without a reset time still classifies (no resetAt)", () => {
+    const { code, context } = classifyAgentError(
+      new Error("429 rate limit exceeded")
+    );
+    expect(code).toBe("PROVIDER_QUOTA_EXHAUSTED");
+    expect(context.resetAt).toBeUndefined();
+  });
+
   test("leaves unrelated crashes unclassified", () => {
     expect(classifyError(new Error("kaboom"))).toBeUndefined();
     expect(classifyError("not an error")).toBeUndefined();
@@ -176,5 +238,18 @@ describe("classifyError", () => {
     expect(classifyError(new Error("No model configured"))).toBe(
       "NO_MODEL_CONFIGURED"
     );
+  });
+
+  test("model-resolver's 'No model resolved' now classifies (was unclassified)", () => {
+    // model-resolver.ts throws this when no default/per-behavior/org model is
+    // set. It previously fell through to `undefined` → raw crash delta + dodged
+    // the PROVIDER_* Sentry alert. Now it renders the actionable catalog line.
+    expect(
+      classifyError(
+        new Error(
+          "No model resolved for this run. Set the agent's default model, a per-behavior model, or an org default inference provider."
+        )
+      )
+    ).toBe("NO_MODEL_CONFIGURED");
   });
 });

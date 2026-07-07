@@ -430,11 +430,6 @@ interface RunAISessionParams {
     incomingImageCount: number;
     runSilentPrompt: (prompt: string) => Promise<void>;
   }) => Promise<void>;
-  maybeBuildAuthHintMessage: (
-    errorMessage: string,
-    provider: string,
-    modelId: string
-  ) => string;
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +456,6 @@ export async function runAISession(
     onModelResolved,
     loadImageAttachments,
     maybeRunPreCompactionMemoryFlush,
-    maybeBuildAuthHintMessage,
   } = params;
 
   let rawOptions: Record<string, unknown>;
@@ -1574,12 +1568,11 @@ user references earlier discussion or you need prior context.`);
     const sessionError = progressProcessor.consumeFatalErrorMessage();
     if (sessionError) {
       await emitAgentEnd(sessionError);
-      const errorWithHint = maybeBuildAuthHintMessage(
-        sessionError,
-        rawProvider,
-        modelId
-      );
-      return buildResult(errorWithHint);
+      // Return the RAW provider error. Classification + user-facing rendering
+      // (incl. the provider-connect CTA) happen once downstream via
+      // classifyAgentError + AGENT_ERRORS — no bespoke sentence to rewrite here
+      // (which the classifier then had to regex-parse back into a code).
+      return buildResult(sessionError);
     }
 
     await emitAgentEnd();
@@ -1597,13 +1590,9 @@ user references earlier discussion or you need prior context.`);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     await emitAgentEnd(errorMsg);
-    const errorWithHint = maybeBuildAuthHintMessage(
-      errorMsg,
-      provider,
-      modelId
-    );
-
-    return buildResult(errorWithHint);
+    // Raw error out; downstream classifyAgentError + AGENT_ERRORS own the
+    // user-facing message + CTA (see the sessionError branch above).
+    return buildResult(errorMsg);
   } finally {
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);

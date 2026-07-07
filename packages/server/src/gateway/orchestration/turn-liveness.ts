@@ -40,6 +40,8 @@
  */
 
 import {
+	AGENT_ERRORS,
+	AgentErrorCode,
 	createLogger,
 	getErrorMessage,
 } from "@lobu/core";
@@ -229,7 +231,7 @@ export async function hasLiveTurnForMessage(
  */
 export async function failTurnsForDeployment(
   deploymentName: string,
-  reason: string
+  code: AgentErrorCode
 ): Promise<number> {
   try {
     const sql = getDb();
@@ -254,7 +256,7 @@ export async function failTurnsForDeployment(
           logger.error("Dropping unroutable turn-timeout marker (fast path)");
           continue;
         }
-        await enqueueTerminalError(tx, routing, reason);
+        await enqueueTerminalError(tx, routing, code);
         emitted += 1;
       }
       return emitted;
@@ -283,7 +285,7 @@ export async function failTurnsForDeployment(
  * outlives the pod that armed it).
  */
 export async function sweepExpiredTurns(
-  reason = "The worker handling your request stopped responding before it could reply. Please retry in a moment."
+  code: AgentErrorCode = AgentErrorCode.WORKER_UNRESPONSIVE
 ): Promise<number> {
   try {
     const sql = getDb();
@@ -314,7 +316,7 @@ export async function sweepExpiredTurns(
           logger.error("Dropping unroutable turn-timeout marker (sweep)");
           continue;
         }
-        await enqueueTerminalError(tx, routing, reason);
+        await enqueueTerminalError(tx, routing, code);
         emitted += 1;
       }
       return emitted;
@@ -364,8 +366,17 @@ async function insertThreadResponseRow(
 
 /** Build the terminal `thread_response{error}` payload for a turn. `platform`
  *  always carries an explicit value (defaults to "api") — gateway routing and
- *  platform isolation require it; never emit `platform: undefined`. */
-function buildTerminalErrorPayload(routing: TurnRouting, reason: string) {
+ *  platform isolation require it; never emit `platform: undefined`.
+ *
+ *  Carries the `AgentErrorCode` so the gateway renderers present it through the
+ *  shared `renderAgentError` catalog like any other agent error. `error` is the
+ *  catalog's own fallback text for that code (for any consumer that reads
+ *  `error` instead of rendering from the code) — NOT a caller-supplied string,
+ *  so there is exactly one place this prose lives: AGENT_ERRORS. */
+function buildTerminalErrorPayload(
+  routing: TurnRouting,
+  code: AgentErrorCode
+) {
   return {
     messageId: routing.messageId,
     channelId: routing.channelId,
@@ -374,7 +385,8 @@ function buildTerminalErrorPayload(routing: TurnRouting, reason: string) {
     teamId: routing.platform ?? "api",
     platform: routing.platform ?? "api",
     platformMetadata: routing.platformMetadata,
-    error: reason,
+    error: AGENT_ERRORS[code].userMessage({}),
+    errorCode: code,
     processedMessageIds: [routing.messageId],
     timestamp: Date.now(),
   };
@@ -384,11 +396,11 @@ function buildTerminalErrorPayload(routing: TurnRouting, reason: string) {
 async function enqueueTerminalError(
   tx: DbClient,
   routing: TurnRouting,
-  reason: string
+  code: AgentErrorCode
 ): Promise<void> {
   await insertThreadResponseRow(
     tx,
-    buildTerminalErrorPayload(routing, reason),
+    buildTerminalErrorPayload(routing, code),
     routing.organizationId ?? null
   );
 }
@@ -407,7 +419,7 @@ async function enqueueTerminalError(
 export async function failTurnIfPending(
   deploymentName: string,
   messageId: string,
-  reason: string
+  code: AgentErrorCode
 ): Promise<boolean> {
   const key = turnMarkerKey(deploymentName, messageId);
   try {
@@ -422,7 +434,7 @@ export async function failTurnIfPending(
       `;
       const routing = rows[0] ? asTurnRouting(rows[0].action_input) : null;
       if (!routing) return false;
-      await enqueueTerminalError(tx, routing, reason);
+      await enqueueTerminalError(tx, routing, code);
       return true;
     });
     if (emitted) await notifyThreadResponse();

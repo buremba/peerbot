@@ -13,7 +13,7 @@ const SETTINGS_LINK_RE =
  * Returns true when the URL points to a loopback address that
  * Telegram (and other platforms) reject for inline keyboard buttons.
  */
-function isLocalhostUrl(url: string): boolean {
+export function isLocalhostUrl(url: string): boolean {
   try {
     const u = new URL(url);
     return (

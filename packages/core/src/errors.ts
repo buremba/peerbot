@@ -135,3 +135,161 @@ export class ConversationOwnedElsewhereError extends BaseError {
 export class ConfigError extends BaseError {
   readonly name = "ConfigError";
 }
+
+/**
+ * The single catalog of user-facing agent-turn failures.
+ *
+ * Historically the same logical failure (e.g. "provider quota exhausted") was
+ * classified and formatted in four independent places — the worker's
+ * `classifyError`, a second ad-hoc regex in `worker.ts`, the Slack
+ * `chat-response-bridge`, and the browser SSE `response-renderer` — plus the
+ * turn-liveness sweep which invented its own string with no code at all. Each
+ * past fix touched one layer while the other three kept diverging, so the same
+ * error rendered differently depending on which layer terminalized first.
+ *
+ * This catalog makes an agent error DATA, resolved once:
+ *   1. `classifyError` (worker) is the ONLY classifier — message → code.
+ *   2. The code rides `signalError`/`ThreadResponsePayload.errorCode` to the
+ *      gateway.
+ *   3. Every renderer (Slack, Telegram, browser SSE) turns the code into
+ *      text + CTA via the shared `renderAgentError`, keyed on this record.
+ *
+ * Adding a new failure mode = one entry here + one `classifyError` pattern.
+ * A raw error reaching a user is a signal to add an entry, not to hand-wire a
+ * new branch in a renderer.
+ */
+export enum AgentErrorCode {
+  /** Provider weekly/monthly/rate limit hit (e.g. z.ai 429 "Limit Exhausted"). */
+  PROVIDER_QUOTA_EXHAUSTED = "PROVIDER_QUOTA_EXHAUSTED",
+  /** Provider credentials missing/invalid/expired. */
+  PROVIDER_AUTH = "PROVIDER_AUTH",
+  /** Model id not valid for the configured provider. */
+  PROVIDER_UNKNOWN_MODEL = "PROVIDER_UNKNOWN_MODEL",
+  /** Provider can't be routed through the gateway proxy (base URL unresolved). */
+  PROVIDER_BASE_URL_UNRESOLVED = "PROVIDER_BASE_URL_UNRESOLVED",
+  /** No model/provider selected for the agent at all. */
+  NO_MODEL_CONFIGURED = "NO_MODEL_CONFIGURED",
+  /**
+   * Turn-liveness sweep terminalized the turn: no worker-driven signal within
+   * the deadline (a worker blocked so long it stopped heartbeating). Carries a
+   * code now so it renders through the same path instead of a hardcoded
+   * "stopped responding" string.
+   */
+  WORKER_UNRESPONSIVE = "WORKER_UNRESPONSIVE",
+  /** Worker process died mid-flight (pod crash/OOM) before it could reply. */
+  WORKER_DIED = "WORKER_DIED",
+  /** Deployment/worker failed to START, so the request never ran. */
+  WORKER_STARTUP_FAILED = "WORKER_STARTUP_FAILED",
+  /**
+   * Operator required the systemd worker sandbox (LOBU_REQUIRE_WORKER_SANDBOX=1)
+   * but it's unavailable — the worker refused to run. An admin-config condition
+   * with remediation steps, not a transient user error.
+   */
+  WORKER_SANDBOX_REQUIRED = "WORKER_SANDBOX_REQUIRED",
+  /** Session exceeded its time budget (exit 124); retried silently. */
+  SESSION_TIMEOUT = "SESSION_TIMEOUT",
+}
+
+/**
+ * What kind of call-to-action link a rendered error should carry. The renderer
+ * resolves each kind to a concrete URL per surface (the resolver knows the org
+ * slug / agent id / public web origin); the catalog stays URL-free so it can
+ * live in `core` with no gateway dependency.
+ */
+export type AgentErrorCtaKind =
+  | "agent-settings" // → <webOrigin>/<slug>/agents/<agentId>
+  | "provider-connect" // → same settings page, provider-connect intent
+  | "none";
+
+export interface AgentErrorContext {
+  /** Provider slug (e.g. "z-ai"), when known — interpolated into the message. */
+  provider?: string;
+  /** Human reset time for quota errors, e.g. "2026-07-10 04:32 UTC". */
+  resetAt?: string;
+}
+
+export interface AgentErrorSpec {
+  /** Build the user-facing sentence (no link — the renderer appends the CTA). */
+  userMessage: (ctx: AgentErrorContext) => string;
+  cta: AgentErrorCtaKind;
+  /** Label for the CTA button/link. */
+  ctaLabel?: string;
+  /**
+   * When true, no user-facing message is emitted (bookkeeping only). Used for
+   * SESSION_TIMEOUT, which the runs queue retries automatically.
+   */
+  silent?: boolean;
+}
+
+const providerLabel = (ctx: AgentErrorContext): string =>
+  ctx.provider ? `Your ${ctx.provider} provider` : "Your AI provider";
+
+export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
+  [AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED]: {
+    userMessage: (ctx) =>
+      `${providerLabel(ctx)}'s usage limit is used up` +
+      (ctx.resetAt ? `. It resets ${ctx.resetAt}.` : "."),
+    cta: "agent-settings",
+    ctaLabel: "Manage provider",
+  },
+  [AgentErrorCode.PROVIDER_AUTH]: {
+    userMessage: (ctx) =>
+      `${providerLabel(ctx)}'s credentials are invalid or expired. Reconnect the provider to continue.`,
+    cta: "provider-connect",
+    ctaLabel: "Reconnect provider",
+  },
+  [AgentErrorCode.PROVIDER_UNKNOWN_MODEL]: {
+    userMessage: () =>
+      `The selected model isn't valid for this provider. Pick a supported model.`,
+    cta: "agent-settings",
+    ctaLabel: "Choose model",
+  },
+  [AgentErrorCode.PROVIDER_BASE_URL_UNRESOLVED]: {
+    userMessage: (ctx) =>
+      `${providerLabel(ctx)} isn't connected to this agent, so its requests can't be routed. Connect it to continue.`,
+    cta: "agent-settings",
+    ctaLabel: "Connect provider",
+  },
+  [AgentErrorCode.NO_MODEL_CONFIGURED]: {
+    userMessage: () =>
+      `No model is configured for this agent. Connect a provider to get started.`,
+    cta: "agent-settings",
+    ctaLabel: "Connect a provider",
+  },
+  [AgentErrorCode.WORKER_UNRESPONSIVE]: {
+    userMessage: () =>
+      `The agent didn't finish responding in time. This is usually temporary — please try again.`,
+    cta: "none",
+  },
+  [AgentErrorCode.WORKER_DIED]: {
+    userMessage: () =>
+      `The agent stopped unexpectedly before it could reply. This is usually temporary — please try again.`,
+    cta: "none",
+  },
+  [AgentErrorCode.WORKER_STARTUP_FAILED]: {
+    userMessage: () =>
+      `The agent couldn't start, so your request wasn't processed. Please try again in a moment.`,
+    cta: "none",
+  },
+  [AgentErrorCode.WORKER_SANDBOX_REQUIRED]: {
+    userMessage: () =>
+      "LOBU_REQUIRE_WORKER_SANDBOX=1 but the systemd worker sandbox is unavailable on this host " +
+      "(no usable `systemd-run --user` manager). Refusing to run an un-sandboxed worker. Provide a " +
+      "user-level systemd manager, or unset LOBU_REQUIRE_WORKER_SANDBOX to allow unwrapped workers " +
+      "(the egress proxy still constrains network access).",
+    cta: "none",
+  },
+  [AgentErrorCode.SESSION_TIMEOUT]: {
+    userMessage: () => "",
+    cta: "none",
+    silent: true,
+  },
+};
+
+/** Parse an `AgentErrorCode` from an unknown value (payload/DB boundary). */
+export function toAgentErrorCode(value: unknown): AgentErrorCode | undefined {
+  if (typeof value !== "string") return undefined;
+  return (Object.values(AgentErrorCode) as string[]).includes(value)
+    ? (value as AgentErrorCode)
+    : undefined;
+}

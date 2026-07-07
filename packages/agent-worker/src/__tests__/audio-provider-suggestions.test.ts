@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { classifyAgentError } from "../core/error-handler";
 import { OpenClawWorker } from "../openclaw/worker";
 import {
   fetchAudioProviderSuggestions,
@@ -180,20 +181,16 @@ describe("OpenClawWorker audio permission hint", () => {
   });
 });
 
-describe("OpenClawWorker auth hint messaging", () => {
-  test("routes missing provider auth to admin guidance", async () => {
-    const hint = await (
-      OpenClawWorker.prototype as any
-    ).maybeBuildAuthHintMessage(
-      'Authentication failed for "openai"',
-      "openai",
-      "gpt-4.1",
-      "http://gateway",
-      "token"
+describe("provider auth classification (no bespoke hint round-trip)", () => {
+  test("a raw provider auth error classifies to PROVIDER_AUTH with the provider in context", () => {
+    // The worker no longer rewrites the raw error into an admin-guidance
+    // sentence that the classifier then re-parses. The raw error classifies
+    // directly, and the provider (threaded from the worker's ExecutionError
+    // context) is what the AGENT_ERRORS catalog uses to render
+    // "Your openai provider's credentials are invalid…" + a reconnect CTA.
+    const { code } = classifyAgentError(
+      new Error('Authentication failed for "openai"')
     );
-
-    expect(hint).toContain("gpt-4.1");
-    expect(hint).toContain("admin");
-    expect(hint).toContain("openai");
+    expect(code).toBe("PROVIDER_AUTH");
   });
 });

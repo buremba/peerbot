@@ -63,7 +63,9 @@ export function registerBuiltInCommands(
         return;
       }
 
-      const settings = await deps.agentSettingsStore.getSettings(ctx.agentId);
+      const settings = await deps.agentSettingsStore.getSettings(ctx.agentId, {
+        organizationId: ctx.organizationId,
+      });
 
       const effectiveModel = resolveEffectiveModelRef(settings);
       const model = effectiveModel || "auto (org default)";

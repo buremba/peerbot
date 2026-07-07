@@ -66,7 +66,12 @@ export async function runOutputGuardrailScan(
   if (!ctx.agentId) return null;
 
   try {
-    const settings = await settingsStore.getSettings(ctx.agentId);
+    // Org-scope the read (see resolveAgentOptions): a shared agent id lives in
+    // multiple orgs and this runs without ambient orgContext, so an unscoped
+    // read can resolve another org's guardrails. ctx carries the org already.
+    const settings = await settingsStore.getSettings(ctx.agentId, {
+      organizationId: ctx.organizationId,
+    });
     const resolved = resolveAgentGuardrails(
       settings ?? { guardrails: [] },
       (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),

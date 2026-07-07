@@ -430,7 +430,12 @@ export class McpProxy {
 	): Promise<boolean> {
 		if (!this.guardrailRegistry || !this.agentSettingsStore) return false;
 		try {
-			const settings = await this.agentSettingsStore.getSettings(agentId);
+			// Org-scope the read (see resolveAgentOptions): a shared agent id spans
+			// orgs and this runs without ambient orgContext, so pass the org from
+			// tokenData to avoid resolving another org's guardrails.
+			const settings = await this.agentSettingsStore.getSettings(agentId, {
+				organizationId: tokenData.organizationId,
+			});
 			const resolved = resolveAgentGuardrails(
 				settings ?? { guardrails: [] },
 				(settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),

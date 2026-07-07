@@ -404,7 +404,8 @@ export class MessageConsumer {
       ) {
         try {
           const settings = await this.agentSettingsStore.getSettings(
-            data.agentId
+            data.agentId,
+            { organizationId: data.organizationId }
           );
           const resolved = resolveAgentGuardrails(
             settings ?? { guardrails: [] },

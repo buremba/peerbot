@@ -14,7 +14,7 @@ import {
 	pgBigintArray,
 	pgTextArray,
 } from "../db/client.js";
-import { resolveEntityLinksForItems } from "../utils/entity-link-upsert.js";
+import { resolveEventAttributionsForItems } from "../utils/entity-link-upsert.js";
 import { ensureResourceEntityType } from "./access-graph.js";
 import { slackChannelKey } from "./slack-channel-graph.js";
 import { SLACK_SOURCE } from "./sources.js";
@@ -125,7 +125,7 @@ export async function ensureChannelResourceEntity(opts: {
 		SLACK_SOURCE.resourceType,
 	);
 
-	const resolved = await resolveEntityLinksForItems(
+	const resolved = await resolveEventAttributionsForItems(
 		{
 			connectorKey: opts.connectorKey,
 			orgId: opts.organizationId,
@@ -141,6 +141,7 @@ export async function ensureChannelResourceEntity(opts: {
 			rules: {
 				channel_about: [
 					{
+						role: "about",
 						entityType: SLACK_SOURCE.resourceType.slug,
 						autoCreate: true,
 						titlePath: "metadata.resource_name",

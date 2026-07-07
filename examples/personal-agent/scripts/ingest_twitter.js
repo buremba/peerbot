@@ -1,6 +1,5 @@
-import { readFileSync } from "fs";
-import { execSync } from "child_process";
-import path from "path";
+import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 
 async function ingestTwitter() {
   const BUREMBA_ID = 5714;

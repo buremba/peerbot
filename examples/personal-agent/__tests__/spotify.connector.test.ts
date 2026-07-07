@@ -4,7 +4,6 @@ import { connectorSdkMock } from "./connector-sdk.mock";
 // Stub @lobu/connector-sdk so the connector imports without the browser stack.
 mock.module("@lobu/connector-sdk", connectorSdkMock);
 
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let trackKey: any;
 
 beforeAll(async () => {

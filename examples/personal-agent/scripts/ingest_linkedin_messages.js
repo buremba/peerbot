@@ -1,5 +1,5 @@
-import { readFileSync } from "fs";
-import { execSync } from "child_process";
+import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 
 function parseCSV(text) {
   const lines = text.split("\n");
@@ -16,7 +16,7 @@ function parseCSV(text) {
     let inQuotes = false;
     let currentVal = "";
 
-    for (let char of line) {
+    for (const char of line) {
       if (char === '"') {
         inQuotes = !inQuotes;
       } else if (char === "," && !inQuotes) {
@@ -66,7 +66,7 @@ async function fetchPersonMap() {
       outputData = jsonMatch ? JSON.parse(jsonMatch[1]) : null;
     }
 
-    if (!outputData || !outputData.success) {
+    if (!outputData?.success) {
       console.error(
         "SDK Error:",
         outputData
@@ -100,17 +100,16 @@ async function ingestLinkedInMessages() {
   const records = parseCSV(csv);
 
   const events = records
-    .filter((r) => r["DATE"] && r["CONTENT"])
-    .map((r, idx) => {
+    .filter((r) => r.DATE && r.CONTENT)
+    .map((r, _idx) => {
       let isoDate = "";
       try {
-        isoDate = new Date(r["DATE"]).toISOString();
+        isoDate = new Date(r.DATE).toISOString();
       } catch (e) {
-        isoDate = r["DATE"];
+        isoDate = r.DATE;
       }
 
-      const otherName =
-        r["FROM"] === "Burak Emre Kabakcı" ? r["TO"] : r["FROM"];
+      const otherName = r.FROM === "Burak Emre Kabakcı" ? r.TO : r.FROM;
       const otherId = personMap[(otherName || "").toLowerCase()];
 
       const entity_ids = [BUREMBA_ID];
@@ -118,15 +117,14 @@ async function ingestLinkedInMessages() {
 
       return {
         semantic_type: "direct_message",
-        content: r["CONTENT"],
+        content: r.CONTENT,
         entity_ids,
         metadata: {
           platform: "linkedin",
           timestamp: isoDate,
-          direction:
-            r["FROM"] === "Burak Emre Kabakcı" ? "outbound" : "inbound",
-          sender: r["FROM"],
-          receiver: r["TO"],
+          direction: r.FROM === "Burak Emre Kabakcı" ? "outbound" : "inbound",
+          sender: r.FROM,
+          receiver: r.TO,
         },
       };
     });

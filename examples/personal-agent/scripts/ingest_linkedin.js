@@ -1,5 +1,5 @@
-import { readFileSync } from "fs";
-import { execSync } from "child_process";
+import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 
 function parseCSV(text) {
   const lines = text.split("\n").slice(3); // Skip first 3 lines (LinkedIn notes)
@@ -16,7 +16,7 @@ function parseCSV(text) {
     let inQuotes = false;
     let currentVal = "";
 
-    for (let char of line) {
+    for (const char of line) {
       if (char === '"') {
         inQuotes = !inQuotes;
       } else if (char === "," && !inQuotes) {
@@ -57,8 +57,8 @@ async function ingestLinkedInConnections() {
           first_name: r["First Name"],
           last_name: r["Last Name"],
           email: r["Email Address"],
-          company: r["Company"],
-          linkedin_url: r["URL"],
+          company: r.Company,
+          linkedin_url: r.URL,
         },
       };
     });

@@ -1,6 +1,6 @@
-import { readFileSync, readdirSync } from "fs";
-import { execSync } from "child_process";
-import path from "path";
+import { readFileSync, readdirSync } from "node:fs";
+import { execSync } from "node:child_process";
+import path from "node:path";
 
 async function ingestKeep() {
   console.log("Loading Google Keep Notes...");
@@ -14,11 +14,11 @@ async function ingestKeep() {
     try {
       const data = JSON.parse(readFileSync(path.join(keepDir, file), "utf-8"));
 
-      let content = data.title ? data.title + "\\n" : "";
+      let content = data.title ? `${data.title}\\n` : "";
       if (data.textContent) content += data.textContent;
       if (data.listContent) {
         content += data.listContent
-          .map((item) => "- " + item.text + (item.isChecked ? " (done)" : ""))
+          .map((item) => `- ${item.text}${item.isChecked ? " (done)" : ""}`)
           .join("\\n");
       }
 

@@ -3,7 +3,6 @@ import { connectorSdkMock } from "./connector-sdk.mock";
 
 mock.module("@lobu/connector-sdk", connectorSdkMock);
 
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let GoogleMapsConnector: any;
 
 beforeAll(async () => {

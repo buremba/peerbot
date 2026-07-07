@@ -18,7 +18,6 @@
 
 interface DomScrapeOpts {
   dispatcher: {
-    // biome-ignore lint/suspicious/noExplicitAny: stub dispatcher return
     dispatch: (action: string, input: Record<string, unknown>) => Promise<any>;
   };
   url: string;

@@ -1,5 +1,4 @@
-import { readFileSync } from "fs";
-import { execSync } from "child_process";
+import { execSync } from "node:child_process";
 import ical from "node-ical";
 
 async function ingestCalendar() {
@@ -25,7 +24,7 @@ async function ingestCalendar() {
     knowledgeEvents.push({
       semantic_type: "calendar_event",
       content:
-        event.summary + (event.description ? "\\n" + event.description : ""),
+        event.summary + (event.description ? `\\n${event.description}` : ""),
       entity_ids: [5714], // user's ID
       metadata: metadata,
     });

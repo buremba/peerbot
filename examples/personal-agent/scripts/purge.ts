@@ -1,4 +1,4 @@
-export default async (ctx, client) => {
+export default async (_ctx, client) => {
   let totalDeleted = 0;
 
   async function purgeType(type_slug) {
@@ -33,8 +33,8 @@ export default async (ctx, client) => {
       limit: 500,
     });
     // Filter to just the ones with slugs starting with linkedin-contact-
-    const toDelete = res.entities.filter(
-      (e) => e.slug && e.slug.startsWith("linkedin-contact-")
+    const toDelete = res.entities.filter((e) =>
+      e.slug?.startsWith("linkedin-contact-")
     );
 
     if (toDelete.length === 0) {
@@ -67,13 +67,19 @@ export default async (ctx, client) => {
   // Delete the schemas
   try {
     await client.entitySchema.deleteType({ slug: "travel_log" });
-  } catch (e) {}
+  } catch {
+    // type may not exist; ignore
+  }
   try {
     await client.entitySchema.deleteType({ slug: "message" });
-  } catch (e) {}
+  } catch {
+    // type may not exist; ignore
+  }
   try {
     await client.entitySchema.deleteType({ slug: "social_post" });
-  } catch (e) {}
+  } catch {
+    // type may not exist; ignore
+  }
 
   return `Purge complete. Deleted ${totalDeleted} entities.`;
 };

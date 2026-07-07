@@ -1,5 +1,5 @@
-import { readFileSync } from "fs";
-import { execSync } from "child_process";
+import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 
 function parseCSV(text) {
   const lines = text.split("\n");
@@ -16,7 +16,7 @@ function parseCSV(text) {
     let inQuotes = false;
     let currentVal = "";
 
-    for (let char of line) {
+    for (const char of line) {
       if (char === '"') {
         inQuotes = !inQuotes;
       } else if (char === "," && !inQuotes) {
@@ -44,16 +44,16 @@ async function ingestTravelLogs() {
   const records = parseCSV(csv);
 
   const events = records
-    .filter((r) => r["Date"])
-    .map((r, idx) => ({
+    .filter((r) => r.Date)
+    .map((r, _idx) => ({
       semantic_type: "travel",
-      content: r["Notes"] || `Travel: ${r["Location"]} (${r["Date"]})`,
+      content: r.Notes || `Travel: ${r.Location} (${r.Date})`,
       entity_ids: [BUREMBA_ID],
       metadata: {
-        date: r["Date"],
-        location: r["Location"],
-        event_type: r["Event"],
-        needs_confirmation: r["NeedsConfirmation"] === "True",
+        date: r.Date,
+        location: r.Location,
+        event_type: r.Event,
+        needs_confirmation: r.NeedsConfirmation === "True",
       },
     }));
 

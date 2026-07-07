@@ -1,5 +1,5 @@
-import { readFileSync } from "fs";
-import { execSync } from "child_process";
+import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import * as cheerio from "cheerio";
 
 async function ingestYouTube() {
@@ -19,7 +19,7 @@ async function ingestYouTube() {
   const knowledgeEvents = [];
 
   // The items are in .outer-cell
-  $(".outer-cell").each((i, el) => {
+  $(".outer-cell").each((_i, el) => {
     const textCell = $(el).find(".content-cell").first();
     const links = textCell.find("a");
 
@@ -41,7 +41,7 @@ async function ingestYouTube() {
     const timestampMatch = cellText.match(
       /([A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2}\u202F[AP]M [A-Z]{3,4})/
     );
-    let timestampStr = timestampMatch ? timestampMatch[1] : null;
+    const timestampStr = timestampMatch ? timestampMatch[1] : null;
     let timestamp = null;
     if (timestampStr) {
       try {

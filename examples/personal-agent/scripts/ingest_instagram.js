@@ -1,5 +1,5 @@
-import { readFileSync } from "fs";
-import { execSync } from "child_process";
+import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { globSync } from "glob";
 import * as cheerio from "cheerio";
 
@@ -32,7 +32,7 @@ async function fetchPersonMap() {
       outputData = jsonMatch ? JSON.parse(jsonMatch[1]) : null;
     }
 
-    if (!outputData || !outputData.success) {
+    if (!outputData?.success) {
       console.error(
         "SDK Error:",
         outputData
@@ -68,7 +68,7 @@ async function ingestInstagramMessages() {
     return;
   }
 
-  let allEvents = [];
+  const allEvents = [];
 
   for (const file of htmlFiles) {
     const html = readFileSync(file, "utf-8");
@@ -85,8 +85,10 @@ async function ingestInstagramMessages() {
       let isoDate = dateStr;
       try {
         const d = new Date(dateStr);
-        if (!isNaN(d)) isoDate = d.toISOString();
-      } catch (e) {}
+        if (!Number.isNaN(d)) isoDate = d.toISOString();
+      } catch {
+        // ignore unparseable dates
+      }
 
       // Attempt to resolve person ID
       const senderId = personMap[sender.toLowerCase()];

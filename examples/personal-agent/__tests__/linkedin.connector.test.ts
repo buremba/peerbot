@@ -5,15 +5,10 @@ import { connectorSdkMock } from "./connector-sdk.mock";
 // without the browser stack. Shared superset — see connector-sdk.mock.ts.
 mock.module("@lobu/connector-sdk", connectorSdkMock);
 
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let LinkedInConnector: any;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let buildHomeFeedEvents: any;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let parseHomeFeedAuthor: any;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let isHomeFeedNoise: any;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let filterPostsSinceCheckpoint: any;
 
 beforeAll(async () => {

@@ -1,4 +1,3 @@
-import type { AgentErrorContext } from "./errors";
 import type { GuardrailStage } from "./guardrails/types";
 import type { SecretRef } from "./secret-refs";
 
@@ -437,14 +436,13 @@ export interface ThreadResponsePayload {
    * drained by a different replica than the one that buffered the deltas.
    */
   finalText?: string;
+  /**
+   * Raw error message. For provider errors this is relayed verbatim as the
+   * user-facing body (the provider's own text already says the useful thing,
+   * e.g. the quota reset time); `errorCode` only selects the CTA link.
+   */
   error?: string;
   errorCode?: string;
-  /**
-   * Structured context for `errorCode`, threaded from the worker's classifier
-   * so a renderer can build the full user message (e.g. the quota reset time)
-   * and CTA. See `AGENT_ERRORS` in ./errors.
-   */
-  errorContext?: AgentErrorContext;
   timestamp: number;
   originalMessageId?: string;
   botResponseId?: string;

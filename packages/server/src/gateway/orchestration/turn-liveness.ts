@@ -385,7 +385,9 @@ function buildTerminalErrorPayload(
     teamId: routing.platform ?? "api",
     platform: routing.platform ?? "api",
     platformMetadata: routing.platformMetadata,
-    error: AGENT_ERRORS[code].userMessage({}),
+    // Sweep/dispatch codes are always worker-family, which carry catalog text
+    // (there's no provider message to relay when the worker never replied).
+    error: AGENT_ERRORS[code].message ?? "The agent didn't finish responding.",
     errorCode: code,
     processedMessageIds: [routing.messageId],
     timestamp: Date.now(),

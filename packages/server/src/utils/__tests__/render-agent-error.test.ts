@@ -5,7 +5,7 @@
  * while four layers each formatted errors independently.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { AgentErrorCode } from "@lobu/core";
 import { renderAgentError } from "../url-builder";
 
@@ -14,58 +14,62 @@ const resolveSettings = async () => SETTINGS_URL;
 const resolveNothing = async () => null;
 
 describe("renderAgentError", () => {
-  test("provider quota renders the reset time + a settings CTA", async () => {
+  it("provider quota RELAYS the provider's own message verbatim + a settings CTA", async () => {
+    // The provider's message already says when the quota resets — we relay it
+    // unchanged (no reset-time parsing, no reword) and only add the CTA link.
+    const raw =
+      "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47";
     const r = await renderAgentError(
       AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
-      { provider: "z-ai", resetAt: "2026-07-10 04:32 UTC" },
+      raw,
       resolveSettings
     );
-    expect(r.text).toContain("z-ai");
-    expect(r.text).toContain("used up");
-    expect(r.text).toContain("2026-07-10 04:32 UTC");
+    expect(r.text).toBe(raw);
     expect(r.ctaUrl).toBe(SETTINGS_URL);
     expect(r.ctaLabel).toBe("Manage provider");
     expect(r.silent).toBe(false);
   });
 
-  test("quota without context is still a coherent generic message", async () => {
+  it("provider error with no relayed message renders empty text but keeps the CTA", async () => {
     const r = await renderAgentError(
       AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
       undefined,
       resolveSettings
     );
-    expect(r.text).toContain("Your AI provider");
-    expect(r.text).not.toContain("undefined");
+    expect(r.text).toBe("");
     expect(r.ctaUrl).toBe(SETTINGS_URL);
   });
 
-  test("auth failure asks the user to reconnect with a CTA", async () => {
+  it("auth failure relays the provider message + a reconnect CTA", async () => {
     const r = await renderAgentError(
       AgentErrorCode.PROVIDER_AUTH,
-      { provider: "openai" },
+      'Authentication failed for "openai"',
       resolveSettings
     );
-    expect(r.text.toLowerCase()).toContain("reconnect");
+    expect(r.text).toBe('Authentication failed for "openai"');
     expect(r.ctaUrl).toBe(SETTINGS_URL);
     expect(r.ctaLabel).toBe("Reconnect provider");
   });
 
-  test("WORKER_UNRESPONSIVE has a message but NO CTA (resolver never called)", async () => {
+  it("WORKER_UNRESPONSIVE uses OUR catalog text (no provider message) and NO CTA", async () => {
     let called = false;
     const r = await renderAgentError(
       AgentErrorCode.WORKER_UNRESPONSIVE,
-      undefined,
+      // Even if a stray message is passed, a synthesized error prefers its own
+      // catalog text.
+      "some raw string",
       async () => {
         called = true;
         return SETTINGS_URL;
       }
     );
     expect(r.text.toLowerCase()).toContain("try again");
+    expect(r.text).not.toBe("some raw string");
     expect(r.ctaUrl).toBeNull();
     expect(called).toBe(false);
   });
 
-  test("SESSION_TIMEOUT is silent", async () => {
+  it("SESSION_TIMEOUT is silent", async () => {
     const r = await renderAgentError(
       AgentErrorCode.SESSION_TIMEOUT,
       undefined,
@@ -74,7 +78,7 @@ describe("renderAgentError", () => {
     expect(r.silent).toBe(true);
   });
 
-  test("a CTA code with an unresolvable URL degrades to text-only", async () => {
+  it("a synthesized CTA code with an unresolvable URL degrades to text-only", async () => {
     const r = await renderAgentError(
       AgentErrorCode.NO_MODEL_CONFIGURED,
       undefined,

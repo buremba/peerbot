@@ -201,16 +201,28 @@ export type AgentErrorCtaKind =
   | "provider-connect" // → same settings page, provider-connect intent
   | "none";
 
-export interface AgentErrorContext {
-  /** Provider slug (e.g. "z-ai"), when known — interpolated into the message. */
-  provider?: string;
-  /** Human reset time for quota errors, e.g. "2026-07-10 04:32 UTC". */
-  resetAt?: string;
-}
-
+/**
+ * The spec is deliberately thin. Two families of failure:
+ *
+ *  - PROVIDER errors (quota/auth/unknown-model/routing) carry NO `message`: the
+ *    provider's own error string (relayed verbatim via `payload.error`) is the
+ *    body, because it already says the useful thing — including a reset time
+ *    like "will reset at 2026-07-10". We don't re-derive or reword it; the spec
+ *    only decides the CTA link to append. Zero string parsing.
+ *
+ *  - WORKER / config errors DO carry a `message`: they're synthesized by us (the
+ *    sweep, the deployment manager, the model resolver) so there is no upstream
+ *    provider string to fall back to.
+ *
+ * The renderer picks `spec.message ?? payload.error` and appends the CTA.
+ */
 export interface AgentErrorSpec {
-  /** Build the user-facing sentence (no link — the renderer appends the CTA). */
-  userMessage: (ctx: AgentErrorContext) => string;
+  /**
+   * Fixed user-facing text, ONLY for errors we synthesize (no provider string
+   * exists). Omit for provider errors — the renderer uses the relayed provider
+   * message instead.
+   */
+  message?: string;
   cta: AgentErrorCtaKind;
   /** Label for the CTA button/link. */
   ctaLabel?: string;
@@ -221,58 +233,48 @@ export interface AgentErrorSpec {
   silent?: boolean;
 }
 
-const providerLabel = (ctx: AgentErrorContext): string =>
-  ctx.provider ? `Your ${ctx.provider} provider` : "Your AI provider";
-
 export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
+  // Provider errors — no `message`; the provider's own text is the body.
   [AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED]: {
-    userMessage: (ctx) =>
-      `${providerLabel(ctx)}'s usage limit is used up` +
-      (ctx.resetAt ? `. It resets ${ctx.resetAt}.` : "."),
     cta: "agent-settings",
     ctaLabel: "Manage provider",
   },
   [AgentErrorCode.PROVIDER_AUTH]: {
-    userMessage: (ctx) =>
-      `${providerLabel(ctx)}'s credentials are invalid or expired. Reconnect the provider to continue.`,
     cta: "provider-connect",
     ctaLabel: "Reconnect provider",
   },
   [AgentErrorCode.PROVIDER_UNKNOWN_MODEL]: {
-    userMessage: () =>
-      `The selected model isn't valid for this provider. Pick a supported model.`,
     cta: "agent-settings",
     ctaLabel: "Choose model",
   },
   [AgentErrorCode.PROVIDER_BASE_URL_UNRESOLVED]: {
-    userMessage: (ctx) =>
-      `${providerLabel(ctx)} isn't connected to this agent, so its requests can't be routed. Connect it to continue.`,
     cta: "agent-settings",
     ctaLabel: "Connect provider",
   },
+  // Errors we synthesize — carry our own text (no provider string to relay).
   [AgentErrorCode.NO_MODEL_CONFIGURED]: {
-    userMessage: () =>
-      `No model is configured for this agent. Connect a provider to get started.`,
+    message:
+      "No model is configured for this agent. Connect a provider to get started.",
     cta: "agent-settings",
     ctaLabel: "Connect a provider",
   },
   [AgentErrorCode.WORKER_UNRESPONSIVE]: {
-    userMessage: () =>
-      `The agent didn't finish responding in time. This is usually temporary — please try again.`,
+    message:
+      "The agent didn't finish responding in time. This is usually temporary — please try again.",
     cta: "none",
   },
   [AgentErrorCode.WORKER_DIED]: {
-    userMessage: () =>
-      `The agent stopped unexpectedly before it could reply. This is usually temporary — please try again.`,
+    message:
+      "The agent stopped unexpectedly before it could reply. This is usually temporary — please try again.",
     cta: "none",
   },
   [AgentErrorCode.WORKER_STARTUP_FAILED]: {
-    userMessage: () =>
-      `The agent couldn't start, so your request wasn't processed. Please try again in a moment.`,
+    message:
+      "The agent couldn't start, so your request wasn't processed. Please try again in a moment.",
     cta: "none",
   },
   [AgentErrorCode.WORKER_SANDBOX_REQUIRED]: {
-    userMessage: () =>
+    message:
       "LOBU_REQUIRE_WORKER_SANDBOX=1 but the systemd worker sandbox is unavailable on this host " +
       "(no usable `systemd-run --user` manager). Refusing to run an un-sandboxed worker. Provide a " +
       "user-level systemd manager, or unset LOBU_REQUIRE_WORKER_SANDBOX to allow unwrapped workers " +
@@ -280,7 +282,6 @@ export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
     cta: "none",
   },
   [AgentErrorCode.SESSION_TIMEOUT]: {
-    userMessage: () => "",
     cta: "none",
     silent: true,
   },

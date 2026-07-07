@@ -4,8 +4,6 @@
  * Current implementation: HTTP.
  */
 
-import type { AgentErrorContext } from "../errors";
-
 /**
  * Transport interface for worker-to-gateway communication
  */
@@ -45,16 +43,12 @@ export interface WorkerTransport {
   /**
    * Signal that an error occurred during processing
    *
-   * @param error - The error that occurred
-   * @param errorCode - Classified `AgentErrorCode` (see @lobu/core errors)
-   * @param errorContext - Structured context (provider, resetAt) the renderer
-   *                       needs to build the full user message + CTA
+   * @param error - The error that occurred. Its message is relayed verbatim as
+   *                the user-facing body for provider errors.
+   * @param errorCode - Classified `AgentErrorCode` (see @lobu/core errors); the
+   *                    renderer uses it only to select the CTA link.
    */
-  signalError(
-    error: Error,
-    errorCode?: string,
-    errorContext?: AgentErrorContext
-  ): Promise<void>;
+  signalError(error: Error, errorCode?: string): Promise<void>;
 
   /**
    * Send a status update to the gateway

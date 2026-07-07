@@ -27,6 +27,9 @@ const server = createServer((req, res) => {
     }
     if (url.includes("/chat/completions")) {
       if (MODE === "quota-429") {
+        // z.ai's real 429 carries the reset time in the BODY text (not a
+        // Retry-After header). The error e2e parses that out of the raw string
+        // and asserts it reaches the user via the catalog.
         res.writeHead(429, { "content-type": "application/json" });
         res.end(
           JSON.stringify({

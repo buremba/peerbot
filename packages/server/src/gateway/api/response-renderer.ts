@@ -112,12 +112,12 @@ export class ApiResponseRenderer implements ResponseRenderer {
       return;
     }
 
-    // Render a coded error through the shared catalog so the browser sees the
-    // same user-facing sentence Slack does (e.g. "Your provider's limit is used
-    // up. It resets …") instead of a raw "429 Weekly/Monthly …". The catalog
-    // text needs no URL, so it's always safe here; the CTA link itself is a
-    // follow-up (this SSE surface lacks the org/agent ids to resolve it — the
-    // structured `errorCode` is forwarded so the frontend can build the button).
+    // Pick the body the same way every surface does: our catalog text for
+    // errors we synthesize (worker/config), else the provider's OWN message
+    // relayed verbatim (it already says the useful thing, e.g. the quota reset
+    // time). The structured `errorCode` is forwarded so the frontend can build
+    // the CTA button (this SSE surface lacks the org/agent ids to resolve the
+    // URL itself).
     const code = toAgentErrorCode(payload.errorCode);
     const spec = code ? AGENT_ERRORS[code] : undefined;
     if (spec?.silent) {
@@ -128,9 +128,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
       });
       return;
     }
-    const errorText = spec
-      ? spec.userMessage(payload.errorContext ?? {})
-      : payload.error;
+    const errorText = spec?.message ?? payload.error;
 
     const errorEvent = {
       type: "error",

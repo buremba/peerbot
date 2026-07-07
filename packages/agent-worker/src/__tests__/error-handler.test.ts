@@ -6,12 +6,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { AgentErrorContext, WorkerTransport } from "@lobu/core";
-import {
-  classifyAgentError,
-  classifyError,
-  handleExecutionError,
-} from "../core/error-handler";
+import type { WorkerTransport } from "@lobu/core";
+import { classifyError, handleExecutionError } from "../core/error-handler";
 
 type Recorder = {
   transport: WorkerTransport;
@@ -20,11 +16,7 @@ type Recorder = {
     isFullReplacement?: boolean;
     isFinal?: boolean;
   }>;
-  errors: Array<{
-    message: string;
-    code?: string;
-    context?: AgentErrorContext;
-  }>;
+  errors: Array<{ message: string; code?: string }>;
 };
 
 function makeTransport(): Recorder {
@@ -39,12 +31,8 @@ function makeTransport(): Recorder {
     },
     signalDone: asyncNoop,
     signalCompletion: asyncNoop,
-    async signalError(error, errorCode, errorContext) {
-      errors.push({
-        message: error.message,
-        code: errorCode,
-        context: errorContext,
-      });
+    async signalError(error, errorCode) {
+      errors.push({ message: error.message, code: errorCode });
     },
     sendStatusUpdate: asyncNoop,
     sendCustomEvent: asyncNoop,
@@ -122,27 +110,22 @@ describe("handleExecutionError", () => {
     expect(errors[0].code).toBe("PROVIDER_BASE_URL_UNRESOLVED");
   });
 
-  test("provider QUOTA (z.ai 429) classifies + threads the reset time", async () => {
+  test("provider QUOTA (z.ai 429) classifies + relays the raw message verbatim", async () => {
     const { transport, deltas, errors } = makeTransport();
 
     // The exact prod shape from the app pod logs.
-    await handleExecutionError(
-      new Error(
-        "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47"
-      ),
-      transport,
-      { provider: "z-ai" }
-    );
+    const raw =
+      "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47";
+    await handleExecutionError(new Error(raw), transport, { provider: "z-ai" });
 
-    // No worker-formatted delta — the renderer builds the CTA'd message.
+    // No worker-formatted delta — the renderer presents it (raw message body +
+    // the code's CTA link). The raw message reaches the wire UNCHANGED: it
+    // already tells the user when the quota resets, so we relay it verbatim
+    // instead of parsing a reset time out of it.
     expect(deltas).toHaveLength(0);
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("PROVIDER_QUOTA_EXHAUSTED");
-    // The reset time is parsed out of the raw provider text so the rendered
-    // message can tell the user when it resets — and the worker's provider is
-    // threaded in for "Your z-ai provider…".
-    expect(errors[0].context?.resetAt).toBe("2026-07-10 04:32:47");
-    expect(errors[0].context?.provider).toBe("z-ai");
+    expect(errors[0].message).toBe(raw);
   });
 });
 
@@ -208,24 +191,6 @@ describe("classifyError", () => {
     expect(classifyError(new Error("RESOURCE_EXHAUSTED: quota"))).toBe(
       "PROVIDER_QUOTA_EXHAUSTED"
     );
-  });
-
-  test("classifyAgentError extracts the reset time when present", () => {
-    const { code, context } = classifyAgentError(
-      new Error(
-        "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47"
-      )
-    );
-    expect(code).toBe("PROVIDER_QUOTA_EXHAUSTED");
-    expect(context.resetAt).toBe("2026-07-10 04:32:47");
-  });
-
-  test("quota without a reset time still classifies (no resetAt)", () => {
-    const { code, context } = classifyAgentError(
-      new Error("429 rate limit exceeded")
-    );
-    expect(code).toBe("PROVIDER_QUOTA_EXHAUSTED");
-    expect(context.resetAt).toBeUndefined();
   });
 
   test("leaves unrelated crashes unclassified", () => {

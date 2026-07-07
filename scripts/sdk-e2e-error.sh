@@ -118,31 +118,21 @@ echo "✓ lobu run auto-applied the project"
 
 echo "--- chat output ---"; cat "$CHAT_OUT"; echo "-------------------"
 
-# 4a) The rendered catalog prose must reach the user.
-grep -qiF "usage limit is used up" "$CHAT_OUT" \
-  || fail "rendered PROVIDER_QUOTA_EXHAUSTED prose missing (got: $(tr -d '\n' < "$CHAT_OUT" | tail -c 300))"
-# 4b) The reset time parsed out of the raw provider body must be threaded through.
+# 4a) The provider's OWN message is relayed verbatim as the body. This is the
+# thin design: we don't reword the provider's error, we surface it — which also
+# means the reset time it contains reaches the user for free.
+grep -qF "Weekly/Monthly Limit Exhausted" "$CHAT_OUT" \
+  || fail "provider message not relayed to the user (got: $(tr -d '\n' < "$CHAT_OUT" | tail -c 300))"
+# 4b) The reset time (inside the provider's message) reaches the user — that's
+# how the user knows when quota is back, with no parsing on our side.
 grep -qF "2026-07-10 04:32:47" "$CHAT_OUT" \
-  || fail "reset time not threaded into the rendered message"
-# 4c) The provider label must be SPECIFIC (threaded from the worker's resolved
-# provider), not the generic "Your AI provider" fallback. The resolved provider
-# is the wire protocol the route composed to — here the mock registers with
-# sdkCompat "openai", so a real openai-compatible route (z.ai included) surfaces
-# as "openai provider". What we're guarding is that a concrete provider name
-# reached the render context at all, i.e. the fallback did NOT fire.
-grep -qiE "Your [a-z0-9_-]+ provider's usage limit" "$CHAT_OUT" \
-  || fail "provider label not rendered from context"
-if grep -qiF "Your AI provider's usage limit" "$CHAT_OUT"; then
-  fail "generic provider fallback fired — resolved provider was not threaded into the render context"
-fi
+  || fail "reset time (in the provider message) did not reach the user"
 
-# 4d) NEGATIVE assertions — the two masks the taxonomy killed must NOT appear.
-if grep -qiF "Weekly/Monthly Limit Exhausted" "$CHAT_OUT"; then
-  fail "raw provider 429 body leaked to the user (should be catalog prose)"
-fi
+# 4c) NEGATIVE assertion — the generic sweep mask must NOT replace the real
+# provider error (the terminalization race the taxonomy closed).
 if grep -qiE "stopped responding|worker.*(unresponsive|not responding)" "$CHAT_OUT"; then
   fail "generic sweep 'stopped responding' surfaced instead of the real quota error"
 fi
 
-echo "✓ provider 429 rendered as unified catalog prose (code + reset + provider), no raw/generic leak"
+echo "✓ provider 429 relayed verbatim (incl. reset time), classified, no generic-sweep mask"
 echo "🎉 error-taxonomy e2e passed"

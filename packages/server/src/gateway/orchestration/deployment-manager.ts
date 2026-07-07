@@ -2190,7 +2190,7 @@ export class DeploymentManager {
       }
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_CREATE_FAILED,
-        AGENT_ERRORS[AgentErrorCode.WORKER_SANDBOX_REQUIRED].userMessage({})
+        AGENT_ERRORS[AgentErrorCode.WORKER_SANDBOX_REQUIRED].message ?? ""
       );
     } else if (
       params.allowSystemd &&

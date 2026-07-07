@@ -1568,10 +1568,9 @@ user references earlier discussion or you need prior context.`);
     const sessionError = progressProcessor.consumeFatalErrorMessage();
     if (sessionError) {
       await emitAgentEnd(sessionError);
-      // Return the RAW provider error. Classification + user-facing rendering
-      // (incl. the provider-connect CTA) happen once downstream via
-      // classifyAgentError + AGENT_ERRORS — no bespoke sentence to rewrite here
-      // (which the classifier then had to regex-parse back into a code).
+      // Return the RAW provider error. It's the user-facing body verbatim; the
+      // only downstream work is `classifyError` → a code that selects the CTA
+      // link (via AGENT_ERRORS). No sentence is rewritten here.
       return buildResult(sessionError);
     }
 
@@ -1590,8 +1589,8 @@ user references earlier discussion or you need prior context.`);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     await emitAgentEnd(errorMsg);
-    // Raw error out; downstream classifyAgentError + AGENT_ERRORS own the
-    // user-facing message + CTA (see the sessionError branch above).
+    // Raw error out; downstream `classifyError` picks the code (→ CTA) and the
+    // raw message is the body verbatim (see the sessionError branch above).
     return buildResult(errorMsg);
   } finally {
     if (heartbeatTimer) {

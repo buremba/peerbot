@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { classifyAgentError } from "../core/error-handler";
+import { classifyError } from "../core/error-handler";
 import { OpenClawWorker } from "../openclaw/worker";
 import {
   fetchAudioProviderSuggestions,
@@ -182,15 +182,13 @@ describe("OpenClawWorker audio permission hint", () => {
 });
 
 describe("provider auth classification (no bespoke hint round-trip)", () => {
-  test("a raw provider auth error classifies to PROVIDER_AUTH with the provider in context", () => {
+  test("a raw provider auth error classifies to PROVIDER_AUTH", () => {
     // The worker no longer rewrites the raw error into an admin-guidance
     // sentence that the classifier then re-parses. The raw error classifies
-    // directly, and the provider (threaded from the worker's ExecutionError
-    // context) is what the AGENT_ERRORS catalog uses to render
-    // "Your openai provider's credentials are invalid…" + a reconnect CTA.
-    const { code } = classifyAgentError(
-      new Error('Authentication failed for "openai"')
+    // directly to a code; that code selects the reconnect CTA, and the raw
+    // provider message is relayed verbatim as the body.
+    expect(classifyError(new Error('Authentication failed for "openai"'))).toBe(
+      "PROVIDER_AUTH"
     );
-    expect(code).toBe("PROVIDER_AUTH");
   });
 });

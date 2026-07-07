@@ -24,7 +24,11 @@ import {
   expect,
   test,
 } from "bun:test";
-import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
+import {
+  AgentErrorCode,
+  generateWorkerToken,
+  verifyWorkerToken,
+} from "@lobu/core";
 import { RunsQueue } from "../infrastructure/queue/runs-queue.js";
 import {
   armTurnTimeout,
@@ -168,7 +172,7 @@ describe("POST /worker/token/refresh", () => {
 
     // The worker dies / replies → marker discharged. Use the fast path to
     // simulate terminalization, then refresh must be denied.
-    await failTurnsForDeployment(DEPLOYMENT, "worker died");
+    await failTurnsForDeployment(DEPLOYMENT, AgentErrorCode.WORKER_DIED);
 
     const res = await postRefresh(original);
     expect(res.status).toBe(403);

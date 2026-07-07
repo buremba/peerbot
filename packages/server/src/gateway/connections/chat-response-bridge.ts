@@ -561,7 +561,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     if (code) {
       const rendered = await renderAgentError(
         code,
-        payload.errorContext,
+        payload.error,
         () =>
           buildAgentSettingsUrl(
             this.manager.getPublicGatewayUrl(),
@@ -570,8 +570,9 @@ export class ChatResponseBridge implements ResponseRenderer {
           )
       );
       if (rendered.silent) return;
-      // Overwrite the raw error with the catalog message so the guardrail scan
-      // and the plain-text fallback below both operate on the rendered text.
+      // For provider errors `rendered.text` IS the provider's own message (we
+      // relay it verbatim); for our synthesized errors it's the catalog line.
+      // Either way the guardrail scan + plain-text fallback below operate on it.
       payload.error = rendered.text;
       if (rendered.ctaUrl) ctaButton = rendered;
     }

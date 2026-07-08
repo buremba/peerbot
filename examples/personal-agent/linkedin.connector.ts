@@ -95,6 +95,10 @@ interface LinkedInPost {
   text: string;
   author: string;
   authorHeadline?: string;
+  /** Immutable `urn:li:fsd_profile:<id>` tail — primary identity when present. */
+  authorMemberId?: string;
+  /** Canonical `/in/<slug>` vanity id — soft identity, bridges to takeout. */
+  authorSlug?: string;
   likes: number;
   comments: number;
   shares: number;
@@ -181,6 +185,51 @@ const LINKEDIN_MESSAGE_ATTRIBUTIONS: EventAttributionRule[] = [
         behavior: "prefer_non_empty",
       },
       last_linkedin_message_at: {
+        eventPath: "occurred_at",
+        behavior: "overwrite",
+      },
+    },
+  },
+];
+
+/**
+ * Link a live `post` to its author. The Voyager feed (company_updates) exposes
+ * the actor's immutable `urn:li:fsd_profile:<id>` as `author_member_id` — the
+ * PRIMARY key that survives a vanity-URL change — plus the `/in/<slug>` as a
+ * soft key that bridges to takeout-ingested people (who have only a slug).
+ *
+ * `createWhen: { author_member_id exists }` gates minting on the durable id:
+ * a post with only a slug (or neither, e.g. a home-feed scrape) MATCHES an
+ * existing person but never mints, so we don't fork a member-id-less duplicate
+ * that a later takeout/live event can't merge into. This is the live half of
+ * the slug-churn hardening — takeout alone can't supply a member id.
+ */
+const LINKEDIN_POST_AUTHOR_ATTRIBUTIONS: EventAttributionRule[] = [
+  {
+    role: "authored_by",
+    autoCreate: true,
+    target: {
+      entityType: "person",
+      createWhen: { path: "metadata.author_member_id", exists: true },
+      titlePath: "author_name",
+      identities: [
+        {
+          namespace: LINKEDIN_IDENTITY.MEMBER_ID,
+          eventPath: "metadata.author_member_id",
+          primary: true,
+        },
+        {
+          namespace: LINKEDIN_IDENTITY.SLUG,
+          eventPath: "metadata.author_linkedin_slug",
+        },
+      ],
+    },
+    traits: {
+      linkedin_headline: {
+        eventPath: "metadata.author_headline",
+        behavior: "prefer_non_empty",
+      },
+      last_linkedin_post_at: {
         eventPath: "occurred_at",
         behavior: "overwrite",
       },
@@ -377,7 +426,10 @@ export function filterPostsSinceCheckpoint(
 
 // ── Voyager API Response Parsers ──────────────────────────────
 
-function parseCompanyUpdates(_url: string, json: unknown): LinkedInPost[] {
+export function parseCompanyUpdates(
+  _url: string,
+  json: unknown
+): LinkedInPost[] {
   const posts: LinkedInPost[] = [];
   const data = json as any;
 
@@ -422,6 +474,29 @@ function parseCompanyUpdates(_url: string, json: unknown): LinkedInPost[] {
     const authorDesc =
       actorObj?.description?.text ?? actorObj?.description ?? undefined;
 
+    // Actor identity: the member's immutable `urn:li:fsd_profile:<id>` and the
+    // vanity `/in/<slug>`. Voyager threads these through a few shapes (the actor
+    // may be a ref into `included`, and the profile urn/url hides under
+    // `*miniProfile` / `navigationContext.actionTarget` / `navigationUrl`).
+    // Best-effort — a company-authored post has no member id and yields null.
+    const authorUrn: string =
+      actorObj?.["*miniProfile"] ??
+      actorObj?.miniProfile?.entityUrn ??
+      actorObj?.urn ??
+      actorObj?.entityUrn ??
+      "";
+    const authorMemberId = /urn:li:(?:fsd_profile|member):/.test(authorUrn)
+      ? authorUrn.slice(authorUrn.lastIndexOf(":") + 1)
+      : undefined;
+    const authorProfileUrl: string =
+      actorObj?.navigationContext?.actionTarget ??
+      actorObj?.navigationUrl ??
+      resolve(actorObj?.["*miniProfile"])?.publicIdentifier ??
+      "";
+    // normalizeLinkedInSlug pulls the `/in/<slug>` segment from a full URL (and
+    // returns null for a company `/company/…` URL or anything slug-invalid).
+    const authorSlug = normalizeLinkedInSlug(authorProfileUrl);
+
     // Get social counts
     const socialRef = el["*socialDetail"] ?? el.socialDetail;
     const social = resolve(socialRef);
@@ -446,6 +521,8 @@ function parseCompanyUpdates(_url: string, json: unknown): LinkedInPost[] {
       text,
       author: authorName,
       authorHeadline: typeof authorDesc === "string" ? authorDesc : undefined,
+      authorMemberId: authorMemberId || undefined,
+      authorSlug: authorSlug ?? undefined,
       likes: counts.numLikes ?? 0,
       comments: counts.numComments ?? 0,
       shares: counts.numShares ?? 0,
@@ -623,10 +700,13 @@ export default class LinkedInConnector extends ConnectorRuntime<
         eventKinds: {
           post: {
             description: "A company LinkedIn post",
+            attributions: LINKEDIN_POST_AUTHOR_ATTRIBUTIONS,
             metadataSchema: {
               type: "object",
               properties: {
                 author_headline: { type: "string" },
+                author_member_id: { type: "string" },
+                author_linkedin_slug: { type: "string" },
                 likes: { type: "number" },
                 comments: { type: "number" },
                 shares: { type: "number" },
@@ -964,6 +1044,10 @@ export default class LinkedInConnector extends ConnectorRuntime<
       }),
       metadata: {
         author_headline: post.authorHeadline,
+        // Author identity for the `post` attribution. member_id (primary) when
+        // Voyager exposed the actor's fsd_profile urn; slug bridges to takeout.
+        author_member_id: post.authorMemberId,
+        author_linkedin_slug: post.authorSlug,
         likes: post.likes,
         comments: post.comments,
         shares: post.shares,

@@ -44,11 +44,21 @@ export interface ConnectorIdentityModule {
 /** Connector-owned identity namespaces (not SDK-global). */
 export const LINKEDIN_IDENTITY = {
   /**
-   * Canonical `/in/<vanity>` profile slug, lowercased — primary namespace for
-   * attribution. Case- and URL-noise-insensitive, so the same person never
-   * forks across the CASE-SENSITIVE `entity_identities` UNIQUE index.
+   * Canonical `/in/<vanity>` profile slug, lowercased. Case- and URL-noise-
+   * insensitive, so the same person never forks across the CASE-SENSITIVE
+   * `entity_identities` UNIQUE index. USER-CHANGEABLE (vanity URL edit), so it
+   * is a soft key — NOT `primary` — matched equal-weight with email/member id.
    */
   SLUG: "linkedin_slug",
+  /**
+   * Immutable numeric member id from `urn:li:fsd_profile:<id>`. The live
+   * connector's Voyager feed exposes it on the post actor; the takeout export
+   * does NOT (it only has the vanity slug). When present it is the PRIMARY key:
+   * it survives a vanity-URL change, so a person who renames their slug still
+   * resolves to one entity. A takeout-only person (slug, no member id) still
+   * bridges to their live-connector self via the shared slug/email.
+   */
+  MEMBER_ID: "linkedin_member_id",
 } as const;
 
 export type LinkedInIdentityNamespace =
@@ -76,6 +86,27 @@ export function normalizeLinkedInSlug(
 }
 
 /**
+ * Extract the immutable numeric member id from a LinkedIn profile URN or a bare
+ * id. `urn:li:fsd_profile:ACoAAB1234`, `urn:li:member:1234`, and `1234` all
+ * reduce to the trailing id token. Returns `null` when no `[A-Za-z0-9_-]` id
+ * token can be recovered. (fsd_profile ids are opaque base64-ish, not just
+ * digits, so the charset is permissive — but URN separators are stripped.)
+ */
+export function normalizeLinkedInMemberId(
+  raw: string | null | undefined
+): string | null {
+  if (typeof raw !== "string") return null;
+  const value = raw.trim();
+  if (!value) return null;
+  // Take the segment after the last `:` (URN tail) or the whole bare value.
+  const tail = value.includes(":")
+    ? value.slice(value.lastIndexOf(":") + 1)
+    : value;
+  if (!/^[A-Za-z0-9_-]+$/.test(tail)) return null;
+  return tail;
+}
+
+/**
  * Normalize a LinkedIn identity namespace value. Returns `undefined` when the
  * namespace is not LinkedIn-owned (caller falls back to generic hygiene). The
  * generic `email` namespace is deliberately NOT handled here — connector-sdk
@@ -88,6 +119,8 @@ export function normalizeLinkedInIdentityValue(
   switch (namespace) {
     case LINKEDIN_IDENTITY.SLUG:
       return normalizeLinkedInSlug(raw);
+    case LINKEDIN_IDENTITY.MEMBER_ID:
+      return normalizeLinkedInMemberId(raw);
     default:
       return undefined;
   }

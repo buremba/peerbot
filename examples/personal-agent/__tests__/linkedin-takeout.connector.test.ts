@@ -87,7 +87,9 @@ describe("LinkedInTakeoutConnector identity attributions", () => {
 
     // The full URL survives only as a display trait, never as an identity.
     expect(
-      identities.some((i: { namespace: string }) => i.namespace === "linkedin_url")
+      identities.some(
+        (i: { namespace: string }) => i.namespace === "linkedin_url"
+      )
     ).toBe(false);
     expect(attr.traits.linkedin_url).toMatchObject({
       eventPath: "metadata.linkedin_url",

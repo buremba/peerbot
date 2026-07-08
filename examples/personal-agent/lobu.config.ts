@@ -683,7 +683,7 @@ const instagramTakeoutConnection = defineConnection({
 // require a company_url, so add them per-company when tracking a specific page
 // (e.g. { feed: "company_updates", config: { company_url: "https://www.linkedin.com/company/openai" } }).
 const linkedinConnection = defineConnection({
-  slug: "linkedin-takeout-buremba",
+  slug: "linkedin-buremba",
   connector: "linkedin",
   name: "LinkedIn",
   feeds: [

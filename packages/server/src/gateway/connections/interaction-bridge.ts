@@ -6,21 +6,21 @@ import { ENTITY_CHANGE_ACTION_KEYS } from "../../tools/admin/entity-field-approv
 import { manageOperations } from "../../tools/admin/manage_operations.js";
 import type { ToolContext } from "../../tools/registry.js";
 import {
-	type PendingToolInvocation,
+  type PendingToolInvocation,
 	takePendingTool,
 } from "../auth/mcp/pending-tool-store.js";
 import type {
-	InteractionService,
-	PostedLinkButton,
-	PostedQuestion,
-	PostedToolApproval,
+  InteractionService,
+  PostedLinkButton,
+  PostedQuestion,
+  PostedToolApproval,
 } from "../interactions.js";
 import type { GrantStore } from "../permissions/grant-store.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
 import {
-	claimPendingQuestion,
-	deletePendingQuestion,
-	storePendingQuestion,
+  claimPendingQuestion,
+  deletePendingQuestion,
+  storePendingQuestion,
 } from "./pending-interaction-store.js";
 import { resolveChatTarget } from "./platforms/shared.js";
 import type { PlatformConnection } from "./types.js";
@@ -29,15 +29,15 @@ const logger = createLogger("chat-interaction-bridge");
 
 /** Signature for the direct tool execution function injected from the MCP proxy. */
 type ExecuteToolDirectFn = (
-	agentId: string,
-	userId: string,
-	mcpId: string,
-	toolName: string,
+  agentId: string,
+  userId: string,
+  mcpId: string,
+  toolName: string,
 	args: Record<string, unknown>,
 	options: { organizationId: string },
 ) => Promise<{
-	content: Array<{ type: string; text: string }>;
-	isError: boolean;
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
 }>;
 
 /**
@@ -48,37 +48,37 @@ type ExecuteToolDirectFn = (
 type SentMessage = { edit: (newContent: any) => Promise<unknown> };
 
 async function postWithFallback(
-	thread: any,
-	primary: { card: any; fallbackText: string },
-	connectionId: string,
+  thread: any,
+  primary: { card: any; fallbackText: string },
+  connectionId: string,
 	context: string,
 ): Promise<SentMessage | null> {
-	try {
-		return (await thread.post(primary)) as SentMessage;
-	} catch (error) {
-		logger.warn(
-			{ connectionId, error: String(error) },
+  try {
+    return (await thread.post(primary)) as SentMessage;
+  } catch (error) {
+    logger.warn(
+      { connectionId, error: String(error) },
 			`Failed to post ${context}`,
-		);
-		try {
-			return (await thread.post(primary.fallbackText)) as SentMessage;
-		} catch {
-			return null;
-		}
-	}
+    );
+    try {
+      return (await thread.post(primary.fallbackText)) as SentMessage;
+    } catch {
+      return null;
+    }
+  }
 }
 
 function resolveGrantExpiresAt(duration: string): number | null {
-	switch (duration) {
-		case "1h":
-			return Date.now() + 3_600_000;
-		case "24h":
-			return Date.now() + 86_400_000;
-		case "always":
-			return null;
-		default:
-			return null;
-	}
+  switch (duration) {
+    case "1h":
+      return Date.now() + 3_600_000;
+    case "24h":
+      return Date.now() + 86_400_000;
+    case "always":
+      return null;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -89,7 +89,7 @@ function resolveGrantExpiresAt(duration: string): number | null {
 async function takePendingToolInvocation(
 	requestId: string,
 ): Promise<PendingToolInvocation | null> {
-	return takePendingTool(requestId);
+  return takePendingTool(requestId);
 }
 
 function describeDecision(decision: string): string {
@@ -180,32 +180,32 @@ async function resolveEntityApprovalRun(
  * after a long gap, or the platform may not support edits).
  */
 async function stripApprovalButtons(
-	sent: SentMessage | undefined,
-	pending: {
-		mcpId: string;
-		toolName: string;
-		args: Record<string, unknown>;
-	},
+  sent: SentMessage | undefined,
+  pending: {
+    mcpId: string;
+    toolName: string;
+    args: Record<string, unknown>;
+  },
 	decision: string,
 ): Promise<void> {
-	if (!sent) return;
-	const summary =
-		`*Tool Approval*\n${pending.mcpId} → ${pending.toolName}\n` +
-		`${formatToolArgs(pending.args)}\n\n_${describeDecision(decision)}_`;
-	try {
-		await sent.edit(summary);
-	} catch {
-		// best effort — card may be stale, edit may be unsupported
-	}
+  if (!sent) return;
+  const summary =
+    `*Tool Approval*\n${pending.mcpId} → ${pending.toolName}\n` +
+    `${formatToolArgs(pending.args)}\n\n_${describeDecision(decision)}_`;
+  try {
+    await sent.edit(summary);
+  } catch {
+    // best effort — card may be stale, edit may be unsupported
+  }
 }
 
 function formatToolArgs(args: Record<string, unknown>): string {
-	return Object.entries(args)
-		.map(([k, v]) => {
-			const val = typeof v === "string" ? v : JSON.stringify(v);
-			return `  ${k}: ${val}`;
-		})
-		.join("\n");
+  return Object.entries(args)
+    .map(([k, v]) => {
+      const val = typeof v === "string" ? v : JSON.stringify(v);
+      return `  ${k}: ${val}`;
+    })
+    .join("\n");
 }
 
 /** Context tracked per posted question so the click handler can feed the
@@ -213,479 +213,479 @@ function formatToolArgs(args: Record<string, unknown>): string {
  *  message (userId/conversationId/channelId/teamId). Also holds the SentMessage
  *  for the card so buttons can be stripped after a click. */
 interface PendingQuestionEntry {
-	question: PostedQuestion;
-	sent?: SentMessage;
+  question: PostedQuestion;
+  sent?: SentMessage;
 }
 
 export function registerInteractionBridge(
-	interactionService: InteractionService,
-	manager: ChatInstanceManager,
-	connection: PlatformConnection,
-	chat: any,
-	grantStore?: GrantStore,
+  interactionService: InteractionService,
+  manager: ChatInstanceManager,
+  connection: PlatformConnection,
+  chat: any,
+  grantStore?: GrantStore,
 	executeToolDirect?: ExecuteToolDirectFn,
 ): () => void {
-	const { id: connectionId, platform } = connection;
+  const { id: connectionId, platform } = connection;
 
-	// Per-connection state (avoids cross-contamination between connections)
-	const handledEvents = new Set<string>();
-	const activeTimers = new Set<NodeJS.Timeout>();
-	// Slack retries event_callback webhooks at ~1s/2s/5s/30s/60s/3min on
-	// missed acks; a 30s dedup window let late retries through and
-	// double-processed the event. 5min covers the full retry envelope.
-	const HANDLED_EVENT_TTL_MS = 5 * 60_000;
-	function markHandled(id: string): void {
-		handledEvents.add(id);
-		const timer = setTimeout(() => {
-			handledEvents.delete(id);
-			activeTimers.delete(timer);
-		}, HANDLED_EVENT_TTL_MS);
-		activeTimers.add(timer);
-	}
+  // Per-connection state (avoids cross-contamination between connections)
+  const handledEvents = new Set<string>();
+  const activeTimers = new Set<NodeJS.Timeout>();
+  // Slack retries event_callback webhooks at ~1s/2s/5s/30s/60s/3min on
+  // missed acks; a 30s dedup window let late retries through and
+  // double-processed the event. 5min covers the full retry envelope.
+  const HANDLED_EVENT_TTL_MS = 5 * 60_000;
+  function markHandled(id: string): void {
+    handledEvents.add(id);
+    const timer = setTimeout(() => {
+      handledEvents.delete(id);
+      activeTimers.delete(timer);
+    }, HANDLED_EVENT_TTL_MS);
+    activeTimers.add(timer);
+  }
 
-	// Tracks posted tool-approval cards so we can edit them on click to strip
-	// the buttons. Keyed by requestId (== PostedToolApproval.id == pending-tool
-	// store key). Auto-expire window matches the pending-tool TTL (24h) so a
-	// late click can still find the card to strip.
-	const APPROVAL_CARD_TTL_MS = 24 * 60 * 60 * 1000;
-	const pendingApprovalCards = new Map<string, SentMessage>();
-	const pendingApprovalTimers = new Map<string, NodeJS.Timeout>();
-	function trackApprovalCard(requestId: string, sent: SentMessage): void {
-		pendingApprovalCards.set(requestId, sent);
-		const timer = setTimeout(() => {
-			pendingApprovalCards.delete(requestId);
-			pendingApprovalTimers.delete(requestId);
-		}, APPROVAL_CARD_TTL_MS);
-		pendingApprovalTimers.set(requestId, timer);
-	}
-	function claimApprovalCard(requestId: string): SentMessage | undefined {
-		const sent = pendingApprovalCards.get(requestId);
-		pendingApprovalCards.delete(requestId);
-		const timer = pendingApprovalTimers.get(requestId);
-		if (timer) {
-			clearTimeout(timer);
-			pendingApprovalTimers.delete(requestId);
-		}
-		return sent;
-	}
+  // Tracks posted tool-approval cards so we can edit them on click to strip
+  // the buttons. Keyed by requestId (== PostedToolApproval.id == pending-tool
+  // store key). Auto-expire window matches the pending-tool TTL (24h) so a
+  // late click can still find the card to strip.
+  const APPROVAL_CARD_TTL_MS = 24 * 60 * 60 * 1000;
+  const pendingApprovalCards = new Map<string, SentMessage>();
+  const pendingApprovalTimers = new Map<string, NodeJS.Timeout>();
+  function trackApprovalCard(requestId: string, sent: SentMessage): void {
+    pendingApprovalCards.set(requestId, sent);
+    const timer = setTimeout(() => {
+      pendingApprovalCards.delete(requestId);
+      pendingApprovalTimers.delete(requestId);
+    }, APPROVAL_CARD_TTL_MS);
+    pendingApprovalTimers.set(requestId, timer);
+  }
+  function claimApprovalCard(requestId: string): SentMessage | undefined {
+    const sent = pendingApprovalCards.get(requestId);
+    pendingApprovalCards.delete(requestId);
+    const timer = pendingApprovalTimers.get(requestId);
+    if (timer) {
+      clearTimeout(timer);
+      pendingApprovalTimers.delete(requestId);
+    }
+    return sent;
+  }
 
-	// Pending questions are persisted in `public.pending_interactions` so a
-	// click landing on a different pod can still claim the entry. The local
-	// `pendingSentMessages` map holds the non-serializable platform
-	// `SentMessage` (used to strip card buttons on click) — losing it
-	// cross-pod is best-effort UX, not correctness.
-	//
-	// DB-row sweeping is owned globally by `coreServices.sweepEphemeralTables`
-	// (scheduled every 5 minutes in `packages/server/src/scheduled/jobs.ts`).
-	// We do NOT call `sweepStalePendingInteractions` per-bridge — N bridges
-	// hitting the same table N times is wasted work. The local sweep below
-	// is in-memory only: it evicts cache entries past their TTL so the Map
-	// doesn't grow unbounded for questions that are never clicked.
-	const PENDING_SENT_TTL_MS = 24 * 60 * 60 * 1000;
-	const PENDING_SENT_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
-	interface CachedSent {
-		sent: SentMessage;
-		registeredAt: number;
-	}
-	const pendingSentMessages = new Map<string, CachedSent>();
-	const pendingSentSweepTimer = setInterval(() => {
-		const ttlCutoff = Date.now() - PENDING_SENT_TTL_MS;
-		for (const [id, entry] of pendingSentMessages) {
-			if (entry.registeredAt <= ttlCutoff) {
-				pendingSentMessages.delete(id);
-			}
-		}
-	}, PENDING_SENT_SWEEP_INTERVAL_MS);
-	pendingSentSweepTimer.unref?.();
-	/**
-	 * Persist a pending question row, then cache its SentMessage handle so a
-	 * click on this pod can edit the card. The persist happens first — see
-	 * `onQuestionCreated` for the post-then-persist policy that wraps the
-	 * card-post; this function is invoked only after the row is durable.
-	 */
-	function rememberSentMessage(
-		questionId: string,
+  // Pending questions are persisted in `public.pending_interactions` so a
+  // click landing on a different pod can still claim the entry. The local
+  // `pendingSentMessages` map holds the non-serializable platform
+  // `SentMessage` (used to strip card buttons on click) — losing it
+  // cross-pod is best-effort UX, not correctness.
+  //
+  // DB-row sweeping is owned globally by `coreServices.sweepEphemeralTables`
+  // (scheduled every 5 minutes in `packages/server/src/scheduled/jobs.ts`).
+  // We do NOT call `sweepStalePendingInteractions` per-bridge — N bridges
+  // hitting the same table N times is wasted work. The local sweep below
+  // is in-memory only: it evicts cache entries past their TTL so the Map
+  // doesn't grow unbounded for questions that are never clicked.
+  const PENDING_SENT_TTL_MS = 24 * 60 * 60 * 1000;
+  const PENDING_SENT_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+  interface CachedSent {
+    sent: SentMessage;
+    registeredAt: number;
+  }
+  const pendingSentMessages = new Map<string, CachedSent>();
+  const pendingSentSweepTimer = setInterval(() => {
+    const ttlCutoff = Date.now() - PENDING_SENT_TTL_MS;
+    for (const [id, entry] of pendingSentMessages) {
+      if (entry.registeredAt <= ttlCutoff) {
+        pendingSentMessages.delete(id);
+      }
+    }
+  }, PENDING_SENT_SWEEP_INTERVAL_MS);
+  pendingSentSweepTimer.unref?.();
+  /**
+   * Persist a pending question row, then cache its SentMessage handle so a
+   * click on this pod can edit the card. The persist happens first — see
+   * `onQuestionCreated` for the post-then-persist policy that wraps the
+   * card-post; this function is invoked only after the row is durable.
+   */
+  function rememberSentMessage(
+    questionId: string,
 		sent: SentMessage | undefined,
-	): void {
-		if (!sent) return;
-		pendingSentMessages.set(questionId, {
-			sent,
-			registeredAt: Date.now(),
-		});
-	}
-	async function claimQuestion(
-		questionId: string,
-		organizationId: string,
+  ): void {
+    if (!sent) return;
+    pendingSentMessages.set(questionId, {
+      sent,
+      registeredAt: Date.now(),
+    });
+  }
+  async function claimQuestion(
+    questionId: string,
+    organizationId: string,
 		expectedUserId: string,
-	): Promise<PendingQuestionEntry | undefined> {
-		const stored = await claimPendingQuestion(
-			questionId,
-			organizationId,
-			connectionId,
+  ): Promise<PendingQuestionEntry | undefined> {
+    const stored = await claimPendingQuestion(
+      questionId,
+      organizationId,
+      connectionId,
 			expectedUserId,
-		).catch((error) => {
-			logger.error(
-				{ connectionId, questionId, error: String(error) },
+    ).catch((error) => {
+      logger.error(
+        { connectionId, questionId, error: String(error) },
 				"Failed to claim pending question",
-			);
-			return null;
-		});
-		if (!stored) return undefined;
-		const cached = pendingSentMessages.get(questionId);
-		pendingSentMessages.delete(questionId);
-		return { question: stored.question, sent: cached?.sent };
-	}
+      );
+      return null;
+    });
+    if (!stored) return undefined;
+    const cached = pendingSentMessages.get(questionId);
+    pendingSentMessages.delete(questionId);
+    return { question: stored.question, sent: cached?.sent };
+  }
 
-	/**
-	 * Shared preamble for every InteractionService handler: platform/tenant
-	 * guard, per-connection dedup (Slack retries the same webhook for up to
-	 * 5min), thread resolution, and a catch-all so one handler's failure never
-	 * escapes into the event emitter. `handler` runs only once per event id with
-	 * a resolved thread; org/user sub-checks stay inline in each body.
-	 */
-	function withResolvedThread<
-		E extends {
-			id: string;
-			channelId: string;
-			conversationId: string;
-			platform?: string;
-		},
-	>(
-		eventName: string,
-		handler: (event: E, thread: any) => Promise<void>,
-	): (event: E) => Promise<void> {
-		return async (event: E) => {
-			try {
-				if (!shouldHandle(event, platform, connectionId, manager)) return;
-				if (handledEvents.has(event.id)) return;
-				markHandled(event.id);
+  /**
+   * Shared preamble for every InteractionService handler: platform/tenant
+   * guard, per-connection dedup (Slack retries the same webhook for up to
+   * 5min), thread resolution, and a catch-all so one handler's failure never
+   * escapes into the event emitter. `handler` runs only once per event id with
+   * a resolved thread; org/user sub-checks stay inline in each body.
+   */
+  function withResolvedThread<
+    E extends {
+      id: string;
+      channelId: string;
+      conversationId: string;
+      platform?: string;
+    },
+  >(
+    eventName: string,
+    handler: (event: E, thread: any) => Promise<void>,
+  ): (event: E) => Promise<void> {
+    return async (event: E) => {
+      try {
+        if (!shouldHandle(event, platform, connectionId, manager)) return;
+        if (handledEvents.has(event.id)) return;
+        markHandled(event.id);
 
-				const thread = await resolveThread(
-					manager,
-					connectionId,
-					event.channelId,
-					event.conversationId,
-				);
-				if (!thread) return;
+        const thread = await resolveThread(
+          manager,
+          connectionId,
+          event.channelId,
+          event.conversationId,
+        );
+        if (!thread) return;
 
-				await handler(event, thread);
-			} catch (error) {
-				logger.error(
-					{ connectionId, error: String(error) },
-					`Unhandled error in ${eventName} handler`,
-				);
-			}
-		};
-	}
+        await handler(event, thread);
+      } catch (error) {
+        logger.error(
+          { connectionId, error: String(error) },
+          `Unhandled error in ${eventName} handler`,
+        );
+      }
+    };
+  }
 
-	const onQuestionCreated = withResolvedThread<PostedQuestion>(
-		"question:created",
-		async (event, thread) => {
-			// Cross-tenant scoping: every pending row must carry the bridge's
-			// org. Without a known org we can't safely persist or claim, so
-			// drop the event rather than write an un-scoped row.
-			const organizationId = connection.organizationId;
-			if (!organizationId) {
-				logger.warn(
-					{ connectionId, questionId: event.id },
+  const onQuestionCreated = withResolvedThread<PostedQuestion>(
+    "question:created",
+    async (event, thread) => {
+      // Cross-tenant scoping: every pending row must carry the bridge's
+      // org. Without a known org we can't safely persist or claim, so
+      // drop the event rather than write an un-scoped row.
+      const organizationId = connection.organizationId;
+      if (!organizationId) {
+        logger.warn(
+          { connectionId, questionId: event.id },
 					"Skipping question:created — connection has no organizationId",
-				);
-				return;
-			}
-			if (!event.userId) {
-				logger.warn(
-					{ connectionId, questionId: event.id },
+        );
+        return;
+      }
+      if (!event.userId) {
+        logger.warn(
+          { connectionId, questionId: event.id },
 					"Skipping question:created — event has no userId",
-				);
-				return;
-			}
+        );
+        return;
+      }
 
-			// Persist the pending row BEFORE posting the card. If the persist
-			// fails we never show buttons that would no-op on click. If the row
-			// is written but the post fails, we delete it on the way out so a
-			// stale row doesn't sit waiting for a click that will never arrive.
-			try {
-				await storePendingQuestion(
-					event.id,
-					organizationId,
-					connectionId,
-					event.userId,
+      // Persist the pending row BEFORE posting the card. If the persist
+      // fails we never show buttons that would no-op on click. If the row
+      // is written but the post fails, we delete it on the way out so a
+      // stale row doesn't sit waiting for a click that will never arrive.
+      try {
+        await storePendingQuestion(
+          event.id,
+          organizationId,
+          connectionId,
+          event.userId,
 					{ question: event },
-				);
-			} catch (error) {
-				logger.error(
-					{ connectionId, questionId: event.id, error: String(error) },
+        );
+      } catch (error) {
+        logger.error(
+          { connectionId, questionId: event.id, error: String(error) },
 					"Failed to persist pending question — not posting card",
-				);
-				return;
-			}
+        );
+        return;
+      }
 
-			const buttons = event.options.map((option, i) =>
-				Button({
-					id: `question:${event.id}:${i}`,
-					label: option,
-					value: option,
+      const buttons = event.options.map((option, i) =>
+        Button({
+          id: `question:${event.id}:${i}`,
+          label: option,
+          value: option,
 				}),
-			);
-			const card = Card({
-				children: [CardText(event.question), Actions(buttons)],
-			});
-			const fallbackText = `${event.question}\n${event.options.map((o, i) => `${i + 1}. ${o}`).join("\n")}`;
-			const sent = await postWithFallback(
-				thread,
-				{ card, fallbackText },
-				connectionId,
+      );
+      const card = Card({
+        children: [CardText(event.question), Actions(buttons)],
+      });
+      const fallbackText = `${event.question}\n${event.options.map((o, i) => `${i + 1}. ${o}`).join("\n")}`;
+      const sent = await postWithFallback(
+        thread,
+        { card, fallbackText },
+        connectionId,
 				"question interaction",
-			);
-			if (!sent) {
-				// Post failed entirely. The row exists but no card was rendered,
-				// so a click can never come — DELETE the row to keep the table
-				// clean. Pre-fix used `claimPendingQuestion` (UPDATE setting
-				// claimed_at), which leaves a phantom row sitting around with
-				// claimed_at set until the 24h sweep. Hard-delete is the
-				// semantically correct end state, and the four-field scoping
-				// matches the claim path's safety invariant: a leaked id alone
-				// cannot delete another tenant's row.
-				try {
-					await deletePendingQuestion(
-						event.id,
-						organizationId,
-						connectionId,
+      );
+      if (!sent) {
+        // Post failed entirely. The row exists but no card was rendered,
+        // so a click can never come — DELETE the row to keep the table
+        // clean. Pre-fix used `claimPendingQuestion` (UPDATE setting
+        // claimed_at), which leaves a phantom row sitting around with
+        // claimed_at set until the 24h sweep. Hard-delete is the
+        // semantically correct end state, and the four-field scoping
+        // matches the claim path's safety invariant: a leaked id alone
+        // cannot delete another tenant's row.
+        try {
+          await deletePendingQuestion(
+            event.id,
+            organizationId,
+            connectionId,
 						event.userId,
-					);
-				} catch (error) {
-					logger.debug(
-						{ connectionId, questionId: event.id, error: String(error) },
+          );
+        } catch (error) {
+          logger.debug(
+            { connectionId, questionId: event.id, error: String(error) },
 						"Failed to drop pending row after post failure",
-					);
-				}
-				return;
-			}
-			rememberSentMessage(event.id, sent);
-		},
-	);
+          );
+        }
+        return;
+      }
+      rememberSentMessage(event.id, sent);
+    },
+  );
 
-	const onToolApprovalNeeded = withResolvedThread<PostedToolApproval>(
-		"tool:approval-needed",
-		async (event, thread) => {
-			const argsText = formatToolArgs(event.args);
-			const text = `Tool Approval\n${event.mcpId} → ${event.toolName}\n${argsText}`;
-			const tid = event.id;
+  const onToolApprovalNeeded = withResolvedThread<PostedToolApproval>(
+    "tool:approval-needed",
+    async (event, thread) => {
+      const argsText = formatToolArgs(event.args);
+      const text = `Tool Approval\n${event.mcpId} → ${event.toolName}\n${argsText}`;
+      const tid = event.id;
 
-			const card = Card({
-				children: [
-					CardText(
+      const card = Card({
+        children: [
+          CardText(
 						`*Tool Approval*\n${event.mcpId} → ${event.toolName}\n${argsText}`,
-					),
-					Actions([
-						Button({
-							id: `tool:${tid}:1h`,
-							label: "Allow 1h",
-							style: "primary",
-							value: "1h",
-						}),
-						Button({
-							id: `tool:${tid}:24h`,
-							label: "Allow 24h",
-							style: "primary",
-							value: "24h",
-						}),
-						Button({
-							id: `tool:${tid}:always`,
-							label: "Allow always",
-							style: "primary",
-							value: "always",
-						}),
-						Button({
-							id: `tool:${tid}:deny`,
-							label: "Deny always",
-							style: "danger",
-							value: "deny",
-						}),
-					]),
-				],
-			});
-			const sent = await postWithFallback(
-				thread,
-				{ card, fallbackText: text },
-				connectionId,
+          ),
+          Actions([
+            Button({
+              id: `tool:${tid}:1h`,
+              label: "Allow 1h",
+              style: "primary",
+              value: "1h",
+            }),
+            Button({
+              id: `tool:${tid}:24h`,
+              label: "Allow 24h",
+              style: "primary",
+              value: "24h",
+            }),
+            Button({
+              id: `tool:${tid}:always`,
+              label: "Allow always",
+              style: "primary",
+              value: "always",
+            }),
+            Button({
+              id: `tool:${tid}:deny`,
+              label: "Deny always",
+              style: "danger",
+              value: "deny",
+            }),
+          ]),
+        ],
+      });
+      const sent = await postWithFallback(
+        thread,
+        { card, fallbackText: text },
+        connectionId,
 				"tool approval interaction",
-			);
-			if (sent) {
-				trackApprovalCard(tid, sent);
-			}
-		},
-	);
+      );
+      if (sent) {
+        trackApprovalCard(tid, sent);
+      }
+    },
+  );
 
-	const onLinkButtonCreated = withResolvedThread<PostedLinkButton>(
-		"link-button:created",
-		async (event, thread) => {
-			const linkButton = LinkButton({
-				url: event.url,
-				label: event.label,
-			});
-			// The button itself carries the label — only render an extra line of
-			// card-body text when the caller supplied a distinct `body` explaining
-			// *why* (e.g. for OAuth, "Authorize {mcp} to continue."). Falling back
-			// to `label` again would produce the "Connect sentry / [Connect sentry]"
-			// duplication we saw in Slack.
-			const bodyText = event.body?.trim();
-			const cardChildren =
-				bodyText && bodyText !== event.label
-					? [CardText(bodyText), Actions([linkButton])]
-					: [Actions([linkButton])];
-			const card = Card({ children: cardChildren });
-			const fallbackText = bodyText
-				? `${bodyText} ${event.label}: ${event.url}`
-				: `${event.label}: ${event.url}`;
-			await postWithFallback(
-				thread,
-				{ card, fallbackText },
-				connectionId,
+  const onLinkButtonCreated = withResolvedThread<PostedLinkButton>(
+    "link-button:created",
+    async (event, thread) => {
+      const linkButton = LinkButton({
+        url: event.url,
+        label: event.label,
+      });
+      // The button itself carries the label — only render an extra line of
+      // card-body text when the caller supplied a distinct `body` explaining
+      // *why* (e.g. for OAuth, "Authorize {mcp} to continue."). Falling back
+      // to `label` again would produce the "Connect sentry / [Connect sentry]"
+      // duplication we saw in Slack.
+      const bodyText = event.body?.trim();
+      const cardChildren =
+        bodyText && bodyText !== event.label
+          ? [CardText(bodyText), Actions([linkButton])]
+          : [Actions([linkButton])];
+      const card = Card({ children: cardChildren });
+      const fallbackText = bodyText
+        ? `${bodyText} ${event.label}: ${event.url}`
+        : `${event.label}: ${event.url}`;
+      await postWithFallback(
+        thread,
+        { card, fallbackText },
+        connectionId,
 				"link button interaction",
-			);
-		},
-	);
+      );
+    },
+  );
 
-	interactionService.on("question:created", onQuestionCreated);
-	interactionService.on("tool:approval-needed", onToolApprovalNeeded);
-	interactionService.on("link-button:created", onLinkButtonCreated);
+  interactionService.on("question:created", onQuestionCreated);
+  interactionService.on("tool:approval-needed", onToolApprovalNeeded);
+  interactionService.on("link-button:created", onLinkButtonCreated);
 
-	registerActionHandlers(
-		chat,
-		connection,
-		grantStore,
-		executeToolDirect,
-		claimApprovalCard,
-		async (questionId, value, thread, author) => {
-			// Fast path — Slack's block_actions webhook requires a <3s response.
-			// The claim is a single `UPDATE … RETURNING` on a PK and stays well
-			// under the budget; the slow platform API calls (post receipt, edit
-			// card, enqueue worker turn) still fire-and-forget below.
-			//
-			// Authorisation lives INSIDE the SQL claim: the row only matches when
-			// `(organization_id, connection_id, expected_user_id)` line up with
-			// the clicker's context. Wrong-user / cross-connection / cross-tenant
-			// clicks return null without consuming the row — no claim-then-auth
-			// race, no restash needed.
-			const organizationId = connection.organizationId;
-			if (!organizationId) {
-				logger.warn(
-					{ connectionId, questionId },
+  registerActionHandlers(
+    chat,
+    connection,
+    grantStore,
+    executeToolDirect,
+    claimApprovalCard,
+    async (questionId, value, thread, author) => {
+      // Fast path — Slack's block_actions webhook requires a <3s response.
+      // The claim is a single `UPDATE … RETURNING` on a PK and stays well
+      // under the budget; the slow platform API calls (post receipt, edit
+      // card, enqueue worker turn) still fire-and-forget below.
+      //
+      // Authorisation lives INSIDE the SQL claim: the row only matches when
+      // `(organization_id, connection_id, expected_user_id)` line up with
+      // the clicker's context. Wrong-user / cross-connection / cross-tenant
+      // clicks return null without consuming the row — no claim-then-auth
+      // race, no restash needed.
+      const organizationId = connection.organizationId;
+      if (!organizationId) {
+        logger.warn(
+          { connectionId, questionId },
 					"Question click on connection with no organizationId — ignoring",
-				);
-				return;
-			}
-			if (!author?.userId) {
-				logger.debug(
-					{ connectionId, questionId },
+        );
+        return;
+      }
+      if (!author?.userId) {
+        logger.debug(
+          { connectionId, questionId },
 					"Question click without author.userId — ignoring",
-				);
-				return;
-			}
+        );
+        return;
+      }
 
-			const entry = await claimQuestion(
-				questionId,
-				organizationId,
+      const entry = await claimQuestion(
+        questionId,
+        organizationId,
 				author.userId,
-			);
-			if (!entry) {
-				logger.debug(
-					{ connectionId, questionId, clickerUserId: author.userId },
+      );
+      if (!entry) {
+        logger.debug(
+          { connectionId, questionId, clickerUserId: author.userId },
 					"Question click did not match any pending row — ignoring",
-				);
-				return;
-			}
+        );
+        return;
+      }
 
-			const instance = manager.getInstance(connectionId);
-			if (!instance) {
-				logger.warn(
-					{ connectionId },
+      const instance = manager.getInstance(connectionId);
+      if (!instance) {
+        logger.warn(
+          { connectionId },
 					"Question click: no instance for connection",
-				);
-				return;
-			}
+        );
+        return;
+      }
 
-			const { question } = entry;
-			const receiptText = value
-				? `*You submitted:* ${value}`
-				: "*You submitted a response.*";
+      const { question } = entry;
+      const receiptText = value
+        ? `*You submitted:* ${value}`
+        : "*You submitted a response.*";
 
-			void (async () => {
-				// Visible "user submitted X" receipt so the click is acknowledged
-				// in-thread even before the worker responds.
-				try {
-					const card = Card({ children: [CardText(receiptText)] });
-					await thread
-						.post({ card, fallbackText: receiptText })
-						.catch(async () => {
-							await thread.post(receiptText);
-						});
-				} catch {
-					try {
-						await thread.post(receiptText);
-					} catch {
-						// best effort — even the plain-text fallback failed
-					}
-				}
+      void (async () => {
+        // Visible "user submitted X" receipt so the click is acknowledged
+        // in-thread even before the worker responds.
+        try {
+          const card = Card({ children: [CardText(receiptText)] });
+          await thread
+            .post({ card, fallbackText: receiptText })
+            .catch(async () => {
+              await thread.post(receiptText);
+            });
+        } catch {
+          try {
+            await thread.post(receiptText);
+          } catch {
+            // best effort — even the plain-text fallback failed
+          }
+        }
 
-				// Strip the original card's buttons so it can't be clicked again.
-				if (entry.sent) {
-					try {
-						await entry.sent.edit(
+        // Strip the original card's buttons so it can't be clicked again.
+        if (entry.sent) {
+          try {
+            await entry.sent.edit(
 							`${question.question}\n\n_Answered: ${value}_`,
-						);
-					} catch {
-						// best effort — card may be stale or un-editable
-					}
-				}
+            );
+          } catch {
+            // best effort — card may be stale or un-editable
+          }
+        }
 
-				// MUST route with question.userId (the original message's user), not
-				// author.userId (who physically clicked). The worker session is keyed
-				// on the original userId and will reject SSE deliveries that don't match.
-				await instance.messageBridge.ingestClick({
-					userId: question.userId,
-					channelId: question.channelId,
-					conversationId: question.conversationId,
-					teamId: question.teamId,
-					authorName: author?.fullName,
-					authorUsername: author?.userName,
-					value,
-					thread,
-					responseThreadId:
-						typeof thread?.id === "string" ? thread.id : undefined,
-				});
-			})().catch((error) => {
-				logger.error(
-					{ connectionId, questionId, error: String(error) },
+        // MUST route with question.userId (the original message's user), not
+        // author.userId (who physically clicked). The worker session is keyed
+        // on the original userId and will reject SSE deliveries that don't match.
+        await instance.messageBridge.ingestClick({
+          userId: question.userId,
+          channelId: question.channelId,
+          conversationId: question.conversationId,
+          teamId: question.teamId,
+          authorName: author?.fullName,
+          authorUsername: author?.userName,
+          value,
+          thread,
+          responseThreadId:
+            typeof thread?.id === "string" ? thread.id : undefined,
+        });
+      })().catch((error) => {
+        logger.error(
+          { connectionId, questionId, error: String(error) },
 					"Background question-click processing failed",
-				);
-			});
-		},
-		async (channelId, conversationId) =>
+        );
+      });
+    },
+    async (channelId, conversationId) =>
 			resolveThread(manager, connectionId, channelId, conversationId),
-	);
+  );
 
-	logger.info({ connectionId, platform }, "Interaction bridge registered");
+  logger.info({ connectionId, platform }, "Interaction bridge registered");
 
-	return () => {
-		interactionService.off("question:created", onQuestionCreated);
-		interactionService.off("tool:approval-needed", onToolApprovalNeeded);
-		interactionService.off("link-button:created", onLinkButtonCreated);
-		for (const timer of activeTimers) {
-			clearTimeout(timer);
-		}
-		activeTimers.clear();
-		handledEvents.clear();
-		for (const timer of pendingApprovalTimers.values()) {
-			clearTimeout(timer);
-		}
-		pendingApprovalTimers.clear();
-		pendingApprovalCards.clear();
-		clearInterval(pendingSentSweepTimer);
-		pendingSentMessages.clear();
-		logger.info({ connectionId, platform }, "Interaction bridge unregistered");
-	};
+  return () => {
+    interactionService.off("question:created", onQuestionCreated);
+    interactionService.off("tool:approval-needed", onToolApprovalNeeded);
+    interactionService.off("link-button:created", onLinkButtonCreated);
+    for (const timer of activeTimers) {
+      clearTimeout(timer);
+    }
+    activeTimers.clear();
+    handledEvents.clear();
+    for (const timer of pendingApprovalTimers.values()) {
+      clearTimeout(timer);
+    }
+    pendingApprovalTimers.clear();
+    pendingApprovalCards.clear();
+    clearInterval(pendingSentSweepTimer);
+    pendingSentMessages.clear();
+    logger.info({ connectionId, platform }, "Interaction bridge unregistered");
+  };
 }
 
 /**
@@ -695,9 +695,9 @@ export function registerInteractionBridge(
  * the raw click through.
  */
 type OnQuestionClickFn = (
-	questionId: string,
-	value: string,
-	thread: any,
+  questionId: string,
+  value: string,
+  thread: any,
 	author: { userId?: string; userName?: string; fullName?: string } | undefined,
 ) => Promise<void>;
 
@@ -713,14 +713,14 @@ type OnQuestionClickFn = (
  * in tests that only exercise tool-approval flows.
  */
 export function registerActionHandlers(
-	chat: any,
-	connection: PlatformConnection,
-	grantStore: GrantStore | undefined,
-	executeToolDirect?: ExecuteToolDirectFn,
-	claimApprovalCard?: (requestId: string) => SentMessage | undefined,
-	onQuestionClick?: OnQuestionClickFn,
-	resolveApprovalTarget?: (
-		channelId: string,
+  chat: any,
+  connection: PlatformConnection,
+  grantStore: GrantStore | undefined,
+  executeToolDirect?: ExecuteToolDirectFn,
+  claimApprovalCard?: (requestId: string) => SentMessage | undefined,
+  onQuestionClick?: OnQuestionClickFn,
+  resolveApprovalTarget?: (
+    channelId: string,
 		conversationId: string,
 	) => Promise<any | null>,
 ): void {
@@ -845,120 +845,120 @@ export function registerActionHandlers(
 			// click looks like it did nothing.
 			const pending = await takePendingToolInvocation(requestId).catch(
 				() => null,
-			);
-			if (!pending) {
-				const sent = claimApprovalCard?.(requestId);
-				if (sent) {
-					logger.info(
-						{ requestId, decision },
+      );
+      if (!pending) {
+        const sent = claimApprovalCard?.(requestId);
+        if (sent) {
+          logger.info(
+            { requestId, decision },
 						"Tool approval click with no pending invocation — likely expired",
-					);
-					try {
-						await sent.edit(
+          );
+          try {
+            await sent.edit(
 							"*Tool Approval*\n\n_This approval request expired before it could be acted on. Re-send your last message to retry._",
-						);
-					} catch {
-						// best effort
-					}
-					try {
-						await thread.post(
+            );
+          } catch {
+            // best effort
+          }
+          try {
+            await thread.post(
 							"This tool approval request expired before it could be acted on. Re-send your last message to retry.",
-						);
-					} catch {
-						// best effort
-					}
-				} else {
-					logger.debug(
-						{ requestId, decision },
+            );
+          } catch {
+            // best effort
+          }
+        } else {
+          logger.debug(
+            { requestId, decision },
 						"Tool approval click with no pending invocation and no tracked card — ignoring (already handled)",
-					);
-				}
-				return;
-			}
+          );
+        }
+        return;
+      }
 
-			const pattern = `/mcp/${pending.mcpId}/tools/${pending.toolName}`;
+      const pattern = `/mcp/${pending.mcpId}/tools/${pending.toolName}`;
 
-			// Edit the posted card to strip buttons so it can't be clicked again.
-			await stripApprovalButtons(
-				claimApprovalCard?.(requestId),
-				pending,
+      // Edit the posted card to strip buttons so it can't be clicked again.
+      await stripApprovalButtons(
+        claimApprovalCard?.(requestId),
+        pending,
 				decision,
-			);
+      );
 
-			// Resolve the post target. Prefer the original conversation captured at
-			// the time the tool call was blocked (saved alongside the pending
-			// record) so the result lands in the same Slack/Telegram thread the
-			// user originally pinged the bot in. Fall back to the click event's
-			// thread (the card the user just clicked) only if we don't have the
-			// original context — that fallback can be wrong on Slack when the card
-			// ended up posted at channel level.
-			let postTarget: any = thread;
-			if (
-				resolveApprovalTarget &&
-				(pending.conversationId || pending.channelId)
-			) {
-				const resolved = await resolveApprovalTarget(
-					pending.channelId ?? "",
+      // Resolve the post target. Prefer the original conversation captured at
+      // the time the tool call was blocked (saved alongside the pending
+      // record) so the result lands in the same Slack/Telegram thread the
+      // user originally pinged the bot in. Fall back to the click event's
+      // thread (the card the user just clicked) only if we don't have the
+      // original context — that fallback can be wrong on Slack when the card
+      // ended up posted at channel level.
+      let postTarget: any = thread;
+      if (
+        resolveApprovalTarget &&
+        (pending.conversationId || pending.channelId)
+      ) {
+        const resolved = await resolveApprovalTarget(
+          pending.channelId ?? "",
 					pending.conversationId ?? "",
-				).catch(() => null);
-				if (resolved) postTarget = resolved;
-			}
+        ).catch(() => null);
+        if (resolved) postTarget = resolved;
+      }
 
-			if (decision === "deny") {
-				if (grantStore) {
-					await grantStore
-						.grant(
-							pending.agentId,
-							pattern,
-							null,
-							true,
+      if (decision === "deny") {
+        if (grantStore) {
+          await grantStore
+            .grant(
+              pending.agentId,
+              pattern,
+              null,
+              true,
 							pending.organizationId ?? connection.organizationId,
-						)
-						.catch(() => undefined);
-				}
-				try {
-					await postTarget.post(
+            )
+            .catch(() => undefined);
+        }
+        try {
+          await postTarget.post(
 						"Tool call denied. Let me know if you'd like me to try a different approach.",
-					);
-				} catch {
-					// best effort
-				}
-				return;
-			}
+          );
+        } catch {
+          // best effort
+        }
+        return;
+      }
 
-			// Approved — store grant, execute, post result
-			const expiresAt = resolveGrantExpiresAt(decision);
+      // Approved — store grant, execute, post result
+      const expiresAt = resolveGrantExpiresAt(decision);
 
-			if (grantStore) {
-				try {
-					await grantStore.grant(
-						pending.agentId,
-						pattern,
-						expiresAt,
-						undefined,
+      if (grantStore) {
+        try {
+          await grantStore.grant(
+            pending.agentId,
+            pattern,
+            expiresAt,
+            undefined,
 						pending.organizationId ?? connection.organizationId,
-					);
-					logger.info(
-						{
-							requestId,
-							agentId: pending.agentId,
-							pattern,
-							decision,
-							expiresAt,
-						},
+          );
+          logger.info(
+            {
+              requestId,
+              agentId: pending.agentId,
+              pattern,
+              decision,
+              expiresAt,
+            },
 						"Grant stored via tool approval",
-					);
-				} catch (error) {
-					logger.error(
-						{ requestId, error: String(error) },
+          );
+        } catch (error) {
+          logger.error(
+            { requestId, error: String(error) },
 						"Failed to store grant",
-					);
-				}
-			}
+          );
+        }
+      }
 
-			// Execute the pending tool call
-			if (executeToolDirect) {
-				try {
+      // Execute the pending tool call
+      if (executeToolDirect) {
+        try {
 					const organizationId = pending.organizationId;
 					if (!organizationId) {
 						logger.error(
@@ -970,151 +970,151 @@ export function registerActionHandlers(
 						);
 						return;
 					}
-					const result = await executeToolDirect(
-						pending.agentId,
-						pending.userId,
-						pending.mcpId,
-						pending.toolName,
+          const result = await executeToolDirect(
+            pending.agentId,
+            pending.userId,
+            pending.mcpId,
+            pending.toolName,
 						pending.args,
 						{ organizationId },
-					);
+          );
 
-					const resultText = result.content.map((c) => c.text).join("\n");
-					await postTarget.post(
+          const resultText = result.content.map((c) => c.text).join("\n");
+          await postTarget.post(
 						result.isError ? `Tool error: ${resultText}` : resultText,
-					);
-					logger.info(
-						{
-							requestId,
-							mcpId: pending.mcpId,
-							toolName: pending.toolName,
-							isError: result.isError,
-						},
+          );
+          logger.info(
+            {
+              requestId,
+              mcpId: pending.mcpId,
+              toolName: pending.toolName,
+              isError: result.isError,
+            },
 						"Tool executed after approval",
-					);
-				} catch (error) {
-					logger.error(
-						{ requestId, error: String(error) },
+          );
+        } catch (error) {
+          logger.error(
+            { requestId, error: String(error) },
 						"Failed to execute tool after approval",
-					);
-					try {
-						await postTarget.post(`Failed to execute tool: ${String(error)}`);
-					} catch {
-						// best effort
-					}
-				}
-			} else {
-				try {
-					await postTarget.post("approve");
-				} catch {
-					// best effort
-				}
-			}
-			return;
-		}
+          );
+          try {
+            await postTarget.post(`Failed to execute tool: ${String(error)}`);
+          } catch {
+            // best effort
+          }
+        }
+      } else {
+        try {
+          await postTarget.post("approve");
+        } catch {
+          // best effort
+        }
+      }
+      return;
+    }
 
-		// Handle question responses — Button value carries the option text on all platforms
-		if (actionId.startsWith("question:")) {
-			const parts = actionId.split(":");
-			const questionId = parts[1] ?? "";
-			const responseText = value || parts[2] || "";
-			if (!questionId) return;
-			if (!onQuestionClick) {
-				// Tests / minimal registrations without a click pipeline — best-effort
-				// post the value so the click is at least visible.
-				try {
-					await thread.post(responseText);
-				} catch {
-					// best effort
-				}
-				return;
-			}
-			try {
-				await onQuestionClick(questionId, responseText, thread, event.user);
-			} catch (error) {
-				logger.error(
-					{ connectionId: connection.id, error: String(error) },
+    // Handle question responses — Button value carries the option text on all platforms
+    if (actionId.startsWith("question:")) {
+      const parts = actionId.split(":");
+      const questionId = parts[1] ?? "";
+      const responseText = value || parts[2] || "";
+      if (!questionId) return;
+      if (!onQuestionClick) {
+        // Tests / minimal registrations without a click pipeline — best-effort
+        // post the value so the click is at least visible.
+        try {
+          await thread.post(responseText);
+        } catch {
+          // best effort
+        }
+        return;
+      }
+      try {
+        await onQuestionClick(questionId, responseText, thread, event.user);
+      } catch (error) {
+        logger.error(
+          { connectionId: connection.id, error: String(error) },
 					"Failed to handle question click",
-				);
-			}
-		}
-	});
+        );
+      }
+    }
+  });
 }
 
 export function shouldHandle(
-	event: {
-		teamId?: string;
-		channelId: string;
-		connectionId?: string;
-		platform?: string;
-	},
-	platform: string,
-	connectionId: string,
+  event: {
+    teamId?: string;
+    channelId: string;
+    connectionId?: string;
+    platform?: string;
+  },
+  platform: string,
+  connectionId: string,
 	manager: ChatInstanceManager,
 ): boolean {
-	// Platform isolation: a bridge only handles events posted for its own
-	// platform. This is what makes connectionless `platform: "api"` events
-	// (API sessions have no Chat SDK connection) safe — without it, the
-	// connectionId fall-through below would let any chat bridge pick them up.
-	if (event.platform && event.platform !== platform) {
-		return false;
-	}
-	if (!manager.has(connectionId)) {
-		logger.debug(
-			{ connectionId, eventConnectionId: event.connectionId },
+  // Platform isolation: a bridge only handles events posted for its own
+  // platform. This is what makes connectionless `platform: "api"` events
+  // (API sessions have no Chat SDK connection) safe — without it, the
+  // connectionId fall-through below would let any chat bridge pick them up.
+  if (event.platform && event.platform !== platform) {
+    return false;
+  }
+  if (!manager.has(connectionId)) {
+    logger.debug(
+      { connectionId, eventConnectionId: event.connectionId },
 			"shouldHandle: manager does not have connection",
-		);
-		return false;
-	}
-	if (event.connectionId && event.connectionId !== connectionId) {
-		return false;
-	}
-	const instance = manager.getInstance(connectionId);
-	if (!instance) {
-		logger.debug({ connectionId }, "shouldHandle: no instance found");
-		return false;
-	}
-	const matches = instance.connection.platform === platform;
-	logger.debug({ connectionId, platform, matches }, "shouldHandle: result");
-	if (!matches) {
-		logger.debug(
-			{
-				connectionId,
-				instancePlatform: instance.connection.platform,
-				eventPlatform: platform,
-			},
+    );
+    return false;
+  }
+  if (event.connectionId && event.connectionId !== connectionId) {
+    return false;
+  }
+  const instance = manager.getInstance(connectionId);
+  if (!instance) {
+    logger.debug({ connectionId }, "shouldHandle: no instance found");
+    return false;
+  }
+  const matches = instance.connection.platform === platform;
+  logger.debug({ connectionId, platform, matches }, "shouldHandle: result");
+  if (!matches) {
+    logger.debug(
+      {
+        connectionId,
+        instancePlatform: instance.connection.platform,
+        eventPlatform: platform,
+      },
 			"shouldHandle: platform mismatch",
-		);
-	}
-	return matches;
+    );
+  }
+  return matches;
 }
 
 async function resolveThread(
-	manager: ChatInstanceManager,
-	connectionId: string,
-	channelId: string,
+  manager: ChatInstanceManager,
+  connectionId: string,
+  channelId: string,
 	conversationId: string,
 ): Promise<any | null> {
-	const instance = manager.getInstance(connectionId);
-	if (!instance) {
-		logger.debug({ connectionId }, "resolveThread: no instance for connection");
-		return null;
-	}
+  const instance = manager.getInstance(connectionId);
+  if (!instance) {
+    logger.debug({ connectionId }, "resolveThread: no instance for connection");
+    return null;
+  }
 
-	try {
-		// No `currentMessage` / `responseThreadId` for interactions — the bridge
-		// resolves the post target purely from channelId + the canonical
-		// conversation thread id.
-		return await resolveChatTarget(
-			instance.chat,
-			instance.connection.platform,
-			{ channelId, conversationId },
-		);
-	} catch (error) {
-		logger.debug(
-			{ connectionId, channelId, conversationId, error: String(error) },
+  try {
+    // No `currentMessage` / `responseThreadId` for interactions — the bridge
+    // resolves the post target purely from channelId + the canonical
+    // conversation thread id.
+    return await resolveChatTarget(
+      instance.chat,
+      instance.connection.platform,
+      { channelId, conversationId },
+    );
+  } catch (error) {
+    logger.debug(
+      { connectionId, channelId, conversationId, error: String(error) },
 			"Failed to resolve thread for interaction",
-		);
-		return null;
-	}
+    );
+    return null;
+  }
 }

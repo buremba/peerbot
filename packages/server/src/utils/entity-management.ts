@@ -49,13 +49,13 @@ interface EntityUpdateOptions {
 // ============================================
 
 const CONVENIENCE_FIELDS = [
-	"domain",
-	"category",
-	"platform_type",
-	"main_market",
-	"market",
-	"link",
-	"external_ids",
+  'domain',
+  'category',
+  'platform_type',
+  'main_market',
+  'market',
+  'link',
+  'external_ids',
 ] as const;
 
 /**
@@ -67,20 +67,20 @@ function mergeConvenienceFields(
 	base: Record<string, any>,
 	mode: "create" | "update",
 ): Record<string, any> {
-	const out = { ...base };
-	for (const key of CONVENIENCE_FIELDS) {
-		const value = data[key];
-		if (mode === "update") {
-			if (value !== undefined) out[key] = value;
-		} else if (key === "external_ids") {
-			if (value && typeof value === "object" && Object.keys(value).length > 0) {
-				out[key] = value;
-			}
-		} else if (value) {
-			out[key] = value;
-		}
-	}
-	return out;
+  const out = { ...base };
+  for (const key of CONVENIENCE_FIELDS) {
+    const value = data[key];
+    if (mode === 'update') {
+      if (value !== undefined) out[key] = value;
+    } else if (key === 'external_ids') {
+      if (value && typeof value === 'object' && Object.keys(value).length > 0) {
+        out[key] = value;
+      }
+    } else if (value) {
+      out[key] = value;
+    }
+  }
+  return out;
 }
 
 /**
@@ -98,64 +98,64 @@ export function toVectorLiteral(
 // ============================================
 
 export interface EntityData {
-	entity_type: string;
-	name: string;
-	slug?: string; // Auto-generated from name if not provided
-	parent_id?: number | null;
+  entity_type: string;
+  name: string;
+  slug?: string; // Auto-generated from name if not provided
+  parent_id?: number | null;
 
-	// Organization scoping
-	organization_id?: string;
+  // Organization scoping
+  organization_id?: string;
 
-	// Common fields
-	enabled_classifiers?: string[] | null;
+  // Common fields
+  enabled_classifiers?: string[] | null;
 
-	// Content & embeddings (used by memory entities and any content-bearing entity)
-	content?: string | null;
-	embedding?: number[] | null;
-	content_hash?: string | null;
+  // Content & embeddings (used by memory entities and any content-bearing entity)
+  content?: string | null;
+  embedding?: number[] | null;
+  content_hash?: string | null;
 
-	// Metadata - contains all type-specific fields
-	metadata?: Record<string, any>;
+  // Metadata - contains all type-specific fields
+  metadata?: Record<string, any>;
 
-	// Optional human-correction note: on a human update it is stored on the
-	// field_controls marker for every field this edit claims, so the watcher (and
-	// the UI) can show WHY the value was set. Ignored for agent/system writes.
-	field_note?: string | null;
+  // Optional human-correction note: on a human update it is stored on the
+  // field_controls marker for every field this edit claims, so the watcher (and
+  // the UI) can show WHY the value was set. Ignored for agent/system writes.
+  field_note?: string | null;
 
-	// Approve/affirm: field names whose CURRENT value the human endorses as-is.
-	// No value change, but ownership is claimed so a watcher can't later overwrite
-	// them without an approval. This is the "approve" half of the recap feedback
-	// loop; "correct" is a normal metadata update. Ignored for agent/system writes.
-	affirm_fields?: string[] | null;
+  // Approve/affirm: field names whose CURRENT value the human endorses as-is.
+  // No value change, but ownership is claimed so a watcher can't later overwrite
+  // them without an approval. This is the "approve" half of the recap feedback
+  // loop; "correct" is a normal metadata update. Ignored for agent/system writes.
+  affirm_fields?: string[] | null;
 
-	// Convenience fields - will be merged into metadata
-	domain?: string | null;
-	category?: string | null;
-	platform_type?: string | null;
-	main_market?: string | null;
-	external_ids?: Record<string, any>;
-	market?: string | null;
-	link?: string | null;
+  // Convenience fields - will be merged into metadata
+  domain?: string | null;
+  category?: string | null;
+  platform_type?: string | null;
+  main_market?: string | null;
+  external_ids?: Record<string, any>;
+  market?: string | null;
+  link?: string | null;
 }
 
 export interface CreatedEntity {
-	id: number;
-	entity_type: string;
-	name: string;
-	slug: string;
-	parent_id: number | null;
-	parent_name?: string | null;
-	parent_slug?: string | null;
-	parent_entity_type?: string | null;
-	metadata?: Record<string, any> | null;
-	enabled_classifiers?: string[] | null;
-	created_at: Date;
-	total_content?: number | null;
-	active_connections?: number | null;
-	watchers_count?: number | null;
-	children_count?: number | null;
-	current_view_template_version_id?: number | null;
-	warnings?: string[];
+  id: number;
+  entity_type: string;
+  name: string;
+  slug: string;
+  parent_id: number | null;
+  parent_name?: string | null;
+  parent_slug?: string | null;
+  parent_entity_type?: string | null;
+  metadata?: Record<string, any> | null;
+  enabled_classifiers?: string[] | null;
+  created_at: Date;
+  total_content?: number | null;
+  active_connections?: number | null;
+  watchers_count?: number | null;
+  children_count?: number | null;
+  current_view_template_version_id?: number | null;
+  warnings?: string[];
 }
 
 /**
@@ -164,8 +164,8 @@ export interface CreatedEntity {
  * shared `CreatedEntity` interface — only `updateEntity`'s return carries it.
  */
 export interface FieldMergeInfo {
-	applied: string[];
-	blocked: Record<string, { current: unknown; proposed: unknown }>;
+  applied: string[];
+  blocked: Record<string, { current: unknown; proposed: unknown }>;
 }
 
 // ============================================
@@ -183,32 +183,27 @@ async function preventEntityCycles(
 	entityId: number | null,
 	parentId: number | null,
 ): Promise<void> {
-	if (parentId === null) return;
+  if (parentId === null) return;
 
-	const sql = getDb();
-	const MAX_DEPTH = 10;
-	let currentId: number | null = parentId;
-	let depth = 0;
+  const sql = getDb();
+  const MAX_DEPTH = 10;
+  let currentId: number | null = parentId;
+  let depth = 0;
 
-	while (currentId !== null) {
-		if ((entityId !== null && currentId === entityId) || ++depth >= MAX_DEPTH) {
-			throw new Error(
-				"Circular reference detected or hierarchy too deep (max 10 levels)",
-			);
-		}
+  while (currentId !== null) {
+    if ((entityId !== null && currentId === entityId) || ++depth >= MAX_DEPTH) {
+      throw new Error('Circular reference detected or hierarchy too deep (max 10 levels)');
+    }
 
-		const rows: Array<Record<string, unknown>> = await sql`
+    const rows: Array<Record<string, unknown>> = await sql`
       SELECT parent_id FROM entities WHERE id = ${currentId}
     `;
-		currentId = rows.length > 0 ? (rows[0].parent_id as number | null) : null;
-	}
+    currentId = rows.length > 0 ? (rows[0].parent_id as number | null) : null;
+  }
 }
 
-async function loadEntityTreeIds(
-	sql: DbClient,
-	entityId: number,
-): Promise<number[]> {
-	const rows = await sql<{ id: number }>`
+async function loadEntityTreeIds(sql: DbClient, entityId: number): Promise<number[]> {
+  const rows = await sql<{ id: number }>`
     WITH RECURSIVE entity_tree AS (
       SELECT id
       FROM entities
@@ -222,7 +217,7 @@ async function loadEntityTreeIds(
     FROM entity_tree
   `;
 
-	return rows.map((row) => Number(row.id));
+  return rows.map((row) => Number(row.id));
 }
 
 // ============================================
@@ -610,7 +605,7 @@ export async function updateEntity(
       WHERE id = ${entityId} AND deleted_at IS NULL
     `;
 
-		const sel = await tx<CreatedEntity>`
+    const sel = await tx<CreatedEntity>`
       SELECT e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at
       FROM entities e
       JOIN entity_types et ON et.id = e.entity_type_id
@@ -659,25 +654,25 @@ export async function getEntity(
 	_env: Env,
 	ctx: ToolContext,
 ): Promise<CreatedEntity | null> {
-	const sql = getDb();
-	if (!ctx.organizationId) return null;
+  const sql = getDb();
+  if (!ctx.organizationId) return null;
 
-	// Operational counts always scope to the caller's org. When `e` is a
-	// public-catalog entity, totals reflect the caller's events/feeds/watchers/
-	// children that reference it — never cross-tenant activity around the
-	// public row.
-	//
-	// Visibility branches checked here:
-	//   1. caller's own org (always readable)
-	//   2. public-catalog entity (anyone reads, except `$member`)
-	const result = await sql<CreatedEntity>`
+  // Operational counts always scope to the caller's org. When `e` is a
+  // public-catalog entity, totals reflect the caller's events/feeds/watchers/
+  // children that reference it — never cross-tenant activity around the
+  // public row.
+  //
+  // Visibility branches checked here:
+  //   1. caller's own org (always readable)
+  //   2. public-catalog entity (anyone reads, except `$member`)
+  const result = await sql<CreatedEntity>`
     SELECT
       e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
       e.current_view_template_version_id,
       pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type,
       (
         SELECT COUNT(*) FROM current_event_records ev
-        WHERE ${sql.unsafe(entityLinkMatchSql("e.id::bigint", "ev"))}
+        WHERE ${sql.unsafe(entityLinkMatchSql('e.id::bigint', 'ev'))}
           AND ev.organization_id = ${ctx.organizationId}
       ) as total_content,
       (
@@ -687,7 +682,7 @@ export async function getEntity(
         WHERE f.organization_id = ${ctx.organizationId}
           AND f.deleted_at IS NULL
           AND c.deleted_at IS NULL
-          AND ${sql.unsafe(feedLinkedToBusinessEntitySql("e.id", "f", "c", "e.organization_id"))}
+          AND ${sql.unsafe(feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id'))}
       ) as active_connections,
       (
         SELECT COUNT(*) FROM watchers i
@@ -713,7 +708,7 @@ export async function getEntity(
       AND e.deleted_at IS NULL
   `;
 
-	return result.length > 0 ? result[0] : null;
+  return result.length > 0 ? result[0] : null;
 }
 
 /**
@@ -728,79 +723,79 @@ export async function deleteEntity(
 	ctx: ToolContext,
 	opts?: { skipHooks?: boolean },
 ): Promise<{ message: string; deleted: number }> {
-	const pgSql = createDbClientFromEnv(env);
-	const sql = getDb();
+  const pgSql = createDbClientFromEnv(env);
+  const sql = getDb();
 
-	// Validate write access (uses PG for auth tables)
-	await requireWriteAccess(pgSql, entityId, ctx);
+  // Validate write access (uses PG for auth tables)
+  await requireWriteAccess(pgSql, entityId, ctx);
 
-	// Run beforeDelete hook
-	if (!opts?.skipHooks) {
-		const entityRow = await sql`
+  // Run beforeDelete hook
+  if (!opts?.skipHooks) {
+    const entityRow = await sql`
       SELECT et.slug AS entity_type, e.metadata
       FROM entities e
       JOIN entity_types et ON et.id = e.entity_type_id
       WHERE e.id = ${entityId} AND e.deleted_at IS NULL
     `;
-		if (entityRow.length > 0) {
-			const hooks = getEntityHooks(entityRow[0].entity_type as string);
-			if (hooks?.beforeDelete) {
-				await hooks.beforeDelete(
-					{
-						id: entityId,
-						entity_type: entityRow[0].entity_type as string,
-						metadata: entityRow[0].metadata as Record<string, unknown> | null,
-					},
-					{ organizationId: ctx.organizationId, userId: ctx.userId },
-				);
-			}
-		}
-	}
+    if (entityRow.length > 0) {
+      const hooks = getEntityHooks(entityRow[0].entity_type as string);
+      if (hooks?.beforeDelete) {
+        await hooks.beforeDelete(
+          {
+            id: entityId,
+            entity_type: entityRow[0].entity_type as string,
+            metadata: entityRow[0].metadata as Record<string, unknown> | null,
+          },
+          { organizationId: ctx.organizationId, userId: ctx.userId }
+        );
+      }
+    }
+  }
 
-	// Check if entity has children
-	if (!force) {
-		const children = await sql`
+  // Check if entity has children
+  if (!force) {
+    const children = await sql`
       SELECT COUNT(*) as count
       FROM entities
       WHERE parent_id = ${entityId}
         AND deleted_at IS NULL
     `;
 
-		const childCount = Number(children[0]?.count || 0);
-		if (childCount > 0) {
-			throw new Error(
-				`Cannot delete entity: it has ${childCount} child entities. Use force_delete_tree=true to delete the entire hierarchy.`,
-			);
-		}
-	}
+    const childCount = Number(children[0]?.count || 0);
+    if (childCount > 0) {
+      throw new Error(
+        `Cannot delete entity: it has ${childCount} child entities. Use force_delete_tree=true to delete the entire hierarchy.`
+      );
+    }
+  }
 
-	if (force) {
-		const entityTreeIds = await loadEntityTreeIds(sql, entityId);
-		const entityTreeIdsLiteral = pgBigintArray(entityTreeIds);
+  if (force) {
+    const entityTreeIds = await loadEntityTreeIds(sql, entityId);
+    const entityTreeIdsLiteral = pgBigintArray(entityTreeIds);
 
-		const eventHistory = await sql`
+    const eventHistory = await sql`
       SELECT COUNT(*) as count
       FROM current_event_records ev
       WHERE ev.entity_ids && ${entityTreeIdsLiteral}::bigint[]
     `;
 
-		const eventCount = Number(eventHistory[0]?.count || 0);
-		if (eventCount > 0) {
-			throw new Error(
-				`Cannot hard delete entity tree: ${eventCount} event rows reference this entity tree. Soft delete the entity instead to preserve event history.`,
-			);
-		}
+    const eventCount = Number(eventHistory[0]?.count || 0);
+    if (eventCount > 0) {
+      throw new Error(
+        `Cannot hard delete entity tree: ${eventCount} event rows reference this entity tree. Soft delete the entity instead to preserve event history.`
+      );
+    }
 
-		await sql.begin(async (tx) => {
-			await tx`
+    await sql.begin(async (tx) => {
+      await tx`
         DELETE FROM entity_relationships
         WHERE from_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
            OR to_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
       `;
 
-			// Canvas-on-events: window_id link rows carry canvas root event ids, so
-			// key the cleanup on the denormalized watcher_id.
-			await tx`
+      // Canvas-on-events: window_id link rows carry canvas root event ids, so
+      // key the cleanup on the denormalized watcher_id.
+      await tx`
         DELETE FROM watcher_window_events
         WHERE watcher_id IN (
           SELECT id
@@ -808,12 +803,12 @@ export async function deleteEntity(
           WHERE COALESCE(entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
         )
       `;
-			// Before hard-deleting watchers: if any of those rows are group roots
-			// (id = watcher_group_id) with surviving siblings, transfer ownership
-			// of the shared watcher_versions chain to a sibling so the upcoming
-			// ON DELETE CASCADE doesn't wipe out the version row that the rest
-			// of the group still depends on.
-			await tx`
+      // Before hard-deleting watchers: if any of those rows are group roots
+      // (id = watcher_group_id) with surviving siblings, transfer ownership
+      // of the shared watcher_versions chain to a sibling so the upcoming
+      // ON DELETE CASCADE doesn't wipe out the version row that the rest
+      // of the group still depends on.
+      await tx`
         UPDATE watcher_versions wv
         SET watcher_id = s.new_root
         FROM (
@@ -835,7 +830,7 @@ export async function deleteEntity(
         ) s
         WHERE wv.watcher_id = s.old_root
       `;
-			await tx`
+      await tx`
         UPDATE watchers w
         SET watcher_group_id = s.new_root,
             source_watcher_id = CASE WHEN w.source_watcher_id = s.old_root THEN s.new_root ELSE w.source_watcher_id END
@@ -858,11 +853,11 @@ export async function deleteEntity(
         ) s
         WHERE w.watcher_group_id = s.old_root
       `;
-			await tx`
+      await tx`
         DELETE FROM watchers
         WHERE COALESCE(entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
       `;
-			await tx`
+      await tx`
         UPDATE watchers
         SET entity_ids = ARRAY(
           SELECT linked_id
@@ -871,8 +866,8 @@ export async function deleteEntity(
         )
         WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
       `;
-			// Canvas-on-events: key link-row cleanup on the denormalized watcher_id.
-			await tx`
+      // Canvas-on-events: key link-row cleanup on the denormalized watcher_id.
+      await tx`
         DELETE FROM watcher_window_events
         WHERE watcher_id IN (
           SELECT id
@@ -880,10 +875,10 @@ export async function deleteEntity(
           WHERE cardinality(COALESCE(entity_ids, '{}'::bigint[])) = 0
         )
       `;
-			// Same group-root ownership transfer as above — predicate here is
-			// "now-orphaned watcher rows" (entity_ids is empty after the array
-			// pruning a few statements up).
-			await tx`
+      // Same group-root ownership transfer as above — predicate here is
+      // "now-orphaned watcher rows" (entity_ids is empty after the array
+      // pruning a few statements up).
+      await tx`
         UPDATE watcher_versions wv
         SET watcher_id = s.new_root
         FROM (
@@ -905,7 +900,7 @@ export async function deleteEntity(
         ) s
         WHERE wv.watcher_id = s.old_root
       `;
-			await tx`
+      await tx`
         UPDATE watchers w
         SET watcher_group_id = s.new_root,
             source_watcher_id = CASE WHEN w.source_watcher_id = s.old_root THEN s.new_root ELSE w.source_watcher_id END
@@ -928,16 +923,16 @@ export async function deleteEntity(
         ) s
         WHERE w.watcher_group_id = s.old_root
       `;
-			await tx`
+      await tx`
         DELETE FROM watchers
         WHERE cardinality(COALESCE(entity_ids, '{}'::bigint[])) = 0
       `;
 
-			await tx`
+      await tx`
         DELETE FROM feeds
         WHERE COALESCE(entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
       `;
-			await tx`
+      await tx`
         UPDATE feeds
         SET entity_ids = ARRAY(
           SELECT linked_id
@@ -946,34 +941,34 @@ export async function deleteEntity(
         )
         WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
       `;
-			await tx`
+      await tx`
         DELETE FROM feeds
         WHERE cardinality(COALESCE(entity_ids, '{}'::bigint[])) = 0
       `;
 
-			await tx`
+      await tx`
         DELETE FROM entities
         WHERE id = ANY(${entityTreeIdsLiteral}::bigint[])
       `;
-		});
+    });
 
-		return {
-			message: "Entity and all descendants deleted successfully",
-			deleted: entityTreeIds.length,
-		};
-	}
+    return {
+      message: 'Entity and all descendants deleted successfully',
+      deleted: entityTreeIds.length,
+    };
+  }
 
-	// Soft delete: set deleted_at timestamp
-	await sql`
+  // Soft delete: set deleted_at timestamp
+  await sql`
     UPDATE entities
     SET deleted_at = current_timestamp, updated_at = current_timestamp
     WHERE id = ${entityId} AND deleted_at IS NULL
   `;
 
-	return {
-		message: "Entity soft-deleted successfully",
-		deleted: 1,
-	};
+  return {
+    message: 'Entity soft-deleted successfully',
+    deleted: 1,
+  };
 }
 
 /**
@@ -997,13 +992,13 @@ export async function listEntities(
 	_env: Env,
 	ctx: ToolContext,
 ): Promise<{
-	entities: CreatedEntity[];
-	hasMore: boolean;
-	totalCount: number;
-	limit: number;
-	offset: number;
-	sortBy: string;
-	sortOrder: "asc" | "desc";
+  entities: CreatedEntity[];
+  hasMore: boolean;
+  totalCount: number;
+  limit: number;
+  offset: number;
+  sortBy: string;
+  sortOrder: 'asc' | 'desc';
 }> {
 	const sql = getDb();
 	const limit = Math.min(Math.max(filters.limit || 100, 1), 500);
@@ -1114,27 +1109,27 @@ export async function listEntities(
     JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities pe ON e.parent_id = pe.id
     LEFT JOIN entity_types pet ON pet.id = pe.entity_type_id
-    LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM current_event_records ev WHERE ${entityLinkMatchSql("e.id::bigint", "ev")}) tc ON true
+    LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM current_event_records ev WHERE ${entityLinkMatchSql('e.id::bigint', 'ev')}) tc ON true
     LEFT JOIN LATERAL (
       SELECT COUNT(DISTINCT c.connector_key) as cnt
       FROM feeds f
       JOIN connections c ON c.id = f.connection_id
       WHERE f.deleted_at IS NULL
         AND c.deleted_at IS NULL
-        AND ${feedLinkedToBusinessEntitySql("e.id", "f", "c", "e.organization_id")}
+        AND ${feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id')}
     ) ac ON true
     LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM watchers i WHERE e.id = ANY(i.entity_ids)) ic ON true
     LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM entities c WHERE c.parent_id = e.id) cc ON true
     WHERE ${whereClause}
   `;
 
-	const totalCountResult = await sql.unsafe<{ total_count: number }>(
-		`SELECT CAST(COUNT(*) AS INTEGER) as total_count ${baseQuery}`,
-		params,
-	);
+  const totalCountResult = await sql.unsafe<{ total_count: number }>(
+    `SELECT CAST(COUNT(*) AS INTEGER) as total_count ${baseQuery}`,
+    params
+  );
 
-	const result = await sql.unsafe<CreatedEntity>(
-		`SELECT
+  const result = await sql.unsafe<CreatedEntity>(
+    `SELECT
       e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
       COALESCE(tc.cnt, 0) as total_content,
       COALESCE(ac.cnt, 0) as active_connections,
@@ -1145,25 +1140,17 @@ export async function listEntities(
     ORDER BY ${orderBy}
     LIMIT ${limit + 1}
     OFFSET ${offset}`,
-		params,
-	);
+    params
+  );
 
-	const hasMore = result.length > limit;
-	const entities = hasMore
-		? (result.slice(0, limit) as unknown as CreatedEntity[])
-		: (result as unknown as CreatedEntity[]);
+  const hasMore = result.length > limit;
+  const entities = hasMore
+    ? (result.slice(0, limit) as unknown as CreatedEntity[])
+    : (result as unknown as CreatedEntity[]);
 
-	const totalCount = Number(totalCountResult[0]?.total_count || 0);
+  const totalCount = Number(totalCountResult[0]?.total_count || 0);
 
-	return {
-		entities,
-		hasMore,
-		totalCount,
-		limit,
-		offset,
-		sortBy,
-		sortOrder: normalizedSortOrder,
-	};
+  return { entities, hasMore, totalCount, limit, offset, sortBy, sortOrder: normalizedSortOrder };
 }
 
 /**
@@ -1172,17 +1159,14 @@ export async function listEntities(
  * the same way so a listed row's link always resolves. Empty ⇒ unroutable.
  */
 export function derivedRowSlug(row: Record<string, unknown>): string {
-	const raw = row.slug ?? row.id;
-	return raw != null ? String(raw).trim() : "";
+  const raw = row.slug ?? row.id;
+  return raw != null ? String(raw).trim() : '';
 }
 
 /** Display name for a derived row: its name/title column, else the slug. */
-export function derivedRowName(
-	row: Record<string, unknown>,
-	slug: string,
-): string {
-	const raw = row.name ?? row.title ?? slug;
-	return raw != null && String(raw).trim() ? String(raw) : slug;
+export function derivedRowName(row: Record<string, unknown>, slug: string): string {
+  const raw = row.name ?? row.title ?? slug;
+  return raw != null && String(raw).trim() ? String(raw) : slug;
 }
 
 /**
@@ -1202,13 +1186,13 @@ async function listDerivedEntities(
 	page: { limit: number; offset: number; search?: string },
 	ctx: ToolContext,
 ): Promise<{
-	entities: CreatedEntity[];
-	hasMore: boolean;
-	totalCount: number;
-	limit: number;
-	offset: number;
-	sortBy: string;
-	sortOrder: "asc" | "desc";
+  entities: CreatedEntity[];
+  hasMore: boolean;
+  totalCount: number;
+  limit: number;
+  offset: number;
+  sortBy: string;
+  sortOrder: 'asc' | 'desc';
 }> {
 	// Search pushes down only on the internal path (the connection path rejects
 	// search_term); external derived views simply ignore the search box.
@@ -1271,16 +1255,16 @@ async function listDerivedEntities(
 // ============================================
 
 export interface RelationshipColumnSpec {
-	relationship_type: string;
-	direction?: "outbound" | "inbound" | "both";
-	label: string;
+  relationship_type: string;
+  direction?: 'outbound' | 'inbound' | 'both';
+  label: string;
 }
 
 interface RelatedEntityInfo {
-	id: number;
-	name: string;
-	slug: string;
-	entity_type: string;
+  id: number;
+  name: string;
+  slug: string;
+  entity_type: string;
 }
 
 export async function batchLoadRelationships(
@@ -1288,16 +1272,14 @@ export async function batchLoadRelationships(
 	specs: RelationshipColumnSpec[],
 	organizationId: string,
 ): Promise<Map<number, Record<string, RelatedEntityInfo[]>>> {
-	const result = new Map<number, Record<string, RelatedEntityInfo[]>>();
-	if (entityIds.length === 0 || specs.length === 0) return result;
+  const result = new Map<number, Record<string, RelatedEntityInfo[]>>();
+  if (entityIds.length === 0 || specs.length === 0) return result;
 
-	const sql = getDb();
-	const typeSlugs = pgTextArray([
-		...new Set(specs.map((s) => s.relationship_type)),
-	]);
-	const idArray = pgBigintArray(entityIds);
+  const sql = getDb();
+  const typeSlugs = pgTextArray([...new Set(specs.map((s) => s.relationship_type))]);
+  const idArray = pgBigintArray(entityIds);
 
-	const rows = await sql`
+  const rows = await sql`
     SELECT
       r.from_entity_id,
       r.to_entity_id,
@@ -1316,62 +1298,56 @@ export async function batchLoadRelationships(
       AND (r.from_entity_id = ANY(${idArray}::bigint[]) OR r.to_entity_id = ANY(${idArray}::bigint[]))
   `;
 
-	// Build a direction lookup per spec
-	const specByType = new Map<string, "outbound" | "inbound" | "both">();
-	for (const spec of specs) {
-		specByType.set(spec.relationship_type, spec.direction ?? "both");
-	}
+  // Build a direction lookup per spec
+  const specByType = new Map<string, 'outbound' | 'inbound' | 'both'>();
+  for (const spec of specs) {
+    specByType.set(spec.relationship_type, spec.direction ?? 'both');
+  }
 
-	for (const row of rows) {
-		const relType = row.relationship_type_slug as string;
-		const direction = specByType.get(relType) ?? "both";
-		const fromId = Number(row.from_entity_id);
-		const toId = Number(row.to_entity_id);
+  for (const row of rows) {
+    const relType = row.relationship_type_slug as string;
+    const direction = specByType.get(relType) ?? 'both';
+    const fromId = Number(row.from_entity_id);
+    const toId = Number(row.to_entity_id);
 
-		const pairs: Array<[number, RelatedEntityInfo]> = [];
+    const pairs: Array<[number, RelatedEntityInfo]> = [];
 
-		if (
-			(direction === "outbound" || direction === "both") &&
-			entityIds.includes(fromId)
-		) {
-			pairs.push([
-				fromId,
-				{
-					id: Number(row.to_id),
-					name: row.to_name as string,
-					slug: row.to_slug as string,
-					entity_type: row.to_entity_type as string,
-				},
-			]);
-		}
-		if (
-			(direction === "inbound" || direction === "both") &&
-			entityIds.includes(toId)
-		) {
-			pairs.push([
-				toId,
-				{
-					id: Number(row.from_id),
-					name: row.from_name as string,
-					slug: row.from_slug as string,
-					entity_type: row.from_entity_type as string,
-				},
-			]);
-		}
+    if ((direction === 'outbound' || direction === 'both') && entityIds.includes(fromId)) {
+      pairs.push([
+        fromId,
+        {
+          id: Number(row.to_id),
+          name: row.to_name as string,
+          slug: row.to_slug as string,
+          entity_type: row.to_entity_type as string,
+        },
+      ]);
+    }
+    if ((direction === 'inbound' || direction === 'both') && entityIds.includes(toId)) {
+      pairs.push([
+        toId,
+        {
+          id: Number(row.from_id),
+          name: row.from_name as string,
+          slug: row.from_slug as string,
+          entity_type: row.from_entity_type as string,
+        },
+      ]);
+    }
 
-		for (const [entityId, related] of pairs) {
-			let record = result.get(entityId);
-			if (!record) {
-				record = {};
-				result.set(entityId, record);
-			}
-			if (!record[relType]) record[relType] = [];
-			// Deduplicate by related entity id
-			if (!record[relType].some((r) => r.id === related.id)) {
-				record[relType].push(related);
-			}
-		}
-	}
+    for (const [entityId, related] of pairs) {
+      let record = result.get(entityId);
+      if (!record) {
+        record = {};
+        result.set(entityId, record);
+      }
+      if (!record[relType]) record[relType] = [];
+      // Deduplicate by related entity id
+      if (!record[relType].some((r) => r.id === related.id)) {
+        record[relType].push(related);
+      }
+    }
+  }
 
-	return result;
+  return result;
 }

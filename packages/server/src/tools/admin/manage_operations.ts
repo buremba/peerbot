@@ -62,23 +62,23 @@ type InlineExecutionResult =
 	| { status: "failed"; error_message: string };
 
 type ConnectionRow = {
-	id: number;
-	connector_key: string;
-	status: string;
-	auth_profile_id: number | null;
-	app_auth_profile_id: number | null;
-	display_name: string | null;
-	config: Record<string, unknown> | null;
-	name: string;
+  id: number;
+  connector_key: string;
+  status: string;
+  auth_profile_id: number | null;
+  app_auth_profile_id: number | null;
+  display_name: string | null;
+  config: Record<string, unknown> | null;
+  name: string;
 };
 
-const manageOperationsTool = defineActionTool("manage_operations", {
-	list_available: action(ListAvailableAction, handleListAvailable),
-	execute: action(ExecuteAction, handleExecute),
-	list_runs: action(ListRunsAction, handleListRuns),
-	get_run: action(GetRunAction, handleGetRun),
-	approve: action(ApproveAction, handleApprove),
-	reject: action(RejectAction, handleReject),
+const manageOperationsTool = defineActionTool('manage_operations', {
+  list_available: action(ListAvailableAction, handleListAvailable),
+  execute: action(ExecuteAction, handleExecute),
+  list_runs: action(ListRunsAction, handleListRuns),
+  get_run: action(GetRunAction, handleGetRun),
+  approve: action(ApproveAction, handleApprove),
+  reject: action(RejectAction, handleReject),
 });
 
 export { ManageOperationsResultSchema, ManageOperationsSchema };
@@ -119,11 +119,7 @@ export function buildActionConfig(
 	connectionCredentials: Record<string, unknown>,
 	connectionConfig: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
-	return {
-		...envStrings,
-		...connectionCredentials,
-		...(connectionConfig ?? {}),
-	};
+  return { ...envStrings, ...connectionCredentials, ...(connectionConfig ?? {}) };
 }
 
 async function executeLocalActionInline(
@@ -241,35 +237,30 @@ async function executeMcpToolInline(
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
 ): Promise<InlineExecutionResult> {
-	if (operation.backend_config.backend !== "mcp_tool") {
-		return {
-			status: "failed",
-			error_message: "Invalid MCP operation backend config",
-		};
-	}
+  if (operation.backend_config.backend !== 'mcp_tool') {
+    return { status: 'failed', error_message: 'Invalid MCP operation backend config' };
+  }
 
-	const result = await callProxyTool(
-		connection.connector_key,
-		{
-			upstream_url: operation.backend_config.upstreamUrl,
-			tool_prefix: "",
-		},
-		organizationId,
-		operation.backend_config.toolName,
-		actionInput,
-	);
+  const result = await callProxyTool(
+    connection.connector_key,
+    {
+      upstream_url: operation.backend_config.upstreamUrl,
+      tool_prefix: '',
+    },
+    organizationId,
+    operation.backend_config.toolName,
+    actionInput
+  );
 
-	if (result.isError) {
-		const errorText =
-			(result.content as Array<{ type: string; text?: string }>).find(
-				(item) => item?.type === "text",
-			)?.text ?? "Upstream MCP error";
-		return failRunInline(runId, organizationId, errorText);
-	}
+  if (result.isError) {
+    const errorText =
+      (result.content as Array<{ type: string; text?: string }>).find(
+        (item) => item?.type === 'text'
+      )?.text ?? 'Upstream MCP error';
+    return failRunInline(runId, organizationId, errorText);
+  }
 
-	return completeRunInline(runId, organizationId, {
-		content: result.content,
-	} as Record<string, unknown>);
+  return completeRunInline(runId, organizationId, { content: result.content } as Record<string, unknown>);
 }
 
 function buildResolvedUrl(
@@ -305,21 +296,14 @@ function buildResolvedUrl(
 	return url;
 }
 
-function pickInterestingHeaders(
-	headers: Headers,
-): Record<string, unknown> | undefined {
-	const interestingHeaders = [
-		"content-type",
-		"x-ratelimit-remaining",
-		"x-ratelimit-reset",
-		"link",
-	];
-	const values = Object.fromEntries(
-		interestingHeaders
-			.map((header) => [header, headers.get(header)])
-			.filter(([, value]) => value !== null),
-	);
-	return Object.keys(values).length > 0 ? values : undefined;
+function pickInterestingHeaders(headers: Headers): Record<string, unknown> | undefined {
+  const interestingHeaders = ['content-type', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'link'];
+  const values = Object.fromEntries(
+    interestingHeaders
+      .map((header) => [header, headers.get(header)])
+      .filter(([, value]) => value !== null)
+  );
+  return Object.keys(values).length > 0 ? values : undefined;
 }
 
 async function executeHttpOperationInline(
@@ -443,59 +427,47 @@ async function executeOperationInline(
 	env: Env,
 	abortSignal?: AbortSignal,
 ): Promise<InlineExecutionResult> {
-	if (operation.backend === "local_action") {
-		return executeLocalActionInline(
-			runId,
-			organizationId,
-			connection,
-			operation,
-			actionInput,
-			env,
-			abortSignal,
-		);
-	}
-	if (operation.backend === "mcp_tool") {
-		return executeMcpToolInline(
-			runId,
-			organizationId,
-			connection,
-			operation,
-			actionInput,
-		);
-	}
-	return executeHttpOperationInline(
-		runId,
-		organizationId,
-		connection,
-		operation,
-		actionInput,
-	);
+  if (operation.backend === 'local_action') {
+    return executeLocalActionInline(
+      runId,
+      organizationId,
+      connection,
+      operation,
+      actionInput,
+      env,
+      abortSignal
+    );
+  }
+  if (operation.backend === 'mcp_tool') {
+    return executeMcpToolInline(runId, organizationId, connection, operation, actionInput);
+  }
+  return executeHttpOperationInline(runId, organizationId, connection, operation, actionInput);
 }
 
 async function handleListAvailable(
 	args: Static<typeof ListAvailableAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
-	const result = await listOperations({
-		organizationId: ctx.organizationId,
-		connectorKey: args.connector_key,
-		connectionId: args.connection_id,
-		entityId: args.entity_id,
-		kind: args.kind,
-		backend: args.backend,
-		includeInputSchema: args.include_input_schema ?? true,
-		includeOutputSchema: args.include_output_schema ?? false,
-		limit: args.limit,
-		offset: args.offset,
-	});
+  const result = await listOperations({
+    organizationId: ctx.organizationId,
+    connectorKey: args.connector_key,
+    connectionId: args.connection_id,
+    entityId: args.entity_id,
+    kind: args.kind,
+    backend: args.backend,
+    includeInputSchema: args.include_input_schema ?? true,
+    includeOutputSchema: args.include_output_schema ?? false,
+    limit: args.limit,
+    offset: args.offset,
+  });
 
-	return {
-		action: "list_available",
-		operations: result.operations,
-		total: result.total,
-		limit: result.limit,
-		offset: result.offset,
-	};
+  return {
+    action: 'list_available',
+    operations: result.operations,
+    total: result.total,
+    limit: result.limit,
+    offset: result.offset,
+  };
 }
 
 // Poll `runs` until status flips to completed/failed/timeout or we hit
@@ -521,14 +493,14 @@ async function handleListAvailable(
 // claimed the run, marking it timeout while the worker was about to
 // pick it up.
 export async function waitForDeviceActionRun(
-	runId: number,
-	organizationId: string,
-	/**
-	 * Abort the wait early (e.g. a watcher reaction hit its wall-clock budget).
-	 * On abort we stop polling and finalize the run as `timeout` so the orphaned
-	 * poll loop and any in-flight device work don't leak past the caller.
-	 */
-	abortSignal?: AbortSignal,
+  runId: number,
+  organizationId: string,
+  /**
+   * Abort the wait early (e.g. a watcher reaction hit its wall-clock budget).
+   * On abort we stop polling and finalize the run as `timeout` so the orphaned
+   * poll loop and any in-flight device work don't leak past the caller.
+   */
+  abortSignal?: AbortSignal,
 ): Promise<{
 	status: "completed" | "failed" | "timeout";
 	// `action_output` is arbitrary connector/device JSON — object, array, or
@@ -536,15 +508,15 @@ export async function waitForDeviceActionRun(
 	output?: unknown;
 	error_message?: string;
 }> {
-	const sql = getDb();
-	const QUEUE_BUDGET_MS = 60_000; // generous: device may be sleeping
-	const POST_CLAIM_BUDGET_MS = 95_000; // matches extension's 90s + 5s buffer
-	const POLL_MS = 500;
-	const queueDeadline = Date.now() + QUEUE_BUDGET_MS;
-	let claimedAtMs: number | null = null;
+  const sql = getDb();
+  const QUEUE_BUDGET_MS = 60_000; // generous: device may be sleeping
+  const POST_CLAIM_BUDGET_MS = 95_000; // matches extension's 90s + 5s buffer
+  const POLL_MS = 500;
+  const queueDeadline = Date.now() + QUEUE_BUDGET_MS;
+  let claimedAtMs: number | null = null;
 
-	while (true) {
-		const rows = (await sql`
+  while (true) {
+    const rows = (await sql`
       SELECT status, action_output, error_message, claimed_at
       FROM runs
       WHERE id = ${runId} AND organization_id = ${organizationId}
@@ -601,16 +573,16 @@ export async function waitForDeviceActionRun(
     UPDATE runs
     SET status = 'timeout',
         completed_at = current_timestamp,
-        error_message = ${"waitForDeviceActionRun: device worker did not complete in time"}
+        error_message = ${'waitForDeviceActionRun: device worker did not complete in time'}
     WHERE id = ${runId}
       AND organization_id = ${organizationId}
       AND status IN ('pending', 'running')
     RETURNING id
   `) as Array<{ id: number }>;
 
-	if (updated.length === 0) {
-		// Worker won the race. Re-read to return whatever it actually said.
-		const finalRows = (await sql`
+  if (updated.length === 0) {
+    // Worker won the race. Re-read to return whatever it actually said.
+    const finalRows = (await sql`
       SELECT status, action_output, error_message
       FROM runs
       WHERE id = ${runId} AND organization_id = ${organizationId}
@@ -879,58 +851,58 @@ async function handleListRuns(
 	args: Static<typeof ListRunsAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
-	const sql = getDb();
-	const limit = args.limit ?? 20;
-	// Keyset pagination short-circuits offset whenever a cursor is supplied.
-	const hasCursor = args.before_id != null && args.before_created_at != null;
-	const offset = hasCursor ? 0 : (args.offset ?? 0);
+  const sql = getDb();
+  const limit = args.limit ?? 20;
+  // Keyset pagination short-circuits offset whenever a cursor is supplied.
+  const hasCursor = args.before_id != null && args.before_created_at != null;
+  const offset = hasCursor ? 0 : (args.offset ?? 0);
 
-	// Shared WHERE fragment so the count and page queries can't drift apart.
-	let where = sql`r.organization_id = ${ctx.organizationId}`;
-	if (args.run_types && args.run_types.length > 0) {
-		// fetch_types:false means JS arrays aren't auto-serialized — use the
-		// PG array-literal helpers (see db/client.ts).
-		where = sql`${where} AND r.run_type = ANY(${pgTextArray(args.run_types)}::text[])`;
-	}
-	// connection scope: scalar connection_id (REST/SDK), an explicit id list, or
-	// every connection pinned to a device.
-	if (args.connection_id != null) {
-		where = sql`${where} AND r.connection_id = ${args.connection_id}`;
-	}
-	if (args.connection_ids && args.connection_ids.length > 0) {
-		where = sql`${where} AND r.connection_id = ANY(${pgBigintArray(args.connection_ids)}::bigint[])`;
-	}
-	if (args.feed_ids && args.feed_ids.length > 0) {
-		where = sql`${where} AND r.feed_id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;
-	}
-	if (args.device_worker_id) {
-		where = sql`${where} AND r.connection_id IN (
+  // Shared WHERE fragment so the count and page queries can't drift apart.
+  let where = sql`r.organization_id = ${ctx.organizationId}`;
+  if (args.run_types && args.run_types.length > 0) {
+    // fetch_types:false means JS arrays aren't auto-serialized — use the
+    // PG array-literal helpers (see db/client.ts).
+    where = sql`${where} AND r.run_type = ANY(${pgTextArray(args.run_types)}::text[])`;
+  }
+  // connection scope: scalar connection_id (REST/SDK), an explicit id list, or
+  // every connection pinned to a device.
+  if (args.connection_id != null) {
+    where = sql`${where} AND r.connection_id = ${args.connection_id}`;
+  }
+  if (args.connection_ids && args.connection_ids.length > 0) {
+    where = sql`${where} AND r.connection_id = ANY(${pgBigintArray(args.connection_ids)}::bigint[])`;
+  }
+  if (args.feed_ids && args.feed_ids.length > 0) {
+    where = sql`${where} AND r.feed_id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;
+  }
+  if (args.device_worker_id) {
+    where = sql`${where} AND r.connection_id IN (
       SELECT id FROM connections
       WHERE device_worker_id = ${args.device_worker_id}
         AND organization_id = ${ctx.organizationId}
         AND deleted_at IS NULL
     )`;
-	}
-	if (args.operation_key) {
-		where = sql`${where} AND r.action_key = ${args.operation_key}`;
-	}
-	if (args.status) {
-		where = sql`${where} AND r.status = ${args.status}`;
-	}
-	if (args.approval_status) {
-		where = sql`${where} AND r.approval_status = ${args.approval_status}`;
-	}
-	if (args.watcher_ids && args.watcher_ids.length > 0) {
-		where = sql`${where} AND r.watcher_id = ANY(${pgBigintArray(args.watcher_ids)}::bigint[])`;
-	}
+  }
+  if (args.operation_key) {
+    where = sql`${where} AND r.action_key = ${args.operation_key}`;
+  }
+  if (args.status) {
+    where = sql`${where} AND r.status = ${args.status}`;
+  }
+  if (args.approval_status) {
+    where = sql`${where} AND r.approval_status = ${args.approval_status}`;
+  }
+  if (args.watcher_ids && args.watcher_ids.length > 0) {
+    where = sql`${where} AND r.watcher_id = ANY(${pgBigintArray(args.watcher_ids)}::bigint[])`;
+  }
 
-	const countQuery = sql`SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`;
+  const countQuery = sql`SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`;
 
-	let pageWhere = where;
-	if (hasCursor) {
-		pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
-	}
-	const query = sql`
+  let pageWhere = where;
+  if (hasCursor) {
+    pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
+  }
+  const query = sql`
     SELECT r.id, r.run_type, r.watcher_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
@@ -945,24 +917,24 @@ async function handleListRuns(
     LIMIT ${limit} OFFSET ${offset}
   `;
 
-	const [countResult, rows] = await Promise.all([countQuery, query]);
+  const [countResult, rows] = await Promise.all([countQuery, query]);
 
-	return {
-		action: "list_runs",
-		runs: rows,
-		total: Number(countResult[0]?.total ?? 0),
-		limit,
-		offset,
-		has_more: rows.length === limit,
-	};
+  return {
+    action: 'list_runs',
+    runs: rows,
+    total: Number(countResult[0]?.total ?? 0),
+    limit,
+    offset,
+    has_more: rows.length === limit,
+  };
 }
 
 async function handleGetRun(
 	args: Static<typeof GetRunAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
-	const sql = getDb();
-	const rows = await sql`
+  const sql = getDb();
+  const rows = await sql`
     SELECT r.id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message,
@@ -973,8 +945,8 @@ async function handleGetRun(
       AND r.run_type = 'action'
     LIMIT 1
   `;
-	if (rows.length === 0) return { error: "Run not found" };
-	return { action: "get_run", run: rows[0] };
+  if (rows.length === 0) return { error: 'Run not found' };
+  return { action: 'get_run', run: rows[0] };
 }
 
 /**
@@ -985,9 +957,9 @@ async function handleGetRun(
  * (e.g. a worker completing a device action it was told to run).
  */
 export interface ApprovalReviewer {
-	userId: string;
-	/** Display name resolved at decision time; falls back to userId when unknown. */
-	name: string | null;
+  userId: string;
+  /** Display name resolved at decision time; falls back to userId when unknown. */
+  name: string | null;
 }
 
 export async function supersedeActionEvent(
@@ -999,8 +971,8 @@ export async function supersedeActionEvent(
 	extraMetadata: Record<string, unknown> = {},
 	reviewer: ApprovalReviewer | null = null,
 ): Promise<number | undefined> {
-	const sql = getDb();
-	const originalEvent = await sql`
+  const sql = getDb();
+  const originalEvent = await sql`
     SELECT id, entity_ids, connection_id, connector_key, metadata, author_name, interaction_input_schema, interaction_input
     FROM current_event_records
     WHERE run_id = ${runId}
@@ -1085,14 +1057,12 @@ export async function supersedeActionEvent(
  * are web-session only (`ctx.clientId` is rejected upstream), so `ctx.userId` is
  * always a real human here; we still guard on null for safety.
  */
-async function resolveReviewer(
-	ctx: ToolContext,
-): Promise<ApprovalReviewer | null> {
-	if (!ctx.userId) return null;
-	const rows = await getDb()<{ name: string | null }>`
+async function resolveReviewer(ctx: ToolContext): Promise<ApprovalReviewer | null> {
+  if (!ctx.userId) return null;
+  const rows = await getDb()<{ name: string | null }>`
     SELECT name FROM "user" WHERE id = ${ctx.userId} LIMIT 1
   `;
-	return { userId: ctx.userId, name: rows[0]?.name ?? null };
+  return { userId: ctx.userId, name: rows[0]?.name ?? null };
 }
 
 /**
@@ -1123,10 +1093,10 @@ async function claimManageAgentsRun(
             AND action_key = ${MANAGE_AGENTS_ACTION_KEY}
           RETURNING action_input, created_by_user_id
         `
-			: await sql`
+      : await sql`
           UPDATE runs
           SET approval_status = 'rejected', status = 'cancelled',
-              error_message = ${rejectReason ?? "Rejected by user"}, completed_at = NOW()
+              error_message = ${rejectReason ?? 'Rejected by user'}, completed_at = NOW()
           WHERE id = ${runId}
             AND organization_id = ${organizationId}
             AND approval_status = 'pending'
@@ -1134,16 +1104,13 @@ async function claimManageAgentsRun(
             AND action_key = ${MANAGE_AGENTS_ACTION_KEY}
           RETURNING action_input, created_by_user_id
         `;
-	if (rows.length === 0) return null;
-	const row = rows[0] as {
-		action_input: ManageAgentsProposal | null;
-		created_by_user_id: string | null;
-	};
-	if (!row.action_input) return null;
-	return {
-		proposal: row.action_input,
-		requesterUserId: row.created_by_user_id,
-	};
+  if (rows.length === 0) return null;
+  const row = rows[0] as {
+    action_input: ManageAgentsProposal | null;
+    created_by_user_id: string | null;
+  };
+  if (!row.action_input) return null;
+  return { proposal: row.action_input, requesterUserId: row.created_by_user_id };
 }
 
 /**
@@ -1253,10 +1220,10 @@ async function claimEntityChangeRun(
             AND action_key = ANY(${actionKeys}::text[])
           RETURNING action_input
         `
-			: await sql`
+      : await sql`
           UPDATE runs
           SET approval_status = 'rejected', status = 'cancelled',
-              error_message = ${rejectReason ?? "Rejected by user"}, completed_at = NOW()
+              error_message = ${rejectReason ?? 'Rejected by user'}, completed_at = NOW()
           WHERE id = ${runId}
             AND organization_id = ${organizationId}
             AND approval_status = 'pending'

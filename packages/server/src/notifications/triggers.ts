@@ -35,7 +35,7 @@ type EntityChangeApprovalDetails = {
 	reason?: string | null;
 };
 
-type ActionApprovalDetails =
+export type ActionApprovalDetails =
 	| FieldChangeApprovalDetails
 	| EntityChangeApprovalDetails;
 
@@ -65,7 +65,8 @@ function truncateNotificationLine(value: string): string {
 		: normalized;
 }
 
-function formatLabel(value: string): string {
+/** "$parent_id" → "Parent id", "entity_type" → "Entity type". */
+export function formatLabel(value: string): string {
 	return value
 		.replace(/^\$/, "")
 		.replace(/[_-]/g, " ")
@@ -74,34 +75,21 @@ function formatLabel(value: string): string {
 		.replace(/^./, (char) => char.toUpperCase());
 }
 
-function formatFieldChangeAction(details: FieldChangeApprovalDetails): string {
-	const fields = Object.keys(details.fields);
+/** "Update topic fields: Severity, Name" — shared with the propose path. */
+export function formatFieldChangeAction(
+	entityType: string | null | undefined,
+	fields: string[],
+): string {
 	const fieldList = fields.map(formatLabel).join(", ") || "field";
 	const fieldNoun = fields.length === 1 ? "field" : "fields";
-	const entityLabel = details.entityType
-		? formatLabel(details.entityType).toLowerCase()
+	const entityLabel = entityType
+		? formatLabel(entityType).toLowerCase()
 		: "entity";
 	return `Update ${entityLabel} ${fieldNoun}: ${fieldList}`;
 }
 
-function formatFieldChangeReviewTitle(
-	details: FieldChangeApprovalDetails,
-): string {
-	return formatFieldChangeAction(details).replace(/^Update /, "Review ");
-}
-
 function formatReviewLink(url: string): string {
 	return `[Review in Lobu](${url})`;
-}
-
-function formatEntityLink(details: FieldChangeApprovalDetails): string | null {
-	const label = escapeNotificationText(
-		details.entityName ??
-			(details.entityType ? formatLabel(details.entityType) : "Entity"),
-	);
-	if (details.entityUrl) return `[${label}](${details.entityUrl})`;
-	if (details.entityId) return `${label} (#${details.entityId})`;
-	return details.entityName ? label : null;
 }
 
 function formatCardLink(label: string, url: string): string {
@@ -132,12 +120,15 @@ function formatWhyApprovalNeeded(reason: string | null | undefined): string {
 	);
 }
 
-function formatActionApprovalTitle(
+export function formatActionApprovalTitle(
 	actionKey: string,
 	details?: ActionApprovalDetails,
 ): string {
 	if (details?.kind === "entity_field_change") {
-		return formatFieldChangeReviewTitle(details);
+		return formatFieldChangeAction(
+			details.entityType,
+			Object.keys(details.fields),
+		).replace(/^Update /, "Review ");
 	}
 	if (details?.kind === "entity_change") {
 		const entityLabel = details.entityType
@@ -150,74 +141,140 @@ function formatActionApprovalTitle(
 	return `Action "${actionKey}" needs approval`;
 }
 
-function formatActionApprovalBody(params: {
+/**
+ * Format-neutral content of an approval card, computed ONCE for both surfaces
+ * (in-app Markdown body and Slack mrkdwn card): escaping, truncation, labels,
+ * diff lines, and the "why" sentence live here; the two emitters below only
+ * decide bolding, link syntax, and blank-line placement.
+ */
+interface ApprovalRenderModel {
+	requestedBy: string | null;
+	entityName: string | null;
+	entityUrl: string | null;
+	entityId: number | null;
+	/** formatLabel(entityType), for the body's entity-link fallback. */
+	entityTypeLabel: string | null;
+	/** Field-change diffs (null for entity_change — kinds render differently). */
+	diffs: Array<{ label: string; diff: string }> | null;
+	/** entity_change action sentence ("Create/Delete this entity"). */
+	action: string | null;
+	proposal: Array<{ label: string; value: string }>;
+	/** Fully formatted "why" text; null omits the section. */
+	why: string | null;
+}
+
+function buildApprovalRenderModel(
+	details: ActionApprovalDetails,
+): ApprovalRenderModel {
+	const base = {
+		requestedBy: details.actorLabel
+			? escapeNotificationText(details.actorLabel)
+			: null,
+		entityName: details.entityName ?? null,
+		entityUrl: details.entityUrl ?? null,
+		entityId: details.entityId ?? null,
+		entityTypeLabel: details.entityType ? formatLabel(details.entityType) : null,
+	};
+	if (details.kind === "entity_field_change") {
+		const current = details.current ?? {};
+		return {
+			...base,
+			diffs: Object.entries(details.fields).map(([field, proposed]) => ({
+				label: formatLabel(field),
+				diff: compactDiffLine(current[field], proposed),
+			})),
+			action: null,
+			proposal: [],
+			why: formatWhyApprovalNeeded(details.reason),
+		};
+	}
+	return {
+		...base,
+		diffs: null,
+		action:
+			details.operation === "delete"
+				? "Delete this entity"
+				: "Create this entity",
+		proposal: Object.entries(details.proposal ?? {}).map(([field, value]) => ({
+			label: formatLabel(field),
+			value: truncateNotificationLine(displayNotificationValue(value)),
+		})),
+		why: details.reason ? escapeNotificationText(details.reason) : null,
+	};
+}
+
+/** In-app Markdown body. */
+function renderApprovalBody(
+	model: ApprovalRenderModel,
+	approvalUrl?: string,
+): string {
+	const lines: string[] = [];
+	if (model.requestedBy) lines.push(`Requested by: ${model.requestedBy}`);
+	const label = escapeNotificationText(
+		model.entityName ?? model.entityTypeLabel ?? "Entity",
+	);
+	const entityLink = model.entityUrl
+		? `[${label}](${model.entityUrl})`
+		: model.entityId
+			? `${label} (#${model.entityId})`
+			: model.entityName
+				? label
+				: null;
+	if (entityLink) lines.push(`Entity: ${entityLink}`);
+
+	if (model.diffs) {
+		lines.push("", "Proposed change:");
+		for (const d of model.diffs) lines.push(`${d.label}:`, d.diff);
+	}
+	if (model.action) {
+		lines.push("", `Proposed action: ${model.action}`);
+		if (model.proposal.length > 0) {
+			lines.push("");
+			for (const p of model.proposal) lines.push(`${p.label}: ${p.value}`);
+		}
+	}
+	if (model.why) lines.push("", `Why approval is needed: ${model.why}`);
+	if (approvalUrl) lines.push("", `Review: ${formatReviewLink(approvalUrl)}`);
+	return lines.join("\n");
+}
+
+/** Slack mrkdwn card text (bold labels, `<url|label>` links). */
+function renderApprovalCardText(model: ApprovalRenderModel): string {
+	const lines: string[] = [];
+	if (model.requestedBy) lines.push(`*Requested by:* ${model.requestedBy}`);
+	if (model.entityName) {
+		lines.push(
+			`*Entity:* ${
+				model.entityUrl
+					? formatCardLink(model.entityName, model.entityUrl)
+					: escapeNotificationText(model.entityName)
+			}`,
+		);
+	}
+	if (model.diffs) {
+		for (const d of model.diffs) lines.push("", `*${d.label}*`, d.diff);
+	}
+	if (model.action) {
+		lines.push("", `*Proposed action:* ${model.action}`);
+		for (const p of model.proposal) lines.push(`*${p.label}:* ${p.value}`);
+	}
+	if (model.why) lines.push("", `*Why approval is needed:* ${model.why}`);
+	return lines.join("\n");
+}
+
+export function formatActionApprovalBody(params: {
 	connectionName?: string;
 	approvalUrl?: string;
 	details?: ActionApprovalDetails;
 }): string {
-	if (params.details?.kind === "entity_field_change") {
-		const details = params.details;
-		const lines: string[] = [];
-		if (details.actorLabel)
-			lines.push(`Requested by: ${escapeNotificationText(details.actorLabel)}`);
-		const entityLink = formatEntityLink(details);
-		if (entityLink) lines.push(`Entity: ${entityLink}`);
-
-		lines.push("", "Proposed change:");
-		const current = details.current ?? {};
-		for (const [field, proposed] of Object.entries(details.fields)) {
-			lines.push(`${formatLabel(field)}:`);
-			lines.push(compactDiffLine(current[field], proposed));
-		}
-
-		lines.push(
-			"",
-			`Why approval is needed: ${formatWhyApprovalNeeded(details.reason)}`,
+	if (
+		params.details?.kind === "entity_field_change" ||
+		params.details?.kind === "entity_change"
+	) {
+		return renderApprovalBody(
+			buildApprovalRenderModel(params.details),
+			params.approvalUrl,
 		);
-		if (params.approvalUrl) {
-			lines.push("", `Review: ${formatReviewLink(params.approvalUrl)}`);
-		}
-		return lines.join("\n");
-	}
-
-	if (params.details?.kind === "entity_change") {
-		const details = params.details;
-		const lines: string[] = [];
-		if (details.actorLabel)
-			lines.push(`Requested by: ${escapeNotificationText(details.actorLabel)}`);
-		const entityLink = formatEntityLink({
-			kind: "entity_field_change",
-			actorLabel: details.actorLabel,
-			entityId: details.entityId,
-			entityType: details.entityType,
-			entityName: details.entityName,
-			entityUrl: details.entityUrl,
-			fields: {},
-		});
-		if (entityLink) lines.push(`Entity: ${entityLink}`);
-
-		if (details.operation === "delete") {
-			lines.push("", "Proposed action: Delete this entity");
-		} else {
-			lines.push("", "Proposed action: Create this entity");
-		}
-		if (details.proposal && Object.keys(details.proposal).length > 0) {
-			lines.push("");
-			for (const [field, value] of Object.entries(details.proposal)) {
-				lines.push(
-					`${formatLabel(field)}: ${truncateNotificationLine(displayNotificationValue(value))}`,
-				);
-			}
-		}
-		if (details.reason)
-			lines.push(
-				"",
-				`Why approval is needed: ${escapeNotificationText(details.reason)}`,
-			);
-		if (params.approvalUrl) {
-			lines.push("", `Review: ${formatReviewLink(params.approvalUrl)}`);
-		}
-		return lines.join("\n");
 	}
 
 	const connLabel = params.connectionName ? ` on ${params.connectionName}` : "";
@@ -227,7 +284,7 @@ function formatActionApprovalBody(params: {
 	return `A queued action${connLabel} is waiting for your review.${urlLine}`;
 }
 
-function buildActionApprovalCard(params: {
+export function buildActionApprovalCard(params: {
 	runId?: number;
 	approvalUrl?: string;
 	details?: ActionApprovalDetails;
@@ -237,50 +294,9 @@ function buildActionApprovalCard(params: {
 		!["entity_field_change", "entity_change"].includes(params.details.kind)
 	)
 		return undefined;
-	const details = params.details;
-	const lines: string[] = [];
-	if (details.actorLabel)
-		lines.push(`*Requested by:* ${escapeNotificationText(details.actorLabel)}`);
-	if (details.entityName) {
-		const entityLabel = details.entityUrl
-			? formatCardLink(details.entityName, details.entityUrl)
-			: escapeNotificationText(details.entityName);
-		lines.push(`*Entity:* ${entityLabel}`);
-	}
-
-	if (details.kind === "entity_field_change") {
-		const current = details.current ?? {};
-		for (const [field, proposed] of Object.entries(details.fields)) {
-			lines.push("");
-			lines.push(`*${formatLabel(field)}*`);
-			lines.push(compactDiffLine(current[field], proposed));
-		}
-	} else {
-		lines.push("");
-		lines.push(
-			details.operation === "delete"
-				? "*Proposed action:* Delete this entity"
-				: "*Proposed action:* Create this entity",
-		);
-		if (details.proposal && Object.keys(details.proposal).length > 0) {
-			for (const [field, value] of Object.entries(details.proposal)) {
-				lines.push(
-					`*${formatLabel(field)}:* ${truncateNotificationLine(displayNotificationValue(value))}`,
-				);
-			}
-		}
-	}
-
-	if (details.kind === "entity_field_change" || details.reason) {
-		lines.push("");
-		lines.push(
-			`*Why approval is needed:* ${
-				details.kind === "entity_field_change"
-					? formatWhyApprovalNeeded(details.reason)
-					: escapeNotificationText(details.reason ?? "")
-			}`,
-		);
-	}
+	const cardText = renderApprovalCardText(
+		buildApprovalRenderModel(params.details),
+	);
 
 	const actions = [];
 	if (params.runId) {
@@ -309,7 +325,7 @@ function buildActionApprovalCard(params: {
 
 	return Card({
 		children: [
-			CardText(lines.join("\n")),
+			CardText(cardText),
 			...(actions.length > 0 ? [Actions(actions)] : []),
 		],
 	});

@@ -68,7 +68,10 @@ import { agentRoutes } from "./lobu/agent-routes";
 import { clientRoutes } from "./lobu/client-routes";
 import { deploymentRoutes } from "./lobu/deployment-routes";
 import { environmentRoutes } from "./lobu/environment-routes";
-import { getLobuCoreServices, isLobuGatewayRunning } from "./lobu/gateway";
+import {
+	getLobuCoreServices,
+	isLobuGatewayRunning,
+} from "./lobu/gateway";
 import {
 	claimSlackPendingInstall,
 	resolveSlackPendingByTenant,

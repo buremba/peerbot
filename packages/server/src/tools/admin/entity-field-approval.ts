@@ -16,7 +16,11 @@
 import { resolveEntityApprovalPolicy } from "../../authz/entity-policy";
 import { getDb } from "../../db/client";
 import type { Env } from "../../index";
-import { notifyActionApprovalNeeded } from "../../notifications/triggers";
+import {
+	formatFieldChangeAction,
+	formatLabel,
+	notifyActionApprovalNeeded,
+} from "../../notifications/triggers";
 import {
 	type FieldMergeResult,
 	mergeEntityFields,
@@ -88,27 +92,6 @@ export type EntityChangeProposal =
 	| EntityFieldChangeProposal
 	| EntityDeleteProposal
 	| EntityCreateProposal;
-
-function formatLabel(value: string): string {
-	return value
-		.replace(/^\$/, "")
-		.replace(/[_-]/g, " ")
-		.replace(/\s+/g, " ")
-		.trim()
-		.replace(/^./, (char) => char.toUpperCase());
-}
-
-function formatFieldChangeAction(
-	entityType: string | null | undefined,
-	fields: string[],
-): string {
-	const fieldList = fields.map(formatLabel).join(", ") || "field";
-	const fieldNoun = fields.length === 1 ? "field" : "fields";
-	const entityLabel = entityType
-		? formatLabel(entityType).toLowerCase()
-		: "entity";
-	return `Update ${entityLabel} ${fieldNoun}: ${fieldList}`;
-}
 
 function operationOf(
 	proposal: EntityChangeProposal,

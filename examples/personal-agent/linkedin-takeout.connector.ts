@@ -3,10 +3,16 @@ import path from "node:path";
 import {
   type ConnectorDefinition,
   ConnectorRuntime,
+  type EventAttributionRule,
   type EventEnvelope,
   type SyncContext,
   type SyncResult,
 } from "@lobu/connector-sdk";
+import {
+  LINKEDIN_EMAIL_NAMESPACE,
+  LINKEDIN_IDENTITY,
+  normalizeLinkedInSlug,
+} from "./linkedin-identity.ts";
 import {
   assertDirectory,
   batchSize,
@@ -17,6 +23,75 @@ import {
   stripHtml,
   takeBatch,
 } from "./takeout-utils.ts";
+
+/**
+ * Link a `connection` event to the connected person via their canonical
+ * `linkedin_slug` (extracted from the profile URL) plus their `email`. Neither
+ * is `primary` — they match equal-weight cross-channel until a stable primary
+ * id arrives from the live connector. The full URL is kept as a display trait,
+ * not an identity (case/URL noise would fork the entity). Connections ARE the
+ * user's network, so we mint (`autoCreate`) a person per row.
+ */
+const LINKEDIN_CONNECTION_ATTRIBUTIONS: EventAttributionRule[] = [
+  {
+    role: "about",
+    autoCreate: true,
+    target: {
+      entityType: "person",
+      titlePath: "author_name",
+      identities: [
+        {
+          namespace: LINKEDIN_IDENTITY.SLUG,
+          eventPath: "metadata.linkedin_slug",
+        },
+        { namespace: LINKEDIN_EMAIL_NAMESPACE, eventPath: "metadata.email" },
+      ],
+    },
+    traits: {
+      linkedin_url: {
+        eventPath: "metadata.linkedin_url",
+        behavior: "prefer_non_empty",
+      },
+      company: { eventPath: "metadata.company", behavior: "prefer_non_empty" },
+      position: {
+        eventPath: "metadata.position",
+        behavior: "prefer_non_empty",
+      },
+    },
+  },
+];
+
+/**
+ * Link a `message` event to its sender (the counterparty) via the
+ * `linkedin_slug` extracted from their profile URL, plus display name. Real
+ * counterparties, so mint on no match.
+ */
+const LINKEDIN_MESSAGE_ATTRIBUTIONS: EventAttributionRule[] = [
+  {
+    role: "authored_by",
+    autoCreate: true,
+    target: {
+      entityType: "person",
+      titlePath: "metadata.from",
+      identities: [
+        {
+          namespace: LINKEDIN_IDENTITY.SLUG,
+          eventPath: "metadata.sender_linkedin_slug",
+        },
+      ],
+    },
+    traits: {
+      linkedin_url: {
+        eventPath: "metadata.sender_profile_url",
+        behavior: "prefer_non_empty",
+      },
+      last_linkedin_message_at: {
+        eventPath: "occurred_at",
+        behavior: "overwrite",
+      },
+    },
+  },
+];
 
 interface LinkedInTakeoutCheckpoint {
   last_messages_timestamp?: string;
@@ -48,6 +123,12 @@ export default class LinkedInTakeoutConnector extends ConnectorRuntime<
         configSchema: localTakeoutSchema(
           "Path to the LinkedIn Data Export folder."
         ),
+        eventKinds: {
+          message: {
+            description: "A LinkedIn direct message",
+            attributions: LINKEDIN_MESSAGE_ATTRIBUTIONS,
+          },
+        },
       },
       connections: {
         key: "connections",
@@ -55,6 +136,12 @@ export default class LinkedInTakeoutConnector extends ConnectorRuntime<
         configSchema: localTakeoutSchema(
           "Path to the LinkedIn Data Export folder."
         ),
+        eventKinds: {
+          connection: {
+            description: "A first-degree LinkedIn connection",
+            attributions: LINKEDIN_CONNECTION_ATTRIBUTIONS,
+          },
+        },
       },
       invitations: {
         key: "invitations",
@@ -247,6 +334,8 @@ export default class LinkedInTakeoutConnector extends ConnectorRuntime<
             conversation_title: row["CONVERSATION TITLE"],
             from: row.FROM,
             sender_profile_url: row["SENDER PROFILE URL"],
+            sender_linkedin_slug:
+              normalizeLinkedInSlug(row["SENDER PROFILE URL"]) ?? undefined,
             to: row.TO,
             recipient_profile_urls: row["RECIPIENT PROFILE URLS"],
             subject: row.SUBJECT,
@@ -286,6 +375,11 @@ export default class LinkedInTakeoutConnector extends ConnectorRuntime<
             company: row.Company,
             position: row.Position,
             linkedin_url: row.URL,
+            // Pre-canonicalized identity key. The server never loads example
+            // connectors' normalizer modules, so we emit the already-lowercased
+            // /in/<slug> here; the engine stores it verbatim (trim fallback) and
+            // case-variant URLs from any source collapse to one entity.
+            linkedin_slug: normalizeLinkedInSlug(row.URL) ?? undefined,
           },
         },
       ];

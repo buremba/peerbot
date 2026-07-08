@@ -4,7 +4,7 @@ import {
 	classifyMutationPrincipal,
 	evaluateEntityFieldUpdates,
 	evaluateEntityMutation,
-} from "../entity-policy";
+} from "../../authz/entity-policy";
 
 type PolicyRowSeed = {
 	id?: number;

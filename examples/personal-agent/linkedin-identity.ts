@@ -51,12 +51,14 @@ export const LINKEDIN_IDENTITY = {
    */
   SLUG: "linkedin_slug",
   /**
-   * Immutable numeric member id from `urn:li:fsd_profile:<id>`. The live
-   * connector's Voyager feed exposes it on the post actor; the takeout export
-   * does NOT (it only has the vanity slug). When present it is the PRIMARY key:
-   * it survives a vanity-URL change, so a person who renames their slug still
-   * resolves to one entity. A takeout-only person (slug, no member id) still
-   * bridges to their live-connector self via the shared slug/email.
+   * Immutable member id from `urn:li:fsd_profile:<id>`. The live connector's
+   * Voyager feed exposes it on the post actor; the takeout export does NOT (it
+   * only has the vanity slug). Matched EQUAL-WEIGHT with the slug (NOT primary):
+   * takeout people pre-exist keyed on slug alone, and a primary member_id would
+   * fork them (a primary that matches nothing mints a new person rather than
+   * falling back to a slug hit). Equal-weight lets a live post bind the existing
+   * slug-person AND accrete the member id — so a LATER vanity-URL change still
+   * resolves via the (now-attached) member id.
    */
   MEMBER_ID: "linkedin_member_id",
 } as const;
@@ -86,11 +88,13 @@ export function normalizeLinkedInSlug(
 }
 
 /**
- * Extract the immutable numeric member id from a LinkedIn profile URN or a bare
- * id. `urn:li:fsd_profile:ACoAAB1234`, `urn:li:member:1234`, and `1234` all
- * reduce to the trailing id token. Returns `null` when no `[A-Za-z0-9_-]` id
- * token can be recovered. (fsd_profile ids are opaque base64-ish, not just
- * digits, so the charset is permissive — but URN separators are stripped.)
+ * Extract the immutable member id from a LinkedIn PERSON URN or a bare id.
+ * `urn:li:fsd_profile:ACoAAB1234` and `urn:li:member:1234` reduce to the
+ * trailing id token; a bare `ACoAAB1234` passes through. Returns `null` for
+ * anything else — critically for a NON-person URN like `urn:li:fsd_company:99`,
+ * so a company id can never be normalized into a `person` member id. (Opaque
+ * fsd ids are base64-ish, so the token charset is permissive, but the URN
+ * PREFIX is checked: only `fsd_profile` / `member` are person namespaces.)
  */
 export function normalizeLinkedInMemberId(
   raw: string | null | undefined
@@ -98,12 +102,14 @@ export function normalizeLinkedInMemberId(
   if (typeof raw !== "string") return null;
   const value = raw.trim();
   if (!value) return null;
-  // Take the segment after the last `:` (URN tail) or the whole bare value.
-  const tail = value.includes(":")
-    ? value.slice(value.lastIndexOf(":") + 1)
-    : value;
-  if (!/^[A-Za-z0-9_-]+$/.test(tail)) return null;
-  return tail;
+  // A colon-bearing input MUST be a person URN — reject company/other URNs so a
+  // non-person id never slips through as a person's primary key.
+  if (value.includes(":")) {
+    const m = value.match(/^urn:li:(?:fsd_profile|member):([A-Za-z0-9_-]+)$/);
+    return m ? m[1] : null;
+  }
+  // A bare id (no URN) is an already-extracted token.
+  return /^[A-Za-z0-9_-]+$/.test(value) ? value : null;
 }
 
 /**

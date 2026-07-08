@@ -39,6 +39,7 @@ import path from "node:path";
 import {
   LINKEDIN_EMAIL_NAMESPACE,
   LINKEDIN_IDENTITY,
+  normalizeLinkedInMemberId,
   normalizeLinkedInSlug,
 } from "./linkedin-identity.ts";
 import {
@@ -194,15 +195,19 @@ const LINKEDIN_MESSAGE_ATTRIBUTIONS: EventAttributionRule[] = [
 
 /**
  * Link a live `post` to its author. The Voyager feed (company_updates) exposes
- * the actor's immutable `urn:li:fsd_profile:<id>` as `author_member_id` — the
- * PRIMARY key that survives a vanity-URL change — plus the `/in/<slug>` as a
- * soft key that bridges to takeout-ingested people (who have only a slug).
+ * the actor's immutable `urn:li:fsd_profile:<id>` as `author_member_id` plus the
+ * `/in/<slug>`. Both are identities; NEITHER is `primary` — they match
+ * EQUAL-WEIGHT (same as the connections/messages attributions).
  *
- * `createWhen: { author_member_id exists }` gates minting on the durable id:
- * a post with only a slug (or neither, e.g. a home-feed scrape) MATCHES an
- * existing person but never mints, so we don't fork a member-id-less duplicate
- * that a later takeout/live event can't merge into. This is the live half of
- * the slug-churn hardening — takeout alone can't supply a member id.
+ * Why not primary member_id: takeout-ingested people already exist keyed on
+ * `linkedin_slug` (no member id — the export has none). A `primary` member_id
+ * would be authoritative: on a live post it would find no member-id match, mint
+ * a NEW person, and fork the existing slug-person (the resolver does not fall
+ * back to a secondary slug hit when a primary is present). Equal-weight instead
+ * UNIONS the hits: the live post matches the existing person by slug AND
+ * accretes the member_id onto them. Durability still holds — once the member_id
+ * is on the person, a later vanity-URL change still resolves via that member_id
+ * in the equal-weight union. Real authors, so mint on no match.
  */
 const LINKEDIN_POST_AUTHOR_ATTRIBUTIONS: EventAttributionRule[] = [
   {
@@ -210,13 +215,11 @@ const LINKEDIN_POST_AUTHOR_ATTRIBUTIONS: EventAttributionRule[] = [
     autoCreate: true,
     target: {
       entityType: "person",
-      createWhen: { path: "metadata.author_member_id", exists: true },
       titlePath: "author_name",
       identities: [
         {
           namespace: LINKEDIN_IDENTITY.MEMBER_ID,
           eventPath: "metadata.author_member_id",
-          primary: true,
         },
         {
           namespace: LINKEDIN_IDENTITY.SLUG,
@@ -475,19 +478,24 @@ export function parseCompanyUpdates(
       actorObj?.description?.text ?? actorObj?.description ?? undefined;
 
     // Actor identity: the member's immutable `urn:li:fsd_profile:<id>` and the
-    // vanity `/in/<slug>`. Voyager threads these through a few shapes (the actor
-    // may be a ref into `included`, and the profile urn/url hides under
-    // `*miniProfile` / `navigationContext.actionTarget` / `navigationUrl`).
-    // Best-effort — a company-authored post has no member id and yields null.
+    // vanity `/in/<slug>`. Voyager threads the profile urn through several
+    // shapes — the actor may be a ref into `included`, and the urn hides under
+    // `*miniProfile` (a bare urn string OR a ref to resolve), `miniProfile` (a
+    // bare urn string OR an object with `entityUrn`), `urn`, or `entityUrn`.
+    // normalizeLinkedInMemberId returns null for a non-person urn (e.g. a
+    // company actor's `urn:li:fsd_company:…`), so a company-authored post yields
+    // no member id and its attribution match-only-gates off (createWhen).
     const authorUrn: string =
-      actorObj?.["*miniProfile"] ??
-      actorObj?.miniProfile?.entityUrn ??
+      (typeof actorObj?.["*miniProfile"] === "string"
+        ? actorObj["*miniProfile"]
+        : resolve(actorObj?.["*miniProfile"])?.entityUrn) ??
+      (typeof actorObj?.miniProfile === "string"
+        ? actorObj.miniProfile
+        : actorObj?.miniProfile?.entityUrn) ??
       actorObj?.urn ??
       actorObj?.entityUrn ??
       "";
-    const authorMemberId = /urn:li:(?:fsd_profile|member):/.test(authorUrn)
-      ? authorUrn.slice(authorUrn.lastIndexOf(":") + 1)
-      : undefined;
+    const authorMemberId = normalizeLinkedInMemberId(authorUrn) ?? undefined;
     const authorProfileUrl: string =
       actorObj?.navigationContext?.actionTarget ??
       actorObj?.navigationUrl ??

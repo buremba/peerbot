@@ -564,6 +564,14 @@ describe("normalizeLinkedInMemberId", () => {
     // A slash-bearing URL is not a bare id token.
     expect(normalizeLinkedInMemberId("https://x.com/in/foo")).toBe(null);
   });
+
+  test("rejects a NON-person URN so a company id never becomes a person id", () => {
+    // The whole point: a company actor's urn must not normalize to a person id.
+    expect(normalizeLinkedInMemberId("urn:li:fsd_company:99")).toBe(null);
+    expect(normalizeLinkedInMemberId("urn:li:organization:123")).toBe(null);
+    // A bare colon-string that isn't a person URN is rejected too.
+    expect(normalizeLinkedInMemberId("foo:bar")).toBe(null);
+  });
 });
 
 describe("LinkedInConnector live post author identity (member id)", () => {
@@ -640,17 +648,15 @@ describe("LinkedInConnector live post author identity (member id)", () => {
     expect(post.authorSlug).toBeUndefined();
   });
 
-  test("company_updates post attribution keys primary on member id, mint-gated", () => {
+  test("company_updates post attribution matches member id + slug equal-weight (neither primary)", () => {
     const def = new LinkedInConnector().definition;
     const attr = def.feeds.company_updates.eventKinds.post.attributions?.[0];
     expect(attr).toBeDefined();
     expect(attr.role).toBe("authored_by");
     expect(attr.autoCreate).toBe(true);
-    // Mint only when the durable member id is present (no slug-only forks).
-    expect(attr.target.createWhen).toEqual({
-      path: "metadata.author_member_id",
-      exists: true,
-    });
+    // NO createWhen gate: a member_id-primary mint-gate would fork the existing
+    // slug-keyed takeout person. Equal-weight union binds them instead.
+    expect(attr.target.createWhen).toBeUndefined();
 
     const memberId = attr.target.identities.find(
       (i: { namespace: string }) => i.namespace === LINKEDIN_IDENTITY.MEMBER_ID
@@ -658,17 +664,48 @@ describe("LinkedInConnector live post author identity (member id)", () => {
     expect(memberId).toMatchObject({
       namespace: "linkedin_member_id",
       eventPath: "metadata.author_member_id",
-      primary: true,
     });
+    // CRITICAL: member_id is NOT primary — a primary that misses would mint a
+    // new person and fork the takeout-first slug person.
+    expect(memberId.primary).toBeUndefined();
+
     const slug = attr.target.identities.find(
       (i: { namespace: string }) => i.namespace === LINKEDIN_IDENTITY.SLUG
     );
-    // Slug is the soft bridge to takeout people — present but NOT primary.
     expect(slug).toMatchObject({
       namespace: "linkedin_slug",
       eventPath: "metadata.author_linkedin_slug",
     });
     expect(slug.primary).toBeUndefined();
+  });
+
+  test("parseCompanyUpdates reads the miniProfile urn as a bare string too", () => {
+    // Voyager sometimes gives `miniProfile` as the urn STRING itself (not a ref
+    // or an object). Codex flagged this shape as previously missed.
+    const json = {
+      included: [
+        {
+          entityUrn: "urn:li:actor:3",
+          name: { text: "Bare Shape" },
+          miniProfile: "urn:li:fsd_profile:ACoAABbareXYZ",
+        },
+      ],
+      data: {
+        data: {
+          feed: {
+            "*elements": [
+              {
+                entityUrn: "urn:li:activity:3",
+                commentary: { text: { text: "post body" } },
+                "*actor": "urn:li:actor:3",
+              },
+            ],
+          },
+        },
+      },
+    };
+    const [post] = parseCompanyUpdates("", json);
+    expect(post.authorMemberId).toBe("ACoAABbareXYZ");
   });
 });
 

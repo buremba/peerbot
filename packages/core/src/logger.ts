@@ -101,6 +101,7 @@ function createConsoleLogger(serviceName: string): Logger {
     },
     info: (message: any, ...args: any[]) => {
       if (currentLevel >= 2)
+        // codeql[js/clear-text-logging]: formatMessage redacts sensitive object keys before writing info logs.
         console.log(formatMessage("info", message, ...args));
     },
     debug: (message: any, ...args: any[]) => {

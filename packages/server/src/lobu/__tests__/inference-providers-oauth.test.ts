@@ -93,16 +93,20 @@ function installTokenEndpointMock(captured: {
 		input: Parameters<typeof fetch>[0],
 		init?: Parameters<typeof fetch>[1],
 	) => {
-		const url =
-			typeof input === "string"
-				? input
-				: input instanceof URL
-					? input.href
-					: input.url;
-		if (url.includes("platform.claude.com") && url.includes("/oauth/token")) {
-			captured.url = url;
-			captured.contentType = init?.headers?.["Content-Type"] ?? null;
-			captured.body = typeof init?.body === "string" ? init.body : "";
+			const url =
+				typeof input === "string"
+					? input
+					: input instanceof URL
+						? input.href
+						: input.url;
+			const parsedUrl = new URL(url);
+			if (
+				parsedUrl.hostname === "platform.claude.com" &&
+				parsedUrl.pathname === "/v1/oauth/token"
+			) {
+				captured.url = url;
+				captured.contentType = init?.headers?.["Content-Type"] ?? null;
+				captured.body = typeof init?.body === "string" ? init.body : "";
 			return new Response(
 				JSON.stringify({
 					access_token: "sk-ant-oat01-test-access",

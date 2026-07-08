@@ -548,6 +548,21 @@ describe("LinkedInConnector takeout identity attributions", () => {
   });
 });
 
+describe("LinkedInConnector auth schema", () => {
+  test("is none-only so a takeout/extension connection needs no OAuth handshake", () => {
+    const def = new LinkedInConnector().definition;
+    const methods = def.authSchema.methods;
+    expect(methods).toHaveLength(1);
+    expect(methods[0].type).toBe("none");
+    // No oauth method — the server would otherwise pick it as authoritative and
+    // force a LinkedIn OAuth flow before a connection could be created, blocking
+    // the takeout + extension use cases (no feed consumes an OAuth token).
+    expect(methods.some((m: { type: string }) => m.type === "oauth")).toBe(
+      false
+    );
+  });
+});
+
 describe("normalizeLinkedInMemberId", () => {
   test("reduces fsd_profile / member URNs and bare ids to the id token", () => {
     expect(normalizeLinkedInMemberId("urn:li:fsd_profile:ACoAAB1234xyz")).toBe(

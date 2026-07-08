@@ -658,26 +658,20 @@ export default class LinkedInConnector extends ConnectorRuntime<
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files.",
     version: "3.0.0",
     faviconDomain: "linkedin.com",
+    // Auth is `none`: every live feed authenticates implicitly through the
+    // paired Owletto Chrome extension (the user's own signed-in linkedin.com
+    // session — no OAuth token is ever read), and takeout feeds read local CSV
+    // files. A previously-declared OPTIONAL oauth method was removed: no feed
+    // consumed it, yet the server's connection-create picks the first non-`none`
+    // method as authoritative and forced an irrelevant LinkedIn OAuth handshake
+    // before a (takeout or extension-driven) connection could be created —
+    // blocking exactly the "one connector, both live and backfill" use case the
+    // merge exists for. If real OAuth sign-in is ever needed downstream, add it
+    // back behind a feed that actually uses the token.
     authSchema: {
       methods: [
         {
           type: "none",
-        },
-        {
-          type: "oauth",
-          provider: "linkedin",
-          requiredScopes: ["openid", "profile", "email"],
-          loginScopes: ["openid", "profile", "email"],
-          authorizationUrl: "https://www.linkedin.com/oauth/v2/authorization",
-          tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
-          userinfoUrl: "https://api.linkedin.com/v2/userinfo",
-          tokenEndpointAuthMethod: "client_secret_post",
-          clientIdKey: "LINKEDIN_CLIENT_ID",
-          clientSecretKey: "LINKEDIN_CLIENT_SECRET",
-          description:
-            "Optional LinkedIn OAuth app config for sign-in. Current company page and jobs feeds run via the Chrome extension; OAuth is here for downstream sign-in flows.",
-          setupInstructions:
-            "Create a LinkedIn OAuth app, add {{redirect_uri}} as the callback URL, then paste the client ID and client secret below.",
         },
       ],
     },

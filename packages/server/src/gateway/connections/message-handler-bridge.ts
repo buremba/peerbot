@@ -85,68 +85,151 @@ async function buildProviderSetupUrl(params: {
   return url.toString();
 }
 
+/**
+ * Is this provider module usable RIGHT NOW for this agent/org — i.e. it has a
+ * credential (system key or org-shared/agent key) AND a routable proxy mapping?
+ * Both checks matter: a provider can be "installed" yet have no key, and a keyed
+ * provider can still fail to produce a route (misconfigured upstream).
+ */
+async function providerIsRoutable(
+  provider: {
+    providerId: string;
+    hasSystemKey(): boolean;
+    hasCredentials(
+      agentId: string,
+      ctx: { organizationId: string; userId: string }
+    ): Promise<boolean>;
+    getProxyBaseUrlMappings(
+      proxyBaseUrl: string,
+      agentId: string,
+      ctx: { organizationId: string; userId: string }
+    ): Record<string, string>;
+  },
+  ctx: {
+    services: CoreServices;
+    agentId: string;
+    organizationId: string;
+    userId: string;
+  }
+): Promise<boolean> {
+  const hasCredentials =
+    provider.hasSystemKey() ||
+    (await provider.hasCredentials(ctx.agentId, {
+      organizationId: ctx.organizationId,
+      userId: ctx.userId,
+    }));
+  if (!hasCredentials) return false;
+  const proxyBaseUrl = `${webOriginFromGateway(ctx.services.getPublicGatewayUrl())}/api/proxy`;
+  const mappings = provider.getProxyBaseUrlMappings(proxyBaseUrl, ctx.agentId, {
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+  });
+  return Object.keys(mappings).length > 0;
+}
+
+/**
+ * Pick a concrete, routable model from a connected provider so a run can proceed
+ * even though the agent's CONFIGURED model names a provider the org never
+ * connected. Returns the provider's default/first model as a `provider/model`
+ * ref, or null if the provider exposes no usable model. This is what turns the
+ * old hard dead-end ("connect claude first") into graceful degradation onto a
+ * provider the org actually has (e.g. openai), which matters most for a new user
+ * whose default agent shipped with a model whose provider they never set up.
+ */
+async function firstModelForProvider(provider: {
+  providerId: string;
+  getModelOptions?: (a: string, b: string) => Promise<Array<{ value: string }>>;
+}): Promise<string | null> {
+  if (!provider.getModelOptions) return null;
+  const options = await provider.getModelOptions("", "").catch(() => []);
+  const first = options[0]?.value?.trim();
+  if (!first) return null;
+  return first.startsWith(`${provider.providerId}/`)
+    ? first
+    : `${provider.providerId}/${first}`;
+}
+
+type ModelProviderResolution =
+  | { kind: "ok" }
+  | { kind: "fallback"; model: string; from: string; to: string }
+  | { kind: "error"; message: string };
+
+/**
+ * Preflight the model a message will run on. Order of outcomes:
+ *  - ok: the configured model's provider is connected + routable → run as-is.
+ *  - fallback: it is NOT routable, but the org has another connected provider →
+ *    run on that provider's default model instead of failing.
+ *  - error: no connected+routable provider exists at all → surface a setup link.
+ */
 async function validateMessageModelProvider(params: {
   services: CoreServices;
   agentId: string;
   organizationId?: string;
   userId: string;
   modelRef?: unknown;
-}): Promise<string | null> {
-  if (typeof params.modelRef !== "string") return null;
+}): Promise<ModelProviderResolution> {
+  if (typeof params.modelRef !== "string") return { kind: "ok" };
   const modelRef = params.modelRef.trim();
   const providerId = parseProviderFromModelRef(modelRef);
-  if (!providerId) return null;
+  if (!providerId) return { kind: "ok" };
 
   const catalog = params.services.getProviderCatalogService?.();
-  if (!catalog || !params.organizationId) return null;
+  if (!catalog || !params.organizationId) return { kind: "ok" };
+  const organizationId = params.organizationId;
 
   const providers = await catalog.getInstalledModules(
     params.agentId,
-    params.organizationId
+    organizationId
   );
   const provider = await catalog.findProviderForModel(modelRef, providers);
+
+  const routableCtx = {
+    services: params.services,
+    agentId: params.agentId,
+    organizationId,
+    userId: params.userId,
+  };
+
+  // Happy path: the configured model's provider is present, keyed, and routable.
+  if (provider && (await providerIsRoutable(provider, routableCtx))) {
+    return { kind: "ok" };
+  }
+
+  // The configured model can't run. Before dead-ending, look for ANY other
+  // connected provider on this agent that IS routable, and fall back to its
+  // default model. Skip the failed provider itself.
+  for (const candidate of providers) {
+    if (provider && candidate.providerId === provider.providerId) continue;
+    if (!(await providerIsRoutable(candidate, routableCtx))) continue;
+    const fallbackModel = await firstModelForProvider(candidate);
+    if (fallbackModel) {
+      return {
+        kind: "fallback",
+        model: fallbackModel,
+        from: modelRef,
+        to: candidate.providerId,
+      };
+    }
+  }
+
+  // Genuinely nothing usable — surface the setup link for the intended provider.
   const setupUrl = await buildProviderSetupUrl({
     publicGatewayUrl: params.services.getPublicGatewayUrl(),
-    organizationId: params.organizationId,
+    organizationId,
     providerId,
     agentId: params.agentId,
     modelRef,
     reason: "model_provider_not_connected",
   });
-
-  if (!provider) {
-    return (
+  const reason = !provider
+    ? `but it isn't connected for this agent`
+    : `but Lobu has no credentials for it`;
+  return {
+    kind: "error",
+    message:
       `I can't run this yet: the selected model (${modelRef}) needs provider "${providerId}", ` +
-      `but it isn't connected for this agent. Open this setup link to connect it: ${setupUrl}`
-    );
-  }
-
-  const hasCredentials =
-    provider.hasSystemKey() ||
-    (await provider.hasCredentials(params.agentId, {
-      organizationId: params.organizationId,
-      userId: params.userId,
-    }));
-  if (!hasCredentials) {
-    return (
-      `I can't run this yet: the selected model (${modelRef}) needs provider "${provider.providerId}", ` +
-      `but Lobu has no credentials for it. Open this setup link to connect or add credentials: ${setupUrl}`
-    );
-  }
-
-  const proxyBaseUrl = `${webOriginFromGateway(params.services.getPublicGatewayUrl())}/api/proxy`;
-  const mappings = provider.getProxyBaseUrlMappings(proxyBaseUrl, params.agentId, {
-    organizationId: params.organizationId,
-    userId: params.userId,
-  });
-  if (Object.keys(mappings).length === 0) {
-    return (
-      `I can't run this yet: the selected model (${modelRef}) needs provider "${provider.providerId}", ` +
-      `but Lobu could not build a route for it. Open this setup link to reconnect the provider: ${setupUrl}`
-    );
-  }
-
-  return null;
+      `${reason}. Open this setup link to connect or add credentials: ${setupUrl}`,
+  };
 }
 
 /**
@@ -952,20 +1035,37 @@ export class MessageHandlerBridge {
         organizationId
       );
 
-      const modelProviderError = await validateMessageModelProvider({
+      const modelResolution = await validateMessageModelProvider({
         services: this.services,
         agentId,
         organizationId,
         userId,
         modelRef: agentOptions.model,
       });
-      if (modelProviderError) {
+      if (modelResolution.kind === "error") {
         logger.warn(
           { traceId, agentId, organizationId, model: agentOptions.model },
-          "Rejecting inbound message before enqueue because model provider is not routable"
+          "Rejecting inbound message before enqueue: no connected+routable model provider"
         );
-        await thread.post(modelProviderError);
+        await thread.post(modelResolution.message);
         return;
+      }
+      if (modelResolution.kind === "fallback") {
+        // The configured model's provider isn't connected, but the org has
+        // another one that is. Run on it rather than dead-ending, and record
+        // the swap so the divergence is visible in logs/traces.
+        logger.warn(
+          {
+            traceId,
+            agentId,
+            organizationId,
+            configuredModel: modelResolution.from,
+            fallbackModel: modelResolution.model,
+            fallbackProvider: modelResolution.to,
+          },
+          "Configured model provider not connected; falling back to a connected provider"
+        );
+        agentOptions.model = modelResolution.model;
       }
 
       const payload = buildMessagePayload({

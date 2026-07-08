@@ -692,6 +692,88 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     expect(posted).not.toContain("api/proxy");
   });
 
+  test("configured model provider unconnected, but org has another connected provider → falls back and enqueues", async () => {
+    // The agent is configured for z-ai/glm-5.2 (not routable here), but the org
+    // has a connected+routable openai provider. Instead of dead-ending with a
+    // setup link, the run must proceed on openai's default model. This is the
+    // new-user gap: a default agent shipped with a model whose provider the org
+    // never connected must NOT hard-block when another provider IS connected.
+    const zai = {
+      providerId: "z-ai",
+      hasSystemKey: () => false,
+      hasCredentials: async () => false, // unroutable: no credentials
+      getProxyBaseUrlMappings: () => ({}),
+      getModelOptions: async () => [{ value: "z-ai/glm-5.2" }],
+    };
+    const openai = {
+      providerId: "openai",
+      hasSystemKey: () => false,
+      hasCredentials: async () => true,
+      getProxyBaseUrlMappings: () => ({ openai: "https://gw/api/proxy/openai" }),
+      getModelOptions: async () => [{ value: "gpt-4o-mini" }],
+    };
+    const providerCatalog = {
+      getInstalledModules: mock(async () => [zai, openai]),
+      // The configured model resolves to the z-ai module (unroutable).
+      findProviderForModel: mock(async () => zai),
+    };
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      binding: {
+        agentId: "lobu-builder",
+        organizationId: "org-bound",
+        model: "z-ai/glm-5.2",
+      },
+      providerCatalog,
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(thread, makeMessage(), "mention");
+
+    // Ran, did not post a setup-link error.
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    const payload = enqueueMessage.mock.calls[0]?.[0] as any;
+    // The fallback provider's default model (prefixed with its providerId) wins.
+    expect(payload.agentOptions?.model).toBe("openai/gpt-4o-mini");
+    expect(
+      thread.post.mock.calls.every(
+        (c: unknown[]) => !String(c[0]).includes("Open this setup link"),
+      ),
+    ).toBe(true);
+  });
+
+  test("no connected provider at all → still posts the setup-link error, no enqueue", async () => {
+    // Guard the negative: when the configured provider is unroutable AND there is
+    // no other connected provider, we must NOT silently proceed — surface setup.
+    const zai = {
+      providerId: "z-ai",
+      hasSystemKey: () => false,
+      hasCredentials: async () => false,
+      getProxyBaseUrlMappings: () => ({}),
+      getModelOptions: async () => [{ value: "z-ai/glm-5.2" }],
+    };
+    const providerCatalog = {
+      getInstalledModules: mock(async () => [zai]),
+      findProviderForModel: mock(async () => zai),
+    };
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      binding: {
+        agentId: "lobu-builder",
+        organizationId: "org-bound",
+        model: "z-ai/glm-5.2",
+      },
+      providerCatalog,
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(thread, makeMessage(), "mention");
+
+    expect(enqueueMessage).not.toHaveBeenCalled();
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    expect(String(thread.post.mock.calls[0]?.[0])).toContain(
+      "Open this setup link",
+    );
+  });
+
   test("cross-org: routes the worker turn under the BOUND agent's org, not the connection's", async () => {
     // Regression for the hosted-preview cross-org bug: a `/lobu link <code>`
     // binds an agent that lives in a DIFFERENT org than the preview connection.

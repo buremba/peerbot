@@ -34,6 +34,7 @@ import {
 } from "../utils/inline-attachments";
 import { insertEvent, recordLifecycleEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
+import { stripNulDeep } from "../utils/strip-nul";
 import { advanceWatcherSchedule } from "../watchers/automation";
 import { authorizeRunForWorker } from "./shared";
 
@@ -183,6 +184,18 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			}>;
 			checkpoint?: Record<string, unknown>;
 		}>();
+
+		// Connector-supplied checkpoints (LinkedIn takeout cursors, browser
+		// scrapes) can carry stray NUL (0x00), which Postgres rejects when written
+		// to the jsonb checkpoint column (unsupported Unicode escape sequence).
+		// Item payloads go through insertEvent which already sanitizes; the
+		// checkpoint writes below are raw sql.json, so strip it here.
+		if (batch.checkpoint) {
+			batch.checkpoint = stripNulDeep(batch.checkpoint) as Record<
+				string,
+				unknown
+			>;
+		}
 
 		const denied = await authorizeRunForWorker(
 			c,
@@ -393,6 +406,16 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 			exit_signal?: string | null;
 			exit_reason?: "ok" | "error_message" | "timeout" | "oom" | "crash";
 		}>();
+
+		// Strip NUL (0x00) from connector-supplied jsonb payloads before they hit
+		// Postgres (see streamContent). The final checkpoint and refreshed browser
+		// auth_update are written via raw sql.json below.
+		if (req.checkpoint) {
+			req.checkpoint = stripNulDeep(req.checkpoint) as Record<string, unknown>;
+		}
+		if (req.auth_update) {
+			req.auth_update = stripNulDeep(req.auth_update) as Record<string, unknown>;
+		}
 
 		const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
 		if (denied) return denied;

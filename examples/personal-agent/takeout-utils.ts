@@ -107,8 +107,15 @@ export function maxEventCursor(
   );
 }
 
+// Composite watermark: ISO timestamp + origin_id so events sharing a second
+// still order deterministically. The delimiter is persisted inside the jsonb
+// checkpoint column, so it must NOT be NUL: Postgres rejects NUL in jsonb
+// (unsupported Unicode escape sequence). \u0001 (SOH) sorts before every
+// printable char (preserving timestamp-first ordering) and is jsonb-safe.
+const CURSOR_DELIMITER = "\u0001";
+
 function eventCursor(event: EventEnvelope): string {
-  return `${event.occurred_at.toISOString()}\0${event.origin_id}`;
+  return `${event.occurred_at.toISOString()}${CURSOR_DELIMITER}${event.origin_id}`;
 }
 
 export function stableId(

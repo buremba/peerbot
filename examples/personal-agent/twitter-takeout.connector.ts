@@ -2,6 +2,7 @@ import path from "node:path";
 import {
   type ConnectorDefinition,
   ConnectorRuntime,
+  type EventAttributionRule,
   type EventEnvelope,
   type SyncContext,
   type SyncResult,
@@ -16,6 +17,121 @@ import {
   takeBatch,
   twitterSnowflakeDate,
 } from "./takeout-utils.ts";
+import {
+  handleFromUserLink,
+  normalizeXHandle,
+  X_IDENTITY,
+} from "./x-identity.ts";
+
+/**
+ * A tweet the user *replied to* names the person they replied to via
+ * `in_reply_to_user_id` (immutable numeric id) + `in_reply_to_screen_name`
+ * (mutable handle). Emit it as an `about` attribution keyed on the SAME
+ * `x_user_id`/`x_handle` namespaces the live X connector uses, so a reply
+ * target consolidates onto the person the live connector already tracks —
+ * across the connector/connection boundary. `autoCreate` mints a person for
+ * reply targets not yet seen (they are, by definition, people the user engaged).
+ */
+const X_REPLY_TARGET_ATTRIBUTIONS: EventAttributionRule[] = [
+  {
+    role: "about",
+    autoCreate: true,
+    target: {
+      entityType: "person",
+      titlePath: "metadata.in_reply_to_screen_name",
+      identities: [
+        {
+          namespace: X_IDENTITY.USER_ID,
+          eventPath: "metadata.in_reply_to_user_id",
+          primary: true,
+        },
+        {
+          namespace: X_IDENTITY.HANDLE,
+          eventPath: "metadata.in_reply_to_screen_name",
+        },
+      ],
+    },
+    traits: {
+      x_handle: {
+        eventPath: "metadata.in_reply_to_screen_name",
+        behavior: "prefer_non_empty",
+      },
+      last_x_interaction_at: {
+        eventPath: "occurred_at",
+        behavior: "overwrite",
+      },
+    },
+  },
+];
+
+/**
+ * A DM names both parties by immutable numeric id (`sender_id`/`recipient_id`)
+ * but a takeout gives no way to tell which id is the connected account itself.
+ * So attribute BOTH ids `matchOnly` (accrete DM history onto an already-known
+ * person, but never MINT one from a raw numeric id — that would risk minting a
+ * "person" for the user's own account). No handle is present in the DM archive.
+ */
+const X_DM_PARTY_ATTRIBUTIONS: EventAttributionRule[] = [
+  {
+    role: "about",
+    autoCreate: false,
+    target: {
+      entityType: "person",
+      identities: [
+        {
+          namespace: X_IDENTITY.USER_ID,
+          eventPath: "metadata.sender_id",
+          matchOnly: true,
+        },
+      ],
+    },
+    traits: {
+      last_x_dm_at: { eventPath: "occurred_at", behavior: "overwrite" },
+    },
+  },
+  {
+    role: "about",
+    autoCreate: false,
+    target: {
+      entityType: "person",
+      identities: [
+        {
+          namespace: X_IDENTITY.USER_ID,
+          eventPath: "metadata.recipient_id",
+          matchOnly: true,
+        },
+      ],
+    },
+  },
+];
+
+/**
+ * Followers/following name a person by immutable numeric `account_id` +
+ * (optional) `handle` recovered from the profile link. These ARE the user's
+ * network, so `autoCreate` mints a person per row, keyed primary on `x_user_id`
+ * so they fuse with the live connector's people.
+ */
+const X_FOLLOW_ATTRIBUTIONS: EventAttributionRule[] = [
+  {
+    role: "about",
+    autoCreate: true,
+    target: {
+      entityType: "person",
+      titlePath: "metadata.handle",
+      identities: [
+        {
+          namespace: X_IDENTITY.USER_ID,
+          eventPath: "metadata.account_id",
+          primary: true,
+        },
+        { namespace: X_IDENTITY.HANDLE, eventPath: "metadata.handle" },
+      ],
+    },
+    traits: {
+      x_handle: { eventPath: "metadata.handle", behavior: "prefer_non_empty" },
+    },
+  },
+];
 
 interface TwitterTakeoutCheckpoint {
   last_tweets_timestamp?: string;
@@ -91,6 +207,12 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
         configSchema: localTakeoutSchema(
           "Path to the X/Twitter archive folder containing data/tweets.js."
         ),
+        eventKinds: {
+          reply: {
+            description: "A reply the user posted to another account",
+            attributions: X_REPLY_TARGET_ATTRIBUTIONS,
+          },
+        },
       },
       messages: {
         key: "messages",
@@ -98,6 +220,12 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
         configSchema: localTakeoutSchema(
           "Path to the X/Twitter archive folder containing DM files."
         ),
+        eventKinds: {
+          dm_message: {
+            description: "A direct message between the user and a counterparty",
+            attributions: X_DM_PARTY_ATTRIBUTIONS,
+          },
+        },
       },
       likes: {
         key: "likes",
@@ -112,6 +240,12 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
         configSchema: localTakeoutSchema(
           "Path to the X/Twitter archive folder containing data/follower.js."
         ),
+        eventKinds: {
+          follower: {
+            description: "An account that follows the user",
+            attributions: X_FOLLOW_ATTRIBUTIONS,
+          },
+        },
       },
       following: {
         key: "following",
@@ -119,6 +253,12 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
         configSchema: localTakeoutSchema(
           "Path to the X/Twitter archive folder containing data/following.js."
         ),
+        eventKinds: {
+          following: {
+            description: "An account the user follows",
+            attributions: X_FOLLOW_ATTRIBUTIONS,
+          },
+        },
       },
     },
   };
@@ -231,7 +371,14 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
               entities: tweet.entities,
               in_reply_to_status_id: tweet.in_reply_to_status_id_str,
               in_reply_to_user_id: tweet.in_reply_to_user_id_str,
-              in_reply_to_screen_name: tweet.in_reply_to_screen_name,
+              // Normalized at emit time (lowercased handle): the server does not
+              // run this example connector's identity normalizer, so the value
+              // must already be in canonical `x_handle` form to match the live
+              // X connector's people. Raw display name kept separately.
+              in_reply_to_screen_name: normalizeXHandle(
+                tweet.in_reply_to_screen_name
+              ),
+              in_reply_to_screen_name_raw: tweet.in_reply_to_screen_name,
             },
           },
         ];
@@ -316,7 +463,7 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
         const item = kind === "follower" ? record.follower : record.following;
         if (!item?.accountId && !item?.userLink) return [];
         const occurredAt = new Date("1970-01-02T00:00:00.000Z");
-        const handle = item.userLink?.match(/twitter\.com\/([^/?#]+)/)?.[1];
+        const handle = handleFromUserLink(item.userLink);
         return [
           {
             origin_id: stableId(`x_${kind}`, [item.accountId, item.userLink]),

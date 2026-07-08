@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review
+.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review owletto-mac owletto-mac-e2e
 
 # Default target
 help:
@@ -24,6 +24,8 @@ help:
 	@echo "  make e2e-browser [RESTART=1]               - Launch/reuse the stable 'owletto' Chrome harness (extension from this worktree) for Chrome e2e"
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
 	@echo "  make review [BASE=<branch>]                - Run local review (typecheck+unit+integration + Claude); posts pi-review status and PR comment"
+	@echo "  make owletto-mac [INSTALL=1] [OPEN=1]      - Build Owletto.app with the Developer ID identity (TCC grants match the notarized release); INSTALL=1 replaces /Applications/Owletto.app, OPEN=1 launches it"
+	@echo "  make owletto-mac-e2e [SKIP_BUILD=1]        - Build/install the signed Owletto.app then probe prod computer_use (permissions + list_windows) via the paired device connection"
 
 # Strict typecheck — mirrors the Dockerfile so local matches CI. Catches
 # what `build-packages` (relaxed, bundler-only) misses.
@@ -113,6 +115,20 @@ task-setup:
 task-clean:
 	@: $${NAME?Usage: make task-clean NAME=<name> [FORCE=1]}
 	@./scripts/task-clean.sh "$(NAME)" $$( [ "$(FORCE)" = "1" ] && echo --force )
+
+# Build the Owletto Mac app locally with the same Developer ID identity as the
+# mac-release CI, so TCC grants (Screen Recording, Accessibility) match the
+# notarized release instead of a default Apple Development build. Syncs the
+# owletto submodule first. INSTALL=1 replaces /Applications/Owletto.app; OPEN=1
+# launches it. See scripts/build-owletto-mac.sh header for details.
+owletto-mac:
+	@INSTALL="$(INSTALL)" OPEN="$(OPEN)" ./scripts/build-owletto-mac.sh
+
+# Build/install the signed Owletto.app then probe prod computer_use against the
+# paired device connection (permissions + list_windows). SKIP_BUILD=1 reuses the
+# already-installed /Applications/Owletto.app. See scripts/owletto-mac-e2e.sh.
+owletto-mac-e2e:
+	@SKIP_BUILD="$(SKIP_BUILD)" ./scripts/owletto-mac-e2e.sh
 
 # Reap task worktrees whose PR is already merged (worktree + branches + dev DB
 # + Lobu context). Dry-run by default — prints what it would remove; pass

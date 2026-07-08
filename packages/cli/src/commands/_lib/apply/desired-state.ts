@@ -189,6 +189,14 @@ export interface DesiredAuthProfile {
 export interface DesiredConnectorDefinition {
   /** Connector key — diff key (`null` until the server compiles a `.ts`). */
   key: string | null;
+  /**
+   * Best-effort static `definition.key` parsed from `sourceCode` WITHOUT a
+   * compile. Used only to widen the pre-diff schema-skip set so re-applying a
+   * local connector whose feed set changed doesn't validate the connection
+   * against the stale server schema. NOT used for diffing/pruning — `key`
+   * stays the authoritative (server-compiled) value there.
+   */
+  declaredKeyHint?: string;
   /** Local `.ts` path (absolute) — mutually exclusive with `sourceUrl`. */
   sourcePath?: string;
   /** Remote URL — mutually exclusive with `sourcePath`. */
@@ -740,6 +748,26 @@ interface LoadDesiredStateOptions {
  * compiled `definition.key`; reference it by its `defineConnector` class
  * (`connector: myConnector`) to make that match exact.
  */
+/**
+ * Best-effort extraction of a connector's static `definition.key` from its
+ * source WITHOUT compiling it. Connector keys are always plain string literals
+ * (the platform indexes on them statically), declared as the first `key:` in
+ * the `definition` object — e.g. `readonly definition: ConnectorDefinition = {
+ * key: "linkedin", ...`. Returns `null` when the shape can't be matched with
+ * confidence, preserving the prior null-key behavior (the server remains the
+ * authoritative source of the compiled key; this hint only affects which
+ * connectors the pre-diff pass treats as locally-declared).
+ */
+export function extractDeclaredConnectorKey(sourceCode: string): string | null {
+  // Anchor on the `definition` assignment so we don't pick up an unrelated
+  // earlier `key:` (feed keys are nested and come later, after this match).
+  const defIdx = sourceCode.search(/\bdefinition\b\s*(?::[^=]*)?=\s*\{/);
+  if (defIdx === -1) return null;
+  const after = sourceCode.slice(defIdx);
+  const keyMatch = after.match(/\bkey\s*:\s*(["'`])([^"'`]+)\1/);
+  return keyMatch?.[2] ?? null;
+}
+
 function resolveConnectorSources(
   sources: ConnectorSource[],
   cwd: string
@@ -788,7 +816,16 @@ function resolveConnectorSources(
       );
     }
     defs.push({
+      // `key` stays null: the server compiles the source and is the
+      // authoritative source of the real key, and null-ness gates the diff /
+      // prune logic (see diff.ts `hasUnnamedLocalDefs`). We keep a separate
+      // best-effort static hint (no compile) purely to widen the pre-diff
+      // schema-skip set — see `localConnectorKeyHints` in apply-cmd. Without it,
+      // re-applying a connector whose feed set changed (e.g. folding takeout
+      // feeds into `linkedin`) validates the connection against the STALE
+      // server schema and rejects the new feeds.
       key: null,
+      declaredKeyHint: extractDeclaredConnectorKey(sourceCode) ?? undefined,
       sourcePath: abs,
       sourceCode,
       sourceFile: rel.replace(/^\.\//, ""),

@@ -272,6 +272,12 @@ async function doRefreshCredentials(
   const creds = existing ?? (await loadCredentials(target.name));
   if (!creds) return null;
   if (!credentialCanRefresh(creds)) return creds;
+  // A still-valid access token must not be discarded just because it *could* be
+  // refreshed: if the refresh token is stale (400 invalid_grant), an eager
+  // refresh would collapse a live session to null, so `whoami` reports "Not
+  // logged in" while every reactive-refresh command still works. Only refresh
+  // when the token is actually near expiry — matching getAgentApiToken.
+  if (!credentialNeedsRefresh(creds)) return creds;
 
   const result = await attemptRefresh(target, creds);
   if (result) return result;

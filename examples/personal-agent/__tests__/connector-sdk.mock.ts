@@ -95,6 +95,14 @@ export function connectorSdkMock() {
     requireBearerClient: notUsed("requireBearerClient"),
     paginateByCursor,
     paginateByOffset,
+    // Generic identity namespaces (real values — connectors read IDENTITY.EMAIL
+    // at module load to declare cross-channel identity specs).
+    IDENTITY: {
+      PHONE: "phone",
+      EMAIL: "email",
+      EMAIL_DOMAIN: "email_domain",
+      AUTH_USER_ID: "auth_user_id",
+    },
     ConnectorRuntime: class {},
     calculateEngagementScore: () => 0,
     extensionDomScrape: async (opts: DomScrapeOpts) => {

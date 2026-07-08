@@ -22,6 +22,7 @@ import { FormatRegistry } from '@sinclair/typebox';
 import { TypeCompiler, type TypeCheck } from '@sinclair/typebox/compiler';
 import { Value } from '@sinclair/typebox/value';
 import { ToolUserError } from '../utils/errors';
+import { stripNul } from '../utils/strip-nul';
 
 // typebox's Value.Check FAILS (returns false) on any `format` constraint that
 // isn't registered — there is no permissive default. `manage_schedules` gates
@@ -73,9 +74,6 @@ function actionOf(variant: TSchema): string {
  *   (`before_occurred_at`) are Type.String; the list→page round trip must
  *   survive validation.
  */
-const stripNul = (str: string): string =>
-  str.indexOf('\u0000') === -1 ? str : str.replace(/\u0000/g, '');
-
 function normalizeArgs(value: unknown): unknown {
   // Postgres text columns and tsquery cannot contain NUL (0x00): a string
   // carrying one raises `invalid byte sequence for encoding "UTF8": 0x00`,

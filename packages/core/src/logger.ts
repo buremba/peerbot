@@ -101,7 +101,7 @@ function createConsoleLogger(serviceName: string): Logger {
     },
     info: (message: any, ...args: any[]) => {
       if (currentLevel >= 2)
-        console.log(formatMessage("info", message, ...args));
+        console.log(formatMessage("info", message, ...args)); // lgtm[js/clear-text-logging] formatMessage redacts sensitive object keys before writing info logs.
     },
     debug: (message: any, ...args: any[]) => {
       if (currentLevel >= 3)

@@ -22,55 +22,60 @@
  */
 
 import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  test,
-} from 'bun:test';
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	test,
+} from "bun:test";
 import {
-  ensureDbForGatewayTests,
-  resetTestDatabase,
-} from '../../gateway/__tests__/helpers/db-setup.js';
-import { orgContext } from '../stores/org-context';
+	ensureDbForGatewayTests,
+	resetTestDatabase,
+} from "../../gateway/__tests__/helpers/db-setup.js";
+import { orgContext } from "../stores/org-context";
 import {
-  authStash,
-  coreServicesStash,
-  installRouteTestMocks,
-} from './helpers/route-test-mocks';
+	buildRealClaudeAuthStack,
+	type RealClaudeAuthStack,
+} from "./helpers/real-claude-auth-stack";
 import {
-  buildRealClaudeAuthStack,
-  type RealClaudeAuthStack,
-} from './helpers/real-claude-auth-stack';
+	authStash,
+	coreServicesStash,
+	installRouteTestMocks,
+} from "./helpers/route-test-mocks";
 
 installRouteTestMocks();
 
 const TEST_ENCRYPTION_KEY =
-  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+	"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-const ORG = 'org-oauth';
-const USER = 'u1';
+const ORG = "org-oauth";
+const USER = "u1";
 const ORG_BUCKET = `__org_oauth__:${ORG}`;
 
-const EXPECTED_REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
+const EXPECTED_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
 
 const realFetch = globalThis.fetch;
 
 beforeAll(async () => {
-  await ensureDbForGatewayTests();
-  process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+	await ensureDbForGatewayTests();
+	process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
 }, 60_000);
 
 async function importAgentRoutes() {
-  const mod = await import('../agent-routes.js');
-  return mod.agentRoutes;
+	const mod = await import("../agent-routes.js");
+	return mod.agentRoutes;
 }
 
 async function seedOrg(): Promise<void> {
-  const { getDb } = await import('../../db/client.js');
-  const sql = getDb();
-  await sql`
+	const { getDb } = await import("../../db/client.js");
+	const sql = getDb();
+	await sql`
+    INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+    VALUES (${USER}, 'Test', 'u1@test', true, now(), now())
+    ON CONFLICT (id) DO NOTHING
+  `;
+	await sql`
     INSERT INTO organization (id, name, slug)
     VALUES (${ORG}, ${ORG}, ${ORG})
     ON CONFLICT (id) DO NOTHING
@@ -80,135 +85,199 @@ async function seedOrg(): Promise<void> {
 /** Captures the body POSTed to Anthropic's token endpoint, returns a fake
  *  token. Every other URL falls through to the real fetch. */
 function installTokenEndpointMock(captured: {
-  url?: string;
-  contentType?: string | null;
-  body?: string;
+	url?: string;
+	contentType?: string | null;
+	body?: string;
 }): void {
-  globalThis.fetch = (async (input: any, init?: any) => {
-    const url = typeof input === 'string' ? input : input.url;
-    if (url.includes('platform.claude.com') && url.includes('/oauth/token')) {
-      captured.url = url;
-      captured.contentType = init?.headers?.['Content-Type'] ?? null;
-      captured.body = typeof init?.body === 'string' ? init.body : '';
-      return new Response(
-        JSON.stringify({
-          access_token: 'sk-ant-oat01-test-access',
-          refresh_token: 'sk-ant-ort01-test-refresh',
-          token_type: 'Bearer',
-          expires_in: 28800,
-          scope: 'user:inference',
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } }
-      );
-    }
-    return realFetch(input, init);
-  }) as typeof fetch;
+	globalThis.fetch = (async (
+		input: Parameters<typeof fetch>[0],
+		init?: Parameters<typeof fetch>[1],
+	) => {
+			const url =
+				typeof input === "string"
+					? input
+					: input instanceof URL
+						? input.href
+						: input.url;
+			const parsedUrl = new URL(url);
+			if (
+				parsedUrl.hostname === "platform.claude.com" &&
+				parsedUrl.pathname === "/v1/oauth/token"
+			) {
+				captured.url = url;
+				captured.contentType = init?.headers?.["Content-Type"] ?? null;
+				captured.body = typeof init?.body === "string" ? init.body : "";
+			return new Response(
+				JSON.stringify({
+					access_token: "sk-ant-oat01-test-access",
+					refresh_token: "sk-ant-ort01-test-refresh",
+					token_type: "Bearer",
+					expires_in: 28800,
+					scope: "user:inference",
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}
+		return realFetch(input, init);
+	}) as typeof fetch;
 }
 
-describe('Org OAuth: redirect_uri matches between authorize and exchange', () => {
-  let stack: RealClaudeAuthStack;
+describe("Org OAuth: redirect_uri matches between authorize and exchange", () => {
+	let stack: RealClaudeAuthStack;
 
-  beforeEach(async () => {
-    await resetTestDatabase();
-    await seedOrg();
-    authStash.user = {
-      id: USER,
-      name: 'Test',
-      email: 'u1@test',
-      emailVerified: true,
-    };
-    authStash.organizationId = ORG;
-    authStash.authSource = 'session';
-    authStash.mcpAuthInfo = null;
+	beforeEach(async () => {
+		await resetTestDatabase();
+		await seedOrg();
+		authStash.user = {
+			id: USER,
+			name: "Test",
+			email: "u1@test",
+			emailVerified: true,
+		};
+		authStash.organizationId = ORG;
+		authStash.authSource = "session";
+		authStash.mcpAuthInfo = null;
 
-    stack = await orgContext.run({ organizationId: ORG }, () =>
-      buildRealClaudeAuthStack()
-    );
-    coreServicesStash.services = {
-      getOAuthStateStore: () => stack.oauthStateStore,
-      getAuthProfilesManager: () => stack.authProfilesManager,
-    };
-  });
+		stack = await orgContext.run({ organizationId: ORG }, () =>
+			buildRealClaudeAuthStack(),
+		);
+		coreServicesStash.services = {
+			getOAuthStateStore: () => stack.oauthStateStore,
+			getAuthProfilesManager: () => stack.authProfilesManager,
+		};
+	});
 
-  afterEach(async () => {
-    globalThis.fetch = realFetch;
-    coreServicesStash.services = null;
-    await stack?.shutdown();
-  });
+	afterEach(async () => {
+		globalThis.fetch = realFetch;
+		coreServicesStash.services = null;
+		await stack?.shutdown();
+	});
 
-  test('exchange reuses the authorize redirect_uri and stores to the org bucket', async () => {
-    const captured: {
-      url?: string;
-      contentType?: string | null;
-      body?: string;
-    } = {};
-    installTokenEndpointMock(captured);
+	test("exchange reuses the authorize redirect_uri and stores to the org bucket", async () => {
+		const captured: {
+			url?: string;
+			contentType?: string | null;
+			body?: string;
+		} = {};
+		installTokenEndpointMock(captured);
 
-    const app = await importAgentRoutes();
+		const app = await importAgentRoutes();
 
-    // 1. start → JSON { mode:'redirect', authorizeUrl }; pull redirect_uri + state.
-    const startRes = await app.request('/inference-providers/oauth/start', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ providerId: 'claude' }),
-    });
-    expect(startRes.status).toBe(200);
-    const startJson = (await startRes.json()) as {
-      mode: string;
-      authorizeUrl: string;
-    };
-    expect(startJson.mode).toBe('redirect');
-    const authorizeUrl = new URL(startJson.authorizeUrl);
-    const authorizeRedirectUri = authorizeUrl.searchParams.get('redirect_uri');
-    const state = authorizeUrl.searchParams.get('state');
-    expect(authorizeRedirectUri).toBe(EXPECTED_REDIRECT_URI);
-    expect(state).toBeTruthy();
-    // #3 extraAuthParams echo: the authorize URL carries `code=true`.
-    expect(authorizeUrl.searchParams.get('code')).toBe('true');
+		// 1. start → JSON { mode:'redirect', authorizeUrl }; pull redirect_uri + state.
+		const startRes = await app.request("/inference-providers/oauth/start", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ providerId: "claude" }),
+		});
+		expect(startRes.status).toBe(200);
+		const startJson = (await startRes.json()) as {
+			mode: string;
+			authorizeUrl: string;
+		};
+		expect(startJson.mode).toBe("redirect");
+		const authorizeUrl = new URL(startJson.authorizeUrl);
+		const authorizeRedirectUri = authorizeUrl.searchParams.get("redirect_uri");
+		const state = authorizeUrl.searchParams.get("state");
+		expect(authorizeRedirectUri).toBe(EXPECTED_REDIRECT_URI);
+		expect(state).toBeTruthy();
+		// #3 extraAuthParams echo: the authorize URL carries `code=true`.
+		expect(authorizeUrl.searchParams.get("code")).toBe("true");
 
-    // 2. complete with the pasted `code#state` → token exchange.
-    const completeRes = await app.request(
-      '/inference-providers/oauth/complete',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          providerId: 'claude',
-          code: `fake-auth-code#${state}`,
-        }),
-      }
-    );
-    expect(completeRes.status).toBe(200);
-    expect(await completeRes.json()).toEqual({ status: 'success' });
+		// 2. complete with the pasted `code#state` → token exchange.
+		const completeRes = await app.request(
+			"/inference-providers/oauth/complete",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					providerId: "claude",
+					code: `fake-auth-code#${state}`,
+				}),
+			},
+		);
+		expect(completeRes.status).toBe(200);
+		expect(await completeRes.json()).toEqual({ status: "success" });
 
-    // #1305: exchange must be form-encoded and carry the SAME redirect_uri.
-    expect(captured.contentType).toBe('application/x-www-form-urlencoded');
-    const exchangeParams = new URLSearchParams(captured.body ?? '');
-    expect(exchangeParams.get('redirect_uri')).toBe(authorizeRedirectUri);
-    expect(exchangeParams.get('redirect_uri')).toBe(EXPECTED_REDIRECT_URI);
+		// #1305: exchange must be form-encoded and carry the SAME redirect_uri.
+		expect(captured.contentType).toBe("application/x-www-form-urlencoded");
+		const exchangeParams = new URLSearchParams(captured.body ?? "");
+		expect(exchangeParams.get("redirect_uri")).toBe(authorizeRedirectUri);
+		expect(exchangeParams.get("redirect_uri")).toBe(EXPECTED_REDIRECT_URI);
 
-    // Persisted via the REAL AuthProfilesManager to the ORG BUCKET.
-    const stored = await orgContext.run({ organizationId: ORG }, () =>
-      stack.authProfilesManager.getProviderProfiles(ORG_BUCKET, 'claude', USER)
-    );
-    expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatchObject({ provider: 'claude', authType: 'oauth' });
-    expect(stored[0]?.credential).toBe('sk-ant-oat01-test-access');
-  });
+		// Persisted via the REAL AuthProfilesManager to the ORG BUCKET.
+		const stored = await orgContext.run({ organizationId: ORG }, () =>
+			stack.authProfilesManager.getProviderProfiles(ORG_BUCKET, "claude", USER),
+		);
+		expect(stored).toHaveLength(1);
+		expect(stored[0]).toMatchObject({ provider: "claude", authType: "oauth" });
+		expect(stored[0]?.credential).toBe("sk-ant-oat01-test-access");
 
-  test('headless (non-session) start hard-fails with a clear message', async () => {
-    authStash.authSource = 'pat';
-    authStash.mcpAuthInfo = { scopes: ['mcp:admin'] };
+		const { listInferenceProviders, resolveInferenceProviderConfig } =
+			await import("../stores/provider-secrets");
+		const providers = await listInferenceProviders(ORG);
+		expect(providers).toHaveLength(1);
+		expect(providers[0]).toMatchObject({
+			slug: "claude",
+			kind: "claude",
+			displayName: "Claude",
+			status: "active",
+		});
+		expect(
+			await resolveInferenceProviderConfig(ORG, "claude", "text"),
+		).toBeNull();
 
-    const app = await importAgentRoutes();
-    const res = await app.request('/inference-providers/oauth/start', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ providerId: 'claude' }),
-    });
-    expect(res.status).toBe(403);
-    expect((await res.json()) as { error: string }).toEqual({
-      error: 'OAuth providers require interactive sign-in',
-    });
-  });
+		const { getDb } = await import("../../db/client.js");
+		const sql = getDb();
+		await sql`
+      UPDATE inference_providers
+      SET deleted_at = now()
+      WHERE organization_id = ${ORG} AND slug = 'claude'
+    `;
+		const repairedRes = await app.request("/inference-providers");
+		expect(repairedRes.status).toBe(200);
+		const repaired = (await repairedRes.json()) as {
+			providers: Array<{
+				slug: string;
+				kind: string;
+				displayName: string | null;
+			}>;
+		};
+		expect(repaired.providers).toHaveLength(1);
+		expect(repaired.providers[0]).toMatchObject({
+			slug: "claude",
+			kind: "claude",
+			displayName: "Claude",
+		});
+
+		const deleteRes = await app.request("/inference-providers/claude", {
+			method: "DELETE",
+		});
+		expect(deleteRes.status).toBe(200);
+		const afterDeleteRes = await app.request("/inference-providers");
+		expect(afterDeleteRes.status).toBe(200);
+		const afterDelete = (await afterDeleteRes.json()) as {
+			providers: Array<{ slug: string }>;
+		};
+		expect(afterDelete.providers).toHaveLength(0);
+		const removedProfiles = await orgContext.run({ organizationId: ORG }, () =>
+			stack.authProfilesManager.getProviderProfiles(ORG_BUCKET, "claude", USER),
+		);
+		expect(removedProfiles).toHaveLength(0);
+	});
+
+	test("headless (non-session) start hard-fails with a clear message", async () => {
+		authStash.authSource = "pat";
+		authStash.mcpAuthInfo = { scopes: ["mcp:admin"] };
+
+		const app = await importAgentRoutes();
+		const res = await app.request("/inference-providers/oauth/start", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ providerId: "claude" }),
+		});
+		expect(res.status).toBe(403);
+		expect((await res.json()) as { error: string }).toEqual({
+			error: "OAuth providers require interactive sign-in",
+		});
+	});
 });

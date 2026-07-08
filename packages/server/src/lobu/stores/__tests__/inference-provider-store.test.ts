@@ -12,6 +12,7 @@ import {
 } from '../../../__tests__/setup/test-db';
 import {
   createInferenceProvider,
+  ensureOAuthInferenceProvider,
   getInferenceProviderBySlug,
   getOrgDefaultModel,
   listInferenceProviders,
@@ -125,6 +126,38 @@ describe('inference-provider store', () => {
       apiKey: 'k2',
     });
     expect(second).toEqual({ error: 'slug_conflict', slug: 'groq' });
+  });
+
+  it('repairs an existing same-slug secret row when OAuth signs in', async () => {
+    const legacy = await createInferenceProvider({
+      organizationId: ORG,
+      slug: 'claude',
+      kind: 'claude',
+      displayName: 'Legacy Claude',
+      apiKey: 'sk-old',
+      capabilities: {
+        text: { base_url: 'https://tenant.example.com/v1', model: 'claude-x' },
+      },
+    });
+    if ('error' in legacy) throw new Error('expected legacy create to succeed');
+
+    const repaired = await ensureOAuthInferenceProvider({
+      organizationId: ORG,
+      slug: 'claude',
+      kind: 'claude',
+      displayName: 'Claude',
+      createdBy: 'user-1',
+    });
+
+    expect(repaired.id).toBe(legacy.id);
+    expect(repaired.apiKeyRef).toBe(`oauth://${ORG}/claude-${legacy.id}`);
+    expect(repaired.displayName).toBe('Claude');
+    expect(repaired.capabilities).toEqual({});
+    expect(repaired.hasCustomUpstream).toBe(false);
+    expect(await readKey(ORG, 'claude')).toBeNull();
+
+    const listed = await getInferenceProviderBySlug(ORG, 'claude');
+    expect(listed?.apiKeyRef).toBe(repaired.apiKeyRef);
   });
 
   it('returns null when updating capabilities for a missing slug', async () => {

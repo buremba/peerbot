@@ -122,7 +122,7 @@ fi
 
 # shellcheck source=scripts/lib/herdr-task.sh
 . "$script_dir/lib/herdr-task.sh"
-if herdr_task_close "$worktree_dir"; then
+if herdr_task_close "$worktree_dir" "$name"; then
   echo "→ closed Herdr workspace for $worktree_dir"
 fi
 

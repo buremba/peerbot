@@ -586,12 +586,20 @@ export function validateConnectorState(
 }
 
 // Connector keys declared locally (`*.connector.ts` / `type: connector`).
-// We don't know the key for an auto-discovered `*.connector.ts` until the
-// server compiles it — those have `key === null` — so they can't be in the
-// skip set; their connections are validated only after install (when the key
-// is known and the def is in the refreshed catalog).
+// A `type: connector` doc carries a resolved `key`; a `connectorFromFile()`
+// source has `key === null` (the server compiles it) but a best-effort
+// `declaredKeyHint` parsed statically from the source. Both belong in the
+// schema-skip set: a connection referencing a locally-supplied connector must
+// be validated against the FRESHLY-uploaded definition (post-install), not the
+// stale server schema — otherwise re-applying a connector whose feed set
+// changed rejects the new feeds. The hint only widens this skip set; the
+// authoritative key still comes from the server at install time.
 export function locallyDeclaredConnectorKeys(state: DesiredState): Set<string> {
-  return declaredConnectorKeys(state.connectors.definitions);
+  const keys = declaredConnectorKeys(state.connectors.definitions);
+  for (const def of state.connectors.definitions) {
+    if (def.declaredKeyHint) keys.add(def.declaredKeyHint);
+  }
+  return keys;
 }
 
 // ── Apply executor ─────────────────────────────────────────────────────────

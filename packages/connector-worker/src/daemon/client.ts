@@ -140,6 +140,7 @@ export interface ContentItem {
 export interface StreamBatch {
   type: 'batch';
   run_id: number;
+  worker_id: string;
   items: ContentItem[];
   checkpoint?: Record<string, unknown>;
 }

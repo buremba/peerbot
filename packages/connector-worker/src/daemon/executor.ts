@@ -185,6 +185,7 @@ async function executeSyncRun(
         await client.stream({
           type: 'batch',
           run_id,
+          worker_id: client.id,
           items: batch,
           checkpoint: lastCheckpoint ?? undefined,
         });
@@ -226,6 +227,7 @@ async function executeSyncRun(
             await client.stream({
               type: 'batch',
               run_id,
+              worker_id: client.id,
               items: [],
               checkpoint: lastCheckpoint,
             });

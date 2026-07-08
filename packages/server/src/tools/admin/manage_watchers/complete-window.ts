@@ -12,10 +12,14 @@ import { ToolUserError } from '../../../utils/errors';
 import { verifyWindowToken } from '../../../utils/jwt';
 import logger from '../../../utils/logger';
 import {
+  type BlockedCreateProposal,
   type BlockedFieldProposal,
   promoteKeyedEntities,
 } from '../../../utils/promote-keyed-entities';
-import { proposeEntityFieldChange } from '../entity-field-approval';
+import {
+  proposeEntityCreate,
+  proposeEntityFieldChange,
+} from '../entity-field-approval';
 import { ensureCanvasEntity, findCanvasHead } from '../../../utils/canvas-events';
 import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
@@ -351,6 +355,8 @@ export async function handleCompleteWindow(
   // Owned-field changes a watcher proposed but couldn't apply; surfaced out of the
   // transaction and turned into approval cards once the window commits.
   let blockedProposals: BlockedFieldProposal[] = [];
+  // Creates held by org policy (create_mode='approval') — same post-commit path.
+  let blockedCreates: BlockedCreateProposal[] = [];
   const result = await sql.begin(async (tx) => {
     // ============================================
     // STEP 7: Canvas-on-events write — THE window storage.
@@ -538,6 +544,7 @@ export async function handleCompleteWindow(
       // Owned-field changes the watcher couldn't apply — queue an approval for each
       // AFTER the window transaction commits (an approval must not ride the tx).
       blockedProposals = promote.blocked;
+      blockedCreates = promote.blockedCreates;
     }
 
     // ============================================
@@ -633,6 +640,30 @@ export async function handleCompleteWindow(
       logger.error(
         { err, watcherId, entityId: b.entityId },
         '[complete-window] failed to queue entity_field_change approval'
+      )
+    );
+  }
+  for (const c of blockedCreates) {
+    await proposeEntityCreate(ctx, {
+      entity_data: {
+        entity_type: c.entityTypeSlug,
+        name: c.name,
+        parent_id: c.parentEntityId,
+        metadata: c.metadata,
+      },
+      proposal: {
+        entity_type: c.entityTypeSlug,
+        name: c.name,
+        parent_id: c.parentEntityId,
+        metadata: c.metadata,
+      },
+      watcher_id: Number(watcherId),
+      attribution: 'watcher',
+      reason: `A watcher proposes creating ${c.entityTypeSlug} "${c.name}".`,
+    }).catch((err) =>
+      logger.error(
+        { err, watcherId, entityType: c.entityTypeSlug, name: c.name },
+        '[complete-window] failed to queue entity create approval'
       )
     );
   }

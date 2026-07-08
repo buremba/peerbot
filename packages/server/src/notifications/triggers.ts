@@ -39,10 +39,23 @@ type ActionApprovalDetails =
 	| FieldChangeApprovalDetails
 	| EntityChangeApprovalDetails;
 
+/**
+ * Escape user/agent-controlled text before it lands in Slack mrkdwn (and the
+ * in-app Markdown body — both render HTML entities). Without this, a proposed
+ * field value containing `<!channel>` pings the room from inside a trusted
+ * approval card, and `<https://evil|Review in Lobu>` spoofs the review link.
+ */
+function escapeNotificationText(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+}
+
 function displayNotificationValue(value: unknown): string {
 	if (value === undefined || value === null || value === "") return "Not set";
-	if (typeof value === "string") return value;
-	return JSON.stringify(value, null, 2);
+	if (typeof value === "string") return escapeNotificationText(value);
+	return escapeNotificationText(JSON.stringify(value, null, 2));
 }
 
 function truncateNotificationLine(value: string): string {
@@ -82,16 +95,17 @@ function formatReviewLink(url: string): string {
 }
 
 function formatEntityLink(details: FieldChangeApprovalDetails): string | null {
-	const label =
+	const label = escapeNotificationText(
 		details.entityName ??
-		(details.entityType ? formatLabel(details.entityType) : "Entity");
+			(details.entityType ? formatLabel(details.entityType) : "Entity"),
+	);
 	if (details.entityUrl) return `[${label}](${details.entityUrl})`;
 	if (details.entityId) return `${label} (#${details.entityId})`;
-	return details.entityName ?? null;
+	return details.entityName ? label : null;
 }
 
 function formatCardLink(label: string, url: string): string {
-	return `<${url}|${label.replace(/[<>|]/g, "")}>`;
+	return `<${url}|${escapeNotificationText(label.replace(/[<>|]/g, ""))}>`;
 }
 
 function compactDiffLine(
@@ -108,10 +122,14 @@ function compactDiffLine(
 }
 
 function formatWhyApprovalNeeded(reason: string | null | undefined): string {
+	// Neutral fallback: this card also fires for org-policy gates (admin said
+	// "updates need approval"), not only the human-owned-field guard.
 	const fallback =
-		"A watcher wants to update a human-owned field, so Lobu is asking before overwriting it.";
+		"This change needs a human approval before it is applied.";
 	if (!reason) return fallback;
-	return reason.replace(/^Watcher proposes updating /i, "Field is protected: ");
+	return escapeNotificationText(
+		reason.replace(/^Watcher proposes updating /i, "Field is protected: "),
+	);
 }
 
 function formatActionApprovalTitle(
@@ -140,7 +158,8 @@ function formatActionApprovalBody(params: {
 	if (params.details?.kind === "entity_field_change") {
 		const details = params.details;
 		const lines: string[] = [];
-		if (details.actorLabel) lines.push(`Requested by: ${details.actorLabel}`);
+		if (details.actorLabel)
+			lines.push(`Requested by: ${escapeNotificationText(details.actorLabel)}`);
 		const entityLink = formatEntityLink(details);
 		if (entityLink) lines.push(`Entity: ${entityLink}`);
 
@@ -164,7 +183,8 @@ function formatActionApprovalBody(params: {
 	if (params.details?.kind === "entity_change") {
 		const details = params.details;
 		const lines: string[] = [];
-		if (details.actorLabel) lines.push(`Requested by: ${details.actorLabel}`);
+		if (details.actorLabel)
+			lines.push(`Requested by: ${escapeNotificationText(details.actorLabel)}`);
 		const entityLink = formatEntityLink({
 			kind: "entity_field_change",
 			actorLabel: details.actorLabel,
@@ -190,7 +210,10 @@ function formatActionApprovalBody(params: {
 			}
 		}
 		if (details.reason)
-			lines.push("", `Why approval is needed: ${details.reason}`);
+			lines.push(
+				"",
+				`Why approval is needed: ${escapeNotificationText(details.reason)}`,
+			);
 		if (params.approvalUrl) {
 			lines.push("", `Review: ${formatReviewLink(params.approvalUrl)}`);
 		}
@@ -216,11 +239,12 @@ function buildActionApprovalCard(params: {
 		return undefined;
 	const details = params.details;
 	const lines: string[] = [];
-	if (details.actorLabel) lines.push(`*Requested by:* ${details.actorLabel}`);
+	if (details.actorLabel)
+		lines.push(`*Requested by:* ${escapeNotificationText(details.actorLabel)}`);
 	if (details.entityName) {
 		const entityLabel = details.entityUrl
 			? formatCardLink(details.entityName, details.entityUrl)
-			: details.entityName;
+			: escapeNotificationText(details.entityName);
 		lines.push(`*Entity:* ${entityLabel}`);
 	}
 
@@ -253,7 +277,7 @@ function buildActionApprovalCard(params: {
 			`*Why approval is needed:* ${
 				details.kind === "entity_field_change"
 					? formatWhyApprovalNeeded(details.reason)
-					: details.reason
+					: escapeNotificationText(details.reason ?? "")
 			}`,
 		);
 	}

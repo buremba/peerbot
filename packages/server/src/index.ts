@@ -31,7 +31,7 @@ import {
 	listEntityApprovalPolicies,
 	upsertEntityApprovalPolicy,
 	upsertGlobalEntityApprovalPolicy,
-} from "./authz/entity-approval-policy";
+} from "./authz/entity-policy";
 import { globalCatalogRoutes, orgInstalledRoutes } from "./catalog/routes";
 import { connectionTokenRoutes } from "./connect/connection-token-route";
 import { connectRoutes } from "./connect/routes";
@@ -1279,6 +1279,7 @@ function serializeEntityApprovalPolicy(
 		organization_id: policy.organizationId,
 		entity_type_slug: policy.entityTypeSlug,
 		field_path: policy.fieldPath,
+		entity_id: policy.entityId,
 		create_mode: policy.createMode,
 		update_mode: policy.updateMode,
 		delete_mode: policy.deleteMode,
@@ -1466,6 +1467,10 @@ app.patch("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 		typeof body.field_path === "string" && body.field_path.trim()
 			? body.field_path.trim()
 			: null;
+	const entityId =
+		typeof body.entity_id === "number" && Number.isInteger(body.entity_id)
+			? body.entity_id
+			: null;
 
 	if (fieldPath && !entityTypeSlug) {
 		return c.json(
@@ -1476,10 +1481,29 @@ app.patch("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 			400,
 		);
 	}
+	if (entityId !== null) {
+		const entityRows = await getDb()<{ id: number }>`
+      SELECT id FROM entities
+      WHERE id = ${entityId}
+        AND organization_id = ${organizationId}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `;
+		if (!entityRows[0]) {
+			return c.json(
+				{
+					error: "invalid_request",
+					message: "Entity not found in this workspace.",
+				},
+				400,
+			);
+		}
+	}
 
 	const policyInput = {
 		entityTypeSlug,
 		fieldPath,
+		entityId,
 		createMode,
 		updateMode,
 		deleteMode,
@@ -1489,7 +1513,7 @@ app.patch("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 		approvalChannelName,
 	};
 	const policy =
-		entityTypeSlug || fieldPath
+		entityTypeSlug || fieldPath || entityId !== null
 			? await upsertEntityApprovalPolicy(organizationId, policyInput)
 			: await upsertGlobalEntityApprovalPolicy(organizationId, policyInput);
 
@@ -1509,7 +1533,10 @@ app.delete("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 	}
 	const entityTypeSlug = c.req.query("entity_type_slug")?.trim() || null;
 	const fieldPath = c.req.query("field_path")?.trim() || null;
-	if (!entityTypeSlug && !fieldPath) {
+	const entityIdRaw = c.req.query("entity_id")?.trim();
+	const entityId =
+		entityIdRaw && /^\d+$/.test(entityIdRaw) ? Number(entityIdRaw) : null;
+	if (!entityTypeSlug && !fieldPath && entityId === null) {
 		return c.json(
 			{
 				error: "invalid_request",
@@ -1531,6 +1558,7 @@ app.delete("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 		organizationId,
 		entityTypeSlug,
 		fieldPath,
+		entityId,
 	});
 	invalidationEmitter.emit(organizationId, {
 		keys: ["entity-approval-policy"],

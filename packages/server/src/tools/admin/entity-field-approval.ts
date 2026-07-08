@@ -13,7 +13,7 @@
  * `supersedeActionEvent`.
  */
 
-import { resolveEntityApprovalPolicy } from "../../authz/entity-approval-policy";
+import { resolveEntityApprovalPolicy } from "../../authz/entity-policy";
 import { getDb } from "../../db/client";
 import type { Env } from "../../index";
 import { notifyActionApprovalNeeded } from "../../notifications/triggers";
@@ -28,6 +28,7 @@ import {
 } from "../../utils/entity-management";
 import { insertEvent } from "../../utils/insert-event";
 import logger from "../../utils/logger";
+import { isUniqueViolation } from "../../utils/pg-errors";
 import {
 	buildEntityUrl,
 	buildResourcePermalink,
@@ -244,10 +245,12 @@ export async function proposeEntityChange(
 			: ENTITY_CHANGE_ACTION_KEY;
 
 	// Idempotency: complete_window is replay-safe (retries + concurrent replicas),
-	// so the same blocked field-change can be proposed more than once. Collapse to a
-	// single pending approval — if an identical pending run already exists for this
-	// org+entity+proposed-fields, reuse it instead of stacking duplicate cards.
-	const existing = await sql<{ id: number; event_id: number | null }>`
+	// so the same blocked change can be proposed more than once. Collapse to a
+	// single pending approval — if an equivalent pending run already exists for
+	// this org+entity+proposal, reuse it instead of stacking duplicate cards.
+	// (Deletes match on force_delete_tree too: force and non-force are different
+	// asks and must not affirm each other.)
+	const findExisting = () => sql<{ id: number; event_id: number | null }>`
     SELECT r.id,
            (SELECT e.id FROM events e
               WHERE e.run_id = r.id
@@ -266,31 +269,54 @@ export async function proposeEntityChange(
 	        OR r.action_input->'fields' = ${sql.json(updateProposal?.fields ?? {})}::jsonb
 	      )
 	      AND (
+	        ${operation !== "delete"}
+	        OR COALESCE((r.action_input->>'force_delete_tree')::boolean, false) = ${deleteProposal?.force_delete_tree ?? false}
+	      )
+	      AND (
 	        ${operation !== "create"}
 	        OR r.action_input->'entity_data' = ${sql.json(createProposal?.entity_data ?? {})}::jsonb
 	      )
 	    ORDER BY r.id DESC
     LIMIT 1
   `;
-	if (existing.length > 0) {
-		const runId = Number(existing[0].id);
-		const eventId =
-			existing[0].event_id != null ? Number(existing[0].event_id) : 0;
-		return { runId, eventId };
-	}
+	const dedupeHit = async (row: { id: number; event_id: number | null }) => {
+		const runId = Number(row.id);
+		const eventId = row.event_id != null ? Number(row.event_id) : 0;
+		const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
+		const approvalUrl = buildResourcePermalink(
+			ownerSlug,
+			{ kind: "run", runId },
+			baseUrl,
+		);
+		return { runId, eventId, approvalUrl };
+	};
+	const existing = await findExisting();
+	if (existing.length > 0) return dedupeHit(existing[0]);
 
-	const inserted = await sql`
-    INSERT INTO runs (
-      organization_id, run_type, action_key, action_input,
-      created_by_user_id, approval_status, status, created_at
-    ) VALUES (
-      ${ctx.organizationId}, 'internal', ${actionKey},
-      ${sql.json(proposal as unknown as Record<string, unknown>)},
-      null, 'pending', 'pending', current_timestamp
-    )
-    RETURNING id
-  `;
-	const runId = Number((inserted[0] as { id: unknown }).id);
+	let runId: number;
+	try {
+		const inserted = await sql`
+      INSERT INTO runs (
+        organization_id, run_type, action_key, action_input,
+        created_by_user_id, approval_status, status, created_at
+      ) VALUES (
+        ${ctx.organizationId}, 'internal', ${actionKey},
+        ${sql.json(proposal as unknown as Record<string, unknown>)},
+        null, 'pending', 'pending', current_timestamp
+      )
+      RETURNING id
+    `;
+		runId = Number((inserted[0] as { id: unknown }).id);
+	} catch (err) {
+		// Two replicas raced the SELECT above with a byte-identical proposal — the
+		// partial unique index (runs_entity_change_pending_dedupe) made one lose.
+		// Resolve to the winner's pending run instead of stacking a duplicate card.
+		if (isUniqueViolation(err, "runs_entity_change_pending_dedupe")) {
+			const winner = await findExisting();
+			if (winner.length > 0) return dedupeHit(winner[0]);
+		}
+		throw err;
+	}
 
 	const fieldKeys = updateProposal ? Object.keys(updateProposal.fields) : [];
 	const fieldList = fieldKeys.join(", ");
@@ -406,10 +432,18 @@ export async function proposeEntityChange(
 					baseUrl,
 				)
 			: undefined;
+	// A single-field update can match a field-scoped delivery target; a
+	// multi-field one falls back to the entity/type/global row rather than
+	// arbitrarily routing by the first field.
 	const approvalPolicy = await resolveEntityApprovalPolicy({
 		organizationId: ctx.organizationId,
 		entityTypeSlug: entityType ?? null,
-		fieldPath: updateProposal ? (fieldKeys[0] ?? null) : null,
+		entityId:
+			"entity_id" in proposal && typeof proposal.entity_id === "number"
+				? proposal.entity_id
+				: null,
+		fieldPath:
+			updateProposal && fieldKeys.length === 1 ? (fieldKeys[0] ?? null) : null,
 	});
 	const deliveryTarget = approvalPolicy.deliveryTarget;
 
@@ -463,28 +497,107 @@ export async function proposeEntityChange(
 	return { runId, eventId, approvalUrl };
 }
 
+/** Reserved $-prefixed proposal keys that map to entity ATTRIBUTES, not metadata. */
+const ATTRIBUTE_FIELD_KEYS = new Set(["$name", "$parent_id", "$content"]);
+
 /**
- * Apply an approved field-change proposal. The approver endorsed the value, so it
- * is written AND marked human-owned (now carrying the approved value) via
- * mergeEntityFields(source='human').
+ * Apply an approved field-change proposal. The approver endorsed the value, so
+ * metadata fields are written AND marked human-owned via
+ * mergeEntityFields(source='human'). Reserved $-attribute keys ($name,
+ * $parent_id, $content) write the entity attribute directly — with the same
+ * staleness guard: an attribute a human changed after the proposal was queued
+ * is left alone.
  */
 export async function applyEntityFieldChangeProposal(
 	proposal: EntityFieldChangeProposal,
 	approverUserId: string | null,
 ): Promise<FieldMergeResult> {
 	const sql = getDb();
-	return await sql.begin(async (tx) =>
-		mergeEntityFields({
-			tx,
-			entityId: proposal.entity_id,
-			fields: proposal.fields,
-			source: "human",
-			actorId: approverUserId,
-			note: proposal.reason ?? null,
-			// Don't overwrite a field the human re-edited after this proposal was queued.
-			expectedCurrent: proposal.current ?? null,
-		}),
+	const metadataFields = Object.fromEntries(
+		Object.entries(proposal.fields).filter(
+			([key]) => !ATTRIBUTE_FIELD_KEYS.has(key),
+		),
 	);
+	const attributeFields = Object.fromEntries(
+		Object.entries(proposal.fields).filter(([key]) =>
+			ATTRIBUTE_FIELD_KEYS.has(key),
+		),
+	);
+	return await sql.begin(async (tx) => {
+		const merge =
+			Object.keys(metadataFields).length > 0
+				? await mergeEntityFields({
+						tx,
+						entityId: proposal.entity_id,
+						fields: metadataFields,
+						source: "human",
+						actorId: approverUserId,
+						note: proposal.reason ?? null,
+						// Don't overwrite a field the human re-edited after this proposal was queued.
+						expectedCurrent: proposal.current ?? null,
+					})
+				: ({
+						changed: false,
+						applied: {},
+						blocked: {},
+						stale: {},
+						affirmed: [],
+						nextMetadata: {},
+						nextControls: {},
+					} satisfies FieldMergeResult);
+		if (Object.keys(attributeFields).length > 0) {
+			const rows = await tx<{
+				name: string | null;
+				parent_id: number | null;
+				content: string | null;
+			}>`
+        SELECT name, parent_id, content FROM entities
+        WHERE id = ${proposal.entity_id} AND deleted_at IS NULL
+        FOR UPDATE
+      `;
+			if (rows.length === 0) {
+				throw new Error(`Entity ${proposal.entity_id} not found`);
+			}
+			const live = {
+				$name: rows[0].name ?? null,
+				$parent_id: rows[0].parent_id == null ? null : Number(rows[0].parent_id),
+				$content: rows[0].content ?? null,
+			} as Record<string, unknown>;
+			const apply: Record<string, unknown> = {};
+			for (const [key, proposed] of Object.entries(attributeFields)) {
+				const expected = proposal.current?.[key];
+				if (
+					proposal.current &&
+					Object.hasOwn(proposal.current, key) &&
+					JSON.stringify(live[key] ?? null) !== JSON.stringify(expected ?? null)
+				) {
+					merge.stale[key] = { expected: expected ?? null, live: live[key] ?? null };
+					continue;
+				}
+				apply[key] = proposed;
+				merge.applied[key] = { old: live[key] ?? null, new: proposed };
+			}
+			if (Object.keys(apply).length > 0) {
+				const nextName =
+					"$name" in apply ? String(apply.$name ?? "") || null : null;
+				await tx`
+          UPDATE entities SET
+            name = COALESCE(${nextName}, name),
+            parent_id = CASE WHEN ${"$parent_id" in apply} THEN ${
+							("$parent_id" in apply ? apply.$parent_id : null) as
+								| number
+								| null
+						}::bigint ELSE parent_id END,
+            content = CASE WHEN ${"$content" in apply} THEN ${
+							("$content" in apply ? (apply.$content as string | null) : null)
+						} ELSE content END,
+            updated_at = current_timestamp
+          WHERE id = ${proposal.entity_id} AND deleted_at IS NULL
+        `;
+			}
+		}
+		return merge;
+	});
 }
 
 export async function applyEntityChangeProposal(

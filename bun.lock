@@ -356,7 +356,6 @@
         "@aws-sdk/client-bedrock": "^3.1028.0",
         "@aws-sdk/client-secrets-manager": "^3.1028.0",
         "@better-auth/passkey": "^1.6.9",
-        "@cedar-policy/cedar-wasm": "^4.11.2",
         "@chat-adapter/discord": "4.26.0",
         "@chat-adapter/gchat": "4.26.0",
         "@chat-adapter/slack": "4.26.0",
@@ -607,8 +606,6 @@
     "@captchafox/react": ["@captchafox/react@1.12.0", "", { "dependencies": { "@captchafox/types": "^1.4.0" }, "peerDependencies": { "react": ">=16.8.0", "react-dom": ">=16.8.0" } }, "sha512-ALJWVvSBL3H16KMrGg3exO6EufI32zY63LBB0UC0l7jW+Ynz832tG7wwg0PbDWNle0CiN35DAfxDzH/29sDp3g=="],
 
     "@captchafox/types": ["@captchafox/types@1.5.0", "", {}, "sha512-uReDnNoAarRjhbxC0w4hEueKLCx8w22dv+XqzDjR4rUFo3fCj8Dh3A6D27OFAYlfSr/nwomDatAxz7ixwJ5y5w=="],
-
-    "@cedar-policy/cedar-wasm": ["@cedar-policy/cedar-wasm@4.11.2", "", {}, "sha512-WirTj7pAQnP2fRAuJ5OLIl4VmQiUiyGgHku+eNTSXm9LJHMU/v14vHz6nEcxAQjR6oXtm21zRsHEBIbWP9TJ5A=="],
 
     "@chat-adapter/discord": ["@chat-adapter/discord@4.26.0", "", { "dependencies": { "@chat-adapter/shared": "4.26.0", "chat": "4.26.0", "discord-api-types": "^0.37.119", "discord-interactions": "^4.4.0", "discord.js": "^14.25.1" } }, "sha512-p0Xm/aPjHP9z87/tXtHz0KFmbUcu7SGPQAAlT8mrKRX49jO77Tognj/5poSmV1XQ1C4BLfxpPvTQlLNK/5omkw=="],
 

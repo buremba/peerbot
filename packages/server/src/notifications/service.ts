@@ -156,11 +156,30 @@ async function deliverToBotConnections(
 	const content = params.card ? { card: params.card } : { markdown: text };
 
 	try {
-		const targets = await resolveBotDeliveryTargets(params.organizationId, {
+		let targets = await resolveBotDeliveryTargets(params.organizationId, {
 			connectionId: params.connectionId,
 			channelId: params.channelId,
 			teamId: params.teamId,
 		});
+		// A configured target that no longer resolves (channel unbound, connection
+		// removed, team drifted) must not silently swallow the notification — the
+		// admin explicitly asked for Slack review. Fall back to org-wide delivery
+		// and say so, instead of nothing arriving anywhere.
+		if (
+			targets.length === 0 &&
+			(params.connectionId || params.channelId || params.teamId)
+		) {
+			logger.warn(
+				{
+					organizationId: params.organizationId,
+					connectionId: params.connectionId,
+					channelId: params.channelId,
+					teamId: params.teamId,
+				},
+				"[Notifications] Configured delivery target resolved to no bound channels — falling back to org-wide delivery",
+			);
+			targets = await resolveBotDeliveryTargets(params.organizationId, null);
+		}
 		if (targets.length === 0) return;
 
 		await Promise.allSettled(

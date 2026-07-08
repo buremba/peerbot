@@ -1,6 +1,7 @@
 import { createLogger } from "@lobu/core";
 import { Actions, Button, Card, CardText, LinkButton } from "chat";
 import { getDb, pgTextArray } from "../../db/client.js";
+import type { Env } from "../../index.js";
 import { ENTITY_CHANGE_ACTION_KEYS } from "../../tools/admin/entity-field-approval.js";
 import { manageOperations } from "../../tools/admin/manage_operations.js";
 import type { ToolContext } from "../../tools/registry.js";
@@ -151,21 +152,26 @@ async function resolveSlackActionReviewer(params: {
 async function resolveEntityApprovalRun(
 	runId: number,
 	organizationId: string,
-): Promise<boolean> {
+): Promise<"pending" | "approved" | "rejected" | "not_found"> {
 	const actionKeys = pgTextArray([...ENTITY_CHANGE_ACTION_KEYS]);
 	const rows = await getDb()<{
 		id: number;
+		approval_status: string | null;
 	}>`
-    SELECT id
+    SELECT id, approval_status
     FROM runs
     WHERE id = ${runId}
       AND organization_id = ${organizationId}
       AND run_type = 'internal'
       AND action_key = ANY(${actionKeys}::text[])
-      AND approval_status = 'pending'
     LIMIT 1
   `;
-	return rows.length === 1;
+	if (rows.length !== 1) return "not_found";
+	const status = rows[0].approval_status;
+	if (status === "pending") return "pending";
+	if (status === "approved") return "approved";
+	if (status === "rejected") return "rejected";
+	return "not_found";
 }
 
 /**
@@ -738,15 +744,22 @@ export function registerActionHandlers(
 			const organizationId = connection.organizationId;
 			if (!Number.isFinite(runId) || !decision || !organizationId) return;
 
-			const isEntityApproval = await resolveEntityApprovalRun(
+			const runState = await resolveEntityApprovalRun(
 				runId,
 				organizationId,
-			).catch(() => false);
-			if (!isEntityApproval) {
+			).catch(() => "not_found" as const);
+			if (runState !== "pending") {
+				// Distinguish "already decided" (double-click, stale card, webhook
+				// retry) from "not an entity approval in this org" — the old single
+				// message blamed Slack support for both.
+				const message =
+					runState === "approved"
+						? "This change was already approved."
+						: runState === "rejected"
+							? "This change was already rejected."
+							: "This approval can’t be completed from Slack yet. Use the Review in Lobu link.";
 				try {
-					await thread.post(
-						"This approval can’t be completed from Slack yet. Use the Review in Lobu link.",
-					);
+					await thread.post(message);
 				} catch {
 					// best effort
 				}
@@ -788,11 +801,14 @@ export function registerActionHandlers(
 					userId: event.user?.userId,
 				},
 			};
+			// Real process env, not {}: approving a create runs entity hooks that
+			// are env-gated (e.g. $member invite email needs RESEND_API_KEY) — an
+			// empty env silently skips them, diverging from web approvals.
 			const result = await manageOperations(
 				decision === "approve"
 					? { action: "approve", run_id: runId }
 					: { action: "reject", run_id: runId, reason: "Rejected from Slack" },
-				{} as never,
+				process.env as unknown as Env,
 				ctx,
 			).catch((error) => ({ error: String(error) }));
 			const resultRecord = result as Record<string, unknown>;

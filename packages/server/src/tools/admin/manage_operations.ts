@@ -1385,24 +1385,28 @@ async function tryApproveEntityChangeRun(
 		};
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
+		// Apply failures here are often transient/situational (entity gained
+		// children before a non-force delete, schema changed, etc.). Put the run
+		// BACK to pending instead of burning the proposal on one errant click —
+		// the reviewer can retry after fixing the blocker, or reject it.
 		await getDb()`
-      UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage}
+      UPDATE runs SET approval_status = 'pending', status = 'pending', error_message = ${errorMessage}
       WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
     `;
 		await supersedeActionEvent(
 			args.run_id,
 			ctx.organizationId,
-			"failed",
+			"apply_failed",
 			operation === "update"
-				? "entity_field_change — failed"
-				: `entity_${operation} — failed`,
-			operation === "update"
-				? `Field change failed: ${errorMessage}`
-				: `Entity ${operation} failed: ${errorMessage}`,
+				? "entity_field_change — apply failed, still pending"
+				: `entity_${operation} — apply failed, still pending`,
+			`Applying the approved change failed: ${errorMessage}. The approval is pending again — fix the blocker and approve once more, or reject it.`,
 			{ error_message: errorMessage },
 			reviewer,
 		);
-		return { error: `Failed to apply entity ${operation}: ${errorMessage}` };
+		return {
+			error: `Failed to apply entity ${operation}: ${errorMessage}. The approval is back to pending — approve again after fixing the blocker, or reject it.`,
+		};
 	}
 }
 
@@ -1435,7 +1439,9 @@ async function tryRejectEntityChangeRun(
 		operation === "update"
 			? `Field change rejected: ${description}${args.reason ? ` — ${args.reason}` : ""}`
 			: `Entity ${operation} rejected: ${description}${args.reason ? ` — ${args.reason}` : ""}`,
-		{ reason },
+		// reject_reason, NOT reason: metadata.reason is the PROPOSER's rationale
+		// and must survive the supersede for the card's "Reasoning" panel.
+		{ reject_reason: reason },
 		reviewer,
 	);
 	return {

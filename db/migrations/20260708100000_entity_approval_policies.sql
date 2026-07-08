@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS public.entity_approval_policies (
   organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
   entity_type_slug text NULL,
   field_path text NULL,
+  entity_id bigint NULL REFERENCES public.entities(id) ON DELETE CASCADE,
   create_mode text NOT NULL DEFAULT 'auto'
     CHECK (create_mode IN ('auto', 'approval')),
   update_mode text NOT NULL DEFAULT 'auto'
@@ -23,11 +24,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS entity_approval_policies_scope_key
   ON public.entity_approval_policies (
     organization_id,
     COALESCE(entity_type_slug, ''),
-    COALESCE(field_path, '')
+    COALESCE(field_path, ''),
+    COALESCE(entity_id, 0)
   );
 
 CREATE INDEX IF NOT EXISTS entity_approval_policies_org_lookup
-  ON public.entity_approval_policies (organization_id, entity_type_slug, field_path);
+  ON public.entity_approval_policies (organization_id, entity_type_slug, entity_id);
 
 -- migrate:down
 

@@ -24,11 +24,10 @@ import {
 	type RelationshipCountByType,
 	type RelationshipRow,
 } from "@lobu/core/contracts/tools/manage-entity";
-import { shouldRequireEntityMutationApproval } from "../../authz/entity-approval-policy";
 import {
+	classifyMutationPrincipal,
 	type EntityPolicyPrincipalKind,
-	evaluateEntityCreate,
-	evaluateEntityDelete,
+	evaluateEntityMutation,
 } from "../../authz/entity-policy";
 import { getDb, pgTextArray } from "../../db/client";
 import type { Env } from "../../index";
@@ -89,21 +88,11 @@ function principalKindForMutation(
 	args: ManageEntityArgs,
 	ctx: ToolContext,
 ): EntityPolicyPrincipalKind {
-	return args.watcher_source ? "watcher" : ctx.agentId ? "agent" : "user";
-}
-
-function policyPrincipal(args: ManageEntityArgs, ctx: ToolContext) {
-	const kind = principalKindForMutation(args, ctx);
-	return {
-		kind,
-		id:
-			ctx.agentId ??
-			ctx.clientId ??
-			ctx.userId ??
-			`${kind}:${ctx.organizationId}`,
-		orgId: ctx.organizationId,
-		role: ctx.memberRole,
-	};
+	return classifyMutationPrincipal({
+		userId: ctx.userId,
+		agentId: ctx.agentId,
+		watcherSource: args.watcher_source,
+	});
 }
 
 // ============================================
@@ -257,26 +246,16 @@ async function handleCreate(
 		entityData.content = args.content;
 	}
 
-	const createDecision = evaluateEntityCreate({
-		principal: policyPrincipal(args, ctx),
-		resource: {
-			id: `new:${args.entity_type}`,
-			orgId: ctx.organizationId,
-			entityType: args.entity_type,
-			fieldOwner: "none",
-		},
-	});
-	if (createDecision === "deny" || createDecision === "redact") {
-		throw new ToolUserError(`Policy denied creating ${args.entity_type}`, 403);
-	}
-	const createRequiresApproval = await shouldRequireEntityMutationApproval({
+	const createDecision = await evaluateEntityMutation({
 		organizationId: ctx.organizationId,
 		principalKind: principalKindForMutation(args, ctx),
 		action: "create",
 		entityTypeSlug: args.entity_type,
-		defaultRequiresApproval: createDecision === "require_approval",
 	});
-	if (createRequiresApproval) {
+	if (createDecision === "deny") {
+		throw new ToolUserError(`Policy denied creating ${args.entity_type}`, 403);
+	}
+	if (createDecision === "require_approval") {
 		const attribution: "agent" | "watcher" = args.watcher_source
 			? "watcher"
 			: "agent";
@@ -1036,19 +1015,7 @@ async function handleDelete(
 	}
 
 	const policyArgs = args ?? { action: "delete", entity_id: entityId };
-	const deleteDecision = evaluateEntityDelete({
-		principal: policyPrincipal(policyArgs as ManageEntityArgs, ctx),
-		resource: {
-			id: entityId,
-			orgId: ctx.organizationId,
-			entityType: entity.entity_type,
-			fieldOwner: "none",
-		},
-	});
-	if (deleteDecision === "deny" || deleteDecision === "redact") {
-		throw new ToolUserError(`Policy denied deleting entity ${entityId}`, 403);
-	}
-	const deleteRequiresApproval = await shouldRequireEntityMutationApproval({
+	const deleteDecision = await evaluateEntityMutation({
 		organizationId: ctx.organizationId,
 		principalKind: principalKindForMutation(
 			policyArgs as ManageEntityArgs,
@@ -1056,9 +1023,12 @@ async function handleDelete(
 		),
 		action: "delete",
 		entityTypeSlug: entity.entity_type,
-		defaultRequiresApproval: deleteDecision === "require_approval",
+		entityId,
 	});
-	if (deleteRequiresApproval) {
+	if (deleteDecision === "deny") {
+		throw new ToolUserError(`Policy denied deleting entity ${entityId}`, 403);
+	}
+	if (deleteDecision === "require_approval") {
 		const attribution: "agent" | "watcher" = args?.watcher_source
 			? "watcher"
 			: "agent";

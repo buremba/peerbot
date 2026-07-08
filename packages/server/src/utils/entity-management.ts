@@ -8,11 +8,9 @@
 
 import { slugify } from "@lobu/core";
 import { feedLinkedToBusinessEntitySql } from "../authz/channel-about";
-import { shouldRequireEntityMutationApproval } from "../authz/entity-approval-policy";
 import {
-	type EntityPolicyDecision,
 	type EntityPolicyPrincipalKind,
-	evaluateEntityFieldUpdate,
+	evaluateEntityFieldUpdates,
 } from "../authz/entity-policy";
 import {
 	createDbClientFromEnv,
@@ -447,7 +445,8 @@ export async function updateEntity(
 	// non-transactional read-modify-write race on entities.metadata.
 	const result = await sql.begin(async (tx) => {
 		const current = await tx`
-      SELECT e.metadata, e.field_controls, e.organization_id, et.slug AS entity_type
+      SELECT e.metadata, e.field_controls, e.organization_id, et.slug AS entity_type,
+             e.name, e.parent_id, e.content
       FROM entities e
       JOIN entity_types et ON et.id = e.entity_type_id
       WHERE e.id = ${entityId} AND e.deleted_at IS NULL
@@ -457,65 +456,105 @@ export async function updateEntity(
 			throw new Error(`Entity ${entityId} not found`);
 		}
 
-		let mergedMetadata: Record<string, unknown> | null = null;
-		let mergedControls: Record<string, unknown> | null = null;
-		if (hasMetadataUpdates || hasAffirm) {
-			const existing = (
-				typeof current[0].metadata === "string"
-					? JSON.parse(current[0].metadata as string)
-					: (current[0].metadata ?? {})
-			) as Record<string, unknown>;
-			const existingControls = (
-				typeof current[0].field_controls === "string"
-					? JSON.parse(current[0].field_controls as string)
-					: (current[0].field_controls ?? {})
-			) as Record<string, FieldControl>;
-			const requireApproval: string[] = [];
-			if (!isHumanEdit) {
-				const principalKind: EntityPolicyPrincipalKind =
-					opts?.policyPrincipalKind ?? "agent";
-				for (const field of Object.keys(metadataUpdates)) {
-					const fieldOwner = Object.hasOwn(existingControls, field)
-						? "human"
-						: "none";
-					const decision: EntityPolicyDecision = evaluateEntityFieldUpdate({
-						principal: {
-							kind: principalKind,
-							id:
-								ctx.agentId ??
-								ctx.clientId ??
-								`${principalKind}:${ctx.organizationId}`,
-							orgId: ctx.organizationId,
-							role: ctx.memberRole,
-						},
-						resource: {
-							id: entityId,
-							orgId: String(current[0].organization_id),
-							entityType: String(current[0].entity_type),
-							fieldOwner,
-						},
+		const existing = (
+			typeof current[0].metadata === "string"
+				? JSON.parse(current[0].metadata as string)
+				: (current[0].metadata ?? {})
+		) as Record<string, unknown>;
+		const existingControls = (
+			typeof current[0].field_controls === "string"
+				? JSON.parse(current[0].field_controls as string)
+				: (current[0].field_controls ?? {})
+		) as Record<string, FieldControl>;
+
+		// Non-human edits run ONE policy pass over metadata fields AND the
+		// top-level attributes (name/content/parent_id as reserved $-paths, so a
+		// field-scoped policy can target them too). A gated attribute is stripped
+		// from this write and queued as a blocked change like any owned field —
+		// otherwise "updates need approval" would gate metadata while an agent
+		// could still rename or re-parent the entity.
+		const requireApproval: string[] = [];
+		const blockedAttributes: Record<
+			string,
+			{ current: unknown; proposed: unknown }
+		> = {};
+		let applyName = data.name !== undefined;
+		let applyParent = data.parent_id !== undefined;
+		let applyContent = hasContent;
+		if (!isHumanEdit) {
+			const principalKind: EntityPolicyPrincipalKind =
+				opts?.policyPrincipalKind ?? "agent";
+			const attributeProposals: Record<
+				string,
+				{ current: unknown; proposed: unknown }
+			> = {};
+			if (applyName && (data.name ?? null) !== (current[0].name ?? null)) {
+				attributeProposals.$name = {
+					current: current[0].name ?? null,
+					proposed: data.name ?? null,
+				};
+			}
+			const currentParentId =
+				current[0].parent_id == null ? null : Number(current[0].parent_id);
+			if (applyParent && (data.parent_id ?? null) !== currentParentId) {
+				attributeProposals.$parent_id = {
+					current: currentParentId,
+					proposed: data.parent_id ?? null,
+				};
+			}
+			if (
+				applyContent &&
+				contentValue !== ((current[0].content as string | null) ?? null)
+			) {
+				attributeProposals.$content = {
+					current: current[0].content ?? null,
+					proposed: contentValue,
+				};
+			}
+			const fieldOwners = {
+				...(Object.fromEntries(
+					Object.keys(metadataUpdates).map((field) => [
 						field,
-					});
-					if (decision === "deny" || decision === "redact") {
+						Object.hasOwn(existingControls, field) ? "human" : "none",
+					]),
+				) as Record<string, "human" | "none">),
+				...(Object.fromEntries(
+					Object.keys(attributeProposals).map((attr) => [attr, "none"]),
+				) as Record<string, "none">),
+			};
+			if (Object.keys(fieldOwners).length > 0) {
+				const decisions = await evaluateEntityFieldUpdates({
+					organizationId: ctx.organizationId,
+					principalKind,
+					entityTypeSlug: String(current[0].entity_type),
+					entityId,
+					entityOrgId: String(current[0].organization_id),
+					fields: fieldOwners,
+					sql: tx,
+				});
+				for (const [field, decision] of Object.entries(decisions)) {
+					if (decision === "deny") {
 						throw new ToolUserError(
 							`Policy denied update to field '${field}'`,
 							403,
 						);
 					}
-					const requiresApproval = await shouldRequireEntityMutationApproval({
-						organizationId: ctx.organizationId,
-						principalKind,
-						action: "update",
-						entityTypeSlug: String(current[0].entity_type),
-						fieldPath: field,
-						defaultRequiresApproval: decision === "require_approval",
-						sql: tx,
-					});
-					if (requiresApproval) {
+					if (decision !== "require_approval") continue;
+					if (attributeProposals[field]) {
+						blockedAttributes[field] = attributeProposals[field];
+						if (field === "$name") applyName = false;
+						if (field === "$parent_id") applyParent = false;
+						if (field === "$content") applyContent = false;
+					} else {
 						requireApproval.push(field);
 					}
 				}
 			}
+		}
+
+		let mergedMetadata: Record<string, unknown> | null = null;
+		let mergedControls: Record<string, unknown> | null = null;
+		if (hasMetadataUpdates || hasAffirm) {
 			const merge = computeFieldMerge({
 				metadata: existing,
 				controls: existingControls,
@@ -543,17 +582,23 @@ export async function updateEntity(
 				),
 			};
 		}
+		if (Object.keys(blockedAttributes).length > 0) {
+			fieldMerge = {
+				applied: fieldMerge?.applied ?? [],
+				blocked: { ...(fieldMerge?.blocked ?? {}), ...blockedAttributes },
+			};
+		}
 
 		await tx`
       UPDATE entities SET
-        name = COALESCE(${data.name ?? null}, name),
-        slug = COALESCE(${newSlug}, slug),
-        parent_id = CASE WHEN ${data.parent_id !== undefined} THEN ${data.parent_id ?? null}::bigint ELSE parent_id END,
+        name = COALESCE(${applyName ? (data.name ?? null) : null}, name),
+        slug = COALESCE(${data.slug ?? (applyName ? newSlug : null)}, slug),
+        parent_id = CASE WHEN ${applyParent} THEN ${data.parent_id ?? null}::bigint ELSE parent_id END,
         metadata = CASE WHEN ${hasMetadataUpdates} THEN ${mergedMetadata ? sql.json(mergedMetadata) : null} ELSE metadata END,
         field_controls = CASE WHEN ${mergedControls !== null} THEN ${mergedControls ? sql.json(mergedControls) : sql.json({})} ELSE field_controls END,
         enabled_classifiers = CASE WHEN ${data.enabled_classifiers !== undefined} THEN ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[] ELSE enabled_classifiers END,
-        content = CASE WHEN ${hasContent} THEN ${contentValue} ELSE content END,
-        embedding = CASE WHEN ${hasEmbedding} THEN ${embeddingLiteral}::vector ELSE embedding END,
+        content = CASE WHEN ${applyContent} THEN ${contentValue} ELSE content END,
+        embedding = CASE WHEN ${hasEmbedding && (applyContent || !hasContent)} THEN ${embeddingLiteral}::vector ELSE embedding END,
         updated_at = current_timestamp
       WHERE id = ${entityId} AND deleted_at IS NULL
     `;

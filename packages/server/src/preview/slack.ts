@@ -365,15 +365,25 @@ export async function consumePreviewClaim(args: {
 			bindingConnectionId,
 		);
 
-		// The code was minted by an authenticated `lobu run`, so the sender is the
-		// same Lobu user. Record the chat-platform → Lobu-user link so they can
-		// re-bind chats with `/lobu link <agentId>` without a fresh code.
+		// The code was minted by an authenticated `lobu run` and is ASSUMED to be
+		// redeemed by the same person. Record the chat-platform → Lobu-user link so
+		// they can re-bind chats with `/lobu link <agentId>` without a fresh code.
+		//
+		// SECURITY: this mapping is also what authorizes Slack approval-button
+		// clicks (interaction-bridge resolveSlackActionReviewer), so a claim code
+		// is effectively a credential for the minter's account — never paste one
+		// in a shared channel. Two guards here: (1) an already-linked Slack user
+		// is NEVER silently re-bound to a different Lobu account by a later code;
+		// (2) the approval path additionally requires the mapped user to be an
+		// org admin/owner. Real identity proof (Slack OAuth / email match) is a
+		// follow-up.
 		if (claim.createdBy && platformUserId) {
 			await tx`
         INSERT INTO chat_user_identities (platform, team_id, platform_user_id, lobu_user_id, updated_at)
         VALUES (${platform}, ${teamId ?? ""}, ${platformUserId}, ${claim.createdBy}, now())
         ON CONFLICT (platform, team_id, platform_user_id)
-          DO UPDATE SET lobu_user_id = EXCLUDED.lobu_user_id, updated_at = now()
+          DO UPDATE SET updated_at = now()
+          WHERE chat_user_identities.lobu_user_id = EXCLUDED.lobu_user_id
       `;
 		}
 

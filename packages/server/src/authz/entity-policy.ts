@@ -190,7 +190,23 @@ function pickPolicy(
 	const match = candidates.find(
 		(row) => row.field_path === null || row.field_path === fieldPath,
 	);
-	return match ? rowToPolicy(match) : defaultEntityApprovalPolicy(organizationId);
+	if (!match) return defaultEntityApprovalPolicy(organizationId);
+	const policy = rowToPolicy(match);
+	// Scoped rows don't carry their own channel — inherit the workspace
+	// default's delivery target so scoped approvals still land in the
+	// configured channel rather than falling back to generic admin fan-out.
+	if (!policy.deliveryTarget.connectionId && !policy.deliveryTarget.channelId) {
+		const global = candidates.find(
+			(row) =>
+				row.entity_type_slug === null &&
+				row.field_path === null &&
+				row.entity_id === null,
+		);
+		if (global) {
+			policy.deliveryTarget = rowToPolicy(global).deliveryTarget;
+		}
+	}
+	return policy;
 }
 
 /**

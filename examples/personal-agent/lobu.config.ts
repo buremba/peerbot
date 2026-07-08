@@ -8,7 +8,6 @@ import {
 import type GoogleTakeoutConnector from "./google-takeout.connector.ts";
 import type InstagramTakeoutConnector from "./instagram-takeout.connector.ts";
 import type LinkedInConnector from "./linkedin.connector.ts";
-import type LinkedInTakeoutConnector from "./linkedin-takeout.connector.ts";
 import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
 import type SpotifyConnector from "./spotify.connector.ts";
 import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
@@ -673,21 +672,34 @@ const instagramTakeoutConnection = defineConnection({
   ],
 });
 
-const linkedinTakeoutConnection = defineConnection({
+// One consolidated LinkedIn connection spanning BOTH sources: the local Data
+// Export CSV feeds AND the live Chrome-extension feeds. Because it's a single
+// connection on connector "linkedin", people met live and people in the CSV
+// export dedup on the shared linkedin_slug/email identity. Keeps the existing
+// slug (buremba connection id 410, 2544 events).
+//
+// The live home_feed reads linkedin.com/feed/ through the paired Owletto Chrome
+// extension and needs no company_url. The company_updates/jobs live feeds each
+// require a company_url, so add them per-company when tracking a specific page
+// (e.g. { feed: "company_updates", config: { company_url: "https://www.linkedin.com/company/openai" } }).
+const linkedinConnection = defineConnection({
   slug: "linkedin-takeout-buremba",
-  connector: "linkedin.takeout",
-  name: "LinkedIn Takeout Local",
+  connector: "linkedin",
+  name: "LinkedIn",
   feeds: [
+    // Local Data Export (CSV) feeds.
     { feed: "messages", config: { takeout_dir: linkedinTakeoutDir } },
     { feed: "connections", config: { takeout_dir: linkedinTakeoutDir } },
     { feed: "invitations", config: { takeout_dir: linkedinTakeoutDir } },
-    { feed: "jobs", config: { takeout_dir: linkedinTakeoutDir } },
+    { feed: "applied_jobs", config: { takeout_dir: linkedinTakeoutDir } },
     { feed: "profile", config: { takeout_dir: linkedinTakeoutDir } },
     { feed: "companies", config: { takeout_dir: linkedinTakeoutDir } },
     { feed: "learning", config: { takeout_dir: linkedinTakeoutDir } },
     { feed: "events", config: { takeout_dir: linkedinTakeoutDir } },
     { feed: "endorsements", config: { takeout_dir: linkedinTakeoutDir } },
     { feed: "media", config: { takeout_dir: linkedinTakeoutDir } },
+    // Live Chrome-extension feed (no company_url needed).
+    { feed: "home_feed", config: { max_scrolls: 8 } },
   ],
 });
 
@@ -710,9 +722,6 @@ export default defineConfig({
     connectorFromFile<typeof InstagramTakeoutConnector>(
       "./instagram-takeout.connector.ts"
     ),
-    connectorFromFile<typeof LinkedInTakeoutConnector>(
-      "./linkedin-takeout.connector.ts"
-    ),
   ],
   org: "buremba",
   orgName: "Buremba Org",
@@ -725,6 +734,6 @@ export default defineConfig({
     takeoutConnection,
     twitterTakeoutConnection,
     instagramTakeoutConnection,
-    linkedinTakeoutConnection,
+    linkedinConnection,
   ],
 });

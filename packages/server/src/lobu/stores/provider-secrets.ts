@@ -232,6 +232,18 @@ interface RawInferenceProviderRow {
 	is_default: boolean;
 }
 
+function oauthInferenceProviderRef(
+	organizationId: string,
+	slug: string,
+	id: number | string,
+): string {
+	return `oauth://${organizationId}/${slug}-${id}`;
+}
+
+function isOAuthInferenceProviderRef(ref: string): boolean {
+	return ref.startsWith("oauth://");
+}
+
 function mapRow(r: RawInferenceProviderRow): InferenceProviderRow {
 	return {
 		id: Number(r.id),
@@ -354,21 +366,45 @@ export async function ensureOAuthInferenceProvider(args: {
 	try {
 		return await sql.begin(async (tx) => {
 			const existing = (await tx`
-				SELECT id, organization_id, slug, kind, display_name, api_key_ref,
-				       capabilities, has_custom_upstream, status, created_at
-				FROM inference_providers
-				WHERE organization_id = ${organizationId}
-				  AND slug = ${slug}
-				  AND deleted_at IS NULL
-				LIMIT 1
-			`) as RawInferenceProviderRow[];
-			if (existing[0]) return mapRow(existing[0]);
+					SELECT id, organization_id, slug, kind, display_name, api_key_ref,
+					       capabilities, has_custom_upstream, status, created_at
+					FROM inference_providers
+					WHERE organization_id = ${organizationId}
+					  AND slug = ${slug}
+					  AND deleted_at IS NULL
+					LIMIT 1
+				`) as RawInferenceProviderRow[];
+			const existingRow = existing[0];
+			if (existingRow) {
+				if (isOAuthInferenceProviderRef(existingRow.api_key_ref)) {
+					return mapRow(existingRow);
+				}
+
+				const apiKeyRef = oauthInferenceProviderRef(
+					organizationId,
+					slug,
+					existingRow.id,
+				);
+				const repaired = (await tx`
+						UPDATE inference_providers
+						SET kind = ${kind},
+						    display_name = COALESCE(${displayName}, display_name),
+						    api_key_ref = ${apiKeyRef},
+						    capabilities = '{}'::jsonb,
+						    created_by = COALESCE(created_by, ${createdBy}),
+						    updated_at = now()
+						WHERE id = ${existingRow.id}
+						RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
+						          capabilities, has_custom_upstream, status, created_at
+					`) as RawInferenceProviderRow[];
+				return mapRow(repaired[0]);
+			}
 
 			const idRows = (await tx`
-				SELECT nextval(pg_get_serial_sequence('inference_providers', 'id')) AS id
-			`) as Array<{ id: string | number }>;
+					SELECT nextval(pg_get_serial_sequence('inference_providers', 'id')) AS id
+				`) as Array<{ id: string | number }>;
 			const id = Number(idRows[0]?.id);
-			const apiKeyRef = `oauth://${organizationId}/${slug}-${id}`;
+			const apiKeyRef = oauthInferenceProviderRef(organizationId, slug, id);
 
 			const rows = (await tx`
 				INSERT INTO inference_providers
@@ -389,8 +425,7 @@ export async function ensureOAuthInferenceProvider(args: {
 			/inference_providers_org_slug_live/.test(msg) ||
 			/duplicate key/.test(msg)
 		) {
-			const existing = await getInferenceProviderBySlug(organizationId, slug);
-			if (existing) return existing;
+			return await ensureOAuthInferenceProvider(args);
 		}
 		throw error;
 	}

@@ -910,9 +910,9 @@ routes.post("/inference-providers", async (c) => {
 		return c.json({ error: "Invalid or missing JSON body" }, 400);
 	}
 
-	const slug = typeof body.slug === "string" ? body.slug : "";
-	const kind = typeof body.kind === "string" ? body.kind : "";
-	const apiKey = typeof body.apiKey === "string" ? body.apiKey : "";
+	const slug = typeof body.slug === "string" ? body.slug.trim() : "";
+	const kind = typeof body.kind === "string" ? body.kind.trim() : "";
+	const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
 	if (!slug) return c.json({ error: "Body must include a `slug` string" }, 400);
 	if (!isValidInferenceProviderSlug(slug)) {
 		return c.json(
@@ -1162,7 +1162,7 @@ routes.put("/inference-providers/:slug/key", async (c) => {
 	} catch {
 		return c.json({ error: "Invalid or missing JSON body" }, 400);
 	}
-	const value = typeof body.value === "string" ? body.value : "";
+	const value = typeof body.value === "string" ? body.value.trim() : "";
 	if (!value) {
 		return c.json(
 			{ error: "Body must include a non-empty `value` string" },
@@ -1443,7 +1443,7 @@ routes.put("/:agentId/providers/:providerId/api-key", async (c) => {
 	} catch {
 		return c.json({ error: "Invalid or missing JSON body" }, 400);
 	}
-	const value = typeof body.value === "string" ? body.value : "";
+	const value = typeof body.value === "string" ? body.value.trim() : "";
 	if (!value) {
 		return c.json(
 			{ error: "Body must include a non-empty `value` string" },

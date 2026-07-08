@@ -373,8 +373,24 @@ describe("credentials", () => {
     expect(result).toBe(creds);
   });
 
-  test("refreshCredentials returns null when refreshTokens() fails and no concurrent rotation", async () => {
-    const creds = buildCreds();
+  test("refreshCredentials keeps a still-valid token when refresh is not yet needed", async () => {
+    // A non-expired access token must not be discarded just because it *could*
+    // be refreshed. Previously whoami eagerly refreshed and, on a stale refresh
+    // token (400 invalid_grant), reported "Not logged in" despite a valid
+    // session — the Owletto Mac app reads whoami --json for its menu bar.
+    const creds = buildCreds({ expiresAt: Date.now() + 60 * 60_000 });
+    const store = { version: 2, contexts: { [currentContextName]: creds } };
+    readFileSpy.mockResolvedValue(JSON.stringify(store));
+    const refreshSpy = spyOn(oauth, "refreshTokens").mockResolvedValue(null);
+
+    const result = await refreshCredentials(creds);
+
+    expect(result).toBe(creds);
+    expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
+  test("refreshCredentials returns null when an expired token's refresh fails", async () => {
+    const creds = buildCreds({ expiresAt: Date.now() - 60_000 });
     const store = { version: 2, contexts: { [currentContextName]: creds } };
     readFileSpy.mockResolvedValue(JSON.stringify(store));
     spyOn(oauth, "refreshTokens").mockResolvedValue(null);

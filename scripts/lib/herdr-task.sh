@@ -37,24 +37,36 @@ print(d.get("result",{}).get("workspace",{}).get("workspace_id",""))' 2>/dev/nul
 # task name: when task-setup ran inside an existing pane, herdr_task_open
 # relabeled that workspace in place rather than binding it to a checkout, so
 # Herdr has no checkout_path for it — the label is the only handle we have.
+#
+# NEVER closes the CURRENT workspace ($HERDR_WORKSPACE_ID). `make task-clean`
+# is routinely run from inside the very pane that task-setup relabeled in place;
+# closing that pane tears down the live session (and under memory pressure the
+# teardown escalates to a SIGKILL of the whole process tree). The git-worktree
+# teardown that follows still removes the checkout, so sparing the pane loses
+# nothing but the (now-stale-labeled) window, which the user can reuse.
 herdr_task_close() {
   local worktree_path="$1" label="${2:-}"
   local json ws matched_by
   herdr_task_enabled || return 1
   json="$(herdr workspace list 2>/dev/null)" || return 1
   # Emit "<match_kind> <workspace_id>": "path" when bound to the checkout,
-  # else "label" when only the label matches. Path wins over label.
-  read -r matched_by ws <<<"$(printf '%s' "$json" | WORKTREE_PATH="$worktree_path" LABEL="$label" python3 -c 'import os,sys,json
+  # else "label" when only the label matches. Path wins over label. The current
+  # workspace is skipped in BOTH branches so we never close our own session.
+  read -r matched_by ws <<<"$(printf '%s' "$json" | WORKTREE_PATH="$worktree_path" LABEL="$label" CURRENT_WS="${HERDR_WORKSPACE_ID:-}" python3 -c 'import os,sys,json
 path=os.environ["WORKTREE_PATH"]
 label=os.environ.get("LABEL","")
+current=os.environ.get("CURRENT_WS","")
 d=json.load(sys.stdin)
 by_label=""
 for w in d.get("result",{}).get("workspaces",[]):
+  wid=w.get("workspace_id") or ""
+  if wid and wid==current:
+    continue  # never close the pane we are running in
   wt=w.get("worktree") or {}
   if wt.get("checkout_path")==path:
-    print("path", w.get("workspace_id") or ""); break
+    print("path", wid); break
   if label and not by_label and w.get("label")==label:
-    by_label=w.get("workspace_id") or ""
+    by_label=wid
 else:
   if by_label: print("label", by_label)
 ' 2>/dev/null)"

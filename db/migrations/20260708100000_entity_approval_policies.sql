@@ -1,7 +1,7 @@
 -- migrate:up
 
 CREATE TABLE IF NOT EXISTS public.entity_approval_policies (
-  id bigserial PRIMARY KEY,
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
   entity_type_slug text NULL,
   field_path text NULL,
@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS public.entity_approval_policies (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- squawk-ignore require-concurrent-index-creation -- table created just above; no traffic to block
 CREATE UNIQUE INDEX IF NOT EXISTS entity_approval_policies_scope_key
   ON public.entity_approval_policies (
     organization_id,
@@ -28,9 +29,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS entity_approval_policies_scope_key
     COALESCE(entity_id, 0)
   );
 
+-- squawk-ignore require-concurrent-index-creation -- table created just above; no traffic to block
 CREATE INDEX IF NOT EXISTS entity_approval_policies_org_lookup
   ON public.entity_approval_policies (organization_id, entity_type_slug, entity_id);
 
 -- migrate:down
 
+-- squawk-ignore ban-drop-table -- down for the table this migration introduces
 DROP TABLE IF EXISTS public.entity_approval_policies;

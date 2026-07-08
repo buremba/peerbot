@@ -139,6 +139,15 @@ export async function upsertSlackInstallByTeam(
      * null for a plain (non-Grid) workspace.
      */
     enterpriseId?: string | null;
+    /**
+     * True when this is a Grid ORG-WIDE install (`is_enterprise_install` from
+     * `oauth.v2.access`) — one installation covering every workspace in the
+     * enterprise. Persisted so sibling-workspace events route to this row by
+     * `enterprise_id` unambiguously (see {@link getSlackEnterpriseInstall}),
+     * without the sole-active heuristic. Absent/false for a per-workspace install
+     * (Grid single-workspace or standalone).
+     */
+    isEnterpriseInstall?: boolean;
   }
 ): Promise<SlackInstallationRow> {
   // Bind the org for the secret-store put + the row write so they land in the
@@ -197,6 +206,9 @@ export async function upsertSlackInstallByTeam(
       }
       if (data.enterpriseId) {
         metadata.enterprise_id = data.enterpriseId;
+      }
+      if (data.isEnterpriseInstall) {
+        metadata.is_enterprise_install = true;
       }
       if (process.env.SLACK_CLIENT_ID) {
         metadata.slack_client_id = process.env.SLACK_CLIENT_ID;
@@ -361,6 +373,29 @@ export async function getSlackInstallByEnterpriseId(
     SLACK_PROVIDER_APP_ID,
     "enterprise_id",
     enterpriseId
+  );
+  return row ? toSlackRow(row) : null;
+}
+
+/**
+ * Resolve the ORG-WIDE (Grid) install for an enterprise: the single active
+ * install with `is_enterprise_install=true` for this `enterprise_id`. Slack
+ * permits exactly ONE org-wide install per enterprise, so this is unambiguous
+ * even when per-workspace installs of sibling teams also exist under the same
+ * enterprise — unlike {@link getSlackInstallByEnterpriseId}, which gives up on
+ * 2+ matches. This is the routing key that lets one enterprise install serve
+ * every sibling workspace's events, replacing the sole-active workaround.
+ */
+export async function getSlackEnterpriseInstall(
+  store: AppInstallationStore,
+  enterpriseId: string
+): Promise<SlackInstallationRow | null> {
+  const row = await store.resolveActiveByMetadataFlag(
+    SLACK_PROVIDER,
+    SLACK_PROVIDER_APP_ID,
+    "enterprise_id",
+    enterpriseId,
+    "is_enterprise_install"
   );
   return row ? toSlackRow(row) : null;
 }
@@ -640,6 +675,7 @@ export async function claimSlackPendingInstall(
       botToken: pending.botToken,
       installerUserId: pending.installerUserId ?? undefined,
       enterpriseId: pending.enterpriseId,
+      isEnterpriseInstall: pending.isEnterpriseInstall,
     }
   );
   // Retire the org-less pending row now that an active, org-owned install owns

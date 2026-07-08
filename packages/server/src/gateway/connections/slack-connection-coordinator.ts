@@ -3,6 +3,7 @@ import { Chat } from "chat";
 import type { AppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import {
   claimSlackWelcomeDm,
+  getSlackEnterpriseInstall,
   getSlackInstallByEnterpriseId,
   getSlackInstallByTeamId,
   resolveSlackPendingByTenant,
@@ -438,14 +439,22 @@ export class SlackConnectionCoordinator {
       //    `forwardWebhook` resolve it via the Slack install projection). Per-message
       //    routing is via `/lobu link` bindings.
       const store = this.deps.getAppInstallationStore();
-      // Exact team id first; on a Grid workspace the event's team id is a sibling
-      // of the install's, so fall back to the shared enterprise id — but only
-      // when that enterprise has a SINGLE install (else it's ambiguous and the
-      // fallback returns null rather than cross-tenant misroute).
+      // Routing precedence for both install models:
+      //  a) EXACT team id — a per-workspace install (Grid or standalone) whose
+      //     own workspace homes this event.
+      //  b) ORG-WIDE enterprise install — a Grid install with
+      //     `is_enterprise_install=true` covers EVERY sibling workspace, so a
+      //     sibling-stamped event routes here by `enterprise_id`. Unambiguous
+      //     because Slack allows one org-wide install per enterprise, EVEN when
+      //     per-workspace installs of other siblings also exist.
+      //  c) SOLE per-workspace Grid install — legacy/self-install fallback for a
+      //     Grid enterprise that has exactly one (non-org-wide) install and no
+      //     org-wide one; still by enterprise_id, but only when unambiguous.
       const installation =
         (await getSlackInstallByTeamId(store, teamId)) ??
         (enterpriseId
-          ? await getSlackInstallByEnterpriseId(store, enterpriseId)
+          ? ((await getSlackEnterpriseInstall(store, enterpriseId)) ??
+            (await getSlackInstallByEnterpriseId(store, enterpriseId)))
           : null);
       if (installation && installation.status !== "stopped") {
         if (!(await this.deps.ensureConnectionRunning(installation.id))) {

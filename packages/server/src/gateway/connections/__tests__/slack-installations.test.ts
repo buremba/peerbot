@@ -430,3 +430,99 @@ describe("slack-installations projection over app_installations", () => {
     expect(token).toBe("xoxb-a");
   });
 });
+
+describe("Grid install-model routing (per-workspace + org-wide enterprise)", () => {
+  test("org-wide enterprise install routes by enterprise_id EVEN WITH sibling per-workspace installs present", async () => {
+    // The workaround's failure mode: getSlackInstallByEnterpriseId (sole-active)
+    // returns null once 2+ installs share an enterprise. An org-wide install must
+    // still route unambiguously via the is_enterprise_install flag.
+    const { store, secretStore, slack } = build();
+    const ENT = "E_GRID";
+    await seedAgentRow("t", { organizationId: "org-x" });
+
+    // A sibling per-workspace install under the same enterprise (adds ambiguity).
+    await slack.upsertSlackInstallByTeam(store, secretStore, "org-x", "T_SIBLING", {
+      botToken: "xoxb-sibling",
+      enterpriseId: ENT,
+      // per-workspace: is_enterprise_install NOT set
+    });
+    // The org-wide install (installed against its home team T_HOME).
+    const orgWide = await slack.upsertSlackInstallByTeam(store, secretStore, "org-x", "T_HOME", {
+      botToken: "xoxb-orgwide",
+      enterpriseId: ENT,
+      isEnterpriseInstall: true,
+    });
+
+    // Sole-active is (correctly) ambiguous now — proves the old path can't route.
+    expect(await slack.getSlackInstallByEnterpriseId(store, ENT)).toBeNull();
+
+    // The org-wide resolver picks the enterprise install unambiguously.
+    const routed = await slack.getSlackEnterpriseInstall(store, ENT);
+    expect(routed?.id).toBe(orgWide.id);
+  });
+
+  test("sole per-workspace Grid install still routes by enterprise_id (no org-wide install)", async () => {
+    // A Grid enterprise with exactly ONE (non-org-wide) install: the legacy
+    // sole-active fallback must keep working, and the org-wide resolver returns
+    // null (nothing flagged).
+    const { store, secretStore, slack } = build();
+    const ENT = "E_SOLO";
+    await seedAgentRow("t", { organizationId: "org-y" });
+    const only = await slack.upsertSlackInstallByTeam(store, secretStore, "org-y", "T_ONLY", {
+      botToken: "xoxb-only",
+      enterpriseId: ENT,
+    });
+
+    expect(await slack.getSlackEnterpriseInstall(store, ENT)).toBeNull();
+    const routed = await slack.getSlackInstallByEnterpriseId(store, ENT);
+    expect(routed?.id).toBe(only.id);
+  });
+
+  test("claim persists is_enterprise_install so an org-wide install is routable after claim", async () => {
+    // End-to-end of the plumbing: a pending ENTERPRISE install, once claimed,
+    // must carry is_enterprise_install=true on the active row (else the org-wide
+    // router never matches it).
+    const { store, secretStore, slack } = build();
+    const ENT = "E_CLAIM";
+    await seedAgentRow("t", { organizationId: "org-claim" });
+    await slack.writeSlackPendingInstall({
+      teamId: "T_CLAIM",
+      teamName: "Claimed WS",
+      botUserId: "U_BOT",
+      botToken: "xoxb-claim",
+      installerUserId: "U_INSTALLER",
+      isEnterpriseInstall: true,
+      enterpriseId: ENT,
+    });
+    const pending = await slack.resolveSlackPendingByTenant("T_CLAIM");
+    expect(pending?.isEnterpriseInstall).toBe(true);
+
+    await slack.claimSlackPendingInstall(store, secretStore, pending!, "org-claim");
+
+    const routed = await slack.getSlackEnterpriseInstall(store, ENT);
+    expect(routed?.organizationId).toBe("org-claim");
+  });
+
+  test("a plain per-workspace claim does NOT set is_enterprise_install (not org-wide routable)", async () => {
+    // Guard the negative: a standalone (non-Grid) or Grid single-workspace claim
+    // must not be picked up by the org-wide router.
+    const { store, secretStore, slack } = build();
+    await seedAgentRow("t", { organizationId: "org-plain" });
+    await slack.writeSlackPendingInstall({
+      teamId: "T_PLAIN",
+      teamName: "Plain WS",
+      botUserId: "U_BOT",
+      botToken: "xoxb-plain",
+      installerUserId: "U_INSTALLER",
+      isEnterpriseInstall: false,
+      enterpriseId: "E_PLAIN",
+    });
+    const pending = await slack.resolveSlackPendingByTenant("T_PLAIN");
+    await slack.claimSlackPendingInstall(store, secretStore, pending!, "org-plain");
+
+    expect(await slack.getSlackEnterpriseInstall(store, "E_PLAIN")).toBeNull();
+    // But it IS still reachable as the sole per-workspace install for its enterprise.
+    const solo = await slack.getSlackInstallByEnterpriseId(store, "E_PLAIN");
+    expect(solo?.organizationId).toBe("org-plain");
+  });
+});

@@ -121,6 +121,28 @@ export interface AppInstallationStore {
     value: string
   ): Promise<AppInstallationRow | null>;
 
+  /**
+   * Resolve the SOLE active install for a provider app whose `metadata[key]`
+   * equals `value` AND whose `metadata[flagKey]` is boolean `true` — unambiguous
+   * only. Distinct from {@link resolveSoleActiveByMetadata}: it filters to rows
+   * carrying a truthy flag, so a match survives even when OTHER (non-flagged)
+   * installs share the same `value`.
+   *
+   * Its Slack consumer routes a Grid ORG-WIDE install (`is_enterprise_install`)
+   * by `enterprise_id`: Slack allows exactly one org-wide install per enterprise,
+   * so this is unambiguous EVEN WHEN per-workspace installs of sibling teams also
+   * exist under the same enterprise — which is precisely the case
+   * {@link resolveSoleActiveByMetadata} could not handle (it saw 2+ and gave up).
+   * Returns null when none match or, defensively, when 2+ flagged rows match.
+   */
+  resolveActiveByMetadataFlag(
+    provider: string,
+    providerAppId: string,
+    key: string,
+    value: string,
+    flagKey: string
+  ): Promise<AppInstallationRow | null>;
+
   getById(id: number): Promise<AppInstallationRow | null>;
   listByOrg(organizationId: string): Promise<AppInstallationRow[]>;
   setStatus(id: number, status: AppInstallationStatus): Promise<void>;
@@ -335,6 +357,24 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
           AND provider_app_id = ${providerAppId}
           AND status = 'active'
           AND metadata ->> ${key} = ${value}
+        LIMIT 2
+      `;
+      return rows.length === 1 ? rowToInstallation(rows[0]) : null;
+    },
+
+    async resolveActiveByMetadataFlag(provider, providerAppId, key, value, flagKey) {
+      const sql = getDb();
+      // Match active installs where metadata[key] = value AND metadata[flagKey]
+      // is JSON boolean true. `key`/`flagKey` are bound as `->>` / `->` operands,
+      // never spliced into SQL. LIMIT 2 detects (defensively) an impossible
+      // duplicate org-wide install; Slack guarantees at most one per enterprise.
+      const rows = await sql`
+        SELECT * FROM app_installations
+        WHERE provider = ${provider}
+          AND provider_app_id = ${providerAppId}
+          AND status = 'active'
+          AND metadata ->> ${key} = ${value}
+          AND (metadata -> ${flagKey}) = 'true'::jsonb
         LIMIT 2
       `;
       return rows.length === 1 ? rowToInstallation(rows[0]) : null;

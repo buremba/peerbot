@@ -1,5 +1,6 @@
 import { createLogger } from "@lobu/core";
 import { Actions, Button, Card, CardText, LinkButton } from "chat";
+import { SCOPE_CHECK_NOT_APPLICABLE } from "../../auth/tool-access.js";
 import { getDb, pgTextArray } from "../../db/client.js";
 import type { Env } from "../../index.js";
 import { ENTITY_CHANGE_ACTION_KEYS } from "../../tools/admin/entity-field-approval.js";
@@ -123,12 +124,20 @@ function actionEventTeamId(
 	return typeof teamId === "string" ? teamId : null;
 }
 
+/**
+ * Map the clicking Slack user to a Lobu member allowed to decide this run:
+ * exactly ONE chat_user_identities row for (team, platform user) that joins to
+ * an org member, AND that member is an admin/owner OR the run's recorded field
+ * owner (`ownerUserId`). A non-admin member who is not the owner resolves null,
+ * same as an unverified account.
+ */
 async function resolveSlackActionReviewer(params: {
 	connection: PlatformConnection;
 	platformUserId: string | undefined;
 	teamId: string | null;
+	ownerUserId?: string | null;
 }): Promise<{ userId: string; role: string } | null> {
-	const { connection, platformUserId, teamId } = params;
+	const { connection, platformUserId, teamId, ownerUserId } = params;
 	if (connection.platform !== "slack") return null;
 	if (!connection.organizationId || !platformUserId || teamId == null)
 		return null;
@@ -142,23 +151,31 @@ async function resolveSlackActionReviewer(params: {
     WHERE c.platform = 'slack'
       AND c.team_id = ${teamId}
       AND c.platform_user_id = ${platformUserId}
-      AND m.role IN ('admin', 'owner')
     LIMIT 2
   `;
 	if (rows.length !== 1) return null;
-	return { userId: rows[0].user_id, role: rows[0].role };
+	const { user_id: userId, role } = rows[0];
+	const isAdmin = role === "admin" || role === "owner";
+	const isOwner = ownerUserId != null && userId === ownerUserId;
+	if (!isAdmin && !isOwner) return null;
+	return { userId, role };
 }
 
 async function resolveEntityApprovalRun(
 	runId: number,
 	organizationId: string,
-): Promise<"pending" | "approved" | "rejected" | "not_found"> {
+): Promise<{
+	state: "pending" | "approved" | "rejected" | "not_found";
+	/** action_input.owner_user_id — the field owner allowed to decide this run. */
+	ownerUserId: string | null;
+}> {
 	const actionKeys = pgTextArray([...ENTITY_CHANGE_ACTION_KEYS]);
 	const rows = await getDb()<{
 		id: number;
 		approval_status: string | null;
+		owner_user_id: string | null;
 	}>`
-    SELECT id, approval_status
+    SELECT id, approval_status, action_input->>'owner_user_id' AS owner_user_id
     FROM runs
     WHERE id = ${runId}
       AND organization_id = ${organizationId}
@@ -166,12 +183,13 @@ async function resolveEntityApprovalRun(
       AND action_key = ANY(${actionKeys}::text[])
     LIMIT 1
   `;
-	if (rows.length !== 1) return "not_found";
+	if (rows.length !== 1) return { state: "not_found", ownerUserId: null };
 	const status = rows[0].approval_status;
-	if (status === "pending") return "pending";
-	if (status === "approved") return "approved";
-	if (status === "rejected") return "rejected";
-	return "not_found";
+	const state =
+		status === "pending" || status === "approved" || status === "rejected"
+			? status
+			: "not_found";
+	return { state, ownerUserId: rows[0].owner_user_id ?? null };
 }
 
 /**
@@ -744,10 +762,10 @@ export function registerActionHandlers(
 			const organizationId = connection.organizationId;
 			if (!Number.isFinite(runId) || !decision || !organizationId) return;
 
-			const runState = await resolveEntityApprovalRun(
+			const { state: runState, ownerUserId } = await resolveEntityApprovalRun(
 				runId,
 				organizationId,
-			).catch(() => "not_found" as const);
+			).catch(() => ({ state: "not_found" as const, ownerUserId: null }));
 			if (runState !== "pending") {
 				// Distinguish "already decided" (double-click, stale card, webhook
 				// retry) from "not an entity approval in this org" — the old single
@@ -770,6 +788,7 @@ export function registerActionHandlers(
 				connection,
 				platformUserId: event.user?.userId,
 				teamId: actionEventTeamId(event, connection),
+				ownerUserId,
 			}).catch(() => null);
 			if (!reviewer) {
 				try {
@@ -788,7 +807,10 @@ export function registerActionHandlers(
 				memberRole: reviewer.role,
 				isAuthenticated: true,
 				clientId: null,
-				scopes: null,
+				// Session-caller sentinel: the reviewer is authorized by verified
+				// Slack identity + role/ownership above, not by MCP token scopes —
+				// a null scope set would fail closed at the action tier.
+				scopes: [...SCOPE_CHECK_NOT_APPLICABLE],
 				tokenType: "session",
 				scopedToOrg: true,
 				allowCrossOrg: false,

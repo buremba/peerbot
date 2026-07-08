@@ -887,6 +887,29 @@ export class ChatInstanceManager {
   }
 
   /**
+   * Open (or reuse) the bot's DM with a platform user and post there — the
+   * owner-routed approval tier. The chat SDK's `openDM` performs the
+   * platform-side conversation open (Slack `conversations.open`) with the
+   * instance's own credentials, so no token plumbing is needed here. Same
+   * multi-replica lazy-hydration guarantee as `postMessageToChannel`.
+   */
+  async postDirectMessage(
+    connectionId: string,
+    platformUserId: string,
+    content: AdapterPostableMessage,
+  ): Promise<void> {
+    const running = await this.ensureConnectionRunning(connectionId);
+    const instance = running ? this.instances.get(connectionId) : undefined;
+    if (!instance) {
+      throw new Error(
+        `No active chat instance for connection ${connectionId} (could not start it on this pod)`,
+      );
+    }
+    const thread = await instance.chat.openDM(platformUserId);
+    await thread.post(content);
+  }
+
+  /**
    * Post to a channel — or a thread within it — and return the platform message
    * id + thread id, so the conversations `send` tool can hand the agent a thread
    * handle to reply into later. `threadId` (a platform thread id like

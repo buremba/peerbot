@@ -60,6 +60,18 @@ export interface EntityFieldChangeProposal {
 	/** Who proposed the change — drives the card label/author. Defaults to 'watcher'. */
 	attribution?: "watcher" | "agent";
 	reason?: string | null;
+	/**
+	 * The ONE human who owns every gated field (distinct
+	 * `field_controls[field].set_by`), resolved at propose time. Drives
+	 * owner-routed delivery (Slack DM tier) and lets that owner approve the run
+	 * without an admin role. Absent for mixed/no owners — admin-only behavior.
+	 * Lives in action_input (not run_metadata) because the approve path and the
+	 * Slack bridge already load action_input for the proposal; the dedupe SELECT
+	 * compares specific fields (operation/entity_id/fields), so replays still
+	 * collapse, and the md5(action_input) race index stays stable because the
+	 * owner is recomputed deterministically from live field_controls.
+	 */
+	owner_user_id?: string | null;
 }
 
 export interface EntityDeleteProposal {
@@ -186,6 +198,39 @@ async function loadEntitySnapshot(
 }
 
 /**
+ * The single human owner across a proposal's gated field paths, from
+ * `entities.field_controls[field].set_by` (stamped on every human edit).
+ * Exactly one distinct owner → that user; mixed owners or none → null
+ * (admin-only routing/authority). Reserved $-attributes ($name/$parent_id/
+ * $content) have no field_controls entry, so they contribute no owner.
+ */
+async function resolveProposalFieldOwner(
+	organizationId: string,
+	entityId: number,
+	fieldPaths: string[],
+): Promise<string | null> {
+	const rows = await getDb()<{ field_controls: unknown }>`
+    SELECT field_controls FROM entities
+    WHERE id = ${entityId}
+      AND organization_id = ${organizationId}
+      AND deleted_at IS NULL
+    LIMIT 1
+  `;
+	if (rows.length === 0) return null;
+	const controls = (
+		typeof rows[0].field_controls === "string"
+			? JSON.parse(rows[0].field_controls)
+			: (rows[0].field_controls ?? {})
+	) as Record<string, { set_by?: string | null }>;
+	const owners = new Set<string>();
+	for (const path of fieldPaths) {
+		const setBy = controls[path]?.set_by;
+		if (setBy) owners.add(setBy);
+	}
+	return owners.size === 1 ? [...owners][0] : null;
+}
+
+/**
  * Queue a watcher field-change for approval. Returns the pending run/event ids.
  * Called post-commit from the watcher promotion path.
  */
@@ -193,7 +238,16 @@ export async function proposeEntityFieldChange(
 	ctx: ToolContext,
 	proposal: EntityFieldChangeProposal,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	return proposeEntityChange(ctx, { ...proposal, operation: "update" });
+	const ownerUserId = await resolveProposalFieldOwner(
+		ctx.organizationId,
+		proposal.entity_id,
+		Object.keys(proposal.fields),
+	);
+	return proposeEntityChange(ctx, {
+		...proposal,
+		...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
+		operation: "update",
+	});
 }
 
 export async function proposeEntityDelete(
@@ -440,6 +494,7 @@ export async function proposeEntityChange(
 		connectionId: deliveryTarget.connectionId,
 		channelId: deliveryTarget.channelId,
 		teamId: deliveryTarget.teamId,
+		ownerUserId: updateProposal?.owner_user_id ?? null,
 		details:
 			operation === "update"
 				? {

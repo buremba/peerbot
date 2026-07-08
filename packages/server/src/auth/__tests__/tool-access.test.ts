@@ -47,9 +47,14 @@ describe('requiresOwnerAdmin', () => {
     expect(requiresOwnerAdmin('manage_classifiers', { action: 'classify' }, false)).toBe(true);
   });
 
-  it('should require admin for manage_operations execute', () => {
+  it('should require admin for manage_operations execute; approve/reject are write-tier (handler enforces admin-or-run-owner)', () => {
     expect(requiresOwnerAdmin('manage_operations', { action: 'execute' }, false)).toBe(true);
-    expect(requiresOwnerAdmin('manage_operations', { action: 'approve' }, false)).toBe(true);
+    // Owner-routed approvals: the recorded field owner (a plain member) may
+    // decide their own entity-change run, so approve/reject sit at write tier
+    // and manage_operations enforces admin-or-run-owner per run.
+    expect(requiresOwnerAdmin('manage_operations', { action: 'approve' }, false)).toBe(false);
+    expect(requiresMemberWrite('manage_operations', { action: 'approve' }, false)).toBe(true);
+    expect(requiresMemberWrite('manage_operations', { action: 'reject' }, false)).toBe(true);
   });
 
   it('should require admin for manage_connections login and connector mutations', () => {
@@ -684,7 +689,7 @@ manage_catalog: list_catalog=read+public list_installed=read+public ?=read
 manage_agents: list=admin get=admin create=admin update=admin delete=admin set_system_agent=admin ?=read
 manage_feeds: list_feeds=read+public read_feed=read+public read_feeds=read+public create_feed=admin update_feed=admin delete_feed=admin trigger_feed=admin ?=read
 manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=admin test_auth_profile=admin create_auth_profile=write update_auth_profile=write delete_auth_profile=admin set_default_auth_profile=admin ?=read
-manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public approve=admin reject=admin ?=read
+manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public approve=write reject=write ?=read
 notify: send=admin ?=admin
 manage_schedules: create=admin list=admin update=admin pause=admin cancel=admin ?=admin
 manage_watchers: create=admin update=admin create_version=admin complete_window=write trigger=admin delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read

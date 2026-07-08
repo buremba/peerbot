@@ -394,6 +394,8 @@ export async function notifyActionApprovalNeeded(params: {
 	connectionId?: string | null;
 	channelId?: string | null;
 	teamId?: string | null;
+	/** Field owner — routes the Slack card to their DM before the channel tier. */
+	ownerUserId?: string | null;
 	details?: ActionApprovalDetails;
 }): Promise<void> {
 	await notifyOrgAdmins(params.orgId, (orgSlug) => {
@@ -422,6 +424,7 @@ export async function notifyActionApprovalNeeded(params: {
 			connectionId: params.connectionId,
 			channelId: params.channelId,
 			teamId: params.teamId,
+			ownerUserId: params.ownerUserId,
 		};
 	});
 }

@@ -25,6 +25,14 @@ interface CreateNotificationParams {
 	/** Optional workspace/team guard for channel-scoped delivery. */
 	teamId?: string | null;
 	/**
+	 * Lobu user who owns the change under review (field-change approvals).
+	 * When set, bot delivery tries the owner's Slack DM FIRST — resolved via
+	 * chat_user_identities against a connected workspace — and only falls back
+	 * to the configured-target/org-wide channel chain when the owner has no
+	 * Slack identity or the DM fails. In-app inbox targeting is unaffected.
+	 */
+	ownerUserId?: string | null;
+	/**
 	 * Optional rich card (`chat` `CardElement`) for bot-connection delivery. When
 	 * set, the bound channel gets this card instead of the markdown body; the
 	 * in-app inbox entry still uses title/body.
@@ -57,6 +65,8 @@ interface BotDeliveryTarget {
 	platform: string;
 	/** Platform-prefixed channel id ready for `chat.channel()`, e.g. "slack:C0123ABCD". */
 	channelKey: string;
+	/** Workspace/team id from the binding — keys the owner-DM identity lookup. */
+	teamId: string | null;
 }
 
 /**
@@ -141,7 +151,50 @@ export async function resolveBotDeliveryTargets(
 			channelKey: row.channel_id.includes(":")
 				? row.channel_id
 				: `${row.platform}:${row.channel_id}`,
+			teamId: row.team_id,
 		}));
+}
+
+/**
+ * Owner-routed delivery target: the Slack identity of `ownerUserId` in a
+ * workspace one of the org's bot connections lives in. Reverse-looks-up
+ * chat_user_identities (platform='slack', team matching the connection's
+ * binding team) per candidate connection, most-recently-bound first via
+ * resolveBotDeliveryTargets order. Null when the owner has no Slack identity in
+ * any connected workspace — the caller falls back to channel delivery.
+ * Exported for testing the tier-selection logic against a real DB.
+ */
+export async function resolveOwnerDmTarget(
+	organizationId: string,
+	ownerUserId: string,
+	connectionId?: string | null,
+): Promise<{ connectionId: string; slackUserId: string } | null> {
+	const targets = await resolveBotDeliveryTargets(
+		organizationId,
+		connectionId ?? null,
+	);
+	const sql = getDb();
+	const seen = new Set<string>();
+	for (const target of targets) {
+		if (target.platform !== "slack" || target.teamId == null) continue;
+		const key = `${target.connectionId}:${target.teamId}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		const rows = await sql<{ platform_user_id: string }>`
+      SELECT platform_user_id FROM chat_user_identities
+      WHERE platform = 'slack'
+        AND team_id = ${target.teamId}
+        AND lobu_user_id = ${ownerUserId}
+      LIMIT 1
+    `;
+		if (rows[0]?.platform_user_id) {
+			return {
+				connectionId: target.connectionId,
+				slackUserId: rows[0].platform_user_id,
+			};
+		}
+	}
+	return null;
 }
 
 async function deliverToBotConnections(
@@ -154,6 +207,38 @@ async function deliverToBotConnections(
 	const text = params.body ? `${params.title}\n\n${params.body}` : params.title;
 	// A rich card takes precedence over the markdown body for the channel post.
 	const content = params.card ? { card: params.card } : { markdown: text };
+
+	// Owner-routed tier: an approval whose gated fields have ONE human owner
+	// goes to that owner's Slack DM first (same card, same approve/reject
+	// buttons — the interaction bridge is connection-scoped, so clicks route
+	// identically). Any miss — no identity row, DM open/post failure — logs and
+	// falls through to the configured-target/org-wide chain unchanged.
+	if (params.ownerUserId) {
+		try {
+			const dm = await resolveOwnerDmTarget(
+				params.organizationId,
+				params.ownerUserId,
+				params.connectionId,
+			);
+			if (dm) {
+				await manager.postDirectMessage(dm.connectionId, dm.slackUserId, content);
+				return;
+			}
+			logger.warn(
+				{ organizationId: params.organizationId, ownerUserId: params.ownerUserId },
+				"[Notifications] Approval owner has no Slack identity in a connected workspace — falling back to channel delivery",
+			);
+		} catch (err) {
+			logger.warn(
+				{
+					err,
+					organizationId: params.organizationId,
+					ownerUserId: params.ownerUserId,
+				},
+				"[Notifications] Owner DM delivery failed — falling back to channel delivery",
+			);
+		}
+	}
 
 	try {
 		let targets = await resolveBotDeliveryTargets(params.organizationId, {

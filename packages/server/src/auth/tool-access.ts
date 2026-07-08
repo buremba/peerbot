@@ -43,6 +43,12 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	// requireWatcherAccess; watcher ADMINISTRATION (create/update/delete/…)
 	// stays admin-tier below.
 	manage_watchers: new Set(["complete_window"]),
+	// `approve`/`reject` are write-tier so the recorded FIELD OWNER of an
+	// entity-change proposal (a plain member) can decide their own run. The
+	// handler enforces admin-or-run-owner per run — a member who is not that
+	// run's owner is rejected there with the same admin-access message.
+	// `execute` stays admin-tier below.
+	manage_operations: new Set(["approve", "reject"]),
 };
 
 const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
@@ -94,7 +100,9 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"delete_auth_profile",
 		"set_default_auth_profile",
 	]),
-	manage_operations: new Set(["execute", "approve", "reject"]),
+	// `approve`/`reject` live in MEMBER_WRITE_ACTIONS (handler enforces
+	// admin-or-run-owner); only `execute` is unconditionally admin.
+	manage_operations: new Set(["execute"]),
 	manage_watchers: new Set([
 		// `complete_window` is in MEMBER_WRITE_ACTIONS — it's the agent result
 		// path (server workers + device CLI over MCP), not administration.

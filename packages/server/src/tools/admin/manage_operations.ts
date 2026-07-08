@@ -39,6 +39,7 @@ import logger from "../../utils/logger";
 import { buildResourcePermalink } from "../../utils/url-builder";
 import { trackWatcherReaction } from "../../utils/watcher-reactions";
 import { dispatchChromeActionToExtension } from "../../worker-api/dispatch-chrome-action";
+import { isAdminOrOwnerRole, isSystemContext } from "../access-control";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 import { action, defineActionTool } from "./action-tool";
@@ -1267,6 +1268,55 @@ function describeEntityChange(proposal: EntityChangeProposal): string {
  * Approve + apply a pending entity_field_change run. Returns a result when the run
  * was a pending field-change run; null to fall through to other approval paths.
  */
+/**
+ * Non-admin authority: a member may decide a run ONLY when it is a pending
+ * entity-change proposal that records them as the field owner
+ * (action_input.owner_user_id, resolved at propose time from field_controls).
+ * Checked BEFORE any claim so an unauthorized call can never flip run state.
+ */
+async function isPendingEntityRunOwner(
+	runId: number,
+	organizationId: string,
+	userId: string | null,
+): Promise<boolean> {
+	if (!userId) return false;
+	const actionKeys = pgTextArray([...ENTITY_CHANGE_ACTION_KEYS]);
+	const rows = await getDb()`
+    SELECT 1 FROM runs
+    WHERE id = ${runId}
+      AND organization_id = ${organizationId}
+      AND run_type = 'internal'
+      AND action_key = ANY(${actionKeys}::text[])
+      AND approval_status = 'pending'
+      AND action_input->>'owner_user_id' = ${userId}
+    LIMIT 1
+  `;
+	return rows.length > 0;
+}
+
+/**
+ * The admin-or-run-owner gate shared by approve/reject. The tool-access tier
+ * admits write-tier members so a recorded field owner can decide their own
+ * run; everyone else non-admin gets the same admin-access denial the action
+ * tier used to throw.
+ */
+async function requireApprovalAuthority(
+	action: "approve" | "reject",
+	runId: number,
+	ctx: ToolContext,
+): Promise<void> {
+	// In-process system calls (userId=null + no member role) bypass role policy
+	// here exactly as they do at the action-router tier.
+	if (isSystemContext(ctx)) return;
+	if (isAdminOrOwnerRole(ctx.memberRole)) return;
+	if (await isPendingEntityRunOwner(runId, ctx.organizationId, ctx.userId)) {
+		return;
+	}
+	throw new Error(
+		`Action manage_operations.${action} requires admin or owner access. Ask an organization owner to grant elevated access.`,
+	);
+}
+
 async function tryApproveEntityChangeRun(
 	args: Static<typeof ApproveAction>,
 	ctx: ToolContext,
@@ -1430,6 +1480,7 @@ async function handleApprove(
 				"Operation approval requires a web session. Agents cannot approve their own operations.",
 		};
 	}
+	await requireApprovalAuthority("approve", args.run_id, ctx);
 
 	const sql = getDb();
 
@@ -1585,6 +1636,7 @@ async function handleReject(
 				"Operation rejection requires a web session. Agents cannot reject operations.",
 		};
 	}
+	await requireApprovalAuthority("reject", args.run_id, ctx);
 
 	const sql = getDb();
 	const reason = args.reason ?? "Rejected by user";

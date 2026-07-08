@@ -86,6 +86,7 @@ describe("resolveBotDeliveryTargets", () => {
 				connectionId: "conn-1",
 				platform: "slack",
 				channelKey: "slack:C0LEADS",
+				teamId: "T_TEST",
 			},
     ]);
   });
@@ -148,7 +149,12 @@ describe("resolveBotDeliveryTargets", () => {
 
     const targets = await resolveBotDeliveryTargets(org.id);
     expect(targets).toEqual([
-			{ connectionId: "conn-1", platform: "slack", channelKey: "slack:C0BARE" },
+			{
+				connectionId: "conn-1",
+				platform: "slack",
+				channelKey: "slack:C0BARE",
+				teamId: "T_TEST",
+			},
     ]);
   });
 
@@ -211,6 +217,7 @@ describe("resolveBotDeliveryTargets", () => {
 				connectionId: "preview-conn",
 				platform: "slack",
 				channelKey: "slack:C0LUNCH",
+				teamId: "T_TEST",
 			},
     ]);
   });
@@ -300,6 +307,7 @@ describe("resolveBotDeliveryTargets", () => {
 				connectionId: "own-conn",
 				platform: "slack",
 				channelKey: "slack:C0LUNCH",
+				teamId: "T_TEST",
 			},
     ]);
   });

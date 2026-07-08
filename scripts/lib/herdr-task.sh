@@ -6,10 +6,21 @@ herdr_task_enabled() {
 }
 
 # Open (or attach) an existing git worktree as a Herdr workspace. Prints workspace_id on stdout.
+#
+# When task-setup runs *inside* an existing Herdr pane (the common "click new →
+# start agent → run make task-setup" flow), Herdr exports $HERDR_WORKSPACE_ID.
+# In that case we relabel the *current* workspace to the task name instead of
+# spawning a second one — otherwise the pane you're typing in keeps its launch
+# label (e.g. "~") while an empty correctly-labeled workspace appears beside it.
 herdr_task_open() {
   local repo="$1" worktree_path="$2" label="$3"
   local json ws
   herdr_task_enabled || return 1
+  if [[ -n "${HERDR_WORKSPACE_ID:-}" ]]; then
+    herdr workspace rename "$HERDR_WORKSPACE_ID" "$label" >/dev/null 2>&1 || true
+    printf '%s' "$HERDR_WORKSPACE_ID"
+    return 0
+  fi
   json="$(herdr worktree open --cwd "$repo" --path "$worktree_path" --label "$label" --no-focus --json 2>/dev/null)" || return 1
   ws="$(printf '%s' "$json" | python3 -c 'import sys,json
 d=json.load(sys.stdin)

@@ -48,6 +48,10 @@ export function normalizeInstagramUsername(
   const trimmed = raw.trim().replace(/^@+/, "").toLowerCase();
   if (!trimmed || !/^[a-z0-9._]{1,30}$/.test(trimmed)) return null;
   // Reserved non-profile path segments that show up as instagram.com/<seg>.
+  // Includes the `_u`/`_n` app-deeplink markers: even though usernameFromProfileUrl
+  // strips them upstream, rejecting them here is defense-in-depth so a raw `_u`
+  // reaching normalization can NEVER become a person (which would mass-merge
+  // every following row into one bogus entity).
   const RESERVED = new Set([
     "p",
     "reel",
@@ -59,6 +63,8 @@ export function normalizeInstagramUsername(
     "about",
     "developer",
     "legal",
+    "_u",
+    "_n",
   ]);
   if (RESERVED.has(trimmed)) return null;
   return trimmed;

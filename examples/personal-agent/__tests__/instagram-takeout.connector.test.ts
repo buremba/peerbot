@@ -47,6 +47,13 @@ describe("instagram-identity normalization", () => {
     }
   });
 
+  test("the _u/_n deeplink markers never normalize to a username (no mass-merge)", () => {
+    // Defense-in-depth: even a raw `_u` reaching the normalizer must be rejected,
+    // so a following row that somehow keeps the marker can't fork/mass-merge.
+    expect(normalizeInstagramUsername("_u")).toBe(null);
+    expect(normalizeInstagramUsername("_n")).toBe(null);
+  });
+
   test("usernameFromProfileUrl recovers the normalized handle from a profile link", () => {
     expect(usernameFromProfileUrl("https://www.instagram.com/Jack")).toBe(
       "jack"

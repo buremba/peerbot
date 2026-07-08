@@ -52,12 +52,20 @@ vi.mock("../utils/logger", () => {
 vi.mock("../sentry", () => {
 	const reported = new WeakSet<object>();
 	return {
+		captureServerError: vi.fn(),
 		isSentryReported: vi.fn((c: { req: unknown }) =>
 			reported.has(c.req as object),
 		),
 		markSentryReported: vi.fn((c: { req: unknown }) => {
 			reported.add(c.req as object);
 		}),
+		trackMCPToolCall: vi.fn(
+			async <T,>(
+				_toolName: string,
+				_args: unknown,
+				handler: () => Promise<T>,
+			) => handler(),
+		),
 	};
 });
 
@@ -70,7 +78,10 @@ vi.mock("../index", async () => {
 	const { Hono } = await import("hono");
 	const app = new Hono();
 	app.get("/health", (c) => c.text("main-ok"));
-	return { app };
+	return {
+		app,
+		setViteDev: vi.fn(),
+	};
 });
 
 const LIFECYCLE_SOURCE = readFileSync(

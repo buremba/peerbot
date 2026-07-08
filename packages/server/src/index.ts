@@ -23,6 +23,15 @@ import { oauthRoutes } from "./auth/oauth/routes";
 import { findExistingPersonalOrg } from "./auth/personal-org-provisioning";
 import { credentialRoutes } from "./auth/routes";
 import { compareWorkerToken } from "./auth/worker-token";
+import {
+	deleteEntityApprovalPolicy,
+	type EntityApprovalPolicy,
+	type EntityMutationMode,
+	getGlobalEntityApprovalPolicy,
+	listEntityApprovalPolicies,
+	upsertEntityApprovalPolicy,
+	upsertGlobalEntityApprovalPolicy,
+} from "./authz/entity-approval-policy";
 import { globalCatalogRoutes, orgInstalledRoutes } from "./catalog/routes";
 import { connectionTokenRoutes } from "./connect/connection-token-route";
 import { connectRoutes } from "./connect/routes";
@@ -34,6 +43,10 @@ import { getDb } from "./db/client";
 import * as invalidationEmitter from "./events/emitter";
 import { streamInvalidationEvents } from "./events/sse";
 import { invalidationSseAuth } from "./events/sse-invalidation-auth";
+import {
+	resolveBoundChannelRows,
+	stripPlatformPrefix,
+} from "./gateway/channels/bound-channels";
 import {
 	type ClaimEligibleOrg,
 	type ClaimEngineDeps,
@@ -55,10 +68,7 @@ import { agentRoutes } from "./lobu/agent-routes";
 import { clientRoutes } from "./lobu/client-routes";
 import { deploymentRoutes } from "./lobu/deployment-routes";
 import { environmentRoutes } from "./lobu/environment-routes";
-import {
-	getLobuCoreServices,
-	isLobuGatewayRunning,
-} from "./lobu/gateway";
+import { getLobuCoreServices, isLobuGatewayRunning } from "./lobu/gateway";
 import {
 	claimSlackPendingInstall,
 	resolveSlackPendingByTenant,
@@ -1255,6 +1265,277 @@ app.get("/api/:orgSlug/actions/available", mcpAuth, async (c) => {
 app.post("/api/:orgSlug/actions/execute", mcpAuth, async (c) => {
 	const body = await c.req.json();
 	return restToolProxy(c, "manage_operations", { action: "execute", ...body });
+});
+
+function isEntityMutationMode(value: unknown): value is EntityMutationMode {
+	return value === "auto" || value === "approval";
+}
+
+function serializeEntityApprovalPolicy(
+	policy: EntityApprovalPolicy,
+) {
+	return {
+		id: policy.id,
+		organization_id: policy.organizationId,
+		entity_type_slug: policy.entityTypeSlug,
+		field_path: policy.fieldPath,
+		create_mode: policy.createMode,
+		update_mode: policy.updateMode,
+		delete_mode: policy.deleteMode,
+		approval_connection_id: policy.deliveryTarget.connectionId,
+		approval_channel_id: policy.deliveryTarget.channelId,
+		approval_team_id: policy.deliveryTarget.teamId,
+		approval_channel_name: policy.deliveryTarget.channelName,
+	};
+}
+
+async function requireOrganizationSettingsAdmin(c: Context) {
+	const organizationId = c.get("organizationId");
+	const memberRole = c.get("memberRole");
+
+	if (!organizationId) {
+		return c.json({ error: "Organization context required" }, 401);
+	}
+
+	if (memberRole !== "owner" && memberRole !== "admin") {
+		return c.json(
+			{
+				error: "forbidden",
+				message: "Workspace settings require owner or admin access.",
+			},
+			403,
+		);
+	}
+
+	const authSource = c.get("authSource");
+	if (authSource === "pat") {
+		return c.json(
+			{
+				error: "forbidden",
+				message: "Use OAuth or a web session to change workspace settings.",
+			},
+			403,
+		);
+	}
+
+	const scopes = c.get("mcpAuthInfo")?.scopes ?? [];
+	if (authSource === "oauth" && !scopes.includes("mcp:admin")) {
+		return c.json(
+			{
+				error: "forbidden",
+				message: "Workspace settings changes require mcp:admin scope.",
+			},
+			403,
+		);
+	}
+
+	return null;
+}
+
+app.get("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
+	const authError = await requireOrganizationSettingsAdmin(c);
+	if (authError) return authError;
+	const organizationId = c.get("organizationId");
+	if (!organizationId) {
+		return c.json({ error: "Organization context required" }, 401);
+	}
+	const policy = await getGlobalEntityApprovalPolicy(organizationId);
+	const policies = await listEntityApprovalPolicies(organizationId);
+	const channelRows = await resolveBoundChannelRows(getDb(), {
+		organizationId,
+	});
+	const availableChannels = channelRows.map((row) => {
+		const nativeChannelId = stripPlatformPrefix(row.platform, row.channel_id);
+		return {
+			connection_id: row.id,
+			platform: row.platform,
+			channel_id: row.channel_id,
+			team_id: row.team_id,
+			label: `${row.platform} ${nativeChannelId}`,
+		};
+	});
+
+	return c.json({
+		policy: serializeEntityApprovalPolicy(policy),
+		policies: policies.map(serializeEntityApprovalPolicy),
+		available_channels: availableChannels,
+	});
+});
+
+app.patch("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
+	const authError = await requireOrganizationSettingsAdmin(c);
+	if (authError) return authError;
+	const organizationId = c.get("organizationId");
+	if (!organizationId) {
+		return c.json({ error: "Organization context required" }, 401);
+	}
+
+	let body: Record<string, unknown>;
+	try {
+		body = await c.req.json();
+	} catch {
+		return c.json(
+			{ error: "invalid_request", message: "Request body must be JSON." },
+			400,
+		);
+	}
+
+	const createMode = body.create_mode;
+	const updateMode = body.update_mode;
+	const deleteMode = body.delete_mode;
+	if (
+		!isEntityMutationMode(createMode) ||
+		!isEntityMutationMode(updateMode) ||
+		!isEntityMutationMode(deleteMode)
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message:
+					'create_mode, update_mode, and delete_mode must be "auto" or "approval".',
+			},
+			400,
+		);
+	}
+
+	const approvalConnectionId =
+		typeof body.approval_connection_id === "string" &&
+		body.approval_connection_id.trim()
+			? body.approval_connection_id.trim()
+			: null;
+	const approvalChannelId =
+		typeof body.approval_channel_id === "string" &&
+		body.approval_channel_id.trim()
+			? body.approval_channel_id.trim()
+			: null;
+	const approvalTeamId =
+		typeof body.approval_team_id === "string" && body.approval_team_id.trim()
+			? body.approval_team_id.trim()
+			: null;
+
+	let approvalChannelName =
+		typeof body.approval_channel_name === "string" &&
+		body.approval_channel_name.trim()
+			? body.approval_channel_name.trim()
+			: null;
+
+	if (approvalConnectionId || approvalChannelId || approvalTeamId) {
+		if (!approvalConnectionId || !approvalChannelId) {
+			return c.json(
+				{
+					error: "invalid_request",
+					message:
+						"Approval channel selection requires a connection and channel.",
+				},
+				400,
+			);
+		}
+		const rows = await resolveBoundChannelRows(getDb(), { organizationId });
+		const selected = rows.find((row) => {
+			const rowChannelKey = row.channel_id.includes(":")
+				? row.channel_id
+				: `${row.platform}:${row.channel_id}`;
+			const requestedChannelKey = approvalChannelId.includes(":")
+				? approvalChannelId
+				: `${row.platform}:${approvalChannelId}`;
+			return (
+				row.id === approvalConnectionId &&
+				rowChannelKey === requestedChannelKey &&
+				(!approvalTeamId || row.team_id === approvalTeamId)
+			);
+		});
+		if (!selected) {
+			return c.json(
+				{
+					error: "invalid_request",
+					message: "Approval channel is not available to this workspace.",
+				},
+				400,
+			);
+		}
+		approvalChannelName =
+			approvalChannelName ??
+			`${selected.platform} ${stripPlatformPrefix(selected.platform, selected.channel_id)}`;
+	}
+
+	const entityTypeSlug =
+		typeof body.entity_type_slug === "string" && body.entity_type_slug.trim()
+			? body.entity_type_slug.trim()
+			: null;
+	const fieldPath =
+		typeof body.field_path === "string" && body.field_path.trim()
+			? body.field_path.trim()
+			: null;
+
+	if (fieldPath && !entityTypeSlug) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "A field-path approval policy requires an entity type.",
+			},
+			400,
+		);
+	}
+
+	const policyInput = {
+		entityTypeSlug,
+		fieldPath,
+		createMode,
+		updateMode,
+		deleteMode,
+		approvalConnectionId,
+		approvalChannelId,
+		approvalTeamId,
+		approvalChannelName,
+	};
+	const policy =
+		entityTypeSlug || fieldPath
+			? await upsertEntityApprovalPolicy(organizationId, policyInput)
+			: await upsertGlobalEntityApprovalPolicy(organizationId, policyInput);
+
+	invalidationEmitter.emit(organizationId, {
+		keys: ["entity-approval-policy"],
+	});
+
+	return c.json({ policy: serializeEntityApprovalPolicy(policy) });
+});
+
+app.delete("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
+	const authError = await requireOrganizationSettingsAdmin(c);
+	if (authError) return authError;
+	const organizationId = c.get("organizationId");
+	if (!organizationId) {
+		return c.json({ error: "Organization context required" }, 401);
+	}
+	const entityTypeSlug = c.req.query("entity_type_slug")?.trim() || null;
+	const fieldPath = c.req.query("field_path")?.trim() || null;
+	if (!entityTypeSlug && !fieldPath) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "The workspace default policy cannot be deleted.",
+			},
+			400,
+		);
+	}
+	if (fieldPath && !entityTypeSlug) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "A field-path approval policy requires an entity type.",
+			},
+			400,
+		);
+	}
+	const deleted = await deleteEntityApprovalPolicy({
+		organizationId,
+		entityTypeSlug,
+		fieldPath,
+	});
+	invalidationEmitter.emit(organizationId, {
+		keys: ["entity-approval-policy"],
+	});
+	return c.json({ deleted });
 });
 
 app.patch("/api/:orgSlug/organization/visibility", mcpAuth, async (c) => {

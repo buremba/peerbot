@@ -6,28 +6,38 @@
  * Organization scoping ensures data isolation.
  */
 
-import { slugify } from '@lobu/core';
+import { slugify } from "@lobu/core";
+import { feedLinkedToBusinessEntitySql } from "../authz/channel-about";
+import { shouldRequireEntityMutationApproval } from "../authz/entity-approval-policy";
 import {
-  createDbClientFromEnv,
-  type DbClient,
-  getDb,
-  pgBigintArray,
-  pgTextArray,
-} from '../db/client';
-import type { Env } from '../index';
-import { querySqlImpl } from '../tools/admin/query_sql';
-import type { ToolContext } from '../tools/registry';
-import { feedLinkedToBusinessEntitySql } from '../authz/channel-about';
-import { entityLinkMatchSql } from './content-search';
-import { computeFieldMerge, type FieldControl } from './entity-field-merge';
-import { type EntityHookContext, getEntityHooks } from './entity-hooks';
-import { ToolUserError } from './errors';
-import { requireWriteAccess } from './organization-access';
-import { RESERVED_ENTITY_TYPES } from './reserved';
+	type EntityPolicyDecision,
+	type EntityPolicyPrincipalKind,
+	evaluateEntityFieldUpdate,
+} from "../authz/entity-policy";
+import {
+	createDbClientFromEnv,
+	type DbClient,
+	getDb,
+	pgBigintArray,
+	pgTextArray,
+} from "../db/client";
+import type { Env } from "../index";
+import { querySqlImpl } from "../tools/admin/query_sql";
+import type { ToolContext } from "../tools/registry";
+import { entityLinkMatchSql } from "./content-search";
+import { computeFieldMerge, type FieldControl } from "./entity-field-merge";
+import { type EntityHookContext, getEntityHooks } from "./entity-hooks";
+import { ToolUserError } from "./errors";
+import { requireWriteAccess } from "./organization-access";
+import { RESERVED_ENTITY_TYPES } from "./reserved";
 
 interface EntityCreateOptions {
-  skipHooks?: boolean;
-  hookContext?: EntityHookContext;
+	skipHooks?: boolean;
+	hookContext?: EntityHookContext;
+}
+
+interface EntityUpdateOptions {
+	policyPrincipalKind?: EntityPolicyPrincipalKind;
 }
 
 // ============================================
@@ -35,13 +45,13 @@ interface EntityCreateOptions {
 // ============================================
 
 const CONVENIENCE_FIELDS = [
-  'domain',
-  'category',
-  'platform_type',
-  'main_market',
-  'market',
-  'link',
-  'external_ids',
+	"domain",
+	"category",
+	"platform_type",
+	"main_market",
+	"market",
+	"link",
+	"external_ids",
 ] as const;
 
 /**
@@ -49,32 +59,34 @@ const CONVENIENCE_FIELDS = [
  * For creates, uses truthiness; for updates, uses `!== undefined` to allow clearing fields.
  */
 function mergeConvenienceFields(
-  data: Partial<EntityData>,
-  base: Record<string, any>,
-  mode: 'create' | 'update'
+	data: Partial<EntityData>,
+	base: Record<string, any>,
+	mode: "create" | "update",
 ): Record<string, any> {
-  const out = { ...base };
-  for (const key of CONVENIENCE_FIELDS) {
-    const value = data[key];
-    if (mode === 'update') {
-      if (value !== undefined) out[key] = value;
-    } else if (key === 'external_ids') {
-      if (value && typeof value === 'object' && Object.keys(value).length > 0) {
-        out[key] = value;
-      }
-    } else if (value) {
-      out[key] = value;
-    }
-  }
-  return out;
+	const out = { ...base };
+	for (const key of CONVENIENCE_FIELDS) {
+		const value = data[key];
+		if (mode === "update") {
+			if (value !== undefined) out[key] = value;
+		} else if (key === "external_ids") {
+			if (value && typeof value === "object" && Object.keys(value).length > 0) {
+				out[key] = value;
+			}
+		} else if (value) {
+			out[key] = value;
+		}
+	}
+	return out;
 }
 
 /**
  * Convert a numeric embedding array to a PostgreSQL vector literal.
  */
-export function toVectorLiteral(embedding: number[] | null | undefined): string | null {
-  if (!embedding || embedding.length === 0) return null;
-  return `[${embedding.join(',')}]`;
+export function toVectorLiteral(
+	embedding: number[] | null | undefined,
+): string | null {
+	if (!embedding || embedding.length === 0) return null;
+	return `[${embedding.join(",")}]`;
 }
 
 // ============================================
@@ -82,64 +94,64 @@ export function toVectorLiteral(embedding: number[] | null | undefined): string 
 // ============================================
 
 export interface EntityData {
-  entity_type: string;
-  name: string;
-  slug?: string; // Auto-generated from name if not provided
-  parent_id?: number | null;
+	entity_type: string;
+	name: string;
+	slug?: string; // Auto-generated from name if not provided
+	parent_id?: number | null;
 
-  // Organization scoping
-  organization_id?: string;
+	// Organization scoping
+	organization_id?: string;
 
-  // Common fields
-  enabled_classifiers?: string[] | null;
+	// Common fields
+	enabled_classifiers?: string[] | null;
 
-  // Content & embeddings (used by memory entities and any content-bearing entity)
-  content?: string | null;
-  embedding?: number[] | null;
-  content_hash?: string | null;
+	// Content & embeddings (used by memory entities and any content-bearing entity)
+	content?: string | null;
+	embedding?: number[] | null;
+	content_hash?: string | null;
 
-  // Metadata - contains all type-specific fields
-  metadata?: Record<string, any>;
+	// Metadata - contains all type-specific fields
+	metadata?: Record<string, any>;
 
-  // Optional human-correction note: on a human update it is stored on the
-  // field_controls marker for every field this edit claims, so the watcher (and
-  // the UI) can show WHY the value was set. Ignored for agent/system writes.
-  field_note?: string | null;
+	// Optional human-correction note: on a human update it is stored on the
+	// field_controls marker for every field this edit claims, so the watcher (and
+	// the UI) can show WHY the value was set. Ignored for agent/system writes.
+	field_note?: string | null;
 
-  // Approve/affirm: field names whose CURRENT value the human endorses as-is.
-  // No value change, but ownership is claimed so a watcher can't later overwrite
-  // them without an approval. This is the "approve" half of the recap feedback
-  // loop; "correct" is a normal metadata update. Ignored for agent/system writes.
-  affirm_fields?: string[] | null;
+	// Approve/affirm: field names whose CURRENT value the human endorses as-is.
+	// No value change, but ownership is claimed so a watcher can't later overwrite
+	// them without an approval. This is the "approve" half of the recap feedback
+	// loop; "correct" is a normal metadata update. Ignored for agent/system writes.
+	affirm_fields?: string[] | null;
 
-  // Convenience fields - will be merged into metadata
-  domain?: string | null;
-  category?: string | null;
-  platform_type?: string | null;
-  main_market?: string | null;
-  external_ids?: Record<string, any>;
-  market?: string | null;
-  link?: string | null;
+	// Convenience fields - will be merged into metadata
+	domain?: string | null;
+	category?: string | null;
+	platform_type?: string | null;
+	main_market?: string | null;
+	external_ids?: Record<string, any>;
+	market?: string | null;
+	link?: string | null;
 }
 
 export interface CreatedEntity {
-  id: number;
-  entity_type: string;
-  name: string;
-  slug: string;
-  parent_id: number | null;
-  parent_name?: string | null;
-  parent_slug?: string | null;
-  parent_entity_type?: string | null;
-  metadata?: Record<string, any> | null;
-  enabled_classifiers?: string[] | null;
-  created_at: Date;
-  total_content?: number | null;
-  active_connections?: number | null;
-  watchers_count?: number | null;
-  children_count?: number | null;
-  current_view_template_version_id?: number | null;
-  warnings?: string[];
+	id: number;
+	entity_type: string;
+	name: string;
+	slug: string;
+	parent_id: number | null;
+	parent_name?: string | null;
+	parent_slug?: string | null;
+	parent_entity_type?: string | null;
+	metadata?: Record<string, any> | null;
+	enabled_classifiers?: string[] | null;
+	created_at: Date;
+	total_content?: number | null;
+	active_connections?: number | null;
+	watchers_count?: number | null;
+	children_count?: number | null;
+	current_view_template_version_id?: number | null;
+	warnings?: string[];
 }
 
 /**
@@ -148,8 +160,8 @@ export interface CreatedEntity {
  * shared `CreatedEntity` interface — only `updateEntity`'s return carries it.
  */
 export interface FieldMergeInfo {
-  applied: string[];
-  blocked: Record<string, { current: unknown; proposed: unknown }>;
+	applied: string[];
+	blocked: Record<string, { current: unknown; proposed: unknown }>;
 }
 
 // ============================================
@@ -164,30 +176,35 @@ export interface FieldMergeInfo {
  * If we encounter `entityId` as an ancestor, that would create a cycle.
  */
 async function preventEntityCycles(
-  entityId: number | null,
-  parentId: number | null
+	entityId: number | null,
+	parentId: number | null,
 ): Promise<void> {
-  if (parentId === null) return;
+	if (parentId === null) return;
 
-  const sql = getDb();
-  const MAX_DEPTH = 10;
-  let currentId: number | null = parentId;
-  let depth = 0;
+	const sql = getDb();
+	const MAX_DEPTH = 10;
+	let currentId: number | null = parentId;
+	let depth = 0;
 
-  while (currentId !== null) {
-    if ((entityId !== null && currentId === entityId) || ++depth >= MAX_DEPTH) {
-      throw new Error('Circular reference detected or hierarchy too deep (max 10 levels)');
-    }
+	while (currentId !== null) {
+		if ((entityId !== null && currentId === entityId) || ++depth >= MAX_DEPTH) {
+			throw new Error(
+				"Circular reference detected or hierarchy too deep (max 10 levels)",
+			);
+		}
 
-    const rows: Array<Record<string, unknown>> = await sql`
+		const rows: Array<Record<string, unknown>> = await sql`
       SELECT parent_id FROM entities WHERE id = ${currentId}
     `;
-    currentId = rows.length > 0 ? (rows[0].parent_id as number | null) : null;
-  }
+		currentId = rows.length > 0 ? (rows[0].parent_id as number | null) : null;
+	}
 }
 
-async function loadEntityTreeIds(sql: DbClient, entityId: number): Promise<number[]> {
-  const rows = await sql<{ id: number }>`
+async function loadEntityTreeIds(
+	sql: DbClient,
+	entityId: number,
+): Promise<number[]> {
+	const rows = await sql<{ id: number }>`
     WITH RECURSIVE entity_tree AS (
       SELECT id
       FROM entities
@@ -201,7 +218,7 @@ async function loadEntityTreeIds(sql: DbClient, entityId: number): Promise<numbe
     FROM entity_tree
   `;
 
-  return rows.map((row) => Number(row.id));
+	return rows.map((row) => Number(row.id));
 }
 
 // ============================================
@@ -213,54 +230,54 @@ async function loadEntityTreeIds(sql: DbClient, entityId: number): Promise<numbe
  * Entity is created in the user's organization
  */
 export async function createEntity(
-  data: EntityData,
-  opts?: EntityCreateOptions
+	data: EntityData,
+	opts?: EntityCreateOptions,
 ): Promise<CreatedEntity> {
-  // Input validation
-  if (!data.name || data.name.trim().length === 0) {
-    throw new Error('Entity name is required');
-  }
+	// Input validation
+	if (!data.name || data.name.trim().length === 0) {
+		throw new Error("Entity name is required");
+	}
 
-  if (!data.entity_type || data.entity_type.trim().length === 0) {
-    throw new Error('Entity type is required');
-  }
+	if (!data.entity_type || data.entity_type.trim().length === 0) {
+		throw new Error("Entity type is required");
+	}
 
-  // Check for reserved entity types
-  if (RESERVED_ENTITY_TYPES.includes(data.entity_type.toLowerCase())) {
-    throw new Error(
-      `Cannot create entity with reserved type '${data.entity_type}'. Reserved types: ${RESERVED_ENTITY_TYPES.join(', ')}`
-    );
-  }
+	// Check for reserved entity types
+	if (RESERVED_ENTITY_TYPES.includes(data.entity_type.toLowerCase())) {
+		throw new Error(
+			`Cannot create entity with reserved type '${data.entity_type}'. Reserved types: ${RESERVED_ENTITY_TYPES.join(", ")}`,
+		);
+	}
 
-  if (!data.organization_id) {
-    throw new Error('Organization ID is required');
-  }
+	if (!data.organization_id) {
+		throw new Error("Organization ID is required");
+	}
 
-  // Run beforeCreate hook
-  if (!opts?.skipHooks && opts?.hookContext) {
-    const hooks = getEntityHooks(data.entity_type);
-    if (hooks?.beforeCreate) {
-      data = await hooks.beforeCreate(data, opts.hookContext);
-    }
-  }
+	// Run beforeCreate hook
+	if (!opts?.skipHooks && opts?.hookContext) {
+		const hooks = getEntityHooks(data.entity_type);
+		if (hooks?.beforeCreate) {
+			data = await hooks.beforeCreate(data, opts.hookContext);
+		}
+	}
 
-  const sql = getDb();
+	const sql = getDb();
 
-  // Resolve entity_type slug → entity_types(id) via the schema search path:
-  //   1. The entity's own org (the user's tenant — local types win).
-  //   2. Any org with visibility='public' (canonical/world-knowledge catalogs).
-  // First match wins. The resolved id is materialized on the row so reads
-  // never need to repeat the search. `ORDER BY (et.organization_id = own_org)
-  // DESC` keeps tenant-local types ahead of public ones when both exist.
-  //
-  // KNOWN LIMITATION: this trusts every visibility='public' org as a curated
-  // catalog. If a tenant can flip their own org public *and* register types
-  // before another tenant references the same slug, they could squat on
-  // common slugs (`brand`, `tax_filing`). Operationally we restrict
-  // visibility flips to admins; long-term the right fix is either an
-  // explicit `is_catalog` flag on `organization` or per-agent `uses_catalog`
-  // declarations narrowing the search scope.
-  const typeRow = await sql<{ id: number; backing_sql: string | null }>`
+	// Resolve entity_type slug → entity_types(id) via the schema search path:
+	//   1. The entity's own org (the user's tenant — local types win).
+	//   2. Any org with visibility='public' (canonical/world-knowledge catalogs).
+	// First match wins. The resolved id is materialized on the row so reads
+	// never need to repeat the search. `ORDER BY (et.organization_id = own_org)
+	// DESC` keeps tenant-local types ahead of public ones when both exist.
+	//
+	// KNOWN LIMITATION: this trusts every visibility='public' org as a curated
+	// catalog. If a tenant can flip their own org public *and* register types
+	// before another tenant references the same slug, they could squat on
+	// common slugs (`brand`, `tax_filing`). Operationally we restrict
+	// visibility flips to admins; long-term the right fix is either an
+	// explicit `is_catalog` flag on `organization` or per-agent `uses_catalog`
+	// declarations narrowing the search scope.
+	const typeRow = await sql<{ id: number; backing_sql: string | null }>`
     SELECT et.id, et.backing_sql
     FROM entity_types et
     LEFT JOIN organization o ON o.id = et.organization_id
@@ -273,42 +290,42 @@ export async function createEntity(
     ORDER BY (et.organization_id = ${data.organization_id}) DESC, et.id ASC
     LIMIT 1
   `;
-  if (typeRow.length === 0) {
-    throw new ToolUserError(
-      `Unknown entity type '${data.entity_type}'. Use manage_entity_schema(schema_type="entity_type", action="list") to list available types or create a custom type first.`,
-      400
-    );
-  }
-  // A derived (view-backed) type has no stored rows — its data is its backing_sql
-  // view. Reject inserts here (the single chokepoint; covers tenant + public
-  // catalog types) so a row the view ignores can't be orphaned.
-  if (typeRow[0].backing_sql) {
-    throw new ToolUserError(
-      `Entity type '${data.entity_type}' is derived (a SQL view) and has no stored rows. Edit its backing view instead of creating entities.`,
-      400
-    );
-  }
-  const entityTypeId = typeRow[0].id;
+	if (typeRow.length === 0) {
+		throw new ToolUserError(
+			`Unknown entity type '${data.entity_type}'. Use manage_entity_schema(schema_type="entity_type", action="list") to list available types or create a custom type first.`,
+			400,
+		);
+	}
+	// A derived (view-backed) type has no stored rows — its data is its backing_sql
+	// view. Reject inserts here (the single chokepoint; covers tenant + public
+	// catalog types) so a row the view ignores can't be orphaned.
+	if (typeRow[0].backing_sql) {
+		throw new ToolUserError(
+			`Entity type '${data.entity_type}' is derived (a SQL view) and has no stored rows. Edit its backing view instead of creating entities.`,
+			400,
+		);
+	}
+	const entityTypeId = typeRow[0].id;
 
-  // Generate slug from name if not provided
-  const slug = data.slug || slugify(data.name);
+	// Generate slug from name if not provided
+	const slug = data.slug || slugify(data.name);
 
-  const metadata = mergeConvenienceFields(data, data.metadata || {}, 'create');
+	const metadata = mergeConvenienceFields(data, data.metadata || {}, "create");
 
-  const createdBy = (data as any).created_by || 'system';
+	const createdBy = (data as any).created_by || "system";
 
-  // Validate parent hierarchy (replaces prevent_entity_cycles trigger)
-  if (data.parent_id) {
-    await preventEntityCycles(null, data.parent_id);
-  }
+	// Validate parent hierarchy (replaces prevent_entity_cycles trigger)
+	if (data.parent_id) {
+		await preventEntityCycles(null, data.parent_id);
+	}
 
-  const contentValue = data.content?.trim() || null;
-  const embeddingLiteral = toVectorLiteral(data.embedding);
-  const contentHash = data.content_hash || null;
+	const contentValue = data.content?.trim() || null;
+	const embeddingLiteral = toVectorLiteral(data.embedding);
+	const contentHash = data.content_hash || null;
 
-  try {
-    const inserted = await sql.begin(async (tx) => {
-      const rows = await tx<Omit<CreatedEntity, 'entity_type'>>`
+	try {
+		const inserted = await sql.begin(async (tx) => {
+			const rows = await tx<Omit<CreatedEntity, "entity_type">>`
         INSERT INTO entities (
           organization_id, entity_type_id, name, slug, parent_id, metadata, enabled_classifiers, created_by, content, embedding, content_hash, created_at, updated_at
         ) VALUES (
@@ -318,46 +335,49 @@ export async function createEntity(
         )
         RETURNING id, name, slug, parent_id, metadata, created_at
       `;
-      if (rows.length === 0) {
-        throw new Error('Failed to create entity');
-      }
-      return rows[0];
-    });
+			if (rows.length === 0) {
+				throw new Error("Failed to create entity");
+			}
+			return rows[0];
+		});
 
-    // The validator above already resolved data.entity_type → entityTypeId.
-    // Pass the slug back through directly rather than JOIN-ing on every insert.
-    const created: CreatedEntity = { ...inserted, entity_type: data.entity_type };
+		// The validator above already resolved data.entity_type → entityTypeId.
+		// Pass the slug back through directly rather than JOIN-ing on every insert.
+		const created: CreatedEntity = {
+			...inserted,
+			entity_type: data.entity_type,
+		};
 
-    // Run afterCreate hook
-    if (!opts?.skipHooks && opts?.hookContext) {
-      const hooks = getEntityHooks(created.entity_type);
-      if (hooks?.afterCreate) {
-        await hooks.afterCreate(created, opts.hookContext);
-      }
-    }
+		// Run afterCreate hook
+		if (!opts?.skipHooks && opts?.hookContext) {
+			const hooks = getEntityHooks(created.entity_type);
+			if (hooks?.afterCreate) {
+				await hooks.afterCreate(created, opts.hookContext);
+			}
+		}
 
-    return created;
-  } catch (error: any) {
-    const msg = error.message ?? '';
+		return created;
+	} catch (error: any) {
+		const msg = error.message ?? "";
 
-    // Handle database constraint violations
-    if (msg.includes('duplicate key') || msg.includes('unique constraint')) {
-      throw new Error('Entity already exists with this name/domain');
-    }
-    if (msg.includes('foreign key')) {
-      if (data.parent_id) {
-        throw new Error(`Parent entity ${data.parent_id} does not exist`);
-      }
-      throw new Error(`Foreign key violation: ${msg}`);
-    }
-    if (msg.includes('check constraint')) {
-      throw new Error(`Invalid entity data: ${msg}`);
-    }
-    if (msg.includes('Circular reference')) {
-      throw new Error('Cannot create circular entity hierarchy');
-    }
-    throw error;
-  }
+		// Handle database constraint violations
+		if (msg.includes("duplicate key") || msg.includes("unique constraint")) {
+			throw new Error("Entity already exists with this name/domain");
+		}
+		if (msg.includes("foreign key")) {
+			if (data.parent_id) {
+				throw new Error(`Parent entity ${data.parent_id} does not exist`);
+			}
+			throw new Error(`Foreign key violation: ${msg}`);
+		}
+		if (msg.includes("check constraint")) {
+			throw new Error(`Invalid entity data: ${msg}`);
+		}
+		if (msg.includes("Circular reference")) {
+			throw new Error("Cannot create circular entity hierarchy");
+		}
+		throw error;
+	}
 }
 
 /**
@@ -366,104 +386,165 @@ export async function createEntity(
  * Requires write access (entity must belong to user's organization)
  */
 export async function updateEntity(
-  entityId: number,
-  data: Partial<EntityData>,
-  env: Env,
-  ctx: ToolContext
+	entityId: number,
+	data: Partial<EntityData>,
+	env: Env,
+	ctx: ToolContext,
+	opts?: EntityUpdateOptions,
 ): Promise<CreatedEntity & { fieldMerge?: FieldMergeInfo }> {
-  const pgSql = createDbClientFromEnv(env);
-  const sql = getDb();
+	const pgSql = createDbClientFromEnv(env);
+	const sql = getDb();
 
-  // Validate write access (uses PG for auth tables)
-  await requireWriteAccess(pgSql, entityId, ctx);
+	// Validate write access (uses PG for auth tables)
+	await requireWriteAccess(pgSql, entityId, ctx);
 
-  // Validate parent hierarchy (replaces prevent_entity_cycles trigger)
-  if (data.parent_id !== undefined && data.parent_id !== null) {
-    await preventEntityCycles(entityId, data.parent_id);
-  }
+	// Validate parent hierarchy (replaces prevent_entity_cycles trigger)
+	if (data.parent_id !== undefined && data.parent_id !== null) {
+		await preventEntityCycles(entityId, data.parent_id);
+	}
 
-  // Generate new slug if provided or name is being updated
-  const newSlug = data.slug ?? (data.name ? slugify(data.name) : null);
+	// Generate new slug if provided or name is being updated
+	const newSlug = data.slug ?? (data.name ? slugify(data.name) : null);
 
-  const metadataUpdates = mergeConvenienceFields(data, data.metadata ?? {}, 'update');
-  const hasMetadataUpdates = Object.keys(metadataUpdates).length > 0;
-  const affirmFields = Array.isArray(data.affirm_fields) ? data.affirm_fields : [];
+	const metadataUpdates = mergeConvenienceFields(
+		data,
+		data.metadata ?? {},
+		"update",
+	);
+	const hasMetadataUpdates = Object.keys(metadataUpdates).length > 0;
+	const affirmFields = Array.isArray(data.affirm_fields)
+		? data.affirm_fields
+		: [];
 
-  // A genuine human edit (a real user, not an agent run) claims per-field
-  // ownership so a watcher can't later overwrite it without an approval. Every
-  // non-human write (chat agent or watcher reaction via manage_entity) is an
-  // ownership-aware watcher-source merge: unowned fields write, owned fields
-  // are blocked and surfaced to the caller for an approval. There is no
-  // plain-merge branch — the only caller is agent-attributed.
-  const isHumanEdit = !!ctx.userId && !ctx.agentId;
-  // affirm_fields claims ownership, which only a human may do. An agent must
-  // never silently claim a field — reject before touching the transaction.
-  if (!isHumanEdit && affirmFields.length > 0) {
-    throw new Error('affirm_fields is only allowed for human edits');
-  }
+	// A genuine human edit (a real user, not an agent run) claims per-field
+	// ownership so a watcher can't later overwrite it without an approval. Every
+	// non-human write (chat agent or watcher reaction via manage_entity) is an
+	// ownership-aware watcher-source merge: unowned fields write, owned fields
+	// are blocked and surfaced to the caller for an approval. There is no
+	// plain-merge branch — the only caller is agent-attributed.
+	const isHumanEdit = !!ctx.userId && !ctx.agentId;
+	// affirm_fields claims ownership, which only a human may do. An agent must
+	// never silently claim a field — reject before touching the transaction.
+	if (!isHumanEdit && affirmFields.length > 0) {
+		throw new Error("affirm_fields is only allowed for human edits");
+	}
 
-  const hasContent = data.content !== undefined;
-  const contentValue = data.content?.trim() || null;
-  const hasEmbedding = data.embedding !== undefined;
-  const embeddingLiteral = toVectorLiteral(data.embedding);
+	const hasContent = data.content !== undefined;
+	const contentValue = data.content?.trim() || null;
+	const hasEmbedding = data.embedding !== undefined;
+	const embeddingLiteral = toVectorLiteral(data.embedding);
 
-  // An affirm-only edit (approve a value as-is) has no metadata delta but still
-  // must run the merge so it can claim field ownership.
-  const hasAffirm = isHumanEdit && affirmFields.length > 0;
+	// An affirm-only edit (approve a value as-is) has no metadata delta but still
+	// must run the merge so it can claim field ownership.
+	const hasAffirm = isHumanEdit && affirmFields.length > 0;
 
-  // Outcome of the ownership-aware merge, threaded out so the caller can queue
-  // an approval for blocked (human-owned) fields AFTER the tx commits.
-  let fieldMerge: FieldMergeInfo | undefined;
+	// Outcome of the ownership-aware merge, threaded out so the caller can queue
+	// an approval for blocked (human-owned) fields AFTER the tx commits.
+	let fieldMerge: FieldMergeInfo | undefined;
 
-  // Lock the entity row, merge metadata, and write in ONE transaction: concurrent
-  // updates to the same entity serialize on the row lock, fixing the pre-existing
-  // non-transactional read-modify-write race on entities.metadata.
-  const result = await sql.begin(async (tx) => {
-    const current = await tx`
-      SELECT metadata, field_controls, organization_id FROM entities
-      WHERE id = ${entityId} AND deleted_at IS NULL
+	// Lock the entity row, merge metadata, and write in ONE transaction: concurrent
+	// updates to the same entity serialize on the row lock, fixing the pre-existing
+	// non-transactional read-modify-write race on entities.metadata.
+	const result = await sql.begin(async (tx) => {
+		const current = await tx`
+      SELECT e.metadata, e.field_controls, e.organization_id, et.slug AS entity_type
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.id = ${entityId} AND e.deleted_at IS NULL
       FOR UPDATE
     `;
-    if (current.length === 0) {
-      throw new Error(`Entity ${entityId} not found`);
-    }
+		if (current.length === 0) {
+			throw new Error(`Entity ${entityId} not found`);
+		}
 
-    let mergedMetadata: Record<string, unknown> | null = null;
-    let mergedControls: Record<string, unknown> | null = null;
-    if (hasMetadataUpdates || hasAffirm) {
-      const existing = (
-        typeof current[0].metadata === 'string'
-          ? JSON.parse(current[0].metadata as string)
-          : (current[0].metadata ?? {})
-      ) as Record<string, unknown>;
-      const existingControls = (
-        typeof current[0].field_controls === 'string'
-          ? JSON.parse(current[0].field_controls as string)
-          : (current[0].field_controls ?? {})
-      ) as Record<string, FieldControl>;
-      const merge = computeFieldMerge({
-        metadata: existing,
-        controls: existingControls,
-        fields: metadataUpdates,
-        source: isHumanEdit ? 'human' : 'watcher',
-        actorId: isHumanEdit ? ctx.userId : (ctx.agentId ?? ctx.clientId ?? null),
-        note: isHumanEdit ? (data.field_note ?? null) : null,
-        nowIso: new Date().toISOString(),
-        affirm: isHumanEdit ? affirmFields : undefined,
-      });
-      mergedMetadata = merge.nextMetadata;
-      // A human edit claims ownership of the fields it sets; a watcher-source
-      // merge never claims ownership, so leave field_controls untouched.
-      mergedControls = isHumanEdit ? merge.nextControls : null;
-      fieldMerge = {
-        applied: Object.keys(merge.applied),
-        blocked: Object.fromEntries(
-          Object.entries(merge.blocked).map(([p, v]) => [p, { current: v.current, proposed: v.proposed }])
-        ),
-      };
-    }
+		let mergedMetadata: Record<string, unknown> | null = null;
+		let mergedControls: Record<string, unknown> | null = null;
+		if (hasMetadataUpdates || hasAffirm) {
+			const existing = (
+				typeof current[0].metadata === "string"
+					? JSON.parse(current[0].metadata as string)
+					: (current[0].metadata ?? {})
+			) as Record<string, unknown>;
+			const existingControls = (
+				typeof current[0].field_controls === "string"
+					? JSON.parse(current[0].field_controls as string)
+					: (current[0].field_controls ?? {})
+			) as Record<string, FieldControl>;
+			const requireApproval: string[] = [];
+			if (!isHumanEdit) {
+				const principalKind: EntityPolicyPrincipalKind =
+					opts?.policyPrincipalKind ?? "agent";
+				for (const field of Object.keys(metadataUpdates)) {
+					const fieldOwner = Object.hasOwn(existingControls, field)
+						? "human"
+						: "none";
+					const decision: EntityPolicyDecision = evaluateEntityFieldUpdate({
+						principal: {
+							kind: principalKind,
+							id:
+								ctx.agentId ??
+								ctx.clientId ??
+								`${principalKind}:${ctx.organizationId}`,
+							orgId: ctx.organizationId,
+							role: ctx.memberRole,
+						},
+						resource: {
+							id: entityId,
+							orgId: String(current[0].organization_id),
+							entityType: String(current[0].entity_type),
+							fieldOwner,
+						},
+						field,
+					});
+					if (decision === "deny" || decision === "redact") {
+						throw new ToolUserError(
+							`Policy denied update to field '${field}'`,
+							403,
+						);
+					}
+					const requiresApproval = await shouldRequireEntityMutationApproval({
+						organizationId: ctx.organizationId,
+						principalKind,
+						action: "update",
+						entityTypeSlug: String(current[0].entity_type),
+						fieldPath: field,
+						defaultRequiresApproval: decision === "require_approval",
+						sql: tx,
+					});
+					if (requiresApproval) {
+						requireApproval.push(field);
+					}
+				}
+			}
+			const merge = computeFieldMerge({
+				metadata: existing,
+				controls: existingControls,
+				fields: metadataUpdates,
+				source: isHumanEdit ? "human" : "watcher",
+				actorId: isHumanEdit
+					? ctx.userId
+					: (ctx.agentId ?? ctx.clientId ?? null),
+				note: isHumanEdit ? (data.field_note ?? null) : null,
+				nowIso: new Date().toISOString(),
+				affirm: isHumanEdit ? affirmFields : undefined,
+				requireApproval,
+			});
+			mergedMetadata = merge.nextMetadata;
+			// A human edit claims ownership of the fields it sets; a watcher-source
+			// merge never claims ownership, so leave field_controls untouched.
+			mergedControls = isHumanEdit ? merge.nextControls : null;
+			fieldMerge = {
+				applied: Object.keys(merge.applied),
+				blocked: Object.fromEntries(
+					Object.entries(merge.blocked).map(([p, v]) => [
+						p,
+						{ current: v.current, proposed: v.proposed },
+					]),
+				),
+			};
+		}
 
-    await tx`
+		await tx`
       UPDATE entities SET
         name = COALESCE(${data.name ?? null}, name),
         slug = COALESCE(${newSlug}, slug),
@@ -477,20 +558,22 @@ export async function updateEntity(
       WHERE id = ${entityId} AND deleted_at IS NULL
     `;
 
-    const sel = await tx<CreatedEntity>`
+		const sel = await tx<CreatedEntity>`
       SELECT e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at
       FROM entities e
       JOIN entity_types et ON et.id = e.entity_type_id
       WHERE e.id = ${entityId}
       LIMIT 1
     `;
-    if (sel.length === 0) {
-      throw new Error(`Entity ${entityId} not found`);
-    }
-    return { ...sel[0], fieldMerge } as CreatedEntity & { fieldMerge?: FieldMergeInfo };
-  });
+		if (sel.length === 0) {
+			throw new Error(`Entity ${entityId} not found`);
+		}
+		return { ...sel[0], fieldMerge } as CreatedEntity & {
+			fieldMerge?: FieldMergeInfo;
+		};
+	});
 
-  return result;
+	return result;
 }
 
 /**
@@ -498,29 +581,29 @@ export async function updateEntity(
  * Only returns entity if user has read access (own org or public)
  */
 export async function getEntity(
-  entityId: number,
-  _env: Env,
-  ctx: ToolContext
+	entityId: number,
+	_env: Env,
+	ctx: ToolContext,
 ): Promise<CreatedEntity | null> {
-  const sql = getDb();
-  if (!ctx.organizationId) return null;
+	const sql = getDb();
+	if (!ctx.organizationId) return null;
 
-  // Operational counts always scope to the caller's org. When `e` is a
-  // public-catalog entity, totals reflect the caller's events/feeds/watchers/
-  // children that reference it — never cross-tenant activity around the
-  // public row.
-  //
-  // Visibility branches checked here:
-  //   1. caller's own org (always readable)
-  //   2. public-catalog entity (anyone reads, except `$member`)
-  const result = await sql<CreatedEntity>`
+	// Operational counts always scope to the caller's org. When `e` is a
+	// public-catalog entity, totals reflect the caller's events/feeds/watchers/
+	// children that reference it — never cross-tenant activity around the
+	// public row.
+	//
+	// Visibility branches checked here:
+	//   1. caller's own org (always readable)
+	//   2. public-catalog entity (anyone reads, except `$member`)
+	const result = await sql<CreatedEntity>`
     SELECT
       e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
       e.current_view_template_version_id,
       pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type,
       (
         SELECT COUNT(*) FROM current_event_records ev
-        WHERE ${sql.unsafe(entityLinkMatchSql('e.id::bigint', 'ev'))}
+        WHERE ${sql.unsafe(entityLinkMatchSql("e.id::bigint", "ev"))}
           AND ev.organization_id = ${ctx.organizationId}
       ) as total_content,
       (
@@ -530,7 +613,7 @@ export async function getEntity(
         WHERE f.organization_id = ${ctx.organizationId}
           AND f.deleted_at IS NULL
           AND c.deleted_at IS NULL
-          AND ${sql.unsafe(feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id'))}
+          AND ${sql.unsafe(feedLinkedToBusinessEntitySql("e.id", "f", "c", "e.organization_id"))}
       ) as active_connections,
       (
         SELECT COUNT(*) FROM watchers i
@@ -556,7 +639,7 @@ export async function getEntity(
       AND e.deleted_at IS NULL
   `;
 
-  return result.length > 0 ? result[0] : null;
+	return result.length > 0 ? result[0] : null;
 }
 
 /**
@@ -565,85 +648,85 @@ export async function getEntity(
  * Requires write access (entity must belong to user's organization)
  */
 export async function deleteEntity(
-  entityId: number,
-  force: boolean = false,
-  env: Env,
-  ctx: ToolContext,
-  opts?: { skipHooks?: boolean }
+	entityId: number,
+	force: boolean = false,
+	env: Env,
+	ctx: ToolContext,
+	opts?: { skipHooks?: boolean },
 ): Promise<{ message: string; deleted: number }> {
-  const pgSql = createDbClientFromEnv(env);
-  const sql = getDb();
+	const pgSql = createDbClientFromEnv(env);
+	const sql = getDb();
 
-  // Validate write access (uses PG for auth tables)
-  await requireWriteAccess(pgSql, entityId, ctx);
+	// Validate write access (uses PG for auth tables)
+	await requireWriteAccess(pgSql, entityId, ctx);
 
-  // Run beforeDelete hook
-  if (!opts?.skipHooks) {
-    const entityRow = await sql`
+	// Run beforeDelete hook
+	if (!opts?.skipHooks) {
+		const entityRow = await sql`
       SELECT et.slug AS entity_type, e.metadata
       FROM entities e
       JOIN entity_types et ON et.id = e.entity_type_id
       WHERE e.id = ${entityId} AND e.deleted_at IS NULL
     `;
-    if (entityRow.length > 0) {
-      const hooks = getEntityHooks(entityRow[0].entity_type as string);
-      if (hooks?.beforeDelete) {
-        await hooks.beforeDelete(
-          {
-            id: entityId,
-            entity_type: entityRow[0].entity_type as string,
-            metadata: entityRow[0].metadata as Record<string, unknown> | null,
-          },
-          { organizationId: ctx.organizationId, userId: ctx.userId }
-        );
-      }
-    }
-  }
+		if (entityRow.length > 0) {
+			const hooks = getEntityHooks(entityRow[0].entity_type as string);
+			if (hooks?.beforeDelete) {
+				await hooks.beforeDelete(
+					{
+						id: entityId,
+						entity_type: entityRow[0].entity_type as string,
+						metadata: entityRow[0].metadata as Record<string, unknown> | null,
+					},
+					{ organizationId: ctx.organizationId, userId: ctx.userId },
+				);
+			}
+		}
+	}
 
-  // Check if entity has children
-  if (!force) {
-    const children = await sql`
+	// Check if entity has children
+	if (!force) {
+		const children = await sql`
       SELECT COUNT(*) as count
       FROM entities
       WHERE parent_id = ${entityId}
         AND deleted_at IS NULL
     `;
 
-    const childCount = Number(children[0]?.count || 0);
-    if (childCount > 0) {
-      throw new Error(
-        `Cannot delete entity: it has ${childCount} child entities. Use force_delete_tree=true to delete the entire hierarchy.`
-      );
-    }
-  }
+		const childCount = Number(children[0]?.count || 0);
+		if (childCount > 0) {
+			throw new Error(
+				`Cannot delete entity: it has ${childCount} child entities. Use force_delete_tree=true to delete the entire hierarchy.`,
+			);
+		}
+	}
 
-  if (force) {
-    const entityTreeIds = await loadEntityTreeIds(sql, entityId);
-    const entityTreeIdsLiteral = pgBigintArray(entityTreeIds);
+	if (force) {
+		const entityTreeIds = await loadEntityTreeIds(sql, entityId);
+		const entityTreeIdsLiteral = pgBigintArray(entityTreeIds);
 
-    const eventHistory = await sql`
+		const eventHistory = await sql`
       SELECT COUNT(*) as count
       FROM current_event_records ev
       WHERE ev.entity_ids && ${entityTreeIdsLiteral}::bigint[]
     `;
 
-    const eventCount = Number(eventHistory[0]?.count || 0);
-    if (eventCount > 0) {
-      throw new Error(
-        `Cannot hard delete entity tree: ${eventCount} event rows reference this entity tree. Soft delete the entity instead to preserve event history.`
-      );
-    }
+		const eventCount = Number(eventHistory[0]?.count || 0);
+		if (eventCount > 0) {
+			throw new Error(
+				`Cannot hard delete entity tree: ${eventCount} event rows reference this entity tree. Soft delete the entity instead to preserve event history.`,
+			);
+		}
 
-    await sql.begin(async (tx) => {
-      await tx`
+		await sql.begin(async (tx) => {
+			await tx`
         DELETE FROM entity_relationships
         WHERE from_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
            OR to_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
       `;
 
-      // Canvas-on-events: window_id link rows carry canvas root event ids, so
-      // key the cleanup on the denormalized watcher_id.
-      await tx`
+			// Canvas-on-events: window_id link rows carry canvas root event ids, so
+			// key the cleanup on the denormalized watcher_id.
+			await tx`
         DELETE FROM watcher_window_events
         WHERE watcher_id IN (
           SELECT id
@@ -651,12 +734,12 @@ export async function deleteEntity(
           WHERE COALESCE(entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
         )
       `;
-      // Before hard-deleting watchers: if any of those rows are group roots
-      // (id = watcher_group_id) with surviving siblings, transfer ownership
-      // of the shared watcher_versions chain to a sibling so the upcoming
-      // ON DELETE CASCADE doesn't wipe out the version row that the rest
-      // of the group still depends on.
-      await tx`
+			// Before hard-deleting watchers: if any of those rows are group roots
+			// (id = watcher_group_id) with surviving siblings, transfer ownership
+			// of the shared watcher_versions chain to a sibling so the upcoming
+			// ON DELETE CASCADE doesn't wipe out the version row that the rest
+			// of the group still depends on.
+			await tx`
         UPDATE watcher_versions wv
         SET watcher_id = s.new_root
         FROM (
@@ -678,7 +761,7 @@ export async function deleteEntity(
         ) s
         WHERE wv.watcher_id = s.old_root
       `;
-      await tx`
+			await tx`
         UPDATE watchers w
         SET watcher_group_id = s.new_root,
             source_watcher_id = CASE WHEN w.source_watcher_id = s.old_root THEN s.new_root ELSE w.source_watcher_id END
@@ -701,11 +784,11 @@ export async function deleteEntity(
         ) s
         WHERE w.watcher_group_id = s.old_root
       `;
-      await tx`
+			await tx`
         DELETE FROM watchers
         WHERE COALESCE(entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
       `;
-      await tx`
+			await tx`
         UPDATE watchers
         SET entity_ids = ARRAY(
           SELECT linked_id
@@ -714,8 +797,8 @@ export async function deleteEntity(
         )
         WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
       `;
-      // Canvas-on-events: key link-row cleanup on the denormalized watcher_id.
-      await tx`
+			// Canvas-on-events: key link-row cleanup on the denormalized watcher_id.
+			await tx`
         DELETE FROM watcher_window_events
         WHERE watcher_id IN (
           SELECT id
@@ -723,10 +806,10 @@ export async function deleteEntity(
           WHERE cardinality(COALESCE(entity_ids, '{}'::bigint[])) = 0
         )
       `;
-      // Same group-root ownership transfer as above — predicate here is
-      // "now-orphaned watcher rows" (entity_ids is empty after the array
-      // pruning a few statements up).
-      await tx`
+			// Same group-root ownership transfer as above — predicate here is
+			// "now-orphaned watcher rows" (entity_ids is empty after the array
+			// pruning a few statements up).
+			await tx`
         UPDATE watcher_versions wv
         SET watcher_id = s.new_root
         FROM (
@@ -748,7 +831,7 @@ export async function deleteEntity(
         ) s
         WHERE wv.watcher_id = s.old_root
       `;
-      await tx`
+			await tx`
         UPDATE watchers w
         SET watcher_group_id = s.new_root,
             source_watcher_id = CASE WHEN w.source_watcher_id = s.old_root THEN s.new_root ELSE w.source_watcher_id END
@@ -771,16 +854,16 @@ export async function deleteEntity(
         ) s
         WHERE w.watcher_group_id = s.old_root
       `;
-      await tx`
+			await tx`
         DELETE FROM watchers
         WHERE cardinality(COALESCE(entity_ids, '{}'::bigint[])) = 0
       `;
 
-      await tx`
+			await tx`
         DELETE FROM feeds
         WHERE COALESCE(entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
       `;
-      await tx`
+			await tx`
         UPDATE feeds
         SET entity_ids = ARRAY(
           SELECT linked_id
@@ -789,34 +872,34 @@ export async function deleteEntity(
         )
         WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
       `;
-      await tx`
+			await tx`
         DELETE FROM feeds
         WHERE cardinality(COALESCE(entity_ids, '{}'::bigint[])) = 0
       `;
 
-      await tx`
+			await tx`
         DELETE FROM entities
         WHERE id = ANY(${entityTreeIdsLiteral}::bigint[])
       `;
-    });
+		});
 
-    return {
-      message: 'Entity and all descendants deleted successfully',
-      deleted: entityTreeIds.length,
-    };
-  }
+		return {
+			message: "Entity and all descendants deleted successfully",
+			deleted: entityTreeIds.length,
+		};
+	}
 
-  // Soft delete: set deleted_at timestamp
-  await sql`
+	// Soft delete: set deleted_at timestamp
+	await sql`
     UPDATE entities
     SET deleted_at = current_timestamp, updated_at = current_timestamp
     WHERE id = ${entityId} AND deleted_at IS NULL
   `;
 
-  return {
-    message: 'Entity soft-deleted successfully',
-    deleted: 1,
-  };
+	return {
+		message: "Entity soft-deleted successfully",
+		deleted: 1,
+	};
 }
 
 /**
@@ -825,50 +908,50 @@ export async function deleteEntity(
  * Only returns entities from readable organizations (user's org + public)
  */
 export async function listEntities(
-  filters: {
-    entity_type?: string;
-    parent_id?: number | null;
-    search?: string;
-    category?: string;
-    main_market?: string;
-    market?: string;
-    limit?: number;
-    offset?: number;
-    sort_by?: string;
-    sort_order?: 'asc' | 'desc';
-  },
-  _env: Env,
-  ctx: ToolContext
+	filters: {
+		entity_type?: string;
+		parent_id?: number | null;
+		search?: string;
+		category?: string;
+		main_market?: string;
+		market?: string;
+		limit?: number;
+		offset?: number;
+		sort_by?: string;
+		sort_order?: "asc" | "desc";
+	},
+	_env: Env,
+	ctx: ToolContext,
 ): Promise<{
-  entities: CreatedEntity[];
-  hasMore: boolean;
-  totalCount: number;
-  limit: number;
-  offset: number;
-  sortBy: string;
-  sortOrder: 'asc' | 'desc';
+	entities: CreatedEntity[];
+	hasMore: boolean;
+	totalCount: number;
+	limit: number;
+	offset: number;
+	sortBy: string;
+	sortOrder: "asc" | "desc";
 }> {
-  const sql = getDb();
-  const limit = Math.min(Math.max(filters.limit || 100, 1), 500);
-  const offset = Math.max(filters.offset || 0, 0);
+	const sql = getDb();
+	const limit = Math.min(Math.max(filters.limit || 100, 1), 500);
+	const offset = Math.max(filters.offset || 0, 0);
 
-  if (!ctx.organizationId) {
-    return {
-      entities: [],
-      hasMore: false,
-      totalCount: 0,
-      limit,
-      offset,
-      sortBy: filters.sort_by ?? 'created_at',
-      sortOrder: filters.sort_order === 'asc' ? 'asc' : 'desc',
-    };
-  }
+	if (!ctx.organizationId) {
+		return {
+			entities: [],
+			hasMore: false,
+			totalCount: 0,
+			limit,
+			offset,
+			sortBy: filters.sort_by ?? "created_at",
+			sortOrder: filters.sort_order === "asc" ? "asc" : "desc",
+		};
+	}
 
-  // Derived ("view") entity types have no rows in `entities` — their rows come
-  // from `backing_sql`. Return them in the standard list shape so the frontend
-  // renders them with the normal table (no derived-specific UI path).
-  if (filters.entity_type) {
-    const etRows = await sql`
+	// Derived ("view") entity types have no rows in `entities` — their rows come
+	// from `backing_sql`. Return them in the standard list shape so the frontend
+	// renders them with the normal table (no derived-specific UI path).
+	if (filters.entity_type) {
+		const etRows = await sql`
       SELECT backing_sql, backing_source
       FROM entity_types
       WHERE slug = ${filters.entity_type}
@@ -876,103 +959,108 @@ export async function listEntities(
         AND deleted_at IS NULL
       LIMIT 1
     `;
-    const backingSql = etRows[0]?.backing_sql as string | null | undefined;
-    if (backingSql) {
-      return listDerivedEntities(
-        filters.entity_type,
-        backingSql,
-        (etRows[0]?.backing_source as string | null | undefined) ?? undefined,
-        { limit, offset, search: filters.search },
-        ctx
-      );
-    }
-  }
+		const backingSql = etRows[0]?.backing_sql as string | null | undefined;
+		if (backingSql) {
+			return listDerivedEntities(
+				filters.entity_type,
+				backingSql,
+				(etRows[0]?.backing_source as string | null | undefined) ?? undefined,
+				{ limit, offset, search: filters.search },
+				ctx,
+			);
+		}
+	}
 
-  const conditions: string[] = ['e.deleted_at IS NULL'];
-  const params: unknown[] = [];
-  let paramIdx = 1;
+	const conditions: string[] = ["e.deleted_at IS NULL"];
+	const params: unknown[] = [];
+	let paramIdx = 1;
 
-  // Organization filter
-  conditions.push(`e.organization_id = $${paramIdx++}`);
-  params.push(ctx.organizationId);
+	// Organization filter
+	conditions.push(`e.organization_id = $${paramIdx++}`);
+	params.push(ctx.organizationId);
 
-  if (filters.entity_type) {
-    conditions.push(`et.slug = $${paramIdx++}`);
-    params.push(filters.entity_type);
-  }
+	if (filters.entity_type) {
+		conditions.push(`et.slug = $${paramIdx++}`);
+		params.push(filters.entity_type);
+	}
 
-  if (filters.parent_id !== undefined) {
-    if (filters.parent_id === null) {
-      conditions.push('e.parent_id IS NULL');
-    } else {
-      conditions.push(`e.parent_id = $${paramIdx++}`);
-      params.push(filters.parent_id);
-    }
-  }
+	if (filters.parent_id !== undefined) {
+		if (filters.parent_id === null) {
+			conditions.push("e.parent_id IS NULL");
+		} else {
+			conditions.push(`e.parent_id = $${paramIdx++}`);
+			params.push(filters.parent_id);
+		}
+	}
 
-  if (filters.search) {
-    conditions.push(`(e.name ILIKE $${paramIdx} OR e.metadata->>'domain' ILIKE $${paramIdx})`);
-    params.push(`%${filters.search}%`);
-    paramIdx++;
-  }
+	if (filters.search) {
+		conditions.push(
+			`(e.name ILIKE $${paramIdx} OR e.metadata->>'domain' ILIKE $${paramIdx})`,
+		);
+		params.push(`%${filters.search}%`);
+		paramIdx++;
+	}
 
-  if (filters.category) {
-    conditions.push(`e.metadata->>'category' = $${paramIdx++}`);
-    params.push(filters.category);
-  }
+	if (filters.category) {
+		conditions.push(`e.metadata->>'category' = $${paramIdx++}`);
+		params.push(filters.category);
+	}
 
-  if (filters.main_market) {
-    conditions.push(`e.metadata->>'main_market' = $${paramIdx++}`);
-    params.push(filters.main_market);
-  }
+	if (filters.main_market) {
+		conditions.push(`e.metadata->>'main_market' = $${paramIdx++}`);
+		params.push(filters.main_market);
+	}
 
-  if (filters.market) {
-    conditions.push(`e.metadata->>'market' = $${paramIdx++}`);
-    params.push(filters.market);
-  }
+	if (filters.market) {
+		conditions.push(`e.metadata->>'market' = $${paramIdx++}`);
+		params.push(filters.market);
+	}
 
-  const whereClause = conditions.join(' AND ');
+	const whereClause = conditions.join(" AND ");
 
-  const sortColumnMap: Record<string, string> = {
-    name: 'e.name',
-    created_at: 'e.created_at',
-    total_content: 'total_content',
-    active_connections: 'active_connections',
-    watchers_count: 'watchers_count',
-    children_count: 'children_count',
-  };
+	const sortColumnMap: Record<string, string> = {
+		name: "e.name",
+		created_at: "e.created_at",
+		total_content: "total_content",
+		active_connections: "active_connections",
+		watchers_count: "watchers_count",
+		children_count: "children_count",
+	};
 
-  const sortBy = filters.sort_by && sortColumnMap[filters.sort_by] ? filters.sort_by : 'created_at';
-  const normalizedSortOrder = filters.sort_order === 'asc' ? 'asc' : 'desc';
-  const sortOrderSql = normalizedSortOrder === 'asc' ? 'ASC' : 'DESC';
-  const orderBy = `${sortColumnMap[sortBy]} ${sortOrderSql}, e.id ASC`;
+	const sortBy =
+		filters.sort_by && sortColumnMap[filters.sort_by]
+			? filters.sort_by
+			: "created_at";
+	const normalizedSortOrder = filters.sort_order === "asc" ? "asc" : "desc";
+	const sortOrderSql = normalizedSortOrder === "asc" ? "ASC" : "DESC";
+	const orderBy = `${sortColumnMap[sortBy]} ${sortOrderSql}, e.id ASC`;
 
-  const baseQuery = `
+	const baseQuery = `
     FROM entities e
     JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities pe ON e.parent_id = pe.id
     LEFT JOIN entity_types pet ON pet.id = pe.entity_type_id
-    LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM current_event_records ev WHERE ${entityLinkMatchSql('e.id::bigint', 'ev')}) tc ON true
+    LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM current_event_records ev WHERE ${entityLinkMatchSql("e.id::bigint", "ev")}) tc ON true
     LEFT JOIN LATERAL (
       SELECT COUNT(DISTINCT c.connector_key) as cnt
       FROM feeds f
       JOIN connections c ON c.id = f.connection_id
       WHERE f.deleted_at IS NULL
         AND c.deleted_at IS NULL
-        AND ${feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id')}
+        AND ${feedLinkedToBusinessEntitySql("e.id", "f", "c", "e.organization_id")}
     ) ac ON true
     LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM watchers i WHERE e.id = ANY(i.entity_ids)) ic ON true
     LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM entities c WHERE c.parent_id = e.id) cc ON true
     WHERE ${whereClause}
   `;
 
-  const totalCountResult = await sql.unsafe<{ total_count: number }>(
-    `SELECT CAST(COUNT(*) AS INTEGER) as total_count ${baseQuery}`,
-    params
-  );
+	const totalCountResult = await sql.unsafe<{ total_count: number }>(
+		`SELECT CAST(COUNT(*) AS INTEGER) as total_count ${baseQuery}`,
+		params,
+	);
 
-  const result = await sql.unsafe<CreatedEntity>(
-    `SELECT
+	const result = await sql.unsafe<CreatedEntity>(
+		`SELECT
       e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
       COALESCE(tc.cnt, 0) as total_content,
       COALESCE(ac.cnt, 0) as active_connections,
@@ -983,17 +1071,25 @@ export async function listEntities(
     ORDER BY ${orderBy}
     LIMIT ${limit + 1}
     OFFSET ${offset}`,
-    params
-  );
+		params,
+	);
 
-  const hasMore = result.length > limit;
-  const entities = hasMore
-    ? (result.slice(0, limit) as unknown as CreatedEntity[])
-    : (result as unknown as CreatedEntity[]);
+	const hasMore = result.length > limit;
+	const entities = hasMore
+		? (result.slice(0, limit) as unknown as CreatedEntity[])
+		: (result as unknown as CreatedEntity[]);
 
-  const totalCount = Number(totalCountResult[0]?.total_count || 0);
+	const totalCount = Number(totalCountResult[0]?.total_count || 0);
 
-  return { entities, hasMore, totalCount, limit, offset, sortBy, sortOrder: normalizedSortOrder };
+	return {
+		entities,
+		hasMore,
+		totalCount,
+		limit,
+		offset,
+		sortBy,
+		sortOrder: normalizedSortOrder,
+	};
 }
 
 /**
@@ -1002,14 +1098,17 @@ export async function listEntities(
  * the same way so a listed row's link always resolves. Empty ⇒ unroutable.
  */
 export function derivedRowSlug(row: Record<string, unknown>): string {
-  const raw = row.slug ?? row.id;
-  return raw != null ? String(raw).trim() : '';
+	const raw = row.slug ?? row.id;
+	return raw != null ? String(raw).trim() : "";
 }
 
 /** Display name for a derived row: its name/title column, else the slug. */
-export function derivedRowName(row: Record<string, unknown>, slug: string): string {
-  const raw = row.name ?? row.title ?? slug;
-  return raw != null && String(raw).trim() ? String(raw) : slug;
+export function derivedRowName(
+	row: Record<string, unknown>,
+	slug: string,
+): string {
+	const raw = row.name ?? row.title ?? slug;
+	return raw != null && String(raw).trim() ? String(raw) : slug;
 }
 
 /**
@@ -1023,65 +1122,74 @@ export function derivedRowName(row: Record<string, unknown>, slug: string): stri
  * unroutable and dropped (they can't link to a detail page).
  */
 async function listDerivedEntities(
-  entityType: string,
-  backingSql: string,
-  backingSource: string | undefined,
-  page: { limit: number; offset: number; search?: string },
-  ctx: ToolContext
+	entityType: string,
+	backingSql: string,
+	backingSource: string | undefined,
+	page: { limit: number; offset: number; search?: string },
+	ctx: ToolContext,
 ): Promise<{
-  entities: CreatedEntity[];
-  hasMore: boolean;
-  totalCount: number;
-  limit: number;
-  offset: number;
-  sortBy: string;
-  sortOrder: 'asc' | 'desc';
+	entities: CreatedEntity[];
+	hasMore: boolean;
+	totalCount: number;
+	limit: number;
+	offset: number;
+	sortBy: string;
+	sortOrder: "asc" | "desc";
 }> {
-  // Search pushes down only on the internal path (the connection path rejects
-  // search_term); external derived views simply ignore the search box.
-  const search =
-    page.search && !backingSource
-      ? { search_term: page.search, search_columns: ['name'] }
-      : {};
-  const result = await querySqlImpl(
-    { sql: backingSql, connection: backingSource, limit: page.limit, offset: page.offset, ...search },
-    undefined,
-    ctx
-  );
-  if (result.error) {
-    throw new ToolUserError(`Derived view '${entityType}' failed: ${result.error}`, 400);
-  }
+	// Search pushes down only on the internal path (the connection path rejects
+	// search_term); external derived views simply ignore the search box.
+	const search =
+		page.search && !backingSource
+			? { search_term: page.search, search_columns: ["name"] }
+			: {};
+	const result = await querySqlImpl(
+		{
+			sql: backingSql,
+			connection: backingSource,
+			limit: page.limit,
+			offset: page.offset,
+			...search,
+		},
+		undefined,
+		ctx,
+	);
+	if (result.error) {
+		throw new ToolUserError(
+			`Derived view '${entityType}' failed: ${result.error}`,
+			400,
+		);
+	}
 
-  const createdAt = new Date();
-  const entities: CreatedEntity[] = [];
-  result.rows.forEach((row, index) => {
-    const slug = derivedRowSlug(row);
-    // Drop unroutable rows: without a slug/id the detail link goes nowhere.
-    if (!slug) return;
-    entities.push({
-      id: page.offset + index + 1,
-      entity_type: entityType,
-      name: derivedRowName(row, slug),
-      slug,
-      parent_id: null,
-      metadata: row,
-      created_at: createdAt,
-      total_content: 0,
-      active_connections: 0,
-      watchers_count: 0,
-      children_count: 0,
-    });
-  });
+	const createdAt = new Date();
+	const entities: CreatedEntity[] = [];
+	result.rows.forEach((row, index) => {
+		const slug = derivedRowSlug(row);
+		// Drop unroutable rows: without a slug/id the detail link goes nowhere.
+		if (!slug) return;
+		entities.push({
+			id: page.offset + index + 1,
+			entity_type: entityType,
+			name: derivedRowName(row, slug),
+			slug,
+			parent_id: null,
+			metadata: row,
+			created_at: createdAt,
+			total_content: 0,
+			active_connections: 0,
+			watchers_count: 0,
+			children_count: 0,
+		});
+	});
 
-  return {
-    entities,
-    hasMore: result.has_more,
-    totalCount: result.total_count,
-    limit: page.limit,
-    offset: page.offset,
-    sortBy: 'created_at',
-    sortOrder: 'desc',
-  };
+	return {
+		entities,
+		hasMore: result.has_more,
+		totalCount: result.total_count,
+		limit: page.limit,
+		offset: page.offset,
+		sortBy: "created_at",
+		sortOrder: "desc",
+	};
 }
 
 // ============================================
@@ -1089,31 +1197,33 @@ async function listDerivedEntities(
 // ============================================
 
 export interface RelationshipColumnSpec {
-  relationship_type: string;
-  direction?: 'outbound' | 'inbound' | 'both';
-  label: string;
+	relationship_type: string;
+	direction?: "outbound" | "inbound" | "both";
+	label: string;
 }
 
 interface RelatedEntityInfo {
-  id: number;
-  name: string;
-  slug: string;
-  entity_type: string;
+	id: number;
+	name: string;
+	slug: string;
+	entity_type: string;
 }
 
 export async function batchLoadRelationships(
-  entityIds: number[],
-  specs: RelationshipColumnSpec[],
-  organizationId: string
+	entityIds: number[],
+	specs: RelationshipColumnSpec[],
+	organizationId: string,
 ): Promise<Map<number, Record<string, RelatedEntityInfo[]>>> {
-  const result = new Map<number, Record<string, RelatedEntityInfo[]>>();
-  if (entityIds.length === 0 || specs.length === 0) return result;
+	const result = new Map<number, Record<string, RelatedEntityInfo[]>>();
+	if (entityIds.length === 0 || specs.length === 0) return result;
 
-  const sql = getDb();
-  const typeSlugs = pgTextArray([...new Set(specs.map((s) => s.relationship_type))]);
-  const idArray = pgBigintArray(entityIds);
+	const sql = getDb();
+	const typeSlugs = pgTextArray([
+		...new Set(specs.map((s) => s.relationship_type)),
+	]);
+	const idArray = pgBigintArray(entityIds);
 
-  const rows = await sql`
+	const rows = await sql`
     SELECT
       r.from_entity_id,
       r.to_entity_id,
@@ -1132,56 +1242,62 @@ export async function batchLoadRelationships(
       AND (r.from_entity_id = ANY(${idArray}::bigint[]) OR r.to_entity_id = ANY(${idArray}::bigint[]))
   `;
 
-  // Build a direction lookup per spec
-  const specByType = new Map<string, 'outbound' | 'inbound' | 'both'>();
-  for (const spec of specs) {
-    specByType.set(spec.relationship_type, spec.direction ?? 'both');
-  }
+	// Build a direction lookup per spec
+	const specByType = new Map<string, "outbound" | "inbound" | "both">();
+	for (const spec of specs) {
+		specByType.set(spec.relationship_type, spec.direction ?? "both");
+	}
 
-  for (const row of rows) {
-    const relType = row.relationship_type_slug as string;
-    const direction = specByType.get(relType) ?? 'both';
-    const fromId = Number(row.from_entity_id);
-    const toId = Number(row.to_entity_id);
+	for (const row of rows) {
+		const relType = row.relationship_type_slug as string;
+		const direction = specByType.get(relType) ?? "both";
+		const fromId = Number(row.from_entity_id);
+		const toId = Number(row.to_entity_id);
 
-    const pairs: Array<[number, RelatedEntityInfo]> = [];
+		const pairs: Array<[number, RelatedEntityInfo]> = [];
 
-    if ((direction === 'outbound' || direction === 'both') && entityIds.includes(fromId)) {
-      pairs.push([
-        fromId,
-        {
-          id: Number(row.to_id),
-          name: row.to_name as string,
-          slug: row.to_slug as string,
-          entity_type: row.to_entity_type as string,
-        },
-      ]);
-    }
-    if ((direction === 'inbound' || direction === 'both') && entityIds.includes(toId)) {
-      pairs.push([
-        toId,
-        {
-          id: Number(row.from_id),
-          name: row.from_name as string,
-          slug: row.from_slug as string,
-          entity_type: row.from_entity_type as string,
-        },
-      ]);
-    }
+		if (
+			(direction === "outbound" || direction === "both") &&
+			entityIds.includes(fromId)
+		) {
+			pairs.push([
+				fromId,
+				{
+					id: Number(row.to_id),
+					name: row.to_name as string,
+					slug: row.to_slug as string,
+					entity_type: row.to_entity_type as string,
+				},
+			]);
+		}
+		if (
+			(direction === "inbound" || direction === "both") &&
+			entityIds.includes(toId)
+		) {
+			pairs.push([
+				toId,
+				{
+					id: Number(row.from_id),
+					name: row.from_name as string,
+					slug: row.from_slug as string,
+					entity_type: row.from_entity_type as string,
+				},
+			]);
+		}
 
-    for (const [entityId, related] of pairs) {
-      let record = result.get(entityId);
-      if (!record) {
-        record = {};
-        result.set(entityId, record);
-      }
-      if (!record[relType]) record[relType] = [];
-      // Deduplicate by related entity id
-      if (!record[relType].some((r) => r.id === related.id)) {
-        record[relType].push(related);
-      }
-    }
-  }
+		for (const [entityId, related] of pairs) {
+			let record = result.get(entityId);
+			if (!record) {
+				record = {};
+				result.set(entityId, record);
+			}
+			if (!record[relType]) record[relType] = [];
+			// Deduplicate by related entity id
+			if (!record[relType].some((r) => r.id === related.id)) {
+				record[relType].push(related);
+			}
+		}
+	}
 
-  return result;
+	return result;
 }

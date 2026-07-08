@@ -115,6 +115,49 @@ describe("TwitterTakeoutConnector identity attributions", () => {
       });
     }
   });
+
+  test("auto-create is gated on the numeric id (no handle-only forks)", () => {
+    // A handle-only row (no numeric id) must MATCH by handle but never MINT —
+    // a person with no primary x_user_id can't merge with a later live-X event
+    // that carries the real id, so minting one forks a permanent duplicate.
+    const def = new TwitterTakeoutConnector().definition;
+
+    const reply = def.feeds.tweets.eventKinds.reply.attributions[0];
+    expect(reply.autoCreate).toBe(true);
+    expect(reply.target.createWhen).toEqual({
+      path: "metadata.in_reply_to_user_id",
+      exists: true,
+    });
+
+    for (const feed of ["followers", "following"] as const) {
+      const kind = feed === "followers" ? "follower" : "following";
+      const attr = def.feeds[feed].eventKinds[kind].attributions[0];
+      expect(attr.target.createWhen).toEqual({
+        path: "metadata.account_id",
+        exists: true,
+      });
+    }
+  });
+
+  test("a follow row with only a userLink (no accountId) still emits, gated off mint", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "x-takeout-"));
+    const dataDir = path.join(dir, "data");
+    mkdirSync(dataDir);
+    writeFileSync(
+      path.join(dataDir, "follower.js"),
+      `window.YTD.follower.part0 = ${JSON.stringify([
+        { follower: { userLink: "https://twitter.com/handleonly" } },
+      ])}`
+    );
+
+    const connector = new TwitterTakeoutConnector();
+    const events = (connector as any).readFollowEvents(dataDir, "follower");
+    expect(events).toHaveLength(1);
+    const [event] = events;
+    // No account_id -> createWhen(exists) is false -> matches by handle only.
+    expect(resolvePath(event, "metadata.account_id")).toBeUndefined();
+    expect(resolvePath(event, "metadata.handle")).toBe("handleonly");
+  });
 });
 
 describe("TwitterTakeoutConnector emits metadata the attributions resolve", () => {

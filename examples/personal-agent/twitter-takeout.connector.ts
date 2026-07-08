@@ -29,8 +29,14 @@ import {
  * (mutable handle). Emit it as an `about` attribution keyed on the SAME
  * `x_user_id`/`x_handle` namespaces the live X connector uses, so a reply
  * target consolidates onto the person the live connector already tracks —
- * across the connector/connection boundary. `autoCreate` mints a person for
- * reply targets not yet seen (they are, by definition, people the user engaged).
+ * across the connector/connection boundary.
+ *
+ * `createWhen: { in_reply_to_user_id exists }` gates minting on the IMMUTABLE
+ * numeric id: a reply whose archive row carries only a handle (no user id)
+ * matches an existing person by `x_handle` but NEVER auto-creates. Otherwise a
+ * handle-only person would fork — a later live-X event carrying the real
+ * primary `x_user_id` won't merge into a person that has no primary id, so the
+ * two would coexist as duplicates. Mint only when we have the durable key.
  */
 const X_REPLY_TARGET_ATTRIBUTIONS: EventAttributionRule[] = [
   {
@@ -38,6 +44,7 @@ const X_REPLY_TARGET_ATTRIBUTIONS: EventAttributionRule[] = [
     autoCreate: true,
     target: {
       entityType: "person",
+      createWhen: { path: "metadata.in_reply_to_user_id", exists: true },
       titlePath: "metadata.in_reply_to_screen_name",
       identities: [
         {
@@ -108,8 +115,13 @@ const X_DM_PARTY_ATTRIBUTIONS: EventAttributionRule[] = [
 /**
  * Followers/following name a person by immutable numeric `account_id` +
  * (optional) `handle` recovered from the profile link. These ARE the user's
- * network, so `autoCreate` mints a person per row, keyed primary on `x_user_id`
- * so they fuse with the live connector's people.
+ * network, so `autoCreate` mints a person per row keyed primary on `x_user_id`
+ * so they fuse with the live connector's people — but ONLY when the numeric
+ * `account_id` is present. A follow row that carries only a `userLink`/handle
+ * (no account id) matches an existing person by `x_handle` but never mints:
+ * a handle-only person can't merge with a later live-X event that has the real
+ * primary `x_user_id`, so minting one would fork a duplicate. `createWhen`
+ * gates the mint on the durable key.
  */
 const X_FOLLOW_ATTRIBUTIONS: EventAttributionRule[] = [
   {
@@ -117,6 +129,7 @@ const X_FOLLOW_ATTRIBUTIONS: EventAttributionRule[] = [
     autoCreate: true,
     target: {
       entityType: "person",
+      createWhen: { path: "metadata.account_id", exists: true },
       titlePath: "metadata.handle",
       identities: [
         {

@@ -9,9 +9,12 @@
 import { slugify } from "@lobu/core";
 import { feedLinkedToBusinessEntitySql } from "../authz/channel-about";
 import {
-	type EntityPolicyPrincipalKind,
-	evaluateEntityFieldUpdates,
-} from "../authz/entity-policy";
+	deferEntityFieldChange,
+	type DeferredMutation,
+	type MutationAttribution,
+	type MutationPrincipalKind,
+	runMutationGate,
+} from "../authz/entity-mutation-gate";
 import {
 	createDbClientFromEnv,
 	type DbClient,
@@ -35,7 +38,10 @@ interface EntityCreateOptions {
 }
 
 interface EntityUpdateOptions {
-	policyPrincipalKind?: EntityPolicyPrincipalKind;
+	policyPrincipalKind?: MutationPrincipalKind;
+	/** Attribution for a deferred approval of blocked fields. Defaults to 'agent'. */
+	attribution?: MutationAttribution;
+	watcherId?: number | null;
 }
 
 // ============================================
@@ -389,7 +395,9 @@ export async function updateEntity(
 	env: Env,
 	ctx: ToolContext,
 	opts?: EntityUpdateOptions,
-): Promise<CreatedEntity & { fieldMerge?: FieldMergeInfo }> {
+): Promise<
+	CreatedEntity & { fieldMerge?: FieldMergeInfo; deferred?: DeferredMutation }
+> {
 	const pgSql = createDbClientFromEnv(env);
 	const sql = getDb();
 
@@ -482,7 +490,7 @@ export async function updateEntity(
 		let applyParent = data.parent_id !== undefined;
 		let applyContent = hasContent;
 		if (!isHumanEdit) {
-			const principalKind: EntityPolicyPrincipalKind =
+			const principalKind: MutationPrincipalKind =
 				opts?.policyPrincipalKind ?? "agent";
 			const attributeProposals: Record<
 				string,
@@ -523,23 +531,22 @@ export async function updateEntity(
 				) as Record<string, "none">),
 			};
 			if (Object.keys(fieldOwners).length > 0) {
-				const decisions = await evaluateEntityFieldUpdates({
+				const decision = await runMutationGate({
+					action: "update",
 					organizationId: ctx.organizationId,
 					principalKind,
+					sql: tx,
+					attribution: opts?.attribution ?? "agent",
+					watcherId: opts?.watcherId ?? null,
 					entityTypeSlug: String(current[0].entity_type),
 					entityId,
 					entityOrgId: String(current[0].organization_id),
 					fields: fieldOwners,
-					sql: tx,
 				});
-				for (const [field, decision] of Object.entries(decisions)) {
-					if (decision === "deny") {
-						throw new ToolUserError(
-							`Policy denied update to field '${field}'`,
-							403,
-						);
-					}
-					if (decision !== "require_approval") continue;
+				if (decision.outcome === "deny") {
+					throw new ToolUserError(decision.reason, 403);
+				}
+				for (const field of decision.requireApproval) {
 					if (attributeProposals[field]) {
 						blockedAttributes[field] = attributeProposals[field];
 						if (field === "$name") applyName = false;
@@ -617,6 +624,28 @@ export async function updateEntity(
 			fieldMerge?: FieldMergeInfo;
 		};
 	});
+
+	// Post-commit: package any blocked (human-owned or policy-gated) fields as a
+	// single deferred approval. The caller queues it AFTER its own tx + change
+	// event so the approval never rides — nor rolls back with — the edit.
+	const blockedPaths = Object.keys(result.fieldMerge?.blocked ?? {});
+	if (blockedPaths.length > 0) {
+		const blocked = result.fieldMerge?.blocked ?? {};
+		return {
+			...result,
+			deferred: deferEntityFieldChange({
+				entityId,
+				fields: Object.fromEntries(
+					blockedPaths.map((p) => [p, blocked[p].proposed]),
+				),
+				current: Object.fromEntries(
+					blockedPaths.map((p) => [p, blocked[p].current]),
+				),
+				attribution: opts?.attribution ?? "agent",
+				watcherId: opts?.watcherId ?? null,
+			}),
+		};
+	}
 
 	return result;
 }

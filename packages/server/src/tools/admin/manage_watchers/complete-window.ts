@@ -11,15 +11,8 @@ import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { verifyWindowToken } from '../../../utils/jwt';
 import logger from '../../../utils/logger';
-import {
-  type BlockedCreateProposal,
-  type BlockedFieldProposal,
-  promoteKeyedEntities,
-} from '../../../utils/promote-keyed-entities';
-import {
-  proposeEntityCreate,
-  proposeEntityFieldChange,
-} from '../entity-field-approval';
+import { promoteKeyedEntities } from '../../../utils/promote-keyed-entities';
+import type { DeferredMutation } from '../../../authz/entity-mutation-gate';
 import { ensureCanvasEntity, findCanvasHead } from '../../../utils/canvas-events';
 import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
@@ -352,11 +345,10 @@ export async function handleCompleteWindow(
   //
   // Transaction for data writes.
   // ============================================
-  // Owned-field changes a watcher proposed but couldn't apply; surfaced out of the
-  // transaction and turned into approval cards once the window commits.
-  let blockedProposals: BlockedFieldProposal[] = [];
-  // Creates held by org policy (create_mode='approval') — same post-commit path.
-  let blockedCreates: BlockedCreateProposal[] = [];
+  // Owned-field changes and policy-held creates a watcher proposed but couldn't
+  // apply; surfaced out of the transaction as deferred approvals and flushed once
+  // the window commits.
+  let deferredApprovals: DeferredMutation[] = [];
   const result = await sql.begin(async (tx) => {
     // ============================================
     // STEP 7: Canvas-on-events write — THE window storage.
@@ -541,10 +533,10 @@ export async function handleCompleteWindow(
         parentEntityId,
         createdBy: watcherCreatedBy,
       });
-      // Owned-field changes the watcher couldn't apply — queue an approval for each
-      // AFTER the window transaction commits (an approval must not ride the tx).
-      blockedProposals = promote.blocked;
-      blockedCreates = promote.blockedCreates;
+      // Owned-field changes and policy-held creates the watcher couldn't apply —
+      // flush each AFTER the window transaction commits (approvals must not ride
+      // the tx).
+      deferredApprovals = promote.deferred;
     }
 
     // ============================================
@@ -625,45 +617,15 @@ export async function handleCompleteWindow(
     };
   });
 
-  // Post-commit: turn any blocked owned-field changes into approval cards. Done
-  // after the window transaction so the durable approval (run + event + notify)
-  // is never rolled back with the window, and a failure here never undoes the
-  // committed sync. Best-effort per proposal.
-  for (const b of blockedProposals) {
-    await proposeEntityFieldChange(ctx, {
-      entity_id: b.entityId,
-      fields: b.fields,
-      current: b.current,
-      watcher_id: Number(watcherId),
-      reason: `Watcher proposes updating ${Object.keys(b.fields).join(', ')} (currently set by you).`,
-    }).catch((err) =>
+  // Post-commit: flush any deferred approvals (owned-field changes + policy-held
+  // creates) the watcher couldn't apply inline. Done after the window transaction
+  // so the durable approval (run + event + notify) is never rolled back with the
+  // window, and a failure here never undoes the committed sync. Best-effort each.
+  for (const d of deferredApprovals) {
+    await d.queue(ctx, env).catch((err) =>
       logger.error(
-        { err, watcherId, entityId: b.entityId },
-        '[complete-window] failed to queue entity_field_change approval'
-      )
-    );
-  }
-  for (const c of blockedCreates) {
-    await proposeEntityCreate(ctx, {
-      entity_data: {
-        entity_type: c.entityTypeSlug,
-        name: c.name,
-        parent_id: c.parentEntityId,
-        metadata: c.metadata,
-      },
-      proposal: {
-        entity_type: c.entityTypeSlug,
-        name: c.name,
-        parent_id: c.parentEntityId,
-        metadata: c.metadata,
-      },
-      watcher_id: Number(watcherId),
-      attribution: 'watcher',
-      reason: `A watcher proposes creating ${c.entityTypeSlug} "${c.name}".`,
-    }).catch((err) =>
-      logger.error(
-        { err, watcherId, entityType: c.entityTypeSlug, name: c.name },
-        '[complete-window] failed to queue entity create approval'
+        { err, watcherId, action: d.display.action },
+        '[complete-window] failed to queue deferred entity approval'
       )
     );
   }

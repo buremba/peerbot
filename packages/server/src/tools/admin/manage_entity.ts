@@ -27,8 +27,8 @@ import {
 import {
 	classifyMutationPrincipal,
 	type EntityPolicyPrincipalKind,
-	evaluateEntityMutation,
 } from "../../authz/entity-policy";
+import { runMutationGate } from "../../authz/entity-mutation-gate";
 import { getDb, pgTextArray } from "../../db/client";
 import type { Env } from "../../index";
 import {
@@ -67,11 +67,6 @@ import {
 	toEntityInfo,
 } from "../view-urls";
 import { defineFlatActionTool, flatAction } from "./action-tool";
-import {
-	proposeEntityCreate,
-	proposeEntityDelete,
-	proposeEntityFieldChange,
-} from "./entity-field-approval";
 
 export { ManageEntityResultSchema, ManageEntitySchema };
 
@@ -246,34 +241,31 @@ async function handleCreate(
 		entityData.content = args.content;
 	}
 
-	const createDecision = await evaluateEntityMutation({
+	const proposal = {
+		entity_type: entityData.entity_type,
+		name: entityData.name,
+		parent_id: entityData.parent_id ?? null,
+		metadata: entityData.metadata ?? {},
+	};
+	const attribution: "agent" | "watcher" = args.watcher_source
+		? "watcher"
+		: "agent";
+	const createDecision = await runMutationGate({
+		action: "create",
 		organizationId: ctx.organizationId,
 		principalKind: principalKindForMutation(args, ctx),
-		action: "create",
+		sql: getDb(),
+		attribution,
+		watcherId: args.watcher_source?.watcher_id ?? null,
 		entityTypeSlug: args.entity_type,
+		entityData,
+		proposal,
 	});
-	if (createDecision === "deny") {
-		throw new ToolUserError(`Policy denied creating ${args.entity_type}`, 403);
+	if (createDecision.outcome === "deny") {
+		throw new ToolUserError(createDecision.reason, 403);
 	}
-	if (createDecision === "require_approval") {
-		const attribution: "agent" | "watcher" = args.watcher_source
-			? "watcher"
-			: "agent";
-		const proposal = {
-			entity_type: entityData.entity_type,
-			name: entityData.name,
-			parent_id: entityData.parent_id ?? null,
-			metadata: entityData.metadata ?? {},
-		};
-		const res = await proposeEntityCreate(ctx, {
-			entity_data: entityData,
-			proposal,
-			watcher_id: args.watcher_source?.watcher_id ?? null,
-			attribution,
-			reason: args.watcher_source
-				? `A watcher proposes creating ${args.entity_type} "${args.name}".`
-				: `An agent proposes creating ${args.entity_type} "${args.name}".`,
-		});
+	if (createDecision.outcome === "defer") {
+		const res = await createDecision.deferred.queue(ctx, env);
 		return {
 			action: "create",
 			approval_queued: true,
@@ -411,6 +403,8 @@ async function handleUpdate(
 
 	const updatedEntity = await updateEntity(entityId, updateData, env, ctx, {
 		policyPrincipalKind: principalKindForMutation(args, ctx),
+		attribution: args.watcher_source ? "watcher" : "agent",
+		watcherId: args.watcher_source?.watcher_id ?? null,
 	});
 	const entityDetails =
 		(await getEntity(updatedEntity.id, env, ctx)) ?? updatedEntity;
@@ -483,42 +477,25 @@ async function handleUpdate(
 
 	const viewUrl = await buildEntityViewUrl(ctx, entityDetails);
 
-	// Post-commit: any blocked (human-owned) fields become a single durable
-	// approval card. Done AFTER the entity tx + change event so the approval
+	// Post-commit: any blocked (human-owned or policy-gated) fields become a
+	// single durable approval card. updateEntity packaged them as a deferred
+	// mutation; queue() runs AFTER the entity tx + change event so the approval
 	// (run + event + notification) is never rolled back with the edit — same
-	// rule as complete_window's blockedProposals.
-	const blocked = updatedEntity.fieldMerge?.blocked ?? {};
-	const blockedPaths = Object.keys(blocked);
+	// rule as complete_window's deferred creates.
+	const blockedPaths = Object.keys(updatedEntity.fieldMerge?.blocked ?? {});
+	const deferred = updatedEntity.deferred;
 	let approvalQueued = false;
 	let approvalUrl: string | undefined;
 	let approvalRunId: number | undefined;
 	let approvalFields: Record<string, unknown> | undefined;
 	let approvalCurrent: Record<string, unknown> | undefined;
-	const approvalAttribution: "agent" | "watcher" = args.watcher_source
-		? "watcher"
-		: "agent";
-	if (blockedPaths.length > 0) {
-		const fields = Object.fromEntries(
-			blockedPaths.map((p) => [p, blocked[p].proposed]),
-		);
-		const current = Object.fromEntries(
-			blockedPaths.map((p) => [p, blocked[p].current]),
-		);
-		const res = await proposeEntityFieldChange(ctx, {
-			entity_id: entityId,
-			fields,
-			current,
-			watcher_id: args.watcher_source?.watcher_id ?? null,
-			attribution: approvalAttribution,
-			reason: args.watcher_source
-				? `A watcher proposes updating ${blockedPaths.join(", ")} on this entity.`
-				: `An agent proposes updating ${blockedPaths.join(", ")} on this entity.`,
-		});
+	if (deferred) {
+		const res = await deferred.queue(ctx, env);
 		approvalQueued = true;
 		approvalUrl = res.approvalUrl;
 		approvalRunId = res.runId;
-		approvalFields = fields;
-		approvalCurrent = current;
+		approvalFields = deferred.display.fields;
+		approvalCurrent = deferred.display.current;
 	}
 
 	return {
@@ -542,7 +519,7 @@ async function handleUpdate(
 		approval_run_id: approvalRunId,
 		approval_fields: approvalFields,
 		approval_current: approvalCurrent,
-		approval_attribution: approvalQueued ? approvalAttribution : undefined,
+		approval_attribution: deferred ? deferred.display.attribution : undefined,
 	};
 }
 
@@ -1015,41 +992,35 @@ async function handleDelete(
 	}
 
 	const policyArgs = args ?? { action: "delete", entity_id: entityId };
-	const deleteDecision = await evaluateEntityMutation({
-		organizationId: ctx.organizationId,
-		principalKind: principalKindForMutation(
-			policyArgs as ManageEntityArgs,
-			ctx,
-		),
+	const attribution: "agent" | "watcher" = args?.watcher_source
+		? "watcher"
+		: "agent";
+	const current = {
+		id: entity.id,
+		entity_type: entity.entity_type,
+		name: entity.name,
+		slug: entity.slug,
+		parent_id: entity.parent_id,
+		metadata: entity.metadata ?? {},
+	};
+	const deleteDecision = await runMutationGate({
 		action: "delete",
+		organizationId: ctx.organizationId,
+		principalKind: principalKindForMutation(policyArgs as ManageEntityArgs, ctx),
+		sql: getDb(),
+		attribution,
+		watcherId: args?.watcher_source?.watcher_id ?? null,
 		entityTypeSlug: entity.entity_type,
 		entityId,
+		entityOrgId: null,
+		forceDeleteTree: force,
+		current,
 	});
-	if (deleteDecision === "deny") {
-		throw new ToolUserError(`Policy denied deleting entity ${entityId}`, 403);
+	if (deleteDecision.outcome === "deny") {
+		throw new ToolUserError(deleteDecision.reason, 403);
 	}
-	if (deleteDecision === "require_approval") {
-		const attribution: "agent" | "watcher" = args?.watcher_source
-			? "watcher"
-			: "agent";
-		const current = {
-			id: entity.id,
-			entity_type: entity.entity_type,
-			name: entity.name,
-			slug: entity.slug,
-			parent_id: entity.parent_id,
-			metadata: entity.metadata ?? {},
-		};
-		const res = await proposeEntityDelete(ctx, {
-			entity_id: entityId,
-			force_delete_tree: force,
-			current,
-			watcher_id: args?.watcher_source?.watcher_id ?? null,
-			attribution,
-			reason: args?.watcher_source
-				? `A watcher proposes deleting ${entity.entity_type} "${entity.name}".`
-				: `An agent proposes deleting ${entity.entity_type} "${entity.name}".`,
-		});
+	if (deleteDecision.outcome === "defer") {
+		const res = await deleteDecision.deferred.queue(ctx, env);
 		return {
 			action: "delete",
 			success: false,

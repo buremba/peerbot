@@ -64,11 +64,22 @@ export function normalizeInstagramUsername(
   return trimmed;
 }
 
-/** Pull a normalized username out of an `instagram.com/<username>` profile link. */
+/**
+ * Pull a normalized username out of an `instagram.com/<username>` profile link.
+ *
+ * The takeout's `following.html` uses Instagram's app-deeplink form
+ * `instagram.com/_u/<username>` (and `/_n/<username>`), where the REAL handle is
+ * the segment AFTER the `_u`/`_n` prefix — the first segment is just the
+ * deeplink marker. `followers_*.html` uses the plain `instagram.com/<username>`.
+ * Grabbing the first segment blindly maps every following row to `_u` and
+ * mass-merges them into one bogus person, so strip the prefix first.
+ */
 export function usernameFromProfileUrl(
   url: string | null | undefined
 ): string | null {
   if (typeof url !== "string") return null;
+  const deep = url.match(/instagram\.com\/_[a-z]\/([^/?#]+)/i);
+  if (deep) return normalizeInstagramUsername(deep[1]);
   const match = url.match(/instagram\.com\/([^/?#]+)/i);
   return match ? normalizeInstagramUsername(match[1]) : null;
 }

@@ -62,6 +62,18 @@ describe("instagram-identity normalization", () => {
     expect(usernameFromProfileUrl(null)).toBe(null);
   });
 
+  test("recovers the REAL handle from the /_u/ app-deeplink form (following.html)", () => {
+    // following.html links are instagram.com/_u/<handle> — the handle is the
+    // segment AFTER the deeplink marker. Grabbing the first segment maps every
+    // following row to "_u" and mass-merges them into one bogus person.
+    expect(
+      usernameFromProfileUrl("https://www.instagram.com/_u/zeynepkaraman")
+    ).toBe("zeynepkaraman");
+    expect(usernameFromProfileUrl("https://instagram.com/_n/some.user")).toBe(
+      "some.user"
+    );
+  });
+
   test("namespace is the IG-internal username key", () => {
     expect(INSTAGRAM_IDENTITY.USERNAME).toBe("ig_username");
   });
@@ -115,10 +127,11 @@ describe("InstagramTakeoutConnector emits metadata the attributions resolve", ()
       </main></body></html>`
     );
     // Same handle appears in following.html -> must fold onto ONE person.
+    // following.html uses the real /_u/ app-deeplink form (see the connector).
     writeFileSync(
       path.join(root, "following.html"),
       `<html><body><main>
-        <a href="https://www.instagram.com/Aykut.GK">Aykut Gedik</a>
+        <a href="https://www.instagram.com/_u/Aykut.GK">Aykut Gedik</a>
       </main></body></html>`
     );
     return dir;

@@ -22,6 +22,7 @@ import { mcpAuth } from "./auth/middleware";
 import { oauthRoutes } from "./auth/oauth/routes";
 import { findExistingPersonalOrg } from "./auth/personal-org-provisioning";
 import { credentialRoutes } from "./auth/routes";
+import { decodeJwtClaims } from "./auth/subject-identities";
 import { compareWorkerToken } from "./auth/worker-token";
 import { globalCatalogRoutes, orgInstalledRoutes } from "./catalog/routes";
 import { connectionTokenRoutes } from "./connect/connection-token-route";
@@ -1468,7 +1469,7 @@ async function resolveClaimingUserSlackIdentities(
 	// The identity is stored as `T…:U…` (team-scoped). Split into a team id and a
 	// bare `U…` id; the claim guard filters by team (membership) or matches the
 	// bare id against the pending install's installerUserId (Grid).
-	return rows
+	const fromGraph = rows
 		.map((r) => String(r.identifier))
 		.map((id) => {
 			const sep = id.indexOf(":");
@@ -1477,6 +1478,49 @@ async function resolveClaimingUserSlackIdentities(
 				: { teamId: id.slice(0, sep), slackUserId: id.slice(sep + 1) };
 		})
 		.filter((x): x is { teamId: string; slackUserId: string } => x !== null);
+
+	// FALLBACK: the entity-graph `slack_user_id` above is only written once the
+	// user's private-org `$member` provisioning has completed AND their signup
+	// identity landed in a private org (see `persistLoginSlackIdentity` /
+	// `resolveTenantMember`). A brand-new user whose signup org is public — or
+	// whose provisioning hasn't finished — has NO such row, so the graph join is
+	// empty and the claim dead-ends in a "Sign in with Slack" loop even though
+	// they just did. Their linked Better-Auth Slack `account` row is an
+	// independent, always-present proof of the same `U…` (the OIDC subject stored
+	// as `accountId`), captured directly by "Sign in with Slack". Union it in so
+	// claim authority never depends on the identity-graph timing.
+	//
+	// The team is read from the stored `id_token` (`https://slack.com/team_id`)
+	// when present, giving a team-scoped entry for Path 1 (workspace membership);
+	// absent, we still emit the bare `U…` with an empty team, which satisfies the
+	// Grid installer-match (Path 2, `slackUserId === installerUserId`). `U…` ids
+	// are enterprise-global, so the bare match is sound on a Grid.
+	const accountRows = (await sql`
+		SELECT "accountId", "idToken"
+		FROM account
+		WHERE "providerId" = 'slack' AND "userId" = ${userId}
+	`) as Array<{ accountId: string | null; idToken: string | null }>;
+	const fromAccounts = accountRows
+		.map((a) => {
+			const slackUserId = a.accountId?.toUpperCase();
+			if (!slackUserId) return null;
+			const teamId = a.idToken
+				? ((decodeJwtClaims(a.idToken)?.["https://slack.com/team_id"] as
+						| string
+						| undefined) ?? "")
+				: "";
+			return { teamId: teamId.toUpperCase(), slackUserId };
+		})
+		.filter((x): x is { teamId: string; slackUserId: string } => x !== null);
+
+	// De-dup by `team:user` so a user present in both sources isn't doubled.
+	const seen = new Set<string>();
+	return [...fromGraph, ...fromAccounts].filter((x) => {
+		const key = `${x.teamId}:${x.slackUserId}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
 }
 
 /**

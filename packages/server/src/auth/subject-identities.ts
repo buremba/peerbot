@@ -148,7 +148,7 @@ export interface LoginAccountForSlackIdentity {
  * same trust level as the access token we already store and use. Mirrors
  * better-auth's own `decodeJwt`. Returns null on any malformation.
  */
-function decodeJwtClaims(jwt: string): Record<string, unknown> | null {
+export function decodeJwtClaims(jwt: string): Record<string, unknown> | null {
 	const seg = jwt.split(".")[1];
 	if (!seg) return null;
 	try {

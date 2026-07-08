@@ -124,6 +124,24 @@ function makeAppInstallationStore(): TrackedAppStore {
 			// Unambiguous only — 2+ matches ⇒ null (see resolveSoleActiveByMetadata).
 			return matches.length === 1 ? matches[0] : null;
 		},
+		resolveActiveByMetadataFlag: async (
+			provider: string,
+			providerAppId: string,
+			key: string,
+			value: string,
+			flagKey: string,
+		) => {
+			const matches = rows.filter(
+				(r) =>
+					r.provider === provider &&
+					r.providerAppId === providerAppId &&
+					r.status === "active" &&
+					r.metadata[key] === value &&
+					r.metadata[flagKey] === true,
+			);
+			// Unambiguous only — 2+ matches ⇒ null (see resolveActiveByMetadataFlag).
+			return matches.length === 1 ? matches[0] : null;
+		},
 		getByTenantAndOrg: async (key: any, org: string) => {
       const matches = rows.filter(
 				(r) => tupleEq(r, key) && r.organizationId === org,

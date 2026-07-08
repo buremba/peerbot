@@ -3,10 +3,15 @@ import path from "node:path";
 import {
   type ConnectorDefinition,
   ConnectorRuntime,
+  type EventAttributionRule,
   type EventEnvelope,
   type SyncContext,
   type SyncResult,
 } from "@lobu/connector-sdk";
+import {
+  INSTAGRAM_IDENTITY,
+  usernameFromProfileUrl,
+} from "./instagram-identity.ts";
 import {
   assertDirectory,
   batchSize,
@@ -17,6 +22,48 @@ import {
   stripHtml,
   takeBatch,
 } from "./takeout-utils.ts";
+
+/**
+ * IG-INTERNAL identity attribution for the connections feed (followers /
+ * following / blocked / restricted). The takeout has no numeric id, so people
+ * are keyed on `ig_username` — the only cross-referenceable handle a takeout
+ * gives. It is USER-CHANGEABLE, so it is matched EQUAL-WEIGHT (NOT `primary`),
+ * exactly like `linkedin_slug`: the same handle appearing in BOTH followers and
+ * following folds onto ONE person instead of forking two.
+ *
+ * `createWhen: { metadata.username exists }` gates minting on a normalized
+ * handle being present — a `blocked`/`restricted` row that is only a display
+ * name with no resolvable `instagram.com/<user>` link (so `username` is absent)
+ * accretes onto an existing person but never MINTS an id-less duplicate. This is
+ * the same mint-gate that codex flagged for the X handle-only-follow case.
+ */
+const IG_CONNECTION_ATTRIBUTIONS: EventAttributionRule[] = [
+  {
+    role: "about",
+    autoCreate: true,
+    target: {
+      entityType: "person",
+      createWhen: { path: "metadata.username", exists: true },
+      titlePath: "author_name",
+      identities: [
+        {
+          namespace: INSTAGRAM_IDENTITY.USERNAME,
+          eventPath: "metadata.username",
+        },
+      ],
+    },
+    traits: {
+      ig_username: {
+        eventPath: "metadata.username",
+        behavior: "prefer_non_empty",
+      },
+      instagram_profile_url: {
+        eventPath: "metadata.profile_url",
+        behavior: "prefer_non_empty",
+      },
+    },
+  },
+];
 
 interface InstagramTakeoutCheckpoint {
   last_messages_timestamp?: string;
@@ -56,6 +103,24 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         configSchema: localTakeoutSchema(
           "Path to the Instagram export folder."
         ),
+        eventKinds: {
+          follower: {
+            description: "An account that follows the user",
+            attributions: IG_CONNECTION_ATTRIBUTIONS,
+          },
+          following: {
+            description: "An account the user follows",
+            attributions: IG_CONNECTION_ATTRIBUTIONS,
+          },
+          blocked_profiles: {
+            description: "An account the user has blocked",
+            attributions: IG_CONNECTION_ATTRIBUTIONS,
+          },
+          restricted_profiles: {
+            description: "An account the user has restricted",
+            attributions: IG_CONNECTION_ATTRIBUTIONS,
+          },
+        },
       },
       saved: {
         key: "saved",
@@ -333,6 +398,10 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         const url = match[1] ?? "";
         const name = stripHtml(match[2] ?? "");
         if (!url || !name) return [];
+        // Normalized handle keyed by the identity resolver. `undefined` (not "")
+        // when the link is not a resolvable profile, so `createWhen exists`
+        // gates minting a person on a real handle being present.
+        const username = usernameFromProfileUrl(url) ?? undefined;
         return [
           {
             origin_id: stableId("ig_connection", [kind, url, name]),
@@ -345,7 +414,7 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
               platform: "instagram",
               kind,
               profile_url: url,
-              username: url.match(/instagram\.com\/([^/?#]+)/)?.[1],
+              username,
             },
           },
         ];

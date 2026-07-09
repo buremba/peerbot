@@ -3,7 +3,7 @@
 # with the diff against the base branch. Prints a JSON verdict on the last line.
 #
 # Usage:
-#   ./scripts/review.sh                 # base = main
+#   ./scripts/review.sh                 # base = origin/main when available
 #   ./scripts/review.sh --base develop  # override base
 #   BASE=develop ./scripts/review.sh    # env-var override
 #
@@ -25,6 +25,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/review-lock.sh
+. "$SCRIPT_DIR/lib/review-lock.sh"
+
 # --- preflight --------------------------------------------------------------
 
 for cmd in claude jq git; do
@@ -40,7 +44,16 @@ fi
 
 # --- args -------------------------------------------------------------------
 
-BASE_BRANCH="${BASE:-main}"
+if [ -n "${BASE:-}" ]; then
+  BASE_BRANCH="$BASE"
+elif git show-ref --verify --quiet refs/remotes/origin/main; then
+  # Task worktrees often outlive the primary checkout's local `main` ref. Use
+  # the fetched remote-tracking branch by default so a stale local main cannot
+  # silently widen or distort the diff sent to the reviewer.
+  BASE_BRANCH="origin/main"
+else
+  BASE_BRANCH="main"
+fi
 CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-opus}"
 CLAUDE_REVIEW_EFFORT="${CLAUDE_REVIEW_EFFORT:-high}"
 PI_REVIEW_STATUS_CONTEXT="${PI_REVIEW_STATUS_CONTEXT:-pi-review}"
@@ -48,6 +61,7 @@ PI_REVIEW_MIN_BUG_FREE="${PI_REVIEW_MIN_BUG_FREE:-80}"
 PI_REVIEW_MAX_SLOP="${PI_REVIEW_MAX_SLOP:-15}"
 PI_REVIEW_MIN_SIMPLICITY="${PI_REVIEW_MIN_SIMPLICITY:-70}"
 CLAUDE_REVIEW_HERDR="${CLAUDE_REVIEW_HERDR:-auto}"
+REVIEW_DATABASE_URL="${REVIEW_DATABASE_URL:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE_BRANCH="$2"; shift 2 ;;
@@ -280,7 +294,9 @@ process.exit(1);
   printf '%s\n' "$raw" | sed -e 's/^```json//' -e 's/^```//' -e 's/```$//'
 }
 
-trap 'ec=$?; if [ $ec -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then post_review_status error "Claude review failed before verdict (exit $ec)"; fi' EXIT
+trap 'ec=$?; release_review_lock; if [ $ec -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then post_review_status error "Claude review failed before verdict (exit $ec)"; fi' EXIT
+
+acquire_review_lock
 
 post_review_status pending "Claude review running"
 
@@ -294,12 +310,21 @@ if [ -f .env ]; then
 fi
 
 # Tests must NOT run against whatever DATABASE_URL .env points at (often a
-# shared/tailnet DB) — they run DDL like `DROP SCHEMA public`. Unset it so the
-# test harness spawns an isolated, ephemeral embedded Postgres per run (see
-# packages/server/src/__tests__/setup/embedded-postgres-backend.ts). This also
-# removes the old "ALTER SCHEMA public OWNER" hack: the embedded cluster's
-# bootstrap role already owns its schema.
-unset DATABASE_URL
+# shared/tailnet DB) — they run DDL like `DROP SCHEMA public`. By default the
+# test harness therefore spawns an isolated embedded Postgres. Parallel review
+# runs can instead opt into distinct pre-created test databases through the
+# deliberately named REVIEW_DATABASE_URL; reject non-test names defensively.
+if [ -n "$REVIEW_DATABASE_URL" ]; then
+  REVIEW_DATABASE_NAME="${REVIEW_DATABASE_URL%%\?*}"
+  REVIEW_DATABASE_NAME="${REVIEW_DATABASE_NAME##*/}"
+  if [[ "$REVIEW_DATABASE_NAME" != lobu_test* ]]; then
+    echo "REVIEW_DATABASE_URL database must start with 'lobu_test'" >&2
+    exit 2
+  fi
+  export DATABASE_URL="$REVIEW_DATABASE_URL"
+else
+  unset DATABASE_URL
+fi
 
 # The dev .env also sets PUBLIC_GATEWAY_URL=http://localhost:8787, which makes the
 # public-origin / public-pages-contract tests fail ("expected 'localhost' to be
@@ -311,7 +336,8 @@ unset PUBLIC_GATEWAY_URL
 # Tests need workspace packages built. Worktree's `dist/` may be stale or
 # missing — always rebuild before tests. Cheap if up-to-date.
 
-BUILD_LOG="/tmp/lobu-review-build.log"
+REVIEW_RUN_DIR="$(mktemp -d /tmp/lobu-review.XXXXXX)"
+BUILD_LOG="$REVIEW_RUN_DIR/build.log"
 echo ">> make build-packages → $BUILD_LOG"
 set +e
 make build-packages > "$BUILD_LOG" 2>&1
@@ -323,9 +349,9 @@ fi
 
 # --- test suites ------------------------------------------------------------
 
-TYPECHECK_LOG="/tmp/lobu-review-typecheck.log"
-UNIT_LOG="/tmp/lobu-review-unit.log"
-INTEGRATION_LOG="/tmp/lobu-review-integration.log"
+TYPECHECK_LOG="$REVIEW_RUN_DIR/typecheck.log"
+UNIT_LOG="$REVIEW_RUN_DIR/unit.log"
+INTEGRATION_LOG="$REVIEW_RUN_DIR/integration.log"
 DETERMINISTIC_TEST_ENV=(
   env
   ANTHROPIC_API_KEY=
@@ -345,6 +371,7 @@ echo ">> unit tests → $UNIT_LOG"
 set +e
 UNIT_EXIT=0
 {
+  "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/review-lock.test.sh";               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # Guard: every packages/server *.test.ts must run in >=1 runner (vitest or a
   # bun job). Fails loudly if a file drifts into running nowhere — the
   # silent-skip class this change fixes.
@@ -365,9 +392,6 @@ UNIT_EXIT=0
   "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/connector-worker;                               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
 } > "$UNIT_LOG" 2>&1
 set -e
-
-echo ">> make clean-test-pg before integration"
-make clean-test-pg
 
 echo ">> integration tests → $INTEGRATION_LOG"
 set +e

@@ -130,9 +130,21 @@ sort by `(scope_specificity desc, principal_specificity desc)`; ties → restric
 (`deny > approval > auto`). Hard invariants (cross-org, field-ownership) sit above
 policy, unconditionally.
 
-## 5. Implementation — three small PRs (v1)
+## 5. Implementation — ONE v1 PR, stacked commits (DECIDED)
+**v1 ships as a single PR** so it's usable end-to-end at merge (no backend-without-UI
+half-state) — INCLUDING batched approvals (§6b). Reviewability comes from clean stacked
+commits read in order, NOT from separate PRs:
+1. `migration + agentId plumbing` (no behavior change)
+2. `per-principal policy resolver + tests`
+3. `batched approvals (window_id grouping) + conversational revision`
+4. `UI: class tabs + principal picker + batch card`
+5. `manage_agents as a governed class + human-admin-immediate behavior`
 
-**PR 1 — DB + `agentId` plumbing (refactor, NO behavior change).**
+The sub-sections below detail each commit's content.
+
+### Commit-level content (was: three small PRs)
+
+**Commit 1 — DB + `agentId` plumbing (refactor, NO behavior change).**
 Migration 1: rename `entity_approval_policies` → `write_approval_policies`; add
 `resource_class`/`target_scope_*`/`principal_*`/`predicate jsonb NULL`; move to id-based
 CRUD + new unique index; backfill existing rows (`resource_class='entity'`, collapse any
@@ -140,20 +152,27 @@ field/row-scoped rows to their type row — enumerate first, they're rare per th
 defaults). Thread `agentId` through the gate request + 3 call sites. All behavior
 identical (defaults preserve today's decisions). Reviewable as pure refactor.
 
-**PR 2 — per-principal policy for entities (the new capability; backend + tests).**
+**Commit 2 — per-principal policy for entities (the new capability; backend + tests).**
 Resolver consumes `principal_kind`/`principal_id`; add the second specificity axis +
 restrictive-wins. Prove red→fix→green: watcher #N auto-allowed while other agents gated;
 tie-break; users never gated; field-ownership approval still fires (regression guard).
 
-**PR 3 — UI (frontend-only; the acknowledged gap).**
+**Commit 3 — batched approvals + conversational revision (§6b).**
+Group proposals by `window_id` into one parent `runs` row + child proposals; batch card
+data; approve-all / reject-all; the in-place child-proposal update operation for the
+conversational-revision loop; reject-with-reason re-dispatch. Backend + tests.
+
+**Commit 4 — UI (frontend).**
 `organization-settings-page.tsx`: resource-class tab strip (Entities + Agents) + a
 principal picker beside the type picker; generalize `useEntityApprovalPolicy` →
-`useWriteApprovalPolicy(resourceClass)`; widen the effect type. NO predicate builder, NO
-connector reflection page. Approvals inbox untouched.
+`useWriteApprovalPolicy(resourceClass)`; widen the effect type. Batch approval card
+(collapsible list reusing the existing before→after diff renderer,
+`event-card.tsx:524-542`). NO predicate builder, NO connector reflection page.
 
-Agents-as-a-governed-class (wiring `manage_agents` through the generalized gate + the
-`manage_agents` human-immediate behavior change + building its `isStale`) is a **fourth
-small PR** once PRs 1–3 land — kept separate because it carries the one behavior change.
+**Commit 5 — `manage_agents` as a governed class.**
+Wire `manage_agents` through the generalized gate; build its `isStale`; implement the
+human-admin-immediate behavior change (drop today's unconditional-approval for humans).
+Carries the one intentional behavior change — kept as its own commit for a clean review.
 
 ## 6. Roadmap after v1
 - **v1.1 — granular scopes**: predicate DSL (flat AND-only `{field, op, value}`, no

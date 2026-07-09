@@ -12,7 +12,7 @@ import type { DbClient } from "../../db/client";
 
 /**
  * Policy-query stub: the builtin approval interceptor (always first in the
- * registry) queries entity_approval_policies on the request's sql handle; an
+ * registry) queries write_approval_policies on the request's sql handle; an
  * empty result set resolves to the default policy (create/update auto), i.e.
  * the interceptor contributes allow / an empty require-approval set, leaving
  * the outcome to the test-registered stubs.

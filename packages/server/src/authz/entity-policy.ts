@@ -6,7 +6,7 @@
  *  - Built-in invariants that no org policy can disable: writes never cross
  *    organizations, and a non-human write to a human-owned field always needs
  *    approval (field ownership is how a user pins a value).
- *  - The org's persisted `entity_approval_policies` rows: per-action
+ *  - The org's persisted `write_approval_policies` rows: per-action
  *    auto/approval modes, scoped global → entity type → field → single entity
  *    (entity_id), most specific row wins. Rows also carry the Slack delivery
  *    target for approval notifications.
@@ -281,7 +281,7 @@ async function loadCandidatePolicies(args: {
        create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
-    FROM entity_approval_policies
+    FROM write_approval_policies
     WHERE organization_id = ${args.organizationId}
       AND resource_class = ${resourceClass}
       AND (
@@ -476,7 +476,7 @@ export async function getGlobalEntityApprovalPolicy(
        create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
-    FROM entity_approval_policies
+    FROM write_approval_policies
     WHERE organization_id = ${organizationId}
       AND resource_class = 'entity'
       AND principal_kind IS NULL
@@ -505,7 +505,7 @@ export async function listEntityApprovalPolicies(
        create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
-    FROM entity_approval_policies
+    FROM write_approval_policies
     WHERE organization_id = ${organizationId}
       AND (${resourceClass ?? null}::text IS NULL OR resource_class = ${resourceClass ?? null})
     ORDER BY
@@ -559,7 +559,7 @@ export async function upsertEntityApprovalPolicy(
 	// The identity tuple the unique index keys on. Reused by both UPDATE arms so
 	// the "lost the insert race" recovery targets the exact same row.
 	const applyUpdate = (tx: DbClient) => tx<EntityApprovalPolicyRow>`
-      UPDATE entity_approval_policies
+      UPDATE write_approval_policies
       SET create_mode = ${createMode},
           update_mode = ${updateMode},
           delete_mode = ${deleteMode},
@@ -587,7 +587,7 @@ export async function upsertEntityApprovalPolicy(
 		if (updated[0]) return updated[0];
 
 		const inserted = await tx<EntityApprovalPolicyRow>`
-      INSERT INTO entity_approval_policies (
+      INSERT INTO write_approval_policies (
         organization_id, resource_class, principal_kind, principal_id,
         entity_type_slug, field_path, entity_id,
         create_mode, update_mode, delete_mode,
@@ -646,7 +646,7 @@ export async function deleteEntityApprovalPolicy(args: {
 	}
 	const sql = getDb();
 	const rows = await sql<{ id: number }>`
-    DELETE FROM entity_approval_policies
+    DELETE FROM write_approval_policies
     WHERE organization_id = ${args.organizationId}
       AND resource_class = ${resourceClass}
       AND principal_kind IS NOT DISTINCT FROM ${principalKind}

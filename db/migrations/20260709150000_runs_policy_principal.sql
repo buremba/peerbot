@@ -13,13 +13,18 @@ ALTER TABLE public.runs
   ADD COLUMN IF NOT EXISTS policy_principal_kind text,
   ADD COLUMN IF NOT EXISTS policy_principal_id text;
 
+-- `runs` is a hot, high-row-count table: validate the CHECK in a second pass so the
+-- ADD takes no table scan / write lock (the columns were just added, so every
+-- existing row is NULL and passes — the VALIDATE is a formality that stays online).
 ALTER TABLE public.runs
   DROP CONSTRAINT IF EXISTS runs_policy_principal_kind_check;
 ALTER TABLE public.runs
   ADD CONSTRAINT runs_policy_principal_kind_check CHECK (
     policy_principal_kind IS NULL
     OR policy_principal_kind IN ('agent', 'watcher', 'user')
-  );
+  ) NOT VALID;
+ALTER TABLE public.runs
+  VALIDATE CONSTRAINT runs_policy_principal_kind_check;
 
 -- (sol review #7) `disabled` is only meaningful for the connector_action class
 -- (an action turned off entirely). The widened mode CHECK from the expand
@@ -36,7 +41,9 @@ ALTER TABLE public.write_approval_policies
       AND update_mode <> 'disabled'
       AND delete_mode <> 'disabled'
     )
-  );
+  ) NOT VALID;
+ALTER TABLE public.write_approval_policies
+  VALIDATE CONSTRAINT write_approval_policies_disabled_only_connector;
 
 -- migrate:down
 

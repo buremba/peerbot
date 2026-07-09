@@ -28,13 +28,24 @@ ALTER TABLE public.entity_approval_policies
   DROP CONSTRAINT IF EXISTS entity_approval_policies_update_mode_check,
   DROP CONSTRAINT IF EXISTS entity_approval_policies_delete_mode_check;
 
+-- Add NOT VALID first (no table scan, no write lock), then VALIDATE in a second
+-- pass (SHARE UPDATE EXCLUSIVE — concurrent reads/writes proceed). The pre-existing
+-- rows only hold 'auto'/'approval', which the widened set is a superset of, so the
+-- validate is guaranteed to pass; splitting it just avoids the blocking scan.
 ALTER TABLE public.entity_approval_policies
   ADD CONSTRAINT entity_approval_policies_create_mode_check
-    CHECK (create_mode IN ('auto', 'approval', 'deny', 'disabled')),
+    CHECK (create_mode IN ('auto', 'approval', 'deny', 'disabled')) NOT VALID,
   ADD CONSTRAINT entity_approval_policies_update_mode_check
-    CHECK (update_mode IN ('auto', 'approval', 'deny', 'disabled')),
+    CHECK (update_mode IN ('auto', 'approval', 'deny', 'disabled')) NOT VALID,
   ADD CONSTRAINT entity_approval_policies_delete_mode_check
-    CHECK (delete_mode IN ('auto', 'approval', 'deny', 'disabled'));
+    CHECK (delete_mode IN ('auto', 'approval', 'deny', 'disabled')) NOT VALID;
+
+ALTER TABLE public.entity_approval_policies
+  VALIDATE CONSTRAINT entity_approval_policies_create_mode_check;
+ALTER TABLE public.entity_approval_policies
+  VALIDATE CONSTRAINT entity_approval_policies_update_mode_check;
+ALTER TABLE public.entity_approval_policies
+  VALIDATE CONSTRAINT entity_approval_policies_delete_mode_check;
 
 -- Lookup index for the generalized resolver (by class + principal).
 -- squawk-ignore require-concurrent-index-creation -- additive; low row count, no hot-path contention on this table
@@ -60,6 +71,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS entity_approval_policies_class_principal_scope
     COALESCE(entity_id, 0)
   );
 
+-- squawk-ignore require-concurrent-index-deletion -- low-row-count policy table, no hot-path contention; a bare DROP takes a brief ACCESS EXCLUSIVE lock that is negligible at this table's scale
 DROP INDEX IF EXISTS public.entity_approval_policies_scope_key;
 
 -- migrate:down
@@ -75,7 +87,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS entity_approval_policies_scope_key
     COALESCE(entity_id, 0)
   );
 
+-- squawk-ignore require-concurrent-index-deletion -- rollback path; low-row-count policy table, brief lock negligible at this scale
 DROP INDEX IF EXISTS public.entity_approval_policies_class_principal_scope_key;
+-- squawk-ignore require-concurrent-index-deletion -- rollback path; low-row-count policy table, brief lock negligible at this scale
 DROP INDEX IF EXISTS public.entity_approval_policies_class_principal;
 
 ALTER TABLE public.entity_approval_policies
@@ -85,11 +99,18 @@ ALTER TABLE public.entity_approval_policies
 
 ALTER TABLE public.entity_approval_policies
   ADD CONSTRAINT entity_approval_policies_create_mode_check
-    CHECK (create_mode IN ('auto', 'approval')),
+    CHECK (create_mode IN ('auto', 'approval')) NOT VALID,
   ADD CONSTRAINT entity_approval_policies_update_mode_check
-    CHECK (update_mode IN ('auto', 'approval')),
+    CHECK (update_mode IN ('auto', 'approval')) NOT VALID,
   ADD CONSTRAINT entity_approval_policies_delete_mode_check
-    CHECK (delete_mode IN ('auto', 'approval'));
+    CHECK (delete_mode IN ('auto', 'approval')) NOT VALID;
+
+ALTER TABLE public.entity_approval_policies
+  VALIDATE CONSTRAINT entity_approval_policies_create_mode_check;
+ALTER TABLE public.entity_approval_policies
+  VALIDATE CONSTRAINT entity_approval_policies_update_mode_check;
+ALTER TABLE public.entity_approval_policies
+  VALIDATE CONSTRAINT entity_approval_policies_delete_mode_check;
 
 ALTER TABLE public.entity_approval_policies
   DROP COLUMN IF EXISTS resource_class,

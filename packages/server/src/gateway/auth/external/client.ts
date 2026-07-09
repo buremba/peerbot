@@ -347,6 +347,7 @@ export class ExternalAuthClient {
       scope: this.config.scope || DEFAULT_SCOPE,
       responseType: "code",
       grantType: "authorization_code",
+      grant: "authorization-code",
       tokenEndpointAuthMethod: resolved.tokenEndpointAuthMethod,
       requireRefreshToken: false,
     };

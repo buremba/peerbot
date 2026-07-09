@@ -151,7 +151,7 @@ export class OAuthClient extends BaseOAuth2Client {
 		);
 		url.searchParams.set("code_challenge_method", "S256");
 		for (const [k, v] of Object.entries(this.config.extraAuthParams ?? {})) {
-			url.searchParams.set(k, v);
+			url.searchParams.set(k, String(v));
 		}
 		return url.toString();
 	}

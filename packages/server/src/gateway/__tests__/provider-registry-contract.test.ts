@@ -101,9 +101,11 @@ describe("provider registry contract (config/providers.json)", () => {
 				expect(() => new URL(provider.upstreamBaseUrl)).not.toThrow();
 			});
 
-			test("sdkCompat, when set, is 'openai'", () => {
+			test("sdkCompat, when set, is a known protocol", () => {
 				if (provider.sdkCompat !== undefined) {
-					expect(provider.sdkCompat).toBe("openai");
+					// Config-driven OpenAI-compat providers use "openai"; Claude's
+					// subscription entry uses "anthropic" (Messages API).
+					expect(["openai", "anthropic"]).toContain(provider.sdkCompat);
 				}
 			});
 
@@ -162,7 +164,7 @@ describe("provider registry contract (config/providers.json)", () => {
 						provider.envVarName.replace("_KEY", "_BASE_URL"),
 					);
 					if (provider.sdkCompat) {
-						expect(meta!.sdkCompat).toBe("openai");
+						expect(meta!.sdkCompat).toBe(provider.sdkCompat);
 					}
 				}
 			});

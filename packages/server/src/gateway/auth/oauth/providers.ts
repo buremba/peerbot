@@ -45,7 +45,7 @@ export function loadOAuthProvidersFromConfigs(
 	for (const [id, entry] of Object.entries(configs)) {
 		const oauth = entry.oauth;
 		if (!oauth) continue;
-		const err = validateOAuthBlock(id, oauth);
+		const err = validateOAuthBlock(oauth);
 		if (err) {
 			logger.error(
 				{ providerId: id, err },
@@ -63,10 +63,7 @@ export function loadOAuthProvidersFromConfigs(
 	return listOAuthProviders();
 }
 
-function validateOAuthBlock(
-	id: string,
-	oauth: ProviderOAuthConfig,
-): string | null {
+function validateOAuthBlock(oauth: ProviderOAuthConfig): string | null {
 	if (!oauth.clientId?.trim()) return "missing clientId";
 	if (!oauth.tokenUrl?.trim()) return "missing tokenUrl";
 	if (!oauth.scope?.trim()) return "missing scope";

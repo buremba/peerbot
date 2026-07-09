@@ -25,6 +25,11 @@ import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
 import type { Env } from "../../index";
 import { callTool as callProxyTool } from "../../mcp-proxy/client";
 import { resolveCredentialsByConnectionId } from "../../mcp-proxy/credential-resolver";
+import {
+	classifyMutationPrincipal,
+	mutationPrincipalId,
+	resolveWritePolicyDecision,
+} from "../../authz/entity-policy";
 import { notifyActionApprovalNeeded } from "../../notifications/triggers";
 import { resolveActionMode } from "../../operations/action-modes";
 import {
@@ -658,7 +663,34 @@ async function handleExecute(
 			error: `Operation '${operation.operation_key}' is disabled on this connection.`,
 		};
 	}
-	const shouldQueue = mode === "approval";
+
+	// Org-level connector-action policy, from the SAME write-gate the entity and
+	// agent_config classes use. It folds with the per-connection action_modes by
+	// restrictive-wins: a `deny` blocks outright; an `approval` upgrades a
+	// connection that would auto-run to queued. A human applies immediately (the
+	// policy governs non-human principals); with no policy row, the class default
+	// is auto, so the connection mode alone decides — today's behavior is intact.
+	const principalKind = classifyMutationPrincipal({
+		userId: ctx.userId,
+		agentId: ctx.agentId,
+		watcherSource: args.watcher_source ?? null,
+	});
+	const policyDecision = await resolveWritePolicyDecision({
+		organizationId: ctx.organizationId,
+		resourceClass: "connector_action",
+		principalKind,
+		principalId: mutationPrincipalId({
+			agentId: ctx.agentId,
+			watcherId: args.watcher_source?.watcher_id ?? null,
+		}),
+		action: "create",
+	});
+	if (policyDecision === "deny") {
+		return {
+			error: `Policy denies '${operation.operation_key}' for this principal.`,
+		};
+	}
+	const shouldQueue = mode === "approval" || policyDecision === "require_approval";
 
 	// Detect device-bound connector by reading the connector definition's
 	// `runtime` field. When set (e.g. chrome-extension, macos, ios), the

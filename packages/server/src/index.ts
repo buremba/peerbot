@@ -1402,7 +1402,10 @@ app.patch("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 
 	// Optional per-principal targeting: an admin can pin one agent/watcher to a
 	// stricter mode. principal_id is only meaningful with a kind. Class is fixed to
-	// 'entity' on this endpoint — the connector-action class has its own surface.
+	// 'entity' on this endpoint — connector_action policy rows are ENFORCED by the
+	// gate (manage_operations.execute) but set via SDK/SQL until their own UI
+	// surface lands; this endpoint stays entity-only so its auto/approval mode
+	// validation doesn't have to fork for the deny/disabled connector modes.
 	const principalKind: "agent" | "watcher" | null =
 		body.principal_kind === "agent" || body.principal_kind === "watcher"
 			? body.principal_kind

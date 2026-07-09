@@ -374,7 +374,7 @@ export async function evaluateEntityMutation(args: {
  * The mode a class falls back to when no policy row matches — the per-action
  * defaults baked into {@link defaultEntityApprovalPolicy} for entity, and a
  * conservative "agent-driven config change needs approval, delete is denied"
- * default for agent_config. A class with no explicit default resolves to `auto`.
+ * default for agent_config.
  */
 function defaultModeFor(
 	resourceClass: WriteResourceClass,
@@ -385,6 +385,11 @@ function defaultModeFor(
 		// approval, delete is denied outright (a human must delete an agent).
 		if (action === "delete") return "deny";
 		return "approval";
+	}
+	if (resourceClass === "connector_action") {
+		// No org connector-action policy → `auto`, so the per-connection
+		// action_modes alone decide (today's behavior). A row only ever tightens.
+		return "auto";
 	}
 	return modeForAction(defaultEntityApprovalPolicy(""), action);
 }

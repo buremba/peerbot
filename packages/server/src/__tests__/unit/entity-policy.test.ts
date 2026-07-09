@@ -346,6 +346,65 @@ describe("resolveWritePolicyDecision (agent_config)", () => {
 	});
 });
 
+describe("resolveWritePolicyDecision (connector_action)", () => {
+	test("no policy row → auto, so the connection mode alone governs", async () => {
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: ORG,
+				resourceClass: "connector_action",
+				principalKind: "agent",
+				action: "create",
+				sql: stubSql([]),
+			}),
+		).toBe("allow");
+	});
+
+	test("an org policy can force connector-action approval or deny", async () => {
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: ORG,
+				resourceClass: "connector_action",
+				principalKind: "agent",
+				action: "create",
+				sql: stubSql([
+					{ resource_class: "connector_action", create_mode: "approval" },
+				]),
+			}),
+		).toBe("require_approval");
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: ORG,
+				resourceClass: "connector_action",
+				principalKind: "watcher",
+				principalId: "watcher:9",
+				action: "create",
+				sql: stubSql([
+					{
+						resource_class: "connector_action",
+						principal_kind: "watcher",
+						principal_id: "watcher:9",
+						create_mode: "deny",
+					},
+				]),
+			}),
+		).toBe("deny");
+	});
+
+	test("a human applies connector actions immediately regardless of policy", async () => {
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: ORG,
+				resourceClass: "connector_action",
+				principalKind: "user",
+				action: "create",
+				sql: stubSql([
+					{ resource_class: "connector_action", create_mode: "deny" },
+				]),
+			}),
+		).toBe("allow");
+	});
+});
+
 describe("evaluateEntityFieldUpdates", () => {
 	const baseArgs = {
 		organizationId: ORG,

@@ -144,6 +144,21 @@ export function classifyMutationPrincipal(args: {
 	return "agent";
 }
 
+/**
+ * Stable identity of the acting non-human principal, for per-principal policy
+ * matching. Watcher → `watcher:<id>`; agent (or automation token with an agent
+ * id) → that id; system/automation token with no id → null ("any agent"). Users
+ * are never policy principals, so this returns null for them too. Kept alongside
+ * {@link classifyMutationPrincipal} so kind and id are computed from one source.
+ */
+export function mutationPrincipalId(args: {
+	agentId?: string | null;
+	watcherId?: number | null;
+}): string | null {
+	if (args.watcherId != null) return `watcher:${args.watcherId}`;
+	return args.agentId ?? null;
+}
+
 function modeForAction(
 	policy: EntityApprovalPolicy,
 	action: EntityMutationAction,

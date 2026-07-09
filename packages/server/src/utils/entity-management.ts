@@ -15,6 +15,7 @@ import {
 	type MutationPrincipalKind,
 	runMutationGate,
 } from "../authz/entity-mutation-gate";
+import { mutationPrincipalId } from "../authz/entity-policy";
 import {
 	createDbClientFromEnv,
 	type DbClient,
@@ -533,6 +534,10 @@ export async function updateEntity(
 					sql: tx,
 					attribution: opts?.attribution ?? "agent",
 					watcherId: opts?.watcherId ?? null,
+					principalId: mutationPrincipalId({
+						agentId: ctx.agentId,
+						watcherId: opts?.watcherId ?? null,
+					}),
 					entityTypeSlug: String(current[0].entity_type),
 					entityId,
 					entityOrgId: String(current[0].organization_id),

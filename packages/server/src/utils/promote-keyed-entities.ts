@@ -40,6 +40,7 @@ import {
   type DeferredMutation,
   runMutationGate,
 } from '../authz/entity-mutation-gate';
+import { mutationPrincipalId } from '../authz/entity-policy';
 import type { DbClient } from '../db/client';
 import type { KeyingConfig } from '../types/watchers';
 import { type BlockedChange, mergeEntityFields } from './entity-field-merge';
@@ -264,6 +265,8 @@ async function upsertKeyedEntity(params: {
   /** Extracted entity field values to sync into metadata (excludes the stable key). */
   fieldValues: Record<string, unknown>;
   createdBy: string;
+  /** Watcher whose run is promoting this entity — used for per-principal policy. */
+  watcherId: number;
   /** Org policy: creates of this type queue an approval instead of inserting. */
   createNeedsApproval: boolean;
 }): Promise<{
@@ -300,6 +303,8 @@ async function upsertKeyedEntity(params: {
       principalKind: 'watcher',
       sql: tx,
       attribution: 'watcher',
+      watcherId: params.watcherId,
+      principalId: mutationPrincipalId({ agentId: null, watcherId: params.watcherId }),
       entityTypeSlug: params.entityTypeSlug,
       entityId,
       fields: Object.fromEntries(
@@ -451,6 +456,7 @@ export async function promoteKeyedEntities(
     sql: tx,
     attribution: 'watcher',
     watcherId,
+    principalId: mutationPrincipalId({ agentId: null, watcherId }),
     entityTypeSlug,
     entityData: { entity_type: entityTypeSlug, name: '' },
     proposal: {},
@@ -509,6 +515,7 @@ export async function promoteKeyedEntities(
           metadata,
           fieldValues,
           createdBy,
+          watcherId,
           createNeedsApproval,
         })
       );

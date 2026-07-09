@@ -63,6 +63,14 @@ interface EntityMutationBase {
 	/** Attribution + watcher id used by an interceptor to label a deferral. */
 	attribution: MutationAttribution;
 	watcherId?: number | null;
+	/**
+	 * Stable identity of the acting non-human principal, for per-principal policy
+	 * matching (a policy row may target one agent or watcher). Agent → agent id;
+	 * watcher → `watcher:<id>`; system/automation token (no agent id) → null.
+	 * Null means "any principal of this kind". Plumbed here now; consumed by the
+	 * per-principal resolver in a later commit.
+	 */
+	principalId?: string | null;
 }
 
 export interface CreateMutationRequest extends EntityMutationBase {

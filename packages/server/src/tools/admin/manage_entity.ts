@@ -26,6 +26,7 @@ import {
 } from "@lobu/core/contracts/tools/manage-entity";
 import {
 	classifyMutationPrincipal,
+	mutationPrincipalId,
 	type EntityPolicyPrincipalKind,
 } from "../../authz/entity-policy";
 import { runMutationGate } from "../../authz/entity-mutation-gate";
@@ -257,6 +258,10 @@ async function handleCreate(
 		sql: getDb(),
 		attribution,
 		watcherId: args.watcher_source?.watcher_id ?? null,
+		principalId: mutationPrincipalId({
+			agentId: ctx.agentId,
+			watcherId: args.watcher_source?.watcher_id ?? null,
+		}),
 		entityTypeSlug: args.entity_type,
 		entityData,
 		proposal,
@@ -1001,6 +1006,10 @@ async function handleDelete(
 		sql: getDb(),
 		attribution,
 		watcherId: args?.watcher_source?.watcher_id ?? null,
+		principalId: mutationPrincipalId({
+			agentId: ctx.agentId,
+			watcherId: args?.watcher_source?.watcher_id ?? null,
+		}),
 		entityTypeSlug: entity.entity_type,
 		entityId,
 		entityOrgId: null,

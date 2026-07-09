@@ -397,7 +397,7 @@ export async function updateDeviceWorkerOrg(c: Context<{ Bindings: Env }>) {
     ? (body.organization_id ?? '').toString().trim()
     : null;
   if (hasOrg && !organizationId) {
-    return c.json({ error: 'organization_id is required when provided' }, 400);
+    return c.json({ error: 'organization_id must not be empty' }, 400);
   }
 
   // Normalize label: trim; empty string / null → clear (store NULL). Cap length.

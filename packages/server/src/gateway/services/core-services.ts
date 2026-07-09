@@ -594,9 +594,15 @@ export class CoreServices {
 		const configProvidersEarly =
 			await this.providerConfigResolver.getProviderConfigs();
 		const oauthLoaded = loadOAuthProvidersFromConfigs(configProvidersEarly);
-		logger.info(
-			`Loaded ${oauthLoaded.length} subscription OAuth provider(s) from config: ${oauthLoaded.map((p) => p.id).join(", ") || "(none)"}`,
-		);
+		if (oauthLoaded.length === 0) {
+			logger.warn(
+				"No subscription OAuth providers loaded from providers.json — Claude/ChatGPT/xAI subscription sign-in and token refresh will be unavailable until oauth blocks are present",
+			);
+		} else {
+			logger.info(
+				`Loaded ${oauthLoaded.length} subscription OAuth provider(s) from config: ${oauthLoaded.map((p) => p.id).join(", ")}`,
+			);
+		}
 
 		// Token refresh job — one refresher per oauth block in providers.json.
 		// Scheduling is wired by TaskScheduler (see scheduled/jobs.ts).

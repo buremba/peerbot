@@ -1,19 +1,17 @@
 import type { ModelOption } from "@lobu/core";
 import { BaseProviderModule } from "../base-provider-module.js";
+import { extractJwtAccountId } from "../oauth/client.js";
+import { getOAuthProviderConfig } from "../oauth/providers.js";
 import type { AuthProfilesManager } from "../settings/auth-profiles-manager.js";
 import { fetchModelOptions } from "../utils/fetch-model-options.js";
-import { ChatGPTDeviceCodeClient } from "./device-code-client.js";
 
 /**
  * ChatGPT provider module — runtime credential surface for the ChatGPT
- * (subscription login) provider. The OAuth device-code FLOW now lives in the
- * generic org routes (`grant-strategy.ts` + `agent-routes.ts`); this module
- * keeps only the provider-runtime methods: the codex-backend credential
- * placeholder, model listing, CLI backend config, and account-id extraction.
+ * (subscription login) provider. The OAuth device-code FLOW lives in the
+ * generic org routes; this module keeps codex-backend credential placeholders
+ * and model listing. Does not require the oauth registry at construction time.
  */
 export class ChatGPTOAuthModule extends BaseProviderModule {
-	private deviceCodeClient: ChatGPTDeviceCodeClient;
-
 	constructor(authProfilesManager: AuthProfilesManager) {
 		super(
 			{
@@ -44,7 +42,6 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
 		);
 		// Preserve existing module name
 		this.name = "chatgpt-oauth";
-		this.deviceCodeClient = new ChatGPTDeviceCodeClient();
 	}
 
 	async buildCredentialPlaceholder(agentId: string): Promise<string> {
@@ -55,7 +52,10 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
 		// Try metadata first, then extract from the stored credential JWT
 		let accountId = profile?.metadata?.accountId as string | undefined;
 		if (!accountId && profile?.credential) {
-			accountId = this.deviceCodeClient.extractAccountId(profile.credential);
+			const claimPath =
+				getOAuthProviderConfig("chatgpt")?.accountIdClaimPath ??
+				"https://api.openai.com/auth";
+			accountId = extractJwtAccountId(profile.credential, claimPath);
 		}
 		if (!accountId) return "lobu-proxy";
 

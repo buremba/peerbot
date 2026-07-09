@@ -52,6 +52,7 @@ describe("OAuthClient token-request encoding", () => {
 		await client.exchangeCodeForToken(
 			"auth_code_xyz",
 			"verifier_abc",
+			undefined,
 			"state_123",
 		);
 

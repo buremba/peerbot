@@ -1,7 +1,7 @@
 /**
- * ChatGPT device-auth helper for the ChatGPT provider module.
- * Resolves wire config from the loaded OAuth registry (providers.json) — no
- * hard-coded endpoints.
+ * ChatGPT device-auth helper. Resolves wire config from the loaded OAuth
+ * registry (providers.json). Only construct when actually starting a device
+ * flow — the ChatGPT runtime module no longer needs this at boot.
  */
 
 import { OAuthClient } from "../oauth/client.js";

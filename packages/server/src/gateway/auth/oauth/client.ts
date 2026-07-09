@@ -132,9 +132,13 @@ export class OAuthClient extends BaseOAuth2Client {
 
 	// ── authorization-code ──────────────────────────────────────────────────
 
-	buildAuthUrl(state: string, codeVerifier: string): string {
+	buildAuthUrl(
+		state: string,
+		codeVerifier: string,
+		customRedirectUri?: string,
+	): string {
 		const authUrl = this.require("authUrl");
-		const redirectUri = this.require("redirectUri");
+		const redirectUri = customRedirectUri || this.require("redirectUri");
 		const url = new URL(authUrl);
 		url.searchParams.set("client_id", this.config.clientId);
 		url.searchParams.set("redirect_uri", redirectUri);
@@ -155,13 +159,17 @@ export class OAuthClient extends BaseOAuth2Client {
 	async exchangeCodeForToken(
 		code: string,
 		codeVerifier: string,
+		customRedirectUri?: string,
 		state?: string,
 	): Promise<OAuthCredentials> {
 		const body: Record<string, string | number> = {
 			grant_type: this.config.grantType || "authorization_code",
 			client_id: this.config.clientId,
 			code,
-			redirect_uri: this.require("redirectUri"),
+			// Prefer explicit override (external-auth alternate host); never swap
+			// this parameter with `state` — ExternalAuthClient passes redirectUri
+			// as the 3rd arg and state is not used on that path.
+			redirect_uri: customRedirectUri || this.require("redirectUri"),
 			code_verifier: codeVerifier,
 			...(this.config.extraTokenParams ?? {}),
 		};
@@ -369,22 +377,10 @@ export class OAuthClient extends BaseOAuth2Client {
 
 	/** JWT account id (ChatGPT display only). */
 	extractAccountId(accessToken: string): string | undefined {
-		try {
-			const parts = accessToken.split(".");
-			const payloadB64 = parts[1];
-			if (!payloadB64) return undefined;
-			const payload = JSON.parse(
-				Buffer.from(payloadB64, "base64url").toString("utf-8"),
-			);
-			const claimPath =
-				this.config.accountIdClaimPath ?? "https://api.openai.com/auth";
-			const authClaim = payload[claimPath];
-			return (
-				authClaim?.organization_id ?? authClaim?.chatgpt_account_id ?? undefined
-			);
-		} catch {
-			return undefined;
-		}
+		return extractJwtAccountId(
+			accessToken,
+			this.config.accountIdClaimPath ?? "https://api.openai.com/auth",
+		);
 	}
 
 	private async readJson(
@@ -415,6 +411,31 @@ export class OAuthClient extends BaseOAuth2Client {
 
 	getConfig(): OAuthProviderConfig {
 		return { ...this.config };
+	}
+}
+
+/**
+ * Decode an informational account id from a JWT access token without verifying
+ * the signature (token was obtained over HTTPS from the IdP). Used by ChatGPT
+ * credential placeholders even when the OAuth registry has no chatgpt entry.
+ */
+export function extractJwtAccountId(
+	accessToken: string,
+	claimPath = "https://api.openai.com/auth",
+): string | undefined {
+	try {
+		const parts = accessToken.split(".");
+		const payloadB64 = parts[1];
+		if (!payloadB64) return undefined;
+		const payload = JSON.parse(
+			Buffer.from(payloadB64, "base64url").toString("utf-8"),
+		) as Record<string, { organization_id?: string; chatgpt_account_id?: string }>;
+		const authClaim = payload[claimPath];
+		return (
+			authClaim?.organization_id ?? authClaim?.chatgpt_account_id ?? undefined
+		);
+	} catch {
+		return undefined;
 	}
 }
 

@@ -92,9 +92,11 @@ const strategy: GrantStrategy = {
 			if (input.mode !== "redirect") {
 				throw new Error("authorization-code complete requires redirect input");
 			}
+			// redirect_uri must match authorize URL (config.redirectUri); state is 4th arg.
 			const credentials = await client.exchangeCodeForToken(
 				input.code,
 				input.codeVerifier,
+				undefined,
 				input.state,
 			);
 			return {

@@ -88,6 +88,19 @@ describe("buildProviderCatalog", () => {
     expect(groq?.defaultModel).toBe("llama-3.3-70b-versatile");
   });
 
+  test("marks providers backed by a system credential as available", () => {
+    moduleRegistry.register(
+      fakeModule({
+        providerId: "claude",
+        providerDisplayName: "Claude",
+        hasSystemKey: () => true,
+      })
+    );
+
+    const claude = buildProviderCatalog().find((e) => e.slug === "claude");
+    expect(claude?.systemAvailable).toBe(true);
+  });
+
   test("supportedAuthTypes defaults to [authType] when absent", () => {
     moduleRegistry.register(fakeModule({ providerId: "cerebras" }));
     const catalog = buildProviderCatalog();

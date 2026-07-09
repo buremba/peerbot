@@ -45,6 +45,8 @@ export interface ProviderCatalogEntry {
   baseUrl: string;
   defaultModel: string | null;
   modelsEndpoint: string | null;
+  /** True when this deployment has a process-level credential for the provider. */
+  systemAvailable: boolean;
   /**
    * Static fallback model IDs (from providers.json), used by the model picker
    * when a provider has no live `modelsEndpoint` or the live fetch is empty.
@@ -112,6 +114,7 @@ export function buildProviderCatalog(
         baseUrl,
         defaultModel,
         modelsEndpoint: config?.modelsEndpoint ?? null,
+        systemAvailable: module.hasSystemKey?.() ?? false,
         models: config?.models ?? module.catalogModels ?? [],
         apiKeyPlaceholder:
           config?.apiKeyPlaceholder ?? module.apiKeyPlaceholder ?? "",

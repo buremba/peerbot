@@ -130,7 +130,7 @@ export async function handleListConnectorGroups(
            MAX(cd.name) AS connector_name,
            MAX(cd.favicon_domain) AS favicon_domain,
            COUNT(*)::int AS connection_count,
-           bool_or(c.credential_mode IS NOT NULL) AS has_chat_connection,
+           bool_or(cd.declares_chat) AS has_chat_connection,
            bool_or(fc.feed_count > 0) AS has_active_feeds,
            -- DATA-facet input: only non-streaming feeds count, so a chat-only
            -- group whose channels became streaming feeds isn't mislabeled data.
@@ -152,7 +152,11 @@ export async function handleListConnectorGroups(
       SELECT name, favicon_domain,
              (feeds_schema IS NOT NULL
               AND feeds_schema::text <> '{}'
-              AND feeds_schema::text <> 'null') AS has_feeds_schema
+              AND feeds_schema::text <> 'null') AS has_feeds_schema,
+             -- chat facet is declared by the connector, not implied by having a
+             -- credential: a connector is chat iff it carries the chat-platform
+             -- marker in its options_schema (x-lobu-chat-platform).
+             (options_schema ->> 'x-lobu-chat-platform') IS NOT NULL AS declares_chat
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'
@@ -239,6 +243,7 @@ export async function handleList(
     SELECT c.*,
            cd.name AS connector_name,
            cd.has_feeds_schema,
+           cd.declares_chat,
            ap.slug AS auth_profile_slug,
            ap.display_name AS auth_profile_name,
            ap.status AS auth_profile_status,
@@ -285,7 +290,8 @@ export async function handleList(
       SELECT name,
              (feeds_schema IS NOT NULL
               AND feeds_schema::text <> '{}'
-              AND feeds_schema::text <> 'null') AS has_feeds_schema
+              AND feeds_schema::text <> 'null') AS has_feeds_schema,
+             (options_schema ->> 'x-lobu-chat-platform') IS NOT NULL AS declares_chat
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'
@@ -358,7 +364,7 @@ export async function handleList(
       has_operations: hasOperations,
       facets: deriveConnectionFacets({
         connectorKey: String(row.connector_key),
-        isChat: row.credential_mode != null,
+        isChat: row.declares_chat === true,
         feedCount: Number(row.data_feed_count) || 0,
         connectorHasFeeds: row.has_feeds_schema === true,
         hasOperations,
@@ -397,6 +403,7 @@ export async function handleGet(
            cd.name AS connector_name,
            cd.feeds_schema,
            cd.auth_schema,
+           cd.declares_chat,
            ap.slug AS auth_profile_slug,
            ap.display_name AS auth_profile_name,
            ap.status AS auth_profile_status,
@@ -423,7 +430,8 @@ export async function handleGet(
            (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL AND f.kind <> 'streaming')::int AS data_feed_count
     FROM connections c
     LEFT JOIN LATERAL (
-      SELECT name, feeds_schema, auth_schema
+      SELECT name, feeds_schema, auth_schema, options_schema,
+             (options_schema ->> 'x-lobu-chat-platform') IS NOT NULL AS declares_chat
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'
@@ -501,7 +509,7 @@ export async function handleGet(
       has_operations: hasOperations,
       facets: deriveConnectionFacets({
         connectorKey: String(getRow.connector_key),
-        isChat: getRow.credential_mode != null,
+        isChat: getRow.declares_chat === true,
         feedCount: Number(getRow.data_feed_count) || 0,
         connectorHasFeeds,
         hasOperations,
@@ -843,7 +851,7 @@ export async function handleCreate(
       return {
         error: callerIsAdmin
 					? "Select or create an OAuth app profile before creating the connection."
-          : `No OAuth app credentials configured for this connector. Ask an admin to set up the ${authSelection.oauthMethod?.provider ?? args.connector_key} app in /oauth-apps first.`,
+          : `No OAuth app credentials configured for this connector. Ask an admin to set up the ${authSelection.oauthMethod?.provider ?? args.connector_key} app under the connector's Setup tab (Connectors › ${args.connector_key}) first.`,
       };
     }
 		if (authSelection.appAuthProfile.status !== "active") {
@@ -861,7 +869,7 @@ export async function handleCreate(
         authSelection.appAuthProfile.connector_key !== args.connector_key)
     ) {
       return {
-        error: `No default OAuth app configured for this connector. Ask an admin to pin a ${authSelection.oauthMethod?.provider ?? args.connector_key} app as the default in /oauth-apps.`,
+        error: `No default OAuth app configured for this connector. Ask an admin to pin a ${authSelection.oauthMethod?.provider ?? args.connector_key} app as the default under the connector's Setup tab (Connectors › ${args.connector_key}).`,
       };
     }
   }

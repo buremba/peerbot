@@ -95,8 +95,19 @@ describe("manage_connections and manage_feeds list filters", () => {
 		const sql = getTestDb();
 
 		// A managed Slack chat connection: an ACL source (audience) + a live bot
-		// adapter (chat). createTestConnection has no credential_mode param, so we
-		// stamp the Stage-2a chat marker directly. createDefaultFeed gives it data.
+		// adapter (chat). The chat facet is declared by the CONNECTOR, via the
+		// `x-lobu-chat-platform` marker in its options_schema — not implied by
+		// having a credential. Seed a matching slack connector_definition so the
+		// facet derivation sees the marker. createDefaultFeed gives it data.
+		await sql`
+			INSERT INTO connector_definitions
+				(organization_id, key, name, version, auth_schema, feeds_schema,
+				 actions_schema, options_schema, status)
+			VALUES (${workspace.org.id}, 'slack', 'Slack', '1.0.0',
+				'{"methods":[{"type":"app_installation"}]}'::jsonb, '{}'::jsonb, NULL,
+				'{"x-lobu-chat-platform":"slack"}'::jsonb, 'active')
+			ON CONFLICT DO NOTHING
+		`;
 		slackChatConnectionId = Number(
 			(
 				await createTestConnection({

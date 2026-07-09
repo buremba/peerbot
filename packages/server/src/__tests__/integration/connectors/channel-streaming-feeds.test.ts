@@ -45,13 +45,25 @@ async function makeChatConnection(opts: {
   teamId: string | null;
 }): Promise<{ id: number; slug: string }> {
   chatConnectionSeq += 1;
+  const sql = getTestDb();
+  // The chat facet is declared by the CONNECTOR — via the `x-lobu-chat-platform`
+  // marker in its options_schema — not implied by having a credential. Seed a
+  // matching slack connector_definition so the facet derivation sees the marker.
+  await sql`
+    INSERT INTO connector_definitions
+      (organization_id, key, name, version, auth_schema, feeds_schema,
+       actions_schema, options_schema, status)
+    VALUES (${opts.orgId}, 'slack', 'Slack', '1.0.0',
+      '{"methods":[{"type":"app_installation"}]}'::jsonb, '{}'::jsonb, NULL,
+      '{"x-lobu-chat-platform":"slack"}'::jsonb, 'active')
+    ON CONFLICT DO NOTHING
+  `;
   const conn = await createTestConnection({
     organization_id: opts.orgId,
     connector_key: "slack",
     display_name: `Org Slack ${opts.orgId} ${opts.teamId ?? "none"} ${chatConnectionSeq}`,
     createDefaultFeed: false,
   });
-  const sql = getTestDb();
   const [row] = await sql`
     UPDATE connections
     SET credential_mode = 'managed', external_tenant_id = ${opts.teamId}

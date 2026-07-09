@@ -398,6 +398,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         SELECT r.id
         FROM runs r
         LEFT JOIN connections con ON con.id = r.connection_id
+        -- Pin target platform: chrome-extension pins on non-chrome connectors mean
+        -- browser affinity (scrape via that extension), not "run parent sync on
+        -- the extension". See dispatch-chrome-action preferredBrowserWorkerForConnection.
+        LEFT JOIN device_workers pin_dw ON pin_dw.id = con.device_worker_id
         LEFT JOIN LATERAL (
           SELECT cd.required_capability
           FROM connector_definitions cd
@@ -414,13 +418,24 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             (
               r.run_type IN ('sync', 'action', 'embed_backfill', 'auth')
               AND (
-                -- (1A) trusted/anonymous fleet worker: the no-capability cloud
-                --      connectors plus any capability it happens to advertise,
-                --      in any org — but NEVER a connection pinned to a device.
+                -- (1A) trusted/anonymous fleet worker: no-capability cloud
+                --      connectors, any org — never a connection pinned for
+                --      *execution*. Browser-affinity pins (chrome-extension on
+                --      non-chrome parent syncs) still allow fleet claim.
                 (
                   ${!isUserScopedWorker}
                   AND COALESCE(cd.required_capability, '') = ANY(${pgTextArray(capabilityMatchSet)}::text[])
-                  AND con.device_worker_id IS NULL
+                  AND (
+                    con.device_worker_id IS NULL
+                    OR (
+                      -- Browser affinity (not job host). Exclude run_type=action:
+                      -- scrape actions are always connector_key='chrome' and use
+                      -- the org chrome connection pin, not LinkedIn's affinity pin.
+                      pin_dw.platform = 'chrome-extension'
+                      AND r.run_type IN ('sync', 'auth', 'embed_backfill')
+                      AND r.connector_key NOT LIKE 'chrome%'
+                    )
+                  )
                 )
                 -- (1B) user-scoped device worker: an unpinned capability-matched
                 --      device connector in an org this worker can see. Capability
@@ -435,11 +450,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                   AND con.device_worker_id IS NULL
                   AND r.organization_id = ANY(${pgTextArray(baseOrgScopeIds)}::text[])
                 )
-                -- ... or any connection explicitly pinned to THIS device (this is
-                --     "run the Reddit connector on my Mac"). Still: a device-only
-                --     connector needs the capability currently advertised, and the
-                --     pin only counts in an org this worker can see (which includes
-                --     the org the device is attached to).
+                -- ... or any connection explicitly pinned to THIS device for
+                --     *execution* (e.g. WhatsApp on Mac). Browser-affinity pins
+                --     (chrome-extension + non-chrome parent sync) must NOT be
+                --     claimed by the extension — those runs stay on the fleet.
                 OR (
                   ${isUserScopedWorker}
                   AND ${deviceWorkerId}::uuid IS NOT NULL
@@ -449,6 +463,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                     OR cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
                   )
                   AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
+                  AND NOT (
+                    pin_dw.platform = 'chrome-extension'
+                    AND r.run_type IN ('sync', 'auth', 'embed_backfill')
+                    AND r.connector_key NOT LIKE 'chrome%'
+                  )
                 )
               )
             )

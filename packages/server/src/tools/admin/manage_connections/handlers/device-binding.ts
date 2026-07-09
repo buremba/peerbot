@@ -100,7 +100,7 @@ export async function resolveDeviceBinding(params: {
   }
   if (device.organization_id !== params.organizationId) {
     return {
-      error: `Device '${device.label ?? deviceWorkerId}' isn't attached to this workspace. Re-attach it from the Devices page first.`,
+      error: `Device '${device.label ?? deviceWorkerId}' isn't attached to this workspace. Re-attach it from Infrastructure › Devices first.`,
     };
   }
 

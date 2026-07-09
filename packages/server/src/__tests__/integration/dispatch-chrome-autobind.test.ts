@@ -11,7 +11,10 @@
  */
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { resolveOnlineChromeConnection } from '../../worker-api/dispatch-chrome-action';
+import {
+  preferredBrowserWorkerForConnection,
+  resolveOnlineChromeConnection,
+} from '../../worker-api/dispatch-chrome-action';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization, createTestUser } from '../setup/test-fixtures';
 
@@ -147,5 +150,58 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     expect(res?.deviceWorkerId).toBe(pinned);
     expect(res?.deviceWorkerId).not.toBe(fresher);
     expect(await pinOf(connId)).toBe(pinned);
+  });
+
+  it('honors preferredDeviceWorkerId over last_seen when that extension is online', async () => {
+    // Data connection (LinkedIn) pin → chrome-extension means browser affinity.
+    const preferred = await seedExtWorker(userId, orgId, { online: true });
+    await sql`
+      UPDATE device_workers
+      SET last_seen_at = now() - interval '3 minutes'
+      WHERE id = ${preferred}::uuid
+    `;
+    const fresher = await seedExtWorker(userId, orgId, { online: true });
+    // Org chrome connection may be stuck on the fresher (or null).
+    const chromeConnId = await seedChromeConn(orgId, userId, fresher);
+
+    const res = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: preferred,
+    });
+
+    expect(res?.deviceWorkerId).toBe(preferred);
+    expect(res?.deviceWorkerId).not.toBe(fresher);
+    // Chrome connection is re-pinned so the action run can be claimed.
+    expect(await pinOf(chromeConnId)).toBe(preferred);
+  });
+
+  it('returns null when preferred extension is offline (fail-closed, no last_seen steal)', async () => {
+    const preferredOffline = await seedExtWorker(userId, orgId, { online: false });
+    await seedExtWorker(userId, orgId, { online: true }); // would otherwise win
+    await seedChromeConn(orgId, userId, null);
+
+    const res = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: preferredOffline,
+      failIfPreferredOffline: true,
+    });
+
+    expect(res).toBeNull();
+  });
+
+  it('preferredBrowserWorkerForConnection only returns chrome-extension pins', async () => {
+    const ext = await seedExtWorker(userId, orgId, { online: true });
+    const slug = `li-${Math.random().toString(36).slice(2, 8)}`;
+    const [li] = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        created_by, visibility, device_worker_id, created_at, updated_at
+      ) VALUES (
+        ${orgId}, 'linkedin', ${slug}, 'LinkedIn', 'active',
+        ${userId}, 'private', ${ext}::uuid, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+    expect(await preferredBrowserWorkerForConnection(li.id, sql)).toBe(ext);
+    expect(await preferredBrowserWorkerForConnection(null, sql)).toBeNull();
   });
 });

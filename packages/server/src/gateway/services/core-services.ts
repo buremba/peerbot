@@ -5,13 +5,16 @@ import {
 	type AgentConnectionStore,
 	CommandRegistry,
 	createLogger,
-	getErrorMessage,
 	GuardrailRegistry,
+	getErrorMessage,
 	moduleRegistry,
 	type ProviderRegistryEntry,
 } from "@lobu/core";
 import { getDb } from "../../db/client.js";
-import { resolveEnv } from "../auth/mcp/string-substitution.js";
+import {
+	type AppInstallationStore,
+	createPostgresAppInstallationStore,
+} from "../../lobu/stores/app-installation-store.js";
 import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js";
 // inference_providers row access (per-modality custom upstreams) — the store
 // owns the SQL + api_key_ref decrypt; core-services owns org resolution.
@@ -20,23 +23,21 @@ import {
 	listInferenceProviders,
 	resolveInferenceProviderConfig,
 } from "../../lobu/stores/provider-secrets.js";
-import {
-	type AppInstallationStore,
-	createPostgresAppInstallationStore,
-} from "../../lobu/stores/app-installation-store.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { BedrockProviderModule } from "../auth/bedrock/provider-module.js";
 import { ChatGPTOAuthModule } from "../auth/chatgpt/chatgpt-oauth-module.js";
-import { ChatGPTDeviceCodeClient } from "../auth/chatgpt/device-code-client.js";
 import { ClaudeOAuthModule } from "../auth/claude/oauth-module.js";
 import { ExternalAuthClient } from "../auth/external/client.js";
-
 import { McpConfigService } from "../auth/mcp/config-service.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
+import { resolveEnv } from "../auth/mcp/string-substitution.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
-import { OAuthClient } from "../auth/oauth/client.js";
-import { CLAUDE_PROVIDER } from "../auth/oauth/providers.js";
+import { buildOAuthRefreshers } from "../auth/oauth/client.js";
+import {
+	getOAuthProviderConfig,
+	loadOAuthProvidersFromConfigs,
+} from "../auth/oauth/providers.js";
 import {
 	createOAuthStateStore,
 	type ProviderOAuthStateStore,
@@ -564,53 +565,8 @@ export class CoreServices {
 			`Secret proxy initialized (upstream: ${this.config.anthropicProxy.anthropicBaseUrl || "https://api.anthropic.com"})`,
 		);
 
-		// Construct the token refresh job — actual scheduling is wired by the
-		// TaskScheduler at boot (see `scheduled/jobs.ts:registerMaintenanceTasks`).
-		if (!this.authProfilesManager) {
-			throw new Error(
-				"Auth profiles manager must be initialized before token refresh job",
-			);
-		}
-		this.tokenRefreshJob = new TokenRefreshJob(this.authProfilesManager, [
-			{ providerId: "claude", refresher: new OAuthClient(CLAUDE_PROVIDER) },
-			{
-				providerId: "chatgpt",
-				refresher: new ChatGPTDeviceCodeClient(),
-			},
-		]);
-		logger.debug("Token refresh job constructed");
-
-		// Register Claude OAuth module
-		this.oauthStateStore = createOAuthStateStore("claude");
-		const claudeOAuthModule = new ClaudeOAuthModule(
-			this.authProfilesManager,
-			this.modelPreferenceStore,
-		);
-		moduleRegistry.register(claudeOAuthModule);
-		logger.debug("Claude OAuth module registered");
-
-		// Register ChatGPT OAuth module
-		const chatgptOAuthModule = new ChatGPTOAuthModule(this.authProfilesManager);
-		moduleRegistry.register(chatgptOAuthModule);
-		logger.debug("ChatGPT OAuth module registered");
-
-
-
-		const bedrockModelCatalog = new BedrockModelCatalog();
-		const bedrockProviderModule = new BedrockProviderModule(
-			this.authProfilesManager,
-			bedrockModelCatalog,
-		);
-		moduleRegistry.register(bedrockProviderModule);
-		this.bedrockOpenAIService = new BedrockOpenAIService({
-			modelCatalog: bedrockModelCatalog,
-		});
-		logger.debug("Bedrock provider module registered");
-
-		// Initialize bundled provider registry — use injected providers if
-		// provided, else load from the resolved providers registry path
-		// (LOBU_PROVIDER_REGISTRY_PATH → <cwd>/config/providers.json → the
-		// providers.json shipped next to the server bundle).
+		// Load providers.json first so subscription OAuth configs (and config-
+		// driven API-key providers) come from data, not hard-coded TS.
 		const injectedProviders = this.options?.providerRegistry;
 		if (injectedProviders) {
 			this.providerRegistryService = new ProviderRegistryService(
@@ -635,6 +591,52 @@ export class CoreServices {
 			this.providerRegistryService,
 		);
 
+		const configProvidersEarly =
+			await this.providerConfigResolver.getProviderConfigs();
+		const oauthLoaded = loadOAuthProvidersFromConfigs(configProvidersEarly);
+		logger.info(
+			`Loaded ${oauthLoaded.length} subscription OAuth provider(s) from config: ${oauthLoaded.map((p) => p.id).join(", ") || "(none)"}`,
+		);
+
+		// Token refresh job — one refresher per oauth block in providers.json.
+		// Scheduling is wired by TaskScheduler (see scheduled/jobs.ts).
+		if (!this.authProfilesManager) {
+			throw new Error(
+				"Auth profiles manager must be initialized before token refresh job",
+			);
+		}
+		this.tokenRefreshJob = new TokenRefreshJob(
+			this.authProfilesManager,
+			buildOAuthRefreshers(),
+		);
+		logger.debug("Token refresh job constructed");
+
+		// Runtime modules with provider-specific credential injection (Anthropic
+		// headers, Codex account placeholders). OAuth *endpoints* still come from
+		// providers.json via the registry above.
+		this.oauthStateStore = createOAuthStateStore("claude");
+		const claudeOAuthModule = new ClaudeOAuthModule(
+			this.authProfilesManager,
+			this.modelPreferenceStore,
+		);
+		moduleRegistry.register(claudeOAuthModule);
+		logger.debug("Claude OAuth module registered");
+
+		const chatgptOAuthModule = new ChatGPTOAuthModule(this.authProfilesManager);
+		moduleRegistry.register(chatgptOAuthModule);
+		logger.debug("ChatGPT OAuth module registered");
+
+		const bedrockModelCatalog = new BedrockModelCatalog();
+		const bedrockProviderModule = new BedrockProviderModule(
+			this.authProfilesManager,
+			bedrockModelCatalog,
+		);
+		moduleRegistry.register(bedrockProviderModule);
+		this.bedrockOpenAIService = new BedrockOpenAIService({
+			modelCatalog: bedrockModelCatalog,
+		});
+		logger.debug("Bedrock provider module registered");
+
 		this.transcriptionService?.setProviderConfigSource(() =>
 			this.providerConfigResolver
 				? this.providerConfigResolver.getProviderConfigs()
@@ -653,9 +655,9 @@ export class CoreServices {
 			inferenceProviderSource,
 		);
 
-		// Register config-driven providers from the bundled providers registry
-		const configProviders =
-			await this.providerConfigResolver.getProviderConfigs();
+		// Register config-driven providers (any providers.json entry not already
+		// claimed by a specialized runtime module). oauth blocks surface Sign-in.
+		const configProviders = configProvidersEarly;
 		logger.info(
 			`Provider registry loaded ${Object.keys(configProviders).length} config-driven provider(s)`,
 		);
@@ -669,6 +671,8 @@ export class CoreServices {
 				);
 				continue;
 			}
+			const oauth = entry.oauth ?? getOAuthProviderConfig(id);
+			const oauthAuthType = oauth?.authType ?? "oauth";
 			const module = new ApiKeyProviderModule({
 				providerId: id,
 				providerDisplayName: entry.displayName,
@@ -683,11 +687,17 @@ export class CoreServices {
 				apiKeyInstructions: entry.apiKeyInstructions,
 				apiKeyPlaceholder: entry.apiKeyPlaceholder,
 				authProfilesManager: this.authProfilesManager,
+				...(oauth
+					? {
+							authType: oauthAuthType,
+							supportedAuthTypes: [oauthAuthType, "api-key" as const],
+						}
+					: {}),
 			});
 			moduleRegistry.register(module);
 			registeredIds.add(id);
 			logger.debug(
-				`Registered config-driven provider: ${id} (system key: ${module.hasSystemKey() ? "available" : "not available"})`,
+				`Registered config-driven provider: ${id} (system key: ${module.hasSystemKey() ? "available" : "not available"}${oauth ? `, oauth: ${oauth.grant}` : ""})`,
 			);
 		}
 

@@ -1,157 +1,429 @@
+/**
+ * Single config-driven OAuth client for every subscription provider.
+ *
+ * Handles authorization-code (Claude), RFC 8628 device-code (xAI), and OpenAI's
+ * proprietary JSON device-auth (ChatGPT). Behavior is selected by
+ * `config.grant` — no per-provider subclasses.
+ */
+
 import { BaseOAuth2Client } from "./base-client.js";
 import type { OAuthCredentials } from "./credentials.js";
-import type { OAuthProviderConfig } from "./providers.js";
+import {
+	listOAuthProviders,
+	type OAuthProviderConfig,
+	resolveOAuthScope,
+} from "./providers.js";
 
-interface OAuthTokenResponse {
-  access_token: string;
-  refresh_token?: string;
-  token_type?: string;
-  expires_in: number;
-  scope?: string;
+const RFC_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+
+interface TokenResponse {
+	access_token: string;
+	refresh_token?: string;
+	token_type?: string;
+	expires_in?: number;
+	scope?: string;
 }
 
-/**
- * Config-driven OAuth client for any provider
- * Extends BaseOAuth2Client with provider configuration
- *
- * Features:
- * - PKCE support (RFC 7636) for public client security
- * - Browser-like headers for anti-bot protection
- * - Configurable via OAuthProviderConfig
- */
+export interface DeviceCodeStart {
+	userCode: string;
+	/** RFC `device_code` or OpenAI `device_auth_id` — both travel as deviceAuthId on the wire. */
+	deviceAuthId: string;
+	interval: number;
+	verificationUrl: string;
+}
+
+export interface DeviceTokenResult {
+	accessToken: string;
+	refreshToken?: string;
+	expiresIn: number;
+	accountId?: string;
+}
+
 export class OAuthClient extends BaseOAuth2Client {
-  private config: OAuthProviderConfig;
+	constructor(readonly config: OAuthProviderConfig) {
+		super(`${config.id}-oauth`);
+	}
 
-  constructor(config: OAuthProviderConfig) {
-    super(`${config.id ?? "oauth"}-client`);
-    this.config = config;
-  }
+	// ── shared helpers ──────────────────────────────────────────────────────
 
-  /**
-   * Build authorization URL with PKCE parameters
-   */
-  buildAuthUrl(
-    state: string,
-    codeVerifier: string,
-    customRedirectUri?: string
-  ): string {
-    const codeChallenge = this.generateCodeChallenge(codeVerifier);
-    const redirectUri = customRedirectUri || this.config.redirectUri;
+	private scope(): string {
+		return resolveOAuthScope(this.config);
+	}
 
-    const url = new URL(this.config.authUrl);
-    url.searchParams.set("client_id", this.config.clientId);
-    url.searchParams.set("redirect_uri", redirectUri);
-    url.searchParams.set("response_type", this.config.responseType || "code");
-    url.searchParams.set("state", state);
-    url.searchParams.set("scope", this.config.scope);
-    url.searchParams.set("code_challenge", codeChallenge);
-    url.searchParams.set("code_challenge_method", "S256");
-    for (const [k, v] of Object.entries(this.config.extraAuthParams ?? {})) {
-      url.searchParams.set(k, v);
-    }
+	private headers(contentType?: "json" | "form"): Record<string, string> {
+		const headers: Record<string, string> = {
+			Accept: "application/json",
+			...(this.config.customHeaders ?? {}),
+		};
+		if (contentType === "json") {
+			headers["Content-Type"] = "application/json";
+		} else if (contentType === "form") {
+			headers["Content-Type"] = "application/x-www-form-urlencoded";
+		}
+		if (this.config.userAgent) {
+			headers["User-Agent"] = this.config.userAgent;
+		}
+		return headers;
+	}
 
-    return url.toString();
-  }
+	private tokenFormat(): "json" | "form" {
+		return this.config.tokenRequestFormat ?? "json";
+	}
 
-  /**
-   * Exchange authorization code for access token using PKCE
-   */
-  async exchangeCodeForToken(
-    code: string,
-    codeVerifier: string,
-    customRedirectUri?: string,
-    state?: string
-  ): Promise<OAuthCredentials> {
-    const redirectUri = customRedirectUri || this.config.redirectUri;
+	private buildCredentials(
+		tokenData: TokenResponse,
+		fallbackRefreshToken?: string,
+	): OAuthCredentials {
+		const refreshToken = tokenData.refresh_token ?? fallbackRefreshToken;
+		if (!refreshToken && this.config.requireRefreshToken !== false) {
+			throw new Error(
+				`${this.config.name} OAuth response missing refresh token`,
+			);
+		}
+		return {
+			accessToken: tokenData.access_token,
+			refreshToken,
+			tokenType: tokenData.token_type || "Bearer",
+			expiresAt:
+				this.calculateExpiresAt(tokenData.expires_in ?? 3600) ?? Date.now(),
+			scopes: this.parseScopes(tokenData.scope ?? this.scope()),
+		};
+	}
 
-    const body: Record<string, string | number> = {
-      grant_type: this.config.grantType || "authorization_code",
-      client_id: this.config.clientId,
-      code,
-      redirect_uri: redirectUri,
-      code_verifier: codeVerifier,
-      ...(this.config.extraTokenParams ?? {}),
-    };
+	private require(
+		field: "deviceCodeUrl" | "deviceTokenUrl" | "authUrl" | "redirectUri",
+	): string {
+		const value =
+			field === "redirectUri"
+				? (this.config.deviceRedirectUri ?? this.config.redirectUri)?.trim()
+				: this.config[field]?.trim();
+		if (!value) {
+			throw new Error(`${this.config.name} OAuth config is missing ${field}`);
+		}
+		return value;
+	}
 
-    // Include state if provided (required by Claude OAuth)
-    if (state) {
-      body.state = state;
-    }
+	// ── refresh (all grants) ────────────────────────────────────────────────
 
-    // Add provider-specific custom headers
-    const tokenData = await this.exchangeToken<OAuthTokenResponse>(
-      this.config.tokenUrl,
-      body,
-      this.config.tokenRequestFormat ?? "json",
-      this.config.customHeaders
-    );
+	async refreshToken(refreshToken: string): Promise<OAuthCredentials> {
+		const body: Record<string, string> = {
+			grant_type: "refresh_token",
+			refresh_token: refreshToken,
+			client_id: this.config.clientId,
+		};
+		if (
+			this.config.clientSecret &&
+			this.config.tokenEndpointAuthMethod !== "none"
+		) {
+			body.client_secret = this.config.clientSecret;
+		}
+		if (this.config.includeScopeInRefresh) {
+			body.scope = this.scope();
+		}
 
-    const credentials = this.buildCredentials(tokenData);
-    this.logger.info(
-      `Token exchange successful, expires_in: ${tokenData.expires_in}s`,
-      { scopes: credentials.scopes }
-    );
+		const tokenData = await this.refreshAccessToken<TokenResponse>(
+			this.config.tokenUrl,
+			body,
+			this.tokenFormat(),
+			this.headers(),
+		);
+		return this.buildCredentials(tokenData, refreshToken);
+	}
 
-    return credentials;
-  }
+	// ── authorization-code ──────────────────────────────────────────────────
 
-  /**
-   * Refresh access token using refresh token
-   * Uses generic refresh method from base client with Claude-specific config
-   */
-  async refreshToken(refreshToken: string): Promise<OAuthCredentials> {
-    const tokenData = await this.refreshTokenWithConfig<OAuthTokenResponse>(
-      this.config.tokenUrl,
-      this.config.clientId,
-      refreshToken,
-      {
-        customHeaders: this.config.customHeaders,
-        contentType: this.config.tokenRequestFormat ?? "json",
-        tokenEndpointAuthMethod: this.config.tokenEndpointAuthMethod,
-      }
-    );
+	buildAuthUrl(state: string, codeVerifier: string): string {
+		const authUrl = this.require("authUrl");
+		const redirectUri = this.require("redirectUri");
+		const url = new URL(authUrl);
+		url.searchParams.set("client_id", this.config.clientId);
+		url.searchParams.set("redirect_uri", redirectUri);
+		url.searchParams.set("response_type", this.config.responseType || "code");
+		url.searchParams.set("state", state);
+		url.searchParams.set("scope", this.scope());
+		url.searchParams.set(
+			"code_challenge",
+			this.generateCodeChallenge(codeVerifier),
+		);
+		url.searchParams.set("code_challenge_method", "S256");
+		for (const [k, v] of Object.entries(this.config.extraAuthParams ?? {})) {
+			url.searchParams.set(k, v);
+		}
+		return url.toString();
+	}
 
-    const credentials = this.buildCredentials(tokenData, refreshToken);
-    this.logger.info(
-      `Token refresh successful, expires_in: ${tokenData.expires_in}s`
-    );
+	async exchangeCodeForToken(
+		code: string,
+		codeVerifier: string,
+		state?: string,
+	): Promise<OAuthCredentials> {
+		const body: Record<string, string | number> = {
+			grant_type: this.config.grantType || "authorization_code",
+			client_id: this.config.clientId,
+			code,
+			redirect_uri: this.require("redirectUri"),
+			code_verifier: codeVerifier,
+			...(this.config.extraTokenParams ?? {}),
+		};
+		if (state) body.state = state;
 
-    return credentials;
-  }
+		const tokenData = await this.exchangeToken<TokenResponse>(
+			this.config.tokenUrl,
+			body,
+			this.tokenFormat(),
+			this.headers(),
+		);
+		return this.buildCredentials(tokenData);
+	}
 
-  private buildCredentials(
-    tokenData: {
-      access_token: string;
-      refresh_token?: string;
-      token_type?: string;
-      expires_in: number;
-      scope?: string;
-    },
-    fallbackRefreshToken?: string
-  ): OAuthCredentials {
-    const expiresAt = this.calculateExpiresAt(tokenData.expires_in)!;
-    const scopes = this.parseScopes(tokenData.scope);
-    const refreshToken = tokenData.refresh_token ?? fallbackRefreshToken;
+	// ── device grants (RFC + OpenAI) ────────────────────────────────────────
 
-    if (!refreshToken && this.config.requireRefreshToken !== false) {
-      throw new Error(
-        `${this.config.name} OAuth response missing refresh token`
-      );
-    }
+	async requestDeviceCode(): Promise<DeviceCodeStart> {
+		const grant = this.config.grant ?? "authorization-code";
+		if (grant === "openai-device-auth") {
+			return this.requestOpenAIDeviceCode();
+		}
+		if (grant === "device-code") {
+			return this.requestRfcDeviceCode();
+		}
+		throw new Error(
+			`${this.config.name} does not support device-code login (grant=${grant})`,
+		);
+	}
 
-    return {
-      accessToken: tokenData.access_token,
-      refreshToken,
-      tokenType: tokenData.token_type || "Bearer",
-      expiresAt,
-      scopes,
-    };
-  }
+	/**
+	 * Poll until authorized. Returns null while pending.
+	 * `userCode` is required for OpenAI; ignored for RFC.
+	 */
+	async pollForToken(
+		deviceAuthId: string,
+		userCode?: string,
+	): Promise<DeviceTokenResult | null> {
+		const grant = this.config.grant ?? "authorization-code";
+		if (grant === "openai-device-auth") {
+			if (!userCode) {
+				throw new Error("OpenAI device-auth poll requires userCode");
+			}
+			return this.pollOpenAIDeviceToken(deviceAuthId, userCode);
+		}
+		if (grant === "device-code") {
+			return this.pollRfcDeviceToken(deviceAuthId);
+		}
+		throw new Error(
+			`${this.config.name} does not support device-code poll (grant=${grant})`,
+		);
+	}
 
-  /**
-   * Get the provider configuration (useful for debugging)
-   */
-  getConfig(): OAuthProviderConfig {
-    return { ...this.config };
-  }
+	private async requestRfcDeviceCode(): Promise<DeviceCodeStart> {
+		const response = await fetch(this.require("deviceCodeUrl"), {
+			method: "POST",
+			headers: this.headers("form"),
+			body: new URLSearchParams({
+				client_id: this.config.clientId,
+				scope: this.scope(),
+			}).toString(),
+		});
+		const data = await this.readJson(response, "Device code request");
+		if (
+			typeof data.device_code !== "string" ||
+			!data.device_code ||
+			typeof data.user_code !== "string" ||
+			!data.user_code
+		) {
+			throw new Error("Device code response missing device_code or user_code");
+		}
+		const verificationUrl =
+			(typeof data.verification_uri === "string" && data.verification_uri) ||
+			this.config.defaultVerificationUrl;
+		if (!verificationUrl) {
+			throw new Error(
+				"Device code response missing verification_uri and no defaultVerificationUrl",
+			);
+		}
+		return {
+			deviceAuthId: data.device_code,
+			userCode: data.user_code,
+			verificationUrl,
+			interval: typeof data.interval === "number" ? data.interval : 5,
+		};
+	}
+
+	private async pollRfcDeviceToken(
+		deviceCode: string,
+	): Promise<DeviceTokenResult | null> {
+		const response = await fetch(this.config.tokenUrl, {
+			method: "POST",
+			headers: this.headers("form"),
+			body: new URLSearchParams({
+				grant_type: RFC_DEVICE_GRANT,
+				device_code: deviceCode,
+				client_id: this.config.clientId,
+			}).toString(),
+		});
+		const text = await response.text().catch(() => "");
+		let data: Record<string, unknown> = {};
+		if (text) {
+			try {
+				data = JSON.parse(text) as Record<string, unknown>;
+			} catch {
+				/* non-JSON */
+			}
+		}
+		const err = typeof data.error === "string" ? data.error : undefined;
+		if (err === "authorization_pending" || err === "slow_down") return null;
+		if (!response.ok) {
+			throw new Error(
+				`Device token poll failed: ${response.status}${err ? ` ${err}` : ""}`,
+			);
+		}
+		if (err) {
+			throw new Error(`Device token poll failed: ${err}`);
+		}
+		if (typeof data.access_token !== "string" || !data.access_token) {
+			return null;
+		}
+		const creds = this.buildCredentials({
+			access_token: data.access_token,
+			refresh_token:
+				typeof data.refresh_token === "string" ? data.refresh_token : undefined,
+			expires_in: typeof data.expires_in === "number" ? data.expires_in : 3600,
+		});
+		return {
+			accessToken: creds.accessToken,
+			refreshToken: creds.refreshToken,
+			expiresIn: typeof data.expires_in === "number" ? data.expires_in : 3600,
+		};
+	}
+
+	private async requestOpenAIDeviceCode(): Promise<DeviceCodeStart> {
+		const response = await fetch(this.require("deviceCodeUrl"), {
+			method: "POST",
+			headers: this.headers("json"),
+			body: JSON.stringify({
+				client_id: this.config.clientId,
+				scope: this.scope(),
+			}),
+		});
+		if (!response.ok) {
+			throw new Error(`Device code request failed: ${response.status}`);
+		}
+		const data = (await response.json()) as {
+			device_auth_id: string;
+			user_code: string;
+			interval?: number;
+		};
+		return {
+			deviceAuthId: data.device_auth_id,
+			userCode: data.user_code,
+			interval: typeof data.interval === "number" ? data.interval : 5,
+			verificationUrl:
+				this.config.defaultVerificationUrl ??
+				"https://auth.openai.com/codex/device",
+		};
+	}
+
+	private async pollOpenAIDeviceToken(
+		deviceAuthId: string,
+		userCode: string,
+	): Promise<DeviceTokenResult | null> {
+		const response = await fetch(this.require("deviceTokenUrl"), {
+			method: "POST",
+			headers: this.headers("json"),
+			body: JSON.stringify({
+				device_auth_id: deviceAuthId,
+				user_code: userCode,
+			}),
+		});
+		const pending = this.config.pendingStatusCodes ?? [403, 404, 429];
+		if (pending.includes(response.status)) return null;
+		if (!response.ok) {
+			throw new Error(`Device token poll failed: ${response.status}`);
+		}
+		const data = (await response.json()) as {
+			authorization_code?: string;
+			code_verifier?: string;
+		};
+		if (!data.authorization_code || !data.code_verifier) return null;
+
+		const tokenData = await this.exchangeToken<TokenResponse>(
+			this.config.tokenUrl,
+			{
+				grant_type: "authorization_code",
+				client_id: this.config.clientId,
+				code: data.authorization_code,
+				code_verifier: data.code_verifier,
+				redirect_uri: this.require("redirectUri"),
+				scope: this.scope(),
+			},
+			this.tokenFormat(),
+			this.headers(),
+		);
+		const creds = this.buildCredentials(tokenData);
+		return {
+			accessToken: creds.accessToken,
+			refreshToken: creds.refreshToken,
+			expiresIn: tokenData.expires_in ?? 0,
+			accountId: this.extractAccountId(creds.accessToken),
+		};
+	}
+
+	/** JWT account id (ChatGPT display only). */
+	extractAccountId(accessToken: string): string | undefined {
+		try {
+			const parts = accessToken.split(".");
+			const payloadB64 = parts[1];
+			if (!payloadB64) return undefined;
+			const payload = JSON.parse(
+				Buffer.from(payloadB64, "base64url").toString("utf-8"),
+			);
+			const claimPath =
+				this.config.accountIdClaimPath ?? "https://api.openai.com/auth";
+			const authClaim = payload[claimPath];
+			return (
+				authClaim?.organization_id ?? authClaim?.chatgpt_account_id ?? undefined
+			);
+		} catch {
+			return undefined;
+		}
+	}
+
+	private async readJson(
+		response: Response,
+		label: string,
+	): Promise<Record<string, unknown>> {
+		const text = await response.text().catch(() => "");
+		let data: Record<string, unknown> = {};
+		if (text) {
+			try {
+				data = JSON.parse(text) as Record<string, unknown>;
+			} catch {
+				/* non-JSON */
+			}
+		}
+		if (!response.ok || typeof data.error === "string") {
+			const err = typeof data.error === "string" ? data.error : undefined;
+			const desc =
+				typeof data.error_description === "string"
+					? data.error_description
+					: undefined;
+			throw new Error(
+				`${label} failed: ${response.status}${err ? ` ${err}` : ""}${desc ? ` — ${desc}` : ""}${!err && text ? ` ${text}` : ""}`,
+			);
+		}
+		return data;
+	}
+
+	getConfig(): OAuthProviderConfig {
+		return { ...this.config };
+	}
+}
+
+/** Token-refresh entries for every loaded OAuth provider (from config). */
+export function buildOAuthRefreshers(
+	providers: readonly OAuthProviderConfig[] = listOAuthProviders(),
+): Array<{ providerId: string; refresher: OAuthClient }> {
+	return providers.map((config) => ({
+		providerId: config.id,
+		refresher: new OAuthClient(config),
+	}));
 }

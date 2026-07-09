@@ -86,6 +86,8 @@ export type {
 export type {
   ConfigProviderMeta,
   ProviderConfigEntry,
+  ProviderOAuthConfig,
+  ProviderOAuthGrantKind,
 } from "./provider-config-types";
 // Wire-protocol registry (sdkCompat → pi-ai adapter)
 export {

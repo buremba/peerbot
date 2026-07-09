@@ -1,6 +1,81 @@
 {
   "providers": [
     {
+      "id": "claude",
+      "name": "Claude",
+      "description": "Anthropic Claude. Sign in with a Claude subscription or paste an API key.",
+      "providers": [
+        {
+          "displayName": "Claude",
+          "iconUrl": "https://www.google.com/s2/favicons?domain=anthropic.com&sz=128",
+          "envVarName": "ANTHROPIC_API_KEY",
+          "upstreamBaseUrl": "https://api.anthropic.com",
+          "apiKeyInstructions": "Get your API key from <a href=\"https://console.anthropic.com/settings/keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Anthropic Console</a>, or sign in with Claude",
+          "apiKeyPlaceholder": "sk-ant-...",
+          "sdkCompat": "anthropic",
+          "modalities": ["text"],
+          "defaultModel": "claude-sonnet-5",
+          "models": [
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-haiku-4-5-20251001",
+            "claude-fable-5"
+          ],
+          "oauth": {
+            "clientId": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+            "authUrl": "https://claude.com/cai/oauth/authorize",
+            "tokenUrl": "https://platform.claude.com/v1/oauth/token",
+            "redirectUri": "https://platform.claude.com/oauth/code/callback",
+            "scope": "user:inference",
+            "responseType": "code",
+            "grantType": "authorization_code",
+            "tokenEndpointAuthMethod": "none",
+            "extraAuthParams": {
+              "code": "true"
+            },
+            "tokenRequestFormat": "form",
+            "grant": "authorization-code",
+            "authType": "oauth"
+          }
+        }
+      ]
+    },
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "description": "Sign in with ChatGPT Plus/Pro (device code). Uses your subscription, not metered API billing.",
+      "providers": [
+        {
+          "displayName": "ChatGPT",
+          "iconUrl": "https://www.google.com/s2/favicons?domain=chatgpt.com&sz=128",
+          "envVarName": "OPENAI_API_KEY",
+          "upstreamBaseUrl": "https://chatgpt.com/backend-api",
+          "apiKeyInstructions": "Sign in with ChatGPT Plus/Pro, or paste an OpenAI API key",
+          "apiKeyPlaceholder": "sk-...",
+          "sdkCompat": "openai",
+          "modalities": ["text"],
+          "oauth": {
+            "clientId": "app_EMoamEEZ73f0CkXaXp7hrann",
+            "tokenUrl": "https://auth.openai.com/oauth/token",
+            "redirectUri": "https://auth.openai.com/deviceauth/callback",
+            "scope": "openid profile email offline_access api.model.read api.model.request api.model.image.request api.model.audio.request",
+            "tokenEndpointAuthMethod": "none",
+            "tokenRequestFormat": "form",
+            "grant": "openai-device-auth",
+            "authType": "device-code",
+            "deviceCodeUrl": "https://auth.openai.com/api/accounts/deviceauth/usercode",
+            "deviceTokenUrl": "https://auth.openai.com/api/accounts/deviceauth/token",
+            "deviceRedirectUri": "https://auth.openai.com/deviceauth/callback",
+            "defaultVerificationUrl": "https://auth.openai.com/codex/device",
+            "includeScopeInRefresh": true,
+            "accountIdClaimPath": "https://api.openai.com/auth",
+            "scopeEnvVar": "OPENAI_OAUTH_SCOPE",
+            "userAgent": "reqwest/0.12.24"
+          }
+        }
+      ]
+    },
+    {
       "id": "groq",
       "name": "Groq",
       "description": "Fast LLM inference via Groq",
@@ -184,7 +259,7 @@
     {
       "id": "deepseek",
       "name": "DeepSeek",
-      "description": "DeepSeek V4 models — fast and reasoning variants",
+      "description": "DeepSeek V4 models \u2014 fast and reasoning variants",
       "providers": [
         {
           "displayName": "DeepSeek",
@@ -273,20 +348,31 @@
     {
       "id": "xai",
       "name": "xAI",
-      "description": "Grok models by xAI",
+      "description": "Grok models by xAI. Sign in with SuperGrok / X Premium+ (device code) or paste an API key from the xAI Console.",
       "providers": [
         {
-          "displayName": "xAI",
+          "displayName": "xAI (SuperGrok)",
           "iconUrl": "https://www.google.com/s2/favicons?domain=x.ai&sz=128",
           "envVarName": "XAI_API_KEY",
           "upstreamBaseUrl": "https://api.x.ai/v1",
-          "apiKeyInstructions": "Get your API key from <a href=\"https://console.x.ai/\" target=\"_blank\" class=\"text-blue-600 hover:underline\">xAI Console</a>",
+          "apiKeyInstructions": "Get your API key from <a href=\"https://console.x.ai/\" target=\"_blank\" class=\"text-blue-600 hover:underline\">xAI Console</a>, or sign in with SuperGrok / X Premium+",
           "apiKeyPlaceholder": "xai-...",
           "sdkCompat": "openai",
           "modalities": ["text"],
           "defaultModel": "grok-4",
           "modelsEndpoint": "/models",
-          "models": ["grok-4", "grok-3", "grok-3-mini"]
+          "models": ["grok-4", "grok-3", "grok-3-mini"],
+          "oauth": {
+            "clientId": "b1a00492-073a-47ea-816f-4c329264a828",
+            "tokenUrl": "https://auth.x.ai/oauth2/token",
+            "scope": "openid profile email offline_access grok-cli:access api:access",
+            "tokenEndpointAuthMethod": "none",
+            "tokenRequestFormat": "form",
+            "grant": "device-code",
+            "authType": "device-code",
+            "deviceCodeUrl": "https://auth.x.ai/oauth2/device/code",
+            "defaultVerificationUrl": "https://accounts.x.ai/oauth2/device"
+          }
         }
       ]
     },

@@ -5,6 +5,60 @@
 
 import type { SdkCompat } from "./sdk-compat";
 
+/**
+ * Subscription-login OAuth wire config (data only). Nested under a
+ * {@link ProviderConfigEntry} in `config/providers.json`. The gateway loads
+ * these at boot — no provider ids are hard-coded in OAuth client code.
+ *
+ * `id` / display name come from the parent provider entry.
+ */
+export type ProviderOAuthGrantKind =
+  | "authorization-code"
+  | "device-code"
+  | "openai-device-auth";
+
+export interface ProviderOAuthConfig {
+  clientId: string;
+  clientSecret?: string;
+  /** Authorization-code only. */
+  authUrl?: string;
+  tokenUrl: string;
+  /** Authorization-code + OpenAI device code exchange. */
+  redirectUri?: string;
+  /** Space-separated scopes. */
+  scope: string;
+  responseType?: string;
+  grantType?: string;
+  customHeaders?: Record<string, string>;
+  tokenEndpointAuthMethod?:
+    | "none"
+    | "client_secret_post"
+    | "client_secret_basic";
+  requireRefreshToken?: boolean;
+  extraAuthParams?: Record<string, string>;
+  extraTokenParams?: Record<string, string | number>;
+  /** Default `json`. Claude requires `form`. */
+  tokenRequestFormat?: "json" | "form";
+  /**
+   * - `authorization-code` — redirect + paste code#state
+   * - `device-code` — RFC 8628 form device code
+   * - `openai-device-auth` — OpenAI proprietary JSON device-auth
+   */
+  grant: ProviderOAuthGrantKind;
+  /** Persisted profile authType. Default `oauth`. */
+  authType?: "oauth" | "device-code";
+  deviceCodeUrl?: string;
+  /** OpenAI device-auth poll URL only. */
+  deviceTokenUrl?: string;
+  deviceRedirectUri?: string;
+  defaultVerificationUrl?: string;
+  pendingStatusCodes?: number[];
+  includeScopeInRefresh?: boolean;
+  accountIdClaimPath?: string;
+  scopeEnvVar?: string;
+  userAgent?: string;
+}
+
 export interface ProviderConfigEntry {
   /** Display name in settings page (e.g. "Groq") */
   displayName: string;
@@ -18,6 +72,11 @@ export interface ProviderConfigEntry {
   apiKeyInstructions: string;
   /** Placeholder text for the API key input */
   apiKeyPlaceholder: string;
+  /**
+   * Optional subscription OAuth (Claude / ChatGPT / SuperGrok, etc.).
+   * When set, the org inference-providers UI offers "Sign in" for this provider.
+   */
+  oauth?: ProviderOAuthConfig;
   /**
    * Wire protocol this provider speaks (see SDK_COMPAT_PROTOCOLS). "openai" for
    * OpenAI-compatible providers; "anthropic"/"google"/etc. for others. Omitted ⇒

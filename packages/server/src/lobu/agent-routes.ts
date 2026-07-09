@@ -11,8 +11,8 @@ import { mcpAuth } from "../auth/middleware";
 import { getDb } from "../db/client";
 import { grantStrategyFor } from "../gateway/auth/oauth/grant-strategy";
 import {
-	CHATGPT_PROVIDER,
-	CLAUDE_PROVIDER,
+	getOAuthProviderConfig,
+	getOAuthProviderConfigs,
 	type OAuthProviderConfig,
 } from "../gateway/auth/oauth/providers";
 import {
@@ -622,21 +622,12 @@ routes.get("/inference-providers/catalog", async (c) => {
 
 // ── Org-scoped LLM-provider OAuth (subscription login) ───────────────────────
 //
-// ONE generic pair for both live flows. Claude runs authorization-code (redirect
-// + paste `code#state`); ChatGPT runs device-code (show a user code + poll). The
-// resulting profile lands in the per-user ORG BUCKET
-// (`(userId, "__org_oauth__:<orgId>")`, with `organization_id` set) so ONE
-// sign-in covers all of this user's agents in the org — the org bucket is the
-// OAuth-sharing mechanism. Behavior is dispatched by the config's `grant`
-// discriminator via `grantStrategyFor`; config rows carry no functions.
+// Generic start/complete for every providers.json entry with an `oauth` block.
+// Profiles land in the per-user ORG BUCKET so one sign-in covers all of this
+// user's agents in the org. Behavior is dispatched by config.grant via
+// grantStrategyFor.
 //
-// Auth: interactive session only. A headless caller (PAT/OAuth bearer, no
-// session user) HARD-FAILS — OAuth sign-in has no non-interactive path.
-
-const OAUTH_PROVIDER_CONFIGS: Record<string, OAuthProviderConfig> = {
-	claude: CLAUDE_PROVIDER,
-	chatgpt: CHATGPT_PROVIDER,
-};
+// Auth: interactive session only.
 
 async function ensureVisibleOAuthProvidersForUser(
 	c: any,
@@ -647,7 +638,7 @@ async function ensureVisibleOAuthProvidersForUser(
 	const authProfilesManager = getLobuCoreServices()?.getAuthProfilesManager?.();
 	if (!authProfilesManager) return;
 
-	for (const config of Object.values(OAUTH_PROVIDER_CONFIGS)) {
+	for (const config of Object.values(getOAuthProviderConfigs())) {
 		const profiles = await orgContext.run({ organizationId: orgId }, () =>
 			authProfilesManager.getProviderProfiles(
 				orgBucketAgentId(orgId),
@@ -672,7 +663,7 @@ function resolveOAuthProvider(
 	providerId: unknown,
 ): OAuthProviderConfig | Response {
 	const id = typeof providerId === "string" ? providerId : "";
-	const config = OAUTH_PROVIDER_CONFIGS[id];
+	const config = getOAuthProviderConfig(id);
 	if (!config) {
 		return c.json(
 			{ error: `Provider '${id}' does not support OAuth sign-in` },
@@ -1194,7 +1185,7 @@ routes.delete("/inference-providers/:slug", async (c) => {
 	const ok = await softDeleteInferenceProvider(orgId, slug);
 	if (!ok) return c.json({ error: "Provider not found" }, 404);
 	const user = c.get("user") as { id: string } | undefined;
-	const oauthConfig = OAUTH_PROVIDER_CONFIGS[slug];
+	const oauthConfig = getOAuthProviderConfig(slug);
 	const authProfilesManager = getLobuCoreServices()?.getAuthProfilesManager?.();
 	// Only an interactive user can revoke their org-bucket OAuth profile. Admin
 	// PAT callers may tombstone the visible row, but must not delete another

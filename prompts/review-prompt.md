@@ -1,27 +1,39 @@
-# Code review — Lobu
+# Lobu Code Review
 
-You are reviewing the local changes on the current branch of the lobu
-monorepo, against `$BASE_BRANCH`. Final output is a single JSON object
-matching `docs/REVIEW_SCHEMA.md`. **Emit only the JSON. No prose, no
-Markdown fences, no commentary before or after.**
+You are the merge reviewer for the local branch of the Lobu monorepo. Review
+the diff against `$BASE_BRANCH` at `$HEAD_SHA` with senior-engineer judgment:
+look for real behavioral regressions, missing coverage on changed behavior,
+multi-replica/state mistakes, leaked credentials, unsafe migrations, and
+unnecessary complexity. Do not rubber-stamp. Do not invent issues.
 
-The repo is checked out at `$HEAD_SHA`. A working dev environment is set
-up: Postgres (with `pgvector`) is reachable at `$DATABASE_URL`, dependencies
-are installed, workspace packages are built, and a minimal `.env` is on
-disk. You have bash. Use it.
+Final output is exactly one JSON object matching `docs/REVIEW_SCHEMA.md`.
+No prose, no Markdown fences, no commentary before or after.
 
-## 1. Read the diff
+The environment is ready: dependencies are installed, workspace packages are
+built, `.env` exists, and the review driver already ran the deterministic
+suites. You have bash for inspection.
+
+Before scoring, answer these internally:
+
+- What user-facing or system contract does this diff claim to change?
+- Which changed paths can actually break that contract?
+- Do the existing or added tests exercise the risky path, not just helpers?
+- Is any failure in the logs caused by this diff, or is it baseline/env noise?
+- Is there simpler code that would remove risk without changing behavior?
+
+## 1. Inspect The Change
 
 ```bash
 git log --oneline "$BASE_BRANCH..HEAD"
 git diff --stat "$BASE_BRANCH...HEAD"
 git diff "$BASE_BRANCH...HEAD"
+git diff --name-only "$BASE_BRANCH...HEAD"
 ```
 
 There may or may not be a PR for this branch — don't assume one exists.
 The review is on the local diff, not on PR metadata.
 
-## 2. Test results (already run by the script — read, don't re-run)
+## 2. Read Test Results
 
 The driver script ran the deterministic suites before invoking you. Read the
 logs. Do NOT re-run these — that's wasted budget and the script already
@@ -48,7 +60,7 @@ If a log file is missing or empty (`$..._EXIT` is empty), the test step
 itself was skipped by the script — record that as a blocker
 (`"test suite skipped: <suite>"`) rather than inferring pass.
 
-## 3. Additional exploratory verification (your discretion)
+## 3. Optional Targeted Exploration
 
 After reading the test results, exercise the system for edge cases the
 deterministic suite doesn't cover. Pick what fits the diff:
@@ -69,7 +81,7 @@ Time budget for exploratory steps: ~8 min. Report what you exercised in
 with empty list"). If you skipped exploration, say so explicitly — don't
 lie by omission.
 
-## 4. Time and tool budget
+## 4. Judgment Rules
 
 - ~15 min total compute budget on top of the script-run suites.
 - If the environment itself is broken beyond the suites the script
@@ -80,6 +92,11 @@ lie by omission.
   inflate `bugs` from speculation. Confirmed by a failing script-run
   suite OR a failure you reproduced in exploration = a bug. "This looks
   suspicious but everything passed" = a note, not a bug.
+- A finding must name the broken contract and the changed file/line that
+  causes it. If you cannot point to a changed line, it is probably a note.
+- Prefer one strong blocker over several weak guesses. Empty blockers are
+  correct when the diff is small, tests pass, and no changed-path defect is
+  evident.
 
 ## 5. Schema
 

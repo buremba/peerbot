@@ -47,6 +47,7 @@ PI_REVIEW_STATUS_CONTEXT="${PI_REVIEW_STATUS_CONTEXT:-pi-review}"
 PI_REVIEW_MIN_BUG_FREE="${PI_REVIEW_MIN_BUG_FREE:-80}"
 PI_REVIEW_MAX_SLOP="${PI_REVIEW_MAX_SLOP:-15}"
 PI_REVIEW_MIN_SIMPLICITY="${PI_REVIEW_MIN_SIMPLICITY:-70}"
+CLAUDE_REVIEW_HERDR="${CLAUDE_REVIEW_HERDR:-auto}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE_BRANCH="$2"; shift 2 ;;
@@ -88,6 +89,195 @@ REVIEW_STATUS_FINALIZED=0
 finalize_review_status() {
   post_review_status "$1" "$2" "${3:-}"
   REVIEW_STATUS_FINALIZED=1
+}
+
+run_claude_review_inline() {
+  local prompt_file="$1"
+  set +e
+  RAW="$(
+    BASE_BRANCH="$BASE_BRANCH" \
+    HEAD_SHA="$HEAD_SHA" \
+    TYPECHECK_LOG="$TYPECHECK_LOG" TYPECHECK_EXIT="$TYPECHECK_EXIT" \
+    UNIT_LOG="$UNIT_LOG" UNIT_EXIT="$UNIT_EXIT" \
+    INTEGRATION_LOG="$INTEGRATION_LOG" INTEGRATION_EXIT="$INTEGRATION_EXIT" \
+    DATABASE_URL="${DATABASE_URL:-}" \
+    claude -p "$(cat "$prompt_file")" \
+      --model "$CLAUDE_REVIEW_MODEL" \
+      --effort "$CLAUDE_REVIEW_EFFORT" \
+      --output-format text \
+      --no-session-persistence \
+      --tools Bash,Read,Grep,LS \
+      --permission-mode bypassPermissions < /dev/null
+  )"
+  CLAUDE_EXIT=$?
+  set -e
+}
+
+run_claude_review_herdr() {
+  local prompt_file="$1"
+  local raw_file exit_file pane_name started
+  raw_file="$(mktemp /tmp/lobu-review-claude-raw.XXXXXX)"
+  exit_file="$(mktemp /tmp/lobu-review-claude-exit.XXXXXX)"
+  rm -f "$exit_file"
+  pane_name="claude-review-${HEAD_SHA:0:8}-$$"
+
+  echo ">> spawning Herdr pane '$pane_name' for Claude review"
+  set +e
+  started="$(
+    herdr agent start "$pane_name" \
+      --workspace "$HERDR_WORKSPACE_ID" \
+      --cwd "$PWD" \
+      --split down \
+      --no-focus \
+      --env "PATH=$PATH" \
+      --env "HOME=$HOME" \
+      --env "SHELL=${SHELL:-}" \
+      --env "BASE_BRANCH=$BASE_BRANCH" \
+      --env "HEAD_SHA=$HEAD_SHA" \
+      --env "TYPECHECK_LOG=$TYPECHECK_LOG" \
+      --env "TYPECHECK_EXIT=$TYPECHECK_EXIT" \
+      --env "UNIT_LOG=$UNIT_LOG" \
+      --env "UNIT_EXIT=$UNIT_EXIT" \
+      --env "INTEGRATION_LOG=$INTEGRATION_LOG" \
+      --env "INTEGRATION_EXIT=$INTEGRATION_EXIT" \
+      --env "DATABASE_URL=${DATABASE_URL:-}" \
+      --env "CLAUDE_REVIEW_MODEL=$CLAUDE_REVIEW_MODEL" \
+      --env "CLAUDE_REVIEW_EFFORT=$CLAUDE_REVIEW_EFFORT" \
+      --env "PROMPT_FILE=$prompt_file" \
+      --env "RAW_FILE=$raw_file" \
+      --env "EXIT_FILE=$exit_file" \
+      -- bash -lc '
+        set +e
+        claude -p "$(cat "$PROMPT_FILE")" \
+          --model "$CLAUDE_REVIEW_MODEL" \
+          --effort "$CLAUDE_REVIEW_EFFORT" \
+          --output-format text \
+          --no-session-persistence \
+          --tools Bash,Read,Grep,LS \
+          --permission-mode bypassPermissions < /dev/null | tee "$RAW_FILE"
+        claude_exit=${PIPESTATUS[0]}
+        printf "%s\n" "$claude_exit" > "$EXIT_FILE"
+        exit "$claude_exit"
+      ' 2>&1
+  )"
+  local start_exit=$?
+  set -e
+  if [ $start_exit -ne 0 ]; then
+    echo ">> Herdr Claude pane failed to start; falling back to inline Claude" >&2
+    printf '%s\n' "$started" >&2
+    run_claude_review_inline "$prompt_file"
+    return
+  fi
+
+  echo ">> Claude review is visible in Herdr pane '$pane_name'"
+  local waited=0
+  while [ ! -f "$exit_file" ]; do
+    sleep 2
+    waited=$((waited + 2))
+    if [ "$waited" -ge "${CLAUDE_REVIEW_TIMEOUT_SECONDS:-1200}" ]; then
+      RAW="$(cat "$raw_file" 2>/dev/null || true)"
+      CLAUDE_EXIT=124
+      rm -f "$raw_file" "$exit_file"
+      echo ">> Claude review pane timed out after ${waited}s" >&2
+      return
+    fi
+  done
+
+  RAW="$(cat "$raw_file" 2>/dev/null || true)"
+  CLAUDE_EXIT="$(cat "$exit_file" 2>/dev/null || echo 1)"
+  rm -f "$raw_file" "$exit_file"
+}
+
+run_claude_review() {
+  local prompt_file="$1"
+  if [ "$CLAUDE_REVIEW_HERDR" != "0" ] &&
+     [ -n "${HERDR_WORKSPACE_ID:-}" ] &&
+     command -v herdr >/dev/null 2>&1; then
+    run_claude_review_herdr "$prompt_file"
+  else
+    if [ "$CLAUDE_REVIEW_HERDR" = "1" ]; then
+      echo ">> CLAUDE_REVIEW_HERDR=1 but no Herdr workspace is available; running inline" >&2
+    fi
+    run_claude_review_inline "$prompt_file"
+  fi
+}
+
+extract_json_verdict() {
+  local raw="$1"
+  local fenced object
+  fenced="$(
+    printf '%s\n' "$raw" | awk '
+      /^[[:space:]]*```json[[:space:]]*$/ { in_json = 1; next }
+      /^[[:space:]]*```[[:space:]]*$/ && in_json { exit }
+      in_json { print }
+    '
+  )"
+  if [ -n "$fenced" ] && printf '%s\n' "$fenced" | jq -e . >/dev/null 2>&1; then
+    printf '%s\n' "$fenced"
+    return
+  fi
+
+  if command -v node >/dev/null 2>&1; then
+    object="$(
+      printf '%s\n' "$raw" | node -e '
+const fs = require("fs");
+const raw = fs.readFileSync(0, "utf8");
+
+function candidateFrom(start) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+    } else if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return raw.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+for (let i = 0; i < raw.length; i += 1) {
+  if (raw[i] !== "{") continue;
+  const candidate = candidateFrom(i);
+  if (!candidate) continue;
+  try {
+    JSON.parse(candidate);
+    process.stdout.write(candidate);
+    process.exit(0);
+  } catch {
+  }
+}
+
+process.exit(1);
+' 2>/dev/null || true
+    )"
+    if [ -n "$object" ] && printf '%s\n' "$object" | jq -e . >/dev/null 2>&1; then
+      printf '%s\n' "$object"
+      return
+    fi
+  fi
+
+  printf '%s\n' "$raw" | sed -e 's/^```json//' -e 's/^```//' -e 's/```$//'
 }
 
 trap 'ec=$?; if [ $ec -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then post_review_status error "Claude review failed before verdict (exit $ec)"; fi' EXIT
@@ -213,33 +403,14 @@ PROMPT_FILE="$(pwd)/prompts/review-prompt.md"
 [ -f "$PROMPT_FILE" ] || { echo "prompt not found: $PROMPT_FILE" >&2; exit 2; }
 
 echo ">> invoking Claude CLI (model: $CLAUDE_REVIEW_MODEL, effort: $CLAUDE_REVIEW_EFFORT)"
-GH_TOKEN_VAL=""
-[ "$GH_AVAILABLE" = "1" ] && GH_TOKEN_VAL="$(gh auth token)"
-
-set +e
-RAW="$(
-  BASE_BRANCH="$BASE_BRANCH" \
-  HEAD_SHA="$HEAD_SHA" \
-  TYPECHECK_LOG="$TYPECHECK_LOG" TYPECHECK_EXIT="$TYPECHECK_EXIT" \
-  UNIT_LOG="$UNIT_LOG" UNIT_EXIT="$UNIT_EXIT" \
-  INTEGRATION_LOG="$INTEGRATION_LOG" INTEGRATION_EXIT="$INTEGRATION_EXIT" \
-  GH_TOKEN="$GH_TOKEN_VAL" \
-  DATABASE_URL="${DATABASE_URL:-}" \
-  claude -p "$(cat "$PROMPT_FILE")
-
-Review the diff. Emit only the JSON verdict." \
-    --model "$CLAUDE_REVIEW_MODEL" \
-    --effort "$CLAUDE_REVIEW_EFFORT" \
-    --output-format text \
-    --no-session-persistence \
-    --tools Bash,Read,Grep,LS \
-    --permission-mode bypassPermissions < /dev/null
-)"
-CLAUDE_EXIT=$?
-set -e
+CLAUDE_PROMPT_FILE="$(mktemp /tmp/lobu-review-prompt.XXXXXX)"
+cat "$PROMPT_FILE" > "$CLAUDE_PROMPT_FILE"
+printf '\n\nReview the diff. Emit only the JSON verdict.\n' >> "$CLAUDE_PROMPT_FILE"
+run_claude_review "$CLAUDE_PROMPT_FILE"
+rm -f "$CLAUDE_PROMPT_FILE"
 
 VERDICT="$RAW"
-VERDICT="$(printf '%s\n' "$VERDICT" | sed -e 's/^```json//' -e 's/^```//' -e 's/```$//')"
+VERDICT="$(extract_json_verdict "$VERDICT")"
 
 if ! echo "$VERDICT" | jq -e '
   (.bug_free_confidence | type == "number" and floor == . and . >= 0 and . <= 100) and

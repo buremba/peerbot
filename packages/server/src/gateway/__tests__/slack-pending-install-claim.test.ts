@@ -37,6 +37,7 @@ mock.module("../../lobu/stores/slack-installations.js", () => ({
 	getSlackInstallByEnterpriseId: mock(async () => null),
 	getSlackEnterpriseInstall: mock(async () => null),
 	resolveSlackPendingByTenant: mock(async () => null),
+	revokeSlackInstallsForUninstall: mock(async () => []),
 	claimSlackWelcomeDm: mock(async () => null),
 }));
 

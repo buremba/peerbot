@@ -495,6 +495,41 @@ export async function markSlackInstallStopped(
   `;
 }
 
+/**
+ * Handle a Slack `app_uninstalled` / `app_deleted` event: stop the install(s)
+ * whose bot token Slack just invalidated, so the router stops sending events to a
+ * dead token (a zombie `active` row would fail every forward). Tombstones (marks
+ * suspended) rather than deletes — audit/rollback, consistent with
+ * {@link markSlackInstallStopped}; a later reinstall reactivates the same row.
+ *
+ * Resolves the affected installs WITHOUT assuming the event carries a team id:
+ *   - the exact `team_id` install (a per-workspace install), when present;
+ *   - the ORG-WIDE install keyed on `enterprise_id` (a Grid org-wide uninstall
+ *     often carries only the enterprise id, no team id).
+ * A per-workspace uninstall thus stops only that workspace's row; a sibling's
+ * separately-installed row (matched by its own team id) is untouched. Returns the
+ * external ids that were stopped (may be empty — an already-inactive or unknown
+ * tenant is a no-op).
+ */
+export async function revokeSlackInstallsForUninstall(
+  store: AppInstallationStore,
+  tenant: { teamId?: string | null; enterpriseId?: string | null }
+): Promise<string[]> {
+  const toStop = new Map<string, SlackInstallationRow>();
+  if (tenant.teamId) {
+    const byTeam = await getSlackInstallByTeamId(store, tenant.teamId);
+    if (byTeam) toStop.set(byTeam.id, byTeam);
+  }
+  if (tenant.enterpriseId) {
+    const orgWide = await getSlackEnterpriseInstall(store, tenant.enterpriseId);
+    if (orgWide) toStop.set(orgWide.id, orgWide);
+  }
+  for (const id of toStop.keys()) {
+    await markSlackInstallStopped(store, id);
+  }
+  return [...toStop.keys()];
+}
+
 /** Delete a Slack install and purge its bot-token secret. */
 export async function deleteSlackInstall(
   store: AppInstallationStore,

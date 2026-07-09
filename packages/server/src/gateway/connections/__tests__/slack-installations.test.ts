@@ -582,4 +582,71 @@ describe("Grid install-model routing (per-workspace + org-wide enterprise)", () 
       "T_ONLY",
     );
   });
+
+  test("revokeSlackInstallsForUninstall stops the org-wide install and its connection projection (enterprise uninstall)", async () => {
+    // A Grid org-wide uninstall carries only the enterprise id. The org-wide
+    // install (keyed on the enterprise id) must be stopped so the router stops
+    // sending to the dead token — verified end-to-end against real Postgres,
+    // including the connections projection pause that markSlackInstallStopped does.
+    const { store, secretStore, slack } = build();
+    const ENT = "E_UNINSTALL";
+    await seedAgentRow("t", { organizationId: "org-u" });
+    const orgWide = await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-u",
+      ENT, // org-wide is keyed on the enterprise id (no team id)
+      { botToken: "xoxb-orgwide", enterpriseId: ENT, isEnterpriseInstall: true },
+    );
+    expect(await slack.getSlackEnterpriseInstall(store, ENT)).not.toBeNull();
+
+    const stopped = await slack.revokeSlackInstallsForUninstall(store, {
+      teamId: null,
+      enterpriseId: ENT,
+    });
+    expect(stopped).toEqual([orgWide.id]);
+
+    // No longer routable — the row is suspended, not active.
+    expect(await slack.getSlackEnterpriseInstall(store, ENT)).toBeNull();
+  });
+
+  test("revokeSlackInstallsForUninstall stops only the uninstalled workspace, not a sibling", async () => {
+    const { store, secretStore, slack } = build();
+    const ENT = "E_MIXED";
+    await seedAgentRow("t", { organizationId: "org-m" });
+    await slack.upsertSlackInstallByTeam(store, secretStore, "org-m", "T_GONE", {
+      botToken: "xoxb-gone",
+      enterpriseId: ENT,
+    });
+    const sibling = await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-m",
+      "T_STAYS",
+      { botToken: "xoxb-stays", enterpriseId: ENT },
+    );
+
+    const stopped = await slack.revokeSlackInstallsForUninstall(store, {
+      teamId: "T_GONE",
+      enterpriseId: ENT,
+    });
+    // Only the uninstalled workspace's install (no org-wide flagged row exists,
+    // so the enterprise arm resolves nothing — the two per-ws rows are ambiguous).
+    expect(stopped).toEqual([expect.any(String)]);
+    expect(await slack.getSlackInstallByTeamId(store, "T_GONE")).toBeNull();
+    // The sibling's own install stays active.
+    expect((await slack.getSlackInstallByTeamId(store, "T_STAYS"))?.id).toBe(
+      sibling.id,
+    );
+  });
+
+  test("revokeSlackInstallsForUninstall is a no-op for an unknown tenant", async () => {
+    const { store, slack } = build();
+    expect(
+      await slack.revokeSlackInstallsForUninstall(store, {
+        teamId: "T_NEVER_SEEN",
+        enterpriseId: "E_NEVER_SEEN",
+      }),
+    ).toEqual([]);
+  });
 });

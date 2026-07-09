@@ -9,7 +9,9 @@ import {
 } from "bun:test";
 import { getDb } from "../../db/client.js";
 import {
+  getSlackEnterpriseInstall,
   getSlackInstallByEnterpriseId,
+  getSlackInstallByTeamId,
   upsertSlackInstallByTeam,
 } from "../../lobu/stores/slack-installations.js";
 import {
@@ -303,6 +305,185 @@ describe("SlackConnectionCoordinator", () => {
 
     expect(response.status).toBe(200);
     expect(forwarded).toEqual([seeded.id]);
+  });
+
+  test("handleAppWebhook revokes the install on an app_uninstalled event (per-workspace)", async () => {
+    // Slack posts `app_uninstalled` when a workspace removes the app. The bot
+    // token is now dead; leaving the install `active` would route events to a
+    // zombie row that fails every send. The install must be stopped.
+    const appStore = makeAppInstallationStore();
+    const secretStore = makeSecretStore();
+    const seeded = await upsertSlackInstallByTeam(
+      appStore,
+      secretStore,
+      "org-acme",
+      "T-GONE",
+      { botToken: "xoxb-gone" },
+    );
+    const forwarded: string[] = [];
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({
+        listSlackConnections: async () => [],
+        getAppInstallationStore: () => appStore,
+        getSecretStore: () => secretStore,
+        forwardWebhook: mock(async (connectionId: string) => {
+          forwarded.push(connectionId);
+          return new Response("ok");
+        }),
+      }),
+    );
+
+    const response = await coordinator.handleAppWebhook(
+      new Request("https://gateway.example.com/slack/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "event_callback",
+          team_id: "T-GONE",
+          event: { type: "app_uninstalled" },
+        }),
+      }),
+    );
+
+    // Acked (Slack retries on non-2xx), NOT forwarded to the dead install.
+    expect(response.status).toBe(200);
+    expect(forwarded).toEqual([]);
+    // The install is no longer active.
+    expect(
+      await getSlackInstallByTeamId(appStore, "T-GONE"),
+    ).toBeNull();
+    expect((seeded as { id: string }).id).toBeTruthy();
+  });
+
+  test("handleAppWebhook does NOT revoke the install on a tokens_revoked event", async () => {
+    // tokens_revoked can fire for a single user-token de-authorization while the
+    // bot install is still valid — stopping the whole install would be too
+    // aggressive. Only app_uninstalled/app_deleted revoke.
+    const appStore = makeAppInstallationStore();
+    const secretStore = makeSecretStore();
+    const seeded = await upsertSlackInstallByTeam(
+      appStore,
+      secretStore,
+      "org-acme",
+      "T-KEEP",
+      { botToken: "xoxb-keep" },
+    );
+
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({
+        listSlackConnections: async () => [],
+        getAppInstallationStore: () => appStore,
+        getSecretStore: () => secretStore,
+        // A tokens_revoked isn't a user message, so it won't forward; the assert
+        // that matters is the install stays active.
+        forwardWebhook: mock(async () => new Response("ok")),
+      }),
+    );
+
+    await coordinator.handleAppWebhook(
+      new Request("https://gateway.example.com/slack/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "event_callback",
+          team_id: "T-KEEP",
+          event: { type: "tokens_revoked", tokens: { bot: ["B1"] } },
+        }),
+      }),
+    );
+
+    // Install is still active — tokens_revoked is not treated as an uninstall.
+    expect((await getSlackInstallByTeamId(appStore, "T-KEEP"))?.id).toBe(
+      seeded.id,
+    );
+  });
+
+  test("handleAppWebhook revokes the org-wide install on an enterprise app_uninstalled event", async () => {
+    // A Grid org-wide uninstall arrives stamped with the enterprise id (and often
+    // no team id). The org-wide install (keyed on the enterprise id) must be
+    // stopped so sibling events stop routing to the dead token.
+    const appStore = makeAppInstallationStore();
+    const secretStore = makeSecretStore();
+    await upsertSlackInstallByTeam(
+      appStore,
+      secretStore,
+      "org-acme",
+      "E-GRID", // org-wide install is keyed on the enterprise id (no team id)
+      {
+        botToken: "xoxb-orgwide",
+        enterpriseId: "E-GRID",
+        isEnterpriseInstall: true,
+      },
+    );
+    expect(await getSlackEnterpriseInstall(appStore, "E-GRID")).not.toBeNull();
+
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({
+        listSlackConnections: async () => [],
+        getAppInstallationStore: () => appStore,
+        getSecretStore: () => secretStore,
+      }),
+    );
+
+    const response = await coordinator.handleAppWebhook(
+      new Request("https://gateway.example.com/slack/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "event_callback",
+          enterprise_id: "E-GRID",
+          event: { type: "app_uninstalled" },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    // The org-wide install is stopped (no longer resolvable by the router).
+    expect(await getSlackEnterpriseInstall(appStore, "E-GRID")).toBeNull();
+  });
+
+  test("app_uninstalled for one Grid workspace does NOT revoke a sibling's own install", async () => {
+    // A per-workspace uninstall must stop only that workspace's install — a
+    // sibling's separately-installed row (same enterprise) stays active.
+    const appStore = makeAppInstallationStore();
+    const secretStore = makeSecretStore();
+    await upsertSlackInstallByTeam(appStore, secretStore, "org-acme", "T-GONE", {
+      botToken: "xoxb-gone",
+      enterpriseId: "E-GRID",
+    });
+    const sibling = await upsertSlackInstallByTeam(
+      appStore,
+      secretStore,
+      "org-acme",
+      "T-STAYS",
+      { botToken: "xoxb-stays", enterpriseId: "E-GRID" },
+    );
+
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({
+        listSlackConnections: async () => [],
+        getAppInstallationStore: () => appStore,
+        getSecretStore: () => secretStore,
+      }),
+    );
+
+    await coordinator.handleAppWebhook(
+      new Request("https://gateway.example.com/slack/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "event_callback",
+          team_id: "T-GONE",
+          enterprise_id: "E-GRID",
+          event: { type: "app_uninstalled" },
+        }),
+      }),
+    );
+
+    expect(await getSlackInstallByTeamId(appStore, "T-GONE")).toBeNull();
+    // The sibling's OWN per-workspace install is untouched.
+    const stays = await getSlackInstallByTeamId(appStore, "T-STAYS");
+    expect(stays?.id).toBe(sibling.id);
   });
 
   test("Grid: a DM stamped with a sibling team id routes via the enterprise fallback", async () => {

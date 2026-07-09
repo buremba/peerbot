@@ -7,6 +7,7 @@ import {
   getSlackInstallByEnterpriseId,
   getSlackInstallByTeamId,
   resolveSlackPendingByTenant,
+  revokeSlackInstallsForUninstall,
   writeSlackPendingInstall,
 } from "../../lobu/stores/slack-installations.js";
 import { getConfiguredPublicOrigin } from "../../utils/public-origin.js";
@@ -274,6 +275,31 @@ export function parseSlackUserMessageEvent(
   return { channel: event.channel, user: event.user };
 }
 
+/**
+ * True when the Events API body is an `app_uninstalled` / `app_deleted` event —
+ * Slack posts these when a workspace or org removes (or deletes) the app, killing
+ * the bot token, so the matching install must be stopped (see
+ * {@link revokeSlackInstallsForUninstall}).
+ *
+ * Deliberately does NOT include `tokens_revoked`: that fires for INDIVIDUAL token
+ * revocations (e.g. one user de-authorizing their user token) and does not
+ * necessarily mean the bot install is gone — stopping the whole install on it
+ * would be too aggressive. Only the JSON Events API carries these; form
+ * (slash/interactivity) bodies never do.
+ */
+export function isSlackUninstallEvent(body: string, contentType: string): boolean {
+  if (contentType.includes("application/x-www-form-urlencoded")) return false;
+  let payload: { type?: string; event?: { type?: string } };
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return false;
+  }
+  if (payload.type !== "event_callback") return false;
+  const t = payload.event?.type;
+  return t === "app_uninstalled" || t === "app_deleted";
+}
+
 type SlackInstallation = {
   botToken: string;
   botUserId?: string;
@@ -413,6 +439,24 @@ export class SlackConnectionCoordinator {
     // `enterprise_id`. Captured so path 2 can fall back to an enterprise match
     // when the exact team id misses.
     const enterpriseId = this.extractEnterpriseId(body, contentType);
+
+    // App/token removal: Slack invalidated the bot token, so stop the matching
+    // install(s) BEFORE any routing — a still-`active` row would keep routing
+    // events to a dead token and fail every forward. Ack 200 either way (a
+    // non-2xx makes Slack retry the uninstall). Handled here (not per-connection)
+    // because an org-wide uninstall carries only the enterprise id, no team id.
+    if (isSlackUninstallEvent(body, contentType)) {
+      const store = this.deps.getAppInstallationStore();
+      const stopped = await revokeSlackInstallsForUninstall(store, {
+        teamId,
+        enterpriseId,
+      });
+      logger.info(
+        { teamId, enterpriseId, stopped },
+        "Slack app_uninstalled — stopped install(s)",
+      );
+      return new Response("", { status: 200 });
+    }
 
     if (teamId) {
       // 1) A BYO agent-owned Slack connection for this workspace (created via

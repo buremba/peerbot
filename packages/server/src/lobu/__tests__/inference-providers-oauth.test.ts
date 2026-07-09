@@ -133,10 +133,6 @@ describe("Org OAuth: redirect_uri matches between authorize and exchange", () =>
 	beforeEach(async () => {
 		await resetTestDatabase();
 		await seedOrg();
-		// Routes resolve providers from the runtime OAuth registry (loaded from
-		// providers.json at boot). Tests that don't boot CoreServices with a
-		// registry path must seed Claude here or start returns 400.
-		setOAuthProviderRegistry([TEST_CLAUDE_OAUTH]);
 		authStash.user = {
 			id: USER,
 			name: "Test",
@@ -150,6 +146,9 @@ describe("Org OAuth: redirect_uri matches between authorize and exchange", () =>
 		stack = await orgContext.run({ organizationId: ORG }, () =>
 			buildRealClaudeAuthStack(),
 		);
+		// Seed AFTER CoreServices.init — init reloads the OAuth registry from
+		// providers.json (or empties it when the path is missing in CI cwd).
+		setOAuthProviderRegistry([TEST_CLAUDE_OAUTH]);
 		coreServicesStash.services = {
 			getOAuthStateStore: () => stack.oauthStateStore,
 			getAuthProfilesManager: () => stack.authProfilesManager,

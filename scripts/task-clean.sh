@@ -117,7 +117,11 @@ fi
 # still be run safely from inside the task itself.
 # shellcheck source=scripts/lib/herdr-task.sh
 . "$script_dir/lib/herdr-task.sh"
-if herdr_task_close "$worktree_dir" "$name"; then
+if herdr_task_enabled; then
+  if ! herdr_task_close "$worktree_dir" "$name"; then
+    echo "error: failed to close the exact Herdr task owner; worktree and retry metadata were preserved" >&2
+    exit 1
+  fi
   echo "→ closed Herdr task tab/workspace for $worktree_dir"
 fi
 

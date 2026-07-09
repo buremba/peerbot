@@ -7,6 +7,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 . "$repo_root/scripts/lib/review-lock.sh"
 # shellcheck source=scripts/lib/review-process.sh
 . "$repo_root/scripts/lib/review-process.sh"
+# shellcheck source=scripts/lib/herdr-review-lifecycle.sh
+. "$repo_root/scripts/lib/herdr-review-lifecycle.sh"
 
 tmp="$(mktemp -d /tmp/lobu-review-lock-test.XXXXXX)"
 holder_pid=""
@@ -234,5 +236,71 @@ set -e
   fail "review owner did not post exactly one pending status"
 [ "$(grep -c 'state=error' "$status_tmp/status-calls")" -eq 1 ] ||
   fail "review owner did not finalize its pending status as error"
+
+# A signaled review whose exact Herdr tab cannot yet be closed must retain the
+# host lock until its runner termination is confirmed. A second review cannot
+# enter the destructive suite during that ambiguous interval.
+close_tmp="$tmp/close-retains-lock"
+mkdir -p "$close_tmp/lock"
+REVIEW_LOCK_ROOT_FOR_TESTS="$close_tmp/lock" \
+  REVIEW_CLOSE_RETRY_SECONDS_FOR_TESTS=0.01 \
+  LOCK_LIB="$repo_root/scripts/lib/review-lock.sh" \
+  LIFECYCLE_LIB="$repo_root/scripts/lib/herdr-review-lifecycle.sh" \
+  CLOSE_TMP="$close_tmp" bash -c '
+    set -euo pipefail
+    . "$LOCK_LIB"
+    . "$LIFECYCLE_LIB"
+    herdr() {
+      case "${1:-} ${2:-}" in
+        "tab close") : > "$CLOSE_TMP/close-attempted"; return 1 ;;
+        "tab get") printf '\''{"result":{"tab":{"tab_id":"workspace-a:review-tab"}}}\n'\'' ;;
+        "tab list") printf '\''{"result":{"tabs":[{"tab_id":"workspace-a:review-tab"}]}}\n'\'' ;;
+        *) return 1 ;;
+      esac
+    }
+    cleanup() {
+      ec=$?
+      trap - EXIT INT TERM HUP
+      herdr_review_abort_until_safe_to_release_lock
+      release_review_lock
+      exit "$ec"
+    }
+    trap cleanup EXIT
+    trap "exit 143" TERM
+    acquire_review_lock
+    raw="$CLOSE_TMP/review.raw"
+    exit_file="$CLOSE_TMP/review.exit"
+    runner="$CLOSE_TMP/review.runner"
+    printf partial > "$raw"
+    printf runner > "$runner"
+    herdr_review_track_files "$raw" "$exit_file" "$runner"
+    herdr_review_track_locator workspace-a review-label "$CLOSE_TMP" ""
+    herdr_review_track_tab workspace-a:review-tab
+    herdr_review_mark_runner_may_be_live
+    : > "$CLOSE_TMP/holder-ready"
+    while true; do sleep 0.05; done
+  ' &
+holder_pid=$!
+wait_for_file "$close_tmp/holder-ready" "close-failure lock holder"
+kill -TERM "$holder_pid"
+wait_for_file "$close_tmp/close-attempted" "exact Herdr close attempt"
+
+set +e
+REVIEW_LOCK_ROOT_FOR_TESTS="$close_tmp/lock" REVIEW_LOCK_TIMEOUT_SECONDS=0 \
+  bash -c '. "$1"; acquire_review_lock' bash "$repo_root/scripts/lib/review-lock.sh" >/dev/null 2>&1
+blocked_exit=$?
+set -e
+[ "$blocked_exit" -eq 2 ] || fail "second review acquired lock while Herdr runner might still live"
+
+printf '143\n' > "$close_tmp/review.exit"
+set +e
+wait "$holder_pid"
+holder_exit=$?
+set -e
+holder_pid=""
+[ "$holder_exit" -eq 143 ] || fail "signaled close-failure owner exited $holder_exit"
+
+REVIEW_LOCK_ROOT_FOR_TESTS="$close_tmp/lock" REVIEW_LOCK_TIMEOUT_SECONDS=0 \
+  bash -c '. "$1"; acquire_review_lock; release_review_lock' bash "$repo_root/scripts/lib/review-lock.sh"
 
 echo "review lock tests passed"

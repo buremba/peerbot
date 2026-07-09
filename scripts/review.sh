@@ -168,7 +168,9 @@ claude -p "$(cat "$PROMPT_FILE")" \
   --tools Bash,Read,Grep,LS \
   --permission-mode bypassPermissions < /dev/null | tee "$RAW_FILE"
 claude_exit=${PIPESTATUS[0]}
-printf "%s\n" "$claude_exit" > "$EXIT_FILE"
+exit_tmp="${EXIT_FILE}.tmp.$$"
+printf "%s\n" "$claude_exit" > "$exit_tmp"
+mv "$exit_tmp" "$EXIT_FILE"
 exit "$claude_exit"
 RUNNER
 
@@ -207,6 +209,10 @@ RUNNER
       started="Herdr tab create returned no tab/pane id: $tab_json"
     else
       herdr pane rename "$pane_id" "$pane_name" >/dev/null 2>&1 || true
+      # A transport failure can still mean the command reached Herdr. Mark the
+      # runner as possibly live before dispatch so EXIT cleanup retains the
+      # global lock until exact closure or its terminal marker is confirmed.
+      herdr_review_mark_runner_may_be_live
       started="$(herdr pane run "$pane_id" "bash $(printf '%q' "$runner_file")" 2>&1)"
       start_exit=$?
     fi
@@ -352,7 +358,7 @@ review_exit_cleanup() {
   # If the normal Herdr path completed, its tracked state is already empty.
   # Otherwise this closes the tab/process and keeps any non-empty partial raw
   # output for diagnosis before the script exits.
-  herdr_review_abort || true
+  herdr_review_abort_until_safe_to_release_lock
   if [ "$ec" -ne 0 ] && [ "$REVIEW_LOCK_HELD" = "1" ] && \
      [ "$REVIEW_STATUS_STARTED" = "1" ] && [ "$REVIEW_STATUS_FINALIZED" != "1" ]; then
     post_failure_status=1

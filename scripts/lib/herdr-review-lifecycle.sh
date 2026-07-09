@@ -10,6 +10,7 @@ HERDR_REVIEW_RAW_FILE=""
 HERDR_REVIEW_EXIT_FILE=""
 HERDR_REVIEW_RUNNER_FILE=""
 HERDR_REVIEW_PROMPT_FILE=""
+HERDR_REVIEW_RUNNER_MAY_BE_LIVE=0
 
 herdr_review_track_files() {
   HERDR_REVIEW_RAW_FILE="$1"
@@ -23,6 +24,21 @@ herdr_review_track_prompt() {
 
 herdr_review_track_tab() {
   HERDR_REVIEW_TAB_ID="$1"
+}
+
+herdr_review_mark_runner_may_be_live() {
+  HERDR_REVIEW_RUNNER_MAY_BE_LIVE=1
+}
+
+herdr_review_runner_termination_confirmed() {
+  local exit_value
+  [ "$HERDR_REVIEW_RUNNER_MAY_BE_LIVE" = "1" ] || return 0
+  [ -n "$HERDR_REVIEW_EXIT_FILE" ] && [ -f "$HERDR_REVIEW_EXIT_FILE" ] || return 1
+  exit_value="$(sed -n '1p' "$HERDR_REVIEW_EXIT_FILE" 2>/dev/null || true)"
+  case "$exit_value" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  HERDR_REVIEW_RUNNER_MAY_BE_LIVE=0
 }
 
 herdr_review_track_locator() {
@@ -61,13 +77,24 @@ herdr_review_snapshot_tabs() {
   printf '%s' "$tab_json" | python3 -c '
 import json, sys
 try:
-    tabs = json.load(sys.stdin).get("result", {}).get("tabs", [])
-except (json.JSONDecodeError, AttributeError):
+    payload = json.load(sys.stdin)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+result = payload.get("result")
+if not isinstance(result, dict) or "tabs" not in result:
+    raise SystemExit(1)
+tabs = result["tabs"]
+if not isinstance(tabs, list):
     raise SystemExit(1)
 for tab in tabs:
+    if not isinstance(tab, dict):
+        raise SystemExit(1)
     tab_id = tab.get("tab_id")
-    if tab_id:
-        print(tab_id)
+    if not isinstance(tab_id, str) or not tab_id:
+        raise SystemExit(1)
+    print(tab_id)
 '
 }
 
@@ -83,22 +110,45 @@ herdr_review_recover_tab() {
     python3 -c '
 import json, os
 
+def collection(raw, name):
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError
+    result = payload.get("result")
+    if not isinstance(result, dict) or name not in result:
+        raise ValueError
+    values = result[name]
+    if not isinstance(values, list) or any(not isinstance(value, dict) for value in values):
+        raise ValueError
+    return values
+
 try:
-    tabs = json.loads(os.environ["HERDR_REVIEW_TAB_JSON"]).get("result", {}).get("tabs", [])
-    panes = json.loads(os.environ["HERDR_REVIEW_PANE_JSON"]).get("result", {}).get("panes", [])
-except (json.JSONDecodeError, AttributeError):
+    tabs = collection(os.environ["HERDR_REVIEW_TAB_JSON"], "tabs")
+    panes = collection(os.environ["HERDR_REVIEW_PANE_JSON"], "panes")
+except (json.JSONDecodeError, ValueError):
     raise SystemExit(2)
+
+for tab in tabs:
+    if not isinstance(tab.get("tab_id"), str) or not tab["tab_id"]:
+        raise SystemExit(2)
+    if "label" in tab and tab["label"] is not None and not isinstance(tab["label"], str):
+        raise SystemExit(2)
+for pane in panes:
+    if not isinstance(pane.get("tab_id"), str) or not pane["tab_id"]:
+        raise SystemExit(2)
+    for key in ("cwd", "foreground_cwd"):
+        if key in pane and pane[key] is not None and not isinstance(pane[key], str):
+            raise SystemExit(2)
 
 label = os.environ["HERDR_REVIEW_TAB_LABEL"]
 expected_cwd = os.path.realpath(os.environ["HERDR_REVIEW_CWD"])
 before = set(filter(None, os.environ["HERDR_REVIEW_BEFORE_TAB_IDS"].splitlines()))
-new_labelled = [
-    tab.get("tab_id")
-    for tab in tabs
-    if tab.get("tab_id") and tab.get("label") == label and tab.get("tab_id") not in before
-]
-if not new_labelled:
+new_tabs = [tab for tab in tabs if tab["tab_id"] not in before]
+if not new_tabs:
     raise SystemExit(1)
+new_labelled = [tab["tab_id"] for tab in new_tabs if tab.get("label") == label]
+if not new_labelled:
+    raise SystemExit(2)
 
 matches = []
 for tab_id in new_labelled:
@@ -123,13 +173,27 @@ herdr_review_tab_absent() {
   # enough—transport errors look the same—so require a valid list snapshot that
   # excludes the exact owned id before declaring closure.
   if get_json="$(herdr tab get "$tab_id" 2>/dev/null)"; then
-    printf '%s' "$get_json" | python3 -c '
-import json, sys
+    HERDR_REVIEW_TAB_ID_TO_FIND="$tab_id" printf '%s' "$get_json" | \
+      HERDR_REVIEW_TAB_ID_TO_FIND="$tab_id" python3 -c '
+import json, os, sys
 try:
-    tab = json.load(sys.stdin).get("result", {}).get("tab") or {}
-except (json.JSONDecodeError, AttributeError):
+    payload = json.load(sys.stdin)
+except json.JSONDecodeError:
     raise SystemExit(1)
-raise SystemExit(1 if tab.get("tab_id") else 0)
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+result = payload.get("result")
+if not isinstance(result, dict) or "tab" not in result:
+    raise SystemExit(1)
+tab = result["tab"]
+if tab is None:
+    raise SystemExit(0)
+if not isinstance(tab, dict):
+    raise SystemExit(1)
+found = tab.get("tab_id")
+if not isinstance(found, str) or not found or found != os.environ["HERDR_REVIEW_TAB_ID_TO_FIND"]:
+    raise SystemExit(1)
+raise SystemExit(1)
 ' || return 1
   fi
 
@@ -138,9 +202,23 @@ raise SystemExit(1 if tab.get("tab_id") else 0)
     HERDR_REVIEW_TAB_ID_TO_FIND="$tab_id" python3 -c '
 import json, os, sys
 try:
-    tabs = json.load(sys.stdin).get("result", {}).get("tabs", [])
-except (json.JSONDecodeError, AttributeError):
+    payload = json.load(sys.stdin)
+except json.JSONDecodeError:
     raise SystemExit(1)
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+result = payload.get("result")
+if not isinstance(result, dict) or "tabs" not in result:
+    raise SystemExit(1)
+tabs = result["tabs"]
+if not isinstance(tabs, list):
+    raise SystemExit(1)
+for tab in tabs:
+    if not isinstance(tab, dict):
+        raise SystemExit(1)
+    found = tab.get("tab_id")
+    if not isinstance(found, str) or not found:
+        raise SystemExit(1)
 target = os.environ["HERDR_REVIEW_TAB_ID_TO_FIND"]
 raise SystemExit(1 if any(tab.get("tab_id") == target for tab in tabs) else 0)
 '
@@ -190,6 +268,7 @@ herdr_review_forget_files() {
   HERDR_REVIEW_RAW_FILE=""
   HERDR_REVIEW_EXIT_FILE=""
   HERDR_REVIEW_RUNNER_FILE=""
+  HERDR_REVIEW_RUNNER_MAY_BE_LIVE=0
 }
 
 herdr_review_release_prompt() {
@@ -220,4 +299,26 @@ herdr_review_abort() {
   fi
   herdr_review_release_prompt
   herdr_review_forget_files
+}
+
+# The Herdr runner is external to this shell and cannot inherit the host flock.
+# If exact tab closure is ambiguous, keep this process (and therefore FD 9)
+# alive until either a retry confirms the tab is absent or the runner writes its
+# terminal exit marker. Only then can another destructive review safely start.
+herdr_review_abort_until_safe_to_release_lock() {
+  local announced=0 retry_seconds="${REVIEW_CLOSE_RETRY_SECONDS_FOR_TESTS:-0.25}"
+  while true; do
+    if herdr_review_abort; then
+      return 0
+    fi
+    if herdr_review_runner_termination_confirmed; then
+      echo ">> Herdr review runner terminated; retained tab diagnostics for manual cleanup" >&2
+      return 0
+    fi
+    if [ "$announced" = "0" ]; then
+      echo ">> retaining full review lock until the Herdr runner is confirmed stopped" >&2
+      announced=1
+    fi
+    sleep "$retry_seconds"
+  done
 }

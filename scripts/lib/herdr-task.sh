@@ -186,7 +186,7 @@ print(d.get("result",{}).get("workspace",{}).get("workspace_id",""))' 2>/dev/nul
 # caller before git cleanup completes.
 herdr_task_close() {
   local worktree_path="$1" label="${2:-}"
-  local json ws matched_by tab candidate_ws metadata_ws metadata_tab pane_json pane_tabs matching_tabs tab_count
+  local json ws matched_by tab candidate_ws metadata_ws metadata_tab pane_json pane_tabs matching_tabs tab_count locator locator_exit
   herdr_task_enabled || return 1
 
   # Prefer the exact identity recorded at creation. This works even when the
@@ -210,6 +210,7 @@ herdr_task_close() {
   # rather than only the caller's, and match panes by checkout cwd. Never close
   # the tab that is executing task-clean.
   json="$(herdr workspace list 2>/dev/null)" || return 1
+  herdr_task_snapshot_valid "$json" workspaces || return 1
   matching_tabs=""
   while IFS= read -r candidate_ws; do
     [[ -n "$candidate_ws" ]] || continue
@@ -219,12 +220,18 @@ path=os.environ["WORKTREE_PATH"]
 current=os.environ.get("CURRENT_TAB","")
 prefix=path.rstrip("/")+"/"
 matches=set()
+current_match=False
 for pane in json.load(sys.stdin).get("result",{}).get("panes",[]):
   tid=pane.get("tab_id") or ""
   cwd=pane.get("cwd") or ""
   foreground=pane.get("foreground_cwd") or ""
-  if tid and tid != current and (cwd==path or cwd.startswith(prefix) or foreground==path or foreground.startswith(prefix)):
-    matches.add(tid)
+  if tid and (cwd==path or cwd.startswith(prefix) or foreground==path or foreground.startswith(prefix)):
+    if tid == current:
+      current_match=True
+    else:
+      matches.add(tid)
+if current_match:
+  print("__CURRENT_TASK_TAB__")
 for tid in sorted(matches):
   print(tid)
 ' 2>/dev/null)" || return 1
@@ -237,6 +244,9 @@ for workspace in json.load(sys.stdin).get("result",{}).get("workspaces",[]):
   if workspace_id: print(workspace_id)
 ' 2>/dev/null)
   if [[ -n "$matching_tabs" ]]; then
+    if printf '%s\n' "$matching_tabs" | grep -Fxq '__CURRENT_TASK_TAB__'; then
+      return 1
+    fi
     tab="$(printf '%s\n' "$matching_tabs" | sort -u)"
     tab_count="$(printf '%s\n' "$tab" | awk 'NF { count++ } END { print count+0 }')"
     [[ "$tab_count" = "1" ]] || return 1
@@ -245,29 +255,50 @@ for workspace in json.load(sys.stdin).get("result",{}).get("workspaces",[]):
   fi
 
   # Emit "<match_kind> <workspace_id>": "path" when bound to the checkout,
-  # else "label" when only the label matches. Path wins over label. The current
-  # workspace is skipped in BOTH branches so we never close our own session.
-  read -r matched_by ws <<<"$(printf '%s' "$json" | WORKTREE_PATH="$worktree_path" LABEL="$label" CURRENT_WS="${HERDR_WORKSPACE_ID:-}" python3 -c 'import os,sys,json
+  # else "label" when only the label matches. Path wins over label. A match on
+  # the current workspace is an owned-but-uncloseable failure, never "absent".
+  if locator="$(printf '%s' "$json" | WORKTREE_PATH="$worktree_path" LABEL="$label" CURRENT_WS="${HERDR_WORKSPACE_ID:-}" python3 -c 'import os,sys,json
 path=os.environ["WORKTREE_PATH"]
 label=os.environ.get("LABEL","")
 current=os.environ.get("CURRENT_WS","")
 d=json.load(sys.stdin)
 path_matches=[]
 label_matches=[]
+current_match=False
 for w in d.get("result",{}).get("workspaces",[]):
   wid=w.get("workspace_id") or ""
-  if wid and wid==current:
-    continue  # never close the pane we are running in
   wt=w.get("worktree") or {}
   if wt.get("checkout_path")==path:
-    path_matches.append(wid)
+    if wid == current:
+      current_match=True
+    else:
+      path_matches.append(wid)
   elif label and w.get("label")==label:
-    label_matches.append(wid)
+    if wid == current:
+      current_match=True
+    else:
+      label_matches.append(wid)
+if current_match:
+  raise SystemExit(2)
 if len(path_matches)==1:
   print("path", path_matches[0])
 elif not path_matches and len(label_matches)==1:
   print("label", label_matches[0])
-' 2>/dev/null)"
+elif path_matches or label_matches:
+  raise SystemExit(2)
+else:
+  raise SystemExit(3)
+' 2>/dev/null)"; then
+    locator_exit=0
+  else
+    locator_exit=$?
+  fi
+  if [[ "$locator_exit" = "3" ]]; then
+    # A valid all-workspace snapshot and every valid pane list found no owner.
+    return 0
+  fi
+  [[ "$locator_exit" = "0" ]] || return 1
+  read -r matched_by ws <<<"$locator"
   [[ -n "$ws" ]] || return 1
   if [[ "$matched_by" == "path" ]]; then
     herdr worktree remove --workspace "$ws" >/dev/null 2>&1 || \

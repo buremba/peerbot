@@ -52,7 +52,9 @@ herdr() {
       fi
       ;;
     "tab list")
-      if [ "$mode" = "review-locator" ]; then
+      if [ "$mode" = "invalid-review-shape" ]; then
+        printf '{}\n'
+      elif [ "$mode" = "review-locator" ]; then
         if grep -q '^tab close workspace-a:located-review$' "$calls"; then
           printf '{"result":{"tabs":[{"tab_id":"workspace-a:stale-review","label":"locator-review"}]}}\n'
         else
@@ -91,7 +93,9 @@ herdr() {
       fi
       ;;
     "pane list")
-      if [ "$mode" = "review-locator" ]; then
+      if [ "$mode" = "invalid-review-shape" ]; then
+        printf '{}\n'
+      elif [ "$mode" = "review-locator" ]; then
         printf '{"result":{"panes":[{"tab_id":"workspace-a:stale-review","cwd":"%s","foreground_cwd":"%s"},{"tab_id":"workspace-a:located-review","cwd":"%s","foreground_cwd":"%s"}]}}\n' "$HERDR_REVIEW_CWD" "$HERDR_REVIEW_CWD" "$HERDR_REVIEW_CWD" "$HERDR_REVIEW_CWD"
       elif [ "$mode" = "legacy" ] && [ "${4:-}" = "legacy" ]; then
         printf '{"result":{"panes":[{"tab_id":"legacy:task-tab","cwd":"%s/subdir","foreground_cwd":"%s/subdir"}]}}\n' "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE"
@@ -286,6 +290,43 @@ test_persisted_tab_close_failure_fails_closed_and_preserves_metadata() {
   fi
 }
 
+test_task_clean_preserves_worktree_when_exact_close_fails() {
+  local fixture="$tmp/task-clean-fixture" worktree="$tmp/task-clean-fixture/.claude/worktrees/close-failure"
+  mkdir -p "$fixture/scripts/lib" "$fixture/.claude/worktrees" "$fixture/bin"
+  cp "$repo_root/scripts/task-clean.sh" "$fixture/scripts/task-clean.sh"
+  cp "$repo_root/scripts/lib/herdr-task.sh" "$fixture/scripts/lib/herdr-task.sh"
+  cp "$repo_root/scripts/lib/db-name.sh" "$fixture/scripts/lib/db-name.sh"
+  printf '.claude/worktrees/\n' > "$fixture/.gitignore"
+  git -C "$fixture" init -q -b main
+  git -C "$fixture" config user.name test
+  git -C "$fixture" config user.email test@example.com
+  git -C "$fixture" add .gitignore scripts
+  git -C "$fixture" commit -qm init
+  git -C "$fixture" worktree add -q -b feat/close-failure "$worktree" main
+  worktree="$(cd "$worktree" && pwd -P)"
+  herdr_task_metadata_write "$worktree" "workspace-a" "workspace-a:persisted-tab"
+
+  cat > "$fixture/bin/herdr" <<'HERDR'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "tab close" ]; then
+  exit 1
+fi
+exit 1
+HERDR
+  chmod +x "$fixture/bin/herdr"
+
+  if PATH="$fixture/bin:$PATH" HERDR=1 \
+    HERDR_WORKSPACE_ID="workspace-b" HERDR_TAB_ID="workspace-b:caller" \
+    bash "$fixture/scripts/task-clean.sh" close-failure --force >/dev/null 2>&1; then
+    fail "task-clean succeeded after the exact persisted Herdr close failed"
+  fi
+  [ -d "$worktree" ] || fail "task-clean deleted the worktree after exact close failure"
+  git -C "$fixture" worktree list --porcelain | grep -Fqx "worktree $worktree" ||
+    fail "task-clean unregistered the worktree after exact close failure"
+  [ "$(herdr_task_metadata_read "$worktree")" = "workspace-a workspace-a:persisted-tab" ] ||
+    fail "task-clean discarded retryable exact Herdr ownership metadata"
+}
+
 test_ambiguous_legacy_tabs_fail_closed() {
   local worktree="$tmp/ambiguous-legacy-worktree"
   mkdir -p "$worktree"
@@ -317,6 +358,22 @@ test_ambiguous_legacy_workspaces_fail_closed() {
   fi
   if grep -Eq '^(worktree remove|workspace close)' "$calls"; then
     fail "ambiguous legacy cleanup closed an unowned task workspace"
+  fi
+}
+
+test_absent_task_owner_is_a_confirmed_noop() {
+  local worktree="$tmp/no-owner-worktree"
+  mkdir -p "$worktree"
+  git -C "$worktree" init -q
+  unset HERDR_WORKSPACE_ID HERDR_TAB_ID
+  export HERDR_TEST_WORKTREE="$worktree"
+  mode="default"
+
+  : > "$calls"
+  herdr_task_close "$worktree" "missing-label" ||
+    fail "valid Herdr snapshots with no task owner did not report a clean no-op"
+  if grep -Eq '^(tab close|workspace close|worktree remove)' "$calls"; then
+    fail "no-owner cleanup mutated an unrelated Herdr resource"
   fi
 }
 
@@ -418,6 +475,33 @@ test_review_close_failure_preserves_state_and_transport() {
     fail "tab ownership was forgotten after unconfirmed close"
 }
 
+test_review_invalid_success_shapes_are_never_proof() {
+  local raw="$tmp/invalid-shape.raw" exit_file="$tmp/invalid-shape.exit" runner="$tmp/invalid-shape.runner" rc
+  printf 'partial review output\n' > "$raw"
+  printf 'runner\n' > "$runner"
+  : > "$calls"
+  mode="invalid-review-shape"
+
+  if herdr_review_snapshot_tabs "workspace-a" >/dev/null 2>&1; then
+    fail "structurally invalid tab snapshot was accepted"
+  fi
+
+  herdr_review_track_files "$raw" "$exit_file" "$runner"
+  herdr_review_track_locator "workspace-a" "review-label" "$tmp" ""
+  set +e
+  herdr_review_recover_tab >/dev/null 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "invalid recovery evidence exited $rc instead of ambiguous"
+
+  herdr_review_track_tab "workspace-a:review-tab"
+  if herdr_review_tab_absent "workspace-a:review-tab"; then
+    fail "structurally invalid tab list falsely proved exact tab absence"
+  fi
+  [ "$HERDR_REVIEW_TAB_ID" = "workspace-a:review-tab" ] ||
+    fail "invalid absence evidence discarded exact review ownership"
+}
+
 test_review_timeout_closes_tab_and_removes_transport_and_prompt() {
   local raw="$tmp/timeout.raw" exit_file="$tmp/timeout.exit" runner="$tmp/timeout.runner" prompt="$tmp/timeout.prompt"
   printf 'partial timeout output\n' > "$raw"
@@ -486,14 +570,17 @@ test_task_workspace_ambiguous_recovery_fails_closed
 test_ordinary_terminal_owns_and_closes_dedicated_workspace
 test_task_tab_cleanup_uses_persisted_identity_across_workspaces
 test_persisted_tab_close_failure_fails_closed_and_preserves_metadata
+test_task_clean_preserves_worktree_when_exact_close_fails
 test_legacy_lookup_closes_cross_workspace_task_tab
 test_ambiguous_legacy_tabs_fail_closed
 test_ambiguous_legacy_workspaces_fail_closed
+test_absent_task_owner_is_a_confirmed_noop
 test_current_task_tab_is_never_closed
 test_review_parses_current_herdr_tab_response
 test_review_cleanup_closes_tab_and_removes_temp_files
 test_review_abort_closes_tab_but_preserves_partial_output
 test_review_close_failure_preserves_state_and_transport
+test_review_invalid_success_shapes_are_never_proof
 test_review_timeout_closes_tab_and_removes_transport_and_prompt
 test_review_signals_remove_prompt
 

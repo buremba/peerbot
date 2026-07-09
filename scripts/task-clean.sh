@@ -112,18 +112,21 @@ if [[ $force -eq 0 ]]; then
   fi
 fi
 
+# Close the Herdr owner while Git's per-worktree metadata still exists. The
+# helper refuses to close the caller's current tab/workspace, so task-clean can
+# still be run safely from inside the task itself.
+# shellcheck source=scripts/lib/herdr-task.sh
+. "$script_dir/lib/herdr-task.sh"
+if herdr_task_close "$worktree_dir" "$name"; then
+  echo "→ closed Herdr task tab/workspace for $worktree_dir"
+fi
+
 echo "→ removing worktree $worktree_dir"
 if git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qF "worktree $worktree_dir"; then
   git -C "$repo" worktree remove "$worktree_dir" --force
 else
   echo "→ worktree path already gone from git (e.g. closed via Herdr)"
   rm -rf "$worktree_dir" 2>/dev/null || true
-fi
-
-# shellcheck source=scripts/lib/herdr-task.sh
-. "$script_dir/lib/herdr-task.sh"
-if herdr_task_close "$worktree_dir" "$name"; then
-  echo "→ closed Herdr workspace for $worktree_dir"
 fi
 
 # Returns 0 if branch <b> in <gitdir> carries no local-only commits (its tip is

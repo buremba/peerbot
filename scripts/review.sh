@@ -32,6 +32,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/review-database-url.sh"
 # shellcheck source=scripts/lib/review-process.sh
 . "$SCRIPT_DIR/lib/review-process.sh"
+# shellcheck source=scripts/lib/herdr-review-lifecycle.sh
+. "$SCRIPT_DIR/lib/herdr-review-lifecycle.sh"
 
 # --- preflight --------------------------------------------------------------
 
@@ -143,10 +145,9 @@ run_claude_review_herdr() {
   exit_file="$(mktemp /tmp/lobu-review-claude-exit.XXXXXX)"
   runner_file="$(mktemp /tmp/lobu-review-claude-runner.XXXXXX)"
   rm -f "$exit_file"
+  herdr_review_track_files "$raw_file" "$exit_file" "$runner_file"
   pane_name="claude-review-${HEAD_SHA:0:8}-$$"
-  REVIEW_HERDR_PANE_NAME="$pane_name"
-  REVIEW_HERDR_RAW_FILE="$raw_file"
-  REVIEW_HERDR_EXIT_FILE="$exit_file"
+  herdr_review_track_locator "$HERDR_WORKSPACE_ID" "$pane_name"
 
   cat > "$runner_file" <<'RUNNER'
 set +e
@@ -193,6 +194,7 @@ RUNNER
     read -r tab_id pane_id <<<"$(printf '%s' "$tab_json" | python3 -c 'import json,sys
 d=json.load(sys.stdin).get("result", {})
 print((d.get("tab") or {}).get("tab_id", ""), (d.get("root_pane") or {}).get("pane_id", ""))' 2>/dev/null)"
+    [ -n "$tab_id" ] && herdr_review_track_tab "$tab_id"
     if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
       start_exit=1
       started="Herdr tab create returned no tab/pane id: $tab_json"
@@ -206,15 +208,12 @@ print((d.get("tab") or {}).get("tab_id", ""), (d.get("root_pane") or {}).get("pa
   fi
   set -e
   if [ $start_exit -ne 0 ]; then
-    [ -n "${tab_id:-}" ] && herdr tab close "$tab_id" >/dev/null 2>&1 || true
-    rm -f "$runner_file"
+    herdr_review_cleanup
     echo ">> Herdr Claude tab failed to start; falling back to inline Claude" >&2
     printf '%s\n' "$started" >&2
-    close_review_herdr_pane
     run_claude_review_inline "$prompt_file"
     return
   fi
-  register_review_herdr_pane "$pane_name" "$started"
 
   echo ">> Claude review is visible in Herdr tab '$pane_name'"
   local waited=0
@@ -222,9 +221,12 @@ print((d.get("tab") or {}).get("tab_id", ""), (d.get("root_pane") or {}).get("pa
     sleep 2
     waited=$((waited + 2))
     if [ "$waited" -ge "${CLAUDE_REVIEW_TIMEOUT_SECONDS:-1200}" ]; then
+      # Stop the tab first so tee flushes its final partial output, then copy it
+      # into RAW before deleting the transport files.
+      herdr_review_close_tab
       RAW="$(cat "$raw_file" 2>/dev/null || true)"
       CLAUDE_EXIT=124
-      close_review_herdr_pane
+      herdr_review_cleanup
       echo ">> Claude review tab timed out after ${waited}s" >&2
       return
     fi
@@ -232,11 +234,7 @@ print((d.get("tab") or {}).get("tab_id", ""), (d.get("root_pane") or {}).get("pa
 
   RAW="$(cat "$raw_file" 2>/dev/null || true)"
   CLAUDE_EXIT="$(cat "$exit_file" 2>/dev/null || echo 1)"
-  rm -f "$raw_file" "$exit_file" "$runner_file"
-  REVIEW_HERDR_PANE_ID=""
-  REVIEW_HERDR_PANE_NAME=""
-  REVIEW_HERDR_RAW_FILE=""
-  REVIEW_HERDR_EXIT_FILE=""
+  herdr_review_cleanup
 }
 
 run_claude_review() {
@@ -331,18 +329,24 @@ process.exit(1);
   printf '%s\n' "$raw" | sed -e 's/^```json//' -e 's/^```//' -e 's/```$//'
 }
 
-handle_review_signal() {
-  local exit_code="$1"
-  trap - INT TERM HUP
+review_exit_cleanup() {
+  local ec=$?
+  trap - EXIT INT TERM HUP
   stop_active_review_child
-  close_review_herdr_pane
-  exit "$exit_code"
+  # If the normal Herdr path completed, its tracked state is already empty.
+  # Otherwise this closes the tab/process and keeps any non-empty partial raw
+  # output for diagnosis before the script exits.
+  herdr_review_abort
+  release_review_lock
+  if [ "$ec" -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then
+    post_review_status error "Claude review failed before verdict (exit $ec)"
+  fi
+  exit "$ec"
 }
-
-trap 'handle_review_signal 130' INT
-trap 'handle_review_signal 143' TERM
-trap 'handle_review_signal 129' HUP
-trap 'ec=$?; stop_active_review_child; close_review_herdr_pane; release_review_lock; if [ $ec -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then post_review_status error "Claude review failed before verdict (exit $ec)"; fi' EXIT
+trap review_exit_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 acquire_review_lock
 
@@ -418,6 +422,9 @@ run_review_unit_suites() {
   "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/review-lock.test.sh";               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/review-database-url.test.sh";        ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/review-process.test.sh";             ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  # Shell lifecycle regressions: Herdr task/review tabs must be owned and
+  # cleaned without invoking the real Herdr daemon.
+  "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/herdr-lifecycle.test.sh";            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # Guard: every packages/server *.test.ts must run in >=1 runner (vitest or a
   # bun job). Fails loudly if a file drifts into running nowhere — the
   # silent-skip class this change fixes.
@@ -481,10 +488,11 @@ PROMPT_FILE="$(pwd)/prompts/review-prompt.md"
 
 echo ">> invoking Claude CLI (model: $CLAUDE_REVIEW_MODEL, effort: $CLAUDE_REVIEW_EFFORT)"
 CLAUDE_PROMPT_FILE="$(mktemp /tmp/lobu-review-prompt.XXXXXX)"
+herdr_review_track_prompt "$CLAUDE_PROMPT_FILE"
 cat "$PROMPT_FILE" > "$CLAUDE_PROMPT_FILE"
 printf '\n\nReview the diff. Emit only the JSON verdict.\n' >> "$CLAUDE_PROMPT_FILE"
 run_claude_review "$CLAUDE_PROMPT_FILE"
-rm -f "$CLAUDE_PROMPT_FILE"
+herdr_review_release_prompt
 
 VERDICT="$RAW"
 VERDICT="$(extract_json_verdict "$VERDICT")"

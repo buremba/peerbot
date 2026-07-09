@@ -4,6 +4,7 @@ import {
 	classifyMutationPrincipal,
 	evaluateEntityFieldUpdates,
 	evaluateEntityMutation,
+	resolveWritePolicyDecision,
 } from "../../authz/entity-policy";
 
 type PolicyRowSeed = {
@@ -281,6 +282,67 @@ describe("evaluateEntityMutation", () => {
 				sql,
 			}),
 		).toBe("allow");
+	});
+});
+
+describe("resolveWritePolicyDecision (agent_config)", () => {
+	test("a human member applies immediately regardless of policy", async () => {
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: ORG,
+				resourceClass: "agent_config",
+				principalKind: "user",
+				action: "update",
+				sql: stubSql([{ resource_class: "agent_config", update_mode: "deny" }]),
+			}),
+		).toBe("allow");
+	});
+
+	test("default: agent create/update queue approval, delete is denied", async () => {
+		const sql = stubSql([]);
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: ORG,
+				resourceClass: "agent_config",
+				principalKind: "agent",
+				action: "create",
+				sql,
+			}),
+		).toBe("require_approval");
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: ORG,
+				resourceClass: "agent_config",
+				principalKind: "agent",
+				action: "delete",
+				sql,
+			}),
+		).toBe("deny");
+	});
+
+	test("an org policy row can loosen the agent_config default to auto", async () => {
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: ORG,
+				resourceClass: "agent_config",
+				principalKind: "agent",
+				action: "update",
+				sql: stubSql([{ resource_class: "agent_config", update_mode: "auto" }]),
+			}),
+		).toBe("allow");
+	});
+
+	test("an entity-class row does not leak into an agent_config decision", async () => {
+		// Only an entity row exists; agent_config falls back to its own default.
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: ORG,
+				resourceClass: "agent_config",
+				principalKind: "agent",
+				action: "update",
+				sql: stubSql([{ resource_class: "entity", update_mode: "auto" }]),
+			}),
+		).toBe("require_approval");
 	});
 });
 

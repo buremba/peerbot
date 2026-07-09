@@ -36,11 +36,12 @@ export type EntityMutationAction = "create" | "update" | "delete";
 export type EntityMutationMode = "auto" | "approval" | "deny" | "disabled";
 
 /**
- * Which class of write a policy row governs. Only `entity` exists in v1; the
- * column is populated so the connector-action class can land in the same table
- * and resolver without a schema change (see docs/plans/write-gate-generalization.md).
+ * Which class of write a policy row governs. `entity` is the original class;
+ * `agent_config` gates manage_agents create/update/delete; `connector_action`
+ * gates connector operation execution. All three share this table + resolver so a
+ * new class is a value, not a schema change (see docs/plans/write-gate-generalization.md).
  */
-export type WriteResourceClass = "entity" | "connector_action";
+export type WriteResourceClass = "entity" | "agent_config" | "connector_action";
 
 /** A non-human principal a policy row may target. NULL principal = any of this kind. */
 export type PolicyPrincipalKind = "agent" | "watcher";
@@ -127,7 +128,9 @@ function normalizeMode(
 }
 
 function normalizeResourceClass(value: unknown): WriteResourceClass {
-	return value === "connector_action" ? "connector_action" : "entity";
+	if (value === "agent_config") return "agent_config";
+	if (value === "connector_action") return "connector_action";
+	return "entity";
 }
 
 function normalizePrincipalKind(value: unknown): PolicyPrincipalKind | null {
@@ -365,6 +368,56 @@ export async function evaluateEntityMutation(args: {
 		principalId: args.principalId ?? null,
 	});
 	return modeToDecision(modeForAction(policy, args.action));
+}
+
+/**
+ * The mode a class falls back to when no policy row matches — the per-action
+ * defaults baked into {@link defaultEntityApprovalPolicy} for entity, and a
+ * conservative "agent-driven config change needs approval, delete is denied"
+ * default for agent_config. A class with no explicit default resolves to `auto`.
+ */
+function defaultModeFor(
+	resourceClass: WriteResourceClass,
+	action: EntityMutationAction,
+): EntityMutationMode {
+	if (resourceClass === "agent_config") {
+		// An agent editing agent definitions is high-trust: create/update queue an
+		// approval, delete is denied outright (a human must delete an agent).
+		if (action === "delete") return "deny";
+		return "approval";
+	}
+	return modeForAction(defaultEntityApprovalPolicy(""), action);
+}
+
+/**
+ * Class-generic write decision for a non-scoped resource (agent_config today;
+ * connector_action later). Humans with any org membership apply immediately —
+ * the write-gate governs non-human principals; role restrictions for humans live
+ * in the tool-access tier. For an agent/watcher, the matched policy row wins;
+ * with no row, the class default applies. Entity writes keep their own scoped
+ * paths ({@link evaluateEntityMutation} / {@link evaluateEntityFieldUpdates}).
+ */
+export async function resolveWritePolicyDecision(args: {
+	organizationId: string;
+	resourceClass: Exclude<WriteResourceClass, "entity">;
+	principalKind: EntityPolicyPrincipalKind;
+	principalId?: string | null;
+	action: EntityMutationAction;
+	sql?: DbClient;
+}): Promise<EntityPolicyDecision> {
+	if (args.principalKind === "user") return "allow";
+	const candidates = await loadCandidatePolicies({
+		organizationId: args.organizationId,
+		resourceClass: args.resourceClass,
+		principalKind: args.principalKind,
+		principalId: args.principalId ?? null,
+		sql: args.sql,
+	});
+	const match = candidates[0];
+	const mode = match
+		? modeForAction(rowToPolicy(match), args.action)
+		: defaultModeFor(args.resourceClass, args.action);
+	return modeToDecision(mode);
 }
 
 /**

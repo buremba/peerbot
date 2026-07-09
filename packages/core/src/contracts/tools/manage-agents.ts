@@ -68,7 +68,13 @@ export type ManageAgentsResult =
   | { action: "list"; agents: AgentRecord[] }
   | { action: "get"; agent: AgentRecord }
   | { action: "create"; agent_id: string; created: boolean }
-  | { action: "update"; agent_id: string; updated_fields: string[] }
+  | {
+      action: "update";
+      agent_id: string;
+      updated_fields: string[];
+      /** Fields a stale approval skipped because another writer changed them first. */
+      skipped_fields?: string[];
+    }
   | { action: "delete"; agent_id: string; deleted: boolean }
   | { action: "set_system_agent"; system_agent_id: string }
   | {
@@ -90,4 +96,15 @@ export interface ManageAgentsProposal {
   name?: string;
   description?: string;
   identity_md?: string;
+  /**
+   * Pre-image of the fields this update proposes to change, captured when the
+   * update was queued. On approve, applyUpdate only overwrites a field whose
+   * live value still equals its pre-image — so a stale approval never clobbers a
+   * newer human edit to that field. Present only for queued `update` proposals.
+   */
+  base?: {
+    name?: string | null;
+    description?: string | null;
+    identity_md?: string | null;
+  };
 }

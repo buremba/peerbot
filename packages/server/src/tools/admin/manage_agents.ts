@@ -24,6 +24,11 @@ import {
   type ManageAgentsProposal,
   type ManageAgentsResult,
 } from '@lobu/core/contracts/tools/manage-agents';
+import {
+  classifyMutationPrincipal,
+  mutationPrincipalId,
+  resolveWritePolicyDecision,
+} from '../../authz/entity-policy';
 import { createDbClientFromEnv, getDb } from '../../db/client';
 import type { Env } from '../../index';
 import { isValidAgentId } from '../../lobu/stores/postgres-stores';
@@ -164,36 +169,70 @@ export async function applyCreate(
 export async function applyUpdate(
   args: ManageAgentsArgs,
   ctx: ToolContext,
-  env: Env
+  env: Env,
+  /**
+   * Pre-image captured when a queued update was proposed. When present, a field
+   * is written only if its live value still equals its pre-image — a stale
+   * approval skips (and reports) fields another writer has since changed. Absent
+   * for immediate (human) applies, which overwrite unconditionally.
+   */
+  base?: ManageAgentsProposal['base']
 ): Promise<ManageAgentsResult> {
   if (!args.agent_id) {
     throw new ToolUserError('agent_id is required for update action');
   }
   const sql = createDbClientFromEnv(env);
-  const updatedFields: string[] = [];
-  if (args.name !== undefined) updatedFields.push('name');
-  if (args.description !== undefined) updatedFields.push('description');
-  if (args.identity_md !== undefined) updatedFields.push('identity_md');
-  if (updatedFields.length === 0) {
+  const requested: string[] = [];
+  if (args.name !== undefined) requested.push('name');
+  if (args.description !== undefined) requested.push('description');
+  if (args.identity_md !== undefined) requested.push('identity_md');
+  if (requested.length === 0) {
     throw new ToolUserError(
       'update requires at least one of: name, description, identity_md'
     );
   }
-  // Per-field CASE WHEN ... THEN ... ELSE col END so only provided fields change
-  // (mirrors manage_watchers crud's partial-update idiom).
-  const rows = await sql`
+  // Each field is written iff (no pre-image given) OR (its live value still
+  // equals the pre-image). `${base ? … : true}` collapses to a constant per
+  // field so the guard is a no-op for immediate applies. IS NOT DISTINCT FROM
+  // matches NULLs. updated_at only bumps when at least one field actually changes.
+  const nameGuard = base ? base.name !== undefined : false;
+  const descGuard = base ? base.description !== undefined : false;
+  const identityGuard = base ? base.identity_md !== undefined : false;
+  const rows = await sql<{ id: string; name: string | null; description: string | null; identity_md: string | null }>`
     UPDATE agents SET
-      updated_at = NOW(),
-      name = CASE WHEN ${args.name !== undefined} THEN ${args.name ?? null} ELSE name END,
-      description = CASE WHEN ${args.description !== undefined} THEN ${args.description ?? null} ELSE description END,
-      identity_md = CASE WHEN ${args.identity_md !== undefined} THEN ${args.identity_md ?? ''} ELSE identity_md END
+      name = CASE
+        WHEN ${args.name !== undefined}
+          AND (${!nameGuard} OR name IS NOT DISTINCT FROM ${base?.name ?? null})
+        THEN ${args.name ?? null} ELSE name END,
+      description = CASE
+        WHEN ${args.description !== undefined}
+          AND (${!descGuard} OR description IS NOT DISTINCT FROM ${base?.description ?? null})
+        THEN ${args.description ?? null} ELSE description END,
+      identity_md = CASE
+        WHEN ${args.identity_md !== undefined}
+          AND (${!identityGuard} OR identity_md IS NOT DISTINCT FROM ${base?.identity_md ?? null})
+        THEN ${args.identity_md ?? ''} ELSE identity_md END,
+      updated_at = NOW()
     WHERE organization_id = ${ctx.organizationId} AND id = ${args.agent_id}
-    RETURNING id
+    RETURNING id, name, description, identity_md
   `;
   if (rows.length === 0) {
     throw new ToolUserError(`Agent "${args.agent_id}" not found`, 404);
   }
-  return { action: 'update', agent_id: args.agent_id, updated_fields: updatedFields };
+  // Report which requested fields actually landed (a stale field was skipped).
+  const after = rows[0];
+  const appliedFields = requested.filter((field) => {
+    if (field === 'name') return after.name === (args.name ?? null);
+    if (field === 'description') return after.description === (args.description ?? null);
+    return after.identity_md === (args.identity_md ?? '');
+  });
+  const skippedFields = requested.filter((f) => !appliedFields.includes(f));
+  return {
+    action: 'update',
+    agent_id: args.agent_id,
+    updated_fields: appliedFields,
+    ...(skippedFields.length > 0 ? { skipped_fields: skippedFields } : {}),
+  };
 }
 
 export async function applyDelete(
@@ -345,6 +384,18 @@ async function queueWriteForApproval(
     throw new ToolUserError(`Agent "${proposal.agent_id}" not found`, 404);
   }
 
+  // Capture the pre-image of each field this update touches, so the eventual
+  // approve applies only fields that haven't since been changed by someone else.
+  if (proposal.action === 'update' && current) {
+    proposal.base = {};
+    if (proposal.name !== undefined)
+      proposal.base.name = (current.name as string | null) ?? null;
+    if (proposal.description !== undefined)
+      proposal.base.description = (current.description as string | null) ?? null;
+    if (proposal.identity_md !== undefined)
+      proposal.base.identity_md = (current.identity_md as string | null) ?? null;
+  }
+
   // Reject a delete of the org's system agent up-front (same guard as
   // applyDelete) so we never surface an un-approvable card.
   if (proposal.action === 'delete') {
@@ -456,7 +507,7 @@ export async function applyManageAgentsProposal(
     case 'create':
       return applyCreate(args, applyCtx, env);
     case 'update':
-      return applyUpdate(args, applyCtx, env);
+      return applyUpdate(args, applyCtx, env, proposal.base);
     case 'delete':
       return applyDelete(args, applyCtx, env);
   }
@@ -489,19 +540,65 @@ async function manageAgentsImpl(
   return runManageAgents(args, env, ctx);
 }
 
-// Write actions (create/update/delete) DON'T run their apply* handler here —
-// they queue a pending run + approval card via queueWriteForApproval, and are
-// applied later by manage_operations' approve handler (which calls
-// applyManageAgentsProposal → the apply* functions). list/get/set_system_agent
-// stay immediate.
+/**
+ * Route one agent write through the `agent_config` write-gate class. The policy
+ * decides per (principal, action): a human member applies immediately, an
+ * agent/watcher-driven write follows the org's policy (default: create/update
+ * queue an approval, delete is denied). `require_approval` → queue a pending run
+ * + card; `allow` → run the apply* handler now; `deny` → refuse.
+ */
+async function dispatchAgentWrite(
+  action: 'create' | 'update' | 'delete',
+  args: ManageAgentsArgs,
+  ctx: ToolContext,
+  env: Env
+): Promise<ManageAgentsResult> {
+  const principalKind = classifyMutationPrincipal({
+    userId: ctx.userId,
+    agentId: ctx.agentId,
+  });
+  const decision = await resolveWritePolicyDecision({
+    organizationId: ctx.organizationId,
+    resourceClass: 'agent_config',
+    principalKind,
+    principalId: mutationPrincipalId({ agentId: ctx.agentId }),
+    action,
+  });
+  if (decision === 'deny') {
+    throw new ToolUserError(
+      `Policy denies ${action} of agents for this principal.`,
+      403
+    );
+  }
+  if (decision === 'require_approval') {
+    return queueWriteForApproval(args, ctx, env);
+  }
+  // allow → apply immediately (validate the proposal first so an immediate apply
+  // enforces the same required-field checks the queued path does).
+  buildProposal(args);
+  switch (action) {
+    case 'create':
+      return applyCreate(args, ctx, env);
+    case 'update':
+      return applyUpdate(args, ctx, env);
+    case 'delete':
+      return applyDelete(args, ctx, env);
+  }
+}
+
+// Write actions (create/update/delete) consult the agent_config write-gate:
+// a human member applies immediately; an agent/watcher-driven write follows the
+// org policy and may queue a pending run + approval card (applied later by
+// manage_operations' approve handler via applyManageAgentsProposal → the apply*
+// functions). list/get/set_system_agent stay immediate.
 const runManageAgents = defineFlatActionTool<ManageAgentsArgs, ManageAgentsResult>(
   'manage_agents',
   {
     list: flatAction((args, ctx, env) => handleList(args, ctx, env)),
     get: flatAction((args, ctx, env) => handleGet(args, ctx, env)),
-    create: flatAction((args, ctx, env) => queueWriteForApproval(args, ctx, env)),
-    update: flatAction((args, ctx, env) => queueWriteForApproval(args, ctx, env)),
-    delete: flatAction((args, ctx, env) => queueWriteForApproval(args, ctx, env)),
+    create: flatAction((args, ctx, env) => dispatchAgentWrite('create', args, ctx, env)),
+    update: flatAction((args, ctx, env) => dispatchAgentWrite('update', args, ctx, env)),
+    delete: flatAction((args, ctx, env) => dispatchAgentWrite('delete', args, ctx, env)),
     set_system_agent: flatAction((args, ctx, env) => handleSetSystemAgent(args, ctx, env)),
   }
 );

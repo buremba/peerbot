@@ -3,19 +3,23 @@
  * (`executeTool(name, args, env, authCtx)`), the same entry the REST proxy and
  * the builder agent's worker use.
  *
- * The builder gate (this feature) routes WRITE actions (create/update/delete)
- * through the durable runs/events approval primitive that manage_operations
- * uses: a write produces a pending `runs` row (approval_status='pending') + an
- * approval `events` card; the mutation only lands when a web session approves
- * via manage_operations.approve, and is cancelled on reject. Read actions
- * (list/get) and set_system_agent stay immediate.
+ * WRITE actions (create/update/delete) route through the `agent_config`
+ * write-gate class. The decision is per-principal:
+ *   - A HUMAN member applies immediately — no run, no approval card. Role
+ *     restrictions for humans live in the tool-access tier (admin-only).
+ *   - An AGENT-driven write follows the org policy (default: create/update queue
+ *     a pending `runs` row + approval card, applied on approve / cancelled on
+ *     reject; delete is denied). This is the durable runs/events primitive that
+ *     manage_operations uses.
  *
  * Covers:
- *   - create gate: pending run + pending approval event, NO agent yet.
+ *   - human owner: create/update/delete apply immediately.
+ *   - agent principal create gate: pending run + pending approval event, NO agent yet.
  *   - approve(run_id): agent now exists (owner_platform='external' + the
  *     agent_users ownership mapping), run completed, event superseded.
  *   - reject(run_id): no agent, run cancelled, event superseded 'rejected'.
- *   - update / delete gates apply on approve.
+ *   - agent update gate applies on approve; agent delete is denied outright.
+ *   - stale approval: applyUpdate skips a field a newer edit already changed.
  *   - set_system_agent / get / list (including the `is_system_agent` flag) stay
  *     immediate.
  *   - access: a non-admin member cannot call the admin-tier actions.
@@ -60,6 +64,7 @@ describe("manage_agents — builder gate e2e", () => {
 	let orgId: string;
 	let ownerId: string;
 	let ownerCtx: AuthContext;
+	let agentCtx: AuthContext;
 	let memberCtx: AuthContext;
 
 	const baseCtx = (
@@ -67,12 +72,13 @@ describe("manage_agents — builder gate e2e", () => {
 		userId: string,
 		memberRole: "owner" | "member",
 		scopes: string[],
+		agentId: string | null = null,
 	): AuthContext => ({
 		organizationId: orgIdValue,
 		tokenOrganizationId: orgIdValue,
 		userId,
 		memberRole,
-		agentId: null,
+		agentId,
 		requestedAgentId: null,
 		isAuthenticated: true,
 		clientId: null,
@@ -101,15 +107,77 @@ describe("manage_agents — builder gate e2e", () => {
 			"mcp:write",
 			"mcp:admin",
 		]);
+		// Same owner identity, but acting as an agent (agentId set) — this is the
+		// principal the write-gate holds for approval.
+		agentCtx = baseCtx(
+			org.id,
+			owner.id,
+			"owner",
+			["mcp:read", "mcp:write", "mcp:admin"],
+			"builder-agent",
+		);
 		memberCtx = baseCtx(org.id, member.id, "member", ["mcp:read", "mcp:write"]);
 	});
 
-	it("create produces a pending run + approval event and does NOT create the agent yet", async () => {
+	it("human owner: create applies immediately with no approval run", async () => {
+		const res = (await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "human-bot", name: "Human Bot" },
+			TEST_ENV,
+			ownerCtx,
+		)) as { action: string; created?: boolean; status?: string };
+		expect(res.status).toBeUndefined();
+		expect(res.created).toBe(true);
+		expect(await agentExists(orgId, "human-bot")).toBe(true);
+
+		// No pending manage_agents run was created for this immediate apply.
+		const sql = getTestDb();
+		const runRows = await sql`
+			SELECT 1 FROM runs
+			WHERE organization_id = ${orgId} AND action_key = 'manage_agents'
+				AND (action_input->>'agent_id') = 'human-bot'
+		`;
+		expect(runRows.length).toBe(0);
+	});
+
+	it("human owner: update and delete apply immediately", async () => {
+		await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "human-edit-bot", name: "v1" },
+			TEST_ENV,
+			ownerCtx,
+		);
+		const upd = (await executeTool(
+			"manage_agents",
+			{ action: "update", agent_id: "human-edit-bot", name: "v2" },
+			TEST_ENV,
+			ownerCtx,
+		)) as { action: string; updated_fields?: string[]; status?: string };
+		expect(upd.status).toBeUndefined();
+		expect(upd.updated_fields).toContain("name");
+		const sql = getTestDb();
+		const nameRows = await sql`
+			SELECT name FROM agents WHERE organization_id = ${orgId} AND id = 'human-edit-bot'
+		`;
+		expect(nameRows[0]?.name).toBe("v2");
+
+		const del = (await executeTool(
+			"manage_agents",
+			{ action: "delete", agent_id: "human-edit-bot" },
+			TEST_ENV,
+			ownerCtx,
+		)) as { action: string; deleted?: boolean; status?: string };
+		expect(del.status).toBeUndefined();
+		expect(del.deleted).toBe(true);
+		expect(await agentExists(orgId, "human-edit-bot")).toBe(false);
+	});
+
+	it("agent create produces a pending run + approval event and does NOT create the agent yet", async () => {
 		const res = (await executeTool(
 			"manage_agents",
 			{ action: "create", agent_id: "support-bot", name: "Support Bot" },
 			TEST_ENV,
-			ownerCtx,
+			agentCtx,
 		)) as PendingApproval;
 
 		expect(res.status).toBe("pending_approval");
@@ -156,7 +224,7 @@ describe("manage_agents — builder gate e2e", () => {
 			"manage_agents",
 			{ action: "create", agent_id: "approved-bot", name: "Approved Bot" },
 			TEST_ENV,
-			ownerCtx,
+			agentCtx,
 		)) as PendingApproval;
 		expect(created.status).toBe("pending_approval");
 		expect(await agentExists(orgId, "approved-bot")).toBe(false);
@@ -209,7 +277,7 @@ describe("manage_agents — builder gate e2e", () => {
 			"manage_agents",
 			{ action: "create", agent_id: "rejected-bot", name: "Rejected Bot" },
 			TEST_ENV,
-			ownerCtx,
+			agentCtx,
 		)) as PendingApproval;
 		expect(created.status).toBe("pending_approval");
 
@@ -240,27 +308,21 @@ describe("manage_agents — builder gate e2e", () => {
 		expect(eventRows[0]?.interaction_status).toBe("rejected");
 	});
 
-	it("update gate applies field changes on approve", async () => {
-		// Land a base agent first (create → approve).
-		const created = (await executeTool(
+	it("agent update gate applies field changes on approve", async () => {
+		// Land a base agent immediately as the human owner.
+		await executeTool(
 			"manage_agents",
 			{ action: "create", agent_id: "editable-bot", name: "Editable Bot" },
 			TEST_ENV,
 			ownerCtx,
-		)) as PendingApproval;
-		await executeTool(
-			"manage_operations",
-			{ action: "approve", run_id: created.run_id },
-			TEST_ENV,
-			ownerCtx,
 		);
 
-		// Now gate an update.
+		// An agent-driven update is gated.
 		const upd = (await executeTool(
 			"manage_agents",
 			{ action: "update", agent_id: "editable-bot", name: "Editable Bot v2" },
 			TEST_ENV,
-			ownerCtx,
+			agentCtx,
 		)) as PendingApproval;
 		expect(upd.status).toBe("pending_approval");
 
@@ -283,51 +345,70 @@ describe("manage_agents — builder gate e2e", () => {
 		expect(nameRows[0]?.name).toBe("Editable Bot v2");
 	});
 
-	it("delete gate removes the agent on approve", async () => {
-		const created = (await executeTool(
-			"manage_agents",
-			{ action: "create", agent_id: "doomed-bot", name: "Doomed Bot" },
-			TEST_ENV,
-			ownerCtx,
-		)) as PendingApproval;
+	it("a stale approval skips a field another writer already changed", async () => {
 		await executeTool(
-			"manage_operations",
-			{ action: "approve", run_id: created.run_id },
+			"manage_agents",
+			{ action: "create", agent_id: "raced-bot", name: "Original" },
 			TEST_ENV,
 			ownerCtx,
 		);
-		expect(await agentExists(orgId, "doomed-bot")).toBe(true);
-
-		const del = (await executeTool(
+		// Agent proposes name → "Agent Name" (pre-image captured: "Original").
+		const upd = (await executeTool(
 			"manage_agents",
-			{ action: "delete", agent_id: "doomed-bot" },
+			{ action: "update", agent_id: "raced-bot", name: "Agent Name" },
 			TEST_ENV,
-			ownerCtx,
+			agentCtx,
 		)) as PendingApproval;
-		expect(del.status).toBe("pending_approval");
-		// Still present until approval.
-		expect(await agentExists(orgId, "doomed-bot")).toBe(true);
+		expect(upd.status).toBe("pending_approval");
 
+		// Meanwhile a human renames it — pre-image no longer matches.
 		await executeTool(
-			"manage_operations",
-			{ action: "approve", run_id: del.run_id },
+			"manage_agents",
+			{ action: "update", agent_id: "raced-bot", name: "Human Name" },
 			TEST_ENV,
 			ownerCtx,
 		);
-		expect(await agentExists(orgId, "doomed-bot")).toBe(false);
+
+		// Approving the stale proposal must NOT clobber the human's newer name.
+		await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: upd.run_id },
+			TEST_ENV,
+			ownerCtx,
+		);
+		const sql = getTestDb();
+		const nameRows = await sql`
+			SELECT name FROM agents WHERE organization_id = ${orgId} AND id = 'raced-bot'
+		`;
+		expect(nameRows[0]?.name).toBe("Human Name");
+	});
+
+	it("agent delete is denied outright (a human must delete an agent)", async () => {
+		await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "protected-bot", name: "Protected Bot" },
+			TEST_ENV,
+			ownerCtx,
+		);
+		expect(await agentExists(orgId, "protected-bot")).toBe(true);
+
+		await expect(
+			executeTool(
+				"manage_agents",
+				{ action: "delete", agent_id: "protected-bot" },
+				TEST_ENV,
+				agentCtx,
+			),
+		).rejects.toThrow();
+		// The agent survives the denied delete.
+		expect(await agentExists(orgId, "protected-bot")).toBe(true);
 	});
 
 	it("get / set_system_agent / list stay immediate", async () => {
-		// Land an agent through the gate.
-		const created = (await executeTool(
+		// Land an agent immediately as the human owner.
+		await executeTool(
 			"manage_agents",
 			{ action: "create", agent_id: "system-bot", name: "System Bot" },
-			TEST_ENV,
-			ownerCtx,
-		)) as PendingApproval;
-		await executeTool(
-			"manage_operations",
-			{ action: "approve", run_id: created.run_id },
 			TEST_ENV,
 			ownerCtx,
 		);

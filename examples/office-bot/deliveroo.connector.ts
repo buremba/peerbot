@@ -322,7 +322,7 @@ export default class DeliverooConnector extends ConnectorRuntime {
 
     if (!loggedIn) {
       throw new Error(
-        "Deliveroo restaurants list could not be read — a login/age wall blocked the page. Sign into deliveroo.co.uk in the focused Owletto window, then re-run."
+        "Deliveroo restaurants list could not be read — a login/age wall blocked the page. Sign into deliveroo.co.uk in the paired Chrome profile, then re-run."
       );
     }
 
@@ -366,7 +366,7 @@ export default class DeliverooConnector extends ConnectorRuntime {
 
     if (!loggedIn) {
       throw new Error(
-        "Deliveroo menu could not be read — a login/age wall blocked the page. Sign into deliveroo.co.uk in the focused Owletto window, then re-run."
+        "Deliveroo menu could not be read — a login/age wall blocked the page. Sign into deliveroo.co.uk in the paired Chrome profile, then re-run."
       );
     }
 

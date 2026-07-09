@@ -5,7 +5,7 @@
  * user's transactions by REPLAYING the retail API the Revolut web app
  * (`app.revolut.com`) already calls — not by scraping the rendered DOM. It runs
  * inside the user's real signed-in Chrome via the paired Owletto extension:
- * reuse the persistent window the user signs into once, capture the app's own
+ * reuse the revolut.com sticky anchor the user signs into once, capture the app's own
  * `transactions/last` request headers, then page the FULL history in-page by
  * walking the `?to=<cursor>` parameter and parsing each
  * `GET /api/retail/user/current/transactions/last` JSON page.
@@ -499,7 +499,7 @@ function sleep(ms: number): Promise<void> {
 
 // 1. Auth-check + capture the app's real `transactions/last` request headers.
 // A fresh tab can't inherit Revolut's rwa auth, so headers are only obtainable
-// in the signed-in persistent window. The on-load request fires before our
+// in the signed-in sticky anchor. The on-load request fires before our
 // wrappers install, so after wrapping fetch + XHR we force ONE fresh app
 // request by remounting the SPA route (away + back). The captured header set
 // (notably the in-memory `x-device-id` app token) + a paging cursor are stored
@@ -609,9 +609,9 @@ const pageBatchExpr = (internalPocketId: string): string => {
  * Crawl the FULL retail transaction history by replaying the `transactions/last`
  * API in-page, walking its `?to=<epoch_ms>` cursor — no scrolling.
  *
- * Reuses the ONE persistent window the user signs into once: a fresh background
+ * Reuses the revolut.com sticky anchor the user signs into once: a fresh background
  * tab bounces to sso.revolut.com (rwa auth is bound to the signed-in tab), so
- * the persistent window is the only context where the retail API authenticates.
+ * the sticky anchor is the only context where the retail API authenticates.
  * We capture the app's own request headers there (SETUP_EXPR), then page the
  * whole history in batches that RETURN their raw rows (PAGE_BATCH_EXPR), parsing
  * each batch with the same `parseTransactionsResponse` used for intercepted
@@ -626,7 +626,7 @@ async function crawlFetchPaging(
 ): Promise<{ items: RevolutTransaction[]; apiCallCount: number }> {
   const allowed = REVOLUT_ALLOWED_ORIGINS;
   const PAGE_BATCH_EXPR = pageBatchExpr(internalPocketId);
-  // Open / reuse the single persistent window in the BACKGROUND (not focused) so
+  // Open / reuse the site sticky anchor in the BACKGROUND (not focused) so
   // a routine authed sync never pops the window to the foreground. We only
   // surface it below if the run actually needs the user to sign in.
   const nav = await dispatcher.dispatch<{ tab_id: number }>("navigate", {
@@ -639,7 +639,7 @@ async function crawlFetchPaging(
   const tabId = nav.tab_id;
 
   // Capture headers / auth-check. On a miss (SSO wall / capture fail), FOCUS the
-  // persistent window so the user can complete the passcode in place, then return
+  // sticky anchor so the user can complete the passcode in place, then return
   // no items so the upstream wait-poll fires the sign-in notice and retries.
   const setup = await dispatcher.dispatch<{
     value?: { authed?: boolean; captured?: boolean };

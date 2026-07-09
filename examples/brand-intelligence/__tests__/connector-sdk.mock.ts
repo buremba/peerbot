@@ -127,8 +127,8 @@ export function connectorSdkMock() {
     extensionDomScrape: async (opts: DomScrapeOpts) => {
       const observation = await opts.dispatcher.dispatch("navigate", {
         cs_scrape: true,
-        persistent: opts.persistent ?? true,
-        focus: opts.focus ?? true,
+        persistent: opts.persistent ?? false,
+        focus: opts.focus ?? false,
         url: opts.url,
         scrape_config: opts.config,
         allowed_origins: opts.allowedOrigins,

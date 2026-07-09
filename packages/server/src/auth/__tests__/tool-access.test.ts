@@ -689,7 +689,7 @@ manage_catalog: list_catalog=read+public list_installed=read+public ?=read
 manage_agents: list=admin get=admin create=admin update=admin delete=admin set_system_agent=admin ?=read
 manage_feeds: list_feeds=read+public read_feed=read+public read_feeds=read+public create_feed=admin update_feed=admin delete_feed=admin trigger_feed=admin ?=read
 manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=admin test_auth_profile=admin create_auth_profile=write update_auth_profile=write delete_auth_profile=admin set_default_auth_profile=admin ?=read
-manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public approve=write reject=write ?=read
+manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public approve=write reject=write approve_batch=write reject_batch=write ?=read
 notify: send=admin ?=admin
 manage_schedules: create=admin list=admin update=admin pause=admin cancel=admin ?=admin
 manage_watchers: create=admin update=admin create_version=admin complete_window=write trigger=admin delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read

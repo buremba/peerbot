@@ -43,12 +43,17 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	// requireWatcherAccess; watcher ADMINISTRATION (create/update/delete/…)
 	// stays admin-tier below.
 	manage_watchers: new Set(["complete_window"]),
-	// `approve`/`reject` are write-tier so the recorded FIELD OWNER of an
-	// entity-change proposal (a plain member) can decide their own run. The
-	// handler enforces admin-or-run-owner per run — a member who is not that
-	// run's owner is rejected there with the same admin-access message.
-	// `execute` stays admin-tier below.
-	manage_operations: new Set(["approve", "reject"]),
+	// `approve`/`reject` (and their `*_batch` forms) are write-tier so the
+	// recorded FIELD OWNER of an entity-change proposal (a plain member) can
+	// decide their own run. The handler enforces admin-or-run-owner per run — a
+	// member who is not that run's owner is rejected there with the same
+	// admin-access message. `execute` stays admin-tier below.
+	manage_operations: new Set([
+		"approve",
+		"reject",
+		"approve_batch",
+		"reject_batch",
+	]),
 };
 
 const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {

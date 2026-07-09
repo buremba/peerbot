@@ -537,6 +537,38 @@ export async function handleCompleteWindow(
       // flush each AFTER the window transaction commits (approvals must not ride
       // the tx).
       deferredApprovals = promote.deferred;
+
+      // Record the applied change-set as a FIRST-CLASS event on the run — even
+      // for fully-auto promotions. The diff is a property of the run, not of the
+      // approval flow: a watcher run that auto-applied 100 entity changes still
+      // shows exactly what it changed. Rides the window tx (it describes writes
+      // that just committed on this same tx) and is scoped to the run + the
+      // entities it touched, so the run view and the entity views both resolve it.
+      if (promote.changes.length > 0 && watcherRunId && Number.isFinite(watcherRunId)) {
+        const createdCount = promote.changes.filter((c) => c.kind === 'created').length;
+        const updatedCount = promote.changes.length - createdCount;
+        await insertEvent(
+          {
+            entityIds: promote.changes.map((c) => c.entityId),
+            organizationId: watcherOrgId,
+            originId: `run_${watcherRunId}_changeset`,
+            title: `Watcher applied ${createdCount} new + ${updatedCount} updated`,
+            content: `This run created ${createdCount} and updated ${updatedCount} entities.`,
+            semanticType: 'change_set',
+            runId: watcherRunId,
+            metadata: {
+              kind: 'watcher_change_set',
+              window_id: windowId,
+              watcher_id: Number(watcherId),
+              created_count: createdCount,
+              updated_count: updatedCount,
+              changes: promote.changes,
+            },
+            createdBy: watcherCreatedBy,
+          },
+          { sql: tx }
+        );
+      }
     }
 
     // ============================================

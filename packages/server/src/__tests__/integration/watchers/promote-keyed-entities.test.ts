@@ -180,12 +180,13 @@ async function readWindowToken(
 async function completeWithToken(
   ctx: Awaited<ReturnType<typeof setupKeyedWatcher>>,
   windowToken: string,
-  runId: number
+  runId: number,
+  extractedData: Record<string, unknown> = KEYED_EXTRACTED_DATA
 ): Promise<number> {
   const completion = (await ctx.api.watchers.completeWindow({
     watcher_id: String(ctx.watcherId),
     window_token: windowToken,
-    extracted_data: KEYED_EXTRACTED_DATA,
+    extracted_data: extractedData,
     run_metadata: { watcher_run_id: runId },
   })) as { action: string; window_id: number };
   expect(completion.action).toBe('complete_window');
@@ -263,6 +264,26 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       expect(Number(md.window_id)).toBe(windowId);
       expect(Number(md.watcher_id)).toBe(watcherId);
     }
+
+    // The run carries a FIRST-CLASS change-set event listing what it applied —
+    // even though these creates were auto-applied (no approval involved). This
+    // is the run's own diff, not an approval artifact.
+    const changeSet = await sql`
+      SELECT title, metadata, entity_ids
+      FROM current_event_records
+      WHERE run_id = ${runId}
+        AND organization_id = ${workspace.org.id}
+        AND semantic_type = 'change_set'
+    `;
+    expect(changeSet).toHaveLength(1);
+    const csMeta = changeSet[0].metadata as Record<string, unknown>;
+    expect(csMeta.kind).toBe('watcher_change_set');
+    expect(Number(csMeta.window_id)).toBe(windowId);
+    expect(Number(csMeta.created_count)).toBe(2);
+    expect(Number(csMeta.updated_count)).toBe(0);
+    const csChanges = csMeta.changes as Array<{ kind: string; entityId: number }>;
+    expect(csChanges).toHaveLength(2);
+    expect(csChanges.every((c) => c.kind === 'created')).toBe(true);
   });
 
   it('is idempotent across a same-window replay — no duplicate entities', async () => {
@@ -721,5 +742,141 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     // The squatter is untouched; the promoted entity carries its origin window.
     const promoted = await sql`SELECT metadata FROM entities WHERE id = ${appCrashes?.entity_id}`;
     expect(Number((promoted[0].metadata as Record<string, unknown>).window_id)).toBe(windowId);
+  });
+
+  it('groups a run\'s proposals by window and approves them all in one batch', async () => {
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, watcherId } = ctx;
+
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    // Run 1: create both entities with a `severity` field.
+    const windowId = await completeWithToken(ctx, token, runId, {
+      problems: [
+        { category: 'Stability', name: 'App Crashes', severity: 'low' },
+        { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+      ],
+    });
+
+    // A human takes ownership of `severity` on BOTH promoted entities.
+    const ids = await sql`
+      SELECT ei.identifier, ei.entity_id FROM entity_identities ei
+      WHERE ei.organization_id = ${workspace.org.id} AND ei.namespace = 'watcher_key'
+      ORDER BY ei.identifier
+    `;
+    for (const row of ids) {
+      await workspace.owner.entities.update({
+        entity_id: Number(row.entity_id),
+        metadata: { severity: 'high' },
+        field_note: 'human-owned',
+      });
+    }
+
+    // Run 2 (same window): the watcher proposes a new severity for BOTH — each is
+    // blocked (human-owned) and queues its own pending proposal, sharing window_id.
+    await completeWithToken(ctx, token, runId, {
+      problems: [
+        { category: 'Stability', name: 'App Crashes', severity: 'critical' },
+        { category: 'Performance', name: 'Slow Loading', severity: 'critical' },
+      ],
+    });
+
+    const pending = await sql`
+      SELECT id, window_id FROM runs
+      WHERE organization_id = ${workspace.org.id}
+        AND run_type = 'internal' AND action_key = 'entity_field_change'
+        AND approval_status = 'pending'
+      ORDER BY id ASC
+    `;
+    expect(pending.length).toBe(2);
+    // Both proposals carry the run's window_id on the COLUMN (batch grouping key).
+    expect(pending.every((r) => Number(r.window_id) === windowId)).toBe(true);
+
+    // approve_batch approves every pending proposal for the window in one call.
+    const batchRes = (await executeTool(
+      'manage_operations',
+      { action: 'approve_batch', window_id: windowId },
+      TEST_ENV,
+      ownerAuthCtx(workspace.org.id, workspace.users.owner.id)
+    )) as { action: string; approved_count?: number; failed_count?: number };
+    expect(batchRes.action).toBe('approve_batch');
+    expect(batchRes.approved_count).toBe(2);
+    expect(batchRes.failed_count).toBe(0);
+
+    // Both proposals applied and their runs completed.
+    for (const row of ids) {
+      const [applied] = await sql`SELECT metadata FROM entities WHERE id = ${Number(row.entity_id)}`;
+      expect((applied.metadata as Record<string, unknown>).severity).toBe('critical');
+    }
+    const stillPending = await sql`
+      SELECT id FROM runs
+      WHERE organization_id = ${workspace.org.id}
+        AND run_type = 'internal' AND action_key = 'entity_field_change'
+        AND approval_status = 'pending'
+    `;
+    expect(stillPending.length).toBe(0);
+  });
+
+  it('reject_batch cancels a run\'s proposals and records the reason for revision', async () => {
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace } = ctx;
+
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+    const windowId = await completeWithToken(ctx, token, runId, {
+      problems: [{ category: 'Stability', name: 'App Crashes', severity: 'low' }],
+    });
+    const [row] = await sql`
+      SELECT ei.entity_id FROM entity_identities ei
+      WHERE ei.organization_id = ${workspace.org.id} AND ei.namespace = 'watcher_key' LIMIT 1
+    `;
+    await workspace.owner.entities.update({
+      entity_id: Number(row.entity_id),
+      metadata: { severity: 'high' },
+      field_note: 'human-owned',
+    });
+    await completeWithToken(ctx, token, runId, {
+      problems: [{ category: 'Stability', name: 'App Crashes', severity: 'critical' }],
+    });
+
+    const rejectRes = (await executeTool(
+      'manage_operations',
+      { action: 'reject_batch', window_id: windowId, reason: 'severity should stay high' },
+      TEST_ENV,
+      ownerAuthCtx(workspace.org.id, workspace.users.owner.id)
+    )) as { action: string; rejected_count?: number };
+    expect(rejectRes.action).toBe('reject_batch');
+    expect(rejectRes.rejected_count).toBe(1);
+
+    // The human-owned value is untouched; the proposal run is cancelled.
+    const [after] = await sql`SELECT metadata FROM entities WHERE id = ${Number(row.entity_id)}`;
+    expect((after.metadata as Record<string, unknown>).severity).toBe('high');
+
+    // The rejection reason is recorded as a feedback event (the revision hook).
+    const feedback = await sql`
+      SELECT metadata FROM current_event_records
+      WHERE organization_id = ${workspace.org.id}
+        AND semantic_type = 'change_set'
+        AND (metadata->>'kind') = 'watcher_batch_reject'
+    `;
+    expect(feedback.length).toBe(1);
+    expect((feedback[0].metadata as Record<string, unknown>).reason).toBe(
+      'severity should stay high'
+    );
   });
 });

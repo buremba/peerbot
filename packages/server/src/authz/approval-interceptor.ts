@@ -60,6 +60,7 @@ export function buildCreateDeferral(args: {
 	proposal: Record<string, unknown>;
 	attribution: MutationAttribution;
 	watcherId?: number | null;
+	windowId?: number | null;
 }): DeferredMutation {
 	const name =
 		typeof args.entityData.name === "string" ? args.entityData.name : undefined;
@@ -74,6 +75,7 @@ export function buildCreateDeferral(args: {
 				entity_data: args.entityData,
 				proposal: args.proposal,
 				watcher_id: args.watcherId ?? null,
+				window_id: args.windowId ?? null,
 				attribution: args.attribution,
 				reason: reasonFor(
 					args.attribution,
@@ -91,6 +93,7 @@ export function buildFieldChangeDeferral(args: {
 	current: Record<string, unknown>;
 	attribution: MutationAttribution;
 	watcherId?: number | null;
+	windowId?: number | null;
 }): DeferredMutation {
 	return {
 		display: {
@@ -105,6 +108,7 @@ export function buildFieldChangeDeferral(args: {
 				fields: args.fields,
 				current: args.current,
 				watcher_id: args.watcherId ?? null,
+				window_id: args.windowId ?? null,
 				attribution: args.attribution,
 				reason: fieldChangeReason(args.attribution, Object.keys(args.fields)),
 			}),

@@ -139,6 +139,23 @@ export const RejectAction = Type.Object({
   reason: Type.Optional(Type.String()),
 });
 
+export const ApproveBatchAction = Type.Object({
+  action: Type.Literal("approve_batch", {
+    description:
+      "Approve every pending proposal a watcher run produced, in one go. Groups by the run's window.",
+  }),
+  window_id: Type.Number(),
+});
+
+export const RejectBatchAction = Type.Object({
+  action: Type.Literal("reject_batch", {
+    description:
+      "Reject every pending proposal a watcher run produced. The reason is fed back to the agent so it can revise its proposals (the conversational revision loop).",
+  }),
+  window_id: Type.Number(),
+  reason: Type.Optional(Type.String()),
+});
+
 /**
  * Result of `manage_operations` — discriminated union (on `action`/`status`,
  * plus an error variant). TypeBox-first: `Static<>` derives the TS type from
@@ -214,6 +231,21 @@ export const ManageOperationsResultSchema = Type.Union([
     run_id: Type.Integer(),
     event_id: Type.Optional(Type.Integer()),
   }),
+  Type.Object({
+    action: Type.Literal("approve_batch"),
+    window_id: Type.Integer(),
+    approved_count: Type.Integer(),
+    failed_count: Type.Integer(),
+    run_ids: Type.Array(Type.Integer()),
+    message: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal("reject_batch"),
+    window_id: Type.Integer(),
+    rejected_count: Type.Integer(),
+    run_ids: Type.Array(Type.Integer()),
+    message: Type.String(),
+  }),
 ]);
 export type ManageOperationsResult = Static<
   typeof ManageOperationsResultSchema
@@ -226,6 +258,8 @@ export const ManageOperationsSchema = Type.Union([
   GetRunAction,
   ApproveAction,
   RejectAction,
+  ApproveBatchAction,
+  RejectBatchAction,
 ]);
 
 export type ManageOperationsArgs = Static<typeof ManageOperationsSchema>;

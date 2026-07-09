@@ -9,6 +9,7 @@
 import { getErrorMessage } from "@lobu/core";
 import {
 	ApproveAction,
+	ApproveBatchAction,
 	ExecuteAction,
 	GetRunAction,
 	ListAvailableAction,
@@ -17,6 +18,7 @@ import {
 	ManageOperationsResultSchema,
 	ManageOperationsSchema,
 	RejectAction,
+	RejectBatchAction,
 } from "@lobu/core/contracts/tools/manage-operations";
 import type { Static } from "@sinclair/typebox";
 import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
@@ -80,6 +82,8 @@ const manageOperationsTool = defineActionTool('manage_operations', {
   get_run: action(GetRunAction, handleGetRun),
   approve: action(ApproveAction, handleApprove),
   reject: action(RejectAction, handleReject),
+  approve_batch: action(ApproveBatchAction, handleApproveBatch),
+  reject_batch: action(RejectBatchAction, handleRejectBatch),
 });
 
 export { ManageOperationsResultSchema, ManageOperationsSchema };
@@ -1700,5 +1704,119 @@ async function handleReject(
 		rejected: true,
 		run_id: args.run_id,
 		event_id: eventId,
+	};
+}
+
+/** Pending proposal runs a single watcher run produced, grouped by its window. */
+async function pendingRunIdsForWindow(
+	windowId: number,
+	organizationId: string,
+): Promise<number[]> {
+	const sql = getDb();
+	const rows = await sql<{ id: number }>`
+    SELECT id FROM runs
+    WHERE window_id = ${windowId}
+      AND organization_id = ${organizationId}
+      AND approval_status = 'pending'
+      AND run_type = 'internal'
+    ORDER BY id ASC
+  `;
+	return rows.map((r) => Number(r.id));
+}
+
+/**
+ * Approve every pending proposal a watcher run produced, in one action. Reuses
+ * the single-run approve path per proposal so each still applies through its own
+ * gate/apply handler — the batch is purely the grouping, not a second code path.
+ */
+async function handleApproveBatch(
+	args: Static<typeof ApproveBatchAction>,
+	ctx: ToolContext,
+	env: Env,
+): Promise<ManageOperationsResult> {
+	if (ctx.clientId) {
+		return {
+			error:
+				"Batch approval requires a web session. Agents cannot approve their own operations.",
+		};
+	}
+	const runIds = await pendingRunIdsForWindow(args.window_id, ctx.organizationId);
+	if (runIds.length === 0) {
+		return {
+			action: "approve_batch",
+			window_id: args.window_id,
+			approved_count: 0,
+			failed_count: 0,
+			run_ids: [],
+			message: "No pending proposals for this run.",
+		};
+	}
+	let approved = 0;
+	let failed = 0;
+	for (const runId of runIds) {
+		const result = await handleApprove({ action: "approve", run_id: runId }, ctx, env);
+		if ("error" in result) failed += 1;
+		else approved += 1;
+	}
+	return {
+		action: "approve_batch",
+		window_id: args.window_id,
+		approved_count: approved,
+		failed_count: failed,
+		run_ids: runIds,
+		message: `Approved ${approved} of ${runIds.length} proposals${failed > 0 ? ` (${failed} failed)` : ""}.`,
+	};
+}
+
+/**
+ * Reject every pending proposal a watcher run produced, feeding the reason back
+ * so the user can ask the agent to revise (the conversational revision loop —
+ * no inline diff editor). Reuses the single-run reject path per proposal, then
+ * records ONE feedback event on the run carrying the reason.
+ */
+async function handleRejectBatch(
+	args: Static<typeof RejectBatchAction>,
+	ctx: ToolContext,
+): Promise<ManageOperationsResult> {
+	if (ctx.clientId) {
+		return {
+			error:
+				"Batch rejection requires a web session. Agents cannot reject operations.",
+		};
+	}
+	const runIds = await pendingRunIdsForWindow(args.window_id, ctx.organizationId);
+	const reason = args.reason ?? "Rejected by user";
+	let rejected = 0;
+	for (const runId of runIds) {
+		const result = await handleReject({ action: "reject", run_id: runId, reason }, ctx);
+		if (!("error" in result)) rejected += 1;
+	}
+	// One feedback event on the window/run carrying the reason, so the run view
+	// shows why the batch was rejected and the agent's next turn can read it.
+	if (rejected > 0) {
+		await insertEvent({
+			entityIds: [],
+			organizationId: ctx.organizationId,
+			originId: `window_${args.window_id}_batch_reject`,
+			title: `Batch rejected — ${rejected} proposals`,
+			content: `The user rejected this run's proposals: ${reason}`,
+			semanticType: "change_set",
+			metadata: {
+				kind: "watcher_batch_reject",
+				window_id: args.window_id,
+				rejected_count: rejected,
+				reason,
+			},
+		});
+	}
+	return {
+		action: "reject_batch",
+		window_id: args.window_id,
+		rejected_count: rejected,
+		run_ids: runIds,
+		message:
+			rejected > 0
+				? `Rejected ${rejected} proposals. Ask the agent to revise them with your feedback.`
+				: "No pending proposals for this run.",
 	};
 }

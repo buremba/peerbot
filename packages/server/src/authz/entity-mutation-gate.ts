@@ -176,6 +176,8 @@ export function deferEntityFieldChange(args: {
 	current: Record<string, unknown>;
 	attribution: MutationAttribution;
 	watcherId?: number | null;
+	/** Groups this proposal's run into a per-window batch approval card. */
+	windowId?: number | null;
 }): DeferredMutation {
 	return buildFieldChangeDeferral(args);
 }
@@ -186,6 +188,8 @@ export function deferEntityCreate(args: {
 	proposal: Record<string, unknown>;
 	attribution: MutationAttribution;
 	watcherId?: number | null;
+	/** Groups this proposal's run into a per-window batch approval card. */
+	windowId?: number | null;
 }): DeferredMutation {
 	return buildCreateDeferral(args);
 }

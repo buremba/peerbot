@@ -21,7 +21,12 @@ import {
 	RejectBatchAction,
 } from "@lobu/core/contracts/tools/manage-operations";
 import type { Static } from "@sinclair/typebox";
-import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
+import {
+	getDb,
+	parsePgNumberArray,
+	pgBigintArray,
+	pgTextArray,
+} from "../../db/client";
 import type { Env } from "../../index";
 import { callTool as callProxyTool } from "../../mcp-proxy/client";
 import { resolveCredentialsByConnectionId } from "../../mcp-proxy/credential-resolver";
@@ -1885,7 +1890,7 @@ async function resolveWindowRevisionContext(
 	organizationId: string,
 ): Promise<{ watcherId: number | null; entityIds: number[] }> {
 	const sql = getDb();
-	const rows = await sql<{ watcher_id: string | null; entity_ids: number[] | null }>`
+	const rows = await sql<{ watcher_id: string | null; entity_ids: unknown }>`
     SELECT (metadata->>'watcher_id')::bigint AS watcher_id, entity_ids
     FROM events
     WHERE organization_id = ${organizationId}
@@ -1897,7 +1902,9 @@ async function resolveWindowRevisionContext(
 	if (rows.length === 0) return { watcherId: null, entityIds: [] };
 	return {
 		watcherId: rows[0].watcher_id != null ? Number(rows[0].watcher_id) : null,
-		entityIds: (rows[0].entity_ids ?? []).map(Number),
+		// entity_ids arrives as a raw PG array string under fetch_types:false — never
+		// call .map on it directly. parsePgNumberArray handles both string and array.
+		entityIds: parsePgNumberArray(rows[0].entity_ids),
 	};
 }
 

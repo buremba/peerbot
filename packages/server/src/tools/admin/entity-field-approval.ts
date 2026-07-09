@@ -451,6 +451,10 @@ export async function proposeEntityChange(
 			watcher_id: proposal.watcher_id ?? null,
 			watcher_name: watcherName,
 			watcher_agent_id: watcherAgentId,
+			// The run window this proposal belongs to, if any. Stamped so the UI can
+			// tell this proposal is part of a BATCH (the change-set card owns the
+			// Approve/Reject decision) and suppress this card's own duplicate buttons.
+			window_id: windowId ?? null,
 			entity_name: entityName ?? null,
 			entity_type: entityType ?? null,
 			entity_slug: createProposal ? null : (entity?.slug ?? null),

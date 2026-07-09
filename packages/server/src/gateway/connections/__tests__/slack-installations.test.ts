@@ -640,6 +640,46 @@ describe("Grid install-model routing (per-workspace + org-wide enterprise)", () 
     );
   });
 
+  test("revokeSlackInstallsForUninstall keeps a coexisting org-wide install active for a workspace uninstall", async () => {
+    const { store, secretStore, slack } = build();
+    const ENT = "E_COEXIST";
+    const TEAM = "T_COEXIST";
+    await seedAgentRow("t", { organizationId: "org-coexist" });
+    const orgWide = await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-coexist",
+      ENT,
+      {
+        botToken: "xoxb-orgwide",
+        enterpriseId: ENT,
+        isEnterpriseInstall: true,
+      },
+    );
+    const workspace = await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-coexist",
+      TEAM,
+      {
+        botToken: "xoxb-workspace",
+        enterpriseId: ENT,
+        isEnterpriseInstall: false,
+      },
+    );
+
+    const stopped = await slack.revokeSlackInstallsForUninstall(store, {
+      teamId: TEAM,
+      enterpriseId: ENT,
+    });
+
+    expect(stopped).toEqual([workspace.id]);
+    expect(await slack.getSlackInstallByTeamId(store, TEAM)).toBeNull();
+    expect((await slack.getSlackEnterpriseInstall(store, ENT))?.id).toBe(
+      orgWide.id,
+    );
+  });
+
   test("revokeSlackInstallsForUninstall is a no-op for an unknown tenant", async () => {
     const { store, slack } = build();
     expect(

@@ -8,7 +8,7 @@
 
 import type { ContentItem } from '@lobu/connector-sdk';
 import { hasRequiredMcpScope } from '../../auth/tool-access';
-import { createDbClientFromEnv, getDb } from '../../db/client';
+import { createDbClientFromEnv, getDb, pgBigintArray } from '../../db/client';
 import type { Env } from '../../index';
 import { ToolUserError } from '../../utils/errors';
 import {
@@ -37,6 +37,51 @@ import { GetContentSchema, type GetContentArgs, getIncludeSupersededValidationEr
 import type { ContentRow, GetContentResult, IdRow } from './types';
 import { handleWatcherMode } from './watcher-mode';
 import { withValidatedArgs } from '../validate-args';
+
+/**
+ * Stamp `metadata.pending_proposal_count` onto every `change_set` content item,
+ * counting the pending proposal runs still open for its window. The change_set
+ * event is permanent, so its batch Approve/Reject buttons can't derive their
+ * visibility from the event alone — a resolved window would keep showing live
+ * buttons that error on click. One batched query over all present windows keeps
+ * this off the per-item hot path; items with no window are left untouched.
+ */
+async function stampPendingProposalCounts(
+  sql: ReturnType<typeof getDb>,
+  organizationId: string,
+  items: ContentItem[]
+): Promise<void> {
+  const windowIds = new Set<number>();
+  for (const item of items) {
+    if (item.semantic_type !== 'change_set') continue;
+    const wid = (item.metadata as Record<string, unknown> | undefined)?.window_id;
+    if (typeof wid === 'number') windowIds.add(wid);
+  }
+  if (windowIds.size === 0) return;
+
+  const rows = await sql<{ window_id: number; pending: number }>`
+    SELECT window_id, COUNT(*)::int AS pending
+    FROM runs
+    WHERE organization_id = ${organizationId}
+      AND run_type = 'internal'
+      AND approval_status = 'pending'
+      AND window_id = ANY(${pgBigintArray([...windowIds])}::bigint[])
+    GROUP BY window_id
+  `;
+  const pendingByWindow = new Map<number, number>();
+  for (const r of rows) pendingByWindow.set(Number(r.window_id), Number(r.pending));
+
+  for (const item of items) {
+    if (item.semantic_type !== 'change_set') continue;
+    const metadata = (item.metadata ?? {}) as Record<string, unknown>;
+    const wid = metadata.window_id;
+    if (typeof wid !== 'number') continue;
+    item.metadata = {
+      ...metadata,
+      pending_proposal_count: pendingByWindow.get(wid) ?? 0,
+    };
+  }
+}
 
 // ============================================
 // Main Function
@@ -438,6 +483,13 @@ async function getContentImpl(
       baseUrl,
       excerptsMap,
     });
+
+    // Stamp a LIVE pending-proposal count onto every change_set card. The
+    // change_set event is permanent (it records what the run did), so its
+    // batch Approve/Reject buttons must key off the CURRENT run state — not the
+    // event itself — or they linger after every proposal is resolved and a
+    // second click hits an already-decided run ("Run not found or not pending").
+    await stampPendingProposalCounts(sql, ctx.organizationId, contentItems);
 
     const result: GetContentResult = {
       content: contentItems,

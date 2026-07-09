@@ -14,20 +14,34 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { render } from '@react-email/render';
+import { MagicLinkEmail } from '../../../email/templates/magic-link';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createTestDeviceCode, createTestOAuthClient, createTestUser } from '../../setup/test-fixtures';
+import { createTestUser } from '../../setup/test-fixtures';
 import { post } from '../../setup/test-helpers';
 
 const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
 
 async function pendingUserCode(): Promise<string> {
-  const client = await createTestOAuthClient({
-    grant_types: [DEVICE_GRANT, 'refresh_token'],
+  const register = await post('/oauth/register', {
+    body: {
+      client_name: 'Claim Test Agent',
+      grant_types: [DEVICE_GRANT, 'refresh_token'],
+      token_endpoint_auth_method: 'none',
+    },
   });
-  const device = await createTestDeviceCode(client.client_id, {
-    scope: 'mcp:read mcp:write',
+  expect(register.status).toBe(201);
+  const client = (await register.json()) as { client_id: string };
+
+  const device = await post('/oauth/device_authorization', {
+    body: {
+      client_id: client.client_id,
+      scope: 'mcp:read mcp:write',
+    },
   });
-  return device.userCode;
+  expect(device.status).toBe(200);
+  const body = (await device.json()) as { user_code: string };
+  return body.user_code;
 }
 
 async function verificationExistsFor(email: string): Promise<boolean> {
@@ -104,5 +118,19 @@ describe('POST /oauth/device/email — agent account claim', () => {
       body: { user_code: 123, email: { nested: true } },
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('MagicLinkEmail authorization copy', () => {
+  it('includes the device user code so stale approval emails are distinguishable', async () => {
+    const text = await render(
+      MagicLinkEmail({
+        mode: 'authorize',
+        url: 'https://app.lobu.ai/api/auth/magic-link/verify?token=t&callbackURL=%2Foauth%2Fdevice%3Fuser_code%3DB49F-VMPZ',
+      }),
+      { plainText: true }
+    );
+
+    expect(text).toContain('Approval code: B49F-VMPZ');
   });
 });

@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { loginCommand } from "../commands/login";
-import * as context from "../internal/context";
-import * as credentials from "../internal/credentials";
+
+const openMock = mock(async (_url: string) => undefined);
+mock.module("open", () => ({ default: openMock }));
+
+const { loginCommand } = await import("../commands/login");
+const context = await import("../internal/context");
+const credentials = await import("../internal/credentials");
 
 /**
  * Regression guard for `lobu login --email`: after the server accepts the
@@ -12,9 +16,12 @@ import * as credentials from "../internal/credentials";
 describe("login --email (user_claimed)", () => {
   afterEach(() => {
     mock.restore();
+    openMock.mockClear();
   });
 
-  function mockOAuthServer(): { calls: string[] } {
+  function mockOAuthServer(
+    options: { expiresIn?: number; tokenResult?: "success" | "pending" } = {}
+  ): { calls: string[] } {
     const calls: string[] = [];
     const fetchMock = mock(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : (input as Request).url;
@@ -42,14 +49,19 @@ describe("login --email (user_claimed)", () => {
           device_code: "dev-code",
           user_code: "ABCD-1234",
           verification_uri: "https://lobu.test/oauth/device",
-          expires_in: 600,
-          interval: 0,
+          verification_uri_complete:
+            "https://lobu.test/oauth/device?user_code=ABCD-1234",
+          expires_in: options.expiresIn ?? 600,
+          interval: 1,
         });
       }
       if (url.endsWith("/oauth/device/email")) {
         return jsonResponse({ status: "pending" }, 202);
       }
       if (url.endsWith("/oauth/token")) {
+        if (options.tokenResult === "pending") {
+          return jsonResponse({ error: "authorization_pending" }, 400);
+        }
         return jsonResponse({
           access_token: "claimed-access-token",
           refresh_token: "claimed-refresh-token",
@@ -70,6 +82,10 @@ describe("login --email (user_claimed)", () => {
     });
     spyOn(credentials, "loadCredentials").mockResolvedValue(null);
     const saveSpy = spyOn(credentials, "saveCredentials").mockResolvedValue();
+    const output: string[] = [];
+    spyOn(console, "log").mockImplementation((...args) => {
+      output.push(args.join(" "));
+    });
 
     const originalFetch = globalThis.fetch;
     const { calls } = mockOAuthServer();
@@ -87,6 +103,43 @@ describe("login --email (user_claimed)", () => {
     expect(saveSpy.mock.calls[0]?.[0]).toMatchObject({
       accessToken: "claimed-access-token",
     });
+    const text = output.join("\n");
+    expect(text).toContain("ABCD-1234");
+    expect(text).toContain(
+      "https://lobu.test/oauth/device?user_code=ABCD-1234"
+    );
+    expect(openMock).not.toHaveBeenCalled();
+  });
+
+  test("opens the browser to the complete verification URL for interactive login", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "prod",
+      url: "https://lobu.test/lobu/api/v1",
+      source: "config",
+    });
+    spyOn(credentials, "loadCredentials").mockResolvedValue(null);
+    const saveSpy = spyOn(credentials, "saveCredentials").mockResolvedValue();
+    spyOn(process.stdout, "isTTY", "get").mockReturnValue(false);
+    spyOn(process.stdin, "isTTY", "get").mockReturnValue(false);
+    spyOn(console, "log").mockImplementation(() => undefined);
+
+    const originalFetch = globalThis.fetch;
+    const { calls } = mockOAuthServer({ expiresIn: 0 });
+    try {
+      await loginCommand({ context: "prod" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(openMock).toHaveBeenCalledTimes(1);
+    expect(openMock.mock.calls[0]?.[0]).toBe(
+      "https://lobu.test/oauth/device?user_code=ABCD-1234"
+    );
+    expect(calls.some((u) => u.endsWith("/oauth/device/email"))).toBe(false);
+    expect(calls.some((u) => u.endsWith("/oauth/token"))).toBe(false);
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
   });
 
   test("errors without polling when the server has no claim endpoint", async () => {

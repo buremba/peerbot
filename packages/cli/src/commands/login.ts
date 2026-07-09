@@ -147,6 +147,8 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
   // `--email`. Approval happens out of band, so we then poll regardless of TTY.
   const emailClaim = Boolean(options.email);
   if (emailClaim) {
+    const verificationUrl =
+      authorization.verificationUriComplete ?? authorization.verificationUri;
     // Support was already verified above, before client/device-code creation.
     // tryOAuthStep returns the callback's value or undefined on error;
     // sendEmailClaim resolves void, so return a truthy sentinel to distinguish
@@ -165,6 +167,10 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
         `\n  Sent a confirmation link to ${chalk.white(options.email as string)}.`
       )
     );
+    console.log(
+      chalk.dim(`  Code: ${chalk.bold.white(authorization.userCode)}`)
+    );
+    console.log(chalk.dim(`  Fallback approval URL: ${verificationUrl}`));
     console.log(
       chalk.dim("  Waiting for the user to approve from their email...\n")
     );

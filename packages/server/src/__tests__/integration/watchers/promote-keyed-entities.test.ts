@@ -867,11 +867,13 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     const [after] = await sql`SELECT metadata FROM entities WHERE id = ${Number(row.entity_id)}`;
     expect((after.metadata as Record<string, unknown>).severity).toBe('high');
 
-    // The rejection reason is recorded as a feedback event (the revision hook).
+    // The rejection reason is recorded as a `correction` feedback event — the
+    // SAME channel getRecentFeedbackSummary reads to feed the watcher's next run
+    // (the revision loop). Keyed to the watcher, field_path='$batch_reject'.
     const feedback = await sql`
       SELECT metadata FROM current_event_records
       WHERE organization_id = ${workspace.org.id}
-        AND semantic_type = 'change_set'
+        AND semantic_type = 'correction'
         AND (metadata->>'kind') = 'watcher_batch_reject'
     `;
     expect(feedback.length).toBe(1);

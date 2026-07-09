@@ -103,7 +103,6 @@ type EntityApprovalPolicyRow = {
 	approval_channel_name: string | null;
 };
 
-
 export function isEntityMutationMode(
 	value: unknown,
 ): value is EntityMutationMode {

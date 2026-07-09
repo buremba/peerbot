@@ -109,6 +109,12 @@ export interface EntityData {
   // Organization scoping
   organization_id?: string;
 
+  // Attribution: entities.created_by is NOT NULL and FK → user. Set explicitly by
+  // the approval-apply path to the approving human (a watcher/agent proposer isn't
+  // a user row). Falls back to "system" — which is only valid where a matching
+  // user exists — when omitted.
+  created_by?: string | null;
+
   // Common fields
   enabled_classifiers?: string[] | null;
 
@@ -314,7 +320,7 @@ export async function createEntity(
 
 	const metadata = mergeConvenienceFields(data, data.metadata || {}, "create");
 
-	const createdBy = (data as any).created_by || "system";
+	const createdBy = data.created_by || "system";
 
 	// Validate parent hierarchy (replaces prevent_entity_cycles trigger)
 	if (data.parent_id) {

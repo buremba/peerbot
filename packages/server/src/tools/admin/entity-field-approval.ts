@@ -673,7 +673,16 @@ export async function applyEntityChangeProposal(
 	if (operation === "create") {
 		const createProposal = asCreateProposal(proposal);
 		return createEntity(
-			{ ...createProposal.entity_data, organization_id: ctx.organizationId },
+			{
+				...createProposal.entity_data,
+				organization_id: ctx.organizationId,
+				// The watcher that PROPOSED the create is not a real user row, so
+				// entities.created_by (NOT NULL, FK → user) must attribute the create to
+				// the human who APPROVED it. Approval is human-gated (requireHuman-
+				// ApprovalContext), so ctx.userId is a verified user here — using it
+				// avoids the "system" fallback that fails the FK.
+				created_by: ctx.userId ?? createProposal.entity_data.created_by,
+			},
 			{
 				hookContext: {
 					organizationId: ctx.organizationId,

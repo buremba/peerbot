@@ -37,13 +37,11 @@ describe("approval notification rendering", () => {
 			"Review topic fields: Severity, Name",
 		);
 		expect(formatActionApprovalBody({ approvalUrl, details })).toBe(
-			"Requested by: Watcher &lt;One&gt;\n" +
-				"Entity: [App &amp; Crashes](https://app.lobu.ai/acme/topic/app-crashes)\n" +
-				"\nProposed change:\n" +
-				"Severity:\n~high~\n→ critical\n" +
-				"Name:\n~Old Name~\n→ New &lt;Name&gt;\n" +
-				"\nWhy approval is needed: Field is protected: severity (currently set by you).\n" +
-				"\nReview: [Review in Lobu](https://app.lobu.ai/acme/runs/42)",
+			"**Watcher &lt;One&gt;** wants to update [App &amp; Crashes](https://app.lobu.ai/acme/topic/app-crashes):\n" +
+				"- Severity: ~high~\n→ critical\n" +
+				"- Name: ~Old Name~\n→ New &lt;Name&gt;\n" +
+				"\nField is protected: severity (currently set by you).\n" +
+				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/42)",
 		);
 		expect(cardText(buildActionApprovalCard({ runId: 42, approvalUrl, details }))).toBe(
 			"*Requested by:* Watcher &lt;One&gt;\n" +
@@ -63,10 +61,9 @@ describe("approval notification rendering", () => {
 			reason: null,
 		};
 		expect(formatActionApprovalBody({ details })).toBe(
-			"Entity: Topic (#9)\n" +
-				"\nProposed change:\n" +
-				'Status:\n~Not set~\n→ { "nested": true }\n' +
-				"\nWhy approval is needed: This change needs a human approval before it is applied.",
+			"**A watcher** wants to update Topic (#9):\n" +
+				'- Status: ~Not set~\n→ { "nested": true }\n' +
+				"\nThis change needs a human approval before it is applied.",
 		);
 		expect(cardText(buildActionApprovalCard({ details }))).toBe(
 			'\n*Status*\n~Not set~\n→ { "nested": true }\n' +
@@ -89,12 +86,10 @@ describe("approval notification rendering", () => {
 			"Review creating topic",
 		);
 		expect(formatActionApprovalBody({ approvalUrl, details })).toBe(
-			"Requested by: A watcher\n" +
-				"Entity: Slow &amp; Loading\n" +
-				"\nProposed action: Create this entity\n" +
-				"\nEntity type: topic\nName: Slow &amp; Loading\nParent id: 3\n" +
-				'\nWhy approval is needed: A watcher proposes creating topic "Slow &amp; Loading".\n' +
-				"\nReview: [Review in Lobu](https://app.lobu.ai/acme/runs/44)",
+			"**A watcher** wants to create Slow &amp; Loading.\n" +
+				"- Entity type: topic\n- Name: Slow &amp; Loading\n- Parent id: 3\n" +
+				'\nA watcher proposes creating topic "Slow &amp; Loading".\n' +
+				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/44)",
 		);
 		expect(cardText(buildActionApprovalCard({ runId: 44, approvalUrl, details }))).toBe(
 			"*Requested by:* A watcher\n" +
@@ -132,11 +127,9 @@ describe("approval notification rendering", () => {
 				details,
 			}),
 		).toBe(
-			"Requested by: An agent\n" +
-				"Entity: [Old &lt;Topic&gt;](https://app.lobu.ai/acme/topic/old-topic)\n" +
-				"\nProposed action: Delete this entity\n" +
-				"\nEntity id: 11\nEntity type: topic\nName: Old &lt;Topic&gt;\nForce delete tree: false\n" +
-				"\nReview: [Review in Lobu](https://app.lobu.ai/acme/runs/45)",
+			"**An agent** wants to delete [Old &lt;Topic&gt;](https://app.lobu.ai/acme/topic/old-topic).\n" +
+				"- Entity id: 11\n- Entity type: topic\n- Name: Old &lt;Topic&gt;\n- Force delete tree: false\n" +
+				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/45)",
 		);
 		expect(cardText(buildActionApprovalCard({ runId: 45, details }))).toBe(
 			"*Requested by:* An agent\n" +

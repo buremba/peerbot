@@ -203,38 +203,42 @@ function buildApprovalRenderModel(
 	};
 }
 
-/** In-app Markdown body. */
+/**
+ * In-app Markdown body. Kept tight — the structured approval card (with the
+ * Approve/Reject buttons) is the primary surface; this body is the scannable
+ * one-glance summary above it: WHO wants to do WHAT to WHICH entity, the diff,
+ * and one review link. No "Requested by:/Proposed action:/Why approval is
+ * needed:" scaffolding — a single natural sentence carries it.
+ */
 function renderApprovalBody(
 	model: ApprovalRenderModel,
 	approvalUrl?: string,
 ): string {
 	const lines: string[] = [];
-	if (model.requestedBy) lines.push(`Requested by: ${model.requestedBy}`);
 	const label = escapeNotificationText(
-		model.entityName ?? model.entityTypeLabel ?? "Entity",
+		model.entityName ?? model.entityTypeLabel ?? "this entity",
 	);
 	const entityLink = model.entityUrl
 		? `[${label}](${model.entityUrl})`
 		: model.entityId
 			? `${label} (#${model.entityId})`
-			: model.entityName
-				? label
-				: null;
-	if (entityLink) lines.push(`Entity: ${entityLink}`);
+			: label;
+	const who = model.requestedBy ?? "A watcher";
 
+	// One summary line: "<Watcher> wants to <verb> <entity>."
 	if (model.diffs) {
-		lines.push("", "Proposed change:");
-		for (const d of model.diffs) lines.push(`${d.label}:`, d.diff);
-	}
-	if (model.action) {
-		lines.push("", `Proposed action: ${model.action}`);
+		lines.push(`**${who}** wants to update ${entityLink}:`);
+		for (const d of model.diffs) lines.push(`- ${d.label}: ${d.diff}`);
+	} else {
+		const verb = model.action === "Delete this entity" ? "delete" : "create";
+		lines.push(`**${who}** wants to ${verb} ${entityLink}.`);
 		if (model.proposal.length > 0) {
-			lines.push("");
-			for (const p of model.proposal) lines.push(`${p.label}: ${p.value}`);
+			for (const p of model.proposal) lines.push(`- ${p.label}: ${p.value}`);
 		}
 	}
-	if (model.why) lines.push("", `Why approval is needed: ${model.why}`);
-	if (approvalUrl) lines.push("", `Review: ${formatReviewLink(approvalUrl)}`);
+	// The proposer's own reason, inline and unlabeled (it reads as a sentence).
+	if (model.why) lines.push("", model.why);
+	if (approvalUrl) lines.push("", formatReviewLink(approvalUrl));
 	return lines.join("\n");
 }
 

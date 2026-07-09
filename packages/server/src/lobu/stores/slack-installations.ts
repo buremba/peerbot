@@ -694,17 +694,20 @@ export async function resolveSlackPendingByTenant(
 }
 
 /**
- * Claim a pending (unclaimed) Slack workspace into an org: BIND the install
- * (persist the bot token to the org-scoped secret store + create the active,
- * org-owned `app_installations` + `connections` rows via
- * {@link upsertSlackInstallByTeam}), then DELETE the org-less pending row so the
- * workspace can't be double-claimed. Caller is responsible for authorizing the
- * claim (token-hash match + workspace-admin check) BEFORE invoking this.
+ * Claim a pending (unclaimed) Slack workspace into an org. The first UPDATE is
+ * the authoritative, durable claim: it atomically assigns the pending row to
+ * one org before any secret-store or activation work begins. A racing org's
+ * compare-and-set returns no row, so generic active-install transfer semantics
+ * can never turn a second pending claim into an ownership steal.
  *
- * The bind commits first; the pending delete is a best-effort follow-up on the
- * same team so a crash between them leaves the workspace claimed (active row
- * wins routing) with a harmless leftover pending row that the next claim
- * replaces. Returns the stable `slackinst-<uuid>` install id.
+ * The claimed row deliberately stays `pending` until
+ * {@link upsertSlackInstallByTeam} has persisted the bot token. That function
+ * finds this org-owned row and flips it active in place. If token persistence or
+ * activation fails, the encrypted token remains on the durable pending row and
+ * the SAME org can retry; a different org still cannot claim it.
+ *
+ * Caller is responsible for authorizing the claim (workspace-admin check)
+ * BEFORE invoking this. Returns the stable `slackinst-<uuid>` install id.
  */
 export async function claimSlackPendingInstall(
   store: AppInstallationStore,
@@ -712,6 +715,23 @@ export async function claimSlackPendingInstall(
   pending: SlackPendingInstall,
   organizationId: string
 ): Promise<{ installationId: string }> {
+  const sql = getDb();
+  const claimed = await sql`
+    UPDATE app_installations
+    SET organization_id = ${organizationId}, updated_at = now()
+    WHERE id = ${pending.id}::bigint
+      AND provider = ${SLACK_PROVIDER}
+      AND provider_instance = ${SLACK_PROVIDER_INSTANCE}
+      AND provider_app_id = ${SLACK_PROVIDER_APP_ID}
+      AND external_tenant_id = ${pending.teamId}
+      AND status = 'pending'
+      AND (organization_id IS NULL OR organization_id = ${organizationId})
+    RETURNING id
+  `;
+  if (claimed.length === 0) {
+    throw new Error("Slack workspace pending install was already claimed");
+  }
+
   const row = await upsertSlackInstallByTeam(
     store,
     secretStore,
@@ -726,13 +746,16 @@ export async function claimSlackPendingInstall(
       isEnterpriseInstall: pending.isEnterpriseInstall,
     }
   );
-  // Retire the org-less pending row now that an active, org-owned install owns
-  // the workspace. Team-scoped: at most one pending row per team.
-  await getDb()`
+  // Usually the reserved row was activated in place. If a same-org active row
+  // already existed, the generic upsert refreshed that row instead; retire only
+  // THIS successfully consumed pending row, never a newer reinstall.
+  await sql`
     DELETE FROM app_installations
-    WHERE provider = ${SLACK_PROVIDER}
+    WHERE id = ${pending.id}::bigint
+      AND provider = ${SLACK_PROVIDER}
       AND provider_app_id = ${SLACK_PROVIDER_APP_ID}
       AND external_tenant_id = ${pending.teamId}
+      AND organization_id = ${organizationId}
       AND status = 'pending'
   `;
   return { installationId: row.id };

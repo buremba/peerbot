@@ -429,6 +429,159 @@ describe("slack-installations projection over app_installations", () => {
     );
     expect(token).toBe("xoxb-a");
   });
+
+  test("concurrent pending claims bind exactly one org and keep ownership stable", async () => {
+    await seedAgentRow("claim-a", { organizationId: "org-claim-race-a" });
+    await seedAgentRow("claim-b", { organizationId: "org-claim-race-b" });
+    const { store, secretStore, slack } = build();
+    const sql = getDb();
+
+    await slack.writeSlackPendingInstall({
+      teamId: "T_CLAIM_RACE",
+      teamName: "Claim Race",
+      botUserId: "U_BOT",
+      botToken: "xoxb-claim-race",
+      installerUserId: "U_INSTALLER",
+      isEnterpriseInstall: false,
+      enterpriseId: null,
+    });
+    const pending = await slack.resolveSlackPendingByTenant("T_CLAIM_RACE");
+    expect(pending).not.toBeNull();
+
+    // Delay org A's app-installation writes so both claim paths overlap. Before
+    // the fix no claim write exists: both callers instead activate sequentially
+    // under the tenant lock and both report success.
+    await sql.unsafe(`
+      CREATE OR REPLACE FUNCTION public.test_delay_slack_pending_claim()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.organization_id = 'org-claim-race-a' THEN
+          PERFORM pg_sleep(0.75);
+        END IF;
+        RETURN NEW;
+      END;
+      $$
+    `);
+    await sql.unsafe(`
+      CREATE TRIGGER test_delay_slack_pending_claim
+      BEFORE INSERT OR UPDATE ON app_installations
+      FOR EACH ROW EXECUTE FUNCTION public.test_delay_slack_pending_claim()
+    `);
+
+    try {
+      const claims = await Promise.allSettled([
+        slack.claimSlackPendingInstall(
+          store,
+          secretStore,
+          pending!,
+          "org-claim-race-a",
+        ),
+        slack.claimSlackPendingInstall(
+          store,
+          secretStore,
+          pending!,
+          "org-claim-race-b",
+        ),
+      ]);
+
+      const statuses = claims.map((claim) => claim.status);
+      expect(statuses.filter((status) => status === "fulfilled")).toHaveLength(1);
+      expect(statuses.filter((status) => status === "rejected")).toHaveLength(1);
+      const winnerIndex = statuses.findIndex((status) => status === "fulfilled");
+      const winningOrg = ["org-claim-race-a", "org-claim-race-b"][winnerIndex]!;
+      const losingOrg = ["org-claim-race-b", "org-claim-race-a"][winnerIndex]!;
+      const active = await slack.getSlackInstallByTeamId(store, "T_CLAIM_RACE");
+      expect(active?.organizationId).toBe(winningOrg);
+
+      // A stale pre-claim object must not let the loser invoke normal Slack
+      // reinstall transfer semantics after the winning claim has committed.
+      await expect(
+        slack.claimSlackPendingInstall(
+          store,
+          secretStore,
+          pending!,
+          losingOrg,
+        ),
+      ).rejects.toThrow(/already claimed/);
+      expect(
+        (await slack.getSlackInstallByTeamId(store, "T_CLAIM_RACE"))
+          ?.organizationId,
+      ).toBe(winningOrg);
+
+      const rows = await sql`
+        SELECT organization_id, status
+        FROM app_installations
+        WHERE provider = 'slack' AND external_tenant_id = 'T_CLAIM_RACE'
+        ORDER BY id
+      `;
+      expect(rows).toEqual([
+        expect.objectContaining({
+          organization_id: winningOrg,
+          status: "active",
+        }),
+      ]);
+    } finally {
+      await sql.unsafe(
+        "DROP TRIGGER IF EXISTS test_delay_slack_pending_claim ON app_installations",
+      );
+      await sql.unsafe(
+        "DROP FUNCTION IF EXISTS public.test_delay_slack_pending_claim()",
+      );
+    }
+  });
+
+  test("a failed pending claim keeps its encrypted token for the winning org to retry", async () => {
+    await seedAgentRow("claim-retry", {
+      organizationId: "org-claim-retry",
+    });
+    const { store, secretStore, slack } = build();
+    await slack.writeSlackPendingInstall({
+      teamId: "T_CLAIM_RETRY",
+      teamName: "Claim Retry",
+      botUserId: "U_BOT",
+      botToken: "xoxb-claim-retry",
+      installerUserId: "U_INSTALLER",
+      isEnterpriseInstall: false,
+      enterpriseId: null,
+    });
+    const pending = await slack.resolveSlackPendingByTenant("T_CLAIM_RETRY");
+    const failingSecretStore = makeFailingSecretStore(
+      secretStore,
+      "simulated pending claim secret failure",
+    );
+
+    await expect(
+      slack.claimSlackPendingInstall(
+        store,
+        failingSecretStore,
+        pending!,
+        "org-claim-retry",
+      ),
+    ).rejects.toThrow(/simulated pending claim secret failure/);
+
+    const sql = getDb();
+    const parked = await sql`
+      SELECT organization_id, status, metadata ->> 'bot_token_enc' AS token_enc
+      FROM app_installations
+      WHERE id = ${pending!.id}
+    `;
+    expect(parked).toHaveLength(1);
+    expect(parked[0].organization_id).toBe("org-claim-retry");
+    expect(parked[0].status).toBe("pending");
+    expect(parked[0].token_enc).toBeTruthy();
+    expect(
+      (await slack.resolveSlackPendingByTenant("T_CLAIM_RETRY"))?.botToken,
+    ).toBe("xoxb-claim-retry");
+
+    await slack.claimSlackPendingInstall(
+      store,
+      secretStore,
+      pending!,
+      "org-claim-retry",
+    );
+    const active = await slack.getSlackInstallByTeamId(store, "T_CLAIM_RETRY");
+    expect(active?.organizationId).toBe("org-claim-retry");
+  });
 });
 
 describe("Grid install-model routing (per-workspace + org-wide enterprise)", () => {

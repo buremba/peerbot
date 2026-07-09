@@ -684,7 +684,8 @@ describe("XConnector home_feed", () => {
 		expect(calls).toHaveLength(1);
 		expect(calls[0].action).toBe("navigate");
 		expect(calls[0].input.cs_scrape).toBe(true);
-		expect(calls[0].input.persistent).toBe(true);
+		expect(calls[0].input.persistent).toBe(false);
+		expect(calls[0].input.focus).toBe(false);
 		expect(calls[0].input.url).toBe("https://x.com/home");
 		expect(
 			(calls[0].input.scrape_config as { scroll: { max: number } }).scroll.max,

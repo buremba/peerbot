@@ -965,8 +965,8 @@ export default class LinkedInConnector extends ConnectorRuntime<
    * Personalized home feed via the extension's content-script scrape. Network
    * capture can't read it (the CDP debugger stops the feed rendering), so we
    * dispatch a `cs_scrape` against linkedin.com/feed/ with the home-feed
-   * selectors. The persistent window is reused/focused so an auth wall can be
-   * cleared in place for the next run.
+   * selectors. Each run uses its own scratch tab; the paired Chrome profile
+   * supplies the shared login cookies.
    */
   private async syncHomeFeed(
     maxScrolls: number,
@@ -986,7 +986,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
 
     if (!loggedIn) {
       throw new Error(
-        "Not logged into LinkedIn. The home feed could not be read — sign in to LinkedIn in the focused Owletto window, then re-run the sync."
+        "Not logged into LinkedIn. Sign in to linkedin.com in the paired Chrome profile, then re-run the sync."
       );
     }
 

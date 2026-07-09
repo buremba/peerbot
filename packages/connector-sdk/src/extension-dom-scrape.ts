@@ -16,12 +16,22 @@ export interface ExtensionScrapeConfig {
   /** Section/day grouping: iterate each `selector`, take its first text line as
    * the group label (when `labelFromFirstLine`), and emit a row per
    * `rowSelector` inside it. The engine reads `cfg.group.selector`. */
-  group?: { selector: string; rowSelector: string; labelFromFirstLine?: boolean };
+  group?: {
+    selector: string;
+    rowSelector: string;
+    labelFromFirstLine?: boolean;
+  };
   id?: { source: string; name?: string; regex?: string; group?: number };
   requireFields?: readonly string[];
   fields?: Record<
     string,
-    { selector?: string; take?: string; attr?: string; firstLine?: boolean; const?: unknown }
+    {
+      selector?: string;
+      take?: string;
+      attr?: string;
+      firstLine?: boolean;
+      const?: unknown;
+    }
   >;
   [k: string]: unknown;
 }
@@ -57,10 +67,50 @@ export interface ExtensionDomScrapeResult<TItem> {
   tabId?: number;
 }
 
+function hostMatchesPattern(host: string, pattern: string): boolean {
+  const normalizedHost = host.toLowerCase().replace(/\.$/, '');
+  const normalizedPattern = pattern.toLowerCase().replace(/\.$/, '');
+  if (normalizedHost === normalizedPattern) return true;
+  if (normalizedPattern.startsWith('*.')) {
+    return normalizedHost.endsWith(normalizedPattern.slice(1));
+  }
+  return false;
+}
+
+function assertExpectedScrapeSite(
+  requestedUrl: string,
+  allowedOrigins: string[],
+  result: ExtensionScrapeResult
+): void {
+  const requestedHost = new URL(requestedUrl).hostname;
+  const expectedHosts = [requestedHost, ...allowedOrigins];
+  const assertHost = (host: string, source: string) => {
+    if (expectedHosts.some((pattern) => hostMatchesPattern(host, pattern)))
+      return;
+    throw new Error(
+      `cs_scrape returned the wrong site: requested ${requestedHost}, but ${source} reported ${host}.`
+    );
+  };
+
+  if (result.host) assertHost(result.host, 'result.host');
+  if (result.landedUrl) {
+    let landedHost: string;
+    try {
+      landedHost = new URL(result.landedUrl).hostname;
+    } catch {
+      throw new Error(
+        `cs_scrape returned the wrong site: landedUrl is not a valid URL (${result.landedUrl}).`
+      );
+    }
+    assertHost(landedHost, 'landedUrl');
+  }
+}
+
 /**
  * Drive one content-script `cs_scrape` navigate and return parsed rows.
- * `persistent`/`focus` default true so a reused, focused window lets the user
- * clear an auth wall in place.
+ * Scrapes default to a background, action-scoped tab that the extension closes
+ * after harvesting. Set `persistent:true` only for a site with tab-bound state;
+ * it selects that site's sticky anchor and serializes work on that anchor.
  */
 export async function extensionDomScrape<TItem>(opts: {
   dispatcher: ChromeActionDispatcher;
@@ -71,14 +121,15 @@ export async function extensionDomScrape<TItem>(opts: {
   persistent?: boolean;
   focus?: boolean;
 }): Promise<ExtensionDomScrapeResult<TItem>> {
-  const observation = await opts.dispatcher.dispatch<ExtensionScrapeObservation>('navigate', {
-    cs_scrape: true,
-    persistent: opts.persistent ?? true,
-    focus: opts.focus ?? true,
-    url: opts.url,
-    scrape_config: opts.config,
-    allowed_origins: opts.allowedOrigins,
-  });
+  const observation =
+    await opts.dispatcher.dispatch<ExtensionScrapeObservation>('navigate', {
+      cs_scrape: true,
+      persistent: opts.persistent ?? false,
+      focus: opts.focus ?? false,
+      url: opts.url,
+      scrape_config: opts.config,
+      allowed_origins: opts.allowedOrigins,
+    });
   const result = observation?.result;
   // Fail loudly on a broken scrape. A missing result (dispatch never produced
   // one) or an `error` field (the in-page script threw — e.g. CSP blocked
@@ -88,11 +139,14 @@ export async function extensionDomScrape<TItem>(opts: {
   // auth wall is different — the engine returns `loggedIn:false` with no error,
   // which is preserved below for the caller to handle.
   if (!result) {
-    throw new Error('cs_scrape returned no result — the content-script dispatch did not complete.');
+    throw new Error(
+      'cs_scrape returned no result — the content-script dispatch did not complete.'
+    );
   }
-  if (typeof result.error === 'string' && result.error) {
-    throw new Error(`cs_scrape failed in the page: ${result.error}`);
+  if (result.error != null && result.error !== '') {
+    throw new Error(`cs_scrape failed in the page: ${String(result.error)}`);
   }
+  assertExpectedScrapeSite(opts.url, opts.allowedOrigins, result);
   const items = opts.parseRows(result.rows ?? []);
   return {
     items,

@@ -53,11 +53,14 @@ describe('extensionDomScrape', () => {
     expect(log).toHaveLength(1);
     expect(log[0].action).toBe('navigate');
     expect(log[0].input.cs_scrape).toBe(true);
-    expect(log[0].input.persistent).toBe(true);
-    expect(log[0].input.focus).toBe(true);
+    expect(log[0].input.persistent).toBe(false);
+    expect(log[0].input.focus).toBe(false);
     expect(log[0].input.url).toBe('https://www.example.com/feed/');
     expect(log[0].input.scrape_config).toBe(config);
-    expect(log[0].input.allowed_origins).toEqual(['example.com', '*.example.com']);
+    expect(log[0].input.allowed_origins).toEqual([
+      'example.com',
+      '*.example.com',
+    ]);
 
     expect(res.items).toEqual([{ id: 'a' }, { id: 'b' }]);
     expect(res.loggedIn).toBe(true);
@@ -105,11 +108,51 @@ describe('extensionDomScrape', () => {
         config: {},
         parseRows: (rows) => rows as { id?: string }[],
         allowedOrigins: ['example.com'],
-        persistent: false,
-        focus: false,
+        persistent: true,
+        focus: true,
       })
     ).rejects.toThrow(/cs_scrape returned no result/);
-    expect(log[0].input.persistent).toBe(false);
-    expect(log[0].input.focus).toBe(false);
+    expect(log[0].input.persistent).toBe(true);
+    expect(log[0].input.focus).toBe(true);
+  });
+
+  test('fails loudly when the scrape result reports a different site', async () => {
+    const { dispatcher } = makeDispatcher({
+      result: {
+        host: 'evil.example.net',
+        landedUrl: 'https://evil.example.net/phishing',
+        rows: [],
+      },
+    });
+
+    await expect(
+      extensionDomScrape({
+        dispatcher,
+        url: 'https://www.example.com/feed/',
+        config: {},
+        parseRows: (rows) => rows,
+        allowedOrigins: ['example.com', '*.example.com'],
+      })
+    ).rejects.toThrow(/wrong site/);
+  });
+
+  test('fails loudly when landedUrl disagrees with an otherwise valid result host', async () => {
+    const { dispatcher } = makeDispatcher({
+      result: {
+        host: 'www.example.com',
+        landedUrl: 'https://evil.example.net/phishing',
+        rows: [],
+      },
+    });
+
+    await expect(
+      extensionDomScrape({
+        dispatcher,
+        url: 'https://www.example.com/feed/',
+        config: {},
+        parseRows: (rows) => rows,
+        allowedOrigins: ['example.com', '*.example.com'],
+      })
+    ).rejects.toThrow(/landedUrl reported evil\.example\.net/);
   });
 });

@@ -1665,7 +1665,7 @@ async function syncHomeFeedViaDomScrape(
 
 	if (!loggedIn) {
 		throw new Error(
-			"Not logged into X. The home timeline could not be read — sign in to x.com in the focused Owletto window, then re-run the sync.",
+			"Not logged into X. Sign in to x.com in the paired Chrome profile, then re-run the sync.",
 		);
 	}
 

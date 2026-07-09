@@ -525,4 +525,61 @@ describe("Grid install-model routing (per-workspace + org-wide enterprise)", () 
     const solo = await slack.getSlackInstallByEnterpriseId(store, "E_PLAIN");
     expect(solo?.organizationId).toBe("org-plain");
   });
+
+  test("org-wide pending (keyed on enterprise id) resolves for a sibling-workspace event via the enterprise fallback", async () => {
+    // The real org-wide install flow: oauth.v2.access returns no team id, so the
+    // pending row is keyed on the ENTERPRISE id (E_ORG). A sibling-workspace event
+    // in the pre-claim window arrives stamped with the sibling's team id (T_SIB),
+    // which never equals E_ORG — so resolveSlackPendingByTenant must fall back to
+    // the enterprise id to find the parked org-wide install (else the unclaimed
+    // reply / connect-link never fires for siblings).
+    const { slack } = build();
+    await slack.writeSlackPendingInstall({
+      teamId: "E_ORG", // enterprise id stands in as the identity key (no team id)
+      teamName: "Org Sandbox",
+      botUserId: "U_BOT",
+      botToken: "xoxb-org",
+      installerUserId: "U_OWNER",
+      isEnterpriseInstall: true,
+      enterpriseId: "E_ORG",
+    });
+
+    // Exact miss on the sibling team id, but enterprise fallback finds it.
+    const bySibling = await slack.resolveSlackPendingByTenant("T_SIB", "E_ORG");
+    expect(bySibling?.teamId).toBe("E_ORG");
+    expect(bySibling?.isEnterpriseInstall).toBe(true);
+
+    // Without the enterprise hint, a sibling team id alone does NOT resolve it.
+    expect(await slack.resolveSlackPendingByTenant("T_SIB")).toBeNull();
+
+    // The exact enterprise-id key still resolves directly (the claim ref path).
+    expect((await slack.resolveSlackPendingByTenant("E_ORG"))?.teamId).toBe(
+      "E_ORG",
+    );
+  });
+
+  test("a plain per-workspace pending is NOT matched by a sibling's enterprise id", async () => {
+    // Guard the negative: a non-org-wide pending row (is_enterprise_install=false)
+    // must never be claimed by an unrelated sibling event that happens to carry
+    // the same enterprise id — only a flagged org-wide row answers the fallback.
+    const { slack } = build();
+    await slack.writeSlackPendingInstall({
+      teamId: "T_ONLY",
+      teamName: "Single WS",
+      botUserId: "U_BOT",
+      botToken: "xoxb-only",
+      installerUserId: "U_INSTALLER",
+      isEnterpriseInstall: false,
+      enterpriseId: "E_SHARED",
+    });
+
+    // A different sibling under the same enterprise must not resolve this row.
+    expect(
+      await slack.resolveSlackPendingByTenant("T_OTHER", "E_SHARED"),
+    ).toBeNull();
+    // Its own team id still resolves it.
+    expect((await slack.resolveSlackPendingByTenant("T_ONLY"))?.teamId).toBe(
+      "T_ONLY",
+    );
+  });
 });

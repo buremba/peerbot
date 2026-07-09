@@ -473,11 +473,15 @@ export class SlackConnectionCoordinator {
       // 3) A workspace that installed Lobu but hasn't been CLAIMED into a Lobu
       //    org yet (a `pending` install). Don't silently drop their messages —
       //    reply with the connect link so a workspace admin can finish setup.
-      const pending = await resolveSlackPendingByTenant(teamId);
+      const pending = await resolveSlackPendingByTenant(teamId, enterpriseId);
       if (pending) {
         return await this.replyUnclaimedWorkspace(
           pending.botToken,
-          teamId,
+          // Use the PENDING ROW's own key as the claim ref, not the event's team
+          // id: for a Grid org-wide install the pending row is keyed on the
+          // enterprise id, and a sibling-workspace event's team id would not
+          // resolve the pending row at claim time.
+          pending.teamId,
           body,
           contentType,
           request.headers.get("x-slack-retry-num") !== null,

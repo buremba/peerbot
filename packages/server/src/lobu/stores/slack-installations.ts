@@ -600,17 +600,31 @@ export async function writeSlackPendingInstall(
 
 /** Resolve the pending (unclaimed) install for a Slack workspace, if any. */
 export async function resolveSlackPendingByTenant(
-  teamId: string
+  teamId: string,
+  enterpriseId?: string | null
 ): Promise<SlackPendingInstall | null> {
   const sql = getDb();
+  // Match the pending row by its own external_tenant_id (the exact workspace, or
+  // — for a Grid ORG-WIDE install — the enterprise id). A sibling-workspace event
+  // arriving in the post-install/pre-claim window carries the sibling's team_id,
+  // which never equals the org-wide pending row's enterprise-id key, so fall back
+  // to the enterprise id (only when the org-wide row also flags itself, so a plain
+  // per-workspace pending row is never matched by a sibling's enterprise id).
   const rows = (await sql`
     SELECT id, external_tenant_id, metadata
     FROM app_installations
     WHERE provider = ${SLACK_PROVIDER}
       AND provider_app_id = ${SLACK_PROVIDER_APP_ID}
-      AND external_tenant_id = ${teamId}
       AND status = 'pending'
-    ORDER BY created_at DESC
+      AND (
+        external_tenant_id = ${teamId}
+        OR (
+          ${enterpriseId ?? null}::text IS NOT NULL
+          AND external_tenant_id = ${enterpriseId ?? null}
+          AND (metadata->'is_enterprise_install') = 'true'::jsonb
+        )
+      )
+    ORDER BY (external_tenant_id = ${teamId}) DESC, created_at DESC
     LIMIT 1
   `) as Array<{
     id: number | string;

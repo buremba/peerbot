@@ -127,4 +127,25 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     expect(res).toBeNull();
     expect(await pinOf(connId)).toBeNull();
   });
+
+  it('keeps a still-online deliberate pin (does not jump to a fresher extension)', async () => {
+    // Older but still online pin (Mac mini) vs a more recently seen MacBook
+    // extension — multi-Chrome orgs must not steal scrapes to last_seen DESC.
+    const pinned = await seedExtWorker(userId, orgId, { online: true });
+    // Age the pinned worker's last_seen slightly so the fresher one would win
+    // under the old ORDER BY last_seen_at DESC rule.
+    await sql`
+      UPDATE device_workers
+      SET last_seen_at = now() - interval '2 minutes'
+      WHERE id = ${pinned}::uuid
+    `;
+    const fresher = await seedExtWorker(userId, orgId, { online: true });
+    const connId = await seedChromeConn(orgId, userId, pinned);
+
+    const res = await resolveOnlineChromeConnection(orgId, sql);
+
+    expect(res?.deviceWorkerId).toBe(pinned);
+    expect(res?.deviceWorkerId).not.toBe(fresher);
+    expect(await pinOf(connId)).toBe(pinned);
+  });
 });

@@ -352,12 +352,21 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
   }
 }
 
+/** Max length for a user-set device display name. */
+const DEVICE_LABEL_MAX_LEN = 80;
+
 /**
- * PATCH /api/me/devices/:id  { organization_id }
+ * PATCH /api/me/devices/:id  { organization_id?, label? }
  *
- * Re-attach one of the caller's devices to a different workspace they belong to.
- * A device's connectors live in its workspace; moving the device un-pins and
- * pauses the connections (and their feeds) it backed in the previous one.
+ * Update one of the caller's devices. At least one field is required:
+ *
+ *  - `label` — human display name (Devices page). Empty/null clears it so the
+ *    UI falls back to the platform label ("Chrome", "Mac", …). Poll heartbeats
+ *    only overwrite when the device itself sends a non-null label, so a
+ *    user-set name sticks across Chrome extension / Mac app check-ins.
+ *  - `organization_id` — re-attach to a different workspace the caller belongs
+ *    to. Moving un-pins and pauses the connections (and their feeds) it backed
+ *    in the previous workspace.
  */
 export async function updateDeviceWorkerOrg(c: Context<{ Bindings: Env }>) {
   const userId = c.var.user?.id;
@@ -368,28 +377,68 @@ export async function updateDeviceWorkerOrg(c: Context<{ Bindings: Env }>) {
   if (!deviceWorkerId) {
     return c.json({ error: 'device id is required' }, 400);
   }
-  let organizationId: string;
+  let body: { organization_id?: string | null; label?: string | null };
   try {
-    const body = await c.req.json<{ organization_id?: string }>();
-    organizationId = (body.organization_id ?? '').trim();
-    if (!organizationId) {
-      return c.json({ error: 'organization_id is required' }, 400);
-    }
+    body = await c.req.json<{ organization_id?: string | null; label?: string | null }>();
   } catch {
     return c.json({ error: 'Invalid or missing JSON body' }, 400);
   }
+
+  const hasOrg = Object.hasOwn(body, 'organization_id');
+  const hasLabel = Object.hasOwn(body, 'label');
+  if (!hasOrg && !hasLabel) {
+    return c.json(
+      { error: 'Provide organization_id and/or label to update' },
+      400
+    );
+  }
+
+  const organizationId = hasOrg
+    ? (body.organization_id ?? '').toString().trim()
+    : null;
+  if (hasOrg && !organizationId) {
+    return c.json({ error: 'organization_id is required when provided' }, 400);
+  }
+
+  // Normalize label: trim; empty string / null → clear (store NULL). Cap length.
+  let nextLabel: string | null | undefined;
+  if (hasLabel) {
+    if (body.label == null) {
+      nextLabel = null;
+    } else if (typeof body.label !== 'string') {
+      return c.json({ error: 'label must be a string or null' }, 400);
+    } else {
+      const trimmed = body.label.trim();
+      if (trimmed.length === 0) {
+        nextLabel = null;
+      } else if (trimmed.length > DEVICE_LABEL_MAX_LEN) {
+        return c.json(
+          { error: `label must be at most ${DEVICE_LABEL_MAX_LEN} characters` },
+          400
+        );
+      } else {
+        nextLabel = trimmed;
+      }
+    }
+  }
+
   try {
     const sql = getDb();
-    const role = await getWorkspaceRole(sql, organizationId, userId);
-    if (!role) {
-      return c.json({ error: 'You are not a member of that workspace' }, 403);
+
+    if (organizationId) {
+      const role = await getWorkspaceRole(sql, organizationId, userId);
+      if (!role) {
+        return c.json({ error: 'You are not a member of that workspace' }, 403);
+      }
     }
+
     const updated = await sql.begin(async (tx) => {
       const owned = (await tx`
         SELECT organization_id FROM device_workers WHERE id = ${deviceWorkerId} AND user_id = ${userId} LIMIT 1
       `) as unknown as Array<{ organization_id: string | null }>;
       if (owned.length === 0) return false;
-      if (owned[0].organization_id !== organizationId) {
+
+      if (organizationId && owned[0].organization_id !== organizationId) {
         const affected = (await tx`
           UPDATE connections
           SET device_worker_id = NULL,
@@ -408,12 +457,20 @@ export async function updateDeviceWorkerOrg(c: Context<{ Bindings: Env }>) {
         }
         await tx`UPDATE device_workers SET organization_id = ${organizationId} WHERE id = ${deviceWorkerId}`;
       }
+
+      if (hasLabel) {
+        await tx`
+          UPDATE device_workers
+          SET label = ${nextLabel ?? null}
+          WHERE id = ${deviceWorkerId} AND user_id = ${userId}
+        `;
+      }
       return true;
     });
     if (!updated) {
       return c.json({ error: 'Device not found or not owned by you' }, 404);
     }
-    return c.json({ ok: true });
+    return c.json({ ok: true, ...(hasLabel ? { label: nextLabel ?? null } : {}) });
   } catch (err: unknown) {
     logger.error({ error: errorMessage(err) }, '[updateDeviceWorkerOrg] Error');
     return c.json({ error: errorMessage(err) }, 500);

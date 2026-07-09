@@ -49,18 +49,20 @@ export interface ChromeActionDispatchResult {
 
 /**
  * Resolve an online Owletto Chrome extension to run a chrome action against, and
- * self-heal the org's `chrome` connection pin to it.
+ * self-heal the org's `chrome` connection pin when needed.
  *
  * Both this dispatch and the poll claim gate on `connections.device_worker_id`,
- * but nothing keeps the generic `chrome` action connection bound to the current
- * extension worker: re-pairing mints a NEW device worker and leaves the chrome
- * connection pinned to the old (now offline) one — or never pinned at all (it's
- * not a bundled device connector, so `device-reconcile` doesn't touch it). The
- * result: a server-side chrome connector (Revolut, LinkedIn) can't reach an
- * extension that IS online, and dispatch fails with "no online paired
- * extension". So resolve any online, debugger-capable chrome-extension worker in
- * the org INDEPENDENT of the existing pin, then repin the connection to it
- * before enqueuing — fixing both the NULL-pin and stale-pin (post-re-pair) cases.
+ * but re-pairing mints a NEW device worker and can leave the chrome connection
+ * pinned to the old (now offline) one — or never pinned at all. Without a
+ * heal, server-side chrome connectors (Revolut, LinkedIn) fail with "no online
+ * paired extension" even when another extension IS online.
+ *
+ * Sticky pin: when the current pin is still an online debugger-capable
+ * chrome-extension, keep it. Users with multiple Chromes (e.g. Mac mini +
+ * MacBook) deliberately pin scrapers to one machine; always rebinding to
+ * `last_seen_at DESC` would steal actions to whichever extension last polled.
+ * Only repin when the pin is NULL or the pinned worker is offline / missing
+ * debugger — covering re-pair and first-use.
  *
  * Returns the chrome connection id + the resolved worker, or null when no online
  * extension exists in the org.
@@ -69,29 +71,56 @@ export async function resolveOnlineChromeConnection(
   organizationId: string,
   sql = getDb()
 ): Promise<{ connectionId: number; deviceWorkerId: string } | null> {
+  // Prefer the connection's current pin when that worker is still online and
+  // debugger-capable. Fall back to the most recently seen online extension.
   const rows = (await sql`
     SELECT
       con.id AS connection_id,
       con.device_worker_id AS current_pin,
-      dw.id AS online_worker_id
+      pinned.id AS pinned_online_worker_id,
+      fresh.id AS fresh_online_worker_id
     FROM connections con
-    JOIN device_workers dw ON dw.organization_id = con.organization_id
+    LEFT JOIN device_workers pinned
+      ON pinned.id = con.device_worker_id
+     AND pinned.organization_id = con.organization_id
+     AND pinned.platform = 'chrome-extension'
+     AND pinned.capabilities::jsonb @> '["browser.debugger"]'::jsonb
+     AND pinned.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
+    LEFT JOIN LATERAL (
+      SELECT dw.id
+      FROM device_workers dw
+      WHERE dw.organization_id = con.organization_id
+        AND dw.platform = 'chrome-extension'
+        AND dw.capabilities::jsonb @> '["browser.debugger"]'::jsonb
+        AND dw.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
+      ORDER BY dw.last_seen_at DESC
+      LIMIT 1
+    ) fresh ON TRUE
     WHERE con.organization_id = ${organizationId}
       AND con.connector_key = 'chrome'
       AND con.status = 'active'
       AND con.deleted_at IS NULL
-      AND dw.platform = 'chrome-extension'
-      AND dw.capabilities::jsonb @> '["browser.debugger"]'::jsonb
-      AND dw.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
-    ORDER BY dw.last_seen_at DESC
     LIMIT 1
-  `) as Array<{ connection_id: number; current_pin: string | null; online_worker_id: string }>;
+  `) as Array<{
+    connection_id: number;
+    current_pin: string | null;
+    pinned_online_worker_id: string | null;
+    fresh_online_worker_id: string | null;
+  }>;
 
   if (rows.length === 0) return null;
-  const { connection_id, current_pin, online_worker_id } = rows[0];
+  const {
+    connection_id,
+    current_pin,
+    pinned_online_worker_id,
+    fresh_online_worker_id,
+  } = rows[0];
 
-  // Self-heal the pin so the poll claim (which gates on device_worker_id) routes
-  // the run to the online worker. Covers a NULL pin and a stale post-re-pair pin.
+  // Sticky: keep a still-online deliberate pin. Otherwise heal to the freshest
+  // online debugger extension (NULL pin or stale post-re-pair pin).
+  const online_worker_id = pinned_online_worker_id ?? fresh_online_worker_id;
+  if (!online_worker_id) return null;
+
   if (current_pin !== online_worker_id) {
     await sql`
       UPDATE connections

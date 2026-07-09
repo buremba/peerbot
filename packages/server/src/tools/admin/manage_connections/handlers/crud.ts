@@ -1577,13 +1577,32 @@ export async function handleUpdate(
 		hasDeviceWorkerArg ||
 		(updateProfileDeviceWorkerId && !hasDeviceWorkerArg)
 	) {
+    // Re-pinning (or clearing) the device also clears the "Device was removed"
+    // tombstone left by DELETE /api/me/devices — otherwise the connection stays
+    // active but UI-flagged error forever after the user picks a new device.
     await sql`
       UPDATE connections
-      SET device_worker_id = ${nextDeviceWorkerId}, updated_at = NOW()
+      SET device_worker_id = ${nextDeviceWorkerId},
+          error_message = CASE
+            WHEN error_message IN (
+              'Device was removed',
+              'Device was moved to another workspace'
+            ) THEN NULL
+            ELSE error_message
+          END,
+          updated_at = NOW()
       WHERE id = ${args.connection_id} AND organization_id = ${organizationId}
     `;
 		(updated[0] as Record<string, unknown>).device_worker_id =
 			nextDeviceWorkerId;
+		if (
+			(updated[0] as Record<string, unknown>).error_message ===
+				"Device was removed" ||
+			(updated[0] as Record<string, unknown>).error_message ===
+				"Device was moved to another workspace"
+		) {
+			(updated[0] as Record<string, unknown>).error_message = null;
+		}
   }
 
   const updatedConnection = updated[0] as {

@@ -28,10 +28,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/review-lock.sh
 . "$SCRIPT_DIR/lib/review-lock.sh"
+# shellcheck source=scripts/lib/review-database-url.sh
+. "$SCRIPT_DIR/lib/review-database-url.sh"
+# shellcheck source=scripts/lib/review-process.sh
+. "$SCRIPT_DIR/lib/review-process.sh"
 
 # --- preflight --------------------------------------------------------------
 
-for cmd in claude jq git; do
+for cmd in claude jq git node perl pgrep; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "$cmd not found on PATH." >&2; exit 2; }
 done
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "Not inside a git work tree." >&2; exit 2; }
@@ -107,8 +111,11 @@ finalize_review_status() {
 
 run_claude_review_inline() {
   local prompt_file="$1"
+  local raw_file
+  raw_file="$(mktemp /tmp/lobu-review-claude-inline.XXXXXX)"
+  REVIEW_INLINE_RAW_FILE="$raw_file"
   set +e
-  RAW="$(
+  run_review_child env \
     BASE_BRANCH="$BASE_BRANCH" \
     HEAD_SHA="$HEAD_SHA" \
     TYPECHECK_LOG="$TYPECHECK_LOG" TYPECHECK_EXIT="$TYPECHECK_EXIT" \
@@ -121,10 +128,12 @@ run_claude_review_inline() {
       --output-format text \
       --no-session-persistence \
       --tools Bash,Read,Grep,LS \
-      --permission-mode bypassPermissions < /dev/null
-  )"
+      --permission-mode bypassPermissions < /dev/null > "$raw_file"
   CLAUDE_EXIT=$?
   set -e
+  RAW="$(cat "$raw_file" 2>/dev/null || true)"
+  rm -f "$raw_file"
+  REVIEW_INLINE_RAW_FILE=""
 }
 
 run_claude_review_herdr() {
@@ -134,9 +143,14 @@ run_claude_review_herdr() {
   exit_file="$(mktemp /tmp/lobu-review-claude-exit.XXXXXX)"
   rm -f "$exit_file"
   pane_name="claude-review-${HEAD_SHA:0:8}-$$"
+  REVIEW_HERDR_PANE_NAME="$pane_name"
+  REVIEW_HERDR_RAW_FILE="$raw_file"
+  REVIEW_HERDR_EXIT_FILE="$exit_file"
 
   echo ">> spawning Herdr pane '$pane_name' for Claude review"
   set +e
+  # Variables in the single-quoted payload expand inside the spawned Bash.
+  # shellcheck disable=SC2016
   started="$(
     herdr agent start "$pane_name" \
       --workspace "$HERDR_WORKSPACE_ID" \
@@ -179,9 +193,11 @@ run_claude_review_herdr() {
   if [ $start_exit -ne 0 ]; then
     echo ">> Herdr Claude pane failed to start; falling back to inline Claude" >&2
     printf '%s\n' "$started" >&2
+    close_review_herdr_pane
     run_claude_review_inline "$prompt_file"
     return
   fi
+  register_review_herdr_pane "$pane_name" "$started"
 
   echo ">> Claude review is visible in Herdr pane '$pane_name'"
   local waited=0
@@ -191,7 +207,7 @@ run_claude_review_herdr() {
     if [ "$waited" -ge "${CLAUDE_REVIEW_TIMEOUT_SECONDS:-1200}" ]; then
       RAW="$(cat "$raw_file" 2>/dev/null || true)"
       CLAUDE_EXIT=124
-      rm -f "$raw_file" "$exit_file"
+      close_review_herdr_pane
       echo ">> Claude review pane timed out after ${waited}s" >&2
       return
     fi
@@ -200,6 +216,10 @@ run_claude_review_herdr() {
   RAW="$(cat "$raw_file" 2>/dev/null || true)"
   CLAUDE_EXIT="$(cat "$exit_file" 2>/dev/null || echo 1)"
   rm -f "$raw_file" "$exit_file"
+  REVIEW_HERDR_PANE_ID=""
+  REVIEW_HERDR_PANE_NAME=""
+  REVIEW_HERDR_RAW_FILE=""
+  REVIEW_HERDR_EXIT_FILE=""
 }
 
 run_claude_review() {
@@ -294,7 +314,18 @@ process.exit(1);
   printf '%s\n' "$raw" | sed -e 's/^```json//' -e 's/^```//' -e 's/```$//'
 }
 
-trap 'ec=$?; release_review_lock; if [ $ec -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then post_review_status error "Claude review failed before verdict (exit $ec)"; fi' EXIT
+handle_review_signal() {
+  local exit_code="$1"
+  trap - INT TERM HUP
+  stop_active_review_child
+  close_review_herdr_pane
+  exit "$exit_code"
+}
+
+trap 'handle_review_signal 130' INT
+trap 'handle_review_signal 143' TERM
+trap 'handle_review_signal 129' HUP
+trap 'ec=$?; stop_active_review_child; close_review_herdr_pane; release_review_lock; if [ $ec -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then post_review_status error "Claude review failed before verdict (exit $ec)"; fi' EXIT
 
 acquire_review_lock
 
@@ -315,12 +346,7 @@ fi
 # runs can instead opt into distinct pre-created test databases through the
 # deliberately named REVIEW_DATABASE_URL; reject non-test names defensively.
 if [ -n "$REVIEW_DATABASE_URL" ]; then
-  REVIEW_DATABASE_NAME="${REVIEW_DATABASE_URL%%\?*}"
-  REVIEW_DATABASE_NAME="${REVIEW_DATABASE_NAME##*/}"
-  if [[ "$REVIEW_DATABASE_NAME" != lobu_test* ]]; then
-    echo "REVIEW_DATABASE_URL database must start with 'lobu_test'" >&2
-    exit 2
-  fi
+  validate_review_database_url "$REVIEW_DATABASE_URL"
   export DATABASE_URL="$REVIEW_DATABASE_URL"
 else
   unset DATABASE_URL
@@ -340,7 +366,7 @@ REVIEW_RUN_DIR="$(mktemp -d /tmp/lobu-review.XXXXXX)"
 BUILD_LOG="$REVIEW_RUN_DIR/build.log"
 echo ">> make build-packages → $BUILD_LOG"
 set +e
-make build-packages > "$BUILD_LOG" 2>&1
+run_review_child make build-packages > "$BUILD_LOG" 2>&1
 BUILD_EXIT=$?
 set -e
 if [ $BUILD_EXIT -ne 0 ]; then
@@ -363,15 +389,18 @@ DETERMINISTIC_TEST_ENV=(
 
 echo ">> typecheck → $TYPECHECK_LOG"
 set +e
-"${DETERMINISTIC_TEST_ENV[@]}" bun run typecheck > "$TYPECHECK_LOG" 2>&1
+run_review_child "${DETERMINISTIC_TEST_ENV[@]}" bun run typecheck > "$TYPECHECK_LOG" 2>&1
 TYPECHECK_EXIT=$?
 set -e
 
 echo ">> unit tests → $UNIT_LOG"
 set +e
-UNIT_EXIT=0
-{
+run_review_unit_suites() {
+  local ec
+  UNIT_EXIT=0
   "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/review-lock.test.sh";               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/review-database-url.test.sh";        ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/review-process.test.sh";             ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # Guard: every packages/server *.test.ts must run in >=1 runner (vitest or a
   # bun job). Fails loudly if a file drifts into running nowhere — the
   # silent-skip class this change fixes.
@@ -390,13 +419,17 @@ UNIT_EXIT=0
   # NOTE: src/gateway/infrastructure/queue runs in the gateway integration loop
   # below (not here) — see #1238; running it in both jobs double-executes it.
   "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/connector-worker;                               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-} > "$UNIT_LOG" 2>&1
+  return "$UNIT_EXIT"
+}
+run_review_child run_review_unit_suites > "$UNIT_LOG" 2>&1
+UNIT_EXIT=$?
 set -e
 
 echo ">> integration tests → $INTEGRATION_LOG"
 set +e
-INTEGRATION_EXIT=0
-{
+run_review_integration_suites() {
+  local ec
+  INTEGRATION_EXIT=0
   (cd packages/server && "${DETERMINISTIC_TEST_ENV[@]}" node ../../node_modules/.bin/vitest run --reporter=default); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
   # Each gateway test file runs in its own bun process: bun has no per-file
   # isolation and the gateway suites aren't mutually hermetic, so co-running a
@@ -416,7 +449,10 @@ INTEGRATION_EXIT=0
     done
     exit $rc );                                                                        ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
   (cd packages/server && "${DETERMINISTIC_TEST_ENV[@]}" bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
-} > "$INTEGRATION_LOG" 2>&1
+  return "$INTEGRATION_EXIT"
+}
+run_review_child run_review_integration_suites > "$INTEGRATION_LOG" 2>&1
+INTEGRATION_EXIT=$?
 set -e
 
 echo ">> suite exit codes: typecheck=$TYPECHECK_EXIT unit=$UNIT_EXIT integration=$INTEGRATION_EXIT"

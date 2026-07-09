@@ -531,6 +531,15 @@ export async function createConnectorOperationRun(params: {
    */
   approvalMode: 'inline' | 'queued' | 'device';
   requireCompiledCode?: boolean;
+  /**
+   * The TRUSTED principal (kind + stable id) that requested this operation,
+   * derived from execution context — never from caller-supplied attribution.
+   * Persisted so a queued run's connector-action policy can be RE-EVALUATED at
+   * approve time against the principal that queued it, not the approver (sol
+   * review #5). Null for a human requester (no per-principal policy applies).
+   */
+  policyPrincipalKind?: 'agent' | 'watcher' | 'user' | null;
+  policyPrincipalId?: string | null;
 }): Promise<number> {
   const sql = getDb();
 
@@ -562,12 +571,15 @@ export async function createConnectorOperationRun(params: {
   const inserted = await sql`
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key, connector_version,
-      action_key, action_input, approval_status, status, created_at
+      action_key, action_input, approval_status, status,
+      policy_principal_kind, policy_principal_id, created_at
     ) VALUES (
       ${params.organizationId}, 'action', ${params.connectionId},
       ${params.connectorKey}, ${connectorVersion},
       ${params.operationKey}, ${sql.json(params.operationInput)},
-      ${approvalStatus}, ${status}, current_timestamp
+      ${approvalStatus}, ${status},
+      ${params.policyPrincipalKind ?? null}, ${params.policyPrincipalId ?? null},
+      current_timestamp
     )
     RETURNING id
   `;

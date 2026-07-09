@@ -179,6 +179,7 @@ async function evaluate(
 				proposal: req.proposal,
 				attribution: req.attribution,
 				watcherId: req.watcherId,
+				windowId: req.windowId,
 			}),
 		};
 	}
@@ -211,6 +212,7 @@ async function evaluate(
 						metadata?: Record<string, unknown> | null;
 					},
 					watcher_id: req.watcherId ?? null,
+					window_id: req.windowId ?? null,
 					attribution: req.attribution,
 					reason: reasonFor(
 						req.attribution,

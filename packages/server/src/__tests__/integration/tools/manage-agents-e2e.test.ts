@@ -383,6 +383,52 @@ describe("manage_agents — builder gate e2e", () => {
 		expect(nameRows[0]?.name).toBe("Human Name");
 	});
 
+	it("a legacy pending run with no pre-image fails closed (does NOT clobber)", async () => {
+		// Simulates a run queued BEFORE the base-capture branch shipped: its
+		// action_input has no `base`. Approving it must skip the field (fail closed),
+		// never blind-overwrite a newer human edit (sol review #8).
+		await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "legacy-bot", name: "Original" },
+			TEST_ENV,
+			ownerCtx,
+		);
+		const upd = (await executeTool(
+			"manage_agents",
+			{ action: "update", agent_id: "legacy-bot", name: "Agent Name" },
+			TEST_ENV,
+			agentCtx,
+		)) as PendingApproval;
+
+		const sql = getTestDb();
+		// Strip `base` from the queued proposal to mimic a pre-branch legacy run.
+		await sql`
+			UPDATE runs
+			SET action_input = (action_input - 'base')
+			WHERE id = ${upd.run_id} AND organization_id = ${orgId}
+		`;
+
+		// A human renames it after the (now base-less) proposal was queued.
+		await executeTool(
+			"manage_agents",
+			{ action: "update", agent_id: "legacy-bot", name: "Human Name" },
+			TEST_ENV,
+			ownerCtx,
+		);
+
+		// Approving the legacy proposal must NOT overwrite the human's newer name.
+		await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: upd.run_id },
+			TEST_ENV,
+			ownerCtx,
+		);
+		const nameRows = await sql`
+			SELECT name FROM agents WHERE organization_id = ${orgId} AND id = 'legacy-bot'
+		`;
+		expect(nameRows[0]?.name).toBe("Human Name");
+	});
+
 	it("agent delete is denied outright (a human must delete an agent)", async () => {
 		await executeTool(
 			"manage_agents",

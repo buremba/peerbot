@@ -489,6 +489,52 @@ describe("resolveWritePolicyDecision (connector_action)", () => {
 	});
 });
 
+describe("persisted mode fails closed (sol review #7)", () => {
+	test("an UNKNOWN stored mode resolves to deny, never allow", async () => {
+		// A mode a future build introduced mid-rolling-upgrade, or corrupt data from
+		// manual SQL, must NOT read as `allow`. parsePersistedMode maps it to deny.
+		expect(
+			await evaluateEntityMutation({
+				organizationId: ORG,
+				principalKind: "agent",
+				action: "create",
+				entityTypeSlug: "task",
+				sql: stubSql([
+					{ entity_type_slug: "task", create_mode: "quantum-approve" },
+				]),
+			}),
+		).toBe("deny");
+	});
+
+	test("unknown stored mode fails closed for agent_config too", async () => {
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: ORG,
+				resourceClass: "agent_config",
+				principalKind: "agent",
+				action: "update",
+				sql: stubSql([
+					{ resource_class: "agent_config", update_mode: "??" },
+				]),
+			}),
+		).toBe("deny");
+	});
+
+	test("a valid stored mode still resolves normally (no over-eager deny)", async () => {
+		expect(
+			await evaluateEntityMutation({
+				organizationId: ORG,
+				principalKind: "agent",
+				action: "create",
+				entityTypeSlug: "task",
+				sql: stubSql([
+					{ entity_type_slug: "task", create_mode: "approval" },
+				]),
+			}),
+		).toBe("require_approval");
+	});
+});
+
 describe("evaluateEntityFieldUpdates", () => {
 	const baseArgs = {
 		organizationId: ORG,

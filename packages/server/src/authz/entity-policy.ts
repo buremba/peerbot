@@ -127,6 +127,19 @@ function normalizeMode(
 	return isEntityMutationMode(value) ? value : fallback;
 }
 
+/**
+ * Parse a mode that was READ FROM THE DATABASE. Unlike {@link normalizeMode}
+ * (which coerces user INPUT to a caller-chosen default), an unrecognized stored
+ * value fails CLOSED to `deny`: a mode a future build introduced mid-rolling-
+ * upgrade, or corrupt data from manual SQL, must never silently read as `allow`.
+ * The DB CHECK bounds today's values, so this is a defense-in-depth backstop for
+ * exactly the rolling-upgrade case the design calls out — not a reachable path
+ * under normal writes.
+ */
+function parsePersistedMode(value: unknown): EntityMutationMode {
+	return isEntityMutationMode(value) ? value : "deny";
+}
+
 function normalizeResourceClass(value: unknown): WriteResourceClass {
 	if (value === "agent_config") return "agent_config";
 	if (value === "connector_action") return "connector_action";
@@ -147,9 +160,9 @@ function rowToPolicy(row: EntityApprovalPolicyRow): EntityApprovalPolicy {
 		entityTypeSlug: row.entity_type_slug,
 		fieldPath: row.field_path,
 		entityId: row.entity_id === null ? null : Number(row.entity_id),
-		createMode: normalizeMode(row.create_mode, "auto"),
-		updateMode: normalizeMode(row.update_mode, "auto"),
-		deleteMode: normalizeMode(row.delete_mode, "approval"),
+		createMode: parsePersistedMode(row.create_mode),
+		updateMode: parsePersistedMode(row.update_mode),
+		deleteMode: parsePersistedMode(row.delete_mode),
 		deliveryTarget: {
 			connectionId: row.approval_connection_id || null,
 			channelId: row.approval_channel_id,
@@ -275,9 +288,9 @@ function modeRestrictiveness(mode: EntityMutationMode): number {
  */
 function rowRestrictiveness(row: EntityApprovalPolicyRow): number {
 	return Math.max(
-		modeRestrictiveness(normalizeMode(row.create_mode, "auto")),
-		modeRestrictiveness(normalizeMode(row.update_mode, "auto")),
-		modeRestrictiveness(normalizeMode(row.delete_mode, "auto")),
+		modeRestrictiveness(parsePersistedMode(row.create_mode)),
+		modeRestrictiveness(parsePersistedMode(row.update_mode)),
+		modeRestrictiveness(parsePersistedMode(row.delete_mode)),
 	);
 }
 

@@ -43,6 +43,8 @@ interface EntityUpdateOptions {
 	/** Attribution for a deferred approval of blocked fields. Defaults to 'agent'. */
 	attribution?: MutationAttribution;
 	watcherId?: number | null;
+	/** Watcher-run window, so a deferred approval groups into its per-window batch. */
+	windowId?: number | null;
 }
 
 // ============================================
@@ -534,6 +536,7 @@ export async function updateEntity(
 					sql: tx,
 					attribution: opts?.attribution ?? "agent",
 					watcherId: opts?.watcherId ?? null,
+					windowId: opts?.windowId ?? null,
 					principalId: mutationPrincipalId({
 						agentId: ctx.agentId,
 						watcherId: opts?.watcherId ?? null,
@@ -643,6 +646,7 @@ export async function updateEntity(
 				),
 				attribution: opts?.attribution ?? "agent",
 				watcherId: opts?.watcherId ?? null,
+				windowId: opts?.windowId ?? null,
 			}),
 		};
 	}

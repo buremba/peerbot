@@ -54,6 +54,16 @@ export async function getRecentFeedbackSummary(
     const value = row.corrected_value;
 
     let line: string;
+    // A whole-run rejection (manage_operations.reject_batch) rather than a
+    // single-field correction: the user turned down the run's proposals with a
+    // reason (in `note`). Render it as guidance for the next run, not a field set.
+    if (path === '$batch_reject') {
+      line = `- Window ${start}–${end}: the user REJECTED this run's proposed changes${
+        row.note ? ` — ${row.note}` : ''
+      }. Revise your extraction accordingly.`;
+      lines.push(line);
+      continue;
+    }
     if (mutation === 'remove') {
       line = `- Window ${start}–${end}: drop "${path}"`;
     } else if (mutation === 'add') {

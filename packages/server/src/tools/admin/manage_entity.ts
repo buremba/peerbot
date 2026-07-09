@@ -258,6 +258,7 @@ async function handleCreate(
 		sql: getDb(),
 		attribution,
 		watcherId: args.watcher_source?.watcher_id ?? null,
+		windowId: args.watcher_source?.window_id ?? null,
 		principalId: mutationPrincipalId({
 			agentId: ctx.agentId,
 			watcherId: args.watcher_source?.watcher_id ?? null,
@@ -410,6 +411,7 @@ async function handleUpdate(
 		policyPrincipalKind: principalKindForMutation(args, ctx),
 		attribution: args.watcher_source ? "watcher" : "agent",
 		watcherId: args.watcher_source?.watcher_id ?? null,
+		windowId: args.watcher_source?.window_id ?? null,
 	});
 	const entityDetails =
 		(await getEntity(updatedEntity.id, env, ctx)) ?? updatedEntity;
@@ -1006,6 +1008,7 @@ async function handleDelete(
 		sql: getDb(),
 		attribution,
 		watcherId: args?.watcher_source?.watcher_id ?? null,
+		windowId: args?.watcher_source?.window_id ?? null,
 		principalId: mutationPrincipalId({
 			agentId: ctx.agentId,
 			watcherId: args?.watcher_source?.watcher_id ?? null,

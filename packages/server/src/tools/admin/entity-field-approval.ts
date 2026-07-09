@@ -314,6 +314,10 @@ export async function proposeEntityChange(
       AND r.action_key = ${actionKey}
       AND r.approval_status = 'pending'
       AND r.status = 'pending'
+      -- Same proposal from a DIFFERENT window is a distinct ask (each window gets
+      -- its own batch card); only a byte-identical replay of the SAME window
+      -- collapses. Matches the runs_entity_change_pending_dedupe unique index.
+      AND r.window_id IS NOT DISTINCT FROM ${windowId ?? null}
       AND COALESCE(r.action_input->>'operation', 'update') = ${operation}
       AND COALESCE(r.action_input->>'entity_id', '') = ${"entity_id" in proposal ? String(proposal.entity_id) : ""}
 	      AND (
@@ -364,7 +368,7 @@ export async function proposeEntityChange(
 		// Two replicas raced the SELECT above with a byte-identical proposal — the
 		// partial unique index (runs_entity_change_pending_dedupe) made one lose.
 		// Resolve to the winner's pending run instead of stacking a duplicate card.
-		if (isUniqueViolation(err, "runs_entity_change_pending_dedupe")) {
+		if (isUniqueViolation(err, "runs_entity_change_pending_dedupe_v2")) {
 			const winner = await findExisting();
 			if (winner.length > 0) return dedupeHit(winner[0]);
 		}

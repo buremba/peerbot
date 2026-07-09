@@ -176,7 +176,18 @@ export async function applyUpdate(
    * approval skips (and reports) fields another writer has since changed. Absent
    * for immediate (human) applies, which overwrite unconditionally.
    */
-  base?: ManageAgentsProposal['base']
+  base?: ManageAgentsProposal['base'],
+  /**
+   * Set by the QUEUED-approval apply path ({@link applyManageAgentsProposal}).
+   * A queued update MUST carry a pre-image for every field it writes — that's
+   * how a stale approval is prevented from clobbering a newer human edit. A
+   * legacy pending run created before this branch has no `base`; without this
+   * flag a missing base read as "overwrite unconditionally" and silently
+   * clobbered the newer value (sol review #8). With it set, a field lacking a
+   * pre-image FAILS CLOSED: the field is skipped and reported, never written on
+   * blind faith. Immediate (human) applies leave this false and overwrite.
+   */
+  requireBase = false
 ): Promise<ManageAgentsResult> {
   if (!args.agent_id) {
     throw new ToolUserError('agent_id is required for update action');
@@ -191,8 +202,26 @@ export async function applyUpdate(
       'update requires at least one of: name, description, identity_md'
     );
   }
-  // Each field is written iff (no pre-image given) OR (its live value still
-  // equals the pre-image). `${base ? … : true}` collapses to a constant per
+  // A queued apply with no pre-image for a requested field can't safely write it
+  // (it might clobber a human edit made after the proposal was queued). Fail that
+  // field closed: drop it from the requested set so its CASE arm never fires and
+  // it's reported as skipped. Legacy pre-`base` runs thus apply nothing rather
+  // than everything. Immediate applies (requireBase=false) are unaffected.
+  const unbackedFields = requireBase
+    ? requested.filter((field) => {
+        if (field === 'name') return base?.name === undefined;
+        if (field === 'description') return base?.description === undefined;
+        return base?.identity_md === undefined;
+      })
+    : [];
+  const writable = requested.filter((f) => !unbackedFields.includes(f));
+  const writeName = args.name !== undefined && writable.includes('name');
+  const writeDesc =
+    args.description !== undefined && writable.includes('description');
+  const writeIdentity =
+    args.identity_md !== undefined && writable.includes('identity_md');
+  // Each writable field is written iff (no pre-image given) OR (its live value
+  // still equals the pre-image). `${base ? … : true}` collapses to a constant per
   // field so the guard is a no-op for immediate applies. IS NOT DISTINCT FROM
   // matches NULLs. updated_at only bumps when at least one field actually changes.
   const nameGuard = base ? base.name !== undefined : false;
@@ -201,15 +230,15 @@ export async function applyUpdate(
   const rows = await sql<{ id: string; name: string | null; description: string | null; identity_md: string | null }>`
     UPDATE agents SET
       name = CASE
-        WHEN ${args.name !== undefined}
+        WHEN ${writeName}
           AND (${!nameGuard} OR name IS NOT DISTINCT FROM ${base?.name ?? null})
         THEN ${args.name ?? null} ELSE name END,
       description = CASE
-        WHEN ${args.description !== undefined}
+        WHEN ${writeDesc}
           AND (${!descGuard} OR description IS NOT DISTINCT FROM ${base?.description ?? null})
         THEN ${args.description ?? null} ELSE description END,
       identity_md = CASE
-        WHEN ${args.identity_md !== undefined}
+        WHEN ${writeIdentity}
           AND (${!identityGuard} OR identity_md IS NOT DISTINCT FROM ${base?.identity_md ?? null})
         THEN ${args.identity_md ?? ''} ELSE identity_md END,
       updated_at = NOW()
@@ -219,9 +248,11 @@ export async function applyUpdate(
   if (rows.length === 0) {
     throw new ToolUserError(`Agent "${args.agent_id}" not found`, 404);
   }
-  // Report which requested fields actually landed (a stale field was skipped).
+  // Report which requested fields actually landed. A field is skipped when its
+  // live value diverged from the pre-image (stale) OR it had no pre-image on a
+  // queued apply (unbacked — never written on blind faith).
   const after = rows[0];
-  const appliedFields = requested.filter((field) => {
+  const appliedFields = writable.filter((field) => {
     if (field === 'name') return after.name === (args.name ?? null);
     if (field === 'description') return after.description === (args.description ?? null);
     return after.identity_md === (args.identity_md ?? '');
@@ -507,7 +538,9 @@ export async function applyManageAgentsProposal(
     case 'create':
       return applyCreate(args, applyCtx, env);
     case 'update':
-      return applyUpdate(args, applyCtx, env, proposal.base);
+      // Queued apply: require a pre-image per field. A legacy pending run with no
+      // `base` thus skips (never blind-overwrites a newer human edit) — fail closed.
+      return applyUpdate(args, applyCtx, env, proposal.base, true);
     case 'delete':
       return applyDelete(args, applyCtx, env);
   }

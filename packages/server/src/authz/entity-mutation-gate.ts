@@ -71,6 +71,13 @@ interface EntityMutationBase {
 	 * per-principal resolver in a later commit.
 	 */
 	principalId?: string | null;
+	/**
+	 * The watcher-run window that produced this mutation, if any. Threaded so a
+	 * deferred approval lands on the `runs.window_id` COLUMN — that's what groups a
+	 * run's N proposals into ONE batch approval card, and (with the window in the
+	 * dedup key) keeps identical proposals from different windows distinct.
+	 */
+	windowId?: number | null;
 }
 
 export interface CreateMutationRequest extends EntityMutationBase {

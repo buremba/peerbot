@@ -36,14 +36,46 @@ ALTER TABLE public.entity_approval_policies
   ADD CONSTRAINT entity_approval_policies_delete_mode_check
     CHECK (delete_mode IN ('auto', 'approval', 'deny', 'disabled'));
 
--- Lookup index for the generalized resolver (by class + principal). The existing
--- COALESCE scope unique index and org-lookup index stay untouched this phase.
+-- Lookup index for the generalized resolver (by class + principal).
 -- squawk-ignore require-concurrent-index-creation -- additive; low row count, no hot-path contention on this table
 CREATE INDEX IF NOT EXISTS entity_approval_policies_class_principal
   ON public.entity_approval_policies (organization_id, resource_class, principal_kind, principal_id);
 
+-- Generalized uniqueness key: one policy row per (org, class, principal, scope).
+-- Superset of the old entity_approval_policies_scope_key — for the pre-existing
+-- rows (all resource_class='entity', principal_kind NULL) this key equals the old
+-- key extended with constants, so it introduces no collision. The upsert's
+-- ON CONFLICT targets this index by its column list. The old scope-only index is
+-- dropped: old pods only INSERT entity/any-principal rows (their INSERTs don't
+-- name the new columns, so the defaults apply), which this index still constrains.
+-- squawk-ignore require-concurrent-index-creation -- low row count, no hot-path contention on this table
+CREATE UNIQUE INDEX IF NOT EXISTS entity_approval_policies_class_principal_scope_key
+  ON public.entity_approval_policies (
+    organization_id,
+    resource_class,
+    COALESCE(principal_kind, ''),
+    COALESCE(principal_id, ''),
+    COALESCE(entity_type_slug, ''),
+    COALESCE(field_path, ''),
+    COALESCE(entity_id, 0)
+  );
+
+DROP INDEX IF EXISTS public.entity_approval_policies_scope_key;
+
 -- migrate:down
 
+-- Restore the original scope-only unique index before dropping the generalized one,
+-- so the table is never left without a uniqueness guarantee mid-rollback.
+-- squawk-ignore require-concurrent-index-creation -- rollback path; low row count
+CREATE UNIQUE INDEX IF NOT EXISTS entity_approval_policies_scope_key
+  ON public.entity_approval_policies (
+    organization_id,
+    COALESCE(entity_type_slug, ''),
+    COALESCE(field_path, ''),
+    COALESCE(entity_id, 0)
+  );
+
+DROP INDEX IF EXISTS public.entity_approval_policies_class_principal_scope_key;
 DROP INDEX IF EXISTS public.entity_approval_policies_class_principal;
 
 ALTER TABLE public.entity_approval_policies

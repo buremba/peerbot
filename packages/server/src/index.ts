@@ -27,8 +27,8 @@ import { compareWorkerToken } from "./auth/worker-token";
 import {
 	deleteEntityApprovalPolicy,
 	type EntityApprovalPolicy,
-	type EntityMutationMode,
 	getGlobalEntityApprovalPolicy,
+	isEntityApprovalUiMode,
 	listEntityApprovalPolicies,
 	upsertEntityApprovalPolicy,
 	upsertGlobalEntityApprovalPolicy,
@@ -1271,16 +1271,13 @@ app.post("/api/:orgSlug/actions/execute", mcpAuth, async (c) => {
 	return restToolProxy(c, "manage_operations", { action: "execute", ...body });
 });
 
-function isEntityMutationMode(value: unknown): value is EntityMutationMode {
-	return value === "auto" || value === "approval";
-}
-
-function serializeEntityApprovalPolicy(
-	policy: EntityApprovalPolicy,
-) {
+function serializeEntityApprovalPolicy(policy: EntityApprovalPolicy) {
 	return {
 		id: policy.id,
 		organization_id: policy.organizationId,
+		resource_class: policy.resourceClass,
+		principal_kind: policy.principalKind,
+		principal_id: policy.principalId,
 		entity_type_slug: policy.entityTypeSlug,
 		field_path: policy.fieldPath,
 		entity_id: policy.entityId,
@@ -1345,7 +1342,7 @@ app.get("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 		return c.json({ error: "Organization context required" }, 401);
 	}
 	const policy = await getGlobalEntityApprovalPolicy(organizationId);
-	const policies = await listEntityApprovalPolicies(organizationId);
+	const policies = await listEntityApprovalPolicies(organizationId, "entity");
 	const channelRows = await resolveBoundChannelRows(getDb(), {
 		organizationId,
 	});
@@ -1389,9 +1386,9 @@ app.patch("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 	const updateMode = body.update_mode;
 	const deleteMode = body.delete_mode;
 	if (
-		!isEntityMutationMode(createMode) ||
-		!isEntityMutationMode(updateMode) ||
-		!isEntityMutationMode(deleteMode)
+		!isEntityApprovalUiMode(createMode) ||
+		!isEntityApprovalUiMode(updateMode) ||
+		!isEntityApprovalUiMode(deleteMode)
 	) {
 		return c.json(
 			{
@@ -1402,6 +1399,20 @@ app.patch("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 			400,
 		);
 	}
+
+	// Optional per-principal targeting: an admin can pin one agent/watcher to a
+	// stricter mode. principal_id is only meaningful with a kind. Class is fixed to
+	// 'entity' on this endpoint — the connector-action class has its own surface.
+	const principalKind: "agent" | "watcher" | null =
+		body.principal_kind === "agent" || body.principal_kind === "watcher"
+			? body.principal_kind
+			: null;
+	const principalId =
+		principalKind &&
+		typeof body.principal_id === "string" &&
+		body.principal_id.trim()
+			? body.principal_id.trim()
+			: null;
 
 	const approvalConnectionId =
 		typeof body.approval_connection_id === "string" &&
@@ -1505,6 +1516,9 @@ app.patch("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 	}
 
 	const policyInput = {
+		resourceClass: "entity" as const,
+		principalKind,
+		principalId,
 		entityTypeSlug,
 		fieldPath,
 		entityId,
@@ -1516,10 +1530,13 @@ app.patch("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 		approvalTeamId,
 		approvalChannelName,
 	};
-	const policy =
-		entityTypeSlug || fieldPath || entityId !== null
-			? await upsertEntityApprovalPolicy(organizationId, policyInput)
-			: await upsertGlobalEntityApprovalPolicy(organizationId, policyInput);
+	// Only the unscoped, any-principal entity row is the workspace default; a
+	// principal-targeted or scoped row is a specific override.
+	const isWorkspaceDefault =
+		!principalKind && !entityTypeSlug && !fieldPath && entityId === null;
+	const policy = isWorkspaceDefault
+		? await upsertGlobalEntityApprovalPolicy(organizationId, policyInput)
+		: await upsertEntityApprovalPolicy(organizationId, policyInput);
 
 	invalidationEmitter.emit(organizationId, {
 		keys: ["entity-approval-policy"],
@@ -1535,12 +1552,22 @@ app.delete("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 	if (!organizationId) {
 		return c.json({ error: "Organization context required" }, 401);
 	}
+	const principalKindRaw = c.req.query("principal_kind")?.trim();
+	const principalKind =
+		principalKindRaw === "agent" || principalKindRaw === "watcher"
+			? principalKindRaw
+			: null;
+	const principalId = principalKind
+		? c.req.query("principal_id")?.trim() || null
+		: null;
 	const entityTypeSlug = c.req.query("entity_type_slug")?.trim() || null;
 	const fieldPath = c.req.query("field_path")?.trim() || null;
 	const entityIdRaw = c.req.query("entity_id")?.trim();
 	const entityId =
 		entityIdRaw && /^\d+$/.test(entityIdRaw) ? Number(entityIdRaw) : null;
-	if (!entityTypeSlug && !fieldPath && entityId === null) {
+	// A principal-targeted row is deletable even with no scope; only the unscoped,
+	// any-principal default is protected.
+	if (!principalKind && !entityTypeSlug && !fieldPath && entityId === null) {
 		return c.json(
 			{
 				error: "invalid_request",
@@ -1560,6 +1587,9 @@ app.delete("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 	}
 	const deleted = await deleteEntityApprovalPolicy({
 		organizationId,
+		resourceClass: "entity",
+		principalKind,
+		principalId,
 		entityTypeSlug,
 		fieldPath,
 		entityId,

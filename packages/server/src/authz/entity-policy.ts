@@ -25,7 +25,25 @@ import { type DbClient, getDb } from "../db/client";
 export type EntityPolicyDecision = "allow" | "deny" | "require_approval";
 export type EntityPolicyPrincipalKind = "user" | "agent" | "watcher";
 export type EntityMutationAction = "create" | "update" | "delete";
-export type EntityMutationMode = "auto" | "approval";
+/**
+ * A stored per-action mode. `auto`/`approval` are the two entity modes; `deny`
+ * (a hard floor — the write never applies and no approval is queued) and
+ * `disabled` (the action is turned off entirely, used by the connector-action
+ * class) are admitted by the widened DB CHECK. The resolver maps each to an
+ * {@link EntityPolicyDecision}; unknown values coerce to the caller's fallback
+ * so a mode this build predates can never silently read as `allow`.
+ */
+export type EntityMutationMode = "auto" | "approval" | "deny" | "disabled";
+
+/**
+ * Which class of write a policy row governs. Only `entity` exists in v1; the
+ * column is populated so the connector-action class can land in the same table
+ * and resolver without a schema change (see docs/plans/write-gate-generalization.md).
+ */
+export type WriteResourceClass = "entity" | "connector_action";
+
+/** A non-human principal a policy row may target. NULL principal = any of this kind. */
+export type PolicyPrincipalKind = "agent" | "watcher";
 
 export interface EntityApprovalDeliveryTarget {
 	connectionId: string | null;
@@ -37,6 +55,10 @@ export interface EntityApprovalDeliveryTarget {
 export interface EntityApprovalPolicy {
 	id: number;
 	organizationId: string;
+	resourceClass: WriteResourceClass;
+	/** Non-human principal this row targets; NULL = any principal of its kind. */
+	principalKind: PolicyPrincipalKind | null;
+	principalId: string | null;
 	entityTypeSlug: string | null;
 	fieldPath: string | null;
 	entityId: number | null;
@@ -47,6 +69,9 @@ export interface EntityApprovalPolicy {
 }
 
 export interface EntityApprovalPolicyInput {
+	resourceClass?: WriteResourceClass;
+	principalKind?: PolicyPrincipalKind | null;
+	principalId?: string | null;
 	entityTypeSlug?: string | null;
 	fieldPath?: string | null;
 	entityId?: number | null;
@@ -62,6 +87,9 @@ export interface EntityApprovalPolicyInput {
 type EntityApprovalPolicyRow = {
 	id: number;
 	organization_id: string;
+	resource_class: string;
+	principal_kind: string | null;
+	principal_id: string | null;
 	entity_type_slug: string | null;
 	field_path: string | null;
 	entity_id: number | null;
@@ -74,9 +102,20 @@ type EntityApprovalPolicyRow = {
 	approval_channel_name: string | null;
 };
 
+
 export function isEntityMutationMode(
 	value: unknown,
 ): value is EntityMutationMode {
+	return (
+		value === "auto" ||
+		value === "approval" ||
+		value === "deny" ||
+		value === "disabled"
+	);
+}
+
+/** The two modes the entity-approval UI/API accept for create/update/delete. */
+export function isEntityApprovalUiMode(value: unknown): value is "auto" | "approval" {
 	return value === "auto" || value === "approval";
 }
 
@@ -87,10 +126,21 @@ function normalizeMode(
 	return isEntityMutationMode(value) ? value : fallback;
 }
 
+function normalizeResourceClass(value: unknown): WriteResourceClass {
+	return value === "connector_action" ? "connector_action" : "entity";
+}
+
+function normalizePrincipalKind(value: unknown): PolicyPrincipalKind | null {
+	return value === "agent" || value === "watcher" ? value : null;
+}
+
 function rowToPolicy(row: EntityApprovalPolicyRow): EntityApprovalPolicy {
 	return {
 		id: Number(row.id),
 		organizationId: row.organization_id,
+		resourceClass: normalizeResourceClass(row.resource_class),
+		principalKind: normalizePrincipalKind(row.principal_kind),
+		principalId: row.principal_id,
 		entityTypeSlug: row.entity_type_slug,
 		fieldPath: row.field_path,
 		entityId: row.entity_id === null ? null : Number(row.entity_id),
@@ -112,6 +162,9 @@ export function defaultEntityApprovalPolicy(
 	return {
 		id: 0,
 		organizationId,
+		resourceClass: "entity",
+		principalKind: null,
+		principalId: null,
 		entityTypeSlug: null,
 		fieldPath: null,
 		entityId: null,
@@ -168,29 +221,73 @@ function modeForAction(
 	return policy.deleteMode;
 }
 
+/**
+ * The winning mode's effect on a mutation. `deny` and `disabled` both stop the
+ * write with no approval queued; `approval` queues one; `auto` applies inline.
+ * Centralized so the create/delete and per-field update paths agree — and so a
+ * future mode can never be read as `allow` by omission.
+ */
+function modeToDecision(mode: EntityMutationMode): EntityPolicyDecision {
+	if (mode === "deny" || mode === "disabled") return "deny";
+	if (mode === "approval") return "require_approval";
+	return "allow";
+}
+
+/**
+ * How specific a candidate row is for the request it survived filtering against.
+ * Higher wins. Principal specificity dominates scope specificity: a row that
+ * names the acting principal always beats a broader-scoped row that targets "any
+ * principal", so an admin can pin one noisy agent/watcher to `approval` without
+ * that being shadowed by a global entity-type default. Within one principal tier,
+ * the entity_id > field_path > entity_type ordering is preserved. Scores never
+ * collide across tiers: principal weights (16/8) sit above every scope weight (≤7).
+ */
 function specificity(row: EntityApprovalPolicyRow): number {
+	const principalScore =
+		row.principal_id !== null ? 16 : row.principal_kind !== null ? 8 : 0;
 	return (
+		principalScore +
 		(row.entity_id !== null ? 4 : 0) +
 		(row.field_path !== null ? 2 : 0) +
 		(row.entity_type_slug !== null ? 1 : 0)
 	);
 }
 
-/** All policy rows that could match this entity type / entity, most specific first. */
+/**
+ * All policy rows that could match this write, most specific first. Filters by
+ * resource class (default `entity`) and by principal: a row applies when it
+ * targets no principal (any), or targets this principal's kind and either no
+ * specific id (any of that kind) or exactly this id.
+ */
 async function loadCandidatePolicies(args: {
 	organizationId: string;
+	resourceClass?: WriteResourceClass;
+	principalKind?: PolicyPrincipalKind | null;
+	principalId?: string | null;
 	entityTypeSlug?: string | null;
 	entityId?: number | null;
 	sql?: DbClient;
 }): Promise<EntityApprovalPolicyRow[]> {
 	const sql = args.sql ?? getDb();
+	const resourceClass = args.resourceClass ?? "entity";
+	const principalKind = args.principalKind ?? null;
+	const principalId = args.principalId ?? null;
 	const rows = await sql<EntityApprovalPolicyRow>`
-    SELECT id, organization_id, entity_type_slug, field_path, entity_id,
+    SELECT id, organization_id, resource_class, principal_kind, principal_id,
+       entity_type_slug, field_path, entity_id,
        create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM entity_approval_policies
     WHERE organization_id = ${args.organizationId}
+      AND resource_class = ${resourceClass}
+      AND (
+        principal_kind IS NULL
+        OR (
+          principal_kind = ${principalKind}
+          AND (principal_id IS NULL OR principal_id = ${principalId})
+        )
+      )
       AND (entity_type_slug IS NULL OR entity_type_slug = ${args.entityTypeSlug ?? null})
       AND (entity_id IS NULL OR entity_id = ${args.entityId ?? null})
   `;
@@ -213,6 +310,7 @@ function pickPolicy(
 	if (!policy.deliveryTarget.connectionId && !policy.deliveryTarget.channelId) {
 		const global = candidates.find(
 			(row) =>
+				row.principal_kind === null &&
 				row.entity_type_slug === null &&
 				row.field_path === null &&
 				row.entity_id === null,
@@ -230,6 +328,9 @@ function pickPolicy(
  */
 export async function resolveEntityApprovalPolicy(args: {
 	organizationId: string;
+	resourceClass?: WriteResourceClass;
+	principalKind?: PolicyPrincipalKind | null;
+	principalId?: string | null;
 	entityTypeSlug?: string | null;
 	fieldPath?: string | null;
 	entityId?: number | null;
@@ -246,6 +347,8 @@ export async function resolveEntityApprovalPolicy(args: {
 export async function evaluateEntityMutation(args: {
 	organizationId: string;
 	principalKind: EntityPolicyPrincipalKind;
+	/** Stable acting-principal id for per-principal matching; null = any of its kind. */
+	principalId?: string | null;
 	action: EntityMutationAction;
 	entityTypeSlug?: string | null;
 	entityId?: number | null;
@@ -256,10 +359,12 @@ export async function evaluateEntityMutation(args: {
 		return "deny";
 	}
 	if (args.principalKind === "user") return "allow";
-	const policy = await resolveEntityApprovalPolicy(args);
-	return modeForAction(policy, args.action) === "approval"
-		? "require_approval"
-		: "allow";
+	const policy = await resolveEntityApprovalPolicy({
+		...args,
+		principalKind: args.principalKind,
+		principalId: args.principalId ?? null,
+	});
+	return modeToDecision(modeForAction(policy, args.action));
 }
 
 /**
@@ -270,6 +375,8 @@ export async function evaluateEntityMutation(args: {
 export async function evaluateEntityFieldUpdates(args: {
 	organizationId: string;
 	principalKind: EntityPolicyPrincipalKind;
+	/** Stable acting-principal id for per-principal matching; null = any of its kind. */
+	principalId?: string | null;
 	entityTypeSlug: string;
 	entityId: number;
 	entityOrgId?: string | null;
@@ -286,13 +393,22 @@ export async function evaluateEntityFieldUpdates(args: {
 		for (const field of Object.keys(args.fields)) decisions[field] = "allow";
 		return decisions;
 	}
-	const candidates = await loadCandidatePolicies(args);
+	const candidates = await loadCandidatePolicies({
+		...args,
+		principalKind: args.principalKind,
+		principalId: args.principalId ?? null,
+	});
 	for (const [field, owner] of Object.entries(args.fields)) {
 		const policy = pickPolicy(candidates, args.organizationId, field);
+		// A human-owned field always needs approval regardless of policy mode; a
+		// deny/disabled policy stops even a human-owned change (deny is a hard floor).
+		const policyDecision = modeToDecision(policy.updateMode);
 		decisions[field] =
-			owner === "human" || policy.updateMode === "approval"
-				? "require_approval"
-				: "allow";
+			policyDecision === "deny"
+				? "deny"
+				: owner === "human" || policyDecision === "require_approval"
+					? "require_approval"
+					: "allow";
 	}
 	return decisions;
 }
@@ -302,12 +418,15 @@ export async function getGlobalEntityApprovalPolicy(
 ): Promise<EntityApprovalPolicy> {
 	const sql = getDb();
 	const rows = await sql<EntityApprovalPolicyRow>`
-    SELECT id, organization_id, entity_type_slug, field_path, entity_id,
+    SELECT id, organization_id, resource_class, principal_kind, principal_id,
+       entity_type_slug, field_path, entity_id,
        create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM entity_approval_policies
     WHERE organization_id = ${organizationId}
+      AND resource_class = 'entity'
+      AND principal_kind IS NULL
       AND entity_type_slug IS NULL
       AND field_path IS NULL
       AND entity_id IS NULL
@@ -318,18 +437,29 @@ export async function getGlobalEntityApprovalPolicy(
 		: defaultEntityApprovalPolicy(organizationId);
 }
 
+/**
+ * Every policy row for an org, most-general first. Filter by class to list one
+ * class's rows (the entity settings page passes `entity`); omit to list all.
+ */
 export async function listEntityApprovalPolicies(
 	organizationId: string,
+	resourceClass?: WriteResourceClass,
 ): Promise<EntityApprovalPolicy[]> {
 	const sql = getDb();
 	const rows = await sql<EntityApprovalPolicyRow>`
-    SELECT id, organization_id, entity_type_slug, field_path, entity_id,
+    SELECT id, organization_id, resource_class, principal_kind, principal_id,
+       entity_type_slug, field_path, entity_id,
        create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM entity_approval_policies
     WHERE organization_id = ${organizationId}
+      AND (${resourceClass ?? null}::text IS NULL OR resource_class = ${resourceClass ?? null})
     ORDER BY
+      resource_class ASC,
+      CASE WHEN principal_kind IS NULL THEN 0 ELSE 1 END,
+      principal_kind ASC NULLS FIRST,
+      principal_id ASC NULLS FIRST,
       CASE WHEN entity_type_slug IS NULL THEN 0 ELSE 1 END,
       entity_type_slug ASC NULLS FIRST,
       CASE WHEN entity_id IS NULL THEN 0 ELSE 1 END,
@@ -357,6 +487,10 @@ export async function upsertEntityApprovalPolicy(
 	organizationId: string,
 	input: EntityApprovalPolicyInput,
 ): Promise<EntityApprovalPolicy> {
+	const resourceClass = normalizeResourceClass(input.resourceClass);
+	const principalKind = normalizePrincipalKind(input.principalKind);
+	// A principal id is only meaningful with a kind; ignore it otherwise.
+	const principalId = principalKind ? input.principalId?.trim() || null : null;
 	const entityTypeSlug = input.entityTypeSlug?.trim() || null;
 	const fieldPath = input.fieldPath?.trim() || null;
 	const entityId = input.entityId ?? null;
@@ -369,8 +503,9 @@ export async function upsertEntityApprovalPolicy(
 	const approvalChannelName = input.approvalChannelName?.trim() || null;
 
 	const sql = getDb();
-	const row = await sql.begin(async (tx) => {
-		const updated = await tx<EntityApprovalPolicyRow>`
+	// The identity tuple the unique index keys on. Reused by both UPDATE arms so
+	// the "lost the insert race" recovery targets the exact same row.
+	const applyUpdate = (tx: DbClient) => tx<EntityApprovalPolicyRow>`
       UPDATE entity_approval_policies
       SET create_mode = ${createMode},
           update_mode = ${updateMode},
@@ -381,31 +516,41 @@ export async function upsertEntityApprovalPolicy(
           approval_channel_name = ${approvalChannelName},
           updated_at = now()
       WHERE organization_id = ${organizationId}
+        AND resource_class = ${resourceClass}
+        AND principal_kind IS NOT DISTINCT FROM ${principalKind}
+        AND principal_id IS NOT DISTINCT FROM ${principalId}
         AND entity_type_slug IS NOT DISTINCT FROM ${entityTypeSlug}
         AND field_path IS NOT DISTINCT FROM ${fieldPath}
         AND entity_id IS NOT DISTINCT FROM ${entityId}
-      RETURNING id, organization_id, entity_type_slug, field_path, entity_id,
+      RETURNING id, organization_id, resource_class, principal_kind, principal_id,
+       entity_type_slug, field_path, entity_id,
        create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     `;
+
+	const row = await sql.begin(async (tx) => {
+		const updated = await applyUpdate(tx);
 		if (updated[0]) return updated[0];
 
 		const inserted = await tx<EntityApprovalPolicyRow>`
       INSERT INTO entity_approval_policies (
-        organization_id, entity_type_slug, field_path, entity_id,
+        organization_id, resource_class, principal_kind, principal_id,
+        entity_type_slug, field_path, entity_id,
         create_mode, update_mode, delete_mode,
         approval_connection_id, approval_channel_id, approval_team_id,
         approval_channel_name, created_at, updated_at
       ) VALUES (
-        ${organizationId}, ${entityTypeSlug}, ${fieldPath}, ${entityId},
+        ${organizationId}, ${resourceClass}, ${principalKind}, ${principalId},
+        ${entityTypeSlug}, ${fieldPath}, ${entityId},
         ${createMode}, ${updateMode}, ${deleteMode},
         ${approvalConnectionId},
         ${approvalChannelId}, ${approvalTeamId}, ${approvalChannelName},
         now(), now()
       )
       ON CONFLICT DO NOTHING
-      RETURNING id, organization_id, entity_type_slug, field_path, entity_id,
+      RETURNING id, organization_id, resource_class, principal_kind, principal_id,
+       entity_type_slug, field_path, entity_id,
        create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
@@ -413,25 +558,7 @@ export async function upsertEntityApprovalPolicy(
 		if (inserted[0]) return inserted[0];
 
 		// Lost the insert race to a concurrent save — apply this request on top.
-		const selected = await tx<EntityApprovalPolicyRow>`
-      UPDATE entity_approval_policies
-      SET create_mode = ${createMode},
-          update_mode = ${updateMode},
-          delete_mode = ${deleteMode},
-          approval_connection_id = ${approvalConnectionId},
-          approval_channel_id = ${approvalChannelId},
-          approval_team_id = ${approvalTeamId},
-          approval_channel_name = ${approvalChannelName},
-          updated_at = now()
-      WHERE organization_id = ${organizationId}
-        AND entity_type_slug IS NOT DISTINCT FROM ${entityTypeSlug}
-        AND field_path IS NOT DISTINCT FROM ${fieldPath}
-        AND entity_id IS NOT DISTINCT FROM ${entityId}
-      RETURNING id, organization_id, entity_type_slug, field_path, entity_id,
-       create_mode, update_mode, delete_mode,
-       approval_connection_id, approval_channel_id, approval_team_id,
-       approval_channel_name
-    `;
+		const selected = await applyUpdate(tx);
 		return selected[0] ?? null;
 	});
 	if (!row) throw new Error("Failed to save entity approval policy");
@@ -440,18 +567,37 @@ export async function upsertEntityApprovalPolicy(
 
 export async function deleteEntityApprovalPolicy(args: {
 	organizationId: string;
+	resourceClass?: WriteResourceClass;
+	principalKind?: PolicyPrincipalKind | null;
+	principalId?: string | null;
 	entityTypeSlug?: string | null;
 	fieldPath?: string | null;
 	entityId?: number | null;
 }): Promise<boolean> {
+	const resourceClass = normalizeResourceClass(args.resourceClass);
+	const principalKind = normalizePrincipalKind(args.principalKind);
+	const principalId = principalKind ? args.principalId?.trim() || null : null;
 	const entityTypeSlug = args.entityTypeSlug?.trim() || null;
 	const fieldPath = args.fieldPath?.trim() || null;
 	const entityId = args.entityId ?? null;
-	if (!entityTypeSlug && !fieldPath && entityId === null) return false;
+	// Guard: never let a request delete the workspace default (entity class, any
+	// principal, unscoped) — that row is the fallback and is edited, not removed.
+	if (
+		resourceClass === "entity" &&
+		principalKind === null &&
+		!entityTypeSlug &&
+		!fieldPath &&
+		entityId === null
+	) {
+		return false;
+	}
 	const sql = getDb();
 	const rows = await sql<{ id: number }>`
     DELETE FROM entity_approval_policies
     WHERE organization_id = ${args.organizationId}
+      AND resource_class = ${resourceClass}
+      AND principal_kind IS NOT DISTINCT FROM ${principalKind}
+      AND principal_id IS NOT DISTINCT FROM ${principalId}
       AND entity_type_slug IS NOT DISTINCT FROM ${entityTypeSlug}
       AND field_path IS NOT DISTINCT FROM ${fieldPath}
       AND entity_id IS NOT DISTINCT FROM ${entityId}

@@ -8,6 +8,9 @@ import {
 
 type PolicyRowSeed = {
 	id?: number;
+	resource_class?: string;
+	principal_kind?: string | null;
+	principal_id?: string | null;
 	entity_type_slug?: string | null;
 	field_path?: string | null;
 	entity_id?: number | null;
@@ -19,11 +22,16 @@ type PolicyRowSeed = {
 const ORG = "org-1";
 
 /** Tagged-template stub that mimics the candidate-policy query: it applies the
- * same (NULL OR match) filters the real SQL does, against seeded rows. */
+ * same (NULL OR match) filters the real SQL does, against seeded rows. Param
+ * order matches loadCandidatePolicies: org, resource_class, principal_kind,
+ * principal_id, entity_type_slug, entity_id. */
 function stubSql(seeds: PolicyRowSeed[]): DbClient {
 	const rows = seeds.map((seed, index) => ({
 		id: seed.id ?? index + 1,
 		organization_id: ORG,
+		resource_class: seed.resource_class ?? "entity",
+		principal_kind: seed.principal_kind ?? null,
+		principal_id: seed.principal_id ?? null,
 		entity_type_slug: seed.entity_type_slug ?? null,
 		field_path: seed.field_path ?? null,
 		entity_id: seed.entity_id ?? null,
@@ -36,15 +44,24 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 		approval_channel_name: null,
 	}));
 	const sql = (_strings: TemplateStringsArray, ...params: unknown[]) => {
-		const [org, entityTypeSlug, entityId] = params as [
-			string,
-			string | null,
-			number | null,
-		];
+		const [org, resourceClass, principalKind, principalId, entityTypeSlug, entityId] =
+			params as [
+				string,
+				string,
+				string | null,
+				string | null,
+				string | null,
+				number | null,
+			];
 		return Promise.resolve(
 			rows.filter(
 				(row) =>
 					row.organization_id === org &&
+					row.resource_class === resourceClass &&
+					(row.principal_kind === null ||
+						(row.principal_kind === principalKind &&
+							(row.principal_id === null ||
+								row.principal_id === principalId))) &&
 					(row.entity_type_slug === null ||
 						row.entity_type_slug === entityTypeSlug) &&
 					(row.entity_id === null || row.entity_id === entityId),
@@ -152,6 +169,93 @@ describe("evaluateEntityMutation", () => {
 		).toBe("require_approval");
 	});
 
+	test("deny mode is a hard floor — the write is denied, not queued", async () => {
+		expect(
+			await evaluateEntityMutation({
+				organizationId: ORG,
+				principalKind: "agent",
+				action: "create",
+				entityTypeSlug: "task",
+				sql: stubSql([{ entity_type_slug: "task", create_mode: "deny" }]),
+			}),
+		).toBe("deny");
+	});
+
+	test("per-principal row beats a broader any-principal row", async () => {
+		// Global says auto for creates; a row pinned to this one agent says approval.
+		const sql = stubSql([
+			{ create_mode: "auto" },
+			{ principal_kind: "agent", principal_id: "agent-77", create_mode: "approval" },
+		]);
+		expect(
+			await evaluateEntityMutation({
+				organizationId: ORG,
+				principalKind: "agent",
+				principalId: "agent-77",
+				action: "create",
+				entityTypeSlug: "task",
+				sql,
+			}),
+		).toBe("require_approval");
+		// A different agent is unaffected and falls back to the global auto.
+		expect(
+			await evaluateEntityMutation({
+				organizationId: ORG,
+				principalKind: "agent",
+				principalId: "agent-99",
+				action: "create",
+				entityTypeSlug: "task",
+				sql,
+			}),
+		).toBe("allow");
+	});
+
+	test("principal-kind row (any id) applies to every agent of that kind", async () => {
+		const sql = stubSql([
+			{ principal_kind: "watcher", delete_mode: "deny" },
+		]);
+		expect(
+			await evaluateEntityMutation({
+				organizationId: ORG,
+				principalKind: "watcher",
+				principalId: "watcher:5",
+				action: "delete",
+				entityTypeSlug: "task",
+				sql,
+			}),
+		).toBe("deny");
+		// An agent (different kind) is not matched by a watcher-kind row.
+		expect(
+			await evaluateEntityMutation({
+				organizationId: ORG,
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "delete",
+				entityTypeSlug: "task",
+				sql,
+			}),
+		).toBe("require_approval");
+	});
+
+	test("a pinned-principal row outranks a more-scoped any-principal row", async () => {
+		// entity-type row (any principal) says auto; principal row (no scope) says
+		// approval. Principal specificity dominates, so the pinned agent is gated.
+		const sql = stubSql([
+			{ entity_type_slug: "task", update_mode: "auto" },
+			{ principal_kind: "agent", principal_id: "agent-77", update_mode: "approval" },
+		]);
+		expect(
+			await evaluateEntityMutation({
+				organizationId: ORG,
+				principalKind: "agent",
+				principalId: "agent-77",
+				action: "update",
+				entityTypeSlug: "task",
+				sql,
+			}),
+		).toBe("require_approval");
+	});
+
 	test("entity-scoped (row-level) policy beats the type policy", async () => {
 		const sql = stubSql([
 			{ entity_type_slug: "task", delete_mode: "auto" },
@@ -242,6 +346,39 @@ describe("evaluateEntityFieldUpdates", () => {
 			...baseArgs,
 			entityId: 9999,
 			principalKind: "agent",
+			fields: { status: "none" },
+			sql,
+		});
+		expect(other.status).toBe("allow");
+	});
+
+	test("deny mode on a field denies it even when human-owned", async () => {
+		const decisions = await evaluateEntityFieldUpdates({
+			...baseArgs,
+			principalKind: "agent",
+			fields: { locked: "human", status: "none" },
+			sql: stubSql([{ entity_type_slug: "task", update_mode: "deny" }]),
+		});
+		expect(decisions.locked).toBe("deny");
+		expect(decisions.status).toBe("deny");
+	});
+
+	test("per-principal update policy gates only the pinned watcher", async () => {
+		const sql = stubSql([
+			{ principal_kind: "watcher", principal_id: "watcher:6", update_mode: "approval" },
+		]);
+		const pinned = await evaluateEntityFieldUpdates({
+			...baseArgs,
+			principalKind: "watcher",
+			principalId: "watcher:6",
+			fields: { status: "none" },
+			sql,
+		});
+		expect(pinned.status).toBe("require_approval");
+		const other = await evaluateEntityFieldUpdates({
+			...baseArgs,
+			principalKind: "watcher",
+			principalId: "watcher:7",
 			fields: { status: "none" },
 			sql,
 		});

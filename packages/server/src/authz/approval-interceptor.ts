@@ -124,6 +124,7 @@ async function evaluate(
 		const decisions = await evaluateEntityFieldUpdates({
 			organizationId: req.organizationId,
 			principalKind: req.principalKind,
+			principalId: req.principalId ?? null,
 			entityTypeSlug: req.entityTypeSlug,
 			entityId: req.entityId,
 			entityOrgId: req.entityOrgId ?? null,
@@ -146,6 +147,7 @@ async function evaluate(
 	const decision = await evaluateEntityMutation({
 		organizationId: req.organizationId,
 		principalKind: req.principalKind,
+		principalId: req.principalId ?? null,
 		action: req.action,
 		entityTypeSlug: req.entityTypeSlug,
 		entityId: req.action === "delete" ? req.entityId : undefined,

@@ -300,7 +300,7 @@
           },
           "models": [
             "anthropic/claude-sonnet-5",
-            "openai/gpt-5.5",
+            "openai/gpt-5.6-sol",
             "google/gemini-2.5-pro"
           ]
         }
@@ -431,9 +431,9 @@
           "apiKeyPlaceholder": "sk-...",
           "sdkCompat": "openai",
           "modalities": ["text", "image", "tts"],
-          "defaultModel": "gpt-5.5",
+          "defaultModel": "gpt-5.6-sol",
           "modelsEndpoint": "/models",
-          "models": ["gpt-5.5", "gpt-5.5-mini", "gpt-5-nano"]
+          "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
         }
       ]
     }

@@ -115,8 +115,8 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 			true,
 		);
 		// Deterministic default from providers.json (`openai` → its curated
-		// defaultModel, currently `gpt-5.5`).
-		expect(b?.model).toBe("openai/gpt-5.5");
+		// defaultModel, currently `gpt-5.6-sol`).
+		expect(b?.model).toBe("openai/gpt-5.6-sol");
 		expect(await readPointer(org.id)).toBe(BUILDER_AGENT_ID);
 	});
 
@@ -169,7 +169,7 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		expect(res.created).toBe(false);
 		const b = await readBuilder(org.id);
 		expect(b?.installed_providers?.length ?? 0).toBeGreaterThan(0);
-		expect(b?.model).toBe("openai/gpt-5.5");
+		expect(b?.model).toBe("openai/gpt-5.6-sol");
 	});
 
 	it("keeps providers + pinned model consistent when repairing a model-only gap", async () => {

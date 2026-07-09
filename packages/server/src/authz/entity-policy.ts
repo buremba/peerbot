@@ -184,35 +184,42 @@ export function defaultEntityApprovalPolicy(
 }
 
 /**
- * Who is performing this mutation, for policy purposes. A watcher-attributed
- * call is a watcher; a real user session (userId without an agent run) is a
- * human; everything else — agent runs, automation/system tokens — is an agent.
- * Used identically by create, update, and delete gates so a system context
- * can neither bypass policy (as a fake "user") nor get spuriously denied.
+ * Who is performing this mutation, for policy purposes. Precedence is DELIBERATE
+ * and security-relevant: a real agent run (trusted `agentId` on the context) is
+ * classified as an agent EVEN IF the request also carries a `watcher_source`.
+ * `watcher_source` is a caller-supplied arg (attribution, e.g. for card labels);
+ * letting it override the trusted agent identity would let an agent escape its
+ * own per-principal policy by tagging its write as a watcher's. A genuine watcher
+ * promotion runs with no agentId, so it still classifies as a watcher. A real
+ * user session (userId, no agentId) is a human; everything else is an agent.
  */
 export function classifyMutationPrincipal(args: {
 	userId?: string | null;
 	agentId?: string | null;
 	watcherSource?: unknown;
 }): EntityPolicyPrincipalKind {
+	// Trusted agent identity wins over the caller-supplied watcher tag.
+	if (args.agentId) return "agent";
 	if (args.watcherSource) return "watcher";
-	if (args.userId && !args.agentId) return "user";
+	if (args.userId) return "user";
 	return "agent";
 }
 
 /**
  * Stable identity of the acting non-human principal, for per-principal policy
- * matching. Watcher → `watcher:<id>`; agent (or automation token with an agent
- * id) → that id; system/automation token with no id → null ("any agent"). Users
- * are never policy principals, so this returns null for them too. Kept alongside
- * {@link classifyMutationPrincipal} so kind and id are computed from one source.
+ * matching. Mirrors {@link classifyMutationPrincipal}'s precedence: a trusted
+ * `agentId` wins — an agent run resolves to its own agent id even when a
+ * `watcherId` (from a caller-supplied watcher_source) is also present, so it
+ * can't spoof `watcher:<id>` to dodge its agent policy. Only a genuine watcher
+ * path (agentId null) resolves to `watcher:<id>`; no id → null ("any agent").
  */
 export function mutationPrincipalId(args: {
 	agentId?: string | null;
 	watcherId?: number | null;
 }): string | null {
+	if (args.agentId) return args.agentId;
 	if (args.watcherId != null) return `watcher:${args.watcherId}`;
-	return args.agentId ?? null;
+	return null;
 }
 
 function modeForAction(
@@ -237,22 +244,59 @@ function modeToDecision(mode: EntityMutationMode): EntityPolicyDecision {
 }
 
 /**
- * How specific a candidate row is for the request it survived filtering against.
- * Higher wins. Principal specificity dominates scope specificity: a row that
- * names the acting principal always beats a broader-scoped row that targets "any
- * principal", so an admin can pin one noisy agent/watcher to `approval` without
- * that being shadowed by a global entity-type default. Within one principal tier,
- * the entity_id > field_path > entity_type ordering is preserved. Scores never
- * collide across tiers: principal weights (16/8) sit above every scope weight (≤7).
+ * Target-scope specificity: entity_id > field_path > entity_type > global. Weights
+ * are strictly ordered so a more-specific scope always outranks a broader one.
  */
-function specificity(row: EntityApprovalPolicyRow): number {
-	const principalScore =
-		row.principal_id !== null ? 16 : row.principal_kind !== null ? 8 : 0;
+function scopeSpecificity(row: EntityApprovalPolicyRow): number {
 	return (
-		principalScore +
 		(row.entity_id !== null ? 4 : 0) +
 		(row.field_path !== null ? 2 : 0) +
 		(row.entity_type_slug !== null ? 1 : 0)
+	);
+}
+
+/** Principal specificity: exact id > kind-wide > any. Used only to break scope ties. */
+function principalSpecificity(row: EntityApprovalPolicyRow): number {
+	return row.principal_id !== null ? 2 : row.principal_kind !== null ? 1 : 0;
+}
+
+/** Restrictive rank of a single stored mode — higher = more restrictive. */
+function modeRestrictiveness(mode: EntityMutationMode): number {
+	if (mode === "deny") return 3;
+	if (mode === "disabled") return 3;
+	if (mode === "approval") return 2;
+	return 1; // auto
+}
+
+/**
+ * A row's overall restrictiveness, for the final tie-break: the most restrictive
+ * of its three per-action modes. Ensures that when scope AND principal specificity
+ * tie, the stricter row wins (deny > approval > auto) rather than DB-return order.
+ */
+function rowRestrictiveness(row: EntityApprovalPolicyRow): number {
+	return Math.max(
+		modeRestrictiveness(normalizeMode(row.create_mode, "auto")),
+		modeRestrictiveness(normalizeMode(row.update_mode, "auto")),
+		modeRestrictiveness(normalizeMode(row.delete_mode, "auto")),
+	);
+}
+
+/**
+ * Order candidate rows most-authoritative first, per the RFC's declared ordering
+ * (docs/plans/write-gate-generalization.md §4): TARGET SCOPE specificity first,
+ * THEN principal specificity, then restrictive-wins as the final tie-break. So an
+ * entity-type `deny` beats an agent-global `auto` — a broad per-principal row can
+ * never shadow a narrowly-scoped rule. `id` last makes the order deterministic.
+ */
+function compareCandidates(
+	a: EntityApprovalPolicyRow,
+	b: EntityApprovalPolicyRow,
+): number {
+	return (
+		scopeSpecificity(b) - scopeSpecificity(a) ||
+		principalSpecificity(b) - principalSpecificity(a) ||
+		rowRestrictiveness(b) - rowRestrictiveness(a) ||
+		Number(b.id) - Number(a.id)
 	);
 }
 
@@ -294,7 +338,7 @@ async function loadCandidatePolicies(args: {
       AND (entity_type_slug IS NULL OR entity_type_slug = ${args.entityTypeSlug ?? null})
       AND (entity_id IS NULL OR entity_id = ${args.entityId ?? null})
   `;
-	return [...rows].sort((a, b) => specificity(b) - specificity(a));
+	return [...rows].sort(compareCandidates);
 }
 
 function pickPolicy(

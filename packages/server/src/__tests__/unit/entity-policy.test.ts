@@ -4,6 +4,7 @@ import {
 	classifyMutationPrincipal,
 	evaluateEntityFieldUpdates,
 	evaluateEntityMutation,
+	mutationPrincipalId,
 	resolveWritePolicyDecision,
 } from "../../authz/entity-policy";
 
@@ -73,14 +74,21 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 }
 
 describe("classifyMutationPrincipal", () => {
-	test("watcher source wins", () => {
+	test("a genuine watcher (no agentId) classifies as watcher", () => {
+		expect(
+			classifyMutationPrincipal({ watcherSource: { watcher_id: 5 } }),
+		).toBe("watcher");
+	});
+
+	test("SECURITY: a trusted agentId beats a caller-supplied watcher_source", () => {
+		// An agent run cannot demote itself to a watcher (and escape its agent
+		// policy) by tagging the write with a watcher_source it controls.
 		expect(
 			classifyMutationPrincipal({
-				userId: "u1",
-				agentId: "a1",
+				agentId: "agent-A",
 				watcherSource: { watcher_id: 5 },
 			}),
-		).toBe("watcher");
+		).toBe("agent");
 	});
 
 	test("real user session is a user", () => {
@@ -95,6 +103,26 @@ describe("classifyMutationPrincipal", () => {
 
 	test("system/automation context (no user, no agent) is an agent, not a user", () => {
 		expect(classifyMutationPrincipal({})).toBe("agent");
+	});
+});
+
+describe("mutationPrincipalId", () => {
+	test("a genuine watcher (no agentId) resolves to watcher:<id>", () => {
+		expect(mutationPrincipalId({ agentId: null, watcherId: 6 })).toBe(
+			"watcher:6",
+		);
+	});
+
+	test("SECURITY: agentId wins over a caller-supplied watcherId — no spoofing", () => {
+		// An agent supplying watcher_source:{watcher_id:6} still resolves to its own
+		// agent id, so it is matched against ITS agent policy, not watcher:6's.
+		expect(mutationPrincipalId({ agentId: "agent-A", watcherId: 6 })).toBe(
+			"agent-A",
+		);
+	});
+
+	test("no principal id → null (any agent)", () => {
+		expect(mutationPrincipalId({})).toBeNull();
 	});
 });
 
@@ -238,9 +266,10 @@ describe("evaluateEntityMutation", () => {
 		).toBe("require_approval");
 	});
 
-	test("a pinned-principal row outranks a more-scoped any-principal row", async () => {
-		// entity-type row (any principal) says auto; principal row (no scope) says
-		// approval. Principal specificity dominates, so the pinned agent is gated.
+	test("scope specificity outranks principal: entity-type row beats a principal-global row", async () => {
+		// entity-type row (any principal) says auto; an agent-global row says approval.
+		// Per the RFC, TARGET SCOPE wins over principal specificity, so the more-
+		// scoped entity-type rule governs — the pinned agent is NOT gated here.
 		const sql = stubSql([
 			{ entity_type_slug: "task", update_mode: "auto" },
 			{ principal_kind: "agent", principal_id: "agent-77", update_mode: "approval" },
@@ -254,7 +283,62 @@ describe("evaluateEntityMutation", () => {
 				entityTypeSlug: "task",
 				sql,
 			}),
+		).toBe("allow");
+	});
+
+	test("an agent-global auto must NOT shadow an entity-type-specific deny", async () => {
+		// The inverse-regression sol asked for: a broad per-principal `auto` cannot
+		// open up a narrowly-scoped `deny`. Scope specificity wins → deny.
+		const sql = stubSql([
+			{ entity_type_slug: "invoice", update_mode: "deny" },
+			{ principal_kind: "agent", principal_id: "agent-A", update_mode: "auto" },
+		]);
+		expect(
+			await evaluateEntityMutation({
+				organizationId: ORG,
+				principalKind: "agent",
+				principalId: "agent-A",
+				action: "update",
+				entityTypeSlug: "invoice",
+				sql,
+			}),
+		).toBe("deny");
+	});
+
+	test("principal breaks a SCOPE tie: two global rows, the pinned one wins", async () => {
+		// Both rows are global scope (equal scope specificity), so principal
+		// specificity is the tie-break — the agent-pinned approval governs.
+		const sql = stubSql([
+			{ update_mode: "auto" },
+			{ principal_kind: "agent", principal_id: "agent-77", update_mode: "approval" },
+		]);
+		expect(
+			await evaluateEntityMutation({
+				organizationId: ORG,
+				principalKind: "agent",
+				principalId: "agent-77",
+				action: "update",
+				entityTypeSlug: "task",
+				sql,
+			}),
 		).toBe("require_approval");
+	});
+
+	test("restrictive-wins breaks a full tie: deny beats auto at equal specificity", async () => {
+		// Same scope + same (null) principal → tie broken by restrictiveness: deny wins.
+		const sql = stubSql([
+			{ entity_type_slug: "task", update_mode: "auto" },
+			{ entity_type_slug: "task", update_mode: "deny" },
+		]);
+		expect(
+			await evaluateEntityMutation({
+				organizationId: ORG,
+				principalKind: "agent",
+				action: "update",
+				entityTypeSlug: "task",
+				sql,
+			}),
+		).toBe("deny");
 	});
 
 	test("entity-scoped (row-level) policy beats the type policy", async () => {

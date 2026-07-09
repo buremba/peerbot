@@ -278,6 +278,9 @@ export class OAuthClient extends BaseOAuth2Client {
 			}
 		}
 		const err = typeof data.error === "string" ? data.error : undefined;
+		// Both pending states return null so the UI re-polls. RFC 8628 suggests
+		// increasing the interval on slow_down; the client already exposes
+		// `interval` from the device-code response and the UI drives the pace.
 		if (err === "authorization_pending" || err === "slow_down") return null;
 		if (!response.ok) {
 			throw new Error(
@@ -320,13 +323,17 @@ export class OAuthClient extends BaseOAuth2Client {
 			user_code: string;
 			interval?: number;
 		};
+		const verificationUrl = this.config.defaultVerificationUrl?.trim();
+		if (!verificationUrl) {
+			throw new Error(
+				`${this.config.name} openai-device-auth config requires defaultVerificationUrl`,
+			);
+		}
 		return {
 			deviceAuthId: data.device_auth_id,
 			userCode: data.user_code,
 			interval: typeof data.interval === "number" ? data.interval : 5,
-			verificationUrl:
-				this.config.defaultVerificationUrl ??
-				"https://auth.openai.com/codex/device",
+			verificationUrl,
 		};
 	}
 
@@ -370,7 +377,8 @@ export class OAuthClient extends BaseOAuth2Client {
 		return {
 			accessToken: creds.accessToken,
 			refreshToken: creds.refreshToken,
-			expiresIn: tokenData.expires_in ?? 0,
+			// Match buildCredentials default so grant-strategy never stores expiresAt=now.
+			expiresIn: tokenData.expires_in ?? 3600,
 			accountId: this.extractAccountId(creds.accessToken),
 		};
 	}

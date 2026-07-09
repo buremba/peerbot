@@ -11,6 +11,7 @@ import type {
 	ProviderOAuthConfig,
 	ProviderOAuthGrantKind,
 } from "@lobu/core";
+import { createLogger } from "@lobu/core";
 
 export type OAuthGrantKind = ProviderOAuthGrantKind;
 
@@ -20,13 +21,22 @@ export type OAuthProviderConfig = ProviderOAuthConfig & {
 	name: string;
 };
 
+const logger = createLogger("oauth-provider-registry");
+
+const VALID_GRANTS = new Set<OAuthGrantKind>([
+	"authorization-code",
+	"device-code",
+	"openai-device-auth",
+]);
+const VALID_AUTH_TYPES = new Set(["oauth", "device-code"]);
+
 /** Mutable registry filled by {@link loadOAuthProvidersFromConfigs} at boot. */
 let registry: Map<string, OAuthProviderConfig> = new Map();
 
 /**
  * Replace the OAuth registry from provider-config entries that declare `oauth`.
  * Called once during gateway boot after `providers.json` is loaded.
- * Also used by tests to inject fixtures (pass a map or call with test configs).
+ * Invalid entries are skipped (logged) so one bad block cannot take down boot.
  */
 export function loadOAuthProvidersFromConfigs(
 	configs: Record<string, ProviderConfigEntry>,
@@ -35,19 +45,13 @@ export function loadOAuthProvidersFromConfigs(
 	for (const [id, entry] of Object.entries(configs)) {
 		const oauth = entry.oauth;
 		if (!oauth) continue;
-		if (
-			!oauth.clientId?.trim() ||
-			!oauth.tokenUrl?.trim() ||
-			!oauth.scope?.trim()
-		) {
-			throw new Error(
-				`providers.json: provider "${id}" oauth block requires clientId, tokenUrl, and scope`,
+		const err = validateOAuthBlock(id, oauth);
+		if (err) {
+			logger.error(
+				{ providerId: id, err },
+				"Skipping invalid oauth block in providers.json",
 			);
-		}
-		if (!oauth.grant) {
-			throw new Error(
-				`providers.json: provider "${id}" oauth block requires grant`,
-			);
+			continue;
 		}
 		next.set(id, {
 			...oauth,
@@ -57,6 +61,37 @@ export function loadOAuthProvidersFromConfigs(
 	}
 	registry = next;
 	return listOAuthProviders();
+}
+
+function validateOAuthBlock(
+	id: string,
+	oauth: ProviderOAuthConfig,
+): string | null {
+	if (!oauth.clientId?.trim()) return "missing clientId";
+	if (!oauth.tokenUrl?.trim()) return "missing tokenUrl";
+	if (!oauth.scope?.trim()) return "missing scope";
+	if (!oauth.grant || !VALID_GRANTS.has(oauth.grant)) {
+		return `invalid grant (got ${String(oauth.grant)})`;
+	}
+	if (oauth.authType && !VALID_AUTH_TYPES.has(oauth.authType)) {
+		return `invalid authType (got ${String(oauth.authType)})`;
+	}
+	if (
+		oauth.grant === "authorization-code" &&
+		(!oauth.authUrl?.trim() || !oauth.redirectUri?.trim())
+	) {
+		return "authorization-code requires authUrl and redirectUri";
+	}
+	if (oauth.grant === "device-code" && !oauth.deviceCodeUrl?.trim()) {
+		return "device-code requires deviceCodeUrl";
+	}
+	if (
+		oauth.grant === "openai-device-auth" &&
+		(!oauth.deviceCodeUrl?.trim() || !oauth.deviceTokenUrl?.trim())
+	) {
+		return "openai-device-auth requires deviceCodeUrl and deviceTokenUrl";
+	}
+	return null;
 }
 
 /** Test / advanced: set the registry directly. */

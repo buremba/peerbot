@@ -851,7 +851,7 @@ export async function handleCreate(
       return {
         error: callerIsAdmin
 					? "Select or create an OAuth app profile before creating the connection."
-          : `No OAuth app credentials configured for this connector. Ask an admin to set up the ${authSelection.oauthMethod?.provider ?? args.connector_key} app in /oauth-apps first.`,
+          : `No OAuth app credentials configured for this connector. Ask an admin to set up the ${authSelection.oauthMethod?.provider ?? args.connector_key} app under the connector's Setup tab (Connectors › ${args.connector_key}) first.`,
       };
     }
 		if (authSelection.appAuthProfile.status !== "active") {
@@ -869,7 +869,7 @@ export async function handleCreate(
         authSelection.appAuthProfile.connector_key !== args.connector_key)
     ) {
       return {
-        error: `No default OAuth app configured for this connector. Ask an admin to pin a ${authSelection.oauthMethod?.provider ?? args.connector_key} app as the default in /oauth-apps.`,
+        error: `No default OAuth app configured for this connector. Ask an admin to pin a ${authSelection.oauthMethod?.provider ?? args.connector_key} app as the default under the connector's Setup tab (Connectors › ${args.connector_key}).`,
       };
     }
   }

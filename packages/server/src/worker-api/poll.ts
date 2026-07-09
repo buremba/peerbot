@@ -428,6 +428,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                   AND (
                     con.device_worker_id IS NULL
                     OR (
+                      -- Browser affinity (not job host). Exclude run_type=action:
+                      -- scrape actions are always connector_key='chrome' and use
+                      -- the org chrome connection pin, not LinkedIn's affinity pin.
                       pin_dw.platform = 'chrome-extension'
                       AND r.run_type IN ('sync', 'auth', 'embed_backfill')
                       AND r.connector_key NOT LIKE 'chrome%'

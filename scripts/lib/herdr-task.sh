@@ -1,23 +1,27 @@
 # herdr-task.sh — optional Herdr workspace wiring for task worktrees.
 # Sourced by task-setup.sh / task-clean.sh. Set HERDR=0 to skip.
+# shellcheck shell=bash
 
 herdr_task_enabled() {
   [[ "${HERDR:-1}" != "0" ]] && command -v herdr >/dev/null 2>&1
 }
 
-# Open (or attach) an existing git worktree as a Herdr workspace. Prints workspace_id on stdout.
+# Open a git worktree in Herdr. Prints workspace_id on stdout.
 #
 # When task-setup runs *inside* an existing Herdr pane (the common "click new →
-# start agent → run make task-setup" flow), Herdr exports $HERDR_WORKSPACE_ID.
-# In that case we relabel the *current* workspace to the task name instead of
-# spawning a second one — otherwise the pane you're typing in keeps its launch
-# label (e.g. "~") while an empty correctly-labeled workspace appears beside it.
+# start agent → run make task-setup" flow), create a new tab for the worktree.
+# The calling agent keeps its full-size pane and task commands remain easy to
+# follow from the tab bar instead of being added as splits to the active tab.
 herdr_task_open() {
   local repo="$1" worktree_path="$2" label="$3"
-  local json ws
+  local json ws tab
   herdr_task_enabled || return 1
   if [[ -n "${HERDR_WORKSPACE_ID:-}" ]]; then
-    herdr workspace rename "$HERDR_WORKSPACE_ID" "$label" >/dev/null 2>&1 || true
+    json="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$worktree_path" --label "$label" --no-focus 2>/dev/null)" || return 1
+    tab="$(printf '%s' "$json" | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+print((d.get("result",{}).get("tab") or {}).get("tab_id",""))' 2>/dev/null)" || return 1
+    [[ -n "$tab" ]] || return 1
     printf '%s' "$HERDR_WORKSPACE_ID"
     return 0
   fi
@@ -30,24 +34,38 @@ print(d.get("result",{}).get("workspace",{}).get("workspace_id",""))' 2>/dev/nul
   printf '%s' "$ws"
 }
 
-# Close the Herdr workspace tied to a worktree path, if any.
+# Close the Herdr tab or workspace tied to a worktree path, if any.
 #
-# Prefers matching by the worktree's checkout_path (set when herdr_task_open
-# spawned a dedicated worktree workspace). Falls back to matching by label ==
-# task name: when task-setup ran inside an existing pane, herdr_task_open
-# relabeled that workspace in place rather than binding it to a checkout, so
-# Herdr has no checkout_path for it — the label is the only handle we have.
+# Tabs are matched by pane cwd. Dedicated workspaces are matched by the
+# worktree's checkout_path, with a legacy label fallback for workspaces made by
+# older versions of this helper.
 #
-# NEVER closes the CURRENT workspace ($HERDR_WORKSPACE_ID). `make task-clean`
-# is routinely run from inside the very pane that task-setup relabeled in place;
-# closing that pane tears down the live session (and under memory pressure the
-# teardown escalates to a SIGKILL of the whole process tree). The git-worktree
-# teardown that follows still removes the checkout, so sparing the pane loses
-# nothing but the (now-stale-labeled) window, which the user can reuse.
+# NEVER closes the current tab or workspace. `make task-clean` may be run from
+# inside the task itself, and tearing down that active session can kill the
+# caller before git cleanup completes.
 herdr_task_close() {
   local worktree_path="$1" label="${2:-}"
-  local json ws matched_by
+  local json ws matched_by tab
   herdr_task_enabled || return 1
+
+  # Worktrees opened from an existing Herdr session live in their own tab.
+  # Match by pane cwd first and label second, and never close the caller's tab.
+  if [[ -n "${HERDR_WORKSPACE_ID:-}" ]]; then
+    json="$(herdr pane list --workspace "$HERDR_WORKSPACE_ID" 2>/dev/null)" || return 1
+    tab="$(printf '%s' "$json" | WORKTREE_PATH="$worktree_path" CURRENT_TAB="${HERDR_TAB_ID:-}" python3 -c 'import os,sys,json
+path=os.environ["WORKTREE_PATH"]
+current=os.environ.get("CURRENT_TAB","")
+for pane in json.load(sys.stdin).get("result",{}).get("panes",[]):
+  tid=pane.get("tab_id") or ""
+  if tid and tid != current and (pane.get("cwd")==path or pane.get("foreground_cwd")==path):
+    print(tid); break
+' 2>/dev/null)" || return 1
+    if [[ -n "$tab" ]]; then
+      herdr tab close "$tab" >/dev/null 2>&1 || return 1
+      return 0
+    fi
+  fi
+
   json="$(herdr workspace list 2>/dev/null)" || return 1
   # Emit "<match_kind> <workspace_id>": "path" when bound to the checkout,
   # else "label" when only the label matches. Path wins over label. The current

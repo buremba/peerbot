@@ -225,7 +225,7 @@ fi
 . "$script_dir/lib/herdr-task.sh"
 herdr_ws=""
 if herdr_ws="$(herdr_task_open "$repo" "$worktree_dir" "$name")"; then
-  echo "→ opened Herdr workspace '$herdr_ws' (label: $name)"
+  echo "→ opened Herdr task tab/workspace '$herdr_ws' (label: $name)"
 else
   if herdr_task_enabled; then
     echo "warning: Herdr is installed but worktree open failed (run manually: herdr worktree open --cwd $repo --path $worktree_dir --label $name)" >&2

@@ -138,24 +138,37 @@ run_claude_review_inline() {
 
 run_claude_review_herdr() {
   local prompt_file="$1"
-  local raw_file exit_file pane_name started
+  local raw_file exit_file runner_file pane_name tab_json tab_id pane_id started
   raw_file="$(mktemp /tmp/lobu-review-claude-raw.XXXXXX)"
   exit_file="$(mktemp /tmp/lobu-review-claude-exit.XXXXXX)"
+  runner_file="$(mktemp /tmp/lobu-review-claude-runner.XXXXXX)"
   rm -f "$exit_file"
   pane_name="claude-review-${HEAD_SHA:0:8}-$$"
   REVIEW_HERDR_PANE_NAME="$pane_name"
   REVIEW_HERDR_RAW_FILE="$raw_file"
   REVIEW_HERDR_EXIT_FILE="$exit_file"
 
-  echo ">> spawning Herdr pane '$pane_name' for Claude review"
+  cat > "$runner_file" <<'RUNNER'
+set +e
+claude -p "$(cat "$PROMPT_FILE")" \
+  --model "$CLAUDE_REVIEW_MODEL" \
+  --effort "$CLAUDE_REVIEW_EFFORT" \
+  --output-format text \
+  --no-session-persistence \
+  --tools Bash,Read,Grep,LS \
+  --permission-mode bypassPermissions < /dev/null | tee "$RAW_FILE"
+claude_exit=${PIPESTATUS[0]}
+printf "%s\n" "$claude_exit" > "$EXIT_FILE"
+exit "$claude_exit"
+RUNNER
+
+  echo ">> spawning Herdr tab '$pane_name' for Claude review"
   set +e
-  # Variables in the single-quoted payload expand inside the spawned Bash.
-  # shellcheck disable=SC2016
-  started="$(
-    herdr agent start "$pane_name" \
+  tab_json="$(
+    herdr tab create \
       --workspace "$HERDR_WORKSPACE_ID" \
       --cwd "$PWD" \
-      --split down \
+      --label "$pane_name" \
       --no-focus \
       --env "PATH=$PATH" \
       --env "HOME=$HOME" \
@@ -173,25 +186,29 @@ run_claude_review_herdr() {
       --env "CLAUDE_REVIEW_EFFORT=$CLAUDE_REVIEW_EFFORT" \
       --env "PROMPT_FILE=$prompt_file" \
       --env "RAW_FILE=$raw_file" \
-      --env "EXIT_FILE=$exit_file" \
-      -- bash -lc '
-        set +e
-        claude -p "$(cat "$PROMPT_FILE")" \
-          --model "$CLAUDE_REVIEW_MODEL" \
-          --effort "$CLAUDE_REVIEW_EFFORT" \
-          --output-format text \
-          --no-session-persistence \
-          --tools Bash,Read,Grep,LS \
-          --permission-mode bypassPermissions < /dev/null | tee "$RAW_FILE"
-        claude_exit=${PIPESTATUS[0]}
-        printf "%s\n" "$claude_exit" > "$EXIT_FILE"
-        exit "$claude_exit"
-      ' 2>&1
+      --env "EXIT_FILE=$exit_file" 2>&1
   )"
   local start_exit=$?
+  if [ $start_exit -eq 0 ]; then
+    read -r tab_id pane_id <<<"$(printf '%s' "$tab_json" | python3 -c 'import json,sys
+d=json.load(sys.stdin).get("result", {})
+print((d.get("tab") or {}).get("tab_id", ""), (d.get("root_pane") or {}).get("pane_id", ""))' 2>/dev/null)"
+    if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
+      start_exit=1
+      started="Herdr tab create returned no tab/pane id: $tab_json"
+    else
+      herdr pane rename "$pane_id" "$pane_name" >/dev/null 2>&1 || true
+      started="$(herdr pane run "$pane_id" "bash $(printf '%q' "$runner_file")" 2>&1)"
+      start_exit=$?
+    fi
+  else
+    started="$tab_json"
+  fi
   set -e
   if [ $start_exit -ne 0 ]; then
-    echo ">> Herdr Claude pane failed to start; falling back to inline Claude" >&2
+    [ -n "${tab_id:-}" ] && herdr tab close "$tab_id" >/dev/null 2>&1 || true
+    rm -f "$runner_file"
+    echo ">> Herdr Claude tab failed to start; falling back to inline Claude" >&2
     printf '%s\n' "$started" >&2
     close_review_herdr_pane
     run_claude_review_inline "$prompt_file"
@@ -199,7 +216,7 @@ run_claude_review_herdr() {
   fi
   register_review_herdr_pane "$pane_name" "$started"
 
-  echo ">> Claude review is visible in Herdr pane '$pane_name'"
+  echo ">> Claude review is visible in Herdr tab '$pane_name'"
   local waited=0
   while [ ! -f "$exit_file" ]; do
     sleep 2
@@ -208,14 +225,14 @@ run_claude_review_herdr() {
       RAW="$(cat "$raw_file" 2>/dev/null || true)"
       CLAUDE_EXIT=124
       close_review_herdr_pane
-      echo ">> Claude review pane timed out after ${waited}s" >&2
+      echo ">> Claude review tab timed out after ${waited}s" >&2
       return
     fi
   done
 
   RAW="$(cat "$raw_file" 2>/dev/null || true)"
   CLAUDE_EXIT="$(cat "$exit_file" 2>/dev/null || echo 1)"
-  rm -f "$raw_file" "$exit_file"
+  rm -f "$raw_file" "$exit_file" "$runner_file"
   REVIEW_HERDR_PANE_ID=""
   REVIEW_HERDR_PANE_NAME=""
   REVIEW_HERDR_RAW_FILE=""

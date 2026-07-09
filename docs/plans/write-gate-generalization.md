@@ -365,3 +365,35 @@ approval read from — one source, two views (mirrors "one writer many mirrors")
 - No user-principal policy rows (users stay manifest-governed).
 - No raw-SQL predicates from admins (structured conditions only, v1.1).
 - No inline diff-editor in the approval card — subset changes are conversational (§6b).
+
+## 8. Codex sol review (post-implementation) — fixed + deferred
+
+A `gpt-5.6-sol` review of the full branch found 10 findings. Resolved on-branch:
+- **#1 precedence inversion (high, FIXED):** `specificity()` made principal weight
+  (16/8) outrank target scope (≤7), inverting the RFC's target-first order. Replaced
+  with a tuple comparator: scope-specificity → principal-specificity → restrictive-wins
+  (`deny>disabled>approval>auto`) → id. Inverse regression added.
+- **#2 watcher_source principal spoof (high, FIXED):** caller-supplied `watcher_source`
+  could reclassify an agent as `watcher:<id>` to dodge its agent policy.
+  `classifyMutationPrincipal`/`mutationPrincipalId` now prefer trusted `ctx.agentId`.
+- **Display bug (FIXED in owletto):** `deny`/`disabled` rendered as "Auto"; now
+  "Denied"/"Disabled".
+
+Deferred (tracked follow-ups, NOT in v1):
+- **#3** approve/reject should require `ctx.userId != null`, not just `!clientId`.
+- **#5** re-evaluate connector_action `deny`/`disabled` at execute time, not only queue.
+- **#7** `normalizeMode` unknown → `deny` (fail-closed), not `auto`.
+- **#8** legacy `manage_agents` pending runs without `proposal.base` must fail closed.
+- **#9** thread `window_id` through `manage_entity` watcher writes (not only promotion).
+- **#4** add `window_id` to the entity-change dedup key (cross-window collapse).
+- **#6** bare rename outage — ACCEPTED tradeoff (user chose clean-cut).
+
+**Part B — architecture (sol + prior reviews agree):** code-defined resolver over one
+Postgres policy authority is right (beats Cedar/OPA, OpenFGA/SpiceDB, per-class tables).
+sol's material suggestion for v1.1: make the table **action-oriented** — replace the
+three entity-shaped `create_mode/update_mode/delete_mode` columns with `(action, effect)`
+rows (action ∈ create/update/delete/execute/install; effect ∈ auto/approval/deny/disabled),
+so verbs like `execute`/`install` aren't crammed into create/update/delete semantics. A
+code registry declares legal actions/effects/targets/predicate-fields per resource class.
+Closer to the Snowflake privilege model. Adopt when connector_action's own UI + the
+v1.1 predicate engine land.

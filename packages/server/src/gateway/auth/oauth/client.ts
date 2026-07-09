@@ -16,6 +16,46 @@ import {
 
 const RFC_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 
+/**
+ * Prefer RFC `verification_uri_complete`, else append `user_code` to a base
+ * verification URL. Generic for every device-code provider (xAI, ChatGPT, …).
+ */
+export function resolveDeviceVerificationUrl(options: {
+  verificationUriComplete?: string | null;
+  verificationUri?: string | null;
+  defaultVerificationUrl?: string | null;
+  userCode: string;
+}): string {
+  const complete = options.verificationUriComplete?.trim();
+  if (complete) return complete;
+
+  const base =
+    options.verificationUri?.trim() ||
+    options.defaultVerificationUrl?.trim() ||
+    "";
+  if (!base) {
+    throw new Error(
+      "Device code response missing verification_uri and no defaultVerificationUrl",
+    );
+  }
+  return withUserCodeQuery(base, options.userCode);
+}
+
+/** Append `user_code` when the URL does not already carry one. */
+export function withUserCodeQuery(url: string, userCode: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.searchParams.has("user_code")) return parsed.toString();
+    parsed.searchParams.set("user_code", userCode);
+    return parsed.toString();
+  } catch {
+    // Non-absolute URLs are rare for device verification; still be safe.
+    if (/[?&]user_code=/.test(url)) return url;
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}user_code=${encodeURIComponent(userCode)}`;
+  }
+}
+
 interface TokenResponse {
   access_token: string;
   refresh_token?: string;
@@ -240,14 +280,18 @@ export class OAuthClient extends BaseOAuth2Client {
     ) {
       throw new Error("Device code response missing device_code or user_code");
     }
-    const verificationUrl =
-      (typeof data.verification_uri === "string" && data.verification_uri) ||
-      this.config.defaultVerificationUrl;
-    if (!verificationUrl) {
-      throw new Error(
-        "Device code response missing verification_uri and no defaultVerificationUrl",
-      );
-    }
+    const verificationUrl = resolveDeviceVerificationUrl({
+      verificationUriComplete:
+        typeof data.verification_uri_complete === "string"
+          ? data.verification_uri_complete
+          : undefined,
+      verificationUri:
+        typeof data.verification_uri === "string"
+          ? data.verification_uri
+          : undefined,
+      defaultVerificationUrl: this.config.defaultVerificationUrl,
+      userCode: data.user_code,
+    });
     return {
       deviceAuthId: data.device_code,
       userCode: data.user_code,
@@ -323,12 +367,16 @@ export class OAuthClient extends BaseOAuth2Client {
       user_code: string;
       interval?: number;
     };
-    const verificationUrl = this.config.defaultVerificationUrl?.trim();
-    if (!verificationUrl) {
+    if (!this.config.defaultVerificationUrl?.trim()) {
       throw new Error(
         `${this.config.name} openai-device-auth config requires defaultVerificationUrl`,
       );
     }
+    // OpenAI does not return verification_uri*; prefill from the configured base.
+    const verificationUrl = resolveDeviceVerificationUrl({
+      defaultVerificationUrl: this.config.defaultVerificationUrl,
+      userCode: data.user_code,
+    });
     return {
       deviceAuthId: data.device_auth_id,
       userCode: data.user_code,

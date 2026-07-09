@@ -209,8 +209,12 @@ async function executeLocalActionInline(
 						actionKey,
 						actionInput,
 						parentRunId: runId,
+						// Browser affinity: data connection pin to a chrome-extension
+						// selects which Owletto browser receives scrapes.
+						parentConnectionId: connection.id,
 						abortSignal,
 					});
+
 					if (dispatchResult.status !== "completed") {
 						throw new Error(
 							dispatchResult.error_message ??

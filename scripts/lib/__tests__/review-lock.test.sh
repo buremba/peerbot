@@ -16,6 +16,14 @@ contender_pid=""
 status_holder=""
 status_waiter=""
 cleanup() {
+  trap - EXIT INT TERM HUP
+  # The close-retains-lock fixture deliberately turns TERM into a wait for its
+  # runner marker. If this test itself is interrupted before the main path
+  # writes that marker, a plain TERM+wait deadlocks and leaves FD 9 held. Give
+  # the synthetic runner its terminal marker before stopping the fixture.
+  if [ -n "$holder_pid" ] && [ -d "$tmp/close-retains-lock" ]; then
+    printf '143\n' > "$tmp/close-retains-lock/review.exit" 2>/dev/null || true
+  fi
   [ -z "$holder_pid" ] || kill "$holder_pid" 2>/dev/null || true
   [ -z "$contender_pid" ] || kill "$contender_pid" 2>/dev/null || true
   [ -z "$status_holder" ] || kill "$status_holder" 2>/dev/null || true
@@ -27,6 +35,9 @@ cleanup() {
   rm -rf "$tmp"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 export TMPDIR="$tmp"
 export REVIEW_LOCK_ROOT_FOR_TESTS="$tmp/host-lock"
 

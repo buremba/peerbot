@@ -109,6 +109,49 @@ raise SystemExit(0 if isinstance(value,list) else 1)
 ' >/dev/null 2>&1
 }
 
+# A close command's exit status is not sufficient proof that an exact tab is
+# gone: a transport failure can arrive after Herdr applied the request, and a
+# stale persisted id is expected when task-clean is retried after a later Git
+# cleanup failure. Require a strict workspace snapshot that excludes the exact
+# id before releasing ownership.
+herdr_task_tab_absent() {
+  local workspace_id="$1" tab_id="$2" json
+  json="$(herdr tab list --workspace "$workspace_id" 2>/dev/null)" || return 1
+  printf '%s' "$json" | HERDR_TASK_TAB_ID="$tab_id" python3 -c 'import json,os,sys
+try:
+  payload=json.load(sys.stdin)
+except json.JSONDecodeError:
+  raise SystemExit(1)
+if not isinstance(payload,dict):
+  raise SystemExit(1)
+result=payload.get("result")
+if not isinstance(result,dict) or "tabs" not in result:
+  raise SystemExit(1)
+tabs=result["tabs"]
+if not isinstance(tabs,list):
+  raise SystemExit(1)
+for tab in tabs:
+  if not isinstance(tab,dict):
+    raise SystemExit(1)
+  found=tab.get("tab_id")
+  if not isinstance(found,str) or not found:
+    raise SystemExit(1)
+target=os.environ["HERDR_TASK_TAB_ID"]
+raise SystemExit(1 if any(tab["tab_id"]==target for tab in tabs) else 0)
+' >/dev/null 2>&1
+}
+
+herdr_task_close_exact_tab() {
+  local workspace_id="$1" tab_id="$2" attempts=0
+  herdr tab close "$tab_id" >/dev/null 2>&1 || true
+  while [[ "$attempts" -lt 20 ]]; do
+    herdr_task_tab_absent "$workspace_id" "$tab_id" && return 0
+    sleep 0.05
+    attempts=$((attempts + 1))
+  done
+  return 1
+}
+
 # Open a git worktree in Herdr. Prints workspace_id on stdout.
 #
 # When task-setup runs *inside* an existing Herdr pane (the common "click new →
@@ -196,7 +239,9 @@ herdr_task_close() {
   if read -r metadata_ws metadata_tab <<<"$(herdr_task_metadata_read "$worktree_path" 2>/dev/null || true)" && [[ -n "$metadata_ws" ]]; then
     if [[ -n "$metadata_tab" ]]; then
       [[ "$metadata_tab" != "${HERDR_TAB_ID:-}" ]] || return 1
-      herdr tab close "$metadata_tab" >/dev/null 2>&1 && return 0
+      if herdr_task_close_exact_tab "$metadata_ws" "$metadata_tab"; then
+        return 0
+      fi
       return 1
     fi
     [[ "$metadata_ws" != "${HERDR_WORKSPACE_ID:-}" ]] || return 1

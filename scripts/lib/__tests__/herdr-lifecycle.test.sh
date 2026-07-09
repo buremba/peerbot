@@ -49,6 +49,8 @@ herdr() {
         return 1
       elif [ "$mode" = "persisted-close-failure" ] && [ "${3:-}" = "workspace-a:persisted-tab" ]; then
         return 1
+      elif [ "$mode" = "retry-after-close" ] && [ "$(grep -c '^tab close workspace-a:retry-tab$' "$calls")" -gt 1 ]; then
+        return 1
       fi
       ;;
     "tab list")
@@ -64,6 +66,8 @@ herdr() {
         printf '{"result":{"tabs":[{"tab_id":"workspace-a:orphan-tab","label":"task-label"}]}}\n'
       elif [ "$mode" = "ambiguous-malformed-tab" ] && grep -q '^tab create ' "$calls"; then
         printf '{"result":{"tabs":[{"tab_id":"workspace-a:orphan-one","label":"task-label"},{"tab_id":"workspace-a:orphan-two","label":"task-label"}]}}\n'
+      elif [ "$mode" = "persisted-close-failure" ]; then
+        printf '{"result":{"tabs":[{"tab_id":"workspace-a:persisted-tab","label":"task-label"}]}}\n'
       else
         printf '{"result":{"tabs":[]}}\n'
       fi
@@ -288,6 +292,27 @@ test_persisted_tab_close_failure_fails_closed_and_preserves_metadata() {
   if grep -q '^workspace list' "$calls"; then
     fail "failed exact close fell through to legacy workspace discovery"
   fi
+}
+
+test_persisted_tab_close_is_retryable_after_later_cleanup_failure() {
+  local worktree="$tmp/retry-after-close"
+  mkdir -p "$worktree"
+  git -C "$worktree" init -q
+  herdr_task_metadata_write "$worktree" "workspace-a" "workspace-a:retry-tab"
+  HERDR_WORKSPACE_ID="workspace-b"
+  HERDR_TAB_ID="workspace-b:caller"
+  export HERDR_WORKSPACE_ID HERDR_TAB_ID
+  mode="retry-after-close"
+
+  : > "$calls"
+  herdr_task_close "$worktree" "task-label" ||
+    fail "initial exact persisted-tab close was not confirmed"
+  # Simulate task-clean failing later while removing the Git worktree. The
+  # persisted id is now stale and Herdr returns tab_not_found on the retry.
+  herdr_task_close "$worktree" "task-label" ||
+    fail "stale exact persisted-tab id made task-clean non-retryable"
+  [ "$(grep -c '^tab close workspace-a:retry-tab$' "$calls")" -eq 2 ] ||
+    fail "retry did not retain exact persisted-tab ownership"
 }
 
 test_task_clean_preserves_worktree_when_exact_close_fails() {
@@ -570,6 +595,7 @@ test_task_workspace_ambiguous_recovery_fails_closed
 test_ordinary_terminal_owns_and_closes_dedicated_workspace
 test_task_tab_cleanup_uses_persisted_identity_across_workspaces
 test_persisted_tab_close_failure_fails_closed_and_preserves_metadata
+test_persisted_tab_close_is_retryable_after_later_cleanup_failure
 test_task_clean_preserves_worktree_when_exact_close_fails
 test_legacy_lookup_closes_cross_workspace_task_tab
 test_ambiguous_legacy_tabs_fail_closed

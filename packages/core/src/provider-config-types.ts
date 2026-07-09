@@ -52,6 +52,13 @@ export interface ProviderOAuthConfig {
   deviceTokenUrl?: string;
   deviceRedirectUri?: string;
   defaultVerificationUrl?: string;
+  /**
+   * When set (e.g. `"user_code"` for xAI), append this query param to the base
+   * verification URL with the device user code so the approval page can prefill.
+   * When omitted, leave the base URL alone unless the provider returned RFC
+   * `verification_uri_complete`. ChatGPT's codex page does not document prefill.
+   */
+  verificationUserCodeParam?: string;
   pendingStatusCodes?: number[];
   includeScopeInRefresh?: boolean;
   accountIdClaimPath?: string;

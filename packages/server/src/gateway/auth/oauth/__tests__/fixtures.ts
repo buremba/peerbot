@@ -63,6 +63,7 @@ export const TEST_XAI_OAUTH: OAuthProviderConfig = {
   authType: "device-code",
   deviceCodeUrl: "https://auth.x.ai/oauth2/device/code",
   defaultVerificationUrl: "https://accounts.x.ai/oauth2/device",
+  verificationUserCodeParam: "user_code",
 };
 
 export const TEST_OAUTH_REGISTRY = [

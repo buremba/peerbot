@@ -17,13 +17,21 @@ import {
 const RFC_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 
 /**
- * Prefer RFC `verification_uri_complete`, else append `user_code` to a base
- * verification URL. Generic for every device-code provider (xAI, ChatGPT, …).
+ * Build the browser verification URL for a device-code start.
+ *
+ * Priority:
+ * 1. RFC `verification_uri_complete` (provider-supplied prefill URL) as-is
+ * 2. Base `verification_uri` / `defaultVerificationUrl`
+ * 3. Optionally append `verificationUserCodeParam=userCode` when the provider
+ *    config opts into prefill (e.g. xAI `"user_code"`). Omitted for providers
+ *    whose pages do not document query prefill (ChatGPT Codex).
  */
 export function resolveDeviceVerificationUrl(options: {
   verificationUriComplete?: string | null;
   verificationUri?: string | null;
   defaultVerificationUrl?: string | null;
+  /** Query param name to prefill, from provider config. Empty/omit = no prefill. */
+  verificationUserCodeParam?: string | null;
   userCode: string;
 }): string {
   const complete = options.verificationUriComplete?.trim();
@@ -38,21 +46,28 @@ export function resolveDeviceVerificationUrl(options: {
       "Device code response missing verification_uri and no defaultVerificationUrl",
     );
   }
-  return withUserCodeQuery(base, options.userCode);
+  const param = options.verificationUserCodeParam?.trim();
+  if (!param) return base;
+  return withUserCodeQuery(base, options.userCode, param);
 }
 
-/** Append `user_code` when the URL does not already carry one. */
-export function withUserCodeQuery(url: string, userCode: string): string {
+/** Append a user-code query param when the URL does not already carry it. */
+export function withUserCodeQuery(
+  url: string,
+  userCode: string,
+  paramName = "user_code",
+): string {
   try {
     const parsed = new URL(url);
-    if (parsed.searchParams.has("user_code")) return parsed.toString();
-    parsed.searchParams.set("user_code", userCode);
+    if (parsed.searchParams.has(paramName)) return parsed.toString();
+    parsed.searchParams.set(paramName, userCode);
     return parsed.toString();
   } catch {
     // Non-absolute URLs are rare for device verification; still be safe.
-    if (/[?&]user_code=/.test(url)) return url;
+    const re = new RegExp(`[?&]${paramName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}=`);
+    if (re.test(url)) return url;
     const sep = url.includes("?") ? "&" : "?";
-    return `${url}${sep}user_code=${encodeURIComponent(userCode)}`;
+    return `${url}${sep}${encodeURIComponent(paramName)}=${encodeURIComponent(userCode)}`;
   }
 }
 
@@ -290,6 +305,7 @@ export class OAuthClient extends BaseOAuth2Client {
           ? data.verification_uri
           : undefined,
       defaultVerificationUrl: this.config.defaultVerificationUrl,
+      verificationUserCodeParam: this.config.verificationUserCodeParam,
       userCode: data.user_code,
     });
     return {
@@ -372,9 +388,11 @@ export class OAuthClient extends BaseOAuth2Client {
         `${this.config.name} openai-device-auth config requires defaultVerificationUrl`,
       );
     }
-    // OpenAI does not return verification_uri*; prefill from the configured base.
+    // OpenAI does not return verification_uri*; use configured base, and only
+    // append a code query param when this provider opts into prefill.
     const verificationUrl = resolveDeviceVerificationUrl({
       defaultVerificationUrl: this.config.defaultVerificationUrl,
+      verificationUserCodeParam: this.config.verificationUserCodeParam,
       userCode: data.user_code,
     });
     return {

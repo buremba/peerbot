@@ -98,36 +98,39 @@ describe("resolveDeviceVerificationUrl / withUserCodeQuery", () => {
         verificationUriComplete:
           "https://accounts.x.ai/oauth2/device?user_code=X3E9-KZ6B",
         verificationUri: "https://accounts.x.ai/oauth2/device",
+        verificationUserCodeParam: "user_code",
         userCode: "IGNORED",
       }),
     ).toBe("https://accounts.x.ai/oauth2/device?user_code=X3E9-KZ6B");
   });
 
-  test("synthesizes ?user_code= from bare verification_uri", () => {
+  test("synthesizes query only when verificationUserCodeParam is set", () => {
     expect(
       resolveDeviceVerificationUrl({
         verificationUri: "https://accounts.x.ai/oauth2/device",
+        verificationUserCodeParam: "user_code",
         userCode: "HZQY-6RSD",
       }),
     ).toBe("https://accounts.x.ai/oauth2/device?user_code=HZQY-6RSD");
   });
 
-  test("does not double-append when user_code is already present", () => {
-    expect(
-      withUserCodeQuery(
-        "https://accounts.x.ai/oauth2/device?user_code=KEEP",
-        "OTHER",
-      ),
-    ).toBe("https://accounts.x.ai/oauth2/device?user_code=KEEP");
-  });
-
-  test("falls back to defaultVerificationUrl", () => {
+  test("leaves bare URL when provider does not opt into prefill", () => {
     expect(
       resolveDeviceVerificationUrl({
         defaultVerificationUrl: "https://auth.openai.com/codex/device",
         userCode: "ABCD-1234",
       }),
-    ).toBe("https://auth.openai.com/codex/device?user_code=ABCD-1234");
+    ).toBe("https://auth.openai.com/codex/device");
+  });
+
+  test("does not double-append when param is already present", () => {
+    expect(
+      withUserCodeQuery(
+        "https://accounts.x.ai/oauth2/device?user_code=KEEP",
+        "OTHER",
+        "user_code",
+      ),
+    ).toBe("https://accounts.x.ai/oauth2/device?user_code=KEEP");
   });
 });
 
@@ -240,7 +243,7 @@ describe("grantStrategyFor(xai)", () => {
 });
 
 describe("OAuthClient OpenAI device-auth (ChatGPT)", () => {
-  test("requestDeviceCode prefills defaultVerificationUrl with user_code", async () => {
+  test("requestDeviceCode returns bare defaultVerificationUrl (no prefill)", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -262,8 +265,9 @@ describe("OAuthClient OpenAI device-auth (ChatGPT)", () => {
       const result = await client.requestDeviceCode();
       expect(result.userCode).toBe("WXYZ-9876");
       expect(result.deviceAuthId).toBe("dev_abc");
+      // ChatGPT omits verificationUserCodeParam — Codex expects manual entry.
       expect(result.verificationUrl).toBe(
-        "https://auth.openai.com/codex/device?user_code=WXYZ-9876",
+        "https://auth.openai.com/codex/device",
       );
     } finally {
       globalThis.fetch = originalFetch;

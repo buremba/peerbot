@@ -33,6 +33,11 @@ import {
 	ensureDbForGatewayTests,
 	resetTestDatabase,
 } from "../../gateway/__tests__/helpers/db-setup.js";
+import { TEST_CLAUDE_OAUTH } from "../../gateway/auth/oauth/__tests__/fixtures.js";
+import {
+	clearOAuthProviderRegistry,
+	setOAuthProviderRegistry,
+} from "../../gateway/auth/oauth/providers.js";
 import { orgContext } from "../stores/org-context";
 import {
 	buildRealClaudeAuthStack,
@@ -128,6 +133,10 @@ describe("Org OAuth: redirect_uri matches between authorize and exchange", () =>
 	beforeEach(async () => {
 		await resetTestDatabase();
 		await seedOrg();
+		// Routes resolve providers from the runtime OAuth registry (loaded from
+		// providers.json at boot). Tests that don't boot CoreServices with a
+		// registry path must seed Claude here or start returns 400.
+		setOAuthProviderRegistry([TEST_CLAUDE_OAUTH]);
 		authStash.user = {
 			id: USER,
 			name: "Test",
@@ -150,6 +159,7 @@ describe("Org OAuth: redirect_uri matches between authorize and exchange", () =>
 	afterEach(async () => {
 		globalThis.fetch = realFetch;
 		coreServicesStash.services = null;
+		clearOAuthProviderRegistry();
 		await stack?.shutdown();
 	});
 

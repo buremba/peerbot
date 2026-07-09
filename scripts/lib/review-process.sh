@@ -1,101 +1,141 @@
-# review-process.sh — child and Herdr lifecycle ownership for the review gate.
+# review-process.sh — process-session ownership for the destructive review gate.
 # shellcheck shell=bash
 
+REVIEW_PROCESS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REVIEW_ACTIVE_CHILD_PID=""
-REVIEW_HERDR_PANE_ID=""
-REVIEW_HERDR_PANE_NAME=""
-REVIEW_HERDR_RAW_FILE=""
-REVIEW_HERDR_EXIT_FILE=""
+REVIEW_ACTIVE_CONTROL_DIR=""
+REVIEW_PREVIOUS_BACKGROUND_PID=""
 REVIEW_INLINE_RAW_FILE=""
 
+review_process_control_root() {
+  if [ -n "${REVIEW_PROCESS_CONTROL_ROOT_FOR_TESTS:-}" ]; then
+    printf '%s\n' "$REVIEW_PROCESS_CONTROL_ROOT_FOR_TESTS"
+  else
+    printf '/tmp/lobu-review-processes-%s\n' "$(id -u)"
+  fi
+}
+
+review_read_pid_file() {
+  local path="$1" value
+  [ -f "$path" ] || return 1
+  value="$(sed -n '1p' "$path" 2>/dev/null || true)"
+  case "$value" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$value"
+}
+
 run_review_child() {
-  local child_exit
-  "$@" &
-  REVIEW_ACTIVE_CHILD_PID=$!
-  if wait "$REVIEW_ACTIVE_CHILD_PID"; then
+  local child_exit control_root control_dir supervisor_pid nounset_enabled
+  local -a command
+  [ "$#" -gt 0 ] || return 2
+
+  control_root="$(review_process_control_root)"
+  mkdir -p "$control_root"
+  chmod 700 "$control_root"
+  control_dir="$(mktemp -d "$control_root/run.XXXXXX")"
+  nounset_enabled=0
+  case "$-" in *u*) nounset_enabled=1; set +u ;; esac
+  REVIEW_PREVIOUS_BACKGROUND_PID="$!"
+  [ "$nounset_enabled" = "0" ] || set -u
+  REVIEW_ACTIVE_CONTROL_DIR="$control_dir"
+  REVIEW_ACTIVE_CHILD_PID=""
+
+  if declare -F "$1" >/dev/null 2>&1; then
+    # The function name is intentionally dynamic.
+    # shellcheck disable=SC2163
+    export -f "$1"
+    command=(bash -c "$1")
+  else
+    command=("$@")
+  fi
+
+  python3 "$REVIEW_PROCESS_LIB_DIR/review-process-supervisor.py" \
+    --control-dir "$control_dir" -- "${command[@]}" &
+  if [ -n "${REVIEW_PARENT_PUBLISH_DELAY_FOR_TESTS:-}" ]; then
+    sleep "$REVIEW_PARENT_PUBLISH_DELAY_FOR_TESTS"
+  fi
+  supervisor_pid=$!
+  REVIEW_ACTIVE_CHILD_PID="$supervisor_pid"
+
+  if wait "$supervisor_pid"; then
     child_exit=0
   else
     child_exit=$?
   fi
+
   REVIEW_ACTIVE_CHILD_PID=""
+  REVIEW_ACTIVE_CONTROL_DIR=""
+  REVIEW_PREVIOUS_BACKGROUND_PID=""
+  rm -rf "$control_dir"
   return "$child_exit"
 }
 
-review_descendant_pids() {
-  local parent_pid="$1"
-  local child_pid
-  for child_pid in $(pgrep -P "$parent_pid" 2>/dev/null || true); do
-    printf '%s\n' "$child_pid"
-    review_descendant_pids "$child_pid"
-  done
-}
-
 stop_active_review_child() {
-  local child_pid descendant pid alive attempts
-  local -a descendants
-  child_pid="$REVIEW_ACTIVE_CHILD_PID"
-  [ -n "$child_pid" ] || return 0
+  local control_dir supervisor_pid process_group last_background_pid attempts nounset_enabled
+  control_dir="$REVIEW_ACTIVE_CONTROL_DIR"
+  supervisor_pid="$REVIEW_ACTIVE_CHILD_PID"
+  nounset_enabled=0
+  case "$-" in *u*) nounset_enabled=1; set +u ;; esac
+  last_background_pid="$!"
+  [ "$nounset_enabled" = "0" ] || set -u
+  [ -n "$control_dir" ] || return 0
 
-  descendants=()
-  while IFS= read -r descendant; do
-    [ -n "$descendant" ] && descendants[${#descendants[@]}]="$descendant"
-  done < <(review_descendant_pids "$child_pid")
-  kill -TERM "$child_pid" "${descendants[@]}" 2>/dev/null || true
+  # If a signal interrupted the shell between `python3 ... &` and publishing
+  # `$!`, wait for the supervisor's atomically-written identity instead of
+  # guessing from the shell's previous background job.
+  attempts=0
+  while [ -z "$supervisor_pid" ] && [ "$attempts" -lt 100 ]; do
+    supervisor_pid="$(review_read_pid_file "$control_dir/supervisor.pid" || true)"
+    [ -n "$supervisor_pid" ] && break
+    sleep 0.01
+    attempts=$((attempts + 1))
+  done
+  if [ -z "$supervisor_pid" ] && [ -n "$last_background_pid" ] &&
+    [ "$last_background_pid" != "$REVIEW_PREVIOUS_BACKGROUND_PID" ]; then
+    supervisor_pid="$last_background_pid"
+  fi
+
+  if [ -n "$supervisor_pid" ]; then
+    kill -TERM "$supervisor_pid" 2>/dev/null || true
+  fi
 
   attempts=0
-  while [ "$attempts" -lt 40 ]; do
-    alive=0
-    for pid in "$child_pid" "${descendants[@]}"; do
-      if kill -0 "$pid" 2>/dev/null; then
-        alive=1
+  while [ "$attempts" -lt 240 ]; do
+    process_group="$(review_read_pid_file "$control_dir/process-group.pid" || true)"
+    if [ -n "$supervisor_pid" ] && ! kill -0 "$supervisor_pid" 2>/dev/null; then
+      if [ -z "$process_group" ] || ! kill -0 "-$process_group" 2>/dev/null; then
         break
       fi
-    done
-    [ "$alive" = "1" ] || break
-    sleep 0.05
+    fi
+    sleep 0.025
     attempts=$((attempts + 1))
   done
 
-  if [ "$alive" = "1" ]; then
-    kill -KILL "$child_pid" "${descendants[@]}" 2>/dev/null || true
+  process_group="$(review_read_pid_file "$control_dir/process-group.pid" || true)"
+  if [ -n "$process_group" ] && kill -0 "-$process_group" 2>/dev/null; then
+    kill -KILL "-$process_group" 2>/dev/null || true
+    while kill -0 "-$process_group" 2>/dev/null; do
+      sleep 0.025
+    done
   fi
-  wait "$child_pid" 2>/dev/null || true
+
+  if [ -n "$supervisor_pid" ] && kill -0 "$supervisor_pid" 2>/dev/null; then
+    kill -KILL "$supervisor_pid" 2>/dev/null || true
+  fi
+  [ -z "$supervisor_pid" ] || wait "$supervisor_pid" 2>/dev/null || true
+
   REVIEW_ACTIVE_CHILD_PID=""
+  REVIEW_ACTIVE_CONTROL_DIR=""
+  REVIEW_PREVIOUS_BACKGROUND_PID=""
+  rm -rf "$control_dir"
 }
 
-register_review_herdr_pane() {
-  local pane_name="$1"
-  local start_output="$2"
-  local pane_id
-  REVIEW_HERDR_PANE_NAME="$pane_name"
-  pane_id="$(printf '%s\n' "$start_output" | jq -r \
-    '.result.pane_id // .result.pane.pane_id // .pane_id // empty' 2>/dev/null || true)"
-  if [ -z "$pane_id" ]; then
-    pane_id="$(herdr pane list --workspace "$HERDR_WORKSPACE_ID" 2>/dev/null | jq -r \
-      --arg label "$pane_name" \
-      '.result.panes[]? | select(.label == $label) | .pane_id' | head -n1)"
+review_process_abort_inline() {
+  if [ -n "$REVIEW_INLINE_RAW_FILE" ] && [ -s "$REVIEW_INLINE_RAW_FILE" ]; then
+    echo ">> interrupted inline Claude output preserved at $REVIEW_INLINE_RAW_FILE" >&2
+  else
+    rm -f "${REVIEW_INLINE_RAW_FILE:-}"
   fi
-  REVIEW_HERDR_PANE_ID="$pane_id"
-}
-
-close_review_herdr_pane() {
-  local pane_id="$REVIEW_HERDR_PANE_ID"
-  if [ -z "$pane_id" ] && [ -n "$REVIEW_HERDR_PANE_NAME" ] &&
-    command -v herdr >/dev/null 2>&1; then
-    pane_id="$(herdr pane list --workspace "$HERDR_WORKSPACE_ID" 2>/dev/null | jq -r \
-      --arg label "$REVIEW_HERDR_PANE_NAME" \
-      '.result.panes[]? | select(.label == $label) | .pane_id' | head -n1)"
-  fi
-  if [ -n "$pane_id" ] && command -v herdr >/dev/null 2>&1; then
-    herdr pane close "$pane_id" >/dev/null 2>&1 || true
-  fi
-  # Remove after pane termination so a racing writer cannot recreate the exit
-  # marker after cleanup.
-  rm -f "${REVIEW_HERDR_RAW_FILE:-}" "${REVIEW_HERDR_EXIT_FILE:-}"
-  rm -f "${REVIEW_INLINE_RAW_FILE:-}"
-  REVIEW_HERDR_PANE_ID=""
-  REVIEW_HERDR_PANE_NAME=""
-  REVIEW_HERDR_RAW_FILE=""
-  REVIEW_HERDR_EXIT_FILE=""
   REVIEW_INLINE_RAW_FILE=""
 }

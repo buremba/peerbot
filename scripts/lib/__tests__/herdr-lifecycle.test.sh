@@ -36,13 +36,26 @@ herdr() {
     "tab get")
       if [ "$mode" = "repeat" ] && [ "${3:-}" = "workspace-a:tab-created" ]; then
         printf '{"result":{"tab":{"tab_id":"workspace-a:tab-created"}}}\n'
+      elif [ "$mode" = "review-close-failure" ]; then
+        printf '{"result":{"tab":{"tab_id":"workspace-a:review-tab"}}}\n'
       else
+        return 1
+      fi
+      ;;
+    "tab close")
+      if [ "$mode" = "review-close-failure" ]; then
+        marker="$HERDR_REVIEW_EXIT_FILE"
+        (sleep 0.1; printf 'late\n' > "$marker") &
         return 1
       fi
       ;;
     "tab list")
       if [ "$mode" = "review-locator" ]; then
-        printf '{"result":{"tabs":[{"tab_id":"workspace-a:located-review","label":"locator-review"}]}}\n'
+        if grep -q '^tab close workspace-a:located-review$' "$calls"; then
+          printf '{"result":{"tabs":[{"tab_id":"workspace-a:stale-review","label":"locator-review"}]}}\n'
+        else
+          printf '{"result":{"tabs":[{"tab_id":"workspace-a:stale-review","label":"locator-review"},{"tab_id":"workspace-a:located-review","label":"locator-review"}]}}\n'
+        fi
       elif [ "$mode" = "malformed-tab" ] && grep -q '^tab create ' "$calls"; then
         printf '{"result":{"tabs":[{"tab_id":"workspace-a:orphan-tab","label":"task-label"}]}}\n'
       else
@@ -68,7 +81,9 @@ herdr() {
       fi
       ;;
     "pane list")
-      if [ "$mode" = "legacy" ] && [ "${4:-}" = "legacy" ]; then
+      if [ "$mode" = "review-locator" ]; then
+        printf '{"result":{"panes":[{"tab_id":"workspace-a:stale-review","cwd":"%s","foreground_cwd":"%s"},{"tab_id":"workspace-a:located-review","cwd":"%s","foreground_cwd":"%s"}]}}\n' "$HERDR_REVIEW_CWD" "$HERDR_REVIEW_CWD" "$HERDR_REVIEW_CWD" "$HERDR_REVIEW_CWD"
+      elif [ "$mode" = "legacy" ] && [ "${4:-}" = "legacy" ]; then
         printf '{"result":{"panes":[{"tab_id":"legacy:task-tab","cwd":"%s/subdir","foreground_cwd":"%s/subdir"}]}}\n' "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE"
       elif [ "$mode" = "current-tab" ]; then
         printf '{"result":{"panes":[{"tab_id":"workspace-a:current-tab","cwd":"%s","foreground_cwd":"%s"}]}}\n' "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE"
@@ -78,6 +93,13 @@ herdr() {
       ;;
   esac
   return 0
+}
+
+test_review_parses_current_herdr_tab_response() {
+  local parsed
+  parsed="$(herdr_review_parse_created_tab '{"id":"cli:tab:create","result":{"type":"tab_created","tab":{"tab_id":"workspace-a:review-tab"},"root_pane":{"pane_id":"workspace-a:review-pane"}}}')"
+  [ "$parsed" = "workspace-a:review-tab workspace-a:review-pane" ] ||
+    fail "current Herdr tab response parsed as: $parsed"
 }
 
 test_task_tab_open_records_identity() {
@@ -235,6 +257,8 @@ test_review_cleanup_closes_tab_and_removes_temp_files() {
 
   grep -Fxq "tab close workspace-a:review-tab" "$calls" ||
     fail "normal review cleanup did not close its tab"
+  grep -Fxq "tab get workspace-a:review-tab" "$calls" ||
+    fail "normal review cleanup did not verify tab closure"
   assert_file_missing "$raw"
   assert_file_missing "$exit_file"
   assert_file_missing "$runner"
@@ -249,15 +273,39 @@ test_review_abort_closes_tab_but_preserves_partial_output() {
 
   herdr_review_track_files "$raw" "$exit_file" "$runner"
   # Model interruption after tab creation but before create's JSON was parsed:
-  # cleanup must recover the id from the unique label locator.
-  herdr_review_track_locator "workspace-a" "locator-review"
+  # cleanup must ignore a pre-existing same-label tab and recover only the new
+  # tab whose pane has this run's exact cwd.
+  herdr_review_track_locator "workspace-a" "locator-review" "$tmp" "workspace-a:stale-review"
   herdr_review_abort >/dev/null 2>&1
 
   grep -Fxq "tab close workspace-a:located-review" "$calls" ||
     fail "aborted review cleanup did not close its tab"
+  if grep -Fxq "tab close workspace-a:stale-review" "$calls"; then
+    fail "aborted review cleanup closed the stale same-label tab"
+  fi
   [ -s "$raw" ] || fail "aborted review output was not preserved"
   assert_file_missing "$exit_file"
   assert_file_missing "$runner"
+}
+
+test_review_close_failure_preserves_state_and_transport() {
+  local raw="$tmp/failed-close.raw" exit_file="$tmp/failed-close.exit" runner="$tmp/failed-close.runner"
+  printf 'partial review output\n' > "$raw"
+  printf 'runner\n' > "$runner"
+  : > "$calls"
+  mode="review-close-failure"
+
+  herdr_review_track_files "$raw" "$exit_file" "$runner"
+  herdr_review_track_tab "workspace-a:review-tab"
+  if herdr_review_cleanup >/dev/null 2>&1; then
+    fail "unconfirmed Herdr tab close unexpectedly succeeded"
+  fi
+  sleep 0.2
+  [ -e "$raw" ] || fail "raw output was deleted after unconfirmed close"
+  [ -e "$exit_file" ] || fail "late exit marker was not preserved after unconfirmed close"
+  [ -e "$runner" ] || fail "runner was deleted after unconfirmed close"
+  [ "$HERDR_REVIEW_TAB_ID" = "workspace-a:review-tab" ] ||
+    fail "tab ownership was forgotten after unconfirmed close"
 }
 
 test_review_timeout_closes_tab_and_removes_transport_and_prompt() {
@@ -327,8 +375,10 @@ test_ordinary_terminal_owns_and_closes_dedicated_workspace
 test_task_tab_cleanup_uses_persisted_identity_across_workspaces
 test_legacy_lookup_closes_cross_workspace_task_tab
 test_current_task_tab_is_never_closed
+test_review_parses_current_herdr_tab_response
 test_review_cleanup_closes_tab_and_removes_temp_files
 test_review_abort_closes_tab_but_preserves_partial_output
+test_review_close_failure_preserves_state_and_transport
 test_review_timeout_closes_tab_and_removes_transport_and_prompt
 test_review_signals_remove_prompt
 

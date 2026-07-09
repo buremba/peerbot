@@ -84,17 +84,17 @@ wait
 # Signals stop and reap the active child before the host lock is released.
 signal_tmp="$tmp/signal"
 mkdir -p "$signal_tmp"
-TMPDIR="$tmp/signal-caller" bash -c '
+TMPDIR="$tmp/signal-caller" REVIEW_PROCESS_TERM_GRACE_SECONDS=0.3 bash -c '
   set -euo pipefail
   . "$1"
   . "$2"
   trap '\''stop_active_review_child; exit 143'\'' TERM
   trap '\''release_review_lock'\'' EXIT
   acquire_review_lock
-  touch "$3/held"
-  run_review_child bash -c '\''echo "$$" > "$1"; sleep 30'\'' bash "$3/child-pid"
+  run_review_child python3 "$3" late-grandchild "$4/child-pid" "$4/late-pid"
 ' bash "$repo_root/scripts/lib/review-lock.sh" \
-  "$repo_root/scripts/lib/review-process.sh" "$signal_tmp" &
+  "$repo_root/scripts/lib/review-process.sh" \
+  "$repo_root/scripts/lib/__tests__/review-process-fixture.py" "$signal_tmp" &
 holder_pid=$!
 while [ ! -f "$signal_tmp/child-pid" ]; do sleep 0.01; done
 child_pid="$(sed -n '1p' "$signal_tmp/child-pid")"
@@ -104,6 +104,10 @@ REVIEW_LOCK_TIMEOUT_SECONDS=10 REVIEW_LOCK_POLL_SECONDS=0.01 bash -c '
   acquire_review_lock >/dev/null
   if kill -0 "$3" 2>/dev/null; then
     touch "$2/reacquired-before-child-exit"
+  fi
+  late_pid="$(sed -n '\''1p'\'' "$2/late-pid" 2>/dev/null || true)"
+  if [ -n "$late_pid" ] && kill -0 "$late_pid" 2>/dev/null; then
+    touch "$2/reacquired-before-late-descendant-exit"
   fi
   touch "$2/reacquired"
   release_review_lock
@@ -121,6 +125,8 @@ contender_pid=""
 [ -e "$signal_tmp/reacquired" ] || fail "signal contender never reacquired the lock"
 [ ! -e "$signal_tmp/reacquired-before-child-exit" ] ||
   fail "host lock was reacquired before the active child exited"
+[ ! -e "$signal_tmp/reacquired-before-late-descendant-exit" ] ||
+  fail "host lock was reacquired before a late descendant exited"
 if kill -0 "$child_pid" 2>/dev/null; then
   fail "active child $child_pid survived signal cleanup"
 fi

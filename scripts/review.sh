@@ -37,7 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- preflight --------------------------------------------------------------
 
-for cmd in claude jq git node perl pgrep; do
+for cmd in claude jq git node perl python3; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "$cmd not found on PATH." >&2; exit 2; }
 done
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "Not inside a git work tree." >&2; exit 2; }
@@ -140,14 +140,22 @@ run_claude_review_inline() {
 
 run_claude_review_herdr() {
   local prompt_file="$1"
-  local raw_file exit_file runner_file pane_name tab_json tab_id pane_id started
+  local raw_file exit_file runner_file pane_name before_tabs tab_json tab_id pane_id started
   raw_file="$(mktemp /tmp/lobu-review-claude-raw.XXXXXX)"
   exit_file="$(mktemp /tmp/lobu-review-claude-exit.XXXXXX)"
   runner_file="$(mktemp /tmp/lobu-review-claude-runner.XXXXXX)"
   rm -f "$exit_file"
   herdr_review_track_files "$raw_file" "$exit_file" "$runner_file"
   pane_name="claude-review-${HEAD_SHA:0:8}-$$"
-  herdr_review_track_locator "$HERDR_WORKSPACE_ID" "$pane_name"
+
+  if ! before_tabs="$(herdr_review_snapshot_tabs "$HERDR_WORKSPACE_ID")"; then
+    rm -f "$raw_file" "$exit_file" "$runner_file"
+    herdr_review_forget_files
+    echo ">> could not snapshot Herdr tabs; running Claude inline" >&2
+    run_claude_review_inline "$prompt_file"
+    return
+  fi
+  herdr_review_track_locator "$HERDR_WORKSPACE_ID" "$pane_name" "$PWD" "$before_tabs"
 
   cat > "$runner_file" <<'RUNNER'
 set +e
@@ -191,9 +199,7 @@ RUNNER
   )"
   local start_exit=$?
   if [ $start_exit -eq 0 ]; then
-    read -r tab_id pane_id <<<"$(printf '%s' "$tab_json" | python3 -c 'import json,sys
-d=json.load(sys.stdin).get("result", {})
-print((d.get("tab") or {}).get("tab_id", ""), (d.get("root_pane") or {}).get("pane_id", ""))' 2>/dev/null)"
+    read -r tab_id pane_id <<<"$(herdr_review_parse_created_tab "$tab_json" 2>/dev/null || true)"
     [ -n "$tab_id" ] && herdr_review_track_tab "$tab_id"
     if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
       start_exit=1
@@ -208,7 +214,10 @@ print((d.get("tab") or {}).get("tab_id", ""), (d.get("root_pane") or {}).get("pa
   fi
   set -e
   if [ $start_exit -ne 0 ]; then
-    herdr_review_cleanup
+    if ! herdr_review_cleanup; then
+      echo ">> Herdr tab creation state is ambiguous; refusing inline fallback" >&2
+      return 1
+    fi
     echo ">> Herdr Claude tab failed to start; falling back to inline Claude" >&2
     printf '%s\n' "$started" >&2
     run_claude_review_inline "$prompt_file"
@@ -223,7 +232,12 @@ print((d.get("tab") or {}).get("tab_id", ""), (d.get("root_pane") or {}).get("pa
     if [ "$waited" -ge "${CLAUDE_REVIEW_TIMEOUT_SECONDS:-1200}" ]; then
       # Stop the tab first so tee flushes its final partial output, then copy it
       # into RAW before deleting the transport files.
-      herdr_review_close_tab
+      if ! herdr_review_close_tab; then
+        RAW="$(cat "$raw_file" 2>/dev/null || true)"
+        CLAUDE_EXIT=124
+        echo ">> Claude review tab timed out and could not be closed" >&2
+        return 1
+      fi
       RAW="$(cat "$raw_file" 2>/dev/null || true)"
       CLAUDE_EXIT=124
       herdr_review_cleanup
@@ -333,10 +347,11 @@ review_exit_cleanup() {
   local ec=$?
   trap - EXIT INT TERM HUP
   stop_active_review_child
+  review_process_abort_inline
   # If the normal Herdr path completed, its tracked state is already empty.
   # Otherwise this closes the tab/process and keeps any non-empty partial raw
   # output for diagnosis before the script exits.
-  herdr_review_abort
+  herdr_review_abort || true
   release_review_lock
   if [ "$ec" -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then
     post_review_status error "Claude review failed before verdict (exit $ec)"
@@ -408,6 +423,18 @@ DETERMINISTIC_TEST_ENV=(
   OPENAI_AUTH_TOKEN=
 )
 
+run_deterministic() {
+  env \
+    ANTHROPIC_API_KEY= \
+    ANTHROPIC_AUTH_TOKEN= \
+    CLAUDE_CODE_OAUTH_TOKEN= \
+    OPENAI_API_KEY= \
+    OPENAI_AUTH_TOKEN= \
+    "$@"
+}
+export -f run_deterministic
+export SCRIPT_DIR
+
 echo ">> typecheck → $TYPECHECK_LOG"
 set +e
 run_review_child "${DETERMINISTIC_TEST_ENV[@]}" bun run typecheck > "$TYPECHECK_LOG" 2>&1
@@ -419,30 +446,30 @@ set +e
 run_review_unit_suites() {
   local ec
   UNIT_EXIT=0
-  "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/review-lock.test.sh";               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/review-database-url.test.sh";        ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/review-process.test.sh";             ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic bash "$SCRIPT_DIR/lib/__tests__/review-lock.test.sh";               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic bash "$SCRIPT_DIR/lib/__tests__/review-database-url.test.sh";        ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic bash "$SCRIPT_DIR/lib/__tests__/review-process.test.sh";             ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # Shell lifecycle regressions: Herdr task/review tabs must be owned and
   # cleaned without invoking the real Herdr daemon.
-  "${DETERMINISTIC_TEST_ENV[@]}" bash "$SCRIPT_DIR/lib/__tests__/herdr-lifecycle.test.sh";            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic bash "$SCRIPT_DIR/lib/__tests__/herdr-lifecycle.test.sh";            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # Guard: every packages/server *.test.ts must run in >=1 runner (vitest or a
   # bun job). Fails loudly if a file drifts into running nowhere — the
   # silent-skip class this change fixes.
-  "${DETERMINISTIC_TEST_ENV[@]}" node scripts/check-test-runner-coverage.mjs;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic node scripts/check-test-runner-coverage.mjs;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # Guard: no raw JS array bound as a SQL param (the fetch_types:false trap —
   # a malformed array literal that Postgres rejects, historically silent).
-  "${DETERMINISTIC_TEST_ENV[@]}" node scripts/check-raw-array-params.mjs;                          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic node scripts/check-raw-array-params.mjs;                          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # Guard: the per-user connection-visibility READ-SEAM gate must come from the
   # one compiler (authz/connection-visibility.ts), not be re-derived inline —
   # that is how the authz gate silently drifts and leaks private-connection data.
-  "${DETERMINISTIC_TEST_ENV[@]}" node scripts/check-connection-visibility-compiler.mjs;            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/core packages/cli packages/connectors;          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/agent-worker;                                   ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/server/src/__tests__/unit;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/server/src/auth/__tests__/tool-access.test.ts;  ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic node scripts/check-connection-visibility-compiler.mjs;            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic bun test packages/core packages/cli packages/connectors;          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic bun test packages/agent-worker;                                   ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic bun test packages/server/src/__tests__/unit;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic bun test packages/server/src/auth/__tests__/tool-access.test.ts;  ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # NOTE: src/gateway/infrastructure/queue runs in the gateway integration loop
   # below (not here) — see #1238; running it in both jobs double-executes it.
-  "${DETERMINISTIC_TEST_ENV[@]}" bun test packages/connector-worker;                               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic bun test packages/connector-worker;                               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   return "$UNIT_EXIT"
 }
 run_review_child run_review_unit_suites > "$UNIT_LOG" 2>&1
@@ -454,7 +481,7 @@ set +e
 run_review_integration_suites() {
   local ec
   INTEGRATION_EXIT=0
-  (cd packages/server && "${DETERMINISTIC_TEST_ENV[@]}" node ../../node_modules/.bin/vitest run --reporter=default); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
+  (cd packages/server && run_deterministic node ../../node_modules/.bin/vitest run --reporter=default); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
   # Each gateway test file runs in its own bun process: bun has no per-file
   # isolation and the gateway suites aren't mutually hermetic, so co-running a
   # whole __tests__ dir in one process leaks DB/module state across files (see
@@ -468,11 +495,11 @@ run_review_integration_suites() {
     for d in $dirs; do
       files=$(find "$d" -maxdepth 1 -type f -name '*.test.ts' | sort)
       for f in $files; do
-        "${DETERMINISTIC_TEST_ENV[@]}" bun test "$f" || rc=1
+        run_deterministic bun test "$f" || rc=1
       done
     done
     exit $rc );                                                                        ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
-  (cd packages/server && "${DETERMINISTIC_TEST_ENV[@]}" bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
+  (cd packages/server && run_deterministic bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
   return "$INTEGRATION_EXIT"
 }
 run_review_child run_review_integration_suites > "$INTEGRATION_LOG" 2>&1

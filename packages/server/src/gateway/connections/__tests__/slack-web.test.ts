@@ -61,3 +61,79 @@ describe("createSlackWebApi wire format", () => {
     );
   });
 });
+
+describe("exchangeOAuthCode install shapes", () => {
+  const OAUTH_ARGS = {
+    clientId: "cid",
+    clientSecret: "secret",
+    code: "the-code",
+    redirectUri: "https://app.lobu.ai/lobu/slack/oauth_callback",
+  };
+
+  test("per-workspace install returns the team id as the identity key", async () => {
+    globalThis.fetch = mock(async () => ({
+      json: async () => ({
+        ok: true,
+        access_token: "xoxb-ws",
+        team: { id: "T123", name: "Acme" },
+        enterprise: null,
+        is_enterprise_install: false,
+        bot_user_id: "B1",
+        authed_user: { id: "U1" },
+      }),
+    })) as unknown as typeof fetch;
+
+    const api = createSlackWebApi();
+    const result = await api.exchangeOAuthCode(OAUTH_ARGS);
+
+    expect(result.teamId).toBe("T123");
+    expect(result.teamName).toBe("Acme");
+    expect(result.isEnterpriseInstall).toBe(false);
+    expect(result.enterpriseId).toBeNull();
+  });
+
+  test("org-wide enterprise install (no team id) resolves the enterprise id as the identity key", async () => {
+    // Grid org-wide install: Slack's oauth.v2.access returns NO `team` — the app
+    // is installed at the enterprise level — but sets `is_enterprise_install:true`
+    // and `enterprise:{id,name}`. The exchange must NOT reject this as a failed
+    // install; the enterprise id is the routing/identity key.
+    globalThis.fetch = mock(async () => ({
+      json: async () => ({
+        ok: true,
+        access_token: "xoxb-ent",
+        team: null,
+        enterprise: { id: "E0BDSKL1KJL", name: "LobuSandbox" },
+        is_enterprise_install: true,
+        bot_user_id: "B2",
+        authed_user: { id: "U2" },
+      }),
+    })) as unknown as typeof fetch;
+
+    const api = createSlackWebApi();
+    const result = await api.exchangeOAuthCode(OAUTH_ARGS);
+
+    expect(result.isEnterpriseInstall).toBe(true);
+    expect(result.enterpriseId).toBe("E0BDSKL1KJL");
+    // The enterprise id stands in as the identity key so the pending row,
+    // claim ref, and enterprise-fallback routing all get a stable non-null id.
+    expect(result.teamId).toBe("E0BDSKL1KJL");
+    expect(result.teamName).toBe("LobuSandbox");
+  });
+
+  test("no team id AND not an enterprise install still throws", async () => {
+    globalThis.fetch = mock(async () => ({
+      json: async () => ({
+        ok: true,
+        access_token: "xoxb-x",
+        team: null,
+        enterprise: null,
+        is_enterprise_install: false,
+      }),
+    })) as unknown as typeof fetch;
+
+    const api = createSlackWebApi();
+    await expect(api.exchangeOAuthCode(OAUTH_ARGS)).rejects.toThrow(
+      /no team id/,
+    );
+  });
+});

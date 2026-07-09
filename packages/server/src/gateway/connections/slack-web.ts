@@ -223,28 +223,47 @@ export function createSlackWebApi(): SlackWebApi {
           `Slack oauth.v2.access failed: ${String(json.error ?? res.status)}`
         );
       }
-      const team = json.team as { id?: string; name?: string } | undefined;
-      const enterprise = json.enterprise as { id?: string } | undefined;
+      const team = json.team as
+        | { id?: string; name?: string }
+        | null
+        | undefined;
+      const enterprise = json.enterprise as
+        | { id?: string; name?: string }
+        | null
+        | undefined;
       const authedUser = json.authed_user as { id?: string } | undefined;
       const botToken = json.access_token;
-      const teamId = team?.id;
+      const isEnterpriseInstall = json.is_enterprise_install === true;
+      const enterpriseId =
+        typeof enterprise?.id === "string" ? enterprise.id : null;
+      // For a Grid ORG-WIDE install the app is installed at the enterprise level,
+      // so `oauth.v2.access` returns NO `team` — the enterprise id is the only
+      // identity. Fall back to it as the routing/identity key (the pending row,
+      // claim ref, and enterprise-fallback routing all key on this). A missing
+      // team id is only fatal for a NON-enterprise install.
+      const identityId =
+        team?.id ?? (isEnterpriseInstall ? enterpriseId : null);
       if (typeof botToken !== "string" || !botToken) {
         throw new Error("Slack oauth.v2.access returned no access_token");
       }
-      if (typeof teamId !== "string" || !teamId) {
+      if (typeof identityId !== "string" || !identityId) {
         throw new Error("Slack oauth.v2.access returned no team id");
       }
+      const subjectName =
+        (typeof team?.name === "string" ? team.name : null) ??
+        (isEnterpriseInstall && typeof enterprise?.name === "string"
+          ? enterprise.name
+          : null);
       return {
         botToken,
-        teamId,
-        teamName: typeof team?.name === "string" ? team.name : null,
+        teamId: identityId,
+        teamName: subjectName,
         botUserId:
           typeof json.bot_user_id === "string" ? json.bot_user_id : null,
         authedUserId:
           typeof authedUser?.id === "string" ? authedUser.id : null,
-        isEnterpriseInstall: json.is_enterprise_install === true,
-        enterpriseId:
-          typeof enterprise?.id === "string" ? enterprise.id : null,
+        isEnterpriseInstall,
+        enterpriseId,
       };
     },
   };

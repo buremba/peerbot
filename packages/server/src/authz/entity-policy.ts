@@ -20,7 +20,12 @@
  * high-volume provenance plumbing, not collaboration edits; gating them would
  * flood approvals. Any new user-facing entity write path MUST call this module.
  */
-import { type DbClient, getDb } from "../db/client";
+import { type DbClient, getDb, pgBigintArray } from "../db/client";
+import {
+	type WriteAction,
+	defaultEffectFor,
+	isLegalActionEffect,
+} from "./write-action-manifest";
 
 export type EntityPolicyDecision = "allow" | "deny" | "require_approval";
 export type EntityPolicyPrincipalKind = "user" | "agent" | "watcher";
@@ -66,6 +71,13 @@ export interface EntityApprovalPolicy {
 	createMode: EntityMutationMode;
 	updateMode: EntityMutationMode;
 	deleteMode: EntityMutationMode;
+	/**
+	 * The effect this policy attaches to each action it declares, from the child
+	 * write_policy_action_effects rows. The create/update/delete convenience
+	 * fields above mirror this map (entity/agent_config); connector_action carries
+	 * only `execute` here and leaves the mode fields at their class defaults.
+	 */
+	effects: Partial<Record<WriteAction, EntityMutationMode>>;
 	deliveryTarget: EntityApprovalDeliveryTarget;
 }
 
@@ -85,6 +97,11 @@ export interface EntityApprovalPolicyInput {
 	approvalChannelName?: string | null;
 }
 
+/**
+ * A header row from write_approval_policies, with its child action→effect rows
+ * attached in `effects` by {@link attachEffects}. The header no longer carries
+ * mode columns; every per-action decision reads `effects`.
+ */
 type EntityApprovalPolicyRow = {
 	id: number;
 	organization_id: string;
@@ -94,14 +111,14 @@ type EntityApprovalPolicyRow = {
 	entity_type_slug: string | null;
 	field_path: string | null;
 	entity_id: number | null;
-	create_mode: string;
-	update_mode: string;
-	delete_mode: string;
 	approval_connection_id: string | null;
 	approval_channel_id: string | null;
 	approval_team_id: string | null;
 	approval_channel_name: string | null;
+	/** Populated post-query from write_policy_action_effects; empty until attached. */
+	effects: Partial<Record<WriteAction, EntityMutationMode>>;
 };
+
 
 export function isEntityMutationMode(
 	value: unknown,
@@ -119,24 +136,17 @@ export function isEntityApprovalUiMode(value: unknown): value is "auto" | "appro
 	return value === "auto" || value === "approval";
 }
 
+/**
+ * Coerce user INPUT to a caller-chosen default when it isn't a legal mode.
+ * (Stored effects READ from the DB fail closed differently — see
+ * {@link attachEffects}, which drops an illegal (action, effect) tuple so the
+ * resolver falls back to the class default rather than reading it as `allow`.)
+ */
 function normalizeMode(
 	value: unknown,
 	fallback: EntityMutationMode,
 ): EntityMutationMode {
 	return isEntityMutationMode(value) ? value : fallback;
-}
-
-/**
- * Parse a mode that was READ FROM THE DATABASE. Unlike {@link normalizeMode}
- * (which coerces user INPUT to a caller-chosen default), an unrecognized stored
- * value fails CLOSED to `deny`: a mode a future build introduced mid-rolling-
- * upgrade, or corrupt data from manual SQL, must never silently read as `allow`.
- * The DB CHECK bounds today's values, so this is a defense-in-depth backstop for
- * exactly the rolling-upgrade case the design calls out — not a reachable path
- * under normal writes.
- */
-function parsePersistedMode(value: unknown): EntityMutationMode {
-	return isEntityMutationMode(value) ? value : "deny";
 }
 
 function normalizeResourceClass(value: unknown): WriteResourceClass {
@@ -149,19 +159,37 @@ function normalizePrincipalKind(value: unknown): PolicyPrincipalKind | null {
 	return value === "agent" || value === "watcher" ? value : null;
 }
 
+/**
+ * The stored effect a policy attaches to `action`, or the class default if the
+ * policy declares no row for that action. A policy is a SPARSE override: a scope
+ * that sets only `execute` (or only `delete`) leaves the other actions at their
+ * class default rather than implicitly `auto`.
+ */
+function effectForRowAction(
+	row: EntityApprovalPolicyRow,
+	resourceClass: WriteResourceClass,
+	action: WriteAction,
+): EntityMutationMode {
+	const stored = row.effects[action];
+	if (stored !== undefined) return stored;
+	return defaultEffectFor(resourceClass, action);
+}
+
 function rowToPolicy(row: EntityApprovalPolicyRow): EntityApprovalPolicy {
+	const resourceClass = normalizeResourceClass(row.resource_class);
 	return {
 		id: Number(row.id),
 		organizationId: row.organization_id,
-		resourceClass: normalizeResourceClass(row.resource_class),
+		resourceClass,
 		principalKind: normalizePrincipalKind(row.principal_kind),
 		principalId: row.principal_id,
 		entityTypeSlug: row.entity_type_slug,
 		fieldPath: row.field_path,
 		entityId: row.entity_id === null ? null : Number(row.entity_id),
-		createMode: parsePersistedMode(row.create_mode),
-		updateMode: parsePersistedMode(row.update_mode),
-		deleteMode: parsePersistedMode(row.delete_mode),
+		createMode: effectForRowAction(row, resourceClass, "create"),
+		updateMode: effectForRowAction(row, resourceClass, "update"),
+		deleteMode: effectForRowAction(row, resourceClass, "delete"),
+		effects: { ...row.effects },
 		deliveryTarget: {
 			connectionId: row.approval_connection_id || null,
 			channelId: row.approval_channel_id,
@@ -186,6 +214,7 @@ export function defaultEntityApprovalPolicy(
 		createMode: "auto",
 		updateMode: "auto",
 		deleteMode: "approval",
+		effects: { create: "auto", update: "auto", delete: "approval" },
 		deliveryTarget: {
 			connectionId: null,
 			channelId: null,
@@ -234,13 +263,20 @@ export function mutationPrincipalId(args: {
 	return null;
 }
 
+/**
+ * The effect this resolved policy attaches to `action`. Reads the policy's
+ * action→effect map, falling back to the class default for an action the policy
+ * declares no row for (a sparse override). Works for every action a class
+ * governs — including connector_action's `execute`, which the old positional
+ * switch could not express.
+ */
 function modeForAction(
 	policy: EntityApprovalPolicy,
-	action: EntityMutationAction,
+	action: WriteAction,
 ): EntityMutationMode {
-	if (action === "create") return policy.createMode;
-	if (action === "update") return policy.updateMode;
-	return policy.deleteMode;
+	const stored = policy.effects[action];
+	if (stored !== undefined) return stored;
+	return defaultEffectFor(policy.resourceClass, action);
 }
 
 /**
@@ -282,15 +318,15 @@ function modeRestrictiveness(mode: EntityMutationMode): number {
 
 /**
  * A row's overall restrictiveness, for the final tie-break: the most restrictive
- * of its three per-action modes. Ensures that when scope AND principal specificity
- * tie, the stricter row wins (deny > approval > auto) rather than DB-return order.
+ * of its declared per-action effects. Ensures that when scope AND principal
+ * specificity tie, the stricter row wins (deny > approval > auto) rather than
+ * DB-return order. A row with no declared effects (shouldn't occur — every saved
+ * scope writes a complete action set) ranks least-restrictive.
  */
 function rowRestrictiveness(row: EntityApprovalPolicyRow): number {
-	return Math.max(
-		modeRestrictiveness(parsePersistedMode(row.create_mode)),
-		modeRestrictiveness(parsePersistedMode(row.update_mode)),
-		modeRestrictiveness(parsePersistedMode(row.delete_mode)),
-	);
+	const effects = Object.values(row.effects);
+	if (effects.length === 0) return modeRestrictiveness("auto");
+	return Math.max(...effects.map((e) => modeRestrictiveness(e)));
 }
 
 /**
@@ -318,6 +354,60 @@ function compareCandidates(
  * targets no principal (any), or targets this principal's kind and either no
  * specific id (any of that kind) or exactly this id.
  */
+type ActionEffectRow = { policy_id: number; action: string; effect: string };
+
+/**
+ * Attach each header row's child action→effect rows in one batched query (keyed
+ * by policy_id, no N+1).
+ *
+ * Fail-closed on a bad STORED value: when a child row exists for an action but
+ * carries an effect this build can't recognize or the manifest declares illegal
+ * for the class (a value a future build introduced mid-rolling-upgrade, or
+ * corrupt data from manual SQL), the action is pinned to `deny` — never silently
+ * dropped. Dropping would let the resolver fall back to the class default (which
+ * for entity create is `auto`), reading a stored-but-unknown value as `allow`.
+ * An ABSENT action (no child row at all) is different: that's a sparse override,
+ * and it correctly inherits the class default.
+ */
+async function attachEffects(
+	sql: DbClient,
+	rows: EntityApprovalPolicyRow[],
+): Promise<EntityApprovalPolicyRow[]> {
+	for (const row of rows) row.effects = {};
+	if (rows.length === 0) return rows;
+	const byId = new Map(rows.map((r) => [Number(r.id), r]));
+	const ids = rows.map((r) => Number(r.id));
+	const effects = await sql<ActionEffectRow>`
+    SELECT policy_id, action, effect
+    FROM write_policy_action_effects
+    WHERE policy_id = ANY(${pgBigintArray(ids)})
+  `;
+	for (const e of effects) {
+		const row = byId.get(Number(e.policy_id));
+		if (!row || !isWriteAction(e.action)) continue;
+		const legal =
+			isEntityMutationMode(e.effect) &&
+			isLegalActionEffect(
+				normalizeResourceClass(row.resource_class),
+				e.action,
+				e.effect,
+			);
+		// Pin an unknown/illegal stored effect to `deny` (fail closed), never drop.
+		row.effects[e.action] =
+			legal && isEntityMutationMode(e.effect) ? e.effect : "deny";
+	}
+	return rows;
+}
+
+function isWriteAction(value: unknown): value is WriteAction {
+	return (
+		value === "create" ||
+		value === "update" ||
+		value === "delete" ||
+		value === "execute"
+	);
+}
+
 async function loadCandidatePolicies(args: {
 	organizationId: string;
 	resourceClass?: WriteResourceClass;
@@ -334,7 +424,6 @@ async function loadCandidatePolicies(args: {
 	const rows = await sql<EntityApprovalPolicyRow>`
     SELECT id, organization_id, resource_class, principal_kind, principal_id,
        entity_type_slug, field_path, entity_id,
-       create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM write_approval_policies
@@ -350,7 +439,9 @@ async function loadCandidatePolicies(args: {
       AND (entity_type_slug IS NULL OR entity_type_slug = ${args.entityTypeSlug ?? null})
       AND (entity_id IS NULL OR entity_id = ${args.entityId ?? null})
   `;
-	return [...rows].sort(compareCandidates);
+	const list = [...rows];
+	await attachEffects(sql, list);
+	return list.sort(compareCandidates);
 }
 
 function pickPolicy(
@@ -426,29 +517,6 @@ export async function evaluateEntityMutation(args: {
 	return modeToDecision(modeForAction(policy, args.action));
 }
 
-/**
- * The mode a class falls back to when no policy row matches — the per-action
- * defaults baked into {@link defaultEntityApprovalPolicy} for entity, and a
- * conservative "agent-driven config change needs approval, delete is denied"
- * default for agent_config.
- */
-function defaultModeFor(
-	resourceClass: WriteResourceClass,
-	action: EntityMutationAction,
-): EntityMutationMode {
-	if (resourceClass === "agent_config") {
-		// An agent editing agent definitions is high-trust: create/update queue an
-		// approval, delete is denied outright (a human must delete an agent).
-		if (action === "delete") return "deny";
-		return "approval";
-	}
-	if (resourceClass === "connector_action") {
-		// No org connector-action policy → `auto`, so the per-connection
-		// action_modes alone decide (today's behavior). A row only ever tightens.
-		return "auto";
-	}
-	return modeForAction(defaultEntityApprovalPolicy(""), action);
-}
 
 /**
  * Class-generic write decision for a non-scoped resource (agent_config today;
@@ -463,7 +531,7 @@ export async function resolveWritePolicyDecision(args: {
 	resourceClass: Exclude<WriteResourceClass, "entity">;
 	principalKind: EntityPolicyPrincipalKind;
 	principalId?: string | null;
-	action: EntityMutationAction;
+	action: WriteAction;
 	sql?: DbClient;
 }): Promise<EntityPolicyDecision> {
 	if (args.principalKind === "user") return "allow";
@@ -477,7 +545,7 @@ export async function resolveWritePolicyDecision(args: {
 	const match = candidates[0];
 	const mode = match
 		? modeForAction(rowToPolicy(match), args.action)
-		: defaultModeFor(args.resourceClass, args.action);
+		: defaultEffectFor(args.resourceClass, args.action);
 	return modeToDecision(mode);
 }
 
@@ -534,7 +602,6 @@ export async function getGlobalEntityApprovalPolicy(
 	const rows = await sql<EntityApprovalPolicyRow>`
     SELECT id, organization_id, resource_class, principal_kind, principal_id,
        entity_type_slug, field_path, entity_id,
-       create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM write_approval_policies
@@ -546,9 +613,9 @@ export async function getGlobalEntityApprovalPolicy(
       AND entity_id IS NULL
     LIMIT 1
   `;
-	return rows[0]
-		? rowToPolicy(rows[0])
-		: defaultEntityApprovalPolicy(organizationId);
+	if (!rows[0]) return defaultEntityApprovalPolicy(organizationId);
+	await attachEffects(sql, rows as EntityApprovalPolicyRow[]);
+	return rowToPolicy(rows[0]);
 }
 
 /**
@@ -563,7 +630,6 @@ export async function listEntityApprovalPolicies(
 	const rows = await sql<EntityApprovalPolicyRow>`
     SELECT id, organization_id, resource_class, principal_kind, principal_id,
        entity_type_slug, field_path, entity_id,
-       create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM write_approval_policies
@@ -582,6 +648,7 @@ export async function listEntityApprovalPolicies(
       field_path ASC NULLS FIRST,
       id ASC
   `;
+	await attachEffects(sql, [...rows]);
 	return rows.map(rowToPolicy);
 }
 
@@ -597,6 +664,53 @@ export async function upsertGlobalEntityApprovalPolicy(
 	});
 }
 
+/**
+ * Turn a policy input into the COMPLETE action→effect set to persist for the
+ * given class. Every save writes a class's full action vocabulary (a complete
+ * bundle, not a sparse override) so the child rows are self-consistent. For the
+ * entity-shaped classes the effects come from create/update/delete; for
+ * connector_action the single `execute` effect is taken from `createMode` (the
+ * field the API carries it in until the connector-action UI ships a dedicated
+ * one). Effects are clamped to what the manifest declares legal for the class.
+ */
+function actionEffectSetForInput(
+	resourceClass: WriteResourceClass,
+	input: EntityApprovalPolicyInput,
+): Array<{ action: WriteAction; effect: EntityMutationMode }> {
+	const clamp = (action: WriteAction, effect: EntityMutationMode) =>
+		isLegalActionEffect(resourceClass, action, effect)
+			? effect
+			: defaultEffectFor(resourceClass, action);
+	if (resourceClass === "connector_action") {
+		return [
+			{
+				action: "execute",
+				effect: clamp("execute", normalizeMode(input.createMode, "auto")),
+			},
+		];
+	}
+	return [
+		{ action: "create", effect: clamp("create", normalizeMode(input.createMode, "auto")) },
+		{ action: "update", effect: clamp("update", normalizeMode(input.updateMode, "auto")) },
+		{ action: "delete", effect: clamp("delete", normalizeMode(input.deleteMode, "approval")) },
+	];
+}
+
+/** Replace a policy's child action-effect rows with the given complete set. */
+async function writeActionEffects(
+	tx: DbClient,
+	policyId: number,
+	set: Array<{ action: WriteAction; effect: EntityMutationMode }>,
+): Promise<void> {
+	await tx`DELETE FROM write_policy_action_effects WHERE policy_id = ${policyId}`;
+	for (const { action, effect } of set) {
+		await tx`
+      INSERT INTO write_policy_action_effects (policy_id, action, effect)
+      VALUES (${policyId}, ${action}, ${effect})
+    `;
+	}
+}
+
 export async function upsertEntityApprovalPolicy(
 	organizationId: string,
 	input: EntityApprovalPolicyInput,
@@ -608,23 +722,19 @@ export async function upsertEntityApprovalPolicy(
 	const entityTypeSlug = input.entityTypeSlug?.trim() || null;
 	const fieldPath = input.fieldPath?.trim() || null;
 	const entityId = input.entityId ?? null;
-	const createMode = normalizeMode(input.createMode, "auto");
-	const updateMode = normalizeMode(input.updateMode, "auto");
-	const deleteMode = normalizeMode(input.deleteMode, "approval");
+	const effectSet = actionEffectSetForInput(resourceClass, input);
 	const approvalConnectionId = input.approvalConnectionId?.trim() || null;
 	const approvalChannelId = input.approvalChannelId?.trim() || null;
 	const approvalTeamId = input.approvalTeamId?.trim() || null;
 	const approvalChannelName = input.approvalChannelName?.trim() || null;
 
 	const sql = getDb();
-	// The identity tuple the unique index keys on. Reused by both UPDATE arms so
-	// the "lost the insert race" recovery targets the exact same row.
+	// Upsert the header row (scope/principal/delivery only — effects live in the
+	// child table). The identity tuple the unique index keys on; reused by both
+	// UPDATE arms so the "lost the insert race" recovery targets the same row.
 	const applyUpdate = (tx: DbClient) => tx<EntityApprovalPolicyRow>`
       UPDATE write_approval_policies
-      SET create_mode = ${createMode},
-          update_mode = ${updateMode},
-          delete_mode = ${deleteMode},
-          approval_connection_id = ${approvalConnectionId},
+      SET approval_connection_id = ${approvalConnectionId},
           approval_channel_id = ${approvalChannelId},
           approval_team_id = ${approvalTeamId},
           approval_channel_name = ${approvalChannelName},
@@ -638,26 +748,23 @@ export async function upsertEntityApprovalPolicy(
         AND entity_id IS NOT DISTINCT FROM ${entityId}
       RETURNING id, organization_id, resource_class, principal_kind, principal_id,
        entity_type_slug, field_path, entity_id,
-       create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     `;
 
 	const row = await sql.begin(async (tx) => {
-		const updated = await applyUpdate(tx);
-		if (updated[0]) return updated[0];
+		let header = (await applyUpdate(tx))[0] ?? null;
 
-		const inserted = await tx<EntityApprovalPolicyRow>`
+		if (!header) {
+			const inserted = await tx<EntityApprovalPolicyRow>`
       INSERT INTO write_approval_policies (
         organization_id, resource_class, principal_kind, principal_id,
         entity_type_slug, field_path, entity_id,
-        create_mode, update_mode, delete_mode,
         approval_connection_id, approval_channel_id, approval_team_id,
         approval_channel_name, created_at, updated_at
       ) VALUES (
         ${organizationId}, ${resourceClass}, ${principalKind}, ${principalId},
         ${entityTypeSlug}, ${fieldPath}, ${entityId},
-        ${createMode}, ${updateMode}, ${deleteMode},
         ${approvalConnectionId},
         ${approvalChannelId}, ${approvalTeamId}, ${approvalChannelName},
         now(), now()
@@ -665,15 +772,19 @@ export async function upsertEntityApprovalPolicy(
       ON CONFLICT DO NOTHING
       RETURNING id, organization_id, resource_class, principal_kind, principal_id,
        entity_type_slug, field_path, entity_id,
-       create_mode, update_mode, delete_mode,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     `;
-		if (inserted[0]) return inserted[0];
+			header = inserted[0] ?? null;
+			// Lost the insert race to a concurrent save — apply this request on top.
+			if (!header) header = (await applyUpdate(tx))[0] ?? null;
+		}
 
-		// Lost the insert race to a concurrent save — apply this request on top.
-		const selected = await applyUpdate(tx);
-		return selected[0] ?? null;
+		if (!header) return null;
+		await writeActionEffects(tx, Number(header.id), effectSet);
+		header.effects = {};
+		for (const { action, effect } of effectSet) header.effects[action] = effect;
+		return header;
 	});
 	if (!row) throw new Error("Failed to save entity approval policy");
 	return rowToPolicy(row);

@@ -19,16 +19,38 @@ type PolicyRowSeed = {
 	create_mode?: string;
 	update_mode?: string;
 	delete_mode?: string;
+	/** Explicit action→effect child rows; if omitted they're derived from the
+	 * create/update/delete modes (entity/agent_config) or from create_mode as the
+	 * single `execute` effect (connector_action) — mirroring the migration backfill. */
+	effects?: Array<{ action: string; effect: string }>;
 };
 
 const ORG = "org-1";
 
-/** Tagged-template stub that mimics the candidate-policy query: it applies the
- * same (NULL OR match) filters the real SQL does, against seeded rows. Param
- * order matches loadCandidatePolicies: org, resource_class, principal_kind,
- * principal_id, entity_type_slug, entity_id. */
+/** Derive the child action-effect rows a seed implies, matching the migration
+ * backfill: connector_action → one `execute` from create_mode; other classes →
+ * create/update/delete from their mode fields. */
+function seedEffectRows(seed: PolicyRowSeed): Array<{ action: string; effect: string }> {
+	if (seed.effects) return seed.effects;
+	if (seed.resource_class === "connector_action") {
+		return [{ action: "execute", effect: seed.create_mode ?? "auto" }];
+	}
+	return [
+		{ action: "create", effect: seed.create_mode ?? "auto" },
+		{ action: "update", effect: seed.update_mode ?? "auto" },
+		{ action: "delete", effect: seed.delete_mode ?? "approval" },
+	];
+}
+
+/**
+ * Tagged-template stub for the two queries the resolver issues:
+ *  1. the candidate-policy header query (params: org, resource_class,
+ *     principal_kind, principal_id, entity_type_slug, entity_id), and
+ *  2. attachEffects' child query (single param: a pgBigintArray of policy ids).
+ * The child query is detected by its lone string-array param.
+ */
 function stubSql(seeds: PolicyRowSeed[]): DbClient {
-	const rows = seeds.map((seed, index) => ({
+	const headers = seeds.map((seed, index) => ({
 		id: seed.id ?? index + 1,
 		organization_id: ORG,
 		resource_class: seed.resource_class ?? "entity",
@@ -37,15 +59,30 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 		entity_type_slug: seed.entity_type_slug ?? null,
 		field_path: seed.field_path ?? null,
 		entity_id: seed.entity_id ?? null,
-		create_mode: seed.create_mode ?? "auto",
-		update_mode: seed.update_mode ?? "auto",
-		delete_mode: seed.delete_mode ?? "approval",
 		approval_connection_id: null,
 		approval_channel_id: null,
 		approval_team_id: null,
 		approval_channel_name: null,
 	}));
+	const childRows = seeds.flatMap((seed, index) =>
+		seedEffectRows(seed).map((e) => ({
+			policy_id: seed.id ?? index + 1,
+			action: e.action,
+			effect: e.effect,
+		})),
+	);
 	const sql = (_strings: TemplateStringsArray, ...params: unknown[]) => {
+		// attachEffects passes exactly one param: a pgBigintArray string like "{1,2}".
+		if (params.length === 1 && typeof params[0] === "string") {
+			const ids = new Set(
+				(params[0] as string)
+					.replace(/[{}]/g, "")
+					.split(",")
+					.filter(Boolean)
+					.map((n) => Number(n)),
+			);
+			return Promise.resolve(childRows.filter((r) => ids.has(Number(r.policy_id))));
+		}
 		const [org, resourceClass, principalKind, principalId, entityTypeSlug, entityId] =
 			params as [
 				string,
@@ -56,7 +93,7 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 				number | null,
 			];
 		return Promise.resolve(
-			rows.filter(
+			headers.filter(
 				(row) =>
 					row.organization_id === org &&
 					row.resource_class === resourceClass &&
@@ -437,7 +474,7 @@ describe("resolveWritePolicyDecision (connector_action)", () => {
 				organizationId: ORG,
 				resourceClass: "connector_action",
 				principalKind: "agent",
-				action: "create",
+				action: "execute",
 				sql: stubSql([]),
 			}),
 		).toBe("allow");
@@ -449,7 +486,7 @@ describe("resolveWritePolicyDecision (connector_action)", () => {
 				organizationId: ORG,
 				resourceClass: "connector_action",
 				principalKind: "agent",
-				action: "create",
+				action: "execute",
 				sql: stubSql([
 					{ resource_class: "connector_action", create_mode: "approval" },
 				]),
@@ -461,7 +498,7 @@ describe("resolveWritePolicyDecision (connector_action)", () => {
 				resourceClass: "connector_action",
 				principalKind: "watcher",
 				principalId: "watcher:9",
-				action: "create",
+				action: "execute",
 				sql: stubSql([
 					{
 						resource_class: "connector_action",
@@ -480,7 +517,7 @@ describe("resolveWritePolicyDecision (connector_action)", () => {
 				organizationId: ORG,
 				resourceClass: "connector_action",
 				principalKind: "user",
-				action: "create",
+				action: "execute",
 				sql: stubSql([
 					{ resource_class: "connector_action", create_mode: "deny" },
 				]),

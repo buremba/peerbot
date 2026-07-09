@@ -693,7 +693,7 @@ async function handleExecute(
 		resourceClass: "connector_action",
 		principalKind,
 		principalId,
-		action: "create",
+		action: "execute",
 	});
 	if (policyDecision === "deny") {
 		return {
@@ -1626,7 +1626,7 @@ async function handleApprove(
 					resourceClass: "connector_action",
 					principalKind: recheckPrincipalKind,
 					principalId: pendingRun.policy_principal_id,
-					action: "create",
+					action: "execute",
 				});
 	if (currentMode === "disabled" || recheckDecision === "deny") {
 		const why =

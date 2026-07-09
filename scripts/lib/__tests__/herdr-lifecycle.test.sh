@@ -27,7 +27,7 @@ herdr() {
   printf '%s\n' "$*" >> "$calls"
   case "${1:-} ${2:-}" in
     "tab create")
-      if [ "$mode" = "malformed-tab" ]; then
+      if [ "$mode" = "malformed-tab" ] || [ "$mode" = "ambiguous-malformed-tab" ]; then
         printf 'warning before malformed tab json\n'
       else
         printf '{"result":{"tab":{"tab_id":"workspace-a:tab-created"}}}\n'
@@ -47,6 +47,8 @@ herdr() {
         marker="$HERDR_REVIEW_EXIT_FILE"
         (sleep 0.1; printf 'late\n' > "$marker") &
         return 1
+      elif [ "$mode" = "persisted-close-failure" ] && [ "${3:-}" = "workspace-a:persisted-tab" ]; then
+        return 1
       fi
       ;;
     "tab list")
@@ -58,12 +60,14 @@ herdr() {
         fi
       elif [ "$mode" = "malformed-tab" ] && grep -q '^tab create ' "$calls"; then
         printf '{"result":{"tabs":[{"tab_id":"workspace-a:orphan-tab","label":"task-label"}]}}\n'
+      elif [ "$mode" = "ambiguous-malformed-tab" ] && grep -q '^tab create ' "$calls"; then
+        printf '{"result":{"tabs":[{"tab_id":"workspace-a:orphan-one","label":"task-label"},{"tab_id":"workspace-a:orphan-two","label":"task-label"}]}}\n'
       else
         printf '{"result":{"tabs":[]}}\n'
       fi
       ;;
     "worktree open")
-      if [ "$mode" = "malformed-workspace" ]; then
+      if [ "$mode" = "malformed-workspace" ] || [ "$mode" = "ambiguous-malformed-workspace" ]; then
         printf 'not-json\n'
       else
         printf '{"result":{"workspace":{"workspace_id":"dedicated-workspace"}}}\n'
@@ -72,10 +76,16 @@ herdr() {
     "workspace list")
       if [ "$mode" = "malformed-workspace" ] && grep -q '^worktree open ' "$calls"; then
         printf '{"result":{"workspaces":[{"workspace_id":"created-workspace","label":"task-label","worktree":{"checkout_path":"%s"}}]}}\n' "$HERDR_TEST_WORKTREE"
+      elif [ "$mode" = "ambiguous-malformed-workspace" ] && grep -q '^worktree open ' "$calls"; then
+        printf '{"result":{"workspaces":[{"workspace_id":"created-workspace-one","label":"task-label","worktree":{"checkout_path":"%s"}},{"workspace_id":"created-workspace-two","label":"task-label","worktree":{"checkout_path":"%s"}}]}}\n' "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE"
       elif [ "$mode" = "legacy" ]; then
         printf '{"result":{"workspaces":[{"workspace_id":"other","label":"other"},{"workspace_id":"legacy","label":"task-label"}]}}\n'
       elif [ "$mode" = "current-tab" ]; then
         printf '{"result":{"workspaces":[{"workspace_id":"workspace-a","label":"task-label"}]}}\n'
+      elif [ "$mode" = "ambiguous-legacy" ] || [ "$mode" = "persisted-close-failure" ]; then
+        printf '{"result":{"workspaces":[{"workspace_id":"workspace-a","label":"task-label"}]}}\n'
+      elif [ "$mode" = "ambiguous-legacy-workspace" ]; then
+        printf '{"result":{"workspaces":[{"workspace_id":"legacy-workspace-one","label":"task-label","worktree":{"checkout_path":"%s"}},{"workspace_id":"legacy-workspace-two","label":"task-label","worktree":{"checkout_path":"%s"}}]}}\n' "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE"
       else
         printf '{"result":{"workspaces":[]}}\n'
       fi
@@ -87,6 +97,12 @@ herdr() {
         printf '{"result":{"panes":[{"tab_id":"legacy:task-tab","cwd":"%s/subdir","foreground_cwd":"%s/subdir"}]}}\n' "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE"
       elif [ "$mode" = "current-tab" ]; then
         printf '{"result":{"panes":[{"tab_id":"workspace-a:current-tab","cwd":"%s","foreground_cwd":"%s"}]}}\n' "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE"
+      elif [ "$mode" = "ambiguous-malformed-tab" ]; then
+        printf '{"result":{"panes":[{"tab_id":"workspace-a:orphan-one","cwd":"%s","foreground_cwd":"%s"},{"tab_id":"workspace-a:orphan-two","cwd":"%s","foreground_cwd":"%s"}]}}\n' "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE"
+      elif [ "$mode" = "ambiguous-legacy" ]; then
+        printf '{"result":{"panes":[{"tab_id":"workspace-a:legacy-one","cwd":"%s","foreground_cwd":"%s"},{"tab_id":"workspace-a:legacy-two","cwd":"%s","foreground_cwd":"%s"}]}}\n' "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE"
+      elif [ "$mode" = "persisted-close-failure" ]; then
+        printf '{"result":{"panes":[{"tab_id":"workspace-a:fallback-tab","cwd":"%s","foreground_cwd":"%s"}]}}\n' "$HERDR_TEST_WORKTREE" "$HERDR_TEST_WORKTREE"
       else
         printf '{"result":{"panes":[]}}\n'
       fi
@@ -156,6 +172,24 @@ test_task_tab_malformed_create_response_closes_created_tab() {
     fail "malformed tab response orphaned the created tab"
 }
 
+test_task_tab_ambiguous_recovery_fails_closed() {
+  local worktree="$tmp/ambiguous-malformed-tab-worktree"
+  mkdir -p "$worktree"
+  git -C "$worktree" init -q
+  HERDR_WORKSPACE_ID="workspace-a"
+  HERDR_TAB_ID="workspace-a:caller"
+  export HERDR_WORKSPACE_ID HERDR_TAB_ID HERDR_TEST_WORKTREE="$worktree"
+  mode="ambiguous-malformed-tab"
+
+  : > "$calls"
+  if herdr_task_open "$worktree" "$worktree" "task-label" >/dev/null 2>&1; then
+    fail "ambiguous malformed tab response unexpectedly succeeded"
+  fi
+  if grep -q '^tab close ' "$calls"; then
+    fail "ambiguous recovery closed an unowned task tab"
+  fi
+}
+
 test_task_workspace_malformed_create_response_closes_created_workspace() {
   local worktree="$tmp/malformed-workspace"
   mkdir -p "$worktree"
@@ -170,6 +204,23 @@ test_task_workspace_malformed_create_response_closes_created_workspace() {
   fi
   grep -Eq '^worktree remove --workspace created-workspace( --force)?$|^workspace close created-workspace$' "$calls" ||
     fail "malformed workspace response orphaned the created workspace"
+}
+
+test_task_workspace_ambiguous_recovery_fails_closed() {
+  local worktree="$tmp/ambiguous-malformed-workspace"
+  mkdir -p "$worktree"
+  git -C "$worktree" init -q
+  unset HERDR_WORKSPACE_ID HERDR_TAB_ID
+  export HERDR_TEST_WORKTREE="$worktree"
+  mode="ambiguous-malformed-workspace"
+
+  : > "$calls"
+  if herdr_task_open "$worktree" "$worktree" "task-label" >/dev/null 2>&1; then
+    fail "ambiguous malformed workspace response unexpectedly succeeded"
+  fi
+  if grep -Eq '^(worktree remove|workspace close)' "$calls"; then
+    fail "ambiguous recovery closed an unowned task workspace"
+  fi
 }
 
 test_ordinary_terminal_owns_and_closes_dedicated_workspace() {
@@ -208,6 +259,65 @@ test_task_tab_cleanup_uses_persisted_identity_across_workspaces() {
 
   grep -Fxq "tab close workspace-a:tab-7" "$calls" ||
     fail "cross-workspace cleanup did not close the persisted task tab"
+}
+
+test_persisted_tab_close_failure_fails_closed_and_preserves_metadata() {
+  local worktree="$tmp/persisted-close-failure"
+  mkdir -p "$worktree"
+  git -C "$worktree" init -q
+  herdr_task_metadata_write "$worktree" "workspace-a" "workspace-a:persisted-tab"
+  HERDR_WORKSPACE_ID="workspace-b"
+  HERDR_TAB_ID="workspace-b:caller"
+  export HERDR_WORKSPACE_ID HERDR_TAB_ID HERDR_TEST_WORKTREE="$worktree"
+  mode="persisted-close-failure"
+
+  : > "$calls"
+  if herdr_task_close "$worktree" "task-label"; then
+    fail "failed exact persisted-tab close unexpectedly succeeded"
+  fi
+  [ "$(herdr_task_metadata_read "$worktree")" = "workspace-a workspace-a:persisted-tab" ] ||
+    fail "failed exact close discarded persisted task ownership"
+  [ "$(grep -c '^tab close ' "$calls")" -eq 1 ] ||
+    fail "failed exact close fell through to a heuristic tab close"
+  grep -Fxq 'tab close workspace-a:persisted-tab' "$calls" ||
+    fail "cleanup did not attempt the exact persisted tab"
+  if grep -q '^workspace list' "$calls"; then
+    fail "failed exact close fell through to legacy workspace discovery"
+  fi
+}
+
+test_ambiguous_legacy_tabs_fail_closed() {
+  local worktree="$tmp/ambiguous-legacy-worktree"
+  mkdir -p "$worktree"
+  git -C "$worktree" init -q
+  unset HERDR_WORKSPACE_ID HERDR_TAB_ID
+  export HERDR_TEST_WORKTREE="$worktree"
+  mode="ambiguous-legacy"
+
+  : > "$calls"
+  if herdr_task_close "$worktree" "task-label"; then
+    fail "ambiguous legacy task tabs unexpectedly reported success"
+  fi
+  if grep -q '^tab close ' "$calls"; then
+    fail "ambiguous legacy cleanup closed an unowned task tab"
+  fi
+}
+
+test_ambiguous_legacy_workspaces_fail_closed() {
+  local worktree="$tmp/ambiguous-legacy-workspace"
+  mkdir -p "$worktree"
+  git -C "$worktree" init -q
+  unset HERDR_WORKSPACE_ID HERDR_TAB_ID
+  export HERDR_TEST_WORKTREE="$worktree"
+  mode="ambiguous-legacy-workspace"
+
+  : > "$calls"
+  if herdr_task_close "$worktree" "task-label"; then
+    fail "ambiguous legacy task workspaces unexpectedly reported success"
+  fi
+  if grep -Eq '^(worktree remove|workspace close)' "$calls"; then
+    fail "ambiguous legacy cleanup closed an unowned task workspace"
+  fi
 }
 
 test_legacy_lookup_closes_cross_workspace_task_tab() {
@@ -370,10 +480,15 @@ test_review_signals_remove_prompt() {
 test_task_tab_open_records_identity
 test_repeated_task_setup_reuses_tab_without_orphaning
 test_task_tab_malformed_create_response_closes_created_tab
+test_task_tab_ambiguous_recovery_fails_closed
 test_task_workspace_malformed_create_response_closes_created_workspace
+test_task_workspace_ambiguous_recovery_fails_closed
 test_ordinary_terminal_owns_and_closes_dedicated_workspace
 test_task_tab_cleanup_uses_persisted_identity_across_workspaces
+test_persisted_tab_close_failure_fails_closed_and_preserves_metadata
 test_legacy_lookup_closes_cross_workspace_task_tab
+test_ambiguous_legacy_tabs_fail_closed
+test_ambiguous_legacy_workspaces_fail_closed
 test_current_task_tab_is_never_closed
 test_review_parses_current_herdr_tab_response
 test_review_cleanup_closes_tab_and_removes_temp_files

@@ -56,12 +56,14 @@ path=os.environ["WORKTREE_PATH"]
 prefix=path.rstrip("/")+"/"
 matching_panes={pane.get("tab_id") for pane in load("PANE_JSON").get("result",{}).get("panes",[]) if pane.get("tab_id") and any(cwd==path or cwd.startswith(prefix) for cwd in (pane.get("cwd") or "", pane.get("foreground_cwd") or ""))}
 new_tabs=[tab for tab in tabs if tab.get("tab_id") and tab.get("tab_id") not in before]
-for tab in new_tabs:
-  if tab.get("tab_id") in matching_panes:
-    print(tab["tab_id"]); raise SystemExit
-for tab in new_tabs:
-  if tab.get("label")==os.environ.get("LABEL", ""):
-    print(tab["tab_id"]); raise SystemExit
+path_matches=[tab["tab_id"] for tab in new_tabs if tab.get("tab_id") in matching_panes]
+if len(path_matches)==1:
+  print(path_matches[0]); raise SystemExit
+if path_matches:
+  raise SystemExit
+label_matches=[tab["tab_id"] for tab in new_tabs if tab.get("label")==os.environ.get("LABEL", "")]
+if len(label_matches)==1:
+  print(label_matches[0])
 ' 2>/dev/null || true)"
   [[ -n "$tab_id" ]] || return 1
   herdr tab close "$tab_id" >/dev/null 2>&1
@@ -84,12 +86,14 @@ def load(name):
 
 before={workspace.get("workspace_id") for workspace in load("BEFORE_JSON").get("result",{}).get("workspaces",[]) if workspace.get("workspace_id")}
 workspaces=[workspace for workspace in load("AFTER_JSON").get("result",{}).get("workspaces",[]) if workspace.get("workspace_id") and workspace.get("workspace_id") not in before]
-for workspace in workspaces:
-  if (workspace.get("worktree") or {}).get("checkout_path")==os.environ["WORKTREE_PATH"]:
-    print(workspace["workspace_id"]); raise SystemExit
-for workspace in workspaces:
-  if workspace.get("label")==os.environ.get("LABEL", ""):
-    print(workspace["workspace_id"]); raise SystemExit
+path_matches=[workspace["workspace_id"] for workspace in workspaces if (workspace.get("worktree") or {}).get("checkout_path")==os.environ["WORKTREE_PATH"]]
+if len(path_matches)==1:
+  print(path_matches[0]); raise SystemExit
+if path_matches:
+  raise SystemExit
+label_matches=[workspace["workspace_id"] for workspace in workspaces if workspace.get("label")==os.environ.get("LABEL", "")]
+if len(label_matches)==1:
+  print(label_matches[0])
 ' 2>/dev/null || true)"
   [[ -n "$workspace_id" ]] || return 1
   herdr worktree remove --workspace "$workspace_id" --force >/dev/null 2>&1 || \
@@ -182,53 +186,63 @@ print(d.get("result",{}).get("workspace",{}).get("workspace_id",""))' 2>/dev/nul
 # caller before git cleanup completes.
 herdr_task_close() {
   local worktree_path="$1" label="${2:-}"
-  local json ws matched_by tab candidate_ws metadata_ws metadata_tab
+  local json ws matched_by tab candidate_ws metadata_ws metadata_tab pane_json pane_tabs matching_tabs tab_count
   herdr_task_enabled || return 1
 
   # Prefer the exact identity recorded at creation. This works even when the
-  # caller is outside Herdr or in a different workspace.
+  # caller is outside Herdr or in a different workspace. Metadata is
+  # authoritative: if its exact owner cannot be closed, fail without guessing
+  # from cwd or label so a later retry can use the same identity.
   if read -r metadata_ws metadata_tab <<<"$(herdr_task_metadata_read "$worktree_path" 2>/dev/null || true)" && [[ -n "$metadata_ws" ]]; then
-    if [[ -n "$metadata_tab" && "$metadata_tab" != "${HERDR_TAB_ID:-}" ]]; then
-      if herdr tab close "$metadata_tab" >/dev/null 2>&1; then
-        return 0
-      fi
-    elif [[ -z "$metadata_tab" && "$metadata_ws" != "${HERDR_WORKSPACE_ID:-}" ]]; then
-      if herdr worktree remove --workspace "$metadata_ws" >/dev/null 2>&1 || \
-         herdr worktree remove --workspace "$metadata_ws" --force >/dev/null 2>&1 || \
-         herdr workspace close "$metadata_ws" >/dev/null 2>&1; then
-        return 0
-      fi
+    if [[ -n "$metadata_tab" ]]; then
+      [[ "$metadata_tab" != "${HERDR_TAB_ID:-}" ]] || return 1
+      herdr tab close "$metadata_tab" >/dev/null 2>&1 && return 0
+      return 1
     fi
+    [[ "$metadata_ws" != "${HERDR_WORKSPACE_ID:-}" ]] || return 1
+    herdr worktree remove --workspace "$metadata_ws" >/dev/null 2>&1 || \
+      herdr worktree remove --workspace "$metadata_ws" --force >/dev/null 2>&1 || \
+      herdr workspace close "$metadata_ws" >/dev/null 2>&1 || return 1
+    return 0
   fi
 
   # Metadata may be absent for legacy task tabs. Enumerate every workspace,
   # rather than only the caller's, and match panes by checkout cwd. Never close
   # the tab that is executing task-clean.
   json="$(herdr workspace list 2>/dev/null)" || return 1
+  matching_tabs=""
   while IFS= read -r candidate_ws; do
     [[ -n "$candidate_ws" ]] || continue
-    local pane_json
-    pane_json="$(herdr pane list --workspace "$candidate_ws" 2>/dev/null)" || continue
-    tab="$(printf '%s' "$pane_json" | WORKTREE_PATH="$worktree_path" CURRENT_TAB="${HERDR_TAB_ID:-}" python3 -c 'import os,sys,json
+    pane_json="$(herdr pane list --workspace "$candidate_ws" 2>/dev/null)" || return 1
+    pane_tabs="$(printf '%s' "$pane_json" | WORKTREE_PATH="$worktree_path" CURRENT_TAB="${HERDR_TAB_ID:-}" python3 -c 'import os,sys,json
 path=os.environ["WORKTREE_PATH"]
 current=os.environ.get("CURRENT_TAB","")
 prefix=path.rstrip("/")+"/"
+matches=set()
 for pane in json.load(sys.stdin).get("result",{}).get("panes",[]):
   tid=pane.get("tab_id") or ""
   cwd=pane.get("cwd") or ""
   foreground=pane.get("foreground_cwd") or ""
   if tid and tid != current and (cwd==path or cwd.startswith(prefix) or foreground==path or foreground.startswith(prefix)):
-    print(tid); break
+    matches.add(tid)
+for tid in sorted(matches):
+  print(tid)
 ' 2>/dev/null)" || return 1
-    if [[ -n "$tab" ]]; then
-      herdr tab close "$tab" >/dev/null 2>&1 || return 1
-      return 0
+    if [[ -n "$pane_tabs" ]]; then
+      matching_tabs+="${matching_tabs:+$'\n'}$pane_tabs"
     fi
   done < <(printf '%s' "$json" | python3 -c 'import sys,json
 for workspace in json.load(sys.stdin).get("result",{}).get("workspaces",[]):
   workspace_id=workspace.get("workspace_id") or ""
   if workspace_id: print(workspace_id)
 ' 2>/dev/null)
+  if [[ -n "$matching_tabs" ]]; then
+    tab="$(printf '%s\n' "$matching_tabs" | sort -u)"
+    tab_count="$(printf '%s\n' "$tab" | awk 'NF { count++ } END { print count+0 }')"
+    [[ "$tab_count" = "1" ]] || return 1
+    herdr tab close "$tab" >/dev/null 2>&1 || return 1
+    return 0
+  fi
 
   # Emit "<match_kind> <workspace_id>": "path" when bound to the checkout,
   # else "label" when only the label matches. Path wins over label. The current
@@ -238,18 +252,21 @@ path=os.environ["WORKTREE_PATH"]
 label=os.environ.get("LABEL","")
 current=os.environ.get("CURRENT_WS","")
 d=json.load(sys.stdin)
-by_label=""
+path_matches=[]
+label_matches=[]
 for w in d.get("result",{}).get("workspaces",[]):
   wid=w.get("workspace_id") or ""
   if wid and wid==current:
     continue  # never close the pane we are running in
   wt=w.get("worktree") or {}
   if wt.get("checkout_path")==path:
-    print("path", wid); break
-  if label and not by_label and w.get("label")==label:
-    by_label=wid
-else:
-  if by_label: print("label", by_label)
+    path_matches.append(wid)
+  elif label and w.get("label")==label:
+    label_matches.append(wid)
+if len(path_matches)==1:
+  print("path", path_matches[0])
+elif not path_matches and len(label_matches)==1:
+  print("label", label_matches[0])
 ' 2>/dev/null)"
   [[ -n "$ws" ]] || return 1
   if [[ "$matched_by" == "path" ]]; then

@@ -105,6 +105,7 @@ post_review_status() {
     || echo ">> warning: failed to post GitHub commit status '$PI_REVIEW_STATUS_CONTEXT'" >&2
 }
 
+REVIEW_STATUS_STARTED=0
 REVIEW_STATUS_FINALIZED=0
 finalize_review_status() {
   post_review_status "$1" "$2" "${3:-}"
@@ -344,7 +345,7 @@ process.exit(1);
 }
 
 review_exit_cleanup() {
-  local ec=$?
+  local ec=$? post_failure_status=0
   trap - EXIT INT TERM HUP
   stop_active_review_child
   review_process_abort_inline
@@ -352,10 +353,14 @@ review_exit_cleanup() {
   # Otherwise this closes the tab/process and keeps any non-empty partial raw
   # output for diagnosis before the script exits.
   herdr_review_abort || true
-  release_review_lock
-  if [ "$ec" -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then
+  if [ "$ec" -ne 0 ] && [ "$REVIEW_LOCK_HELD" = "1" ] && \
+     [ "$REVIEW_STATUS_STARTED" = "1" ] && [ "$REVIEW_STATUS_FINALIZED" != "1" ]; then
+    post_failure_status=1
+  fi
+  if [ "$post_failure_status" = "1" ]; then
     post_review_status error "Claude review failed before verdict (exit $ec)"
   fi
+  release_review_lock
   exit "$ec"
 }
 trap review_exit_cleanup EXIT
@@ -365,6 +370,7 @@ trap 'exit 129' HUP
 
 acquire_review_lock
 
+REVIEW_STATUS_STARTED=1
 post_review_status pending "Claude review running"
 
 # --- env --------------------------------------------------------------------

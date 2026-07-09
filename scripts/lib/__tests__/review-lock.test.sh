@@ -11,11 +11,17 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 tmp="$(mktemp -d /tmp/lobu-review-lock-test.XXXXXX)"
 holder_pid=""
 contender_pid=""
+status_holder=""
+status_waiter=""
 cleanup() {
   [ -z "$holder_pid" ] || kill "$holder_pid" 2>/dev/null || true
   [ -z "$contender_pid" ] || kill "$contender_pid" 2>/dev/null || true
+  [ -z "$status_holder" ] || kill "$status_holder" 2>/dev/null || true
+  [ -z "$status_waiter" ] || kill "$status_waiter" 2>/dev/null || true
   wait "$holder_pid" 2>/dev/null || true
   wait "$contender_pid" 2>/dev/null || true
+  wait "$status_holder" 2>/dev/null || true
+  wait "$status_waiter" 2>/dev/null || true
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -25,6 +31,15 @@ export REVIEW_LOCK_ROOT_FOR_TESTS="$tmp/host-lock"
 fail() {
   echo "FAIL: $*" >&2
   exit 1
+}
+
+wait_for_file() {
+  local path="$1" description="$2"
+  for _ in $(seq 1 500); do
+    [ -e "$path" ] && return 0
+    sleep 0.01
+  done
+  fail "timed out waiting for $description"
 }
 
 # A live owner blocks a second review even with a different caller TMPDIR.
@@ -37,7 +52,7 @@ TMPDIR="$tmp" bash -c '
   release_review_lock
 ' bash "$repo_root/scripts/lib/review-lock.sh" "$tmp" &
 holder_pid=$!
-while [ ! -f "$tmp/held" ]; do sleep 0.05; done
+wait_for_file "$tmp/held" "initial lock holder"
 
 set +e
 REVIEW_DATABASE_URL='postgresql://user@127.0.0.1/lobu_test_other' \
@@ -96,7 +111,7 @@ TMPDIR="$tmp/signal-caller" REVIEW_PROCESS_TERM_GRACE_SECONDS=0.3 bash -c '
   "$repo_root/scripts/lib/review-process.sh" \
   "$repo_root/scripts/lib/__tests__/review-process-fixture.py" "$signal_tmp" &
 holder_pid=$!
-while [ ! -f "$signal_tmp/child-pid" ]; do sleep 0.01; done
+wait_for_file "$signal_tmp/child-pid" "signal-test child pid"
 child_pid="$(sed -n '1p' "$signal_tmp/child-pid")"
 REVIEW_LOCK_TIMEOUT_SECONDS=10 REVIEW_LOCK_POLL_SECONDS=0.01 bash -c '
   set -euo pipefail
@@ -130,5 +145,94 @@ contender_pid=""
 if kill -0 "$child_pid" 2>/dev/null; then
   fail "active child $child_pid survived signal cleanup"
 fi
+
+# A review invocation that never acquires the lock does not own the commit
+# status. Timing out or being canceled while waiting must not overwrite the
+# active owner's pending status.
+status_tmp="$tmp/status-waiter"
+mkdir -p "$status_tmp/bin" "$status_tmp/lock"
+cat > "$status_tmp/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$status_tmp/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "auth status") exit 0 ;;
+  "repo view") printf 'lobu-ai/lobu\n' ;;
+  "api -X") printf '%s\n' "$*" >> "$REVIEW_STATUS_CALLS" ;;
+esac
+EOF
+chmod +x "$status_tmp/bin/claude" "$status_tmp/bin/gh"
+
+REVIEW_LOCK_ROOT_FOR_TESTS="$status_tmp/lock" HOLDER_READY="$status_tmp/holder-ready" bash -c '
+  set -euo pipefail
+  . "$1/scripts/lib/review-lock.sh"
+  acquire_review_lock
+  : > "$HOLDER_READY"
+  sleep 30
+' bash "$repo_root" &
+status_holder=$!
+for _ in $(seq 1 100); do
+  [ -e "$status_tmp/holder-ready" ] && break
+  sleep 0.02
+done
+[ -e "$status_tmp/holder-ready" ] || fail "status-test lock holder never started"
+
+: > "$status_tmp/status-calls"
+set +e
+PATH="$status_tmp/bin:$PATH" \
+  REVIEW_STATUS_CALLS="$status_tmp/status-calls" \
+  REVIEW_LOCK_ROOT_FOR_TESTS="$status_tmp/lock" \
+  REVIEW_LOCK_TIMEOUT_SECONDS=0 \
+  bash "$repo_root/scripts/review.sh" >/dev/null 2>&1
+waiter_exit=$?
+set -e
+[ "$waiter_exit" -eq 2 ] || fail "timed-out review waiter exited $waiter_exit"
+[ ! -s "$status_tmp/status-calls" ] || fail "timed-out review waiter posted a commit status"
+
+: > "$status_tmp/status-calls"
+PATH="$status_tmp/bin:$PATH" \
+  REVIEW_STATUS_CALLS="$status_tmp/status-calls" \
+  REVIEW_LOCK_ROOT_FOR_TESTS="$status_tmp/lock" \
+  REVIEW_LOCK_TIMEOUT_SECONDS=30 \
+  REVIEW_LOCK_POLL_SECONDS=0.05 \
+  bash "$repo_root/scripts/review.sh" >"$status_tmp/waiter.out" 2>&1 &
+status_waiter=$!
+for _ in $(seq 1 100); do
+  grep -q 'another full review owns this host' "$status_tmp/waiter.out" 2>/dev/null && break
+  sleep 0.02
+done
+grep -q 'another full review owns this host' "$status_tmp/waiter.out" 2>/dev/null ||
+  fail "cancel-test review waiter never blocked on the lock"
+kill -TERM "$status_waiter"
+set +e
+wait "$status_waiter"
+waiter_exit=$?
+set -e
+status_waiter=""
+[ "$waiter_exit" -eq 143 ] || fail "canceled review waiter exited $waiter_exit"
+[ ! -s "$status_tmp/status-calls" ] || fail "canceled review waiter posted a commit status"
+
+kill "$status_holder" 2>/dev/null || true
+wait "$status_holder" 2>/dev/null || true
+status_holder=""
+
+# Once the invocation acquires the lock and starts the pending status, an early
+# failure still finalizes that owned status as an error.
+: > "$status_tmp/status-calls"
+set +e
+PATH="$status_tmp/bin:$PATH" \
+  REVIEW_STATUS_CALLS="$status_tmp/status-calls" \
+  REVIEW_LOCK_ROOT_FOR_TESTS="$status_tmp/lock" \
+  REVIEW_DATABASE_URL='postgres://localhost/production' \
+  bash "$repo_root/scripts/review.sh" >/dev/null 2>&1
+owner_exit=$?
+set -e
+[ "$owner_exit" -eq 2 ] || fail "early-failing review owner exited $owner_exit"
+[ "$(grep -c 'state=pending' "$status_tmp/status-calls")" -eq 1 ] ||
+  fail "review owner did not post exactly one pending status"
+[ "$(grep -c 'state=error' "$status_tmp/status-calls")" -eq 1 ] ||
+  fail "review owner did not finalize its pending status as error"
 
 echo "review lock tests passed"

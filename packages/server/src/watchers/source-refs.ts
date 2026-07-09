@@ -497,7 +497,11 @@ export async function normalizeWatcherSources(
   for (const source of sources) {
     const ref = parseWatcherSourceRef(source.query);
     if (!ref) {
-      normalized.push({ ...source, kind: 'event' });
+      // A `context: true` SQL source is entity context, not event content: its
+      // rows reach the agent but are never linked into watcher_window_events
+      // (so its `id` may be an entity id, sidestepping the events FK). A plain
+      // SQL source stays event content and its `id` must be an `events.id`.
+      normalized.push({ ...source, kind: source.context ? 'entity' : 'event' });
       continue;
     }
     const { query, kind } = await compileRefToQuery(sql, organizationId, ref);

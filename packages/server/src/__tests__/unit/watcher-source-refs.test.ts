@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
 	extractSourcesFromPromptTokens,
 	mergePromptSources,
+	normalizeWatcherSources,
 	parseWatcherSourceRef,
 	validateWatcherSourceRef,
 	watcherSourceKindForRef,
@@ -133,5 +134,41 @@ describe("mergePromptSources", () => {
 			{ name: "slack", query: "@feed:a" },
 			{ name: "slack_2", query: "@connection:7" },
 		]);
+	});
+});
+
+describe("normalizeWatcherSources source.context classification", () => {
+	// A no-ref SQL source never touches the DB in normalizeWatcherSources, so a
+	// stub sql client is enough — it must not be called for these cases.
+	const sql = (() => {
+		throw new Error("sql should not be called for no-ref SQL sources");
+	}) as never;
+
+	it("classifies a plain SQL source as event content (id must be an events.id)", async () => {
+		const [normalized] = await normalizeWatcherSources(sql, "org", [
+			{ name: "window", query: "SELECT id FROM events WHERE 1=0" },
+		]);
+		expect(normalized.kind).toBe("event");
+	});
+
+	it("classifies a context:true SQL source as entity context (no events FK)", async () => {
+		const [normalized] = await normalizeWatcherSources(sql, "org", [
+			{
+				name: "candidates",
+				query: "SELECT id, name FROM entities WHERE entity_type='person'",
+				context: true,
+			},
+		]);
+		// kind:'entity' means its rows reach the agent but are excluded from the
+		// window's content_ids (see watcher-mode allContent), so the entity `id`
+		// never hits the watcher_window_events → events(id) foreign key.
+		expect(normalized.kind).toBe("entity");
+	});
+
+	it("context:false stays event content", async () => {
+		const [normalized] = await normalizeWatcherSources(sql, "org", [
+			{ name: "window", query: "SELECT id FROM events", context: false },
+		]);
+		expect(normalized.kind).toBe("event");
 	});
 });

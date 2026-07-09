@@ -3,6 +3,14 @@ import { type Static, Type } from "@sinclair/typebox";
 export const WatcherSourceSchema = Type.Object({
   name: Type.String(),
   query: Type.String(),
+  // When true, this SQL source is CONTEXT (like an @entity ref), not event
+  // content: its rows are handed to the agent for reasoning but are NOT linked
+  // into the window's event set. Use it to feed a filtered set of entities the
+  // agent should look at (e.g. duplicate-merge candidates) — the raw `id` it
+  // projects is an entity id, not an `events.id`, so it must NOT go through the
+  // watcher_window_events FK. A plain (non-context) SQL source stays event
+  // content and its `id` must be an `events.id`.
+  context: Type.Optional(Type.Boolean()),
 });
 export type WatcherSource = Static<typeof WatcherSourceSchema>;
 
@@ -78,6 +86,12 @@ export const SourceSchema = Type.Object({
     description:
       "SQL SELECT query. If it references the events table, time window bounds are auto-applied.",
   }),
+  context: Type.Optional(
+    Type.Boolean({
+      description:
+        "When true, the source is CONTEXT (like an @entity ref), not event content: its rows reach the agent but are NOT linked into the window's event set, so the `id` it projects may be an entity id rather than an events.id. Use for feeding a filtered entity set (e.g. duplicate-merge candidates) the agent should reason over.",
+    })
+  ),
 });
 
 // Flattened schema for MCP compatibility (MCP doesn't support top-level unions)

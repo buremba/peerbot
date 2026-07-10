@@ -88,7 +88,20 @@ function normalizeArgs(value: unknown): unknown {
     if (proto === Object.prototype || proto === null) {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(value)) {
-        if (v !== undefined) out[stripNul(k)] = normalizeArgs(v);
+        if (v === undefined) continue;
+        const key = stripNul(k);
+        // `out[key] = …` invokes the `__proto__` accessor for a key named
+        // `__proto__`, mutating the prototype instead of creating an own key —
+        // so `Object.keys` never sees it and rejectUnknownKeys can't reject it
+        // (prototype-pollution bypass). `defineProperty` always creates a
+        // plain own data property, so a JSON `__proto__` key becomes a real
+        // (unknown) argument that validation then rejects.
+        Object.defineProperty(out, key, {
+          value: normalizeArgs(v),
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
       }
       return out;
     }
@@ -107,6 +120,40 @@ function compileSchema(schema: TSchema): TypeCheck<TSchema> {
   return compiled;
 }
 
+/**
+ * Reject top-level keys the schema does not declare. TypeBox `Type.Object`
+ * accepts extra keys by default, so an unknown argument (a typo, or a field
+ * that belongs to a DIFFERENT action variant) used to be silently dropped —
+ * the call "succeeded" while ignoring the caller's intent. This runs against
+ * the MATCHED variant's properties (never the union: clients see the
+ * flattened merged schema, so only post-dispatch is the allowed key set
+ * well-defined; the `action` discriminator is a declared property of every
+ * variant and thus always allowed).
+ *
+ * Skipped when the schema declares `additionalProperties` as anything other
+ * than `false` (e.g. `Type.Record` passthrough) or has no `properties` at
+ * all — those schemas accept arbitrary keys by design.
+ */
+function rejectUnknownKeys(toolName: string, schema: TSchema, coerced: unknown): void {
+  const { properties, additionalProperties } = schema as {
+    properties?: Record<string, unknown>;
+    additionalProperties?: unknown;
+  };
+  if (!properties) return;
+  if (additionalProperties !== undefined && additionalProperties !== false) return;
+  if (!coerced || typeof coerced !== 'object' || Array.isArray(coerced)) return;
+  // Object.hasOwn, NOT `key in properties`: `in` walks Object.prototype, so
+  // args named `constructor`, `toString`, `hasOwnProperty`, etc. would be
+  // wrongly accepted as "known" keys.
+  const unknown = Object.keys(coerced).filter((key) => !Object.hasOwn(properties, key));
+  if (unknown.length === 0) return;
+  const action = (properties.action as { const?: unknown } | undefined)?.const;
+  const scope = action !== undefined ? ` for action '${String(action)}'` : '';
+  throw new ToolUserError(
+    `Invalid arguments for ${toolName}: unknown argument(s): ${unknown.join(', ')} — valid arguments${scope} are: ${Object.keys(properties).join(', ')}`
+  );
+}
+
 function checkAgainst(toolName: string, schema: TSchema, args: unknown): unknown {
   // Convert returns a coerced copy — the handler must receive it, otherwise
   // coercion would satisfy the validator but the handler would still see the
@@ -117,7 +164,10 @@ function checkAgainst(toolName: string, schema: TSchema, args: unknown): unknown
   // path requires sort_by to be UNSET; injecting the default broke it.
   const coerced = Value.Convert(schema, normalizeArgs(args));
   const validator = compileSchema(schema);
-  if (validator.Check(coerced)) return coerced;
+  if (validator.Check(coerced)) {
+    rejectUnknownKeys(toolName, schema, coerced);
+    return coerced;
+  }
 
   // Deduplicate by path — TypeBox emits both `Expected required property` and
   // `Expected <type>` against the same missing field, which would otherwise

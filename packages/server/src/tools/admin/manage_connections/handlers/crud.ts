@@ -1223,6 +1223,7 @@ export async function handleUpdate(
 	const hasAuthProfileArg = Object.hasOwn(args, "auth_profile_slug");
 	const hasAppAuthProfileArg = Object.hasOwn(args, "app_auth_profile_slug");
 	const hasDeviceWorkerArg = Object.hasOwn(args, "device_worker_id");
+	const hasAgentIdArg = Object.hasOwn(args, "agent_id");
 
   // `update` is now member-writable so members can edit their own
   // connection. Resolve the caller's role once up front and gate every
@@ -1241,7 +1242,42 @@ export async function handleUpdate(
     }
   }
 
+	// Reassigning a chat connection's fallback agent (or clearing it) is the
+	// same class of authority as a channel binding: it decides which agent an
+	// unbound DM/mention runs — and thus whose agent_users those platform
+	// people are recorded into. bind_channel is owner/admin-only for exactly
+	// this reason (OWNER_ADMIN_ACTIONS in auth/tool-access.ts). `update` is
+	// member-writable (a member may rename / rebind their OWN connection), so
+	// without this gate a member could point their connection's fallback at
+	// another member's agent — an escalation bind_channel forbids. Require
+	// admin to touch agent_id, matching the channel-binding tier.
+	if (hasAgentIdArg && !callerIsAdmin) {
+		return {
+			error:
+				"Only admins can set a chat connection's fallback agent (agent_id).",
+		};
+	}
+
 	if (existing.credential_mode !== null) {
+		// Three explicit cases — never rely on truthiness, because `""` is a
+		// falsy string that Type.String() permits: (1) null CLEARS the fallback;
+		// (2) a non-empty string must resolve to a real agent in this org
+		// (mirrors handleApplyChatConnection); (3) an empty string is invalid —
+		// without this guard `""` would skip the existence check and then be
+		// treated downstream as a destructive clear.
+		if (hasAgentIdArg) {
+			if (args.agent_id === "") {
+				return { error: "agent_id must be a non-empty agent id or null" };
+			}
+			if (typeof args.agent_id === "string") {
+				const agents = await sql`
+          SELECT 1 FROM agents
+          WHERE organization_id = ${organizationId} AND id = ${args.agent_id}
+          LIMIT 1
+        `;
+				if (agents.length === 0) return { error: "Agent not found" };
+			}
+		}
 		try {
 			await updateChatConnection({
 				organizationId,
@@ -1249,6 +1285,7 @@ export async function handleUpdate(
 				displayName: args.display_name,
 				config: args.config,
 				status: args.status,
+				...(hasAgentIdArg ? { agentId: args.agent_id ?? null } : {}),
 			});
 			const read = await handleGet(
 				{ action: "get", connection_id: args.connection_id },
@@ -1265,12 +1302,23 @@ export async function handleUpdate(
 					...(args.display_name !== undefined ? ["display_name"] : []),
 					...(args.config !== undefined ? ["config"] : []),
 					...(args.status !== undefined ? ["status"] : []),
+					...(hasAgentIdArg ? ["agent_id"] : []),
 				],
 			});
 			return { action: "update", connection: read.connection };
 		} catch (error) {
 			return { error: getErrorMessage(error) };
 		}
+	}
+
+	// Non-chat connections have no runtime that reads connections.agent_id
+	// (routing consults it only as a chat fallback after channel bindings
+	// miss) — reject rather than silently writing a column nothing reads.
+	if (hasAgentIdArg) {
+		return {
+			error:
+				"agent_id applies only to chat connections (it sets the chat runtime's fallback agent); this connection has no chat runtime.",
+		};
 	}
 
   // App profile updates: non-admins may only set the connector's pinned

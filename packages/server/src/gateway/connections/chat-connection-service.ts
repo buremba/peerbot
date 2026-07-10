@@ -295,6 +295,8 @@ export async function updateChatConnection(input: {
 	organizationId: string;
 	connectionId: number;
 	displayName?: string;
+	/** Fallback agent for the chat runtime; `null` clears it, `undefined` leaves it untouched. */
+	agentId?: string | null;
 	config?: Record<string, unknown>;
 	status?: string;
 }): Promise<void> {
@@ -323,12 +325,20 @@ export async function updateChatConnection(input: {
 		const providerMetadata = await validateProviderIdentity(config);
 		await orgContext.run({ organizationId: input.organizationId }, () =>
 			manager.updateConnection(runtimeId, {
+				...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
 				config,
 				metadata: {
 					...providerMetadata,
 					...(input.displayName ? { teamName: input.displayName } : {}),
 				},
 			}),
+		);
+	} else if (input.agentId !== undefined) {
+		// agentId-only update: no config change, so no restart is needed — the
+		// manager persists the new fallback agent and refreshes any warm
+		// in-memory instance in place.
+		await orgContext.run({ organizationId: input.organizationId }, () =>
+			manager.updateConnection(runtimeId, { agentId: input.agentId }),
 		);
 	}
 	if (input.status === "active") {

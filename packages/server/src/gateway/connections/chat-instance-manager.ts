@@ -779,7 +779,38 @@ export class ChatInstanceManager {
     } else {
       const instance = this.instances.get(id);
       if (instance) {
-        instance.connection = connection;
+        // Mutate the EXISTING connection object in place (never replace the
+        // reference): registerMessageHandlers captured this same object at
+        // start time and reads `this.connection.agentId` per message, so a
+        // fresh object here would orphan that reference and the fallback-agent
+        // change would not take effect on a warm pod until an unrelated
+        // restart.
+        //
+        // Apply ONLY the fields that changed — NEVER a blanket
+        // `Object.assign(warm, fromStore)`. This branch runs with
+        // `needsRestart === false`, i.e. config did not meaningfully change,
+        // and the warm instance's `config` holds the PLAINTEXT credentials
+        // resolved at startup (`startInstanceUnscoped` → resolveConfigForRuntime)
+        // while the store's `connection.config` holds `secret://` refs.
+        // Copying config over (and then bumping rowVersion so it won't
+        // rehydrate) would make the live adapter read `secret://…` as the
+        // actual bot token. So propagate agentId / settings / metadata and
+        // leave the runtime config untouched.
+        const warm = instance.connection;
+        if (updates.agentId !== undefined) {
+          if (updates.agentId) {
+            warm.agentId = updates.agentId;
+          } else {
+            delete warm.agentId;
+          }
+        }
+        if (updates.settings !== undefined) {
+          warm.settings = { ...warm.settings, ...updates.settings };
+        }
+        if (updates.metadata !== undefined) {
+          warm.metadata = { ...(warm.metadata || {}), ...updates.metadata };
+        }
+        warm.updatedAt = connection.updatedAt;
         instance.rowVersion = reread.updatedAt;
       }
     }

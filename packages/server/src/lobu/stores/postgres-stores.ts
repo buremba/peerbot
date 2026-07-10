@@ -348,17 +348,42 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			// defeat the cross-replica serialization.
 			await sql.begin(async (tx: typeof sql) => {
 				const configToPersist = { ...connection.config };
+				// Scope to the LIVE row only, and lock it. Slug uniqueness holds
+				// solely for live rows (the projection's ON CONFLICT targets the
+				// `WHERE deleted_at IS NULL` partial index), so a same-slug
+				// tombstone — e.g. a deleted managed install whose slackinst-* id
+				// was later recreated as BYO — must NOT be read here. Without the
+				// filter, LIMIT 1 could pick the tombstone and its credential_mode
+				// would reclassify the live row (managed↔byo). FOR UPDATE ties the
+				// read to the same live row the upsert below writes.
 				const existingRows = await tx`
-          SELECT config
+          SELECT config, credential_mode
           FROM connections
           WHERE slug = ${slug} AND organization_id = ${orgId}
+            AND deleted_at IS NULL
           LIMIT 1
+          FOR UPDATE
         `;
 				const existingConfig =
 					existingRows[0] &&
 					typeof existingRows[0].config === "object" &&
 					existingRows[0].config
 						? (existingRows[0].config as Record<string, any>)
+						: null;
+
+				// The generic store has no notion of managed vs BYO — it always
+				// carried "byo" here, which reclassified an OAuth-MANAGED chat
+				// connection to BYO on any store-driven edit (e.g. setting a
+				// fallback agent_id via manage_connections update). A reclassified
+				// managed row skips revokeManagedConnection on delete (leaking the
+				// install's credentials) and loses managed-credential edit
+				// protection. Preserve the existing mode; only a brand-new row
+				// defaults to byo (managed rows are created by the Slack install
+				// path, which passes "managed" explicitly).
+				const existingCredentialMode =
+					existingRows[0]?.credential_mode === "managed" ||
+					existingRows[0]?.credential_mode === "byo"
+						? (existingRows[0].credential_mode as "managed" | "byo")
 						: null;
 
 				// ChatInstanceManager normalizes secret fields into `secret://` refs
@@ -383,7 +408,7 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 					(v) => sql.json(v),
 					{ ...connection, config: configToPersist },
 					orgId,
-					"byo",
+					existingCredentialMode ?? "byo",
 				);
 			});
 		},

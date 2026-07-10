@@ -99,7 +99,7 @@ export async function resolveAgentOptions(
   // system agent like "lobu-builder"), and the worker-dispatch path runs
   // without ambient orgContext, so an unscoped read returns an arbitrary org's
   // row — cross-tenant config bleed that mis-resolved the model to another
-  // org's `defaultModel`. Pass the org explicitly so the right row wins.
+  // org's `models` list. Pass the org explicitly so the right row wins.
   const settings = await agentSettingsStore.getSettings(agentId, {
     organizationId,
   });
@@ -111,11 +111,30 @@ export async function resolveAgentOptions(
 
   // Layered model fallback: behavior override → agent default → org default.
   // A per-behavior override arrives as baseOptions.model (injected at enqueue)
-  // and wins; otherwise resolve agent.defaultModel, then the org default. Only
+  // and wins; otherwise resolve agent.models[0], then the org default. Only
   // when all three are empty do we leave model unset (worker surfaces an
   // actionable "no model" error).
-  const behaviorOverride =
+  //
+  // A malformed override (not a `<slug>/<model>` ref — e.g. a legacy "auto"
+  // binding, or a bare model id) is IGNORED here and falls through to the
+  // agent default, rather than propagating an unroutable/ungated value. `auto`
+  // is gone repo-wide, so it never wins as an override. The exact allow-list
+  // gate (deployment-manager backstop) still validates the resulting ref.
+  const rawOverride =
     typeof baseOptions.model === "string" ? baseOptions.model.trim() : "";
+  const overrideSlash = rawOverride.indexOf("/");
+  const behaviorOverride =
+    overrideSlash > 0 &&
+    overrideSlash < rawOverride.length - 1 &&
+    rawOverride.slice(overrideSlash + 1) !== "auto"
+      ? rawOverride
+      : "";
+  if (rawOverride && !behaviorOverride) {
+    logger.warn(
+      { agentId, rejectedOverride: rawOverride },
+      "Ignoring malformed model override (not a <provider>/<model> ref); falling back to the agent default",
+    );
+  }
   const effectiveModelRef =
     behaviorOverride ||
     (await composeEffectiveModelRef(

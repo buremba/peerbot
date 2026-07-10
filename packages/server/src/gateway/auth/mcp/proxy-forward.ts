@@ -65,7 +65,7 @@ async function handleProxyRequestAuthenticated(
 	tokenData: NonNullable<ReturnType<typeof verifyWorkerToken>>,
 ): Promise<Response> {
 	const agentId = tokenData.agentId || tokenData.userId;
-	const httpServer = await proxy.configService.getHttpServer(mcpId, agentId);
+	const httpServer = await proxy.configService.getHttpServer(mcpId, agentId, tokenData.organizationId);
 
 	if (!httpServer) {
 		return sendJsonRpcError(c, -32601, `MCP server '${mcpId}' not found`);

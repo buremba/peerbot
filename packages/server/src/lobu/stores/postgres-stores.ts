@@ -4,6 +4,7 @@ import type {
 	AgentMetadata,
 	AgentSettings,
 } from "@lobu/core";
+import { createLogger } from "@lobu/core";
 import { getDb, tsTime, tsTimeOrNull } from "../../db/client";
 import { recordLifecycleEvent } from "../../utils/insert-event";
 import {
@@ -13,6 +14,8 @@ import {
 	upsertChatConnectionProjection,
 } from "./connections-projection";
 import { getOrgId, tryGetOrgId } from "./org-context";
+
+const logger = createLogger("postgres-stores");
 
 export const AGENT_ID_PATTERN = /^[a-z][a-z0-9-]{2,59}$/;
 
@@ -50,11 +53,11 @@ export async function touchAgentLastUsed(
 
 function rowToSettings(row: Record<string, any>): AgentSettings {
 	return {
-		// The `model` column is the agent's single defaultModel ref (a
-		// `provider/model` string or "auto"). The legacy `model_selection` /
-		// `provider_model_preferences` columns are no longer read (dropped in a
-		// follow-up migration after backfill).
-		defaultModel: row.model ?? undefined,
+		// The `models` column is the agent's ordered list of explicit
+		// `<providerSlug>/<model>` refs (index 0 = default). NULL/empty ⇒ all org
+		// providers are available and the default falls through to the org
+		// default model.
+		models: row.models ?? undefined,
 		networkConfig: row.network_config ?? undefined,
 		nixConfig: row.nix_config ?? undefined,
 		soulMd: row.soul_md ?? undefined,
@@ -63,7 +66,6 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
 		skillsConfig: row.skills_config ?? undefined,
 		toolsConfig: row.tools_config ?? undefined,
 		pluginsConfig: row.plugins_config ?? undefined,
-		installedProviders: row.installed_providers ?? undefined,
 		verboseLogging: row.verbose_logging ?? undefined,
 		showToolCalls: row.show_tool_calls ?? undefined,
 		preApprovedTools: row.pre_approved_tools ?? undefined,
@@ -111,22 +113,22 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const orgId = tryGetOrgId();
 			const rows = orgId
 				? await sql`
-            SELECT model,
+            SELECT models,
                    network_config, nix_config,
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
-                   installed_providers, verbose_logging, show_tool_calls,
+                   verbose_logging, show_tool_calls,
                    pre_approved_tools, guardrails, guardrails_inline,
                    environment_id, updated_at
             FROM agents
             WHERE id = ${agentId} AND organization_id = ${orgId}
           `
 				: await sql`
-            SELECT model,
+            SELECT models,
                    network_config, nix_config,
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
-                   installed_providers, verbose_logging, show_tool_calls,
+                   verbose_logging, show_tool_calls,
                    pre_approved_tools, guardrails, guardrails_inline,
                    environment_id, updated_at
             FROM agents
@@ -141,7 +143,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const now = new Date();
 			await sql`
         UPDATE agents SET
-          model = ${settings.defaultModel ?? null},
+          models = ${settings.models ? sql.json(settings.models) : null},
           network_config = ${sql.json(settings.networkConfig ?? {})},
           nix_config = ${sql.json(settings.nixConfig ?? {})},
           soul_md = ${settings.soulMd ?? ""},
@@ -150,7 +152,6 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           skills_config = ${sql.json(settings.skillsConfig ?? { skills: [] })},
           tools_config = ${sql.json(settings.toolsConfig ?? {})},
           plugins_config = ${sql.json(settings.pluginsConfig ?? {})},
-          installed_providers = ${sql.json(settings.installedProviders ?? [])},
           verbose_logging = ${settings.verboseLogging ?? false},
           show_tool_calls = ${settings.showToolCalls ?? false},
           pre_approved_tools = ${sql.json(settings.preApprovedTools ?? [])},
@@ -175,11 +176,11 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const orgId = getOrgId();
 			await sql`
         UPDATE agents SET
-          model = NULL,
+          models = NULL,
           network_config = '{}', nix_config = '{}',
           soul_md = '', user_md = '', identity_md = '',
           skills_config = '{"skills": []}', tools_config = '{}', plugins_config = '{}',
-          installed_providers = '[]', verbose_logging = false,
+          verbose_logging = false,
           show_tool_calls = false,
           pre_approved_tools = '[]', guardrails = '[]', guardrails_inline = '[]',
           environment_id = NULL,
@@ -321,6 +322,21 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			const orgId = tryGetOrgId();
 			const agentId = filter?.agentId ?? null;
 			const platform = filter?.platform ?? null;
+
+			// CROSS-TENANT GUARD: an AGENT-scoped list with NO ambient org would drop
+			// the org filter below and return ANOTHER tenant's rows for a shared
+			// agent id (`lobu-builder`). That's a leak. Callers that legitimately
+			// want all-tenant rows (reconcile loops, admin/list) do NOT pass
+			// `agentId` and run either unscoped-by-design or inside their own
+			// `orgContext.run` — so requiring an ambient org ONLY when `agentId` is
+			// set is the tightest guard that leaves those callers untouched.
+			if (agentId && !orgId) {
+				logger.warn(
+					{ agentId, platform },
+					"[listConnections] agent-scoped list with no org context — returning empty (cross-tenant guard)",
+				);
+				return [];
+			}
 
 			// `connections` is the sole source of truth; `credential_mode IS NOT NULL`
 			// selects chat rows only (data connectors leave it NULL). filter.agentId →

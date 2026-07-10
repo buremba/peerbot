@@ -15,7 +15,7 @@
  *   | connectors  | `connector_definitions` (+ versions) per org          | yes         |
  *   | watchers    | watcher inventory rows                                | yes (rows)  |
  *   | skills      | agent `skillsConfig` in settings                      | no          |
- *   | providers   | agent `installedProviders` + module registry metadata | no          |
+ *   | providers   | agent `models` slug prefixes + module registry metadata | no        |
  *   | guardrails  | agent `guardrails` enable list + gateway registry     | no          |
  *
  * Only connector *definitions* are persisted as installable catalog entries in

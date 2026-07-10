@@ -68,7 +68,7 @@ export function registerBuiltInCommands(
       });
 
       const effectiveModel = resolveEffectiveModelRef(settings);
-      const model = effectiveModel || "auto (org default)";
+      const model = effectiveModel || "(org default)";
       const skillsCount = settings?.skillsConfig?.skills
         ? Object.keys(settings.skillsConfig.skills).length
         : 0;

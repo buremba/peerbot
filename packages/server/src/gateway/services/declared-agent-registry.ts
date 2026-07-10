@@ -1,5 +1,9 @@
 import type { AgentSettings, DeclaredCredential } from "@lobu/core";
 import { createLogger } from "@lobu/core";
+import {
+  buildProviderCatalog,
+  UNRESOLVED_MODEL_SUFFIX,
+} from "../auth/provider-catalog.js";
 import type { AgentConfig } from "../config/index.js";
 
 const logger = createLogger("declared-agent-registry");
@@ -59,17 +63,36 @@ export function entryFromAgentConfig(agent: AgentConfig): DeclaredAgentEntry {
   if (agent.userMd) settings.userMd = agent.userMd;
 
   if (agent.providers?.length) {
-    // installedProviders stays the credential/catalog list (routes org
-    // providers). The agent's model collapses to a single defaultModel: the
-    // primary provider's declared model, or "<providerId>/auto" so the worker
-    // resolves that provider's newest live model.
-    settings.installedProviders = agent.providers.map((p) => ({
-      providerId: p.id,
-      installedAt: Date.now(),
-    }));
-    const primary = agent.providers[0];
-    const primaryModel = primary.model?.trim();
-    settings.defaultModel = primaryModel || `${primary.id}/auto`;
+    // Each declared provider becomes one explicit `<providerId>/<model>` ref in
+    // the ordered `models` list (index 0 = the primary/default). A provider
+    // that declares no model resolves to its catalog defaultModel; if none
+    // exists it becomes a `<providerId>/__unresolved__` restriction sentinel —
+    // NEVER dropped to nothing. Dropping it would leave an agent that DECLARED
+    // providers with `models` undefined = allow-all, silently widening the
+    // intended restriction. The sentinel keeps the exact gate CLOSED (it never
+    // routes) until a real model is picked. Refs are always concrete or
+    // sentinel, never "<providerId>/auto".
+    const catalogDefaults = new Map(
+      buildProviderCatalog().map((entry) => [entry.slug, entry.defaultModel])
+    );
+    const models: string[] = [];
+    for (const provider of agent.providers) {
+      const declared = provider.model?.trim();
+      const model = declared || catalogDefaults.get(provider.id) || "";
+      if (!model) {
+        logger.warn(
+          `Declared provider "${provider.id}" on agent "${agent.id}" has no model and no catalog default — kept as a restriction sentinel (agent stays gated, not allow-all)`
+        );
+        models.push(`${provider.id}/${UNRESOLVED_MODEL_SUFFIX}`);
+        continue;
+      }
+      models.push(
+        model.startsWith(`${provider.id}/`) ? model : `${provider.id}/${model}`
+      );
+    }
+    // providers were declared ⇒ ALWAYS a non-empty models list (restricted),
+    // never undefined/allow-all.
+    settings.models = models;
   }
 
   if (agent.network) {

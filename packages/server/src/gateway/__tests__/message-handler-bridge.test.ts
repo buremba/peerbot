@@ -663,11 +663,28 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     expect(enqueueMessage).not.toHaveBeenCalled();
   });
 
-  test("unroutable model provider posts a plain Slack text fallback and skips enqueue", async () => {
-    const providerCatalog = {
-      getInstalledModules: mock(async () => []),
-      findProviderForModel: mock(async () => null),
+  // Build a mock ProviderCatalogService for the preflight path. `findProviderForModel`
+  // matches a ref to its module by the `<slug>/` prefix (mirrors the real one).
+  function makeCatalogMock(opts: {
+    modules: Array<{ providerId: string }>;
+    allowedRefs: string[] | null;
+  }) {
+    return {
+      getModelPolicy: mock(async () => ({
+        modules: opts.modules,
+        allowedRefs: opts.allowedRefs,
+      })),
+      findProviderForModel: mock(async (ref: string, mods?: Array<{ providerId: string }>) => {
+        const slash = ref.indexOf("/");
+        const prefix = slash > 0 ? ref.slice(0, slash) : ref;
+        return (mods ?? opts.modules).find((m) => m.providerId === prefix);
+      }),
     };
+  }
+
+  test("unroutable model provider posts a plain Slack text fallback and skips enqueue", async () => {
+    // Empty allow-list (allow-all) but the provider module isn't present/routable.
+    const providerCatalog = makeCatalogMock({ modules: [], allowedRefs: null });
     const { bridge, enqueueMessage } = makePreviewHarness({
       binding: {
         agentId: "lobu-builder",
@@ -692,12 +709,89 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     expect(posted).not.toContain("api/proxy");
   });
 
-  test("configured model provider unconnected, but org has another connected provider → falls back and enqueues", async () => {
-    // The agent is configured for z-ai/glm-5.2 (not routable here), but the org
-    // has a connected+routable openai provider. Instead of dead-ending with a
-    // setup link, the run must proceed on openai's default model. This is the
-    // new-user gap: a default agent shipped with a model whose provider the org
-    // never connected must NOT hard-block when another provider IS connected.
+  test("EXACT GATE: an override on a LISTED provider but NOT in the list is rejected", async () => {
+    // The agent allows only openai/gpt-5. The override is openai/other — same
+    // PROVIDER, different MODEL — so the exact gate must reject it, even though a
+    // provider-slug gate would have let it through.
+    const openai = {
+      providerId: "openai",
+      hasSystemKey: () => true,
+      hasCredentials: async () => true,
+      getProxyBaseUrlMappings: () => ({ openai: "https://gw/api/proxy/openai" }),
+      getModelOptions: async () => [{ value: "openai/gpt-5" }],
+    };
+    const providerCatalog = makeCatalogMock({
+      modules: [openai],
+      allowedRefs: ["openai/gpt-5"],
+    });
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      binding: {
+        agentId: "lobu-builder",
+        organizationId: "org-bound",
+        model: "openai/other",
+      },
+      providerCatalog,
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(thread, makeMessage(), "mention");
+
+    // openai/other is NOT in the allow-list, so the exact gate blocks it. The
+    // only listed ref (openai/gpt-5) is routable, so preflight falls back to it.
+    // The disallowed model must never reach the worker.
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    const payload = enqueueMessage.mock.calls[0]?.[0] as any;
+    expect(payload.agentOptions?.model).not.toBe("openai/other");
+    expect(payload.agentOptions?.model).toBe("openai/gpt-5");
+  });
+
+  test("FALLBACK iterates the LISTED alternates in order, never the catalog default", async () => {
+    // models=["xai/grok-4","openai/gpt-5"] but the DEFAULT provider (xai) is
+    // unroutable. The fallback must be the LISTED alternate openai/gpt-5 (an
+    // exact models[] entry), and the code must NOT consult getModelOptions to
+    // pick a provider's catalog/first default. We prove that by exploding if
+    // getModelOptions is ever called.
+    const xai = {
+      providerId: "xai",
+      hasSystemKey: () => false,
+      hasCredentials: async () => false, // unroutable
+      getProxyBaseUrlMappings: () => ({}),
+      getModelOptions: async () => {
+        throw new Error("fallback must not consult getModelOptions");
+      },
+    };
+    const openai = {
+      providerId: "openai",
+      hasSystemKey: () => true,
+      hasCredentials: async () => true,
+      getProxyBaseUrlMappings: () => ({ openai: "https://gw/api/proxy/openai" }),
+      getModelOptions: async () => {
+        throw new Error("fallback must not consult getModelOptions");
+      },
+    };
+    const providerCatalog = makeCatalogMock({
+      modules: [xai, openai],
+      allowedRefs: ["xai/grok-4", "openai/gpt-5"],
+    });
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      binding: {
+        agentId: "lobu-builder",
+        organizationId: "org-bound",
+        model: "xai/grok-4",
+      },
+      providerCatalog,
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(thread, makeMessage(), "mention");
+
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    const payload = enqueueMessage.mock.calls[0]?.[0] as any;
+    // The exact LISTED alternate wins.
+    expect(payload.agentOptions?.model).toBe("openai/gpt-5");
+  });
+
+  test("configured model provider unconnected, but a listed alternate IS routable → falls back and enqueues", async () => {
     const zai = {
       providerId: "z-ai",
       hasSystemKey: () => false,
@@ -710,13 +804,13 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       hasSystemKey: () => false,
       hasCredentials: async () => true,
       getProxyBaseUrlMappings: () => ({ openai: "https://gw/api/proxy/openai" }),
-      getModelOptions: async () => [{ value: "gpt-4o-mini" }],
+      getModelOptions: async () => [{ value: "openai/gpt-4o-mini" }],
     };
-    const providerCatalog = {
-      getInstalledModules: mock(async () => [zai, openai]),
-      // The configured model resolves to the z-ai module (unroutable).
-      findProviderForModel: mock(async () => zai),
-    };
+    const providerCatalog = makeCatalogMock({
+      modules: [zai, openai],
+      // Both the failed default and the routable alternate are listed exactly.
+      allowedRefs: ["z-ai/glm-5.2", "openai/gpt-4o-mini"],
+    });
     const { bridge, enqueueMessage } = makePreviewHarness({
       binding: {
         agentId: "lobu-builder",
@@ -729,10 +823,9 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
 
     await bridge.handleMessage(thread, makeMessage(), "mention");
 
-    // Ran, did not post a setup-link error.
+    // Ran on the listed alternate, did not post a setup-link error.
     expect(enqueueMessage).toHaveBeenCalledTimes(1);
     const payload = enqueueMessage.mock.calls[0]?.[0] as any;
-    // The fallback provider's default model (prefixed with its providerId) wins.
     expect(payload.agentOptions?.model).toBe("openai/gpt-4o-mini");
     expect(
       thread.post.mock.calls.every(
@@ -742,8 +835,6 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
   });
 
   test("no connected provider at all → still posts the setup-link error, no enqueue", async () => {
-    // Guard the negative: when the configured provider is unroutable AND there is
-    // no other connected provider, we must NOT silently proceed — surface setup.
     const zai = {
       providerId: "z-ai",
       hasSystemKey: () => false,
@@ -751,10 +842,10 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       getProxyBaseUrlMappings: () => ({}),
       getModelOptions: async () => [{ value: "z-ai/glm-5.2" }],
     };
-    const providerCatalog = {
-      getInstalledModules: mock(async () => [zai]),
-      findProviderForModel: mock(async () => zai),
-    };
+    const providerCatalog = makeCatalogMock({
+      modules: [zai],
+      allowedRefs: ["z-ai/glm-5.2"],
+    });
     const { bridge, enqueueMessage } = makePreviewHarness({
       binding: {
         agentId: "lobu-builder",

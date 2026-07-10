@@ -176,6 +176,58 @@ describe("manage_connections channel-binding actions", () => {
 		expect(after.bindings).toHaveLength(0);
 	});
 
+	it("gates the per-binding model against the agent's exact models list", async () => {
+		const connectionId = await makeManagedSlackConnection({
+			orgId,
+			slug: "slackinst-modelgate",
+			teamId: TEAM,
+		});
+		// Restrict the agent to exactly one model.
+		const sql = getTestDb();
+		await sql`
+      UPDATE agents SET models = ${sql.json(["openai/gpt-5"])}
+      WHERE organization_id = ${orgId} AND id = ${agentId}
+    `;
+
+		// An in-list model is accepted.
+		const ok = (await workspace.owner.connections.manage({
+			action: "bind_channel",
+			agent_id: agentId,
+			connection_id: connectionId,
+			channel_id: "slack:CMODEL_OK",
+			model: "openai/gpt-5",
+		})) as { success?: boolean; error?: string };
+		expect(ok.success).toBe(true);
+
+		// A model NOT in the agent's list is rejected (same provider, diff model).
+		const rejected = (await workspace.owner.connections.manage({
+			action: "bind_channel",
+			agent_id: agentId,
+			connection_id: connectionId,
+			channel_id: "slack:CMODEL_BAD",
+			model: "openai/gpt-4o",
+		})) as { success?: boolean; error?: string };
+		expect(rejected.success).toBeUndefined();
+		expect(String(rejected.error)).toContain("allowed models list");
+
+		// "auto" is rejected outright (auto is gone repo-wide).
+		const autoRejected = (await workspace.owner.connections.manage({
+			action: "bind_channel",
+			agent_id: agentId,
+			connection_id: connectionId,
+			channel_id: "slack:CMODEL_AUTO",
+			model: "openai/auto",
+		})) as { success?: boolean; error?: string };
+		expect(autoRejected.success).toBeUndefined();
+		expect(String(autoRejected.error)).toContain("auto");
+
+		// Reset for later cases (beforeEach only clears bindings/connections).
+		await sql`
+      UPDATE agents SET models = NULL
+      WHERE organization_id = ${orgId} AND id = ${agentId}
+    `;
+	});
+
 	it("rejects bind_channel for a missing connection", async () => {
 		const res = (await workspace.owner.connections.manage({
 			action: "bind_channel",

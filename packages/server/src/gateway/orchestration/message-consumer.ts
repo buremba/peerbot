@@ -534,6 +534,14 @@ export class MessageConsumer {
         organizationId: data.organizationId,
       });
 
+      // EXACT-MODEL GATE (enqueue chokepoint — covers cold AND warm/resumed):
+      // BOTH the cold and warm paths funnel through here before
+      // `sendToWorkerQueue` serializes `data.agentOptions.model` into the queue
+      // job that the worker reads verbatim. Deployment-time enforcement is too
+      // late — warm workers never re-run createWorkerDeployment. So enforce the
+      // agent's exact allow-list on the payload model NOW, before it's persisted.
+      await this.enforceModelPolicyAtEnqueue(data);
+
       // 1) Send to thread queue immediately (queue persists; worker will drain on attach)
       await Sentry.startSpan(
         {
@@ -641,6 +649,103 @@ export class MessageConsumer {
   /**
    * Send message to worker queue for the worker to consume
    */
+  /**
+   * Enforce the agent's exact-model allow-list on the OUTBOUND payload model,
+   * at enqueue time. This is the authoritative gate: every dispatch lane
+   * (direct API, Listen bridge, chat-instance, watcher HTTP, scheduled-job
+   * direct enqueue) — cold, warm, or resumed — funnels through `handleMessage`
+   * → here → `sendToWorkerQueue`, which serializes `data.agentOptions.model`
+   * into the queue job the worker reads verbatim. Mutating the model here
+   * guarantees a disallowed/stale/sentinel model can never reach the worker,
+   * regardless of whether a deployment is (re)created.
+   *
+   * Uses the SHARED `resolveDispatchModel` resolver (same one session-context
+   * uses) so both layers agree on the effective model — a disallowed/sentinel
+   * request is replaced with the first listed ref that is non-sentinel AND
+   * routable, not merely non-sentinel.
+   *
+   * FAILS CLOSED on a policy-lookup error: a DB/catalog blip must NEVER let a
+   * disallowed or sentinel model reach the worker. Since the warm path never
+   * re-runs createWorkerDeployment, we cannot rely on the deployment-time gate
+   * as a fallback — so when the lookup throws AND a model was requested, we DROP
+   * the model (worker resolves the agent/org default or surfaces
+   * NO_MODEL_CONFIGURED), never leaving the unvalidated requested model in place.
+   */
+  private async enforceModelPolicyAtEnqueue(
+    data: MessagePayload
+  ): Promise<void> {
+    const requested = data.agentOptions?.model;
+    if (!requested) return;
+    // FAIL CLOSED when we cannot scope/run a policy check for a REQUESTED model:
+    //  - no agentId → can't identify the agent's policy;
+    //  - no catalog → the ProviderCatalogService isn't wired yet (startup, or a
+    //    persisted job drained before wiring). The warm worker would otherwise
+    //    read the unvalidated model verbatim.
+    // In every such case we DROP the model rather than silently pass it.
+    if (!data.agentId) {
+      logger.warn(
+        { requestedModel: requested },
+        "Enqueue-time model gate: missing agentId — dropping the requested model (fail-closed)"
+      );
+      if (data.agentOptions) delete data.agentOptions.model;
+      return;
+    }
+    const catalog = this.deploymentManager.getProviderCatalogService?.();
+    if (!catalog) {
+      logger.warn(
+        { agentId: data.agentId, requestedModel: requested },
+        "Enqueue-time model gate: ProviderCatalogService not wired — dropping the requested model (fail-closed)"
+      );
+      if (data.agentOptions) delete data.agentOptions.model;
+      return;
+    }
+    // CROSS-TENANT GUARD: a policy-enforcement read MUST be org-scoped. A
+    // declared agent id (e.g. `lobu-builder`) exists in EVERY org, so an
+    // id-only lookup could enforce another tenant's models list. If the org is
+    // somehow missing here, fail closed (drop the model) rather than risk
+    // gating against the wrong org's policy.
+    if (!data.organizationId) {
+      logger.warn(
+        { agentId: data.agentId, requestedModel: requested },
+        "Enqueue-time model gate: missing organizationId — dropping the requested model (fail-closed, cross-tenant guard)"
+      );
+      if (data.agentOptions) delete data.agentOptions.model;
+      return;
+    }
+    try {
+      const resolved = await catalog.resolveDispatchModel(
+        data.agentId,
+        data.organizationId,
+        requested,
+        data.userId
+      );
+      if (!resolved.replaced) return;
+      logger.warn(
+        {
+          agentId: data.agentId,
+          organizationId: data.organizationId,
+          requestedModel: requested,
+          allowedRefs: resolved.allowedRefs,
+          effectiveModel: resolved.model ?? null,
+        },
+        "Enqueue-time model gate: requested model is not routable under the agent's allowed models list — enforcing (fail-closed)"
+      );
+      if (data.agentOptions) {
+        if (resolved.model) data.agentOptions.model = resolved.model;
+        else delete data.agentOptions.model;
+      }
+    } catch (err) {
+      // FAIL CLOSED: never leave an unvalidated requested model on the payload.
+      // The warm path won't re-gate at deployment time, so a lookup failure must
+      // drop the model rather than let a possibly-disallowed/sentinel model run.
+      logger.warn(
+        { agentId: data.agentId, err: getErrorMessage(err) },
+        "Enqueue-time model gate: policy lookup FAILED — dropping the requested model (fail-closed)"
+      );
+      if (data.agentOptions) delete data.agentOptions.model;
+    }
+  }
+
   private async sendToWorkerQueue(
     data: MessagePayload,
     deploymentName: string

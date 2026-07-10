@@ -1,13 +1,12 @@
 /**
  * ensureBuilderAgent — provisioning reliability e2e.
  *
- * Reproduces + guards the prod bug: the builder was provisioned with
- * `installed_providers = []` and no model whenever the live module registry
- * wasn't populated, and the org sentinel then made that broken state
- * permanent. This test process never boots the gateway, so the module registry
- * is empty here too — exactly the prod failure mode. The fix resolves
- * providers/model deterministically from `config/providers.json` and repairs
- * builders stuck in the broken state.
+ * Reproduces + guards the prod bug: the builder was provisioned with an empty
+ * `models` list whenever the live module registry wasn't populated, and the
+ * org sentinel then made that broken state permanent. This test process never
+ * boots the gateway, so the module registry is empty here too — exactly the
+ * prod failure mode. The fix resolves the models list deterministically from
+ * `config/providers.json` and repairs builders stuck in the broken state.
  */
 
 import { access, readFile } from "node:fs/promises";
@@ -86,14 +85,16 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 
 	async function readBuilder(orgId: string) {
 		const rows = (await sql`
-      SELECT installed_providers, model FROM agents
+      SELECT models FROM agents
       WHERE organization_id = ${orgId} AND id = ${BUILDER_AGENT_ID} LIMIT 1
     `) as unknown as Array<{
-			installed_providers: Array<{ providerId: string }> | null;
-			model: string | null;
+			models: string[] | null;
 		}>;
 		return rows[0];
 	}
+
+	const slugsOf = (models: string[] | null | undefined): string[] =>
+		(models ?? []).map((ref) => ref.slice(0, ref.indexOf("/")));
 
 	async function readPointer(orgId: string): Promise<string | null> {
 		const rows = (await sql`
@@ -102,21 +103,19 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		return rows[0]?.system_agent_id ?? null;
 	}
 
-	it("provisions a builder with providers + a pinned model even when the module registry is empty", async () => {
+	it("provisions a builder with a concrete models list even when the module registry is empty", async () => {
 		const org = await createTestOrganization({ name: "builder fresh" });
 		const res = await ensureBuilderAgent(org.id, sql);
 
 		expect(res.created).toBe(true);
 		const b = await readBuilder(org.id);
 		expect(b).toBeTruthy();
-		expect(Array.isArray(b?.installed_providers)).toBe(true);
-		expect(b?.installed_providers?.length ?? 0).toBeGreaterThan(0);
-		expect(b?.installed_providers?.some((p) => p.providerId === "openai")).toBe(
-			true,
-		);
+		expect(Array.isArray(b?.models)).toBe(true);
+		expect(b?.models?.length ?? 0).toBeGreaterThan(0);
+		expect(slugsOf(b?.models)).toContain("openai");
 		// Deterministic default from providers.json (`openai` → its curated
-		// defaultModel, currently `gpt-5.6-sol`).
-		expect(b?.model).toBe("openai/gpt-5.6-sol");
+		// defaultModel, currently `gpt-5.6-sol`) at index 0.
+		expect(b?.models?.[0]).toBe("openai/gpt-5.6-sol");
 		expect(await readPointer(org.id)).toBe(BUILDER_AGENT_ID);
 	});
 
@@ -135,27 +134,27 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 
 			expect(res.created).toBe(true);
 			const b = await readBuilder(org.id);
-			// openai still installs (its key resolves) but must NOT be the pin.
-			expect(
-				b?.installed_providers?.some((p) => p.providerId === "openai"),
-			).toBe(true);
+			// openai still lands in the list (its key resolves) but must NOT be the pin.
+			expect(slugsOf(b?.models)).toContain("openai");
 			// Claude's pin comes from the provider catalog, so adding a current
 			// default there must not leave provisioning on a stale code constant.
-			expect(b?.model).toBe("claude/claude-sonnet-5");
+			expect(b?.models?.[0]).toBe("claude/claude-sonnet-5");
 		} finally {
 			if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
 			else process.env.ANTHROPIC_API_KEY = prev;
 		}
 	});
 
-	it("repairs a builder stuck with empty providers/model (sentinel no longer makes breakage permanent)", async () => {
+	it("repairs a builder that was NEVER configured (models NULL), sentinel notwithstanding", async () => {
 		const org = await createTestOrganization({ name: "builder broken" });
-		// Simulate the prod failure: builder row with no providers/model, and the
-		// sentinel already written — the old code skipped on the sentinel and left
-		// it broken forever.
+		// Simulate the prod failure: builder row with models NULL (never
+		// configured) and the sentinel already written — the old code skipped on
+		// the sentinel and left it broken forever. NOTE: NULL is the broken state;
+		// an EMPTY list ([]) is a VALID allow-all policy and is NOT repaired
+		// (covered by the dedicated #6 test below).
 		await sql`
-      INSERT INTO agents (id, organization_id, name, owner_platform, installed_providers, model, created_at, updated_at)
-      VALUES (${BUILDER_AGENT_ID}, ${org.id}, 'Builder', 'external', '[]'::jsonb, NULL, now(), now())
+      INSERT INTO agents (id, organization_id, name, owner_platform, created_at, updated_at)
+      VALUES (${BUILDER_AGENT_ID}, ${org.id}, 'Builder', 'external', now(), now())
     `;
 		await sql`
       UPDATE "organization"
@@ -168,30 +167,13 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 
 		expect(res.created).toBe(false);
 		const b = await readBuilder(org.id);
-		expect(b?.installed_providers?.length ?? 0).toBeGreaterThan(0);
-		expect(b?.model).toBe("openai/gpt-5.6-sol");
-	});
-
-	it("keeps providers + pinned model consistent when repairing a model-only gap", async () => {
-		// Legacy builder: a provider installed but no model. The repair must not
-		// pin a model whose provider isn't installed (no dangling ref).
-		const org = await createTestOrganization({ name: "builder model-gap" });
-		await sql`
-      INSERT INTO agents (id, organization_id, name, owner_platform, installed_providers, model, created_at, updated_at)
-      VALUES (${BUILDER_AGENT_ID}, ${org.id}, 'Builder', 'external',
-        '[{"providerId":"claude","installedAt":1}]'::jsonb, NULL, now(), now())
-    `;
-
-		const res = await ensureBuilderAgent(org.id, sql);
-
-		expect(res.created).toBe(false);
-		const b = await readBuilder(org.id);
-		expect(b?.model).toBeTruthy();
-		// Invariant: the pinned model's provider is always installed.
-		const pid = b?.model?.slice(0, b.model.indexOf("/")) ?? "";
-		expect(b?.installed_providers?.some((p) => p.providerId === pid)).toBe(
-			true,
-		);
+		expect(b?.models?.length ?? 0).toBeGreaterThan(0);
+		expect(b?.models?.[0]).toBe("openai/gpt-5.6-sol");
+		// Every repaired ref is provider-qualified and concrete (never auto).
+		for (const ref of b?.models ?? []) {
+			expect(ref.includes("/")).toBe(true);
+			expect(ref.split("/").slice(1).join("/")).not.toBe("auto");
+		}
 	});
 
 	it("provisions a usable builder when ONLY an Anthropic system key is present", async () => {
@@ -226,10 +208,8 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 
 			expect(res.created).toBe(true);
 			const b = await readBuilder(org.id);
-			expect(
-				b?.installed_providers?.some((p) => p.providerId === "claude"),
-			).toBe(true);
-			expect(b?.model).toBe("claude/claude-sonnet-5");
+			expect(slugsOf(b?.models)).toContain("claude");
+			expect(b?.models?.[0]).toBe("claude/claude-sonnet-5");
 		} finally {
 			for (const [k, v] of Object.entries(saved)) {
 				if (v === undefined) delete process.env[k];
@@ -249,9 +229,9 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
       WHERE id = ${org.id}
     `;
 		await sql`
-      INSERT INTO agents (id, organization_id, name, owner_platform, installed_providers, model, created_at, updated_at)
+      INSERT INTO agents (id, organization_id, name, owner_platform, models, created_at, updated_at)
       VALUES (${BUILDER_AGENT_ID}, ${org.id}, 'Builder', 'external',
-        '[{"providerId":"openai","installedAt":1}]'::jsonb, 'openai/gpt-4o', now(), now())
+        '["openai/gpt-4o"]'::jsonb, now(), now())
     `;
 
 		await ensureBuilderAgent(org.id, sql);
@@ -299,7 +279,7 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		expect(await readPointer(org.id)).toBe(BUILDER_AGENT_ID);
 	});
 
-	it("does not clobber a working builder, and never overwrites the model/providers (idempotent fast path)", async () => {
+	it("does not clobber a working builder, and never overwrites the models list (idempotent fast path)", async () => {
 		const org = await createTestOrganization({ name: "builder idempotent" });
 		await ensureBuilderAgent(org.id, sql);
 		const before = await readBuilder(org.id);
@@ -308,9 +288,24 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 
 		expect(res.created).toBe(false);
 		const after = await readBuilder(org.id);
-		expect(after?.model).toBe(before?.model);
-		expect(after?.installed_providers?.length).toBe(
-			before?.installed_providers?.length,
-		);
+		expect(after?.models).toEqual(before?.models);
+	});
+
+	it("#6: an EMPTY models list ([]) is a valid allow-all policy and survives provisioning unchanged", async () => {
+		// [] means "allow all org + system-key providers" — a deliberate policy,
+		// NOT the broken "never configured" (NULL) state. Provisioning must NOT
+		// overwrite it back to a system-key list.
+		const org = await createTestOrganization({ name: "builder empty-allow" });
+		await sql`
+      INSERT INTO agents (id, organization_id, name, owner_platform, models, created_at, updated_at)
+      VALUES (${BUILDER_AGENT_ID}, ${org.id}, 'Builder', 'external', '[]'::jsonb, now(), now())
+    `;
+
+		const res = await ensureBuilderAgent(org.id, sql);
+
+		expect(res.created).toBe(false);
+		const b = await readBuilder(org.id);
+		// Untouched: still the deliberate empty allow-all list.
+		expect(b?.models).toEqual([]);
 	});
 });

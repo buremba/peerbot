@@ -412,8 +412,9 @@ export const BindChannelAction = Type.Object({
     Type.String({
       maxLength: 200,
       description:
-        'Optional per-binding model override (a `provider/model` ref or "auto"). ' +
-        "Wins over the agent/org default for messages on this channel.",
+        "Optional per-binding model override — an explicit `<provider>/<model>` ref. " +
+        "Must be one of the agent's allowed models (its `models` list) when that " +
+        "list is non-empty. Wins over the agent/org default for messages on this channel.",
     })
   ),
 });

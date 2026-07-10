@@ -20,7 +20,10 @@ import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
 import type { McpConfigService } from "../auth/mcp/config-service.js";
 import type { McpProxy } from "../auth/mcp/proxy.js";
 import type { McpTool } from "../auth/mcp/tool-cache.js";
-import type { ProviderCatalogService } from "../auth/provider-catalog.js";
+import {
+	isUnresolvedModelRef,
+	type ProviderCatalogService,
+} from "../auth/provider-catalog.js";
 import { composeEffectiveModelRef } from "../auth/settings/model-selection.js";
 import { getOrgDefaultModel } from "../../lobu/stores/provider-secrets.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
@@ -514,11 +517,36 @@ export class WorkerGateway {
         return c.json({ error: "Invalid token (missing conversationId)" }, 401);
       }
 
+      // CROSS-TENANT GUARD (hoisted): compute org-scope safety ONCE, before any
+      // agent-scoped read (instructions, MCP, skills, model). A DB-backed agent's
+      // settings read MUST be org-scoped — the worker token can be orgless, and a
+      // shared id (e.g. "lobu-builder", present in every org) would id-only read
+      // ANOTHER org's identity/soul/skills/MCP-slug and ship it to the worker.
+      // Declared (SDK-embedded) agents are org-agnostic, so they resolve without
+      // an org. When `!orgScopedOk` for a DB-backed agent we deny ALL agent-scoped
+      // reads (fail closed to generic/no-agent behavior).
+      const tokenOrgId = auth.tokenData.organizationId;
+      // ORG-AWARE declared check: a declared id that ALSO has a real DB row in
+      // the token's org is DB-backed (the DB row wins), so a collision cannot
+      // flip the orgless guard open for a tenant's agent. Falls back to the
+      // synchronous membership check for a store without the org-aware method.
+      const store = this.agentSettingsStore;
+      const isDeclared =
+        !!agentId && store
+          ? store.isDeclaredAgentScoped
+            ? await store.isDeclaredAgentScoped(agentId, tokenOrgId)
+            : (store.isDeclaredAgent?.(agentId) ?? false)
+          : false;
+      const orgScopedOk = !!tokenOrgId || isDeclared;
+
       // Build instruction context
       const instructionContext: InstructionContext = {
         userId,
         agentId: agentId || "",
-        organizationId: auth.tokenData.organizationId,
+        organizationId: tokenOrgId,
+        // Instruction providers skip their by-id settings read when this is
+        // false (orgless DB-backed agent) and use the generic branch.
+        orgScoped: orgScopedOk,
         sessionKey: sessionKey || "",
         workingDirectory: "/workspace",
         availableProjects: [],
@@ -593,44 +621,60 @@ export class WorkerGateway {
         }
       }
 
-      // Resolve dynamic provider configuration
+      // Resolve dynamic provider configuration. The org-scope guard
+      // (tokenOrgId / orgScopedOk) was hoisted above — a DB-backed agent with no
+      // org reads nothing here (fail closed). `agentSettings` is null in that
+      // case, which is ALSO the correct fail-closed value the skills-sync below
+      // reuses (no duplicate id-only read).
       const agentSettings =
-        this.agentSettingsStore && agentId
+        this.agentSettingsStore && agentId && orgScopedOk
           ? await this.agentSettingsStore.getSettings(agentId, {
-              organizationId: auth.tokenData.organizationId,
+              organizationId: tokenOrgId,
             })
           : null;
+      // The layered fallback default (agent models[0] or org default). For a
+      // non-empty models list this is models[0] — which may be a SENTINEL.
+      const layeredDefault = orgScopedOk
+        ? await composeEffectiveModelRef(agentSettings, tokenOrgId, getOrgDefaultModel)
+        : undefined;
+      // Resolve the EFFECTIVE dispatch model through the SAME shared resolver the
+      // enqueue gate uses: when models[0] is a sentinel but a later listed ref is
+      // real+routable, this picks that ref (e.g. ["chatgpt/__unresolved__",
+      // "openai/gpt-5"] → "openai/gpt-5" with the OpenAI module published). Only
+      // an all-sentinel / nothing-routable list — or an orgless DB-backed agent
+      // (resolveDispatchModel then reads not-found → deny) — yields undefined
+      // (fail closed).
+      const effectiveModel =
+        agentId && this.providerCatalogService && orgScopedOk
+          ? (
+              await this.providerCatalogService.resolveDispatchModel(
+                agentId,
+                tokenOrgId,
+                layeredDefault,
+                userId
+              )
+            ).model
+          : undefined;
       const providerConfig = await this.resolveProviderConfig(
         agentId || "",
-        await composeEffectiveModelRef(
-          agentSettings,
-          auth.tokenData.organizationId,
-          getOrgDefaultModel
-        ),
+        effectiveModel,
         baseUrl,
         auth.token,
-        auth.tokenData.organizationId,
+        tokenOrgId,
         userId
       );
 
-      // Fetch enabled skills with content for worker filesystem sync
+      // Enabled skills for worker filesystem sync. REUSE the org-scoped
+      // `agentSettings` fetched above — it is null for an orgless DB-backed agent
+      // (the correct fail-closed value: NO skill content leaks cross-tenant), and
+      // this removes the duplicate id-only read that ignored the org guard.
       let skillsConfig: Array<{ name: string; content: string }> = [];
       const mcpContext: Record<string, string> = {};
-      if (this.agentSettingsStore && agentId) {
-        try {
-          const settings =
-            await this.agentSettingsStore.getSettings(agentId, {
-              organizationId: auth.tokenData.organizationId,
-            });
-          const skills = settings?.skillsConfig?.skills || [];
-          skillsConfig = skills
-            .filter((s) => s.enabled && s.content)
-            .map((s) => ({ name: s.name, content: s.content! }));
-        } catch (error) {
-          logger.error("Failed to fetch skills config for worker sync", {
-            error,
-          });
-        }
+      if (agentSettings) {
+        const skills = agentSettings.skillsConfig?.skills || [];
+        skillsConfig = skills
+          .filter((s) => s.enabled && s.content)
+          .map((s) => ({ name: s.name, content: s.content! }));
       }
 
       const mergedSkillsInstructions = contextData.skillsInstructions || "";
@@ -844,6 +888,20 @@ export class WorkerGateway {
         organizationId
       );
     if (effectiveProviders.length === 0) {
+      return {};
+    }
+
+    // FAIL CLOSED on a restriction sentinel: a `<slug>/__unresolved__` model is
+    // NOT a real model — it must never route. If the resolved default is a
+    // sentinel, publish NO provider config (no defaultProvider, no defaultModel),
+    // so the worker surfaces "no routable model" instead of stripping the
+    // "__unresolved__" prefix and sending it to a credentialed upstream, or
+    // silently falling back to the first credentialed module.
+    if (agentModel && isUnresolvedModelRef(agentModel)) {
+      logger.warn(
+        { agentId, organizationId, agentModel },
+        "Agent's default model is an unresolved restriction sentinel — publishing no routable model (fail closed)"
+      );
       return {};
     }
 

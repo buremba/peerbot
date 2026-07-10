@@ -774,8 +774,8 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     // agent per chat, never used the user's actual default agent, and the
     // saveSettings UPDATE silently no-op'd on a row that didn't exist yet.
     // Default-agent provisioning runs at signup (`ensureDefaultAgent`) and
-    // already populates `installed_providers` from system-key providers,
-    // so the row exists with credentials by the time chat reaches here.
+    // already populates `models` from system-key providers, so the row
+    // exists with credentials by the time chat reaches here.
     //
     // Org resolution: `createLobuAuthBridge` (outer middleware on `/lobu/*`)
     // sets `c.get("organizationId")` from the PAT — that's the common path

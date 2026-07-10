@@ -111,7 +111,6 @@ export type {
   ConversationMessage,
   DeclaredCredential,
   HistoryMessage,
-  InstalledProvider,
   InstructionContext,
   InstructionProvider,
   LogLevel,

@@ -12,6 +12,7 @@ import {
 import type { CommandDispatcher } from "../commands/command-dispatcher.js";
 import { createChatReply } from "../commands/command-reply-adapters.js";
 import type { ArtifactStore } from "../files/artifact-store.js";
+import type { ModelProviderModule } from "../modules/module-system.js";
 import type { CoreServices } from "../platform.js";
 import {
   buildMessagePayload,
@@ -55,7 +56,7 @@ function sanitizeRefLabel(name: string): string {
 
 function parseProviderFromModelRef(modelRef: string): string | null {
   const trimmed = modelRef.trim();
-  if (!trimmed || trimmed === "auto") return null;
+  if (!trimmed) return null;
   const slash = trimmed.indexOf("/");
   if (slash <= 0) return null;
   return trimmed.slice(0, slash);
@@ -127,28 +128,6 @@ async function providerIsRoutable(
   return Object.keys(mappings).length > 0;
 }
 
-/**
- * Pick a concrete, routable model from a connected provider so a run can proceed
- * even though the agent's CONFIGURED model names a provider the org never
- * connected. Returns the provider's default/first model as a `provider/model`
- * ref, or null if the provider exposes no usable model. This is what turns the
- * old hard dead-end ("connect claude first") into graceful degradation onto a
- * provider the org actually has (e.g. openai), which matters most for a new user
- * whose default agent shipped with a model whose provider they never set up.
- */
-async function firstModelForProvider(provider: {
-  providerId: string;
-  getModelOptions?: (a: string, b: string) => Promise<Array<{ value: string }>>;
-}): Promise<string | null> {
-  if (!provider.getModelOptions) return null;
-  const options = await provider.getModelOptions("", "").catch(() => []);
-  const first = options[0]?.value?.trim();
-  if (!first) return null;
-  return first.startsWith(`${provider.providerId}/`)
-    ? first
-    : `${provider.providerId}/${first}`;
-}
-
 type ModelProviderResolution =
   | { kind: "ok" }
   | { kind: "fallback"; model: string; from: string; to: string }
@@ -156,10 +135,17 @@ type ModelProviderResolution =
 
 /**
  * Preflight the model a message will run on. Order of outcomes:
- *  - ok: the configured model's provider is connected + routable → run as-is.
- *  - fallback: it is NOT routable, but the org has another connected provider →
- *    run on that provider's default model instead of failing.
- *  - error: no connected+routable provider exists at all → surface a setup link.
+ *  - ok: the configured EXACT ref is allowed and its provider is routable.
+ *  - fallback: it isn't routable (or, under a non-empty list, not allowed), but
+ *    the agent has a listed ALTERNATE whose exact ref is routable → run that
+ *    alternate. Alternates are tried in the agent's models[] order.
+ *  - error: nothing usable → surface a setup link.
+ *
+ * The gate is EXACT: when the agent has a non-empty `models` list, a ref that
+ * isn't in that list is rejected even if its PROVIDER prefix is listed — so
+ * `models:["openai/gpt-5"]` does not admit `openai/other`. There is NO
+ * org-default tail: an unroutable listed model falls back only to another
+ * LISTED alternate, never to an unlisted model.
  */
 async function validateMessageModelProvider(params: {
   services: CoreServices;
@@ -177,11 +163,10 @@ async function validateMessageModelProvider(params: {
   if (!catalog || !params.organizationId) return { kind: "ok" };
   const organizationId = params.organizationId;
 
-  const providers = await catalog.getInstalledModules(
+  const { modules, allowedRefs } = await catalog.getModelPolicy(
     params.agentId,
     organizationId
   );
-  const provider = await catalog.findProviderForModel(modelRef, providers);
 
   const routableCtx = {
     services: params.services,
@@ -190,24 +175,40 @@ async function validateMessageModelProvider(params: {
     userId: params.userId,
   };
 
-  // Happy path: the configured model's provider is present, keyed, and routable.
-  if (provider && (await providerIsRoutable(provider, routableCtx))) {
-    return { kind: "ok" };
+  // A concrete ref is usable when (a) it clears the exact allow-list — always,
+  // when the agent allows all providers — and (b) its provider module is
+  // present and routable (keyed + a proxy route builds).
+  const refIsAllowed = (ref: string): boolean =>
+    allowedRefs === null || allowedRefs.includes(ref);
+  const providerForRef = async (
+    ref: string
+  ): Promise<ModelProviderModule | undefined> =>
+    catalog.findProviderForModel(ref, modules);
+
+  // Happy path: the exact ref is allowed AND its provider is routable.
+  if (refIsAllowed(modelRef)) {
+    const provider = await providerForRef(modelRef);
+    if (provider && (await providerIsRoutable(provider, routableCtx))) {
+      return { kind: "ok" };
+    }
   }
 
-  // The configured model can't run. Before dead-ending, look for ANY other
-  // connected provider on this agent that IS routable, and fall back to its
-  // default model. Skip the failed provider itself.
-  for (const candidate of providers) {
-    if (provider && candidate.providerId === provider.providerId) continue;
-    if (!(await providerIsRoutable(candidate, routableCtx))) continue;
-    const fallbackModel = await firstModelForProvider(candidate);
-    if (fallbackModel) {
+  // The configured ref can't run. Fall back to the agent's listed ALTERNATES,
+  // in order — the exact refs the agent declared (not a provider's catalog
+  // default), so multiple same-provider entries act as ordered fallbacks. When
+  // the agent allows all providers there is no alternate list to walk; the
+  // original ref was the only ask, so we go straight to the setup link.
+  if (allowedRefs !== null) {
+    for (const altRef of allowedRefs) {
+      if (altRef === modelRef) continue;
+      const altProvider = await providerForRef(altRef);
+      if (!altProvider) continue;
+      if (!(await providerIsRoutable(altProvider, routableCtx))) continue;
       return {
         kind: "fallback",
-        model: fallbackModel,
+        model: altRef,
         from: modelRef,
-        to: candidate.providerId,
+        to: altProvider.providerId,
       };
     }
   }
@@ -221,14 +222,14 @@ async function validateMessageModelProvider(params: {
     modelRef,
     reason: "model_provider_not_connected",
   });
-  const reason = !provider
-    ? `but it isn't connected for this agent`
-    : `but Lobu has no credentials for it`;
+  const reason = !refIsAllowed(modelRef)
+    ? `but that model isn't in this agent's allowed model list`
+    : `but its provider isn't connected or has no credentials`;
   return {
     kind: "error",
     message:
-      `I can't run this yet: the selected model (${modelRef}) needs provider "${providerId}", ` +
-      `${reason}. Open this setup link to connect or add credentials: ${setupUrl}`,
+      `I can't run this yet: the selected model (${modelRef}) ${reason}. ` +
+      `Open this setup link to connect a provider or pick an allowed model: ${setupUrl}`,
   };
 }
 

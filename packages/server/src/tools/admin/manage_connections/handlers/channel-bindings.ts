@@ -210,6 +210,42 @@ export async function handleListChannelBindings(
 	};
 }
 
+/**
+ * Validate a per-binding model override against the agent's `models` list.
+ * Returns an error string, or null when the model is acceptable.
+ *
+ * Rules:
+ *   - unset ⇒ ok (the binding inherits the agent/org default).
+ *   - "auto" (or any non-`<slug>/<model>` shape) ⇒ rejected: `auto` is gone
+ *     repo-wide, and a binding override must be an explicit concrete ref.
+ *   - non-empty agent `models` list ⇒ the override MUST be an exact member.
+ *   - empty/absent agent `models` list ⇒ any explicit `<slug>/<model>` ref is
+ *     accepted (the agent allows all providers).
+ */
+async function validateBindingModel(
+	organizationId: string,
+	agentId: string,
+	model: string | undefined,
+): Promise<string | null> {
+	const ref = model?.trim();
+	if (!ref) return null;
+	const slash = ref.indexOf("/");
+	if (slash <= 0 || slash === ref.length - 1 || ref.slice(slash + 1) === "auto") {
+		return `Invalid binding model "${ref}": use an explicit "<provider>/<model>" ref (\"auto\" is not supported).`;
+	}
+	const sql = getDb();
+	const rows = (await sql`
+		SELECT models FROM agents
+		WHERE id = ${agentId} AND organization_id = ${organizationId}
+		LIMIT 1
+	`) as Array<{ models: string[] | null }>;
+	const models = rows[0]?.models;
+	if (Array.isArray(models) && models.length > 0 && !models.includes(ref)) {
+		return `Model "${ref}" is not in this agent's allowed models list. Pick one of: ${models.join(", ")}.`;
+	}
+	return null;
+}
+
 /** Bind a chat channel to an agent (owner/admin tier). Materializes the
  *  channel's streaming feed via ChannelBindingService.createBinding. */
 export async function handleBindChannel(
@@ -222,6 +258,17 @@ export async function handleBindChannel(
 	}
 	const channelId = args.channel_id.trim();
 	if (!channelId) return { error: "Invalid channel_id" };
+
+	// Gate the per-binding model override against the agent's EXACT allowed
+	// list. A Listen binding must not be able to route this channel to a model
+	// the agent isn't allowed to use.
+	const modelError = await validateBindingModel(
+		organizationId,
+		args.agent_id,
+		args.model,
+	);
+	if (modelError) return { error: modelError };
+
 	const sql = getDb();
 	const connections = (await sql`
 		SELECT id, slug, connector_key, external_tenant_id

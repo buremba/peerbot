@@ -98,7 +98,7 @@ describe('ensureDefaultAgent', () => {
     expect(agents).toHaveLength(0);
   });
 
-  it('stamps owner_user_id + installed_providers + agent_users on insert', async () => {
+  it('stamps owner_user_id + models + agent_users on insert', async () => {
     const orgId = `org-owner-${generateSecureToken(4)}`;
     await seedOrg(orgId);
 
@@ -120,18 +120,22 @@ describe('ensureDefaultAgent', () => {
     await ensureDefaultAgent(orgId);
 
     const rows = await sql`
-      SELECT owner_platform, owner_user_id, installed_providers
+      SELECT owner_platform, owner_user_id, models
         FROM agents
        WHERE organization_id = ${orgId} AND id = ${DEFAULT_AGENT_ID}
     `;
     expect(rows).toHaveLength(1);
     expect(String(rows[0].owner_platform)).toBe('external');
     expect(String(rows[0].owner_user_id)).toBe(ownerUserId);
-    // installed_providers shape: array of { providerId, installedAt }.
-    // We don't pin a count because system keys depend on test env vars;
-    // we just assert the column is now a JSON array (object/array, never
-    // null/empty-string).
-    expect(Array.isArray(rows[0].installed_providers)).toBe(true);
+    // models shape: ordered array of explicit "<slug>/<model>" refs. We don't
+    // pin a count because system keys depend on test env vars; we just assert
+    // the column is a JSON array of provider-qualified refs (never null/
+    // empty-string, never "auto").
+    expect(Array.isArray(rows[0].models)).toBe(true);
+    for (const ref of rows[0].models as string[]) {
+      expect(ref.includes('/')).toBe(true);
+      expect(ref.split('/').slice(1).join('/')).not.toBe('auto');
+    }
 
     const userAgents = await sql`
       SELECT platform, user_id
@@ -145,8 +149,8 @@ describe('ensureDefaultAgent', () => {
 
   it('backfills owner + agent_users on a legacy row past the sentinel', async () => {
     // Simulate a legacy install: the row exists with the old
-    // owner_platform='lobu', owner_user_id=NULL, installed_providers='[]'
-    // shape, and the sentinel is already set so the fast-path would skip.
+    // owner_platform='lobu', owner_user_id=NULL, no models shape, and the
+    // sentinel is already set so the fast-path would skip.
     const orgId = `org-backfill-${generateSecureToken(4)}`;
     await seedOrg(orgId);
 
@@ -168,11 +172,10 @@ describe('ensureDefaultAgent', () => {
     await sql`
       INSERT INTO agents (
         id, organization_id, name, owner_platform, owner_user_id,
-        installed_providers, created_at, updated_at
+        created_at, updated_at
       ) VALUES (
         ${DEFAULT_AGENT_ID}, ${orgId}, 'Owletto Personal',
         'lobu', NULL,
-        '[]'::jsonb,
         NOW(), NOW()
       )
     `;
@@ -197,6 +200,50 @@ describe('ensureDefaultAgent', () => {
     `;
     expect(userAgents).toHaveLength(1);
     expect(String(userAgents[0].user_id)).toBe(ownerUserId);
+  });
+
+  it('#6: an EMPTY models list ([]) survives a backfill pass unchanged (deliberate allow-all)', async () => {
+    // [] = "allow all org + system-key providers", a valid deliberate policy.
+    // The backfill must NOT treat it as broken and overwrite it.
+    const orgId = `org-empty-allow-${generateSecureToken(4)}`;
+    await seedOrg(orgId);
+
+    const ownerUserId = `user_${generateSecureToken(4)}`;
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES (${ownerUserId}, 'Owner', ${`${ownerUserId}@test.local`}, true, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+    `;
+    await sql`
+      UPDATE "organization"
+         SET metadata = ${JSON.stringify({
+           personal_org_for_user_id: ownerUserId,
+           [DEFAULT_AGENT_SENTINEL]: new Date().toISOString(),
+         })}
+       WHERE id = ${orgId}
+    `;
+    await sql`
+      INSERT INTO agents (
+        id, organization_id, name, owner_platform, owner_user_id,
+        models, created_at, updated_at
+      ) VALUES (
+        ${DEFAULT_AGENT_ID}, ${orgId}, 'Owletto Personal',
+        'external', ${ownerUserId},
+        '[]'::jsonb,
+        NOW(), NOW()
+      )
+    `;
+
+    const result = await ensureDefaultAgent(orgId);
+    expect(result.created).toBe(false);
+
+    const rows = await sql`
+      SELECT models FROM agents
+       WHERE organization_id = ${orgId} AND id = ${DEFAULT_AGENT_ID}
+    `;
+    // The deliberate empty allow-all list is preserved, never re-populated.
+    expect(rows[0].models).toEqual([]);
   });
 
   it('skips creation (but stamps sentinel) when other agents already exist', async () => {

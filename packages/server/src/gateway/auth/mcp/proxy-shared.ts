@@ -90,9 +90,11 @@ export interface McpConfigSource {
 	getHttpServer(
 		id: string,
 		agentId?: string,
+		organizationId?: string,
 	): Promise<HttpMcpServerConfig | undefined>;
 	getAllHttpServers(
 		agentId?: string,
+		organizationId?: string,
 	): Promise<Map<string, HttpMcpServerConfig>>;
 }
 

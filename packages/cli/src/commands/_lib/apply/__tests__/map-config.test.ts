@@ -41,10 +41,9 @@ describe("mapProjectToDesiredState", () => {
     const agent = state.agents[0];
     expect(agent?.metadata.agentId).toBe("crm");
     expect(agent?.metadata.name).toBe("crm"); // defaults to id
-    expect(agent?.settings.installedProviders?.[0]?.providerId).toBe(
-      "anthropic"
-    );
-    expect(agent?.settings.defaultModel).toBe("claude-sonnet-4-6");
+    // The provider collapses to a single ordered `models` list entry
+    // (`<provider>/<model>`) — no separate installedProviders/defaultModel.
+    expect(agent?.settings.models).toEqual(["anthropic/claude-sonnet-4-6"]);
     expect(agent?.settings.networkConfig?.allowedDomains).toEqual([
       "github.com",
     ]);
@@ -54,6 +53,79 @@ describe("mapProjectToDesiredState", () => {
     ]);
     expect(state.requiredSecrets).toContain("ANTHROPIC_API_KEY");
     expect(state.memory).toEqual({ org: "o" });
+  });
+
+  test("#5: multiple providers → ordered models list; already-qualified model not double-prefixed", () => {
+    const multi = defineAgent({
+      id: "multi",
+      providers: [
+        { id: "openai", model: "gpt-5", key: secret("ANTHROPIC_API_KEY") },
+        // Already `<slug>/…`-qualified (provider-native id with a slash).
+        {
+          id: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-5",
+          key: secret("ANTHROPIC_API_KEY"),
+        },
+      ],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ org: "o", agents: [multi] }),
+      env
+    );
+    const agent = state.agents[0];
+    // Order preserved (index 0 = primary); no `<slug>/<slug>/…` double-prefix.
+    expect(agent?.settings.models).toEqual([
+      "openai/gpt-5",
+      "openrouter/anthropic/claude-sonnet-5",
+    ]);
+  });
+
+  test("#3: a provider with NO model maps to the sentinel ref (no crash)", () => {
+    // `lobu init --provider chatgpt` emits a provider with no model (ChatGPT has
+    // no catalog default). map-config must NOT crash on p.model.trim() — it maps
+    // to the `<slug>/__unresolved__` restriction sentinel so the agent stays
+    // gated (never allow-all).
+    const chat = defineAgent({
+      id: "chat",
+      providers: [{ id: "chatgpt", key: secret("ANTHROPIC_API_KEY") }],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ org: "o", agents: [chat] }),
+      env
+    );
+    expect(state.agents[0]?.settings.models).toEqual([
+      "chatgpt/__unresolved__",
+    ]);
+  });
+
+  test("#3: mixed — a model-less provider (sentinel) alongside a concrete one", () => {
+    const mixed = defineAgent({
+      id: "mixed",
+      providers: [
+        { id: "chatgpt", key: secret("ANTHROPIC_API_KEY") },
+        { id: "openai", model: "gpt-5", key: secret("ANTHROPIC_API_KEY") },
+      ],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ org: "o", agents: [mixed] }),
+      env
+    );
+    expect(state.agents[0]?.settings.models).toEqual([
+      "chatgpt/__unresolved__",
+      "openai/gpt-5",
+    ]);
+  });
+
+  test("#5: a provider with NO id is a config error (never emits '/__unresolved__')", () => {
+    const bad = defineAgent({
+      id: "bad",
+      // A provider entry with no id is meaningless — must throw at map time,
+      // not silently emit a bogus "/__unresolved__" ref the server rejects.
+      providers: [{} as any],
+    });
+    expect(() =>
+      mapProjectToDesiredState(defineConfig({ org: "o", agents: [bad] }), env)
+    ).toThrow(/provider with no "id"/);
   });
 
   test("maps agent platforms: stable id + RESOLVED secret values + literals + collected secrets", () => {

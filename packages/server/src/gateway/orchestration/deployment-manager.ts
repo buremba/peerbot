@@ -862,6 +862,18 @@ export class DeploymentManager {
   }
 
   /**
+   * The provider-catalog service, when wired. Exposed so the message consumer
+   * can enforce the exact-model allow-list at ENQUEUE time (before the payload
+   * is persisted to the queue) — the deployment-time enforcement is too late
+   * for warm/resumed workers that never re-run createWorkerDeployment.
+   */
+  getProviderCatalogService():
+    | import("../auth/provider-catalog.js").ProviderCatalogService
+    | undefined {
+    return this.providerCatalogService;
+  }
+
+  /**
    * Inject grant store for auto-adding domain grants at deployment time.
    */
   setGrantStore(store: GrantStore): void {
@@ -1582,13 +1594,44 @@ export class DeploymentManager {
       }
     }
 
-    // Resolve per-agent installed providers (catalog-only when active, no global fallback)
-    const effectiveProviders = this.providerCatalogService
-      ? await this.providerCatalogService.getInstalledModules(
-          agentId,
-          validated.organizationId
-        )
-      : this.providerModules;
+    // EXACT-MODEL GATE + module resolution (defense-in-depth backstop for the
+    // COLD path — the authoritative gate is at enqueue time in the message
+    // consumer, which the warm path also passes). Use the SHARED
+    // `resolveDispatchModel` so this backstop agrees with the enqueue gate and
+    // session-context on the effective (allow-listed, non-sentinel, ROUTABLE)
+    // model. A sentinel-only / nothing-routable list yields undefined → fail
+    // closed. Modules come from the same policy resolution.
+    const requestedModel = validated.agentOptions?.model as string | undefined;
+    let effectiveProviders: ModelProviderModule[];
+    let allowedRefs: string[] | null = null;
+    let agentModel: string | undefined = requestedModel;
+    if (this.providerCatalogService) {
+      const resolved = await this.providerCatalogService.resolveDispatchModel(
+        agentId,
+        validated.organizationId,
+        requestedModel,
+        userId
+      );
+      effectiveProviders = resolved.modules;
+      allowedRefs = resolved.allowedRefs;
+      agentModel = resolved.model;
+      if (resolved.replaced && validated.agentOptions) {
+        logger.warn(
+          {
+            agentId,
+            organizationId: validated.organizationId,
+            requestedModel,
+            allowedRefs,
+            effectiveModel: agentModel ?? null,
+          },
+          "Deployment backstop: requested model not routable under the agent's models list — enforcing fail-closed gate"
+        );
+        if (agentModel) validated.agentOptions.model = agentModel;
+        else delete validated.agentOptions.model;
+      }
+    } else {
+      effectiveProviders = this.providerModules;
+    }
 
     for (const provider of effectiveProviders) {
       envVars = provider.injectSystemKeyFallback(envVars);
@@ -1603,8 +1646,7 @@ export class DeploymentManager {
 
     // Inject provider metadata into agentOptions so the worker can configure
     // the SDK generically without hardcoded provider checks.
-    // Determine primary provider from the model in agentOptions.
-    const agentModel = validated.agentOptions?.model as string | undefined;
+    // Determine primary provider from the (now gate-checked) model.
     let primaryProvider: ModelProviderModule | undefined;
 
     if (

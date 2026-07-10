@@ -18,7 +18,6 @@ import type {
 	AgentSettingsStore,
 } from "../../auth/settings/agent-settings-store.js";
 import type { AuthProfilesManager } from "../../auth/settings/auth-profiles-manager.js";
-import { resolveEffectiveModelRef } from "../../auth/settings/model-selection.js";
 import {
 	canEditSettingsSection,
 	type ResolvedProviderView,
@@ -126,16 +125,35 @@ async function resolveSettingsView(
 	) as Record<SettingsSectionKey, ResolvedSectionView>;
 
 	const providerSources = Object.fromEntries(
-		(settings?.installedProviders || []).map((provider) => [
-			provider.providerId,
+		orderedProviderSlugs(settings?.models).map((providerId) => [
+			providerId,
 			{
-				id: provider.providerId,
+				id: providerId,
 				canEdit: canEditSettingsSection("model", viewer),
 			} satisfies ResolvedProviderView,
 		]),
 	);
 
 	return { sections, providerSources, settings };
+}
+
+/**
+ * Ordered provider slugs derived from a `models` list — the `<slug>/` prefixes
+ * in first-appearance order.
+ */
+function orderedProviderSlugs(models: string[] | undefined): string[] {
+	const slugs: string[] = [];
+	const seen = new Set<string>();
+	for (const ref of models ?? []) {
+		const slash = ref.indexOf("/");
+		if (slash <= 0) continue;
+		const slug = ref.slice(0, slash);
+		if (!seen.has(slug)) {
+			seen.add(slug);
+			slugs.push(slug);
+		}
+	}
+	return slugs;
 }
 
 async function buildResolvedConfigResponse(
@@ -214,9 +232,7 @@ async function buildResolvedConfigResponse(
 		capabilities: [] as string[],
 	}));
 
-	const installedIds = (settings?.installedProviders || []).map(
-		(provider) => provider.providerId,
-	);
+	const installedIds = orderedProviderSlugs(settings?.models);
 	const installedIdSet = new Set(installedIds);
 	const catalogProviders = allProviderMeta.filter(
 		(provider) => !installedIdSet.has(provider.id),
@@ -259,9 +275,11 @@ async function buildResolvedConfigResponse(
 			icons: providerIconUrls,
 			configManaged: [] as string[],
 		},
-		// The agent's model (middle of the layered fallback behavior → agent →
-		// org default). Empty string ⇒ inherit the org default.
-		defaultModel: resolveEffectiveModelRef(settings) || "",
+		// The agent's ordered EXACT model allow-list (`<slug>/<model>` refs).
+		// models[0] is the default (middle of the layered fallback behavior →
+		// agent → org default); the rest are alternates. Empty/absent ⇒ inherit
+		// the org default + allow all org providers.
+		models: settings?.models ?? [],
 		skills: sanitized.skillsConfig?.skills || [],
 		tools: {
 			nixPackages: sanitized.nixConfig?.packages || [],

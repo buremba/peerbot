@@ -784,13 +784,19 @@ export class CoreServices {
 		// connector-backed operations; the worker only receives lobu-memory.
 		this.mcpConfigService = new McpConfigService({
 			lobuMemory: {
-				resolveOrgSlug: async (agentId: string) => {
+				// CROSS-TENANT SAFE: resolve the lobu-memory org slug from the token's
+				// organizationId, NOT an id-only agent lookup. A shared agent id
+				// (`lobu-builder`) exists in every org, so `WHERE a.id = agentId` alone
+				// would pick an ARBITRARY org's slug and build the wrong tenant's
+				// `/mcp/<orgSlug>` endpoint. When the token carries no org (orgless
+				// db-backed agent) we return null → no lobu-memory MCP (fail closed).
+				resolveOrgSlug: async (
+					_agentId: string,
+					organizationId: string | undefined,
+				) => {
+					if (!organizationId) return null;
 					const rows = await getDb()`
-            SELECT o.slug
-            FROM agents a
-            JOIN organization o ON o.id = a.organization_id
-            WHERE a.id = ${agentId}
-            LIMIT 1
+            SELECT slug FROM organization WHERE id = ${organizationId} LIMIT 1
           `;
 					const slug = rows[0]?.slug;
 					return typeof slug === "string" && slug.trim() ? slug.trim() : null;

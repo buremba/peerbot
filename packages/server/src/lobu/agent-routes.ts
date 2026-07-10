@@ -15,12 +15,11 @@ import {
 	getOAuthProviderConfigs,
 	type OAuthProviderConfig,
 } from "../gateway/auth/oauth/providers";
-import {
-	buildProviderCatalog,
-	type ProviderCatalogService,
-} from "../gateway/auth/provider-catalog";
+import { isUnresolvedModelRef } from "../gateway/auth/model-sentinel";
+import { buildProviderCatalog } from "../gateway/auth/provider-catalog";
 import { createAuthProfileLabel } from "../gateway/auth/settings/auth-profiles-manager";
 import { orgBucketAgentId } from "../gateway/auth/settings/user-auth-profile-store";
+import { getModelProviderModules } from "../gateway/modules/module-system";
 import {
 	ProviderRegistryService,
 	resolveProviderRegistryPath,
@@ -90,86 +89,88 @@ function buildRequestBaseUrls(c: any, agentId: string, providerId: string) {
 	};
 }
 
-function parseProviderFromModelRef(modelRef: string): string | null {
-	const trimmed = modelRef.trim();
-	if (!trimmed || trimmed === "auto") return null;
-	const slash = trimmed.indexOf("/");
-	if (slash <= 0) return null;
-	return trimmed.slice(0, slash);
-}
+/**
+ * Validate a PATCHed `models` list. Every entry must be an explicit
+ * `<slug>/<model>` ref (no bare model ids, no `auto` in either position) whose
+ * slug resolves at the ORG level: a registry provider module OR one of the
+ * org's `inference_providers` rows. Validating against the org-level set (not
+ * the agent's own list) is what makes the write atomic — an entry can never
+ * dangle on "the agent hasn't installed that provider yet", because the list
+ * being written IS the install.
+ *
+ * Returns `{ error }` JSON on the first invalid entry, or null when valid.
+ */
+/**
+ * Legacy agent-settings model fields removed in the atomic cutover. A PATCH
+ * carrying any of these is rejected (see the config route) rather than silently
+ * dropped — silently dropping would reset a RESTRICTED agent to `models = NULL`
+ * (allow-all), widening access. Exported for the route guard + its test.
+ */
+export const LEGACY_MODEL_FIELDS = ["defaultModel", "installedProviders"] as const;
 
-async function validateModelProviderRoutable(params: {
-	catalog: ProviderCatalogService;
-	agentId: string;
-	modelRef: string;
+export async function validateModelsUpdate(params: {
+	models: unknown;
 	organizationId: string;
-	userId?: string;
+	agentId: string;
 	c: any;
 }): Promise<Record<string, unknown> | null> {
-	const providerId = parseProviderFromModelRef(params.modelRef);
-	if (!providerId) return null;
+	if (
+		!Array.isArray(params.models) ||
+		params.models.some((m) => typeof m !== "string")
+	) {
+		return {
+			error: "invalid_models",
+			error_description: "models must be an array of strings",
+		};
+	}
 
-	const providers = await params.catalog.getInstalledModules(
-		params.agentId,
-		params.organizationId,
-	);
-	const provider = await params.catalog.findProviderForModel(
-		params.modelRef,
-		providers,
-	);
-	const urls = buildRequestBaseUrls(params.c, params.agentId, providerId);
+	const entries = (params.models as string[]).map((m) => m.trim());
+	const invalid = (ref: string, why: string): Record<string, unknown> => ({
+		error: "invalid_model_ref",
+		error_description: `Invalid models entry "${ref}": ${why}. Every entry must be an explicit "<provider>/<model>" ref.`,
+		model: ref,
+	});
+	for (const ref of entries) {
+		// A `<slug>/__unresolved__` restriction sentinel is a deliberate,
+		// non-routable placeholder (emitted by the migration/provisioning for a
+		// "provider intended, no concrete model" agent). It must round-trip
+		// through PATCH — e.g. editing soulMd on a migrated legacy agent PATCHes
+		// the full settings incl. `models`, which may contain a sentinel — so
+		// accept it as valid without the model-shape / org-provider checks below.
+		if (isUnresolvedModelRef(ref)) continue;
+		const slash = ref.indexOf("/");
+		if (!ref || slash <= 0 || slash === ref.length - 1) {
+			return invalid(ref, "expected a provider-qualified model ref");
+		}
+		if (ref.slice(slash + 1).trim() === "auto") {
+			return invalid(ref, '"auto" is not a model; pick a concrete model');
+		}
+	}
 
-	if (!provider) {
+	// Org-level slug resolution: registry modules ∪ the org's provider rows.
+	const orgSlugs = new Set<string>(
+		getModelProviderModules().map((m) => m.providerId),
+	);
+	for (const row of await listInferenceProviders(params.organizationId)) {
+		orgSlugs.add(row.slug);
+	}
+	for (const ref of entries) {
+		// Sentinels are accepted above; skip the org-provider existence check
+		// (their slug — e.g. `legacy` — is intentionally not a real provider).
+		if (isUnresolvedModelRef(ref)) continue;
+		const providerId = ref.slice(0, ref.indexOf("/"));
+		if (orgSlugs.has(providerId)) continue;
+		const urls = buildRequestBaseUrls(params.c, params.agentId, providerId);
 		return {
 			error: "model_provider_not_connected",
 			error_description:
-				`The selected model (${params.modelRef}) uses provider "${providerId}", but that provider is not connected to this agent. ` +
-				`Open ${urls.settingsUrl}, connect "${providerId}" in Providers, then save again. ` +
+				`The model "${ref}" uses provider "${providerId}", but that provider does not exist in this organization. ` +
+				`Add it under Providers (or fix the slug), then save again. ` +
 				`Expected gateway proxy URL after setup: ${urls.expectedProxyUrl}`,
-			model: params.modelRef,
+			model: ref,
 			provider: providerId,
 			settingsUrl: urls.settingsUrl,
 			expectedProxyUrl: urls.expectedProxyUrl,
-		};
-	}
-
-	const hasCredentials =
-		provider.hasSystemKey() ||
-		(await provider.hasCredentials(params.agentId, {
-			organizationId: params.organizationId,
-			userId: params.userId,
-		}));
-	if (!hasCredentials) {
-		return {
-			error: "model_provider_credentials_missing",
-			error_description:
-				`The selected model (${params.modelRef}) uses provider "${provider.providerId}", but Lobu has no credentials for that provider. ` +
-				`Open ${urls.settingsUrl}, connect or add credentials for "${provider.providerId}", then save again. ` +
-				`Expected gateway proxy URL after setup: ${urls.expectedProxyUrl}`,
-			model: params.modelRef,
-			provider: provider.providerId,
-			settingsUrl: urls.settingsUrl,
-			expectedProxyUrl: urls.expectedProxyUrl,
-		};
-	}
-
-	const mappings = provider.getProxyBaseUrlMappings(
-		urls.proxyBaseUrl,
-		params.agentId,
-		{ organizationId: params.organizationId, userId: params.userId },
-	);
-	const expectedProxyUrl = Object.values(mappings)[0] || urls.expectedProxyUrl;
-	if (Object.keys(mappings).length === 0) {
-		return {
-			error: "model_provider_route_missing",
-			error_description:
-				`The selected model (${params.modelRef}) uses provider "${provider.providerId}", but Lobu could not build a gateway route for it. ` +
-				`Open ${urls.settingsUrl} and reconnect the provider, or restart/redeploy the gateway. ` +
-				`Expected gateway proxy URL: ${expectedProxyUrl}`,
-			model: params.modelRef,
-			provider: provider.providerId,
-			settingsUrl: urls.settingsUrl,
-			expectedProxyUrl,
 		};
 	}
 
@@ -447,9 +448,9 @@ routes.get("/", async (c) => {
           AND c.deleted_at IS NULL
         GROUP BY c.agent_id
       `,
-		// Provider ids per agent, from the agent row's installed_providers list.
+		// Provider ids per agent, derived from the `models` list's slug prefixes.
 		sql`
-        SELECT id, installed_providers
+        SELECT id, models
         FROM agents
         WHERE organization_id = ${orgId}
       `,
@@ -476,9 +477,10 @@ routes.get("/", async (c) => {
 	const providersMap = new Map<string, string[]>();
 	for (const r of providerRows) {
 		const set = new Set<string>();
-		for (const p of ((r as any).installed_providers ?? []) as any[]) {
-			const id = p?.providerId ?? p?.provider;
-			if (id) set.add(String(id));
+		for (const ref of ((r as any).models ?? []) as unknown[]) {
+			if (typeof ref !== "string") continue;
+			const slash = ref.indexOf("/");
+			if (slash > 0) set.add(ref.slice(0, slash));
 		}
 		providersMap.set((r as any).id, [...set]);
 	}
@@ -1577,6 +1579,63 @@ routes.patch("/:agentId/config", async (c) => {
 		authProfiles?: AuthProfile[];
 	} & Record<string, unknown>;
 
+	// Atomic cutover: the legacy model fields are GONE. An old client (pre-PR4
+	// CLI, stale web build) that still sends them would have its restricted
+	// declaration silently dropped to `models = NULL` = allow-all — a silent
+	// access widening. Reject loudly so the operator upgrades instead.
+	for (const legacyField of LEGACY_MODEL_FIELDS) {
+		if (legacyField in settingsUpdates) {
+			return c.json(
+				{
+					error: "legacy_model_field",
+					error_description:
+						`This server no longer accepts "${legacyField}". The agent's model configuration is now a single ordered "models" list of explicit "<provider>/<model>" refs. Upgrade your client (CLI / web) and send "models" instead.`,
+					field: legacyField,
+				},
+				400,
+			);
+		}
+	}
+
+	// ATOMICITY (#7): validate the `models` allow-list BEFORE mutating anything
+	// else (auth profiles, settings row). A models-validation failure must leave
+	// the PATCH a true no-op — reconciling auth profiles first and THEN 503-ing
+	// on models would persist a credential change while claiming "nothing saved".
+	if (settingsUpdates.models !== undefined) {
+		const organizationId = c.get("organizationId") as string;
+		let error: Record<string, unknown> | null;
+		try {
+			error = await validateModelsUpdate({
+				models: settingsUpdates.models,
+				organizationId,
+				agentId,
+				c,
+			});
+		} catch (err) {
+			// FAIL CLOSED: the `models` list is an access gate, so a lookup/infra
+			// failure while validating it must REJECT the write — never persist an
+			// unvalidated allow-list (that could silently widen or misconfigure
+			// access). Nothing has been mutated yet, so this is a true no-op.
+			logger.warn(
+				{ agentId, err },
+				"Failed to validate models list before saving agent settings — rejecting",
+			);
+			return c.json(
+				{
+					error: "models_validation_failed",
+					error_description:
+						"Could not validate the models list against the organization's providers. No change was saved; please retry.",
+				},
+				503,
+			);
+		}
+		if (error) return c.json(error, 400);
+		// Persist the trimmed refs, not the raw client payload.
+		settingsUpdates.models = (settingsUpdates.models as string[]).map((m) =>
+			m.trim(),
+		);
+	}
+
 	if (Array.isArray(authProfiles)) {
 		const user = c.get("user");
 		if (!user?.id) {
@@ -1600,32 +1659,6 @@ routes.patch("/:agentId/config", async (c) => {
 								: "Failed to persist auth profiles",
 					},
 					503,
-				);
-			}
-		}
-	}
-
-	if (typeof settingsUpdates.defaultModel === "string") {
-		const modelRef = settingsUpdates.defaultModel.trim();
-		if (modelRef) {
-			try {
-				const catalog = getLobuCoreServices()?.getProviderCatalogService?.();
-				const organizationId = c.get("organizationId") as string | undefined;
-				if (catalog && organizationId) {
-					const error = await validateModelProviderRoutable({
-						catalog,
-						agentId,
-						modelRef,
-						organizationId,
-						userId: c.get("user")?.id,
-						c,
-					});
-					if (error) return c.json(error, 400);
-				}
-			} catch (error) {
-				logger.warn(
-					{ agentId, modelRef, error },
-					"Failed to validate model/provider routability before saving agent settings",
 				);
 			}
 		}

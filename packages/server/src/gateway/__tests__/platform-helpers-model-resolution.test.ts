@@ -7,7 +7,7 @@ import {
 describe("resolveAgentOptions model resolution (layered fallback)", () => {
   test("behavior override (baseOptions.model) wins over the agent default", async () => {
     const settingsStore = {
-      getSettings: async () => ({ defaultModel: "openai/gpt-5" }) as any,
+      getSettings: async () => ({ models: ["openai/gpt-5"] }) as any,
     };
 
     const resolved = await resolveAgentOptions(
@@ -21,9 +21,9 @@ describe("resolveAgentOptions model resolution (layered fallback)", () => {
     expect(resolved.model).toBe("claude/claude-opus-4-8");
   });
 
-  test("uses the agent defaultModel when no behavior override", async () => {
+  test("uses the agent models[0] when no behavior override", async () => {
     const settingsStore = {
-      getSettings: async () => ({ defaultModel: "openai/gpt-5" }) as any,
+      getSettings: async () => ({ models: ["openai/gpt-5"] }) as any,
     };
 
     const resolved = await resolveAgentOptions(
@@ -36,14 +36,65 @@ describe("resolveAgentOptions model resolution (layered fallback)", () => {
     expect(resolved.model).toBe("openai/gpt-5");
   });
 
+  test("#6: a legacy 'auto' override is IGNORED and falls back to the agent default", async () => {
+    // A stale Listen binding with model='auto' must NOT propagate as the run
+    // model — `auto` is gone repo-wide. The malformed override is dropped and
+    // the agent's models[0] wins.
+    const settingsStore = {
+      getSettings: async () => ({ models: ["openai/gpt-5"] }) as any,
+    };
+
+    const resolved = await resolveAgentOptions(
+      "agent-1",
+      { model: "auto" },
+			settingsStore as any,
+      "org-1",
+    );
+
+    expect(resolved.model).toBe("openai/gpt-5");
+    expect(resolved.model).not.toBe("auto");
+  });
+
+  test("#6: a bare (unqualified) override is IGNORED and falls back to the agent default", async () => {
+    const settingsStore = {
+      getSettings: async () => ({ models: ["openai/gpt-5"] }) as any,
+    };
+
+    const resolved = await resolveAgentOptions(
+      "agent-1",
+      { model: "gpt-4o" }, // no provider prefix
+			settingsStore as any,
+      "org-1",
+    );
+
+    expect(resolved.model).toBe("openai/gpt-5");
+  });
+
+  test("a valid <provider>/<model> override still wins over the agent default", async () => {
+    const settingsStore = {
+      getSettings: async () => ({ models: ["openai/gpt-5"] }) as any,
+    };
+
+    const resolved = await resolveAgentOptions(
+      "agent-1",
+      { model: "claude/claude-sonnet-5" },
+			settingsStore as any,
+      "org-1",
+    );
+
+    // Note: the exact-allow-list gate (deployment-manager backstop) validates
+    // this later; resolveAgentOptions only ensures a WELL-FORMED override wins.
+    expect(resolved.model).toBe("claude/claude-sonnet-5");
+  });
+
   test("reads the agent row scoped to the caller's org (shared agent id across orgs)", async () => {
     // A shared agent id (e.g. "lobu-builder") exists in multiple orgs, each with
-    // its own defaultModel. The worker-dispatch path has no ambient orgContext,
+    // its own models list. The worker-dispatch path has no ambient orgContext,
     // so getSettings MUST receive the org explicitly — otherwise it reads an
     // arbitrary org's row and mis-resolves the model (the Gemini/Claude 404 bug).
-    const rowsByOrg: Record<string, { defaultModel: string }> = {
-      "org-a": { defaultModel: "claude/claude-sonnet-4-6" },
-      "org-b": { defaultModel: "gemini/gemini-2.5-flash" },
+    const rowsByOrg: Record<string, { models: string[] }> = {
+      "org-a": { models: ["claude/claude-sonnet-4-6"] },
+      "org-b": { models: ["gemini/gemini-2.5-flash"] },
     };
     const seenAgentIds: string[] = [];
     const settingsStore = {

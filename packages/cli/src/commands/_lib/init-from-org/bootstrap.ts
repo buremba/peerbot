@@ -17,6 +17,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AgentSettings } from "@lobu/core";
 import chalk from "chalk";
+import { UNRESOLVED_MODEL_SUFFIX } from "../../../config/index.js";
 import { printText } from "../../../internal/output.js";
 import type {
   ApplyClient,
@@ -277,28 +278,33 @@ function emitAgent(
   const files: Array<{ relPath: string; body: string }> = [];
   const dir = `agents/${agent.agentId}`;
 
-  // providers ← installedProviders (+ secret key). The agent's single
-  // defaultModel attaches to the PRIMARY provider (installedProviders[0]); a
-  // bare "<id>/auto" is the implicit default, so it's not emitted.
-  const providers = settings?.installedProviders ?? [];
-  if (providers.length > 0) {
-    const defaultModel = settings?.defaultModel?.trim();
-    const primaryId = providers[0]?.providerId;
-    const items = providers.map((p) => {
-      const id = p.providerId;
-      const model =
-        id === primaryId && defaultModel && defaultModel !== `${id}/auto`
-          ? defaultModel
-          : undefined;
-      const envVar = envVarFor(id, "API_KEY");
-      const provFields = [
-        `id: ${str(id)}`,
-        ...(model ? [`model: ${str(model)}`] : []),
-        `key: ${secrets.ref(envVar)}`,
-      ];
-      return objectLiteral(provFields, 2);
-    });
-    fields.push(`providers: [\n    ${items.join(",\n    ")},\n  ]`);
+  // providers ← models[] (+ secret key). Each `<slug>/<model>` ref becomes one
+  // provider `{ id, model }`, in list order (index 0 = the primary/default).
+  // An `<slug>/__unresolved__` restriction sentinel carries no real model, so
+  // it re-emits as a provider with no `model` (the operator picks one). The
+  // ref's model may itself contain slashes (provider-native ids), so only the
+  // FIRST segment is the slug; the remainder is the model.
+  const models = settings?.models ?? [];
+  if (models.length > 0) {
+    const items = models
+      .map((ref) => {
+        const slash = ref.indexOf("/");
+        if (slash <= 0) return null;
+        const id = ref.slice(0, slash);
+        const model = ref.slice(slash + 1);
+        const isSentinel = model === UNRESOLVED_MODEL_SUFFIX;
+        const envVar = envVarFor(id, "API_KEY");
+        const provFields = [
+          `id: ${str(id)}`,
+          ...(isSentinel ? [] : [`model: ${str(model)}`]),
+          `key: ${secrets.ref(envVar)}`,
+        ];
+        return objectLiteral(provFields, 2);
+      })
+      .filter((item): item is string => item !== null);
+    if (items.length > 0) {
+      fields.push(`providers: [\n    ${items.join(",\n    ")},\n  ]`);
+    }
   }
 
   // network ← networkConfig (allowed/denied).

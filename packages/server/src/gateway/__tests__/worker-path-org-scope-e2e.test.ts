@@ -4,7 +4,7 @@
  * (lobu-builder) exists in multiple orgs.
  *
  * This reproduces the original Slack-bot bug condition: two orgs both own an
- * agent id `lobu-builder`, each with a different `defaultModel`. The worker
+ * agent id `lobu-builder`, each with a different `models` list. The worker
  * path runs with NO ambient orgContext. Before the #1779 fix, `resolveAgentOptions`
  * fell to an id-only read and returned an arbitrary org's model (the Gemini/Claude
  * 404). This drives the real resolver against the real store and asserts the
@@ -38,19 +38,19 @@ describe("worker-path org scope (real store, shared agent id)", () => {
     await resetTestDatabase();
     store = new AgentSettingsStore(createPostgresAgentConfigStore());
 
-    // Seed the SAME agent id in two orgs with different defaultModels. Order
+    // Seed the SAME agent id in two orgs with different models lists. Order
     // matters: org-claude is created first so an unscoped `WHERE id = $agentId`
     // (no ORDER BY) tends to return it — the wrong row for a gemini install.
     await seedAgentRow(AGENT, { organizationId: ORG_CLAUDE });
     await seedAgentRow(AGENT, { organizationId: ORG_GEMINI });
     await orgContext.run({ organizationId: ORG_CLAUDE }, () =>
       store.saveSettings(AGENT, {
-        defaultModel: "claude/claude-sonnet-4-6",
+        models: ["claude/claude-sonnet-4-6"],
       } as any),
     );
     await orgContext.run({ organizationId: ORG_GEMINI }, () =>
       store.saveSettings(AGENT, {
-        defaultModel: "gemini/gemini-2.5-flash",
+        models: ["gemini/gemini-2.5-flash"],
       } as any),
     );
   });
@@ -72,7 +72,7 @@ describe("worker-path org scope (real store, shared agent id)", () => {
 
     // Whatever it returns, it is NOT reliably the gemini org — demonstrating why
     // the explicit org scope is required. In this seeding it returns claude's.
-    expect(unscoped?.defaultModel).toBe("claude/claude-sonnet-4-6");
+    expect(unscoped?.models?.[0]).toBe("claude/claude-sonnet-4-6");
   });
 
   test("each org resolves its own model independently", async () => {

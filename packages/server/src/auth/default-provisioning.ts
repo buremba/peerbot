@@ -27,10 +27,7 @@ import { getDb } from "../db/client";
 import { getNextNumericId } from "../tools/admin/helpers/db-helpers";
 import { nextRunAt } from "../utils/cron";
 import logger from "../utils/logger";
-import {
-	type InstalledProvider,
-	resolveSystemKeyProvidersAndModel,
-} from "./system-provider-resolution";
+import { resolveSystemKeyProvidersAndModel } from "./system-provider-resolution";
 
 export const DEFAULT_AGENT_SENTINEL = "default_agent_provisioned";
 export const DEFAULT_WATCHER_SENTINEL = "default_watcher_provisioned";
@@ -126,10 +123,9 @@ export async function hasOrgSentinel(
  *     ownership check in `verifyOwnedAgentAccess`).
  *   - agent_users mapping for that (platform, user_id) so `ownsAgent`
  *     returns true on the PAT-session path.
- *   - installed_providers populated with all currently-available
- *     system-key providers when empty. Never removes existing entries
- *     and never overwrites a non-empty list — admins may have curated
- *     the list intentionally.
+ *   - `models` populated from the currently-available system-key providers
+ *     when empty. Never overwrites a non-empty list — admins may have
+ *     curated the list intentionally.
  *
  * Idempotent and only writes when there's something to fix. Returns
  * silently when the row is absent (caller decides whether to INSERT).
@@ -139,7 +135,7 @@ async function backfillDefaultAgent(
 	client: DbClient,
 ): Promise<void> {
 	const rows = (await client`
-    SELECT owner_platform, owner_user_id, installed_providers, model
+    SELECT owner_platform, owner_user_id, models
       FROM agents
      WHERE organization_id = ${organizationId}
        AND id = ${DEFAULT_AGENT_ID}
@@ -147,8 +143,7 @@ async function backfillDefaultAgent(
   `) as unknown as Array<{
 		owner_platform: string | null;
 		owner_user_id: string | null;
-		installed_providers: unknown;
-		model: string | null;
+		models: unknown;
 	}>;
 	const row = rows[0];
 	if (!row) return;
@@ -160,65 +155,30 @@ async function backfillDefaultAgent(
 			? ownerUserIdRaw
 			: null;
 
-	const installedNow = Array.isArray(row.installed_providers)
-		? (row.installed_providers as Array<{ providerId: string }>)
-		: [];
-	const providersEmpty = installedNow.length === 0;
-
-	const modelEmpty = !row.model || String(row.model).trim() === "";
-	const configuredModel = modelEmpty ? null : String(row.model).trim();
+	// Heal `models` ONLY when it was never configured (genuine NULL). An EMPTY
+	// list ([]) is the deliberate "allow all org + system-key providers" policy
+	// and must survive a provisioning pass unchanged; a non-empty list is an
+	// admin's curated allow-list. Only NULL means "never configured".
+	const neverConfigured = row.models === null || row.models === undefined;
 	const needsOwnerFix =
 		ownerUserId &&
 		(row.owner_user_id !== ownerUserId || row.owner_platform !== "external");
-	const needsProvidersFix = providersEmpty;
-	const needsModelFix = modelEmpty;
 
-	if (needsOwnerFix || needsProvidersFix || needsModelFix) {
-		const resolved =
-			needsModelFix || needsProvidersFix
-				? await resolveSystemKeyProvidersAndModel()
-				: null;
-		const existingProviders: InstalledProvider[] = installedNow.map((p) => ({
-			providerId: p.providerId,
-			installedAt: Date.now(),
-		}));
-		const newModel =
-			modelEmpty && resolved?.model ? resolved.model : configuredModel;
-
-		let nextProviders = existingProviders;
-		if (needsProvidersFix && resolved) {
-			nextProviders = resolved.providers;
-		} else if (resolved) {
-			const providerMap = new Map<string, InstalledProvider>();
-			for (const p of existingProviders) providerMap.set(p.providerId, p);
-			for (const p of resolved.providers) {
-				if (!providerMap.has(p.providerId)) providerMap.set(p.providerId, p);
-			}
-			if (newModel) {
-				const slash = newModel.indexOf("/");
-				const modelProviderId = slash > 0 ? newModel.slice(0, slash) : "";
-				if (modelProviderId && !providerMap.has(modelProviderId)) {
-					providerMap.set(modelProviderId, {
-						providerId: modelProviderId,
-						installedAt: Date.now(),
-					});
-				}
-			}
-			nextProviders = [...providerMap.values()];
-		}
-
-		const writeProviders =
-			needsProvidersFix || nextProviders.length !== existingProviders.length;
-		const writeModel = modelEmpty && !!newModel;
+	if (needsOwnerFix || neverConfigured) {
+		// Each ref carries its provider, so a single resolved list keeps the
+		// default and its provider consistent by construction.
+		const resolved = neverConfigured
+			? await resolveSystemKeyProvidersAndModel()
+			: null;
+		const writeModels =
+			neverConfigured && !!resolved && resolved.models.length > 0;
 
 		await client`
       UPDATE agents SET
         owner_platform = ${needsOwnerFix ? "external" : row.owner_platform},
         owner_user_id = ${needsOwnerFix ? ownerUserId : row.owner_user_id},
-        installed_providers = CASE WHEN ${writeProviders}
-          THEN ${client.json(nextProviders)} ELSE installed_providers END,
-        model = CASE WHEN ${writeModel}
-          THEN ${newModel} ELSE model END,
+        models = CASE WHEN ${writeModels}
+          THEN ${client.json(resolved?.models ?? [])} ELSE models END,
         updated_at = NOW()
       WHERE organization_id = ${organizationId}
         AND id = ${DEFAULT_AGENT_ID}
@@ -228,10 +188,7 @@ async function backfillDefaultAgent(
 				organizationId,
 				agentId: DEFAULT_AGENT_ID,
 				ownerFixed: !!needsOwnerFix,
-				providersAdded: writeProviders
-					? nextProviders.map((p) => p.providerId)
-					: [],
-				modelSet: writeModel ? newModel : undefined,
+				modelsSet: writeModels ? resolved?.models : undefined,
 			},
 			"[default-provisioning] Backfilled default agent",
 		);
@@ -273,10 +230,10 @@ export async function ensureDefaultAgent(
 	try {
 		// Always run the backfill — it's idempotent and only writes when there's
 		// a divergence to fix. Legacy installs that ran ensureDefaultAgent before
-		// this PR have the row but with `owner_user_id = NULL` and
-		// `installed_providers = []`; the sentinel-fast-path would have skipped
-		// them otherwise, and `lobu chat -c local` would still hit 403 / "No
-		// model configured" on those installs.
+		// this PR have the row but with `owner_user_id = NULL` and no `models`;
+		// the sentinel-fast-path would have skipped them otherwise, and
+		// `lobu chat -c local` would still hit 403 / "No model configured" on
+		// those installs.
 		await backfillDefaultAgent(organizationId, client);
 
 		const provisioned = await hasOrgSentinel(
@@ -310,8 +267,8 @@ export async function ensureDefaultAgent(
 
 		// Resolve the set of model providers that have a system-level credential
 		// available at this boot (env-var API keys, claude OAuth-discovery, etc.)
-		// and install them onto the default agent up front. Without this, the row
-		// exists but `installed_providers = '[]'` and `lobu chat -c local` would
+		// into a concrete `models` list for the default agent up front. Without
+		// this, the row exists with no models and `lobu chat -c local` would
 		// immediately hit "No model configured" — even though the env keys are
 		// sitting right there in the same process.
 		const resolved = await resolveSystemKeyProvidersAndModel();
@@ -330,19 +287,19 @@ export async function ensureDefaultAgent(
 				: null;
 
 		// Insert the default agent. The PK is (organization_id, id) so we can
-		// ON CONFLICT DO NOTHING to guard against a parallel boot. `model` is the
-		// agent's single defaultModel ref (a `provider/model` string or "auto");
-		// the old model_selection/provider_model_preferences fields are gone.
+		// ON CONFLICT DO NOTHING to guard against a parallel boot. `models` is the
+		// agent's ordered list of explicit `provider/model` refs (index 0 = the
+		// default); the old model/installed_providers columns are gone.
 		await client`
       INSERT INTO agents (
         id, organization_id, name, identity_md,
         owner_platform, owner_user_id,
-        installed_providers, model,
+        models,
         created_at, updated_at
       ) VALUES (
         ${DEFAULT_AGENT_ID}, ${organizationId}, ${DEFAULT_AGENT_NAME}, ${DEFAULT_AGENT_IDENTITY},
         'external', ${ownerUserId},
-        ${client.json(resolved.providers)}, ${resolved.model},
+        ${client.json(resolved.models)},
         NOW(), NOW()
       )
       ON CONFLICT (organization_id, id) DO NOTHING

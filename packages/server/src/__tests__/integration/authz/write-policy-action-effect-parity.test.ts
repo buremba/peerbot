@@ -282,6 +282,18 @@ describe("write-policy action/effect decision parity", () => {
 		expect(slugPresentInvalid(null)).toBe(false);
 	});
 
+	it("the DELETE principal_mode guard rejects a PRESENT non-'autonomous' value, null only when ABSENT (codex-14)", () => {
+		// A query param `?principal_mode=` (empty) must NOT map to null and delete the
+		// attended/both-mode row — only a genuinely absent param maps to null.
+		const rejects = (param: string | undefined) =>
+			param !== undefined && param.trim() !== "autonomous";
+		expect(rejects(undefined)).toBe(false); // absent → null (both-mode)
+		expect(rejects("autonomous")).toBe(false);
+		expect(rejects("")).toBe(true); // present empty → 400
+		expect(rejects("  ")).toBe(true); // whitespace → 400
+		expect(rejects("attended")).toBe(true); // typo → 400
+	});
+
 	it("a type scope is rejected for non-entity classes; only entity is type-scoped (codex-13)", () => {
 		// A present entity_type_slug on agent_config/connector_action must 400, not
 		// coerce to null and overwrite the class's blanket policy.

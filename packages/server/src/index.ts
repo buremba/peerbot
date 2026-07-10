@@ -1858,13 +1858,14 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			400,
 		);
 	}
-	// Same rule as the PUT: principal_mode picks the target row. A typo'd mode must
-	// not silently DELETE the attended row when the caller meant the autonomous one.
-	const principalModeRaw = c.req.query("principal_mode")?.trim();
+	// Same rule as the PUT: principal_mode picks the target row (null = the both-mode
+	// row). ONLY a truly-ABSENT param maps to null — a PRESENT value that isn't exactly
+	// 'autonomous' (a typo, whitespace, or empty `?principal_mode=`) must 400, else the
+	// DELETE would fall through to null and destroy the attended/both-mode row.
+	const principalModeParam = c.req.query("principal_mode");
 	if (
-		principalModeRaw !== undefined &&
-		principalModeRaw !== "" &&
-		principalModeRaw !== "autonomous"
+		principalModeParam !== undefined &&
+		principalModeParam.trim() !== "autonomous"
 	) {
 		return c.json(
 			{
@@ -1874,7 +1875,8 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			400,
 		);
 	}
-	const principalMode = principalModeRaw === "autonomous" ? "autonomous" : null;
+	const principalMode =
+		principalModeParam?.trim() === "autonomous" ? "autonomous" : null;
 	// entity_type_slug picks WHICH row to delete (null = the blanket all-types row).
 	// A present-but-empty slug, or a slug on a non-entity class, must NOT coerce to
 	// null and delete the blanket policy instead of the intended per-type override.

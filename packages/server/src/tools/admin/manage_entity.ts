@@ -265,11 +265,12 @@ async function handleCreate(
 		principalKind: actor.kind,
 		sql: getDb(),
 		attribution,
-		// Fall back to the trusted reaction-session watcher/window when the script
-		// omitted an explicit watcher_source — else a deferred create loses its
-		// watcher/window attribution (no per-window batching, cross-window dedup).
-		watcherId: args.watcher_source?.watcher_id ?? ctx.actingWatcherId ?? null,
-		windowId: args.watcher_source?.window_id ?? ctx.actingWindowId ?? null,
+		// The TRUSTED reaction-session watcher/window WINS (same precedence as
+		// resolveActingPrincipal): a reaction can't retag its deferral into another
+		// watcher's approval batch by passing a foreign watcher_source. The
+		// caller-supplied source is only honored OUTSIDE a reaction session.
+		watcherId: ctx.actingWatcherId ?? args.watcher_source?.watcher_id ?? null,
+		windowId: ctx.actingWindowId ?? args.watcher_source?.window_id ?? null,
 		principalId: actor.id,
 		ownerAgentId: actor.ownerAgentId,
 		ownerResolved: actor.ownerResolved,
@@ -423,8 +424,8 @@ async function handleUpdate(
 		policyPrincipalKind: updateActor.kind,
 		attribution: updateActor.kind === "watcher" ? "watcher" : "agent",
 		principalId: updateActor.id,
-		// Trusted reaction-session fallback — see the create path.
-		windowId: args.watcher_source?.window_id ?? ctx.actingWindowId ?? null,
+		// Trusted reaction-session window WINS — see the create path.
+		windowId: ctx.actingWindowId ?? args.watcher_source?.window_id ?? null,
 		ownerAgentId: updateActor.ownerAgentId,
 		ownerResolved: updateActor.ownerResolved,
 		mode: updateActor.mode,
@@ -1022,9 +1023,9 @@ async function handleDelete(
 		principalKind: deleteActor.kind,
 		sql: getDb(),
 		attribution,
-		// Trusted reaction-session fallback — see the create path.
-		watcherId: args?.watcher_source?.watcher_id ?? ctx.actingWatcherId ?? null,
-		windowId: args?.watcher_source?.window_id ?? ctx.actingWindowId ?? null,
+		// Trusted reaction-session watcher/window WINS — see the create path.
+		watcherId: ctx.actingWatcherId ?? args?.watcher_source?.watcher_id ?? null,
+		windowId: ctx.actingWindowId ?? args?.watcher_source?.window_id ?? null,
 		principalId: deleteActor.id,
 		ownerAgentId: deleteActor.ownerAgentId,
 		ownerResolved: deleteActor.ownerResolved,

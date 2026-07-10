@@ -31,6 +31,7 @@ import {
   type ManageWatchersArgs,
   type ManageWatchersResult,
 } from '@lobu/core/contracts/tools/manage-watchers';
+import type { ReservedSql } from 'postgres';
 import {
   resolveActingPrincipal,
   resolveWritePolicyDecision,
@@ -128,9 +129,109 @@ async function manageWatchersImpl(
   // This closes the two-step self-escalation: an agent whose own agent_config
   // writes require approval can no longer freely mint a watcher to escape its
   // envelope.
-  await gateWatcherWrite(args, ctx);
+  //
+  // TOCTOU: gateWatcherWrite's escalation guard reads the affected watcher owners
+  // (resolveEffectiveWatcherOwners) and the mutation writes them, but on SEPARATE
+  // pooled connections. A concurrent reassign of the target watcher's agent_id
+  // could slip between the check and the write, so the guard would pass on owner A
+  // while the behavior lands on a now-B-owned watcher. We serialize both the guard
+  // AND the mutation under ONE session-level advisory lock keyed by the target's
+  // watcher_group_id. EVERY mutating action that has a resolvable target group
+  // takes the lock — human or non-human — because the racing reassign is itself an
+  // `update` that flows through this same path, so the lock makes them mutually
+  // exclusive. Actions with no existing target group (`create`) skip the lock.
+  return withWatcherGroupLock(args, ctx, async () => {
+    await gateWatcherWrite(args, ctx);
+    return runManageWatchers(args, env, ctx);
+  });
+}
 
-  return runManageWatchers(args, env, ctx);
+/**
+ * Namespace half of the (int, int) advisory-lock key. Pairs with the
+ * watcher_group_id so unrelated lock users never collide with a bare group id.
+ * Distinct from the `watcher_create_version` key version-actions.ts takes inside
+ * its own handler — that's a different, tx-scoped lock; nesting two distinct
+ * advisory keys is safe. This one is SESSION scope so it can span the guard read
+ * and the mutation write, which run on different pooled connections.
+ */
+const WATCHER_GROUP_LOCK_NS = 'watcher_group_ownership';
+
+/**
+ * Resolve the watcher_group_id whose ownership this action touches — the row the
+ * escalation guard reads and the mutation writes must not have its owner changed
+ * underneath us. Returns null when there is no pre-existing group to race on:
+ *   - `create` mints a brand-new row (no target yet).
+ *   - `update` targets args.watcher_id → its group.
+ *   - `create_version` / `set_reaction_script` write GROUP-WIDE off args.watcher_id.
+ *   - `create_from_version` reads a SOURCE version → lock the source watcher's group
+ *     so a concurrent reassign of the source can't change the owner we clone.
+ * All lookups are org-scoped.
+ */
+async function resolveTargetWatcherGroupId(
+  args: ManageWatchersArgs,
+  ctx: ToolContext,
+): Promise<number | null> {
+  const sql = getDb();
+  if (args.action === 'update' || args.action === 'create_version' || args.action === 'set_reaction_script') {
+    if (args.watcher_id == null) return null;
+    const rows = await sql<{ watcher_group_id: number | null }>`
+      SELECT watcher_group_id FROM watchers
+      WHERE id = ${Number(args.watcher_id)} AND organization_id = ${ctx.organizationId}
+      LIMIT 1
+    `;
+    const gid = rows.length > 0 ? rows[0].watcher_group_id : null;
+    return gid == null ? null : Number(gid);
+  }
+  if (args.action === 'create_from_version') {
+    if (args.version_id == null) return null;
+    const rows = await sql<{ watcher_group_id: number | null }>`
+      SELECT w.watcher_group_id
+      FROM watcher_versions wv JOIN watchers w ON w.id = wv.watcher_id
+      WHERE wv.id = ${Number(args.version_id)} AND w.organization_id = ${ctx.organizationId}
+      LIMIT 1
+    `;
+    const gid = rows.length > 0 ? rows[0].watcher_group_id : null;
+    return gid == null ? null : Number(gid);
+  }
+  return null;
+}
+
+/**
+ * Run `fn` (guard + mutation) while holding a SESSION-level Postgres advisory
+ * lock on the action's target watcher_group_id. A session lock (vs. the
+ * tx-scoped `pg_advisory_xact_lock`) is required because the guard read and the
+ * mutation write happen on different pooled connections and across separate
+ * transactions — a tx-scoped lock would release at the guard's implicit commit,
+ * before the mutation runs. We acquire + release on ONE reserved connection so
+ * the session identity is stable (any pool connection could otherwise serve the
+ * unlock and PG would error `you don't own a lock of type ExclusiveLock`).
+ *
+ * Only the mutating write-gate actions with a resolvable target group are locked;
+ * read-only actions and `create` (no pre-existing group) run `fn` directly.
+ */
+async function withWatcherGroupLock<T>(
+  args: ManageWatchersArgs,
+  ctx: ToolContext,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (watcherWriteAction(args.action) === null) return fn();
+  const groupId = await resolveTargetWatcherGroupId(args, ctx);
+  if (groupId == null) return fn();
+
+  const sql = getDb();
+  const reserved = (await (
+    sql as unknown as { reserve: () => Promise<ReservedSql> }
+  ).reserve()) as ReservedSql;
+  try {
+    await reserved`SELECT pg_advisory_lock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
+    try {
+      return await fn();
+    } finally {
+      await reserved`SELECT pg_advisory_unlock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
+    }
+  } finally {
+    reserved.release();
+  }
 }
 
 /** Maps a manage_watchers action to its agent_config write verb, or null for a

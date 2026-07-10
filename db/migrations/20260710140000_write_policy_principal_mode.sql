@@ -73,7 +73,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS write_approval_policies_class_principal_mode_s
 -- squawk-ignore require-concurrent-index-deletion -- low-row-count policy table; brief lock negligible at this scale
 DROP INDEX IF EXISTS public.write_approval_policies_class_principal_scope_key;
 
+-- Cascade an agent's write-gate policy rows when the agent is deleted. `principal_id`
+-- is a POLYMORPHIC text column (agent id / `watcher:<id>` / NULL), so a plain FK
+-- can't express this — a trigger enforces it in the DB, covering EVERY deletion path
+-- (the manage_agents tool, the dashboard's configStore.deleteMetadata, and any
+-- future one). Agent ids are reusable slugs, so leaving these rows would let a later
+-- agent recreated with the same id silently inherit the old envelope. Child
+-- write_policy_action_effects rows cascade via their policy_id FK.
+CREATE OR REPLACE FUNCTION public.cascade_delete_agent_write_policies()
+  RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  DELETE FROM public.write_approval_policies
+  WHERE organization_id = OLD.organization_id
+    AND principal_kind = 'agent'
+    AND principal_id = OLD.id;
+  RETURN OLD;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_cascade_delete_agent_write_policies ON public.agents;
+CREATE TRIGGER trg_cascade_delete_agent_write_policies
+  AFTER DELETE ON public.agents
+  FOR EACH ROW EXECUTE FUNCTION public.cascade_delete_agent_write_policies();
+
 -- migrate:down
+
+DROP TRIGGER IF EXISTS trg_cascade_delete_agent_write_policies ON public.agents;
+DROP FUNCTION IF EXISTS public.cascade_delete_agent_write_policies();
 
 -- Restore the mode-less unique key before dropping the mode-aware one, so the
 -- table always has a uniqueness guarantee. Safe only because a rollback also drops

@@ -287,17 +287,9 @@ export async function applyDelete(
     WHERE organization_id = ${ctx.organizationId} AND id = ${args.agent_id}
     RETURNING id
   `;
-  // Cascade the agent's write-gate policy rows: they key on the agent id (a reusable
-  // slug), so leaving them would silently apply to a future agent recreated with the
-  // same id. write_policy_action_effects rows cascade via their policy_id FK.
-  if (rows.length > 0) {
-    await sql`
-      DELETE FROM write_approval_policies
-      WHERE organization_id = ${ctx.organizationId}
-        AND principal_kind = 'agent'
-        AND principal_id = ${args.agent_id}
-    `;
-  }
+  // The agent's write-gate policy rows (principal_kind='agent') cascade via a DB
+  // trigger on `agents` (see 20260710140000) — covers this path AND the dashboard's
+  // configStore.deleteMetadata, so no app-level cleanup is duplicated here.
   return { action: 'delete', agent_id: args.agent_id, deleted: rows.length > 0 };
 }
 

@@ -99,7 +99,7 @@ jobs:
         # pure-unit subdirectories that don't touch Postgres.
         run: |
           bun test packages/server/src/__tests__/unit
-          bun test packages/server/src/auth/__tests__/tool-access.test.ts
+          bun test packages/server/src/auth/__tests__/tool-access.test.ts packages/server/src/auth/__tests__/system-provider-resolution.test.ts
 
       - name: connector-worker (bun:test)
         # openclaw-plugin e2e tests need a live backend and belong in the

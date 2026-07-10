@@ -475,6 +475,7 @@ async function handleListAvailable(
   // connector_action policy is one blanket `execute` per principal today (no
   // per-op scope yet), so a disabled effect hides the whole connector's ops.
   const actor = await resolveActingPrincipal(getDb(), {
+    organizationId: ctx.organizationId,
     userId: ctx.userId,
     agentId: ctx.agentId,
     sessionWatcherId: ctx.actingWatcherId ?? null,
@@ -717,6 +718,7 @@ async function handleExecute(
 	// agent, and pins autonomous mode for a watcher. Persisted with the run so the
 	// approve-time recheck re-evaluates in the SAME mode/principal.
 	const actor = await resolveActingPrincipal(sql, {
+		organizationId: ctx.organizationId,
 		userId: ctx.userId,
 		agentId: ctx.agentId,
 		explicitWatcherId: args.watcher_source?.watcher_id ?? null,
@@ -1670,12 +1672,13 @@ async function handleApprove(
 	const recheckWatcherId = watcherIdFromPrincipalId(
 		pendingRun.policy_principal_id,
 	);
-	// Re-resolve the owner from the persisted `watcher:<id>`. If the watcher row is
-	// GONE at approve time, fail closed (deny) — the agent envelope can't be folded,
-	// so we must not let the approval sail through as an unowned watcher.
+	// Re-resolve the owner from the persisted `watcher:<id>`. If the watcher row (or
+	// its owning agent) is GONE at approve time, fail closed (deny) — the agent
+	// envelope can't be folded, so we must not let the approval sail through as an
+	// unowned watcher.
 	const recheckOwner =
 		recheckWatcherId != null
-			? await resolveWatcherOwner(sql, recheckWatcherId)
+			? await resolveWatcherOwner(sql, recheckWatcherId, ctx.organizationId)
 			: { ownerAgentId: null, resolved: true };
 	const recheckDecision =
 		recheckPrincipalKind === "user"

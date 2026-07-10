@@ -136,6 +136,16 @@ describe('ownership gate on agent entity writes', () => {
       created_by: workspace.users.owner.id,
     });
     entity = { id: created.id };
+    // The default agentCtx binds 'test-agent-1' (and one test 'restricted-agent').
+    // Prod binds an agentId only for an existing agent (codex-17), and the gate's
+    // existence check now enforces it — so seed the rows these ctxs assume.
+    for (const agentId of ['test-agent-1', 'restricted-agent']) {
+      await createTestAgent({
+        organizationId: workspace.org.id,
+        agentId,
+        ownerUserId: workspace.users.owner.id,
+      });
+    }
   });
 
   it('blocks an agent overwrite of a human-owned field and queues an approval', async () => {

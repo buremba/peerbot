@@ -594,6 +594,7 @@ async function dispatchAgentWrite(
   // approval/deny override. manage_agents has no watcher_source arg, so only the
   // trusted session watcher applies.
   const actor = await resolveActingPrincipal(getDb(), {
+    organizationId: ctx.organizationId,
     userId: ctx.userId,
     agentId: ctx.agentId,
     sessionWatcherId: ctx.actingWatcherId ?? null,

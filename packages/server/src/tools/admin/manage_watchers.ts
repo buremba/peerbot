@@ -339,6 +339,7 @@ async function gateWatcherWrite(
   // self-escalate. manage_watchers has no watcher_source arg, so only the session
   // watcher applies.
   const actor = await resolveActingPrincipal(getDb(), {
+    organizationId: ctx.organizationId,
     userId: ctx.userId,
     agentId: ctx.agentId,
     sessionWatcherId: ctx.actingWatcherId ?? null,

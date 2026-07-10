@@ -21,7 +21,10 @@ import {
 	upsertEntityApprovalPolicy,
 } from "../../../authz/entity-policy";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
-import { createTestOrganization } from "../../setup/test-fixtures";
+import {
+	createTestAgent,
+	createTestOrganization,
+} from "../../setup/test-fixtures";
 
 async function seedPolicy(args: {
 	orgId: string;
@@ -65,6 +68,12 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 	beforeEach(async () => {
 		const org = await createTestOrganization();
 		orgId = org.id;
+		// Tests pin policies to these agent ids. Prod guarantees a bound agent id has an
+		// agents row (auth binds only after existence; codex-17), and the policy trigger
+		// + resolver enforce it — so seed the rows the tests assume.
+		for (const agentId of ["agent-1", "agent-auto", "agent-deliv"]) {
+			await createTestAgent({ organizationId: orgId, agentId });
+		}
 	});
 
 	it("org floor holds: a per-agent auto cannot loosen an org approval", async () => {

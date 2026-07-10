@@ -511,7 +511,7 @@ export async function promoteKeyedEntities(
   // attended — and mode 'autonomous' lets the agent set a stricter watcher-only
   // envelope. Without this, an agent's own delete=deny would NOT bind its own
   // watcher (the write would fall through to the looser org default).
-  const watcherOwner = await resolveWatcherOwner(tx, watcherId);
+  const watcherOwner = await resolveWatcherOwner(tx, watcherId, organizationId);
 
   // Gate decision for creates of this type (watchers are never human): resolved
   // once per promotion — every row in this window is the same entity type, so

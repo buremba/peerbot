@@ -91,6 +91,7 @@ function actingPrincipalFor(
 	ctx: ToolContext,
 ): Promise<ActingPrincipal> {
 	return resolveActingPrincipal(getDb(), {
+		organizationId: ctx.organizationId,
 		userId: ctx.userId,
 		agentId: ctx.agentId,
 		explicitWatcherId: args?.watcher_source?.watcher_id ?? null,

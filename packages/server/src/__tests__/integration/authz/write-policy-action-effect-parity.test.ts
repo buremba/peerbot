@@ -19,7 +19,10 @@ import {
 } from "../../../authz/entity-policy";
 import { isLegalActionEffect } from "../../../authz/write-action-manifest";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
-import { createTestOrganization } from "../../setup/test-fixtures";
+import {
+	createTestAgent,
+	createTestOrganization,
+} from "../../setup/test-fixtures";
 
 /**
  * Insert a policy header + its child action-effect rows directly, the way the
@@ -68,6 +71,11 @@ describe("write-policy action/effect decision parity", () => {
 	beforeEach(async () => {
 		const org = await createTestOrganization();
 		orgId = org.id;
+		// Seed the agent rows these tests pin policies to — prod guarantees a bound
+		// agent id has an agents row, and the policy trigger enforces it (codex-17).
+		for (const agentId of ["agent_off", "agent_tie", "agent_xyz"]) {
+			await createTestAgent({ organizationId: orgId, agentId });
+		}
 	});
 
 	it("entity: create auto / update auto / delete approval resolve unchanged", async () => {

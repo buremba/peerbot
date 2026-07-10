@@ -359,22 +359,36 @@ export function watcherIdFromPrincipalId(
  * `ownerAgentId`. Shared by every watcher write surface (entity promotion, reaction
  * scripts, watcher CRUD) so the linkage is resolved ONE way.
  *
- * Returns `{ ownerAgentId, resolved }`. `resolved` is false ONLY when the watcher
- * row is GONE (hard-deleted mid-reaction, or a bad id) — a security-relevant state:
- * the acting watcher's agent envelope can't be folded, so proceeding as an
- * unowned watcher would let the reaction slip its owning agent's deny/approval
- * rules and fall back to the (looser) org default. Callers acting on a TRUSTED
- * watcher must FAIL CLOSED on `resolved === false` (see the gate resolvers).
+ * Returns `{ ownerAgentId, resolved }`. `resolved` is false when the watcher row is
+ * GONE (hard-deleted mid-reaction, or a bad id) OR its owning AGENT no longer exists
+ * (deleted out from under an in-flight watcher — there is no watcher→agent FK, so the
+ * agent_id can dangle) — both are the same security-relevant state: the acting
+ * watcher's agent envelope can't be folded, so proceeding as an unowned watcher would
+ * let the reaction slip its owning agent's deny/approval rules and fall back to the
+ * (looser) org default. Callers acting on a TRUSTED watcher must FAIL CLOSED on
+ * `resolved === false` (see the gate resolvers).
+ *
+ * `organizationId` scopes both the watcher AND the owning-agent existence check so a
+ * caller can't resolve against another org's rows.
  */
 export async function resolveWatcherOwner(
 	sql: DbClient,
 	watcherId: number,
+	organizationId: string,
 ): Promise<{ ownerAgentId: string | null; resolved: boolean }> {
-	const rows = await sql<{ agent_id: string | null }>`
-    SELECT agent_id FROM watchers WHERE id = ${watcherId} LIMIT 1
+	// INNER JOIN agents: the row resolves ONLY when the owning agent still exists in
+	// this org. A dangling agent_id (agent deleted mid-flight) yields zero rows →
+	// resolved:false → gates deny, closing the fail-open where a deleted agent's
+	// watcher would fall back to the looser org default.
+	const rows = await sql<{ agent_id: string }>`
+    SELECT w.agent_id
+    FROM watchers w
+    JOIN agents a ON a.id = w.agent_id AND a.organization_id = ${organizationId}
+    WHERE w.id = ${watcherId} AND w.organization_id = ${organizationId}
+    LIMIT 1
   `;
 	if (rows.length === 0) return { ownerAgentId: null, resolved: false };
-	return { ownerAgentId: rows[0].agent_id ?? null, resolved: true };
+	return { ownerAgentId: rows[0].agent_id, resolved: true };
 }
 
 /** The fully-resolved acting principal for one write, ready to hand to the gate. */
@@ -432,6 +446,7 @@ function watcherPrincipal(
 export async function resolveActingPrincipal(
 	sql: DbClient,
 	args: {
+		organizationId: string;
 		userId?: string | null;
 		agentId?: string | null;
 		explicitWatcherId?: number | null;
@@ -450,11 +465,15 @@ export async function resolveActingPrincipal(
 	if (args.sessionWatcherId != null) {
 		return watcherPrincipal(
 			args.sessionWatcherId,
-			await resolveWatcherOwner(sql, args.sessionWatcherId),
+			await resolveWatcherOwner(sql, args.sessionWatcherId, args.organizationId),
 		);
 	}
 	if (args.explicitWatcherId != null) {
-		const owner = await resolveWatcherOwner(sql, args.explicitWatcherId);
+		const owner = await resolveWatcherOwner(
+			sql,
+			args.explicitWatcherId,
+			args.organizationId,
+		);
 		if (!args.agentId || owner.ownerAgentId === args.agentId) {
 			return watcherPrincipal(args.explicitWatcherId, owner);
 		}
@@ -464,13 +483,39 @@ export async function resolveActingPrincipal(
 		userId: args.userId,
 		agentId: args.agentId,
 	});
+	// A bound agent whose row was deleted out from under a still-live session must
+	// FAIL CLOSED. Its envelope rows are gone (the delete trigger cascades them), so
+	// gating would find no agent-specific policy and fall back to the looser org
+	// default — most dangerously connector_action → auto. Mark it unresolved so every
+	// gate denies, exactly as for a watcher whose owner vanished. Users are never
+	// existence-checked here (they aren't gated as a principal). null agentId (the
+	// system/keyed path) has no row to check and stays resolved.
+	const ownerResolved =
+		kind === "agent" && args.agentId != null
+			? await agentExistsInOrg(sql, args.agentId, args.organizationId)
+			: true;
 	return {
 		kind,
 		id: mutationPrincipalId({ agentId: args.agentId }),
 		ownerAgentId: null,
-		ownerResolved: true,
+		ownerResolved,
 		mode: modeForSource(args.sourceForMode),
 	};
+}
+
+/** True iff an agent row with this id exists in the org. Org-scoped so a caller
+ * can't probe another tenant's agent namespace. */
+async function agentExistsInOrg(
+	sql: DbClient,
+	agentId: string,
+	organizationId: string,
+): Promise<boolean> {
+	const rows = await sql<{ one: number }>`
+    SELECT 1 AS one FROM agents
+    WHERE id = ${agentId} AND organization_id = ${organizationId}
+    LIMIT 1
+  `;
+	return rows.length > 0;
 }
 
 /**

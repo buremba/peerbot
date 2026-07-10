@@ -96,7 +96,45 @@ CREATE TRIGGER trg_cascade_delete_agent_write_policies
   AFTER DELETE ON public.agents
   FOR EACH ROW EXECUTE FUNCTION public.cascade_delete_agent_write_policies();
 
+-- Reject an agent-principal policy write whose agent doesn't exist, and SERIALIZE it
+-- against a concurrent agent delete. The app checks agent existence and inserts the
+-- policy in SEPARATE transactions, so without this a PUT that observed agent A could
+-- commit its INSERT *after* A's delete trigger already cascaded — leaving an orphan
+-- row that a later agent recreated with the reusable A slug would silently inherit
+-- (defeating the cascade above). The `FOR KEY SHARE` lock on the agent row is the
+-- serialization point: if the delete holds the row, this INSERT blocks then sees zero
+-- rows and raises; if this INSERT holds the KEY SHARE lock, the delete's FOR UPDATE
+-- (row removal) blocks until we commit, then the AFTER DELETE trigger cascades our
+-- freshly-inserted row. Only EXACT agent-principal rows are checked (principal_id is
+-- polymorphic: agent id / `watcher:<id>` / NULL) — watcher/kind-wide/null rows have no
+-- single agent to bind and are left alone.
+CREATE OR REPLACE FUNCTION public.assert_agent_write_policy_principal_exists()
+  RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.principal_kind = 'agent' AND NEW.principal_id IS NOT NULL THEN
+    PERFORM 1 FROM public.agents
+    WHERE id = NEW.principal_id
+      AND organization_id = NEW.organization_id
+    FOR KEY SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'write_approval_policies principal agent % not found in org %',
+        NEW.principal_id, NEW.organization_id
+        USING ERRCODE = 'foreign_key_violation';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_assert_agent_write_policy_principal_exists ON public.write_approval_policies;
+CREATE TRIGGER trg_assert_agent_write_policy_principal_exists
+  BEFORE INSERT OR UPDATE ON public.write_approval_policies
+  FOR EACH ROW EXECUTE FUNCTION public.assert_agent_write_policy_principal_exists();
+
 -- migrate:down
+
+DROP TRIGGER IF EXISTS trg_assert_agent_write_policy_principal_exists ON public.write_approval_policies;
+DROP FUNCTION IF EXISTS public.assert_agent_write_policy_principal_exists();
 
 DROP TRIGGER IF EXISTS trg_cascade_delete_agent_write_policies ON public.agents;
 DROP FUNCTION IF EXISTS public.cascade_delete_agent_write_policies();

@@ -536,6 +536,12 @@ async function handleListAvailable(
     backend: args.backend,
     includeInputSchema: args.include_input_schema ?? true,
     includeOutputSchema: args.include_output_schema ?? false,
+    // Fetch the WHOLE filtered set — listOperations defaults to limit 100, which
+    // would silently drop ops past index 100 and make them unreachable at any
+    // caller offset. We must filter per-op-disabled across the full set BEFORE
+    // slicing, so no internal cap here; the caller's limit/offset apply below.
+    limit: Number.MAX_SAFE_INTEGER,
+    offset: 0,
   });
 
   // Hide any single operation whose PER-OP rule resolves to disabled (the blanket

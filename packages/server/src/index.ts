@@ -1698,7 +1698,7 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		kind: "write",
 		includeInputSchema: false,
 		includeOutputSchema: false,
-		limit: 1000,
+		limit: Number.MAX_SAFE_INTEGER,
 	});
 	const seenOps = new Set<string>();
 	const operations: Array<{
@@ -1909,7 +1909,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			kind: "write",
 			includeInputSchema: false,
 			includeOutputSchema: false,
-			limit: 1000,
+			limit: Number.MAX_SAFE_INTEGER,
 		});
 		const knownQualified = new Set(
 			known.operations.map((op) =>

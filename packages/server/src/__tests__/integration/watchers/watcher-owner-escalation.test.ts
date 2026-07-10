@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
-import { cleanupTestDatabase } from "../../setup/test-db";
+import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { createTestAgent } from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
 
@@ -89,7 +89,7 @@ describe("manage_watchers owner-escalation guard", () => {
 				agentB,
 				"escalation-attempt",
 			),
-		).rejects.toThrow(/cannot assign a watcher to another agent/i);
+		).rejects.toThrow(/cannot own a watcher via another agent/i);
 	});
 
 	it("a HUMAN may assign a watcher to any agent (ungoverned)", async () => {
@@ -100,5 +100,63 @@ describe("manage_watchers owner-escalation guard", () => {
 			agent_id: agentB,
 		})) as { watcher_id: string };
 		expect(created.watcher_id).toBeDefined();
+	});
+
+	it("blocks agent A from CLONING agent B's watcher via create_from_version (inherited owner)", async () => {
+		// A human seeds a watcher owned by B; its v1 version_id is the clone source.
+		await workspace.owner.entity_schema.createType({
+			slug: "company",
+			name: "Company",
+		});
+		const target = (await workspace.owner.entities.create({
+			type: "company",
+			name: "Clone Target",
+		})) as { entity: { id: number } };
+		const bWatcher = (await workspace.owner.watchers.create({
+			slug: "b-owned-source",
+			name: "b-owned-source",
+			prompt: "Track things.",
+			agent_id: agentB,
+		})) as { watcher_id: string };
+		const [ver] = await getTestDb()<{ id: number }>`
+      SELECT id FROM watcher_versions WHERE watcher_id = ${Number(bWatcher.watcher_id)} ORDER BY id ASC LIMIT 1
+    `;
+		// Agent A clones it WITHOUT supplying agent_id — the clone would inherit B's
+		// owner. The guard resolves the effective (inherited) owner and blocks it.
+		await expect(
+			executeTool(
+				"manage_watchers",
+				{
+					action: "create_from_version",
+					version_id: String(ver.id),
+					entity_ids: [target.entity.id],
+				},
+				TEST_ENV,
+				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),
+			),
+		).rejects.toThrow(/cannot own a watcher via another agent/i);
+	});
+
+	it("blocks agent A from EDITING agent B's watcher (preserved owner, no agent_id)", async () => {
+		const bWatcher = (await workspace.owner.watchers.create({
+			slug: "b-owned-edit",
+			name: "b-owned-edit",
+			prompt: "Track things.",
+			agent_id: agentB,
+		})) as { watcher_id: string };
+		// Agent A updates it WITHOUT agent_id — ownership stays B. Blocked because the
+		// preserved effective owner (B) isn't A.
+		await expect(
+			executeTool(
+				"manage_watchers",
+				{
+					action: "update",
+					watcher_id: bWatcher.watcher_id,
+					name: "renamed-by-a",
+				},
+				TEST_ENV,
+				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),
+			),
+		).rejects.toThrow(/cannot own a watcher via another agent/i);
 	});
 });

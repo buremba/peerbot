@@ -155,6 +155,46 @@ function watcherWriteAction(
 }
 
 /**
+ * The agent that will OWN the watcher after this write completes — the value the
+ * escalation guard checks. Returns:
+ *  - the supplied `args.agent_id` when the action sets it explicitly;
+ *  - otherwise the owner the action INHERITS or PRESERVES: `create_from_version`
+ *    copies the source version's watcher.agent_id; `update`/`create_version`/
+ *    `set_reaction_script` keep the target watcher's current agent_id;
+ *  - `undefined` when there is no effective owner to check (e.g. a create with no
+ *    agent_id — handleCreate rejects that separately — or an unresolvable target).
+ * `delete` changes no owner and isn't passed here.
+ */
+async function resolveEffectiveWatcherOwner(
+  args: ManageWatchersArgs,
+  ctx: ToolContext,
+): Promise<string | null | undefined> {
+  if (args.agent_id != null) return args.agent_id;
+  const sql = getDb();
+  if (args.action === 'create_from_version') {
+    if (!args.version_id) return undefined;
+    // Org-scope the lookup so a caller can't probe/clone another org's version.
+    const rows = await sql<{ agent_id: string | null }>`
+      SELECT w.agent_id
+      FROM watcher_versions wv JOIN watchers w ON w.id = wv.watcher_id
+      WHERE wv.id = ${Number(args.version_id)} AND w.organization_id = ${ctx.organizationId}
+      LIMIT 1
+    `;
+    return rows.length > 0 ? (rows[0].agent_id ?? null) : undefined;
+  }
+  // update / create_version / set_reaction_script: owner preserved from the target.
+  if (args.watcher_id != null) {
+    const rows = await sql<{ agent_id: string | null }>`
+      SELECT agent_id FROM watchers
+      WHERE id = ${Number(args.watcher_id)} AND organization_id = ${ctx.organizationId}
+      LIMIT 1
+    `;
+    return rows.length > 0 ? (rows[0].agent_id ?? null) : undefined;
+  }
+  return undefined;
+}
+
+/**
  * Enforce the `agent_config` write-gate for a watcher definition write. No-op for
  * read-only actions and for human members (whose decision is always 'allow').
  * A non-human principal is refused on `deny` AND on `require_approval` — there is
@@ -177,20 +217,21 @@ async function gateWatcherWrite(
     sessionWatcherId: ctx.actingWatcherId ?? null,
     sourceForMode: ctx.sourceContext?.source,
   });
-  // Escalation guard: a non-human caller must not set the watcher's OWNING AGENT
-  // (`agent_id`) to anyone but itself. Otherwise a reaction owned by restricted
-  // agent A could create/reassign a watcher to looser agent B — and every later
-  // write through that watcher would fold B's (looser) envelope instead of A's,
-  // side-stepping A's deny rules. Humans are ungoverned here and may assign freely.
-  if (
-    actor.kind !== 'user' &&
-    (action === 'create' || action === 'update') &&
-    args.agent_id != null
-  ) {
+  // Escalation guard: a non-human caller must not end up OWNING a watcher through
+  // another agent. A watcher's `agent_id` IS its policy principal, so if a reaction
+  // owned by restricted agent A could create/clone/edit a watcher that stays owned
+  // by looser agent B, every later write through that watcher would fold B's (looser)
+  // envelope instead of A's, side-stepping A's deny rules. We validate the EFFECTIVE
+  // owner — the owner the operation actually retains or creates — not merely a supplied
+  // `agent_id`: `create_from_version` inherits the SOURCE version's owner, and an
+  // `update`/`create_version`/`set_reaction_script` that omits agent_id PRESERVES the
+  // current owner. Humans are ungoverned here and may own/assign freely.
+  if (actor.kind !== 'user') {
     const ownAgentId = actor.ownerAgentId ?? actor.id;
-    if (args.agent_id !== ownAgentId) {
+    const effectiveOwner = await resolveEffectiveWatcherOwner(args, ctx);
+    if (effectiveOwner !== undefined && effectiveOwner !== ownAgentId) {
       throw new ToolUserError(
-        `A ${actor.kind} cannot assign a watcher to another agent — agent_id must be its own (${ownAgentId ?? 'none'}).`,
+        `A ${actor.kind} cannot own a watcher via another agent — its owner must be itself (${ownAgentId ?? 'none'}), not ${effectiveOwner ?? 'none'}.`,
         403,
       );
     }

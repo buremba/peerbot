@@ -86,14 +86,6 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 	},
 };
 
-/** True when `action` is one this class governs. */
-export function isLegalAction(
-	resourceClass: WriteResourceClass,
-	action: WriteAction,
-): boolean {
-	return WRITE_ACTION_MANIFEST[resourceClass].actions.includes(action);
-}
-
 /** True when `(action, effect)` is a legal pair for this class. */
 export function isLegalActionEffect(
 	resourceClass: WriteResourceClass,
@@ -116,11 +108,4 @@ export function defaultEffectFor(
 	const m = WRITE_ACTION_MANIFEST[resourceClass];
 	if (!m.actions.includes(action)) return "deny";
 	return m.defaultEffect[action];
-}
-
-/** The actions a class governs, for iterating a complete action set. */
-export function actionsFor(
-	resourceClass: WriteResourceClass,
-): readonly WriteAction[] {
-	return WRITE_ACTION_MANIFEST[resourceClass].actions;
 }

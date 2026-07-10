@@ -155,6 +155,16 @@ export interface EntityApprovalPolicyInput {
 	approvalChannelId?: string | null;
 	approvalTeamId?: string | null;
 	approvalChannelName?: string | null;
+	/**
+	 * When true, an UPDATE of an existing header PRESERVES its stored approval
+	 * delivery target instead of overwriting it with the (omitted → null) delivery
+	 * fields above. The effect-only permissions PUT sets this: it never carries
+	 * delivery, so without preservation each save would silently erase a configured
+	 * Slack connection/channel/team/name. The entity-settings path leaves it unset —
+	 * it always sends the delivery it wants and MEANS to write it (including clears).
+	 * On INSERT this flag is a no-op (a brand-new row has no prior target to keep).
+	 */
+	preserveDelivery?: boolean;
 }
 
 /**
@@ -487,12 +497,26 @@ function modeRestrictiveness(mode: EntityMutationMode): number {
 	return 1; // auto
 }
 
-/** The more-restrictive of two modes (deny/disabled > approval > auto). */
+/**
+ * The more-restrictive of two modes (deny/disabled > approval > auto).
+ *
+ * `deny` and `disabled` are equally restrictive (both stop the write), so a fold
+ * that mixes them must pick one DETERMINISTICALLY — not by candidate order, which
+ * would make the resolved effect depend on scope specificity and diverge from what
+ * the UI (which folds the same rows without that ordering) shows. We break the tie
+ * toward `deny`: it is the safer, more-visible outcome — `list_available` still
+ * SURFACES the op and gates it, rather than silently hiding it as `disabled` does.
+ * The UI mirrors this exact rule (see EFFECT_STRICTNESS + stricterEffect).
+ */
 function moreRestrictive(
 	a: EntityMutationMode,
 	b: EntityMutationMode,
 ): EntityMutationMode {
-	return modeRestrictiveness(a) >= modeRestrictiveness(b) ? a : b;
+	const ra = modeRestrictiveness(a);
+	const rb = modeRestrictiveness(b);
+	if (ra !== rb) return ra > rb ? a : b;
+	// Equal rank: only deny/disabled tie here; prefer deny deterministically.
+	return a === "deny" || b === "deny" ? "deny" : a;
 }
 
 /**
@@ -1064,6 +1088,11 @@ export async function upsertEntityApprovalPolicy(
 	const approvalChannelId = input.approvalChannelId?.trim() || null;
 	const approvalTeamId = input.approvalTeamId?.trim() || null;
 	const approvalChannelName = input.approvalChannelName?.trim() || null;
+	// Effect-only callers (the permissions PUT) don't carry a delivery target and
+	// must not clobber the one already stored. When preserveDelivery is set, COALESCE
+	// each column to its existing value so an omitted (null) field keeps the header's
+	// current target; a caller that MEANS to write delivery leaves the flag unset.
+	const preserveDelivery = input.preserveDelivery === true;
 
 	const sql = getDb();
 	// Upsert the header row (scope/principal/delivery only — effects live in the
@@ -1071,10 +1100,18 @@ export async function upsertEntityApprovalPolicy(
 	// UPDATE arms so the "lost the insert race" recovery targets the same row.
 	const applyUpdate = (tx: DbClient) => tx<EntityApprovalPolicyRow>`
       UPDATE write_approval_policies
-      SET approval_connection_id = ${approvalConnectionId},
-          approval_channel_id = ${approvalChannelId},
-          approval_team_id = ${approvalTeamId},
-          approval_channel_name = ${approvalChannelName},
+      SET approval_connection_id = ${
+				preserveDelivery ? sql`COALESCE(approval_connection_id, ${approvalConnectionId})` : approvalConnectionId
+			},
+          approval_channel_id = ${
+						preserveDelivery ? sql`COALESCE(approval_channel_id, ${approvalChannelId})` : approvalChannelId
+					},
+          approval_team_id = ${
+						preserveDelivery ? sql`COALESCE(approval_team_id, ${approvalTeamId})` : approvalTeamId
+					},
+          approval_channel_name = ${
+						preserveDelivery ? sql`COALESCE(approval_channel_name, ${approvalChannelName})` : approvalChannelName
+					},
           updated_at = now()
       WHERE organization_id = ${organizationId}
         AND resource_class = ${resourceClass}

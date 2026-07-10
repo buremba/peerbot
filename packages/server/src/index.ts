@@ -1631,10 +1631,22 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	// managed on the entity/field surfaces, not this agent matrix.
 	const typeScoped = (p: EntityApprovalPolicy) =>
 		p.fieldPath === null && p.entityId === null;
-	// Floor = any-principal rows (principal_kind NULL). Agent = rows pinned to this
-	// agent id. A watcher-kind row is NOT the agent's envelope (watchers inherit
-	// the agent envelope in autonomous mode; they have no separate principal here).
-	const floor = all.filter((p) => p.principalKind === null && typeScoped(p));
+	// Floor = the non-loosenable baseline this agent inherits. TWO kinds of row bind
+	// it (both fold into the write-gate for this agent via loadCandidatePolicies, and
+	// neither is editable on THIS per-agent surface):
+	//  - any-principal rows (principal_kind NULL) — the org-wide floor, and
+	//  - KIND-WIDE agent rows (principal_kind 'agent', principal_id NULL) — an
+	//    "all agents" policy that applies to every agent. Omitting these made the
+	//    matrix show/permit values LOOSER than the resolver enforces.
+	// Agent = rows pinned to THIS agent id (the editable overrides). A watcher-kind
+	// row is NOT the agent's envelope (watchers inherit the agent envelope in
+	// autonomous mode; they have no separate principal here).
+	const floor = all.filter(
+		(p) =>
+			typeScoped(p) &&
+			(p.principalKind === null ||
+				(p.principalKind === "agent" && p.principalId === null)),
+	);
 	const agent = all.filter(
 		(p) =>
 			p.principalKind === "agent" &&
@@ -1746,6 +1758,8 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		principalMode,
 		entityTypeSlug,
 		effects,
+		// Effect-only endpoint: keep any approval delivery target already on the row.
+		preserveDelivery: true,
 	});
 	invalidationEmitter.emit(organizationId, {
 		keys: ["entity-approval-policy"],

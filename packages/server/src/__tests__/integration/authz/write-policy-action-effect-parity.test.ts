@@ -228,6 +228,36 @@ describe("write-policy action/effect decision parity", () => {
 		).toBe("allow");
 	});
 
+	it("connector_action: org disabled + exact-agent deny resolves deny deterministically (codex-7)", async () => {
+		// deny and disabled are equally restrictive; the fold must pick ONE regardless
+		// of candidate/scope order, or the resolved effect (and list_available's
+		// hide-vs-surface behavior) becomes order-dependent and diverges from the UI.
+		// We break the tie toward deny — it still SURFACES the op and gates it.
+		await seedPolicy({
+			orgId,
+			resourceClass: "connector_action",
+			principalKind: null, // org-wide
+			effects: [{ action: "execute", effect: "disabled" }],
+		});
+		await seedPolicy({
+			orgId,
+			resourceClass: "connector_action",
+			principalKind: "agent",
+			principalId: "agent_tie",
+			effects: [{ action: "execute", effect: "deny" }],
+		});
+		const base = {
+			organizationId: orgId,
+			resourceClass: "connector_action" as const,
+			principalKind: "agent" as const,
+			principalId: "agent_tie",
+			action: "execute" as const,
+		};
+		// The raw effect resolves deny (not disabled), so list_available surfaces it.
+		expect(await resolveWriteEffect(base)).toBe("deny");
+		expect(await resolveWritePolicyDecision(base)).toBe("deny");
+	});
+
 	it("fail-closed: a stored effect illegal for the class resolves to deny, not the default", async () => {
 		// 'disabled' is legal only for connector_action; an entity row carrying it
 		// is corrupt/forward data and must fail closed, not read as the create=auto default.

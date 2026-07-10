@@ -413,4 +413,41 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 		// Exactly one child effect row — create/update absent (abstaining).
 		expect(stored?.effects).toEqual({ delete: "deny" });
 	});
+
+	it("preserveDelivery keeps a stored approval target across an effect-only update (codex-7)", async () => {
+		// First save configures a delivery target (as the entity-settings path would).
+		await upsertEntityApprovalPolicy(orgId, {
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-deliv",
+			effects: { create: "approval" },
+			approvalConnectionId: "conn_slack",
+			approvalChannelId: "chan_ops",
+			approvalTeamId: "T123",
+			approvalChannelName: "#ops",
+		});
+		// The effect-only permissions PUT re-saves with NO delivery fields but
+		// preserveDelivery set — the stored target must survive.
+		const updated = await upsertEntityApprovalPolicy(orgId, {
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-deliv",
+			effects: { create: "deny" },
+			preserveDelivery: true,
+		});
+		expect(updated.deliveryTarget.connectionId).toBe("conn_slack");
+		expect(updated.deliveryTarget.channelId).toBe("chan_ops");
+		expect(updated.effects).toEqual({ create: "deny" });
+
+		// Without preserveDelivery, an omitted delivery still CLEARS it (the
+		// entity-settings path means what it sends).
+		const cleared = await upsertEntityApprovalPolicy(orgId, {
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-deliv",
+			effects: { create: "approval" },
+		});
+		expect(cleared.deliveryTarget.connectionId).toBeNull();
+		expect(cleared.deliveryTarget.channelId).toBeNull();
+	});
 });

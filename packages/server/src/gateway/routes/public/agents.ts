@@ -165,9 +165,13 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       const agents = [];
       for (const agentId of agentIds) {
         const metadata = await config.agentMetadataStore.getMetadata(agentId);
-        if (metadata) {
-          const bindings =
-            await config.channelBindingService.listBindings(agentId);
+        // An agent id is unique only within its org; skip (rather than list
+        // cross-org) if the agent has no resolvable org.
+        if (metadata?.organizationId) {
+          const bindings = await config.channelBindingService.listBindings(
+            agentId,
+            metadata.organizationId
+          );
           agents.push({
             agentId,
             name: metadata.name,
@@ -253,9 +257,24 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
         const ownerPlatform = access.ownerPlatform;
         const ownerUserId = access.ownerUserId;
 
+        // Resolve the agent's own org — an agent id is unique only within its
+        // org (the per-org "lobu-builder" shares one id across tenants), so the
+        // unbind must be org-scoped or it would wipe a same-named agent's
+        // bindings in another tenant. `access.organizationId` is the ownership-
+        // resolved org; fall back to the agent row's own org for admin bypass.
+        const metadata = await config.agentMetadataStore.getMetadata(agentId);
+        const organizationId =
+          access.organizationId ?? metadata?.organizationId;
+        if (!organizationId) {
+          return errorResponse(c, "Agent has no organization", 400);
+        }
+
         // Auto-unbind all channels
         const unboundCount =
-          await config.channelBindingService.deleteAllBindings(agentId);
+          await config.channelBindingService.deleteAllBindings(
+            agentId,
+            organizationId
+          );
 
         // Delete settings
         await config.agentSettingsStore.deleteSettings(agentId);

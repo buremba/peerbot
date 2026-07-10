@@ -1,7 +1,7 @@
 import { createLogger } from "@lobu/core";
 import { type DbClient, getDb, tsTime } from "../../db/client.js";
 import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection.js";
-import { requireOrgId, resolveOrgId } from "../../lobu/stores/org-context.js";
+import { requireOrgId } from "../../lobu/stores/org-context.js";
 import {
 	resolveStreamingChannelFeedId,
 	softDeleteStreamingChannelFeed,
@@ -218,36 +218,38 @@ export class ChannelBindingService {
 
 	async listBindings(
 		agentId: string,
-		organizationId?: string,
+		organizationId: string,
 	): Promise<ChannelBinding[]> {
 		const sql = getDb();
-		const orgId = resolveOrgId(organizationId);
-		const rows = orgId
-			? await sql`
+		// Org is REQUIRED: an agent id is unique only WITHIN an org (the
+		// per-org "lobu-builder" system agent has the SAME id across ~20 orgs),
+		// so an org-less `WHERE agent_id = …` would smear every tenant's
+		// bindings for that id into one caller's view.
+		const orgId = requireOrgId(
+			organizationId,
+			"ChannelBindingService.listBindings",
+		);
+		const rows = await sql`
           SELECT * FROM agent_channel_bindings
           WHERE agent_id = ${agentId} AND organization_id = ${orgId}
-        `
-			: await sql`
-          SELECT * FROM agent_channel_bindings WHERE agent_id = ${agentId}
         `;
 		return rows.map(rowToBinding);
 	}
 
 	async deleteAllBindings(
 		agentId: string,
-		organizationId?: string,
+		organizationId: string,
 	): Promise<number> {
 		const sql = getDb();
-		const orgId = resolveOrgId(organizationId);
-		const rows = orgId
-			? await sql`
+		// Org is REQUIRED — see listBindings. An org-less DELETE would wipe
+		// every tenant's bindings for a shared agent id (e.g. "lobu-builder").
+		const orgId = requireOrgId(
+			organizationId,
+			"ChannelBindingService.deleteAllBindings",
+		);
+		const rows = await sql`
           DELETE FROM agent_channel_bindings
           WHERE agent_id = ${agentId} AND organization_id = ${orgId}
-          RETURNING platform, channel_id, team_id, connection_id
-        `
-			: await sql`
-          DELETE FROM agent_channel_bindings
-          WHERE agent_id = ${agentId}
           RETURNING platform, channel_id, team_id, connection_id
         `;
 		logger.info(`Deleted ${rows.length} bindings for agent ${agentId}`);

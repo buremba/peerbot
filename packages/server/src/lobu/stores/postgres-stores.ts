@@ -7,6 +7,7 @@ import type {
 import { getDb, tsTime, tsTimeOrNull } from "../../db/client";
 import { recordLifecycleEvent } from "../../utils/insert-event";
 import {
+	chatTenantAdvisoryLockKey,
 	connectionsRowToStored,
 	runtimeConnectionIdToSlug,
 	softDeleteChatConnectionProjection,
@@ -348,6 +349,22 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			// defeat the cross-replica serialization.
 			await sql.begin(async (tx: typeof sql) => {
 				const configToPersist = { ...connection.config };
+				// Global lock order for chat-connection writes: tenant ADVISORY lock
+				// first, THEN `connections` row locks. The projection writer (also
+				// reached via the managed Slack reinstall path, in ITS own txn) is
+				// advisory → row; if this txn took the row lock below (FOR UPDATE)
+				// and only then reached the projection's advisory lock, a concurrent
+				// fallback-agent update + workspace reinstall would deadlock
+				// (row→advisory here vs advisory→row there). Same guard + key as the
+				// projection (chatTenantAdvisoryLockKey — the connection passed on is
+				// identical in status/platform/metadata); pg_advisory_xact_lock is
+				// reentrant, so the projection re-acquiring it below is a no-op.
+				const tenantLockKey = chatTenantAdvisoryLockKey(connection, orgId);
+				if (tenantLockKey) {
+					await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+						tenantLockKey,
+					]);
+				}
 				// Scope to the LIVE row only, and lock it. Slug uniqueness holds
 				// solely for live rows (the projection's ON CONFLICT targets the
 				// `WHERE deleted_at IS NULL` partial index), so a same-slug

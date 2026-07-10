@@ -87,6 +87,9 @@ describe("manage_connections update — chat fallback agent_id", () => {
 	let dataConnectionId: number;
 	let managedConnectionId: number;
 	let manager: ChatInstanceManager;
+	let connStore: ReturnType<typeof createPostgresAgentConnectionStore>;
+	let installStore: ReturnType<typeof createPostgresAppInstallationStore>;
+	let managedSecretStore: SecretStoreRegistry;
 
 	beforeAll(async () => {
 		process.env.ENCRYPTION_KEY = ENCRYPTION_KEY;
@@ -97,10 +100,10 @@ describe("manage_connections update — chat fallback agent_id", () => {
 
 		// Real manager + real Postgres store, injected via the test seam — the
 		// full persistence chain (manager → store → connections projection) runs.
-		const store = createPostgresAgentConnectionStore();
+		connStore = createPostgresAgentConnectionStore();
 		manager = new ChatInstanceManager();
 		(manager as unknown as { connectionStore: unknown }).connectionStore =
-			store;
+			connStore;
 		const pss = new PostgresSecretStore();
 		(manager as unknown as { services: unknown }).services = {
 			getSecretStore: () => new SecretStoreRegistry(pss, { secret: pss }),
@@ -109,7 +112,7 @@ describe("manage_connections update — chat fallback agent_id", () => {
 
 		// A BYO chat connection whose fallback agent starts as agentA.
 		await orgContext.run({ organizationId: orgId }, () =>
-			store.saveConnection({
+			connStore.saveConnection({
 				id: RUNTIME_ID,
 				platform: "slack",
 				agentId: agentA,
@@ -145,8 +148,8 @@ describe("manage_connections update — chat fallback agent_id", () => {
 		// on it (no full config), so `update` must set its fallback agent WITHOUT
 		// reclassifying it to BYO.
 		const pss2 = new PostgresSecretStore();
-		const managedSecretStore = new SecretStoreRegistry(pss2, { secret: pss2 });
-		const installStore = createPostgresAppInstallationStore();
+		managedSecretStore = new SecretStoreRegistry(pss2, { secret: pss2 });
+		installStore = createPostgresAppInstallationStore();
 		const installRow = await upsertSlackInstallByTeam(
 			installStore,
 			managedSecretStore,
@@ -433,4 +436,152 @@ describe("manage_connections update — chat fallback agent_id", () => {
 			expect(mode).toBe("managed");
 		});
 	});
+
+	it("a managed reinstall preserves the configured fallback agent_id; explicit null still clears", async () => {
+		// Configure the fallback via the real update path — the exact scenario
+		// PR1 exists for.
+		const set = (await workspace.owner.connections.update({
+			connection_id: managedConnectionId,
+			agent_id: agentA,
+		})) as { error?: string };
+		expect(set.error).toBeUndefined();
+		expect(await agentIdOf(managedConnectionId)).toBe(agentA);
+
+		// The workspace reinstalls (same team, fresh token). A reinstall carries
+		// NO agent-routing intent, so it must not touch the fallback.
+		await upsertSlackInstallByTeam(
+			installStore,
+			managedSecretStore,
+			orgId,
+			"TMANAGED1",
+			{
+				teamName: "Managed Co",
+				botUserId: "U-MGD",
+				botToken: "xoxb-managed-reinstalled",
+			},
+		);
+		expect(await agentIdOf(managedConnectionId)).toBe(agentA);
+		// Still the same live row, still managed.
+		expect((await connRow(managedConnectionId)).credential_mode).toBe(
+			"managed",
+		);
+
+		// An EXPLICIT clear (agent_id: null) must still null the column — the
+		// preserve applies only to writes that carry no agent_id intent.
+		const clear = (await workspace.owner.connections.update({
+			connection_id: managedConnectionId,
+			agent_id: null,
+		})) as { error?: string };
+		expect(clear.error).toBeUndefined();
+		expect(await agentIdOf(managedConnectionId)).toBeNull();
+
+		// …and a reinstall on an intentionally-cleared fallback keeps it cleared
+		// (preserve must not resurrect a value from nowhere).
+		await upsertSlackInstallByTeam(
+			installStore,
+			managedSecretStore,
+			orgId,
+			"TMANAGED1",
+			{
+				teamName: "Managed Co",
+				botUserId: "U-MGD",
+				botToken: "xoxb-managed-reinstalled-2",
+			},
+		);
+		expect(await agentIdOf(managedConnectionId)).toBeNull();
+	});
+
+	it("saveConnection takes the tenant advisory lock BEFORE the row lock (no deadlock against a managed reinstall)", async () => {
+		// Lock-order contract: every chat-connection write path acquires the
+		// tenant ADVISORY lock first, THEN connections row locks. The managed
+		// reinstall path (upsertChatConnectionProjection) is advisory → row;
+		// if saveConnection row-locked first (FOR UPDATE) and only then reached
+		// the projection's advisory lock, a concurrent update + reinstall would
+		// deadlock. This test holds the advisory lock the way a reinstall does,
+		// runs the REAL saveConnection until it blocks on that lock, then takes
+		// the row lock the reinstall would take next: with the inverted order
+		// saveConnection already holds the row ⇒ Postgres aborts one txn with
+		// "deadlock detected"; with the fixed order it holds nothing ⇒ clean.
+		const sql = getDb();
+		const runtimeId = "agentfb-lockorder-1";
+		const lockSlug = `agentconn-${runtimeId}`;
+		const teamId = "TLOCK1";
+		const seed = (agentId: string) => ({
+			id: runtimeId,
+			platform: "slack",
+			agentId,
+			organizationId: orgId,
+			config: { platform: "slack", botToken: "secret://lockorder-1" },
+			settings: { allowGroups: true },
+			metadata: { teamId, teamName: "Lock Order" },
+			status: "active" as const,
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+		});
+		await orgContext.run({ organizationId: orgId }, () =>
+			connStore.saveConnection(seed(agentA)),
+		);
+
+		// Same key derivation as chatTenantAdvisoryLockKey / the projection.
+		const lockKey = `chatconn:${orgId}:slack:${teamId}`;
+		// int8 advisory locks surface in pg_locks as classid = high 32 bits,
+		// objid = low 32 bits of the (sign-extended) hashtext key.
+		const waitingOnAdvisory = async (): Promise<boolean> => {
+			const rows = (await sql`
+				WITH k AS (SELECT hashtext(${lockKey})::bigint AS key)
+				SELECT 1 FROM pg_locks, k
+				WHERE locktype = 'advisory' AND NOT granted
+				  AND classid::bigint = ((k.key >> 32) & 4294967295)
+				  AND objid::bigint = (k.key & 4294967295)
+			`) as unknown[];
+			return rows.length > 0;
+		};
+
+		let advisoryHeld!: () => void;
+		const advisoryHeldGate = new Promise<void>((resolve) => {
+			advisoryHeld = resolve;
+		});
+		let reinstallProceed!: () => void;
+		const reinstallGate = new Promise<void>((resolve) => {
+			reinstallProceed = resolve;
+		});
+
+		// T2 — the reinstall's exact lock sequence: advisory tenant lock, then
+		// the connections row.
+		const reinstallTxn = sql.begin(async (tx: typeof sql) => {
+			await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+				lockKey,
+			]);
+			advisoryHeld();
+			await reinstallGate;
+			await tx`
+				UPDATE connections SET updated_at = now()
+				WHERE organization_id = ${orgId} AND slug = ${lockSlug}
+				  AND deleted_at IS NULL
+			`;
+		});
+		await advisoryHeldGate;
+
+		// T1 — the REAL fallback-agent update write path.
+		const updateTxn = orgContext.run({ organizationId: orgId }, () =>
+			connStore.saveConnection(seed(agentB)),
+		);
+
+		// Wait until T1 is provably blocked on the advisory lock T2 holds.
+		for (let i = 0; i < 200 && !(await waitingOnAdvisory()); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		expect(await waitingOnAdvisory()).toBe(true);
+
+		// Now T2 takes its row lock. Inverted order ⇒ deadlock detected here.
+		reinstallProceed();
+		await reinstallTxn;
+		await updateTxn;
+
+		const rows = (await sql`
+			SELECT agent_id FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${lockSlug}
+		`) as Array<{ agent_id: string | null }>;
+		expect(rows[0]?.agent_id).toBe(agentB);
+	}, 30_000);
 });

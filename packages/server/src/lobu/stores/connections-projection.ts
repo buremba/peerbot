@@ -115,6 +115,30 @@ export function connectionsRowToStored(
 }
 
 /**
+ * Advisory-lock key for a chat connection's tenant tuple — the FIRST lock in
+ * the global lock order for chat-connection writes (tenant advisory lock →
+ * `connections` row locks). Returns null when the write is not a tenant-bound
+ * activation (paused / tenantless), in which case no advisory lock is taken
+ * anywhere on the path. Every writer that row-locks a chat connection row
+ * (saveConnection's `FOR UPDATE`, this module's upsert/demote) must derive its
+ * guard AND key from THIS helper so the two can never drift — a writer that
+ * row-locks first and only then reaches the advisory lock inverts the order
+ * and deadlocks against a concurrent managed reinstall.
+ */
+export function chatTenantAdvisoryLockKey(
+  conn: StoredConnection,
+  orgId: string,
+): string | null {
+  const rawTeamId = conn.metadata?.teamId;
+  const externalTenantId =
+    typeof rawTeamId === "string" && rawTeamId.length > 0 ? rawTeamId : null;
+  return legacyStatusToConnections(conn.status) === "active" &&
+    externalTenantId
+    ? `chatconn:${orgId}:${conn.platform}:${externalTenantId}`
+    : null;
+}
+
+/**
  * Write-through: upsert the `connections` projection of a chat connection by
  * (org, slug), INSIDE the caller's transaction so a crash can never diverge the
  * two sources. The folded `config` carries the adapter config (with `secret://`
@@ -131,6 +155,15 @@ export function connectionsRowToStored(
  *
  * `sql` is the transaction handle; `jsonOf` builds a json-bound param from the
  * outer sql instance (postgres.js `sql.json`).
+ *
+ * `opts.preserveAgentId`: the fallback `agent_id` is ROUTING state set by an
+ * admin (`manage_connections update`), not connection state the caller owns —
+ * a managed reinstall re-persists tokens/config but carries NO agent-routing
+ * intent, and `StoredConnection.agentId === undefined` cannot distinguish
+ * "no intent" from an explicit clear (the manager deletes the key on clear).
+ * So the caller declares intent: with `preserveAgentId` the conflict UPDATE
+ * keeps the existing row's `agent_id` (a fresh insert still starts NULL);
+ * without it, `agent_id` is written from `conn.agentId` (set or clear).
  */
 export async function upsertChatConnectionProjection(
   sql: any,
@@ -138,12 +171,14 @@ export async function upsertChatConnectionProjection(
   conn: StoredConnection,
   orgId: string,
   credentialMode: ChatCredentialMode,
+  opts?: { preserveAgentId?: boolean },
 ): Promise<void> {
   const slug = runtimeConnectionIdToSlug(conn.id);
   const status = legacyStatusToConnections(conn.status);
   const rawTeamId = conn.metadata?.teamId;
   const externalTenantId =
     typeof rawTeamId === "string" && rawTeamId.length > 0 ? rawTeamId : null;
+  const tenantLockKey = chatTenantAdvisoryLockKey(conn, orgId);
   const displayName =
     (typeof conn.metadata?.teamName === "string" && conn.metadata.teamName) ||
     conn.platform;
@@ -155,7 +190,7 @@ export async function upsertChatConnectionProjection(
 
   if (status === "active" && externalTenantId) {
     await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
-      `chatconn:${orgId}:${conn.platform}:${externalTenantId}`,
+      tenantLockKey,
     ]);
     const demoted = await sql`
       UPDATE connections SET status = 'paused', updated_at = now()
@@ -233,7 +268,11 @@ export async function upsertChatConnectionProjection(
     ON CONFLICT (organization_id, slug) WHERE deleted_at IS NULL DO UPDATE SET
       connector_key = EXCLUDED.connector_key,
       external_tenant_id = EXCLUDED.external_tenant_id,
-      agent_id = EXCLUDED.agent_id,
+      agent_id = ${
+        opts?.preserveAgentId
+          ? sql`connections.agent_id`
+          : sql`EXCLUDED.agent_id`
+      },
       display_name = EXCLUDED.display_name,
       status = EXCLUDED.status,
       config = EXCLUDED.config,

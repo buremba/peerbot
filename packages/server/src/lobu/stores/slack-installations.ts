@@ -302,12 +302,17 @@ export async function upsertSlackInstallByTeam(
     };
     const db = getDb();
     await db.begin(async (tx: typeof db) => {
+      // preserveAgentId: an install/reinstall (re)persists tokens + config but
+      // carries NO agent-routing intent — the fallback `agent_id` is set by an
+      // admin via manage_connections update. Without the flag, this upsert
+      // would clobber the configured fallback to NULL on every reinstall.
       await upsertChatConnectionProjection(
         tx,
         (v) => db.json(v),
         projection,
         organizationId,
-        "managed"
+        "managed",
+        { preserveAgentId: true }
       );
     });
 

@@ -11,6 +11,8 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
+import { CrossOrgTransferBlockedError } from "../../lobu/stores/app-installation-store.js";
+import { ClaimMoveBlockedError } from "../connections/connection-claim.js";
 import { slackClaimProvider } from "../connections/slack-claim.js";
 import type { SlackClaimProviderDeps } from "../connections/slack-claim.js";
 import type { SlackPendingInstall } from "../../lobu/stores/slack-installations.js";
@@ -208,5 +210,39 @@ describe("slackClaimProvider.bind", () => {
     const { deps, claim } = makeDeps();
     await slackClaimProvider(deps).bind(pendingInstall(), "org-1", "user-1", true);
     expect(claim.mock.calls[0]![2]).toBe(true);
+  });
+
+  test("translates a store CrossOrgTransferBlockedError into ClaimMoveBlockedError carrying the other org", async () => {
+    // The atomic (raced) path: deps.claim throws the store-specific error; the
+    // adapter must re-resolve the incumbent org and rethrow the engine's
+    // provider-agnostic ClaimMoveBlockedError so the engine returns a 409.
+    const resolveActiveBindingElsewhere = mock(async () => ({
+      orgSlug: "incumbent",
+      orgName: "Incumbent Org",
+    }));
+    const { deps } = makeDeps({
+      resolveActiveBindingElsewhere,
+      claim: mock(async () => {
+        throw new CrossOrgTransferBlockedError("org-incumbent");
+      }),
+    });
+    const pending = pendingInstall({ enterpriseId: "E-GRID" });
+    let thrown: unknown;
+    try {
+      await slackClaimProvider(deps).bind(pending, "org-target", "user-1", false);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ClaimMoveBlockedError);
+    expect((thrown as ClaimMoveBlockedError).existing).toEqual({
+      orgSlug: "incumbent",
+      orgName: "Incumbent Org",
+    });
+    // Re-resolved against the pending's team + enterprise + target org.
+    expect(resolveActiveBindingElsewhere).toHaveBeenCalledWith(
+      TEAM,
+      "E-GRID",
+      "org-target",
+    );
   });
 });

@@ -969,6 +969,17 @@ describe("Grid install-model routing (per-workspace + org-wide enterprise)", () 
       `;
       expect(releasedPending[0]?.organization_id).toBeNull();
 
+      // FIX 2: the fenced claim token-first persisted a bot token under a minted
+      // slackinst- id in the REFUSED org's bucket; it must be purged, not leaked.
+      const { orgContext } = await import("../../../lobu/stores/org-context.js");
+      const refusedOrgSecrets = await orgContext.run(
+        { organizationId: "org-claim-fence-b" },
+        () => secretStore.list("installations/"),
+      );
+      expect(
+        refusedOrgSecrets.filter((s) => s.name.startsWith("installations/slackinst-")),
+      ).toHaveLength(0);
+
       // (c) A deliberate claim WITH confirmMove moves the workspace to org B.
       const pendingC = await slack.resolveSlackPendingByTenant("T_CLAIM_FENCE");
       await slack.claimSlackPendingInstall(
@@ -984,6 +995,123 @@ describe("Grid install-model routing (per-workspace + org-wide enterprise)", () 
       expect((await slack.getSlackInstallById(store, boundA.installationId))?.status).toBe(
         "stopped",
       );
+    });
+
+    // FIX 1: Grid cross-key. Org A holds a per-workspace install (tuple keyed on
+    // the TEAM id) carrying enterprise_id=E; a fence-active claim of the ORG-WIDE
+    // pending (tuple keyed on the ENTERPRISE id) into org B touches a DIFFERENT
+    // tuple, so the tuple lock/guard alone would miss it. The enterprise-keyed
+    // fence arm must still refuse it.
+    test("a cross-key Grid claim (enterprise-id tuple vs team-id tuple) is fenced", async () => {
+      await seedAgentRow("grid-a", { organizationId: "org-grid-a" });
+      await seedAgentRow("grid-b", { organizationId: "org-grid-b" });
+      const { store, secretStore, slack } = build();
+      const { CrossOrgTransferBlockedError } = await import(
+        "../../../lobu/stores/app-installation-store.js"
+      );
+
+      // org A: a per-workspace install of T_GRID_HOME under enterprise E_GRID.
+      await slack.upsertSlackInstallByTeam(store, secretStore, "org-grid-a", "T_GRID_HOME", {
+        botToken: "xoxb-grid-home",
+        enterpriseId: "E_GRID",
+      });
+
+      // A Grid ORG-WIDE pending keyed on the ENTERPRISE id (external_tenant_id=E_GRID).
+      await slack.writeSlackPendingInstall({
+        teamId: "E_GRID",
+        teamName: "Grid Wide",
+        botUserId: "U_BOT",
+        botToken: "xoxb-grid-wide",
+        installerUserId: "U_INSTALLER",
+        isEnterpriseInstall: true,
+        enterpriseId: "E_GRID",
+      });
+      const pendingWide = await slack.resolveSlackPendingByTenant("E_GRID", "E_GRID");
+      expect(pendingWide?.teamId).toBe("E_GRID");
+
+      // A naive (confirmMove=false) claim into org B must be refused by the
+      // enterprise-keyed fence arm, even though the tuples differ.
+      await expect(
+        slack.claimSlackPendingInstall(store, secretStore, pendingWide!, "org-grid-b"),
+      ).rejects.toBeInstanceOf(CrossOrgTransferBlockedError);
+      // org A's per-workspace install is untouched.
+      expect(
+        (await slack.getSlackInstallByTeamId(store, "T_GRID_HOME"))?.organizationId,
+      ).toBe("org-grid-a");
+    });
+
+    // FIX 1 (atomic): two CONCURRENT cross-key claims of the same enterprise into
+    // two orgs. Without the enterprise-keyed advisory lock they take different
+    // per-tuple locks and both read the fence as clear before either commits,
+    // silently binding two orgs. The shared metadata-group lock serializes them so
+    // at most one wins.
+    test("concurrent cross-key Grid claims into two orgs bind exactly one (atomic)", async () => {
+      await seedAgentRow("grid-race-a", { organizationId: "org-grid-race-a" });
+      await seedAgentRow("grid-race-b", { organizationId: "org-grid-race-b" });
+      const { store, secretStore, slack } = build();
+      const sql = getDb();
+
+      // org A: per-workspace install (team-id tuple) under E_RACE — NOT yet claimed
+      // by the racers; this is the incumbent the fence must protect.
+      await slack.upsertSlackInstallByTeam(store, secretStore, "org-grid-race-a", "T_RACE_HOME", {
+        botToken: "xoxb-race-home",
+        enterpriseId: "E_RACE",
+      });
+
+      // Two separate ORG-WIDE pendings (enterprise-id tuple) — one per racing org.
+      // (A real deploy has one pending; two lets both callers pass the durable
+      // pending-row claim and race into the activation fence, which is the path
+      // under test.)
+      await slack.writeSlackPendingInstall({
+        teamId: "E_RACE",
+        teamName: "Race Wide",
+        botUserId: "U_BOT",
+        botToken: "xoxb-race-wide",
+        installerUserId: "U_INSTALLER",
+        isEnterpriseInstall: true,
+        enterpriseId: "E_RACE",
+      });
+      const pending = await slack.resolveSlackPendingByTenant("E_RACE", "E_RACE");
+
+      // Delay one activation so both overlap inside the fence window.
+      await sql.unsafe(`
+        CREATE OR REPLACE FUNCTION public.test_delay_grid_race()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.organization_id = 'org-grid-race-a' THEN
+            PERFORM pg_sleep(0.5);
+          END IF;
+          RETURN NEW;
+        END;
+        $$
+      `);
+      await sql.unsafe(`
+        CREATE TRIGGER test_delay_grid_race
+        BEFORE INSERT OR UPDATE ON app_installations
+        FOR EACH ROW EXECUTE FUNCTION public.test_delay_grid_race()
+      `);
+      try {
+        const results = await Promise.allSettled([
+          slack.claimSlackPendingInstall(store, secretStore, pending!, "org-grid-race-a"),
+          slack.claimSlackPendingInstall(store, secretStore, pending!, "org-grid-race-b"),
+        ]);
+        const rejected = results.filter((r) => r.status === "rejected");
+        // At least one racer is fenced; neither silently co-binds a second org.
+        expect(rejected.length).toBeGreaterThanOrEqual(1);
+        // Exactly one active install exists for the enterprise across both orgs
+        // (the incumbent T_RACE_HOME, or a confirmed winner — never two).
+        const activeByEnt = await sql`
+          SELECT organization_id FROM app_installations
+          WHERE provider = 'slack'
+            AND status = 'active'
+            AND (external_tenant_id = 'E_RACE' OR metadata ->> 'enterprise_id' = 'E_RACE')
+        `;
+        const orgs = new Set(activeByEnt.map((r: { organization_id: string }) => r.organization_id));
+        expect(orgs.size).toBe(1);
+      } finally {
+        await sql.unsafe("DROP TRIGGER IF EXISTS test_delay_grid_race ON app_installations");
+        await sql.unsafe("DROP FUNCTION IF EXISTS public.test_delay_grid_race()");
+      }
     });
   });
 });

@@ -187,6 +187,15 @@ export async function upsertSlackInstallByTeam(
     const plannedId =
       (existing?.metadata.external_id as string | undefined) ?? candidateId;
 
+    // For a Grid claim, fence on the enterprise id too: an org-wide install keys
+    // on the enterprise id and a per-workspace install on the team id, so the
+    // store's per-tuple lock/guard would miss the counterpart. Only when we are
+    // actually blocking a transfer AND this is a Grid install.
+    const crossOrgFenceEnterpriseMatch =
+      data.blockCrossOrgTransfer && data.enterpriseId
+        ? { key: "enterprise_id", value: data.enterpriseId }
+        : undefined;
+
     // TOKEN FIRST — persist the bot token BEFORE any row is created/activated, so
     // the invariant "no active Slack install without a resolvable botToken" holds
     // even if this throws: on failure we simply never wrote/flipped a row. A
@@ -225,18 +234,41 @@ export async function upsertSlackInstallByTeam(
       return metadata;
     };
 
-    const row = await store.upsert({
-      organizationId,
-      provider: SLACK_PROVIDER,
-      providerInstance: SLACK_PROVIDER_INSTANCE,
-      providerAppId: SLACK_PROVIDER_APP_ID,
-      externalTenantId: teamId,
-      authProfileId: null,
-      status: "active",
-      metadata: buildMetadata(plannedId),
-      preserveMetadataKeysOnUpdate: ["external_id", "welcome_dm_sent"],
-      blockCrossOrgTransfer: data.blockCrossOrgTransfer,
-    });
+    let row: AppInstallationRow;
+    try {
+      row = await store.upsert({
+        organizationId,
+        provider: SLACK_PROVIDER,
+        providerInstance: SLACK_PROVIDER_INSTANCE,
+        providerAppId: SLACK_PROVIDER_APP_ID,
+        externalTenantId: teamId,
+        authProfileId: null,
+        status: "active",
+        metadata: buildMetadata(plannedId),
+        preserveMetadataKeysOnUpdate: ["external_id", "welcome_dm_sent"],
+        blockCrossOrgTransfer: data.blockCrossOrgTransfer,
+        crossOrgFenceMetadataMatch: crossOrgFenceEnterpriseMatch,
+      });
+    } catch (err) {
+      // The cross-org fence tripped AFTER we token-first persisted the bot token
+      // (above) but BEFORE any row was activated. The minted `plannedId` prefix is
+      // known only here, so purge its now-orphaned secret from THIS (refused) org's
+      // bucket rather than leaking a live token. Same-org scope as the put (we are
+      // inside orgContext.run). Best-effort — a leftover would be harmless (no row
+      // references it) but the whole point is to not leave a live token behind.
+      if (err instanceof CrossOrgTransferBlockedError) {
+        await deleteSecretsByPrefix(
+          secretStore,
+          `installations/${plannedId}/`
+        ).catch((cleanupError) => {
+          logger.warn(
+            { plannedId, teamId, error: String(cleanupError) },
+            "Failed to purge Slack token secret after cross-org fence block"
+          );
+        });
+      }
+      throw err;
+    }
     const canonicalId = row.metadata.external_id as string;
 
     // Concurrency reconciliation: if a racing first-install won the id (the store
@@ -264,6 +296,7 @@ export async function upsertSlackInstallByTeam(
         metadata: buildMetadata(canonicalId),
         preserveMetadataKeysOnUpdate: ["external_id", "welcome_dm_sent"],
         blockCrossOrgTransfer: data.blockCrossOrgTransfer,
+        crossOrgFenceMetadataMatch: crossOrgFenceEnterpriseMatch,
       });
       await deleteSecretsByPrefix(
         secretStore,

@@ -33,6 +33,22 @@ export interface ClaimForeignBinding {
   orgName: string | null;
 }
 
+/**
+ * A provider's `bind` throws this when its ATOMIC (under-lock) cross-org fence
+ * trips — the raced path the engine's sequential pre-check could not see (two
+ * concurrent claims both read null before either committed). The engine catches
+ * it and maps it to the SAME `already_connected_elsewhere` result the pre-check
+ * returns, so both paths yield a consistent 409 carrying the other org, never a
+ * 500 `claim_failed`. Provider-agnostic on purpose: the Slack adapter translates
+ * its store-specific `CrossOrgTransferBlockedError` into this.
+ */
+export class ClaimMoveBlockedError extends Error {
+  constructor(readonly existing: ClaimForeignBinding) {
+    super("Subject already actively bound in a different org (move not confirmed)");
+    this.name = "ClaimMoveBlockedError";
+  }
+}
+
 /** Terminal outcome of the bind (`claimPendingConnection`). */
 export type ClaimResult =
   | {
@@ -297,6 +313,11 @@ export async function claimPendingConnection<P>(
     const orgSlug = await deps.resolveOrgSlug(organizationId);
     return { status: "ok", orgSlug, bindingId };
   } catch (err) {
+    // The atomic (under-lock) fence in the provider's bind tripped on the raced
+    // path — surface the SAME explicit outcome as the pre-check, not a 500.
+    if (err instanceof ClaimMoveBlockedError) {
+      return { status: "already_connected_elsewhere", existing: err.existing };
+    }
     return {
       status: "claim_failed",
       message: err instanceof Error ? err.message : String(err),

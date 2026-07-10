@@ -1,8 +1,10 @@
+import { CrossOrgTransferBlockedError } from "../../lobu/stores/app-installation-store.js";
 import type { SlackPendingInstall } from "../../lobu/stores/slack-installations.js";
-import type {
-  ClaimAuthorization,
-  ClaimForeignBinding,
-  ClaimProvider,
+import {
+  type ClaimAuthorization,
+  type ClaimForeignBinding,
+  type ClaimProvider,
+  ClaimMoveBlockedError,
 } from "./connection-claim.js";
 import type { SlackWebApi } from "./slack-web.js";
 
@@ -139,12 +141,32 @@ export function slackClaimProvider(
       ),
     authorize: (userId, pending) => authorizeSlackClaim(deps, userId, pending),
     bind: async (pending, organizationId, _userId, confirmMove) => {
-      const { installationId } = await deps.claim(
-        pending,
-        organizationId,
-        confirmMove,
-      );
-      return { bindingId: installationId };
+      try {
+        const { installationId } = await deps.claim(
+          pending,
+          organizationId,
+          confirmMove,
+        );
+        return { bindingId: installationId };
+      } catch (err) {
+        // The store's ATOMIC fence tripped on the raced path (the sequential
+        // pre-check saw null). Translate the store-specific error into the
+        // engine's provider-agnostic ClaimMoveBlockedError so the raced path
+        // returns the SAME `already_connected_elsewhere` 409 as the pre-check,
+        // carrying the other org (still resolvable — the fenced claim released
+        // its own pending row, leaving the incumbent active row intact).
+        if (err instanceof CrossOrgTransferBlockedError) {
+          const existing = await deps.resolveActiveBindingElsewhere(
+            pending.teamId,
+            pending.enterpriseId,
+            organizationId,
+          );
+          throw new ClaimMoveBlockedError(
+            existing ?? { orgSlug: null, orgName: null },
+          );
+        }
+        throw err;
+      }
     },
   };
 }

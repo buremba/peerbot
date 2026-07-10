@@ -13,6 +13,7 @@ import {
   type ClaimEligibleOrg,
   type ClaimEngineDeps,
   type ClaimForeignBinding,
+  ClaimMoveBlockedError,
   type ClaimProvider,
   claimHttpStatus,
   claimPendingConnection,
@@ -216,6 +217,27 @@ describe("claimPendingConnection", () => {
 
     test("fence maps to 409 in the HTTP layer", () => {
       expect(claimHttpStatus("already_connected_elsewhere")).toBe(409);
+    });
+
+    test("atomic-guard trip in bind maps to already_connected_elsewhere, NOT claim_failed", async () => {
+      // The raced path: the sequential pre-check saw null (foreign binding not yet
+      // committed), so bind runs — and its atomic under-lock fence trips, throwing
+      // ClaimMoveBlockedError. The engine must surface the SAME 409 outcome as the
+      // pre-check, carrying the other org, never a 500 claim_failed.
+      const racedBind = mock(async () => {
+        throw new ClaimMoveBlockedError(foreign);
+      });
+      const { provider } = makeProvider({
+        // Pre-check misses (simulating the race), bind's atomic fence catches it.
+        resolveActiveBindingElsewhere: mock(async () => null),
+        bind: racedBind,
+      });
+      const result = await claimPendingConnection(provider, makeDeps(), input);
+      expect(result).toEqual({
+        status: "already_connected_elsewhere",
+        existing: foreign,
+      });
+      expect(racedBind).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -15,7 +15,10 @@ function stubSql(ownerAgentId: string | null): DbClient {
 }
 
 describe("resolveActingPrincipal", () => {
-	it("a trusted agent wins over any watcher channel (can't spoof a watcher tag)", async () => {
+	it("a watcher channel wins over the agent id — it only tightens (folds the owner)", async () => {
+		// Resolving to a watcher is strictly MORE restrictive than the agent alone:
+		// it folds the owning agent's rows on top. So even with an agentId present,
+		// a watcher channel binds the watcher — there's no way to escape agent policy.
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			agentId: "agent-1",
 			explicitWatcherId: 7,
@@ -23,10 +26,11 @@ describe("resolveActingPrincipal", () => {
 			sourceForMode: "direct-api",
 		});
 		expect(actor).toEqual({
-			kind: "agent",
-			id: "agent-1",
-			ownerAgentId: null,
-			mode: "attended",
+			kind: "watcher",
+			// The trusted SESSION watcher (9) wins over the caller-supplied tag (7).
+			id: "watcher:9",
+			ownerAgentId: "owner-agent",
+			mode: "autonomous",
 		});
 	});
 
@@ -57,12 +61,12 @@ describe("resolveActingPrincipal", () => {
 		});
 	});
 
-	it("an explicit watcher_source takes precedence over the session watcher", async () => {
+	it("the trusted session watcher wins over an explicit tag (no retag to dodge policy)", async () => {
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			explicitWatcherId: 7,
 			sessionWatcherId: 9,
 		});
-		expect(actor.id).toBe("watcher:7");
+		expect(actor.id).toBe("watcher:9");
 	});
 
 	it("a plain user turn is attended with no owner to fold", async () => {

@@ -375,16 +375,21 @@ export interface ActingPrincipal {
 /**
  * Resolve WHO is performing a write, from the two channels an acting watcher can
  * arrive on, in ONE place — so no call site has to merge them. A watcher is
- * identified by an explicit `watcher_source.watcher_id` (attribution the caller
- * passed, e.g. a keyed-promotion) OR by `ctx.actingWatcherId` (the reaction
- * session's own watcher, stamped by the reaction executor). A trusted `agentId`
- * always wins (an agent run can't spoof a watcher tag to dodge its own policy).
+ * identified by `ctx.actingWatcherId` (the reaction session's own watcher, stamped
+ * by the reaction executor) OR by an explicit `watcher_source.watcher_id` (a tag
+ * the caller passed, e.g. a keyed-promotion). The trusted SESSION watcher wins:
+ * a reaction script can't retag itself with a different (nonexistent or
+ * less-restricted) watcher to dodge its owning agent's envelope. Any watcher
+ * channel makes this a watcher — which is strictly MORE restrictive, since it
+ * folds the owning agent's rows in on top (a watcher can only tighten, never
+ * loosen, its agent), so there's no way to "spoof a watcher tag" to escape agent
+ * policy.
  *
- * When a watcher acts, this looks up its owning agent (folded max-restrictive so
- * the agent's envelope binds and a watcher-specific rule can only tighten) and
- * pins the mode to autonomous. An agent/user turn takes `sourceForMode` for its
- * attended-vs-autonomous classification. This is THE seam every write surface
- * (manage_entity/operations/watchers, promotion) resolves identity through.
+ * When a watcher acts, this looks up its owning agent (folded max-restrictive) and
+ * pins the mode to autonomous. With no watcher channel, an agent/user turn takes
+ * `sourceForMode` for its attended-vs-autonomous classification. This is THE seam
+ * every write surface (manage_entity/agents/operations/watchers, promotion)
+ * resolves identity through.
  */
 export async function resolveActingPrincipal(
 	sql: DbClient,
@@ -397,23 +402,21 @@ export async function resolveActingPrincipal(
 		sourceForMode?: string | null;
 	},
 ): Promise<ActingPrincipal> {
-	const kind = classifyMutationPrincipal({
-		userId: args.userId,
-		agentId: args.agentId,
-		watcherSource:
-			args.explicitWatcherId != null || args.sessionWatcherId != null
-				? { watcher_id: args.explicitWatcherId ?? args.sessionWatcherId }
-				: null,
-	});
-	if (kind === "watcher") {
-		const watcherId = (args.explicitWatcherId ?? args.sessionWatcherId) as number;
+	// Trusted session watcher wins over a caller-supplied tag, so a reaction can't
+	// retag to a different watcher; any watcher channel ⇒ watcher (folds its agent).
+	const watcherId = args.sessionWatcherId ?? args.explicitWatcherId ?? null;
+	if (watcherId != null) {
 		return {
-			kind,
+			kind: "watcher",
 			id: `watcher:${watcherId}`,
 			ownerAgentId: await resolveWatcherOwnerAgentId(sql, watcherId),
 			mode: "autonomous",
 		};
 	}
+	const kind = classifyMutationPrincipal({
+		userId: args.userId,
+		agentId: args.agentId,
+	});
 	return {
 		kind,
 		id: mutationPrincipalId({ agentId: args.agentId }),
@@ -940,10 +943,8 @@ export async function upsertGlobalEntityApprovalPolicy(
 }
 
 /**
- * Turn a policy input into the COMPLETE action→effect set to persist for the
- * given class. Every save writes a class's full action vocabulary (a complete
- * bundle, not a sparse override) so the child rows are self-consistent. For the
- * entity-shaped classes the effects come from create/update/delete; for
+ * Turn a policy input into the action→effect set to persist for the given class.
+ * For the entity-shaped classes the effects come from create/update/delete; for
  * connector_action the single `execute` effect is taken from `createMode` (the
  * field the API carries it in until the connector-action UI ships a dedicated
  * one). Effects are clamped to what the manifest declares legal for the class.
@@ -956,13 +957,19 @@ function actionEffectSetForInput(
 		isLegalActionEffect(resourceClass, action, effect)
 			? effect
 			: defaultEffectFor(resourceClass, action);
-	// Raw effects map wins when provided (the agent Permissions path): write one
-	// child row per action THIS CLASS governs, clamped to a legal effect.
+	// Raw effects map wins when provided (the agent Permissions path). Persist ONLY
+	// the actions the caller named — this is a SPARSE override, so an omitted action
+	// must NOT get an explicit row that pins it to the class default. A stored row
+	// stops the action from abstaining (see foldEffectForAction), which would freeze
+	// it against later attended/blanket changes. Only actions THIS CLASS governs.
 	if (input.effects) {
-		return WRITE_ACTION_MANIFEST[resourceClass].actions.map((action) => ({
-			action,
-			effect: clamp(action, input.effects?.[action] ?? defaultEffectFor(resourceClass, action)),
-		}));
+		const governed = new Set(WRITE_ACTION_MANIFEST[resourceClass].actions);
+		return (Object.keys(input.effects) as WriteAction[])
+			.filter((action) => governed.has(action) && input.effects?.[action] !== undefined)
+			.map((action) => ({
+				action,
+				effect: clamp(action, input.effects?.[action] as EntityMutationMode),
+			}));
 	}
 	if (resourceClass === "connector_action") {
 		return [

@@ -25,9 +25,7 @@ import {
   type ManageAgentsResult,
 } from '@lobu/core/contracts/tools/manage-agents';
 import {
-  classifyMutationPrincipal,
-  modeForSource,
-  mutationPrincipalId,
+  resolveActingPrincipal,
   resolveWritePolicyDecision,
 } from '../../authz/entity-policy';
 import { createDbClientFromEnv, getDb } from '../../db/client';
@@ -587,19 +585,24 @@ async function dispatchAgentWrite(
   ctx: ToolContext,
   env: Env
 ): Promise<ManageAgentsResult> {
-  const principalKind = classifyMutationPrincipal({
+  // Resolve identity through the shared seam so a watcher reaction (which sets
+  // ctx.actingWatcherId but no agentId) binds its owning agent's `agent_config`
+  // envelope — otherwise it would gate as a null-id agent and skip the owner's
+  // approval/deny override. manage_agents has no watcher_source arg, so only the
+  // trusted session watcher applies.
+  const actor = await resolveActingPrincipal(getDb(), {
     userId: ctx.userId,
     agentId: ctx.agentId,
+    sessionWatcherId: ctx.actingWatcherId ?? null,
+    sourceForMode: ctx.sourceContext?.source,
   });
   const decision = await resolveWritePolicyDecision({
     organizationId: ctx.organizationId,
     resourceClass: 'agent_config',
-    principalKind,
-    principalId: mutationPrincipalId({ agentId: ctx.agentId }),
-    // A watcher/scheduled agent turn acts autonomously — its autonomous-only
-    // rules must bind. Interactive turns are attended. Derived from the run's
-    // source claim (see modeForSource / AUTONOMOUS_SOURCES).
-    mode: modeForSource(ctx.sourceContext?.source),
+    principalKind: actor.kind,
+    principalId: actor.id,
+    ownerAgentId: actor.ownerAgentId,
+    mode: actor.mode,
     action,
   });
   if (decision === 'deny') {

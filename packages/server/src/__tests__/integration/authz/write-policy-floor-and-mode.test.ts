@@ -15,7 +15,9 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
 	evaluateEntityMutation,
+	listEntityApprovalPolicies,
 	resolveWritePolicyDecision,
+	upsertEntityApprovalPolicy,
 } from "../../../authz/entity-policy";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { createTestOrganization } from "../../setup/test-fixtures";
@@ -387,5 +389,28 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 				entityTypeSlug: "person",
 			}),
 		).toBe("require_approval");
+	});
+
+	it("a sparse effects input persists ONLY the named actions (untouched stay abstaining)", async () => {
+		// An autonomous {delete: deny} override must NOT also pin create/update — a
+		// stored row for those would stop them inheriting later attended/blanket
+		// changes. The write path mirrors the resolver's sparse-row semantics.
+		await upsertEntityApprovalPolicy(orgId, {
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-1",
+			principalMode: "autonomous",
+			effects: { delete: "deny" },
+		});
+		const rows = await listEntityApprovalPolicies(orgId);
+		const stored = rows.find(
+			(r) =>
+				r.principalKind === "agent" &&
+				r.principalId === "agent-1" &&
+				r.principalMode === "autonomous",
+		);
+		expect(stored).toBeTruthy();
+		// Exactly one child effect row — create/update absent (abstaining).
+		expect(stored?.effects).toEqual({ delete: "deny" });
 	});
 });

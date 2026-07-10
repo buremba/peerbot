@@ -1641,10 +1641,22 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			p.principalId === agentId &&
 			typeScoped(p),
 	);
+	// Types the org can create/update entities for: its own PLUS any public-catalog
+	// org's (visibility='public') — the same local-or-public resolution entity
+	// creation uses. The write gate keys on the slug, so a catalog-backed type
+	// (e.g. `company`) must be offerable as a per-type exception. Dedupe by slug,
+	// preferring the org-owned row, and drop `$member` (per-tenant, never a public
+	// catalog type) to mirror the entity-write resolver.
 	const typeRows = await getDb()<{ slug: string; name: string }>`
-    SELECT slug, name FROM entity_types
-    WHERE organization_id = ${organizationId}
-      AND deleted_at IS NULL
+    SELECT slug, name FROM (
+      SELECT DISTINCT ON (et.slug) et.slug, et.name
+      FROM entity_types et
+      LEFT JOIN organization o ON o.id = et.organization_id
+      WHERE et.deleted_at IS NULL
+        AND et.slug <> '$member'
+        AND (et.organization_id = ${organizationId} OR o.visibility = 'public')
+      ORDER BY et.slug, (et.organization_id = ${organizationId}) DESC, et.id ASC
+    ) t
     ORDER BY name ASC
   `;
 	return c.json({

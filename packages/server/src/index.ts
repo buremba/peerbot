@@ -27,8 +27,10 @@ import { compareWorkerToken } from "./auth/worker-token";
 import {
 	deleteEntityApprovalPolicy,
 	type EntityApprovalPolicy,
+	type EntityMutationMode,
 	getGlobalEntityApprovalPolicy,
 	isEntityApprovalUiMode,
+	isEntityMutationMode,
 	listEntityApprovalPolicies,
 	upsertEntityApprovalPolicy,
 	upsertGlobalEntityApprovalPolicy,
@@ -1278,12 +1280,16 @@ function serializeEntityApprovalPolicy(policy: EntityApprovalPolicy) {
 		resource_class: policy.resourceClass,
 		principal_kind: policy.principalKind,
 		principal_id: policy.principalId,
+		principal_mode: policy.principalMode,
 		entity_type_slug: policy.entityTypeSlug,
 		field_path: policy.fieldPath,
 		entity_id: policy.entityId,
 		create_mode: policy.createMode,
 		update_mode: policy.updateMode,
 		delete_mode: policy.deleteMode,
+		// The full per-action effect map (incl. deny/disabled/execute), for the
+		// agent Permissions UI which the create/update/delete triple can't express.
+		effects: policy.effects,
 		approval_connection_id: policy.deliveryTarget.connectionId,
 		approval_channel_id: policy.deliveryTarget.channelId,
 		approval_team_id: policy.deliveryTarget.teamId,
@@ -1596,6 +1602,169 @@ app.delete("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 		entityTypeSlug,
 		fieldPath,
 		entityId,
+	});
+	invalidationEmitter.emit(organizationId, {
+		keys: ["entity-approval-policy"],
+	});
+	return c.json({ deleted });
+});
+
+// ---------------------------------------------------------------------------
+// Agent permissions ("Guardrails" is the separate LLM-judge surface; this is the
+// deterministic write-gate envelope). Returns the ORG FLOOR rows (principal_kind
+// NULL) and THIS AGENT's rows across all three write classes, so the UI can show
+// the floor as a non-loosenable baseline and the agent's overrides on top.
+app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
+	const authError = await requireOrganizationSettingsAdmin(c);
+	if (authError) return authError;
+	const organizationId = c.get("organizationId");
+	if (!organizationId) {
+		return c.json({ error: "Organization context required" }, 401);
+	}
+	const agentId = c.req.param("agentId");
+	const all = await listEntityApprovalPolicies(organizationId);
+	// Floor = any-principal rows (principal_kind NULL). Agent = rows pinned to this
+	// agent id. A watcher-kind row is NOT the agent's envelope (watchers inherit
+	// the agent envelope in autonomous mode; they have no separate principal here).
+	const floor = all.filter((p) => p.principalKind === null);
+	const agent = all.filter(
+		(p) => p.principalKind === "agent" && p.principalId === agentId,
+	);
+	const typeRows = await getDb()<{ slug: string; name: string }>`
+    SELECT slug, name FROM entity_types
+    WHERE organization_id = ${organizationId}
+      AND deleted_at IS NULL
+    ORDER BY name ASC
+  `;
+	return c.json({
+		floor: floor.map(serializeEntityApprovalPolicy),
+		agent: agent.map(serializeEntityApprovalPolicy),
+		entity_types: typeRows.map((r) => ({ slug: r.slug, name: r.name })),
+	});
+});
+
+// Upsert one agent policy row: a (class, entity_type?, mode?) scope with a full
+// per-action effect map. Effects may be auto/approval/deny/disabled — the UI, not
+// the create/update/delete triple, is the source of truth here.
+app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
+	const authError = await requireOrganizationSettingsAdmin(c);
+	if (authError) return authError;
+	const organizationId = c.get("organizationId");
+	if (!organizationId) {
+		return c.json({ error: "Organization context required" }, 401);
+	}
+	const agentId = c.req.param("agentId");
+
+	let body: Record<string, unknown>;
+	try {
+		body = await c.req.json();
+	} catch {
+		return c.json(
+			{ error: "invalid_request", message: "Request body must be JSON." },
+			400,
+		);
+	}
+
+	const resourceClass =
+		body.resource_class === "entity" ||
+		body.resource_class === "agent_config" ||
+		body.resource_class === "connector_action"
+			? body.resource_class
+			: null;
+	if (!resourceClass) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message:
+					"resource_class must be entity, agent_config, or connector_action.",
+			},
+			400,
+		);
+	}
+
+	// The per-action effect map. Each value must be a legal effect; the resolver
+	// clamps illegal (action, effect) pairs to the class default on save.
+	const rawEffects =
+		typeof body.effects === "object" && body.effects !== null
+			? (body.effects as Record<string, unknown>)
+			: null;
+	if (!rawEffects) {
+		return c.json(
+			{ error: "invalid_request", message: "effects map is required." },
+			400,
+		);
+	}
+	const effects: Partial<Record<"create" | "update" | "delete" | "execute", EntityMutationMode>> =
+		{};
+	for (const [action, effect] of Object.entries(rawEffects)) {
+		if (
+			(action === "create" ||
+				action === "update" ||
+				action === "delete" ||
+				action === "execute") &&
+			isEntityMutationMode(effect)
+		) {
+			effects[action] = effect;
+		}
+	}
+
+	const principalMode = body.principal_mode === "autonomous" ? "autonomous" : null;
+	const entityTypeSlug =
+		resourceClass === "entity" &&
+		typeof body.entity_type_slug === "string" &&
+		body.entity_type_slug.trim()
+			? body.entity_type_slug.trim()
+			: null;
+
+	const policy = await upsertEntityApprovalPolicy(organizationId, {
+		resourceClass,
+		principalKind: "agent",
+		principalId: agentId,
+		principalMode,
+		entityTypeSlug,
+		effects,
+	});
+	invalidationEmitter.emit(organizationId, {
+		keys: ["entity-approval-policy"],
+	});
+	return c.json({ policy: serializeEntityApprovalPolicy(policy) });
+});
+
+// Delete one agent override row (falls back to the floor / class default).
+app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
+	const authError = await requireOrganizationSettingsAdmin(c);
+	if (authError) return authError;
+	const organizationId = c.get("organizationId");
+	if (!organizationId) {
+		return c.json({ error: "Organization context required" }, 401);
+	}
+	const agentId = c.req.param("agentId");
+	const resourceClassRaw = c.req.query("resource_class")?.trim();
+	const resourceClass =
+		resourceClassRaw === "entity" ||
+		resourceClassRaw === "agent_config" ||
+		resourceClassRaw === "connector_action"
+			? resourceClassRaw
+			: null;
+	if (!resourceClass) {
+		return c.json(
+			{ error: "invalid_request", message: "resource_class is required." },
+			400,
+		);
+	}
+	const principalMode =
+		c.req.query("principal_mode")?.trim() === "autonomous" ? "autonomous" : null;
+	const entityTypeSlug =
+		resourceClass === "entity"
+			? c.req.query("entity_type_slug")?.trim() || null
+			: null;
+	const deleted = await deleteEntityApprovalPolicy({
+		organizationId,
+		resourceClass,
+		principalKind: "agent",
+		principalId: agentId,
+		principalMode,
+		entityTypeSlug,
 	});
 	invalidationEmitter.emit(organizationId, {
 		keys: ["entity-approval-policy"],

@@ -303,10 +303,11 @@ describe("evaluateEntityMutation", () => {
 		).toBe("require_approval");
 	});
 
-	test("scope specificity outranks principal: entity-type row beats a principal-global row", async () => {
-		// entity-type row (any principal) says auto; an agent-global row says approval.
-		// Per the RFC, TARGET SCOPE wins over principal specificity, so the more-
-		// scoped entity-type rule governs — the pinned agent is NOT gated here.
+	test("peer overrides fold most-restrictive: a per-type auto cannot loosen a per-agent approval", async () => {
+		// entity-type row (any principal) says auto; an agent-pinned row says approval.
+		// Under the v1.1 floor rule, restrictiveness wins over scope — a narrow `auto`
+		// can never open a hole a broader `approval` meant to close. Both rows address
+		// `update`, so the stricter (approval) governs → the pinned agent is gated.
 		const sql = stubSql([
 			{ entity_type_slug: "task", update_mode: "auto" },
 			{ principal_kind: "agent", principal_id: "agent-77", update_mode: "approval" },
@@ -320,12 +321,12 @@ describe("evaluateEntityMutation", () => {
 				entityTypeSlug: "task",
 				sql,
 			}),
-		).toBe("allow");
+		).toBe("require_approval");
 	});
 
 	test("an agent-global auto must NOT shadow an entity-type-specific deny", async () => {
-		// The inverse-regression sol asked for: a broad per-principal `auto` cannot
-		// open up a narrowly-scoped `deny`. Scope specificity wins → deny.
+		// A broad per-principal `auto` cannot open up a narrowly-scoped `deny`.
+		// Restrictiveness wins in the fold → deny (deny is the strictest effect).
 		const sql = stubSql([
 			{ entity_type_slug: "invoice", update_mode: "deny" },
 			{ principal_kind: "agent", principal_id: "agent-A", update_mode: "auto" },

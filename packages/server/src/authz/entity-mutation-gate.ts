@@ -41,6 +41,7 @@ import type { DbClient } from "../db/client";
 import type { Env } from "../index";
 import type { ToolContext } from "../tools/registry";
 import type { EntityData } from "../utils/entity-management";
+import type { PrincipalMode } from "./entity-policy";
 import {
 	approvalInterceptor,
 	buildCreateDeferral,
@@ -71,6 +72,12 @@ interface EntityMutationBase {
 	 * per-principal resolver in a later commit.
 	 */
 	principalId?: string | null;
+	/**
+	 * Whether the acting principal is attended (a human is driving) or autonomous
+	 * (a watcher / scheduled run). A watcher promotion is `autonomous`; the resolver
+	 * evaluates autonomous as at-least-as-strict as attended. Defaults attended.
+	 */
+	mode?: PrincipalMode;
 	/**
 	 * The watcher-run window that produced this mutation, if any. Threaded so a
 	 * deferred approval lands on the `runs.window_id` COLUMN — that's what groups a

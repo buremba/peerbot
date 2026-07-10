@@ -31,8 +31,14 @@ import {
   type ManageWatchersArgs,
   type ManageWatchersResult,
 } from '@lobu/core/contracts/tools/manage-watchers';
+import {
+  classifyMutationPrincipal,
+  mutationPrincipalId,
+  resolveWritePolicyDecision,
+} from '../../authz/entity-policy';
 import { createDbClientFromEnv } from '../../db/client';
 import type { Env } from '../../index';
+import { ToolUserError } from '../../utils/errors';
 import {
   requireOrgReadAccess,
   requireOrgWriteAccess,
@@ -115,7 +121,69 @@ async function manageWatchersImpl(
     }
   }
 
+  // A watcher IS agent config — it's an autonomous-execution definition (prompt,
+  // SQL source, reaction). Gate its create/update/delete under the `agent_config`
+  // write class, exactly like editing an agent. A human member applies immediately
+  // (resolveWritePolicyDecision returns 'allow' for users); a non-human principal
+  // follows the org policy (default: create/update need approval, delete denied).
+  // This closes the two-step self-escalation: an agent whose own agent_config
+  // writes require approval can no longer freely mint a watcher to escape its
+  // envelope.
+  await gateWatcherWrite(args, ctx);
+
   return runManageWatchers(args, env, ctx);
+}
+
+/** Maps a manage_watchers action to its agent_config write verb, or null for a
+ * read-only / non-definition action that the write-gate doesn't govern. */
+function watcherWriteAction(
+  action: ManageWatchersArgs['action'],
+): 'create' | 'update' | 'delete' | null {
+  switch (action) {
+    case 'create':
+    case 'create_from_version':
+      return 'create';
+    case 'update':
+    case 'create_version':
+    case 'set_reaction_script':
+      return 'update';
+    case 'delete':
+      return 'delete';
+    default:
+      // list/get/trigger/complete_window/feedback etc. aren't definition writes.
+      return null;
+  }
+}
+
+/**
+ * Enforce the `agent_config` write-gate for a watcher definition write. No-op for
+ * read-only actions and for human members (whose decision is always 'allow').
+ * A non-human principal is refused on `deny` AND on `require_approval` — there is
+ * no watcher-definition approval queue, so fail closed rather than silently apply.
+ */
+async function gateWatcherWrite(
+  args: ManageWatchersArgs,
+  ctx: ToolContext,
+): Promise<void> {
+  const action = watcherWriteAction(args.action);
+  if (!action) return;
+  const decision = await resolveWritePolicyDecision({
+    organizationId: ctx.organizationId,
+    resourceClass: 'agent_config',
+    principalKind: classifyMutationPrincipal({
+      userId: ctx.userId,
+      agentId: ctx.agentId,
+    }),
+    principalId: mutationPrincipalId({ agentId: ctx.agentId }),
+    action,
+  });
+  if (decision === 'allow') return;
+  throw new ToolUserError(
+    decision === 'require_approval'
+      ? `Editing watchers (agent config) requires approval for this principal; a watcher cannot be ${action}d autonomously.`
+      : `Policy denies ${action} of watchers (agent config) for this principal.`,
+    403,
+  );
 }
 
 const runManageWatchers = defineFlatActionTool<ManageWatchersArgs, ManageWatchersResult>(

@@ -41,6 +41,7 @@ function makeDeps(overrides: Partial<SlackClaimProviderDeps> = {}): {
   const deps: SlackClaimProviderDeps = {
     resolvePending: mock(async () => pendingInstall()),
     resolveActiveOrgSlug: mock(async () => null),
+    resolveActiveBindingElsewhere: mock(async () => null),
     resolveClaimerSlackIdentities: mock(async () => [
       { teamId: TEAM, slackUserId: "U-ADMIN" },
     ]),
@@ -150,6 +151,42 @@ describe("slackClaimProvider.resolveExistingBinding", () => {
   });
 });
 
+describe("slackClaimProvider.resolveActiveBindingElsewhere", () => {
+  test("keys the store lookup on the pending's team + enterprise + target org", async () => {
+    const resolveActiveBindingElsewhere = mock(async () => ({
+      orgSlug: "other",
+      orgName: "Other Org",
+    }));
+    const { deps } = makeDeps({ resolveActiveBindingElsewhere });
+    const foreign = await slackClaimProvider(deps).resolveActiveBindingElsewhere(
+      TEAM,
+      pendingInstall({ enterpriseId: "E-GRID" }),
+      "org-target",
+    );
+    expect(foreign).toEqual({ orgSlug: "other", orgName: "Other Org" });
+    expect(resolveActiveBindingElsewhere).toHaveBeenCalledWith(
+      TEAM,
+      "E-GRID",
+      "org-target",
+    );
+  });
+
+  test("passes a null enterpriseId through for a plain workspace", async () => {
+    const resolveActiveBindingElsewhere = mock(async () => null);
+    const { deps } = makeDeps({ resolveActiveBindingElsewhere });
+    await slackClaimProvider(deps).resolveActiveBindingElsewhere(
+      TEAM,
+      pendingInstall({ enterpriseId: null }),
+      "org-target",
+    );
+    expect(resolveActiveBindingElsewhere).toHaveBeenCalledWith(
+      TEAM,
+      null,
+      "org-target",
+    );
+  });
+});
+
 describe("slackClaimProvider.bind", () => {
   test("maps the Slack installationId onto the engine's bindingId contract", async () => {
     const { deps, claim } = makeDeps();
@@ -157,11 +194,19 @@ describe("slackClaimProvider.bind", () => {
       pendingInstall(),
       "org-1",
       "user-1",
+      false,
     );
     expect(result).toEqual({ bindingId: "slackinst-bound" });
     expect(claim).toHaveBeenCalledTimes(1);
-    const [boundPending, boundOrg] = claim.mock.calls[0]!;
+    const [boundPending, boundOrg, boundConfirmMove] = claim.mock.calls[0]!;
     expect((boundPending as SlackPendingInstall).teamId).toBe(TEAM);
     expect(boundOrg).toBe("org-1");
+    expect(boundConfirmMove).toBe(false);
+  });
+
+  test("forwards confirmMove:true to the store claim (deliberate move)", async () => {
+    const { deps, claim } = makeDeps();
+    await slackClaimProvider(deps).bind(pendingInstall(), "org-1", "user-1", true);
+    expect(claim.mock.calls[0]![2]).toBe(true);
   });
 });

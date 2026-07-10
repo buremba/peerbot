@@ -71,6 +71,29 @@ export interface AppInstallationUpsert extends AppInstallationTenantKey {
    * provided `metadata` value (the first writer's mint is kept).
    */
   preserveMetadataKeysOnUpdate?: string[];
+  /**
+   * Refuse the silent cross-org TRANSFER. When true and an ACTIVE row for this
+   * tuple is owned by a DIFFERENT org, the activation aborts (throws
+   * {@link CrossOrgTransferBlockedError}) instead of demoting the prior owner —
+   * the fence for a claim that must be a deliberate move, not a silent slot
+   * steal. Checked INSIDE the advisory-locked transaction, so it holds across
+   * replicas even against a concurrent activation of the same tuple. Default
+   * false (transfer proceeds, preserving the historical one-active-owner behavior
+   * for reinstall/OAuth paths).
+   */
+  blockCrossOrgTransfer?: boolean;
+}
+
+/**
+ * Thrown by {@link AppInstallationStore.upsert} when `blockCrossOrgTransfer` is
+ * set and an active install for the tuple is owned by a different org. Carries
+ * that org's id so the caller can surface it.
+ */
+export class CrossOrgTransferBlockedError extends Error {
+  constructor(readonly ownerOrganizationId: string) {
+    super("Active install owned by a different org; transfer not confirmed");
+    this.name = "CrossOrgTransferBlockedError";
+  }
 }
 
 export interface AppInstallationStore {
@@ -253,6 +276,28 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
         await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
           activeTenantLockTag(install),
         ]);
+
+        // Cross-org fence (atomic, under the lock): when the caller forbids a
+        // silent transfer, refuse to demote a DIFFERENT-org active owner. Checked
+        // here — not before the lock — so a concurrent activation on another pod
+        // cannot slip a foreign owner in between the check and the demote.
+        if (install.blockCrossOrgTransfer) {
+          const foreign = await tx`
+            SELECT organization_id FROM app_installations
+            WHERE provider = ${install.provider}
+              AND provider_instance = ${install.providerInstance}
+              AND provider_app_id = ${install.providerAppId}
+              AND external_tenant_id = ${install.externalTenantId}
+              AND status = 'active'
+              AND organization_id <> ${install.organizationId}
+            LIMIT 1
+          `;
+          if (foreign.length > 0) {
+            throw new CrossOrgTransferBlockedError(
+              foreign[0].organization_id as string
+            );
+          }
+        }
 
         // Demote any active row for this tuple owned by a DIFFERENT org — a
         // transfer takes the single active slot from the prior owner. (A same-org

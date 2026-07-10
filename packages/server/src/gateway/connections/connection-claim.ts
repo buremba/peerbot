@@ -27,6 +27,12 @@ export type ClaimError =
   | { status: "no_org" }
   | { status: "claim_failed"; message: string };
 
+/** The identity of the OTHER org a subject is already actively bound to. */
+export interface ClaimForeignBinding {
+  orgSlug: string | null;
+  orgName: string | null;
+}
+
 /** Terminal outcome of the bind (`claimPendingConnection`). */
 export type ClaimResult =
   | {
@@ -36,6 +42,16 @@ export type ClaimResult =
       /** True when the subject was already connected (idempotent no-op). */
       alreadyConnected?: boolean;
     }
+  /**
+   * The subject is ALREADY actively bound in a DIFFERENT org than the one the
+   * claimer confirmed. The engine does NOT silently create a second binding (that
+   * silent duplication is a cross-org pollution vector). It returns this explicit
+   * outcome carrying the other org's identity so the UI can prompt "This
+   * workspace is already connected in <org>. Move it here?" — the caller re-issues
+   * the claim with `confirmMove: true` to proceed (fence, not forbid: a single
+   * external workspace may legitimately serve multiple orgs).
+   */
+  | { status: "already_connected_elsewhere"; existing: ClaimForeignBinding }
   | ClaimError;
 
 /** A Lobu org the claimer may bind the subject into. */
@@ -92,13 +108,35 @@ export interface ClaimProvider<P = unknown> {
    * `already_connected` success rather than an error.
    */
   resolveExistingBinding(ref: string): Promise<{ orgSlug: string | null } | null>;
+  /**
+   * The identity of an org OTHER than `targetOrganizationId` that already holds
+   * an active binding for this subject, or null when the only (or no) active
+   * binding is in the target org itself. Used to FENCE a silent cross-org walk:
+   * a non-null result blocks the bind (returning `already_connected_elsewhere`)
+   * unless the claimer explicitly confirmed the move. The provider decides what
+   * "same subject" means across its keying (e.g. Slack matches team_id AND a Grid
+   * enterprise_id) — the engine only asks the question.
+   */
+  resolveActiveBindingElsewhere(
+    ref: string,
+    pending: P,
+    targetOrganizationId: string,
+  ): Promise<ClaimForeignBinding | null>;
   /** The provider's authority verdict for the claiming user against `pending`. */
   authorize(userId: string, pending: P): Promise<ClaimAuthorization>;
-  /** Bind: persist the token + create the active install, returning its id. */
+  /**
+   * Bind: persist the token + create the active install, returning its id. When
+   * `confirmMove` is set the caller has explicitly approved MOVING an active
+   * binding that lives in another org into `organizationId`; the provider must
+   * re-verify and enforce the cross-org fence atomically (under the same lock as
+   * the write) so a concurrent claim on another pod cannot slip a silent move
+   * through the engine's pre-check.
+   */
   bind(
     pending: P,
     organizationId: string,
     userId: string,
+    confirmMove: boolean,
   ): Promise<{ bindingId: string }>;
 }
 
@@ -198,6 +236,13 @@ export async function claimPendingConnection<P>(
     userId: string | null;
     ref: string;
     organizationId?: string;
+    /**
+     * The claimer explicitly confirmed MOVING an active binding that lives in
+     * another org into the confirmed org. Without it a subject already active
+     * elsewhere yields `already_connected_elsewhere` (fence, not forbid): the
+     * second claim must be deliberate, never a silent duplicate.
+     */
+    confirmMove?: boolean;
   },
 ): Promise<ClaimResult> {
   try {
@@ -226,10 +271,28 @@ export async function claimPendingConnection<P>(
     );
     if (!organizationId) return { status: "not_member_of_org" };
 
+    // Cross-org fence. If this subject is already ACTIVE in a DIFFERENT org, a
+    // naive bind would silently transfer/duplicate it (the install store demotes
+    // the prior org's active row on activation — a silent ownership steal). Only
+    // proceed when the claimer explicitly confirmed the move; otherwise surface
+    // the other org so the UI can prompt. This is the pre-check for a friendly
+    // outcome — `bind` re-enforces it atomically for the multi-pod race.
+    if (!input.confirmMove) {
+      const elsewhere = await provider.resolveActiveBindingElsewhere(
+        input.ref,
+        target.pending,
+        organizationId,
+      );
+      if (elsewhere) {
+        return { status: "already_connected_elsewhere", existing: elsewhere };
+      }
+    }
+
     const { bindingId } = await provider.bind(
       target.pending,
       organizationId,
       input.userId as string,
+      input.confirmMove ?? false,
     );
     const orgSlug = await deps.resolveOrgSlug(organizationId);
     return { status: "ok", orgSlug, bindingId };
@@ -257,6 +320,7 @@ export function claimHttpStatus(
     case "not_member_of_org":
       return 403;
     case "no_org":
+    case "already_connected_elsewhere":
       return 409;
     default:
       return 500;

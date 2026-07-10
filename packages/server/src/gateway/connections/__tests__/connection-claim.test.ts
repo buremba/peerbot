@@ -12,6 +12,7 @@ import {
   type ClaimAuthorization,
   type ClaimEligibleOrg,
   type ClaimEngineDeps,
+  type ClaimForeignBinding,
   type ClaimProvider,
   claimHttpStatus,
   claimPendingConnection,
@@ -43,6 +44,7 @@ function makeProvider(overrides: Partial<ClaimProvider<StubPending>> = {}): {
     subjectKind: "workspace",
     resolvePending: mock(async () => ({ ref: REF, name: "Acme" })),
     resolveExistingBinding: mock(async () => null),
+    resolveActiveBindingElsewhere: mock(async () => null),
     authorize,
     bind,
     ...overrides,
@@ -155,6 +157,66 @@ describe("claimPendingConnection", () => {
       alreadyConnected: true,
     });
     expect(bind).not.toHaveBeenCalled();
+  });
+
+  // Cross-org fence (PR2): a subject already ACTIVE in a DIFFERENT org must not
+  // be silently walked into a second org. The engine surfaces the other org and
+  // refuses to bind unless the claimer explicitly confirms the move.
+  describe("cross-org fence", () => {
+    const foreign: ClaimForeignBinding = { orgSlug: "acme", orgName: "Acme" };
+
+    test("(a) first claim into org A binds normally (no foreign binding)", async () => {
+      const { provider, bind } = makeProvider();
+      const result = await claimPendingConnection(provider, makeDeps(), input);
+      expect(result).toEqual({
+        status: "ok",
+        orgSlug: "acme",
+        bindingId: "binding-bound",
+      });
+      // bind is called with confirmMove=false on the un-fenced first claim.
+      expect(bind).toHaveBeenCalledTimes(1);
+      expect(bind.mock.calls[0]![3]).toBe(false);
+    });
+
+    test("(b) naive second claim into org B is fenced, never bound", async () => {
+      const resolveActiveBindingElsewhere = mock(async () => foreign);
+      const { provider, bind } = makeProvider({ resolveActiveBindingElsewhere });
+      const result = await claimPendingConnection(provider, makeDeps(), {
+        ...input,
+        organizationId: "other-org",
+      });
+      expect(result).toEqual({
+        status: "already_connected_elsewhere",
+        existing: foreign,
+      });
+      expect(bind).not.toHaveBeenCalled();
+      // The fence is asked against the membership-resolved TARGET org id.
+      expect(resolveActiveBindingElsewhere).toHaveBeenCalledTimes(1);
+      expect(resolveActiveBindingElsewhere.mock.calls[0]![2]).toBe("org-1");
+    });
+
+    test("(c) second claim WITH confirmMove binds and skips the fence", async () => {
+      const resolveActiveBindingElsewhere = mock(async () => foreign);
+      const { provider, bind } = makeProvider({ resolveActiveBindingElsewhere });
+      const result = await claimPendingConnection(provider, makeDeps(), {
+        ...input,
+        organizationId: "other-org",
+        confirmMove: true,
+      });
+      expect(result).toEqual({
+        status: "ok",
+        orgSlug: "acme",
+        bindingId: "binding-bound",
+      });
+      // confirmMove short-circuits the pre-check (bind re-enforces atomically).
+      expect(resolveActiveBindingElsewhere).not.toHaveBeenCalled();
+      expect(bind).toHaveBeenCalledTimes(1);
+      expect(bind.mock.calls[0]![3]).toBe(true);
+    });
+
+    test("fence maps to 409 in the HTTP layer", () => {
+      expect(claimHttpStatus("already_connected_elsewhere")).toBe(409);
+    });
   });
 
   test("404s when the subject has no install at all", async () => {

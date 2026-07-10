@@ -1,5 +1,9 @@
 import type { SlackPendingInstall } from "../../lobu/stores/slack-installations.js";
-import type { ClaimAuthorization, ClaimProvider } from "./connection-claim.js";
+import type {
+  ClaimAuthorization,
+  ClaimForeignBinding,
+  ClaimProvider,
+} from "./connection-claim.js";
 import type { SlackWebApi } from "./slack-web.js";
 
 /**
@@ -25,6 +29,18 @@ export interface SlackClaimProviderDeps {
   /** The org slug the workspace is ALREADY connected to (active install), or null. */
   resolveActiveOrgSlug(team: string): Promise<string | null>;
   /**
+   * The identity of an org OTHER than `targetOrganizationId` that already holds
+   * an ACTIVE install for this workspace, or null. Matches on the workspace
+   * `team_id` AND — for a Grid install — the `enterprise_id`, so a Grid claim
+   * that keys on enterprise still sees a sibling-workspace binding. Powers the
+   * cross-org fence: a non-null result blocks a silent second bind.
+   */
+  resolveActiveBindingElsewhere(
+    team: string,
+    enterpriseId: string | null,
+    targetOrganizationId: string,
+  ): Promise<ClaimForeignBinding | null>;
+  /**
    * ALL of the claiming user's `slack_user_id` identities as `{teamId, slackUserId}`
    * pairs (bare `U…` ids, across every workspace they've signed in with Slack for).
    * A team-scoped match doubles as the workspace-membership proof; the full list
@@ -36,10 +52,16 @@ export interface SlackClaimProviderDeps {
   ): Promise<Array<{ teamId: string; slackUserId: string }>>;
   /** `users.info` admin/owner flags for the claimer. */
   usersInfo: SlackWebApi["usersInfo"];
-  /** Bind: persist the token + create the active install, returning its id. */
+  /**
+   * Bind: persist the token + create the active install, returning its id.
+   * `confirmMove` is true when the claimer explicitly approved MOVING a workspace
+   * that is active in another org; the store must re-enforce the cross-org fence
+   * atomically under its active-tenant advisory lock when it is false.
+   */
   claim(
     pending: SlackPendingInstall,
     organizationId: string,
+    confirmMove: boolean,
   ): Promise<{ installationId: string }>;
 }
 
@@ -109,9 +131,19 @@ export function slackClaimProvider(
       const orgSlug = await deps.resolveActiveOrgSlug(ref);
       return orgSlug ? { orgSlug } : null;
     },
+    resolveActiveBindingElsewhere: (ref, pending, targetOrganizationId) =>
+      deps.resolveActiveBindingElsewhere(
+        ref,
+        pending.enterpriseId,
+        targetOrganizationId,
+      ),
     authorize: (userId, pending) => authorizeSlackClaim(deps, userId, pending),
-    bind: async (pending, organizationId) => {
-      const { installationId } = await deps.claim(pending, organizationId);
+    bind: async (pending, organizationId, _userId, confirmMove) => {
+      const { installationId } = await deps.claim(
+        pending,
+        organizationId,
+        confirmMove,
+      );
       return { bindingId: installationId };
     },
   };

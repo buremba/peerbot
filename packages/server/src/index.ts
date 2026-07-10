@@ -83,6 +83,7 @@ import {
 } from "./lobu/gateway";
 import {
 	claimSlackPendingInstall,
+	resolveSlackActiveBindingElsewhere,
 	resolveSlackPendingByTenant,
 } from "./lobu/stores/slack-installations";
 import { handleMcp, MCP_APP_DIRS } from "./mcp-handler";
@@ -2406,9 +2407,23 @@ function buildSlackClaimProvider(): ClaimProvider {
 			`) as Array<{ slug: string }>;
 			return rows[0]?.slug ?? null;
 		},
+		resolveActiveBindingElsewhere: async (
+			team,
+			enterpriseId,
+			targetOrganizationId,
+		) => {
+			const foreign = await resolveSlackActiveBindingElsewhere(
+				team,
+				enterpriseId,
+				targetOrganizationId,
+			);
+			return foreign
+				? { orgSlug: foreign.orgSlug, orgName: foreign.orgName }
+				: null;
+		},
 		resolveClaimerSlackIdentities: resolveClaimingUserSlackIdentities,
 		usersInfo: (botToken, uid) => createSlackWebApi().usersInfo(botToken, uid),
-		claim: async (pending, organizationId) => {
+		claim: async (pending, organizationId, confirmMove) => {
 			const core = getLobuCoreServices();
 			if (!core) throw new Error("Lobu core services unavailable");
 			const result = await claimSlackPendingInstall(
@@ -2416,6 +2431,7 @@ function buildSlackClaimProvider(): ClaimProvider {
 				core.getSecretStore(),
 				pending,
 				organizationId,
+				confirmMove,
 			);
 			// Post-claim, best-effort: auto-link the org's Builder agent to the
 			// installer's DM and fire the welcome DM. Never throws — a failure here
@@ -2487,9 +2503,13 @@ app.post("/api/connector/:connector/connection/claim", async (c) => {
 	const provider = buildProvider();
 	const userId = await resolveClaimSessionUser(c.env, c.req.raw);
 
-	let body: { ref?: unknown; org?: unknown };
+	let body: { ref?: unknown; org?: unknown; confirmMove?: unknown };
 	try {
-		body = (await c.req.json()) as { ref?: unknown; org?: unknown };
+		body = (await c.req.json()) as {
+			ref?: unknown;
+			org?: unknown;
+			confirmMove?: unknown;
+		};
 	} catch {
 		body = {};
 	}
@@ -2502,6 +2522,10 @@ app.post("/api/connector/:connector/connection/claim", async (c) => {
 		typeof body.org === "string" && body.org.trim()
 			? body.org.trim()
 			: undefined;
+	// Explicit opt-in to MOVE a workspace already active in another org into the
+	// confirmed org. Without it the engine fences the second claim and returns
+	// `already_connected_elsewhere` (deliberate move, never a silent duplicate).
+	const confirmMove = body.confirmMove === true;
 
 	// All branching lives in the injectable engine so it stays unit-testable;
 	// the route only wires real deps + maps outcomes to HTTP.
@@ -2509,6 +2533,7 @@ app.post("/api/connector/:connector/connection/claim", async (c) => {
 		userId,
 		ref,
 		organizationId,
+		confirmMove,
 	});
 
 	if (result.status === "ok") {
@@ -2518,6 +2543,19 @@ app.post("/api/connector/:connector/connection/claim", async (c) => {
 			provider: provider.provider,
 			alreadyConnected: result.alreadyConnected ?? false,
 		});
+	}
+	if (result.status === "already_connected_elsewhere") {
+		// Not an error the user must fix — a decision. Surface the other org so the
+		// SPA can prompt "already connected in <org>. Move it here?" and re-POST
+		// with confirmMove:true. 409 (state conflict requiring explicit resolution).
+		return c.json(
+			{
+				error: result.status,
+				existing: result.existing,
+				provider: provider.provider,
+			},
+			claimHttpStatus(result.status),
+		);
 	}
 	if (result.status === "claim_failed") {
 		logger.error(

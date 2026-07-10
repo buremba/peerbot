@@ -1,10 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildEntityUrl, buildResourcePermalink, getPublicWebUrl } from '../url-builder';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  buildAgentSettingsUrl,
+  buildEntityUrl,
+  buildResourcePermalink,
+  getPublicWebUrl,
+} from '../url-builder';
 import {
   HOSTED_UI_FALLBACK_ORIGIN,
   __resetPublicOriginCachesForTests,
   __setLocalFrontendForTests,
 } from '../public-origin';
+
+// buildAgentSettingsUrl resolves the org slug via the workspace provider; stub
+// it so the test asserts only the URL SHAPE (the `/settings` deep-link), not
+// tenant lookup.
+vi.mock('../../workspace', () => ({
+  getWorkspaceProvider: () => ({
+    getOrgSlug: async (orgId: string) => (orgId === 'org-1' ? 'acme' : null),
+  }),
+}));
 
 /**
  * Behavior contract for `getPublicWebUrl`:
@@ -67,6 +81,44 @@ describe('getPublicWebUrl', () => {
   it('falls back to HOSTED_UI_FALLBACK_ORIGIN even when requestUrl is given (backend-only host)', () => {
     __setLocalFrontendForTests(false);
     expect(getPublicWebUrl('https://request.lobu.com/mcp')).toBe(HOSTED_UI_FALLBACK_ORIGIN);
+  });
+});
+
+describe('buildAgentSettingsUrl', () => {
+  // Regression: the CTA for provider/model errors ("Connect a provider" /
+  // "Choose a model") MUST deep-link to the agent's /settings tab. The bare
+  // /agents/<id> route redirects to Chat — the surface the user just failed on
+  // — so a missing /settings suffix drops the admin nowhere useful.
+  it('deep-links to the agent /settings tab (not the bare, chat-redirecting route)', async () => {
+    const url = await buildAgentSettingsUrl(
+      'https://app.lobu.com/lobu',
+      'org-1',
+      'lobu-builder'
+    );
+    expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/settings');
+    expect(url?.endsWith('/settings')).toBe(true);
+  });
+
+  it('strips the embedded-mode /lobu suffix from the web origin', async () => {
+    const url = await buildAgentSettingsUrl(
+      'https://app.lobu.com/lobu/',
+      'org-1',
+      'my agent/id'
+    );
+    // agentId is percent-encoded; origin has no /lobu.
+    expect(url).toBe('https://app.lobu.com/acme/agents/my%20agent%2Fid/settings');
+  });
+
+  it('returns null when the org slug cannot be resolved', async () => {
+    expect(
+      await buildAgentSettingsUrl('https://app.lobu.com', 'unknown-org', 'a')
+    ).toBeNull();
+  });
+
+  it('returns null when any required piece is missing', async () => {
+    expect(await buildAgentSettingsUrl(undefined, 'org-1', 'a')).toBeNull();
+    expect(await buildAgentSettingsUrl('https://x', undefined, 'a')).toBeNull();
+    expect(await buildAgentSettingsUrl('https://x', 'org-1', undefined)).toBeNull();
   });
 });
 

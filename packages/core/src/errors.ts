@@ -197,7 +197,7 @@ export enum AgentErrorCode {
  * live in `core` with no gateway dependency.
  */
 export type AgentErrorCtaKind =
-  | "agent-settings" // → <webOrigin>/<slug>/agents/<agentId>
+  | "agent-settings" // → <webOrigin>/<slug>/agents/<agentId>/settings
   | "provider-connect" // → same settings page, provider-connect intent
   | "none";
 

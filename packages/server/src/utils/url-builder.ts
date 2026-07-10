@@ -40,10 +40,17 @@ export async function getOrganizationSlug(
 }
 
 /**
- * Build the agent's admin-settings URL — `<webOrigin>/<orgSlug>/agents/<agentId>`
- * — the CTA target for provider/model errors (connect a provider, choose a
- * model, reconnect credentials). Returns null when any required piece is
- * missing; callers fall back to a non-linked message.
+ * Build the agent's model/provider settings URL —
+ * `<webOrigin>/<orgSlug>/agents/<agentId>/settings` — the CTA target for
+ * provider/model errors (connect a provider, choose a model, reconnect
+ * credentials). Returns null when any required piece is missing; callers fall
+ * back to a non-linked message.
+ *
+ * The `/settings` suffix is load-bearing: the bare `/agents/<id>` route
+ * redirects to the agent's Chat page (`redirectBareAgentToChat`), which is the
+ * surface the user just failed on — not where the model is fixed. `/settings`
+ * lands on the tab that hosts the models allow-list editor, so the CTA drops
+ * the admin exactly where they pick a model / connect a provider.
  *
  * `publicGatewayUrl` is the gateway base, which in embedded mode carries the
  * `/lobu` path suffix (the gateway is mounted at `/lobu` under the web app).
@@ -59,7 +66,7 @@ export async function buildAgentSettingsUrl(
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
   const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
-  return `${webOrigin}/${slug}/agents/${encodeURIComponent(agentId)}`;
+  return `${webOrigin}/${slug}/agents/${encodeURIComponent(agentId)}/settings`;
 }
 
 export interface RenderedAgentError {

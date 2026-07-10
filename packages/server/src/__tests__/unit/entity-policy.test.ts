@@ -13,6 +13,9 @@ type PolicyRowSeed = {
 	resource_class?: string;
 	principal_kind?: string | null;
 	principal_id?: string | null;
+	principal_mode?: string | null;
+	/** connector_action per-operation scope; null = the blanket execute row. */
+	operation_key?: string | null;
 	entity_type_slug?: string | null;
 	field_path?: string | null;
 	entity_id?: number | null;
@@ -56,6 +59,8 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 		resource_class: seed.resource_class ?? "entity",
 		principal_kind: seed.principal_kind ?? null,
 		principal_id: seed.principal_id ?? null,
+		principal_mode: seed.principal_mode ?? null,
+		operation_key: seed.operation_key ?? null,
 		entity_type_slug: seed.entity_type_slug ?? null,
 		field_path: seed.field_path ?? null,
 		entity_id: seed.entity_id ?? null,
@@ -86,7 +91,7 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 		// Param order mirrors loadCandidatePolicies' WHERE: org, resourceClass,
 		// then the principal OR-block (principalKind, principalId, then ownerAgentId
 		// interpolated TWICE — once for `::text IS NOT NULL`, once for the `=`
-		// comparison), then the scope filters (entityTypeSlug, entityId).
+		// comparison), then the scope filters (operationKey, entityTypeSlug, entityId).
 		// ownerAgentId folds an 'agent' row for a watcher acting under its agent.
 		const [
 			org,
@@ -95,11 +100,13 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 			principalId,
 			ownerAgentId,
 			,
+			operationKey,
 			entityTypeSlug,
 			entityId,
 		] = params as [
 			string,
 			string,
+			string | null,
 			string | null,
 			string | null,
 			string | null,
@@ -120,6 +127,8 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 							row.principal_kind === "agent" &&
 							(row.principal_id === null ||
 								row.principal_id === ownerAgentId))) &&
+					(row.operation_key === null ||
+						row.operation_key === operationKey) &&
 					(row.entity_type_slug === null ||
 						row.entity_type_slug === entityTypeSlug) &&
 					(row.entity_id === null || row.entity_id === entityId),

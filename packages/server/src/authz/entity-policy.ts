@@ -356,19 +356,25 @@ export function watcherIdFromPrincipalId(
  * The agent that owns a watcher (`watchers.agent_id`, NOT NULL in schema). Every
  * watcher write is governed by its owning agent's envelope — a watcher is that
  * agent's autonomous mode — so the resolver folds the agent's rows in via
- * `ownerAgentId`. Returns null only if the watcher row is missing (defensive;
- * shouldn't happen for a live watcher), in which case the gate falls back to
- * "any agent". Shared by every watcher write surface (entity promotion, reaction
+ * `ownerAgentId`. Shared by every watcher write surface (entity promotion, reaction
  * scripts, watcher CRUD) so the linkage is resolved ONE way.
+ *
+ * Returns `{ ownerAgentId, resolved }`. `resolved` is false ONLY when the watcher
+ * row is GONE (hard-deleted mid-reaction, or a bad id) — a security-relevant state:
+ * the acting watcher's agent envelope can't be folded, so proceeding as an
+ * unowned watcher would let the reaction slip its owning agent's deny/approval
+ * rules and fall back to the (looser) org default. Callers acting on a TRUSTED
+ * watcher must FAIL CLOSED on `resolved === false` (see the gate resolvers).
  */
-export async function resolveWatcherOwnerAgentId(
+export async function resolveWatcherOwner(
 	sql: DbClient,
 	watcherId: number,
-): Promise<string | null> {
+): Promise<{ ownerAgentId: string | null; resolved: boolean }> {
 	const rows = await sql<{ agent_id: string | null }>`
     SELECT agent_id FROM watchers WHERE id = ${watcherId} LIMIT 1
   `;
-	return rows.length > 0 ? (rows[0].agent_id ?? null) : null;
+	if (rows.length === 0) return { ownerAgentId: null, resolved: false };
+	return { ownerAgentId: rows[0].agent_id ?? null, resolved: true };
 }
 
 /** The fully-resolved acting principal for one write, ready to hand to the gate. */
@@ -378,6 +384,14 @@ export interface ActingPrincipal {
 	id: string | null;
 	/** The watcher's owning agent, folded max-restrictive; null unless a watcher. */
 	ownerAgentId: string | null;
+	/**
+	 * False ONLY when this is a watcher whose owning-agent lookup FAILED (the watcher
+	 * row is gone). The gate must FAIL CLOSED (deny) rather than run the write as an
+	 * unowned watcher against the looser org default — otherwise a reaction whose
+	 * watcher was hard-deleted mid-flight escapes its agent's envelope. True for every
+	 * agent/user turn and every watcher whose owner resolved (incl. legitimately null).
+	 */
+	ownerResolved: boolean;
 	/** attended vs autonomous. A watcher is always autonomous. */
 	mode: PrincipalMode;
 }
@@ -404,12 +418,13 @@ export interface ActingPrincipal {
 /** A watcher acting principal: autonomous, folding its (already-resolved) owner. */
 function watcherPrincipal(
 	watcherId: number,
-	ownerAgentId: string | null,
+	owner: { ownerAgentId: string | null; resolved: boolean },
 ): ActingPrincipal {
 	return {
 		kind: "watcher",
 		id: `watcher:${watcherId}`,
-		ownerAgentId,
+		ownerAgentId: owner.ownerAgentId,
+		ownerResolved: owner.resolved,
 		mode: "autonomous",
 	};
 }
@@ -435,16 +450,13 @@ export async function resolveActingPrincipal(
 	if (args.sessionWatcherId != null) {
 		return watcherPrincipal(
 			args.sessionWatcherId,
-			await resolveWatcherOwnerAgentId(sql, args.sessionWatcherId),
+			await resolveWatcherOwner(sql, args.sessionWatcherId),
 		);
 	}
 	if (args.explicitWatcherId != null) {
-		const ownerAgentId = await resolveWatcherOwnerAgentId(
-			sql,
-			args.explicitWatcherId,
-		);
-		if (!args.agentId || ownerAgentId === args.agentId) {
-			return watcherPrincipal(args.explicitWatcherId, ownerAgentId);
+		const owner = await resolveWatcherOwner(sql, args.explicitWatcherId);
+		if (!args.agentId || owner.ownerAgentId === args.agentId) {
+			return watcherPrincipal(args.explicitWatcherId, owner);
 		}
 		// Caller-controlled tag that isn't this agent's own watcher — ignore it.
 	}
@@ -456,6 +468,7 @@ export async function resolveActingPrincipal(
 		kind,
 		id: mutationPrincipalId({ agentId: args.agentId }),
 		ownerAgentId: null,
+		ownerResolved: true,
 		mode: modeForSource(args.sourceForMode),
 	};
 }
@@ -786,6 +799,13 @@ export async function evaluateEntityMutation(args: {
 	entityTypeSlug?: string | null;
 	entityId?: number | null;
 	entityOrgId?: string | null;
+	/**
+	 * False iff the acting principal is a watcher whose owning agent could not be
+	 * resolved (its row is gone). Fail CLOSED — the agent envelope can't be folded,
+	 * so we deny rather than run the write against the looser org default. Defaults
+	 * true (agent/user turns, and watchers whose owner resolved).
+	 */
+	ownerResolved?: boolean;
 	/** Attended (human-driven) vs autonomous (watcher). Defaults attended. */
 	mode?: PrincipalMode;
 	sql?: DbClient;
@@ -794,6 +814,7 @@ export async function evaluateEntityMutation(args: {
 		return "deny";
 	}
 	if (args.principalKind === "user") return "allow";
+	if (args.ownerResolved === false) return "deny";
 	const candidates = await loadCandidatePolicies({
 		...args,
 		principalKind: args.principalKind,
@@ -834,6 +855,8 @@ export async function resolveWritePolicyDecision(args: {
 	 * {@link loadCandidatePolicies}.
 	 */
 	ownerAgentId?: string | null;
+	/** See {@link resolveWriteEffect}. Fail closed (deny) when a watcher owner is unresolved. */
+	ownerResolved?: boolean;
 	action: WriteAction;
 	/**
 	 * Whether the principal is acting attended (a human is driving the agent) or
@@ -860,11 +883,18 @@ export async function resolveWriteEffect(args: {
 	principalKind: EntityPolicyPrincipalKind;
 	principalId?: string | null;
 	ownerAgentId?: string | null;
+	/**
+	 * False iff a watcher whose owning agent could not be resolved (its row is
+	 * gone) — fail CLOSED to `deny` so the write can't slip its agent's envelope.
+	 * See {@link evaluateEntityMutation}. Defaults true.
+	 */
+	ownerResolved?: boolean;
 	action: WriteAction;
 	mode?: PrincipalMode;
 	sql?: DbClient;
 }): Promise<EntityMutationMode> {
 	if (args.principalKind === "user") return "auto";
+	if (args.ownerResolved === false) return "deny";
 	const candidates = await loadCandidatePolicies({
 		organizationId: args.organizationId,
 		resourceClass: args.resourceClass,
@@ -893,6 +923,11 @@ export async function evaluateEntityFieldUpdates(args: {
 	principalId?: string | null;
 	/** The watcher's owning agent, folded alongside — see {@link evaluateEntityMutation}. */
 	ownerAgentId?: string | null;
+	/**
+	 * False iff a watcher whose owning agent could not be resolved — deny every
+	 * field (fail closed). See {@link evaluateEntityMutation}. Defaults true.
+	 */
+	ownerResolved?: boolean;
 	entityTypeSlug: string;
 	entityId: number;
 	entityOrgId?: string | null;
@@ -909,6 +944,10 @@ export async function evaluateEntityFieldUpdates(args: {
 	}
 	if (args.principalKind === "user") {
 		for (const field of Object.keys(args.fields)) decisions[field] = "allow";
+		return decisions;
+	}
+	if (args.ownerResolved === false) {
+		for (const field of Object.keys(args.fields)) decisions[field] = "deny";
 		return decisions;
 	}
 	const candidates = await loadCandidatePolicies({

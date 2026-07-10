@@ -602,6 +602,7 @@ async function dispatchAgentWrite(
     principalKind: actor.kind,
     principalId: actor.id,
     ownerAgentId: actor.ownerAgentId,
+    ownerResolved: actor.ownerResolved,
     mode: actor.mode,
     action,
   });

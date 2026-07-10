@@ -35,6 +35,10 @@ import {
 	upsertEntityApprovalPolicy,
 	upsertGlobalEntityApprovalPolicy,
 } from "./authz/entity-policy";
+import {
+	isLegalActionEffect,
+	type WriteAction,
+} from "./authz/write-action-manifest";
 import { globalCatalogRoutes, orgInstalledRoutes } from "./catalog/routes";
 import { connectionTokenRoutes } from "./connect/connection-token-route";
 import { connectRoutes } from "./connect/routes";
@@ -1348,7 +1352,15 @@ app.get("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 		return c.json({ error: "Organization context required" }, 401);
 	}
 	const policy = await getGlobalEntityApprovalPolicy(organizationId);
-	const policies = await listEntityApprovalPolicies(organizationId, "entity");
+	// This legacy org-settings surface is MODE-BLIND: its PATCH/DELETE key a row by
+	// scope+principal WITHOUT principal_mode, so it can only address the both-mode
+	// (principal_mode NULL) rows. Autonomous-only rows are created and managed solely
+	// by the agent Permissions UI; surfacing them here would let a delete of the
+	// displayed autonomous row hit the same-scope attended row instead. Filter them
+	// out so this endpoint neither shows nor mutates them.
+	const policies = (
+		await listEntityApprovalPolicies(organizationId, "entity")
+	).filter((p) => p.principalMode === null);
 	const channelRows = await resolveBoundChannelRows(getDb(), {
 		organizationId,
 	});
@@ -1717,8 +1729,12 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		);
 	}
 
-	// The per-action effect map. Each value must be a legal effect; the resolver
-	// clamps illegal (action, effect) pairs to the class default on save.
+	// The per-action effect map. This PUT REPLACES the row's whole child-effect set,
+	// so a silently-dropped bad entry would ERASE an existing effect (e.g. a stale
+	// client sending an entity `execute` could wipe a stored `delete=deny` back to
+	// the auto default). REJECT the request on any invalid entry instead of filtering
+	// or clamping — an unknown action, a non-effect value, or an (action,effect) pair
+	// illegal for this class all 400.
 	const rawEffects =
 		typeof body.effects === "object" && body.effects !== null
 			? (body.effects as Record<string, unknown>)
@@ -1729,18 +1745,21 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			400,
 		);
 	}
-	const effects: Partial<Record<"create" | "update" | "delete" | "execute", EntityMutationMode>> =
-		{};
+	const effects: Partial<Record<WriteAction, EntityMutationMode>> = {};
 	for (const [action, effect] of Object.entries(rawEffects)) {
 		if (
-			(action === "create" ||
-				action === "update" ||
-				action === "delete" ||
-				action === "execute") &&
-			isEntityMutationMode(effect)
+			!isEntityMutationMode(effect) ||
+			!isLegalActionEffect(resourceClass, action as WriteAction, effect)
 		) {
-			effects[action] = effect;
+			return c.json(
+				{
+					error: "invalid_request",
+					message: `Illegal effect for ${resourceClass}: '${action}' = '${String(effect)}'.`,
+				},
+				400,
+			);
 		}
+		effects[action as WriteAction] = effect;
 	}
 
 	const principalMode = body.principal_mode === "autonomous" ? "autonomous" : null;

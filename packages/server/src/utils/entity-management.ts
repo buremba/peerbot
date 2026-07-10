@@ -60,6 +60,11 @@ interface EntityUpdateOptions {
 	 * `ownerAgentId`. Null for agent/user writes.
 	 */
 	ownerAgentId?: string | null;
+	/**
+	 * False iff a watcher whose owning agent couldn't be resolved — the gate fails
+	 * closed (deny). See the gate's `ownerResolved`. Defaults true.
+	 */
+	ownerResolved?: boolean;
 	/** Attended vs autonomous acting mode for this update. Defaults attended. */
 	mode?: PrincipalMode;
 }
@@ -563,6 +568,7 @@ export async function updateEntity(
 						opts?.principalId ??
 						mutationPrincipalId({ agentId: ctx.agentId }),
 					ownerAgentId: opts?.ownerAgentId ?? null,
+					ownerResolved: opts?.ownerResolved ?? true,
 					mode: opts?.mode ?? "attended",
 					entityTypeSlug: String(current[0].entity_type),
 					entityId,

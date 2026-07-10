@@ -16,6 +16,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
 	evaluateEntityMutation,
 	listEntityApprovalPolicies,
+	resolveWriteEffect,
 	resolveWritePolicyDecision,
 	upsertEntityApprovalPolicy,
 } from "../../../authz/entity-policy";
@@ -412,6 +413,77 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 		expect(stored).toBeTruthy();
 		// Exactly one child effect row — create/update absent (abstaining).
 		expect(stored?.effects).toEqual({ delete: "deny" });
+	});
+
+	it("fails CLOSED when a watcher's owning agent can't be resolved (codex-8)", async () => {
+		// A reaction whose watcher row was hard-deleted mid-flight arrives with
+		// ownerResolved=false. Even with the most permissive org default (entity
+		// create = auto, no deny anywhere), the gate must DENY — proceeding as an
+		// unowned watcher would let the write slip its agent's envelope.
+		const denied = await evaluateEntityMutation({
+			organizationId: orgId,
+			principalKind: "watcher",
+			principalId: "watcher:999",
+			ownerResolved: false,
+			action: "create",
+			entityTypeSlug: "task",
+		});
+		expect(denied).toBe("deny");
+		// Sanity: the SAME call with a resolved owner (default true) allows (auto).
+		const allowed = await evaluateEntityMutation({
+			organizationId: orgId,
+			principalKind: "watcher",
+			principalId: "watcher:999",
+			action: "create",
+			entityTypeSlug: "task",
+		});
+		expect(allowed).toBe("allow");
+	});
+
+	it("resolveWriteEffect also fails closed on an unresolved watcher owner (codex-8)", async () => {
+		const effect = await resolveWriteEffect({
+			organizationId: orgId,
+			resourceClass: "connector_action",
+			principalKind: "watcher",
+			principalId: "watcher:999",
+			ownerResolved: false,
+			action: "execute",
+		});
+		expect(effect).toBe("deny");
+	});
+
+	it("the legacy org-settings list hides autonomous-only rows (codex-8)", async () => {
+		// The new agent UI can create an autonomous-only entity row for an agent. The
+		// legacy mode-blind org-settings endpoint must NOT surface it (its DELETE keys
+		// by scope without principal_mode → would hit the wrong row).
+		await upsertEntityApprovalPolicy(orgId, {
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-auto",
+			principalMode: "autonomous",
+			entityTypeSlug: "task",
+			effects: { delete: "deny" },
+		});
+		await upsertEntityApprovalPolicy(orgId, {
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-auto",
+			entityTypeSlug: "task",
+			effects: { delete: "approval" },
+		});
+		// Mirror the endpoint's filter: only principal_mode NULL rows are shown.
+		const shown = (await listEntityApprovalPolicies(orgId, "entity")).filter(
+			(p) => p.principalMode === null,
+		);
+		const autoRows = shown.filter((p) => p.principalMode === "autonomous");
+		expect(autoRows).toHaveLength(0);
+		// The both-mode row for the same scope IS still shown.
+		expect(
+			shown.some(
+				(p) =>
+					p.principalId === "agent-auto" && p.entityTypeSlug === "task",
+			),
+		).toBe(true);
 	});
 
 	it("preserveDelivery keeps a stored approval target across an effect-only update (codex-7)", async () => {

@@ -17,6 +17,7 @@ import {
 	resolveWriteEffect,
 	resolveWritePolicyDecision,
 } from "../../../authz/entity-policy";
+import { isLegalActionEffect } from "../../../authz/write-action-manifest";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { createTestOrganization } from "../../setup/test-fixtures";
 
@@ -256,6 +257,18 @@ describe("write-policy action/effect decision parity", () => {
 		// The raw effect resolves deny (not disabled), so list_available surfaces it.
 		expect(await resolveWriteEffect(base)).toBe("deny");
 		expect(await resolveWritePolicyDecision(base)).toBe("deny");
+	});
+
+	it("the permissions-PUT validation predicate rejects illegal (action,effect) pairs (codex-8)", async () => {
+		// The endpoint 400s on any entry isLegalActionEffect rejects, rather than
+		// dropping it (a dropped entry + replace-all upsert would ERASE a stored deny).
+		// entity governs create/update/delete with auto/approval/deny — NOT execute,
+		// NOT disabled.
+		expect(isLegalActionEffect("entity", "create", "approval")).toBe(true);
+		expect(isLegalActionEffect("entity", "execute", "auto")).toBe(false); // illegal action
+		expect(isLegalActionEffect("entity", "create", "disabled")).toBe(false); // illegal effect
+		expect(isLegalActionEffect("connector_action", "execute", "disabled")).toBe(true);
+		expect(isLegalActionEffect("connector_action", "create", "auto")).toBe(false);
 	});
 
 	it("fail-closed: a stored effect illegal for the class resolves to deny, not the default", async () => {

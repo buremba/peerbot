@@ -14,6 +14,12 @@ function stubSql(ownerAgentId: string | null): DbClient {
 	return sql as unknown as DbClient;
 }
 
+/** A stub where the watcher row is GONE — the owner lookup returns no rows. */
+function stubSqlNoWatcher(): DbClient {
+	const sql = () => Promise.resolve([]);
+	return sql as unknown as DbClient;
+}
+
 describe("resolveActingPrincipal", () => {
 	it("the trusted session watcher wins over the agent id AND a caller tag", async () => {
 		// The session watcher is stamped by the executor (trusted), so it binds even
@@ -29,6 +35,7 @@ describe("resolveActingPrincipal", () => {
 			// The trusted SESSION watcher (9) wins over the caller-supplied tag (7).
 			id: "watcher:9",
 			ownerAgentId: "owner-agent",
+			ownerResolved: true,
 			mode: "autonomous",
 		});
 	});
@@ -46,6 +53,7 @@ describe("resolveActingPrincipal", () => {
 			kind: "agent",
 			id: "agent-1",
 			ownerAgentId: null,
+			ownerResolved: true,
 			mode: "attended",
 		});
 	});
@@ -60,6 +68,7 @@ describe("resolveActingPrincipal", () => {
 			kind: "watcher",
 			id: "watcher:7",
 			ownerAgentId: "agent-1",
+			ownerResolved: true,
 			mode: "autonomous",
 		});
 	});
@@ -73,6 +82,7 @@ describe("resolveActingPrincipal", () => {
 			kind: "watcher",
 			id: "watcher:7",
 			ownerAgentId: "owner-agent",
+			ownerResolved: true,
 			mode: "autonomous",
 		});
 	});
@@ -87,6 +97,7 @@ describe("resolveActingPrincipal", () => {
 			kind: "watcher",
 			id: "watcher:9",
 			ownerAgentId: "owner-agent",
+			ownerResolved: true,
 			mode: "autonomous",
 		});
 	});
@@ -108,6 +119,7 @@ describe("resolveActingPrincipal", () => {
 			kind: "user",
 			id: null,
 			ownerAgentId: null,
+			ownerResolved: true,
 			mode: "attended",
 		});
 	});
@@ -118,5 +130,21 @@ describe("resolveActingPrincipal", () => {
 			sourceForMode: "watcher-run",
 		});
 		expect(actor.mode).toBe("autonomous");
+	});
+
+	it("a session watcher whose row is GONE resolves ownerResolved=false (gate fails closed)", async () => {
+		// The reaction's watcher was hard-deleted mid-flight. We still act as the
+		// watcher, but the owner lookup fails → ownerResolved=false, so the gate must
+		// deny rather than run the write against the looser org default.
+		const actor = await resolveActingPrincipal(stubSqlNoWatcher(), {
+			sessionWatcherId: 9,
+		});
+		expect(actor).toEqual({
+			kind: "watcher",
+			id: "watcher:9",
+			ownerAgentId: null,
+			ownerResolved: false,
+			mode: "autonomous",
+		});
 	});
 });

@@ -269,6 +269,7 @@ async function handleCreate(
 		windowId: args.watcher_source?.window_id ?? null,
 		principalId: actor.id,
 		ownerAgentId: actor.ownerAgentId,
+		ownerResolved: actor.ownerResolved,
 		mode: actor.mode,
 		entityTypeSlug: args.entity_type,
 		entityData,
@@ -421,6 +422,7 @@ async function handleUpdate(
 		principalId: updateActor.id,
 		windowId: args.watcher_source?.window_id ?? null,
 		ownerAgentId: updateActor.ownerAgentId,
+		ownerResolved: updateActor.ownerResolved,
 		mode: updateActor.mode,
 	});
 	const entityDetails =
@@ -1020,6 +1022,7 @@ async function handleDelete(
 		windowId: args?.watcher_source?.window_id ?? null,
 		principalId: deleteActor.id,
 		ownerAgentId: deleteActor.ownerAgentId,
+		ownerResolved: deleteActor.ownerResolved,
 		mode: deleteActor.mode,
 		entityTypeSlug: entity.entity_type,
 		entityId,

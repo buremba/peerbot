@@ -32,7 +32,7 @@ import { callTool as callProxyTool } from "../../mcp-proxy/client";
 import { resolveCredentialsByConnectionId } from "../../mcp-proxy/credential-resolver";
 import {
 	resolveActingPrincipal,
-	resolveWatcherOwnerAgentId,
+	resolveWatcherOwner,
 	resolveWriteEffect,
 	resolveWritePolicyDecision,
 	watcherIdFromPrincipalId,
@@ -486,6 +486,7 @@ async function handleListAvailable(
     principalKind: actor.kind,
     principalId: actor.id,
     ownerAgentId: actor.ownerAgentId,
+    ownerResolved: actor.ownerResolved,
     mode: actor.mode,
     action: 'execute',
   });
@@ -728,6 +729,7 @@ async function handleExecute(
 		principalKind: actor.kind,
 		principalId: actor.id,
 		ownerAgentId: actor.ownerAgentId,
+		ownerResolved: actor.ownerResolved,
 		mode: actor.mode,
 		action: "execute",
 	});
@@ -1665,10 +1667,13 @@ async function handleApprove(
 	const recheckWatcherId = watcherIdFromPrincipalId(
 		pendingRun.policy_principal_id,
 	);
-	const recheckOwnerAgentId =
+	// Re-resolve the owner from the persisted `watcher:<id>`. If the watcher row is
+	// GONE at approve time, fail closed (deny) — the agent envelope can't be folded,
+	// so we must not let the approval sail through as an unowned watcher.
+	const recheckOwner =
 		recheckWatcherId != null
-			? await resolveWatcherOwnerAgentId(sql, recheckWatcherId)
-			: null;
+			? await resolveWatcherOwner(sql, recheckWatcherId)
+			: { ownerAgentId: null, resolved: true };
 	const recheckDecision =
 		recheckPrincipalKind === "user"
 			? "allow"
@@ -1677,7 +1682,8 @@ async function handleApprove(
 					resourceClass: "connector_action",
 					principalKind: recheckPrincipalKind,
 					principalId: pendingRun.policy_principal_id,
-					ownerAgentId: recheckOwnerAgentId,
+					ownerAgentId: recheckOwner.ownerAgentId,
+					ownerResolved: recheckOwner.resolved,
 					// Recheck in the SAME mode the run was queued under, so an
 					// autonomous-only tightening isn't lost to an attended recheck. A
 					// watcher is INTRINSICALLY autonomous, so a legacy run queued before

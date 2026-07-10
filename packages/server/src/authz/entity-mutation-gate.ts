@@ -83,6 +83,13 @@ interface EntityMutationBase {
 	 */
 	ownerAgentId?: string | null;
 	/**
+	 * False iff the acting principal is a watcher whose owning agent could not be
+	 * resolved (its row is gone). Threaded to the gate so it FAILS CLOSED (deny)
+	 * rather than run the write as an unowned watcher against the looser org default.
+	 * Defaults true (agent/user writes, and watchers whose owner resolved).
+	 */
+	ownerResolved?: boolean;
+	/**
 	 * Whether the acting principal is attended (a human is driving) or autonomous
 	 * (a watcher / scheduled run). A watcher promotion is `autonomous`; the resolver
 	 * evaluates autonomous as at-least-as-strict as attended. Defaults attended.

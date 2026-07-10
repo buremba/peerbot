@@ -128,6 +128,8 @@ async function evaluate(
 	// the agent envelope binds while a pre-existing watcher-specific restriction
 	// can only tighten (the agent envelope never loosens it away).
 	const ownerAgentId = req.ownerAgentId ?? null;
+	// A watcher whose owning agent couldn't be resolved fails closed downstream.
+	const ownerResolved = req.ownerResolved ?? true;
 
 	if (req.action === "update") {
 		const decisions = await evaluateEntityFieldUpdates({
@@ -135,6 +137,7 @@ async function evaluate(
 			principalKind: req.principalKind,
 			principalId: req.principalId ?? null,
 			ownerAgentId,
+			ownerResolved,
 			mode: req.mode,
 			entityTypeSlug: req.entityTypeSlug,
 			entityId: req.entityId,
@@ -160,6 +163,7 @@ async function evaluate(
 		principalKind: req.principalKind,
 		principalId: req.principalId ?? null,
 		ownerAgentId,
+		ownerResolved,
 		mode: req.mode,
 		action: req.action,
 		entityTypeSlug: req.entityTypeSlug,

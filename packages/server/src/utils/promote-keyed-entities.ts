@@ -42,7 +42,7 @@ import {
 } from '../authz/entity-mutation-gate';
 import {
   mutationPrincipalId,
-  resolveWatcherOwnerAgentId,
+  resolveWatcherOwner,
 } from '../authz/entity-policy';
 import type { DbClient } from '../db/client';
 import type { KeyingConfig } from '../types/watchers';
@@ -298,9 +298,14 @@ async function upsertKeyedEntity(params: {
   /**
    * The agent that owns this watcher (watchers.agent_id). The gate resolves the
    * principal to this agent id so the agent's own envelope binds the watcher's
-   * writes; null only if the watcher row is somehow missing an agent.
+   * writes; null when the watcher row is missing (see watcherOwnerResolved).
    */
   watcherAgentId: string | null;
+  /**
+   * False iff the watcher row was gone when we resolved its owner — the gate then
+   * fails closed (deny) rather than promote under no agent envelope.
+   */
+  watcherOwnerResolved: boolean;
   /** Org policy: creates of this type queue an approval instead of inserting. */
   createNeedsApproval: boolean;
 }): Promise<{
@@ -347,6 +352,7 @@ async function upsertKeyedEntity(params: {
       watcherId: params.watcherId,
       principalId: mutationPrincipalId({ watcherId: params.watcherId }),
       ownerAgentId: params.watcherAgentId,
+      ownerResolved: params.watcherOwnerResolved,
       mode: 'autonomous',
       entityTypeSlug: params.entityTypeSlug,
       entityId,
@@ -505,7 +511,7 @@ export async function promoteKeyedEntities(
   // attended — and mode 'autonomous' lets the agent set a stricter watcher-only
   // envelope. Without this, an agent's own delete=deny would NOT bind its own
   // watcher (the write would fall through to the looser org default).
-  const watcherAgentId = await resolveWatcherOwnerAgentId(tx, watcherId);
+  const watcherOwner = await resolveWatcherOwner(tx, watcherId);
 
   // Gate decision for creates of this type (watchers are never human): resolved
   // once per promotion — every row in this window is the same entity type, so
@@ -527,7 +533,8 @@ export async function promoteKeyedEntities(
     attribution: 'watcher',
     watcherId,
     principalId: mutationPrincipalId({ watcherId }),
-    ownerAgentId: watcherAgentId,
+    ownerAgentId: watcherOwner.ownerAgentId,
+    ownerResolved: watcherOwner.resolved,
     mode: 'autonomous',
     entityTypeSlug,
     entityData: { entity_type: entityTypeSlug, name: '' },
@@ -588,7 +595,8 @@ export async function promoteKeyedEntities(
           fieldValues,
           createdBy,
           watcherId,
-          watcherAgentId,
+          watcherAgentId: watcherOwner.ownerAgentId,
+          watcherOwnerResolved: watcherOwner.resolved,
           createNeedsApproval,
         })
       );

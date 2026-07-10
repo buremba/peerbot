@@ -220,9 +220,31 @@ export async function upsertChatConnectionProjection(
   };
 
   if (status === "active" && externalTenantId) {
+    // UNIVERSAL lock order for chat writes: org-advisory → managed-advisory →
+    // ALL row locks. BOTH advisories are acquired UP FRONT, before ANY row is
+    // touched, so every path (this projection AND saveConnection) takes locks
+    // in the identical order and no advisory↔row cycle can form. In particular
+    // the same-org one-active demote below is a ROW lock — it MUST come AFTER
+    // the managed-advisory, or a concurrent cross-org write (which takes the
+    // managed-advisory then row-locks THIS org's sibling) would invert against
+    // it. The managed-advisory is mode-INDEPENDENT and taken for EVERY active
+    // tenant-bound write; over-acquiring on a BYO write only serializes it with
+    // managed writes on the same tenant (harmless). pg_advisory_xact_lock is
+    // reentrant, so a caller (saveConnection) that already holds these is a
+    // no-op here.
     await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
       tenantLockKey,
     ]);
+    if (managedLockKey) {
+      await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        managedLockKey,
+      ]);
+    }
+
+    // Same-org one-active-per-(org, platform, tenant): demote any OTHER active
+    // sibling in THIS org so the partial-unique `connections_active_chat_tenant`
+    // index is never contended. First ROW lock — taken with BOTH advisories
+    // already held.
     const demoted = await sql`
       UPDATE connections SET status = 'paused', updated_at = now()
       WHERE organization_id = ${orgId}
@@ -247,50 +269,41 @@ export async function upsertChatConnectionProjection(
       );
     }
 
-    // GLOBAL managed-workspace lock — the SECOND advisory lock, held before ANY
-    // other-org row is touched. Acquire it for EVERY active tenant-bound write
-    // (managedLockKey is mode-independent), not just managed writes: the lock
-    // order (org-advisory → managed-advisory → rows) must be identical on every
-    // path, or a BYO write that races a managed transfer inverts against it.
-    // Over-acquiring on a BYO write only serializes it with managed writes on
-    // the same tenant (harmless). The DEMOTE, however, is managed-only: a
-    // MANAGED install binds a provider workspace (Slack team) to exactly ONE
-    // org — the OAuth install moves with the workspace. On a reinstall/transfer
-    // of the same team into a different org, the old org's managed projection
-    // would otherwise stay 'active', leaving a stale routing/ACL row for a team
-    // this org no longer owns. So demote any OTHER org's active managed
-    // projection ONLY when THIS write is itself managed; BYO connections can
-    // legitimately coexist cross-org and must not demote anyone.
-    if (managedLockKey) {
-      await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
-        managedLockKey,
-      ]);
-      if (credentialMode === "managed") {
-        const transferred = await sql`
-          UPDATE connections SET status = 'paused', updated_at = now()
-          WHERE connector_key = ${conn.platform}
-            AND external_tenant_id = ${externalTenantId}
-            AND credential_mode = 'managed'
-            AND status = 'active'
-            AND deleted_at IS NULL
-            AND organization_id <> ${orgId}
-          RETURNING slug, organization_id
-        `;
-        if (transferred.length > 0) {
-          logger.info(
-            {
-              orgId,
-              platform: conn.platform,
-              teamId: externalTenantId,
-              activated: slug,
-              demoted: transferred.map(
-                (r: { slug: string; organization_id: string }) =>
-                  `${r.organization_id}:${r.slug}`,
-              ),
-            },
-            "Demoted stale managed install in another org (workspace transfer)",
-          );
-        }
+    // Cross-org managed transfer/demote — managed writes ONLY. A MANAGED install
+    // binds a provider workspace (Slack team) to exactly ONE org — the OAuth
+    // install moves with the workspace. On a reinstall/transfer of the same team
+    // into a different org, the old org's managed projection would otherwise
+    // stay 'active', leaving a stale routing/ACL row for a team this org no
+    // longer owns. Demote any OTHER org's active managed projection. BYO
+    // connections can legitimately coexist cross-org, so they took the
+    // managed-advisory (for lock-order uniformity) but demote no one. The
+    // managed-advisory is already held above, so these other-org row locks
+    // never precede it.
+    if (managedLockKey && credentialMode === "managed") {
+      const transferred = await sql`
+        UPDATE connections SET status = 'paused', updated_at = now()
+        WHERE connector_key = ${conn.platform}
+          AND external_tenant_id = ${externalTenantId}
+          AND credential_mode = 'managed'
+          AND status = 'active'
+          AND deleted_at IS NULL
+          AND organization_id <> ${orgId}
+        RETURNING slug, organization_id
+      `;
+      if (transferred.length > 0) {
+        logger.info(
+          {
+            orgId,
+            platform: conn.platform,
+            teamId: externalTenantId,
+            activated: slug,
+            demoted: transferred.map(
+              (r: { slug: string; organization_id: string }) =>
+                `${r.organization_id}:${r.slug}`,
+            ),
+          },
+          "Demoted stale managed install in another org (workspace transfer)",
+        );
       }
     }
   }

@@ -25,6 +25,7 @@ import { ChatInstanceManager } from "../../../gateway/connections/chat-instance-
 import type { PlatformConnection } from "../../../gateway/connections/types";
 import { SecretStoreRegistry } from "../../../gateway/secrets/index";
 import { __setChatInstanceManagerForTests } from "../../../lobu/gateway";
+import { upsertChatConnectionProjection } from "../../../lobu/stores/connections-projection";
 import { orgContext } from "../../../lobu/stores/org-context";
 import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-installation-store";
 import { PostgresSecretStore } from "../../../lobu/stores/postgres-secret-store";
@@ -809,4 +810,132 @@ describe("manage_connections update — chat fallback agent_id", () => {
 		expect(rows[0]?.credential_mode).toBe("byo");
 		expect(rows[0]?.agent_id).toBe(agentB);
 	}, 30_000);
+
+	it("the projection acquires the managed-advisory BEFORE its same-org sibling ROW lock (no cross-org projection-order cycle)", async () => {
+		// THIRD-order cycle (the mirror of the round-3 fix). The projection's
+		// same-org one-active demote is a ROW lock. Pre-fix the projection's
+		// order was org-advisory → sibling ROW → managed-advisory → cross-org
+		// rows, which inverts against saveConnection's org → managed → rows:
+		//   Tx B (projection): holds O(B,T) + sibling ROW, then wants M(T).
+		//   Tx A (saveConnection): holds O(A,T) + M(T), then wants a B-side row.
+		//   ⇒ A waits B's row, B waits M(T) = 40P01.
+		// The fix moves the projection's managed-advisory ABOVE its same-org
+		// demote, so BOTH paths are org → managed → ALL rows and no cycle forms.
+		//
+		// This drives the REAL projection (via saveConnection activating a row
+		// whose SAME-ORG sibling is active, forcing the projection's line-227
+		// same-org demote) and proves the ordering directly: hold the same-org
+		// SIBLING row, run the REAL projection write, and while it is parked on
+		// that sibling row, probe M(T). Post-fix the projection has ALREADY taken
+		// M(T) before the sibling demote ⇒ probe fails (M(T) held). Pre-fix
+		// (managed-advisory below the sibling demote) the projection would be
+		// parked on the sibling row WITHOUT M(T) ⇒ probe would succeed. This is
+		// the exact invariant the fix establishes on the projection side.
+		const sql = getDb();
+		const teamId = "TPROJORDER1";
+		const managedKey = `chatconn:managed:slack:${teamId}`;
+
+		// A same-org MANAGED sibling that is currently active — the projection's
+		// one-active demote (line 227) will target it when we activate a new row.
+		const siblingSlug = "slackinst-projorder-sibling";
+		await sql`
+			INSERT INTO connections (
+				organization_id, connector_key, external_tenant_id, agent_id,
+				display_name, status, config, credential_mode, slug, visibility,
+				created_at, updated_at
+			) VALUES (
+				${orgId}, 'slack', ${teamId}, ${agentA},
+				'Proj sibling', 'active', ${sql.json({ platform: "slack", botToken: "secret://projsib" })},
+				'managed', ${siblingSlug}, 'org', now(), now()
+			)
+		`;
+
+		let rowHeldGate!: () => void;
+		const rowHeld = new Promise<void>((resolve) => {
+			rowHeldGate = resolve;
+		});
+		let releaseHolder!: () => void;
+		const release = new Promise<void>((resolve) => {
+			releaseHolder = resolve;
+		});
+		// Hold the SAME-ORG SIBLING row so the projection's line-227 demote must
+		// wait on it — parking the REAL projection write exactly at its first row
+		// lock, with whatever advisories it has taken by then still held.
+		const holderTxn = sql.begin(async (tx: typeof sql) => {
+			await tx`
+				SELECT id FROM connections
+				WHERE organization_id = ${orgId} AND slug = ${siblingSlug}
+				  AND deleted_at IS NULL
+				FOR UPDATE
+			`;
+			rowHeldGate();
+			await release;
+		});
+		await rowHeld;
+
+		// REAL projection write, called DIRECTLY (not via saveConnection, so the
+		// ordering under test is the PROJECTION's own, not saveConnection's
+		// pre-acquire). Activating a NEW managed row for the same tenant makes the
+		// projection run org-advisory → managed-advisory → same-org demote, which
+		// blocks on the held sibling row.
+		const newSlug = "slackinst-projorder-new";
+		const projWrite = getDb().begin((tx: typeof sql) =>
+			upsertChatConnectionProjection(
+				tx,
+				(v) => sql.json(v),
+				{
+					id: newSlug,
+					platform: "slack",
+					agentId: agentB,
+					organizationId: orgId,
+					config: { platform: "slack", botToken: "secret://projnew" },
+					settings: { allowGroups: true },
+					metadata: { teamId, teamName: "Proj new" },
+					status: "active",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				},
+				orgId,
+				"managed",
+			),
+		);
+
+		const blockedOnRow = async (): Promise<boolean> => {
+			const r = (await sql`
+				SELECT 1 FROM pg_locks
+				WHERE locktype IN ('tuple', 'transactionid') AND NOT granted
+			`) as unknown[];
+			return r.length > 0;
+		};
+		for (let i = 0; i < 400 && !(await blockedOnRow()); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		expect(await blockedOnRow()).toBe(true);
+		// The projection is parked on its same-org sibling demote row. Post-fix
+		// it has ALREADY acquired M(T) (managed-advisory moved above the demote)
+		// ⇒ probe cannot take it. Pre-fix it would still be BELOW the demote and
+		// M(T) would be free ⇒ probe would succeed. This directly asserts the
+		// projection's managed-advisory precedes its same-org row lock.
+		const probe = (await sql`
+			SELECT pg_try_advisory_xact_lock(hashtext(${managedKey})) AS got
+		`) as Array<{ got: boolean }>;
+		expect(probe[0]?.got).toBe(false);
+
+		releaseHolder();
+		await projWrite; // must NOT throw 40P01
+		await holderTxn;
+
+		// The projection demoted the same-org sibling and activated the new row.
+		const sib = (await sql`
+			SELECT status FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${siblingSlug}
+		`) as Array<{ status: string }>;
+		expect(sib[0]?.status).toBe("paused");
+		const created = (await sql`
+			SELECT status, credential_mode FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${newSlug}
+		`) as Array<{ status: string; credential_mode: string | null }>;
+		expect(created[0]?.status).toBe("active");
+		expect(created[0]?.credential_mode).toBe("managed");
+	}, 40_000);
 });

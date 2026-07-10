@@ -350,39 +350,32 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			// defeat the cross-replica serialization.
 			await sql.begin(async (tx: typeof sql) => {
 				const configToPersist = { ...connection.config };
-				// Global lock order for chat-connection writes: tenant ADVISORY
-				// locks FIRST, THEN `connections` row locks. A MANAGED write in the
-				// projection takes TWO advisory locks in order — the org-specific
-				// tenant lock, then the GLOBAL managed-workspace lock (which then
-				// row-locks OTHER orgs' rows to demote a transferred install). If
-				// this txn row-locked first (FOR UPDATE below) and only then reached
-				// those advisory locks, a concurrent write + cross-org transfer would
-				// deadlock (row→advisory here vs advisory→row there). So replicate
-				// the projection's EXACT acquisition order at the top of the txn:
-				// org-specific lock, then (managed only) the managed-global lock.
-				// pg_advisory_xact_lock is reentrant — the projection re-taking both
-				// inside this same txn is a harmless no-op.
+				// Global lock order for chat-connection writes: BOTH tenant advisory
+				// locks FIRST — org-specific (`chatTenantAdvisoryLockKey`), then the
+				// GLOBAL managed-workspace lock (`managedTenantAdvisoryLockKey`) —
+				// THEN any `connections` row lock. The projection's real order is:
+				// org-advisory → same-org sibling rows (one-active demote) →
+				// managed-advisory → other-org rows (transfer demote) → target
+				// upsert. saveConnection can't replicate the interleaved row locks
+				// (it doesn't know the siblings yet), so instead it takes BOTH
+				// advisories up front, before ANY row lock — which is strictly safe:
+				// a txn holding both advisories before it row-locks anything can
+				// never be the party that holds a row while waiting on an advisory,
+				// so it cannot participate in the advisory↔row cycle. pg_advisory_-
+				// xact_lock is reentrant, so the projection re-taking both inside
+				// this same txn is a harmless no-op.
 				//
-				// Managed-ness must be known BEFORE the row lock, but the projection
-				// derives it from the row's credential_mode (read below FOR UPDATE).
-				// Take a LOCK-FREE peek at credential_mode here purely to decide
-				// whether to pre-acquire the managed-global lock. Over-acquiring is
-				// safe (it only serializes); the risk is UNDER-acquiring. A managed
-				// row's credential_mode never flips to byo (the projection preserves
-				// it; only the install path sets managed), so a row that is managed
-				// now is still managed at the FOR UPDATE below — this peek cannot
-				// make a managed write skip the lock. A BYO / brand-new row correctly
-				// skips it. `keyConn` carries the incoming status/platform/metadata
-				// the key helpers read; the peeked mode only gates the managed key.
-				const peek = (await tx`
-          SELECT credential_mode
-          FROM connections
-          WHERE slug = ${slug} AND organization_id = ${orgId}
-            AND deleted_at IS NULL
-          LIMIT 1
-        `) as Array<{ credential_mode: string | null }>;
-				const peekedMode: "managed" | "byo" =
-					peek[0]?.credential_mode === "managed" ? "managed" : "byo";
+				// The managed-global lock is acquired UNCONDITIONALLY for every
+				// active tenant-bound write — NOT gated on credential_mode. A
+				// lock-free peek at the mode would be a TOCTOU: a concurrent managed
+				// install can flip a byo/empty row to managed between the peek and
+				// the FOR UPDATE, after which the projection (running with the now-
+				// managed mode) takes the managed lock while this txn already holds
+				// the target row → the cycle reopens. The managed key is
+				// mode-INDEPENDENT (it names the workspace, not the mode), and
+				// over-acquiring on a genuine BYO write only serializes it against
+				// managed writes on the same tenant (harmless); UNDER-acquiring is
+				// the only unsafe outcome, so we always take it.
 				const keyConn = { ...connection, organizationId: orgId };
 				const tenantLockKey = chatTenantAdvisoryLockKey(keyConn, orgId);
 				if (tenantLockKey) {
@@ -390,10 +383,7 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 						tenantLockKey,
 					]);
 				}
-				const managedLockKey = managedTenantAdvisoryLockKey(
-					keyConn,
-					peekedMode,
-				);
+				const managedLockKey = managedTenantAdvisoryLockKey(keyConn);
 				if (managedLockKey) {
 					await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
 						managedLockKey,

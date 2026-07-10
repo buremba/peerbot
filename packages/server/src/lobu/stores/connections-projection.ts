@@ -139,26 +139,31 @@ export function chatTenantAdvisoryLockKey(
 }
 
 /**
- * Advisory-lock key for the GLOBAL managed-workspace tuple — the SECOND lock a
- * MANAGED write takes (org-specific `chatTenantAdvisoryLockKey` FIRST, then this
- * one), serializing the cross-org transfer/demote of a Slack team across ALL
- * orgs (hence org-independent, unlike the per-org key). Managed-only: BYO
- * connections legitimately coexist cross-org and must NOT take it. Returns null
- * when `credentialMode !== 'managed'` or the write is not a tenant-bound
- * activation. Every writer that reaches the managed demote (the projection) OR
- * pre-acquires to keep the global lock order intact (saveConnection) derives its
- * key HERE so the two can never drift.
+ * Advisory-lock key for the GLOBAL managed-workspace tuple — the SECOND lock in
+ * a chat write's lock order (org-specific `chatTenantAdvisoryLockKey` FIRST,
+ * then this one), serializing the cross-org transfer/demote of a workspace
+ * across ALL orgs (hence org-independent, unlike the per-org key).
+ *
+ * The KEY is MODE-INDEPENDENT — it names a (platform, tenant) workspace, not a
+ * credential mode. Only the ACT of demoting other orgs' rows is managed-only
+ * (see the projection's demote block), but the LOCK ORDER must be honored by
+ * every active tenant-bound write regardless of mode: a BYO write that later
+ * turns out to race a managed transfer must already hold this lock before it
+ * row-locks anything, or the advisory↔row cycle reopens. So this returns the
+ * key for ANY active tenant-bound write. Over-acquiring on a BYO write only
+ * serializes it against managed writes on the same tenant (harmless); the
+ * danger is UNDER-acquiring. Returns null only when the write is not an active
+ * tenant-bound activation (paused / tenantless — takes no advisory lock at
+ * all). Both the projection and saveConnection derive the key HERE so they
+ * can never drift.
  */
 export function managedTenantAdvisoryLockKey(
   conn: StoredConnection,
-  credentialMode: ChatCredentialMode,
 ): string | null {
   const rawTeamId = conn.metadata?.teamId;
   const externalTenantId =
     typeof rawTeamId === "string" && rawTeamId.length > 0 ? rawTeamId : null;
-  return credentialMode === "managed" &&
-    legacyStatusToConnections(conn.status) === "active" &&
-    externalTenantId
+  return legacyStatusToConnections(conn.status) === "active" && externalTenantId
     ? `chatconn:managed:${conn.platform}:${externalTenantId}`
     : null;
 }
@@ -204,7 +209,7 @@ export async function upsertChatConnectionProjection(
   const externalTenantId =
     typeof rawTeamId === "string" && rawTeamId.length > 0 ? rawTeamId : null;
   const tenantLockKey = chatTenantAdvisoryLockKey(conn, orgId);
-  const managedLockKey = managedTenantAdvisoryLockKey(conn, credentialMode);
+  const managedLockKey = managedTenantAdvisoryLockKey(conn);
   const displayName =
     (typeof conn.metadata?.teamName === "string" && conn.metadata.teamName) ||
     conn.platform;
@@ -242,41 +247,50 @@ export async function upsertChatConnectionProjection(
       );
     }
 
-    // A MANAGED install binds a provider workspace (Slack team) to exactly ONE
+    // GLOBAL managed-workspace lock — the SECOND advisory lock, held before ANY
+    // other-org row is touched. Acquire it for EVERY active tenant-bound write
+    // (managedLockKey is mode-independent), not just managed writes: the lock
+    // order (org-advisory → managed-advisory → rows) must be identical on every
+    // path, or a BYO write that races a managed transfer inverts against it.
+    // Over-acquiring on a BYO write only serializes it with managed writes on
+    // the same tenant (harmless). The DEMOTE, however, is managed-only: a
+    // MANAGED install binds a provider workspace (Slack team) to exactly ONE
     // org — the OAuth install moves with the workspace. On a reinstall/transfer
     // of the same team into a different org, the old org's managed projection
     // would otherwise stay 'active', leaving a stale routing/ACL row for a team
-    // this org no longer owns. Demote any OTHER org's active managed projection
-    // for this team (global tenant lock so it serializes cross-replica). BYO
-    // connections can legitimately coexist cross-org, so this is managed-only.
+    // this org no longer owns. So demote any OTHER org's active managed
+    // projection ONLY when THIS write is itself managed; BYO connections can
+    // legitimately coexist cross-org and must not demote anyone.
     if (managedLockKey) {
       await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
         managedLockKey,
       ]);
-      const transferred = await sql`
-        UPDATE connections SET status = 'paused', updated_at = now()
-        WHERE connector_key = ${conn.platform}
-          AND external_tenant_id = ${externalTenantId}
-          AND credential_mode = 'managed'
-          AND status = 'active'
-          AND deleted_at IS NULL
-          AND organization_id <> ${orgId}
-        RETURNING slug, organization_id
-      `;
-      if (transferred.length > 0) {
-        logger.info(
-          {
-            orgId,
-            platform: conn.platform,
-            teamId: externalTenantId,
-            activated: slug,
-            demoted: transferred.map(
-              (r: { slug: string; organization_id: string }) =>
-                `${r.organization_id}:${r.slug}`,
-            ),
-          },
-          "Demoted stale managed install in another org (workspace transfer)",
-        );
+      if (credentialMode === "managed") {
+        const transferred = await sql`
+          UPDATE connections SET status = 'paused', updated_at = now()
+          WHERE connector_key = ${conn.platform}
+            AND external_tenant_id = ${externalTenantId}
+            AND credential_mode = 'managed'
+            AND status = 'active'
+            AND deleted_at IS NULL
+            AND organization_id <> ${orgId}
+          RETURNING slug, organization_id
+        `;
+        if (transferred.length > 0) {
+          logger.info(
+            {
+              orgId,
+              platform: conn.platform,
+              teamId: externalTenantId,
+              activated: slug,
+              demoted: transferred.map(
+                (r: { slug: string; organization_id: string }) =>
+                  `${r.organization_id}:${r.slug}`,
+              ),
+            },
+            "Demoted stale managed install in another org (workspace transfer)",
+          );
+        }
       }
     }
   }

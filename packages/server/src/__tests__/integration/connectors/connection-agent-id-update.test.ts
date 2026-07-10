@@ -617,8 +617,10 @@ describe("manage_connections update — chat fallback agent_id", () => {
 			createdAt: Date.now(),
 			updatedAt: Date.now(),
 		});
-		// Seed as MANAGED so saveConnection's credential_mode peek sees 'managed'
-		// and takes the managed-global lock (a BYO row would correctly skip it).
+		// Seed as MANAGED. saveConnection now pre-acquires the managed-global lock
+		// for EVERY active tenant-bound write (mode-independent), so both a
+		// managed and a BYO row would take it — this case keeps the managed
+		// variant; the BYO variant is covered by the lock-presence test below.
 		await sql`
 			INSERT INTO connections (
 				organization_id, connector_key, external_tenant_id, agent_id,
@@ -694,5 +696,117 @@ describe("manage_connections update — chat fallback agent_id", () => {
 		expect(rows[0]?.agent_id).toBe(agentB);
 		// Still managed — the write preserved credential_mode.
 		expect(rows[0]?.credential_mode).toBe("managed");
+	}, 30_000);
+
+	it("a BYO tenant-bound saveConnection acquires chatconn:managed BEFORE it row-locks the target (mode-independent pre-acquire closes the peek TOCTOU)", async () => {
+		// The managed-global lock must be taken by EVERY active tenant-bound write
+		// regardless of credential_mode. A lock-free peek at the mode was a
+		// TOCTOU: a concurrent managed install could flip a byo/empty row to
+		// managed between the peek and the FOR UPDATE; the projection (now
+		// managed) then takes chatconn:managed while this txn already holds the
+		// target row ⇒ the cross-org cycle reopens.
+		//
+		// The distinguishing property is ORDER: post-fix a BYO write takes
+		// chatconn:managed BEFORE it row-locks the target; pre-fix (byo peek) it
+		// row-locks the target first and only reaches chatconn:managed inside the
+		// projection. Isolate that: hold the TARGET ROW lock in a manual txn and
+		// run the REAL BYO saveConnection. Post-fix it parks on the ROW while
+		// already HOLDING chatconn:managed ⇒ a probe txn canNOT acquire
+		// chatconn:managed (a conditional pg_try_advisory_xact_lock fails).
+		// Pre-fix it parks on the ROW WITHOUT holding chatconn:managed ⇒ the
+		// probe WOULD succeed. This asserts the managed lock is held while the
+		// BYO write waits on the row — the exact ordering guarantee, isolated
+		// from the projection's own (later) acquire.
+		const sql = getDb();
+		const teamId = "TBYOLOCK1";
+		const runtimeId = "agentfb-byolock-1";
+		const byoSlug = `agentconn-${runtimeId}`;
+		const managedKey = `chatconn:managed:slack:${teamId}`;
+
+		// Seed the row so the manual holder can row-lock it (and so the BYO
+		// saveConnection updates rather than inserts — an INSERT takes no
+		// pre-existing row lock to contend on).
+		await sql`
+			INSERT INTO connections (
+				organization_id, connector_key, external_tenant_id, agent_id,
+				display_name, status, config, credential_mode, slug, visibility,
+				created_at, updated_at
+			) VALUES (
+				${orgId}, 'slack', ${teamId}, ${agentA},
+				'BYO Lock', 'active', ${sql.json({ platform: "slack", botToken: "secret://byolock-1" })},
+				'byo', ${byoSlug}, 'org', now(), now()
+			)
+		`;
+
+		let rowHeldGate!: () => void;
+		const rowHeld = new Promise<void>((resolve) => {
+			rowHeldGate = resolve;
+		});
+		let releaseRow!: () => void;
+		const release = new Promise<void>((resolve) => {
+			releaseRow = resolve;
+		});
+		// Holder txn: lock the TARGET ROW, signal, then wait.
+		const holderTxn = sql.begin(async (tx: typeof sql) => {
+			await tx`
+				SELECT id FROM connections
+				WHERE organization_id = ${orgId} AND slug = ${byoSlug}
+				  AND deleted_at IS NULL
+				FOR UPDATE
+			`;
+			rowHeldGate();
+			await release;
+		});
+		await rowHeld;
+
+		// The REAL BYO write (existing byo row ⇒ credential_mode peeks/reads byo).
+		const byoWrite = orgContext.run({ organizationId: orgId }, () =>
+			connStore.saveConnection({
+				id: runtimeId,
+				platform: "slack",
+				agentId: agentB,
+				organizationId: orgId,
+				config: { platform: "slack", botToken: "secret://byolock-1" },
+				settings: { allowGroups: true },
+				metadata: { teamId, teamName: "BYO Lock" },
+				status: "active",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			}),
+		);
+
+		// Wait until the BYO write is provably blocked on the target ROW the
+		// holder owns (ShareLock on the tuple / the holder's xid).
+		const blockedOnRow = async (): Promise<boolean> => {
+			const r = (await sql`
+				SELECT 1 FROM pg_locks
+				WHERE locktype IN ('tuple', 'transactionid')
+				  AND NOT granted
+			`) as unknown[];
+			return r.length > 0;
+		};
+		for (let i = 0; i < 200 && !(await blockedOnRow()); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		expect(await blockedOnRow()).toBe(true);
+
+		// While the BYO write waits on the row, probe chatconn:managed with a
+		// CONDITIONAL lock. Post-fix the BYO write already HOLDS it ⇒ probe fails
+		// (false). Pre-fix (byo peek skipped it) ⇒ probe would succeed (true).
+		const probe = (await sql`
+			SELECT pg_try_advisory_xact_lock(hashtext(${managedKey})) AS got
+		`) as Array<{ got: boolean }>;
+		expect(probe[0]?.got).toBe(false);
+
+		releaseRow();
+		await holderTxn;
+		await byoWrite;
+
+		const rows = (await sql`
+			SELECT credential_mode, agent_id FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${byoSlug}
+		`) as Array<{ credential_mode: string | null; agent_id: string | null }>;
+		expect(rows[0]?.credential_mode).toBe("byo");
+		expect(rows[0]?.agent_id).toBe(agentB);
 	}, 30_000);
 });

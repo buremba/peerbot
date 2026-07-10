@@ -699,13 +699,15 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
 
     expect(enqueueMessage).not.toHaveBeenCalled();
     expect(thread.post).toHaveBeenCalledTimes(1);
+    // The preflight now emits its reason text + a provider-connect CTA through
+    // the shared buildCtaCardPayload path. With no WorkspaceProvider inited in
+    // this bun suite, the org slug can't resolve, so the CTA URL is null and the
+    // payload degrades to a plain text string (no card) — the fallback the
+    // helper guarantees. Assert the new copy; there's no setup URL to check.
     const posted = thread.post.mock.calls[0]?.[0];
     expect(typeof posted).toBe("string");
-    expect(posted).toContain("selected model (z-ai/glm-5.2)");
-    expect(posted).toContain("Open this setup link");
-    expect(posted).toContain("https://gateway.example.com/inference-providers/new");
-    expect(posted).toContain("provider=z-ai");
-    expect(posted).toContain("agentId=lobu-builder");
+    expect(posted).toContain("z-ai/glm-5.2");
+    expect(posted).toContain("isn't connected or has no credentials");
     expect(posted).not.toContain("api/proxy");
   });
 
@@ -823,13 +825,13 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
 
     await bridge.handleMessage(thread, makeMessage(), "mention");
 
-    // Ran on the listed alternate, did not post a setup-link error.
+    // Ran on the listed alternate, did not post a "can't run this yet" error.
     expect(enqueueMessage).toHaveBeenCalledTimes(1);
     const payload = enqueueMessage.mock.calls[0]?.[0] as any;
     expect(payload.agentOptions?.model).toBe("openai/gpt-4o-mini");
     expect(
       thread.post.mock.calls.every(
-        (c: unknown[]) => !String(c[0]).includes("Open this setup link"),
+        (c: unknown[]) => !String(c[0]).includes("I can't run this yet"),
       ),
     ).toBe(true);
   });
@@ -860,8 +862,10 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
 
     expect(enqueueMessage).not.toHaveBeenCalled();
     expect(thread.post).toHaveBeenCalledTimes(1);
+    // Model is allowed but its provider isn't routable → the new provider-connect
+    // reason copy (see the sibling test for why this degrades to a text string).
     expect(String(thread.post.mock.calls[0]?.[0])).toContain(
-      "Open this setup link",
+      "isn't connected or has no credentials",
     );
   });
 

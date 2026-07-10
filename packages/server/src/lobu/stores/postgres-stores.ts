@@ -9,6 +9,7 @@ import { recordLifecycleEvent } from "../../utils/insert-event";
 import {
 	chatTenantAdvisoryLockKey,
 	connectionsRowToStored,
+	managedTenantAdvisoryLockKey,
 	runtimeConnectionIdToSlug,
 	softDeleteChatConnectionProjection,
 	upsertChatConnectionProjection,
@@ -349,20 +350,53 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			// defeat the cross-replica serialization.
 			await sql.begin(async (tx: typeof sql) => {
 				const configToPersist = { ...connection.config };
-				// Global lock order for chat-connection writes: tenant ADVISORY lock
-				// first, THEN `connections` row locks. The projection writer (also
-				// reached via the managed Slack reinstall path, in ITS own txn) is
-				// advisory → row; if this txn took the row lock below (FOR UPDATE)
-				// and only then reached the projection's advisory lock, a concurrent
-				// fallback-agent update + workspace reinstall would deadlock
-				// (row→advisory here vs advisory→row there). Same guard + key as the
-				// projection (chatTenantAdvisoryLockKey — the connection passed on is
-				// identical in status/platform/metadata); pg_advisory_xact_lock is
-				// reentrant, so the projection re-acquiring it below is a no-op.
-				const tenantLockKey = chatTenantAdvisoryLockKey(connection, orgId);
+				// Global lock order for chat-connection writes: tenant ADVISORY
+				// locks FIRST, THEN `connections` row locks. A MANAGED write in the
+				// projection takes TWO advisory locks in order — the org-specific
+				// tenant lock, then the GLOBAL managed-workspace lock (which then
+				// row-locks OTHER orgs' rows to demote a transferred install). If
+				// this txn row-locked first (FOR UPDATE below) and only then reached
+				// those advisory locks, a concurrent write + cross-org transfer would
+				// deadlock (row→advisory here vs advisory→row there). So replicate
+				// the projection's EXACT acquisition order at the top of the txn:
+				// org-specific lock, then (managed only) the managed-global lock.
+				// pg_advisory_xact_lock is reentrant — the projection re-taking both
+				// inside this same txn is a harmless no-op.
+				//
+				// Managed-ness must be known BEFORE the row lock, but the projection
+				// derives it from the row's credential_mode (read below FOR UPDATE).
+				// Take a LOCK-FREE peek at credential_mode here purely to decide
+				// whether to pre-acquire the managed-global lock. Over-acquiring is
+				// safe (it only serializes); the risk is UNDER-acquiring. A managed
+				// row's credential_mode never flips to byo (the projection preserves
+				// it; only the install path sets managed), so a row that is managed
+				// now is still managed at the FOR UPDATE below — this peek cannot
+				// make a managed write skip the lock. A BYO / brand-new row correctly
+				// skips it. `keyConn` carries the incoming status/platform/metadata
+				// the key helpers read; the peeked mode only gates the managed key.
+				const peek = (await tx`
+          SELECT credential_mode
+          FROM connections
+          WHERE slug = ${slug} AND organization_id = ${orgId}
+            AND deleted_at IS NULL
+          LIMIT 1
+        `) as Array<{ credential_mode: string | null }>;
+				const peekedMode: "managed" | "byo" =
+					peek[0]?.credential_mode === "managed" ? "managed" : "byo";
+				const keyConn = { ...connection, organizationId: orgId };
+				const tenantLockKey = chatTenantAdvisoryLockKey(keyConn, orgId);
 				if (tenantLockKey) {
 					await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
 						tenantLockKey,
+					]);
+				}
+				const managedLockKey = managedTenantAdvisoryLockKey(
+					keyConn,
+					peekedMode,
+				);
+				if (managedLockKey) {
+					await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+						managedLockKey,
 					]);
 				}
 				// Scope to the LIVE row only, and lock it. Slug uniqueness holds

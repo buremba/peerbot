@@ -584,4 +584,115 @@ describe("manage_connections update — chat fallback agent_id", () => {
 		`) as Array<{ agent_id: string | null }>;
 		expect(rows[0]?.agent_id).toBe(agentB);
 	}, 30_000);
+
+	it("a MANAGED saveConnection takes the managed-global advisory lock BEFORE its row lock (no cross-org transfer deadlock)", async () => {
+		// A MANAGED write takes TWO advisory locks in the projection: the
+		// org-specific tenant lock, THEN the GLOBAL managed-workspace lock, which
+		// then row-locks OTHER orgs' rows to demote a transferred install. A
+		// concurrent cross-org transfer takes chatconn:managed:slack:T then tries
+		// to demote THIS org's managed row. If saveConnection row-locked first
+		// (FOR UPDATE) and only reached chatconn:managed AFTER, the two invert:
+		// transfer holds managed-global + waits on our row; we hold our row +
+		// wait on managed-global ⇒ 40P01. Post-fix saveConnection pre-acquires
+		// chatconn:managed BEFORE its row lock, so it simply queues behind the
+		// transfer's managed-global lock — no cycle.
+		//
+		// Reproduce: a manual holder txn takes chatconn:managed:slack:T (the
+		// transfer's position after ITS own org-specific lock), then runs the
+		// REAL saveConnection on THIS org's managed row until pg_locks shows it
+		// blocked on chatconn:managed, then the holder row-locks this org's row.
+		// Inverted order ⇒ deadlock here; fixed order ⇒ clean.
+		const sql = getDb();
+		const teamId = "TXFER1";
+		const runtimeId = "slackinst-xfer-1"; // managed slug passes through verbatim
+		const seed = (agentId: string) => ({
+			id: runtimeId,
+			platform: "slack",
+			agentId,
+			organizationId: orgId,
+			config: { platform: "slack", botToken: "secret://xfer-1" },
+			settings: { allowGroups: true },
+			metadata: { teamId, teamName: "Transfer Co" },
+			status: "active" as const,
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+		});
+		// Seed as MANAGED so saveConnection's credential_mode peek sees 'managed'
+		// and takes the managed-global lock (a BYO row would correctly skip it).
+		await sql`
+			INSERT INTO connections (
+				organization_id, connector_key, external_tenant_id, agent_id,
+				display_name, status, config, credential_mode, slug, visibility,
+				created_at, updated_at
+			) VALUES (
+				${orgId}, 'slack', ${teamId}, ${agentA},
+				'Transfer Co', 'active', ${sql.json({ platform: "slack", botToken: "secret://xfer-1" })},
+				'managed', ${runtimeId}, 'org', now(), now()
+			)
+		`;
+
+		const managedKey = `chatconn:managed:slack:${teamId}`;
+		const waitingOnManaged = async (): Promise<boolean> => {
+			const r = (await sql`
+				WITH k AS (SELECT hashtext(${managedKey})::bigint AS key)
+				SELECT 1 FROM pg_locks, k
+				WHERE locktype = 'advisory' AND NOT granted
+				  AND classid::bigint = ((k.key >> 32) & 4294967295)
+				  AND objid::bigint = (k.key & 4294967295)
+			`) as unknown[];
+			return r.length > 0;
+		};
+
+		let managedHeld!: () => void;
+		const managedHeldGate = new Promise<void>((resolve) => {
+			managedHeld = resolve;
+		});
+		let transferProceed!: () => void;
+		const transferGate = new Promise<void>((resolve) => {
+			transferProceed = resolve;
+		});
+
+		// T2 — the transfer's managed-lock-then-demote sequence.
+		const transferTxn = sql.begin(async (tx: typeof sql) => {
+			await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+				managedKey,
+			]);
+			managedHeld();
+			await transferGate;
+			// Demote THIS org's managed row (what the projection's transfer branch
+			// does to any other-org managed row for the team) — the row lock.
+			await tx`
+				UPDATE connections SET status = 'paused', updated_at = now()
+				WHERE organization_id = ${orgId} AND slug = ${runtimeId}
+				  AND deleted_at IS NULL
+			`;
+		});
+		await managedHeldGate;
+
+		// T1 — the REAL managed write path.
+		const saveTxn = orgContext.run({ organizationId: orgId }, () =>
+			connStore.saveConnection(seed(agentB)),
+		);
+
+		for (let i = 0; i < 200 && !(await waitingOnManaged()); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		// Post-fix: T1 pre-acquires chatconn:managed before its row lock ⇒ it is
+		// provably parked on the managed-global lock, holding no row. Pre-fix it
+		// would instead already hold the row and be waiting on managed-global,
+		// and the reinstallProceed step below would 40P01.
+		expect(await waitingOnManaged()).toBe(true);
+
+		transferProceed();
+		await transferTxn;
+		await saveTxn;
+
+		const rows = (await sql`
+			SELECT agent_id, credential_mode FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${runtimeId}
+		`) as Array<{ agent_id: string | null; credential_mode: string | null }>;
+		expect(rows[0]?.agent_id).toBe(agentB);
+		// Still managed — the write preserved credential_mode.
+		expect(rows[0]?.credential_mode).toBe("managed");
+	}, 30_000);
 });

@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { extractSettingsLinkButtons } from "../platform/link-buttons.js";
+import {
+  buildCtaCardPayload,
+  extractSettingsLinkButtons,
+} from "../platform/link-buttons.js";
 
 describe("extractSettingsLinkButtons", () => {
   test("extracts settings link and replaces with label", () => {
@@ -108,5 +111,49 @@ describe("extractSettingsLinkButtons", () => {
 
     expect(linkButtons).toHaveLength(1);
     expect(linkButtons[0]!.url).toBe("https://example.com/agent?claim=legacy");
+  });
+});
+
+describe("buildCtaCardPayload", () => {
+  // The shared seam that both the terminal-error bridge and the pre-enqueue
+  // preflight use so a CTA renders identically (native button) everywhere.
+  test("real URL → { card, fallbackText } with the URL in the fallback", () => {
+    const out = buildCtaCardPayload({
+      text: "No model configured.",
+      url: "https://app.lobu.ai/acme/agents/a1/settings",
+      label: "Choose a model",
+    });
+    expect(typeof out).toBe("object");
+    const obj = out as { card: unknown; fallbackText: string };
+    expect(obj.card).toBeDefined();
+    expect(obj.fallbackText).toBe(
+      "No model configured.\n\nChoose a model: https://app.lobu.ai/acme/agents/a1/settings"
+    );
+  });
+
+  test("no URL → plain text string (no card)", () => {
+    const out = buildCtaCardPayload({ text: "Try again in a moment." });
+    expect(out).toBe("Try again in a moment.");
+  });
+
+  test("loopback URL → text-only fallback (localhost can't be an inline button)", () => {
+    const out = buildCtaCardPayload({
+      text: "Connect a provider.",
+      url: "http://localhost:8787/acme/inference-providers/new",
+      label: "Connect a provider",
+    });
+    expect(typeof out).toBe("string");
+    expect(out).toBe(
+      "Connect a provider.\n\nConnect a provider: http://localhost:8787/acme/inference-providers/new"
+    );
+  });
+
+  test("default label when none supplied", () => {
+    const out = buildCtaCardPayload({
+      text: "x",
+      url: "https://app.lobu.ai/acme/agents/a1/settings",
+    });
+    const obj = out as { card: unknown; fallbackText: string };
+    expect(obj.fallbackText).toContain("Open settings: ");
   });
 });

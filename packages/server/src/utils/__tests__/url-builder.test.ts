@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildAgentSettingsUrl,
   buildEntityUrl,
+  buildProviderConnectUrl,
   buildResourcePermalink,
   getPublicWebUrl,
 } from '../url-builder';
@@ -119,6 +120,35 @@ describe('buildAgentSettingsUrl', () => {
     expect(await buildAgentSettingsUrl(undefined, 'org-1', 'a')).toBeNull();
     expect(await buildAgentSettingsUrl('https://x', undefined, 'a')).toBeNull();
     expect(await buildAgentSettingsUrl('https://x', 'org-1', undefined)).toBeNull();
+  });
+});
+
+describe('buildProviderConnectUrl', () => {
+  // The "connect a provider" CTA target — distinct from buildAgentSettingsUrl.
+  // Its fix is wiring credentials, so it lands on /inference-providers/new, the
+  // live connect form, NOT the agent's model settings.
+  it('builds the connect-a-provider URL (distinct page from agent settings)', async () => {
+    const url = await buildProviderConnectUrl(
+      'https://app.lobu.com/lobu',
+      'org-1'
+    );
+    expect(url).toBe('https://app.lobu.com/acme/inference-providers/new');
+  });
+
+  it('prefills provider + model on the connect form when given', async () => {
+    const url = await buildProviderConnectUrl('https://app.lobu.com', 'org-1', {
+      provider: 'z-ai',
+      model: 'z-ai/glm-5.2',
+    });
+    expect(url).toBe(
+      'https://app.lobu.com/acme/inference-providers/new?provider=z-ai&model=z-ai%2Fglm-5.2'
+    );
+  });
+
+  it('returns null when org slug or gateway url is missing', async () => {
+    expect(await buildProviderConnectUrl(undefined, 'org-1')).toBeNull();
+    expect(await buildProviderConnectUrl('https://x', undefined)).toBeNull();
+    expect(await buildProviderConnectUrl('https://x', 'unknown-org')).toBeNull();
   });
 });
 

@@ -20,7 +20,11 @@ import {
   resolveAgentOptions,
 } from "../services/platform-helpers.js";
 import { resolveSlackBotIdentity } from "../../authz/slack-acl-sync.js";
-import { getOrganizationSlug } from "../../utils/url-builder.js";
+import {
+  buildAgentSettingsUrl,
+  buildProviderConnectUrl,
+} from "../../utils/url-builder.js";
+import { buildCtaCardPayload } from "../platform/link-buttons.js";
 import { stripPlatformPrefix } from "../channels/bound-channels.js";
 import { captureChannelMessage } from "./channel-transcript.js";
 import { createSlackWebApi } from "./slack-web.js";
@@ -65,25 +69,6 @@ function parseProviderFromModelRef(modelRef: string): string | null {
 function webOriginFromGateway(publicGatewayUrl: string): string {
   const base = publicGatewayUrl.replace(/\/$/, "");
   return base.endsWith("/lobu") ? base.slice(0, -"/lobu".length) : base;
-}
-
-async function buildProviderSetupUrl(params: {
-  publicGatewayUrl: string;
-  organizationId?: string;
-  agentId: string;
-  providerId: string;
-  modelRef: string;
-  reason: string;
-}): Promise<string> {
-  const origin = webOriginFromGateway(params.publicGatewayUrl);
-  const orgSlug = await getOrganizationSlug(params.organizationId).catch(() => null);
-  const pathPrefix = orgSlug ? `/${encodeURIComponent(orgSlug)}` : "";
-  const url = new URL(`${pathPrefix}/inference-providers/new`, `${origin}/`);
-  url.searchParams.set("provider", params.providerId);
-  url.searchParams.set("model", params.modelRef);
-  url.searchParams.set("reason", params.reason);
-  url.searchParams.set("agentId", params.agentId);
-  return url.toString();
 }
 
 /**
@@ -131,7 +116,17 @@ async function providerIsRoutable(
 type ModelProviderResolution =
   | { kind: "ok" }
   | { kind: "fallback"; model: string; from: string; to: string }
-  | { kind: "error"; message: string };
+  // A pre-enqueue rejection: the specific reason text + a CTA kind. The caller
+  // resolves the kind to a URL and renders it through the SAME shared card path
+  // as the terminal-error bridge (native button, platform-agnostic) — never a
+  // URL inlined into prose.
+  | {
+      kind: "error";
+      text: string;
+      cta: "agent-settings" | "provider-connect";
+      provider: string;
+      model: string;
+    };
 
 /**
  * Preflight the model a message will run on. Order of outcomes:
@@ -213,23 +208,21 @@ async function validateMessageModelProvider(params: {
     }
   }
 
-  // Genuinely nothing usable — surface the setup link for the intended provider.
-  const setupUrl = await buildProviderSetupUrl({
-    publicGatewayUrl: params.services.getPublicGatewayUrl(),
-    organizationId,
-    providerId,
-    agentId: params.agentId,
-    modelRef,
-    reason: "model_provider_not_connected",
-  });
-  const reason = !refIsAllowed(modelRef)
-    ? `but that model isn't in this agent's allowed model list`
-    : `but its provider isn't connected or has no credentials`;
+  // Genuinely nothing usable. The two reasons take DIFFERENT fixes, so they map
+  // to different CTA kinds: a model that isn't in the agent's allow-list is
+  // fixed by picking an allowed one (agent-settings); a provider with no
+  // credentials/route is fixed by connecting it (provider-connect). The caller
+  // renders the text + CTA through the shared card path.
+  const modelNotAllowed = !refIsAllowed(modelRef);
+  const text = modelNotAllowed
+    ? `I can't run this yet: the model \`${modelRef}\` isn't in this agent's allowed model list. Pick an allowed model to continue.`
+    : `I can't run this yet: the provider for \`${modelRef}\` isn't connected or has no credentials. Connect it to continue.`;
   return {
     kind: "error",
-    message:
-      `I can't run this yet: the selected model (${modelRef}) ${reason}. ` +
-      `Open this setup link to connect a provider or pick an allowed model: ${setupUrl}`,
+    text,
+    cta: modelNotAllowed ? "agent-settings" : "provider-connect",
+    provider: providerId,
+    model: modelRef,
   };
 }
 
@@ -1048,7 +1041,28 @@ export class MessageHandlerBridge {
           { traceId, agentId, organizationId, model: agentOptions.model },
           "Rejecting inbound message before enqueue: no connected+routable model provider"
         );
-        await thread.post(modelResolution.message);
+        // Resolve the CTA kind to a URL and render through the SAME shared card
+        // path the terminal-error bridge uses — native button, platform-
+        // agnostic, no URL inlined in prose.
+        const gatewayUrl = this.services.getPublicGatewayUrl();
+        const ctaUrl =
+          modelResolution.cta === "provider-connect"
+            ? await buildProviderConnectUrl(gatewayUrl, organizationId, {
+                provider: modelResolution.provider,
+                model: modelResolution.model,
+              })
+            : await buildAgentSettingsUrl(gatewayUrl, organizationId, agentId);
+        const label =
+          modelResolution.cta === "provider-connect"
+            ? "Connect a provider"
+            : "Choose a model";
+        await thread.post(
+          buildCtaCardPayload({
+            text: modelResolution.text,
+            url: ctaUrl,
+            label,
+          })
+        );
         return;
       }
       if (modelResolution.kind === "fallback") {

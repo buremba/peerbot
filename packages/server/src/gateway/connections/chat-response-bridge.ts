@@ -19,6 +19,7 @@ import { Actions, Card, CardText, LinkButton } from "chat";
 import { getDb } from "../../db/client.js";
 import {
   buildAgentSettingsUrl,
+  buildProviderConnectUrl,
   type RenderedAgentError,
   renderAgentError,
 } from "../../utils/url-builder.js";
@@ -29,8 +30,8 @@ import {
 } from "../guardrails/output-scan.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
 import {
+  buildCtaCardPayload,
   extractSettingsLinkButtons,
-  isLocalhostUrl,
 } from "../platform/link-buttons.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
 import { captureChannelMessage } from "./channel-transcript.js";
@@ -559,16 +560,16 @@ export class ChatResponseBridge implements ResponseRenderer {
     const code = toAgentErrorCode(payload.errorCode);
     let ctaButton: RenderedAgentError | null = null;
     if (code) {
-      const rendered = await renderAgentError(
-        code,
-        payload.error,
-        () =>
-          buildAgentSettingsUrl(
-            this.manager.getPublicGatewayUrl(),
-            this.resolveOrganizationId(payload, ctx) ?? undefined,
-            this.resolveAgentId(payload, ctx) ?? undefined
-          )
-      );
+      const gatewayUrl = this.manager.getPublicGatewayUrl();
+      const orgId = this.resolveOrganizationId(payload, ctx) ?? undefined;
+      const agentId = this.resolveAgentId(payload, ctx) ?? undefined;
+      const rendered = await renderAgentError(code, payload.error, {
+        // "pick a model" → the agent's settings tab.
+        'agent-settings': () =>
+          buildAgentSettingsUrl(gatewayUrl, orgId, agentId),
+        // "connect a provider" → the org's connect-a-provider page.
+        'provider-connect': () => buildProviderConnectUrl(gatewayUrl, orgId),
+      });
       if (rendered.silent) return;
       // For provider errors `rendered.text` IS the provider's own message (we
       // relay it verbatim); for our synthesized errors it's the catalog line.
@@ -592,24 +593,18 @@ export class ChatResponseBridge implements ResponseRenderer {
     }
 
     // Coded error with a resolved CTA → post a Card with a native link button
-    // (same mechanism the ephemeral settings-link path uses) so the user gets a
-    // clickable action, not a bare URL in prose. Loopback URLs can't be
-    // rendered as inline buttons by some platforms, so fall through to text.
-    if (ctaButton?.ctaUrl && !isLocalhostUrl(ctaButton.ctaUrl)) {
-      const label = ctaButton.ctaLabel ?? "Open settings";
-      const card = Card({
-        children: [
-          CardText(ctaButton.text),
-          Actions([LinkButton({ url: ctaButton.ctaUrl, label })]),
-        ],
-      });
+    // (shared with the pre-enqueue preflight via buildCtaCardPayload) so the
+    // user gets a clickable action, not a bare URL in prose. Loopback URLs fall
+    // back to text inside the helper.
+    if (ctaButton?.ctaUrl) {
       await this.postToPayloadTarget(
         payload,
         ctx,
-        {
-          card,
-          fallbackText: `${ctaButton.text}\n\n${label}: ${ctaButton.ctaUrl}`,
-        },
+        buildCtaCardPayload({
+          text: ctaButton.text,
+          url: ctaButton.ctaUrl,
+          label: ctaButton.ctaLabel,
+        }),
         "Failed to send error card"
       );
       return;

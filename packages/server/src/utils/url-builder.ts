@@ -69,6 +69,36 @@ export async function buildAgentSettingsUrl(
   return `${webOrigin}/${slug}/agents/${encodeURIComponent(agentId)}/settings`;
 }
 
+/**
+ * Build the org's "connect a provider" URL — `<webOrigin>/<orgSlug>/
+ * inference-providers/new` — the CTA target for errors whose fix is *connecting
+ * a provider* (missing/expired credentials, unroutable provider), as opposed to
+ * *picking a model* on an agent (which is {@link buildAgentSettingsUrl}). This
+ * is the same live route the pre-enqueue model-provider preflight links to.
+ *
+ * Optional `provider`/`model` prefill the connect form so the user lands on the
+ * exact provider to wire up. Returns null when any required piece is missing;
+ * callers fall back to a non-linked message. The `/lobu` embedded-mode suffix is
+ * stripped like the sibling builders.
+ */
+export async function buildProviderConnectUrl(
+  publicGatewayUrl: string | undefined,
+  organizationId: string | undefined,
+  prefill?: { provider?: string; model?: string }
+): Promise<string | null> {
+  if (!publicGatewayUrl || !organizationId) return null;
+  const slug = await getOrganizationSlug(organizationId).catch(() => null);
+  if (!slug) return null;
+  const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
+  const url = new URL(
+    `/${encodeURIComponent(slug)}/inference-providers/new`,
+    `${webOrigin}/`
+  );
+  if (prefill?.provider) url.searchParams.set('provider', prefill.provider);
+  if (prefill?.model) url.searchParams.set('model', prefill.model);
+  return url.toString();
+}
+
 export interface RenderedAgentError {
   /** User-facing body (no link appended — carry `ctaUrl` separately). */
   text: string;
@@ -81,6 +111,19 @@ export interface RenderedAgentError {
 }
 
 /**
+ * Per-CTA-kind URL resolvers, injected so `renderAgentError` stays free of the
+ * per-surface plumbing (org slug / agent id / public origin live in the caller).
+ * The catalog's two actionable CTA kinds land on DIFFERENT pages:
+ *   - `agent-settings`   → the agent's model/provider settings (pick a model).
+ *   - `provider-connect` → the org's connect-a-provider page (wire credentials).
+ * A kind whose resolver is absent (or resolves null) renders with no button.
+ */
+export interface AgentErrorCtaResolvers {
+  'agent-settings'?: () => Promise<string | null>;
+  'provider-connect'?: () => Promise<string | null>;
+}
+
+/**
  * THE renderer: turn an `AgentErrorCode` + the raw provider message into the
  * user-facing body and a resolved CTA link. Every surface — Slack/Telegram
  * bridge, browser SSE — calls this so the same error reads identically
@@ -90,20 +133,24 @@ export interface RenderedAgentError {
  * we relay the provider's OWN message verbatim (it already says the useful thing
  * — the reset time, the bad model id). For errors we synthesize (worker/config),
  * the catalog carries the text. The code's only job is to pick the CTA *kind*;
- * this function resolves that kind to a concrete URL (the only layer that knows
- * the org slug / agent id / public origin). `resolveSettingsUrl` is injected so
- * this stays free of the per-surface plumbing.
+ * this resolves that kind to a concrete URL via the matching injected resolver,
+ * so "connect a provider" and "pick a model" land on their own pages instead of
+ * collapsing to one.
  */
 export async function renderAgentError(
   code: AgentErrorCode,
   providerMessage: string | undefined,
-  resolveSettingsUrl: () => Promise<string | null>
+  resolvers: AgentErrorCtaResolvers
 ): Promise<RenderedAgentError> {
   const spec = AGENT_ERRORS[code];
   const text = spec.message ?? providerMessage ?? '';
   let ctaUrl: string | null = null;
-  if (spec.cta === 'agent-settings' || spec.cta === 'provider-connect') {
-    ctaUrl = await resolveSettingsUrl().catch(() => null);
+  const resolve =
+    spec.cta === 'agent-settings' || spec.cta === 'provider-connect'
+      ? resolvers[spec.cta]
+      : undefined;
+  if (resolve) {
+    ctaUrl = await resolve().catch(() => null);
   }
   return {
     text,

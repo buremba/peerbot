@@ -235,8 +235,11 @@ export interface AgentErrorSpec {
 
 export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
   // Provider errors — no `message`; the provider's own text is the body.
+  // Provider-level failures (quota, credentials, routing) are fixed on the
+  // connect-a-provider page → `provider-connect`. A model-level failure
+  // (unknown/unallowed model) is fixed on the agent's settings → `agent-settings`.
   [AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED]: {
-    cta: "agent-settings",
+    cta: "provider-connect",
     ctaLabel: "Manage provider",
   },
   [AgentErrorCode.PROVIDER_AUTH]: {
@@ -248,7 +251,7 @@ export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
     ctaLabel: "Choose model",
   },
   [AgentErrorCode.PROVIDER_BASE_URL_UNRESOLVED]: {
-    cta: "agent-settings",
+    cta: "provider-connect",
     ctaLabel: "Connect provider",
   },
   // Errors we synthesize — carry our own text (no provider string to relay).

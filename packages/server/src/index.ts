@@ -35,6 +35,7 @@ import {
 	upsertEntityApprovalPolicy,
 	upsertGlobalEntityApprovalPolicy,
 } from "./authz/entity-policy";
+import { listOperations } from "./operations/connector-operations";
 import {
 	isLegalActionEffect,
 	type WriteAction,
@@ -1285,6 +1286,7 @@ function serializeEntityApprovalPolicy(policy: EntityApprovalPolicy) {
 		principal_kind: policy.principalKind,
 		principal_id: policy.principalId,
 		principal_mode: policy.principalMode,
+		operation_key: policy.operationKey,
 		entity_type_slug: policy.entityTypeSlug,
 		field_path: policy.fieldPath,
 		entity_id: policy.entityId,
@@ -1683,10 +1685,40 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
     ) t
     ORDER BY name ASC
   `;
+	// The org's WRITE connector operations, so the matrix can render one row per
+	// operation under connector_action (always-expanded). Only write ops are gated —
+	// reads never mutate, so they carry no per-op rule. Deduped by operation_key
+	// (the same op can surface from multiple connections); the key is what the policy
+	// row and the execute gate both bind to.
+	const opList = await listOperations({
+		organizationId,
+		kind: "write",
+		includeInputSchema: false,
+		includeOutputSchema: false,
+		limit: 500,
+	});
+	const seenOps = new Set<string>();
+	const operations: Array<{
+		operation_key: string;
+		name: string;
+		connector_key: string;
+		connector_name: string;
+	}> = [];
+	for (const op of opList.operations) {
+		if (seenOps.has(op.operation_key)) continue;
+		seenOps.add(op.operation_key);
+		operations.push({
+			operation_key: op.operation_key,
+			name: op.name,
+			connector_key: op.connector_key,
+			connector_name: op.connector_name,
+		});
+	}
 	return c.json({
 		floor: floor.map(serializeEntityApprovalPolicy),
 		agent: agent.map(serializeEntityApprovalPolicy),
 		entity_types: typeRows.map((r) => ({ slug: r.slug, name: r.name })),
+		connector_operations: operations,
 	});
 });
 
@@ -1829,6 +1861,62 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			? body.entity_type_slug.trim()
 			: null;
 
+	// operation_key selects the per-operation connector row (null = the blanket
+	// execute row). Only `connector_action` is op-scoped. Same rules as
+	// entity_type_slug: a present-but-invalid key, or a key on a non-connector class,
+	// must 400 rather than silently coerce to null and overwrite the blanket rule.
+	const opKeyPresent =
+		body.operation_key !== undefined && body.operation_key !== null;
+	if (opKeyPresent && resourceClass !== "connector_action") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `operation_key is only valid for resource_class 'connector_action', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
+	if (
+		opKeyPresent &&
+		(typeof body.operation_key !== "string" ||
+			body.operation_key.trim() === "")
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "operation_key must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
+	const operationKey =
+		resourceClass === "connector_action" &&
+		typeof body.operation_key === "string" &&
+		body.operation_key.trim()
+			? body.operation_key.trim()
+			: null;
+	// A per-op rule must name an operation the org actually exposes — else a typo
+	// would create a dead row that gates nothing and clutters the matrix. Validate
+	// against the org's write-operation catalog (the same list the matrix renders).
+	if (operationKey) {
+		const known = await listOperations({
+			organizationId,
+			kind: "write",
+			includeInputSchema: false,
+			includeOutputSchema: false,
+			limit: 1000,
+		});
+		if (!known.operations.some((op) => op.operation_key === operationKey)) {
+			return c.json(
+				{
+					error: "invalid_request",
+					message: `Unknown connector operation '${operationKey}' for this workspace.`,
+				},
+				400,
+			);
+		}
+	}
+
 	// The policy row targets this agent by id (a reusable slug). Confirm the agent
 	// EXISTS in this org before persisting — else a stale/typo'd URL would leave an
 	// orphan row that a future agent recreated with the same id silently inherits.
@@ -1849,6 +1937,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		principalKind: "agent",
 		principalId: agentId,
 		principalMode,
+		operationKey,
 		entityTypeSlug,
 		effects,
 		// Effect-only endpoint: keep any approval delivery target already on the row.
@@ -1925,12 +2014,41 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	}
 	const entityTypeSlug =
 		resourceClass === "entity" ? (slugRaw?.trim() ?? null) || null : null;
+	// operation_key picks WHICH connector row to delete (null = the blanket execute
+	// row). Same guard as entity_type_slug: a present-but-empty value, or a key on a
+	// non-connector class, must NOT coerce to null and delete the blanket rule.
+	const opKeyRaw = c.req.query("operation_key");
+	if (
+		opKeyRaw !== undefined &&
+		opKeyRaw !== "" &&
+		resourceClass !== "connector_action"
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `operation_key is only valid for resource_class 'connector_action', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
+	if (opKeyRaw !== undefined && opKeyRaw.trim() === "") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "operation_key must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
+	const operationKey =
+		resourceClass === "connector_action" ? (opKeyRaw?.trim() ?? null) || null : null;
 	const deleted = await deleteEntityApprovalPolicy({
 		organizationId,
 		resourceClass,
 		principalKind: "agent",
 		principalId: agentId,
 		principalMode,
+		operationKey,
 		entityTypeSlug,
 	});
 	invalidationEmitter.emit(organizationId, {

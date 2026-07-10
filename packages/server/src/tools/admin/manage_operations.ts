@@ -470,11 +470,11 @@ async function handleListAvailable(
 	args: Static<typeof ListAvailableAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
-  // A `disabled` connector_action effect turns the connector OFF for this
-  // principal — the operations shouldn't be listed at all (Disabled HIDES the
-  // action, unlike deny/approval which surface then gate on execute). The
-  // connector_action policy is one blanket `execute` per principal today (no
-  // per-op scope yet), so a disabled effect hides the whole connector's ops.
+  // A `disabled` connector_action effect turns an operation OFF for this principal
+  // — it shouldn't be listed at all (Disabled HIDES the action, unlike deny/approval
+  // which surface then gate on execute). Two levels now: the BLANKET `execute` rule
+  // (operation_key NULL) can disable the whole connector, and a PER-OPERATION rule
+  // can disable a single op while the rest stay listed.
   const actor = await resolveActingPrincipal(getDb(), {
     organizationId: ctx.organizationId,
     userId: ctx.userId,
@@ -482,17 +482,20 @@ async function handleListAvailable(
     sessionWatcherId: ctx.actingWatcherId ?? null,
     sourceForMode: ctx.sourceContext?.source,
   });
-  const effect = await resolveWriteEffect({
-    organizationId: ctx.organizationId,
-    resourceClass: 'connector_action',
-    principalKind: actor.kind,
-    principalId: actor.id,
-    ownerAgentId: actor.ownerAgentId,
-    ownerResolved: actor.ownerResolved,
-    mode: actor.mode,
-    action: 'execute',
-  });
-  if (effect === 'disabled') {
+  const effectFor = (operationKey?: string | null) =>
+    resolveWriteEffect({
+      organizationId: ctx.organizationId,
+      resourceClass: 'connector_action',
+      principalKind: actor.kind,
+      principalId: actor.id,
+      ownerAgentId: actor.ownerAgentId,
+      ownerResolved: actor.ownerResolved,
+      mode: actor.mode,
+      action: 'execute',
+      operationKey: operationKey ?? null,
+    });
+  // Cheap early exit: a blanket disable hides everything without listing.
+  if ((await effectFor(null)) === 'disabled') {
     return {
       action: 'list_available',
       operations: [],
@@ -515,10 +518,21 @@ async function handleListAvailable(
     offset: args.offset,
   });
 
+  // Hide any single operation whose PER-OP rule resolves to disabled (the blanket
+  // isn't disabled or we'd have returned above). Humans always resolve auto, so this
+  // only filters non-human principals; the effect calls short-circuit for users.
+  const visibleFlags = await Promise.all(
+    result.operations.map((op) => effectFor(op.operation_key)),
+  );
+  const operations = result.operations.filter(
+    (_op, i) => visibleFlags[i] !== 'disabled',
+  );
+  const hidden = result.operations.length - operations.length;
+
   return {
     action: 'list_available',
-    operations: result.operations,
-    total: result.total,
+    operations,
+    total: result.total - hidden,
     limit: result.limit,
     offset: result.offset,
   };
@@ -735,6 +749,9 @@ async function handleExecute(
 		ownerResolved: actor.ownerResolved,
 		mode: actor.mode,
 		action: "execute",
+		// A per-operation rule (e.g. deliveroo.place_order = approval) tightens the
+		// blanket execute for this op alone; the blanket applies to every other op.
+		operationKey: operation.operation_key,
 	});
 	if (policyDecision === "deny") {
 		return {
@@ -1725,6 +1742,10 @@ async function handleApprove(
 							? "attended"
 							: "autonomous",
 					action: "execute",
+					// Recheck against the SAME operation the run was queued under (its
+					// action_key IS the operation_key), so a per-op rule installed after
+					// queueing still binds — mirrors the queue-time gate above.
+					operationKey: pendingRun.action_key,
 				});
 	if (currentMode === "disabled" || recheckDecision === "deny") {
 		const why =

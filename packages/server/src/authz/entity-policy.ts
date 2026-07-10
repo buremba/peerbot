@@ -114,6 +114,9 @@ export interface EntityApprovalPolicy {
 	principalId: string | null;
 	/** 'autonomous' = watcher-only override; NULL = applies to both acting modes. */
 	principalMode: PrincipalMode | null;
+	/** Connector operation this row scopes to (connector_action only); NULL = the
+	 * blanket row governing every operation. */
+	operationKey: string | null;
 	entityTypeSlug: string | null;
 	fieldPath: string | null;
 	entityId: number | null;
@@ -136,6 +139,9 @@ export interface EntityApprovalPolicyInput {
 	principalId?: string | null;
 	/** 'autonomous' scopes this row to watcher runs only; null = both modes. */
 	principalMode?: PrincipalMode | null;
+	/** Scopes a connector_action row to one operation (e.g. 'slack.send_message');
+	 * null = the blanket row for every operation. */
+	operationKey?: string | null;
 	entityTypeSlug?: string | null;
 	fieldPath?: string | null;
 	entityId?: number | null;
@@ -180,6 +186,9 @@ type EntityApprovalPolicyRow = {
 	principal_id: string | null;
 	/** 'autonomous' = watcher-only override; NULL = applies to both modes. */
 	principal_mode: string | null;
+	/** Connector operation this row scopes to (e.g. 'slack.send_message'); NULL =
+	 * the blanket row governing every operation. Only set for connector_action. */
+	operation_key: string | null;
 	entity_type_slug: string | null;
 	field_path: string | null;
 	entity_id: number | null;
@@ -262,6 +271,7 @@ function rowToPolicy(row: EntityApprovalPolicyRow): EntityApprovalPolicy {
 		principalKind: normalizePrincipalKind(row.principal_kind),
 		principalId: row.principal_id,
 		principalMode: normalizePrincipalMode(row.principal_mode),
+		operationKey: row.operation_key,
 		entityTypeSlug: row.entity_type_slug,
 		fieldPath: row.field_path,
 		entityId: row.entity_id === null ? null : Number(row.entity_id),
@@ -288,6 +298,7 @@ export function defaultEntityApprovalPolicy(
 		principalKind: null,
 		principalId: null,
 		principalMode: null,
+		operationKey: null,
 		entityTypeSlug: null,
 		fieldPath: null,
 		entityId: null,
@@ -538,7 +549,12 @@ function scopeSpecificity(row: EntityApprovalPolicyRow): number {
 	return (
 		(row.entity_id !== null ? 4 : 0) +
 		(row.field_path !== null ? 2 : 0) +
-		(row.entity_type_slug !== null ? 1 : 0)
+		// operation_key (connector_action) and entity_type_slug (entity) are mutually
+		// exclusive scope dimensions on disjoint classes; both are the class's finest
+		// non-instance scope, so they share weight 1. A row with either set outranks
+		// the blanket row for its class.
+		(row.entity_type_slug !== null ? 1 : 0) +
+		(row.operation_key !== null ? 1 : 0)
 	);
 }
 
@@ -745,6 +761,10 @@ async function loadCandidatePolicies(args: {
 	ownerAgentId?: string | null;
 	entityTypeSlug?: string | null;
 	entityId?: number | null;
+	/** The connector operation being run (connector_action only). Loads BOTH the
+	 * blanket row (operation_key IS NULL) and any row scoped to this operation; the
+	 * op-specific row wins via {@link scopeSpecificity}. */
+	operationKey?: string | null;
 	sql?: DbClient;
 }): Promise<EntityApprovalPolicyRow[]> {
 	const sql = args.sql ?? getDb();
@@ -754,7 +774,7 @@ async function loadCandidatePolicies(args: {
 	const ownerAgentId = args.ownerAgentId ?? null;
 	const rows = await sql<EntityApprovalPolicyRow>`
     SELECT id, organization_id, resource_class, principal_kind, principal_id,
-       principal_mode, entity_type_slug, field_path, entity_id,
+       principal_mode, operation_key, entity_type_slug, field_path, entity_id,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM write_approval_policies
@@ -772,6 +792,7 @@ async function loadCandidatePolicies(args: {
           AND (principal_id IS NULL OR principal_id = ${ownerAgentId})
         )
       )
+      AND (operation_key IS NULL OR operation_key = ${args.operationKey ?? null})
       AND (entity_type_slug IS NULL OR entity_type_slug = ${args.entityTypeSlug ?? null})
       AND (entity_id IS NULL OR entity_id = ${args.entityId ?? null})
   `;
@@ -910,6 +931,9 @@ export async function resolveWritePolicyDecision(args: {
 	 * watcher can never be more permissive than the same agent acting live.
 	 */
 	mode?: PrincipalMode;
+	/** connector_action only: the operation being run — a per-op row tightens the
+	 * blanket execute rule for it alone. Forwarded to {@link resolveWriteEffect}. */
+	operationKey?: string | null;
 	sql?: DbClient;
 }): Promise<EntityPolicyDecision> {
 	return modeToDecision(await resolveWriteEffect(args));
@@ -936,6 +960,9 @@ export async function resolveWriteEffect(args: {
 	ownerResolved?: boolean;
 	action: WriteAction;
 	mode?: PrincipalMode;
+	/** connector_action only: the operation being run (e.g. 'slack.send_message').
+	 * A row scoped to this op tightens the blanket execute rule for it alone. */
+	operationKey?: string | null;
 	sql?: DbClient;
 }): Promise<EntityMutationMode> {
 	if (args.principalKind === "user") return "auto";
@@ -946,6 +973,7 @@ export async function resolveWriteEffect(args: {
 		principalKind: args.principalKind,
 		principalId: args.principalId ?? null,
 		ownerAgentId: args.ownerAgentId ?? null,
+		operationKey: args.operationKey ?? null,
 		sql: args.sql,
 	});
 	return foldEffectWithMode(
@@ -1030,7 +1058,7 @@ export async function getGlobalEntityApprovalPolicy(
 	const sql = getDb();
 	const rows = await sql<EntityApprovalPolicyRow>`
     SELECT id, organization_id, resource_class, principal_kind, principal_id,
-       principal_mode, entity_type_slug, field_path, entity_id,
+       principal_mode, operation_key, entity_type_slug, field_path, entity_id,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM write_approval_policies
@@ -1058,7 +1086,7 @@ export async function listEntityApprovalPolicies(
 	const sql = getDb();
 	const rows = await sql<EntityApprovalPolicyRow>`
     SELECT id, organization_id, resource_class, principal_kind, principal_id,
-       principal_mode, entity_type_slug, field_path, entity_id,
+       principal_mode, operation_key, entity_type_slug, field_path, entity_id,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM write_approval_policies
@@ -1069,6 +1097,8 @@ export async function listEntityApprovalPolicies(
       CASE WHEN principal_kind IS NULL THEN 0 ELSE 1 END,
       principal_kind ASC NULLS FIRST,
       principal_id ASC NULLS FIRST,
+      CASE WHEN operation_key IS NULL THEN 0 ELSE 1 END,
+      operation_key ASC NULLS FIRST,
       CASE WHEN entity_type_slug IS NULL THEN 0 ELSE 1 END,
       entity_type_slug ASC NULLS FIRST,
       CASE WHEN entity_id IS NULL THEN 0 ELSE 1 END,
@@ -1164,6 +1194,12 @@ export async function upsertEntityApprovalPolicy(
 	const principalMode = principalKind
 		? normalizePrincipalMode(input.principalMode)
 		: null;
+	// operation_key scopes a connector_action row to one operation; meaningless (and
+	// dropped) for any other class so an entity/agent_config row can't smuggle one in.
+	const operationKey =
+		resourceClass === "connector_action"
+			? input.operationKey?.trim() || null
+			: null;
 	const entityTypeSlug = input.entityTypeSlug?.trim() || null;
 	const fieldPath = input.fieldPath?.trim() || null;
 	const entityId = input.entityId ?? null;
@@ -1202,11 +1238,12 @@ export async function upsertEntityApprovalPolicy(
         AND principal_kind IS NOT DISTINCT FROM ${principalKind}
         AND principal_id IS NOT DISTINCT FROM ${principalId}
         AND principal_mode IS NOT DISTINCT FROM ${principalMode}
+        AND operation_key IS NOT DISTINCT FROM ${operationKey}
         AND entity_type_slug IS NOT DISTINCT FROM ${entityTypeSlug}
         AND field_path IS NOT DISTINCT FROM ${fieldPath}
         AND entity_id IS NOT DISTINCT FROM ${entityId}
       RETURNING id, organization_id, resource_class, principal_kind, principal_id,
-       principal_mode, entity_type_slug, field_path, entity_id,
+       principal_mode, operation_key, entity_type_slug, field_path, entity_id,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     `;
@@ -1218,19 +1255,19 @@ export async function upsertEntityApprovalPolicy(
 			const inserted = await tx<EntityApprovalPolicyRow>`
       INSERT INTO write_approval_policies (
         organization_id, resource_class, principal_kind, principal_id,
-        principal_mode, entity_type_slug, field_path, entity_id,
+        principal_mode, operation_key, entity_type_slug, field_path, entity_id,
         approval_connection_id, approval_channel_id, approval_team_id,
         approval_channel_name, created_at, updated_at
       ) VALUES (
         ${organizationId}, ${resourceClass}, ${principalKind}, ${principalId},
-        ${principalMode}, ${entityTypeSlug}, ${fieldPath}, ${entityId},
+        ${principalMode}, ${operationKey}, ${entityTypeSlug}, ${fieldPath}, ${entityId},
         ${approvalConnectionId},
         ${approvalChannelId}, ${approvalTeamId}, ${approvalChannelName},
         now(), now()
       )
       ON CONFLICT DO NOTHING
       RETURNING id, organization_id, resource_class, principal_kind, principal_id,
-       principal_mode, entity_type_slug, field_path, entity_id,
+       principal_mode, operation_key, entity_type_slug, field_path, entity_id,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     `;
@@ -1255,6 +1292,7 @@ export async function deleteEntityApprovalPolicy(args: {
 	principalKind?: PolicyPrincipalKind | null;
 	principalId?: string | null;
 	principalMode?: PrincipalMode | null;
+	operationKey?: string | null;
 	entityTypeSlug?: string | null;
 	fieldPath?: string | null;
 	entityId?: number | null;
@@ -1265,6 +1303,10 @@ export async function deleteEntityApprovalPolicy(args: {
 	const principalMode = principalKind
 		? normalizePrincipalMode(args.principalMode)
 		: null;
+	const operationKey =
+		resourceClass === "connector_action"
+			? args.operationKey?.trim() || null
+			: null;
 	const entityTypeSlug = args.entityTypeSlug?.trim() || null;
 	const fieldPath = args.fieldPath?.trim() || null;
 	const entityId = args.entityId ?? null;
@@ -1287,6 +1329,7 @@ export async function deleteEntityApprovalPolicy(args: {
       AND principal_kind IS NOT DISTINCT FROM ${principalKind}
       AND principal_id IS NOT DISTINCT FROM ${principalId}
       AND principal_mode IS NOT DISTINCT FROM ${principalMode}
+      AND operation_key IS NOT DISTINCT FROM ${operationKey}
       AND entity_type_slug IS NOT DISTINCT FROM ${entityTypeSlug}
       AND field_path IS NOT DISTINCT FROM ${fieldPath}
       AND entity_id IS NOT DISTINCT FROM ${entityId}

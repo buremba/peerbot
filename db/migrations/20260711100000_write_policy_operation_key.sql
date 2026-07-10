@@ -20,11 +20,18 @@ ALTER TABLE public.write_approval_policies
 -- the old one, so the table is never left without a uniqueness guarantee.
 -- COALESCE(operation_key,'') keeps blanket (NULL) rows unique.
 --
--- ROLLING-DEPLOY: additive column + expand-before-contract index. Old pods keep
--- writing operation_key=NULL blanket rows (valid under the new key); the new
--- per-operation UI is the only writer of non-NULL operation_key rows and ships in
--- this deploy, so a non-blanket row can only appear once new pods are live. No
--- backfill — every existing row is a blanket row and stays one.
+-- DEPLOY SAFETY: additive column + expand-before-contract index. Old pods write the
+-- blanket rule with a scope-BLIND UPDATE/DELETE (their WHERE has no operation_key
+-- clause), so on the migrated schema an old pod could match BOTH the blanket row AND
+-- a new per-op row in one statement and clobber the per-op effect — a PERSISTENT
+-- fail-open, not the self-healing "old pod can't see the row" kind. This is closed at
+-- the deploy layer, NOT here: the app Deployment is `strategy: Recreate` with
+-- replicaCount 1 (charts/lobu/values.yaml), so the old pod fully terminates before
+-- the new one starts and no two server versions ever serve writes concurrently. If
+-- this is ever backported to a multi-replica RollingUpdate, split into expand (this
+-- migration) + a NEXT-release feature that gates operation_key writes until every pod
+-- carries the scope-aware predicate. No backfill — every existing row is a blanket
+-- row and stays one.
 -- squawk-ignore require-concurrent-index-creation -- low-row-count policy table; brief lock negligible at this scale
 CREATE UNIQUE INDEX IF NOT EXISTS write_approval_policies_class_principal_mode_op_scope_key
   ON public.write_approval_policies (

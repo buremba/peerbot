@@ -18,11 +18,17 @@ imagePullSecrets:
 # App deployment settings (API backend)
 app:
   replicaCount: 1
-  # With workspaces.enabled=false (Phase 5 default), the chart leaves
-  # strategy unset so the Deployment uses kube-default RollingUpdate.
-  # Setting `workspaces.enabled: true` (legacy RWO path) still pins to
-  # Recreate below.
-  strategy: {}
+  # Recreate: the old pod fully terminates before the new one starts, so at most
+  # ONE server version is ever live. This is a correctness requirement, not just a
+  # single-replica convenience — write-gate policy migrations add scope columns
+  # (e.g. operation_key) whose write predicates only the NEW code carries. Under
+  # RollingUpdate an old pod could serve a scope-blind UPDATE/DELETE concurrently
+  # with the migrated schema and clobber a freshly-written finer-scoped policy row
+  # (a persistent fail-open). Recreate removes the two-version overlap window. With
+  # replicaCount 1 there is no availability cost vs RollingUpdate (never >1 serving
+  # pod anyway). `workspaces.enabled: true` (legacy RWO path) already pinned this.
+  strategy:
+    type: Recreate
 
   resources:
     requests:

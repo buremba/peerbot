@@ -133,4 +133,23 @@ describe("connector_action per-operation scope", () => {
 		// Another op falls back to the class default (auto).
 		expect(await execFor(orgId, "op-agent", "slack.send_message")).toBe("auto");
 	});
+
+	it("connector-qualified keys don't alias: two connectors' same bare op are distinct (F1)", async () => {
+		// linear::create_issue = deny, but github::create_issue must stay auto. The
+		// qualified key is what the gate passes, so a rule on one connector's op can't
+		// leak to another connector that exposes the same bare operation key.
+		await seedConnectorPolicy({
+			orgId,
+			principalKind: "agent",
+			principalId: "op-agent",
+			operationKey: "linear::create_issue",
+			effect: "deny",
+		});
+		expect(await execFor(orgId, "op-agent", "linear::create_issue")).toBe(
+			"deny",
+		);
+		expect(await execFor(orgId, "op-agent", "github::create_issue")).toBe(
+			"auto",
+		);
+	});
 });

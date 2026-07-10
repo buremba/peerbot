@@ -36,6 +36,7 @@ import {
 	upsertGlobalEntityApprovalPolicy,
 } from "./authz/entity-policy";
 import { listOperations } from "./operations/connector-operations";
+import { qualifiedOperationKey } from "./tools/admin/manage_operations";
 import {
 	isLegalActionEffect,
 	type WriteAction,
@@ -1687,15 +1688,17 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
   `;
 	// The org's WRITE connector operations, so the matrix can render one row per
 	// operation under connector_action (always-expanded). Only write ops are gated —
-	// reads never mutate, so they carry no per-op rule. Deduped by operation_key
-	// (the same op can surface from multiple connections); the key is what the policy
-	// row and the execute gate both bind to.
+	// reads never mutate, so they carry no per-op rule. The row's `operation_key` is
+	// the CONNECTOR-QUALIFIED key (`connector_key::op`) — the exact value the policy
+	// row and the execute gate bind to — so Linear's and GitHub's `create_issue`
+	// stay distinct rows. Deduped by that qualified key (the same op can surface from
+	// multiple connections OF THE SAME connector).
 	const opList = await listOperations({
 		organizationId,
 		kind: "write",
 		includeInputSchema: false,
 		includeOutputSchema: false,
-		limit: 500,
+		limit: 1000,
 	});
 	const seenOps = new Set<string>();
 	const operations: Array<{
@@ -1705,10 +1708,11 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		connector_name: string;
 	}> = [];
 	for (const op of opList.operations) {
-		if (seenOps.has(op.operation_key)) continue;
-		seenOps.add(op.operation_key);
+		const key = qualifiedOperationKey(op.connector_key, op.operation_key);
+		if (seenOps.has(key)) continue;
+		seenOps.add(key);
 		operations.push({
-			operation_key: op.operation_key,
+			operation_key: key,
 			name: op.name,
 			connector_key: op.connector_key,
 			connector_name: op.connector_name,
@@ -1896,8 +1900,9 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			? body.operation_key.trim()
 			: null;
 	// A per-op rule must name an operation the org actually exposes — else a typo
-	// would create a dead row that gates nothing and clutters the matrix. Validate
-	// against the org's write-operation catalog (the same list the matrix renders).
+	// would create a dead row that gates nothing and clutters the matrix. The client
+	// sends the CONNECTOR-QUALIFIED key (`connector_key::op`); validate against the
+	// same qualified catalog the matrix renders.
 	if (operationKey) {
 		const known = await listOperations({
 			organizationId,
@@ -1906,7 +1911,12 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			includeOutputSchema: false,
 			limit: 1000,
 		});
-		if (!known.operations.some((op) => op.operation_key === operationKey)) {
+		const knownQualified = new Set(
+			known.operations.map((op) =>
+				qualifiedOperationKey(op.connector_key, op.operation_key),
+			),
+		);
+		if (!knownQualified.has(operationKey)) {
 			return c.json(
 				{
 					error: "invalid_request",

@@ -776,7 +776,10 @@ async function handleExecute(
 		// rule isn't lost to an attended recheck.
 		policyPrincipalKind: actor.kind,
 		policyPrincipalId: actor.id,
-		policyPrincipalMode: actor.mode === "autonomous" ? "autonomous" : null,
+		// Persist the acting mode EXPLICITLY ('attended' | 'autonomous') so the
+		// approve-time recheck evaluates in the same mode and doesn't over-deny a
+		// genuine attended run. NULL is reserved for legacy rows (fail-closed there).
+		policyPrincipalMode: actor.mode === "autonomous" ? "autonomous" : "attended",
 	});
 
 	if (args.watcher_source) {
@@ -1684,17 +1687,16 @@ async function handleApprove(
 					principalId: pendingRun.policy_principal_id,
 					ownerAgentId: recheckOwner.ownerAgentId,
 					ownerResolved: recheckOwner.resolved,
-					// Recheck a non-human run in AUTONOMOUS mode. `policy_principal_mode` is
-					// written 'autonomous' | NULL (the CHECK forbids 'attended'), so NULL is
-					// AMBIGUOUS: a NEW attended run and a LEGACY run (queued before the
-					// column, incl. autonomous scheduled-job/connector-repair/internal AGENT
-					// runs) both read NULL. We can't tell them apart, so we FAIL CLOSED to
-					// autonomous whenever the acting principal is non-human (this branch is
-					// only reached for agent/watcher — user short-circuits to "allow"
-					// above). Autonomous folds the attended decision as its floor then only
-					// tightens, so at approve time (a human is present) the worst case is an
-					// over-strict recheck, never a skipped autonomous-only deny.
-					mode: "autonomous",
+					// Recheck in the SAME mode the run was queued under. Both modes are now
+					// persisted EXPLICITLY ('attended' | 'autonomous'), so an attended run
+					// isn't over-denied by an autonomous-only rule, and an autonomous run
+					// still can't dodge its autonomous-only tightening. NULL is a LEGACY row
+					// (queued before the column) whose true mode is unknown — fail closed to
+					// autonomous (the stricter direction) for those.
+					mode:
+						pendingRun.policy_principal_mode === "attended"
+							? "attended"
+							: "autonomous",
 					action: "execute",
 				});
 	if (currentMode === "disabled" || recheckDecision === "deny") {

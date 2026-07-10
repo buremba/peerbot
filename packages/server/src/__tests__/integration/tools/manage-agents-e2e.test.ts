@@ -172,6 +172,39 @@ describe("manage_agents — builder gate e2e", () => {
 		expect(await agentExists(orgId, "human-edit-bot")).toBe(false);
 	});
 
+	it("deleting an agent CASCADES its write-gate policy rows (codex-15)", async () => {
+		const sql = getTestDb();
+		await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "policy-bot", name: "v1" },
+			TEST_ENV,
+			ownerCtx,
+		);
+		// Seed an exact-agent policy row for it.
+		await sql`
+			INSERT INTO write_approval_policies (organization_id, resource_class, principal_kind, principal_id)
+			VALUES (${orgId}, 'entity', 'agent', 'policy-bot')
+		`;
+		const before = await sql`
+			SELECT id FROM write_approval_policies
+			WHERE organization_id = ${orgId} AND principal_kind = 'agent' AND principal_id = 'policy-bot'
+		`;
+		expect(before.length).toBe(1);
+
+		await executeTool(
+			"manage_agents",
+			{ action: "delete", agent_id: "policy-bot" },
+			TEST_ENV,
+			ownerCtx,
+		);
+		// The agent's policy rows must be gone — else a future 'policy-bot' inherits them.
+		const after = await sql`
+			SELECT id FROM write_approval_policies
+			WHERE organization_id = ${orgId} AND principal_kind = 'agent' AND principal_id = 'policy-bot'
+		`;
+		expect(after.length).toBe(0);
+	});
+
 	it("agent create produces a pending run + approval event and does NOT create the agent yet", async () => {
 		const res = (await executeTool(
 			"manage_agents",

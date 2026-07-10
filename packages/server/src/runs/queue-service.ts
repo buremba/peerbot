@@ -541,8 +541,9 @@ export async function createConnectorOperationRun(params: {
   policyPrincipalKind?: 'agent' | 'watcher' | 'user' | null;
   policyPrincipalId?: string | null;
   /** Acting mode the run was queued under; the approve-time recheck reuses it so
-   * an autonomous run isn't re-evaluated (looser) as attended. */
-  policyPrincipalMode?: 'autonomous' | null;
+   * an autonomous run isn't re-evaluated (looser) as attended, and an attended run
+   * isn't over-denied by an autonomous-only rule. NULL = legacy (pre-column). */
+  policyPrincipalMode?: 'attended' | 'autonomous' | null;
 }): Promise<number> {
   const sql = getDb();
 

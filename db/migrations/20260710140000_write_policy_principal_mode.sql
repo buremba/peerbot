@@ -17,9 +17,15 @@ ALTER TABLE public.write_approval_policies
 -- trusted principal (runs.policy_principal_kind/id from 20260709150000). The
 -- approve-time recheck must re-evaluate in the SAME mode it was queued under —
 -- otherwise an autonomous run whose autonomous-only rule tightened to approval/deny
--- would be re-checked as ATTENDED (looser) and could sail through. Nullable +
--- additive: NULL means attended (the pre-mode default). Only autonomous runs write
--- 'autonomous', so no backfill is needed.
+-- would be re-checked as ATTENDED (looser) and could sail through.
+--
+-- BOTH modes are written EXPLICITLY ('attended' | 'autonomous') so the recheck can
+-- trust the stored value. NULL is reserved for LEGACY rows queued before this column
+-- existed — the recheck can't know their true mode, so it fails closed to autonomous
+-- for those (the safe direction). Writing 'attended' explicitly (rather than leaving
+-- new attended runs NULL) is what lets the recheck NOT over-deny a genuine attended
+-- run that merely queued because its connection requires approval. Additive + no
+-- backfill: legacy rows stay NULL and are handled by the fail-closed fallback.
 ALTER TABLE public.runs
   ADD COLUMN IF NOT EXISTS policy_principal_mode text NULL;
 -- runs is hot/high-row-count: validate the CHECK in a second pass so the ADD takes
@@ -28,7 +34,7 @@ ALTER TABLE public.runs
   DROP CONSTRAINT IF EXISTS runs_policy_principal_mode_check;
 ALTER TABLE public.runs
   ADD CONSTRAINT runs_policy_principal_mode_check CHECK (
-    policy_principal_mode IS NULL OR policy_principal_mode IN ('autonomous')
+    policy_principal_mode IS NULL OR policy_principal_mode IN ('attended', 'autonomous')
   ) NOT VALID;
 ALTER TABLE public.runs
   VALIDATE CONSTRAINT runs_policy_principal_mode_check;

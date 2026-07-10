@@ -1711,6 +1711,15 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			400,
 		);
 	}
+	// Valid JSON `null` / an array / a primitive parses without throwing but isn't a
+	// policy body — dereferencing body.resource_class below would 500. Require a plain
+	// object so we return the intended 400.
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		return c.json(
+			{ error: "invalid_request", message: "Request body must be a JSON object." },
+			400,
+		);
+	}
 
 	const resourceClass =
 		body.resource_class === "entity" ||
@@ -1819,6 +1828,21 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		body.entity_type_slug.trim()
 			? body.entity_type_slug.trim()
 			: null;
+
+	// The policy row targets this agent by id (a reusable slug). Confirm the agent
+	// EXISTS in this org before persisting — else a stale/typo'd URL would leave an
+	// orphan row that a future agent recreated with the same id silently inherits.
+	const agentExists = await getDb()<{ id: string }>`
+    SELECT id FROM agents
+    WHERE id = ${agentId} AND organization_id = ${organizationId}
+    LIMIT 1
+  `;
+	if (!agentExists[0]) {
+		return c.json(
+			{ error: "not_found", message: `Agent '${agentId}' not found in this workspace.` },
+			404,
+		);
+	}
 
 	const policy = await upsertEntityApprovalPolicy(organizationId, {
 		resourceClass,

@@ -13,7 +13,6 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
-import { pinoLogger } from "hono-pino";
 import { LOBU_LOGO_PNG_BASE64 } from "./assets/logo";
 import { createAuth } from "./auth";
 import { getAuthConfig as getAuthConfigFromEnv } from "./auth/config";
@@ -421,14 +420,6 @@ app.use(
 		],
 		exposeHeaders: ["Content-Type"],
 		credentials: true, // Required for better-auth cookies
-	}),
-);
-
-// Add Pino logger middleware
-app.use(
-	"*",
-	pinoLogger({
-		pino: logger,
 	}),
 );
 

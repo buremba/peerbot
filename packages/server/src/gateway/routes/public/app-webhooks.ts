@@ -783,6 +783,8 @@ export function createChatWebhookDelivery(options: {
 export interface AppWebhookRouterDeps {
 	installationStore: AppInstallationStore;
 	secretStore: SecretStore;
+	/** Optional logger override for route-level verification tests. */
+	logger?: Pick<typeof logger, "info" | "warn" | "error">;
 	/** Provider plugins keyed by `provider` (the `:provider` path param). */
 	providers: AppWebhookProvider[];
 	/**
@@ -832,6 +834,7 @@ function json(status: number, body: Record<string, unknown>): Response {
 export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 	const router = new Hono();
 	const providers = new Map(deps.providers.map((p) => [p.provider, p]));
+	const routeLogger = deps.logger ?? logger;
 
 	router.post("/api/v1/app-webhooks/:provider", async (c) => {
 		const providerName = c.req.param("provider");
@@ -854,13 +857,17 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 		//    deliveries just because its secret went unconfigured.
 		const appSecret = await deps.resolveAppWebhookSecret(providerName);
 		if (!appSecret) {
-			logger.warn(
+			routeLogger.warn(
 				{ provider: providerName },
 				"[app-webhook] no app webhook secret configured — rejecting delivery",
 			);
 			return json(401, { error: "Unauthorized" });
 		}
 		if (!provider.verify(rawBody, c.req.raw.headers, appSecret)) {
+			routeLogger.warn(
+				{ provider: providerName },
+				"[app-webhook] signature verification failed — rejecting delivery",
+			);
 			return json(401, { error: "Unauthorized" });
 		}
 
@@ -880,7 +887,7 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 					method: c.req.raw.method,
 				});
 			} catch (error) {
-				logger.error(
+				routeLogger.error(
 					{ provider: providerName, error: String(error) },
 					"[app-webhook] handleDelivery failed",
 				);
@@ -892,7 +899,7 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 		//    tenant (e.g. an app-level ping) is acked without landing.
 		const tenant = provider.extractTenant(rawBody, c.req.raw.headers);
 		if (!tenant) {
-			logger.info(
+			routeLogger.info(
 				{ provider: providerName },
 				"[app-webhook] delivery carries no tenant — acked without landing",
 			);
@@ -910,7 +917,7 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 			externalTenantId: tenant.externalTenantId,
 		});
 		if (!install) {
-			logger.info(
+			routeLogger.info(
 				{
 					provider: providerName,
 					providerInstance: tenant.providerInstance,
@@ -937,7 +944,7 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 				});
 				return json(200, { ok: true, triggered });
 			} catch (error) {
-				logger.error(
+				routeLogger.error(
 					{ provider: providerName, installationId: install.id, error: String(error) },
 					"[app-webhook] onDelivery trigger failed",
 				);
@@ -1018,7 +1025,7 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 					: undefined,
 			);
 		} catch (error) {
-			logger.error(
+			routeLogger.error(
 				{ provider: providerName, installationId: install.id, error: String(error) },
 				"[app-webhook] failed to land delivery",
 			);

@@ -173,12 +173,30 @@ describe("slack app-webhook provider route", () => {
 
   it("rejects a forged signature 401 before delegating", async () => {
     const handler = vi.fn(async () => new Response("ok"));
-    const router = makeRouter(handler);
+    const warn = vi.fn();
+    const router = createAppWebhookRoutes({
+      installationStore: {} as never,
+      secretStore: { get: async () => null },
+      providers: [
+        createDeclaredAppWebhookProvider({
+          provider: "slack",
+          appId: "slack-app",
+          webhookSchema: SLACK_WEBHOOK_SCHEMA,
+          handleDelivery: createChatWebhookDelivery({ handleChatAppWebhook: handler }),
+        }),
+      ],
+      resolveAppWebhookSecret: async () => SIGNING_SECRET,
+      logger: { warn } as never,
+    });
 
     const res = await router.fetch(delivery("{}", nowTs(), "v0=forged"));
 
     expect(res.status).toBe(401);
     expect(handler).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      { provider: "slack" },
+      "[app-webhook] signature verification failed — rejecting delivery",
+    );
   });
 
   it("delegates a fresh, valid delivery to handleSlackAppWebhook", async () => {

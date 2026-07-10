@@ -353,12 +353,12 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 				// Global lock order for chat-connection writes: BOTH tenant advisory
 				// locks FIRST — org-specific (`chatTenantAdvisoryLockKey`), then the
 				// GLOBAL managed-workspace lock (`managedTenantAdvisoryLockKey`) —
-				// THEN any `connections` row lock. The projection's real order is:
-				// org-advisory → same-org sibling rows (one-active demote) →
-				// managed-advisory → other-org rows (transfer demote) → target
-				// upsert. saveConnection can't replicate the interleaved row locks
-				// (it doesn't know the siblings yet), so instead it takes BOTH
-				// advisories up front, before ANY row lock — which is strictly safe:
+				// THEN any `connections` row lock. This order is now UNIVERSAL: the
+				// projection (`upsertChatConnectionProjection`) takes both advisories
+				// up front too (org-advisory → managed-advisory → same-org demote →
+				// cross-org transfer demote → target upsert), so no path locks a
+				// `connections` row between the two advisories. saveConnection takes
+				// BOTH advisories before ANY row lock — which is strictly safe:
 				// a txn holding both advisories before it row-locks anything can
 				// never be the party that holds a row while waiting on an advisory,
 				// so it cannot participate in the advisory↔row cycle. pg_advisory_-

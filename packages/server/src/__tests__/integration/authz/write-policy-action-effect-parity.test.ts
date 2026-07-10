@@ -14,6 +14,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
 	evaluateEntityMutation,
 	resolveEntityApprovalPolicy,
+	resolveWriteEffect,
 	resolveWritePolicyDecision,
 } from "../../../authz/entity-policy";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
@@ -193,6 +194,27 @@ describe("write-policy action/effect decision parity", () => {
 				action: "execute",
 			}),
 		).toBe("deny");
+	});
+
+	it("connector_action: resolveWriteEffect exposes `disabled` (decision collapses it to deny)", async () => {
+		await seedPolicy({
+			orgId,
+			resourceClass: "connector_action",
+			principalKind: "agent",
+			principalId: "agent_off",
+			effects: [{ action: "execute", effect: "disabled" }],
+		});
+		const base = {
+			organizationId: orgId,
+			resourceClass: "connector_action" as const,
+			principalKind: "agent" as const,
+			principalId: "agent_off",
+			action: "execute" as const,
+		};
+		// The DECISION collapses disabled→deny (both stop the write)...
+		expect(await resolveWritePolicyDecision(base)).toBe("deny");
+		// ...but the raw EFFECT is preserved so list_available can HIDE the op.
+		expect(await resolveWriteEffect(base)).toBe("disabled");
 	});
 
 	it("connector_action: no row → auto (connection mode alone governs)", async () => {

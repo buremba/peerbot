@@ -820,7 +820,27 @@ export async function resolveWritePolicyDecision(args: {
 	mode?: PrincipalMode;
 	sql?: DbClient;
 }): Promise<EntityPolicyDecision> {
-	if (args.principalKind === "user") return "allow";
+	return modeToDecision(await resolveWriteEffect(args));
+}
+
+/**
+ * The raw folded EFFECT (auto/approval/deny/disabled) for a non-scoped resource,
+ * before it collapses to a decision. `disabled` and `deny` both stop the write,
+ * but callers that must DISTINGUISH them — e.g. `list_available` hides a disabled
+ * connector's operations rather than surfacing them to fail on execute — need the
+ * effect, not the decision. A human always resolves `auto`.
+ */
+export async function resolveWriteEffect(args: {
+	organizationId: string;
+	resourceClass: Exclude<WriteResourceClass, "entity">;
+	principalKind: EntityPolicyPrincipalKind;
+	principalId?: string | null;
+	ownerAgentId?: string | null;
+	action: WriteAction;
+	mode?: PrincipalMode;
+	sql?: DbClient;
+}): Promise<EntityMutationMode> {
+	if (args.principalKind === "user") return "auto";
 	const candidates = await loadCandidatePolicies({
 		organizationId: args.organizationId,
 		resourceClass: args.resourceClass,
@@ -829,13 +849,11 @@ export async function resolveWritePolicyDecision(args: {
 		ownerAgentId: args.ownerAgentId ?? null,
 		sql: args.sql,
 	});
-	return modeToDecision(
-		foldEffectWithMode(
-			candidates,
-			args.resourceClass,
-			args.action,
-			args.mode ?? "attended",
-		),
+	return foldEffectWithMode(
+		candidates,
+		args.resourceClass,
+		args.action,
+		args.mode ?? "attended",
 	);
 }
 

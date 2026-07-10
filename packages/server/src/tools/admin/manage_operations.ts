@@ -33,6 +33,7 @@ import { resolveCredentialsByConnectionId } from "../../mcp-proxy/credential-res
 import {
 	resolveActingPrincipal,
 	resolveWatcherOwnerAgentId,
+	resolveWriteEffect,
 	resolveWritePolicyDecision,
 	watcherIdFromPrincipalId,
 } from "../../authz/entity-policy";
@@ -468,6 +469,36 @@ async function handleListAvailable(
 	args: Static<typeof ListAvailableAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
+  // A `disabled` connector_action effect turns the connector OFF for this
+  // principal — the operations shouldn't be listed at all (Disabled HIDES the
+  // action, unlike deny/approval which surface then gate on execute). The
+  // connector_action policy is one blanket `execute` per principal today (no
+  // per-op scope yet), so a disabled effect hides the whole connector's ops.
+  const actor = await resolveActingPrincipal(getDb(), {
+    userId: ctx.userId,
+    agentId: ctx.agentId,
+    sessionWatcherId: ctx.actingWatcherId ?? null,
+    sourceForMode: ctx.sourceContext?.source,
+  });
+  const effect = await resolveWriteEffect({
+    organizationId: ctx.organizationId,
+    resourceClass: 'connector_action',
+    principalKind: actor.kind,
+    principalId: actor.id,
+    ownerAgentId: actor.ownerAgentId,
+    mode: actor.mode,
+    action: 'execute',
+  });
+  if (effect === 'disabled') {
+    return {
+      action: 'list_available',
+      operations: [],
+      total: 0,
+      limit: args.limit ?? 0,
+      offset: args.offset ?? 0,
+    };
+  }
+
   const result = await listOperations({
     organizationId: ctx.organizationId,
     connectorKey: args.connector_key,
@@ -1648,9 +1679,14 @@ async function handleApprove(
 					principalId: pendingRun.policy_principal_id,
 					ownerAgentId: recheckOwnerAgentId,
 					// Recheck in the SAME mode the run was queued under, so an
-					// autonomous-only tightening isn't lost to an attended recheck.
+					// autonomous-only tightening isn't lost to an attended recheck. A
+					// watcher is INTRINSICALLY autonomous, so a legacy run queued before
+					// the policy_principal_mode column existed (mode NULL) must still
+					// recheck autonomous — otherwise an autonomous-only deny added before
+					// approval would be skipped.
 					mode:
-						pendingRun.policy_principal_mode === "autonomous"
+						pendingRun.policy_principal_mode === "autonomous" ||
+						recheckPrincipalKind === "watcher"
 							? "autonomous"
 							: "attended",
 					action: "execute",

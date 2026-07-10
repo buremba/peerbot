@@ -38,6 +38,19 @@ ALTER TABLE public.runs
 -- autonomous-only override would collide with the base row on the old key. Build
 -- the new index first, then drop the old one, so the table is never left without
 -- a uniqueness guarantee. COALESCE(principal_mode,'') keeps NULL rows unique.
+--
+-- ROLLING-DEPLOY NOTE (accepted risk, decided 2026-07-10): this runs as a
+-- pre-upgrade Helm hook, so it completes BEFORE new pods roll. During the
+-- RollingUpdate window (~30-90s) old pods run against the migrated schema with the
+-- old mode-blind upsert/resolver. In theory a NULL-mode + autonomous row pair could
+-- coexist and an old pod could apply the autonomous-only row to an attended write,
+-- or its `IS NOT DISTINCT FROM` upsert could match both headers. We ACCEPT this: no
+-- autonomous rows exist at cutover (the agent-envelope UI ships in THIS deploy), so
+-- an autonomous row can only appear if an admin uses the brand-new UI during that
+-- exact rollout window — effectively zero exposure. If the feature is ever
+-- backported to a slow/large rollout, split this into expand (add index) + contract
+-- (drop old index next deploy) and gate autonomous-row writes until the old index is
+-- gone.
 -- squawk-ignore require-concurrent-index-creation -- low-row-count policy table; brief lock negligible at this scale
 CREATE UNIQUE INDEX IF NOT EXISTS write_approval_policies_class_principal_mode_scope_key
   ON public.write_approval_policies (

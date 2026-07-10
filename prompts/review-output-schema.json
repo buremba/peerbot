@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "Lobu merge-review verdict. Judge the diff against the requested base and report concrete changed-path defects only.",
+  "additionalProperties": false,
+  "required": [
+    "bug_free_confidence",
+    "bugs",
+    "slop",
+    "simplicity",
+    "blockers",
+    "change_type",
+    "behavior_change_risk",
+    "tests_adequate",
+    "suggested_fixes",
+    "notes",
+    "categories"
+  ],
+  "properties": {
+    "bug_free_confidence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Confidence that the diff is bug-free; 90 or more requires strong verification."
+    },
+    "bugs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Count of concrete defects caused by the diff."
+    },
+    "slop": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Amount of unnecessary or generated waste; lower is better."
+    },
+    "simplicity": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "How simple and maintainable the change is; higher is better."
+    },
+    "blockers": {
+      "type": "array",
+      "description": "Merge-blocking defects caused by the diff.",
+      "items": { "type": "string" }
+    },
+    "change_type": {
+      "type": "string",
+      "enum": ["feat", "fix", "refactor", "docs", "chore", "test", "deps"]
+    },
+    "behavior_change_risk": {
+      "type": "string",
+      "enum": ["none", "low", "medium", "high"]
+    },
+    "tests_adequate": {
+      "type": "boolean",
+      "description": "Whether changed behavior has adequate automated coverage."
+    },
+    "suggested_fixes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "change"],
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": ["integer", "null"], "minimum": 1 },
+          "change": { "type": "string" }
+        }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Concise review summary, including any non-blocking or environmental observations."
+    },
+    "categories": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "src",
+        "tests",
+        "docs",
+        "config",
+        "deps",
+        "migrations",
+        "ci",
+        "generated"
+      ],
+      "properties": {
+        "src": { "type": "integer", "minimum": 0 },
+        "tests": { "type": "integer", "minimum": 0 },
+        "docs": { "type": "integer", "minimum": 0 },
+        "config": { "type": "integer", "minimum": 0 },
+        "deps": { "type": "integer", "minimum": 0 },
+        "migrations": { "type": "integer", "minimum": 0 },
+        "ci": { "type": "integer", "minimum": 0 },
+        "generated": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1786,11 +1786,22 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	}
 	const principalMode = body.principal_mode === "autonomous" ? "autonomous" : null;
 	// entity_type_slug selects the per-type row (null = the blanket all-types row).
-	// A PRESENT-but-invalid slug (a number, or whitespace) must not silently coerce to
-	// null and overwrite the broad blanket policy — reject it, same as principal_mode.
+	// Only the `entity` class is type-scoped. A present-but-invalid slug (number,
+	// whitespace) OR a slug on a NON-entity class must not silently coerce to null and
+	// overwrite the broad blanket policy — 400, same as principal_mode.
+	const slugPresent =
+		body.entity_type_slug !== undefined && body.entity_type_slug !== null;
+	if (slugPresent && resourceClass !== "entity") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `entity_type_slug is only valid for resource_class 'entity', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
 	if (
-		body.entity_type_slug !== undefined &&
-		body.entity_type_slug !== null &&
+		slugPresent &&
 		(typeof body.entity_type_slug !== "string" ||
 			body.entity_type_slug.trim() === "")
 	) {
@@ -1864,10 +1875,30 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		);
 	}
 	const principalMode = principalModeRaw === "autonomous" ? "autonomous" : null;
+	// entity_type_slug picks WHICH row to delete (null = the blanket all-types row).
+	// A present-but-empty slug, or a slug on a non-entity class, must NOT coerce to
+	// null and delete the blanket policy instead of the intended per-type override.
+	const slugRaw = c.req.query("entity_type_slug");
+	if (slugRaw !== undefined && slugRaw !== "" && resourceClass !== "entity") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `entity_type_slug is only valid for resource_class 'entity', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
+	if (slugRaw !== undefined && slugRaw.trim() === "") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "entity_type_slug must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
 	const entityTypeSlug =
-		resourceClass === "entity"
-			? c.req.query("entity_type_slug")?.trim() || null
-			: null;
+		resourceClass === "entity" ? (slugRaw?.trim() ?? null) || null : null;
 	const deleted = await deleteEntityApprovalPolicy({
 		organizationId,
 		resourceClass,

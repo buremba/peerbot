@@ -282,6 +282,22 @@ describe("write-policy action/effect decision parity", () => {
 		expect(slugPresentInvalid(null)).toBe(false);
 	});
 
+	it("a type scope is rejected for non-entity classes; only entity is type-scoped (codex-13)", () => {
+		// A present entity_type_slug on agent_config/connector_action must 400, not
+		// coerce to null and overwrite the class's blanket policy.
+		const slugAllowed = (
+			resourceClass: string,
+			slug: string | undefined | null,
+		) => {
+			const present = slug !== undefined && slug !== null;
+			return !(present && resourceClass !== "entity");
+		};
+		expect(slugAllowed("entity", "trip")).toBe(true);
+		expect(slugAllowed("agent_config", "trip")).toBe(false);
+		expect(slugAllowed("connector_action", "trip")).toBe(false);
+		expect(slugAllowed("agent_config", undefined)).toBe(true); // omitted is fine
+	});
+
 	it("the permissions-PUT validation predicate rejects illegal (action,effect) pairs (codex-8)", async () => {
 		// The endpoint 400s on any entry isLegalActionEffect rejects, rather than
 		// dropping it (a dropped entry + replace-all upsert would ERASE a stored deny).

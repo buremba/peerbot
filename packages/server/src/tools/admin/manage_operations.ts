@@ -1684,17 +1684,17 @@ async function handleApprove(
 					principalId: pendingRun.policy_principal_id,
 					ownerAgentId: recheckOwner.ownerAgentId,
 					ownerResolved: recheckOwner.resolved,
-					// Recheck in the SAME mode the run was queued under, so an
-					// autonomous-only tightening isn't lost to an attended recheck. A
-					// watcher is INTRINSICALLY autonomous, so a legacy run queued before
-					// the policy_principal_mode column existed (mode NULL) must still
-					// recheck autonomous — otherwise an autonomous-only deny added before
-					// approval would be skipped.
-					mode:
-						pendingRun.policy_principal_mode === "autonomous" ||
-						recheckPrincipalKind === "watcher"
-							? "autonomous"
-							: "attended",
+					// Recheck a non-human run in AUTONOMOUS mode. `policy_principal_mode` is
+					// written 'autonomous' | NULL (the CHECK forbids 'attended'), so NULL is
+					// AMBIGUOUS: a NEW attended run and a LEGACY run (queued before the
+					// column, incl. autonomous scheduled-job/connector-repair/internal AGENT
+					// runs) both read NULL. We can't tell them apart, so we FAIL CLOSED to
+					// autonomous whenever the acting principal is non-human (this branch is
+					// only reached for agent/watcher — user short-circuits to "allow"
+					// above). Autonomous folds the attended decision as its floor then only
+					// tightens, so at approve time (a human is present) the worst case is an
+					// over-strict recheck, never a skipped autonomous-only deny.
+					mode: "autonomous",
 					action: "execute",
 				});
 	if (currentMode === "disabled" || recheckDecision === "deny") {

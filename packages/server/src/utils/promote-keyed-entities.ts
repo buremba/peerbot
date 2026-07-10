@@ -40,7 +40,10 @@ import {
   type DeferredMutation,
   runMutationGate,
 } from '../authz/entity-mutation-gate';
-import { mutationPrincipalId } from '../authz/entity-policy';
+import {
+  mutationPrincipalId,
+  resolveWatcherOwnerAgentId,
+} from '../authz/entity-policy';
 import type { DbClient } from '../db/client';
 import type { KeyingConfig } from '../types/watchers';
 import {
@@ -143,22 +146,6 @@ async function resolveCreator(
   return rows.length > 0 ? rows[0].userId : null;
 }
 
-/**
- * The agent that owns a watcher (watchers.agent_id, NOT NULL in schema). Used to
- * bind the watcher's promotions to the owning agent's write envelope — a watcher
- * is that agent's autonomous mode, so the agent's own policy rows must govern it.
- * Returns null only if the watcher row is missing (defensive; shouldn't happen
- * within a live promotion), in which case the gate falls back to "any agent".
- */
-async function resolveWatcherAgentId(
-  tx: DbClient,
-  watcherId: number
-): Promise<string | null> {
-  const rows = await tx<{ agent_id: string | null }>`
-    SELECT agent_id FROM watchers WHERE id = ${watcherId} LIMIT 1
-  `;
-  return rows.length > 0 ? (rows[0].agent_id ?? null) : null;
-}
 
 /**
  * Resolve the target entity-type slug. Prefer the explicit `keying_config`
@@ -518,7 +505,7 @@ export async function promoteKeyedEntities(
   // attended — and mode 'autonomous' lets the agent set a stricter watcher-only
   // envelope. Without this, an agent's own delete=deny would NOT bind its own
   // watcher (the write would fall through to the looser org default).
-  const watcherAgentId = await resolveWatcherAgentId(tx, watcherId);
+  const watcherAgentId = await resolveWatcherOwnerAgentId(tx, watcherId);
 
   // Gate decision for creates of this type (watchers are never human): resolved
   // once per promotion — every row in this window is the same entity type, so

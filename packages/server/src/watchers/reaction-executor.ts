@@ -57,6 +57,14 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
     scopes: [...SCOPE_CHECK_NOT_APPLICABLE],
     scopedToOrg: true,
     allowCrossOrg: false,
+    // The reaction IS this watcher acting autonomously. Stamping the watcher id
+    // here makes EVERY gated write it performs (connector ops, entity mutations,
+    // watcher edits) resolve the watcher's owning agent and evaluate in
+    // autonomous mode — the script cannot dodge its agent's envelope by omitting
+    // an explicit `watcher_source`. `source: 'watcher-run'` marks the turn
+    // autonomous even for surfaces that read only sourceContext.
+    actingWatcherId: context.window.watcher_id,
+    sourceContext: { source: 'watcher-run' as const },
   };
 
   const result = await runScript({

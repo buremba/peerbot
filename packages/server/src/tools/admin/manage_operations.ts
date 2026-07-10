@@ -31,11 +31,10 @@ import type { Env } from "../../index";
 import { callTool as callProxyTool } from "../../mcp-proxy/client";
 import { resolveCredentialsByConnectionId } from "../../mcp-proxy/credential-resolver";
 import {
-	classifyMutationPrincipal,
-	modeForSource,
-	mutationPrincipalId,
-	type PrincipalMode,
+	resolveActingPrincipal,
+	resolveWatcherOwnerAgentId,
 	resolveWritePolicyDecision,
+	watcherIdFromPrincipalId,
 } from "../../authz/entity-policy";
 import { notifyActionApprovalNeeded } from "../../notifications/triggers";
 import { resolveActionMode } from "../../operations/action-modes";
@@ -681,28 +680,24 @@ async function handleExecute(
 	// connection that would auto-run to queued. A human applies immediately (the
 	// policy governs non-human principals); with no policy row, the class default
 	// is auto, so the connection mode alone decides — today's behavior is intact.
-	const principalKind = classifyMutationPrincipal({
+	// Resolve WHO is acting through the single seam — merges the explicit
+	// watcher_source and the reaction session's own watcher, looks up the owning
+	// agent, and pins autonomous mode for a watcher. Persisted with the run so the
+	// approve-time recheck re-evaluates in the SAME mode/principal.
+	const actor = await resolveActingPrincipal(sql, {
 		userId: ctx.userId,
 		agentId: ctx.agentId,
-		watcherSource: args.watcher_source ?? null,
+		explicitWatcherId: args.watcher_source?.watcher_id ?? null,
+		sessionWatcherId: ctx.actingWatcherId ?? null,
+		sourceForMode: ctx.sourceContext?.source,
 	});
-	const principalId = mutationPrincipalId({
-		agentId: ctx.agentId,
-		watcherId: args.watcher_source?.watcher_id ?? null,
-	});
-	// A watcher-attributed or watcher/scheduled-sourced execution is autonomous
-	// (its own tighter rules bind); an interactive turn is attended. Computed once
-	// and persisted with the run so the approve-time recheck re-evaluates in the
-	// SAME mode.
-	const principalMode: PrincipalMode = args.watcher_source
-		? "autonomous"
-		: modeForSource(ctx.sourceContext?.source);
 	const policyDecision = await resolveWritePolicyDecision({
 		organizationId: ctx.organizationId,
 		resourceClass: "connector_action",
-		principalKind,
-		principalId,
-		mode: principalMode,
+		principalKind: actor.kind,
+		principalId: actor.id,
+		ownerAgentId: actor.ownerAgentId,
+		mode: actor.mode,
 		action: "execute",
 	});
 	if (policyDecision === "deny") {
@@ -746,9 +741,9 @@ async function handleExecute(
 		// at approve time against who queued it, not who approves it (sol #5) —
 		// and in the SAME acting mode, so an autonomous run's tighter autonomous
 		// rule isn't lost to an attended recheck.
-		policyPrincipalKind: principalKind,
-		policyPrincipalId: principalId,
-		policyPrincipalMode: principalMode === "autonomous" ? "autonomous" : null,
+		policyPrincipalKind: actor.kind,
+		policyPrincipalId: actor.id,
+		policyPrincipalMode: actor.mode === "autonomous" ? "autonomous" : null,
 	});
 
 	if (args.watcher_source) {
@@ -1632,6 +1627,17 @@ async function handleApprove(
 		pendingRun.policy_principal_kind === "watcher"
 			? pendingRun.policy_principal_kind
 			: "user";
+	// A watcher-attributed run must fold its OWNING AGENT'S envelope at recheck too,
+	// exactly as at queue time — else an agent-level deny installed before approval
+	// would be missed. Re-resolve the owner from the persisted `watcher:<id>` id
+	// (no need to persist it separately).
+	const recheckWatcherId = watcherIdFromPrincipalId(
+		pendingRun.policy_principal_id,
+	);
+	const recheckOwnerAgentId =
+		recheckWatcherId != null
+			? await resolveWatcherOwnerAgentId(sql, recheckWatcherId)
+			: null;
 	const recheckDecision =
 		recheckPrincipalKind === "user"
 			? "allow"
@@ -1640,6 +1646,7 @@ async function handleApprove(
 					resourceClass: "connector_action",
 					principalKind: recheckPrincipalKind,
 					principalId: pendingRun.policy_principal_id,
+					ownerAgentId: recheckOwnerAgentId,
 					// Recheck in the SAME mode the run was queued under, so an
 					// autonomous-only tightening isn't lost to an attended recheck.
 					mode:

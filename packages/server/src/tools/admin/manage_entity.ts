@@ -25,11 +25,8 @@ import {
 	type RelationshipRow,
 } from "@lobu/core/contracts/tools/manage-entity";
 import {
-	classifyMutationPrincipal,
-	modeForSource,
-	mutationPrincipalId,
-	type EntityPolicyPrincipalKind,
-	type PrincipalMode,
+	type ActingPrincipal,
+	resolveActingPrincipal,
 } from "../../authz/entity-policy";
 import { runMutationGate } from "../../authz/entity-mutation-gate";
 import { getDb, pgTextArray } from "../../db/client";
@@ -82,30 +79,24 @@ function capitalize(value: string): string {
 	return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-function principalKindForMutation(
-	args: ManageEntityArgs,
-	ctx: ToolContext,
-): EntityPolicyPrincipalKind {
-	return classifyMutationPrincipal({
-		userId: ctx.userId,
-		agentId: ctx.agentId,
-		watcherSource: args.watcher_source,
-	});
-}
-
 /**
- * The acting mode for an entity mutation. Autonomous when the call carries a
- * `watcher_source` (an explicit watcher-attributed write) OR the run's source
- * marks it autonomous (a watcher/scheduled agent turn); attended otherwise. So a
- * watcher's own tighter autonomous rules bind on its direct entity writes, not
- * just on keyed-entity promotion.
+ * The acting principal for an entity mutation, resolved through the shared seam
+ * ({@link resolveActingPrincipal}): merges the explicit `watcher_source` and the
+ * reaction session's own watcher, looks up the owning agent, and pins autonomous
+ * mode for a watcher — so a reaction can't dodge its agent's envelope by omitting
+ * watcher_source.
  */
-function mutationModeFor(
+function actingPrincipalFor(
 	args: ManageEntityArgs | undefined,
 	ctx: ToolContext,
-): PrincipalMode {
-	if (args?.watcher_source) return "autonomous";
-	return modeForSource(ctx.sourceContext?.source);
+): Promise<ActingPrincipal> {
+	return resolveActingPrincipal(getDb(), {
+		userId: ctx.userId,
+		agentId: ctx.agentId,
+		explicitWatcherId: args?.watcher_source?.watcher_id ?? null,
+		sessionWatcherId: ctx.actingWatcherId ?? null,
+		sourceForMode: ctx.sourceContext?.source,
+	});
 }
 
 // ============================================
@@ -265,22 +256,20 @@ async function handleCreate(
 		parent_id: entityData.parent_id ?? null,
 		metadata: entityData.metadata ?? {},
 	};
-	const attribution: "agent" | "watcher" = args.watcher_source
-		? "watcher"
-		: "agent";
+	const actor = await actingPrincipalFor(args, ctx);
+	const attribution: "agent" | "watcher" =
+		actor.kind === "watcher" ? "watcher" : "agent";
 	const createDecision = await runMutationGate({
 		action: "create",
 		organizationId: ctx.organizationId,
-		principalKind: principalKindForMutation(args, ctx),
+		principalKind: actor.kind,
 		sql: getDb(),
 		attribution,
 		watcherId: args.watcher_source?.watcher_id ?? null,
 		windowId: args.watcher_source?.window_id ?? null,
-		principalId: mutationPrincipalId({
-			agentId: ctx.agentId,
-			watcherId: args.watcher_source?.watcher_id ?? null,
-		}),
-		mode: mutationModeFor(args, ctx),
+		principalId: actor.id,
+		ownerAgentId: actor.ownerAgentId,
+		mode: actor.mode,
 		entityTypeSlug: args.entity_type,
 		entityData,
 		proposal,
@@ -425,11 +414,14 @@ async function handleUpdate(
 	if (args.affirm_fields !== undefined)
 		updateData.affirm_fields = args.affirm_fields;
 
+	const updateActor = await actingPrincipalFor(args, ctx);
 	const updatedEntity = await updateEntity(entityId, updateData, env, ctx, {
-		policyPrincipalKind: principalKindForMutation(args, ctx),
-		attribution: args.watcher_source ? "watcher" : "agent",
-		watcherId: args.watcher_source?.watcher_id ?? null,
+		policyPrincipalKind: updateActor.kind,
+		attribution: updateActor.kind === "watcher" ? "watcher" : "agent",
+		principalId: updateActor.id,
 		windowId: args.watcher_source?.window_id ?? null,
+		ownerAgentId: updateActor.ownerAgentId,
+		mode: updateActor.mode,
 	});
 	const entityDetails =
 		(await getEntity(updatedEntity.id, env, ctx)) ?? updatedEntity;
@@ -1007,10 +999,9 @@ async function handleDelete(
 		throw new Error(`Entity with ID ${entityId} not found`);
 	}
 
-	const policyArgs = args ?? { action: "delete", entity_id: entityId };
-	const attribution: "agent" | "watcher" = args?.watcher_source
-		? "watcher"
-		: "agent";
+	const deleteActor = await actingPrincipalFor(args, ctx);
+	const attribution: "agent" | "watcher" =
+		deleteActor.kind === "watcher" ? "watcher" : "agent";
 	const current = {
 		id: entity.id,
 		entity_type: entity.entity_type,
@@ -1022,16 +1013,14 @@ async function handleDelete(
 	const deleteDecision = await runMutationGate({
 		action: "delete",
 		organizationId: ctx.organizationId,
-		principalKind: principalKindForMutation(policyArgs as ManageEntityArgs, ctx),
+		principalKind: deleteActor.kind,
 		sql: getDb(),
 		attribution,
 		watcherId: args?.watcher_source?.watcher_id ?? null,
 		windowId: args?.watcher_source?.window_id ?? null,
-		principalId: mutationPrincipalId({
-			agentId: ctx.agentId,
-			watcherId: args?.watcher_source?.watcher_id ?? null,
-		}),
-		mode: mutationModeFor(args, ctx),
+		principalId: deleteActor.id,
+		ownerAgentId: deleteActor.ownerAgentId,
+		mode: deleteActor.mode,
 		entityTypeSlug: entity.entity_type,
 		entityId,
 		entityOrgId: null,

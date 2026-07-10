@@ -333,6 +333,95 @@ export function mutationPrincipalId(args: {
 	return null;
 }
 
+/** Inverse of {@link mutationPrincipalId} for a watcher: `watcher:<id>` → id, else null. */
+export function watcherIdFromPrincipalId(
+	principalId: string | null | undefined,
+): number | null {
+	if (!principalId?.startsWith("watcher:")) return null;
+	const id = Number(principalId.slice("watcher:".length));
+	return Number.isFinite(id) ? id : null;
+}
+
+/**
+ * The agent that owns a watcher (`watchers.agent_id`, NOT NULL in schema). Every
+ * watcher write is governed by its owning agent's envelope — a watcher is that
+ * agent's autonomous mode — so the resolver folds the agent's rows in via
+ * `ownerAgentId`. Returns null only if the watcher row is missing (defensive;
+ * shouldn't happen for a live watcher), in which case the gate falls back to
+ * "any agent". Shared by every watcher write surface (entity promotion, reaction
+ * scripts, watcher CRUD) so the linkage is resolved ONE way.
+ */
+export async function resolveWatcherOwnerAgentId(
+	sql: DbClient,
+	watcherId: number,
+): Promise<string | null> {
+	const rows = await sql<{ agent_id: string | null }>`
+    SELECT agent_id FROM watchers WHERE id = ${watcherId} LIMIT 1
+  `;
+	return rows.length > 0 ? (rows[0].agent_id ?? null) : null;
+}
+
+/** The fully-resolved acting principal for one write, ready to hand to the gate. */
+export interface ActingPrincipal {
+	kind: EntityPolicyPrincipalKind;
+	/** `watcher:<id>` / agent id / null ("any of this kind"). */
+	id: string | null;
+	/** The watcher's owning agent, folded max-restrictive; null unless a watcher. */
+	ownerAgentId: string | null;
+	/** attended vs autonomous. A watcher is always autonomous. */
+	mode: PrincipalMode;
+}
+
+/**
+ * Resolve WHO is performing a write, from the two channels an acting watcher can
+ * arrive on, in ONE place — so no call site has to merge them. A watcher is
+ * identified by an explicit `watcher_source.watcher_id` (attribution the caller
+ * passed, e.g. a keyed-promotion) OR by `ctx.actingWatcherId` (the reaction
+ * session's own watcher, stamped by the reaction executor). A trusted `agentId`
+ * always wins (an agent run can't spoof a watcher tag to dodge its own policy).
+ *
+ * When a watcher acts, this looks up its owning agent (folded max-restrictive so
+ * the agent's envelope binds and a watcher-specific rule can only tighten) and
+ * pins the mode to autonomous. An agent/user turn takes `sourceForMode` for its
+ * attended-vs-autonomous classification. This is THE seam every write surface
+ * (manage_entity/operations/watchers, promotion) resolves identity through.
+ */
+export async function resolveActingPrincipal(
+	sql: DbClient,
+	args: {
+		userId?: string | null;
+		agentId?: string | null;
+		explicitWatcherId?: number | null;
+		sessionWatcherId?: number | null;
+		/** The run source, used for mode ONLY when the actor is an agent/user. */
+		sourceForMode?: string | null;
+	},
+): Promise<ActingPrincipal> {
+	const kind = classifyMutationPrincipal({
+		userId: args.userId,
+		agentId: args.agentId,
+		watcherSource:
+			args.explicitWatcherId != null || args.sessionWatcherId != null
+				? { watcher_id: args.explicitWatcherId ?? args.sessionWatcherId }
+				: null,
+	});
+	if (kind === "watcher") {
+		const watcherId = (args.explicitWatcherId ?? args.sessionWatcherId) as number;
+		return {
+			kind,
+			id: `watcher:${watcherId}`,
+			ownerAgentId: await resolveWatcherOwnerAgentId(sql, watcherId),
+			mode: "autonomous",
+		};
+	}
+	return {
+		kind,
+		id: mutationPrincipalId({ agentId: args.agentId }),
+		ownerAgentId: null,
+		mode: modeForSource(args.sourceForMode),
+	};
+}
+
 /**
  * The winning mode's effect on a mutation. `deny` and `disabled` both stop the
  * write with no approval queued; `approval` queues one; `auto` applies inline.
@@ -685,6 +774,14 @@ export async function resolveWritePolicyDecision(args: {
 	resourceClass: Exclude<WriteResourceClass, "entity">;
 	principalKind: EntityPolicyPrincipalKind;
 	principalId?: string | null;
+	/**
+	 * The owning agent of a watcher — folds the agent's rows in alongside the
+	 * watcher's, max-restrictive. Set for a watcher-attributed connector/agent_config
+	 * write (e.g. a reaction script's `client.operations.execute`) so the agent's
+	 * envelope binds and a watcher-specific rule can only tighten. See
+	 * {@link loadCandidatePolicies}.
+	 */
+	ownerAgentId?: string | null;
 	action: WriteAction;
 	/**
 	 * Whether the principal is acting attended (a human is driving the agent) or
@@ -701,6 +798,7 @@ export async function resolveWritePolicyDecision(args: {
 		resourceClass: args.resourceClass,
 		principalKind: args.principalKind,
 		principalId: args.principalId ?? null,
+		ownerAgentId: args.ownerAgentId ?? null,
 		sql: args.sql,
 	});
 	return modeToDecision(

@@ -32,12 +32,10 @@ import {
   type ManageWatchersResult,
 } from '@lobu/core/contracts/tools/manage-watchers';
 import {
-  classifyMutationPrincipal,
-  modeForSource,
-  mutationPrincipalId,
+  resolveActingPrincipal,
   resolveWritePolicyDecision,
 } from '../../authz/entity-policy';
-import { createDbClientFromEnv } from '../../db/client';
+import { createDbClientFromEnv, getDb } from '../../db/client';
 import type { Env } from '../../index';
 import { ToolUserError } from '../../utils/errors';
 import {
@@ -168,17 +166,24 @@ async function gateWatcherWrite(
 ): Promise<void> {
   const action = watcherWriteAction(args.action);
   if (!action) return;
+  // Resolve the actor through the shared seam. A reaction script editing watchers
+  // acts as its own watcher (ctx.actingWatcherId) — the seam folds that watcher's
+  // owning agent so the agent's agent_config envelope binds and the reaction can't
+  // self-escalate. manage_watchers has no watcher_source arg, so only the session
+  // watcher applies.
+  const actor = await resolveActingPrincipal(getDb(), {
+    userId: ctx.userId,
+    agentId: ctx.agentId,
+    sessionWatcherId: ctx.actingWatcherId ?? null,
+    sourceForMode: ctx.sourceContext?.source,
+  });
   const decision = await resolveWritePolicyDecision({
     organizationId: ctx.organizationId,
     resourceClass: 'agent_config',
-    principalKind: classifyMutationPrincipal({
-      userId: ctx.userId,
-      agentId: ctx.agentId,
-    }),
-    principalId: mutationPrincipalId({ agentId: ctx.agentId }),
-    // Autonomous when this is a watcher/scheduled turn (its own autonomous
-    // rules bind); attended for an interactive turn.
-    mode: modeForSource(ctx.sourceContext?.source),
+    principalKind: actor.kind,
+    principalId: actor.id,
+    ownerAgentId: actor.ownerAgentId,
+    mode: actor.mode,
     action,
   });
   if (decision === 'allow') return;

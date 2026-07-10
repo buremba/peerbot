@@ -83,15 +83,30 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 			);
 			return Promise.resolve(childRows.filter((r) => ids.has(Number(r.policy_id))));
 		}
-		const [org, resourceClass, principalKind, principalId, entityTypeSlug, entityId] =
-			params as [
-				string,
-				string,
-				string | null,
-				string | null,
-				string | null,
-				number | null,
-			];
+		// Param order mirrors loadCandidatePolicies' WHERE: org, resourceClass,
+		// then the principal OR-block (principalKind, principalId, then ownerAgentId
+		// interpolated TWICE — once for `::text IS NOT NULL`, once for the `=`
+		// comparison), then the scope filters (entityTypeSlug, entityId).
+		// ownerAgentId folds an 'agent' row for a watcher acting under its agent.
+		const [
+			org,
+			resourceClass,
+			principalKind,
+			principalId,
+			ownerAgentId,
+			,
+			entityTypeSlug,
+			entityId,
+		] = params as [
+			string,
+			string,
+			string | null,
+			string | null,
+			string | null,
+			string | null,
+			string | null,
+			number | null,
+		];
 		return Promise.resolve(
 			headers.filter(
 				(row) =>
@@ -100,7 +115,11 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 					(row.principal_kind === null ||
 						(row.principal_kind === principalKind &&
 							(row.principal_id === null ||
-								row.principal_id === principalId))) &&
+								row.principal_id === principalId)) ||
+						(ownerAgentId !== null &&
+							row.principal_kind === "agent" &&
+							(row.principal_id === null ||
+								row.principal_id === ownerAgentId))) &&
 					(row.entity_type_slug === null ||
 						row.entity_type_slug === entityTypeSlug) &&
 					(row.entity_id === null || row.entity_id === entityId),

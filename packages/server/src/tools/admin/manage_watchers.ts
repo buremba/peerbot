@@ -155,43 +155,69 @@ function watcherWriteAction(
 }
 
 /**
- * The agent that will OWN the watcher after this write completes — the value the
- * escalation guard checks. Returns:
- *  - the supplied `args.agent_id` when the action sets it explicitly;
- *  - otherwise the owner the action INHERITS or PRESERVES: `create_from_version`
- *    copies the source version's watcher.agent_id; `update`/`create_version`/
- *    `set_reaction_script` keep the target watcher's current agent_id;
- *  - `undefined` when there is no effective owner to check (e.g. a create with no
- *    agent_id — handleCreate rejects that separately — or an unresolvable target).
- * `delete` changes no owner and isn't passed here.
+ * EVERY agent that ends up OWNING behavior this write installs — resolved by what
+ * each handler ACTUALLY persists, NOT the supplied `args.agent_id` (several handlers
+ * ignore it). The guard requires all of them to be the actor itself. Returns `[]`
+ * when there's nothing to check.
+ *
+ *  - `create`: the supplied `args.agent_id` (handleCreate requires it).
+ *  - `create_from_version`: IGNORES args.agent_id — the clone inherits the SOURCE
+ *    version's watcher.agent_id.
+ *  - `update`: DOES apply args.agent_id → the target's new owner is
+ *    `args.agent_id ?? current owner`.
+ *  - `create_version` / `set_reaction_script`: IGNORE args.agent_id and write
+ *    GROUP-WIDE (WHERE watcher_group_id = …) → EVERY owner in the target's group is
+ *    affected; a mixed-owner group means A editing its assignment also rewrites B's
+ *    prompt/reaction code. Validate ALL of them.
+ *
+ * All lookups are org-scoped so a caller can't probe another org.
  */
-async function resolveEffectiveWatcherOwner(
+async function resolveEffectiveWatcherOwners(
   args: ManageWatchersArgs,
   ctx: ToolContext,
-): Promise<string | null | undefined> {
-  if (args.agent_id != null) return args.agent_id;
+): Promise<Array<string | null>> {
   const sql = getDb();
-  if (args.action === 'create_from_version') {
-    if (!args.version_id) return undefined;
-    // Org-scope the lookup so a caller can't probe/clone another org's version.
-    const rows = await sql<{ agent_id: string | null }>`
-      SELECT w.agent_id
-      FROM watcher_versions wv JOIN watchers w ON w.id = wv.watcher_id
-      WHERE wv.id = ${Number(args.version_id)} AND w.organization_id = ${ctx.organizationId}
-      LIMIT 1
-    `;
-    return rows.length > 0 ? (rows[0].agent_id ?? null) : undefined;
+  switch (args.action) {
+    case 'create':
+      return args.agent_id != null ? [args.agent_id] : [];
+    case 'create_from_version': {
+      if (!args.version_id) return [];
+      const rows = await sql<{ agent_id: string | null }>`
+        SELECT w.agent_id
+        FROM watcher_versions wv JOIN watchers w ON w.id = wv.watcher_id
+        WHERE wv.id = ${Number(args.version_id)} AND w.organization_id = ${ctx.organizationId}
+        LIMIT 1
+      `;
+      return rows.length > 0 ? [rows[0].agent_id ?? null] : [];
+    }
+    case 'update': {
+      if (args.agent_id != null) return [args.agent_id];
+      if (args.watcher_id == null) return [];
+      const rows = await sql<{ agent_id: string | null }>`
+        SELECT agent_id FROM watchers
+        WHERE id = ${Number(args.watcher_id)} AND organization_id = ${ctx.organizationId}
+        LIMIT 1
+      `;
+      return rows.length > 0 ? [rows[0].agent_id ?? null] : [];
+    }
+    case 'create_version':
+    case 'set_reaction_script': {
+      if (args.watcher_id == null) return [];
+      // Group-wide: EVERY owner in the target watcher's group is affected.
+      const rows = await sql<{ agent_id: string | null }>`
+        SELECT DISTINCT agent_id FROM watchers
+        WHERE organization_id = ${ctx.organizationId}
+          AND watcher_group_id = (
+            SELECT watcher_group_id FROM watchers
+            WHERE id = ${Number(args.watcher_id)} AND organization_id = ${ctx.organizationId}
+            LIMIT 1
+          )
+      `;
+      return rows.map((r) => r.agent_id ?? null);
+    }
+    default:
+      return [];
   }
-  // update / create_version / set_reaction_script: owner preserved from the target.
-  if (args.watcher_id != null) {
-    const rows = await sql<{ agent_id: string | null }>`
-      SELECT agent_id FROM watchers
-      WHERE id = ${Number(args.watcher_id)} AND organization_id = ${ctx.organizationId}
-      LIMIT 1
-    `;
-    return rows.length > 0 ? (rows[0].agent_id ?? null) : undefined;
-  }
-  return undefined;
 }
 
 /**
@@ -217,21 +243,22 @@ async function gateWatcherWrite(
     sessionWatcherId: ctx.actingWatcherId ?? null,
     sourceForMode: ctx.sourceContext?.source,
   });
-  // Escalation guard: a non-human caller must not end up OWNING a watcher through
-  // another agent. A watcher's `agent_id` IS its policy principal, so if a reaction
-  // owned by restricted agent A could create/clone/edit a watcher that stays owned
-  // by looser agent B, every later write through that watcher would fold B's (looser)
-  // envelope instead of A's, side-stepping A's deny rules. We validate the EFFECTIVE
-  // owner — the owner the operation actually retains or creates — not merely a supplied
-  // `agent_id`: `create_from_version` inherits the SOURCE version's owner, and an
-  // `update`/`create_version`/`set_reaction_script` that omits agent_id PRESERVES the
-  // current owner. Humans are ungoverned here and may own/assign freely.
+  // Escalation guard: a non-human caller must not end up installing behavior OWNED by
+  // another agent. A watcher's `agent_id` IS its policy principal, so if restricted
+  // agent A could create/clone/edit a watcher (or a group-shared prompt/reaction)
+  // that stays owned by looser agent B, every later run would fold B's (looser)
+  // envelope instead of A's, side-stepping A's deny rules. We validate what each
+  // handler ACTUALLY persists (see resolveEffectiveWatcherOwners) — NOT the supplied
+  // `agent_id` (create_from_version/create_version/set_reaction_script ignore it) —
+  // and ALL owners a group-wide write touches. EVERY affected owner must be the actor
+  // itself. Humans are ungoverned here and may own/assign freely.
   if (actor.kind !== 'user') {
     const ownAgentId = actor.ownerAgentId ?? actor.id;
-    const effectiveOwner = await resolveEffectiveWatcherOwner(args, ctx);
-    if (effectiveOwner !== undefined && effectiveOwner !== ownAgentId) {
+    const owners = await resolveEffectiveWatcherOwners(args, ctx);
+    const foreign = owners.find((o) => o !== ownAgentId);
+    if (foreign !== undefined) {
       throw new ToolUserError(
-        `A ${actor.kind} cannot own a watcher via another agent — its owner must be itself (${ownAgentId ?? 'none'}), not ${effectiveOwner ?? 'none'}.`,
+        `A ${actor.kind} cannot install watcher behavior owned by another agent — every affected owner must be itself (${ownAgentId ?? 'none'}); found ${foreign ?? 'none'}.`,
         403,
       );
     }

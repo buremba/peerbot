@@ -89,7 +89,7 @@ describe("manage_watchers owner-escalation guard", () => {
 				agentB,
 				"escalation-attempt",
 			),
-		).rejects.toThrow(/cannot own a watcher via another agent/i);
+		).rejects.toThrow(/cannot install watcher behavior owned by another agent/i);
 	});
 
 	it("a HUMAN may assign a watcher to any agent (ungoverned)", async () => {
@@ -134,7 +134,7 @@ describe("manage_watchers owner-escalation guard", () => {
 				TEST_ENV,
 				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),
 			),
-		).rejects.toThrow(/cannot own a watcher via another agent/i);
+		).rejects.toThrow(/cannot install watcher behavior owned by another agent/i);
 	});
 
 	it("blocks agent A from EDITING agent B's watcher (preserved owner, no agent_id)", async () => {
@@ -157,6 +157,81 @@ describe("manage_watchers owner-escalation guard", () => {
 				TEST_ENV,
 				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),
 			),
-		).rejects.toThrow(/cannot own a watcher via another agent/i);
+		).rejects.toThrow(/cannot install watcher behavior owned by another agent/i);
+	});
+
+	it("create_from_version STILL blocked when A passes agent_id=A (handler ignores it, clone inherits B) (codex-12)", async () => {
+		await workspace.owner.entity_schema.createType({
+			slug: "company",
+			name: "Company",
+		});
+		const target = (await workspace.owner.entities.create({
+			type: "company",
+			name: "Clone Target 2",
+		})) as { entity: { id: number } };
+		const bWatcher = (await workspace.owner.watchers.create({
+			slug: "b-owned-source-2",
+			name: "b-owned-source-2",
+			prompt: "Track things.",
+			agent_id: agentB,
+		})) as { watcher_id: string };
+		const [ver] = await getTestDb()<{ id: number }>`
+      SELECT id FROM watcher_versions WHERE watcher_id = ${Number(bWatcher.watcher_id)} ORDER BY id ASC LIMIT 1
+    `;
+		// A supplies agent_id=A to try to satisfy the guard — but handleCreateFromVersion
+		// IGNORES it and clones B's owner, so the guard must resolve the SOURCE owner.
+		await expect(
+			executeTool(
+				"manage_watchers",
+				{
+					action: "create_from_version",
+					version_id: String(ver.id),
+					entity_ids: [target.entity.id],
+					agent_id: agentA,
+				},
+				TEST_ENV,
+				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),
+			),
+		).rejects.toThrow(/cannot install watcher behavior owned by another agent/i);
+	});
+
+	it("set_reaction_script on A's own watcher is blocked when its GROUP also contains a B-owned assignment (codex-12)", async () => {
+		// A owns watcher wA; a human adds a SECOND assignment owned by B into wA's group
+		// (same watcher_group_id). set_reaction_script writes group-wide → it would
+		// rewrite B's reaction code too. A editing "its own" watcher must be blocked.
+		const wA = (await workspace.owner.watchers.create({
+			slug: "a-owned-grouproot",
+			name: "a-owned-grouproot",
+			prompt: "Track things.",
+			agent_id: agentA,
+		})) as { watcher_id: string };
+		// Add a B-owned sibling into wA's group. Create it via the normal CRUD path
+		// (so all its rows/triggers are consistent), then move it into wA's group with
+		// a direct UPDATE — a raw watcher INSERT trips unrelated sequence collisions.
+		const bSibling = (await workspace.owner.watchers.create({
+			slug: "b-sibling",
+			name: "b-sibling",
+			prompt: "Track things.",
+			agent_id: agentB,
+		})) as { watcher_id: string };
+		const [grp] = await getTestDb()<{ watcher_group_id: number }>`
+      SELECT watcher_group_id FROM watchers WHERE id = ${Number(wA.watcher_id)} LIMIT 1
+    `;
+		await getTestDb()`
+      UPDATE watchers SET watcher_group_id = ${Number(grp.watcher_group_id)}
+      WHERE id = ${Number(bSibling.watcher_id)}
+    `;
+		await expect(
+			executeTool(
+				"manage_watchers",
+				{
+					action: "set_reaction_script",
+					watcher_id: wA.watcher_id,
+					reaction_script: "export default async () => {};",
+				},
+				TEST_ENV,
+				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),
+			),
+		).rejects.toThrow(/cannot install watcher behavior owned by another agent/i);
 	});
 });

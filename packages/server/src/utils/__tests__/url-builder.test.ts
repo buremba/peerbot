@@ -11,15 +11,7 @@ import {
   __resetPublicOriginCachesForTests,
   __setLocalFrontendForTests,
 } from '../public-origin';
-
-// buildAgentSettingsUrl resolves the org slug via the workspace provider; stub
-// it so the test asserts only the URL SHAPE (the `/settings` deep-link), not
-// tenant lookup.
-vi.mock('../../workspace', () => ({
-  getWorkspaceProvider: () => ({
-    getOrgSlug: async (orgId: string) => (orgId === 'org-1' ? 'acme' : null),
-  }),
-}));
+import * as workspaceModule from '../../workspace';
 
 /**
  * Behavior contract for `getPublicWebUrl`:
@@ -85,7 +77,25 @@ describe('getPublicWebUrl', () => {
   });
 });
 
+// Stub the org-slug lookup so the URL-builder tests assert only URL SHAPE, not
+// tenant resolution. A `vi.spyOn` in beforeEach (not a module-level `vi.mock`)
+// is required: the server vitest config runs `isolate: false`, so a module-mock
+// declared here does NOT apply once an earlier test file has loaded the real
+// `../../workspace` module into the shared registry — the spy re-applies on
+// every run regardless of load order.
+function stubOrgSlug(): void {
+  beforeEach(() => {
+    vi.spyOn(workspaceModule, 'getWorkspaceProvider').mockReturnValue({
+      getOrgSlug: async (orgId: string) => (orgId === 'org-1' ? 'acme' : null),
+    } as unknown as ReturnType<typeof workspaceModule.getWorkspaceProvider>);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+}
+
 describe('buildAgentSettingsUrl', () => {
+  stubOrgSlug();
   // Regression: the CTA for provider/model errors ("Connect a provider" /
   // "Choose a model") MUST deep-link to the agent's /settings tab. The bare
   // /agents/<id> route redirects to Chat — the surface the user just failed on
@@ -124,6 +134,7 @@ describe('buildAgentSettingsUrl', () => {
 });
 
 describe('buildProviderConnectUrl', () => {
+  stubOrgSlug();
   // The "connect a provider" CTA target — distinct from buildAgentSettingsUrl.
   // Its fix is wiring credentials, so it lands on /inference-providers/new, the
   // live connect form, NOT the agent's model settings.

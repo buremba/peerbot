@@ -64,6 +64,9 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
     // an explicit `watcher_source`. `source: 'watcher-run'` marks the turn
     // autonomous even for surfaces that read only sourceContext.
     actingWatcherId: context.window.watcher_id,
+    // The window too, so a deferred approval batches per window and dedups across
+    // windows even when the script omits `watcher_source` (see ToolContext).
+    actingWindowId: context.window.id,
     sourceContext: { source: 'watcher-run' as const },
   };
 

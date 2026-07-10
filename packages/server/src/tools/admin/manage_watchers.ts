@@ -177,6 +177,25 @@ async function gateWatcherWrite(
     sessionWatcherId: ctx.actingWatcherId ?? null,
     sourceForMode: ctx.sourceContext?.source,
   });
+  // Escalation guard: a non-human caller must not set the watcher's OWNING AGENT
+  // (`agent_id`) to anyone but itself. Otherwise a reaction owned by restricted
+  // agent A could create/reassign a watcher to looser agent B — and every later
+  // write through that watcher would fold B's (looser) envelope instead of A's,
+  // side-stepping A's deny rules. Humans are ungoverned here and may assign freely.
+  if (
+    actor.kind !== 'user' &&
+    (action === 'create' || action === 'update') &&
+    args.agent_id != null
+  ) {
+    const ownAgentId = actor.ownerAgentId ?? actor.id;
+    if (args.agent_id !== ownAgentId) {
+      throw new ToolUserError(
+        `A ${actor.kind} cannot assign a watcher to another agent — agent_id must be its own (${ownAgentId ?? 'none'}).`,
+        403,
+      );
+    }
+  }
+
   const decision = await resolveWritePolicyDecision({
     organizationId: ctx.organizationId,
     resourceClass: 'agent_config',

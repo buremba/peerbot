@@ -265,8 +265,11 @@ async function handleCreate(
 		principalKind: actor.kind,
 		sql: getDb(),
 		attribution,
-		watcherId: args.watcher_source?.watcher_id ?? null,
-		windowId: args.watcher_source?.window_id ?? null,
+		// Fall back to the trusted reaction-session watcher/window when the script
+		// omitted an explicit watcher_source — else a deferred create loses its
+		// watcher/window attribution (no per-window batching, cross-window dedup).
+		watcherId: args.watcher_source?.watcher_id ?? ctx.actingWatcherId ?? null,
+		windowId: args.watcher_source?.window_id ?? ctx.actingWindowId ?? null,
 		principalId: actor.id,
 		ownerAgentId: actor.ownerAgentId,
 		ownerResolved: actor.ownerResolved,
@@ -420,7 +423,8 @@ async function handleUpdate(
 		policyPrincipalKind: updateActor.kind,
 		attribution: updateActor.kind === "watcher" ? "watcher" : "agent",
 		principalId: updateActor.id,
-		windowId: args.watcher_source?.window_id ?? null,
+		// Trusted reaction-session fallback — see the create path.
+		windowId: args.watcher_source?.window_id ?? ctx.actingWindowId ?? null,
 		ownerAgentId: updateActor.ownerAgentId,
 		ownerResolved: updateActor.ownerResolved,
 		mode: updateActor.mode,
@@ -1018,8 +1022,9 @@ async function handleDelete(
 		principalKind: deleteActor.kind,
 		sql: getDb(),
 		attribution,
-		watcherId: args?.watcher_source?.watcher_id ?? null,
-		windowId: args?.watcher_source?.window_id ?? null,
+		// Trusted reaction-session fallback — see the create path.
+		watcherId: args?.watcher_source?.watcher_id ?? ctx.actingWatcherId ?? null,
+		windowId: args?.watcher_source?.window_id ?? ctx.actingWindowId ?? null,
 		principalId: deleteActor.id,
 		ownerAgentId: deleteActor.ownerAgentId,
 		ownerResolved: deleteActor.ownerResolved,

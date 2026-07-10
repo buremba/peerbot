@@ -17,6 +17,7 @@ import type { DbClient } from "../../../db/client";
 import { promoteKeyedEntities } from "../../../utils/promote-keyed-entities";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
+	createTestAgent,
 	createTestEntity,
 	createTestOrganization,
 } from "../../setup/test-fixtures";
@@ -59,7 +60,24 @@ async function setup() {
     SELECT "userId" FROM "member" WHERE "organizationId" = ${org.id} LIMIT 1
   `;
 	const createdBy = (member?.userId as string) ?? "test-seed-user";
-	return { sql, orgId: org.id, parentId: parent.id, createdBy };
+	// A REAL watcher (with an owning agent) — the gate resolves watchers.agent_id and
+	// FAILS CLOSED if the watcher row is missing, so a fake id would now deny every
+	// write. We exercise the interceptor fail-closed here, not owner-resolution.
+	const agent = await createTestAgent({
+		organizationId: org.id,
+		ownerUserId: createdBy,
+	});
+	// watchers.watcher_group_id is NOT NULL and self-references the row (the CRUD sets
+	// it = the watcher id); id is serial. Grab the next id first so both match.
+	const [{ nextid }] = await sql<{ nextid: number }>`
+    SELECT nextval('watchers_id_seq') AS nextid
+  `;
+	const watcherId = Number(nextid);
+	await sql`
+    INSERT INTO watchers (id, organization_id, slug, name, agent_id, created_by, watcher_group_id, created_at, updated_at)
+    VALUES (${watcherId}, ${org.id}, 'gate-fail-closed', 'Gate Fail Closed', ${agent.agentId}, ${createdBy}, ${watcherId}, NOW(), NOW())
+  `;
+	return { sql, orgId: org.id, parentId: parent.id, createdBy, watcherId };
 }
 
 async function promote(
@@ -71,7 +89,7 @@ async function promote(
 			tx: tx as unknown as DbClient,
 			extractedData: extracted(severity),
 			keyingConfig: KEYING_CONFIG,
-			watcherId: 4242,
+			watcherId: ctx.watcherId,
 			organizationId: ctx.orgId,
 			windowId: 1,
 			parentEntityId: ctx.parentId,

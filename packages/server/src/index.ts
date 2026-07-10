@@ -1762,6 +1762,23 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		effects[action as WriteAction] = effect;
 	}
 
+	// principal_mode selects WHICH row this write targets: omitted/null = the
+	// both-mode row, 'autonomous' = the autonomous-only override. Silently coercing
+	// any other value to null would make a typo'd/unsupported mode clobber the
+	// ATTENDED row instead of the intended autonomous one — so reject it.
+	if (
+		body.principal_mode !== undefined &&
+		body.principal_mode !== null &&
+		body.principal_mode !== "autonomous"
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "principal_mode must be omitted, null, or 'autonomous'.",
+			},
+			400,
+		);
+	}
 	const principalMode = body.principal_mode === "autonomous" ? "autonomous" : null;
 	const entityTypeSlug =
 		resourceClass === "entity" &&
@@ -1808,8 +1825,23 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			400,
 		);
 	}
-	const principalMode =
-		c.req.query("principal_mode")?.trim() === "autonomous" ? "autonomous" : null;
+	// Same rule as the PUT: principal_mode picks the target row. A typo'd mode must
+	// not silently DELETE the attended row when the caller meant the autonomous one.
+	const principalModeRaw = c.req.query("principal_mode")?.trim();
+	if (
+		principalModeRaw !== undefined &&
+		principalModeRaw !== "" &&
+		principalModeRaw !== "autonomous"
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "principal_mode must be omitted or 'autonomous'.",
+			},
+			400,
+		);
+	}
+	const principalMode = principalModeRaw === "autonomous" ? "autonomous" : null;
 	const entityTypeSlug =
 		resourceClass === "entity"
 			? c.req.query("entity_type_slug")?.trim() || null

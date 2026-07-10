@@ -286,6 +286,48 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(csChanges.every((c) => c.kind === 'created')).toBe(true);
   });
 
+  it("a create=deny policy on the watcher's OWNING AGENT blocks its promotions", async () => {
+    // The v1.1 fix: a watcher is its agent's autonomous mode, so the agent's own
+    // envelope binds the watcher. Pin entity create=deny to THIS watcher's agent;
+    // the promotion must create nothing. Before the fix the gate resolved the
+    // watcher as principal `watcher:<id>` (agentId null), so this agent-scoped
+    // deny never matched and the rows were created under the looser org default.
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, watcherId, parentEntityId, agent } = ctx;
+
+    const policyRows = await sql<{ id: number }>`
+      INSERT INTO write_approval_policies
+        (organization_id, resource_class, principal_kind, principal_id)
+      VALUES (${workspace.org.id}, 'entity', 'agent', ${agent.agentId})
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO write_policy_action_effects (policy_id, action, effect)
+      VALUES (${Number(policyRows[0].id)}, 'create', 'deny')
+    `;
+
+    await createTestEvent({
+      entity_id: parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+    await completeWithToken(ctx, token, runId);
+
+    // No `topic` entities were promoted — the agent's deny bound the watcher.
+    const promoted = await sql<{ c: number }>`
+      SELECT COUNT(*)::int AS c
+      FROM entity_identities
+      WHERE organization_id = ${workspace.org.id}
+        AND namespace = 'watcher_key'
+        AND identifier LIKE ${`${watcherId}::%`}
+    `;
+    expect(Number(promoted[0].c)).toBe(0);
+  });
+
   it('is idempotent across a same-window replay — no duplicate entities', async () => {
     const ctx = await setupKeyedWatcher();
     const { sql, workspace, watcherId, parentEntityId } = ctx;

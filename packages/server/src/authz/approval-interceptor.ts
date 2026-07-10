@@ -124,11 +124,17 @@ async function evaluate(
 	| UpdateDecision
 	| null
 > {
+	// A watcher acting under its owning agent folds the AGENT'S rows in too, so
+	// the agent envelope binds while a pre-existing watcher-specific restriction
+	// can only tighten (the agent envelope never loosens it away).
+	const ownerAgentId = req.ownerAgentId ?? null;
+
 	if (req.action === "update") {
 		const decisions = await evaluateEntityFieldUpdates({
 			organizationId: req.organizationId,
 			principalKind: req.principalKind,
 			principalId: req.principalId ?? null,
+			ownerAgentId,
 			mode: req.mode,
 			entityTypeSlug: req.entityTypeSlug,
 			entityId: req.entityId,
@@ -153,6 +159,7 @@ async function evaluate(
 		organizationId: req.organizationId,
 		principalKind: req.principalKind,
 		principalId: req.principalId ?? null,
+		ownerAgentId,
 		mode: req.mode,
 		action: req.action,
 		entityTypeSlug: req.entityTypeSlug,

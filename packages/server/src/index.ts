@@ -1623,12 +1623,23 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	}
 	const agentId = c.req.param("agentId");
 	const all = await listEntityApprovalPolicies(organizationId);
+	// The matrix models ONLY blanket (null entity_type) and entity-type scopes.
+	// Field-scoped (fieldPath) and single-entity (entityId) rows are finer than the
+	// matrix can express: the client keys agent rows by (class, mode, type) alone,
+	// so a field/entity row would be misrendered as type-wide and editing it would
+	// silently widen it into a type policy. Exclude them from BOTH lists — they are
+	// managed on the entity/field surfaces, not this agent matrix.
+	const typeScoped = (p: EntityApprovalPolicy) =>
+		p.fieldPath === null && p.entityId === null;
 	// Floor = any-principal rows (principal_kind NULL). Agent = rows pinned to this
 	// agent id. A watcher-kind row is NOT the agent's envelope (watchers inherit
 	// the agent envelope in autonomous mode; they have no separate principal here).
-	const floor = all.filter((p) => p.principalKind === null);
+	const floor = all.filter((p) => p.principalKind === null && typeScoped(p));
 	const agent = all.filter(
-		(p) => p.principalKind === "agent" && p.principalId === agentId,
+		(p) =>
+			p.principalKind === "agent" &&
+			p.principalId === agentId &&
+			typeScoped(p),
 	);
 	const typeRows = await getDb()<{ slug: string; name: string }>`
     SELECT slug, name FROM entity_types

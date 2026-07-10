@@ -349,19 +349,17 @@ async function upsertKeyedEntity(params: {
     const decision = await runMutationGate({
       action: 'update',
       organizationId,
-      // A watcher's writes are governed by its OWNING AGENT'S envelope: classify
-      // as 'agent' with the agent id so the agent's own policy rows bind (the
-      // resolver filters by principal_kind, so 'watcher' here would never match an
-      // agent row). `mode: 'autonomous'` lets the agent set a stricter watcher-only
-      // envelope. Only if the watcher lacks an agent do we fall back to 'watcher'.
-      principalKind: params.watcherAgentId ? 'agent' : 'watcher',
+      // The watcher is the acting principal (its OWN rows bind); its owning agent
+      // is folded in as the ancestor via `ownerAgentId` so the agent's envelope
+      // ALSO binds — max-restrictive, so the agent can tighten but a watcher-
+      // specific restriction is never loosened away. `mode: 'autonomous'` applies
+      // the agent's autonomous-only rules (watchers are never human).
+      principalKind: 'watcher',
       sql: tx,
       attribution: 'watcher',
       watcherId: params.watcherId,
-      principalId: mutationPrincipalId({
-        agentId: params.watcherAgentId,
-        watcherId: params.watcherId,
-      }),
+      principalId: mutationPrincipalId({ watcherId: params.watcherId }),
+      ownerAgentId: params.watcherAgentId,
       mode: 'autonomous',
       entityTypeSlug: params.entityTypeSlug,
       entityId,
@@ -531,14 +529,18 @@ export async function promoteKeyedEntities(
   const createGate = await runMutationGate({
     action: 'create',
     organizationId,
-    // See the update-gate note below: a watcher is its agent's autonomous mode,
-    // so classify as 'agent' with the owning agent id (fall back to 'watcher'
-    // only if the row has no agent) and evaluate in autonomous mode.
-    principalKind: watcherAgentId ? 'agent' : 'watcher',
+    // The watcher is the acting principal (its OWN rows bind, e.g. a watcher-
+    // specific deny). Its owning agent is folded in as the ancestor via
+    // `ownerAgentId` so the agent's envelope ALSO binds — max-restrictive, so
+    // the agent envelope can tighten but a watcher-specific restriction can only
+    // tighten further, never be loosened away. Evaluated in autonomous mode
+    // (watchers are never human) so the agent's autonomous-only rules apply.
+    principalKind: 'watcher',
     sql: tx,
     attribution: 'watcher',
     watcherId,
-    principalId: mutationPrincipalId({ agentId: watcherAgentId, watcherId }),
+    principalId: mutationPrincipalId({ watcherId }),
+    ownerAgentId: watcherAgentId,
     mode: 'autonomous',
     entityTypeSlug,
     entityData: { entity_type: entityTypeSlug, name: '' },

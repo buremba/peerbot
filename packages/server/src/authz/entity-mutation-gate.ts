@@ -73,6 +73,16 @@ interface EntityMutationBase {
 	 */
 	principalId?: string | null;
 	/**
+	 * The OWNING AGENT of a watcher, when the acting principal is a watcher. The
+	 * write is then governed by BOTH the watcher's own rows AND its agent's,
+	 * folded max-restrictive — so an agent's envelope binds its watcher, while a
+	 * pre-existing watcher-specific restriction can only tighten (the agent
+	 * envelope never loosens it away). Null when not a watcher, or a watcher with
+	 * no agent. `watchers.agent_id` is the sole principal-ownership edge, so this
+	 * is the only ancestor a write ever folds.
+	 */
+	ownerAgentId?: string | null;
+	/**
 	 * Whether the acting principal is attended (a human is driving) or autonomous
 	 * (a watcher / scheduled run). A watcher promotion is `autonomous`; the resolver
 	 * evaluates autonomous as at-least-as-strict as attended. Defaults attended.

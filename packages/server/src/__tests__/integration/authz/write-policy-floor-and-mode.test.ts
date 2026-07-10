@@ -27,6 +27,8 @@ async function seedPolicy(args: {
 	principalId?: string | null;
 	principalMode?: string | null;
 	entityTypeSlug?: string | null;
+	fieldPath?: string | null;
+	entityId?: number | null;
 	effects: Array<{ action: string; effect: string }>;
 }): Promise<number> {
 	const sql = getTestDb();
@@ -37,7 +39,8 @@ async function seedPolicy(args: {
     VALUES
       (${args.orgId}, ${args.resourceClass}, ${args.principalKind ?? null},
        ${args.principalId ?? null}, ${args.principalMode ?? null},
-       ${args.entityTypeSlug ?? null}, NULL, NULL)
+       ${args.entityTypeSlug ?? null}, ${args.fieldPath ?? null},
+       ${args.entityId ?? null})
     RETURNING id
   `;
 	const id = Number(rows[0].id);
@@ -294,5 +297,95 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 				entityTypeSlug: "task",
 			}),
 		).toBe("allow");
+	});
+
+	it("owner-agent fold: a watcher inherits its agent's envelope via ownerAgentId", async () => {
+		// The agent (owning agent) sets delete=deny. The WATCHER is the acting
+		// principal (principalKind='watcher') with its agent folded in via
+		// ownerAgentId — the agent's deny must bind the watcher's write.
+		await seedPolicy({
+			orgId,
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-1",
+			effects: [{ action: "delete", effect: "deny" }],
+		});
+		expect(
+			await evaluateEntityMutation({
+				organizationId: orgId,
+				principalKind: "watcher",
+				principalId: "watcher:7",
+				ownerAgentId: "agent-1",
+				action: "delete",
+				entityTypeSlug: "task",
+				mode: "autonomous",
+			}),
+		).toBe("deny");
+	});
+
+	it("owner-agent fold: a watcher-specific deny is NOT loosened by a looser agent envelope", async () => {
+		// The owning agent auto-approves delete; a pre-existing WATCHER-specific row
+		// denies it. Folding the agent envelope in must NOT loosen the watcher's own
+		// deny — the strictest matched effect wins (this is the P1 regression).
+		await seedPolicy({
+			orgId,
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-1",
+			effects: [{ action: "delete", effect: "auto" }],
+		});
+		await seedPolicy({
+			orgId,
+			resourceClass: "entity",
+			principalKind: "watcher",
+			principalId: "watcher:7",
+			effects: [{ action: "delete", effect: "deny" }],
+		});
+		expect(
+			await evaluateEntityMutation({
+				organizationId: orgId,
+				principalKind: "watcher",
+				principalId: "watcher:7",
+				ownerAgentId: "agent-1",
+				action: "delete",
+				entityTypeSlug: "task",
+				mode: "autonomous",
+			}),
+		).toBe("deny");
+	});
+
+	it("a field-scoped row does NOT bleed into the entity create/delete decision", async () => {
+		// A deny on ONE field (person.ssn update) must govern only that field, never
+		// the whole entity's create or delete (this is the P2 regression). With no
+		// entity-level row, create/delete follow their class defaults.
+		await seedPolicy({
+			orgId,
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-1",
+			entityTypeSlug: "person",
+			fieldPath: "ssn",
+			effects: [{ action: "update", effect: "deny" }],
+		});
+		// create default = auto → allow (the field deny is irrelevant to create).
+		expect(
+			await evaluateEntityMutation({
+				organizationId: orgId,
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "create",
+				entityTypeSlug: "person",
+			}),
+		).toBe("allow");
+		// delete default = approval → require_approval (NOT deny from the field row).
+		expect(
+			await evaluateEntityMutation({
+				organizationId: orgId,
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "delete",
+				entityTypeSlug: "person",
+			}),
+		).toBe("require_approval");
 	});
 });

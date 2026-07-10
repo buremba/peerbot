@@ -63,21 +63,32 @@ export type PolicyPrincipalKind = "agent" | "watcher";
 export type PrincipalMode = "attended" | "autonomous";
 
 /**
- * Worker-token `source` values that mark a run as AUTONOMOUS — a watcher or
- * scheduled turn with no human in the loop. Any run whose `sourceContext.source`
- * is one of these evaluates its write-gate decisions in autonomous mode (so an
- * agent's autonomous-only tighter rules bind). Everything else — an interactive
- * turn (`direct-api`, a slack/telegram/web platform turn), a user session — is
- * attended. These are the exact `source` claims minted onto the run's worker
- * token: `watcher-run` at gateway/routes/public/agent.ts (session.intent.kind ===
- * 'watcher_run') and `scheduled-job` at scheduled/jobs.ts. The set is
- * deliberately explicit: a NEW autonomous dispatch source must be added here to be
- * governed autonomously (an unknown source falls to attended, never LOOSER than
- * autonomous per the resolver's floor).
+ * Worker-token `source` values that mark a run as AUTONOMOUS — a server-dispatched
+ * turn with NO human in the loop. Any run whose `sourceContext.source` is one of
+ * these evaluates its write-gate decisions in autonomous mode (so an agent's
+ * autonomous-only tighter rules bind). Everything else — an interactive turn
+ * (`direct-api`, a slack/telegram/web platform turn), a user session — is attended.
+ *
+ * This MUST stay in lockstep with `HEADLESS_SOURCES` in
+ * gateway/platform/unified-thread-consumer.ts: every source that bypasses the
+ * SSE-owner gate there is a no-human dispatch and so must be governed
+ * autonomously here. Adding a source to one without the other is a bug — a new
+ * headless dispatch would otherwise be evaluated as attended and skip an agent's
+ * autonomous-only restrictions. Producers of these claims:
+ *   - `watcher-run`      gateway/routes/public/agent.ts (session.intent=watcher_run)
+ *   - `scheduled-job`    scheduled/jobs.ts (a scheduled agent wake)
+ *   - `connector-repair` connectors/repair-agent.ts (auto-fixing a broken connector)
+ *   - `internal`         gateway/services/agent-threads.ts (server-dispatched default)
+ * An unknown source falls to attended (never LOOSER than autonomous, per the
+ * resolver's floor), so the failure mode of a missed source is over-, not
+ * under-, restriction for the interactive path — but under-restriction for the
+ * headless path, which is why the two sets must not drift.
  */
 const AUTONOMOUS_SOURCES: ReadonlySet<string> = new Set([
 	"watcher-run", // a watcher-dispatched agent turn (agent.ts intent=watcher_run)
 	"scheduled-job", // a scheduled agent wake (scheduled/jobs.ts)
+	"connector-repair", // a repair agent auto-fixing a connector (repair-agent.ts)
+	"internal", // server-dispatched default turn (agent-threads.ts)
 ]);
 
 /** The acting mode implied by a run's `source` (see {@link AUTONOMOUS_SOURCES}). */
@@ -523,6 +534,16 @@ async function loadCandidatePolicies(args: {
 	resourceClass?: WriteResourceClass;
 	principalKind?: PolicyPrincipalKind | null;
 	principalId?: string | null;
+	/**
+	 * The OWNING AGENT of a watcher, when a watcher acts under its agent's
+	 * envelope. The write is then governed by BOTH the watcher's own rows (the
+	 * primary `principalKind='watcher'`) AND the agent's rows, folded max-
+	 * restrictive — so a pre-existing watcher-specific `deny` can only tighten and
+	 * the agent envelope can never loosen it away. Null = no owning agent (the
+	 * only two-principal case in the model: `watchers.agent_id` is the sole
+	 * principal-ownership edge, so there is never a third principal to fold).
+	 */
+	ownerAgentId?: string | null;
 	entityTypeSlug?: string | null;
 	entityId?: number | null;
 	sql?: DbClient;
@@ -531,6 +552,7 @@ async function loadCandidatePolicies(args: {
 	const resourceClass = args.resourceClass ?? "entity";
 	const principalKind = args.principalKind ?? null;
 	const principalId = args.principalId ?? null;
+	const ownerAgentId = args.ownerAgentId ?? null;
 	const rows = await sql<EntityApprovalPolicyRow>`
     SELECT id, organization_id, resource_class, principal_kind, principal_id,
        principal_mode, entity_type_slug, field_path, entity_id,
@@ -544,6 +566,11 @@ async function loadCandidatePolicies(args: {
         OR (
           principal_kind = ${principalKind}
           AND (principal_id IS NULL OR principal_id = ${principalId})
+        )
+        OR (
+          ${ownerAgentId}::text IS NOT NULL
+          AND principal_kind = 'agent'
+          AND (principal_id IS NULL OR principal_id = ${ownerAgentId})
         )
       )
       AND (entity_type_slug IS NULL OR entity_type_slug = ${args.entityTypeSlug ?? null})
@@ -609,6 +636,11 @@ export async function evaluateEntityMutation(args: {
 	principalKind: EntityPolicyPrincipalKind;
 	/** Stable acting-principal id for per-principal matching; null = any of its kind. */
 	principalId?: string | null;
+	/**
+	 * The owning agent of a watcher — folds the agent's rows in alongside the
+	 * watcher's, max-restrictive. See {@link loadCandidatePolicies}.
+	 */
+	ownerAgentId?: string | null;
 	action: EntityMutationAction;
 	entityTypeSlug?: string | null;
 	entityId?: number | null;
@@ -625,12 +657,17 @@ export async function evaluateEntityMutation(args: {
 		...args,
 		principalKind: args.principalKind,
 		principalId: args.principalId ?? null,
+		ownerAgentId: args.ownerAgentId ?? null,
 	});
-	// create/delete carry no field path; every matched row applies. Fold
-	// max-restrictive so the org floor holds and a per-type override tightens,
-	// then layer the attended/autonomous relationship.
+	// create/delete act on the WHOLE entity, not any one field — a field-scoped
+	// row (e.g. person.ssn=deny) governs only its field's UPDATES and must not
+	// bleed into the entity's create/delete decision. Drop field-scoped rows here
+	// (the update path keeps them, matched per-field). What remains — the org
+	// floor, blanket, and type-scoped rows — folds max-restrictive, then layers
+	// the attended/autonomous relationship.
+	const forEntity = candidates.filter((row) => row.field_path === null);
 	return modeToDecision(
-		foldEffectWithMode(candidates, "entity", args.action, args.mode ?? "attended"),
+		foldEffectWithMode(forEntity, "entity", args.action, args.mode ?? "attended"),
 	);
 }
 
@@ -686,6 +723,8 @@ export async function evaluateEntityFieldUpdates(args: {
 	principalKind: EntityPolicyPrincipalKind;
 	/** Stable acting-principal id for per-principal matching; null = any of its kind. */
 	principalId?: string | null;
+	/** The watcher's owning agent, folded alongside — see {@link evaluateEntityMutation}. */
+	ownerAgentId?: string | null;
 	entityTypeSlug: string;
 	entityId: number;
 	entityOrgId?: string | null;
@@ -708,6 +747,7 @@ export async function evaluateEntityFieldUpdates(args: {
 		...args,
 		principalKind: args.principalKind,
 		principalId: args.principalId ?? null,
+		ownerAgentId: args.ownerAgentId ?? null,
 	});
 	const mode = args.mode ?? "attended";
 	for (const [field, owner] of Object.entries(args.fields)) {

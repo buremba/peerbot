@@ -505,7 +505,7 @@ export async function resolveActingPrincipal(
 
 /** True iff an agent row with this id exists in the org. Org-scoped so a caller
  * can't probe another tenant's agent namespace. */
-async function agentExistsInOrg(
+export async function agentExistsInOrg(
 	sql: DbClient,
 	agentId: string,
 	organizationId: string,

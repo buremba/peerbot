@@ -31,6 +31,7 @@ import type { Env } from "../../index";
 import { callTool as callProxyTool } from "../../mcp-proxy/client";
 import { resolveCredentialsByConnectionId } from "../../mcp-proxy/credential-resolver";
 import {
+	agentExistsInOrg,
 	resolveActingPrincipal,
 	resolveWatcherOwner,
 	resolveWriteEffect,
@@ -1672,14 +1673,37 @@ async function handleApprove(
 	const recheckWatcherId = watcherIdFromPrincipalId(
 		pendingRun.policy_principal_id,
 	);
-	// Re-resolve the owner from the persisted `watcher:<id>`. If the watcher row (or
-	// its owning agent) is GONE at approve time, fail closed (deny) — the agent
-	// envelope can't be folded, so we must not let the approval sail through as an
-	// unowned watcher.
-	const recheckOwner =
-		recheckWatcherId != null
-			? await resolveWatcherOwner(sql, recheckWatcherId, ctx.organizationId)
-			: { ownerAgentId: null, resolved: true };
+	// Re-resolve the principal's resolvability from persistence. A WATCHER principal
+	// re-resolves its owning agent via `watcher:<id>`. A direct AGENT principal must be
+	// existence-checked too: if the agent was DELETED between queue and approve, the
+	// r16 cascade removed its deny/approval rows, so folding candidates for a gone
+	// agent would fall back to the looser org default (connector_action → auto) and let
+	// a human's Approve execute the run as a deleted agent — strictly looser than
+	// before the delete. Either GONE → resolved:false → resolveWriteEffect denies,
+	// cancelling the approval. (Same fail-closed invariant resolveActingPrincipal
+	// enforces for live sessions; this is the persisted-principal path.)
+	let recheckOwner: { ownerAgentId: string | null; resolved: boolean };
+	if (recheckWatcherId != null) {
+		recheckOwner = await resolveWatcherOwner(
+			sql,
+			recheckWatcherId,
+			ctx.organizationId,
+		);
+	} else if (
+		recheckPrincipalKind === "agent" &&
+		pendingRun.policy_principal_id != null
+	) {
+		recheckOwner = {
+			ownerAgentId: null,
+			resolved: await agentExistsInOrg(
+				sql,
+				pendingRun.policy_principal_id,
+				ctx.organizationId,
+			),
+		};
+	} else {
+		recheckOwner = { ownerAgentId: null, resolved: true };
+	}
 	const recheckDecision =
 		recheckPrincipalKind === "user"
 			? "allow"

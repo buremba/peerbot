@@ -108,6 +108,24 @@ CREATE TRIGGER trg_cascade_delete_agent_write_policies
 -- freshly-inserted row. Only EXACT agent-principal rows are checked (principal_id is
 -- polymorphic: agent id / `watcher:<id>` / NULL) — watcher/kind-wide/null rows have no
 -- single agent to bind and are left alone.
+-- Remediate rows already orphaned before this deploy. Per-agent policy rows were
+-- creatable on main (write-gate v1 + the per-principal PUT) with NO cascade on agent
+-- delete, so any agent deleted under old code left dangling `principal_kind='agent'`
+-- rows. The cascade (above) only fires on FUTURE deletes and the assert trigger
+-- (below) only blocks FUTURE inserts — neither remediates the historical window. An
+-- orphan `execute=auto`/`update=auto` row keyed to a reusable slug would be inherited
+-- by the next agent created with that id (the exact slug-inheritance hole this
+-- migration closes), and once the assert trigger is live such rows are frozen (any
+-- UPDATE trips it). Delete them now, one-time, before arming the trigger. Child
+-- write_policy_action_effects rows cascade via their policy_id FK.
+DELETE FROM public.write_approval_policies p
+WHERE p.principal_kind = 'agent'
+  AND p.principal_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM public.agents a
+    WHERE a.id = p.principal_id AND a.organization_id = p.organization_id
+  );
+
 CREATE OR REPLACE FUNCTION public.assert_agent_write_policy_principal_exists()
   RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -126,9 +144,19 @@ BEGIN
 END;
 $$;
 
+-- Fire on INSERT and only on an UPDATE that REBINDS the principal — never on an
+-- effect-only header UPDATE (delivery target, updated_at). The upsert's UPDATE arm
+-- keeps principal_kind/principal_id/organization_id fixed (they're its match key), so
+-- restricting the columns is integrity-preserving. It also avoids a lock-order
+-- deadlock: an effect-only UPDATE first locks the policy row then would take FOR KEY
+-- SHARE on the agent, while a concurrent agent DELETE locks the agent then cascades
+-- to the policy row — a circular wait (40P01). Scoping the trigger off the header-only
+-- arm removes that inversion; the INSERT/rebind arms still serialize correctly (they
+-- take the agent lock first).
 DROP TRIGGER IF EXISTS trg_assert_agent_write_policy_principal_exists ON public.write_approval_policies;
 CREATE TRIGGER trg_assert_agent_write_policy_principal_exists
-  BEFORE INSERT OR UPDATE ON public.write_approval_policies
+  BEFORE INSERT OR UPDATE OF principal_kind, principal_id, organization_id
+  ON public.write_approval_policies
   FOR EACH ROW EXECUTE FUNCTION public.assert_agent_write_policy_principal_exists();
 
 -- migrate:down

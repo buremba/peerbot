@@ -15,10 +15,9 @@ function stubSql(ownerAgentId: string | null): DbClient {
 }
 
 describe("resolveActingPrincipal", () => {
-	it("a watcher channel wins over the agent id — it only tightens (folds the owner)", async () => {
-		// Resolving to a watcher is strictly MORE restrictive than the agent alone:
-		// it folds the owning agent's rows on top. So even with an agentId present,
-		// a watcher channel binds the watcher — there's no way to escape agent policy.
+	it("the trusted session watcher wins over the agent id AND a caller tag", async () => {
+		// The session watcher is stamped by the executor (trusted), so it binds even
+		// with an agentId and a different explicit tag present. It folds its owner.
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			agentId: "agent-1",
 			explicitWatcherId: 7,
@@ -30,6 +29,37 @@ describe("resolveActingPrincipal", () => {
 			// The trusted SESSION watcher (9) wins over the caller-supplied tag (7).
 			id: "watcher:9",
 			ownerAgentId: "owner-agent",
+			mode: "autonomous",
+		});
+	});
+
+	it("an authed agent's caller-supplied tag for a FOREIGN watcher is ignored", async () => {
+		// The exploit: a restricted agent tags a watcher owned by someone else (or a
+		// nonexistent id) to null out ownerAgentId and skip its own deny rows. The
+		// explicit tag must NOT override the authenticated agent identity.
+		const actor = await resolveActingPrincipal(stubSql("other-owner"), {
+			agentId: "agent-1",
+			explicitWatcherId: 7,
+			sourceForMode: "direct-api",
+		});
+		expect(actor).toEqual({
+			kind: "agent",
+			id: "agent-1",
+			ownerAgentId: null,
+			mode: "attended",
+		});
+	});
+
+	it("an authed agent tagging its OWN watcher is honored (owner matches)", async () => {
+		const actor = await resolveActingPrincipal(stubSql("agent-1"), {
+			agentId: "agent-1",
+			explicitWatcherId: 7,
+			sourceForMode: "direct-api",
+		});
+		expect(actor).toEqual({
+			kind: "watcher",
+			id: "watcher:7",
+			ownerAgentId: "agent-1",
 			mode: "autonomous",
 		});
 	});

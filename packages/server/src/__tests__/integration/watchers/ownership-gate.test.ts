@@ -115,7 +115,12 @@ async function seedWatcherAndWindow(workspace: TestWorkspace, suffix: string) {
     createdBy: workspace.users.owner.id,
     entityIds: [entity.id],
   });
-  return { entity, watcherId: Number(watcher.watcher_id), windowId };
+  return {
+    entity,
+    watcherId: Number(watcher.watcher_id),
+    windowId,
+    agentId: agent.agentId,
+  };
 }
 
 describe('ownership gate on agent entity writes', () => {
@@ -225,17 +230,21 @@ describe('ownership gate on agent entity writes', () => {
   it('attributes the proposal to the watcher on the reaction path', async () => {
     const org = workspace.org.id;
     const user = workspace.users.owner.id;
-    const { entity: reactionEntity, watcherId, windowId } = await seedWatcherAndWindow(
-      workspace,
-      'reaction'
-    );
+    const {
+      entity: reactionEntity,
+      watcherId,
+      windowId,
+      agentId,
+    } = await seedWatcherAndWindow(workspace, 'reaction');
 
     // Human owns the field first.
     await manageEntityUpdate(humanCtx(org, user), reactionEntity.id, { severity: 'high' });
 
-    // Agent mutation attributed to a watcher reaction.
+    // The reaction acts as its OWN watcher: the explicit watcher_source names a
+    // watcher owned by this agent, so the tag is honored (an agent can only tag
+    // its own watcher — a foreign tag is ignored, see resolveActingPrincipal).
     const result = await manageEntityUpdate(
-      agentCtx(org, user),
+      agentCtx(org, user, agentId),
       reactionEntity.id,
       { severity: 'critical' },
       { watcher_source: { watcher_id: watcherId, window_id: windowId } }
@@ -257,6 +266,30 @@ describe('ownership gate on agent entity writes', () => {
     // The card attribution flows through as 'watcher' so the SPA labels it
     // "A watcher proposes…" instead of "An agent proposes…".
     expect(result.approval_attribution).toBe('watcher');
+  });
+
+  it('ignores a caller-supplied watcher_source that is NOT the acting agent\'s own watcher', async () => {
+    const org = workspace.org.id;
+    const user = workspace.users.owner.id;
+    // A watcher owned by a DIFFERENT agent than the one making the call.
+    const { entity: target, watcherId, windowId } = await seedWatcherAndWindow(
+      workspace,
+      'foreign'
+    );
+
+    await manageEntityUpdate(humanCtx(org, user), target.id, { severity: 'high' });
+
+    // A restricted agent tags the foreign watcher, trying to escape its own
+    // envelope. The tag must be IGNORED → the write is attributed to the agent,
+    // not the watcher (ownerAgentId can't be nulled out via a foreign tag).
+    const result = await manageEntityUpdate(
+      agentCtx(org, user, 'restricted-agent'),
+      target.id,
+      { severity: 'critical' },
+      { watcher_source: { watcher_id: watcherId, window_id: windowId } }
+    );
+
+    expect(result.approval_attribution).toBe('agent');
   });
 
   it('collapses an identical repeated agent edit into a single pending approval', async () => {

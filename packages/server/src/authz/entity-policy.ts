@@ -391,6 +391,19 @@ export interface ActingPrincipal {
  * every write surface (manage_entity/agents/operations/watchers, promotion)
  * resolves identity through.
  */
+/** A watcher acting principal: autonomous, folding its (already-resolved) owner. */
+function watcherPrincipal(
+	watcherId: number,
+	ownerAgentId: string | null,
+): ActingPrincipal {
+	return {
+		kind: "watcher",
+		id: `watcher:${watcherId}`,
+		ownerAgentId,
+		mode: "autonomous",
+	};
+}
+
 export async function resolveActingPrincipal(
 	sql: DbClient,
 	args: {
@@ -402,16 +415,28 @@ export async function resolveActingPrincipal(
 		sourceForMode?: string | null;
 	},
 ): Promise<ActingPrincipal> {
-	// Trusted session watcher wins over a caller-supplied tag, so a reaction can't
-	// retag to a different watcher; any watcher channel ⇒ watcher (folds its agent).
-	const watcherId = args.sessionWatcherId ?? args.explicitWatcherId ?? null;
-	if (watcherId != null) {
-		return {
-			kind: "watcher",
-			id: `watcher:${watcherId}`,
-			ownerAgentId: await resolveWatcherOwnerAgentId(sql, watcherId),
-			mode: "autonomous",
-		};
+	// The trusted SESSION watcher (stamped by the reaction executor) always wins and
+	// folds its owning agent. An EXPLICIT watcher_source is caller-controlled, so it
+	// can't override an authenticated agent's identity: honor it only when there is
+	// no agent (the system/keyed-promotion path) OR when it genuinely belongs to that
+	// agent (an agent tagging its own watcher). Otherwise a restricted agent could
+	// tag a foreign/nonexistent watcher to null out ownerAgentId and skip its own
+	// deny/approval rows — so we fall through to the agent as the principal.
+	if (args.sessionWatcherId != null) {
+		return watcherPrincipal(
+			args.sessionWatcherId,
+			await resolveWatcherOwnerAgentId(sql, args.sessionWatcherId),
+		);
+	}
+	if (args.explicitWatcherId != null) {
+		const ownerAgentId = await resolveWatcherOwnerAgentId(
+			sql,
+			args.explicitWatcherId,
+		);
+		if (!args.agentId || ownerAgentId === args.agentId) {
+			return watcherPrincipal(args.explicitWatcherId, ownerAgentId);
+		}
+		// Caller-controlled tag that isn't this agent's own watcher — ignore it.
 	}
 	const kind = classifyMutationPrincipal({
 		userId: args.userId,

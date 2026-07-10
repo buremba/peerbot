@@ -13,6 +13,26 @@ ALTER TABLE public.write_approval_policies
   ADD COLUMN IF NOT EXISTS principal_mode text NULL
     CHECK (principal_mode IS NULL OR principal_mode IN ('autonomous'));
 
+-- Persist the ACTING MODE that queued a connector-action run, alongside the
+-- trusted principal (runs.policy_principal_kind/id from 20260709150000). The
+-- approve-time recheck must re-evaluate in the SAME mode it was queued under —
+-- otherwise an autonomous run whose autonomous-only rule tightened to approval/deny
+-- would be re-checked as ATTENDED (looser) and could sail through. Nullable +
+-- additive: NULL means attended (the pre-mode default). Only autonomous runs write
+-- 'autonomous', so no backfill is needed.
+ALTER TABLE public.runs
+  ADD COLUMN IF NOT EXISTS policy_principal_mode text NULL;
+-- runs is hot/high-row-count: validate the CHECK in a second pass so the ADD takes
+-- no scan/write lock (columns just added → every existing row is NULL and passes).
+ALTER TABLE public.runs
+  DROP CONSTRAINT IF EXISTS runs_policy_principal_mode_check;
+ALTER TABLE public.runs
+  ADD CONSTRAINT runs_policy_principal_mode_check CHECK (
+    policy_principal_mode IS NULL OR policy_principal_mode IN ('autonomous')
+  ) NOT VALID;
+ALTER TABLE public.runs
+  VALIDATE CONSTRAINT runs_policy_principal_mode_check;
+
 -- Extend the uniqueness key so a (…, autonomous) override is a DISTINCT row from
 -- the (…, both-mode) row for the same principal+scope. Without this, saving an
 -- autonomous-only override would collide with the base row on the old key. Build
@@ -59,3 +79,8 @@ DROP INDEX IF EXISTS public.write_approval_policies_class_principal_mode_scope_k
 
 ALTER TABLE public.write_approval_policies
   DROP COLUMN IF EXISTS principal_mode;
+
+ALTER TABLE public.runs
+  DROP CONSTRAINT IF EXISTS runs_policy_principal_mode_check;
+ALTER TABLE public.runs
+  DROP COLUMN IF EXISTS policy_principal_mode;

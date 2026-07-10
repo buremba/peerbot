@@ -26,6 +26,7 @@ import {
 } from '@lobu/core/contracts/tools/manage-agents';
 import {
   classifyMutationPrincipal,
+  modeForSource,
   mutationPrincipalId,
   resolveWritePolicyDecision,
 } from '../../authz/entity-policy';
@@ -595,6 +596,10 @@ async function dispatchAgentWrite(
     resourceClass: 'agent_config',
     principalKind,
     principalId: mutationPrincipalId({ agentId: ctx.agentId }),
+    // A watcher/scheduled agent turn acts autonomously — its autonomous-only
+    // rules must bind. Interactive turns are attended. Derived from the run's
+    // source claim (see modeForSource / AUTONOMOUS_SOURCES).
+    mode: modeForSource(ctx.sourceContext?.source),
     action,
   });
   if (decision === 'deny') {

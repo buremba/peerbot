@@ -214,6 +214,49 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 		).toBe("require_approval");
 	});
 
+	it("a sparse autonomous row abstains on actions it does not name", async () => {
+		// Attended: create=auto. An autonomous-only row names ONLY delete=deny.
+		// create must stay auto in autonomous mode — the sparse autonomous row must
+		// NOT pull create toward the class default.
+		await seedPolicy({
+			orgId,
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-1",
+			effects: [{ action: "create", effect: "auto" }],
+		});
+		await seedPolicy({
+			orgId,
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-1",
+			principalMode: "autonomous",
+			effects: [{ action: "delete", effect: "deny" }],
+		});
+		// autonomous create: the autonomous row abstains → inherits attended auto.
+		expect(
+			await evaluateEntityMutation({
+				organizationId: orgId,
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "create",
+				entityTypeSlug: "task",
+				mode: "autonomous",
+			}),
+		).toBe("allow");
+		// autonomous delete: the autonomous row names it → deny.
+		expect(
+			await evaluateEntityMutation({
+				organizationId: orgId,
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "delete",
+				entityTypeSlug: "task",
+				mode: "autonomous",
+			}),
+		).toBe("deny");
+	});
+
 	it("per-type override tightens only its type; other types follow the agent default", async () => {
 		// Agent default: delete auto. Per-type override for `trip`: delete deny.
 		await seedPolicy({

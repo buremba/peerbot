@@ -26,8 +26,10 @@ import {
 } from "@lobu/core/contracts/tools/manage-entity";
 import {
 	classifyMutationPrincipal,
+	modeForSource,
 	mutationPrincipalId,
 	type EntityPolicyPrincipalKind,
+	type PrincipalMode,
 } from "../../authz/entity-policy";
 import { runMutationGate } from "../../authz/entity-mutation-gate";
 import { getDb, pgTextArray } from "../../db/client";
@@ -89,6 +91,21 @@ function principalKindForMutation(
 		agentId: ctx.agentId,
 		watcherSource: args.watcher_source,
 	});
+}
+
+/**
+ * The acting mode for an entity mutation. Autonomous when the call carries a
+ * `watcher_source` (an explicit watcher-attributed write) OR the run's source
+ * marks it autonomous (a watcher/scheduled agent turn); attended otherwise. So a
+ * watcher's own tighter autonomous rules bind on its direct entity writes, not
+ * just on keyed-entity promotion.
+ */
+function mutationModeFor(
+	args: ManageEntityArgs | undefined,
+	ctx: ToolContext,
+): PrincipalMode {
+	if (args?.watcher_source) return "autonomous";
+	return modeForSource(ctx.sourceContext?.source);
 }
 
 // ============================================
@@ -263,6 +280,7 @@ async function handleCreate(
 			agentId: ctx.agentId,
 			watcherId: args.watcher_source?.watcher_id ?? null,
 		}),
+		mode: mutationModeFor(args, ctx),
 		entityTypeSlug: args.entity_type,
 		entityData,
 		proposal,
@@ -1013,6 +1031,7 @@ async function handleDelete(
 			agentId: ctx.agentId,
 			watcherId: args?.watcher_source?.watcher_id ?? null,
 		}),
+		mode: mutationModeFor(args, ctx),
 		entityTypeSlug: entity.entity_type,
 		entityId,
 		entityOrgId: null,

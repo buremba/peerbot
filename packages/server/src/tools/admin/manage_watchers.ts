@@ -33,6 +33,7 @@ import {
 } from '@lobu/core/contracts/tools/manage-watchers';
 import {
   classifyMutationPrincipal,
+  modeForSource,
   mutationPrincipalId,
   resolveWritePolicyDecision,
 } from '../../authz/entity-policy';
@@ -175,6 +176,9 @@ async function gateWatcherWrite(
       agentId: ctx.agentId,
     }),
     principalId: mutationPrincipalId({ agentId: ctx.agentId }),
+    // Autonomous when this is a watcher/scheduled turn (its own autonomous
+    // rules bind); attended for an interactive turn.
+    mode: modeForSource(ctx.sourceContext?.source),
     action,
   });
   if (decision === 'allow') return;

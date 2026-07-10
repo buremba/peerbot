@@ -32,7 +32,9 @@ import { callTool as callProxyTool } from "../../mcp-proxy/client";
 import { resolveCredentialsByConnectionId } from "../../mcp-proxy/credential-resolver";
 import {
 	classifyMutationPrincipal,
+	modeForSource,
 	mutationPrincipalId,
+	type PrincipalMode,
 	resolveWritePolicyDecision,
 } from "../../authz/entity-policy";
 import { notifyActionApprovalNeeded } from "../../notifications/triggers";
@@ -688,11 +690,19 @@ async function handleExecute(
 		agentId: ctx.agentId,
 		watcherId: args.watcher_source?.watcher_id ?? null,
 	});
+	// A watcher-attributed or watcher/scheduled-sourced execution is autonomous
+	// (its own tighter rules bind); an interactive turn is attended. Computed once
+	// and persisted with the run so the approve-time recheck re-evaluates in the
+	// SAME mode.
+	const principalMode: PrincipalMode = args.watcher_source
+		? "autonomous"
+		: modeForSource(ctx.sourceContext?.source);
 	const policyDecision = await resolveWritePolicyDecision({
 		organizationId: ctx.organizationId,
 		resourceClass: "connector_action",
 		principalKind,
 		principalId,
+		mode: principalMode,
 		action: "execute",
 	});
 	if (policyDecision === "deny") {
@@ -733,9 +743,12 @@ async function handleExecute(
 		approvalMode,
 		requireCompiledCode: operation.backend === "local_action",
 		// Persist the TRUSTED principal so a queued run's policy is re-evaluated
-		// at approve time against who queued it, not who approves it (sol #5).
+		// at approve time against who queued it, not who approves it (sol #5) —
+		// and in the SAME acting mode, so an autonomous run's tighter autonomous
+		// rule isn't lost to an attended recheck.
 		policyPrincipalKind: principalKind,
 		policyPrincipalId: principalId,
+		policyPrincipalMode: principalMode === "autonomous" ? "autonomous" : null,
 	});
 
 	if (args.watcher_source) {
@@ -1573,7 +1586,7 @@ async function handleApprove(
 
 	const pendingRows = await sql`
     SELECT id, connection_id, action_key, action_input,
-           policy_principal_kind, policy_principal_id
+           policy_principal_kind, policy_principal_id, policy_principal_mode
     FROM runs
     WHERE id = ${args.run_id}
       AND organization_id = ${ctx.organizationId}
@@ -1592,6 +1605,7 @@ async function handleApprove(
 		action_input: Record<string, unknown> | null;
 		policy_principal_kind: string | null;
 		policy_principal_id: string | null;
+		policy_principal_mode: string | null;
 	};
 	const resolved = await getOperationForConnection(
 		ctx.organizationId,
@@ -1626,6 +1640,12 @@ async function handleApprove(
 					resourceClass: "connector_action",
 					principalKind: recheckPrincipalKind,
 					principalId: pendingRun.policy_principal_id,
+					// Recheck in the SAME mode the run was queued under, so an
+					// autonomous-only tightening isn't lost to an attended recheck.
+					mode:
+						pendingRun.policy_principal_mode === "autonomous"
+							? "autonomous"
+							: "attended",
 					action: "execute",
 				});
 	if (currentMode === "disabled" || recheckDecision === "deny") {

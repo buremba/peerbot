@@ -62,6 +62,31 @@ export type PolicyPrincipalKind = "agent" | "watcher";
  */
 export type PrincipalMode = "attended" | "autonomous";
 
+/**
+ * Worker-token `source` values that mark a run as AUTONOMOUS — a watcher or
+ * scheduled turn with no human in the loop. Any run whose `sourceContext.source`
+ * is one of these evaluates its write-gate decisions in autonomous mode (so an
+ * agent's autonomous-only tighter rules bind). Everything else — an interactive
+ * turn (`direct-api`, a slack/telegram/web platform turn), a user session — is
+ * attended. These are the exact `source` claims minted onto the run's worker
+ * token: `watcher-run` at gateway/routes/public/agent.ts (session.intent.kind ===
+ * 'watcher_run') and `scheduled-job` at scheduled/jobs.ts. The set is
+ * deliberately explicit: a NEW autonomous dispatch source must be added here to be
+ * governed autonomously (an unknown source falls to attended, never LOOSER than
+ * autonomous per the resolver's floor).
+ */
+const AUTONOMOUS_SOURCES: ReadonlySet<string> = new Set([
+	"watcher-run", // a watcher-dispatched agent turn (agent.ts intent=watcher_run)
+	"scheduled-job", // a scheduled agent wake (scheduled/jobs.ts)
+]);
+
+/** The acting mode implied by a run's `source` (see {@link AUTONOMOUS_SOURCES}). */
+export function modeForSource(source: string | null | undefined): PrincipalMode {
+	return source != null && AUTONOMOUS_SOURCES.has(source)
+		? "autonomous"
+		: "attended";
+}
+
 export interface EntityApprovalDeliveryTarget {
 	connectionId: string | null;
 	channelId: string | null;
@@ -402,12 +427,14 @@ function foldEffectWithMode(
 	const attended = foldEffectForAction(attendedRows, resourceClass, action);
 	if (mode === "attended") return attended;
 	// Autonomous: attended is the floor; autonomous-only overrides can only tighten.
+	// A sparse autonomous row that does NOT name this action ABSTAINS (same rule as
+	// foldEffectForAction) — it must not pull the action toward its class default,
+	// which would tighten an action the admin never touched autonomously.
 	let effect = attended;
 	for (const row of candidates.filter(isAutonomousOnlyRow)) {
-		effect = moreRestrictive(
-			effect,
-			effectForRowAction(row, resourceClass, action),
-		);
+		const stored = row.effects[action];
+		if (stored === undefined) continue; // row abstains on this action
+		effect = moreRestrictive(effect, stored);
 	}
 	return effect;
 }

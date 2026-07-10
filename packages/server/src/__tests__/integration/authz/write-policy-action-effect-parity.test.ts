@@ -259,6 +259,29 @@ describe("write-policy action/effect decision parity", () => {
 		expect(await resolveWritePolicyDecision(base)).toBe("deny");
 	});
 
+	it("the permissions-PUT input guards reject payloads that would erase/mis-target a row (codex-11)", async () => {
+		// effects MUST be a plain object — an array passes typeof==='object' but yields
+		// no entries, so a replace-all upsert would wipe stored effects. Reject arrays.
+		const isEffectsMap = (v: unknown) =>
+			typeof v === "object" && v !== null && !Array.isArray(v);
+		expect(isEffectsMap({ create: "deny" })).toBe(true);
+		expect(isEffectsMap([])).toBe(false);
+		expect(isEffectsMap(null)).toBe(false);
+
+		// entity_type_slug: present-but-invalid (number, whitespace) must NOT coerce to
+		// null (the blanket row) — that would overwrite the broad policy. Only a
+		// non-empty string or omitted is valid.
+		const slugPresentInvalid = (v: unknown) =>
+			v !== undefined &&
+			v !== null &&
+			(typeof v !== "string" || v.trim() === "");
+		expect(slugPresentInvalid(123)).toBe(true);
+		expect(slugPresentInvalid("   ")).toBe(true);
+		expect(slugPresentInvalid("trip")).toBe(false);
+		expect(slugPresentInvalid(undefined)).toBe(false);
+		expect(slugPresentInvalid(null)).toBe(false);
+	});
+
 	it("the permissions-PUT validation predicate rejects illegal (action,effect) pairs (codex-8)", async () => {
 		// The endpoint 400s on any entry isLegalActionEffect rejects, rather than
 		// dropping it (a dropped entry + replace-all upsert would ERASE a stored deny).

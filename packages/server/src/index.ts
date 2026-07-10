@@ -1735,13 +1735,18 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	// the auto default). REJECT the request on any invalid entry instead of filtering
 	// or clamping — an unknown action, a non-effect value, or an (action,effect) pair
 	// illegal for this class all 400.
+	// Must be a plain OBJECT map. An ARRAY passes `typeof === "object"` but yields no
+	// Object.entries → the replace-all upsert would wipe the row's stored effects
+	// (erasing deny/approval). Reject arrays explicitly.
 	const rawEffects =
-		typeof body.effects === "object" && body.effects !== null
+		typeof body.effects === "object" &&
+		body.effects !== null &&
+		!Array.isArray(body.effects)
 			? (body.effects as Record<string, unknown>)
 			: null;
 	if (!rawEffects) {
 		return c.json(
-			{ error: "invalid_request", message: "effects map is required." },
+			{ error: "invalid_request", message: "effects must be a JSON object." },
 			400,
 		);
 	}
@@ -1780,6 +1785,23 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		);
 	}
 	const principalMode = body.principal_mode === "autonomous" ? "autonomous" : null;
+	// entity_type_slug selects the per-type row (null = the blanket all-types row).
+	// A PRESENT-but-invalid slug (a number, or whitespace) must not silently coerce to
+	// null and overwrite the broad blanket policy — reject it, same as principal_mode.
+	if (
+		body.entity_type_slug !== undefined &&
+		body.entity_type_slug !== null &&
+		(typeof body.entity_type_slug !== "string" ||
+			body.entity_type_slug.trim() === "")
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "entity_type_slug must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
 	const entityTypeSlug =
 		resourceClass === "entity" &&
 		typeof body.entity_type_slug === "string" &&

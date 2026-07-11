@@ -112,32 +112,40 @@ export function resetLastGoodMcpInstructions(): void {
 /**
  * Reconcile freshly-fetched MCP instructions against the last-known-good ones.
  *
- * A successful session-context response is AUTHORITATIVE about which servers
- * exist: the result is keyed ONLY by the servers present in `fresh`, so a
- * server that was disconnected/removed drops out and is no longer rendered (we
- * must not let the agent act on a revoked connector). The last-known-good cache
- * only rescues a *transient blip within a present server*: if a server is still
- * in `fresh` but its instructions came back empty (a gateway tool-fetch hiccup),
- * we reuse its previous non-empty text instead of dropping the block for a turn
- * and busting the cache twice.
+ * `knownServerIds` (from `mcpStatus`) is the authoritative set of servers that
+ * still EXIST for this agent. `fresh` (from `mcpInstructions`) carries their
+ * instruction text — but the gateway only populates a key when the tool fetch
+ * succeeded AND returned instructions (gateway/index.ts: `if
+ * (result.value.instructions)`). So a transient blip (401, init failure) shows
+ * up as a server that is in `knownServerIds` but MISSING from `fresh` — not as
+ * an empty string. We must tell these two cases apart:
  *
- * Returns the reconciled map and updates the last-known-good cache to exactly
- * the present server set.
+ *   - id in knownServerIds, present & non-empty in fresh -> use fresh (remember)
+ *   - id in knownServerIds, absent/empty in fresh        -> BLIP: reuse last-good
+ *   - id NOT in knownServerIds                            -> REMOVED: drop it
+ *
+ * This keeps a disconnected connector from lingering (security) while a
+ * momentary fetch failure no longer drops the block and busts the cache twice.
+ * When `knownServerIds` is omitted we fall back to treating `fresh`'s own keys
+ * as the known set (used by unit tests exercising the map logic directly).
  */
 export function withLastGoodMcpInstructions(
-  fresh: Record<string, string>
+  fresh: Record<string, string>,
+  knownServerIds?: Iterable<string>
 ): Record<string, string> {
+  const known = new Set(knownServerIds ?? Object.keys(fresh));
   const reconciled: Record<string, string> = {};
-  for (const [mcpId, value] of Object.entries(fresh)) {
+  for (const mcpId of known) {
+    const value = fresh[mcpId];
     if (value && value.trim().length > 0) {
       reconciled[mcpId] = value;
     } else if (lastGoodMcpInstructions[mcpId]) {
-      // Present-but-empty: transient blip, keep the last-known-good text.
+      // Known server, but instructions absent/empty this fetch -> blip.
       reconciled[mcpId] = lastGoodMcpInstructions[mcpId];
     }
-    // Present-but-empty with no prior value: nothing to render yet — skip.
+    // Known but no text anywhere yet -> nothing to render.
   }
-  // Authoritative: forget any server not in this response (disconnected/removed).
+  // Authoritative: forget any server not in knownServerIds (removed/revoked).
   lastGoodMcpInstructions = reconciled;
   return reconciled;
 }
@@ -336,7 +344,10 @@ export async function getOpenClawSessionContext(
     // These provide workspace context (available connectors, entity schemas, etc.)
     // that helps the agent use the tools effectively.
     const mcpServerInstructions = buildMcpServerInstructions(
-      withLastGoodMcpInstructions(data.mcpInstructions || {})
+      withLastGoodMcpInstructions(
+        data.mcpInstructions || {},
+        (data.mcpStatus || []).map((mcp) => mcp.id)
+      )
     );
     const mcpCliInstructions =
       mcpExposure === "cli" ? buildMcpCliInstructions(data.mcpStatus) : "";

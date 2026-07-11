@@ -1308,6 +1308,12 @@ const plugin = {
       // rather than the cached prefix, is not cache-stable. So skip the
       // system-context prepend here in gateway mode and let recall (which is
       // genuinely per-turn) flow through on its own.
+      //
+      // KNOWN GAP (follow-up): when the worker's lobu-memory discovery fails,
+      // the system prompt has no memory block, and in gateway mode we now emit
+      // nothing here either — so that degraded turn loses the static
+      // FALLBACK_SYSTEM_CONTEXT it used to get. Acceptable for now (rare, and
+      // the memory tools still work); revisit if discovery failures are common.
       const getSystemContext = () => {
         if (config.gatewayAuthUrl) return '';
         return cachedWorkspaceInstructions

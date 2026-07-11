@@ -22,23 +22,22 @@ describe("buildConversationUrl", () => {
     ).toBeUndefined();
   });
 
-  test("slack with known workspace domain -> archives permalink, ts dot removed", () => {
+  test("slack -> undefined until the workspace domain is plumbed (no 404 guess)", () => {
     expect(
       buildConversationUrl({
         platform: "slack",
         channelId: "slack:C0ABC123",
         messageId: "1699560000.001900",
-        slackDomain: "acme",
       })
-    ).toBe("https://acme.slack.com/archives/C0ABC123/p1699560000001900");
+    ).toBeUndefined();
   });
 
-  test("slack without a known domain -> undefined (never a 404 guess)", () => {
+  test("telegram with a non-numeric (synthetic) messageId -> undefined", () => {
     expect(
       buildConversationUrl({
-        platform: "slack",
-        channelId: "slack:C0ABC123",
-        messageId: "1699560000.001900",
+        platform: "telegram",
+        channelId: "telegram:-1001234567890",
+        messageId: "click-abc123",
       })
     ).toBeUndefined();
   });

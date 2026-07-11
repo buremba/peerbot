@@ -33,60 +33,78 @@ describe("buildMcpServerInstructions", () => {
 describe("withLastGoodMcpInstructions", () => {
   beforeEach(() => resetLastGoodMcpInstructions());
 
+  // The gateway sets mcpInstructions[id] ONLY when a fetch succeeds with text
+  // (gateway/index.ts: `if (result.value.instructions)`). So a blip shows up as
+  // a server present in mcpStatus (knownServerIds) but ABSENT from fresh — not
+  // as an empty string. These tests use the real (fresh, knownServerIds) shape.
+  const ids = (...xs: string[]) => xs;
+
   test("passes fresh non-empty instructions through and remembers them", () => {
-    const merged = withLastGoodMcpInstructions({ "lobu-memory": "v1" });
+    const merged = withLastGoodMcpInstructions(
+      { "lobu-memory": "v1" },
+      ids("lobu-memory")
+    );
     expect(merged).toEqual({ "lobu-memory": "v1" });
   });
 
-  test("a present-but-empty server falls back to its last-known-good value", () => {
-    withLastGoodMcpInstructions({ "lobu-memory": "good" });
-    // Next turn: server still present in the response, but its instructions
-    // blipped empty (transient gateway tool-fetch hiccup).
-    const merged = withLastGoodMcpInstructions({ "lobu-memory": "" });
+  test("a known server MISSING from fresh (the real blip) uses last-good", () => {
+    withLastGoodMcpInstructions({ "lobu-memory": "good" }, ids("lobu-memory"));
+    // Next turn: 401/init blip — server still in mcpStatus, but no instructions
+    // key in the response. This is the actual gateway failure shape.
+    const merged = withLastGoodMcpInstructions({}, ids("lobu-memory"));
     expect(merged["lobu-memory"]).toBe("good"); // block does not disappear
   });
 
-  test("an explicitly empty value does not overwrite the good value", () => {
-    withLastGoodMcpInstructions({ "lobu-memory": "good" });
-    const merged = withLastGoodMcpInstructions({ "lobu-memory": "   " });
-    expect(merged["lobu-memory"]).toBe("good");
-  });
-
   test("fresh non-empty value supersedes the previous one", () => {
-    withLastGoodMcpInstructions({ "lobu-memory": "old" });
-    const merged = withLastGoodMcpInstructions({ "lobu-memory": "new" });
+    withLastGoodMcpInstructions({ "lobu-memory": "old" }, ids("lobu-memory"));
+    const merged = withLastGoodMcpInstructions(
+      { "lobu-memory": "new" },
+      ids("lobu-memory")
+    );
     expect(merged["lobu-memory"]).toBe("new");
   });
 
-  test("the block stays byte-stable when a PRESENT server blips empty", () => {
+  test("the block stays byte-stable across a real blip (no cache bust)", () => {
     const turn1 = buildMcpServerInstructions(
-      withLastGoodMcpInstructions({ "lobu-memory": "schema block" })
+      withLastGoodMcpInstructions(
+        { "lobu-memory": "schema block" },
+        ids("lobu-memory")
+      )
     );
-    // Server still present in the authoritative response but instructions empty.
+    // Blip: still known, instructions key absent.
     const turn2 = buildMcpServerInstructions(
-      withLastGoodMcpInstructions({ "lobu-memory": "" })
+      withLastGoodMcpInstructions({}, ids("lobu-memory"))
     );
     expect(turn2).toBe(turn1);
   });
 
-  test("a server ABSENT from an authoritative response is dropped", () => {
-    withLastGoodMcpInstructions({ "lobu-memory": "mem", slack: "slack text" });
-    // Slack disconnected: next authoritative response omits it entirely.
-    const merged = withLastGoodMcpInstructions({ "lobu-memory": "mem" });
+  test("a server removed from mcpStatus is dropped even if last-good has it", () => {
+    withLastGoodMcpInstructions(
+      { "lobu-memory": "mem", slack: "slack text" },
+      ids("lobu-memory", "slack")
+    );
+    // Slack disconnected: it's gone from mcpStatus (knownServerIds) entirely.
+    const merged = withLastGoodMcpInstructions(
+      { "lobu-memory": "mem" },
+      ids("lobu-memory")
+    );
     expect(merged.slack).toBeUndefined();
     expect(merged["lobu-memory"]).toBe("mem");
-    // And it must not reappear on a later fetch.
-    const later = withLastGoodMcpInstructions({ "lobu-memory": "mem" });
+    // Must not resurrect on a later fetch either.
+    const later = withLastGoodMcpInstructions(
+      { "lobu-memory": "mem" },
+      ids("lobu-memory")
+    );
     expect(later.slack).toBeUndefined();
   });
 
-  test("an empty authoritative response drops everything", () => {
-    withLastGoodMcpInstructions({ "lobu-memory": "mem" });
-    expect(withLastGoodMcpInstructions({})).toEqual({});
+  test("empty knownServerIds drops everything (no servers exist)", () => {
+    withLastGoodMcpInstructions({ "lobu-memory": "mem" }, ids("lobu-memory"));
+    expect(withLastGoodMcpInstructions({}, ids())).toEqual({});
   });
 
-  test("present-but-empty with no prior value renders nothing", () => {
-    const merged = withLastGoodMcpInstructions({ "brand-new": "" });
+  test("a known server with no text anywhere yet renders nothing", () => {
+    const merged = withLastGoodMcpInstructions({}, ids("brand-new"));
     expect(merged["brand-new"]).toBeUndefined();
   });
 });

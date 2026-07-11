@@ -18,8 +18,6 @@ export interface ConversationUrlInput {
   channelId: string;
   /** Source message id (Slack `ts`, Telegram numeric message id). */
   messageId: string;
-  /** Slack workspace subdomain, when known (e.g. "acme" for acme.slack.com). */
-  slackDomain?: string;
 }
 
 /**
@@ -36,21 +34,20 @@ export function buildConversationUrl(
     case "telegram": {
       // Supergroups/channels use the -100-prefixed id; the public t.me link
       // drops that prefix. Private/basic chats have no shareable web URL.
-      if (/^-100\d+$/.test(rawChannel)) {
+      // Only numeric telegram message ids yield a valid link (synthetic ids
+      // like "click-…" do not).
+      if (/^-100\d+$/.test(rawChannel) && /^\d+$/.test(input.messageId)) {
         return `https://t.me/c/${rawChannel.slice(4)}/${input.messageId}`;
       }
       return undefined;
     }
-    case "slack": {
-      // Slack archive URLs are subdomain-scoped: without the workspace domain
-      // the link can't be built correctly (the team id `Txxx` is not the
-      // subdomain). Only emit when the domain is known.
-      if (!input.slackDomain) return undefined;
-      const ts = input.messageId.replace(".", "");
-      return `https://${input.slackDomain}.slack.com/archives/${rawChannel}/p${ts}`;
-    }
+    // Slack is intentionally NOT handled: a correct archives permalink is
+    // subdomain-scoped (the team id `Txxx` is not the subdomain), and the
+    // workspace domain is not resolved at inbound dispatch. Rather than emit a
+    // guessed URL that 404s, we omit it. Add a `slack` case here once the
+    // workspace domain (via team.info at connect time) is plumbed through.
     default:
-      // discord/whatsapp/teams/gchat/api: no stable inbound permalink here.
+      // slack/discord/whatsapp/teams/gchat/api: no stable inbound permalink.
       return undefined;
   }
 }

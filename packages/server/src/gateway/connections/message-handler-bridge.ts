@@ -619,6 +619,32 @@ export class MessageHandlerBridge {
     const routingOrgId =
       resolved.organizationId ?? this.connection.organizationId;
 
+    // Lazy self-heal (Slack Grid): a binding written before its workspace was
+    // known carries a NULL team. Inbound Slack events reliably carry the REAL
+    // workspace `T…` (never the enterprise `E…`), so converge the binding's team
+    // to it on the first message. Guarded to fill only an unknown team; best-
+    // effort — a heal failure must never block routing.
+    if (
+      resolved.source === "binding" &&
+      platform === "slack" &&
+      /^T[A-Z0-9]+$/i.test(teamId ?? "") &&
+      routingOrgId
+    ) {
+      try {
+        await channelBindingService.healBindingTeam(
+          this.connection.id,
+          channelId,
+          routingOrgId,
+          teamId as string,
+        );
+      } catch (err) {
+        logger.debug(
+          { channelId, teamId, error: String(err) },
+          "binding team self-heal failed (non-fatal)"
+        );
+      }
+    }
+
     // Durable transcript capture: persist this inbound message so
     // read_conversation can serve channel history from Postgres instead of the
     // throttled platform history API. Fire-and-forget + idempotent. thread_id is

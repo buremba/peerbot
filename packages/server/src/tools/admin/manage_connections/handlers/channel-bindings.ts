@@ -18,6 +18,7 @@
 import { createLogger } from "@lobu/core";
 import { getDb } from "../../../../db/client";
 import { ChannelBindingService } from "../../../../gateway/channels/binding-service";
+import { resolveBindingTeam } from "../../../../gateway/channels/binding-scope-resolver";
 import { scheduleChannelBindConfirmation } from "../../../../gateway/channels/bind-channel-notify";
 import {
 	runtimeConnectionIdToSlug,
@@ -51,6 +52,11 @@ type ChannelBindingInput =
 
 type NormalizedChannelSpec = {
 	channelId: string;
+	/** The workspace parsed from a declarative `T…/channel` spec, when present.
+	 *  Preserved as a trusted per-channel workspace hint so a Grid org-wide
+	 *  install (whose connection tenant id is the enterprise `E…`) still stamps
+	 *  the real workspace on the binding instead of dropping it. */
+	teamHint?: string;
 	about?: Array<number | string>;
 };
 
@@ -63,20 +69,30 @@ function normalizeChannelSpec(
 		typeof input === "string" ? { channel_id: input, about: undefined } : input;
 	let channelId = raw.channel_id.trim();
 	if (!channelId) return { error: "Channel ids cannot be empty" };
+	let teamHint: string | undefined;
 	if (connectorKey === "slack") {
 		const slash = channelId.indexOf("/");
 		if (slash >= 0) {
 			const teamId = channelId.slice(0, slash);
 			channelId = channelId.slice(slash + 1);
-			if (externalTenantId && teamId !== externalTenantId) {
+			// Only reject a `T…/channel` spec against a WORKSPACE tenant id. A Grid
+			// org-wide install stores its enterprise `E…` in external_tenant_id, so
+			// a `T…` prefix there is the channel's real workspace, NOT a mismatch —
+			// preserve it as the binding team hint rather than reject.
+			if (
+				externalTenantId &&
+				externalTenantId.startsWith("T") &&
+				teamId !== externalTenantId
+			) {
 				return {
 					error: `Channel ${raw.channel_id} belongs to a different Slack workspace`,
 				};
 			}
+			if (teamId) teamHint = teamId;
 		}
 		channelId = canonicalSlackChannelId(channelId);
 	}
-	return { channelId, about: raw.about };
+	return { channelId, teamHint, about: raw.about };
 }
 
 const logger = createLogger("manage-connections-channels");
@@ -287,7 +303,20 @@ export async function handleBindChannel(
 	}>;
 	const connection = connections[0];
 	if (!connection) return { error: "Active chat connection not found" };
-	const teamId = connection.external_tenant_id ?? undefined;
+	// The binding's team is the CONCRETE workspace the channel lives in — the
+	// connector-owned resolver decides how to derive it (for Slack Grid the
+	// connection's tenant id is the enterprise `E…`, never the workspace). Null
+	// = unknown yet; the row heals from the first inbound message.
+	const teamId =
+		(await resolveBindingTeam({
+			connection: {
+				connectorKey: connection.connector_key,
+				externalTenantId: connection.external_tenant_id,
+				connectionId: connection.id,
+				organizationId,
+			},
+			channelId,
+		})) ?? undefined;
 
 	const svc = new ChannelBindingService();
 	const runtimeConnectionId = slugToRuntimeConnectionId(connection.slug);
@@ -457,15 +486,33 @@ export async function handleSyncChannelBindings(
 		aboutRemoved: number;
 	};
 	try {
+		const teamHintByChannel = new Map(
+			normalized.map((c) => [c.channelId, c.teamHint]),
+		);
 		reconcileResult = await sql.begin(async (tx) => {
 			const bound: string[] = [];
 			for (const channelId of desired) {
 				if (!existingIds.has(channelId)) {
+					// Resolve the CONCRETE workspace via the connector-owned resolver.
+					// A declarative `T…/channel` spec supplies a trusted workspace hint;
+					// otherwise the resolver decides (and returns null = unknown yet,
+					// healing from inbound — never the enterprise id).
+					const teamId =
+						(await resolveBindingTeam({
+							connection: {
+								connectorKey: connection.connector_key,
+								externalTenantId: connection.external_tenant_id,
+								connectionId: connection.id,
+								organizationId,
+							},
+							channelId,
+							workspaceHint: teamHintByChannel.get(channelId) ?? null,
+						})) ?? undefined;
 					await svc.createBinding(
 						args.agent_id,
 						connection.connector_key,
 						channelId,
-						connection.external_tenant_id ?? undefined,
+						teamId,
 						{
 							configuredBy: userId ?? undefined,
 							organizationId,
@@ -655,11 +702,23 @@ export async function handleConnectChannelDm(
 		boundChannelId,
 		organizationId,
 	);
+	// Resolve the DM's concrete workspace (never the enterprise id on a Grid
+	// org-wide install). Null = unknown yet; heals from the first inbound DM.
+	const dmTeamId =
+		(await resolveBindingTeam({
+			connection: {
+				connectorKey: "slack",
+				externalTenantId: connection.external_tenant_id,
+				connectionId: connection.id,
+				organizationId,
+			},
+			channelId: boundChannelId,
+		})) ?? undefined;
 	await svc.createBinding(
 		args.agent_id,
 		"slack",
 		boundChannelId,
-		connection.external_tenant_id ?? undefined,
+		dmTeamId,
 		{
 			configuredBy: userId ?? undefined,
 			organizationId,

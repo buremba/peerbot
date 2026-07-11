@@ -32,7 +32,7 @@ describe("isConversationVisible", () => {
 		expect(isConversationVisible("slack:C123:1781.0", v)).toBe(true);
 	});
 
-	it("fails closed when the channel id is bound in more than one workspace", () => {
+	it("fails closed when the channel id is bound in more than one REAL workspace", () => {
 		// Same channel id across two Slack teams — the conversation id carries no
 		// team, so it must NOT show even though T1 is visible.
 		const v = vis({
@@ -40,6 +40,35 @@ describe("isConversationVisible", () => {
 			channelTeams: { "slack:C123": ["T1", "T2"] },
 		});
 		expect(isConversationVisible("slack:C123:1781.0", v)).toBe(false);
+	});
+
+	it("is VISIBLE when a channel is bound {NULL, T…} — the NULL is a wildcard that resolves to T…", () => {
+		// A binding written before its workspace healed carries a NULL team ("" in
+		// the map). It is unknown-yet, NOT a second distinct workspace, so the
+		// conversation resolves to the single real team T1 and stays visible.
+		const v = vis({
+			visibleKeys: ["slack:T1:C123"],
+			channelTeams: { "slack:C123": ["", "T1"] },
+		});
+		expect(isConversationVisible("slack:C123:1781.0", v)).toBe(true);
+	});
+
+	it("is VISIBLE for a lone real team (defensive: the {E…, T…} case can no longer occur)", () => {
+		// The invariant guarantees team_id is never a Grid enterprise id, so a
+		// channel only ever carries at most one real workspace. A lone T… is visible.
+		const v = vis({
+			visibleKeys: ["slack:T1:C777"],
+			channelTeams: { "slack:C777": ["T1"] },
+		});
+		expect(isConversationVisible("slack:C777:9.9", v)).toBe(true);
+	});
+
+	it("fails closed on two DISTINCT real teams {T_A, T_B} — genuine cross-workspace ambiguity", () => {
+		const v = vis({
+			visibleKeys: ["slack:TA:C555"],
+			channelTeams: { "slack:C555": ["TA", "TB"] },
+		});
+		expect(isConversationVisible("slack:C555:1.1", v)).toBe(false);
 	});
 
 	it("fails closed when the requester isn't a member of the channel's team", () => {

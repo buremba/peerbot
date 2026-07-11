@@ -117,8 +117,16 @@ export async function resolveChannelVisibility(
 }
 
 /** Can the requester read this platform conversation (`{platform}:{channel}:{thread}`)?
- *  Fail-closed: unbound, or a channel bound in more than one workspace (can't tie
- *  the conversation to a team), is not visible. */
+ *  Fail-closed: unbound, or a channel bound in ≥2 DISTINCT REAL workspaces (can't
+ *  tie the conversation to a single team), is not visible.
+ *
+ *  A NULL/"" team is a WILDCARD ("workspace unknown yet" — a binding written
+ *  before its workspace healed from the first inbound event), NOT a distinct
+ *  workspace. `team_id` is now guaranteed to be a real workspace or NULL (never a
+ *  Grid enterprise id), so the gate needs zero connector knowledge: it counts
+ *  distinct non-null teams and only fails closed on genuine cross-workspace
+ *  ambiguity (2+ real teams). One real team + any number of NULLs resolves to
+ *  that team; all-NULL resolves via the wildcard visible key. */
 export function isConversationVisible(
 	conversationId: string,
 	vis: ChannelVisibility,
@@ -127,11 +135,13 @@ export function isConversationVisible(
 	const platform = (parts[0] ?? "").toLowerCase();
 	const channel = parts[1] ?? "";
 	const teams = vis.channelTeams.get(`${platform}:${channel}`);
-	if (!teams || teams.size !== 1) return false; // unbound or ambiguous workspace
-	const [team] = [...teams];
-	return vis.visibleKeys.has(
-		channelVisibilityKey(platform, team || null, channel),
-	);
+	if (!teams || teams.size === 0) return false; // unbound
+	const realTeams = [...teams].filter((t) => t !== "");
+	if (realTeams.length > 1) return false; // genuine cross-workspace ambiguity
+	// One real team (NULLs are wildcards that resolve to it), or all-NULL (a
+	// teamless/unknown-yet binding — resolves via the "" wildcard visible key).
+	const team = realTeams[0] ?? null;
+	return vis.visibleKeys.has(channelVisibilityKey(platform, team, channel));
 }
 
 async function findConversationSessionFile(

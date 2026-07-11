@@ -17,7 +17,11 @@ import {
 } from "../../../gateway/secrets";
 import { orgContext } from "../../../lobu/stores/org-context";
 import { PostgresSecretStore } from "../../../lobu/stores/postgres-secret-store";
+import { ChannelBindingService } from "../../../gateway/channels/binding-service";
+import { slugToRuntimeConnectionId } from "../../../lobu/stores/connections-projection";
 import { __setBindChannelNotifyDepsForTests } from "../../../gateway/channels/bind-channel-notify";
+import { __setBindingScopeResolverForTests } from "../../../gateway/channels/binding-scope-resolver";
+import { resolveSlackBindingTeam } from "../../../gateway/connections/slack-binding-scope";
 import { __setSlackWebApiForTests } from "../../../tools/admin/manage_connections/handlers/channel-bindings";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -33,6 +37,10 @@ import {
 import { TestMcpClient, TestWorkspace } from "../../setup/test-mcp-client";
 
 const TEAM = "TACME";
+/** A Grid enterprise id (org-wide install tenant) — must NEVER reach a binding. */
+const ENTERPRISE = "E0BDSKL1KJL";
+/** The concrete workspace a Grid channel resolves to. */
+const WORKSPACE = "T0BF8TKGW79";
 
 async function makeManagedSlackConnection(opts: {
 	orgId: string;
@@ -317,6 +325,155 @@ describe("manage_connections channel-binding actions", () => {
       WHERE organization_id = ${orgId} AND agent_id = ${agentId}
     `;
 		expect(bound.map((r) => r.channel_id)).toContain("slack:D999");
+	});
+
+	it("bind_channel on an org-wide Grid install NEVER stores the enterprise id — stores the workspace T… from context_team_id", async () => {
+		// An org-wide Grid install's connection tenant id is the ENTERPRISE id
+		// (E…). The binding must carry the concrete WORKSPACE (T…), which the
+		// connector resolver reads from conversations.info.context_team_id — never
+		// the E….
+		const pg = new PostgresSecretStore();
+		const store = new SecretStoreRegistry(pg, { secret: pg });
+		const tokenRef = await orgContext.run({ organizationId: orgId }, () =>
+			persistSecretValue(store, "installations/slackinst-grid/botToken", "xoxb-grid"),
+		);
+		const connectionId = await makeManagedSlackConnection({
+			orgId,
+			slug: "slackinst-grid",
+			teamId: ENTERPRISE, // org-wide install ⇒ tenant id is the enterprise E…
+		});
+		const sql = getTestDb();
+		await sql`UPDATE connections SET config = ${sql.json({ botToken: tokenRef })} WHERE id = ${connectionId}`;
+
+		// Drive the REAL Slack resolver with a stub Slack Web API + secret store so
+		// the E… → conversations.info.context_team_id path is exercised end to end.
+		__setBindingScopeResolverForTests("slack", (params) =>
+			resolveSlackBindingTeam(
+				{
+					slackWeb: {
+						conversationInfo: async () => ({
+							name: "eng",
+							isPrivate: false,
+							contextTeamId: WORKSPACE,
+						}),
+					},
+					secretStore: store,
+				},
+				params,
+			),
+		);
+		try {
+			const res = (await workspace.owner.connections.manage({
+				action: "bind_channel",
+				agent_id: agentId,
+				connection_id: connectionId,
+				channel_id: "slack:CGRID",
+			})) as { success?: boolean; team_id?: string; error?: string };
+			expect(res.error).toBeUndefined();
+			expect(res.success).toBe(true);
+			expect(res.team_id).toBe(WORKSPACE);
+			expect(res.team_id).not.toBe(ENTERPRISE);
+
+			const bound = await getDb()<{ team_id: string | null }[]>`
+				SELECT team_id FROM agent_channel_bindings
+				WHERE organization_id = ${orgId} AND channel_id = 'slack:CGRID'
+			`;
+			expect(bound[0]?.team_id).toBe(WORKSPACE);
+			expect(bound[0]?.team_id).not.toBe(ENTERPRISE);
+		} finally {
+			__setBindingScopeResolverForTests("slack", undefined);
+		}
+	});
+
+	it("bind_channel writes NULL (not the enterprise id) when the workspace is unresolvable yet", async () => {
+		// Private channel the bot isn't in: conversations.info throws. The binding
+		// gets a NULL team (unknown-yet, heals from inbound) — NEVER the E….
+		const pg = new PostgresSecretStore();
+		const store = new SecretStoreRegistry(pg, { secret: pg });
+		const tokenRef = await orgContext.run({ organizationId: orgId }, () =>
+			persistSecretValue(store, "installations/slackinst-grid2/botToken", "xoxb-grid2"),
+		);
+		const connectionId = await makeManagedSlackConnection({
+			orgId,
+			slug: "slackinst-grid2",
+			teamId: ENTERPRISE,
+		});
+		const sql = getTestDb();
+		await sql`UPDATE connections SET config = ${sql.json({ botToken: tokenRef })} WHERE id = ${connectionId}`;
+
+		__setBindingScopeResolverForTests("slack", (params) =>
+			resolveSlackBindingTeam(
+				{
+					slackWeb: {
+						conversationInfo: async () => {
+							throw new Error("Slack conversations.info failed: not_in_channel");
+						},
+					},
+					secretStore: store,
+				},
+				params,
+			),
+		);
+		try {
+			const res = (await workspace.owner.connections.manage({
+				action: "bind_channel",
+				agent_id: agentId,
+				connection_id: connectionId,
+				channel_id: "slack:CPRIV",
+			})) as { success?: boolean; team_id?: string; error?: string };
+			expect(res.error).toBeUndefined();
+			expect(res.success).toBe(true);
+			expect(res.team_id).toBeUndefined();
+
+			const bound = await getDb()<{ team_id: string | null }[]>`
+				SELECT team_id FROM agent_channel_bindings
+				WHERE organization_id = ${orgId} AND channel_id = 'slack:CPRIV'
+			`;
+			expect(bound[0]?.team_id).toBeNull();
+		} finally {
+			__setBindingScopeResolverForTests("slack", undefined);
+		}
+	});
+
+	it("lazy self-heal: a NULL-team binding converges to the real T… after an inbound message", async () => {
+		const connectionId = await makeManagedSlackConnection({
+			orgId,
+			slug: "slackinst-heal",
+			teamId: ENTERPRISE,
+		});
+		const sql = getTestDb();
+		// A binding written before its workspace was known — NULL team.
+		await sql`
+			INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
+			VALUES (${orgId}, ${agentId}, 'slack', 'slack:CHEAL', NULL, ${connectionId})
+		`;
+		const svc = new ChannelBindingService();
+		// The inbound message carries the REAL workspace T…; heal converges to it.
+		await svc.healBindingTeam(
+			slugToRuntimeConnectionId("slackinst-heal"),
+			"slack:CHEAL",
+			orgId,
+			WORKSPACE,
+		);
+		const healed = await getDb()<{ team_id: string | null }[]>`
+			SELECT team_id FROM agent_channel_bindings
+			WHERE organization_id = ${orgId} AND channel_id = 'slack:CHEAL'
+		`;
+		expect(healed[0]?.team_id).toBe(WORKSPACE);
+
+		// Guard: a stray/foreign team on a later message must NOT overwrite a
+		// known workspace.
+		await svc.healBindingTeam(
+			slugToRuntimeConnectionId("slackinst-heal"),
+			"slack:CHEAL",
+			orgId,
+			"T99OTHER",
+		);
+		const after = await getDb()<{ team_id: string | null }[]>`
+			SELECT team_id FROM agent_channel_bindings
+			WHERE organization_id = ${orgId} AND channel_id = 'slack:CHEAL'
+		`;
+		expect(after[0]?.team_id).toBe(WORKSPACE);
 	});
 
 	it("sync_channel_bindings writes config-sourced about edges from entity slugs", async () => {

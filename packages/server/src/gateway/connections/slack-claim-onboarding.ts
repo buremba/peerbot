@@ -27,6 +27,7 @@ import { BUILDER_AGENT_ID, ensureBuilderAgent } from "../../auth/builder-provisi
 import { getDb } from "../../db/client.js";
 import { canonicalSlackChannelId } from "../../preview/slack.js";
 import { ChannelBindingService } from "../channels/binding-service.js";
+import { resolveBindingTeam } from "../channels/binding-scope-resolver.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import {
   resolveSecretValue,
@@ -174,11 +175,37 @@ async function linkBuilderToInstallerDm(args: {
   // Store under the canonical `slack:<id>` key — inbound messages reach the
   // dispatcher already canonicalized, so a raw `D…` key would never route.
   const channelId = canonicalSlackChannelId(dmChannelId);
+  // Resolve the DM's CONCRETE workspace. On a Grid org-wide install the claim's
+  // `teamId` (and the connection's external_tenant_id) is the enterprise `E…`,
+  // which must never land in a binding — the resolver returns the real
+  // workspace or null (heal-from-inbound). Not the raw `teamId`.
+  const [conn] = (await getDb()`
+    SELECT external_tenant_id FROM connections
+    WHERE id = ${Number(connection.connectionId)}
+      AND organization_id = ${organizationId}
+      AND deleted_at IS NULL
+    LIMIT 1
+  `) as Array<{ external_tenant_id: string | null }>;
+  const bindingTeamId =
+    (await resolveBindingTeam({
+      connection: {
+        connectorKey: "slack",
+        externalTenantId: conn?.external_tenant_id ?? teamId ?? null,
+        connectionId: Number(connection.connectionId),
+        organizationId,
+      },
+      channelId,
+      // The claim's teamId is the workspace for a normal install — a trusted hint
+      // the resolver uses directly (no Slack round-trip). For an org-wide install
+      // it's the enterprise id, which the resolver rejects and resolves via
+      // conversations.info instead.
+      workspaceHint: teamId,
+    })) ?? undefined;
   await new ChannelBindingService().createBinding(
     builderId,
     "slack",
     channelId,
-    teamId,
+    bindingTeamId,
     { organizationId, connectionId: connection.connectionId },
   );
   logger.info(

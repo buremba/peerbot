@@ -94,6 +94,41 @@ export class ChannelBindingService {
 		return rows[0] ? rowToBinding(rows[0]) : null;
 	}
 
+	/**
+	 * Lazy self-heal: converge a binding's `team_id` to the real WORKSPACE id an
+	 * inbound message carries. A binding written before its workspace was known
+	 * (the resolver returned null → NULL team) heals here on the first message.
+	 *
+	 * Guarded to ONLY fill an unknown (NULL/empty) team — never overwrite an
+	 * already-set workspace, so a stray/foreign `team_id` on a message can't
+	 * repoint a live binding. Keyed on the concrete (org, connection, channel).
+	 * Best-effort by contract: a heal failure must never block message routing.
+	 */
+	async healBindingTeam(
+		connectionId: string,
+		channelId: string,
+		organizationId: string,
+		realTeamId: string,
+	): Promise<void> {
+		if (!realTeamId.trim()) return;
+		const sql = getDb();
+		// Resolve the binding by the concrete connection (via slug, exactly like
+		// getBindingForConnection) so a runtime slug id maps to the right numeric
+		// connection_id. Only fills an unknown team.
+		const slug = runtimeConnectionIdToSlug(connectionId);
+		await sql`
+			UPDATE agent_channel_bindings b
+			SET team_id = ${realTeamId}
+			FROM connections c
+			WHERE c.id = b.connection_id
+				AND c.slug = ${slug}
+				AND c.deleted_at IS NULL
+				AND b.organization_id = ${organizationId}
+				AND b.channel_id = ${channelId}
+				AND (b.team_id IS NULL OR b.team_id = '')
+		`;
+	}
+
 	async createBinding(
 		agentId: string,
 		platform: string,

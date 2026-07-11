@@ -82,12 +82,51 @@ let cachedResult: {
 } | null = null;
 
 /**
+ * Last-known-good per-server MCP instructions, keyed by mcpId. A transient
+ * gateway-side tool-fetch failure makes a server's `mcpInstructions` entry
+ * arrive empty/missing; rendering that as-is would drop the whole
+ * `## MCP Server Instructions` block for one turn, shrinking the system prompt
+ * and busting the prompt cache — then the block returns next turn and busts it
+ * again. Reusing the last non-empty value keeps the block stable across a blip.
+ */
+let lastGoodMcpInstructions: Record<string, string> = {};
+
+/**
  * Invalidate the session context cache.
  * Called by the SSE client when a config_changed event is received.
  */
 export function invalidateSessionContextCache(): void {
   cachedResult = null;
   logger.info("Session context cache invalidated");
+}
+
+/**
+ * Reset the last-known-good MCP instructions cache. Exposed for tests; a
+ * real config change flows in as fresh non-empty instructions which overwrite
+ * the stale entries anyway.
+ */
+export function resetLastGoodMcpInstructions(): void {
+  lastGoodMcpInstructions = {};
+}
+
+/**
+ * Merge freshly-fetched MCP instructions over the last-known-good ones: fresh
+ * non-empty values win and are remembered; a missing/empty value for a server
+ * we've seen before falls back to its previous non-empty text rather than
+ * disappearing. Returns the merged map and updates the last-known-good cache.
+ */
+export function withLastGoodMcpInstructions(
+  fresh: Record<string, string>
+): Record<string, string> {
+  const merged: Record<string, string> = { ...lastGoodMcpInstructions };
+  for (const [mcpId, value] of Object.entries(fresh)) {
+    if (value && value.trim().length > 0) {
+      merged[mcpId] = value;
+    }
+    // else: keep the last-known-good entry (if any) — do not overwrite with empty.
+  }
+  lastGoodMcpInstructions = merged;
+  return merged;
 }
 
 function buildMcpInstructions(
@@ -176,10 +215,15 @@ Servers:
 ${servers}`;
 }
 
-function buildMcpServerInstructions(
+export function buildMcpServerInstructions(
   mcpInstructions: Record<string, string>
 ): string {
-  const entries = Object.entries(mcpInstructions).filter(([, v]) => v);
+  // Sort by mcpId so the rendered block is byte-identical turn-to-turn
+  // regardless of the map's key order. Non-deterministic ordering here would
+  // reshuffle a stable-content block and needlessly bust the prompt cache.
+  const entries = Object.entries(mcpInstructions)
+    .filter(([, v]) => v)
+    .sort(([a], [b]) => a.localeCompare(b));
   if (entries.length === 0) return "";
 
   const lines: string[] = ["## MCP Server Instructions", ""];
@@ -269,7 +313,7 @@ export async function getOpenClawSessionContext(
     // These provide workspace context (available connectors, entity schemas, etc.)
     // that helps the agent use the tools effectively.
     const mcpServerInstructions = buildMcpServerInstructions(
-      data.mcpInstructions || {}
+      withLastGoodMcpInstructions(data.mcpInstructions || {})
     );
     const mcpCliInstructions =
       mcpExposure === "cli" ? buildMcpCliInstructions(data.mcpStatus) : "";

@@ -1301,10 +1301,19 @@ const plugin = {
     // Inject workspace instructions (dynamic from server) or fallback (static).
     // When autoRecall is enabled, also inject recalled memories.
     {
-      const getSystemContext = () =>
-        cachedWorkspaceInstructions
+      // In gateway mode the worker already injects the full workspace
+      // instructions into the SYSTEM prompt (the `## MCP Server Instructions`
+      // / lobu-memory block). Prepending them again into every user turn would
+      // duplicate those tokens and, because it lands in the per-turn message
+      // rather than the cached prefix, is not cache-stable. So skip the
+      // system-context prepend here in gateway mode and let recall (which is
+      // genuinely per-turn) flow through on its own.
+      const getSystemContext = () => {
+        if (config.gatewayAuthUrl) return '';
+        return cachedWorkspaceInstructions
           ? `<lobu-system>\n${cachedWorkspaceInstructions}\n</lobu-system>`
-          : FALLBACK_SYSTEM_CONTEXT;
+          : (FALLBACK_SYSTEM_CONTEXT ?? '');
+      };
       const recallOnce = async (query: string, signal: AbortSignal): Promise<string> => {
         try {
           const result = await callMcpTool(
@@ -1370,9 +1379,13 @@ const plugin = {
         lastRecallBlock = block;
         return block;
       };
-      const buildPrependContext = (recallBlock: string) => ({
-        prependContext: getSystemContext() + (recallBlock ? '\n' + recallBlock : ''),
-      });
+      const buildPrependContext = (recallBlock: string) => {
+        const sys = getSystemContext();
+        const prependContext = [sys, recallBlock]
+          .filter((s) => s && s.trim().length > 0)
+          .join('\n');
+        return { prependContext };
+      };
 
       on('before_prompt_build', async (event: Record<string, unknown>) => {
         const prompt = event.prompt;

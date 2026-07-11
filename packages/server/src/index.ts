@@ -9,7 +9,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Env } from "@lobu/connector-sdk";
-import { SLACK_IDENTITY } from "@lobu/connectors/slack-identity";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { compress } from "hono/compress";
@@ -22,7 +21,6 @@ import { mcpAuth } from "./auth/middleware";
 import { oauthRoutes } from "./auth/oauth/routes";
 import { findExistingPersonalOrg } from "./auth/personal-org-provisioning";
 import { credentialRoutes } from "./auth/routes";
-import { decodeJwtClaims } from "./auth/subject-identities";
 import { compareWorkerToken } from "./auth/worker-token";
 import {
 	deleteEntityApprovalPolicy,
@@ -65,6 +63,7 @@ import {
 	resolveClaimContext,
 } from "./gateway/connections/connection-claim";
 import { slackClaimProvider } from "./gateway/connections/slack-claim";
+import { resolveClaimingUserSlackIdentities } from "./gateway/connections/slack-claim-identities";
 import { autoLinkBuilderAndWelcome } from "./gateway/connections/slack-claim-onboarding";
 import { createSlackWebApi } from "./gateway/connections/slack-web";
 import {
@@ -2243,95 +2242,6 @@ app.post("/api/:orgSlug/join", async (c) => {
 		role: result.role,
 	});
 });
-
-/**
- * Resolve ALL of the signed-in user's `slack_user_id` identities as
- * `{teamId, slackUserId}` pairs — every workspace they've signed in with Slack
- * for. Reuses the canonical `entity_identities` shape the authz layer writes on
- * Slack sign-in (namespace `slack_user_id`, identifier stored uppercased as
- * `T…:U…` on the user's `$member`), joined to the user's memberships via the
- * guarded `auth_user_id`/`auth:signup` claim so a user-supplied identity row
- * can't hijack the lookup. Org-agnostic (the identity may live in any org the
- * user belongs to), so it runs BEFORE we resolve the org to bind into. The claim
- * guard filters by team (workspace membership) or matches the bare `U…` against
- * a Grid pending install's `installerUserId`.
- */
-async function resolveClaimingUserSlackIdentities(
-	userId: string,
-): Promise<Array<{ teamId: string; slackUserId: string }>> {
-	const sql = getDb();
-	const rows = (await sql`
-		SELECT DISTINCT ei.identifier
-		FROM "member" m
-		JOIN entity_identities auth_ei
-		  ON auth_ei.organization_id = m."organizationId"
-		 AND auth_ei.namespace = 'auth_user_id'
-		 AND auth_ei.identifier = m."userId"
-		 AND auth_ei.source_connector = 'auth:signup'
-		 AND auth_ei.deleted_at IS NULL
-		JOIN entity_identities ei
-		  ON ei.organization_id = auth_ei.organization_id
-		 AND ei.entity_id = auth_ei.entity_id
-		 AND ei.namespace = ${SLACK_IDENTITY.USER_ID}
-		 AND ei.deleted_at IS NULL
-		WHERE m."userId" = ${userId}
-	`) as Array<{ identifier: string }>;
-	// The identity is stored as `T…:U…` (team-scoped). Split into a team id and a
-	// bare `U…` id; the claim guard filters by team (membership) or matches the
-	// bare id against the pending install's installerUserId (Grid).
-	const fromGraph = rows
-		.map((r) => String(r.identifier))
-		.map((id) => {
-			const sep = id.indexOf(":");
-			return sep === -1
-				? null
-				: { teamId: id.slice(0, sep), slackUserId: id.slice(sep + 1) };
-		})
-		.filter((x): x is { teamId: string; slackUserId: string } => x !== null);
-
-	// FALLBACK: the entity-graph `slack_user_id` above is only written once the
-	// user's private-org `$member` provisioning has completed AND their signup
-	// identity landed in a private org (see `persistLoginSlackIdentity` /
-	// `resolveTenantMember`). A brand-new user whose signup org is public — or
-	// whose provisioning hasn't finished — has NO such row, so the graph join is
-	// empty and the claim dead-ends in a "Sign in with Slack" loop even though
-	// they just did. Their linked Better-Auth Slack `account` row is an
-	// independent, always-present proof of the same `U…` (the OIDC subject stored
-	// as `accountId`), captured directly by "Sign in with Slack". Union it in so
-	// claim authority never depends on the identity-graph timing.
-	//
-	// The team is read from the stored `id_token` (`https://slack.com/team_id`)
-	// when present, giving a team-scoped entry for Path 1 (workspace membership);
-	// absent, we still emit the bare `U…` with an empty team, which satisfies the
-	// Grid installer-match (Path 2, `slackUserId === installerUserId`). `U…` ids
-	// are enterprise-global, so the bare match is sound on a Grid.
-	const accountRows = (await sql`
-		SELECT "accountId", "idToken"
-		FROM account
-		WHERE "providerId" = 'slack' AND "userId" = ${userId}
-	`) as Array<{ accountId: string | null; idToken: string | null }>;
-	const fromAccounts = accountRows
-		.map((a) => {
-			const slackUserId = a.accountId?.toUpperCase();
-			if (!slackUserId) return null;
-			const teamId = a.idToken
-				? ((decodeJwtClaims(a.idToken)?.["https://slack.com/team_id"] as
-						| string
-						| undefined) ?? "")
-				: "";
-			return { teamId: teamId.toUpperCase(), slackUserId };
-		})
-		.filter((x): x is { teamId: string; slackUserId: string } => x !== null);
-
-	// De-dup by `team:user` so a user present in both sources isn't doubled.
-	const seen = new Set<string>();
-	return [...fromGraph, ...fromAccounts].filter((x) => {
-		const key = `${x.teamId}:${x.slackUserId}`;
-		if (seen.has(key)) return false;
-		seen.add(key);
-		return true;
-	});
-}
 
 /**
  * The provider-agnostic connection "claim" routes bind a parked (pending)

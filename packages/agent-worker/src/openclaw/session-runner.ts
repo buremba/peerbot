@@ -398,8 +398,26 @@ export function buildRunContextBlock(input: {
     input.platformMetadata && typeof input.platformMetadata === "object"
       ? (input.platformMetadata as Record<string, unknown>)
       : {};
-  const str = (v: unknown): string | undefined =>
-    typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
+  // Platform metadata (display names, channel names, URLs) is UNTRUSTED user
+  // input that ends up in the prompt. Neutralize prompt injection: strip all
+  // control characters (newlines especially — a newline lets a value forge a
+  // new `## Section` or `- ` line), collapse whitespace, and cap length so an
+  // overlong value can't dominate the turn. Empty-after-sanitize -> omitted.
+  const MAX_FIELD_LEN = 200;
+  const str = (v: unknown): string | undefined => {
+    if (typeof v !== "string") return undefined;
+    // Replace any C0/C1 control char (code point < 0x20, or 0x7F-0x9F) with a
+    // space — done by code point rather than a literal control-char regex so no
+    // raw control bytes live in this source file. Then collapse whitespace and
+    // cap length. A newline/tab can't survive to forge a new prompt line.
+    let cleaned = "";
+    for (const ch of v) {
+      const code = ch.codePointAt(0) ?? 0;
+      cleaned += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : ch;
+    }
+    cleaned = cleaned.replace(/\s+/g, " ").trim().slice(0, MAX_FIELD_LEN);
+    return cleaned.length > 0 ? cleaned : undefined;
+  };
 
   const platform = str(input.platform);
   const channel =

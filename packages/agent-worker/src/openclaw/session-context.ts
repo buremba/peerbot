@@ -110,23 +110,36 @@ export function resetLastGoodMcpInstructions(): void {
 }
 
 /**
- * Merge freshly-fetched MCP instructions over the last-known-good ones: fresh
- * non-empty values win and are remembered; a missing/empty value for a server
- * we've seen before falls back to its previous non-empty text rather than
- * disappearing. Returns the merged map and updates the last-known-good cache.
+ * Reconcile freshly-fetched MCP instructions against the last-known-good ones.
+ *
+ * A successful session-context response is AUTHORITATIVE about which servers
+ * exist: the result is keyed ONLY by the servers present in `fresh`, so a
+ * server that was disconnected/removed drops out and is no longer rendered (we
+ * must not let the agent act on a revoked connector). The last-known-good cache
+ * only rescues a *transient blip within a present server*: if a server is still
+ * in `fresh` but its instructions came back empty (a gateway tool-fetch hiccup),
+ * we reuse its previous non-empty text instead of dropping the block for a turn
+ * and busting the cache twice.
+ *
+ * Returns the reconciled map and updates the last-known-good cache to exactly
+ * the present server set.
  */
 export function withLastGoodMcpInstructions(
   fresh: Record<string, string>
 ): Record<string, string> {
-  const merged: Record<string, string> = { ...lastGoodMcpInstructions };
+  const reconciled: Record<string, string> = {};
   for (const [mcpId, value] of Object.entries(fresh)) {
     if (value && value.trim().length > 0) {
-      merged[mcpId] = value;
+      reconciled[mcpId] = value;
+    } else if (lastGoodMcpInstructions[mcpId]) {
+      // Present-but-empty: transient blip, keep the last-known-good text.
+      reconciled[mcpId] = lastGoodMcpInstructions[mcpId];
     }
-    // else: keep the last-known-good entry (if any) — do not overwrite with empty.
+    // Present-but-empty with no prior value: nothing to render yet — skip.
   }
-  lastGoodMcpInstructions = merged;
-  return merged;
+  // Authoritative: forget any server not in this response (disconnected/removed).
+  lastGoodMcpInstructions = reconciled;
+  return reconciled;
 }
 
 function buildMcpInstructions(
@@ -269,12 +282,22 @@ export async function getOpenClawSessionContext(
     return cachedResult;
   }
 
+  // On any fetch failure, fall back to the last SUCCESSFUL context (even if
+  // stale past the TTL) rather than the empty default — dropping to
+  // DEFAULT_SESSION_CONTEXT would blank the MCP server block, shrink the system
+  // prompt, and bust the prompt cache until the gateway recovers. An empty
+  // default is only correct when we've never had a successful fetch.
+  const fallbackContext = () =>
+    cachedResult && cachedResult.mcpExposure === mcpExposure
+      ? cachedResult
+      : { ...DEFAULT_SESSION_CONTEXT };
+
   const dispatcherUrl = process.env.DISPATCHER_URL;
   const workerToken = process.env.WORKER_TOKEN;
 
   if (!dispatcherUrl || !workerToken) {
     logger.warn("Missing dispatcher URL or worker token for session context");
-    return { ...DEFAULT_SESSION_CONTEXT };
+    return fallbackContext();
   }
 
   try {
@@ -294,7 +317,7 @@ export async function getOpenClawSessionContext(
       logger.warn("Gateway returned non-success status for session context", {
         status: response.status,
       });
-      return { ...DEFAULT_SESSION_CONTEXT };
+      return fallbackContext();
     }
 
     const data = (await response.json()) as SessionContextResponse;
@@ -372,6 +395,6 @@ export async function getOpenClawSessionContext(
     return result;
   } catch (error) {
     logger.error("Failed to fetch session context from gateway", { error });
-    return { ...DEFAULT_SESSION_CONTEXT };
+    return fallbackContext();
   }
 }

@@ -38,10 +38,11 @@ describe("withLastGoodMcpInstructions", () => {
     expect(merged).toEqual({ "lobu-memory": "v1" });
   });
 
-  test("a transient empty fetch falls back to the last-known-good value", () => {
+  test("a present-but-empty server falls back to its last-known-good value", () => {
     withLastGoodMcpInstructions({ "lobu-memory": "good" });
-    // Next turn: gateway tool-fetch blipped, entry arrives missing entirely.
-    const merged = withLastGoodMcpInstructions({});
+    // Next turn: server still present in the response, but its instructions
+    // blipped empty (transient gateway tool-fetch hiccup).
+    const merged = withLastGoodMcpInstructions({ "lobu-memory": "" });
     expect(merged["lobu-memory"]).toBe("good"); // block does not disappear
   });
 
@@ -57,13 +58,35 @@ describe("withLastGoodMcpInstructions", () => {
     expect(merged["lobu-memory"]).toBe("new");
   });
 
-  test("the block stays byte-stable across a blip (no cache bust)", () => {
+  test("the block stays byte-stable when a PRESENT server blips empty", () => {
     const turn1 = buildMcpServerInstructions(
       withLastGoodMcpInstructions({ "lobu-memory": "schema block" })
     );
+    // Server still present in the authoritative response but instructions empty.
     const turn2 = buildMcpServerInstructions(
-      withLastGoodMcpInstructions({}) // blip
+      withLastGoodMcpInstructions({ "lobu-memory": "" })
     );
     expect(turn2).toBe(turn1);
+  });
+
+  test("a server ABSENT from an authoritative response is dropped", () => {
+    withLastGoodMcpInstructions({ "lobu-memory": "mem", slack: "slack text" });
+    // Slack disconnected: next authoritative response omits it entirely.
+    const merged = withLastGoodMcpInstructions({ "lobu-memory": "mem" });
+    expect(merged.slack).toBeUndefined();
+    expect(merged["lobu-memory"]).toBe("mem");
+    // And it must not reappear on a later fetch.
+    const later = withLastGoodMcpInstructions({ "lobu-memory": "mem" });
+    expect(later.slack).toBeUndefined();
+  });
+
+  test("an empty authoritative response drops everything", () => {
+    withLastGoodMcpInstructions({ "lobu-memory": "mem" });
+    expect(withLastGoodMcpInstructions({})).toEqual({});
+  });
+
+  test("present-but-empty with no prior value renders nothing", () => {
+    const merged = withLastGoodMcpInstructions({ "brand-new": "" });
+    expect(merged["brand-new"]).toBeUndefined();
   });
 });

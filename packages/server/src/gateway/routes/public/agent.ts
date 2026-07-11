@@ -272,12 +272,14 @@ const deleteAgentRoute = createRoute({
   method: "delete",
   path: "/api/v1/agents/{agentId}",
   tags: ["Agents"],
-  summary: "Delete an agent",
+  // Deletes the SESSION only (the path param is a sessionKey); the agent row
+  // itself persists — it's owned by the org or the user's personal org.
+  summary: "Delete an agent session",
   security: [{ bearerAuth: [] }],
   request: { params: AgentIdParamSchema },
   responses: {
     200: {
-      description: "Agent deleted",
+      description: "Agent session deleted",
       content: { "application/json": { schema: SuccessResponseSchema } },
     },
     ...errorResponses(ErrorResponseSchema, {
@@ -1072,7 +1074,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
 
     return c.json({
       success: true,
-      message: "Agent deleted",
+      message: "Agent session deleted",
       agentId: sessionKey,
     });
   });

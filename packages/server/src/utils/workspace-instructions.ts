@@ -13,7 +13,12 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
   const sql = getDb();
 
   try {
-    const [entityTypeRows, entityCounts, relationshipTypes] = await Promise.all([
+    // Entity/relationship COUNTS are deliberately excluded: this block is part
+    // of the cached system prompt, and live counts would mutate it on every
+    // memory write, busting the prompt cache (and all downstream message
+    // history) on each context refresh. Only stable schema belongs here; the
+    // agent gets live counts from tool calls at runtime.
+    const [entityTypeRows, relationshipTypes] = await Promise.all([
       sql.unsafe(
         `SELECT slug, name, metadata_schema, event_kinds FROM entity_types
          WHERE deleted_at IS NULL
@@ -21,24 +26,10 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
          ORDER BY name ASC`,
         [organizationId]
       ),
-      sql`
-        SELECT et.slug AS entity_type, COUNT(*)::int as entity_count
-        FROM entities e
-        JOIN entity_types et ON et.id = e.entity_type_id
-        WHERE e.organization_id = ${organizationId}
-          AND e.deleted_at IS NULL
-        GROUP BY et.slug
-      `,
       sql.unsafe(
-        `SELECT rt.slug, rt.name, rt.is_symmetric, inv.slug as inverse_type_slug,
-            COALESCE(rc.cnt, 0)::int as relationship_count
+        `SELECT rt.slug, rt.name, rt.is_symmetric, inv.slug as inverse_type_slug
          FROM entity_relationship_types rt
          LEFT JOIN entity_relationship_types inv ON rt.inverse_type_id = inv.id
-         LEFT JOIN (
-           SELECT relationship_type_id, COUNT(*) as cnt
-           FROM entity_relationships WHERE deleted_at IS NULL
-           GROUP BY relationship_type_id
-         ) rc ON rc.relationship_type_id = rt.id
          WHERE rt.status = 'active'
            AND rt.deleted_at IS NULL
            AND rt.organization_id = $1
@@ -47,15 +38,9 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       ),
     ]);
 
-    const counts = new Map<string, number>();
-    for (const row of entityCounts) {
-      counts.set(row.entity_type as string, Number(row.entity_count));
-    }
-
     const entityTypeLines = entityTypeRows.map((et: any) => {
-      const count = counts.get(et.slug) || 0;
       const fields = et.metadata_schema ? Object.keys(et.metadata_schema).join(', ') : '';
-      return `- ${et.slug} ("${et.name}")${fields ? ` — fields: ${fields}` : ''} — ${count} entities`;
+      return `- ${et.slug} ("${et.name}")${fields ? ` — fields: ${fields}` : ''}`;
     });
 
     const emittedRelSlugs = new Set<string>();
@@ -69,7 +54,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       if (rt.is_symmetric) parts.push('symmetric');
       if (inverseSlug) parts.push(`inverse: ${inverseSlug}`);
       const meta = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-      relTypeLines.push(`- ${slug}${meta} — ${rt.relationship_count} links`);
+      relTypeLines.push(`- ${slug}${meta}`);
     }
 
     // Assemble

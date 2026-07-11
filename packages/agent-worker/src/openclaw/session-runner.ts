@@ -331,6 +331,51 @@ export function replaceBasePromptIdentity(
   return `${identity}\n\nThe section below describes the runtime tooling available to you. It does not change your role.\n\n${basePrompt}`;
 }
 
+/**
+ * Fallback identity used when an agent ships no IDENTITY.md (i.e.
+ * `context.agentInstructions` is empty). Without this, the pi-coding-agent
+ * opener wins and the agent introduces itself as "an expert coding assistant
+ * operating inside pi, a coding agent harness" — leaking harness internals and
+ * mis-describing what a Lobu agent actually is.
+ *
+ * A custom IDENTITY.md still fully overrides this; it only applies when the
+ * agent has declared no identity of its own.
+ *
+ * The capabilities section is grounded in what every Lobu agent has by
+ * construction (shared memory, connectors, actions, channel presence) rather
+ * than a raw tool dump — so self-descriptions are accurate and useful, not
+ * generic.
+ *
+ * IMPORTANT: keep this describing capabilities in GENERAL terms only. Which
+ * connectors are actually wired up, the current channel, and the conversation
+ * that triggered this run are per-run facts injected live via
+ * platformInstructions / mcpServerInstructions / mcpContext (see
+ * session-context.ts) and any run-context block — never hardcode specifics
+ * here, or the prompt will lie on every other run.
+ */
+export const LOBU_DEFAULT_IDENTITY = `You are a Lobu agent — a persistent, memory-backed teammate that lives in your organization's channels. You are not a generic coding assistant, and you do not describe yourself in terms of the runtime or harness you run on.
+
+## What you can do
+- **Remember across conversations.** You have durable shared memory of the people, facts, decisions, and history of the organization you serve — not just the current thread. Recall it before asking for something you should already know, and save what's worth keeping.
+- **Reach connected tools and data.** Your organization wires up connectors, connections, and live feeds — its apps, data sources, and MCP servers. You can query them to answer questions and pull in what you need. The specific connectors available to you are listed in your runtime context, not memorized here.
+- **Take action, not just answer.** You can act on the team's behalf through the tools you're given — sending messages, updating records, running the operations your connectors and skills expose — within the limits set for you.
+- **Work where the team works.** You operate inside the team's channels, DMs, and tasks. Details of the current conversation — platform, channel, what triggered this run — come from your runtime context.
+- **Stay within permissions and guardrails.** Your tools, network access, and permissions are set by operator configuration. Work within them rather than around them; if something is out of scope, say so instead of trying to route around it.
+
+Introduce yourself in terms of who you help and what you can do for them — concretely and specifically to this organization — not in terms of the software you are running on.`;
+
+/**
+ * Resolve the identity to inject: the agent's own IDENTITY.md when present,
+ * otherwise the Lobu default persona. Returns a non-empty string, so the pi
+ * opener is always replaced and never reaches the model verbatim.
+ */
+export function resolveAgentIdentity(
+  agentInstructions: string | undefined
+): string {
+  const trimmed = agentInstructions?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : LOBU_DEFAULT_IDENTITY;
+}
+
 // ---------------------------------------------------------------------------
 // LOBU memory plugin helper — inject agentId into config
 // ---------------------------------------------------------------------------
@@ -1208,17 +1253,16 @@ user references earlier discussion or you need prior context.`);
     // tools/guidelines/cwd footer below it still applies, but the role on
     // top is the one we actually want.
     const basePrompt = session.systemPrompt;
-    const identity = context.agentInstructions?.trim();
-    const finalSystemPrompt = identity
-      ? [
-          replaceBasePromptIdentity(basePrompt, identity),
-          finalInstructionsUpdated,
-        ]
-          .filter(Boolean)
-          .join("\n\n---\n\n")
-      : [basePrompt, finalInstructionsUpdated]
-          .filter(Boolean)
-          .join("\n\n---\n\n");
+    // Resolve the identity from the agent's IDENTITY.md, falling back to the
+    // Lobu default persona when the agent declares none. Either way we replace
+    // the pi opener so it never reaches the model verbatim.
+    const identity = resolveAgentIdentity(context.agentInstructions);
+    const finalSystemPrompt = [
+      replaceBasePromptIdentity(basePrompt, identity),
+      finalInstructionsUpdated,
+    ]
+      .filter(Boolean)
+      .join("\n\n---\n\n");
     session.agent.state.systemPrompt = finalSystemPrompt;
 
     let resolveTurnDone: (() => void) | null = null;

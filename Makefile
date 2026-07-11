@@ -23,7 +23,7 @@ help:
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 	@echo "  make e2e-browser [RESTART=1]               - Launch/reuse the stable 'owletto' Chrome harness (extension from this worktree) for Chrome e2e"
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
-	@echo "  make review [BASE=<branch>]                - Run local review (typecheck+unit+integration + Claude); posts pi-review status and PR comment"
+	@echo "  make review [BASE=<branch>]                - Run local review (typecheck+unit+integration + cross-harness reviewer); posts pi-review status and PR comment"
 	@echo "  make owletto-mac [INSTALL=1] [OPEN=1]      - Build Owletto.app with the Developer ID identity (TCC grants match the notarized release); INSTALL=1 replaces /Applications/Owletto.app, OPEN=1 launches it"
 	@echo "  make owletto-mac-e2e [SKIP_BUILD=1]        - Build/install the signed Owletto.app then probe prod computer_use (permissions + list_windows) via the paired device connection"
 
@@ -277,9 +277,11 @@ clean-test-pg:
 	@echo "✅ Test-PG clusters + dirs reaped"
 
 # --- Local AI review gate ---------------------------------------------------
-# Local-only: runs the deterministic suites in cwd, then invokes Claude CLI against
-# `git diff <BASE>...HEAD` (BASE defaults to main; override with BASE=<branch>
-# env or `--base <branch>` arg). Prints a JSON verdict on the last line. If
+# Local-only: runs the deterministic suites in cwd, then invokes the reviewer
+# from the model family opposite the current harness against
+# `git diff <BASE>...HEAD` (BASE defaults to origin/main when available;
+# override with BASE=<branch> env or `--base <branch>` arg). Prints a JSON
+# verdict on the last line. If
 # GitHub auth is available, posts a pi-review commit status; if the current
 # branch has an open PR, also posts/updates a PR comment. See docs/REVIEW_SCHEMA.md.
 

@@ -6,6 +6,7 @@ REVIEW_ACTIVE_CHILD_PID=""
 REVIEW_ACTIVE_CONTROL_DIR=""
 REVIEW_PREVIOUS_BACKGROUND_PID=""
 REVIEW_INLINE_RAW_FILE=""
+REVIEW_INLINE_DIAGNOSTIC_FILE=""
 
 review_process_control_root() {
   if [ -n "${REVIEW_PROCESS_CONTROL_ROOT_FOR_TESTS:-}" ]; then
@@ -137,5 +138,11 @@ review_process_abort_inline() {
   else
     rm -f "${REVIEW_INLINE_RAW_FILE:-}"
   fi
+  if [ -n "$REVIEW_INLINE_DIAGNOSTIC_FILE" ] && [ -s "$REVIEW_INLINE_DIAGNOSTIC_FILE" ]; then
+    echo ">> interrupted inline reviewer diagnostics preserved at $REVIEW_INLINE_DIAGNOSTIC_FILE" >&2
+  else
+    rm -f "${REVIEW_INLINE_DIAGNOSTIC_FILE:-}"
+  fi
   REVIEW_INLINE_RAW_FILE=""
+  REVIEW_INLINE_DIAGNOSTIC_FILE=""
 }

@@ -485,34 +485,43 @@ export async function handleSyncChannelBindings(
 		aboutLinked: number;
 		aboutRemoved: number;
 	};
-	try {
-		const teamHintByChannel = new Map(
-			normalized.map((c) => [c.channelId, c.teamHint]),
+	// Resolve each new channel's CONCRETE workspace BEFORE opening the txn — the
+	// connector resolver may make a Slack HTTP round-trip (conversations.info), and
+	// an external call must never hold a pooled txn connection open. A declarative
+	// `T…/channel` spec supplies a trusted workspace hint; otherwise the resolver
+	// decides (returns null = unknown yet, healing from inbound — never the
+	// enterprise id). Null → undefined, identical to before the hoist.
+	const teamHintByChannel = new Map(
+		normalized.map((c) => [c.channelId, c.teamHint]),
+	);
+	const resolvedTeamByChannel = new Map<string, string | undefined>();
+	for (const channelId of desired) {
+		if (existingIds.has(channelId)) continue;
+		resolvedTeamByChannel.set(
+			channelId,
+			(await resolveBindingTeam({
+				connection: {
+					connectorKey: connection.connector_key,
+					externalTenantId: connection.external_tenant_id,
+					connectionId: connection.id,
+					organizationId,
+				},
+				channelId,
+				workspaceHint: teamHintByChannel.get(channelId) ?? null,
+			})) ?? undefined,
 		);
+	}
+
+	try {
 		reconcileResult = await sql.begin(async (tx) => {
 			const bound: string[] = [];
 			for (const channelId of desired) {
 				if (!existingIds.has(channelId)) {
-					// Resolve the CONCRETE workspace via the connector-owned resolver.
-					// A declarative `T…/channel` spec supplies a trusted workspace hint;
-					// otherwise the resolver decides (and returns null = unknown yet,
-					// healing from inbound — never the enterprise id).
-					const teamId =
-						(await resolveBindingTeam({
-							connection: {
-								connectorKey: connection.connector_key,
-								externalTenantId: connection.external_tenant_id,
-								connectionId: connection.id,
-								organizationId,
-							},
-							channelId,
-							workspaceHint: teamHintByChannel.get(channelId) ?? null,
-						})) ?? undefined;
 					await svc.createBinding(
 						args.agent_id,
 						connection.connector_key,
 						channelId,
-						teamId,
+						resolvedTeamByChannel.get(channelId),
 						{
 							configuredBy: userId ?? undefined,
 							organizationId,

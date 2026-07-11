@@ -82,11 +82,9 @@ export async function resolveSlackBindingTeam(
   const { connection, channelId, workspaceHint } = params;
   const stored = connection.externalTenantId;
 
-  // 1. A trusted, real-workspace hint wins with no round-trip. Reject a hint
-  //    that is the connection's own enterprise id (a mis-supplied E…).
-  if (isSlackWorkspaceId(workspaceHint) && workspaceHint !== stored) {
-    return workspaceHint.trim();
-  }
+  // 1. A trusted, real-workspace (T…) hint wins with no round-trip. The
+  //    workspace-shape check already excludes an enterprise `E…` hint, so a
+  //    valid hint is always safe to use verbatim.
   if (isSlackWorkspaceId(workspaceHint)) return workspaceHint.trim();
 
   // 2/3. If the stored tenant is already a workspace id (normal install), use

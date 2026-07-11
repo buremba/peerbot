@@ -23,6 +23,26 @@ export function isValidAgentId(agentId: string): boolean {
 	return AGENT_ID_PATTERN.test(agentId);
 }
 
+async function withChatConnectionDeadlockRetry<T>(
+	context: { organizationId: string; slug: string },
+	transaction: () => Promise<T>,
+): Promise<T> {
+	try {
+		return await transaction();
+	} catch (error) {
+		const code =
+			error && typeof error === "object"
+				? (error as { code?: unknown }).code
+				: undefined;
+		if (code !== "40P01") throw error;
+		logger.warn(
+			context,
+			"chat connection write deadlocked — retrying transaction",
+		);
+		return transaction();
+	}
+}
+
 export async function agentExistsInOrganization(
 	organizationId: string,
 	agentId: string,
@@ -362,46 +382,59 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			// together. The advisory lock is TRANSACTION-scoped — calling the writer
 			// on the pool handle would release it after the first statement and
 			// defeat the cross-replica serialization.
-			await sql.begin(async (tx: typeof sql) => {
-				const configToPersist = { ...connection.config };
-				const existingRows = await tx`
+			//
+			// A concurrent same-org tenant swap can deadlock after each transaction
+			// demotes the other's target. Retrying once is safe here: every effect is
+			// enclosed by this transaction, so PostgreSQL rolls the aborted attempt
+			// back completely before the callback is re-run.
+			await withChatConnectionDeadlockRetry(
+				{ organizationId: orgId, slug },
+				() =>
+					sql.begin(async (tx: typeof sql) => {
+						const configToPersist = { ...connection.config };
+						const existingRows = await tx`
           SELECT config
           FROM connections
           WHERE slug = ${slug} AND organization_id = ${orgId}
           LIMIT 1
         `;
-				const existingConfig =
-					existingRows[0] &&
-					typeof existingRows[0].config === "object" &&
-					existingRows[0].config
-						? (existingRows[0].config as Record<string, any>)
-						: null;
+						const existingConfig =
+							existingRows[0] &&
+							typeof existingRows[0].config === "object" &&
+							existingRows[0].config
+								? (existingRows[0].config as Record<string, any>)
+								: null;
 
-				// ChatInstanceManager normalizes secret fields into `secret://` refs
-				// before reaching here. The remaining special case is the API surface
-				// that hands back `***last4`-redacted values when a sanitized
-				// connection is round-tripped to an UPDATE — preserve the existing
-				// ref/value so a non-edited secret doesn't overwrite the real one.
-				if (existingConfig) {
-					for (const [key, value] of Object.entries(configToPersist)) {
-						if (!isSecretField(key) || !isRedactedSecretValue(value)) continue;
+						// ChatInstanceManager normalizes secret fields into `secret://` refs
+						// before reaching here. The remaining special case is the API surface
+						// that hands back `***last4`-redacted values when a sanitized
+						// connection is round-tripped to an UPDATE — preserve the existing
+						// ref/value so a non-edited secret doesn't overwrite the real one.
+						if (existingConfig) {
+							for (const [key, value] of Object.entries(configToPersist)) {
+								if (!isSecretField(key) || !isRedactedSecretValue(value))
+									continue;
 
-						const existingValue = existingConfig[key];
-						if (typeof existingValue === "string" && existingValue.length > 0) {
-							configToPersist[key] = existingValue;
+								const existingValue = existingConfig[key];
+								if (
+									typeof existingValue === "string" &&
+									existingValue.length > 0
+								) {
+									configToPersist[key] = existingValue;
+								}
+							}
 						}
-					}
-				}
 
-				// `connections` is the sole source of truth — persist the chat projection.
-				await upsertChatConnectionProjection(
-					tx,
-					(v) => sql.json(v),
-					{ ...connection, config: configToPersist },
-					orgId,
-					"byo",
-				);
-			});
+						// `connections` is the sole source of truth — persist the chat projection.
+						await upsertChatConnectionProjection(
+							tx,
+							(v) => sql.json(v),
+							{ ...connection, config: configToPersist },
+							orgId,
+							"byo",
+						);
+					}),
+			);
 		},
 		async updateConnection(connectionId, updates) {
 			const existing = await this.getConnection(connectionId);

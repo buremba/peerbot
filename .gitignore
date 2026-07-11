@@ -30,18 +30,6 @@ packages/**/*.d.ts.map
 !packages/cli/bin/*.js
 # Hand-authored type shims for optional native modules (not build output)
 !packages/**/src/types/*.d.ts
-# Redirect packages publish a hand-written index.js + index.d.ts shim
-# (no build step — they re-export from the renamed package).
-!packages/lobu-sdk/index.js
-!packages/lobu-sdk/index.d.ts
-!packages/lobu-connectors/index.js
-!packages/lobu-connectors/index.d.ts
-!packages/lobu-worker/index.js
-!packages/lobu-worker/index.d.ts
-!packages/lobu-embeddings/index.js
-!packages/lobu-embeddings/index.d.ts
-!packages/lobu-openclaw/index.js
-!packages/lobu-openclaw/index.d.ts
 tsconfig.tsbuildinfo
 **/tsconfig.tsbuildinfo
 

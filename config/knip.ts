@@ -66,17 +66,10 @@ const config: KnipConfig = {
       ignoreDependencies: ["@hey-api/client-fetch"],
     },
     "packages/embeddings": {
-      // main points at dist/; the source entries are index, the standalone
-      // embeddings server, and (reached transitively) openai/embedding-utils,
-      // listed because src/ holds stale compiled .js siblings that confuse the
-      // resolver.
-      entry: [
-        "src/index.ts",
-        "src/server.ts",
-        "src/openai.ts",
-        "src/embedding-utils.ts",
-        "src/**/*.test.ts",
-      ],
+      // main points at dist/; the source entries are index and the standalone
+      // embeddings server. openai/embedding-utils are reached transitively from
+      // those, so they don't need explicit entries.
+      entry: ["src/index.ts", "src/server.ts", "src/**/*.test.ts"],
     },
     "packages/server": {
       entry: [

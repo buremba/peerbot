@@ -8,7 +8,13 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AgentConfigStore, ParsedMessage } from "@lobu/core";
-import { createLogger, entryToMessage, parseSessionEntries } from "@lobu/core";
+import {
+	AGENT_ERRORS,
+	createLogger,
+	entryToMessage,
+	parseSessionEntries,
+	toAgentErrorCode,
+} from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
@@ -63,6 +69,95 @@ export async function readLatestSnapshotJsonl(
 }
 
 const logger = createLogger("agent-history-routes");
+
+type ToolApprovalHistoryInteraction = {
+	type: "tool-approval";
+	runId: number;
+	action: string | null;
+	proposal: Record<string, unknown> | null;
+	current: Record<string, unknown> | null;
+	fields: Record<string, unknown> | null;
+	attribution: string | null;
+};
+
+type AgentErrorHistoryInteraction = {
+	type: "agent-error";
+	runId: number;
+	error: string;
+	errorCode: string | null;
+	errorContext: { provider?: string; model?: string } | null;
+};
+
+type HistoryInteraction =
+	| ToolApprovalHistoryInteraction
+	| AgentErrorHistoryInteraction;
+
+async function readLatestAgentErrorInteraction(
+	organizationId: string,
+	conversationId: string,
+): Promise<AgentErrorHistoryInteraction | null> {
+	const rows = await getDb()<{
+		id: number;
+		payload: Record<string, unknown> | null;
+	}>`
+		WITH response_rows AS (
+			SELECT id,
+			       CASE
+			         WHEN jsonb_typeof(action_input) = 'string'
+			           THEN (action_input #>> '{}')::jsonb
+			         ELSE action_input
+			       END AS payload
+			FROM public.runs
+			WHERE organization_id = ${organizationId}
+			  AND run_type = 'chat_message'
+			  AND queue_name = 'thread_response'
+			  AND status IN ('pending', 'completed', 'failed')
+			  AND action_input IS NOT NULL
+		)
+		SELECT id, payload
+		FROM response_rows
+		WHERE payload->>'conversationId' = ${conversationId}
+		  AND (payload ? 'error' OR payload ? 'processedMessageIds')
+		ORDER BY id DESC
+		LIMIT 1
+	`;
+	const row = rows[0];
+	if (!row?.payload || typeof row.payload !== "object") return null;
+
+	// A newer successful terminal row supersedes any older error for the thread.
+	if (typeof row.payload.error !== "string") return null;
+	const code = toAgentErrorCode(row.payload.errorCode);
+	const spec = code ? AGENT_ERRORS[code] : undefined;
+	if (spec?.silent) return null;
+	const error = spec?.message ?? row.payload.error;
+	if (!error) return null;
+
+	const rawContext =
+		row.payload.errorContext &&
+		typeof row.payload.errorContext === "object" &&
+		!Array.isArray(row.payload.errorContext)
+			? (row.payload.errorContext as Record<string, unknown>)
+			: null;
+	const provider =
+		typeof rawContext?.provider === "string" ? rawContext.provider : undefined;
+	const model =
+		typeof rawContext?.model === "string" ? rawContext.model : undefined;
+	const errorContext =
+		provider || model
+			? {
+					...(provider ? { provider } : {}),
+					...(model ? { model } : {}),
+				}
+			: null;
+
+	return {
+		type: "agent-error",
+		runId: Number(row.id),
+		error,
+		errorCode: code ?? null,
+		errorContext,
+	};
+}
 
 // Tokenless artifact references persisted in the transcript by the message-send
 // path (`[name](/api/v1/files/:id)`). They carry no expiring credential, so the
@@ -403,15 +498,7 @@ export function createAgentHistoryRoutes(deps: {
 		// pending approval events. Self-cleaning: a resolved approval is
 		// superseded out of current_event_records. Without this the interactive
 		// approval card is lost on reload — only the model's text + link survive.
-		let interactions: Array<{
-			type: "tool-approval";
-			runId: number;
-			action: string | null;
-			proposal: Record<string, unknown> | null;
-			current: Record<string, unknown> | null;
-			fields: Record<string, unknown> | null;
-			attribution: string | null;
-		}> = [];
+		let interactions: HistoryInteraction[] = [];
 		if (scope.organizationId) {
 			const conversationId = buildApiConversationId({
 				agentId: scope.agentId,
@@ -452,6 +539,11 @@ export function createAgentHistoryRoutes(deps: {
 				fields: r.fields ?? null,
 				attribution: r.attribution ?? null,
 			}));
+			const errorInteraction = await readLatestAgentErrorInteraction(
+				scope.organizationId,
+				conversationId,
+			);
+			if (errorInteraction) interactions.push(errorInteraction);
 		}
 		return c.json({ ...data, interactions });
 	});

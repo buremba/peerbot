@@ -410,6 +410,13 @@ export interface InstructionProvider {
  * Shared payload contract for worker → platform thread responses.
  * Ensures gateway consumers and workers stay type-aligned.
  */
+export interface AgentErrorContext {
+  /** Lobu provider slug safe to expose to the settings UI. */
+  provider?: string;
+  /** Provider model id safe to expose to the settings UI. */
+  model?: string;
+}
+
 export interface ThreadResponsePayload {
   messageId: string;
   channelId: string;
@@ -436,6 +443,8 @@ export interface ThreadResponsePayload {
    */
   error?: string;
   errorCode?: string;
+  /** Non-secret provider/model targeting for the error CTA. */
+  errorContext?: AgentErrorContext;
   timestamp: number;
   originalMessageId?: string;
   botResponseId?: string;

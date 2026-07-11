@@ -3,6 +3,7 @@ import {
   buildAgentSettingsUrl,
   buildEntityUrl,
   buildProviderConnectUrl,
+  buildProviderManagementUrl,
   buildResourcePermalink,
   getPublicWebUrl,
 } from '../url-builder';
@@ -86,7 +87,12 @@ describe('getPublicWebUrl', () => {
 function stubOrgSlug(): void {
   beforeEach(() => {
     vi.spyOn(workspaceModule, 'getWorkspaceProvider').mockReturnValue({
-      getOrgSlug: async (orgId: string) => (orgId === 'org-1' ? 'acme' : null),
+      getOrgSlug: async (orgId: string) =>
+        orgId === 'org-1'
+          ? 'acme'
+          : orgId === 'org-special'
+            ? 'acme/team'
+            : null,
     } as unknown as ReturnType<typeof workspaceModule.getWorkspaceProvider>);
   });
   afterEach(() => {
@@ -118,6 +124,15 @@ describe('buildAgentSettingsUrl', () => {
     );
     // agentId is percent-encoded; origin has no /lobu.
     expect(url).toBe('https://app.lobu.com/acme/agents/my%20agent%2Fid/settings');
+  });
+
+  it('percent-encodes the workspace slug', async () => {
+    const url = await buildAgentSettingsUrl(
+      'https://app.lobu.com',
+      'org-special',
+      'agent-1'
+    );
+    expect(url).toBe('https://app.lobu.com/acme%2Fteam/agents/agent-1/settings');
   });
 
   it('returns null when the org slug cannot be resolved', async () => {
@@ -156,10 +171,45 @@ describe('buildProviderConnectUrl', () => {
     );
   });
 
+  it('preserves the preflight reason + agent target', async () => {
+    const url = await buildProviderConnectUrl('https://app.lobu.com', 'org-1', {
+      provider: 'z-ai',
+      model: 'z-ai/glm-5.2',
+      reason: 'model_provider_not_connected',
+      agentId: 'agent/1',
+    });
+    expect(url).toBe(
+      'https://app.lobu.com/acme/inference-providers/new?provider=z-ai&model=z-ai%2Fglm-5.2&reason=model_provider_not_connected&agentId=agent%2F1'
+    );
+  });
+
   it('returns null when org slug or gateway url is missing', async () => {
     expect(await buildProviderConnectUrl(undefined, 'org-1')).toBeNull();
     expect(await buildProviderConnectUrl('https://x', undefined)).toBeNull();
     expect(await buildProviderConnectUrl('https://x', 'unknown-org')).toBeNull();
+  });
+});
+
+describe('buildProviderManagementUrl', () => {
+  stubOrgSlug();
+
+  it('targets the exact existing provider and model', async () => {
+    const url = await buildProviderManagementUrl(
+      'https://app.lobu.com/lobu',
+      'org-1',
+      { provider: 'z-ai', model: 'glm-5.2' }
+    );
+    expect(url).toBe(
+      'https://app.lobu.com/acme/infrastructure/models?provider=z-ai&model=glm-5.2'
+    );
+  });
+
+  it('returns null when org slug or gateway url is missing', async () => {
+    expect(await buildProviderManagementUrl(undefined, 'org-1')).toBeNull();
+    expect(await buildProviderManagementUrl('https://x', undefined)).toBeNull();
+    expect(
+      await buildProviderManagementUrl('https://x', 'unknown-org')
+    ).toBeNull();
   });
 });
 

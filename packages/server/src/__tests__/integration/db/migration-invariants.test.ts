@@ -155,6 +155,25 @@ describe('migration invariants', () => {
       expect(hashIdx.map((r) => r.indexname)).toEqual(['oauth_tokens_token_hash_key']);
     });
 
+    it('agent history has an ordered partial index over retained thread responses', async () => {
+      const sql = getTestDb();
+      const rows = await sql<{ indexdef: string }[]>`
+        SELECT indexdef FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename = 'runs'
+          AND indexname = 'idx_runs_thread_response_history'
+      `;
+      expect(rows).toHaveLength(1);
+      const def = rows[0]?.indexdef ?? '';
+      expect(def).toContain('(organization_id, id DESC)');
+      expect(def).toContain("run_type = 'chat_message'::text");
+      expect(def).toContain("queue_name = 'thread_response'::text");
+      expect(def).toContain("'pending'::text");
+      expect(def).toContain("'completed'::text");
+      expect(def).toContain("'failed'::text");
+      expect(def).toContain('action_input IS NOT NULL');
+    });
+
     it('redundant/dead indexes are dropped while their covering indexes remain (2026-06-16 audit round 2)', async () => {
       const sql = getTestDb();
       // Dropped: idx_events_source_embedding (redundant btree(event_id) before

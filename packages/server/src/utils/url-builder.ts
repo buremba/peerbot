@@ -66,15 +66,15 @@ export async function buildAgentSettingsUrl(
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
   const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
-  return `${webOrigin}/${slug}/agents/${encodeURIComponent(agentId)}/settings`;
+  return `${webOrigin}/${encodeURIComponent(slug)}/agents/${encodeURIComponent(agentId)}/settings`;
 }
 
 /**
  * Build the org's "connect a provider" URL — `<webOrigin>/<orgSlug>/
- * inference-providers/new` — the CTA target for errors whose fix is *connecting
- * a provider* (missing/expired credentials, unroutable provider), as opposed to
- * *picking a model* on an agent (which is {@link buildAgentSettingsUrl}). This
- * is the same live route the pre-enqueue model-provider preflight links to.
+ * inference-providers/new` — the preflight CTA target when the selected model's
+ * provider is not connected yet, as opposed to *picking a model* on an agent
+ * (which is {@link buildAgentSettingsUrl}). This is the same live route the
+ * pre-enqueue model-provider preflight links to.
  *
  * Optional `provider`/`model` prefill the connect form so the user lands on the
  * exact provider to wire up. Returns null when any required piece is missing;
@@ -84,7 +84,12 @@ export async function buildAgentSettingsUrl(
 export async function buildProviderConnectUrl(
   publicGatewayUrl: string | undefined,
   organizationId: string | undefined,
-  prefill?: { provider?: string; model?: string }
+  prefill?: {
+    provider?: string;
+    model?: string;
+    reason?: string;
+    agentId?: string;
+  }
 ): Promise<string | null> {
   if (!publicGatewayUrl || !organizationId) return null;
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
@@ -96,6 +101,31 @@ export async function buildProviderConnectUrl(
   );
   if (prefill?.provider) url.searchParams.set('provider', prefill.provider);
   if (prefill?.model) url.searchParams.set('model', prefill.model);
+  if (prefill?.reason) url.searchParams.set('reason', prefill.reason);
+  if (prefill?.agentId) url.searchParams.set('agentId', prefill.agentId);
+  return url.toString();
+}
+
+/**
+ * Build the org's existing-provider management URL. Provider failures should
+ * land on the configured provider row, not the new-provider flow; provider and
+ * model are non-secret targeting context carried from the worker.
+ */
+export async function buildProviderManagementUrl(
+  publicGatewayUrl: string | undefined,
+  organizationId: string | undefined,
+  target?: { provider?: string; model?: string }
+): Promise<string | null> {
+  if (!publicGatewayUrl || !organizationId) return null;
+  const slug = await getOrganizationSlug(organizationId).catch(() => null);
+  if (!slug) return null;
+  const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
+  const url = new URL(
+    `/${encodeURIComponent(slug)}/infrastructure/models`,
+    `${webOrigin}/`
+  );
+  if (target?.provider) url.searchParams.set('provider', target.provider);
+  if (target?.model) url.searchParams.set('model', target.model);
   return url.toString();
 }
 
@@ -113,14 +143,16 @@ export interface RenderedAgentError {
 /**
  * Per-CTA-kind URL resolvers, injected so `renderAgentError` stays free of the
  * per-surface plumbing (org slug / agent id / public origin live in the caller).
- * The catalog's two actionable CTA kinds land on DIFFERENT pages:
+ * The catalog's actionable CTA kinds land on DIFFERENT pages:
  *   - `agent-settings`   → the agent's model/provider settings (pick a model).
  *   - `provider-connect` → the org's connect-a-provider page (wire credentials).
+ *   - `provider-management` → the existing provider's management surface.
  * A kind whose resolver is absent (or resolves null) renders with no button.
  */
 export interface AgentErrorCtaResolvers {
   'agent-settings'?: () => Promise<string | null>;
   'provider-connect'?: () => Promise<string | null>;
+  'provider-management'?: () => Promise<string | null>;
 }
 
 /**
@@ -146,7 +178,9 @@ export async function renderAgentError(
   const text = spec.message ?? providerMessage ?? '';
   let ctaUrl: string | null = null;
   const resolve =
-    spec.cta === 'agent-settings' || spec.cta === 'provider-connect'
+    spec.cta === 'agent-settings' ||
+    spec.cta === 'provider-connect' ||
+    spec.cta === 'provider-management'
       ? resolvers[spec.cta]
       : undefined;
   if (resolve) {

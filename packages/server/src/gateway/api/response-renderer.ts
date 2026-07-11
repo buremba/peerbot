@@ -134,6 +134,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
       type: "error",
       error: errorText,
       errorCode: code,
+      errorContext: payload.errorContext,
       messageId: payload.messageId,
       timestamp: payload.timestamp || Date.now(),
     };

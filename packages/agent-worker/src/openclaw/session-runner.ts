@@ -415,7 +415,11 @@ interface RunAISessionParams {
    * so the worker can tag Sentry captures with which provider/model a later
    * failure belongs to. Fires before any provider call can fail.
    */
-  onModelResolved: (provider: string, modelId: string) => void;
+  onModelResolved: (
+    provider: string,
+    modelId: string,
+    providerSlug: string
+  ) => void;
 
   // Methods delegated from OpenClawWorker (kept on the class; passed here as
   // plain function references so the class can share them with tests without
@@ -556,7 +560,11 @@ export async function runAISession(
 
   const modelRef = typeof rawOptions.model === "string" ? rawOptions.model : "";
 
-  const { provider: rawProvider, modelId } = resolveModelRef(modelRef, {
+  const {
+    provider: rawProvider,
+    providerSlug,
+    modelId,
+  } = resolveModelRef(modelRef, {
     defaultModel: pc.defaultModel,
     defaultProvider: pc.defaultProvider,
     defaultProviderSlug: pc.defaultProviderSlug,
@@ -565,7 +573,7 @@ export async function runAISession(
   });
   // Map gateway slug to model-registry provider name (e.g. "z-ai" → "zai")
   const provider = PROVIDER_REGISTRY_ALIASES[rawProvider] || rawProvider;
-  onModelResolved(provider, modelId);
+  onModelResolved(provider, modelId, providerSlug);
 
   // Dynamic provider base URL from agentOptions.providerBaseUrlMappings
   let providerBaseUrl: string | undefined;

@@ -34,10 +34,17 @@ async function insertRun(opts: {
 	conversationId: string;
 	runType?: string;
 	status?: string;
+	queueName?: string;
+	actionInput?: Record<string, unknown>;
 }): Promise<number> {
 	const sql = getDb();
 	const runType = opts.runType ?? "chat_message";
 	const status = opts.status ?? "completed";
+	const queueName = opts.queueName ?? runType;
+	const actionInput = opts.actionInput ?? {
+		agentId: opts.agentId,
+		conversationId: opts.conversationId,
+	};
 	const rows = (await sql`
     INSERT INTO public.runs (
       organization_id, run_type, status, action_input,
@@ -46,8 +53,8 @@ async function insertRun(opts: {
       ${opts.organizationId},
       ${runType},
       ${status},
-      ${sql.json({ agentId: opts.agentId, conversationId: opts.conversationId })},
-      ${runType},
+      ${sql.json(actionInput)},
+      ${queueName},
       NOW(),
       NOW()
     )
@@ -261,6 +268,89 @@ describe("agent history routes", () => {
 		expect(card?.fields).toMatchObject({ "metadata.tier": "enterprise" });
 		expect(card?.current).toMatchObject({ "metadata.tier": "free" });
 		expect(card?.attribution).toBe("agent");
+	});
+
+	test("replays only the latest terminal agent error and clears it after success", async () => {
+		setAuthProvider(() => ({
+			userId: USER_ID,
+			platform: "external",
+			exp: Date.now() + 60_000,
+		}));
+
+		const agentId = "agent-1";
+		const threadId = "thread-error";
+		const conversationId = buildApiConversationId({
+			agentId,
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			threadId,
+		});
+		const errorRunId = await insertRun({
+			organizationId: ORG_ID,
+			agentId,
+			conversationId,
+			queueName: "thread_response",
+			actionInput: {
+				messageId: "m-error",
+				channelId: conversationId,
+				conversationId,
+				userId: USER_ID,
+				teamId: "api",
+				timestamp: Date.now(),
+				error: "429 quota exhausted",
+				errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+				errorContext: { provider: "z-ai", model: "glm-5.2" },
+			},
+		});
+
+		const requestHistory = () =>
+			orgContext.run({ organizationId: ORG_ID }, () =>
+				createApp().request(
+					`/api/v1/agents/${agentId}/history/threads/${threadId}/messages`,
+					{ method: "GET", headers: { host: "localhost" } },
+				),
+			);
+
+		const errorResponse = await requestHistory();
+		expect(errorResponse.status).toBe(200);
+		const errorBody = (await errorResponse.json()) as {
+			interactions: Array<Record<string, unknown>>;
+		};
+		expect(errorBody.interactions).toContainEqual({
+			type: "agent-error",
+			runId: errorRunId,
+			error: "429 quota exhausted",
+			errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+			errorContext: { provider: "z-ai", model: "glm-5.2" },
+		});
+
+		// A later successful terminal outcome supersedes the stale error.
+		await insertRun({
+			organizationId: ORG_ID,
+			agentId,
+			conversationId,
+			queueName: "thread_response",
+			actionInput: {
+				messageId: "m-success",
+				channelId: conversationId,
+				conversationId,
+				userId: USER_ID,
+				teamId: "api",
+				timestamp: Date.now() + 1,
+				processedMessageIds: ["m-success"],
+				finalText: "Recovered",
+			},
+		});
+
+		const successResponse = await requestHistory();
+		const successBody = (await successResponse.json()) as {
+			interactions: Array<{ type: string }>;
+		};
+		expect(
+			successBody.interactions.some(
+				(interaction) => interaction.type === "agent-error",
+			),
+		).toBe(false);
 	});
 
 	test("rejects sessions that do not own the requested agent", async () => {

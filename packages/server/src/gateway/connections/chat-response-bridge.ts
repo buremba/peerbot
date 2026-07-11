@@ -20,6 +20,7 @@ import { getDb } from "../../db/client.js";
 import {
   buildAgentSettingsUrl,
   buildProviderConnectUrl,
+  buildProviderManagementUrl,
   type RenderedAgentError,
   renderAgentError,
 } from "../../utils/url-builder.js";
@@ -569,6 +570,9 @@ export class ChatResponseBridge implements ResponseRenderer {
           buildAgentSettingsUrl(gatewayUrl, orgId, agentId),
         // "connect a provider" → the org's connect-a-provider page.
         'provider-connect': () => buildProviderConnectUrl(gatewayUrl, orgId),
+        // Provider auth/quota/routing → manage the exact existing provider.
+        'provider-management': () =>
+          buildProviderManagementUrl(gatewayUrl, orgId, payload.errorContext),
       });
       if (rendered.silent) return;
       // For provider errors `rendered.text` IS the provider's own message (we

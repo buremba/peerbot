@@ -28,7 +28,7 @@ export function isLocalhostUrl(url: string): boolean {
   }
 }
 
-interface LinkButton {
+interface ExtractedLinkButton {
   text: string;
   url: string;
 }
@@ -73,9 +73,9 @@ export function buildCtaCardPayload(args: {
  */
 export function extractSettingsLinkButtons(content: string): {
   processedContent: string;
-  linkButtons: LinkButton[];
+  linkButtons: ExtractedLinkButton[];
 } {
-  const linkButtons: LinkButton[] = [];
+  const linkButtons: ExtractedLinkButton[] = [];
 
   const processedContent = content.replace(
     SETTINGS_LINK_RE,

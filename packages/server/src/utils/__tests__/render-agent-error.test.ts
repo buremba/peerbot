@@ -11,23 +11,27 @@ import { type AgentErrorCtaResolvers, renderAgentError } from "../url-builder";
 
 const SETTINGS_URL = "https://app.lobu.ai/acme/agents/agent-1/settings";
 const CONNECT_URL = "https://app.lobu.ai/acme/inference-providers/new";
+const MANAGE_URL =
+  "https://app.lobu.ai/acme/infrastructure/models?provider=z-ai&model=glm-5.2";
 
 // Distinct resolvers per CTA kind, so a test can assert that a code routes to
 // the RIGHT page (pick-a-model vs connect-a-provider), not just "some url".
 const resolvers: AgentErrorCtaResolvers = {
   "agent-settings": async () => SETTINGS_URL,
   "provider-connect": async () => CONNECT_URL,
+  "provider-management": async () => MANAGE_URL,
 };
 const resolveNothing: AgentErrorCtaResolvers = {
   "agent-settings": async () => null,
   "provider-connect": async () => null,
+  "provider-management": async () => null,
 };
 
 describe("renderAgentError", () => {
-  it("provider quota RELAYS the provider's own message verbatim + routes to the CONNECT page", async () => {
+  it("provider quota relays the provider message + routes to existing-provider management", async () => {
     // The provider's message already says when the quota resets — we relay it
     // unchanged (no reset-time parsing, no reword) and only add the CTA link. A
-    // quota/provider-level failure is fixed on the connect-a-provider page.
+    // quota/provider-level failure is fixed on existing-provider management.
     const raw =
       "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47";
     const r = await renderAgentError(
@@ -36,7 +40,7 @@ describe("renderAgentError", () => {
       resolvers
     );
     expect(r.text).toBe(raw);
-    expect(r.ctaUrl).toBe(CONNECT_URL);
+    expect(r.ctaUrl).toBe(MANAGE_URL);
     expect(r.ctaLabel).toBe("Manage provider");
     expect(r.silent).toBe(false);
   });
@@ -48,22 +52,19 @@ describe("renderAgentError", () => {
       resolvers
     );
     expect(r.text).toBe("");
-    expect(r.ctaUrl).toBe(CONNECT_URL);
+    expect(r.ctaUrl).toBe(MANAGE_URL);
   });
 
-  it("auth failure relays the provider message + routes to the CONNECT page (not settings)", async () => {
-    // PROVIDER_AUTH's cta kind is `provider-connect` — its fix is reconnecting
-    // credentials, so it must land on the connect-a-provider page, NOT the
-    // agent's model settings. This is the exact distinction the per-kind
-    // resolver exists for (both kinds used to collapse to one URL).
+  it("auth failure routes to existing-provider management (not add-new or settings)", async () => {
     const r = await renderAgentError(
       AgentErrorCode.PROVIDER_AUTH,
       'Authentication failed for "openai"',
       resolvers
     );
     expect(r.text).toBe('Authentication failed for "openai"');
-    expect(r.ctaUrl).toBe(CONNECT_URL);
+    expect(r.ctaUrl).toBe(MANAGE_URL);
     expect(r.ctaUrl).not.toBe(SETTINGS_URL);
+    expect(r.ctaUrl).not.toBe(CONNECT_URL);
     expect(r.ctaLabel).toBe("Reconnect provider");
   });
 
@@ -75,7 +76,7 @@ describe("renderAgentError", () => {
     );
     expect(r.text).toContain("No model");
     expect(r.ctaUrl).toBe(SETTINGS_URL);
-    expect(r.ctaLabel).toBe("Connect a provider");
+    expect(r.ctaLabel).toBe("Choose a model");
   });
 
   it("WORKER_UNRESPONSIVE uses OUR catalog text (no provider message) and NO CTA", async () => {
@@ -118,7 +119,7 @@ describe("renderAgentError", () => {
   });
 
   it("a CTA code whose resolver is ABSENT degrades to text-only (no throw)", async () => {
-    // provider-connect resolver omitted → PROVIDER_AUTH renders text-only.
+    // provider-management resolver omitted → PROVIDER_AUTH renders text-only.
     const r = await renderAgentError(AgentErrorCode.PROVIDER_AUTH, "auth fail", {
       "agent-settings": async () => SETTINGS_URL,
     });

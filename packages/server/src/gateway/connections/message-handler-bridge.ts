@@ -1050,6 +1050,8 @@ export class MessageHandlerBridge {
             ? await buildProviderConnectUrl(gatewayUrl, organizationId, {
                 provider: modelResolution.provider,
                 model: modelResolution.model,
+                reason: "model_provider_not_connected",
+                agentId,
               })
             : await buildAgentSettingsUrl(gatewayUrl, organizationId, agentId);
         const label =

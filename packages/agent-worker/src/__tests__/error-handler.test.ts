@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { WorkerTransport } from "@lobu/core";
+import type { AgentErrorContext, WorkerTransport } from "@lobu/core";
 import { classifyError, handleExecutionError } from "../core/error-handler";
 
 type Recorder = {
@@ -16,7 +16,11 @@ type Recorder = {
     isFullReplacement?: boolean;
     isFinal?: boolean;
   }>;
-  errors: Array<{ message: string; code?: string }>;
+  errors: Array<{
+    message: string;
+    code?: string;
+    context?: AgentErrorContext;
+  }>;
 };
 
 function makeTransport(): Recorder {
@@ -31,8 +35,8 @@ function makeTransport(): Recorder {
     },
     signalDone: asyncNoop,
     signalCompletion: asyncNoop,
-    async signalError(error, errorCode) {
-      errors.push({ message: error.message, code: errorCode });
+    async signalError(error, errorCode, context) {
+      errors.push({ message: error.message, code: errorCode, context });
     },
     sendStatusUpdate: asyncNoop,
     sendCustomEvent: asyncNoop,
@@ -83,7 +87,12 @@ describe("handleExecutionError", () => {
 
     await handleExecutionError(
       new Error('Model "gpt-nope" not found for provider "openai".'),
-      transport
+      transport,
+      {
+        provider: "openai-runtime",
+        providerSlug: "openai",
+        model: "gpt-nope",
+      }
     );
 
     // New contract: the gateway renderer owns the user-facing text (via
@@ -93,6 +102,10 @@ describe("handleExecutionError", () => {
     expect(deltas).toHaveLength(0);
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("PROVIDER_UNKNOWN_MODEL");
+    expect(errors[0].context).toEqual({
+      provider: "openai",
+      model: "gpt-nope",
+    });
   });
 
   test("provider routing failures signal a code, not a crash delta", async () => {

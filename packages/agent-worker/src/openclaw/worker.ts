@@ -89,6 +89,7 @@ export class OpenClawWorker implements WorkerExecutor {
    * and an opaque worker crash.
    */
   private resolvedProvider: string | undefined;
+  private resolvedProviderSlug: string | undefined;
   private resolvedModelId: string | undefined;
 
   constructor(config: WorkerConfig) {
@@ -136,6 +137,7 @@ export class OpenClawWorker implements WorkerExecutor {
     // Reset per-run resolved provider/model so a prior run's values can't leak
     // into the Sentry tags of a failure that happens before model resolution.
     this.resolvedProvider = undefined;
+    this.resolvedProviderSlug = undefined;
     this.resolvedModelId = undefined;
 
     // Fail loud when the per-run scope the gateway is supposed to
@@ -323,6 +325,7 @@ export class OpenClawWorker implements WorkerExecutor {
             this.workerTransport,
             {
               provider: this.resolvedProvider,
+              providerSlug: this.resolvedProviderSlug,
               model: this.resolvedModelId,
               agentId: this.config.agentId,
               runId: this.config.runId,
@@ -346,6 +349,7 @@ export class OpenClawWorker implements WorkerExecutor {
     } catch (error) {
       await handleExecutionError(error, this.workerTransport, {
         provider: this.resolvedProvider,
+        providerSlug: this.resolvedProviderSlug,
         model: this.resolvedModelId,
         agentId: this.config.agentId,
         runId: this.config.runId,
@@ -527,12 +531,13 @@ export class OpenClawWorker implements WorkerExecutor {
       onSessionFilePathResolved: (filePath) => {
         this.sessionFilePath = filePath;
       },
-      onModelResolved: (provider, modelId) => {
+      onModelResolved: (provider, modelId, providerSlug) => {
         // Stamp for Sentry tagging in execute()'s catch-all + failure
         // branches. Anything that fails after this point (unknown model,
         // unresolved base URL, provider auth) is attributable to a specific
         // provider/model.
         this.resolvedProvider = provider;
+        this.resolvedProviderSlug = providerSlug;
         this.resolvedModelId = modelId;
       },
       loadImageAttachments: () => this.loadImageAttachments(),

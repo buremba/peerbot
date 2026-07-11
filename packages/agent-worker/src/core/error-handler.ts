@@ -13,7 +13,10 @@ const logger = createLogger("worker");
  * carries the tags that make "openai doesn't work" triageable in Sentry.
  */
 interface ExecutionErrorContext {
+  /** Runtime provider/registry alias used for Sentry attribution. */
   provider?: string;
+  /** Lobu provider slug used to target the settings CTA. */
+  providerSlug?: string;
   model?: string;
   agentId?: string;
   runId?: number | string;
@@ -152,7 +155,15 @@ export async function handleExecutionError(
     if (!code) {
       await transport.sendStreamDelta(formatErrorMessage(error), true, true);
     }
-    await transport.signalError(errorInstance, code);
+    const provider = ctx?.providerSlug ?? ctx?.provider;
+    const errorContext =
+      provider || ctx?.model
+        ? {
+            ...(provider ? { provider } : {}),
+            ...(ctx?.model ? { model: ctx.model } : {}),
+          }
+        : undefined;
+    await transport.signalError(errorInstance, code, errorContext);
   } catch (gatewayError) {
     logger.error("Failed to send error via gateway:", gatewayError);
     throw error;

@@ -163,7 +163,6 @@ describe("manage_watchers source-id + cross-org guards", () => {
 			JWT_SECRET: "test-jwt-secret-for-testing-only",
 		} as Env);
 		expect(token.content_ids).toEqual([event.id]);
-		expect(token.content_ids).not.toContain(customer.id);
 
 		const orgScoped = (await owner.watchers.create({
 			slug: "source-ref-org-count",

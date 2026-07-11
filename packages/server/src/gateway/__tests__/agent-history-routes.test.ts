@@ -353,6 +353,73 @@ describe("agent history routes", () => {
 		).toBe(false);
 	});
 
+	test("returns transcript messages when supplemental error history is malformed", async () => {
+		setAuthProvider(() => ({
+			userId: USER_ID,
+			platform: "external",
+			exp: Date.now() + 60_000,
+		}));
+
+		const agentId = "agent-1";
+		const threadId = "thread-malformed-error";
+		const conversationId = buildApiConversationId({
+			agentId,
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			threadId,
+		});
+		const jsonl =
+			`{"type":"session","version":3,"id":"s-malformed","timestamp":"2026-07-11T00:00:00Z","cwd":"/w"}\n` +
+			`{"type":"message","id":"u-malformed","parentId":null,"timestamp":"2026-07-11T00:00:01Z","message":{"role":"user","content":[{"type":"text","text":"Keep this message"}]}}\n`;
+		const snapshotRunId = await insertRun({
+			organizationId: ORG_ID,
+			agentId,
+			conversationId,
+		});
+		const sql = getDb();
+		await sql`
+			INSERT INTO public.agent_transcript_snapshot
+				(organization_id, agent_id, conversation_id, run_id,
+				 snapshot_jsonl, byte_size, terminal_status)
+			VALUES
+				(${ORG_ID}, ${agentId}, ${conversationId}, ${snapshotRunId},
+				 ${jsonl}, ${Buffer.byteLength(jsonl, "utf-8")}, 'completed')
+		`;
+
+		// The history query supports legacy JSON-encoded strings. This scalar is
+		// valid jsonb but invalid when decoded and cast back to jsonb, so only the
+		// supplementary agent-error lookup fails.
+		await sql`
+			INSERT INTO public.runs (
+				organization_id, run_type, status, action_input,
+				queue_name, run_at, created_at
+			) VALUES (
+				${ORG_ID},
+				'chat_message',
+				'completed',
+				${sql.json("not-json")},
+				'thread_response',
+				NOW(),
+				NOW()
+			)
+		`;
+
+		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
+			createApp().request(
+				`/api/v1/agents/${agentId}/history/threads/${threadId}/messages`,
+				{ method: "GET", headers: { host: "localhost" } },
+			),
+		);
+
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as {
+			messages: Array<{ id: string }>;
+			interactions: Array<unknown>;
+		};
+		expect(body.messages.map((message) => message.id)).toEqual(["u-malformed"]);
+		expect(body.interactions).toEqual([]);
+	});
+
 	test("rejects sessions that do not own the requested agent", async () => {
 		setAuthProvider(() => ({
 			userId: "u2",

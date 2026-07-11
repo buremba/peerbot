@@ -6,7 +6,7 @@
  * #948 + the #943 7-hygiene catch-up):
  *
  *   1. Middleware ordering on the Hono wrapper:
- *      peer-address stash → env-inject → sentry-5xx-capture → onError
+ *      peer-address stash → env-inject → request logger → sentry-5xx-capture → onError
  *   2. Route mounts: `/lobu` mounted only when lobuApp is non-null; `/` always.
  *   3. httpServer timeouts: keepAliveTimeout=75000, headersTimeout=76000.
  *   4. Shutdown ordering documented in createServerLifecycle().
@@ -28,21 +28,20 @@ vi.mock("@sentry/node", () => ({
 }));
 
 vi.mock("../utils/logger", () => {
-	const noop = (): void => undefined;
 	// Recursive `child` is required because several modules (e.g.
 	// identity/connectors/google.ts) call `logger.child(...)` at module-load
 	// time. Match pino's interface so any caller's `.info / .warn / .error /
 	// .child` works without instrumentation.
 	const make = (): Record<string, unknown> => {
 		const self: Record<string, unknown> = {
-			info: noop,
-			warn: noop,
-			error: noop,
-			debug: noop,
-			trace: noop,
-			fatal: noop,
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
+			debug: vi.fn(),
+			trace: vi.fn(),
+			fatal: vi.fn(),
 		};
-		self.child = () => make();
+		self.child = vi.fn(() => self);
 		return self;
 	};
 	const logger = make();
@@ -132,6 +131,22 @@ describe("serializeBootError", () => {
 });
 
 describe("buildWrapperApp", () => {
+	it("logs requests handled by the /lobu mounted app", async () => {
+		const { buildWrapperApp } = await import("../server-lifecycle");
+		const { default: logger } = await import("../utils/logger");
+		const { Hono } = await import("hono");
+		const lobuApp = new Hono();
+		lobuApp.get("/ping", (c) => c.text("lobu-pong"));
+		const info = logger.info as ReturnType<typeof vi.fn>;
+		info.mockClear();
+
+		const wrapper = buildWrapperApp({} as never, lobuApp);
+		const response = await wrapper.request("/lobu/ping");
+
+		expect(response.status).toBe(200);
+		expect(info).toHaveBeenCalled();
+	});
+
 	it("mounts mainApp at / and lobuApp at /lobu when present", async () => {
 		const { buildWrapperApp } = await import("../server-lifecycle");
 		const { Hono } = await import("hono");

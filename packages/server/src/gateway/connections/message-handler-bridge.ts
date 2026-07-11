@@ -21,6 +21,7 @@ import {
 import { resolveSlackBotIdentity } from "../../authz/slack-acl-sync.js";
 import { getOrganizationSlug } from "../../utils/url-builder.js";
 import { stripPlatformPrefix } from "../channels/bound-channels.js";
+import { buildConversationUrl } from "./conversation-url.js";
 import { captureChannelMessage } from "./channel-transcript.js";
 import { createSlackWebApi } from "./slack-web.js";
 import type { ConversationStateStore } from "./conversation-state-store.js";
@@ -1068,6 +1069,14 @@ export class MessageHandlerBridge {
         agentOptions.model = modelResolution.model;
       }
 
+      // Link back to the source message so the agent's per-run context can show
+      // it. Undefined for platforms/inputs where no correct URL exists.
+      const conversationUrl = buildConversationUrl({
+        platform,
+        channelId,
+        messageId,
+      });
+
       const payload = buildMessagePayload({
         platform,
         userId,
@@ -1088,6 +1097,7 @@ export class MessageHandlerBridge {
           senderUsername,
           senderDisplayName,
           teamId,
+          conversationUrl,
           isGroup,
           connectionId: this.connection.id,
           responseChannel: channelId,

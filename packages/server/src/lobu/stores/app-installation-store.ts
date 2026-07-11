@@ -110,8 +110,26 @@ export interface AppInstallationUpsert extends AppInstallationTenantKey {
    * takes a `metadata`-grouped advisory lock so two concurrent cross-key claims
    * serialize, and the guard SELECT matches this key too. Ignored without
    * `blockCrossOrgTransfer`.
+   *
+   * The match must NOT over-fence: two INDEPENDENT per-workspace siblings sharing
+   * a grouping value (both non-org-wide Grid installs) may legitimately live in
+   * different orgs. So the grouping arm only matches when a scope-spanning install
+   * is involved:
+   *  - `claimIsScopeWide` true → the CLAIMING install spans the group, so ANY
+   *    foreign row carrying `metadata[key] === value` overlaps it.
+   *  - else → only a foreign row that ITSELF spans the group matches, i.e. one
+   *    whose `metadata[scopeFlagKey]` is boolean `true`.
+   * When neither holds (both sides per-workspace), the grouping arm is inert and
+   * only the exact tuple fences.
    */
-  crossOrgFenceMetadataMatch?: { key: string; value: string };
+  crossOrgFenceMetadataMatch?: {
+    key: string;
+    value: string;
+    /** True when the claiming install spans the whole group (e.g. Grid org-wide). */
+    claimIsScopeWide: boolean;
+    /** Metadata flag identifying a foreign row that spans the group. */
+    scopeFlagKey: string;
+  };
 }
 
 /**
@@ -327,6 +345,13 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
               ),
             ]);
           }
+          // The grouping arm matches a foreign row sharing the value ONLY when a
+          // scope-spanning install is involved: either WE span the group
+          // (`claimIsScopeWide` → any foreign sibling overlaps) or the FOREIGN row
+          // itself spans it (its `scopeFlagKey` is true). Two independent
+          // per-workspace siblings (neither scope-wide) never match, so a genuine
+          // second-workspace claim of the same Grid into another org is allowed.
+          const claimScopeWide = fenceMatch?.claimIsScopeWide === true;
           const foreign = await tx`
             SELECT organization_id FROM app_installations
             WHERE provider = ${install.provider}
@@ -343,6 +368,12 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
                   AND metadata ->> ${fenceMatch ? fenceMatch.key : ""} = ${
                     fenceMatch ? fenceMatch.value : null
                   }
+                  AND (
+                    ${claimScopeWide}
+                    OR (metadata -> ${
+                      fenceMatch ? fenceMatch.scopeFlagKey : ""
+                    }) = 'true'::jsonb
+                  )
                 )
               )
             LIMIT 1

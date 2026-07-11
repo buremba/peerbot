@@ -154,36 +154,44 @@ describe("slackClaimProvider.resolveExistingBinding", () => {
 });
 
 describe("slackClaimProvider.resolveActiveBindingElsewhere", () => {
-  test("keys the store lookup on the pending's team + enterprise + target org", async () => {
+  test("keys the store lookup on the pending's team + enterprise + org-wide flag + target org", async () => {
     const resolveActiveBindingElsewhere = mock(async () => ({
       orgSlug: "other",
       orgName: "Other Org",
+      matchKind: "enterprise_scope_overlap" as const,
     }));
     const { deps } = makeDeps({ resolveActiveBindingElsewhere });
     const foreign = await slackClaimProvider(deps).resolveActiveBindingElsewhere(
       TEAM,
-      pendingInstall({ enterpriseId: "E-GRID" }),
+      pendingInstall({ enterpriseId: "E-GRID", isEnterpriseInstall: true }),
       "org-target",
     );
-    expect(foreign).toEqual({ orgSlug: "other", orgName: "Other Org" });
+    expect(foreign).toEqual({
+      orgSlug: "other",
+      orgName: "Other Org",
+      matchKind: "enterprise_scope_overlap",
+    });
+    // Forwards enterprise id + the CLAIMING install's org-wide flag.
     expect(resolveActiveBindingElsewhere).toHaveBeenCalledWith(
       TEAM,
       "E-GRID",
+      true,
       "org-target",
     );
   });
 
-  test("passes a null enterpriseId through for a plain workspace", async () => {
+  test("passes a null enterpriseId + false org-wide flag for a plain workspace", async () => {
     const resolveActiveBindingElsewhere = mock(async () => null);
     const { deps } = makeDeps({ resolveActiveBindingElsewhere });
     await slackClaimProvider(deps).resolveActiveBindingElsewhere(
       TEAM,
-      pendingInstall({ enterpriseId: null }),
+      pendingInstall({ enterpriseId: null, isEnterpriseInstall: false }),
       "org-target",
     );
     expect(resolveActiveBindingElsewhere).toHaveBeenCalledWith(
       TEAM,
       null,
+      false,
       "org-target",
     );
   });
@@ -219,6 +227,7 @@ describe("slackClaimProvider.bind", () => {
     const resolveActiveBindingElsewhere = mock(async () => ({
       orgSlug: "incumbent",
       orgName: "Incumbent Org",
+      matchKind: "same_workspace" as const,
     }));
     const { deps } = makeDeps({
       resolveActiveBindingElsewhere,
@@ -226,7 +235,7 @@ describe("slackClaimProvider.bind", () => {
         throw new CrossOrgTransferBlockedError("org-incumbent");
       }),
     });
-    const pending = pendingInstall({ enterpriseId: "E-GRID" });
+    const pending = pendingInstall({ enterpriseId: "E-GRID", isEnterpriseInstall: true });
     let thrown: unknown;
     try {
       await slackClaimProvider(deps).bind(pending, "org-target", "user-1", false);
@@ -237,11 +246,13 @@ describe("slackClaimProvider.bind", () => {
     expect((thrown as ClaimMoveBlockedError).existing).toEqual({
       orgSlug: "incumbent",
       orgName: "Incumbent Org",
+      matchKind: "same_workspace",
     });
-    // Re-resolved against the pending's team + enterprise + target org.
+    // Re-resolved against the pending's team + enterprise + org-wide flag + target org.
     expect(resolveActiveBindingElsewhere).toHaveBeenCalledWith(
       TEAM,
       "E-GRID",
+      true,
       "org-target",
     );
   });

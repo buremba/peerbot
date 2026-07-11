@@ -848,7 +848,8 @@ describe("Grid install-model routing (per-workspace + org-wide enterprise)", () 
   // this atomically under the active-tenant advisory lock; the read-side helper
   // powers the engine's friendly `already_connected_elsewhere` pre-check.
   describe("cross-org fence", () => {
-    test("resolveSlackActiveBindingElsewhere finds a foreign active install (team_id), null for the owning org", async () => {
+    // CASE 1: same exact workspace team id in another org → same_workspace.
+    test("resolveSlackActiveBindingElsewhere matches same team_id in another org (same_workspace), null for the owning org", async () => {
       await seedAgentRow("fence-a", { organizationId: "org-fence-a" });
       const { store, secretStore, slack } = build();
       await slack.upsertSlackInstallByTeam(
@@ -858,50 +859,101 @@ describe("Grid install-model routing (per-workspace + org-wide enterprise)", () 
         "T_FENCE",
         { botToken: "xoxb-a" },
       );
-      // A DIFFERENT org sees org-fence-a's binding as foreign.
+      // A DIFFERENT org sees org-fence-a's binding as foreign (same_workspace).
       const foreign = await slack.resolveSlackActiveBindingElsewhere(
         "T_FENCE",
         null,
+        false,
         "org-fence-b",
       );
       expect(foreign?.organizationId).toBe("org-fence-a");
       expect(foreign?.orgSlug).toBe("org-fence-a");
+      expect(foreign?.matchKind).toBe("same_workspace");
       // The owning org itself sees no foreign binding.
       expect(
         await slack.resolveSlackActiveBindingElsewhere(
           "T_FENCE",
           null,
+          false,
           "org-fence-a",
         ),
       ).toBeNull();
     });
 
-    test("resolveSlackActiveBindingElsewhere matches a Grid sibling by enterprise_id", async () => {
-      await seedAgentRow("fence-ent", { organizationId: "org-fence-ent" });
+    // CASE 3 (the over-match fix): two INDEPENDENT per-workspace siblings sharing an
+    // enterprise, NEITHER org-wide → ALLOWED. The old broad enterprise arm blocked
+    // this; the typed arm must NOT.
+    test("two per-workspace Grid siblings (same enterprise, neither org-wide) do NOT conflict", async () => {
+      await seedAgentRow("sib-a", { organizationId: "org-sib-a" });
       const { store, secretStore, slack } = build();
-      // Install on ONE workspace of the enterprise.
+      // org A holds a PER-WORKSPACE install (isEnterpriseInstall omitted/false).
       await slack.upsertSlackInstallByTeam(
         store,
         secretStore,
-        "org-fence-ent",
-        "T_GRID_HOME",
-        { botToken: "xoxb-grid", enterpriseId: "E_GRID_FENCE" },
+        "org-sib-a",
+        "T_SIB_A",
+        { botToken: "xoxb-sib-a", enterpriseId: "E_SIB" },
       );
-      // A sibling-workspace team id misses on team_id but matches on enterprise.
+      // A DIFFERENT sibling workspace (T_SIB_B), also per-workspace, claimed into
+      // another org: NOT a conflict — independent workspaces of one Grid may live
+      // in different orgs.
       const foreign = await slack.resolveSlackActiveBindingElsewhere(
-        "T_GRID_SIBLING",
-        "E_GRID_FENCE",
-        "org-other",
+        "T_SIB_B",
+        "E_SIB",
+        false,
+        "org-sib-b",
       );
-      expect(foreign?.organizationId).toBe("org-fence-ent");
-      // A genuinely different plain workspace (no enterprise) never collides.
-      expect(
-        await slack.resolveSlackActiveBindingElsewhere(
-          "T_GRID_SIBLING",
-          null,
-          "org-other",
-        ),
-      ).toBeNull();
+      expect(foreign).toBeNull();
+    });
+
+    // CASE 4a: the CLAIMING install is ORG-WIDE → any foreign sibling overlaps →
+    // enterprise_scope_overlap.
+    test("an org-wide Grid claim overlaps a per-workspace sibling in another org (enterprise_scope_overlap)", async () => {
+      await seedAgentRow("ow-a", { organizationId: "org-ow-a" });
+      const { store, secretStore, slack } = build();
+      // org A holds a per-workspace sibling of E_OW.
+      await slack.upsertSlackInstallByTeam(
+        store,
+        secretStore,
+        "org-ow-a",
+        "T_OW_SIB",
+        { botToken: "xoxb-ow", enterpriseId: "E_OW" },
+      );
+      // We claim the ORG-WIDE install (external tenant = enterprise, org-wide flag)
+      // into another org → overlaps org A's per-workspace sibling.
+      const foreign = await slack.resolveSlackActiveBindingElsewhere(
+        "E_OW",
+        "E_OW",
+        true,
+        "org-ow-b",
+      );
+      expect(foreign?.organizationId).toBe("org-ow-a");
+      expect(foreign?.matchKind).toBe("enterprise_scope_overlap");
+    });
+
+    // CASE 4b: the FOREIGN install is ORG-WIDE and we claim a per-workspace sibling
+    // → its org-wide scope covers ours → enterprise_scope_overlap.
+    test("a per-workspace claim overlaps a FOREIGN org-wide Grid install (enterprise_scope_overlap)", async () => {
+      await seedAgentRow("owf-a", { organizationId: "org-owf-a" });
+      const { store, secretStore, slack } = build();
+      // org A holds the ORG-WIDE install of E_OWF (external tenant = enterprise).
+      await slack.upsertSlackInstallByTeam(
+        store,
+        secretStore,
+        "org-owf-a",
+        "E_OWF",
+        { botToken: "xoxb-owf", enterpriseId: "E_OWF", isEnterpriseInstall: true },
+      );
+      // We claim a per-workspace sibling into another org → the foreign org-wide
+      // install already covers it.
+      const foreign = await slack.resolveSlackActiveBindingElsewhere(
+        "T_OWF_SIB",
+        "E_OWF",
+        false,
+        "org-owf-b",
+      );
+      expect(foreign?.organizationId).toBe("org-owf-a");
+      expect(foreign?.matchKind).toBe("enterprise_scope_overlap");
     });
 
     test("(a) first claim into org A succeeds, (b) naive claim into org B is fenced, (c) confirmMove moves it", async () => {

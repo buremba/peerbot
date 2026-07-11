@@ -31,15 +31,17 @@ export interface SlackClaimProviderDeps {
   /** The org slug the workspace is ALREADY connected to (active install), or null. */
   resolveActiveOrgSlug(team: string): Promise<string | null>;
   /**
-   * The identity of an org OTHER than `targetOrganizationId` that already holds
-   * an ACTIVE install for this workspace, or null. Matches on the workspace
-   * `team_id` AND — for a Grid install — the `enterprise_id`, so a Grid claim
-   * that keys on enterprise still sees a sibling-workspace binding. Powers the
-   * cross-org fence: a non-null result blocks a silent second bind.
+   * The TYPED cross-org conflict for claiming `team` into `targetOrganizationId`,
+   * or null when there is none. Matches the exact workspace `team_id`
+   * (`same_workspace`) and — only across an ORG-WIDE Grid install on either side —
+   * an `enterprise_id` scope overlap (`enterprise_scope_overlap`). Two independent
+   * per-workspace siblings of one enterprise do NOT conflict. `isEnterpriseInstall`
+   * is the CLAIMING install's org-wide flag. Powers the cross-org fence.
    */
   resolveActiveBindingElsewhere(
     team: string,
     enterpriseId: string | null,
+    isEnterpriseInstall: boolean,
     targetOrganizationId: string,
   ): Promise<ClaimForeignBinding | null>;
   /**
@@ -137,6 +139,7 @@ export function slackClaimProvider(
       deps.resolveActiveBindingElsewhere(
         ref,
         pending.enterpriseId,
+        pending.isEnterpriseInstall,
         targetOrganizationId,
       ),
     authorize: (userId, pending) => authorizeSlackClaim(deps, userId, pending),
@@ -152,17 +155,18 @@ export function slackClaimProvider(
         // The store's ATOMIC fence tripped on the raced path (the sequential
         // pre-check saw null). Translate the store-specific error into the
         // engine's provider-agnostic ClaimMoveBlockedError so the raced path
-        // returns the SAME `already_connected_elsewhere` 409 as the pre-check,
-        // carrying the other org (still resolvable — the fenced claim released
-        // its own pending row, leaving the incumbent active row intact).
+        // returns the SAME typed 409 as the pre-check (by matchKind), carrying the
+        // other org (still resolvable — the fenced claim released its own pending
+        // row, leaving the incumbent active row intact).
         if (err instanceof CrossOrgTransferBlockedError) {
           const existing = await deps.resolveActiveBindingElsewhere(
             pending.teamId,
             pending.enterpriseId,
+            pending.isEnterpriseInstall,
             organizationId,
           );
           throw new ClaimMoveBlockedError(
-            existing ?? { orgSlug: null, orgName: null },
+            existing ?? { orgSlug: null, orgName: null, matchKind: "same_workspace" },
           );
         }
         throw err;

@@ -164,7 +164,16 @@ describe("claimPendingConnection", () => {
   // be silently walked into a second org. The engine surfaces the other org and
   // refuses to bind unless the claimer explicitly confirms the move.
   describe("cross-org fence", () => {
-    const foreign: ClaimForeignBinding = { orgSlug: "acme", orgName: "Acme" };
+    const foreign: ClaimForeignBinding = {
+      orgSlug: "acme",
+      orgName: "Acme",
+      matchKind: "same_workspace",
+    };
+    const overlap: ClaimForeignBinding = {
+      orgSlug: "grid",
+      orgName: "Grid Org",
+      matchKind: "enterprise_scope_overlap",
+    };
 
     test("(a) first claim into org A binds normally (no foreign binding)", async () => {
       const { provider, bind } = makeProvider();
@@ -196,7 +205,7 @@ describe("claimPendingConnection", () => {
       expect(resolveActiveBindingElsewhere.mock.calls[0]![2]).toBe("org-1");
     });
 
-    test("(c) second claim WITH confirmMove binds and skips the fence", async () => {
+    test("(c) second claim WITH confirmMove binds a same_workspace conflict (fence still runs)", async () => {
       const resolveActiveBindingElsewhere = mock(async () => foreign);
       const { provider, bind } = makeProvider({ resolveActiveBindingElsewhere });
       const result = await claimPendingConnection(provider, makeDeps(), {
@@ -209,26 +218,43 @@ describe("claimPendingConnection", () => {
         orgSlug: "acme",
         bindingId: "binding-bound",
       });
-      // confirmMove short-circuits the pre-check (bind re-enforces atomically).
-      expect(resolveActiveBindingElsewhere).not.toHaveBeenCalled();
+      // The pre-check ALWAYS runs now (so enterprise_scope_overlap is never
+      // silently confirmed away); confirmMove only waives the same_workspace block.
+      expect(resolveActiveBindingElsewhere).toHaveBeenCalledTimes(1);
       expect(bind).toHaveBeenCalledTimes(1);
       expect(bind.mock.calls[0]![3]).toBe(true);
     });
 
-    test("fence maps to 409 in the HTTP layer", () => {
-      expect(claimHttpStatus("already_connected_elsewhere")).toBe(409);
+    test("enterprise_scope_overlap blocks EVEN WITH confirmMove (not overridable)", async () => {
+      const resolveActiveBindingElsewhere = mock(async () => overlap);
+      const { provider, bind } = makeProvider({ resolveActiveBindingElsewhere });
+      const result = await claimPendingConnection(provider, makeDeps(), {
+        ...input,
+        organizationId: "other-org",
+        confirmMove: true,
+      });
+      expect(result).toEqual({
+        status: "enterprise_scope_overlap",
+        existing: overlap,
+      });
+      // A Grid scope overlap is a routing collision, not a movable binding — the
+      // cross-key demote can't move it, so confirmMove must NOT bind it.
+      expect(bind).not.toHaveBeenCalled();
     });
 
-    test("atomic-guard trip in bind maps to already_connected_elsewhere, NOT claim_failed", async () => {
+    test("both fence statuses map to 409, kept distinct", () => {
+      expect(claimHttpStatus("already_connected_elsewhere")).toBe(409);
+      expect(claimHttpStatus("enterprise_scope_overlap")).toBe(409);
+    });
+
+    test("atomic-guard trip in bind maps by matchKind (same_workspace → already_connected_elsewhere)", async () => {
       // The raced path: the sequential pre-check saw null (foreign binding not yet
       // committed), so bind runs — and its atomic under-lock fence trips, throwing
-      // ClaimMoveBlockedError. The engine must surface the SAME 409 outcome as the
-      // pre-check, carrying the other org, never a 500 claim_failed.
+      // ClaimMoveBlockedError. The engine must surface the SAME typed 409 outcome.
       const racedBind = mock(async () => {
         throw new ClaimMoveBlockedError(foreign);
       });
       const { provider } = makeProvider({
-        // Pre-check misses (simulating the race), bind's atomic fence catches it.
         resolveActiveBindingElsewhere: mock(async () => null),
         bind: racedBind,
       });
@@ -238,6 +264,20 @@ describe("claimPendingConnection", () => {
         existing: foreign,
       });
       expect(racedBind).toHaveBeenCalledTimes(1);
+    });
+
+    test("atomic-guard trip with an enterprise overlap maps to enterprise_scope_overlap", async () => {
+      const { provider } = makeProvider({
+        resolveActiveBindingElsewhere: mock(async () => null),
+        bind: mock(async () => {
+          throw new ClaimMoveBlockedError(overlap);
+        }),
+      });
+      const result = await claimPendingConnection(provider, makeDeps(), input);
+      expect(result).toEqual({
+        status: "enterprise_scope_overlap",
+        existing: overlap,
+      });
     });
   });
 

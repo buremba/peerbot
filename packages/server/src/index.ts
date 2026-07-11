@@ -2410,15 +2410,21 @@ function buildSlackClaimProvider(): ClaimProvider {
 		resolveActiveBindingElsewhere: async (
 			team,
 			enterpriseId,
+			isEnterpriseInstall,
 			targetOrganizationId,
 		) => {
 			const foreign = await resolveSlackActiveBindingElsewhere(
 				team,
 				enterpriseId,
+				isEnterpriseInstall,
 				targetOrganizationId,
 			);
 			return foreign
-				? { orgSlug: foreign.orgSlug, orgName: foreign.orgName }
+				? {
+						orgSlug: foreign.orgSlug,
+						orgName: foreign.orgName,
+						matchKind: foreign.matchKind,
+					}
 				: null;
 		},
 		resolveClaimerSlackIdentities: resolveClaimingUserSlackIdentities,
@@ -2544,7 +2550,14 @@ app.post("/api/connector/:connector/connection/claim", async (c) => {
 			alreadyConnected: result.alreadyConnected ?? false,
 		});
 	}
-	if (result.status === "already_connected_elsewhere") {
+	if (
+		result.status === "already_connected_elsewhere" ||
+		result.status === "enterprise_scope_overlap"
+	) {
+		// Two DISTINCT 409 conflicts, kept distinguishable for the SPA via `error`:
+		// already_connected_elsewhere (same workspace — re-POST confirmMove:true) vs
+		// enterprise_scope_overlap (Grid org-wide/per-workspace routing collision —
+		// NOT overridable, admin resolves out-of-band).
 		// Not an error the user must fix — a decision. Surface the other org so the
 		// SPA can prompt "already connected in <org>. Move it here?" and re-POST
 		// with confirmMove:true. 409 (state conflict requiring explicit resolution).

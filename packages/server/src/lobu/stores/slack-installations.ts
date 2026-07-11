@@ -187,13 +187,20 @@ export async function upsertSlackInstallByTeam(
     const plannedId =
       (existing?.metadata.external_id as string | undefined) ?? candidateId;
 
-    // For a Grid claim, fence on the enterprise id too: an org-wide install keys
-    // on the enterprise id and a per-workspace install on the team id, so the
-    // store's per-tuple lock/guard would miss the counterpart. Only when we are
-    // actually blocking a transfer AND this is a Grid install.
+    // For a Grid claim, fence on the enterprise id too — but ONLY across a
+    // scope-spanning (org-wide) install, never between two independent per-
+    // workspace siblings of the same enterprise (those may live in different orgs).
+    // `claimIsScopeWide` = this claim is org-wide; the guard also matches a FOREIGN
+    // org-wide row (its `is_enterprise_install` flag) even when this claim is per-
+    // workspace. Only when actually blocking a transfer AND this is a Grid install.
     const crossOrgFenceEnterpriseMatch =
       data.blockCrossOrgTransfer && data.enterpriseId
-        ? { key: "enterprise_id", value: data.enterpriseId }
+        ? {
+            key: "enterprise_id",
+            value: data.enterpriseId,
+            claimIsScopeWide: data.isEnterpriseInstall === true,
+            scopeFlagKey: "is_enterprise_install",
+          }
         : undefined;
 
     // TOKEN FIRST — persist the bot token BEFORE any row is created/activated, so
@@ -444,35 +451,59 @@ export async function getSlackEnterpriseInstall(
   return row ? toSlackRow(row) : null;
 }
 
+/** Which cross-org conflict the Slack fence matched (see engine `ClaimConflictKind`). */
+export type SlackForeignMatchKind = "same_workspace" | "enterprise_scope_overlap";
+
 /** An active Slack install owned by an org OTHER than a claim's target org. */
 export interface SlackForeignActiveBinding {
   organizationId: string;
   orgSlug: string | null;
   orgName: string | null;
+  matchKind: SlackForeignMatchKind;
 }
 
 /**
- * Resolve an ACTIVE Slack install for a workspace owned by an org OTHER than
- * `targetOrganizationId`, or null when the only (or no) active install is the
- * target org's own. This is the read half of the cross-org claim fence: a
- * non-null result means claiming the workspace into `targetOrganizationId` would
- * MOVE (steal the active slot from) another org, so it must be a deliberate,
- * confirmed move rather than a silent duplicate.
+ * Resolve an ACTIVE Slack install, owned by an org OTHER than
+ * `targetOrganizationId`, that CONFLICTS with claiming `teamId` — TYPED by which
+ * of two distinct conflicts it is. Null when there is no conflict.
  *
- * Matches the SAME subject the router would: the exact workspace `team_id`, and
- * — for a Grid install — any sibling install sharing this `enterprise_id`. The
- * enterprise arm is gated on a non-null `enterpriseId` so two genuinely
- * different plain workspaces never collide. Returns the most recently updated
- * foreign row (deterministic) with its org identity for the UI prompt.
+ * The four cases (see the coordinator's spec):
+ *  1. Same exact workspace `team_id` in another org → `same_workspace`. The real
+ *     "same workspace elsewhere" case; a deliberate move can proceed.
+ *  2. Same exact org-wide enterprise `external_tenant_id` in another org → also a
+ *     `team_id` match here (external_tenant_id equals the claimed id), so it falls
+ *     under case 1's exact-id arm. No special handling.
+ *  3. DIFFERENT per-workspace siblings (T_A vs T_B) sharing one enterprise, with
+ *     NEITHER side org-wide → ALLOWED. Two independent workspaces of one Grid may
+ *     belong to different Lobu orgs, so the enterprise arm must NOT match here.
+ *  4. An org-wide install (`is_enterprise_install`) on EITHER side vs a per-
+ *     workspace install of a sibling in another org → `enterprise_scope_overlap`.
+ *     A real routing overlap (org-wide covers all siblings), surfaced distinctly
+ *     and blocked by default.
+ *
+ * So the enterprise arm trips ONLY when at least one side is org-wide: either the
+ * CLAIMING install (`isEnterpriseInstall`) or the FOREIGN row
+ * (`metadata->>'is_enterprise_install' = 'true'`). Exact-id matches always win and
+ * are reported as `same_workspace`.
  */
 export async function resolveSlackActiveBindingElsewhere(
   teamId: string,
   enterpriseId: string | null,
+  isEnterpriseInstall: boolean,
   targetOrganizationId: string
 ): Promise<SlackForeignActiveBinding | null> {
   const sql = getDb();
+  // Enterprise arm only when SOME side is org-wide (case 4). When the claiming
+  // side is org-wide, any foreign sibling of the enterprise overlaps; otherwise
+  // only a foreign ORG-WIDE row overlaps our per-workspace claim.
+  const enterpriseArmActive = enterpriseId != null && isEnterpriseInstall;
+  const foreignOrgWideArmActive = enterpriseId != null;
   const rows = (await sql`
-    SELECT ai.organization_id, o.slug, o.name
+    SELECT
+      ai.organization_id,
+      o.slug,
+      o.name,
+      (ai.external_tenant_id = ${teamId}) AS exact_match
     FROM app_installations ai
     JOIN "organization" o ON o.id = ai.organization_id
     WHERE ai.provider = ${SLACK_PROVIDER}
@@ -480,18 +511,28 @@ export async function resolveSlackActiveBindingElsewhere(
       AND ai.status = 'active'
       AND ai.organization_id IS DISTINCT FROM ${targetOrganizationId}
       AND (
+        -- Case 1/2: exact same external subject (team id, or org-wide enterprise id).
         ai.external_tenant_id = ${teamId}
+        -- Case 4a: WE are org-wide → any foreign sibling of this enterprise overlaps.
         OR (
-          ${enterpriseId ?? null}::text IS NOT NULL
+          ${enterpriseArmActive}
           AND ai.metadata ->> 'enterprise_id' = ${enterpriseId ?? null}
         )
+        -- Case 4b: a foreign ORG-WIDE row covers our per-workspace claim's enterprise.
+        OR (
+          ${foreignOrgWideArmActive}
+          AND ai.metadata ->> 'enterprise_id' = ${enterpriseId ?? null}
+          AND (ai.metadata -> 'is_enterprise_install') = 'true'::jsonb
+        )
       )
-    ORDER BY ai.updated_at DESC, ai.id DESC
+    -- Prefer an exact-id (same_workspace) match over an enterprise-scope match.
+    ORDER BY exact_match DESC, ai.updated_at DESC, ai.id DESC
     LIMIT 1
   `) as Array<{
     organization_id: string;
     slug: string | null;
     name: string | null;
+    exact_match: boolean;
   }>;
   const row = rows[0];
   if (!row) return null;
@@ -499,6 +540,7 @@ export async function resolveSlackActiveBindingElsewhere(
     organizationId: row.organization_id,
     orgSlug: row.slug ?? null,
     orgName: row.name ?? null,
+    matchKind: row.exact_match ? "same_workspace" : "enterprise_scope_overlap",
   };
 }
 

@@ -376,6 +376,50 @@ export function resolveAgentIdentity(
   return trimmed && trimmed.length > 0 ? trimmed : LOBU_DEFAULT_IDENTITY;
 }
 
+/**
+ * Per-run conversation context: where this turn is happening, who triggered it,
+ * and (when available) a link back to the conversation.
+ *
+ * This is DELIBERATELY injected into the per-turn USER prompt, never the system
+ * prompt. It varies every turn/channel, so putting it in the cached system
+ * prefix would bust the prompt cache on every message. As the tail of the user
+ * turn it appends after all cached content and costs nothing in cache terms.
+ *
+ * Only fields actually present are rendered — an empty/unknown field is omitted
+ * rather than shown as "unknown". Returns "" when nothing is known, so the
+ * caller can conditionally prepend it.
+ */
+export function buildRunContextBlock(input: {
+  platform: string | undefined;
+  channelId: string | undefined;
+  platformMetadata: unknown;
+}): string {
+  const md =
+    input.platformMetadata && typeof input.platformMetadata === "object"
+      ? (input.platformMetadata as Record<string, unknown>)
+      : {};
+  const str = (v: unknown): string | undefined =>
+    typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
+
+  const platform = str(input.platform);
+  const channel =
+    str(md.responseChannel) ?? str(md.chatId) ?? str(input.channelId);
+  const sender = str(md.senderDisplayName) ?? str(md.senderUsername);
+  const thread = str(md.responseThreadId);
+  // Opportunistic: rendered only if the gateway ever plumbs a link through.
+  const url = str(md.conversationUrl) ?? str(md.permalink);
+
+  const lines: string[] = [];
+  if (platform) lines.push(`- Platform: ${platform}`);
+  if (channel) lines.push(`- Channel: ${channel}`);
+  if (thread) lines.push(`- Thread: ${thread}`);
+  if (sender) lines.push(`- Triggered by: ${sender}`);
+  if (url) lines.push(`- Link: ${url}`);
+
+  if (lines.length === 0) return "";
+  return `## This conversation\n${lines.join("\n")}`;
+}
+
 // ---------------------------------------------------------------------------
 // LOBU memory plugin helper — inject agentId into config
 // ---------------------------------------------------------------------------
@@ -1587,7 +1631,15 @@ user references earlier discussion or you need prior context.`);
     // referenced, go resolve them" hint — as an instruction-shaped preamble in
     // the user turn the model tended to echo it back into its reply. (Full
     // pre-resolution of refs into injected data is a possible future follow-up.)
-    const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${userPrompt}`;
+    // Per-run conversation context (channel, trigger, link). Injected into the
+    // user turn — NOT the cached system prompt — because it varies per turn.
+    const runContext = buildRunContextBlock({
+      platform,
+      channelId,
+      platformMetadata,
+    });
+
+    const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${runContext ? `${runContext}\n\n` : ""}${userPrompt}`;
 
     // Load image attachments for vision-capable models
     const images = await loadImageAttachments();

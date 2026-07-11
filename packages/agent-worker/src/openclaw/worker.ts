@@ -48,6 +48,7 @@ import { type TerminalStatus, writeSnapshot } from "./transcript-snapshot";
 // Re-export the session-runner utilities that other modules import via this
 // barrel.
 export {
+  buildRunContextBlock,
   estimatePromptTokenCost,
   LOBU_DEFAULT_IDENTITY,
   replaceBasePromptIdentity,

@@ -518,9 +518,10 @@ interface RunAISessionParams {
    */
   onSessionFilePathResolved: (sessionFilePath: string) => void;
   /**
-   * Called as soon as the model ref is resolved to a (provider, modelId) pair
-   * so the worker can tag Sentry captures with which provider/model a later
-   * failure belongs to. Fires before any provider call can fail.
+   * Called as soon as the model ref is resolved to a
+   * (provider, modelId, providerSlug) triple so the worker can tag Sentry
+   * captures with which provider/model a later failure belongs to. Fires before
+   * any provider call can fail.
    */
   onModelResolved: (
     provider: string,

@@ -92,71 +92,88 @@ type HistoryInteraction =
 	| ToolApprovalHistoryInteraction
 	| AgentErrorHistoryInteraction;
 
+/**
+ * Rehydrate the latest non-silent terminal agent error for a conversation.
+ * This interaction is supplemental to transcript history, so storage or legacy
+ * payload parsing failures log and degrade to no interaction instead of
+ * failing the messages endpoint.
+ */
 async function readLatestAgentErrorInteraction(
 	organizationId: string,
 	conversationId: string,
 ): Promise<AgentErrorHistoryInteraction | null> {
-	const rows = await getDb()<{
-		id: number;
-		payload: Record<string, unknown> | null;
-	}>`
-		WITH response_rows AS (
-			SELECT id,
-			       CASE
-			         WHEN jsonb_typeof(action_input) = 'string'
-			           THEN (action_input #>> '{}')::jsonb
-			         ELSE action_input
-			       END AS payload
-			FROM public.runs
-			WHERE organization_id = ${organizationId}
-			  AND run_type = 'chat_message'
-			  AND queue_name = 'thread_response'
-			  AND status IN ('pending', 'completed', 'failed')
-			  AND action_input IS NOT NULL
-		)
-		SELECT id, payload
-		FROM response_rows
-		WHERE payload->>'conversationId' = ${conversationId}
-		  AND (payload ? 'error' OR payload ? 'processedMessageIds')
-		ORDER BY id DESC
-		LIMIT 1
-	`;
-	const row = rows[0];
-	if (!row?.payload || typeof row.payload !== "object") return null;
+	try {
+		const rows = await getDb()<{
+			id: number;
+			payload: Record<string, unknown> | null;
+		}>`
+			WITH response_rows AS (
+				SELECT id,
+				       CASE
+				         WHEN jsonb_typeof(action_input) = 'string'
+				           THEN (action_input #>> '{}')::jsonb
+				         ELSE action_input
+				       END AS payload
+				FROM public.runs
+				WHERE organization_id = ${organizationId}
+				  AND run_type = 'chat_message'
+				  AND queue_name = 'thread_response'
+				  AND status IN ('pending', 'completed', 'failed')
+				  AND action_input IS NOT NULL
+			)
+			SELECT id, payload
+			FROM response_rows
+			WHERE payload->>'conversationId' = ${conversationId}
+			  AND (payload ? 'error' OR payload ? 'processedMessageIds')
+			ORDER BY id DESC
+			LIMIT 1
+		`;
+		const row = rows[0];
+		if (!row?.payload || typeof row.payload !== "object") return null;
 
-	// A newer successful terminal row supersedes any older error for the thread.
-	if (typeof row.payload.error !== "string") return null;
-	const code = toAgentErrorCode(row.payload.errorCode);
-	const spec = code ? AGENT_ERRORS[code] : undefined;
-	if (spec?.silent) return null;
-	const error = spec?.message ?? row.payload.error;
-	if (!error) return null;
+		// A newer successful terminal row supersedes any older error for the thread.
+		if (typeof row.payload.error !== "string") return null;
+		const code = toAgentErrorCode(row.payload.errorCode);
+		const spec = code ? AGENT_ERRORS[code] : undefined;
+		if (spec?.silent) return null;
+		const error = spec?.message ?? row.payload.error;
+		if (!error) return null;
 
-	const rawContext =
-		row.payload.errorContext &&
-		typeof row.payload.errorContext === "object" &&
-		!Array.isArray(row.payload.errorContext)
-			? (row.payload.errorContext as Record<string, unknown>)
-			: null;
-	const provider =
-		typeof rawContext?.provider === "string" ? rawContext.provider : undefined;
-	const model =
-		typeof rawContext?.model === "string" ? rawContext.model : undefined;
-	const errorContext =
-		provider || model
-			? {
-					...(provider ? { provider } : {}),
-					...(model ? { model } : {}),
-				}
-			: null;
+		const rawContext =
+			row.payload.errorContext &&
+			typeof row.payload.errorContext === "object" &&
+			!Array.isArray(row.payload.errorContext)
+				? (row.payload.errorContext as Record<string, unknown>)
+				: null;
+		const provider =
+			typeof rawContext?.provider === "string"
+				? rawContext.provider
+				: undefined;
+		const model =
+			typeof rawContext?.model === "string" ? rawContext.model : undefined;
+		const errorContext =
+			provider || model
+				? {
+						...(provider ? { provider } : {}),
+						...(model ? { model } : {}),
+					}
+				: null;
 
-	return {
-		type: "agent-error",
-		runId: Number(row.id),
-		error,
-		errorCode: code ?? null,
-		errorContext,
-	};
+		return {
+			type: "agent-error",
+			runId: Number(row.id),
+			error,
+			errorCode: code ?? null,
+			errorContext,
+		};
+	} catch (error) {
+		logger.warn("Failed to read latest agent error interaction", {
+			error,
+			organizationId,
+			conversationId,
+		});
+		return null;
+	}
 }
 
 // Tokenless artifact references persisted in the transcript by the message-send

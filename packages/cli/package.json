@@ -116,7 +116,10 @@
     "dist",
     "bin",
     "README.md",
-    "src/config"
+    "src/config",
+    "!src/config/**/__tests__/**",
+    "!src/config/**/*.test.ts",
+    "!src/config/**/*.spec.ts"
   ],
   "engines": {
     "node": ">=22 <25 || >=26"

@@ -9,7 +9,10 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "!src/**/__tests__/**",
+    "!src/**/*.test.ts",
+    "!src/**/*.spec.ts"
   ],
   "exports": {
     ".": {

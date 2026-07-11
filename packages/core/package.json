@@ -21,10 +21,10 @@
       "require": "./dist/index.js"
     },
     "./testing": {
-      "types": "./dist/__tests__/fixtures/index.d.ts",
-      "bun": "./src/__tests__/fixtures/index.ts",
-      "import": "./dist/__tests__/fixtures/index.js",
-      "require": "./dist/__tests__/fixtures/index.js"
+      "types": "./dist/testing/index.d.ts",
+      "bun": "./src/testing/index.ts",
+      "import": "./dist/testing/index.js",
+      "require": "./dist/testing/index.js"
     },
     "./errors": {
       "types": "./dist/errors.d.ts",

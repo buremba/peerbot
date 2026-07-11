@@ -19,8 +19,8 @@
  */
 
 import { hostname } from 'node:os';
-import { WorkerDaemon } from '../../../connector-worker/src/daemon/worker';
-import { buildConnectorWorkerEnv } from '../../../connector-worker/src/env';
+import { WorkerDaemon } from '@lobu/connector-worker/daemon';
+import { buildConnectorWorkerEnv } from '@lobu/connector-worker/env';
 import { intervals } from '../config/intervals';
 import type { Env } from '../index';
 import logger from '../utils/logger';

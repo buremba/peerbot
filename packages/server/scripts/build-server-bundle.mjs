@@ -76,6 +76,8 @@ async function buildBundle(entryPoint, outfile) {
     outfile,
   });
 
+  assertSingleConnectorWorkerIdentity(result.metafile, outfile);
+
   const output = Object.entries(result.metafile.outputs).find(([file]) =>
     file.endsWith(outfile),
   )?.[1];
@@ -84,6 +86,36 @@ async function buildBundle(entryPoint, outfile) {
     `\n=== bundle ready: ${outfile} (${(bytes / 1024 / 1024).toFixed(2)} MB)`,
   );
   console.log(`    warnings: ${result.warnings.length}, errors: ${result.errors.length}`);
+}
+
+// Guard against the #v14 regression where a caller imported connector-worker
+// via a cross-package `../../../connector-worker/src/...` path while the rest of
+// the tree used its `@lobu/connector-worker/*` exports. The bundler then carried
+// the same module twice — once as workspace `src`, once as compiled `dist` —
+// treating equivalent code as separate modules. Fail the build if any
+// connector-worker module stem is reached through both.
+function assertSingleConnectorWorkerIdentity(metafile, outfile) {
+  const byStem = new Map();
+  for (const p of Object.keys(metafile.inputs)) {
+    const m = p.match(/connector-worker\/(src|dist)\/(.+?)\.(?:m?[jt]s)$/);
+    if (!m) continue;
+    const [, kind, stem] = m;
+    if (!byStem.has(stem)) byStem.set(stem, new Set());
+    byStem.get(stem).add(kind);
+  }
+  const dupes = [...byStem.entries()]
+    .filter(([, kinds]) => kinds.has('src') && kinds.has('dist'))
+    .map(([stem]) => stem);
+  console.log(
+    `    connector-worker inputs: ${byStem.size} module stem(s), ${dupes.length} duplicated across src+dist`,
+  );
+  if (dupes.length > 0) {
+    throw new Error(
+      `[build-server-bundle] ${outfile}: ${dupes.length} connector-worker module(s) ` +
+        `bundled through BOTH src and dist — import them via @lobu/connector-worker/* ` +
+        `exports, not cross-package src paths:\n  ${dupes.sort().join('\n  ')}`,
+    );
+  }
 }
 
 // Single entry for both backends: server.ts branches on DATABASE_URL

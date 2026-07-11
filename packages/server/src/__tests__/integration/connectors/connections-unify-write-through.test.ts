@@ -21,9 +21,9 @@ import { getDb } from "../../../db/client";
 import { SecretStoreRegistry } from "../../../gateway/secrets/index";
 import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-installation-store";
 import { upsertChatConnectionProjection } from "../../../lobu/stores/connections-projection";
-import { createPostgresAgentConnectionStore } from "../../../lobu/stores/postgres-stores";
-import { PostgresSecretStore } from "../../../lobu/stores/postgres-secret-store";
 import { orgContext } from "../../../lobu/stores/org-context";
+import { PostgresSecretStore } from "../../../lobu/stores/postgres-secret-store";
+import { createPostgresAgentConnectionStore } from "../../../lobu/stores/postgres-stores";
 import { upsertSlackInstallByTeam } from "../../../lobu/stores/slack-installations";
 import { initWorkspaceProvider } from "../../../workspace";
 import {
@@ -51,7 +51,10 @@ interface ProjRow {
 	updated_at: string;
 }
 
-async function projBySlug(orgId: string, slug: string): Promise<ProjRow | null> {
+async function projBySlug(
+	orgId: string,
+	slug: string,
+): Promise<ProjRow | null> {
 	const rows = (await getDb()`
 		SELECT slug, connector_key, status, credential_mode, external_tenant_id,
 		       config, deleted_at, updated_at
@@ -110,7 +113,10 @@ describe("connections-unify single-table store (chat)", () => {
 		const read = await withOrg(orgId, () => store.getConnection("wt-slack-1"));
 		expect(read?.id).toBe("wt-slack-1");
 		expect(read?.platform).toBe("slack");
-		expect(read?.config).toEqual({ platform: "slack", botToken: "secret://wt-1" });
+		expect(read?.config).toEqual({
+			platform: "slack",
+			botToken: "secret://wt-1",
+		});
 		expect(read?.settings).toEqual({ allowGroups: true });
 		expect(read?.metadata?.teamId).toBe("TW1");
 		expect(read?.status).toBe("active");
@@ -219,6 +225,75 @@ describe("connections-unify single-table store (chat)", () => {
 			  AND external_tenant_id = 'TDEMO' AND status = 'active' AND deleted_at IS NULL
 		`) as Array<{ count: number }>;
 		expect(Number(count)).toBe(1);
+	});
+
+	it("concurrent same-org tenant swaps recover from a PostgreSQL deadlock", async () => {
+		const db = getDb();
+		const swapA = "wt-swap-a";
+		const swapB = "wt-swap-b";
+		const slugA = `agentconn-${swapA}`;
+		const slugB = `agentconn-${swapB}`;
+		const writeActive = (id: string, teamId: string) =>
+			withOrg(orgId, () =>
+				store.saveConnection({
+					id,
+					platform: "slack",
+					agentId,
+					organizationId: orgId,
+					config: { platform: "slack", botToken: `secret://${id}` },
+					settings: { allowGroups: true },
+					metadata: { teamId },
+					status: "active",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				}),
+			);
+
+		await writeActive(swapA, "TSWAP-X");
+		await writeActive(swapB, "TSWAP-Y");
+
+		// Widen the real deadlock window after each transaction has demoted (and
+		// row-locked) the other's target. Both then try to upsert their own
+		// locked-by-the-peer row, so PostgreSQL aborts one transaction with 40P01;
+		// the store must retry that fully rolled-back transaction.
+		await db.unsafe(`
+			CREATE OR REPLACE FUNCTION test_delay_connection_swap_1842()
+			RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN
+				IF OLD.status = 'active' AND NEW.status = 'paused'
+					AND NEW.slug IN ('${slugA}', '${slugB}') THEN
+					PERFORM pg_sleep(0.25);
+				END IF;
+				RETURN NEW;
+			END;
+			$$;
+			CREATE TRIGGER test_delay_connection_swap_1842
+			AFTER UPDATE ON connections
+			FOR EACH ROW EXECUTE FUNCTION test_delay_connection_swap_1842();
+		`);
+
+		try {
+			await Promise.all([
+				writeActive(swapA, "TSWAP-Y"),
+				writeActive(swapB, "TSWAP-X"),
+			]);
+		} finally {
+			await db.unsafe(`
+				DROP TRIGGER IF EXISTS test_delay_connection_swap_1842 ON connections;
+				DROP FUNCTION IF EXISTS test_delay_connection_swap_1842();
+			`);
+		}
+
+		const a = await projBySlug(orgId, slugA);
+		const b = await projBySlug(orgId, slugB);
+		expect(a).toMatchObject({
+			status: "active",
+			external_tenant_id: "TSWAP-Y",
+		});
+		expect(b).toMatchObject({
+			status: "active",
+			external_tenant_id: "TSWAP-X",
+		});
 	});
 
 	it("managed Slack install projects a credential_mode=managed row resolvable by its slackinst- id", async () => {

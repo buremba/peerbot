@@ -452,14 +452,58 @@ export async function handleSyncChannelBindings(
 		await svc.listBindings(args.agent_id, organizationId)
 	).filter((binding) => binding.connectionId === String(connection.id));
 	const existingIds = new Set(existing.map((binding) => binding.channelId));
+	const existingTeamByChannel = new Map(
+		existing.map((binding) => [binding.channelId, binding.teamId]),
+	);
+
+	// Resolve each channel's CONCRETE workspace BEFORE opening the txn — the
+	// connector resolver may make a Slack HTTP round-trip (conversations.info), and
+	// an external call must never hold a pooled txn connection open. A declarative
+	// `T…/channel` spec supplies a trusted workspace hint; otherwise the resolver
+	// decides (returns null = unknown yet, healing from inbound — never the
+	// enterprise id). An EXISTING binding already carries its resolved team, so
+	// reuse it rather than re-round-trip. This same team keys BOTH the binding
+	// write and the about edge, so a Grid org-wide install (connection tenant =
+	// enterprise `E…`) never mis-keys the about edge onto a phantom `E…:C…` entity.
+	const teamHintByChannel = new Map(
+		normalized.map((c) => [c.channelId, c.teamHint]),
+	);
+	const resolvedTeamByChannel = new Map<string, string | undefined>();
+	for (const channelId of desired) {
+		const existingTeam = existingTeamByChannel.get(channelId);
+		if (existingTeam) {
+			resolvedTeamByChannel.set(channelId, existingTeam);
+			continue;
+		}
+		resolvedTeamByChannel.set(
+			channelId,
+			(await resolveBindingTeam({
+				connection: {
+					connectorKey: connection.connector_key,
+					externalTenantId: connection.external_tenant_id,
+					connectionId: connection.id,
+					organizationId,
+				},
+				channelId,
+				workspaceHint: teamHintByChannel.get(channelId) ?? null,
+			})) ?? undefined,
+		);
+	}
+
 	const aboutChannels: Array<{
 		channelId: string;
+		teamId: string | undefined;
 		aboutEntityIds: number[];
 	}> = [];
 	try {
 		for (const spec of normalized) {
+			const teamId = resolvedTeamByChannel.get(spec.channelId);
 			if (!spec.about?.length) {
-				aboutChannels.push({ channelId: spec.channelId, aboutEntityIds: [] });
+				aboutChannels.push({
+					channelId: spec.channelId,
+					teamId,
+					aboutEntityIds: [],
+				});
 				continue;
 			}
 			const aboutEntityIds = await resolveAboutEntityRefs(
@@ -468,7 +512,7 @@ export async function handleSyncChannelBindings(
 				sql,
 			);
 			await assertEntityIdsInOrg(sql, organizationId, aboutEntityIds);
-			aboutChannels.push({ channelId: spec.channelId, aboutEntityIds });
+			aboutChannels.push({ channelId: spec.channelId, teamId, aboutEntityIds });
 		}
 	} catch (error) {
 		return {
@@ -485,32 +529,6 @@ export async function handleSyncChannelBindings(
 		aboutLinked: number;
 		aboutRemoved: number;
 	};
-	// Resolve each new channel's CONCRETE workspace BEFORE opening the txn — the
-	// connector resolver may make a Slack HTTP round-trip (conversations.info), and
-	// an external call must never hold a pooled txn connection open. A declarative
-	// `T…/channel` spec supplies a trusted workspace hint; otherwise the resolver
-	// decides (returns null = unknown yet, healing from inbound — never the
-	// enterprise id). Null → undefined, identical to before the hoist.
-	const teamHintByChannel = new Map(
-		normalized.map((c) => [c.channelId, c.teamHint]),
-	);
-	const resolvedTeamByChannel = new Map<string, string | undefined>();
-	for (const channelId of desired) {
-		if (existingIds.has(channelId)) continue;
-		resolvedTeamByChannel.set(
-			channelId,
-			(await resolveBindingTeam({
-				connection: {
-					connectorKey: connection.connector_key,
-					externalTenantId: connection.external_tenant_id,
-					connectionId: connection.id,
-					organizationId,
-				},
-				channelId,
-				workspaceHint: teamHintByChannel.get(channelId) ?? null,
-			})) ?? undefined,
-		);
-	}
 
 	try {
 		reconcileResult = await sql.begin(async (tx) => {
@@ -550,7 +568,6 @@ export async function handleSyncChannelBindings(
 				organizationId,
 				connectionId: connection.id,
 				connectorKey: connection.connector_key,
-				teamId: connection.external_tenant_id,
 				channels: aboutChannels,
 				userId,
 				sql: tx,
@@ -610,13 +627,39 @@ export async function handleSetChannelAbout(
 	}>;
 	const connection = rows[0];
 	if (!connection) return { error: "Chat connection not found" };
+	// The manual about edge must key on the channel's CONCRETE workspace — the
+	// SAME real team the binding uses — never the connection's stored tenant id
+	// (a Grid org-wide install stores the enterprise `E…` there). Prefer the team
+	// already stamped on this channel's binding; otherwise ask the connector's
+	// resolver (never the `E…`, null = unknown yet).
+	const boundTeamRows = (await sql`
+		SELECT team_id
+		FROM agent_channel_bindings
+		WHERE organization_id = ${organizationId}
+			AND connection_id = ${connection.id}
+			AND channel_id = ${args.channel_id}
+			AND team_id IS NOT NULL
+		LIMIT 1
+	`) as Array<{ team_id: string | null }>;
+	const teamId =
+		boundTeamRows[0]?.team_id ??
+		(await resolveBindingTeam({
+			connection: {
+				connectorKey: connection.connector_key,
+				externalTenantId: connection.external_tenant_id,
+				connectionId: connection.id,
+				organizationId,
+			},
+			channelId: args.channel_id,
+		})) ??
+		undefined;
 	try {
 		await assertEntityIdsInOrg(sql, organizationId, args.about_entity_ids);
 		await setManualChannelAboutEdges({
 			organizationId,
 			connectionId: connection.id,
 			connectorKey: connection.connector_key,
-			teamId: connection.external_tenant_id,
+			teamId,
 			channelId: args.channel_id,
 			aboutEntityIds: args.about_entity_ids,
 			userId,

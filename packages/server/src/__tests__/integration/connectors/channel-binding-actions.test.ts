@@ -10,6 +10,7 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { SLACK_IDENTITY, slackChannelKey } from "@lobu/connectors/slack-identity";
 import { getDb } from "../../../db/client";
 import {
 	persistSecretValue,
@@ -524,6 +525,115 @@ describe("manage_connections channel-binding actions", () => {
 		expect(edges).toHaveLength(1);
 		expect(Number(edges[0].to_entity_id)).toBe(company.id);
 		expect(edges[0].source).toBe("config");
+	});
+
+	it("about edge on an org-wide Grid install keys the channel entity on the workspace T…, never the enterprise E…", async () => {
+		// An org-wide Grid install's connection tenant id is the ENTERPRISE id (E…).
+		// The channel-about edge must attach to the SAME channel resource entity the
+		// binding + ACL graph own — keyed on the concrete workspace T…, resolved from
+		// conversations.info.context_team_id — NOT a phantom E…:C… entity.
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, orgId, "owner");
+		const sql = getTestDb();
+		await sql`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${orgId}, 'company', 'Company', current_timestamp, current_timestamp)
+      ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
+      DO NOTHING
+    `;
+		const company = await createTestEntity({
+			name: "Grid Acme",
+			entity_type: "company",
+			organization_id: orgId,
+			created_by: user.id,
+		});
+
+		const pg = new PostgresSecretStore();
+		const store = new SecretStoreRegistry(pg, { secret: pg });
+		const tokenRef = await orgContext.run({ organizationId: orgId }, () =>
+			persistSecretValue(
+				store,
+				"installations/slackinst-gridabout/botToken",
+				"xoxb-gridabout",
+			),
+		);
+		const connectionId = await makeManagedSlackConnection({
+			orgId,
+			slug: "slackinst-gridabout",
+			teamId: ENTERPRISE, // org-wide install ⇒ tenant id is the enterprise E…
+		});
+		await sql`UPDATE connections SET config = ${sql.json({ botToken: tokenRef })} WHERE id = ${connectionId}`;
+
+		// The channel lives in workspace WORKSPACE (T…) — the resolver reads it from
+		// conversations.info.context_team_id. Bind with a BARE channel id (no T…/
+		// prefix hint) so resolution goes through the E… → context_team_id path.
+		__setBindingScopeResolverForTests("slack", (params) =>
+			resolveSlackBindingTeam(
+				{
+					slackWeb: {
+						conversationInfo: async () => ({
+							name: "eng",
+							isPrivate: false,
+							contextTeamId: WORKSPACE,
+						}),
+					},
+					secretStore: store,
+				},
+				params,
+			),
+		);
+		try {
+			const synced = (await workspace.owner.connections.manage({
+				action: "sync_channel_bindings",
+				agent_id: agentId,
+				connection_id: connectionId,
+				channels: [{ channel_id: "slack:CGRIDABOUT", about: ["grid-acme"] }],
+			})) as { success?: boolean; about_linked?: number; error?: string };
+			expect(synced.error).toBeUndefined();
+			expect(synced.success).toBe(true);
+			expect(synced.about_linked).toBe(1);
+
+			// The channel resource entity the edge points FROM must be identified on
+			// the workspace key T…:C…, and NO enterprise-keyed E…:C… entity exists.
+			const workspaceKey = slackChannelKey(WORKSPACE, "CGRIDABOUT");
+			const enterpriseKey = slackChannelKey(ENTERPRISE, "CGRIDABOUT");
+			const [wsEntity] = await sql<{ entity_id: number }[]>`
+        SELECT entity_id FROM entity_identities
+        WHERE organization_id = ${orgId}
+          AND namespace = ${SLACK_IDENTITY.CHANNEL_ID}
+          AND identifier = ${workspaceKey}
+          AND deleted_at IS NULL
+      `;
+			expect(wsEntity?.entity_id).toBeDefined();
+			const entEntity = await sql<{ entity_id: number }[]>`
+        SELECT entity_id FROM entity_identities
+        WHERE organization_id = ${orgId}
+          AND namespace = ${SLACK_IDENTITY.CHANNEL_ID}
+          AND identifier = ${enterpriseKey}
+          AND deleted_at IS NULL
+      `;
+			expect(entEntity).toHaveLength(0);
+
+			const edges = await sql<
+				{ from_entity_id: number; to_entity_id: number; channel_key: string }[]
+			>`
+        SELECT r.from_entity_id, r.to_entity_id, r.metadata->>'channel_key' AS channel_key
+        FROM entity_relationships r
+        JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
+        WHERE r.organization_id = ${orgId}
+          AND rt.slug = 'about'
+          AND r.deleted_at IS NULL
+          AND r.metadata->>'connection_id' = ${String(connectionId)}
+      `;
+			expect(edges).toHaveLength(1);
+			expect(Number(edges[0].to_entity_id)).toBe(company.id);
+			// The edge attaches to the WORKSPACE-keyed channel entity, not the E… one.
+			expect(Number(edges[0].from_entity_id)).toBe(Number(wsEntity.entity_id));
+			expect(edges[0].channel_key).toBe(workspaceKey);
+			expect(edges[0].channel_key).not.toContain(ENTERPRISE);
+		} finally {
+			__setBindingScopeResolverForTests("slack", undefined);
+		}
 	});
 
 	it("surfaces about-linked channels in entity_names and active_connections", async () => {

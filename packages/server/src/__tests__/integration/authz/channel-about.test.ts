@@ -81,10 +81,10 @@ describe("channel about edges", () => {
 			organizationId: org.id,
 			connectionId,
 			connectorKey: "slack",
-			teamId: TEAM,
 			channels: [
 				{
 					channelId: CHANNEL,
+					teamId: TEAM,
 					aboutEntityIds: [company.id],
 				},
 			],
@@ -133,8 +133,7 @@ describe("channel about edges", () => {
 			organizationId: org.id,
 			connectionId: "99",
 			connectorKey: "slack",
-			teamId: TEAM,
-			channels: [{ channelId: CHANNEL, aboutEntityIds: [company.id] }],
+			channels: [{ channelId: CHANNEL, teamId: TEAM, aboutEntityIds: [company.id] }],
 		});
 
 		const channels = await listChannelEntitiesAboutBusinessEntity({

@@ -13,10 +13,7 @@
 export function mockFetch(responses: Record<string, any> = {}): () => void {
   const originalFetch = globalThis.fetch;
 
-  globalThis.fetch = (async (
-    url: string | URL | Request,
-    _options?: RequestInit
-  ) => {
+  globalThis.fetch = (async (url: string | URL | Request) => {
     const urlString = url instanceof Request ? url.url : url.toString();
 
     const body = responses[urlString] ?? { success: true };

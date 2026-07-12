@@ -7,15 +7,16 @@
 // tree, or dangling `.js.map`/`.d.ts.map` files) are invisible in code review
 // and only surface as bloated tarballs. This runs `npm pack --dry-run --json`
 // — the exact file selection `npm publish` uses — for every non-private package
-// and asserts none of the packed files are tests or sourcemaps.
+// and asserts none of the packed files are tests or sourcemaps, and every
+// explicit package export resolves to a file present in the tarball.
 //
 // Run after building packages. A package whose `files` declares `dist` but
 // packs no `dist/` entries fails hard — an unbuilt tarball would otherwise
 // pass trivially, silently skipping the very artifact this guards:
 //   bun run build:packages && node scripts/check-package-contents.mjs
 //
-// Exit 0 = clean, 1 = a tarball contains a disallowed file, a declared `dist`
-// packed empty, or packing failed.
+// Exit 0 = clean, 1 = a tarball contains a disallowed file, has a missing
+// explicit export target, declares an empty `dist`, or packing failed.
 
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
@@ -66,9 +67,34 @@ function publishablePackageDirs() {
       name: pkg.name ?? name,
       dir: path.join(PACKAGES_DIR, name),
       declaresDist: (pkg.files ?? []).includes("dist"),
+      exports: pkg.exports,
     });
   }
   return dirs.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Collect exact relative targets from an exports map. Wildcard targets are
+// intentionally skipped because validating their substitutions requires the
+// corresponding wildcard keys and is outside this guard's current scope.
+function explicitExportTargets(exports) {
+  const targets = new Set();
+  function visit(value) {
+    if (typeof value === "string") {
+      if (value.startsWith("./") && !value.includes("*")) {
+        targets.add(value.slice(2));
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const item of Object.values(value)) visit(item);
+    }
+  }
+  visit(exports);
+  return [...targets].sort();
 }
 
 function packedFiles(dir) {
@@ -91,7 +117,7 @@ function packedFiles(dir) {
 }
 
 let failed = false;
-for (const { name, dir, declaresDist } of publishablePackageDirs()) {
+for (const { name, dir, declaresDist, exports } of publishablePackageDirs()) {
   let files;
   try {
     files = packedFiles(dir);
@@ -111,6 +137,18 @@ for (const { name, dir, declaresDist } of publishablePackageDirs()) {
     );
     continue;
   }
+  const packed = new Set(files);
+  const missingExports = explicitExportTargets(exports).filter(
+    (target) => !packed.has(target)
+  );
+  if (missingExports.length > 0) {
+    failed = true;
+    console.error(
+      `✗ ${name}: ${missingExports.length} explicit export target(s) missing ` +
+        "from the tarball:"
+    );
+    for (const target of missingExports) console.error(`    ${target}`);
+  }
   const offenders = files
     .map((f) => ({ f, reason: disallowedReason(f) }))
     .filter((o) => o.reason);
@@ -121,7 +159,7 @@ for (const { name, dir, declaresDist } of publishablePackageDirs()) {
     );
     for (const { f, reason } of offenders)
       console.error(`    [${reason}] ${f}`);
-  } else {
+  } else if (missingExports.length === 0) {
     console.log(`✓ ${name}: clean (${files.length} files packed)`);
   }
 }
@@ -129,8 +167,9 @@ for (const { name, dir, declaresDist } of publishablePackageDirs()) {
 if (failed) {
   console.error(
     "\nPublishable tarballs must not contain __tests__/, *.test.*, *.spec.*, " +
-      "or sourcemap (*.{js,cjs,mjs}.map / *.d.{ts,cts,mts}.map) files, and a " +
-      "package declaring `dist` in `files` must be built before this check."
+      "or sourcemap (*.{js,cjs,mjs}.map / *.d.{ts,cts,mts}.map) files. Every " +
+      "explicit export target must be packed, and a package declaring `dist` " +
+      "in `files` must be built before this check."
   );
   process.exit(1);
 }

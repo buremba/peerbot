@@ -15,8 +15,7 @@ export class MockMessageQueue {
 
   async work(
     queueName: string,
-    handler: (job: any) => Promise<void>,
-    _options?: { startPaused?: boolean }
+    handler: (job: any) => Promise<void>
   ): Promise<void> {
     this.workers.set(queueName, handler);
   }

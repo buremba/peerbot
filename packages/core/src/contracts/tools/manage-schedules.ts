@@ -4,33 +4,39 @@ import { Type } from "@sinclair/typebox";
 // Schema
 // ============================================
 
-export const SendNotificationArgs = Type.Object({
-  type: Type.Literal("send_notification"),
-  title: Type.String({ minLength: 1, maxLength: 200 }),
-  body: Type.Optional(Type.String({ maxLength: 1000 })),
-  recipients: Type.Optional(
-    Type.Union([
-      Type.Literal("admins"),
-      Type.Literal("all"),
-      Type.Array(Type.String()),
-    ])
-  ),
-  resource_url: Type.Optional(Type.String()),
-});
+export const SendNotificationArgs = Type.Object(
+  {
+    type: Type.Literal("send_notification"),
+    title: Type.String({ minLength: 1, maxLength: 200 }),
+    body: Type.Optional(Type.String({ maxLength: 1000 })),
+    recipients: Type.Optional(
+      Type.Union([
+        Type.Literal("admins"),
+        Type.Literal("all"),
+        Type.Array(Type.String()),
+      ])
+    ),
+    resource_url: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false }
+);
 
-export const WakeAgentArgs = Type.Object({
-  type: Type.Literal("wake_agent"),
-  agent_id: Type.String({ minLength: 1 }),
-  prompt: Type.String({ minLength: 1, maxLength: 4000 }),
-  thread_id: Type.Optional(Type.String()),
-  reason: Type.Optional(Type.String({ maxLength: 200 })),
-  /**
-   * Optional per-schedule model override (a `provider/model` ref or "auto").
-   * When set it wins over the agent's default and the org default at run
-   * enqueue; when omitted the layered fallback (agent → org) resolves it.
-   */
-  model: Type.Optional(Type.String({ maxLength: 200 })),
-});
+export const WakeAgentArgs = Type.Object(
+  {
+    type: Type.Literal("wake_agent"),
+    agent_id: Type.String({ minLength: 1 }),
+    prompt: Type.String({ minLength: 1, maxLength: 4000 }),
+    thread_id: Type.Optional(Type.String()),
+    reason: Type.Optional(Type.String({ maxLength: 200 })),
+    /**
+     * Optional per-schedule model override (a `provider/model` ref or "auto").
+     * When set it wins over the agent's default and the org default at run
+     * enqueue; when omitted the layered fallback (agent → org) resolves it.
+     */
+    model: Type.Optional(Type.String({ maxLength: 200 })),
+  },
+  { additionalProperties: false }
+);
 
 export const ActionUnion = Type.Union([SendNotificationArgs, WakeAgentArgs]);
 

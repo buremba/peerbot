@@ -60,36 +60,37 @@ describe("manage_schedules wake_agent chat delivery", () => {
     await seedAgentRow(AGENT, { organizationId: ORG, ownerUserId: USER });
   }, 60_000);
 
-  test("ignores and strips caller-supplied delivery payload", async () => {
+  test("rejects caller-supplied delivery payload without persisting", async () => {
     await seedChatConnection({ id: "conn-real" });
 
-    const result = await manageSchedules(
-      {
-        action: "create",
-        description: "forged delivery is ignored",
-        run_at: new Date(Date.now() + 60_000).toISOString(),
-        payload: {
-          type: "wake_agent",
-          agent_id: AGENT,
-          prompt: "wake up",
-          delivery: {
-            platform: "slack",
-            connectionId: "conn-real",
-            channelId: "C-real",
-            conversationId: "slack:C-real:123",
+    await expect(
+      manageSchedules(
+        {
+          action: "create",
+          description: "forged delivery is rejected",
+          run_at: new Date(Date.now() + 60_000).toISOString(),
+          payload: {
+            type: "wake_agent",
+            agent_id: AGENT,
+            prompt: "wake up",
+            delivery: {
+              platform: "slack",
+              connectionId: "conn-real",
+              channelId: "C-real",
+              conversationId: "slack:C-real:123",
+            },
           },
         } as any,
-      },
-      {} as any,
-			ctx(),
+        {} as any,
+        ctx()
+      )
+    ).rejects.toThrow(
+      /Invalid arguments for manage_schedules: \/payload: Expected union value/
     );
 
-    expect(result.error).toBeUndefined();
 		const rows =
 			await getDb()`SELECT action_args, delivery_context FROM scheduled_jobs`;
-    expect(rows).toHaveLength(1);
-    expect(rows[0].action_args.delivery).toBeUndefined();
-    expect(rows[0].delivery_context).toBeNull();
+    expect(rows).toHaveLength(0);
   });
 
   test("persists a per-schedule model override into action_args on create", async () => {

@@ -363,6 +363,29 @@ describe("manage_schedules tool: create/update validation + round-trip", () => {
     expect(res.error).toContain("until_at must not be before run_at");
   });
 
+  test("create rejects unsupported send_notification payload fields without persisting", async () => {
+    const create = manageSchedules(
+      {
+        action: "create",
+        description: "invalid notification payload",
+        run_at: new Date(Date.now() + 3600_000).toISOString(),
+        payload: {
+          type: "send_notification",
+          title: "hi",
+          message: "this must not be silently discarded",
+        },
+      } as any,
+      {} as never,
+      ctx()
+    );
+
+    await expect(create).rejects.toThrow(
+      /Invalid arguments for manage_schedules: \/payload: Expected union value/
+    );
+    const rows = await getDb()`SELECT id FROM scheduled_jobs`;
+    expect(rows).toHaveLength(0);
+  });
+
   test("update can set and clear timezone and until_at", async () => {
     const created = (await manageSchedules(
       {

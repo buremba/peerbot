@@ -13,16 +13,23 @@ import {
   spyOn,
   test,
 } from "bun:test";
-import * as providersInternal from "../../internal/index.js";
+import * as internal from "../../internal/index.js";
 import { clientsListCommand, clientsRevokeCommand } from "../clients.js";
 import {
   environmentCreateCommand,
+  environmentDeleteCommand,
+  environmentListCommand,
   environmentSetCredentialCommand,
 } from "../environment.js";
 import {
+  providersCatalogCommand,
   providersCreateCommand,
+  providersDeleteCommand,
   providersListCommand,
   providersSetCapabilityCommand,
+  providersSetDefaultCommand,
+  providersSetKeyCommand,
+  providersUpdateCommand,
 } from "../providers/manage.js";
 
 interface RecordedCall {
@@ -33,30 +40,39 @@ interface RecordedCall {
 
 let calls: RecordedCall[];
 let responses: unknown[];
+let logLines: string[];
+let errorLines: string[];
+/** When set, the fake client throws for any call whose path ends with this. */
+let failPathSuffix: string | null;
 
 /** Minimal ApiClient stand-in: records every call, replays queued responses. */
 function fakeClient() {
-  const next = () => (responses.length > 0 ? responses.shift() : {});
+  const next = (path: string) => {
+    if (failPathSuffix && path.endsWith(failPathSuffix)) {
+      throw new Error(`simulated failure: ${path}`);
+    }
+    return responses.length > 0 ? responses.shift() : {};
+  };
   return {
     get: async (path: string) => {
       calls.push({ method: "GET", path });
-      return next();
+      return next(path);
     },
     post: async (path: string, body?: unknown) => {
       calls.push({ method: "POST", path, body });
-      return next();
+      return next(path);
     },
     patch: async (path: string, body?: unknown) => {
       calls.push({ method: "PATCH", path, body });
-      return next();
+      return next(path);
     },
     delete: async (path: string) => {
       calls.push({ method: "DELETE", path });
-      return next();
+      return next(path);
     },
     request: async (method: string, path: string, body?: unknown) => {
       calls.push({ method, path, body });
-      return next();
+      return next(path);
     },
   };
 }
@@ -64,7 +80,10 @@ function fakeClient() {
 beforeEach(() => {
   calls = [];
   responses = [];
-  spyOn(providersInternal, "resolveApiClient").mockImplementation(
+  logLines = [];
+  errorLines = [];
+  failPathSuffix = null;
+  spyOn(internal, "resolveApiClient").mockImplementation(
     async () =>
       ({
         client: fakeClient(),
@@ -75,14 +94,29 @@ beforeEach(() => {
       }) as never
   );
   spyOn(process.stdout, "write").mockImplementation(() => true);
-  spyOn(console, "log").mockImplementation(() => undefined);
-  spyOn(console, "error").mockImplementation(() => undefined);
+  spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+    logLines.push(args.map(String).join(" "));
+  });
+  spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    errorLines.push(args.map(String).join(" "));
+  });
 });
 
 afterEach(() => {
   mock.restore();
   delete process.env.LOBU_TEST_PROVIDER_KEY;
 });
+
+/** Guarded delete-style commands: assert refusal without --yes (no network). */
+async function expectYesGuard(run: () => Promise<void>): Promise<void> {
+  const exitSpy = spyOn(process, "exit").mockImplementation((() => {
+    throw new Error("exit");
+  }) as never);
+  await expect(run()).rejects.toThrow("exit");
+  expect(exitSpy).toHaveBeenCalledWith(1);
+  expect(calls).toEqual([]);
+  exitSpy.mockRestore();
+}
 
 describe("providers", () => {
   test("list hits the org inference-providers route", async () => {
@@ -91,6 +125,40 @@ describe("providers", () => {
     expect(calls).toEqual([
       { method: "GET", path: "/api/testorg/agents/inference-providers" },
     ]);
+  });
+
+  test("catalog fetches /catalog and renders auth by supportedAuthTypes", async () => {
+    responses = [
+      {
+        catalog: [
+          {
+            slug: "claude",
+            displayName: "Claude",
+            authType: "oauth",
+            supportedAuthTypes: ["oauth", "api-key"],
+            defaultModel: null,
+          },
+          {
+            slug: "sub-only",
+            displayName: "Sub Only",
+            authType: "oauth",
+            supportedAuthTypes: ["oauth"],
+            defaultModel: null,
+          },
+        ],
+      },
+    ];
+    await providersCatalogCommand({});
+    expect(calls).toEqual([
+      {
+        method: "GET",
+        path: "/api/testorg/agents/inference-providers/catalog",
+      },
+    ]);
+    const claudeLine = logLines.find((l) => l.includes("claude"));
+    const subOnlyLine = logLines.find((l) => l.includes("sub-only"));
+    expect(claudeLine).toContain("api key or web sign-in");
+    expect(subOnlyLine).toContain("sign-in via web console");
   });
 
   test("create resolves $VAR key, merges --model, and sets default", async () => {
@@ -120,6 +188,52 @@ describe("providers", () => {
     });
   });
 
+  test("create --default reports partial success when the default PUT fails", async () => {
+    responses = [{ provider: { slug: "p1" } }];
+    failPathSuffix = "/p1/default";
+    await expect(
+      providersCreateCommand("p1", {
+        kind: "openai",
+        key: "sk-literal",
+        default: true,
+      })
+    ).rejects.toThrow("simulated failure");
+    // The provider row exists — the operator must learn create succeeded.
+    expect(errorLines.join("\n")).toContain("was created");
+    expect(errorLines.join("\n")).toContain("lobu providers set-default p1");
+  });
+
+  test("update trims the name and PUTs displayName", async () => {
+    responses = [{ provider: { slug: "z-ai" } }];
+    await providersUpdateCommand("z-ai", { name: "  Z AI  ", json: true });
+    expect(calls).toEqual([
+      {
+        method: "PUT",
+        path: "/api/testorg/agents/inference-providers/z-ai",
+        body: { displayName: "Z AI" },
+      },
+    ]);
+  });
+
+  test("update rejects a blank name before any network call", async () => {
+    await expect(
+      providersUpdateCommand("z-ai", { name: "   " })
+    ).rejects.toThrow("--name must not be blank");
+    expect(calls).toEqual([]);
+  });
+
+  test("set-key rotates via /key with a resolved $VAR value", async () => {
+    process.env.LOBU_TEST_PROVIDER_KEY = "sk-rotated";
+    await providersSetKeyCommand("z-ai", { key: "$LOBU_TEST_PROVIDER_KEY" });
+    expect(calls).toEqual([
+      {
+        method: "PUT",
+        path: "/api/testorg/agents/inference-providers/z-ai/key",
+        body: { value: "sk-rotated" },
+      },
+    ]);
+  });
+
   test("set-capability sends the block for one modality", async () => {
     await providersSetCapabilityCommand("z-ai", "text", {
       model: "glm-5.2",
@@ -133,9 +247,41 @@ describe("providers", () => {
       },
     ]);
   });
+
+  test("set-default PUTs /default", async () => {
+    await providersSetDefaultCommand("z-ai", {});
+    expect(calls).toEqual([
+      {
+        method: "PUT",
+        path: "/api/testorg/agents/inference-providers/z-ai/default",
+        body: undefined,
+      },
+    ]);
+  });
+
+  test("delete requires --yes, then DELETEs", async () => {
+    await expectYesGuard(() => providersDeleteCommand("z-ai", {}));
+    await providersDeleteCommand("z-ai", { yes: true });
+    expect(calls).toEqual([
+      {
+        method: "DELETE",
+        path: "/api/testorg/agents/inference-providers/z-ai",
+      },
+    ]);
+  });
 });
 
 describe("environment", () => {
+  test("list hits the environments route", async () => {
+    responses = [
+      { builtin: { id: "builtin" }, environments: [], availableProviders: [] },
+    ];
+    await environmentListCommand({ json: true });
+    expect(calls).toEqual([
+      { method: "GET", path: "/api/testorg/environments" },
+    ]);
+  });
+
   test("create sends snake-case provider_kind and parsed credential", async () => {
     responses = [{ environment: { id: "env_1", name: "prod" } }];
     await environmentCreateCommand("prod", {
@@ -170,6 +316,14 @@ describe("environment", () => {
       },
     ]);
   });
+
+  test("delete requires --yes, then DELETEs", async () => {
+    await expectYesGuard(() => environmentDeleteCommand("env_1", {}));
+    await environmentDeleteCommand("env_1", { yes: true });
+    expect(calls).toEqual([
+      { method: "DELETE", path: "/api/testorg/environments/env_1" },
+    ]);
+  });
 });
 
 describe("clients", () => {
@@ -181,21 +335,11 @@ describe("clients", () => {
     ]);
   });
 
-  test("revoke deletes the mcp client and requires --yes", async () => {
+  test("revoke requires --yes, then DELETEs the mcp client", async () => {
+    await expectYesGuard(() => clientsRevokeCommand("mcp_client_1", {}));
     await clientsRevokeCommand("mcp_client_1", { yes: true });
     expect(calls).toEqual([
       { method: "DELETE", path: "/api/testorg/clients/mcp/mcp_client_1" },
     ]);
-
-    // Without --yes: refuses before any network call.
-    calls = [];
-    const exitSpy = spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("exit");
-    }) as never);
-    await expect(clientsRevokeCommand("mcp_client_1", {})).rejects.toThrow(
-      "exit"
-    );
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(calls).toEqual([]);
   });
 });

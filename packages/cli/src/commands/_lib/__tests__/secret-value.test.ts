@@ -65,4 +65,19 @@ describe("parseKeyValueEntries", () => {
       "key=value"
     );
   });
+
+  test("never echoes entry content in errors — not even the key part", () => {
+    // A pasted secret can land on either side of the `=`.
+    for (const entry of ["sk-live-oops", "sk-live-oops=", "=sk-live-oops"]) {
+      let message = "";
+      try {
+        parseKeyValueEntries([entry], "--credential");
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).not.toBe("");
+      expect(message).not.toContain("sk-live-oops");
+      expect(message).toContain("entry #1");
+    }
+  });
 });

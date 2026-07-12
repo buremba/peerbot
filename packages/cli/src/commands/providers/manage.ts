@@ -248,11 +248,18 @@ export async function providersUpdateCommand(
   slug: string,
   options: CloudCommandOptions & { name: string }
 ): Promise<void> {
+  // requiredOption guarantees presence, not substance — the server treats a
+  // blank displayName as "leave unchanged", which would print "Renamed" for
+  // a no-op.
+  const displayName = options.name.trim();
+  if (!displayName) {
+    throw new Error("--name must not be blank.");
+  }
   const { client, orgSlug } = await resolveApiClient(options);
   const { provider } = await client.request<{ provider: OrgProviderRow }>(
     "PUT",
     `${providersBase(orgSlug)}/${encodeURIComponent(slug)}`,
-    { displayName: options.name }
+    { displayName }
   );
 
   if (options.json) {

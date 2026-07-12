@@ -31,9 +31,9 @@ export function resolveSecretFlag(raw: string, flagName: string): string {
 /**
  * Parse repeatable `key=value` flag entries into a record. Values follow the
  * `$VAR` convention above, so `--credential 'token=$VERCEL_TOKEN'` reads the
- * env var instead of putting the token on the command line. Malformed-entry
- * errors deliberately do NOT echo the entry — a pasted bare secret must not
- * end up on stderr.
+ * env var instead of putting the token on the command line. Errors reference
+ * entries only by index, never by content — a mistakenly pasted secret must
+ * not end up on stderr, and even the "key" part can be one (`sk-live-…=`).
  */
 export function parseKeyValueEntries(
   entries: string[],
@@ -41,14 +41,13 @@ export function parseKeyValueEntries(
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [index, entry] of entries.entries()) {
+    const label = `${flagName} entry #${index + 1}`;
     const eq = entry.indexOf("=");
     const key = eq > 0 ? entry.slice(0, eq).trim() : "";
     if (!key) {
-      throw new Error(
-        `${flagName} entry #${index + 1} must be key=value (value not shown).`
-      );
+      throw new Error(`${label} must be key=value (value not shown).`);
     }
-    out[key] = resolveSecretFlag(entry.slice(eq + 1), `${flagName} ${key}`);
+    out[key] = resolveSecretFlag(entry.slice(eq + 1), label);
   }
   return out;
 }

@@ -93,6 +93,14 @@ const config: KnipConfig = {
         "@vitest/coverage-v8",
       ],
     },
+    "packages/openclaw-plugin": {
+      entry: [
+        // Referenced only as `vitest run --config …` CLI flags (test:e2e /
+        // test:unit scripts), which knip can't trace.
+        "test/e2e/vitest.config.ts",
+        "test/unit/vitest.config.ts",
+      ],
+    },
     "packages/cli": {
       entry: [
         // Tests run via `bun test packages/cli` in CI (nested __tests__ dirs).
@@ -162,6 +170,11 @@ const config: KnipConfig = {
         "vite",
         "winston",
         "zod",
+        // Server's Vercel runtime provider (gateway/runtime/providers/vercel.ts),
+        // reached only through the bundled server.
+        "@vercel/sandbox",
+        // Vendored into dist/vendor by scripts/build.cjs (file copy, no import).
+        "@lobu/pgvector-embedded",
       ],
     },
     ".": {
@@ -175,7 +188,9 @@ const config: KnipConfig = {
         "examples/**/*.connector.ts",
         "examples/**/*.reaction.ts",
         "examples/**/evals/**/*.ts",
-        "examples/**/skills/**/*.ts",
+        // Example test suites run in CI (`bun test examples/personal-agent`,
+        // `bun test examples/brand-intelligence`) and locally for the rest.
+        "examples/**/__tests__/**/*.ts",
       ],
     },
   },

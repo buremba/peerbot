@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { getDb } from "../../db/client";
+import { nextRunAt } from "../../utils/cron";
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,
@@ -68,6 +69,29 @@ async function readRow(id: string): Promise<ScheduledJobRow> {
 function minutesAgo(n: number): Date {
   return new Date(Date.now() - n * 60_000);
 }
+
+describe("nextRunAt timezone evaluation (no DB)", () => {
+  test("daily 9am survives spring-forward: Europe/London 2026-03-29 fires at 08:00Z", () => {
+    // UK clocks jump 01:00→02:00 on 2026-03-29. cron-parser 5.5.0 skipped
+    // this occurrence entirely (returned 03-30); fixed in 5.6.x.
+    expect(nextRunAt("0 9 * * *", new Date("2026-03-28T12:00:00Z"), "Europe/London")).toBe(
+      "2026-03-29T08:00:00.000Z"
+    );
+  });
+
+  test("daily 9am survives fall-back: Europe/London 2026-10-25 fires at 09:00Z", () => {
+    expect(nextRunAt("0 9 * * *", new Date("2026-10-24T12:00:00Z"), "Europe/London")).toBe(
+      "2026-10-25T09:00:00.000Z"
+    );
+  });
+
+  test("null timezone falls back to server-time evaluation", () => {
+    const next = new Date(nextRunAt("0 9 * * *", new Date("2026-03-28T12:00:00Z"), null));
+    expect(next.toISOString()).toBe(
+      new Date(nextRunAt("0 9 * * *", new Date("2026-03-28T12:00:00Z"))).toISOString()
+    );
+  });
+});
 
 describe("scheduled jobs: timezone-aware cron advance", () => {
   beforeAll(async () => {

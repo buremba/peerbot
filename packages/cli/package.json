@@ -77,7 +77,7 @@
     "chalk": "^5.3.0",
     "chat": "^4.26.0",
     "commander": "^14.0.1",
-    "cron-parser": "^5.5.0",
+    "cron-parser": "^5.6.1",
     "dotenv": "^16.4.5",
     "embedded-postgres": "18.3.0-beta.17",
     "esbuild": "^0.28.1",

@@ -690,27 +690,37 @@ export async function updateInferenceProviderCoreFields(
 
 /**
  * Rotate a provider's api key: re-encrypt into the SAME api_key_ref name (the
- * ref is immutable). Returns false when no live row exists for the slug.
+ * ref is immutable). Returns "not_found" when no live row exists for the slug
+ * and "oauth_provider" for an OAuth-backed row (its `oauth://` ref never reads
+ * the vault, so a write would be silently unused).
  */
+export type RotateInferenceProviderKeyResult =
+	| "rotated"
+	| "not_found"
+	/** The row signs in via OAuth (`oauth://` api_key_ref) — it has no vault
+	 *  key to rotate, and writing one would be silently unread. */
+	| "oauth_provider";
+
 export async function rotateInferenceProviderKey(
 	organizationId: string,
 	slug: string,
 	apiKey: string,
-): Promise<boolean> {
+): Promise<RotateInferenceProviderKeyResult> {
 	const sql = getDb();
 	const ciphertext = encrypt(apiKey);
 
 	return await sql.begin(async (tx) => {
 		const rows = (await tx`
-			SELECT id
+			SELECT id, api_key_ref
 			FROM inference_providers
 			WHERE organization_id = ${organizationId} AND slug = ${slug}
 			  AND deleted_at IS NULL
 			LIMIT 1
 			FOR UPDATE
-		`) as Array<{ id: string | number }>;
+		`) as Array<{ id: string | number; api_key_ref: string }>;
 		const row = rows[0];
-		if (!row) return false;
+		if (!row) return "not_found";
+		if (isOAuthInferenceProviderRef(row.api_key_ref)) return "oauth_provider";
 
 		const secretName = inferenceProviderSecretName(slug, Number(row.id));
 
@@ -721,7 +731,7 @@ export async function rotateInferenceProviderKey(
 			DO UPDATE SET ciphertext = EXCLUDED.ciphertext, updated_at = now()
 		`;
 
-		return true;
+		return "rotated";
 	});
 }
 
@@ -745,10 +755,6 @@ export async function softDeleteInferenceProvider(
 		RETURNING id
 	`) as Array<{ id: string | number }>;
 	return rows.length > 0;
-}
-
-export function providerOrgSecretName(providerId: string): string {
-	return `provider:${providerId}:apiKey`;
 }
 
 /**
@@ -830,6 +836,12 @@ export async function readEnvironmentSecret(
  * this tier: run dispatch checks it via `hasCredentials`, so a proxy that
  * skips it lets an apply-provisioned org dispatch its agent only to 401 at
  * the first provider call.
+ *
+ * Post-cutover this resolves through the org's `inference_providers` row for
+ * the slug (= the module providerId) to its row-unique `<slug>-<id>` vault
+ * name — the same name `createInferenceProvider` / `rotateInferenceProviderKey`
+ * write. The legacy `provider:<id>:apiKey` rows are converged into these by
+ * the backfill task (backfill-inference-providers.ts) and are no longer read.
  */
 export async function readOrgSharedProviderApiKey(
 	providerId: string,
@@ -837,11 +849,15 @@ export async function readOrgSharedProviderApiKey(
 ): Promise<string | null> {
 	const sql = getDb();
 	const rows = (await sql`
-    SELECT ciphertext
-    FROM agent_secrets
-    WHERE organization_id = ${organizationId}
-      AND name = ${providerOrgSecretName(providerId)}
-      AND (expires_at IS NULL OR expires_at > now())
+    SELECT s.ciphertext
+    FROM inference_providers p
+    JOIN agent_secrets s
+      ON s.organization_id = p.organization_id
+     AND ('secret://' || p.organization_id || '/' || s.name) = p.api_key_ref
+     AND (s.expires_at IS NULL OR s.expires_at > now())
+    WHERE p.organization_id = ${organizationId}
+      AND p.slug = ${providerId}
+      AND p.deleted_at IS NULL
     LIMIT 1
   `) as Array<{ ciphertext: string }>;
 	const ciphertext = rows[0]?.ciphertext;

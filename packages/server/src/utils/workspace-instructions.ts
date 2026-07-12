@@ -119,20 +119,33 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
     if (operationConnections.length > 0) {
       sections.push(
         '',
-        '### Connector Operations (call via `run_sdk` → `client.operations.execute(...)`)'
+        '### Connector Operations',
+        // One path only: `run_sdk` → `client.operations.execute(...)` with the
+        // REAL SDK signature (connection_id + operation_key — see
+        // sandbox/namespaces/operations.ts). Deliberately NOT surfacing the
+        // local/mcp/openapi backend split — that is internal plumbing
+        // `execute` dispatches on, and showing it invites the agent to look
+        // for a separate MCP/HTTP tool that does not exist.
+        'Run any connector operation the same way: `run_sdk` → `client.operations.execute({ connection_id, operation_key, input })`. There is no separate per-connector tool.',
+        'Discover `operation_key`s and input schemas with `query_sdk` → `client.operations.listAvailable()`; get the `connection_id` with `client.connections.list()`.',
+        'Execution may be policy-gated: a gated op returns `status: "pending_approval"` (a run queued for a human). Surface that to the user rather than treating it as a failure.'
       );
       for (const conn of operationConnections) {
-        const actionCount =
+        const localOps =
           conn.actions_schema && typeof conn.actions_schema === 'object'
-            ? Object.keys(conn.actions_schema as Record<string, unknown>).length
-            : 0;
-        const mcpCount = conn.mcp_config ? 1 : 0;
-        const openApiCount = conn.openapi_config ? 1 : 0;
-        const totalSources = actionCount + mcpCount + openApiCount;
-        if (totalSources === 0) continue;
-        sections.push(
-          `- ${conn.key}: local actions ${actionCount}, mcp ${mcpCount}, openapi ${openApiCount}`
-        );
+            ? Object.keys(conn.actions_schema as Record<string, unknown>)
+            : [];
+        const hasMcp = !!conn.mcp_config;
+        const hasOpenApi = !!conn.openapi_config;
+        if (localOps.length === 0 && !hasMcp && !hasOpenApi) continue;
+        // Prefer showing concrete operation names; fall back to a discovery
+        // pointer when the ops live behind mcp/openapi backends (whose names
+        // aren't in actions_schema — list_available resolves them).
+        const detail =
+          localOps.length > 0
+            ? localOps.join(', ')
+            : 'operations via `manage_operations.list_available`';
+        sections.push(`- ${conn.key}: ${detail}`);
       }
     }
 

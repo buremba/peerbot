@@ -172,12 +172,11 @@ export abstract class BaseProviderModule
     // Keep this availability check aligned with resolveCredential(). An org
     // inference-provider row owns its key whether it uses the catalog URL or a
     // custom upstream; that key is intentionally absent from per-agent auth
-    // profiles and the legacy org-shared provider secret. Treat it as available
-    // so proxy-mode workers receive an opaque credential placeholder and can
-    // reach the gateway, where the invariant resolves the real key at egress.
-    // Conversely, a custom upstream with an unavailable key must fail closed
-    // even when a profile exists, because that profile is not consented for the
-    // custom URL.
+    // profiles. Treat it as available so proxy-mode workers receive an opaque
+    // credential placeholder and can reach the gateway, where the invariant
+    // resolves the real key at egress. Conversely, a custom upstream with an
+    // unavailable key must fail closed even when a profile exists, because
+    // that profile is not consented for the custom URL.
     const invariant = await resolveUrlInvariant(
       this.providerId,
       resolveOrgId(context?.organizationId) ?? undefined
@@ -197,11 +196,12 @@ export abstract class BaseProviderModule
     );
     if (hasProfile) return true;
     // Mirror the resolution chain in `buildEnvVars`: when no per-user auth
-    // profile exists, an org-shared API key written by `lobu apply`
-    // (`provider:<id>:apiKey` in agent_secrets) is a valid credential too.
-    // Without this, `lobu apply`-provisioned providers report no credentials,
-    // so primary-provider detection (and thus the worker's defaultProvider /
-    // model resolution) silently fails until the gateway is restarted.
+    // profile exists, the org's inference-provider row key (written by
+    // `lobu apply` / the console; row-unique vault name) is a valid credential
+    // too. Without this, `lobu apply`-provisioned providers report no
+    // credentials, so primary-provider detection (and thus the worker's
+    // defaultProvider / model resolution) silently fails until the gateway is
+    // restarted.
     return (await readOrgSharedProviderKey(this.providerId, context)) !== null;
   }
 

@@ -25,19 +25,21 @@
  */
 
 import { getDb } from '../db/client';
+import { isValidInferenceProviderSlug } from '../lobu/stores/provider-secrets';
 import logger from '../utils/logger';
 
 // Legacy org-shared provider secret name: `provider:<type>:apiKey`.
 const LEGACY_PROVIDER_SECRET_RE = /^provider:(.+):apiKey$/;
-
-// inference_providers.slug format: ^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 
 export interface BackfillInferenceProvidersResult {
   scanned: number;
   created: number;
   skipped: number;
   invalidSlug: number;
+  /** Row-unique secrets refreshed from a NEWER legacy row (see freshness pass). */
+  freshened: number;
+  /** Per-row failures (logged at error level; the hourly tick retries them). */
+  errors: number;
 }
 
 /**
@@ -53,6 +55,8 @@ export async function backfillInferenceProviders(): Promise<BackfillInferencePro
     created: 0,
     skipped: 0,
     invalidSlug: 0,
+    freshened: 0,
+    errors: 0,
   };
 
   // Candidate legacy secrets that don't yet have a live inference_providers row
@@ -77,11 +81,18 @@ export async function backfillInferenceProviders(): Promise<BackfillInferencePro
     result.scanned++;
     const match = LEGACY_PROVIDER_SECRET_RE.exec(row.name);
     const slug = match?.[1];
-    if (!slug || !SLUG_RE.test(slug)) {
+    if (!slug || !isValidInferenceProviderSlug(slug)) {
       // A legacy type that isn't a valid slug (uppercase, too long, etc.) —
-      // can't be represented as an inference_providers row. Leave it for the
-      // resolver's legacy path; count it so operators can see the gap.
+      // can't be represented as an inference_providers row, and the resolver
+      // no longer has a legacy path, so this credential is unreachable. That
+      // was already true pre-cutover for module lookups (module providerIds
+      // are valid slugs), but WARN loudly so an operator sees the stranded
+      // row instead of a silent counter.
       result.invalidSlug++;
+      logger.warn(
+        { organization_id: row.organization_id, name: row.name },
+        '[backfill-inference-providers] legacy secret name is not a valid provider slug — credential is unreachable; migrate or delete it manually',
+      );
       continue;
     }
 
@@ -134,10 +145,13 @@ export async function backfillInferenceProviders(): Promise<BackfillInferencePro
         result.skipped++;
       }
     } catch (error) {
-      // A single org's failure must not abort the batch — log and continue so
-      // the rest of the fleet still converges. The next tick retries this one.
-      result.skipped++;
-      logger.warn(
+      // A single org's failure must not abort the batch — log at ERROR and
+      // continue so the rest of the fleet still converges (a poisoned row
+      // must not become a fleet-wide deploy freeze via the boot-time run).
+      // The hourly tick retries it; `errors` makes the failure visible in the
+      // result instead of hiding inside `skipped`.
+      result.errors++;
+      logger.error(
         {
           err: error,
           organization_id: row.organization_id,
@@ -146,6 +160,38 @@ export async function backfillInferenceProviders(): Promise<BackfillInferencePro
         '[backfill-inference-providers] failed to backfill one provider',
       );
     }
+  }
+
+  // Freshness pass: a key rotated through the legacy
+  // `PUT /agents/:id/providers/:id/api-key` route AFTER the create pass ran
+  // landed only in the legacy `provider:<slug>:apiKey` row, so the row-unique
+  // `<slug>-<id>` copy the resolver reads went stale. Copy the legacy
+  // ciphertext forward wherever the legacy row is strictly newer. The legacy
+  // route is deleted in the same release as the resolver cutover, so this
+  // converges once and is a permanent no-op afterwards (new rotations write
+  // only the row-unique name).
+  // A freshness failure PROPAGATES: the boot-time caller fails closed on it
+  // (serving with a knowingly-stale key is worse than a restart), and the
+  // hourly scheduler retries via the runs-queue backoff path.
+  const freshened = (await sql`
+    UPDATE agent_secrets AS dst
+    SET ciphertext = src.ciphertext, updated_at = now()
+    FROM inference_providers p
+    JOIN agent_secrets src
+      ON src.organization_id = p.organization_id
+     AND src.name = 'provider:' || p.slug || ':apiKey'
+    WHERE dst.organization_id = p.organization_id
+      AND ('secret://' || p.organization_id || '/' || dst.name) = p.api_key_ref
+      AND p.deleted_at IS NULL
+      AND src.updated_at > dst.updated_at
+    RETURNING dst.name
+  `) as Array<{ name: string }>;
+  result.freshened = freshened.length;
+  if (freshened.length > 0) {
+    logger.info(
+      { freshened: freshened.length },
+      '[backfill-inference-providers] refreshed row-unique secrets from newer legacy rows',
+    );
   }
 
   return result;

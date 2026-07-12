@@ -16,6 +16,7 @@ import {
   getInferenceProviderBySlug,
   getOrgDefaultModel,
   listInferenceProviders,
+  readOrgSharedProviderApiKey,
   resolveInferenceProviderConfig,
   rotateInferenceProviderKey,
   setInferenceProviderDefault,
@@ -85,14 +86,23 @@ describe('inference-provider store', () => {
 
     // ── rotate the key (same immutable ref) ───────────────────────────────
     expect(await rotateInferenceProviderKey(ORG, 'openai', 'sk-rotated')).toBe(
-      true
+      'rotated'
     );
     expect(await readKey(ORG, 'openai')).toBe('sk-rotated');
+    // The resolver-cutover reader (worker-spawn / egress tier) resolves the
+    // same row-unique vault name.
+    expect(await readOrgSharedProviderApiKey('openai', ORG)).toBe('sk-rotated');
+
+    // ── rotate outcomes: missing slug / OAuth-backed row ──────────────────
+    expect(
+      await rotateInferenceProviderKey(ORG, 'no-such-slug', 'sk-x')
+    ).toBe('not_found');
 
     // ── soft-delete ───────────────────────────────────────────────────────
     expect(await softDeleteInferenceProvider(ORG, 'openai')).toBe(true);
     expect(await getInferenceProviderBySlug(ORG, 'openai')).toBeNull();
     expect(await listInferenceProviders(ORG)).toHaveLength(0);
+    expect(await readOrgSharedProviderApiKey('openai', ORG)).toBeNull();
 
     // ── recreate the same slug succeeds (fresh id, fresh keyref) ──────────
     // Give it a text block so the key is resolvable via the modality resolver.
@@ -155,6 +165,25 @@ describe('inference-provider store', () => {
     expect(repaired.capabilities).toEqual({});
     expect(repaired.hasCustomUpstream).toBe(false);
     expect(await readKey(ORG, 'claude')).toBeNull();
+    // The org-key tier must not serve the pre-repair vault key either — the
+    // oauth:// ref never joins to a vault secret.
+    expect(await readOrgSharedProviderApiKey('claude', ORG)).toBeNull();
+
+    // Rotating an OAuth-backed row is rejected: a vault write would be
+    // silently unread behind the oauth:// ref. Prove the vault is untouched
+    // byte-for-byte, not merely unreadable.
+    const db = getTestDb();
+    const vaultBefore = await db`
+      SELECT name, ciphertext FROM agent_secrets ORDER BY name
+    `;
+    expect(await rotateInferenceProviderKey(ORG, 'claude', 'sk-new')).toBe(
+      'oauth_provider'
+    );
+    const vaultAfter = await db`
+      SELECT name, ciphertext FROM agent_secrets ORDER BY name
+    `;
+    expect(Array.from(vaultAfter)).toEqual(Array.from(vaultBefore));
+    expect(await readOrgSharedProviderApiKey('claude', ORG)).toBeNull();
 
     const listed = await getInferenceProviderBySlug(ORG, 'claude');
     expect(listed?.apiKeyRef).toBe(repaired.apiKeyRef);

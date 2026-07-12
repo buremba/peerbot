@@ -68,6 +68,36 @@ export async function bootTaskScheduler(
   env: Env,
 ): Promise<TaskScheduler> {
   const scheduler = new TaskScheduler(coreServices.getQueue());
+
+  // Converge legacy provider secrets BEFORE this pod serves traffic: the org
+  // credential resolver reads ONLY inference_providers-backed vault names
+  // (resolver cutover), so a legacy-only org must have its rows minted before
+  // the first credential lookup. Idempotent and cheap once converged.
+  //
+  // Failure semantics are deliberately split: a WHOLE-PASS throw (candidate
+  // scan / freshness UPDATE) propagates and fails the boot — serving with
+  // unconverged or knowingly-stale keys is worse than a pod restart, and
+  // during a rolling deploy the old pods keep serving. PER-ROW failures do
+  // NOT throw (they're counted in `errors` and logged inside the backfill):
+  // one org's poisoned row must not become a fleet-wide deploy freeze; the
+  // hourly tick retries it.
+  const backfill = await backfillInferenceProviders();
+  if (backfill.errors > 0) {
+    logger.error(
+      { ...backfill },
+      '[boot] backfill-inference-providers PARTIALLY converged — some rows failed; hourly tick retries them',
+    );
+  } else if (
+    backfill.created > 0 ||
+    backfill.freshened > 0 ||
+    backfill.invalidSlug > 0
+  ) {
+    logger.info(
+      { ...backfill },
+      '[boot] backfill-inference-providers converged before serving',
+    );
+  }
+
   registerMaintenanceTasks(scheduler, env, coreServices);
   await scheduler.start();
 
@@ -252,9 +282,10 @@ function registerMaintenanceTasks(
   // row-unique keyref, empty capabilities so behavior is byte-identical). App
   // -level (NOT inline in a migration — the classifier-backfill outage
   // precedent), idempotent (ON CONFLICT DO NOTHING + candidate anti-join),
-  // single-claimant per tick (multi-replica safe). The first tick after a
-  // deploy converges the fleet without an operator step; hourly thereafter is
-  // plenty since it only matters until every legacy secret is migrated.
+  // single-claimant per tick (multi-replica safe). The PRIMARY run is awaited
+  // at boot in bootTaskScheduler (the resolver reads only backfilled names, so
+  // convergence must precede traffic); this hourly tick is the retry safety
+  // net for a failed boot run.
   scheduler.register(
     'backfill-inference-providers',
     async () => {

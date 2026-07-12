@@ -17,9 +17,9 @@ import { ApiResponseRenderer } from "../../../gateway/api/response-renderer";
 import { UnifiedThreadResponseConsumer } from "../../../gateway/platform/unified-thread-consumer";
 import type { Env } from "../../../index";
 import { createWatcherRun } from "../../../runs/queue-service";
+import { nextRunAt } from "../../../utils/cron";
 import { generateWindowToken } from "../../../utils/jwt";
 import { computePendingWindow } from "../../../utils/window-utils";
-import { nextRunAt } from "../../../utils/cron";
 import {
 	advanceWatcherSchedule,
 	dispatchPendingWatcherRuns,
@@ -1585,6 +1585,90 @@ describe("watcher automation contract", () => {
 	});
 
 	describe("sweepStaleWatcherRuns liveness reaping", () => {
+		it("finalizes a stale scheduled pending run and advances its watcher schedule", async () => {
+			const { sql, watcherId } = await createAutomatedWatcher();
+			const materialized = await materializeDueWatcherRuns({} as Env);
+			expect(materialized.runsCreated).toBe(1);
+
+			const [queued] = await sql`
+        UPDATE runs
+        SET created_at = NOW() - INTERVAL '3 hours'
+        WHERE watcher_id = ${watcherId}
+          AND run_type = 'watcher'
+          AND status = 'pending'
+        RETURNING id
+      `;
+			expect(queued).toBeDefined();
+
+			const [sweepA, sweepB] = await Promise.all([
+				sweepStaleWatcherRuns(sql),
+				sweepStaleWatcherRuns(sql),
+			]);
+			expect(sweepA.timedOut + sweepB.timedOut).toBe(1);
+
+			const [run] = await sql`
+        SELECT status, completed_at, error_message
+        FROM runs
+        WHERE id = ${Number(queued.id)}
+      `;
+			expect(String(run.status)).toBe("timeout");
+			expect(run.completed_at).not.toBeNull();
+			expect(String(run.error_message ?? "")).toMatch(/pending.*2 hours/i);
+
+			const [watcher] =
+				await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+			expect(new Date(watcher.next_run_at as string).getTime()).toBeGreaterThan(
+				Date.now(),
+			);
+
+			const retry = await materializeDueWatcherRuns({} as Env);
+			expect(retry.runsCreated).toBe(0);
+		});
+
+		it("leaves a fresh scheduled pending run available for dispatch", async () => {
+			const { sql, watcherId } = await createAutomatedWatcher();
+			const materialized = await materializeDueWatcherRuns({} as Env);
+			expect(materialized.runsCreated).toBe(1);
+
+			const { timedOut } = await sweepStaleWatcherRuns(sql);
+			expect(timedOut).toBe(0);
+			const [run] = await sql`
+        SELECT status FROM runs
+        WHERE watcher_id = ${watcherId} AND run_type = 'watcher'
+      `;
+			expect(String(run.status)).toBe("pending");
+		});
+
+		it("does not expire a stale manually triggered pending run", async () => {
+			const { sql, watcherId } = await createAutomatedWatcher();
+			await materializeDueWatcherRuns({} as Env);
+			await sql`
+        UPDATE runs
+        SET created_at = NOW() - INTERVAL '3 hours',
+            approved_input = jsonb_set(
+              approved_input,
+              '{dispatch_source}',
+              '"manual"'::jsonb
+            )
+        WHERE watcher_id = ${watcherId}
+          AND run_type = 'watcher'
+          AND status = 'pending'
+      `;
+
+			const { timedOut } = await sweepStaleWatcherRuns(sql);
+			expect(timedOut).toBe(0);
+			const [run] = await sql`
+        SELECT status FROM runs
+        WHERE watcher_id = ${watcherId} AND run_type = 'watcher'
+      `;
+			expect(String(run.status)).toBe("pending");
+			const [watcher] =
+				await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+			expect(new Date(watcher.next_run_at as string).getTime()).toBeLessThan(
+				Date.now(),
+			);
+		});
+
 		// Seed a `running` watcher run with controlled claim/heartbeat ages.
 		// Omitting `heartbeatAgo` mirrors a client that never heartbeats — the
 		// claim sets last_heartbeat_at == claimed_at, so the row must fall to the

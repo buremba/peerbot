@@ -476,7 +476,11 @@ export async function sweepStaleWatcherRuns(
 	const sql = db ?? getDb();
 	const heartbeatStaleInterval = intervals.watcherRunHeartbeatStaleInterval;
 	const coarseStaleInterval = intervals.watcherRunStaleInterval;
-	const timedOut = await markStaleRunsAsTimeout(sql, {
+	const pendingTimedOut = await finalizeStalePendingWatcherRuns(
+		sql,
+		coarseStaleInterval,
+	);
+	const executingTimedOut = await markStaleRunsAsTimeout(sql, {
 		runTypes: ["watcher"],
 		heartbeatSemantics: "beat-after-claim",
 		heartbeatStaleInterval,
@@ -484,10 +488,89 @@ export async function sweepStaleWatcherRuns(
 		heartbeatErrorMessage: `Watcher run heartbeat went silent for over ${heartbeatStaleInterval} — the executor crashed or was abandoned`,
 		coarseErrorMessage: `Watcher run exceeded ${coarseStaleInterval} without reaching terminal state`,
 	});
+	const timedOut = pendingTimedOut + executingTimedOut;
 	if (timedOut > 0) {
-		logger.warn({ timedOut }, "[watchers] Swept stale watcher runs");
+		logger.warn(
+			{ timedOut, pendingTimedOut, executingTimedOut },
+			"[watchers] Swept stale watcher runs",
+		);
 	}
 	return { timedOut };
+}
+
+/**
+ * Terminalize scheduled watcher runs that were never claimed before the
+ * coarse watcher TTL elapsed. A `pending` row is part of the active-run set,
+ * so without this recovery it blocks materialization forever while the
+ * watcher's `next_run_at` remains in the past.
+ *
+ * The run and watcher are locked together in Postgres. Competing replicas,
+ * dispatchers, and materializers therefore converge on one transition:
+ * either a dispatcher claims the row first, or one sweeper marks it timeout
+ * and advances the schedule. Advancing inside the same transaction prevents
+ * the next automation tick from immediately recreating the missed run.
+ *
+ * Manual runs are intentionally excluded: a manual caller owns retry policy.
+ * Fresh scheduled rows are protected by the same generous TTL used for
+ * non-heartbeating executions, allowing device-pinned watchers to wait for a
+ * temporarily offline device without being churned.
+ */
+async function finalizeStalePendingWatcherRuns(
+	sql: DbClient,
+	staleInterval: string,
+): Promise<number> {
+	return sql.begin(async (tx) => {
+		const candidates = await tx<{
+			id: number;
+			watcher_id: number;
+			schedule: string | null;
+			timezone: string | null;
+		}>`
+      SELECT r.id, r.watcher_id, w.schedule, w.timezone
+      FROM runs r
+      JOIN watchers w ON w.id = r.watcher_id
+      WHERE r.run_type = 'watcher'
+        AND r.status = 'pending'
+        AND r.created_at < current_timestamp - ${staleInterval}::interval
+        AND r.approved_input->>'dispatch_source' = 'scheduled'
+      ORDER BY r.created_at ASC
+      FOR UPDATE OF r, w SKIP LOCKED
+      LIMIT 100
+    `;
+
+		let finalized = 0;
+		for (const candidate of candidates) {
+			const result = await tx`
+        UPDATE runs
+        SET status = 'timeout',
+            completed_at = current_timestamp,
+            error_message = ${`Watcher run remained pending for over ${staleInterval} without being claimed`}
+        WHERE id = ${candidate.id}
+          AND status = 'pending'
+      `;
+			if (Number(result.count ?? 0) === 0) continue;
+			finalized++;
+
+			if (!candidate.schedule) continue;
+			const next = nextRunAt(
+				candidate.schedule,
+				new Date(),
+				candidate.timezone,
+			);
+			await tx`
+        UPDATE watchers
+        SET next_run_at = ${next}::timestamptz,
+            updated_at = current_timestamp
+        WHERE id = ${candidate.watcher_id}
+          AND status = 'active'
+          AND schedule IS NOT NULL
+          AND next_run_at IS NOT NULL
+          AND next_run_at <= current_timestamp
+      `;
+		}
+
+		return finalized;
+	});
 }
 
 /**

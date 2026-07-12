@@ -9,10 +9,13 @@
 // — the exact file selection `npm publish` uses — for every non-private package
 // and asserts none of the packed files are tests or sourcemaps.
 //
-// Run after building packages (unbuilt `dist` just yields empty tarballs):
+// Run after building packages. A package whose `files` declares `dist` but
+// packs no `dist/` entries fails hard — an unbuilt tarball would otherwise
+// pass trivially, silently skipping the very artifact this guards:
 //   bun run build:packages && node scripts/check-package-contents.mjs
 //
-// Exit 0 = clean, 1 = a tarball contains a disallowed file (or packing failed).
+// Exit 0 = clean, 1 = a tarball contains a disallowed file, a declared `dist`
+// packed empty, or packing failed.
 
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
@@ -30,8 +33,9 @@ const PACKAGES_DIR = path.join(REPO_ROOT, "packages");
 const TEST_PATH = /(^|\/)__tests__\//;
 const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/;
 // Sourcemaps: dev-only debug artifacts. They point at `src` that most packages
-// don't ship, so they're dead weight in the tarball.
-const SOURCEMAP = /\.(js|d\.ts)\.map$/;
+// don't ship, so they're dead weight in the tarball. Covers .js/.cjs/.mjs and
+// .d.ts/.d.cts/.d.mts maps.
+const SOURCEMAP = /\.[cm]?js\.map$|\.d\.[cm]?ts\.map$/;
 
 // Narrow allowlist for public compatibility files that legitimately match the
 // patterns above. Keep empty unless a genuinely-public export requires it;
@@ -58,7 +62,11 @@ function publishablePackageDirs() {
       continue; // not a package dir
     }
     if (pkg.private === true) continue;
-    dirs.push({ name: pkg.name ?? name, dir: path.join(PACKAGES_DIR, name) });
+    dirs.push({
+      name: pkg.name ?? name,
+      dir: path.join(PACKAGES_DIR, name),
+      declaresDist: (pkg.files ?? []).includes("dist"),
+    });
   }
   return dirs.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -83,13 +91,24 @@ function packedFiles(dir) {
 }
 
 let failed = false;
-for (const { name, dir } of publishablePackageDirs()) {
+for (const { name, dir, declaresDist } of publishablePackageDirs()) {
   let files;
   try {
     files = packedFiles(dir);
   } catch (err) {
     console.error(`✗ ${name}: ${err.message}`);
     failed = true;
+    continue;
+  }
+  // A declared-but-empty `dist` means the package wasn't built before the
+  // check — the pack list is missing exactly the artifacts under guard, so
+  // "clean" would be meaningless. Fail loudly instead of passing trivially.
+  if (declaresDist && !files.some((f) => f.startsWith("dist/"))) {
+    failed = true;
+    console.error(
+      `✗ ${name}: \`files\` declares \`dist\` but the tarball packs no ` +
+        "dist/ entries — build the package before running this check."
+    );
     continue;
   }
   const offenders = files
@@ -110,7 +129,8 @@ for (const { name, dir } of publishablePackageDirs()) {
 if (failed) {
   console.error(
     "\nPublishable tarballs must not contain __tests__/, *.test.*, *.spec.*, " +
-      "or sourcemap (*.js.map / *.d.ts.map) files."
+      "or sourcemap (*.{js,cjs,mjs}.map / *.d.{ts,cts,mts}.map) files, and a " +
+      "package declaring `dist` in `files` must be built before this check."
   );
   process.exit(1);
 }

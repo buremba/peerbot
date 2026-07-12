@@ -628,6 +628,7 @@ async function handleUpdateFeed(
     ...(args.entity_ids !== undefined ? ['entity_ids'] : []),
     ...(args.config !== undefined ? ['config'] : []),
     ...(args.schedule !== undefined ? ['schedule'] : []),
+    ...(hasTimezoneArg ? ['timezone'] : []),
     ...(hasRepairAgentArg ? ['repair_agent_id'] : []),
   ];
   recordToolConfigChange(ctx, {

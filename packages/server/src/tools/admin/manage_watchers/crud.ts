@@ -298,6 +298,7 @@ export async function handleCreate(
         current_version_id: versionId,
         entity_ids: entityId ? [entityId] : [],
         schedule: args.schedule ?? null,
+        timezone: args.timezone ?? null,
         agent_id: args.agent_id ?? null,
         agent_kind: args.agent_kind ?? null,
         scheduler_client_id: args.scheduler_client_id ?? null,

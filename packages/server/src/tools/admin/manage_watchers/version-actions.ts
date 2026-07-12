@@ -256,6 +256,8 @@ export async function handleCreateVersion(
         classifiers: classifiers ?? null,
         reactions_guidance: args.reactions_guidance ?? (prev.reactions_guidance as string) ?? null,
         change_notes: args.change_notes ?? null,
+        ...(args.schedule !== undefined ? { schedule: args.schedule ?? null } : {}),
+        ...(args.timezone !== undefined ? { timezone: args.timezone ?? null } : {}),
       },
       changedFields: [
         'version',

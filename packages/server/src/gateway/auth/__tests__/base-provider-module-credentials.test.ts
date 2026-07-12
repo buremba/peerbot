@@ -7,7 +7,9 @@ const TEST_ENCRYPTION_KEY = Buffer.from(
 
 // Controls what the mocked org context and db return per-test.
 let mockOrgId: string | null = null;
-let orgSharedSecretRows: Array<{ ciphertext: string }> = [];
+// One rows array serves both inference_providers reads: the invariant's
+// config read (block + ciphertext) and the org-key tier (ciphertext only) —
+// post-cutover both resolve through the same row.
 let inferenceProviderRows: Array<{
   block: { base_url?: string; model?: string } | null;
   ciphertext: string | null;
@@ -24,18 +26,14 @@ mock.module("../../../lobu/stores/org-context.js", () => ({
   },
 }));
 
-// Mock the db client. `readOrgSharedProviderKey` uses the postgres tagged
+// Mock the db client. Both provider-key reads use the postgres tagged
 // template (`sql\`SELECT ...\``); a tagged-template call invokes the function
 // with (strings, ...values), so returning the rows array satisfies it.
 mock.module("../../../db/client.js", () => ({
   PROD_PG_VALUE_OPTIONS: {},
   closeDbSingleton: async () => undefined,
-  getDb: () => (strings: TemplateStringsArray) =>
-    Promise.resolve(
-      strings.join(" ").includes("FROM inference_providers")
-        ? inferenceProviderRows
-        : orgSharedSecretRows
-    ),
+  getDb: () => (_strings: TemplateStringsArray) =>
+    Promise.resolve(inferenceProviderRows),
 }));
 
 // Import AFTER mocks so the module graph picks them up.
@@ -66,7 +64,6 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     // Ensure no system key influences the result — we test the org-shared path.
     delete process.env.Z_AI_API_KEY;
     mockOrgId = null;
-    orgSharedSecretRows = [];
     inferenceProviderRows = [];
   });
 
@@ -82,10 +79,11 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     expect(await mod.hasCredentials("agent-1")).toBe(true);
   });
 
-  test("returns true when only an org-shared API key exists (lobu apply path)", async () => {
-    // No auth profile, but `lobu apply` wrote provider:z-ai:apiKey for the org.
+  test("returns true when only the org provider-row key exists (lobu apply path)", async () => {
+    // No auth profile, and no per-modality block (a backfilled / plain row):
+    // the invariant declines and the org-key tier reads the row's vault key.
     mockOrgId = "org-1";
-    orgSharedSecretRows = [{ ciphertext: encrypt("zai-secret-value") }];
+    inferenceProviderRows = [{ block: null, ciphertext: encrypt("zai-secret-value") }];
 
     const mod = makeModule(false);
     // Pass org explicitly (as the worker session-context path now does) and
@@ -183,9 +181,9 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     );
   });
 
-  test("returns false when neither profile nor org-shared key exists", async () => {
+  test("returns false when neither profile nor org provider row exists", async () => {
     mockOrgId = "org-1";
-    orgSharedSecretRows = [];
+    inferenceProviderRows = [];
     const mod = makeModule(false);
     expect(
       await mod.hasCredentials("agent-1", { organizationId: "org-1" })
@@ -193,9 +191,11 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
   });
 
   test("returns false when there is no org context and no profile", async () => {
-    // No org id anywhere → org-shared lookup short-circuits, no db hit.
+    // No org id anywhere → org-key lookup short-circuits, no db hit.
     mockOrgId = null;
-    orgSharedSecretRows = [{ ciphertext: encrypt("should-not-be-read") }];
+    inferenceProviderRows = [
+      { block: null, ciphertext: encrypt("should-not-be-read") },
+    ];
     const mod = makeModule(false);
     expect(await mod.hasCredentials("agent-1")).toBe(false);
   });

@@ -612,32 +612,40 @@ interface ApplyContext {
 }
 
 /**
- * Push provider API keys as org-shared `agent_secrets` rows so the worker can
- * inject them at runtime without a per-user auth profile. Idempotent (PUT):
- * same value → 200, different value → rotation. Walks all desired agents (not
- * just those with a settings diff) — the secret value isn't part of the
- * settings JSON, so a row can need a key even when every resource is noop (e.g.
- * first apply after the gateway picked up support, or a key-only `.env`
- * change/rotation). Callers invoke this AFTER executePlan (so a just-created
- * agent exists before its `/agents/<id>/providers/...` key push), and also in
- * the all-noop / key-only branch (no agent creates there). Kept outside
- * `executePlan` so both paths can call it without double-pushing.
+ * Push provider API keys into the org's `inference_providers` store — the
+ * single org-key store the worker credential resolution reads (post
+ * resolver-cutover; the legacy `/agents/<id>/providers/<id>/api-key` route is
+ * gone). A key declared per agent in config is an ORG-scoped secret, so keys
+ * are deduped by provider — last declaration wins, matching the previous
+ * PUT-overwrite semantics — and pushed once each: rotate when the org
+ * provider row exists, create the row otherwise (slug doubles as kind;
+ * per-agent provider ids are catalog kinds). Idempotent either way. Walks all
+ * desired agents (not just those with a settings diff) — the secret value
+ * isn't part of the settings JSON, so a key can need pushing even when every
+ * resource is noop (e.g. a key-only `.env` change/rotation).
  */
 export async function pushProviderApiKeys(
   client: ApplyClient,
   agents: DesiredState["agents"]
 ): Promise<void> {
+  const keys = new Map<string, string>();
   for (const desired of agents) {
     for (const { providerId, value } of desired.providerKeys) {
-      await client.setProviderApiKey(
-        desired.metadata.agentId,
-        providerId,
-        value
-      );
-      printText(
-        chalk.dim(`  ↻ provider-key ${desired.metadata.agentId}/${providerId}`)
-      );
+      keys.set(providerId, value);
     }
+  }
+  for (const [providerId, value] of keys) {
+    try {
+      await client.rotateInferenceProviderKey(providerId, value);
+    } catch (err) {
+      if (!(err instanceof ApiError && err.status === 404)) throw err;
+      await client.createInferenceProvider({
+        slug: providerId,
+        kind: providerId,
+        apiKey: value,
+      });
+    }
+    printText(chalk.dim(`  ↻ provider-key ${providerId}`));
   }
 }
 
@@ -1442,11 +1450,9 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   const pendingAuth: PendingAuthEntry[] = [];
   let applyErr: unknown;
   try {
-    // Resources FIRST: executePlan does `upsertAgent` for created agents, and
-    // `setProviderApiKey` targets `/agents/<id>/providers/...` — pushing keys
-    // before the agent exists 404s on a first apply. So run the plan, then push
-    // keys. (The all-noop / key-only short-circuit above pushes keys directly:
-    // there are no agent creates there, so the agents already exist remotely.)
+    // Resources first, then provider keys. Keys are org-scoped
+    // (inference_providers rows), so there is no agent-existence ordering
+    // constraint anymore — the order is kept for stable output only.
     if (hasResourceWork) {
       printText(chalk.bold("\nApplying:"));
       await executePlan({ client, state, plan, remote }, pendingAuth);

@@ -747,10 +747,6 @@ export async function softDeleteInferenceProvider(
 	return rows.length > 0;
 }
 
-export function providerOrgSecretName(providerId: string): string {
-	return `provider:${providerId}:apiKey`;
-}
-
 /**
  * Vault row name for one credential field of a runtime environment. Keyed by
  * `environments.id` (not provider kind) so two environments of the same
@@ -830,6 +826,12 @@ export async function readEnvironmentSecret(
  * this tier: run dispatch checks it via `hasCredentials`, so a proxy that
  * skips it lets an apply-provisioned org dispatch its agent only to 401 at
  * the first provider call.
+ *
+ * Post-cutover this resolves through the org's `inference_providers` row for
+ * the slug (= the module providerId) to its row-unique `<slug>-<id>` vault
+ * name — the same name `createInferenceProvider` / `rotateInferenceProviderKey`
+ * write. The legacy `provider:<id>:apiKey` rows are converged into these by
+ * the backfill task (backfill-inference-providers.ts) and are no longer read.
  */
 export async function readOrgSharedProviderApiKey(
 	providerId: string,
@@ -837,11 +839,15 @@ export async function readOrgSharedProviderApiKey(
 ): Promise<string | null> {
 	const sql = getDb();
 	const rows = (await sql`
-    SELECT ciphertext
-    FROM agent_secrets
-    WHERE organization_id = ${organizationId}
-      AND name = ${providerOrgSecretName(providerId)}
-      AND (expires_at IS NULL OR expires_at > now())
+    SELECT s.ciphertext
+    FROM inference_providers p
+    JOIN agent_secrets s
+      ON s.organization_id = p.organization_id
+     AND ('secret://' || p.organization_id || '/' || s.name) = p.api_key_ref
+     AND (s.expires_at IS NULL OR s.expires_at > now())
+    WHERE p.organization_id = ${organizationId}
+      AND p.slug = ${providerId}
+      AND p.deleted_at IS NULL
     LIMIT 1
   `) as Array<{ ciphertext: string }>;
 	const ciphertext = rows[0]?.ciphertext;

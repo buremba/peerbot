@@ -38,6 +38,8 @@ export interface BackfillInferenceProvidersResult {
   created: number;
   skipped: number;
   invalidSlug: number;
+  /** Row-unique secrets refreshed from a NEWER legacy row (see freshness pass). */
+  freshened: number;
 }
 
 /**
@@ -53,6 +55,7 @@ export async function backfillInferenceProviders(): Promise<BackfillInferencePro
     created: 0,
     skipped: 0,
     invalidSlug: 0,
+    freshened: 0,
   };
 
   // Candidate legacy secrets that don't yet have a live inference_providers row
@@ -146,6 +149,42 @@ export async function backfillInferenceProviders(): Promise<BackfillInferencePro
         '[backfill-inference-providers] failed to backfill one provider',
       );
     }
+  }
+
+  // Freshness pass: a key rotated through the legacy
+  // `PUT /agents/:id/providers/:id/api-key` route AFTER the create pass ran
+  // landed only in the legacy `provider:<slug>:apiKey` row, so the row-unique
+  // `<slug>-<id>` copy the resolver reads went stale. Copy the legacy
+  // ciphertext forward wherever the legacy row is strictly newer. The legacy
+  // route is deleted in the same release as the resolver cutover, so this
+  // converges once and is a permanent no-op afterwards (new rotations write
+  // only the row-unique name).
+  try {
+    const freshened = (await sql`
+      UPDATE agent_secrets AS dst
+      SET ciphertext = src.ciphertext, updated_at = now()
+      FROM inference_providers p
+      JOIN agent_secrets src
+        ON src.organization_id = p.organization_id
+       AND src.name = 'provider:' || p.slug || ':apiKey'
+      WHERE dst.organization_id = p.organization_id
+        AND ('secret://' || p.organization_id || '/' || dst.name) = p.api_key_ref
+        AND p.deleted_at IS NULL
+        AND src.updated_at > dst.updated_at
+      RETURNING dst.name
+    `) as Array<{ name: string }>;
+    result.freshened = freshened.length;
+    if (freshened.length > 0) {
+      logger.info(
+        { freshened: freshened.length },
+        '[backfill-inference-providers] refreshed row-unique secrets from newer legacy rows',
+      );
+    }
+  } catch (error) {
+    logger.warn(
+      { err: error },
+      '[backfill-inference-providers] freshness pass failed; next tick retries',
+    );
   }
 
   return result;

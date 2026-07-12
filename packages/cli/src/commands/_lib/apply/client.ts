@@ -464,22 +464,6 @@ export class ApplyClient {
     await this.request("POST", `/api/${this.orgSlug}/deployments`, summary);
   }
 
-  /**
-   * Set (or rotate) the org-shared API key for a provider. Idempotent.
-   * Lands in `agent_secrets` under `provider:<id>:apiKey`, scoped to the org.
-   */
-  async setProviderApiKey(
-    agentId: string,
-    providerId: string,
-    value: string
-  ): Promise<void> {
-    await this.request(
-      "PUT",
-      `/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}/api-key`,
-      { value }
-    );
-  }
-
   // ── Org inference providers ────────────────────────────────────────────────
   // Org-scoped, mounted UNDER the agents router (`/api/:orgSlug/agents`), so the
   // full path is `/api/<org>/agents/inference-providers…` — verified against

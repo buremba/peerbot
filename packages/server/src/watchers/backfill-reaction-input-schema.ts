@@ -19,7 +19,7 @@
  * ever fills a NULL column (never overwrites a populated one).
  *
  * The extractor loads the `isolated-vm` native addon (V8-only), so this runs under
- * the server's node runtime — invoked by `scripts/backfill-reaction-input-schema.ts`.
+ * the server's node runtime.
  */
 
 import type { DbClient } from '../db/client';

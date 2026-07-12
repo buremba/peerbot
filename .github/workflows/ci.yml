@@ -404,15 +404,9 @@ jobs:
         run: |
           node ../../node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/vitest-report.json" \
             --coverage.enabled --coverage.provider=v8 --coverage.reporter=lcov --coverage.reportsDirectory=coverage
+          # vitest writes coverage/lcov.info; rename so later bun steps don't clobber it.
+          mv coverage/lcov.info coverage/vitest.lcov.info
           node ../../scripts/assert-vitest-report-clean.mjs "$RUNNER_TEMP/vitest-report.json"
-
-      - name: Upload server integration coverage
-        if: always()
-        uses: codecov/codecov-action@v7
-        with:
-          files: packages/server/coverage/lcov.info
-          flags: server-integration
-          fail_ci_if_error: false
 
       - name: server gateway suites (bun:test, needs Postgres)
         # The gateway bun:test files are excluded from vitest (vitest.config.ts)
@@ -427,6 +421,8 @@ jobs:
         # if a gateway test file ever escapes this loop. Covers
         # src/gateway/infrastructure/queue too (#1238). Run all dirs and fail at
         # the end so one run reports every failing dir, not just the first.
+        # packages/server/bunfig.toml routes --coverage to ./coverage/lcov.info
+        # (lcov only); each dir is moved to a unique name before the next overwrites it.
         working-directory: packages/server
         run: |
           set -uo pipefail
@@ -437,7 +433,11 @@ jobs:
           rc=0
           for d in $dirs; do
             echo "::group::bun test $d"
-            bun test "$d" || rc=1
+            bun test "$d" --coverage || rc=1
+            if [ -f coverage/lcov.info ]; then
+              safe=$(printf '%s' "$d" | tr '/' '-')
+              mv coverage/lcov.info "coverage/gateway-${safe}.lcov.info"
+            fi
             echo "::endgroup::"
           done
           exit $rc
@@ -449,7 +449,18 @@ jobs:
         # (src/lobu/stores/__tests__) that vitest owns, so we target
         # src/lobu/__tests__ specifically rather than the whole src/lobu tree.
         working-directory: packages/server
-        run: bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__
+        run: |
+          bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__ --coverage
+          mv coverage/lcov.info coverage/server-postgres-other.lcov.info
+
+      - name: Upload server integration coverage
+        if: always()
+        uses: codecov/codecov-action@v7
+        with:
+          # vitest + every instrumented bun:test step above write into this dir.
+          directory: packages/server/coverage
+          flags: server-integration
+          fail_ci_if_error: false
 
   format-lint:
     runs-on: ubuntu-latest

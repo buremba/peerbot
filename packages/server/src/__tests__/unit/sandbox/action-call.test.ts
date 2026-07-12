@@ -95,6 +95,29 @@ describe("createActionCaller", () => {
 		});
 	});
 
+	it.each(["failed", "error"] as const)(
+		"rejects a named call when status is %s",
+		async (status) => {
+			const failure = {
+				status,
+				error_message: `Operation ended with status ${status}`,
+			};
+			const handler = async () => failure;
+			const { action } = createActionCaller(
+				handler as never,
+				{} as never,
+				{} as never,
+			);
+
+			await expect(action("execute", {})).rejects.toMatchObject({
+				name: "ClientSdkActionError",
+				action: "execute",
+				message: failure.error_message,
+				result: failure,
+			});
+		},
+	);
+
 	it("returns a queued approval even when its mutation success is false", async () => {
 		const queued = {
 			success: false,

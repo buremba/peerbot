@@ -38,10 +38,19 @@ function failureMessage(
 	// callers need its approval URL/run id to continue the workflow.
 	const acceptedForApproval = result.approval_queued === true;
 	const reportsFailure =
-		!acceptedForApproval && (result.success === false || result.ok === false);
+		!acceptedForApproval &&
+		(result.success === false ||
+			result.ok === false ||
+			result.status === "failed" ||
+			result.status === "error");
 	if (!hasError && !reportsFailure) return null;
 
-	const candidates = [result.error, result.message, result.reason];
+	const candidates = [
+		result.error,
+		result.error_message,
+		result.message,
+		result.reason,
+	];
 	const message = candidates.find(
 		(candidate): candidate is string =>
 			typeof candidate === "string" && candidate.trim().length > 0,

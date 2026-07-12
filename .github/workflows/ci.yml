@@ -527,9 +527,12 @@ jobs:
         run: bun run check:packages
 
       # Report-only for now: knip surfaces unused files / exports / deps to
-      # establish a baseline. Non-blocking (continue-on-error) until the
-      # baseline is triaged — then this can be promoted to a hard gate.
-      - name: Dead-code report (knip, non-blocking)
+      # The files section is a hard gate: a PR that adds an unreachable file
+      # fails CI. Exports/deps/types stay report-only until their baseline is
+      # triaged — promote sections into the gate by extending --include.
+      - name: Dead-code gate (knip, unused files)
+        run: bun run knip --include files
+      - name: Dead-code report (knip full, non-blocking)
         continue-on-error: true
         run: bun run knip
 

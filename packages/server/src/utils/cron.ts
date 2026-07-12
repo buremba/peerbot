@@ -10,10 +10,26 @@ const MIN_INTERVAL_MS = 60_000; // 1 minute minimum between runs
 /**
  * Compute the next run time from a cron expression.
  * Returns an ISO string suitable for storing in `next_run_at`.
+ *
+ * `tz` is an IANA zone name; when set, wall-clock fields in the expression
+ * ("0 9 * * *") are evaluated in that zone, DST included. When omitted the
+ * expression is evaluated in server time (UTC in prod).
  */
-export function nextRunAt(schedule: string, from: Date = new Date()): string {
-  const interval = CronExpressionParser.parse(schedule, { currentDate: from });
+export function nextRunAt(schedule: string, from: Date = new Date(), tz?: string | null): string {
+  const interval = CronExpressionParser.parse(schedule, { currentDate: from, tz: tz ?? undefined });
   return interval.next().toDate().toISOString();
+}
+
+/**
+ * Validate an IANA timezone name. Returns null if valid, error message if not.
+ */
+export function validateTimezone(tz: string): string | null {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return null;
+  } catch {
+    return `Unknown IANA timezone: ${tz}`;
+  }
 }
 
 /**

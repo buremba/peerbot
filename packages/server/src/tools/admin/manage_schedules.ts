@@ -43,7 +43,7 @@ import {
 } from '../../scheduled/scheduled-jobs-service';
 import type { ToolContext, ToolSourceContext } from '../registry';
 import logger from '../../utils/logger';
-import { nextRunAt as nextCronTickAt } from '../../utils/cron';
+import { nextRunAt as nextCronTickAt, validateTimezone } from '../../utils/cron';
 import { getErrorMessage } from "@lobu/core";
 
 // ============================================
@@ -76,10 +76,26 @@ async function handleCreate(
   if (Number.isNaN(runAtDate.getTime())) {
     return { error: `run_at is not a valid ISO timestamp: ${args.run_at}` };
   }
-  // If cron is set, sanity-check it by computing the next tick from now.
+  if (args.timezone) {
+    const tzError = validateTimezone(args.timezone);
+    if (tzError) return { error: tzError };
+  }
+  let untilAtDate: Date | null = null;
+  if (args.until_at !== undefined) {
+    untilAtDate = new Date(args.until_at);
+    if (Number.isNaN(untilAtDate.getTime())) {
+      return { error: `until_at is not a valid ISO timestamp: ${args.until_at}` };
+    }
+    if (untilAtDate.getTime() < runAtDate.getTime()) {
+      return { error: 'until_at must not be before run_at.' };
+    }
+  }
+  // If cron is set, sanity-check it by computing the next tick from now —
+  // in the schedule's timezone, so a zone the parser can't handle is
+  // rejected here rather than blowing up the ticker later.
   if (args.cron) {
     try {
-      nextCronTickAt(args.cron);
+      nextCronTickAt(args.cron, new Date(), args.timezone);
     } catch (err) {
       return {
         error: `cron expression rejected: ${getErrorMessage(err)}`,
@@ -104,6 +120,9 @@ async function handleCreate(
     description: args.description,
     cron: args.cron ?? null,
     runAt: runAtDate,
+    timezone: args.timezone ?? null,
+    untilAt: untilAtDate,
+    idempotencyKey: args.idempotency_key ?? null,
     createdByUser: ctx.userId ?? null,
     createdByAgent: ctx.agentId ?? null,
     sourceRunId: args.source_run_id ?? null,
@@ -138,6 +157,10 @@ async function handleUpdate(
       return { error: `run_at is not a valid ISO timestamp: ${args.run_at}` };
     }
   }
+  if (typeof args.timezone === 'string') {
+    const tzError = validateTimezone(args.timezone);
+    if (tzError) return { error: tzError };
+  }
   // A string cron is validated (empty string rejected); explicit null clears
   // the cadence (recurring → one-shot); omitted leaves it unchanged.
   if (typeof args.cron === 'string') {
@@ -147,9 +170,20 @@ async function handleUpdate(
       };
     }
     try {
-      nextCronTickAt(args.cron);
+      nextCronTickAt(args.cron, new Date(), typeof args.timezone === 'string' ? args.timezone : undefined);
     } catch (err) {
       return { error: `cron expression rejected: ${getErrorMessage(err)}` };
+    }
+  }
+  let untilAt: Date | null | undefined;
+  if (args.until_at !== undefined) {
+    if (args.until_at === null) {
+      untilAt = null;
+    } else {
+      untilAt = new Date(args.until_at);
+      if (Number.isNaN(untilAt.getTime())) {
+        return { error: `until_at is not a valid ISO timestamp: ${args.until_at}` };
+      }
     }
   }
 
@@ -180,6 +214,8 @@ async function handleUpdate(
     id: args.id,
     description: args.description,
     cron: args.cron,
+    timezone: args.timezone,
+    untilAt,
     runAt,
     actionArgs,
   });
@@ -287,6 +323,9 @@ function serializeSchedule(row: ScheduledJobRow) {
     delivery_context: row.delivery_context,
     cron: row.cron,
     next_run_at: row.next_run_at,
+    timezone: row.timezone,
+    until_at: row.until_at,
+    idempotency_key: row.idempotency_key,
     last_fired_at: row.last_fired_at,
     last_fired_run_id: row.last_fired_run_id,
     paused: row.paused,

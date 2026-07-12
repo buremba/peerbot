@@ -131,6 +131,9 @@ export interface ScheduledJobRow {
   delivery_context: ScheduledDeliveryContext | null;
   cron: string | null;
   next_run_at: string;
+  timezone: string | null;
+  until_at: string | null;
+  idempotency_key: string | null;
   last_fired_at: string | null;
   last_fired_run_id: number | null;
   paused: boolean;
@@ -152,6 +155,12 @@ interface CreateScheduledJobParams {
   description: string;
   cron?: string | null;
   runAt: Date;
+  /** IANA zone the cron is evaluated in; null/omitted = server time. */
+  timezone?: string | null;
+  /** Stop recurring after this instant; the ticker pauses the row instead of advancing past it. */
+  untilAt?: Date | null;
+  /** Client-chosen dedup key: a retried create with the same (org, key) returns the existing row. */
+  idempotencyKey?: string | null;
   createdByUser?: string | null;
   createdByAgent?: string | null;
   sourceRunId?: number | null;
@@ -166,20 +175,28 @@ export async function createScheduledJob(
     throw new Error('scheduled_jobs requires created_by_user or created_by_agent');
   }
   const sql = getDb();
+  // ON CONFLICT rides the partial unique index on (org, idempotency_key).
+  // The no-op DO UPDATE (vs DO NOTHING) makes RETURNING yield the existing
+  // row, so a retried create gets the original schedule back instead of a
+  // duplicate — or an empty result it would have to re-query for.
   const rows = (await sql`
     INSERT INTO scheduled_jobs (
       organization_id, action_type, action_args, delivery_context, cron, next_run_at,
+      timezone, until_at, idempotency_key,
       description,
       created_by_user, created_by_agent,
       source_run_id, source_event_id, source_thread_id
     ) VALUES (
       ${params.organizationId}, ${params.actionType},
       ${sql.json(params.actionArgs)}, ${params.deliveryContext ? sql.json(params.deliveryContext) : null}, ${params.cron ?? null}, ${params.runAt},
+      ${params.timezone ?? null}, ${params.untilAt ?? null}, ${params.idempotencyKey ?? null},
       ${params.description},
       ${params.createdByUser ?? null}, ${params.createdByAgent ?? null},
       ${params.sourceRunId ?? null}, ${params.sourceEventId ?? null},
       ${params.sourceThreadId ?? null}
     )
+    ON CONFLICT (organization_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+    DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
     RETURNING *
   `) as unknown as ScheduledJobRow[];
   return rows[0];
@@ -239,6 +256,10 @@ interface UpdateScheduledJobParams {
   description?: string;
   /** `null` clears the cron (recurring → one-shot); a string sets a new cadence. */
   cron?: string | null;
+  /** `null` clears the zone (back to server time); a string sets a new zone. */
+  timezone?: string | null;
+  /** `null` clears the bound (recur forever); a Date sets/moves it. */
+  untilAt?: Date | null;
   /** Reschedule the next firing. */
   runAt?: Date;
   /** Replace the durable action payload (e.g. a new wake_agent prompt). */
@@ -257,11 +278,15 @@ export async function updateScheduledJob(
 ): Promise<ScheduledJobRow | null> {
   const sql = getDb();
   const setCron = params.cron !== undefined;
+  const setTimezone = params.timezone !== undefined;
+  const setUntilAt = params.untilAt !== undefined;
   const rows = (await sql`
     UPDATE scheduled_jobs
     SET
       description = COALESCE(${params.description ?? null}, description),
       cron = CASE WHEN ${setCron} THEN ${params.cron ?? null} ELSE cron END,
+      timezone = CASE WHEN ${setTimezone} THEN ${params.timezone ?? null} ELSE timezone END,
+      until_at = CASE WHEN ${setUntilAt} THEN ${params.untilAt ?? null} ELSE until_at END,
       next_run_at = COALESCE(${params.runAt ?? null}, next_run_at),
       action_args = COALESCE(${params.actionArgs ? sql.json(params.actionArgs) : null}, action_args),
       updated_at = now()
@@ -312,6 +337,19 @@ export function registerScheduledJobsTicker(scheduler: TaskScheduler): void {
       if (claimed.length === 0) return;
 
       for (const row of claimed) {
+        const untilAtMs = row.until_at ? new Date(row.until_at).getTime() : null;
+        // A due row past its until_at bound retires without firing. Normal
+        // advancement never lands next_run_at past until_at (see below), so
+        // this is only reachable when an update pushed run_at beyond the
+        // bound. Same conditional-advance guard as the paths below.
+        if (untilAtMs !== null && new Date(row.next_run_at).getTime() > untilAtMs) {
+          await sql`
+            UPDATE scheduled_jobs
+            SET paused = true, updated_at = now()
+            WHERE id = ${row.id} AND next_run_at <= now()
+          `;
+          continue;
+        }
         const tickIso = row.next_run_at;
         const idempotencyKey = `scheduled_job:${row.id}:${tickIso}`;
         try {
@@ -349,16 +387,20 @@ export function registerScheduledJobsTicker(scheduler: TaskScheduler): void {
         // re-claimed every tick. `<= now()` is a no-op once any pod has
         // advanced the row (next_run_at is then in the future) and never
         // clobbers an operator re-schedule to a future time.
-        const nextAt = row.cron ? nextCronTickAt(row.cron) : null;
-        if (nextAt) {
+        const nextAt = row.cron ? nextCronTickAt(row.cron, new Date(), row.timezone) : null;
+        // A recurring row whose next occurrence would land past until_at is
+        // done: fall through to the one-shot pause path instead of advancing.
+        const withinBound =
+          nextAt !== null && (untilAtMs === null || new Date(nextAt).getTime() <= untilAtMs);
+        if (withinBound) {
           await sql`
             UPDATE scheduled_jobs
             SET last_fired_at = now(), next_run_at = ${nextAt}, updated_at = now()
             WHERE id = ${row.id} AND next_run_at <= now()
           `;
         } else {
-          // One-shot: mark as fired + paused so the index ignores it.
-          // Re-pausing an already-paused row is idempotent.
+          // One-shot, or recurring past its until_at bound: mark as fired +
+          // paused so the index ignores it. Re-pausing is idempotent.
           await sql`
             UPDATE scheduled_jobs
             SET last_fired_at = now(), paused = true, updated_at = now()

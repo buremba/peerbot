@@ -13,6 +13,7 @@ import type { Env } from '../index';
 import { isCloudMode } from '../utils/cloud-mode';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
 import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
+import { nextRunAt as nextRunAtFromCron } from '../utils/cron';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
@@ -174,7 +175,8 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
 
   // Get feed details (including pinned_version)
   const feedRows = await sql`
-    SELECT f.organization_id, f.connection_id, f.pinned_version, c.connector_key
+    SELECT f.organization_id, f.connection_id, f.pinned_version, f.schedule, f.timezone,
+           c.connector_key
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     WHERE f.id = ${feedId}
@@ -188,6 +190,8 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
     connection_id: number;
     connector_key: string;
     pinned_version: string | null;
+    schedule: string | null;
+    timezone: string | null;
   };
 
   // Cloud gate: a raw-DB connector (postgres) has no tenant-URL egress hardening
@@ -246,15 +250,30 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
   }
   const connectorVersion = resolved.version;
 
+  const nextRunAt = nextRunAtFromCron(
+    feed.schedule ?? '0 */6 * * *',
+    new Date(),
+    feed.timezone
+  );
   const inserted = await sql`
-    INSERT INTO runs (
-      organization_id, run_type, feed_id, connection_id,
-      connector_key, connector_version, status, approval_status, created_at
-    ) VALUES (
-      ${feed.organization_id}, 'sync', ${feedId}, ${feed.connection_id},
-      ${feed.connector_key}, ${connectorVersion}, 'pending', 'auto', current_timestamp
+    WITH inserted AS (
+      INSERT INTO runs (
+        organization_id, run_type, feed_id, connection_id,
+        connector_key, connector_version, status, approval_status, created_at
+      ) VALUES (
+        ${feed.organization_id}, 'sync', ${feedId}, ${feed.connection_id},
+        ${feed.connector_key}, ${connectorVersion}, 'pending', 'auto', current_timestamp
+      )
+      RETURNING id, feed_id
     )
-    RETURNING id
+    UPDATE feeds f
+    SET last_sync_status = 'pending',
+        last_error = NULL,
+        next_run_at = ${nextRunAt},
+        updated_at = current_timestamp
+    FROM inserted i
+    WHERE f.id = i.feed_id
+    RETURNING i.id
   `;
   const runId = Number((inserted[0] as { id: unknown }).id);
 

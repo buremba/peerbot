@@ -760,14 +760,18 @@ export function createGatewayApp(
               agentConfigStore.getSettings(a.agentId),
             )
           : null;
-      const providers = (settings?.installedProviders || []).map(
-				(p: { providerId: string }) => p.providerId,
-      );
+      const providers: string[] = [];
+      for (const ref of settings?.models || []) {
+        const slash = ref.indexOf("/");
+        if (slash > 0 && !providers.includes(ref.slice(0, slash))) {
+          providers.push(ref.slice(0, slash));
+        }
+      }
       agentDetails.push({
         agentId: a.agentId,
         name: a.name,
         providers,
-        model: settings?.defaultModel || "auto",
+        model: settings?.models?.[0] ?? null,
       });
     }
 

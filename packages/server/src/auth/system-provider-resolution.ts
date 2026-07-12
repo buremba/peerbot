@@ -1,6 +1,7 @@
 /**
- * Resolve system-key model providers and a default pinned model for
- * auto-provisioned agents (builder, owletto-default).
+ * Resolve the system-key model providers available to this deployment into an
+ * ordered `models` list (explicit `<slug>/<model>` refs) for auto-provisioned
+ * agents (builder, owletto-default). Index 0 is the pinned default.
  *
  * Reads `config/providers.json` directly so provisioning is deterministic
  * regardless of whether the gateway module registry is initialized.
@@ -10,6 +11,7 @@ import type { ProviderConfigEntry } from "@lobu/core";
 import { getErrorMessage } from "@lobu/core";
 import { resolveEnv } from "../gateway/auth/mcp/string-substitution";
 import { collectProviderModelOptions } from "../gateway/auth/provider-model-options";
+import { UNRESOLVED_MODEL_SUFFIX } from "../gateway/auth/provider-catalog";
 import { getModelProviderModules } from "../gateway/modules/module-system";
 import {
 	ProviderRegistryService,
@@ -17,14 +19,9 @@ import {
 } from "../gateway/services/provider-registry-service";
 import logger from "../utils/logger";
 
-export interface InstalledProvider {
-	providerId: string;
-	installedAt: number;
-}
-
 export interface ResolvedSystemProviders {
-	providers: InstalledProvider[];
-	model: string | null;
+	/** Ordered explicit `<slug>/<model>` refs; index 0 = the pinned default. */
+	models: string[];
 }
 
 const MODEL_PROVIDER_PREFERENCE = [
@@ -56,8 +53,8 @@ function hasClaudeSystemKey(): boolean {
 }
 
 export async function resolveSystemKeyProvidersAndModel(): Promise<ResolvedSystemProviders> {
-	const now = Date.now();
-	const installed = new Map<string, InstalledProvider>();
+	// Ordered set of provider slugs with a system-level credential.
+	const installed = new Set<string>();
 
 	let configs: Record<string, ProviderConfigEntry> = {};
 	try {
@@ -71,79 +68,127 @@ export async function resolveSystemKeyProvidersAndModel(): Promise<ResolvedSyste
 	}
 	for (const [providerId, cfg] of Object.entries(configs)) {
 		if (cfg.envVarName && resolveEnv(cfg.envVarName)) {
-			installed.set(providerId, { providerId, installedAt: now });
+			installed.add(providerId);
 		}
 	}
 
 	if (hasZaiSystemKey()) {
-		installed.set(ZAI_PROVIDER_ID, {
-			providerId: ZAI_PROVIDER_ID,
-			installedAt: now,
-		});
+		installed.add(ZAI_PROVIDER_ID);
 	}
 
 	if (hasClaudeSystemKey()) {
-		installed.set(CLAUDE_PROVIDER_ID, {
-			providerId: CLAUDE_PROVIDER_ID,
-			installedAt: now,
-		});
+		installed.add(CLAUDE_PROVIDER_ID);
 	}
 
 	try {
 		for (const m of getModelProviderModules()) {
-			if (m.hasSystemKey() && !installed.has(m.providerId)) {
-				installed.set(m.providerId, {
-					providerId: m.providerId,
-					installedAt: now,
-				});
+			if (m.hasSystemKey()) {
+				installed.add(m.providerId);
 			}
 		}
 	} catch {
 		// Registry not available — the providers.json + Claude floor already applies.
 	}
 
-	const pickModel = (providerId: string): string | null => {
-		const cfg = configs[providerId];
-		const dm = cfg?.defaultModel?.trim();
-		if (installed.has(providerId) && dm) {
-			return `${providerId}/${dm}`;
+	// Live model options per provider (from the module registry) — the ONLY
+	// source of a concrete default for providers whose defaultModel isn't in
+	// providers.json (e.g. Bedrock declares it on the module). Fetched ONCE and
+	// reused so EVERY system-key provider can resolve a concrete model, not just
+	// the one that becomes the default. Best-effort: unavailable ⇒ empty map.
+	let liveOptions: Record<string, Array<{ value: string }>> = {};
+	if (installed.size > 0) {
+		try {
+			liveOptions = await collectProviderModelOptions("", "");
+		} catch {
+			// Registry/model fetch unavailable — fall back to providers.json only.
 		}
-		return null;
+	}
+
+	// Prefix a bare model id with its slug, unless it is ALREADY `<slug>/…`
+	// qualified. Provider-native ids can contain slashes (nvidia
+	// `nvidia/moonshotai/kimi-k2.6`, openrouter `anthropic/claude-sonnet-5`), so
+	// a catalog default or live option that already carries its slug must NOT be
+	// double-prefixed to `<slug>/<slug>/…`.
+	const qualify = (providerId: string, model: string): string =>
+		model.startsWith(`${providerId}/`) ? model : `${providerId}/${model}`;
+
+	// Concrete model ref per slug: the catalog defaultModel first, else the
+	// provider's first live model option. No `auto` refs — a provider with no
+	// resolvable concrete model returns null (caller decides sentinel vs skip).
+	const concreteRef = (providerId: string): string | null => {
+		const dm = configs[providerId]?.defaultModel?.trim();
+		if (dm) return qualify(providerId, dm);
+		const first = liveOptions[providerId]?.[0]?.value?.trim();
+		if (!first) return null;
+		return qualify(providerId, first);
 	};
+
+	const pickDefault = (providerId: string): string | null =>
+		installed.has(providerId) ? concreteRef(providerId) : null;
 
 	// Prefer Claude over ZAI and the remaining config-declared providers, but use
 	// the catalog's defaultModel for every provider. Keeping a second model ID in
 	// code made auto-provisioned agents lag the picker after catalog updates.
-	let model: string | null = hasClaudeSystemKey()
-		? pickModel(CLAUDE_PROVIDER_ID)
+	let defaultRef: string | null = hasClaudeSystemKey()
+		? pickDefault(CLAUDE_PROVIDER_ID)
 		: hasZaiSystemKey()
-			? pickModel(ZAI_PROVIDER_ID)
+			? pickDefault(ZAI_PROVIDER_ID)
 			: null;
 	for (const providerId of MODEL_PROVIDER_PREFERENCE) {
-		if (model) break;
-		model = pickModel(providerId);
+		if (defaultRef) break;
+		defaultRef = pickDefault(providerId);
 	}
-	if (!model) {
+	if (!defaultRef) {
 		for (const providerId of Object.keys(configs)) {
-			model = pickModel(providerId);
-			if (model) break;
+			defaultRef = pickDefault(providerId);
+			if (defaultRef) break;
 		}
 	}
-	if (!model && installed.size > 0) {
-		try {
-			const optionsByProvider = await collectProviderModelOptions("", "");
-			for (const { providerId } of installed.values()) {
-				const first = optionsByProvider[providerId]?.[0]?.value?.trim();
-				if (first) {
-					model = first.startsWith(`${providerId}/`)
-						? first
-						: `${providerId}/${first}`;
-					break;
-				}
+	if (!defaultRef) {
+		// Still nothing from config-declared providers — take the first installed
+		// provider that resolves a concrete (live) model as the default.
+		for (const providerId of installed) {
+			defaultRef = concreteRef(providerId);
+			if (defaultRef) break;
+		}
+	}
+
+	// Default first, then EVERY other system-key provider. A provider that
+	// resolves to a concrete model (via catalog default OR live options) is added
+	// as that ref; a provider that resolves to NOTHING is added as a
+	// `<slug>/__unresolved__` restriction SENTINEL — never dropped. Dropping it
+	// would let "system providers exist but none resolved" collapse to an empty
+	// `models` list, which the provisioning callers persist as `[]` = allow-all,
+	// silently widening the restriction. The sentinel keeps the agent gated
+	// (non-empty, never routes) until a concrete model resolves.
+	const models: string[] = defaultRef ? [defaultRef] : [];
+	const defaultSlug = defaultRef ? defaultRef.split("/", 1)[0] : null;
+	const sentinelled: string[] = [];
+	for (const providerId of installed) {
+		if (providerId === defaultSlug) continue;
+		const ref = concreteRef(providerId);
+		if (ref) {
+			models.push(ref);
+		} else {
+			models.push(`${providerId}/${UNRESOLVED_MODEL_SUFFIX}`);
+			sentinelled.push(providerId);
+		}
+	}
+	// If NO provider resolved a concrete default (defaultRef null) but system
+	// providers exist, the list is all sentinels — restricted, not allow-all.
+	if (!defaultRef) {
+		for (const providerId of installed) {
+			if (!models.some((m) => m.startsWith(`${providerId}/`))) {
+				models.push(`${providerId}/${UNRESOLVED_MODEL_SUFFIX}`);
+				sentinelled.push(providerId);
 			}
-		} catch {
-			// Registry/model fetch unavailable — model may stay null.
 		}
 	}
-	return { providers: [...installed.values()], model };
+	if (sentinelled.length > 0) {
+		logger.info(
+			{ sentinelled },
+			"[system-provider-resolution] System-key providers with no concrete model kept as restriction sentinels (agent stays gated, not allow-all)",
+		);
+	}
+	return { models };
 }

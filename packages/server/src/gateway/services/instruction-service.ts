@@ -47,8 +47,15 @@ class SkillsInstructionProvider extends BaseInstructionProvider {
   protected async buildInstructions(
     context: InstructionContext
   ): Promise<string> {
-    // If no settings store or agentId, return generic skill discovery instructions
-    if (!this.agentSettingsStore || !context.agentId) {
+    // If no settings store or agentId, return generic skill discovery instructions.
+    // Also fail closed (generic) for an orgless DB-backed agent: an id-only read
+    // of a shared id would leak another org's skills — `orgScoped === false` says
+    // "do NOT read agent settings by id".
+    if (
+      !this.agentSettingsStore ||
+      !context.agentId ||
+      context.orgScoped === false
+    ) {
       return this.getGenericSkillsInstructions();
     }
 
@@ -242,10 +249,14 @@ export class InstructionService {
     context: InstructionContext,
     options?: { settingsUrl?: string }
   ): Promise<SessionContextData> {
-    // Get platform-specific instructions
+    // Get platform-specific instructions. A platform provider may do an
+    // agent-scoped DB read (e.g. SlackInstructionProvider.listConnections),
+    // so it is gated by the SAME org-scope guard as skills/agent instructions:
+    // an orgless DB-backed agent (`orgScoped === false`) skips it entirely
+    // (platformInstructions stays "") to avoid leaking another tenant's data.
     let platformInstructions = "";
     const platformProvider = this.platformProviders.get(platform);
-    if (platformProvider) {
+    if (platformProvider && context.orgScoped !== false) {
       try {
         platformInstructions = await platformProvider.getInstructions(context);
         logger.info(
@@ -271,9 +282,15 @@ export class InstructionService {
       logger.error("Failed to get network instructions:", error);
     }
 
-    // Build agent instructions from identity/soul/user settings
+    // Build agent instructions from identity/soul/user settings. Skip the by-id
+    // read for an orgless DB-backed agent (`orgScoped === false`) — it would
+    // id-only read another org's identity/soul/user for a shared id.
     let agentInstructions = "";
-    if (this.agentSettingsStore && context.agentId) {
+    if (
+      this.agentSettingsStore &&
+      context.agentId &&
+      context.orgScoped !== false
+    ) {
       try {
         const settings = await this.agentSettingsStore.getSettings(
           context.agentId,
@@ -319,12 +336,16 @@ export class InstructionService {
       logger.error("Failed to get skills instructions:", error);
     }
 
-    // Get MCP status data
+    // Get MCP status data. Pass the org so the lobu-memory slug is resolved from
+    // the token's org (not an id-only agent lookup); orgless db-backed → none.
     let mcpStatus: McpStatus[] = [];
     if (this.mcpConfigService) {
       try {
         mcpStatus =
-          (await this.mcpConfigService.getMcpStatus(context.agentId)) || [];
+          (await this.mcpConfigService.getMcpStatus(
+            context.agentId,
+            context.organizationId
+          )) || [];
         logger.info(`Got MCP status for ${mcpStatus.length} MCPs`);
       } catch (error) {
         logger.error("Failed to get MCP status:", error);

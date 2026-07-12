@@ -395,9 +395,31 @@ export function defineWatcher(config: Omit<Watcher, "kind">): Watcher {
 // Agents
 // ---------------------------------------------------------------------------
 
+/**
+ * Model suffix for a provider with no resolved concrete model. Kept in lockstep
+ * with the server's `UNRESOLVED_MODEL_SUFFIX` (a `<slug>/__unresolved__` ref is
+ * a restriction sentinel: it keeps the agent gated, never routes, never emits
+ * `<slug>/auto`). Duplicated here rather than imported so the CLI never depends
+ * on the server package.
+ */
+export const UNRESOLVED_MODEL_SUFFIX = "__unresolved__";
+
 export interface ProviderConfig {
-  id?: string;
-  model: string;
+  /**
+   * Provider slug (`openai`, `chatgpt`, an org inference-provider slug, …).
+   * REQUIRED — a provider entry with no id is meaningless (it would map to a
+   * `/__unresolved__` ref the server rejects).
+   */
+  id: string;
+  /**
+   * Concrete model id for this provider (`gpt-5`, or a provider-native id that
+   * may itself contain slashes). OPTIONAL: some providers have no catalog
+   * default (e.g. ChatGPT) and `lobu init --provider <id>` omits it; a provider
+   * with no model maps to the `<slug>/__unresolved__` restriction sentinel in
+   * the agent's ordered `models` list (the operator picks a concrete model
+   * later). Never emits `<slug>/auto`.
+   */
+  model?: string;
   key?: string | SecretRef;
 }
 

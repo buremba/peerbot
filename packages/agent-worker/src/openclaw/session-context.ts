@@ -82,12 +82,72 @@ let cachedResult: {
 } | null = null;
 
 /**
+ * Last-known-good per-server MCP instructions, keyed by mcpId. A transient
+ * gateway-side tool-fetch failure makes a server's `mcpInstructions` entry
+ * arrive empty/missing; rendering that as-is would drop the whole
+ * `## MCP Server Instructions` block for one turn, shrinking the system prompt
+ * and busting the prompt cache — then the block returns next turn and busts it
+ * again. Reusing the last non-empty value keeps the block stable across a blip.
+ */
+let lastGoodMcpInstructions: Record<string, string> = {};
+
+/**
  * Invalidate the session context cache.
  * Called by the SSE client when a config_changed event is received.
  */
 export function invalidateSessionContextCache(): void {
   cachedResult = null;
   logger.info("Session context cache invalidated");
+}
+
+/**
+ * Reset the last-known-good MCP instructions cache. Exposed for tests; a
+ * real config change flows in as fresh non-empty instructions which overwrite
+ * the stale entries anyway.
+ */
+export function resetLastGoodMcpInstructions(): void {
+  lastGoodMcpInstructions = {};
+}
+
+/**
+ * Reconcile freshly-fetched MCP instructions against the last-known-good ones.
+ *
+ * `knownServerIds` (from `mcpStatus`) is the authoritative set of servers that
+ * still EXIST for this agent. `fresh` (from `mcpInstructions`) carries their
+ * instruction text — but the gateway only populates a key when the tool fetch
+ * succeeded AND returned instructions (gateway/index.ts: `if
+ * (result.value.instructions)`). So a transient blip (401, init failure) shows
+ * up as a server that is in `knownServerIds` but MISSING from `fresh` — not as
+ * an empty string. We must tell these two cases apart:
+ *
+ *   - id in knownServerIds, present & non-empty in fresh -> use fresh (remember)
+ *   - id in knownServerIds, absent/empty in fresh        -> BLIP: reuse last-good
+ *   - id NOT in knownServerIds                            -> REMOVED: drop it
+ *
+ * This keeps a disconnected connector from lingering (security) while a
+ * momentary fetch failure no longer drops the block and busts the cache twice.
+ * When `knownServerIds` is omitted we fall back to treating `fresh`'s own keys
+ * as the known set (used by unit tests exercising the map logic directly).
+ */
+export function withLastGoodMcpInstructions(
+  fresh: Record<string, string>,
+  knownServerIds?: Iterable<string>
+): Record<string, string> {
+  const known = new Set(knownServerIds ?? Object.keys(fresh));
+  const reconciled: Record<string, string> = {};
+  for (const mcpId of known) {
+    const value = fresh[mcpId];
+    if (value && value.trim().length > 0) {
+      reconciled[mcpId] = value;
+    } else if (lastGoodMcpInstructions[mcpId]) {
+      // Known server, but instructions absent/empty this fetch -> blip.
+      reconciled[mcpId] = lastGoodMcpInstructions[mcpId];
+    }
+    // Known but no text anywhere yet -> nothing to render.
+  }
+  // Authoritative: forget any server not in knownServerIds (removed/revoked).
+  lastGoodMcpInstructions = reconciled;
+  return reconciled;
 }
 
 function buildMcpInstructions(
@@ -176,10 +236,15 @@ Servers:
 ${servers}`;
 }
 
-function buildMcpServerInstructions(
+export function buildMcpServerInstructions(
   mcpInstructions: Record<string, string>
 ): string {
-  const entries = Object.entries(mcpInstructions).filter(([, v]) => v);
+  // Sort by mcpId so the rendered block is byte-identical turn-to-turn
+  // regardless of the map's key order. Non-deterministic ordering here would
+  // reshuffle a stable-content block and needlessly bust the prompt cache.
+  const entries = Object.entries(mcpInstructions)
+    .filter(([, v]) => v)
+    .sort(([a], [b]) => a.localeCompare(b));
   if (entries.length === 0) return "";
 
   const lines: string[] = ["## MCP Server Instructions", ""];
@@ -225,12 +290,22 @@ export async function getOpenClawSessionContext(
     return cachedResult;
   }
 
+  // On any fetch failure, fall back to the last SUCCESSFUL context (even if
+  // stale past the TTL) rather than the empty default — dropping to
+  // DEFAULT_SESSION_CONTEXT would blank the MCP server block, shrink the system
+  // prompt, and bust the prompt cache until the gateway recovers. An empty
+  // default is only correct when we've never had a successful fetch.
+  const fallbackContext = () =>
+    cachedResult && cachedResult.mcpExposure === mcpExposure
+      ? cachedResult
+      : { ...DEFAULT_SESSION_CONTEXT };
+
   const dispatcherUrl = process.env.DISPATCHER_URL;
   const workerToken = process.env.WORKER_TOKEN;
 
   if (!dispatcherUrl || !workerToken) {
     logger.warn("Missing dispatcher URL or worker token for session context");
-    return { ...DEFAULT_SESSION_CONTEXT };
+    return fallbackContext();
   }
 
   try {
@@ -250,7 +325,7 @@ export async function getOpenClawSessionContext(
       logger.warn("Gateway returned non-success status for session context", {
         status: response.status,
       });
-      return { ...DEFAULT_SESSION_CONTEXT };
+      return fallbackContext();
     }
 
     const data = (await response.json()) as SessionContextResponse;
@@ -269,7 +344,10 @@ export async function getOpenClawSessionContext(
     // These provide workspace context (available connectors, entity schemas, etc.)
     // that helps the agent use the tools effectively.
     const mcpServerInstructions = buildMcpServerInstructions(
-      data.mcpInstructions || {}
+      withLastGoodMcpInstructions(
+        data.mcpInstructions || {},
+        (data.mcpStatus || []).map((mcp) => mcp.id)
+      )
     );
     const mcpCliInstructions =
       mcpExposure === "cli" ? buildMcpCliInstructions(data.mcpStatus) : "";
@@ -328,6 +406,6 @@ export async function getOpenClawSessionContext(
     return result;
   } catch (error) {
     logger.error("Failed to fetch session context from gateway", { error });
-    return { ...DEFAULT_SESSION_CONTEXT };
+    return fallbackContext();
   }
 }

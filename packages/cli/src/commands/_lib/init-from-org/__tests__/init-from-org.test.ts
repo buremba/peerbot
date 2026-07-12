@@ -87,8 +87,7 @@ function fullOrgRoutes(): Record<string, () => unknown> {
       organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
     }),
     "/agents/sales/config": () => ({
-      installedProviders: [{ providerId: "anthropic", installedAt: 111 }],
-      defaultModel: "claude/sonnet-4-5",
+      models: ["anthropic/claude-sonnet-5"],
       networkConfig: {
         allowedDomains: ["github.com", ".github.com"],
         deniedDomains: ["evil.com"],
@@ -251,10 +250,7 @@ describe("lobu init --from-org", () => {
       name: "Sales",
       description: "Revenue agent",
     });
-    expect(agent?.settings.installedProviders?.[0]?.providerId).toBe(
-      "anthropic"
-    );
-    expect(agent?.settings.defaultModel).toBe("claude/sonnet-4-5");
+    expect(agent?.settings.models).toEqual(["anthropic/claude-sonnet-5"]);
     expect(agent?.settings.networkConfig).toEqual({
       allowedDomains: ["github.com", ".github.com"],
       deniedDomains: ["evil.com"],
@@ -383,6 +379,45 @@ describe("lobu init --from-org", () => {
     expect(state.memorySchema.entityTypes).toHaveLength(0);
     expect(state.watchers).toHaveLength(0);
     expect(state.connectors.connections).toHaveLength(0);
+  });
+
+  test("#3: a server models[] with an __unresolved__ sentinel round-trips (no crash, no spurious diff)", async () => {
+    const dir = mkFixtureDir();
+    await initFromOrg({
+      targetDir: dir,
+      fetchImpl: buildFetch({
+        "/oauth/userinfo": () => ({
+          organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
+        }),
+        // The server represents "provider intended, no model resolved" as a
+        // sentinel ref. Bootstrap must emit a provider config with NO model,
+        // and re-mapping must reproduce the SAME models[] — a stable no-op.
+        "/agents/lone/config": () => ({
+          models: ["chatgpt/__unresolved__", "openai/gpt-5"],
+          updatedAt: 0,
+        }),
+        "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
+        "watchers?include_details": () => ({ watchers: [] }),
+        manage_entity_schema: () => ({
+          entity_types: [],
+          relationship_types: [],
+        }),
+        manage_auth_profiles: () => ({ auth_profiles: [] }),
+        manage_connections: () => ({ connections: [] }),
+      }),
+    });
+
+    const env = {
+      CHATGPT_API_KEY: "x",
+      OPENAI_API_KEY: "y",
+    } as NodeJS.ProcessEnv;
+    const { state } = await loadDesiredStateFromConfig({ cwd: dir, env });
+    // Re-mapped models EXACTLY equal the server's list — the sentinel round-trips
+    // (a diff against the remote would be a no-op).
+    expect(state.agents[0]?.settings.models).toEqual([
+      "chatgpt/__unresolved__",
+      "openai/gpt-5",
+    ]);
   });
 
   test("env auth profile → credentials keyed by the connector's auth-schema field, not <SLUG>_VALUE", async () => {

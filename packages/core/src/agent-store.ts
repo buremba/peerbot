@@ -10,7 +10,6 @@ import type { PluginsConfig } from "./plugin-types";
 import type {
   AgentInlineGuardrail,
   AuthProfile,
-  InstalledProvider,
   NetworkConfig,
   NixConfig,
   SkillsConfig,
@@ -27,13 +26,15 @@ import type {
  */
 export interface AgentSettings {
   /**
-   * The agent's default model — a `provider/model` ref (e.g.
-   * "claude/claude-sonnet-4-6") or the literal "auto" (newest live model for the
-   * provider). Optional: when unset, model resolution falls through to the org's
-   * default inference provider (`inference_providers.is_default` →
-   * `capabilities.text.model`). A behavior may override this per-run.
+   * Ordered list of explicit model refs `<providerSlug>/<model>`. Index 0 = the
+   * agent's default (default provider + default model). Remaining entries are
+   * the agent's alternates: fallback candidates and the pick-list for
+   * per-channel (Listen) overrides. Every slug must resolve to an org-level
+   * provider (`inference_providers` row) or a built-in module. Empty/absent ⇒
+   * all org providers (org rows AND deployment system-key providers) are
+   * available and the default falls through to the org default model.
    */
-  defaultModel?: string;
+  models?: string[];
   /** Network access configuration */
   networkConfig?: NetworkConfig;
   /** Nix environment configuration */
@@ -77,8 +78,6 @@ export interface AgentSettings {
    * host's settings JSON column still round-trips this list.
    */
   authProfiles?: AuthProfile[];
-  /** Installed providers for this agent (index 0 = primary). */
-  installedProviders?: InstalledProvider[];
   /** Enable verbose logging (show tool calls, reasoning, etc.) */
   verboseLogging?: boolean;
   /**

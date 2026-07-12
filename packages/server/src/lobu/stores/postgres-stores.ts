@@ -4,6 +4,7 @@ import type {
 	AgentMetadata,
 	AgentSettings,
 } from "@lobu/core";
+import { createLogger } from "@lobu/core";
 import { getDb, tsTime, tsTimeOrNull } from "../../db/client";
 import { recordLifecycleEvent } from "../../utils/insert-event";
 import {
@@ -16,10 +17,32 @@ import {
 } from "./connections-projection";
 import { getOrgId, tryGetOrgId } from "./org-context";
 
+const logger = createLogger("postgres-stores");
+
 export const AGENT_ID_PATTERN = /^[a-z][a-z0-9-]{2,59}$/;
 
 export function isValidAgentId(agentId: string): boolean {
 	return AGENT_ID_PATTERN.test(agentId);
+}
+
+async function withChatConnectionDeadlockRetry<T>(
+	context: { organizationId: string; slug: string },
+	transaction: () => Promise<T>,
+): Promise<T> {
+	try {
+		return await transaction();
+	} catch (error) {
+		const code =
+			error && typeof error === "object"
+				? (error as { code?: unknown }).code
+				: undefined;
+		if (code !== "40P01") throw error;
+		logger.warn(
+			context,
+			"chat connection write deadlocked — retrying transaction",
+		);
+		return transaction();
+	}
 }
 
 export async function agentExistsInOrganization(
@@ -52,11 +75,11 @@ export async function touchAgentLastUsed(
 
 function rowToSettings(row: Record<string, any>): AgentSettings {
 	return {
-		// The `model` column is the agent's single defaultModel ref (a
-		// `provider/model` string or "auto"). The legacy `model_selection` /
-		// `provider_model_preferences` columns are no longer read (dropped in a
-		// follow-up migration after backfill).
-		defaultModel: row.model ?? undefined,
+		// The `models` column is the agent's ordered list of explicit
+		// `<providerSlug>/<model>` refs (index 0 = default). NULL/empty ⇒ all org
+		// providers are available and the default falls through to the org
+		// default model.
+		models: row.models ?? undefined,
 		networkConfig: row.network_config ?? undefined,
 		nixConfig: row.nix_config ?? undefined,
 		soulMd: row.soul_md ?? undefined,
@@ -65,7 +88,6 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
 		skillsConfig: row.skills_config ?? undefined,
 		toolsConfig: row.tools_config ?? undefined,
 		pluginsConfig: row.plugins_config ?? undefined,
-		installedProviders: row.installed_providers ?? undefined,
 		verboseLogging: row.verbose_logging ?? undefined,
 		showToolCalls: row.show_tool_calls ?? undefined,
 		preApprovedTools: row.pre_approved_tools ?? undefined,
@@ -113,22 +135,22 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const orgId = tryGetOrgId();
 			const rows = orgId
 				? await sql`
-            SELECT model,
+            SELECT models,
                    network_config, nix_config,
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
-                   installed_providers, verbose_logging, show_tool_calls,
+                   verbose_logging, show_tool_calls,
                    pre_approved_tools, guardrails, guardrails_inline,
                    environment_id, updated_at
             FROM agents
             WHERE id = ${agentId} AND organization_id = ${orgId}
           `
 				: await sql`
-            SELECT model,
+            SELECT models,
                    network_config, nix_config,
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
-                   installed_providers, verbose_logging, show_tool_calls,
+                   verbose_logging, show_tool_calls,
                    pre_approved_tools, guardrails, guardrails_inline,
                    environment_id, updated_at
             FROM agents
@@ -143,7 +165,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const now = new Date();
 			await sql`
         UPDATE agents SET
-          model = ${settings.defaultModel ?? null},
+          models = ${settings.models ? sql.json(settings.models) : null},
           network_config = ${sql.json(settings.networkConfig ?? {})},
           nix_config = ${sql.json(settings.nixConfig ?? {})},
           soul_md = ${settings.soulMd ?? ""},
@@ -152,7 +174,6 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           skills_config = ${sql.json(settings.skillsConfig ?? { skills: [] })},
           tools_config = ${sql.json(settings.toolsConfig ?? {})},
           plugins_config = ${sql.json(settings.pluginsConfig ?? {})},
-          installed_providers = ${sql.json(settings.installedProviders ?? [])},
           verbose_logging = ${settings.verboseLogging ?? false},
           show_tool_calls = ${settings.showToolCalls ?? false},
           pre_approved_tools = ${sql.json(settings.preApprovedTools ?? [])},
@@ -177,11 +198,11 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const orgId = getOrgId();
 			await sql`
         UPDATE agents SET
-          model = NULL,
+          models = NULL,
           network_config = '{}', nix_config = '{}',
           soul_md = '', user_md = '', identity_md = '',
           skills_config = '{"skills": []}', tools_config = '{}', plugins_config = '{}',
-          installed_providers = '[]', verbose_logging = false,
+          verbose_logging = false,
           show_tool_calls = false,
           pre_approved_tools = '[]', guardrails = '[]', guardrails_inline = '[]',
           environment_id = NULL,
@@ -324,6 +345,21 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			const agentId = filter?.agentId ?? null;
 			const platform = filter?.platform ?? null;
 
+			// CROSS-TENANT GUARD: an AGENT-scoped list with NO ambient org would drop
+			// the org filter below and return ANOTHER tenant's rows for a shared
+			// agent id (`lobu-builder`). That's a leak. Callers that legitimately
+			// want all-tenant rows (reconcile loops, admin/list) do NOT pass
+			// `agentId` and run either unscoped-by-design or inside their own
+			// `orgContext.run` — so requiring an ambient org ONLY when `agentId` is
+			// set is the tightest guard that leaves those callers untouched.
+			if (agentId && !orgId) {
+				logger.warn(
+					{ agentId, platform },
+					"[listConnections] agent-scoped list with no org context — returning empty (cross-tenant guard)",
+				);
+				return [];
+			}
+
 			// `connections` is the sole source of truth; `credential_mode IS NOT NULL`
 			// selects chat rows only (data connectors leave it NULL). filter.agentId →
 			// agent_id, filter.platform → connector_key.
@@ -348,39 +384,48 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			// together. The advisory lock is TRANSACTION-scoped — calling the writer
 			// on the pool handle would release it after the first statement and
 			// defeat the cross-replica serialization.
-			await sql.begin(async (tx: typeof sql) => {
-				const configToPersist = { ...connection.config };
-				// Universal lock order for chat writes (see chatTenantAdvisoryLockKey):
-				// org-tenant advisory → managed-workspace advisory → only then any
-				// `connections` row lock (the FOR UPDATE below, and every row lock in
-				// the projection). The managed lock is taken UNCONDITIONALLY rather
-				// than after peeking at credential_mode — the peek would be a TOCTOU
-				// (a concurrent managed install can flip the mode between peek and
-				// FOR UPDATE, reopening the advisory↔row cycle); over-acquiring on a
-				// BYO write merely serializes it against managed writes on the same
-				// tenant. Both locks are reentrant, so the projection re-taking them
-				// inside this txn is a no-op.
-				const tenantLockKey = chatTenantAdvisoryLockKey(connection, orgId);
-				if (tenantLockKey) {
-					await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
-						tenantLockKey,
-					]);
-				}
-				const managedLockKey = managedTenantAdvisoryLockKey(connection);
-				if (managedLockKey) {
-					await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
-						managedLockKey,
-					]);
-				}
-				// Scope to the LIVE row only, and lock it. Slug uniqueness holds
-				// solely for live rows (the projection's ON CONFLICT targets the
-				// `WHERE deleted_at IS NULL` partial index), so a same-slug
-				// tombstone — e.g. a deleted managed install whose slackinst-* id
-				// was later recreated as BYO — must NOT be read here. Without the
-				// filter, LIMIT 1 could pick the tombstone and its credential_mode
-				// would reclassify the live row (managed↔byo). FOR UPDATE ties the
-				// read to the same live row the upsert below writes.
-				const existingRows = await tx`
+			//
+			// A concurrent same-org tenant swap can deadlock after each transaction
+			// demotes the other's target. Retrying once is safe here: every effect is
+			// enclosed by this transaction, so PostgreSQL rolls the aborted attempt
+			// back completely before the callback is re-run.
+			await withChatConnectionDeadlockRetry(
+				{ organizationId: orgId, slug },
+				() =>
+					sql.begin(async (tx: typeof sql) => {
+						const configToPersist = { ...connection.config };
+						// Universal lock order for chat writes (see
+						// chatTenantAdvisoryLockKey): org-tenant advisory →
+						// managed-workspace advisory → only then any `connections` row
+						// lock (the FOR UPDATE below, and every row lock in the
+						// projection). The managed lock is taken UNCONDITIONALLY rather
+						// than after peeking at credential_mode — the peek would be a
+						// TOCTOU (a concurrent managed install can flip the mode between
+						// peek and FOR UPDATE, reopening the advisory↔row cycle);
+						// over-acquiring on a BYO write merely serializes it against
+						// managed writes on the same tenant. Both locks are reentrant, so
+						// the projection re-taking them inside this txn is a no-op.
+						const tenantLockKey = chatTenantAdvisoryLockKey(connection, orgId);
+						if (tenantLockKey) {
+							await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+								tenantLockKey,
+							]);
+						}
+						const managedLockKey = managedTenantAdvisoryLockKey(connection);
+						if (managedLockKey) {
+							await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+								managedLockKey,
+							]);
+						}
+						// Scope to the LIVE row only, and lock it. Slug uniqueness holds
+						// solely for live rows (the projection's ON CONFLICT targets the
+						// `WHERE deleted_at IS NULL` partial index), so a same-slug
+						// tombstone — e.g. a deleted managed install whose slackinst-* id
+						// was later recreated as BYO — must NOT be read here. Without the
+						// filter, LIMIT 1 could pick the tombstone and its credential_mode
+						// would reclassify the live row (managed↔byo). FOR UPDATE ties the
+						// read to the same live row the upsert below writes.
+						const existingRows = await tx`
           SELECT config, credential_mode
           FROM connections
           WHERE slug = ${slug} AND organization_id = ${orgId}
@@ -388,53 +433,58 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
           LIMIT 1
           FOR UPDATE
         `;
-				const existingConfig =
-					existingRows[0] &&
-					typeof existingRows[0].config === "object" &&
-					existingRows[0].config
-						? (existingRows[0].config as Record<string, any>)
-						: null;
+						const existingConfig =
+							existingRows[0] &&
+							typeof existingRows[0].config === "object" &&
+							existingRows[0].config
+								? (existingRows[0].config as Record<string, any>)
+								: null;
 
-				// The generic store has no notion of managed vs BYO — it always
-				// carried "byo" here, which reclassified an OAuth-MANAGED chat
-				// connection to BYO on any store-driven edit (e.g. setting a
-				// fallback agent_id via manage_connections update). A reclassified
-				// managed row skips revokeManagedConnection on delete (leaking the
-				// install's credentials) and loses managed-credential edit
-				// protection. Preserve the existing mode; only a brand-new row
-				// defaults to byo (managed rows are created by the Slack install
-				// path, which passes "managed" explicitly).
-				const existingCredentialMode =
-					existingRows[0]?.credential_mode === "managed" ||
-					existingRows[0]?.credential_mode === "byo"
-						? (existingRows[0].credential_mode as "managed" | "byo")
-						: null;
+						// The generic store has no notion of managed vs BYO — it always
+						// carried "byo" here, which reclassified an OAuth-MANAGED chat
+						// connection to BYO on any store-driven edit (e.g. setting a
+						// fallback agent_id via manage_connections update). A reclassified
+						// managed row skips revokeManagedConnection on delete (leaking the
+						// install's credentials) and loses managed-credential edit
+						// protection. Preserve the existing mode; only a brand-new row
+						// defaults to byo (managed rows are created by the Slack install
+						// path, which passes "managed" explicitly).
+						const existingCredentialMode =
+							existingRows[0]?.credential_mode === "managed" ||
+							existingRows[0]?.credential_mode === "byo"
+								? (existingRows[0].credential_mode as "managed" | "byo")
+								: null;
 
-				// ChatInstanceManager normalizes secret fields into `secret://` refs
-				// before reaching here. The remaining special case is the API surface
-				// that hands back `***last4`-redacted values when a sanitized
-				// connection is round-tripped to an UPDATE — preserve the existing
-				// ref/value so a non-edited secret doesn't overwrite the real one.
-				if (existingConfig) {
-					for (const [key, value] of Object.entries(configToPersist)) {
-						if (!isSecretField(key) || !isRedactedSecretValue(value)) continue;
+						// ChatInstanceManager normalizes secret fields into `secret://` refs
+						// before reaching here. The remaining special case is the API surface
+						// that hands back `***last4`-redacted values when a sanitized
+						// connection is round-tripped to an UPDATE — preserve the existing
+						// ref/value so a non-edited secret doesn't overwrite the real one.
+						if (existingConfig) {
+							for (const [key, value] of Object.entries(configToPersist)) {
+								if (!isSecretField(key) || !isRedactedSecretValue(value))
+									continue;
 
-						const existingValue = existingConfig[key];
-						if (typeof existingValue === "string" && existingValue.length > 0) {
-							configToPersist[key] = existingValue;
+								const existingValue = existingConfig[key];
+								if (
+									typeof existingValue === "string" &&
+									existingValue.length > 0
+								) {
+									configToPersist[key] = existingValue;
+								}
+							}
 						}
-					}
-				}
 
-				// `connections` is the sole source of truth — persist the chat projection.
-				await upsertChatConnectionProjection(
-					tx,
-					(v) => sql.json(v),
-					{ ...connection, config: configToPersist },
-					orgId,
-					existingCredentialMode ?? "byo",
-				);
-			});
+						// `connections` is the sole source of truth — persist the chat projection.
+						await upsertChatConnectionProjection(
+							tx,
+							(v) => sql.json(v),
+							{ ...connection, config: configToPersist },
+							orgId,
+							existingCredentialMode ?? "byo",
+						);
+					}),
+			);
 		},
 		async updateConnection(connectionId, updates) {
 			const existing = await this.getConnection(connectionId);

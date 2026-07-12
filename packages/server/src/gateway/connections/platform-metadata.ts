@@ -30,6 +30,12 @@ export interface PlatformMetadata {
   senderDisplayName?: string;
   /** Inbound: Slack workspace id (also used as `raw.team_id` shim). */
   teamId?: string;
+  /**
+   * Inbound: a link back to the originating conversation/message on the source
+   * platform (e.g. a Slack permalink). Surfaced to the agent in its per-run
+   * conversation context. Absent for platforms that have no addressable URL.
+   */
+  conversationUrl?: string;
   /** Outbound: marker for the session-reset signal from the worker. */
   sessionReset?: boolean;
   /** Outbound: distributed tracing context propagation. */

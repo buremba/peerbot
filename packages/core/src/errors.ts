@@ -197,8 +197,9 @@ export enum AgentErrorCode {
  * live in `core` with no gateway dependency.
  */
 export type AgentErrorCtaKind =
-  | "agent-settings" // → <webOrigin>/<slug>/agents/<agentId>
-  | "provider-connect" // → same settings page, provider-connect intent
+  | "agent-settings" // → <webOrigin>/<slug>/agents/<agentId>/settings
+  | "provider-connect" // → <webOrigin>/<slug>/inference-providers/new
+  | "provider-management" // → existing provider management, exact provider/model
   | "none";
 
 /**
@@ -235,12 +236,15 @@ export interface AgentErrorSpec {
 
 export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
   // Provider errors — no `message`; the provider's own text is the body.
+  // Provider-level failures (quota, credentials, routing) are fixed on the
+  // existing provider's management surface. A model-level failure
+  // (unknown/unallowed model) is fixed on the agent's settings.
   [AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED]: {
-    cta: "agent-settings",
+    cta: "provider-management",
     ctaLabel: "Manage provider",
   },
   [AgentErrorCode.PROVIDER_AUTH]: {
-    cta: "provider-connect",
+    cta: "provider-management",
     ctaLabel: "Reconnect provider",
   },
   [AgentErrorCode.PROVIDER_UNKNOWN_MODEL]: {
@@ -248,15 +252,15 @@ export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
     ctaLabel: "Choose model",
   },
   [AgentErrorCode.PROVIDER_BASE_URL_UNRESOLVED]: {
-    cta: "agent-settings",
-    ctaLabel: "Connect provider",
+    cta: "provider-management",
+    ctaLabel: "Manage provider",
   },
   // Errors we synthesize — carry our own text (no provider string to relay).
   [AgentErrorCode.NO_MODEL_CONFIGURED]: {
     message:
-      "No model is configured for this agent. Connect a provider to get started.",
+      "No model is configured for this agent. Choose a model in agent settings.",
     cta: "agent-settings",
-    ctaLabel: "Connect a provider",
+    ctaLabel: "Choose a model",
   },
   [AgentErrorCode.WORKER_UNRESPONSIVE]: {
     message:

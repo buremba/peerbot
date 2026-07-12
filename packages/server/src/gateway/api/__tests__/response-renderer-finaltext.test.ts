@@ -63,3 +63,25 @@ describe("ApiResponseRenderer.handleCompletion finalText repair", () => {
     expect(complete?.data.finalText).toBeUndefined();
   });
 });
+
+describe("ApiResponseRenderer.handleError targeting context", () => {
+  test("forwards provider/model context on both browser error events", async () => {
+    const { renderer, broadcasts } = makeRenderer();
+
+    await renderer.handleError(
+      basePayload({
+        error: "quota exhausted",
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        errorContext: { provider: "z-ai", model: "glm-5.2" },
+      }),
+      "session-key"
+    );
+
+    for (const event of ["error", "agent-error"]) {
+      expect(broadcasts.find((b) => b.event === event)?.data).toMatchObject({
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        errorContext: { provider: "z-ai", model: "glm-5.2" },
+      });
+    }
+  });
+});

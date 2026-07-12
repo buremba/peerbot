@@ -1,3 +1,5 @@
+import type { AgentErrorContext } from "../types";
+
 /**
  * Worker Transport Interface
  * Defines how workers communicate with the gateway (platform-agnostic).
@@ -47,8 +49,13 @@ export interface WorkerTransport {
    *                the user-facing body for provider errors.
    * @param errorCode - Classified `AgentErrorCode` (see @lobu/core errors); the
    *                    renderer uses it only to select the CTA link.
+   * @param context - Non-secret provider/model targeting for the error CTA.
    */
-  signalError(error: Error, errorCode?: string): Promise<void>;
+  signalError(
+    error: Error,
+    errorCode?: string,
+    context?: AgentErrorContext
+  ): Promise<void>;
 
   /**
    * Send a status update to the gateway

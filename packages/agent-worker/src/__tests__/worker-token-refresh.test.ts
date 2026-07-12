@@ -30,6 +30,7 @@ import { writeSnapshot } from "../openclaw/transcript-snapshot";
 
 let originalFetch: typeof globalThis.fetch;
 let capturedAuth: string[];
+let capturedBodies: unknown[];
 let originalDispatcher: string | undefined;
 let originalWorkerToken: string | undefined;
 let originalTtl: string | undefined;
@@ -41,6 +42,7 @@ beforeEach(() => {
   originalTtl = process.env.WORKER_TOKEN_TTL_MS;
   process.env.DISPATCHER_URL = "http://gw.test/lobu";
   capturedAuth = [];
+  capturedBodies = [];
   __resetWorkerTokenManagerForTests();
 });
 
@@ -77,6 +79,9 @@ function stubFetch(opts?: {
         return new Response(JSON.stringify({ token: tok }), { status: 200 });
       }
       if (auth) capturedAuth.push(auth);
+      if (typeof init?.body === "string") {
+        capturedBodies.push(JSON.parse(init.body));
+      }
       const status = opts?.responseStatusByAuth?.(auth) ?? 200;
       return new Response(JSON.stringify({ ok: true }), { status });
     }
@@ -132,6 +137,26 @@ describe("per-turn token adoption (transport reads the live manager token)", () 
     expect(capturedAuth.every((a) => a === "Bearer deployment-token")).toBe(
       true
     );
+  });
+
+  test("carries non-secret provider/model error context on the wire", async () => {
+    stubFetch();
+    const transport = makeTransport("deployment-token");
+
+    await transport.signalError(
+      new Error("quota exhausted"),
+      "PROVIDER_QUOTA_EXHAUSTED",
+      {
+        provider: "z-ai",
+        model: "glm-5.2",
+      }
+    );
+
+    expect(capturedBodies.at(-1)).toMatchObject({
+      error: "quota exhausted",
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+      errorContext: { provider: "z-ai", model: "glm-5.2" },
+    });
   });
 });
 

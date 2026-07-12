@@ -1,5 +1,11 @@
+import { CrossOrgTransferBlockedError } from "../../lobu/stores/app-installation-store.js";
 import type { SlackPendingInstall } from "../../lobu/stores/slack-installations.js";
-import type { ClaimAuthorization, ClaimProvider } from "./connection-claim.js";
+import {
+  type ClaimAuthorization,
+  type ClaimForeignBinding,
+  type ClaimProvider,
+  ClaimMoveBlockedError,
+} from "./connection-claim.js";
 import type { SlackWebApi } from "./slack-web.js";
 
 /**
@@ -25,6 +31,20 @@ export interface SlackClaimProviderDeps {
   /** The org slug the workspace is ALREADY connected to (active install), or null. */
   resolveActiveOrgSlug(team: string): Promise<string | null>;
   /**
+   * The TYPED cross-org conflict for claiming `team` into `targetOrganizationId`,
+   * or null when there is none. Matches the exact workspace `team_id`
+   * (`same_workspace`) and — only across an ORG-WIDE Grid install on either side —
+   * an `enterprise_id` scope overlap (`enterprise_scope_overlap`). Two independent
+   * per-workspace siblings of one enterprise do NOT conflict. `isEnterpriseInstall`
+   * is the CLAIMING install's org-wide flag. Powers the cross-org fence.
+   */
+  resolveActiveBindingElsewhere(
+    team: string,
+    enterpriseId: string | null,
+    isEnterpriseInstall: boolean,
+    targetOrganizationId: string,
+  ): Promise<ClaimForeignBinding | null>;
+  /**
    * ALL of the claiming user's `slack_user_id` identities as `{teamId, slackUserId}`
    * pairs (bare `U…` ids, across every workspace they've signed in with Slack for).
    * A team-scoped match doubles as the workspace-membership proof; the full list
@@ -36,10 +56,16 @@ export interface SlackClaimProviderDeps {
   ): Promise<Array<{ teamId: string; slackUserId: string }>>;
   /** `users.info` admin/owner flags for the claimer. */
   usersInfo: SlackWebApi["usersInfo"];
-  /** Bind: persist the token + create the active install, returning its id. */
+  /**
+   * Bind: persist the token + create the active install, returning its id.
+   * `confirmMove` is true when the claimer explicitly approved MOVING a workspace
+   * that is active in another org; the store must re-enforce the cross-org fence
+   * atomically under its active-tenant advisory lock when it is false.
+   */
   claim(
     pending: SlackPendingInstall,
     organizationId: string,
+    confirmMove: boolean,
   ): Promise<{ installationId: string }>;
 }
 
@@ -109,10 +135,42 @@ export function slackClaimProvider(
       const orgSlug = await deps.resolveActiveOrgSlug(ref);
       return orgSlug ? { orgSlug } : null;
     },
+    resolveActiveBindingElsewhere: (ref, pending, targetOrganizationId) =>
+      deps.resolveActiveBindingElsewhere(
+        ref,
+        pending.enterpriseId,
+        pending.isEnterpriseInstall,
+        targetOrganizationId,
+      ),
     authorize: (userId, pending) => authorizeSlackClaim(deps, userId, pending),
-    bind: async (pending, organizationId) => {
-      const { installationId } = await deps.claim(pending, organizationId);
-      return { bindingId: installationId };
+    bind: async (pending, organizationId, _userId, confirmMove) => {
+      try {
+        const { installationId } = await deps.claim(
+          pending,
+          organizationId,
+          confirmMove,
+        );
+        return { bindingId: installationId };
+      } catch (err) {
+        // The store's ATOMIC fence tripped on the raced path (the sequential
+        // pre-check saw null). Translate the store-specific error into the
+        // engine's provider-agnostic ClaimMoveBlockedError so the raced path
+        // returns the SAME typed 409 as the pre-check (by matchKind), carrying the
+        // other org (still resolvable — the fenced claim released its own pending
+        // row, leaving the incumbent active row intact).
+        if (err instanceof CrossOrgTransferBlockedError) {
+          const existing = await deps.resolveActiveBindingElsewhere(
+            pending.teamId,
+            pending.enterpriseId,
+            pending.isEnterpriseInstall,
+            organizationId,
+          );
+          throw new ClaimMoveBlockedError(
+            existing ?? { orgSlug: null, orgName: null, matchKind: "same_workspace" },
+          );
+        }
+        throw err;
+      }
     },
   };
 }

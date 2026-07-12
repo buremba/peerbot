@@ -1,4 +1,5 @@
 import type { InstructionContext } from "@lobu/core";
+import { orgContext } from "../../lobu/stores/org-context.js";
 import { BaseInstructionProvider } from "../services/instruction-service.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
 
@@ -13,10 +14,21 @@ export class SlackInstructionProvider extends BaseInstructionProvider {
   protected async buildInstructions(
     context: InstructionContext
   ): Promise<string> {
-    const connections = await this.manager.listConnections({
-      platform: "slack",
-      agentId: context.agentId,
-    });
+    // Defense in depth: no Slack identity without an org. `listConnections` is
+    // agent-scoped and — without an ambient org — would return ANOTHER tenant's
+    // newest Slack connection for a shared agent id (leaking foreign
+    // botUsername/botUserId). Require the org and run the read INSIDE it so it's
+    // actually tenant-scoped. (The InstructionService also gates this provider
+    // out when `orgScoped === false`; this is the belt to that suspenders.)
+    if (!context.organizationId) return "";
+    const connections = await orgContext.run(
+      { organizationId: context.organizationId },
+      () =>
+        this.manager.listConnections({
+          platform: "slack",
+          agentId: context.agentId,
+        })
+    );
     const connection = connections[0];
     if (!connection) return "";
 

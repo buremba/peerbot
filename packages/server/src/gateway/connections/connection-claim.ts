@@ -27,6 +27,41 @@ export type ClaimError =
   | { status: "no_org" }
   | { status: "claim_failed"; message: string };
 
+/**
+ * Which cross-org conflict the fence matched — the two are DIFFERENT concepts and
+ * map to different outcomes:
+ *  - `same_workspace`: the SAME external subject (exact team id) is active in
+ *    another org. A genuine "already connected elsewhere; move it?" case.
+ *  - `enterprise_scope_overlap`: a ROUTING overlap where one side is an org-wide
+ *    Grid install that covers sibling workspaces the other org claims per-
+ *    workspace (or vice-versa). Not the same subject — a scope collision — so it
+ *    is surfaced distinctly and blocked by default (no silent move).
+ */
+export type ClaimConflictKind = "same_workspace" | "enterprise_scope_overlap";
+
+/** The identity of the OTHER org a subject conflicts with, and how it matched. */
+export interface ClaimForeignBinding {
+  orgSlug: string | null;
+  orgName: string | null;
+  matchKind: ClaimConflictKind;
+}
+
+/**
+ * A provider's `bind` throws this when its ATOMIC (under-lock) cross-org fence
+ * trips — the raced path the engine's sequential pre-check could not see (two
+ * concurrent claims both read null before either committed). The engine catches
+ * it and maps it to the SAME `already_connected_elsewhere` result the pre-check
+ * returns, so both paths yield a consistent 409 carrying the other org, never a
+ * 500 `claim_failed`. Provider-agnostic on purpose: the Slack adapter translates
+ * its store-specific `CrossOrgTransferBlockedError` into this.
+ */
+export class ClaimMoveBlockedError extends Error {
+  constructor(readonly existing: ClaimForeignBinding) {
+    super("Subject already actively bound in a different org (move not confirmed)");
+    this.name = "ClaimMoveBlockedError";
+  }
+}
+
 /** Terminal outcome of the bind (`claimPendingConnection`). */
 export type ClaimResult =
   | {
@@ -36,6 +71,26 @@ export type ClaimResult =
       /** True when the subject was already connected (idempotent no-op). */
       alreadyConnected?: boolean;
     }
+  /**
+   * The SAME external subject (exact workspace) is ALREADY actively bound in a
+   * DIFFERENT org than the one the claimer confirmed. The engine does NOT silently
+   * create a second binding (that silent duplication is a cross-org pollution
+   * vector). It returns this explicit outcome carrying the other org's identity so
+   * the UI can prompt "This workspace is already connected in <org>. Move it
+   * here?" — the caller re-issues with `confirmMove: true` to proceed (fence, not
+   * forbid: a single external workspace may legitimately serve multiple orgs).
+   */
+  | { status: "already_connected_elsewhere"; existing: ClaimForeignBinding }
+  /**
+   * A Grid ENTERPRISE-SCOPE overlap: an org-wide install in one org covers the
+   * sibling workspaces another org claims per-workspace (or vice-versa). This is
+   * NOT the same subject — it's a routing collision — so it is distinct from
+   * `already_connected_elsewhere`. Blocked by DEFAULT (safety) and NOT overridable
+   * by `confirmMove`: the cross-key demote can't actually move an org-wide vs
+   * per-workspace install, so a "move it here" prompt would be a lie. Lifting this
+   * needs product support for Grid carve-outs + atomic group demotion.
+   */
+  | { status: "enterprise_scope_overlap"; existing: ClaimForeignBinding }
   | ClaimError;
 
 /** A Lobu org the claimer may bind the subject into. */
@@ -92,13 +147,35 @@ export interface ClaimProvider<P = unknown> {
    * `already_connected` success rather than an error.
    */
   resolveExistingBinding(ref: string): Promise<{ orgSlug: string | null } | null>;
+  /**
+   * The identity of an org OTHER than `targetOrganizationId` that already holds
+   * an active binding for this subject, or null when the only (or no) active
+   * binding is in the target org itself. Used to FENCE a silent cross-org walk:
+   * a non-null result blocks the bind (returning `already_connected_elsewhere`)
+   * unless the claimer explicitly confirmed the move. The provider decides what
+   * "same subject" means across its keying (e.g. Slack matches team_id AND a Grid
+   * enterprise_id) — the engine only asks the question.
+   */
+  resolveActiveBindingElsewhere(
+    ref: string,
+    pending: P,
+    targetOrganizationId: string,
+  ): Promise<ClaimForeignBinding | null>;
   /** The provider's authority verdict for the claiming user against `pending`. */
   authorize(userId: string, pending: P): Promise<ClaimAuthorization>;
-  /** Bind: persist the token + create the active install, returning its id. */
+  /**
+   * Bind: persist the token + create the active install, returning its id. When
+   * `confirmMove` is set the caller has explicitly approved MOVING an active
+   * binding that lives in another org into `organizationId`; the provider must
+   * re-verify and enforce the cross-org fence atomically (under the same lock as
+   * the write) so a concurrent claim on another pod cannot slip a silent move
+   * through the engine's pre-check.
+   */
   bind(
     pending: P,
     organizationId: string,
     userId: string,
+    confirmMove: boolean,
   ): Promise<{ bindingId: string }>;
 }
 
@@ -198,6 +275,13 @@ export async function claimPendingConnection<P>(
     userId: string | null;
     ref: string;
     organizationId?: string;
+    /**
+     * The claimer explicitly confirmed MOVING an active binding that lives in
+     * another org into the confirmed org. Without it a subject already active
+     * elsewhere yields `already_connected_elsewhere` (fence, not forbid): the
+     * second claim must be deliberate, never a silent duplicate.
+     */
+    confirmMove?: boolean;
   },
 ): Promise<ClaimResult> {
   try {
@@ -226,14 +310,47 @@ export async function claimPendingConnection<P>(
     );
     if (!organizationId) return { status: "not_member_of_org" };
 
+    // Cross-org fence. If this subject conflicts with an ACTIVE binding in a
+    // DIFFERENT org, a naive bind would silently transfer/duplicate it (the install
+    // store demotes the prior org's active row on activation). The check ALWAYS
+    // runs — even under `confirmMove` — because an `enterprise_scope_overlap` is
+    // never overridable (the cross-key demote can't move it), while a
+    // `same_workspace` conflict IS the deliberate move `confirmMove` authorizes.
+    // This is the pre-check for a friendly outcome; `bind` re-enforces atomically.
+    const elsewhere = await provider.resolveActiveBindingElsewhere(
+      input.ref,
+      target.pending,
+      organizationId,
+    );
+    if (elsewhere) {
+      if (elsewhere.matchKind === "enterprise_scope_overlap") {
+        return { status: "enterprise_scope_overlap", existing: elsewhere };
+      }
+      // same_workspace: a confirmed move proceeds; otherwise fence.
+      if (!input.confirmMove) {
+        return { status: "already_connected_elsewhere", existing: elsewhere };
+      }
+    }
+
     const { bindingId } = await provider.bind(
       target.pending,
       organizationId,
       input.userId as string,
+      input.confirmMove ?? false,
     );
     const orgSlug = await deps.resolveOrgSlug(organizationId);
     return { status: "ok", orgSlug, bindingId };
   } catch (err) {
+    // The atomic (under-lock) fence in the provider's bind tripped on the raced
+    // path — surface the SAME typed outcome as the pre-check (by matchKind), not a
+    // 500.
+    if (err instanceof ClaimMoveBlockedError) {
+      const status =
+        err.existing.matchKind === "enterprise_scope_overlap"
+          ? "enterprise_scope_overlap"
+          : "already_connected_elsewhere";
+      return { status, existing: err.existing };
+    }
     return {
       status: "claim_failed",
       message: err instanceof Error ? err.message : String(err),
@@ -257,6 +374,8 @@ export function claimHttpStatus(
     case "not_member_of_org":
       return 403;
     case "no_org":
+    case "already_connected_elsewhere":
+    case "enterprise_scope_overlap":
       return 409;
     default:
       return 500;

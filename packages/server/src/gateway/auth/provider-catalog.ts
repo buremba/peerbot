@@ -1,6 +1,5 @@
 import {
   createLogger,
-  type InstalledProvider,
   isSdkCompat,
   type ProviderConfigEntry,
   SDK_COMPAT_PROTOCOLS,
@@ -13,10 +12,18 @@ import {
   type ProviderUpstreamConfig,
 } from "../modules/module-system.js";
 import { ApiKeyProviderModule } from "./api-key-provider-module.js";
+import {
+  isUnresolvedModelRef,
+  UNRESOLVED_MODEL_SUFFIX,
+} from "./model-sentinel.js";
 import type { AgentSettingsStore } from "./settings/agent-settings-store.js";
 import type { AuthProfilesManager } from "./settings/auth-profiles-manager.js";
+import { enforceModelAllowList } from "./settings/model-selection.js";
 
 const logger = createLogger("provider-catalog");
+
+// Re-export the sentinel helpers so existing importers keep working.
+export { isUnresolvedModelRef, UNRESOLVED_MODEL_SUFFIX };
 
 /** Auth mechanism a provider supports. */
 export type ProviderAuthType = "oauth" | "device-code" | "api-key";
@@ -165,21 +172,62 @@ function orgProviderKeyEnvVarName(slug: string): string {
 }
 
 /**
- * Resolve an agent's installed providers.
+ * The THREE distinct model-policy states — kept distinct so the caller can map
+ * each to the right allow-list semantics (a fail-open bug conflated the first
+ * two into allow-all):
+ *   - `not-found`   : no agent row (or a cross-org / cross-tenant refusal) →
+ *                     the caller must DENY ALL (empty allow-list, zero modules).
+ *   - `unrestricted`: the agent exists with an EMPTY/absent `models` list → the
+ *                     deliberate allow-all policy.
+ *   - `restricted`  : the agent has a non-empty `models` list → the exact refs.
  */
-async function resolveInstalledProviders(
+type AgentModelPolicy =
+  | { kind: "not-found" }
+  | { kind: "unrestricted" }
+  | { kind: "restricted"; models: string[] };
+
+/**
+ * Resolve an agent's ordered `models` list into one of the three policy states.
+ *
+ * REFUSES an id-only cross-org read: when `organizationId` is undefined the read
+ * is NOT org-scoped, and a shared agent id (e.g. "lobu-builder") lives in many
+ * orgs — an id-only match could read ANOTHER tenant's models list. For a
+ * policy-enforcement read that is a cross-tenant leak, so we return `not-found`
+ * (deny) rather than risk it. (Declared/SDK-embedded agents are resolved by the
+ * settings store BEFORE any DB scope, so their org-agnostic settings still
+ * resolve; only the DB-backed path requires org.)
+ */
+async function resolveAgentModels(
   agentSettingsStore: AgentSettingsStore,
   agentId: string,
   organizationId?: string
-): Promise<InstalledProvider[]> {
-  // Org-scope the read: a shared agent id (e.g. "lobu-builder") lives in many
-  // orgs, and this runs on the worker-dispatch path with no ambient orgContext,
-  // so an unscoped read can return another org's installed-provider list. Pass
-  // the org explicitly so the agent's real providers resolve.
+): Promise<AgentModelPolicy> {
+  // Declared (SDK-embedded) agents have org-agnostic settings; getSettings
+  // resolves them without a DB scope, so an orgless declared-agent turn still
+  // reads its REAL policy (not a cross-org DB row). The check is ORG-AWARE: a
+  // declared id that ALSO has a real DB row in the given org is treated as
+  // DB-backed (the DB row wins), so a collision never flips the orgless guard
+  // open for a tenant's agent.
+  const isDeclared = agentSettingsStore.isDeclaredAgentScoped
+    ? await agentSettingsStore.isDeclaredAgentScoped(agentId, organizationId)
+    : (agentSettingsStore.isDeclaredAgent?.(agentId) ?? false);
+
+  // A DB-backed agent policy read MUST be org-scoped. Without an org, refuse the
+  // id-only fallback (a shared id like "lobu-builder" would read another org's
+  // row — a cross-tenant leak) and DENY.
+  if (!isDeclared && !organizationId) {
+    return { kind: "not-found" };
+  }
+
   const settings = await agentSettingsStore.getSettings(agentId, {
     organizationId,
   });
-  return settings?.installedProviders || [];
+  // NULL settings = the agent row does not exist in THIS org (or the agent-org
+  // pair mismatched). Not-found MUST deny-all, never collapse to allow-all.
+  if (!settings) return { kind: "not-found" };
+  return settings.models && settings.models.length > 0
+    ? { kind: "restricted", models: settings.models }
+    : { kind: "unrestricted" };
 }
 
 /**
@@ -262,41 +310,68 @@ export class ProviderCatalogService {
   }
 
   /**
-   * Resolve an agent's installedProviders to their module instances.
-   * Returns modules in the agent's install order.
+   * Resolve an agent's model policy: the routable provider modules PLUS the
+   * exact-ref allow-list that gates which `<slug>/<model>` refs may run.
    *
-   * Providers.json modules resolve directly. Any installed slug that isn't a
+   * A NON-empty `models` list is an EXACT allow-list (gate): only the exact
+   * refs it names may run (`allowedRefs`), and only the providers those refs
+   * (plus the org default's concrete ref, appended as the safety tail) name
+   * are routed as modules. models[0] is the default; the remaining entries are
+   * the agent's alternates — the ORDERED fallback candidates and the
+   * per-channel (Listen) override pick-list.
+   *
+   * An EMPTY/absent list is allow-all (`allowedRefs = null`): every org
+   * provider routes (default row first, remaining `inference_providers` rows in
+   * listing order, then every deployment/system-key registry module), and any
+   * ref whose provider is among them may run.
+   *
+   * Providers.json modules resolve directly. Any slug that isn't a
    * providers.json module is resolved (when `organizationId` is provided) from
    * the org's inference_providers rows: a matching row with a custom text
    * upstream is synthesized into a routable ApiKeyProviderModule. Slugs with no
    * matching custom-upstream row (or when no org is given) are dropped, as
    * before.
    */
-  async getInstalledModules(
+  async getModelPolicy(
     agentId: string,
     organizationId?: string
-  ): Promise<ModelProviderModule[]> {
-    const installed = await resolveInstalledProviders(
+  ): Promise<{
+    modules: ModelProviderModule[];
+    /** Ordered exact allow-list, or null when the agent allows all providers. */
+    allowedRefs: string[] | null;
+  }> {
+    const policy = await resolveAgentModels(
       this.agentSettingsStore,
       agentId,
       organizationId
     );
+
+    // NOT-FOUND ⇒ DENY-ALL: no agent row (or an orgless/cross-tenant refusal).
+    // Return an EMPTY allow-list (distinct from `null` allow-all) with ZERO
+    // modules, so any requested model fails closed. This is the fail-open bug
+    // fix — a missing agent must never expose every org/system-key provider.
+    if (policy.kind === "not-found") {
+      return { modules: [], allowedRefs: [] };
+    }
+
+    const models = policy.kind === "restricted" ? policy.models : [];
 
     const allModules = getModelProviderModules();
     const moduleMap = new Map(allModules.map((m) => [m.providerId, m]));
 
     // Slugs not backed by a providers.json module may be org-defined inference
     // providers. Load the org's rows once and index by slug so each unmatched
-    // installed slug — AND the org DEFAULT provider — can be synthesized.
+    // slug — AND the org DEFAULT provider — can be synthesized.
+    let orgRows: InferenceProviderListItem[] = [];
     let orgRowsBySlug: Map<string, InferenceProviderListItem> | undefined;
     let orgDefaultSlug: string | undefined;
     // Protocol per catalog slug, so a synthesized org row routes with the wire
     // protocol its `kind` declares (openai/anthropic/…), not a hardcoded one.
     let sdkCompatByKind: Map<string, SdkCompat> | undefined;
     if (organizationId && this.listOrgInferenceProviders) {
-      const rows = await this.listOrgInferenceProviders(organizationId);
-      orgRowsBySlug = new Map(rows.map((r) => [r.slug, r]));
-      orgDefaultSlug = rows.find((r) => r.isDefault)?.slug;
+      orgRows = await this.listOrgInferenceProviders(organizationId);
+      orgRowsBySlug = new Map(orgRows.map((r) => [r.slug, r]));
+      orgDefaultSlug = orgRows.find((r) => r.isDefault)?.slug;
       sdkCompatByKind = new Map();
       for (const entry of buildProviderCatalog()) {
         if (isSdkCompat(entry.sdkCompat)) {
@@ -305,22 +380,60 @@ export class ProviderCatalogService {
       }
     }
 
-    // Resolve providers in install order, then append the org default when it
-    // isn't already covered. The default must reach the worker even for an agent
-    // with NO installed providers — that is the exact case the org-default
-    // fallback exists to serve (behavior → agent → ORG default). Without this a
-    // bare-config agent gets a routable model ref (`slug/model`) but no provider
-    // config/credentials, so the run can't route to a custom upstream.
-    const providerIds = installed.map((ip) => ip.providerId);
-    if (orgDefaultSlug && !providerIds.includes(orgDefaultSlug)) {
-      providerIds.push(orgDefaultSlug);
+    const providerIds: string[] = [];
+    const seenSlug = new Set<string>();
+    const pushSlug = (slug: string) => {
+      if (slug && !seenSlug.has(slug)) {
+        seenSlug.add(slug);
+        providerIds.push(slug);
+      }
+    };
+
+    // The exact allow-list (null = allow-all). Non-empty models list ⇒
+    // allowedRefs is EXACTLY the listed refs — NO org-default safety tail.
+    // An unroutable listed model FAILS CLOSED at dispatch; it never silently
+    // escalates to an unlisted org-default model (that would widen the
+    // restriction). A list of only `<slug>/__unresolved__` sentinels resolves
+    // to zero routable modules → the run hard-fails closed (the intended
+    // "restricted but nothing resolvable yet" state). The org default is only
+    // consulted for the allow-ALL (empty/absent) case below.
+    let allowedRefs: string[] | null = null;
+    if (models.length > 0) {
+      const refs: string[] = [];
+      const seenRef = new Set<string>();
+      const pushRef = (ref: string) => {
+        if (ref && !seenRef.has(ref)) {
+          seenRef.add(ref);
+          refs.push(ref);
+        }
+      };
+      for (const ref of models) {
+        pushRef(ref);
+        // A `<slug>/__unresolved__` sentinel keeps its place in the exact
+        // allow-list (so a mixed list still knows it's a listed entry), but its
+        // slug must NOT contribute a provider module — the sentinel is inert and
+        // must never route. Skipping the slug here is what makes a sentinel-only
+        // list resolve to ZERO modules → hard fail closed.
+        if (isUnresolvedModelRef(ref)) continue;
+        const slash = ref.indexOf("/");
+        if (slash > 0) pushSlug(ref.slice(0, slash));
+      }
+      allowedRefs = refs;
+    } else {
+      // Empty/absent ⇒ ALL org providers: default row first, remaining org
+      // rows, then every deployment/system-key registry module.
+      if (orgDefaultSlug) pushSlug(orgDefaultSlug);
+      for (const row of orgRows) pushSlug(row.slug);
+      for (const module of allModules) {
+        if (module.hasSystemKey()) pushSlug(module.providerId);
+      }
     }
 
-    const resolved: ModelProviderModule[] = [];
+    const modules: ModelProviderModule[] = [];
     for (const providerId of providerIds) {
       const staticModule = moduleMap.get(providerId);
       if (staticModule) {
-        resolved.push(staticModule);
+        modules.push(staticModule);
         continue;
       }
       const row = orgRowsBySlug?.get(providerId);
@@ -330,17 +443,77 @@ export class ProviderCatalogService {
         // protocol, and custom endpoints, are OpenAI-compatible).
         const sdkCompat = sdkCompatByKind?.get(row.kind) ?? "openai";
         const synthesized = this.synthesizeOrgProviderModule(row, sdkCompat);
-        if (synthesized) resolved.push(synthesized);
+        if (synthesized) modules.push(synthesized);
       }
     }
-    return resolved;
+    return { modules, allowedRefs };
   }
 
   /**
-   * Get raw installed provider entries for an agent.
+   * Resolve an agent's routable provider modules (the module list only). Thin
+   * wrapper over getModelPolicy for callers that don't need the allow-list.
    */
-  async getInstalledProviders(agentId: string): Promise<InstalledProvider[]> {
-    return resolveInstalledProviders(this.agentSettingsStore, agentId);
+  async getInstalledModules(
+    agentId: string,
+    organizationId?: string
+  ): Promise<ModelProviderModule[]> {
+    return (await this.getModelPolicy(agentId, organizationId)).modules;
+  }
+
+  /**
+   * The SINGLE, shared dispatch-model resolver used by BOTH the enqueue gate
+   * (message-consumer) and session-context (gateway), so they always agree on
+   * the effective model for a turn.
+   *
+   * Given a requested model, apply the exact allow-list; when the request is
+   * disallowed or a sentinel, replace it with the first LISTED ref that is both
+   * non-sentinel AND ROUTABLE (its provider module is present and keyed) — not
+   * merely the first non-sentinel. Returns `{ model, modules, allowedRefs }`;
+   * `model` is undefined when nothing routable qualifies (fail closed).
+   */
+  async resolveDispatchModel(
+    agentId: string,
+    organizationId: string | undefined,
+    requestedModel: string | undefined,
+    userId?: string
+  ): Promise<{
+    model: string | undefined;
+    replaced: boolean;
+    modules: ModelProviderModule[];
+    allowedRefs: string[] | null;
+  }> {
+    const { modules, allowedRefs } = await this.getModelPolicy(
+      agentId,
+      organizationId
+    );
+    // A ref is routable when its (non-sentinel) provider module is present in
+    // the policy's modules AND has a system key or stored credentials.
+    const routableCache = new Map<string, boolean>();
+    const isRoutable = (ref: string): boolean => {
+      // Synchronous predicate for enforceModelAllowList: we precompute below.
+      return routableCache.get(ref) ?? false;
+    };
+    // Precompute routability for each listed real ref (credential checks are
+    // async, so we resolve them up front and feed the synchronous predicate).
+    if (allowedRefs) {
+      for (const ref of allowedRefs) {
+        if (isUnresolvedModelRef(ref)) {
+          routableCache.set(ref, false);
+          continue;
+        }
+        const provider = await this.findProviderForModel(ref, modules);
+        if (!provider) {
+          routableCache.set(ref, false);
+          continue;
+        }
+        const routable =
+          provider.hasSystemKey() ||
+          (await provider.hasCredentials(agentId, { organizationId, userId }));
+        routableCache.set(ref, routable);
+      }
+    }
+    const gate = enforceModelAllowList(requestedModel, allowedRefs, isRoutable);
+    return { ...gate, modules, allowedRefs };
   }
 
   /**
@@ -350,6 +523,10 @@ export class ProviderCatalogService {
     model: string,
     providers?: ModelProviderModule[]
   ): Promise<ModelProviderModule | undefined> {
+    // A restriction sentinel is never a real model — it must NOT resolve to a
+    // credentialed provider by slug-prefix (that would route the sentinel as if
+    // real, widening the restriction). Return undefined so the run fails closed.
+    if (isUnresolvedModelRef(model)) return undefined;
     const candidates = providers || getModelProviderModules();
     for (const provider of candidates) {
       if (!provider.getModelOptions) continue;

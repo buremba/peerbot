@@ -212,6 +212,8 @@ export function resolveModelRef(
   }
 ): {
   provider: string;
+  /** Lobu provider slug retained for exact settings/CTA targeting. */
+  providerSlug: string;
   modelId: string;
 } {
   const defaultModelRef = overrides?.defaultModel || "";
@@ -265,7 +267,11 @@ export function resolveModelRef(
         DEFAULT_PROVIDER_MODELS[routedProvider] ??
         modelId;
     }
-    return { provider: routedProvider, modelId };
+    return {
+      provider: routedProvider,
+      providerSlug: explicitProvider,
+      modelId,
+    };
   }
 
   // When the agent has an explicitly configured provider, route to it and pass
@@ -306,7 +312,11 @@ export function resolveModelRef(
     ) {
       modelId = modelId.slice(defaultProviderSlug.length + 1);
     }
-    return { provider: defaultProvider, modelId };
+    return {
+      provider: defaultProvider,
+      providerSlug: defaultProviderSlug || defaultProvider,
+      modelId,
+    };
   }
 
   // Auto / no-configured-provider mode: derive the provider from the model
@@ -323,7 +333,7 @@ export function resolveModelRef(
         modelId = fallback;
       }
     }
-    return { provider, modelId };
+    return { provider, providerSlug: provider, modelId };
   }
 
   throw new Error(

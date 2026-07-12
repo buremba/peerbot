@@ -41,6 +41,7 @@ import type { DbClient } from "../db/client";
 import type { Env } from "../index";
 import type { ToolContext } from "../tools/registry";
 import type { EntityData } from "../utils/entity-management";
+import type { PrincipalMode } from "./entity-policy";
 import {
 	approvalInterceptor,
 	buildCreateDeferral,
@@ -71,6 +72,29 @@ interface EntityMutationBase {
 	 * per-principal resolver in a later commit.
 	 */
 	principalId?: string | null;
+	/**
+	 * The OWNING AGENT of a watcher, when the acting principal is a watcher. The
+	 * write is then governed by BOTH the watcher's own rows AND its agent's,
+	 * folded max-restrictive — so an agent's envelope binds its watcher, while a
+	 * pre-existing watcher-specific restriction can only tighten (the agent
+	 * envelope never loosens it away). Null when not a watcher, or a watcher with
+	 * no agent. `watchers.agent_id` is the sole principal-ownership edge, so this
+	 * is the only ancestor a write ever folds.
+	 */
+	ownerAgentId?: string | null;
+	/**
+	 * False iff the acting principal is a watcher whose owning agent could not be
+	 * resolved (its row is gone). Threaded to the gate so it FAILS CLOSED (deny)
+	 * rather than run the write as an unowned watcher against the looser org default.
+	 * Defaults true (agent/user writes, and watchers whose owner resolved).
+	 */
+	ownerResolved?: boolean;
+	/**
+	 * Whether the acting principal is attended (a human is driving) or autonomous
+	 * (a watcher / scheduled run). A watcher promotion is `autonomous`; the resolver
+	 * evaluates autonomous as at-least-as-strict as attended. Defaults attended.
+	 */
+	mode?: PrincipalMode;
 	/**
 	 * The watcher-run window that produced this mutation, if any. Threaded so a
 	 * deferred approval lands on the `runs.window_id` COLUMN — that's what groups a

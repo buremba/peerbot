@@ -26,6 +26,10 @@
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
+import {
+	evaluateEntityMutation,
+	resolveActingPrincipal,
+} from "../../../authz/entity-policy";
 import type { Env } from "../../../index";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
@@ -33,6 +37,7 @@ import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
+	createTestAgent,
 	createTestOrganization,
 	createTestUser,
 } from "../../setup/test-fixtures";
@@ -108,7 +113,15 @@ describe("manage_agents — builder gate e2e", () => {
 			"mcp:admin",
 		]);
 		// Same owner identity, but acting as an agent (agentId set) — this is the
-		// principal the write-gate holds for approval.
+		// principal the write-gate holds for approval. The prod auth path binds an
+		// agentId only after confirming the agent row exists (mcp-handler), so the
+		// fixture must create it too — otherwise the gate's existence check (codex-17)
+		// correctly denies a bound-but-nonexistent principal.
+		await createTestAgent({
+			organizationId: org.id,
+			agentId: "builder-agent",
+			ownerUserId: owner.id,
+		});
 		agentCtx = baseCtx(
 			org.id,
 			owner.id,
@@ -170,6 +183,110 @@ describe("manage_agents — builder gate e2e", () => {
 		expect(del.status).toBeUndefined();
 		expect(del.deleted).toBe(true);
 		expect(await agentExists(orgId, "human-edit-bot")).toBe(false);
+	});
+
+	it("deleting an agent CASCADES its write-gate policy rows (codex-15)", async () => {
+		const sql = getTestDb();
+		await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "policy-bot", name: "v1" },
+			TEST_ENV,
+			ownerCtx,
+		);
+		// Seed an exact-agent policy row for it.
+		await sql`
+			INSERT INTO write_approval_policies (organization_id, resource_class, principal_kind, principal_id)
+			VALUES (${orgId}, 'entity', 'agent', 'policy-bot')
+		`;
+		const before = await sql`
+			SELECT id FROM write_approval_policies
+			WHERE organization_id = ${orgId} AND principal_kind = 'agent' AND principal_id = 'policy-bot'
+		`;
+		expect(before.length).toBe(1);
+
+		await executeTool(
+			"manage_agents",
+			{ action: "delete", agent_id: "policy-bot" },
+			TEST_ENV,
+			ownerCtx,
+		);
+		// The agent's policy rows must be gone — else a future 'policy-bot' inherits them.
+		const after = await sql`
+			SELECT id FROM write_approval_policies
+			WHERE organization_id = ${orgId} AND principal_kind = 'agent' AND principal_id = 'policy-bot'
+		`;
+		expect(after.length).toBe(0);
+	});
+
+	it("a deleted agent's still-live session FAILS CLOSED at the gate (codex-17 P1)", async () => {
+		const sql = getTestDb();
+		// An agent with a live session, then deleted. The deny comes from the existence
+		// check (ownerResolved=false), NOT a seeded rule — so no policy row is needed.
+		await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "ghost-bot", name: "v1" },
+			TEST_ENV,
+			ownerCtx,
+		);
+		// Before deletion the resolver treats the agent as resolved.
+		const live = await resolveActingPrincipal(sql, {
+			organizationId: orgId,
+			agentId: "ghost-bot",
+			sourceForMode: "direct-api",
+		});
+		expect(live.ownerResolved).toBe(true);
+
+		await executeTool(
+			"manage_agents",
+			{ action: "delete", agent_id: "ghost-bot" },
+			TEST_ENV,
+			ownerCtx,
+		);
+
+		// The bound session keeps agentId 'ghost-bot'. Without the existence check it
+		// would resolve as an agent with no rows → gate falls back to the looser org
+		// default. The fix marks it unresolved → every gate denies.
+		const stale = await resolveActingPrincipal(sql, {
+			organizationId: orgId,
+			agentId: "ghost-bot",
+			sourceForMode: "direct-api",
+		});
+		expect(stale.ownerResolved).toBe(false);
+		const decision = await evaluateEntityMutation({
+			organizationId: orgId,
+			principalKind: stale.kind,
+			principalId: stale.id,
+			ownerAgentId: stale.ownerAgentId,
+			ownerResolved: stale.ownerResolved,
+			mode: stale.mode,
+			action: "create",
+			entityTypeSlug: "task",
+			sql,
+		});
+		expect(decision).toBe("deny");
+	});
+
+	it("the DB trigger REJECTS an orphan agent-policy insert (codex-17 P2 race backstop)", async () => {
+		const sql = getTestDb();
+		// A permissions PUT that observed an agent, then the agent was deleted before
+		// the policy INSERT committed, must not leave an orphan row a recreated slug
+		// would inherit. The trigger rejects the write outright.
+		let raised = false;
+		try {
+			await sql`
+				INSERT INTO write_approval_policies (organization_id, resource_class, principal_kind, principal_id)
+				VALUES (${orgId}, 'entity', 'agent', 'never-existed-bot')
+			`;
+		} catch (err) {
+			raised = true;
+			expect(String(err)).toContain("not found in org");
+		}
+		expect(raised).toBe(true);
+		const rows = await sql`
+			SELECT id FROM write_approval_policies
+			WHERE organization_id = ${orgId} AND principal_id = 'never-existed-bot'
+		`;
+		expect(rows.length).toBe(0);
 	});
 
 	it("agent create produces a pending run + approval event and does NOT create the agent yet", async () => {

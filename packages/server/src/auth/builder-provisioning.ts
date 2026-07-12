@@ -5,9 +5,9 @@
  * that manages agents, connections, watchers, and workflows on the user's
  * behalf. `organization.system_agent_id` points at it.
  *
- *   - installs system-key model providers + pins a default model up front (so
- *     the agent can chat the moment it's created, instead of "No model
- *     configured"),
+ *   - resolves the system-key model providers into a concrete `models` list up
+ *     front (so the agent can chat the moment it's created, instead of "No
+ *     model configured"),
  *   - attributes ownership to the personal-org owner via the
  *     `personal_org_for_user_id` org-metadata marker,
  *   - writes a sentinel into `organization.metadata` so a deleted builder agent
@@ -19,8 +19,8 @@
  * directly (via `ProviderRegistryService`) rather than depending on the live
  * `moduleRegistry` being populated. The registry is only fully wired during
  * gateway boot, so a provisioning call that ran against an empty registry used
- * to silently create a builder with `installed_providers = []` and no model —
- * and the sentinel then made that broken state permanent. Reading the config
+ * to silently create a builder with no models — and the sentinel then made
+ * that broken state permanent. Reading the config
  * file is deterministic regardless of where/when provisioning runs, and the
  * repair path below heals any builder that was created in the broken state.
  *
@@ -35,10 +35,7 @@ import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
 import logger from "../utils/logger";
 import { hasOrgSentinel } from "./default-provisioning";
-import {
-	type InstalledProvider,
-	resolveSystemKeyProvidersAndModel,
-} from "./system-provider-resolution";
+import { resolveSystemKeyProvidersAndModel } from "./system-provider-resolution";
 
 export const BUILDER_AGENT_ID = "lobu-builder";
 export const BUILDER_AGENT_SENTINEL = "builder_agent_provisioned";
@@ -134,13 +131,13 @@ async function linkOwnerAndPointer(
 
 /**
  * Provision the org's builder agent and point `organization.system_agent_id`
- * at it — creating it if missing, or healing it if a prior run left it with no
- * providers / no model.
+ * at it — creating it if missing, or healing it if a prior run left it with an
+ * empty `models` list.
  *
  * Behaviour:
- *   - Builder row present + has providers and a model → no-op (fast path).
- *   - Builder row present but missing providers/model → repair (fill the empty
- *     fields; never removes a working config).
+ *   - Builder row present + has models → no-op (fast path).
+ *   - Builder row present but models empty → repair (fill the list; never
+ *     removes a working config).
  *   - Builder row absent + sentinel set → respect deletion (do NOT recreate).
  *   - Builder row absent + no sentinel → create.
  *
@@ -155,69 +152,38 @@ export async function ensureBuilderAgent(
 	const client = sql ?? getDb();
 	try {
 		const rows = (await client`
-      SELECT installed_providers, model FROM agents
+      SELECT models FROM agents
       WHERE organization_id = ${organizationId} AND id = ${BUILDER_AGENT_ID}
       LIMIT 1
     `) as unknown as Array<{
-			installed_providers: InstalledProvider[] | null;
-			model: string | null;
+			models: string[] | null;
 		}>;
 		const existing = rows[0];
 
 		if (existing) {
-			const providersEmpty =
-				!Array.isArray(existing.installed_providers) ||
-				existing.installed_providers.length === 0;
-			const modelEmpty =
-				!existing.model || String(existing.model).trim() === "";
+			// Heal `models` ONLY when it was never configured (NULL/absent). Two
+			// list states are both VALID policies we must never overwrite:
+			//   - a non-empty list = the admin's curated exact allow-list;
+			//   - an EMPTY list ([]) = the deliberate "allow all org + system-key
+			//     providers" policy (allow-all).
+			// Only a genuine NULL means "never configured", which is the broken
+			// state this repair exists for. Each resolved ref carries its provider,
+			// so the list is consistent by construction.
+			const neverConfigured =
+				existing.models === null || existing.models === undefined;
 
-			// Heal providers/model only when broken, keeping providers + model
-			// CONSISTENT — the pinned model's provider must always be installed, so we
-			// never leave a dangling ref (e.g. model=openai/... with providers=[claude]).
-			// The healthy path skips this provider-config read entirely.
-			if (providersEmpty || modelEmpty) {
+			if (neverConfigured) {
 				const resolved = await resolveSystemKeyProvidersAndModel();
-				const existingProviders: InstalledProvider[] = Array.isArray(
-					existing.installed_providers,
-				)
-					? existing.installed_providers
-					: [];
-				// Keep an existing model if present, otherwise take the resolved pick.
-				const newModel = modelEmpty ? resolved.model : existing.model;
-				// Providers = existing ∪ resolved, plus the (new) model's own provider.
-				const providerMap = new Map<string, InstalledProvider>();
-				for (const p of existingProviders) providerMap.set(p.providerId, p);
-				for (const p of resolved.providers) {
-					if (!providerMap.has(p.providerId)) providerMap.set(p.providerId, p);
-				}
-				if (newModel) {
-					const slash = newModel.indexOf("/");
-					const modelProviderId = slash > 0 ? newModel.slice(0, slash) : "";
-					if (modelProviderId && !providerMap.has(modelProviderId)) {
-						providerMap.set(modelProviderId, {
-							providerId: modelProviderId,
-							installedAt: Date.now(),
-						});
-					}
-				}
-				const mergedProviders = [...providerMap.values()];
-				// Union only ever grows, so a length change means we added a provider.
-				const writeProviders =
-					mergedProviders.length !== existingProviders.length;
-				const writeModel = modelEmpty && !!newModel;
-				if (writeProviders || writeModel) {
+				if (resolved.models.length > 0) {
 					await client`
             UPDATE agents SET
-              installed_providers = CASE WHEN ${writeProviders}
-                THEN ${client.json(mergedProviders)} ELSE installed_providers END,
-              model = CASE WHEN ${writeModel}
-                THEN ${newModel} ELSE model END,
+              models = ${client.json(resolved.models)},
               updated_at = now()
             WHERE organization_id = ${organizationId} AND id = ${BUILDER_AGENT_ID}
           `;
 					logger.info(
-						{ organizationId, writeProviders, writeModel, model: newModel },
-						"[builder-provisioning] Repaired builder providers/model",
+						{ organizationId, models: resolved.models },
+						"[builder-provisioning] Repaired builder models",
 					);
 				}
 			}
@@ -260,12 +226,12 @@ export async function ensureBuilderAgent(
       INSERT INTO agents (
         id, organization_id, name, identity_md,
         owner_platform, owner_user_id,
-        installed_providers, model,
+        models,
         created_at, updated_at
       ) VALUES (
         ${BUILDER_AGENT_ID}, ${organizationId}, ${BUILDER_AGENT_NAME}, ${BUILDER_AGENT_IDENTITY},
         'external', ${ownerUserId},
-        ${client.json(resolved.providers)}, ${resolved.model},
+        ${client.json(resolved.models)},
         NOW(), NOW()
       )
       ON CONFLICT (organization_id, id) DO NOTHING
@@ -285,8 +251,7 @@ export async function ensureBuilderAgent(
 				organizationId,
 				agentId: BUILDER_AGENT_ID,
 				ownerUserId,
-				providers: resolved.providers.length,
-				model: resolved.model,
+				models: resolved.models,
 			},
 			"[builder-provisioning] Provisioned builder agent",
 		);

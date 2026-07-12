@@ -13,6 +13,9 @@ type PolicyRowSeed = {
 	resource_class?: string;
 	principal_kind?: string | null;
 	principal_id?: string | null;
+	principal_mode?: string | null;
+	/** connector_action per-operation scope; null = the blanket execute row. */
+	operation_key?: string | null;
 	entity_type_slug?: string | null;
 	field_path?: string | null;
 	entity_id?: number | null;
@@ -56,6 +59,8 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 		resource_class: seed.resource_class ?? "entity",
 		principal_kind: seed.principal_kind ?? null,
 		principal_id: seed.principal_id ?? null,
+		principal_mode: seed.principal_mode ?? null,
+		operation_key: seed.operation_key ?? null,
 		entity_type_slug: seed.entity_type_slug ?? null,
 		field_path: seed.field_path ?? null,
 		entity_id: seed.entity_id ?? null,
@@ -83,15 +88,32 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 			);
 			return Promise.resolve(childRows.filter((r) => ids.has(Number(r.policy_id))));
 		}
-		const [org, resourceClass, principalKind, principalId, entityTypeSlug, entityId] =
-			params as [
-				string,
-				string,
-				string | null,
-				string | null,
-				string | null,
-				number | null,
-			];
+		// Param order mirrors loadCandidatePolicies' WHERE: org, resourceClass,
+		// then the principal OR-block (principalKind, principalId, then ownerAgentId
+		// interpolated TWICE — once for `::text IS NOT NULL`, once for the `=`
+		// comparison), then the scope filters (operationKey, entityTypeSlug, entityId).
+		// ownerAgentId folds an 'agent' row for a watcher acting under its agent.
+		const [
+			org,
+			resourceClass,
+			principalKind,
+			principalId,
+			ownerAgentId,
+			,
+			operationKey,
+			entityTypeSlug,
+			entityId,
+		] = params as [
+			string,
+			string,
+			string | null,
+			string | null,
+			string | null,
+			string | null,
+			string | null,
+			string | null,
+			number | null,
+		];
 		return Promise.resolve(
 			headers.filter(
 				(row) =>
@@ -100,7 +122,13 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 					(row.principal_kind === null ||
 						(row.principal_kind === principalKind &&
 							(row.principal_id === null ||
-								row.principal_id === principalId))) &&
+								row.principal_id === principalId)) ||
+						(ownerAgentId !== null &&
+							row.principal_kind === "agent" &&
+							(row.principal_id === null ||
+								row.principal_id === ownerAgentId))) &&
+					(row.operation_key === null ||
+						row.operation_key === operationKey) &&
 					(row.entity_type_slug === null ||
 						row.entity_type_slug === entityTypeSlug) &&
 					(row.entity_id === null || row.entity_id === entityId),
@@ -303,10 +331,11 @@ describe("evaluateEntityMutation", () => {
 		).toBe("require_approval");
 	});
 
-	test("scope specificity outranks principal: entity-type row beats a principal-global row", async () => {
-		// entity-type row (any principal) says auto; an agent-global row says approval.
-		// Per the RFC, TARGET SCOPE wins over principal specificity, so the more-
-		// scoped entity-type rule governs — the pinned agent is NOT gated here.
+	test("peer overrides fold most-restrictive: a per-type auto cannot loosen a per-agent approval", async () => {
+		// entity-type row (any principal) says auto; an agent-pinned row says approval.
+		// Under the v1.1 floor rule, restrictiveness wins over scope — a narrow `auto`
+		// can never open a hole a broader `approval` meant to close. Both rows address
+		// `update`, so the stricter (approval) governs → the pinned agent is gated.
 		const sql = stubSql([
 			{ entity_type_slug: "task", update_mode: "auto" },
 			{ principal_kind: "agent", principal_id: "agent-77", update_mode: "approval" },
@@ -320,12 +349,12 @@ describe("evaluateEntityMutation", () => {
 				entityTypeSlug: "task",
 				sql,
 			}),
-		).toBe("allow");
+		).toBe("require_approval");
 	});
 
 	test("an agent-global auto must NOT shadow an entity-type-specific deny", async () => {
-		// The inverse-regression sol asked for: a broad per-principal `auto` cannot
-		// open up a narrowly-scoped `deny`. Scope specificity wins → deny.
+		// A broad per-principal `auto` cannot open up a narrowly-scoped `deny`.
+		// Restrictiveness wins in the fold → deny (deny is the strictest effect).
 		const sql = stubSql([
 			{ entity_type_slug: "invoice", update_mode: "deny" },
 			{ principal_kind: "agent", principal_id: "agent-A", update_mode: "auto" },

@@ -157,15 +157,12 @@ describe("apply diff — settings", () => {
     expect(renderPlan(plan)).toMatchSnapshot();
   });
 
-  test("updates when provider declarations change but ignores installedAt churn", () => {
+  test("#5: updates when the models list changes; noop when it matches", () => {
     const desired = buildState([
       buildDesiredAgent("triage", {
         metadata: { agentId: "triage", name: "Triage" },
         settings: {
-          installedProviders: [
-            { providerId: "anthropic", installedAt: 200 },
-            { providerId: "openai", installedAt: 200 },
-          ],
+          models: ["anthropic/claude-sonnet-5", "openai/gpt-5"],
         },
       }),
     ]);
@@ -173,13 +170,7 @@ describe("apply diff — settings", () => {
       ...emptyRemote(),
       agents: [{ agentId: "triage", name: "Triage" }],
       agentSettings: new Map<string, AgentSettings | null>([
-        [
-          "triage",
-          {
-            installedProviders: [{ providerId: "anthropic", installedAt: 100 }],
-            updatedAt: 0,
-          },
-        ],
+        ["triage", { models: ["anthropic/claude-sonnet-5"], updatedAt: 0 }],
       ]),
       platformsByAgent: new Map([["triage", []]]),
     };
@@ -187,19 +178,17 @@ describe("apply diff — settings", () => {
     const settingsRow = plan.rows.find((r) => r.kind === "settings");
     expect(settingsRow?.verb).toBe("update");
     if (settingsRow?.kind === "settings") {
-      expect(settingsRow.changedFields).toContain("installedProviders");
+      expect(settingsRow.changedFields).toContain("models");
     }
 
+    // Same ordered list ⇒ noop.
     const unchanged = computeDiff(desired, {
       ...remote,
       agentSettings: new Map<string, AgentSettings | null>([
         [
           "triage",
           {
-            installedProviders: [
-              { providerId: "anthropic", installedAt: 1 },
-              { providerId: "openai", installedAt: 2 },
-            ],
+            models: ["anthropic/claude-sonnet-5", "openai/gpt-5"],
             updatedAt: 0,
           },
         ],
@@ -209,6 +198,36 @@ describe("apply diff — settings", () => {
       (r) => r.kind === "settings"
     );
     expect(unchangedSettingsRow?.verb).toBe("noop");
+  });
+
+  test("#5: models is order-sensitive — reordering is a change (index 0 = default)", () => {
+    const desired = buildState([
+      buildDesiredAgent("triage", {
+        metadata: { agentId: "triage", name: "Triage" },
+        settings: { models: ["openai/gpt-5", "anthropic/claude-sonnet-5"] },
+      }),
+    ]);
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      agents: [{ agentId: "triage", name: "Triage" }],
+      agentSettings: new Map<string, AgentSettings | null>([
+        [
+          "triage",
+          {
+            models: ["anthropic/claude-sonnet-5", "openai/gpt-5"],
+            updatedAt: 0,
+          },
+        ],
+      ]),
+      platformsByAgent: new Map([["triage", []]]),
+    };
+    const settingsRow = computeDiff(desired, remote).rows.find(
+      (r) => r.kind === "settings"
+    );
+    expect(settingsRow?.verb).toBe("update");
+    if (settingsRow?.kind === "settings") {
+      expect(settingsRow.changedFields).toContain("models");
+    }
   });
 });
 

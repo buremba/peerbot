@@ -219,6 +219,16 @@ async function handleReadFeed(
            c.connector_key,
            c.external_tenant_id,
            c.display_name AS connection_name,
+           -- The channel's CONCRETE workspace, from its binding: the SAME real
+           -- team the about-edge writer keyed on. For a Grid org-wide install the
+           -- connection tenant is the enterprise E-id, so the about lookup must
+           -- NOT fall back to it; the binding holds the real T-id.
+           (SELECT b.team_id FROM agent_channel_bindings b
+             WHERE b.organization_id = f.organization_id
+               AND b.connection_id = f.connection_id
+               AND b.channel_id = f.feed_key
+               AND b.team_id IS NOT NULL
+             LIMIT 1) AS binding_team_id,
            (
              SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)
              FROM entities ent
@@ -278,7 +288,14 @@ async function handleReadFeed(
       organizationId,
       connectionId: feed.connection_id,
       connectorKey: String(feed.connector_key ?? 'slack'),
-      teamId: (feed.external_tenant_id as string | null) ?? null,
+      // The binding's real workspace (`T…`) — NOT the connection tenant, which is
+      // the enterprise `E…` on a Grid org-wide install. Falls back to the tenant
+      // only for a non-team-scoped connector / not-yet-healed binding, matching
+      // the writer.
+      teamId:
+        (feed.binding_team_id as string | null) ??
+        (feed.external_tenant_id as string | null) ??
+        null,
       channelId: feedKey,
     });
     return {

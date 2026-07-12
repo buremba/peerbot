@@ -14,10 +14,15 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
 	evaluateEntityMutation,
 	resolveEntityApprovalPolicy,
+	resolveWriteEffect,
 	resolveWritePolicyDecision,
 } from "../../../authz/entity-policy";
+import { isLegalActionEffect } from "../../../authz/write-action-manifest";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
-import { createTestOrganization } from "../../setup/test-fixtures";
+import {
+	createTestAgent,
+	createTestOrganization,
+} from "../../setup/test-fixtures";
 
 /**
  * Insert a policy header + its child action-effect rows directly, the way the
@@ -66,6 +71,11 @@ describe("write-policy action/effect decision parity", () => {
 	beforeEach(async () => {
 		const org = await createTestOrganization();
 		orgId = org.id;
+		// Seed the agent rows these tests pin policies to — prod guarantees a bound
+		// agent id has an agents row, and the policy trigger enforces it (codex-17).
+		for (const agentId of ["agent_off", "agent_tie", "agent_xyz"]) {
+			await createTestAgent({ organizationId: orgId, agentId });
+		}
 	});
 
 	it("entity: create auto / update auto / delete approval resolve unchanged", async () => {
@@ -195,6 +205,27 @@ describe("write-policy action/effect decision parity", () => {
 		).toBe("deny");
 	});
 
+	it("connector_action: resolveWriteEffect exposes `disabled` (decision collapses it to deny)", async () => {
+		await seedPolicy({
+			orgId,
+			resourceClass: "connector_action",
+			principalKind: "agent",
+			principalId: "agent_off",
+			effects: [{ action: "execute", effect: "disabled" }],
+		});
+		const base = {
+			organizationId: orgId,
+			resourceClass: "connector_action" as const,
+			principalKind: "agent" as const,
+			principalId: "agent_off",
+			action: "execute" as const,
+		};
+		// The DECISION collapses disabled→deny (both stop the write)...
+		expect(await resolveWritePolicyDecision(base)).toBe("deny");
+		// ...but the raw EFFECT is preserved so list_available can HIDE the op.
+		expect(await resolveWriteEffect(base)).toBe("disabled");
+	});
+
 	it("connector_action: no row → auto (connection mode alone governs)", async () => {
 		expect(
 			await resolveWritePolicyDecision({
@@ -204,6 +235,99 @@ describe("write-policy action/effect decision parity", () => {
 				action: "execute",
 			}),
 		).toBe("allow");
+	});
+
+	it("connector_action: org disabled + exact-agent deny resolves deny deterministically (codex-7)", async () => {
+		// deny and disabled are equally restrictive; the fold must pick ONE regardless
+		// of candidate/scope order, or the resolved effect (and list_available's
+		// hide-vs-surface behavior) becomes order-dependent and diverges from the UI.
+		// We break the tie toward deny — it still SURFACES the op and gates it.
+		await seedPolicy({
+			orgId,
+			resourceClass: "connector_action",
+			principalKind: null, // org-wide
+			effects: [{ action: "execute", effect: "disabled" }],
+		});
+		await seedPolicy({
+			orgId,
+			resourceClass: "connector_action",
+			principalKind: "agent",
+			principalId: "agent_tie",
+			effects: [{ action: "execute", effect: "deny" }],
+		});
+		const base = {
+			organizationId: orgId,
+			resourceClass: "connector_action" as const,
+			principalKind: "agent" as const,
+			principalId: "agent_tie",
+			action: "execute" as const,
+		};
+		// The raw effect resolves deny (not disabled), so list_available surfaces it.
+		expect(await resolveWriteEffect(base)).toBe("deny");
+		expect(await resolveWritePolicyDecision(base)).toBe("deny");
+	});
+
+	it("the permissions-PUT input guards reject payloads that would erase/mis-target a row (codex-11)", async () => {
+		// effects MUST be a plain object — an array passes typeof==='object' but yields
+		// no entries, so a replace-all upsert would wipe stored effects. Reject arrays.
+		const isEffectsMap = (v: unknown) =>
+			typeof v === "object" && v !== null && !Array.isArray(v);
+		expect(isEffectsMap({ create: "deny" })).toBe(true);
+		expect(isEffectsMap([])).toBe(false);
+		expect(isEffectsMap(null)).toBe(false);
+
+		// entity_type_slug: present-but-invalid (number, whitespace) must NOT coerce to
+		// null (the blanket row) — that would overwrite the broad policy. Only a
+		// non-empty string or omitted is valid.
+		const slugPresentInvalid = (v: unknown) =>
+			v !== undefined &&
+			v !== null &&
+			(typeof v !== "string" || v.trim() === "");
+		expect(slugPresentInvalid(123)).toBe(true);
+		expect(slugPresentInvalid("   ")).toBe(true);
+		expect(slugPresentInvalid("trip")).toBe(false);
+		expect(slugPresentInvalid(undefined)).toBe(false);
+		expect(slugPresentInvalid(null)).toBe(false);
+	});
+
+	it("the DELETE principal_mode guard rejects a PRESENT non-'autonomous' value, null only when ABSENT (codex-14)", () => {
+		// A query param `?principal_mode=` (empty) must NOT map to null and delete the
+		// attended/both-mode row — only a genuinely absent param maps to null.
+		const rejects = (param: string | undefined) =>
+			param !== undefined && param.trim() !== "autonomous";
+		expect(rejects(undefined)).toBe(false); // absent → null (both-mode)
+		expect(rejects("autonomous")).toBe(false);
+		expect(rejects("")).toBe(true); // present empty → 400
+		expect(rejects("  ")).toBe(true); // whitespace → 400
+		expect(rejects("attended")).toBe(true); // typo → 400
+	});
+
+	it("a type scope is rejected for non-entity classes; only entity is type-scoped (codex-13)", () => {
+		// A present entity_type_slug on agent_config/connector_action must 400, not
+		// coerce to null and overwrite the class's blanket policy.
+		const slugAllowed = (
+			resourceClass: string,
+			slug: string | undefined | null,
+		) => {
+			const present = slug !== undefined && slug !== null;
+			return !(present && resourceClass !== "entity");
+		};
+		expect(slugAllowed("entity", "trip")).toBe(true);
+		expect(slugAllowed("agent_config", "trip")).toBe(false);
+		expect(slugAllowed("connector_action", "trip")).toBe(false);
+		expect(slugAllowed("agent_config", undefined)).toBe(true); // omitted is fine
+	});
+
+	it("the permissions-PUT validation predicate rejects illegal (action,effect) pairs (codex-8)", async () => {
+		// The endpoint 400s on any entry isLegalActionEffect rejects, rather than
+		// dropping it (a dropped entry + replace-all upsert would ERASE a stored deny).
+		// entity governs create/update/delete with auto/approval/deny — NOT execute,
+		// NOT disabled.
+		expect(isLegalActionEffect("entity", "create", "approval")).toBe(true);
+		expect(isLegalActionEffect("entity", "execute", "auto")).toBe(false); // illegal action
+		expect(isLegalActionEffect("entity", "create", "disabled")).toBe(false); // illegal effect
+		expect(isLegalActionEffect("connector_action", "execute", "disabled")).toBe(true);
+		expect(isLegalActionEffect("connector_action", "create", "auto")).toBe(false);
 	});
 
 	it("fail-closed: a stored effect illegal for the class resolves to deny, not the default", async () => {

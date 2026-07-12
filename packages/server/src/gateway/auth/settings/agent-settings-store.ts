@@ -70,20 +70,68 @@ export class AgentSettingsStore {
     this.declaredAgents = registry;
   }
 
+  /**
+   * True when `agentId` is a declared (SDK-embedded) agent whose settings are
+   * org-agnostic (no persisted Postgres row). Lets a policy-enforcement read
+   * distinguish "declared agent, org not required" from a DB-backed agent that
+   * MUST be org-scoped — an orgless DB read of a shared id is a cross-tenant
+   * leak.
+   */
+  isDeclaredAgent(agentId: string): boolean {
+    return this.declaredAgents?.has(agentId) ?? false;
+  }
+
   async getSettings(
     agentId: string,
     context?: { organizationId?: string }
   ): Promise<AgentSettings | null> {
     const declared = this.declaredAgents?.get(agentId);
+
+    // DECLARED/DB DISJOINTNESS (cross-tenant): declared (SDK-embedded) settings
+    // are org-agnostic. A declared id must NOT shadow a REAL tenant DB row that
+    // shares the id — otherwise an org-scoped read of a tenant's agent would be
+    // mis-served the declared identity/skills/model. So when an org IS supplied,
+    // the org-scoped DB row wins: read it first, and only fall back to the
+    // declared overlay when the tenant has NO row for that id. When NO org is
+    // supplied, the read is org-agnostic and the declared overlay applies (that
+    // is the legitimate orgless declared-agent case).
+    if (context?.organizationId) {
+      const dbRow = await orgContext.run(
+        { organizationId: context.organizationId },
+        () => this.configStore.getSettings(agentId)
+      );
+      if (dbRow) return dbRow;
+      return declared ? (declared.settings as AgentSettings) : null;
+    }
+
     if (declared) {
       return declared.settings as AgentSettings;
     }
-    if (context?.organizationId) {
-      return orgContext.run({ organizationId: context.organizationId }, () =>
-        this.configStore.getSettings(agentId)
-      );
-    }
     return this.configStore.getSettings(agentId);
+  }
+
+  /**
+   * True when `agentId` resolves to declared (SDK-embedded) settings FOR THIS
+   * READ — i.e. it is in the declared registry AND (when an org is given) the
+   * tenant has NO persisted DB row that would take precedence. Used by the
+   * cross-tenant guard to decide whether an orgless read is safe (declared =
+   * org-agnostic) or must be denied (a DB-backed agent with no org). A colliding
+   * id that has a real DB row in the given org is NOT treated as declared, so it
+   * never flips the orgless guard open.
+   */
+  async isDeclaredAgentScoped(
+    agentId: string,
+    organizationId?: string
+  ): Promise<boolean> {
+    if (!this.declaredAgents?.has(agentId)) return false;
+    // No org → org-agnostic declared read; the registry membership is decisive.
+    if (!organizationId) return true;
+    // Org given → a real tenant DB row takes precedence over the declared
+    // overlay, so this id is NOT "declared" for that org (it's DB-backed).
+    const dbRow = await orgContext.run({ organizationId }, () =>
+      this.configStore.getSettings(agentId)
+    );
+    return !dbRow;
   }
 
   async saveSettings(

@@ -331,6 +331,113 @@ export function replaceBasePromptIdentity(
   return `${identity}\n\nThe section below describes the runtime tooling available to you. It does not change your role.\n\n${basePrompt}`;
 }
 
+/**
+ * Fallback identity used when an agent ships no IDENTITY.md (i.e.
+ * `context.agentInstructions` is empty). Without this, the pi-coding-agent
+ * opener wins and the agent introduces itself as "an expert coding assistant
+ * operating inside pi, a coding agent harness" — leaking harness internals and
+ * mis-describing what a Lobu agent actually is.
+ *
+ * A custom IDENTITY.md still fully overrides this; it only applies when the
+ * agent has declared no identity of its own.
+ *
+ * The capabilities section is grounded in what every Lobu agent has by
+ * construction (shared memory, connectors, actions, channel presence) rather
+ * than a raw tool dump — so self-descriptions are accurate and useful, not
+ * generic.
+ *
+ * IMPORTANT: keep this describing capabilities in GENERAL terms only. Which
+ * connectors are actually wired up, the current channel, and the conversation
+ * that triggered this run are per-run facts injected live via
+ * platformInstructions / mcpServerInstructions / mcpContext (see
+ * session-context.ts) and any run-context block — never hardcode specifics
+ * here, or the prompt will lie on every other run.
+ */
+export const LOBU_DEFAULT_IDENTITY = `You are a Lobu agent — a persistent, memory-backed teammate that lives in your organization's channels. You are not a generic coding assistant, and you do not describe yourself in terms of the runtime or harness you run on.
+
+## What you can do
+- **Remember across conversations.** You have durable shared memory of the people, facts, decisions, and history of the organization you serve — not just the current thread. Recall it before asking for something you should already know, and save what's worth keeping.
+- **Reach connected tools and data.** Your organization wires up connectors, connections, and live feeds — its apps, data sources, and MCP servers. You can query them to answer questions and pull in what you need. The specific connectors available to you are listed in your runtime context, not memorized here.
+- **Take action, not just answer.** You can act on the team's behalf through the tools you're given — sending messages, updating records, running the operations your connectors and skills expose — within the limits set for you.
+- **Work where the team works.** You operate inside the team's channels, DMs, and tasks. Details of the current conversation — platform, channel, what triggered this run — come from your runtime context.
+- **Stay within permissions and guardrails.** Your tools, network access, and permissions are set by operator configuration. Work within them rather than around them; if something is out of scope, say so instead of trying to route around it.
+
+Introduce yourself in terms of who you help and what you can do for them — concretely and specifically to this organization — not in terms of the software you are running on.`;
+
+/**
+ * Resolve the identity to inject: the agent's own IDENTITY.md when present,
+ * otherwise the Lobu default persona. Returns a non-empty string, so the pi
+ * opener is always replaced and never reaches the model verbatim.
+ */
+export function resolveAgentIdentity(
+  agentInstructions: string | undefined
+): string {
+  const trimmed = agentInstructions?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : LOBU_DEFAULT_IDENTITY;
+}
+
+/**
+ * Per-run conversation context: where this turn is happening, who triggered it,
+ * and (when available) a link back to the conversation.
+ *
+ * This is DELIBERATELY injected into the per-turn USER prompt, never the system
+ * prompt. It varies every turn/channel, so putting it in the cached system
+ * prefix would bust the prompt cache on every message. As the tail of the user
+ * turn it appends after all cached content and costs nothing in cache terms.
+ *
+ * Only fields actually present are rendered — an empty/unknown field is omitted
+ * rather than shown as "unknown". Returns "" when nothing is known, so the
+ * caller can conditionally prepend it.
+ */
+export function buildRunContextBlock(input: {
+  platform: string | undefined;
+  channelId: string | undefined;
+  platformMetadata: unknown;
+}): string {
+  const md =
+    input.platformMetadata && typeof input.platformMetadata === "object"
+      ? (input.platformMetadata as Record<string, unknown>)
+      : {};
+  // Platform metadata (display names, channel names, URLs) is UNTRUSTED user
+  // input that ends up in the prompt. Neutralize prompt injection: strip all
+  // control characters (newlines especially — a newline lets a value forge a
+  // new `## Section` or `- ` line), collapse whitespace, and cap length so an
+  // overlong value can't dominate the turn. Empty-after-sanitize -> omitted.
+  const MAX_FIELD_LEN = 200;
+  const str = (v: unknown): string | undefined => {
+    if (typeof v !== "string") return undefined;
+    // Replace any C0/C1 control char (code point < 0x20, or 0x7F-0x9F) with a
+    // space — done by code point rather than a literal control-char regex so no
+    // raw control bytes live in this source file. Then collapse whitespace and
+    // cap length. A newline/tab can't survive to forge a new prompt line.
+    let cleaned = "";
+    for (const ch of v) {
+      const code = ch.codePointAt(0) ?? 0;
+      cleaned += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : ch;
+    }
+    cleaned = cleaned.replace(/\s+/g, " ").trim().slice(0, MAX_FIELD_LEN);
+    return cleaned.length > 0 ? cleaned : undefined;
+  };
+
+  const platform = str(input.platform);
+  const channel =
+    str(md.responseChannel) ?? str(md.chatId) ?? str(input.channelId);
+  const sender = str(md.senderDisplayName) ?? str(md.senderUsername);
+  const thread = str(md.responseThreadId);
+  // Opportunistic: rendered only if the gateway ever plumbs a link through.
+  const url = str(md.conversationUrl) ?? str(md.permalink);
+
+  const lines: string[] = [];
+  if (platform) lines.push(`- Platform: ${platform}`);
+  if (channel) lines.push(`- Channel: ${channel}`);
+  if (thread) lines.push(`- Thread: ${thread}`);
+  if (sender) lines.push(`- Triggered by: ${sender}`);
+  if (url) lines.push(`- Link: ${url}`);
+
+  if (lines.length === 0) return "";
+  return `## This conversation\n${lines.join("\n")}`;
+}
+
 // ---------------------------------------------------------------------------
 // LOBU memory plugin helper — inject agentId into config
 // ---------------------------------------------------------------------------
@@ -411,11 +518,16 @@ interface RunAISessionParams {
    */
   onSessionFilePathResolved: (sessionFilePath: string) => void;
   /**
-   * Called as soon as the model ref is resolved to a (provider, modelId) pair
-   * so the worker can tag Sentry captures with which provider/model a later
-   * failure belongs to. Fires before any provider call can fail.
+   * Called as soon as the model ref is resolved to a
+   * (provider, modelId, providerSlug) triple so the worker can tag Sentry
+   * captures with which provider/model a later failure belongs to. Fires before
+   * any provider call can fail.
    */
-  onModelResolved: (provider: string, modelId: string) => void;
+  onModelResolved: (
+    provider: string,
+    modelId: string,
+    providerSlug: string
+  ) => void;
 
   // Methods delegated from OpenClawWorker (kept on the class; passed here as
   // plain function references so the class can share them with tests without
@@ -556,7 +668,11 @@ export async function runAISession(
 
   const modelRef = typeof rawOptions.model === "string" ? rawOptions.model : "";
 
-  const { provider: rawProvider, modelId } = resolveModelRef(modelRef, {
+  const {
+    provider: rawProvider,
+    providerSlug,
+    modelId,
+  } = resolveModelRef(modelRef, {
     defaultModel: pc.defaultModel,
     defaultProvider: pc.defaultProvider,
     defaultProviderSlug: pc.defaultProviderSlug,
@@ -565,7 +681,7 @@ export async function runAISession(
   });
   // Map gateway slug to model-registry provider name (e.g. "z-ai" → "zai")
   const provider = PROVIDER_REGISTRY_ALIASES[rawProvider] || rawProvider;
-  onModelResolved(provider, modelId);
+  onModelResolved(provider, modelId, providerSlug);
 
   // Dynamic provider base URL from agentOptions.providerBaseUrlMappings
   let providerBaseUrl: string | undefined;
@@ -1208,17 +1324,16 @@ user references earlier discussion or you need prior context.`);
     // tools/guidelines/cwd footer below it still applies, but the role on
     // top is the one we actually want.
     const basePrompt = session.systemPrompt;
-    const identity = context.agentInstructions?.trim();
-    const finalSystemPrompt = identity
-      ? [
-          replaceBasePromptIdentity(basePrompt, identity),
-          finalInstructionsUpdated,
-        ]
-          .filter(Boolean)
-          .join("\n\n---\n\n")
-      : [basePrompt, finalInstructionsUpdated]
-          .filter(Boolean)
-          .join("\n\n---\n\n");
+    // Resolve the identity from the agent's IDENTITY.md, falling back to the
+    // Lobu default persona when the agent declares none. Either way we replace
+    // the pi opener so it never reaches the model verbatim.
+    const identity = resolveAgentIdentity(context.agentInstructions);
+    const finalSystemPrompt = [
+      replaceBasePromptIdentity(basePrompt, identity),
+      finalInstructionsUpdated,
+    ]
+      .filter(Boolean)
+      .join("\n\n---\n\n");
     session.agent.state.systemPrompt = finalSystemPrompt;
 
     let resolveTurnDone: (() => void) | null = null;
@@ -1543,7 +1658,15 @@ user references earlier discussion or you need prior context.`);
     // referenced, go resolve them" hint — as an instruction-shaped preamble in
     // the user turn the model tended to echo it back into its reply. (Full
     // pre-resolution of refs into injected data is a possible future follow-up.)
-    const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${userPrompt}`;
+    // Per-run conversation context (channel, trigger, link). Injected into the
+    // user turn — NOT the cached system prompt — because it varies per turn.
+    const runContext = buildRunContextBlock({
+      platform,
+      channelId,
+      platformMetadata,
+    });
+
+    const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${runContext ? `${runContext}\n\n` : ""}${userPrompt}`;
 
     // Load image attachments for vision-capable models
     const images = await loadImageAttachments();

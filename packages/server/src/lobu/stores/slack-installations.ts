@@ -7,10 +7,11 @@ import {
   deleteSecretsByPrefix,
   persistSecretValue,
 } from "../../gateway/secrets/index.js";
-import type {
-  AppInstallationRow,
-  AppInstallationStatus,
-  AppInstallationStore,
+import {
+  type AppInstallationRow,
+  type AppInstallationStatus,
+  type AppInstallationStore,
+  CrossOrgTransferBlockedError,
 } from "./app-installation-store.js";
 import { upsertChatConnectionProjection } from "./connections-projection.js";
 import { orgContext } from "./org-context.js";
@@ -148,6 +149,14 @@ export async function upsertSlackInstallByTeam(
      * (Grid single-workspace or standalone).
      */
     isEnterpriseInstall?: boolean;
+    /**
+     * When true, refuse a SILENT cross-org transfer: if this workspace is already
+     * ACTIVE in a different org, the activation aborts
+     * ({@link CrossOrgTransferBlockedError}) instead of stealing the slot. Set on
+     * the claim path so a second-org claim must be a deliberate, confirmed move.
+     * Absent on the OAuth reinstall path (transfer is the intended behavior there).
+     */
+    blockCrossOrgTransfer?: boolean;
   }
 ): Promise<SlackInstallationRow> {
   // Bind the org for the secret-store put + the row write so they land in the
@@ -177,6 +186,22 @@ export async function upsertSlackInstallByTeam(
     );
     const plannedId =
       (existing?.metadata.external_id as string | undefined) ?? candidateId;
+
+    // For a Grid claim, fence on the enterprise id too — but ONLY across a
+    // scope-spanning (org-wide) install, never between two independent per-
+    // workspace siblings of the same enterprise (those may live in different orgs).
+    // `claimIsScopeWide` = this claim is org-wide; the guard also matches a FOREIGN
+    // org-wide row (its `is_enterprise_install` flag) even when this claim is per-
+    // workspace. Only when actually blocking a transfer AND this is a Grid install.
+    const crossOrgFenceEnterpriseMatch =
+      data.blockCrossOrgTransfer && data.enterpriseId
+        ? {
+            key: "enterprise_id",
+            value: data.enterpriseId,
+            claimIsScopeWide: data.isEnterpriseInstall === true,
+            scopeFlagKey: "is_enterprise_install",
+          }
+        : undefined;
 
     // TOKEN FIRST — persist the bot token BEFORE any row is created/activated, so
     // the invariant "no active Slack install without a resolvable botToken" holds
@@ -216,17 +241,41 @@ export async function upsertSlackInstallByTeam(
       return metadata;
     };
 
-    const row = await store.upsert({
-      organizationId,
-      provider: SLACK_PROVIDER,
-      providerInstance: SLACK_PROVIDER_INSTANCE,
-      providerAppId: SLACK_PROVIDER_APP_ID,
-      externalTenantId: teamId,
-      authProfileId: null,
-      status: "active",
-      metadata: buildMetadata(plannedId),
-      preserveMetadataKeysOnUpdate: ["external_id", "welcome_dm_sent"],
-    });
+    let row: AppInstallationRow;
+    try {
+      row = await store.upsert({
+        organizationId,
+        provider: SLACK_PROVIDER,
+        providerInstance: SLACK_PROVIDER_INSTANCE,
+        providerAppId: SLACK_PROVIDER_APP_ID,
+        externalTenantId: teamId,
+        authProfileId: null,
+        status: "active",
+        metadata: buildMetadata(plannedId),
+        preserveMetadataKeysOnUpdate: ["external_id", "welcome_dm_sent"],
+        blockCrossOrgTransfer: data.blockCrossOrgTransfer,
+        crossOrgFenceMetadataMatch: crossOrgFenceEnterpriseMatch,
+      });
+    } catch (err) {
+      // The cross-org fence tripped AFTER we token-first persisted the bot token
+      // (above) but BEFORE any row was activated. The minted `plannedId` prefix is
+      // known only here, so purge its now-orphaned secret from THIS (refused) org's
+      // bucket rather than leaking a live token. Same-org scope as the put (we are
+      // inside orgContext.run). Best-effort — a leftover would be harmless (no row
+      // references it) but the whole point is to not leave a live token behind.
+      if (err instanceof CrossOrgTransferBlockedError) {
+        await deleteSecretsByPrefix(
+          secretStore,
+          `installations/${plannedId}/`
+        ).catch((cleanupError) => {
+          logger.warn(
+            { plannedId, teamId, error: String(cleanupError) },
+            "Failed to purge Slack token secret after cross-org fence block"
+          );
+        });
+      }
+      throw err;
+    }
     const canonicalId = row.metadata.external_id as string;
 
     // Concurrency reconciliation: if a racing first-install won the id (the store
@@ -253,6 +302,8 @@ export async function upsertSlackInstallByTeam(
         status: "active",
         metadata: buildMetadata(canonicalId),
         preserveMetadataKeysOnUpdate: ["external_id", "welcome_dm_sent"],
+        blockCrossOrgTransfer: data.blockCrossOrgTransfer,
+        crossOrgFenceMetadataMatch: crossOrgFenceEnterpriseMatch,
       });
       await deleteSecretsByPrefix(
         secretStore,
@@ -403,6 +454,99 @@ export async function getSlackEnterpriseInstall(
     "is_enterprise_install"
   );
   return row ? toSlackRow(row) : null;
+}
+
+/** Which cross-org conflict the Slack fence matched (see engine `ClaimConflictKind`). */
+export type SlackForeignMatchKind = "same_workspace" | "enterprise_scope_overlap";
+
+/** An active Slack install owned by an org OTHER than a claim's target org. */
+export interface SlackForeignActiveBinding {
+  organizationId: string;
+  orgSlug: string | null;
+  orgName: string | null;
+  matchKind: SlackForeignMatchKind;
+}
+
+/**
+ * Resolve an ACTIVE Slack install, owned by an org OTHER than
+ * `targetOrganizationId`, that CONFLICTS with claiming `teamId` — TYPED by which
+ * of two distinct conflicts it is. Null when there is no conflict.
+ *
+ * The four cases (see the coordinator's spec):
+ *  1. Same exact workspace `team_id` in another org → `same_workspace`. The real
+ *     "same workspace elsewhere" case; a deliberate move can proceed.
+ *  2. Same exact org-wide enterprise `external_tenant_id` in another org → also a
+ *     `team_id` match here (external_tenant_id equals the claimed id), so it falls
+ *     under case 1's exact-id arm. No special handling.
+ *  3. DIFFERENT per-workspace siblings (T_A vs T_B) sharing one enterprise, with
+ *     NEITHER side org-wide → ALLOWED. Two independent workspaces of one Grid may
+ *     belong to different Lobu orgs, so the enterprise arm must NOT match here.
+ *  4. An org-wide install (`is_enterprise_install`) on EITHER side vs a per-
+ *     workspace install of a sibling in another org → `enterprise_scope_overlap`.
+ *     A real routing overlap (org-wide covers all siblings), surfaced distinctly
+ *     and blocked by default.
+ *
+ * So the enterprise arm trips ONLY when at least one side is org-wide: either the
+ * CLAIMING install (`isEnterpriseInstall`) or the FOREIGN row
+ * (`metadata->>'is_enterprise_install' = 'true'`). Exact-id matches always win and
+ * are reported as `same_workspace`.
+ */
+export async function resolveSlackActiveBindingElsewhere(
+  teamId: string,
+  enterpriseId: string | null,
+  isEnterpriseInstall: boolean,
+  targetOrganizationId: string
+): Promise<SlackForeignActiveBinding | null> {
+  const sql = getDb();
+  // Enterprise arm only when SOME side is org-wide (case 4). When the claiming
+  // side is org-wide, any foreign sibling of the enterprise overlaps; otherwise
+  // only a foreign ORG-WIDE row overlaps our per-workspace claim.
+  const enterpriseArmActive = enterpriseId != null && isEnterpriseInstall;
+  const foreignOrgWideArmActive = enterpriseId != null;
+  const rows = (await sql`
+    SELECT
+      ai.organization_id,
+      o.slug,
+      o.name,
+      (ai.external_tenant_id = ${teamId}) AS exact_match
+    FROM app_installations ai
+    JOIN "organization" o ON o.id = ai.organization_id
+    WHERE ai.provider = ${SLACK_PROVIDER}
+      AND ai.provider_app_id = ${SLACK_PROVIDER_APP_ID}
+      AND ai.status = 'active'
+      AND ai.organization_id IS DISTINCT FROM ${targetOrganizationId}
+      AND (
+        -- Case 1/2: exact same external subject (team id, or org-wide enterprise id).
+        ai.external_tenant_id = ${teamId}
+        -- Case 4a: WE are org-wide → any foreign sibling of this enterprise overlaps.
+        OR (
+          ${enterpriseArmActive}
+          AND ai.metadata ->> 'enterprise_id' = ${enterpriseId ?? null}
+        )
+        -- Case 4b: a foreign ORG-WIDE row covers our per-workspace claim's enterprise.
+        OR (
+          ${foreignOrgWideArmActive}
+          AND ai.metadata ->> 'enterprise_id' = ${enterpriseId ?? null}
+          AND (ai.metadata -> 'is_enterprise_install') = 'true'::jsonb
+        )
+      )
+    -- Prefer an exact-id (same_workspace) match over an enterprise-scope match.
+    ORDER BY exact_match DESC, ai.updated_at DESC, ai.id DESC
+    LIMIT 1
+  `) as Array<{
+    organization_id: string;
+    slug: string | null;
+    name: string | null;
+    exact_match: boolean;
+  }>;
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    organizationId: row.organization_id,
+    orgSlug: row.slug ?? null,
+    orgName: row.name ?? null,
+    matchKind: row.exact_match ? "same_workspace" : "enterprise_scope_overlap",
+  };
 }
 
 /**
@@ -713,12 +857,19 @@ export async function resolveSlackPendingByTenant(
  *
  * Caller is responsible for authorizing the claim (workspace-admin check)
  * BEFORE invoking this. Returns the stable `slackinst-<uuid>` install id.
+ *
+ * When `confirmMove` is false and the workspace is already ACTIVE in another
+ * org, activation throws {@link CrossOrgTransferBlockedError} — the atomic fence
+ * against a silent second-org claim stealing the active slot. The durable
+ * pending-row claim is rolled back to org-less so a genuine first claim can
+ * still succeed once the user confirms the move (or claims elsewhere).
  */
 export async function claimSlackPendingInstall(
   store: AppInstallationStore,
   secretStore: WritableSecretStore,
   pending: SlackPendingInstall,
-  organizationId: string
+  organizationId: string,
+  confirmMove = false
 ): Promise<{ installationId: string }> {
   const sql = getDb();
   const claimed = await sql`
@@ -737,20 +888,43 @@ export async function claimSlackPendingInstall(
     throw new Error("Slack workspace pending install was already claimed");
   }
 
-  const row = await upsertSlackInstallByTeam(
-    store,
-    secretStore,
-    organizationId,
-    pending.teamId,
-    {
-      teamName: pending.teamName ?? undefined,
-      botUserId: pending.botUserId ?? undefined,
-      botToken: pending.botToken,
-      installerUserId: pending.installerUserId ?? undefined,
-      enterpriseId: pending.enterpriseId,
-      isEnterpriseInstall: pending.isEnterpriseInstall,
+  let row: SlackInstallationRow;
+  try {
+    row = await upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      organizationId,
+      pending.teamId,
+      {
+        teamName: pending.teamName ?? undefined,
+        botUserId: pending.botUserId ?? undefined,
+        botToken: pending.botToken,
+        installerUserId: pending.installerUserId ?? undefined,
+        enterpriseId: pending.enterpriseId,
+        isEnterpriseInstall: pending.isEnterpriseInstall,
+        blockCrossOrgTransfer: !confirmMove,
+      }
+    );
+  } catch (err) {
+    if (err instanceof CrossOrgTransferBlockedError) {
+      // The fence tripped: this workspace is already active in another org and
+      // the move was not confirmed. Release the durable pending-row claim (back
+      // to org-less, still pending) so a genuine first claim from the rightful
+      // org — or a later confirmed move — can still proceed. Never leave the row
+      // stranded under an org that failed to activate.
+      await sql`
+        UPDATE app_installations
+        SET organization_id = NULL, updated_at = now()
+        WHERE id = ${pending.id}::bigint
+          AND provider = ${SLACK_PROVIDER}
+          AND provider_app_id = ${SLACK_PROVIDER_APP_ID}
+          AND external_tenant_id = ${pending.teamId}
+          AND organization_id = ${organizationId}
+          AND status = 'pending'
+      `;
     }
-  );
+    throw err;
+  }
   // Usually the reserved row was activated in place. If a same-org active row
   // already existed, the generic upsert refreshed that row instead; retire only
   // THIS successfully consumed pending row, never a newer reinstall.

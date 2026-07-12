@@ -2,22 +2,6 @@ import type { GuardrailStage } from "./guardrails/types";
 import type { SecretRef } from "./secret-refs";
 
 /**
- * Represents a provider installed for a specific agent.
- * Stored in AgentSettings.installedProviders as an ordered array (index 0 = primary).
- */
-export interface InstalledProvider {
-  /**
-   * Provider reference. For built-in providers this is the provider id
-   * ("claude", "chatgpt", "gemini", "z-ai"); for an org-defined inference
-   * provider it is the row's slug. Custom upstreams live on the org's
-   * `inference_providers` row (capabilities.<modality>.base_url), NOT here —
-   * the old per-agent `config.baseUrl` override was removed with that move.
-   */
-  providerId: string;
-  installedAt: number;
-}
-
-/**
  * CLI backend configuration for pi-agent integration.
  * Providers can ship CLI tools that pi-agent invokes as backends.
  */
@@ -389,6 +373,15 @@ export interface InstructionContext {
    * so an unscoped read returns an arbitrary org's row.
    */
   organizationId?: string;
+  /**
+   * Whether agent-scoped settings reads are org-safe for this turn. False for an
+   * orgless DB-backed agent (a shared id like "lobu-builder" exists in every
+   * org, so an id-only read would leak another tenant's identity/soul/skills).
+   * When false, instruction providers MUST skip the by-id settings read and use
+   * their generic (no-agent) branch. True (or absent) for a normal org-scoped
+   * agent and for declared/SDK-embedded agents (whose settings are org-agnostic).
+   */
+  orgScoped?: boolean;
   sessionKey: string;
   workingDirectory: string;
   availableProjects?: string[];
@@ -417,6 +410,13 @@ export interface InstructionProvider {
  * Shared payload contract for worker → platform thread responses.
  * Ensures gateway consumers and workers stay type-aligned.
  */
+export interface AgentErrorContext {
+  /** Lobu provider slug safe to expose to the settings UI. */
+  provider?: string;
+  /** Provider model id safe to expose to the settings UI. */
+  model?: string;
+}
+
 export interface ThreadResponsePayload {
   messageId: string;
   channelId: string;
@@ -443,6 +443,8 @@ export interface ThreadResponsePayload {
    */
   error?: string;
   errorCode?: string;
+  /** Non-secret provider/model targeting for the error CTA. */
+  errorContext?: AgentErrorContext;
   timestamp: number;
   originalMessageId?: string;
   botResponseId?: string;

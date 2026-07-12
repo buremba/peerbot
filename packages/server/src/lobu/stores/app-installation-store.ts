@@ -6,6 +6,24 @@ function activeTenantLockTag(key: AppInstallationTenantKey): string {
 }
 
 /**
+ * Advisory-lock tag that serializes activation across every install sharing a
+ * `metadata` grouping key (e.g. Slack Grid `enterprise_id`), regardless of their
+ * differing tenant tuples. The per-tuple lock (an org-wide Grid install keys on
+ * the ENTERPRISE id, a per-workspace install on the TEAM id) does NOT serialize
+ * two cross-key claims of the same enterprise; this second lock does, so the
+ * cross-org fence stays atomic across replicas even when the two racers touch
+ * different tuples.
+ */
+function fenceGroupLockTag(
+  provider: string,
+  providerAppId: string,
+  metadataKey: string,
+  value: string
+): string {
+  return `app_installations:fence:${provider}:${providerAppId}:${metadataKey}:${value}`;
+}
+
+/**
  * A generic, provider-agnostic app installation: the multi-tenant record of
  * "Lobu App <X> is installed into external tenant <Y>". One model spans GitHub
  * Apps (installation_id), Slack OAuth v2 (team_id), and Jira/Atlassian Connect
@@ -71,6 +89,59 @@ export interface AppInstallationUpsert extends AppInstallationTenantKey {
    * provided `metadata` value (the first writer's mint is kept).
    */
   preserveMetadataKeysOnUpdate?: string[];
+  /**
+   * Refuse the silent cross-org TRANSFER. When true and an ACTIVE row for this
+   * tuple is owned by a DIFFERENT org, the activation aborts (throws
+   * {@link CrossOrgTransferBlockedError}) instead of demoting the prior owner —
+   * the fence for a claim that must be a deliberate move, not a silent slot
+   * steal. Checked INSIDE the advisory-locked transaction, so it holds across
+   * replicas even against a concurrent activation of the same tuple. Default
+   * false (transfer proceeds, preserving the historical one-active-owner behavior
+   * for reinstall/OAuth paths).
+   */
+  blockCrossOrgTransfer?: boolean;
+  /**
+   * Extends {@link blockCrossOrgTransfer} to a SECONDARY grouping key: an active
+   * install owned by a different org whose `metadata[key] === value` also trips
+   * the fence, even if its tenant tuple differs. This closes the Slack Grid
+   * cross-key hole — an org-wide install keys on the enterprise id, a
+   * per-workspace install on the team id, so the tuple lock/guard alone misses
+   * the counterpart. When set (with `blockCrossOrgTransfer`), the activation ALSO
+   * takes a `metadata`-grouped advisory lock so two concurrent cross-key claims
+   * serialize, and the guard SELECT matches this key too. Ignored without
+   * `blockCrossOrgTransfer`.
+   *
+   * The match must NOT over-fence: two INDEPENDENT per-workspace siblings sharing
+   * a grouping value (both non-org-wide Grid installs) may legitimately live in
+   * different orgs. So the grouping arm only matches when a scope-spanning install
+   * is involved:
+   *  - `claimIsScopeWide` true → the CLAIMING install spans the group, so ANY
+   *    foreign row carrying `metadata[key] === value` overlaps it.
+   *  - else → only a foreign row that ITSELF spans the group matches, i.e. one
+   *    whose `metadata[scopeFlagKey]` is boolean `true`.
+   * When neither holds (both sides per-workspace), the grouping arm is inert and
+   * only the exact tuple fences.
+   */
+  crossOrgFenceMetadataMatch?: {
+    key: string;
+    value: string;
+    /** True when the claiming install spans the whole group (e.g. Grid org-wide). */
+    claimIsScopeWide: boolean;
+    /** Metadata flag identifying a foreign row that spans the group. */
+    scopeFlagKey: string;
+  };
+}
+
+/**
+ * Thrown by {@link AppInstallationStore.upsert} when `blockCrossOrgTransfer` is
+ * set and an active install for the tuple is owned by a different org. Carries
+ * that org's id so the caller can surface it.
+ */
+export class CrossOrgTransferBlockedError extends Error {
+  constructor(readonly ownerOrganizationId: string) {
+    super("Active install owned by a different org; transfer not confirmed");
+    this.name = "CrossOrgTransferBlockedError";
+  }
 }
 
 export interface AppInstallationStore {
@@ -253,6 +324,66 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
         await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
           activeTenantLockTag(install),
         ]);
+
+        // Cross-org fence (atomic, under the lock): when the caller forbids a
+        // silent transfer, refuse to demote a DIFFERENT-org active owner. Checked
+        // here — not before the lock — so a concurrent activation on another pod
+        // cannot slip a foreign owner in between the check and the demote.
+        if (install.blockCrossOrgTransfer) {
+          const fenceMatch = install.crossOrgFenceMetadataMatch;
+          // A cross-key claim (e.g. Grid org-wide vs per-workspace) touches a
+          // DIFFERENT tenant tuple, so the tuple lock above does NOT serialize it.
+          // Take a second lock on the shared metadata grouping key so the two
+          // racers order deterministically before either reads the fence.
+          if (fenceMatch) {
+            await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+              fenceGroupLockTag(
+                install.provider,
+                install.providerAppId,
+                fenceMatch.key,
+                fenceMatch.value
+              ),
+            ]);
+          }
+          // The grouping arm matches a foreign row sharing the value ONLY when a
+          // scope-spanning install is involved: either WE span the group
+          // (`claimIsScopeWide` → any foreign sibling overlaps) or the FOREIGN row
+          // itself spans it (its `scopeFlagKey` is true). Two independent
+          // per-workspace siblings (neither scope-wide) never match, so a genuine
+          // second-workspace claim of the same Grid into another org is allowed.
+          const claimScopeWide = fenceMatch?.claimIsScopeWide === true;
+          const foreign = await tx`
+            SELECT organization_id FROM app_installations
+            WHERE provider = ${install.provider}
+              AND provider_app_id = ${install.providerAppId}
+              AND status = 'active'
+              AND organization_id <> ${install.organizationId}
+              AND (
+                (
+                  provider_instance = ${install.providerInstance}
+                  AND external_tenant_id = ${install.externalTenantId}
+                )
+                OR (
+                  ${fenceMatch ? fenceMatch.value : null}::text IS NOT NULL
+                  AND metadata ->> ${fenceMatch ? fenceMatch.key : ""} = ${
+                    fenceMatch ? fenceMatch.value : null
+                  }
+                  AND (
+                    ${claimScopeWide}
+                    OR (metadata -> ${
+                      fenceMatch ? fenceMatch.scopeFlagKey : ""
+                    }) = 'true'::jsonb
+                  )
+                )
+              )
+            LIMIT 1
+          `;
+          if (foreign.length > 0) {
+            throw new CrossOrgTransferBlockedError(
+              foreign[0].organization_id as string
+            );
+          }
+        }
 
         // Demote any active row for this tuple owned by a DIFFERENT org — a
         // transfer takes the single active slot from the prior owner. (A same-org

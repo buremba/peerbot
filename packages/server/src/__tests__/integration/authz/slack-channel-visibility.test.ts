@@ -12,7 +12,12 @@
 
 import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { syncSlackConnectionAcl } from "../../../authz/slack-acl-sync";
+import {
+	resolveSlackBotIdentity,
+	syncSlackConnectionAcl,
+} from "../../../authz/slack-acl-sync";
+import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-installation-store";
+import { createSlackWebApi } from "../../../gateway/connections/slack-web";
 import {
 	slackAclSource,
 	slackChannelsToResources,
@@ -319,6 +324,270 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 		);
 		expect(channels).toContain("C01ENG");
 		expect(channels).not.toContain("C01SEC");
+  });
+
+	it("org-wide Grid install (conn tenant = E…, bindings carry T…) STILL graphs and stays ENFORCED", async () => {
+    // Regression guard for the codex finding: once bindings carry the real
+    // workspace `T…` instead of the enterprise `E…`, an org-wide install's ACL
+    // sync must NOT drop every row (which would silently downgrade to the legacy
+    // per-agent fence). connTeamId is the enterprise id here — the relaxed scope
+    // filter accepts every T… binding on the connection and graphs it.
+    const org = await createTestOrganization({ name: "GridCo" });
+    const alice = await createTestUser({ name: "GridAlice" });
+    await addUserToOrganization(alice.id, org.id, "owner");
+    const agent = await createTestAgent({ organizationId: org.id });
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${org.id}, 'person', 'Person', current_timestamp, current_timestamp)
+      ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
+      DO NOTHING
+    `;
+
+    const ENTERPRISE = "E0BDSKL1KJL";
+    const WORKSPACE = "T0BF8TKGW79";
+    const GRID_CONN = "slackinst-gridco"; // managed org-wide install
+    // Connection tenant id is the ENTERPRISE id (org-wide install).
+    await insertChatConnectionRow({
+      id: GRID_CONN,
+      agentId: null,
+      platform: "slack",
+      organizationId: org.id,
+      status: "active",
+      metadata: { teamId: ENTERPRISE },
+    });
+    // Bindings carry the concrete WORKSPACE T… (post-invariant), NOT the E….
+    for (const channel of ["C01ENG", "C01SEC"]) {
+      await sql`
+        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
+        SELECT ${org.id}, ${agent.agentId}, 'slack', ${channel}, ${WORKSPACE}, id
+        FROM connections
+        WHERE organization_id = ${org.id} AND slug = ${GRID_CONN} AND deleted_at IS NULL
+      `;
+      await sql`
+        INSERT INTO channel_messages (
+          organization_id, connection_id, platform, channel_id,
+          platform_message_id, author_name, is_bot, text, occurred_at
+        ) VALUES (
+          ${org.id}, ${GRID_CONN}, 'slack', ${channel},
+          ${`${channel}-0`}, 'Alice', false, 'quarterly revenue in this channel', NOW()
+        )
+      `;
+    }
+    // Alice signed in + linked Slack, scoped to the real WORKSPACE.
+    const aliceEntity = await createTestEntity({
+      name: "GridAlice",
+      entity_type: "$member",
+      organization_id: org.id,
+      created_by: alice.id,
+    });
+    const aliceSlack = normalizeSlackUserId(WORKSPACE, "U01ALICE");
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
+      VALUES
+        (${org.id}, ${aliceEntity.id}, 'auth_user_id', ${alice.id}, 'auth:signup'),
+        (${org.id}, ${aliceEntity.id}, 'slack_user_id', ${aliceSlack}, 'connector:slack')
+    `;
+
+    // Drive the REAL production sync. resolveBotIdentity is stubbed (as in prod
+    // wiring). The graph is keyed on the binding's WORKSPACE T… (slack-acl-sync
+    // groups by binding team), and members resolve on that same T….
+    const membersByChannel: Record<string, string[]> = {
+      C01ENG: ["U01ALICE"],
+      C01SEC: ["U01BOB"],
+    };
+    const result = await syncSlackConnectionAcl(
+      {
+        slackWeb: {
+          conversationMembers: async (_t, channelId) =>
+            membersByChannel[channelId] ?? [],
+        },
+        resolveBotIdentity: async () => ({
+          token: "xoxb-grid-token",
+          botUserId: null,
+        }),
+      },
+      { connectionId: GRID_CONN, organizationId: org.id },
+    );
+    // Pre-fix: connTeamId=E… ≠ binding T… dropped BOTH rows → 0 synced →
+    // connection never graphed → gate falls back to the legacy fence (NOT
+    // enforced). Post-fix: both channels graph and the gate enforces.
+    expect(result.ok).toBe(true);
+    expect(result.channelsSynced).toBe(2);
+
+    const asAlice = search(
+      { query: "quarterly revenue", include_content: true },
+      {} as Parameters<typeof search>[1],
+      { organizationId: org.id, userId: alice.id, agentId: agent.agentId } as SearchCtx,
+    );
+    const channels = ((await asAlice).conversation_messages ?? []).map(
+      (m) => m.channel_id,
+    );
+    // ENFORCED (not legacy fence): Alice (member of #eng only) recalls #eng,
+    // never #secret. If the connection had fallen back to the legacy fence she'd
+    // see BOTH — that is exactly the downgrade this guards against.
+    expect(channels).toContain("C01ENG");
+    expect(channels).not.toContain("C01SEC");
+  });
+
+	it("org-wide Grid install: resolves the bot credential by the slackinst- install id via the REAL resolveSlackBotIdentity (NOT the team-keyed miss), then graphs + ENFORCES", async () => {
+    // The load-bearing half of the ACL-sync fix, driven WITHOUT stubbing
+    // resolveBotIdentity: a Grid org-wide install's app_installations row is
+    // keyed on the ENTERPRISE id (E…), so getSlackInstallByTeamId(T…) MISSES for
+    // the sibling workspace. resolveSlackBotIdentity must resolve the token by
+    // the connection's slackinst- slug (= the install external_id) via
+    // getSlackInstallById instead. If it can't, it returns null → sync throws →
+    // connection marked ACL-failed → the gate drops ALL channels (fail-closed
+    // OUTAGE). This proves the by-id branch, the graph build, and enforcement.
+    const org = await createTestOrganization({ name: "GridById" });
+    const alice = await createTestUser({ name: "GridByIdAlice" });
+    await addUserToOrganization(alice.id, org.id, "owner");
+    const agent = await createTestAgent({ organizationId: org.id });
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${org.id}, 'person', 'Person', current_timestamp, current_timestamp)
+      ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
+      DO NOTHING
+    `;
+
+    const ENTERPRISE = "E0GRIDENT99";
+    const WORKSPACE = "T0GRIDWS123";
+    const INSTALL_ID = "slackinst-grid-byid";
+    const ENTERPRISE_TOKEN = "xoxb-enterprise-token"; // plaintext ⇒ no-op secret store
+    const BOT_USER = "U0GRIDBOT";
+
+    // The connection: slug IS the install external id (slackinst-…), tenant id is
+    // the ENTERPRISE id (org-wide install). No BYO token on the connection — the
+    // ONLY way to a token is the install, resolved by id.
+    await insertChatConnectionRow({
+      id: INSTALL_ID,
+      agentId: null,
+      platform: "slack",
+      organizationId: org.id,
+      status: "active",
+      metadata: { teamId: ENTERPRISE },
+    });
+    // The REAL org-wide app_installations row: external_tenant_id = E…,
+    // external_id = the slackinst- slug, is_enterprise_install=true, a bot token.
+    // getSlackInstallByTeamId(T0GRIDWS123) will NOT match this (its tenant is E…);
+    // getSlackInstallById(slackinst-grid-byid) WILL.
+    await sql`
+      INSERT INTO app_installations
+        (organization_id, provider, provider_instance, provider_app_id,
+         external_tenant_id, status, metadata)
+      VALUES
+        (${org.id}, 'slack', 'cloud', 'cloud', ${ENTERPRISE}, 'active',
+         ${sql.json({
+           external_id: INSTALL_ID,
+           is_enterprise_install: true,
+           enterprise_id: ENTERPRISE,
+           bot_user_id: BOT_USER,
+           config: { platform: "slack", botToken: ENTERPRISE_TOKEN },
+         })})
+    `;
+    // Bindings carry the concrete sibling WORKSPACE T… (post-invariant).
+    for (const channel of ["C01ENG", "C01SEC"]) {
+      await sql`
+        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
+        SELECT ${org.id}, ${agent.agentId}, 'slack', ${channel}, ${WORKSPACE}, id
+        FROM connections
+        WHERE organization_id = ${org.id} AND slug = ${INSTALL_ID} AND deleted_at IS NULL
+      `;
+      await sql`
+        INSERT INTO channel_messages (
+          organization_id, connection_id, platform, channel_id,
+          platform_message_id, author_name, is_bot, text, occurred_at
+        ) VALUES (
+          ${org.id}, ${INSTALL_ID}, 'slack', ${channel},
+          ${`${channel}-0`}, 'Alice', false, 'quarterly revenue in this channel', NOW()
+        )
+      `;
+    }
+    // Alice signed in + linked Slack, scoped to the real WORKSPACE.
+    const aliceEntity = await createTestEntity({
+      name: "GridByIdAlice",
+      entity_type: "$member",
+      organization_id: org.id,
+      created_by: alice.id,
+    });
+    const aliceSlack = normalizeSlackUserId(WORKSPACE, "U01ALICE");
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
+      VALUES
+        (${org.id}, ${aliceEntity.id}, 'auth_user_id', ${alice.id}, 'auth:signup'),
+        (${org.id}, ${aliceEntity.id}, 'slack_user_id', ${aliceSlack}, 'connector:slack')
+    `;
+
+    // A no-op secret store: the install's botToken is plaintext, so
+    // resolveSecretValue returns it verbatim without ever calling `.get`.
+    const secretStore = {
+      get: async () => undefined,
+    } as unknown as Parameters<typeof resolveSlackBotIdentity>[0]["secretStore"];
+    const installStore = createPostgresAppInstallationStore();
+    const slackWeb = createSlackWebApi();
+
+    // Capture the token each membership fetch is made with — it MUST be the
+    // enterprise install token, which proves the by-id resolution hit.
+    const fetchedWithTokens: string[] = [];
+    const result = await syncSlackConnectionAcl(
+      {
+        slackWeb: {
+          conversationMembers: async (token, channelId) => {
+            fetchedWithTokens.push(token);
+            return channelId === "C01ENG" ? ["U01ALICE"] : ["U01BOB"];
+          },
+          conversationInfo: async () => ({
+            name: "eng",
+            isPrivate: false,
+            contextTeamId: WORKSPACE,
+          }),
+        },
+        // The REAL production resolver — NOT stubbed. This is the whole point.
+        resolveBotIdentity: (params) =>
+          resolveSlackBotIdentity({ installStore, secretStore, slackWeb }, params),
+      },
+      { connectionId: INSTALL_ID, organizationId: org.id },
+    );
+
+    // Credential resolved by the install id: the enterprise token was used to
+    // fetch every channel's members. A miss would have returned null → throw →
+    // ok:false, channelsSynced:0 → ACL-failed.
+    expect(result.ok).toBe(true);
+    expect(result.channelsSynced).toBe(2);
+    expect(fetchedWithTokens.length).toBe(2);
+    expect(fetchedWithTokens.every((t) => t === ENTERPRISE_TOKEN)).toBe(true);
+
+    // Directly assert the by-id resolution too (independent of the sync loop):
+    // asked to graph the sibling WORKSPACE T…, it returns the enterprise token +
+    // bot id — even though getSlackInstallByTeamId(T…) would miss.
+    const identity = await resolveSlackBotIdentity(
+      { installStore, secretStore, slackWeb },
+      { organizationId: org.id, teamId: WORKSPACE, connectionId: INSTALL_ID },
+    );
+    expect(identity).toEqual({ token: ENTERPRISE_TOKEN, botUserId: BOT_USER });
+
+    // The connection is now ENFORCED (authz_source_acl_state full+fresh), NOT
+    // failed — so the gate enforces membership rather than dropping everything.
+    const [state] = await sql<{ acl_support: string; freshness_state: string }>`
+      SELECT acl_support, freshness_state FROM authz_source_acl_state
+      WHERE organization_id = ${org.id} AND connection_id = ${INSTALL_ID}
+    `;
+    expect(state?.acl_support).toBe("full");
+    expect(state?.freshness_state).toBe("fresh");
+
+    // End-to-end through the gate: Alice (member of #eng only) recalls #eng,
+    // never #secret. Legacy-fence fallback would show BOTH.
+    const asAlice = search(
+      { query: "quarterly revenue", include_content: true },
+      {} as Parameters<typeof search>[1],
+      { organizationId: org.id, userId: alice.id, agentId: agent.agentId } as SearchCtx,
+    );
+    const channels = ((await asAlice).conversation_messages ?? []).map(
+      (m) => m.channel_id,
+    );
+    expect(channels).toContain("C01ENG");
+    expect(channels).not.toContain("C01SEC");
   });
 
 	it("scopes the production sync to the connection workspace — a second workspace never leaks in", async () => {

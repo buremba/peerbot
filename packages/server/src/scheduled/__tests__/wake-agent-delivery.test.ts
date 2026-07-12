@@ -7,7 +7,10 @@ import {
   seedAgentRow,
 } from "../../gateway/__tests__/helpers/db-setup";
 import type { CoreServices } from "../../gateway/services/core-services";
-import { enqueueAgentMessage } from "../../gateway/services/agent-threads";
+import {
+  createThreadForAgent,
+  enqueueAgentMessage,
+} from "../../gateway/services/agent-threads";
 import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection";
 import { runWakeAgentTask, type WakeAgentTaskPayload } from "../jobs";
 
@@ -260,4 +263,60 @@ test("internal API-thread dispatch marks a supplied model as a behavior override
     model: "z-ai/glm-5.2",
     behaviorModelOverride: true,
   });
+});
+
+test("#2: createThreadForAgent STORES organizationId on the session", async () => {
+  let stored: { organizationId?: string } | undefined;
+  const deps = {
+    sessionManager: {
+      setSession: async (s: { organizationId?: string }) => {
+        stored = s;
+      },
+    },
+  } as unknown as Parameters<typeof createThreadForAgent>[0];
+
+  await createThreadForAgent(deps, {
+    agentId: AGENT,
+    organizationId: "org-B",
+    userId: USER,
+  });
+
+  // The session (read at enqueue by internal threads) carries the org, not just
+  // the token.
+  expect(stored?.organizationId).toBe("org-B");
+});
+
+test("#2: enqueueAgentMessage threads the session's organizationId to the TOP-LEVEL payload", async () => {
+  // The enqueue-time model gate reads payload.organizationId. An internal
+  // scheduled/repair thread must carry the RIGHT org top-level, or the gate
+  // queries the agent id across orgs (declared agents exist in every org) and
+  // enforces another tenant's policy. Cross-tenant leak.
+  const enqueued: MessagePayload[] = [];
+  const deps = {
+    sessionManager: {
+      getSession: async () => ({
+        userId: USER,
+        conversationId: "thread-2",
+        agentId: AGENT,
+        provider: "claude",
+        organizationId: "org-B",
+      }),
+      touchSession: async () => {},
+    },
+    queueProducer: {
+      enqueueMessage: async (message: MessagePayload) => {
+        enqueued.push(message);
+        return "queued";
+      },
+    },
+  } as unknown as Parameters<typeof enqueueAgentMessage>[0];
+
+  await enqueueAgentMessage(deps, {
+    threadId: "thread-2",
+    messageText: "wake up",
+  });
+
+  // Top-level org (not just platformMetadata) so the gate resolves org-B, not
+  // an id-only cross-org read.
+  expect(enqueued[0].organizationId).toBe("org-B");
 });

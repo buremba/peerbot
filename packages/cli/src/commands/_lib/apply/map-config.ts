@@ -24,7 +24,7 @@ import type {
   RelationshipType,
   Watcher,
 } from "../../../config/index.js";
-import { isSecretRef } from "../../../config/index.js";
+import { isSecretRef, UNRESOLVED_MODEL_SUFFIX } from "../../../config/index.js";
 import { ValidationError } from "../../memory/_lib/errors.js";
 import type {
   DesiredAgent,
@@ -88,9 +88,9 @@ function envRefName(value: string): string | null {
   return match ? (match[1] ?? null) : null;
 }
 
-/** Provider id used as the storage key; falls back to the model when omitted. */
+/** Provider slug used as the storage key. `id` is required on a provider. */
 function providerId(provider: ProviderConfig): string {
-  return provider.id ?? provider.model;
+  return (provider.id ?? "").trim();
 }
 
 /**
@@ -279,18 +279,29 @@ function mapAgent(
   const settings: Partial<AgentSettings> = {};
 
   if (agent.providers?.length) {
-    // installedProviders stays the provider-install/catalog list; the model
-    // collapses to a single defaultModel — the primary provider's declared
-    // model, or "<providerId>/auto" for its newest live model.
-    settings.installedProviders = agent.providers.map((p) => ({
-      providerId: providerId(p),
-      installedAt: Date.now(),
-    }));
-    const primary = agent.providers[0];
-    if (primary) {
-      const primaryModel = primary.model?.trim();
-      settings.defaultModel = primaryModel || `${providerId(primary)}/auto`;
-    }
+    // Each declared provider becomes one explicit ref in the ordered `models`
+    // list (index 0 = the primary/default). A provider WITH a concrete model
+    // emits `<providerId>/<model>` (never `<providerId>/auto` — auto is gone);
+    // a model already `<slug>/`-qualified (provider-native ids can contain
+    // slashes) is used verbatim, never double-prefixed. A provider with NO
+    // model (e.g. ChatGPT, which has no catalog default) emits the
+    // `<providerId>/__unresolved__` restriction sentinel — the same way the
+    // server represents "provider intended, no model resolved" — so the agent
+    // stays gated (never allow-all) and the config still applies without a
+    // crash.
+    settings.models = agent.providers.map((p) => {
+      const id = providerId(p);
+      // A provider with no id is a config error — it would emit a bogus
+      // "/__unresolved__" ref the server rejects. Fail loudly at map time.
+      if (!id) {
+        throw new Error(
+          `Agent "${agent.id}" has a provider with no "id". Every provider must declare an "id" (e.g. { id: "openai", model: "gpt-5" }).`
+        );
+      }
+      const model = p.model?.trim();
+      if (!model) return `${id}/${UNRESOLVED_MODEL_SUFFIX}`;
+      return model.startsWith(`${id}/`) ? model : `${id}/${model}`;
+    });
   }
 
   const allowed = agent.network?.allowed ?? [];

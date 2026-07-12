@@ -112,7 +112,14 @@ export class McpProxy {
 		isError: boolean;
 	}> {
 		return runWithOrganizationContext(options?.organizationId, () =>
-			this.executeToolDirectScoped(agentId, userId, mcpId, toolName, args),
+			this.executeToolDirectScoped(
+				agentId,
+				userId,
+				mcpId,
+				toolName,
+				args,
+				options.organizationId,
+			),
 		);
 	}
 
@@ -122,11 +129,16 @@ export class McpProxy {
 		mcpId: string,
 		toolName: string,
 		args: Record<string, unknown>,
+		organizationId: string,
 	): Promise<{
 		content: Array<{ type: string; text: string }>;
 		isError: boolean;
 	}> {
-		const httpServer = await this.configService.getHttpServer(mcpId, agentId);
+		const httpServer = await this.configService.getHttpServer(
+			mcpId,
+			agentId,
+			organizationId,
+		);
 		if (!httpServer) {
 			return {
 				content: [{ type: "text", text: `MCP server '${mcpId}' not found` }],
@@ -237,7 +249,11 @@ export class McpProxy {
 			if (cached) return cached;
 		}
 
-		const httpServer = await this.configService.getHttpServer(mcpId, agentId);
+		const httpServer = await this.configService.getHttpServer(
+			mcpId,
+			agentId,
+			tokenData.organizationId,
+		);
 		if (!httpServer) {
 			return { tools: [] };
 		}

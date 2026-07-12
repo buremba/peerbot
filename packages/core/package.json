@@ -26,6 +26,12 @@
       "import": "./dist/__tests__/fixtures/index.js",
       "require": "./dist/__tests__/fixtures/index.js"
     },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "bun": "./src/errors.ts",
+      "import": "./dist/errors.js",
+      "require": "./dist/errors.js"
+    },
     "./contracts/tools/manage-connections": {
       "types": "./dist/contracts/tools/manage-connections.d.ts",
       "bun": "./src/contracts/tools/manage-connections.ts",

@@ -51,6 +51,7 @@ describe("resolveModelRef", () => {
       defaultProviderSlug: "claude",
     });
     expect(result.provider).toBe("anthropic");
+    expect(result.providerSlug).toBe("claude");
     expect(result.modelId).toBe("claude-opus-4-8");
   });
 
@@ -84,6 +85,7 @@ describe("resolveModelRef", () => {
     });
 
     expect(result.provider).toBe("z-ai");
+    expect(result.providerSlug).toBe("z-ai");
     expect(result.modelId).toBe("glm-5.2");
   });
 
@@ -109,6 +111,7 @@ describe("resolveModelRef", () => {
     });
 
     expect(result.provider).toBe("anthropic");
+    expect(result.providerSlug).toBe("claude");
     expect(result.modelId).toBe("claude-sonnet-4-5");
   });
 

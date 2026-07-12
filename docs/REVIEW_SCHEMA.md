@@ -2,9 +2,13 @@
 
 After making changes on a feature branch, the agent runs `make review`
 locally. `scripts/review.sh` drives the deterministic test suites in cwd,
-invokes `pi` against `git diff <base>...HEAD` (base defaults to `main`,
-override with `BASE=<branch>` or `--base <branch>`), and prints a JSON
-verdict matching this schema. The script posts a `pi-review` commit status
+invokes an independent CLI reviewer against `git diff <base>...HEAD` (base
+defaults to `origin/main` when available, override with `BASE=<branch>` or
+`--base <branch>`), and prints a JSON verdict matching this schema. Codex
+harnesses use Claude; other environments, including Claude Code, use Codex.
+Set `REVIEWER_CLI=codex|claude` to override automatic selection. The script
+also accepts `CLAUDE_REVIEW_MODEL`, `CLAUDE_REVIEW_EFFORT`, and
+`CODEX_REVIEW_MODEL` overrides. It posts a `pi-review` commit status
 whenever GitHub auth is available; if a PR exists for the current branch, it
 also posts an idempotent PR comment (marker-keyed upsert) with the verdict.
 **GitHub Actions does not run review** — it's a local-driven gate owned by
@@ -209,9 +213,9 @@ exceptions, use an explicit env override or admin merge.
 Specific actionable suggestions. Each object has `file`, `line`, `change`.
 Empty array if none.
 
-These are read by the local Claude Code agent and applied between review
-iterations — not by pi itself. Be specific (file path + line + concrete
-change). Vibe suggestions ("consider refactoring", "this could be cleaner")
+These are read by the local coding agent and applied between review
+iterations — not by the reviewer itself. Be specific (file path + line +
+concrete change). Vibe suggestions ("consider refactoring", "this could be cleaner")
 don't belong here — the agent can't act on them; surface those as `notes`
 instead.
 
@@ -247,8 +251,8 @@ nuanced gates later.
 ## Local gate flow
 
 Today's flow: agent finishes a change → opens a PR → runs `make review` from
-the branch's worktree → pi reviews and prints the JSON verdict → the script
-posts/updates the `pi-review` commit status and PR comment. Branch protection
-can require `pi-review`, so a new commit remains unmergeable until the local
+the branch's worktree → the cross-harness reviewer prints the JSON verdict →
+the script posts/updates the `pi-review` commit status and PR comment. Branch
+protection can require `pi-review`, so a new commit remains unmergeable until the local
 review runs and passes for that exact SHA. Human/admin merge remains the
 explicit escape hatch for intentional exceptions.

@@ -18,6 +18,7 @@ import v8 from "node:v8";
 import { getRequestListener } from "@hono/node-server";
 import * as Sentry from "@sentry/node";
 import { Hono } from "hono";
+import { pinoLogger } from "hono-pino";
 import { closeDbSingleton } from "./db/client";
 import { mountViteDev } from "./dev-vite";
 import { markShuttingDown } from "./lifecycle-state";
@@ -140,8 +141,9 @@ export function reportBootFailure(err: unknown): never {
  *      BEFORE the env-inject middleware replaces shared fields)
  *   2. env-inject                (`Object.assign(c.env, env)` — preserves
  *      `c.env.incoming` so the Node adapter's `getConnInfo` keeps working)
- *   3. sentry 5xx response capture (for inner-catch returns that never throw)
- *   4. `app.onError` for thrown exceptions
+ *   3. request logger             (covers both `/lobu` and the main app)
+ *   4. sentry 5xx response capture (for inner-catch returns that never throw)
+ *   5. `app.onError` for thrown exceptions
  *
  * Route mounts:
  *   - `/lobu` → `lobuApp` (only when non-null)
@@ -183,7 +185,12 @@ export function buildWrapperApp(
 		return next();
 	});
 
-	// 3. Server-error capture. Two layers cover both shapes of failing route:
+	// 3. Request logging belongs on the wrapper because `/lobu` and the main app
+	// are sibling mounts. Putting it inside only one child silently drops the
+	// other child's requests from the access log.
+	wrapper.use("*", pinoLogger({ pino: logger }));
+
+	// 4. Server-error capture. Two layers cover both shapes of failing route:
 	//   (a) routes that throw — handled by `app.onError` below.
 	//   (b) routes that try/catch internally and `return c.json(..., 500)` —
 	//       the framework never sees the exception, so onError doesn't fire.

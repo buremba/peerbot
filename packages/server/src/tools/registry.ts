@@ -77,6 +77,23 @@ export interface ToolContext {
   memberRole: string | null;
   /** Durable Lobu/Lobu agent identity bound to this MCP session, when provided. */
   agentId?: string | null;
+  /**
+   * The watcher whose reaction script is driving these tool calls, when the
+   * session IS a watcher reaction (set by the reaction executor). Every gated
+   * write then resolves this watcher's owning agent and evaluates autonomously,
+   * WITHOUT the script having to pass `watcher_source` — so a reaction can never
+   * escape its agent's envelope by simply omitting the attribution. Null for all
+   * non-reaction sessions.
+   */
+  actingWatcherId?: number | null;
+  /**
+   * The watcher-run WINDOW driving this reaction (its root event id), set by the
+   * reaction executor alongside {@link actingWatcherId}. Threaded into a deferred
+   * approval's `runs.window_id` so proposals from the same window batch into one
+   * approval card and identical proposals from DIFFERENT windows stay distinct —
+   * even when the script omits an explicit `watcher_source`. Null off-reaction.
+   */
+  actingWindowId?: number | null;
   /** Verified source conversation for worker-originated tool calls, when any. */
   sourceContext?: ToolSourceContext | null;
   /** `x-lobu-apply-id` when this call belongs to a `lobu apply` run (REST proxy only). */

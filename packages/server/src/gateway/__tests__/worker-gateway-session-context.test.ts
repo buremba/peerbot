@@ -21,7 +21,10 @@ describe("WorkerGateway session context", () => {
     }
   });
 
-  test("syncs only agent-configured skills into skillsConfig", async () => {
+  test("syncs only agent-configured skills into skillsConfig (declared agent, orgless)", async () => {
+    // A DECLARED (SDK-embedded) agent has org-agnostic settings, so an orgless
+    // token legitimately syncs its skills. (A DB-backed agent with an orgless
+    // token would fail closed — covered by the cross-tenant test below.)
     const gateway = new WorkerGateway(
       { send: async () => undefined } as any,
       "https://gateway.example.com",
@@ -41,6 +44,7 @@ describe("WorkerGateway session context", () => {
       undefined,
       undefined,
       {
+        isDeclaredAgent: () => true,
         getSettings: async () => ({
           skillsConfig: {
             skills: [

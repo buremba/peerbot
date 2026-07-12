@@ -18,6 +18,7 @@ import type {
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { ChannelBindingService } from "../../channels/binding-service.js";
+import { orgContext } from "../../../lobu/stores/org-context.js";
 import { resolveSettingsLookupUserId } from "../shared/agent-ownership.js";
 import {
   errorResponse,
@@ -40,25 +41,51 @@ interface AgentRoutesConfig {
   channelBindingService: ChannelBindingService;
 }
 
-async function listOwnedAgentIds(
+/**
+ * The `(agentId, organizationId)` pairs the caller owns, each org resolved from
+ * an authoritative per-caller source — NEVER the unscoped `getMetadata` (a
+ * global `WHERE id = $agentId` that returns an arbitrary tenant's row). The org
+ * is the fence key for the listing, so it must be tenant-safe:
+ *  - `agent_users` mappings → `findAgentOrganizations` (per-caller, may yield
+ *    multiple orgs for the same agent id; each is a distinct owned instance).
+ *  - external browser sessions also own via the legacy `agents.owner_user_id`
+ *    column; `listAllAgents` is ambient-org-scoped (`listAgents` filters on the
+ *    ALS org) and carries each row's `organizationId`, so it's safe to trust.
+ * De-duped on `(agentId, organizationId)`.
+ */
+async function listOwnedAgentInstances(
   payload: SettingsTokenPayload,
   config: Pick<AgentRoutesConfig, "userAgentsStore" | "agentMetadataStore">
-): Promise<string[]> {
+): Promise<Array<{ agentId: string; organizationId: string }>> {
   const lookupUserId = resolveSettingsLookupUserId(payload);
-  const agentIds = new Set(
-    await config.userAgentsStore.listAgents(payload.platform, lookupUserId)
+  const byKey = new Map<string, { agentId: string; organizationId: string }>();
+  const add = (agentId: string, organizationId: string) => {
+    byKey.set(`${organizationId} ${agentId}`, { agentId, organizationId });
+  };
+
+  const mappedAgentIds = await config.userAgentsStore.listAgents(
+    payload.platform,
+    lookupUserId
   );
+  for (const agentId of mappedAgentIds) {
+    const orgs = await config.userAgentsStore.findAgentOrganizations(
+      payload.platform,
+      lookupUserId,
+      agentId
+    );
+    for (const organizationId of orgs) add(agentId, organizationId);
+  }
 
   if (payload.platform === "external") {
     const allAgents = await config.agentMetadataStore.listAllAgents();
     for (const agent of allAgents) {
-      if (agent.owner.userId === lookupUserId) {
-        agentIds.add(agent.agentId);
+      if (agent.owner.userId === lookupUserId && agent.organizationId) {
+        add(agent.agentId, agent.organizationId);
       }
     }
   }
 
-  return [...agentIds];
+  return [...byKey.values()];
 }
 
 /**
@@ -109,7 +136,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
       // Check per-user limit (admins bypass)
       if (!payload.isAdmin && MAX_AGENTS_PER_USER > 0) {
-        const userAgents = await listOwnedAgentIds(payload, config);
+        const userAgents = await listOwnedAgentInstances(payload, config);
         if (userAgents.length >= MAX_AGENTS_PER_USER) {
           return errorResponse(
             c,
@@ -160,23 +187,30 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
     if (payload instanceof Response) return payload;
 
     try {
-      const agentIds = await listOwnedAgentIds(payload, config);
+      // Each owned instance carries its authoritative org (the fence key).
+      const instances = await listOwnedAgentInstances(payload, config);
 
       const agents = [];
-      for (const agentId of agentIds) {
-        const metadata = await config.agentMetadataStore.getMetadata(agentId);
-        if (metadata) {
-          const bindings =
-            await config.channelBindingService.listBindings(agentId);
-          agents.push({
-            agentId,
-            name: metadata.name,
-            description: metadata.description,
-            createdAt: metadata.createdAt,
-            lastUsedAt: metadata.lastUsedAt,
-            channelCount: bindings.length,
-          });
-        }
+      for (const { agentId, organizationId } of instances) {
+        // Read metadata + bindings scoped to the resolved org. getMetadata reads
+        // the ambient ALS org, so pin it to THIS org so it selects the right
+        // row instead of an arbitrary tenant's via the global lookup.
+        const metadata = await orgContext.run({ organizationId }, () =>
+          config.agentMetadataStore.getMetadata(agentId)
+        );
+        if (!metadata) continue;
+        const bindings = await config.channelBindingService.listBindings(
+          agentId,
+          organizationId
+        );
+        agents.push({
+          agentId,
+          name: metadata.name,
+          description: metadata.description,
+          createdAt: metadata.createdAt,
+          lastUsedAt: metadata.lastUsedAt,
+          channelCount: bindings.length,
+        });
       }
 
       return c.json({ agents });
@@ -238,58 +272,11 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
     )
   );
 
-  // DELETE /api/v1/agents/{agentId} - Delete an agent
-  router.delete("/:agentId", async (c) =>
-    withOwnedAgent(
-      c,
-      {
-        access: ownershipAccessConfig,
-        errorLabel: "Failed to delete agent",
-        logger,
-      },
-      async ({ session, agentId, access }) => {
-        // Owner fields are only populated for non-admin sessions (admins
-        // bypass the ownership check), matching the prior inline behavior.
-        const ownerPlatform = access.ownerPlatform;
-        const ownerUserId = access.ownerUserId;
-
-        // Auto-unbind all channels
-        const unboundCount =
-          await config.channelBindingService.deleteAllBindings(agentId);
-
-        // Delete settings
-        await config.agentSettingsStore.deleteSettings(agentId);
-
-        // Delete metadata
-        await config.agentMetadataStore.deleteAgent(agentId);
-
-        // Remove from user's list
-        await config.userAgentsStore.removeAgent(
-          session.platform,
-          resolveSettingsLookupUserId(session),
-          agentId
-        );
-        if (
-          ownerPlatform &&
-          ownerUserId &&
-          (ownerPlatform !== session.platform ||
-            ownerUserId !== session.userId)
-        ) {
-          await config.userAgentsStore.removeAgent(
-            ownerPlatform,
-            ownerUserId,
-            agentId
-          );
-        }
-
-        logger.info(
-          `Deleted agent ${agentId} (unbound ${unboundCount} channels)`
-        );
-
-        return c.json({ success: true, unboundChannels: unboundCount });
-      }
-    )
-  );
+  // NOTE: DELETE /api/v1/agents/:agentId is served by the session-only handler
+  // in `agent.ts` (mounted first; Hono is first-match), and the APP/CLI delete
+  // via `/api/:orgSlug/agents/:id` (org-context middleware; bindings/settings
+  // cleaned by the composite `(org_id, agent_id)` FK ON DELETE CASCADE). A
+  // second item-DELETE here would be dead code, so it is intentionally absent.
 
   logger.debug("Agent management routes registered");
   return router;

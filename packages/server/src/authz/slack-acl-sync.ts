@@ -36,7 +36,10 @@ import {
   runtimeConnectionIdToSlug,
   slugToRuntimeConnectionId,
 } from '../lobu/stores/connections-projection.js';
-import { getSlackInstallByTeamId } from '../lobu/stores/slack-installations.js';
+import {
+  getSlackInstallById,
+  getSlackInstallByTeamId,
+} from '../lobu/stores/slack-installations.js';
 import { orgContext } from '../lobu/stores/org-context.js';
 import {
   type SlackChannelInput,
@@ -116,13 +119,18 @@ export async function syncSlackConnectionAcl(
     connectionId,
   });
 
-  // `resolveBoundChannelRows` joins bindings on (org, agent, platform) — NOT on
-  // workspace — so an agent with a SECOND Slack connection (another workspace)
-  // would pull that workspace's channels in here too. A real workspace
-  // connection carries `metadata.teamId`; scope to it so we only ever fetch
-  // members with THIS connection's token and stamp THIS connection's ACL state.
-  // A preview connection (no teamId, the hosted-bot invariant) serves cross-org
-  // bindings by design, so it stays unscoped.
+  // `resolveBoundChannelRows` narrows bindings to THIS connection (by slug), so
+  // every row here already belongs to it — we trust connection_id as the scope,
+  // NOT a team-string round-trip. `connTeamId` is only used to guard the BYO
+  // multi-workspace case: when the connection's tenant id is itself a WORKSPACE
+  // (`T…`), a binding for a DIFFERENT workspace is a stray second-connection row
+  // and is dropped (fetched with the wrong token → fail-closed otherwise). When
+  // the tenant id is NOT a workspace — a Grid ENTERPRISE (`E…`) org-wide install,
+  // whose bindings correctly carry the sibling workspace `T…`, or a preview
+  // connection (no teamId) — we accept EVERY real-team binding on the connection
+  // and group by the binding's own team. Without this relaxation an org-wide
+  // install (connTeamId = E…) drops all its `T…` bindings and silently
+  // downgrades to the legacy per-agent fence.
   const [conn] = await sql<{ team_id: string | null }>`
 		SELECT COALESCE(external_tenant_id, config->'chatMetadata'->>'teamId') AS team_id
 		FROM connections
@@ -133,14 +141,18 @@ export async function syncSlackConnectionAcl(
 		LIMIT 1
 	`;
   const connTeamId = conn?.team_id ?? null;
+  // Is the connection's tenant id itself a concrete workspace? Only then do we
+  // enforce workspace equality (BYO foreign-workspace guard). An enterprise `E…`
+  // or absent tenant id does NOT constrain the binding team.
+  const connScopesWorkspace = /^T[A-Z0-9]+$/i.test(connTeamId ?? '');
 
-  // Only Slack rows that carry a team id can be team-scoped into the graph; a
-  // channel with no team id is dropped fail-closed by the gate anyway.
+  // Only Slack rows that carry a real workspace team can be team-scoped into the
+  // graph; a channel with no team id is dropped fail-closed by the gate anyway.
   const slackRows = bound.filter(
     (r) =>
       r.platform.startsWith('slack') &&
       r.team_id &&
-      (connTeamId === null || r.team_id === connTeamId),
+      (!connScopesWorkspace || r.team_id === connTeamId),
   );
   if (slackRows.length === 0) {
     return { ok: true, teamsSynced: 0, channelsSynced: 0 };
@@ -272,7 +284,29 @@ export async function resolveSlackBotIdentity(
   const { installStore, secretStore, slackWeb } = deps;
   const { organizationId, teamId, connectionId } = params;
 
-  // Primary: the workspace OAuth app-installation (the hosted/managed path).
+  // Primary: resolve the install by THIS connection's concrete id
+  // (`slackinst-<uuid>` slug = the install external id), NOT by round-tripping
+  // the team string. On a Grid ORG-WIDE install the install row is keyed on the
+  // ENTERPRISE id, so a per-team `getSlackInstallByTeamId(T…)` lookup misses for
+  // every sibling workspace — but the one bot token is enterprise-wide and reads
+  // every workspace's channels. Resolving by connection id gives us that token
+  // for any `T…` we're graphing. Only slackinst- slugs are installs; a BYO slug
+  // (`agentconn-…`) skips straight to the fallback below.
+  const connSlug = runtimeConnectionIdToSlug(connectionId);
+  const installById = connSlug.startsWith('slackinst-')
+    ? await getSlackInstallById(installStore, connSlug)
+    : null;
+  if (installById && installById.status === 'active') {
+    const tokenRef = (installById.config as { botToken?: string }).botToken;
+    const token = await orgContext.run(
+      { organizationId: installById.organizationId },
+      () => resolveSecretValue(secretStore, tokenRef),
+    );
+    if (token) return { token, botUserId: installById.botUserId ?? null };
+  }
+
+  // Secondary: the workspace OAuth app-installation keyed by team (a normal,
+  // non-org-wide install whose connection slug may not be the install id).
   const install = await getSlackInstallByTeamId(installStore, teamId);
   if (install && install.status === 'active') {
     const tokenRef = (install.config as { botToken?: string }).botToken;

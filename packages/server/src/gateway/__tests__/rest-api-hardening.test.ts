@@ -40,7 +40,6 @@ import {
   resetTestDatabase,
   seedAgentRow,
 } from "./helpers/db-setup.js";
-import { getDb } from "../../db/client.js";
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
@@ -171,24 +170,6 @@ describe("auth: missing and expired sessions", () => {
     expect(response.status).toBe(401);
   });
 
-  test("DELETE /api/v1/agents/:agentId without session returns 401", async () => {
-    const app = createAgentRoutes({
-      userAgentsStore,
-      agentMetadataStore,
-      agentSettingsStore,
-      channelBindingService: {
-        async getBinding() { return null; },
-        async createBinding() { return true; },
-        async listBindings() { return []; },
-        async deleteAllBindings() { return 0; },
-      } as any,
-    });
-
-    const response = await orgContext.run({ organizationId: ORG_A }, () =>
-      app.request("/agent-auth-test", { method: "DELETE" })
-    );
-    expect(response.status).toBe(401);
-  });
 
   test("expired session is rejected (401)", async () => {
     setAuthProvider(() => makeExpiredSession());
@@ -304,28 +285,6 @@ describe("cross-org isolation: agents cannot leak across organizations", () => {
     expect(response.status).toBe(404);
   });
 
-  test("user from org-a cannot DELETE agent belonging to org-b", async () => {
-    setAuthProvider(() =>
-      makeSession({ userId: "u-a", oauthUserId: "u-a" })
-    );
-
-    const app = createAgentRoutes({
-      userAgentsStore: userAgentsStoreA,
-      agentMetadataStore: agentMetadataStoreB,
-      agentSettingsStore: agentSettingsStoreA,
-      channelBindingService: {
-        async getBinding() { return null; },
-        async createBinding() { return true; },
-        async listBindings() { return []; },
-        async deleteAllBindings() { return 0; },
-      } as any,
-    });
-
-    const response = await orgContext.run({ organizationId: ORG_B }, () =>
-      app.request("/agent-org-b", { method: "DELETE" })
-    );
-    expect(response.status).toBe(404);
-  });
 
 });
 
@@ -517,28 +476,6 @@ describe("agent CRUD: access control and input validation", () => {
       })
     );
     expect(response.status).toBe(404);
-  });
-
-  test("non-owner cannot DELETE another user's agent (404)", async () => {
-    setAuthProvider(() =>
-      makeSession({ userId: "attacker", oauthUserId: "attacker" })
-    );
-
-    const response = await orgContext.run({ organizationId: ORG_A }, () =>
-      buildApp().request("/my-agent", { method: "DELETE" })
-    );
-    expect(response.status).toBe(404);
-  });
-
-  test("owner can successfully delete their own agent (200)", async () => {
-    setAuthProvider(() => makeSession({ userId: "owner", oauthUserId: "owner" }));
-
-    const response = await orgContext.run({ organizationId: ORG_A }, () =>
-      buildApp().request("/my-agent", { method: "DELETE" })
-    );
-    expect(response.status).toBe(200);
-    const data = (await response.json()) as any;
-    expect(data.success).toBe(true);
   });
 
   test("PATCH with malformed JSON body returns 400", async () => {

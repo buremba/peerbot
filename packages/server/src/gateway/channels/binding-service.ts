@@ -1,7 +1,7 @@
 import { createLogger } from "@lobu/core";
 import { type DbClient, getDb, tsTime } from "../../db/client.js";
 import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection.js";
-import { requireOrgId, resolveOrgId } from "../../lobu/stores/org-context.js";
+import { requireOrgId } from "../../lobu/stores/org-context.js";
 import {
 	resolveStreamingChannelFeedId,
 	softDeleteStreamingChannelFeed,
@@ -92,6 +92,41 @@ export class ChannelBindingService {
           LIMIT 1
         `;
 		return rows[0] ? rowToBinding(rows[0]) : null;
+	}
+
+	/**
+	 * Lazy self-heal: converge a binding's `team_id` to the real WORKSPACE id an
+	 * inbound message carries. A binding written before its workspace was known
+	 * (the resolver returned null → NULL team) heals here on the first message.
+	 *
+	 * Guarded to ONLY fill an unknown (NULL/empty) team — never overwrite an
+	 * already-set workspace, so a stray/foreign `team_id` on a message can't
+	 * repoint a live binding. Keyed on the concrete (org, connection, channel).
+	 * Best-effort by contract: a heal failure must never block message routing.
+	 */
+	async healBindingTeam(
+		connectionId: string,
+		channelId: string,
+		organizationId: string,
+		realTeamId: string,
+	): Promise<void> {
+		if (!realTeamId.trim()) return;
+		const sql = getDb();
+		// Resolve the binding by the concrete connection (via slug, exactly like
+		// getBindingForConnection) so a runtime slug id maps to the right numeric
+		// connection_id. Only fills an unknown team.
+		const slug = runtimeConnectionIdToSlug(connectionId);
+		await sql`
+			UPDATE agent_channel_bindings b
+			SET team_id = ${realTeamId}
+			FROM connections c
+			WHERE c.id = b.connection_id
+				AND c.slug = ${slug}
+				AND c.deleted_at IS NULL
+				AND b.organization_id = ${organizationId}
+				AND b.channel_id = ${channelId}
+				AND (b.team_id IS NULL OR b.team_id = '')
+		`;
 	}
 
 	async createBinding(
@@ -218,36 +253,38 @@ export class ChannelBindingService {
 
 	async listBindings(
 		agentId: string,
-		organizationId?: string,
+		organizationId: string,
 	): Promise<ChannelBinding[]> {
 		const sql = getDb();
-		const orgId = resolveOrgId(organizationId);
-		const rows = orgId
-			? await sql`
+		// Org is REQUIRED: an agent id is unique only WITHIN an org (the
+		// per-org "lobu-builder" system agent has the SAME id across ~20 orgs),
+		// so an org-less `WHERE agent_id = …` would smear every tenant's
+		// bindings for that id into one caller's view.
+		const orgId = requireOrgId(
+			organizationId,
+			"ChannelBindingService.listBindings",
+		);
+		const rows = await sql`
           SELECT * FROM agent_channel_bindings
           WHERE agent_id = ${agentId} AND organization_id = ${orgId}
-        `
-			: await sql`
-          SELECT * FROM agent_channel_bindings WHERE agent_id = ${agentId}
         `;
 		return rows.map(rowToBinding);
 	}
 
 	async deleteAllBindings(
 		agentId: string,
-		organizationId?: string,
+		organizationId: string,
 	): Promise<number> {
 		const sql = getDb();
-		const orgId = resolveOrgId(organizationId);
-		const rows = orgId
-			? await sql`
+		// Org is REQUIRED — see listBindings. An org-less DELETE would wipe
+		// every tenant's bindings for a shared agent id (e.g. "lobu-builder").
+		const orgId = requireOrgId(
+			organizationId,
+			"ChannelBindingService.deleteAllBindings",
+		);
+		const rows = await sql`
           DELETE FROM agent_channel_bindings
           WHERE agent_id = ${agentId} AND organization_id = ${orgId}
-          RETURNING platform, channel_id, team_id, connection_id
-        `
-			: await sql`
-          DELETE FROM agent_channel_bindings
-          WHERE agent_id = ${agentId}
           RETURNING platform, channel_id, team_id, connection_id
         `;
 		logger.info(`Deleted ${rows.length} bindings for agent ${agentId}`);

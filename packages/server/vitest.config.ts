@@ -36,6 +36,12 @@ export default defineConfig({
       // src/auth/oauth/__tests__ is bun:test (OAuth scope suites), run via the
       // same `bun test … src/auth/oauth/__tests__` job — keep it off vitest.
       "src/auth/oauth/__tests__/**",
+      // src/auth/__tests__ is a MIXED dir: most files are vitest-style and must
+      // stay visible to vitest. system-provider-resolution imports bun:test, so
+      // vitest cannot load it — exclude just that file (it runs via its own bun
+      // test job). Do NOT broaden to src/auth/__tests__/** — that orphans the
+      // vitest files. (tool-access is framework-less and runs fine in both.)
+      "src/auth/__tests__/system-provider-resolution.test.ts",
       "**/node_modules/**",
       "**/dist/**",
     ],

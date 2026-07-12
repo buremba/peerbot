@@ -332,9 +332,9 @@ function diffAgent(
  * AgentSettings shape currently has no redacted leaf strings, so this is a
  * forward-compatible guard rather than a hot path today.
  *
- * Field set: limited to the keys lobu.config.ts can express today. Settings that
- * only the UI mutates (e.g. `installedProviders[].installedAt`) are
- * excluded so unrelated UI activity doesn't show up as drift in the plan.
+ * Field set: limited to the keys lobu.config.ts can express today. The agent's
+ * model configuration is a single ordered `models` list of explicit
+ * `<provider>/<model>` refs (the merged defaultModel + installedProviders).
  */
 const SETTINGS_FIELDS: Array<keyof AgentSettings> = [
   "networkConfig",
@@ -343,18 +343,11 @@ const SETTINGS_FIELDS: Array<keyof AgentSettings> = [
   "toolsConfig",
   "guardrails",
   "preApprovedTools",
-  "defaultModel",
-  "installedProviders",
+  "models",
   "soulMd",
   "userMd",
   "identityMd",
 ];
-
-function normalizeInstalledProviders(
-  providers: AgentSettings["installedProviders"] | undefined
-): string[] | undefined {
-  return providers?.map((provider) => provider.providerId);
-}
 
 function diffSettings(
   agentId: string,
@@ -364,17 +357,6 @@ function diffSettings(
   const changed: string[] = [];
   for (const field of SETTINGS_FIELDS) {
     if (!(field in desired)) continue;
-    if (field === "installedProviders") {
-      if (
-        !deepEqual(
-          normalizeInstalledProviders(desired.installedProviders),
-          normalizeInstalledProviders(remote?.installedProviders)
-        )
-      ) {
-        changed.push(field);
-      }
-      continue;
-    }
     if (!deepEqual(desired[field], remote?.[field])) {
       changed.push(field);
     }

@@ -25,8 +25,7 @@ import {
   type ManageAgentsResult,
 } from '@lobu/core/contracts/tools/manage-agents';
 import {
-  classifyMutationPrincipal,
-  mutationPrincipalId,
+  resolveActingPrincipal,
   resolveWritePolicyDecision,
 } from '../../authz/entity-policy';
 import { createDbClientFromEnv, getDb } from '../../db/client';
@@ -288,6 +287,9 @@ export async function applyDelete(
     WHERE organization_id = ${ctx.organizationId} AND id = ${args.agent_id}
     RETURNING id
   `;
+  // The agent's write-gate policy rows (principal_kind='agent') cascade via a DB
+  // trigger on `agents` (see 20260710140000) — covers this path AND the dashboard's
+  // configStore.deleteMetadata, so no app-level cleanup is duplicated here.
   return { action: 'delete', agent_id: args.agent_id, deleted: rows.length > 0 };
 }
 
@@ -586,15 +588,26 @@ async function dispatchAgentWrite(
   ctx: ToolContext,
   env: Env
 ): Promise<ManageAgentsResult> {
-  const principalKind = classifyMutationPrincipal({
+  // Resolve identity through the shared seam so a watcher reaction (which sets
+  // ctx.actingWatcherId but no agentId) binds its owning agent's `agent_config`
+  // envelope — otherwise it would gate as a null-id agent and skip the owner's
+  // approval/deny override. manage_agents has no watcher_source arg, so only the
+  // trusted session watcher applies.
+  const actor = await resolveActingPrincipal(getDb(), {
+    organizationId: ctx.organizationId,
     userId: ctx.userId,
     agentId: ctx.agentId,
+    sessionWatcherId: ctx.actingWatcherId ?? null,
+    sourceForMode: ctx.sourceContext?.source,
   });
   const decision = await resolveWritePolicyDecision({
     organizationId: ctx.organizationId,
     resourceClass: 'agent_config',
-    principalKind,
-    principalId: mutationPrincipalId({ agentId: ctx.agentId }),
+    principalKind: actor.kind,
+    principalId: actor.id,
+    ownerAgentId: actor.ownerAgentId,
+    ownerResolved: actor.ownerResolved,
+    mode: actor.mode,
     action,
   });
   if (decision === 'deny') {

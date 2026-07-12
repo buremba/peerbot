@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Local review runner: typecheck + unit + integration in cwd, then Claude CLI
-# with the diff against the base branch. Prints a JSON verdict on the last line.
+# Local review runner: typecheck + unit + integration in cwd, then an independent
+# CLI reviewer with the diff against the base branch. Prints a JSON verdict on
+# the last line.
 #
 # Usage:
 #   ./scripts/review.sh                 # base = origin/main when available
@@ -16,10 +17,10 @@
 # available, so branch protection can require the local agent review.
 # If there's no PR, the verdict still prints locally.
 #
-# Auth: uses the operator's Claude CLI auth for the local review verdict, and
+# Reviewer selection: Codex harnesses run Claude, while other environments
+# (including Claude Code) run Codex. Override with REVIEWER_CLI=codex|claude.
+# Auth uses the operator's selected CLI auth for the local review verdict, and
 # `gh auth token` for GitHub (optional — missing auth just skips posting).
-# Do not route the verdict through Codex/OpenAI providers here: the gate should
-# work from Codex sessions even when Codex provider quota is exhausted.
 # Commit statuses use the legacy Statuses API because `gh api check-runs`
 # requires GitHub App auth, and a user PAT cannot create check-runs.
 
@@ -34,10 +35,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/review-process.sh"
 # shellcheck source=scripts/lib/herdr-review-lifecycle.sh
 . "$SCRIPT_DIR/lib/herdr-review-lifecycle.sh"
+# shellcheck source=scripts/lib/review-reviewer.sh
+. "$SCRIPT_DIR/lib/review-reviewer.sh"
 
 # --- preflight --------------------------------------------------------------
 
-for cmd in claude jq git node perl python3; do
+for cmd in jq git node perl python3; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "$cmd not found on PATH." >&2; exit 2; }
 done
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "Not inside a git work tree." >&2; exit 2; }
@@ -62,10 +65,13 @@ else
 fi
 CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-opus}"
 CLAUDE_REVIEW_EFFORT="${CLAUDE_REVIEW_EFFORT:-high}"
+CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-}"
+REVIEWER_CLI="${REVIEWER_CLI:-auto}"
 PI_REVIEW_STATUS_CONTEXT="${PI_REVIEW_STATUS_CONTEXT:-pi-review}"
 PI_REVIEW_MIN_BUG_FREE="${PI_REVIEW_MIN_BUG_FREE:-80}"
 PI_REVIEW_MAX_SLOP="${PI_REVIEW_MAX_SLOP:-15}"
 PI_REVIEW_MIN_SIMPLICITY="${PI_REVIEW_MIN_SIMPLICITY:-70}"
+# Existing Herdr control applies to either selected reviewer.
 CLAUDE_REVIEW_HERDR="${CLAUDE_REVIEW_HERDR:-auto}"
 REVIEW_DATABASE_URL="${REVIEW_DATABASE_URL:-}"
 while [ $# -gt 0 ]; do
@@ -74,6 +80,12 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+REVIEWER_CLI_SELECTED="$(review_select_reviewer "$REVIEWER_CLI")"
+command -v "$REVIEWER_CLI_SELECTED" >/dev/null 2>&1 || {
+  review_fail_closed_message "$REVIEWER_CLI_SELECTED" "command not found on PATH" >&2
+  exit 2
+}
 
 HEAD_SHA="$(git rev-parse HEAD)"
 MERGE_BASE="$(git merge-base HEAD "$BASE_BRANCH" 2>/dev/null || true)"
@@ -85,6 +97,7 @@ fi
 echo ">> cwd:  $(pwd)"
 echo ">> base: $BASE_BRANCH (merge-base $MERGE_BASE)"
 echo ">> head: $HEAD_SHA"
+echo ">> reviewer: $REVIEWER_CLI_SELECTED"
 
 post_review_status() {
   [ "$GH_AVAILABLE" = "1" ] || return 0
@@ -112,69 +125,123 @@ finalize_review_status() {
   REVIEW_STATUS_FINALIZED=1
 }
 
-run_claude_review_inline() {
+run_reviewer_inline() {
   local prompt_file="$1"
-  local raw_file
-  raw_file="$(mktemp /tmp/lobu-review-claude-inline.XXXXXX)"
+  local raw_file diagnostic_file
+  raw_file="$(mktemp /tmp/lobu-review-"${REVIEWER_CLI_SELECTED}"-inline.XXXXXX)"
+  diagnostic_file="${raw_file}.stderr"
   REVIEW_INLINE_RAW_FILE="$raw_file"
+  REVIEW_INLINE_DIAGNOSTIC_FILE="$diagnostic_file"
   set +e
-  run_review_child env \
-    BASE_BRANCH="$BASE_BRANCH" \
-    HEAD_SHA="$HEAD_SHA" \
-    TYPECHECK_LOG="$TYPECHECK_LOG" TYPECHECK_EXIT="$TYPECHECK_EXIT" \
-    UNIT_LOG="$UNIT_LOG" UNIT_EXIT="$UNIT_EXIT" \
-    INTEGRATION_LOG="$INTEGRATION_LOG" INTEGRATION_EXIT="$INTEGRATION_EXIT" \
-    DATABASE_URL="${DATABASE_URL:-}" \
-    claude -p "$(cat "$prompt_file")" \
-      --model "$CLAUDE_REVIEW_MODEL" \
-      --effort "$CLAUDE_REVIEW_EFFORT" \
-      --output-format text \
-      --no-session-persistence \
-      --tools Bash,Read,Grep,LS \
-      --permission-mode bypassPermissions < /dev/null > "$raw_file"
-  CLAUDE_EXIT=$?
+  case "$REVIEWER_CLI_SELECTED" in
+    claude)
+      run_review_child env \
+        BASE_BRANCH="$BASE_BRANCH" \
+        HEAD_SHA="$HEAD_SHA" \
+        TYPECHECK_LOG="$TYPECHECK_LOG" TYPECHECK_EXIT="$TYPECHECK_EXIT" \
+        UNIT_LOG="$UNIT_LOG" UNIT_EXIT="$UNIT_EXIT" \
+        INTEGRATION_LOG="$INTEGRATION_LOG" INTEGRATION_EXIT="$INTEGRATION_EXIT" \
+        DATABASE_URL="${DATABASE_URL:-}" \
+        claude -p "$(cat "$prompt_file")" \
+          --model "$CLAUDE_REVIEW_MODEL" \
+          --effort "$CLAUDE_REVIEW_EFFORT" \
+          --json-schema "$(cat "$SCHEMA_FILE")" \
+          --output-format text \
+          --no-session-persistence \
+          --tools Bash,Read,Grep,LS \
+          --permission-mode bypassPermissions < /dev/null > "$raw_file"
+      ;;
+    codex)
+      # The review subcommand cannot combine --base with the Lobu prompt. Use
+      # structured exec so deterministic test results remain part of the gate.
+      local codex_args=(
+        codex exec
+        --sandbox read-only
+        --output-schema "$SCHEMA_FILE"
+        --output-last-message "$raw_file"
+        --ephemeral
+      )
+      if [ -n "$CODEX_REVIEW_MODEL" ]; then
+        codex_args+=(--model "$CODEX_REVIEW_MODEL")
+      fi
+      run_review_child env \
+        BASE_BRANCH="$BASE_BRANCH" \
+        HEAD_SHA="$HEAD_SHA" \
+        TYPECHECK_LOG="$TYPECHECK_LOG" TYPECHECK_EXIT="$TYPECHECK_EXIT" \
+        UNIT_LOG="$UNIT_LOG" UNIT_EXIT="$UNIT_EXIT" \
+        INTEGRATION_LOG="$INTEGRATION_LOG" INTEGRATION_EXIT="$INTEGRATION_EXIT" \
+        DATABASE_URL="${DATABASE_URL:-}" \
+        "${codex_args[@]}" "$(cat "$prompt_file")" < /dev/null > /dev/null 2> "$diagnostic_file"
+      ;;
+  esac
+  REVIEWER_EXIT=$?
   set -e
   RAW="$(cat "$raw_file" 2>/dev/null || true)"
-  rm -f "$raw_file"
+  if [ "$REVIEWER_EXIT" -ne 0 ] && [ -s "$diagnostic_file" ]; then
+    RAW="${RAW}${RAW:+$'\n'}$(cat "$diagnostic_file")"
+  fi
+  rm -f "$raw_file" "$diagnostic_file"
   REVIEW_INLINE_RAW_FILE=""
+  REVIEW_INLINE_DIAGNOSTIC_FILE=""
 }
 
-run_claude_review_herdr() {
+run_reviewer_herdr() {
   local prompt_file="$1"
   local raw_file exit_file runner_file pane_name before_tabs tab_json tab_id pane_id started
-  raw_file="$(mktemp /tmp/lobu-review-claude-raw.XXXXXX)"
-  exit_file="$(mktemp /tmp/lobu-review-claude-exit.XXXXXX)"
-  runner_file="$(mktemp /tmp/lobu-review-claude-runner.XXXXXX)"
+  raw_file="$(mktemp /tmp/lobu-review-"${REVIEWER_CLI_SELECTED}"-raw.XXXXXX)"
+  exit_file="$(mktemp /tmp/lobu-review-"${REVIEWER_CLI_SELECTED}"-exit.XXXXXX)"
+  runner_file="$(mktemp /tmp/lobu-review-"${REVIEWER_CLI_SELECTED}"-runner.XXXXXX)"
   rm -f "$exit_file"
   herdr_review_track_files "$raw_file" "$exit_file" "$runner_file"
-  pane_name="claude-review-${HEAD_SHA:0:8}-$$"
+  pane_name="${REVIEWER_CLI_SELECTED}-review-${HEAD_SHA:0:8}-$$"
 
   if ! before_tabs="$(herdr_review_snapshot_tabs "$HERDR_WORKSPACE_ID")"; then
     rm -f "$raw_file" "$exit_file" "$runner_file"
     herdr_review_forget_files
-    echo ">> could not snapshot Herdr tabs; running Claude inline" >&2
-    run_claude_review_inline "$prompt_file"
+    echo ">> could not snapshot Herdr tabs; running $REVIEWER_CLI_SELECTED inline" >&2
+    run_reviewer_inline "$prompt_file"
     return
   fi
   herdr_review_track_locator "$HERDR_WORKSPACE_ID" "$pane_name" "$PWD" "$before_tabs"
 
   cat > "$runner_file" <<'RUNNER'
 set +e
-claude -p "$(cat "$PROMPT_FILE")" \
-  --model "$CLAUDE_REVIEW_MODEL" \
-  --effort "$CLAUDE_REVIEW_EFFORT" \
-  --output-format text \
-  --no-session-persistence \
-  --tools Bash,Read,Grep,LS \
-  --permission-mode bypassPermissions < /dev/null | tee "$RAW_FILE"
-claude_exit=${PIPESTATUS[0]}
+case "$REVIEWER_CLI_SELECTED" in
+  claude)
+    claude -p "$(cat "$PROMPT_FILE")" \
+      --model "$CLAUDE_REVIEW_MODEL" \
+      --effort "$CLAUDE_REVIEW_EFFORT" \
+      --json-schema "$(cat "$SCHEMA_FILE")" \
+      --output-format text \
+      --no-session-persistence \
+      --tools Bash,Read,Grep,LS \
+      --permission-mode bypassPermissions < /dev/null | tee "$RAW_FILE"
+    reviewer_exit=${PIPESTATUS[0]}
+    ;;
+  codex)
+    # Keep this command aligned with the inline path above. The Lobu prompt is
+    # required because it connects deterministic suite exits to the verdict.
+    codex_args=(
+      codex exec
+      --sandbox read-only
+      --output-schema "$SCHEMA_FILE"
+      --output-last-message "$RAW_FILE"
+      --ephemeral
+    )
+    if [ -n "$CODEX_REVIEW_MODEL" ]; then
+      codex_args+=(--model "$CODEX_REVIEW_MODEL")
+    fi
+    "${codex_args[@]}" "$(cat "$PROMPT_FILE")" < /dev/null
+    reviewer_exit=$?
+    ;;
+esac
 exit_tmp="${EXIT_FILE}.tmp.$$"
-printf "%s\n" "$claude_exit" > "$exit_tmp"
+printf "%s\n" "$reviewer_exit" > "$exit_tmp"
 mv "$exit_tmp" "$EXIT_FILE"
-exit "$claude_exit"
+exit "$reviewer_exit"
 RUNNER
 
-  echo ">> spawning Herdr tab '$pane_name' for Claude review"
+  echo ">> spawning Herdr tab '$pane_name' for $REVIEWER_CLI_SELECTED review"
   set +e
   tab_json="$(
     herdr tab create \
@@ -194,9 +261,12 @@ RUNNER
       --env "INTEGRATION_LOG=$INTEGRATION_LOG" \
       --env "INTEGRATION_EXIT=$INTEGRATION_EXIT" \
       --env "DATABASE_URL=${DATABASE_URL:-}" \
+      --env "REVIEWER_CLI_SELECTED=$REVIEWER_CLI_SELECTED" \
       --env "CLAUDE_REVIEW_MODEL=$CLAUDE_REVIEW_MODEL" \
       --env "CLAUDE_REVIEW_EFFORT=$CLAUDE_REVIEW_EFFORT" \
+      --env "CODEX_REVIEW_MODEL=$CODEX_REVIEW_MODEL" \
       --env "PROMPT_FILE=$prompt_file" \
+      --env "SCHEMA_FILE=$SCHEMA_FILE" \
       --env "RAW_FILE=$raw_file" \
       --env "EXIT_FILE=$exit_file" 2>&1
   )"
@@ -225,13 +295,13 @@ RUNNER
       echo ">> Herdr tab creation state is ambiguous; refusing inline fallback" >&2
       return 1
     fi
-    echo ">> Herdr Claude tab failed to start; falling back to inline Claude" >&2
+    echo ">> Herdr $REVIEWER_CLI_SELECTED tab failed to start; falling back to inline $REVIEWER_CLI_SELECTED" >&2
     printf '%s\n' "$started" >&2
-    run_claude_review_inline "$prompt_file"
+    run_reviewer_inline "$prompt_file"
     return
   fi
 
-  echo ">> Claude review is visible in Herdr tab '$pane_name'"
+  echo ">> $REVIEWER_CLI_SELECTED review is visible in Herdr tab '$pane_name'"
   local waited=0
   while [ ! -f "$exit_file" ]; do
     sleep 2
@@ -241,34 +311,38 @@ RUNNER
       # into RAW before deleting the transport files.
       if ! herdr_review_close_tab; then
         RAW="$(cat "$raw_file" 2>/dev/null || true)"
-        CLAUDE_EXIT=124
-        echo ">> Claude review tab timed out and could not be closed" >&2
+        REVIEWER_EXIT=124
+        echo ">> $REVIEWER_CLI_SELECTED review tab timed out and could not be closed" >&2
         return 1
       fi
       RAW="$(cat "$raw_file" 2>/dev/null || true)"
-      CLAUDE_EXIT=124
+      REVIEWER_EXIT=124
       herdr_review_cleanup
-      echo ">> Claude review tab timed out after ${waited}s" >&2
+      echo ">> $REVIEWER_CLI_SELECTED review tab timed out after ${waited}s" >&2
       return
     fi
   done
 
   RAW="$(cat "$raw_file" 2>/dev/null || true)"
-  CLAUDE_EXIT="$(cat "$exit_file" 2>/dev/null || echo 1)"
+  REVIEWER_EXIT="$(cat "$exit_file" 2>/dev/null || echo 1)"
   herdr_review_cleanup
+  if review_should_retry_inline "$REVIEWER_EXIT" "$RAW"; then
+    echo ">> $REVIEWER_CLI_SELECTED review returned empty output; retrying once inline" >&2
+    run_reviewer_inline "$prompt_file"
+  fi
 }
 
-run_claude_review() {
+run_reviewer() {
   local prompt_file="$1"
   if [ "$CLAUDE_REVIEW_HERDR" != "0" ] &&
      [ -n "${HERDR_WORKSPACE_ID:-}" ] &&
      command -v herdr >/dev/null 2>&1; then
-    run_claude_review_herdr "$prompt_file"
+    run_reviewer_herdr "$prompt_file"
   else
     if [ "$CLAUDE_REVIEW_HERDR" = "1" ]; then
-      echo ">> CLAUDE_REVIEW_HERDR=1 but no Herdr workspace is available; running inline" >&2
+      echo ">> CLAUDE_REVIEW_HERDR=1 but no Herdr workspace is available; running $REVIEWER_CLI_SELECTED inline" >&2
     fi
-    run_claude_review_inline "$prompt_file"
+    run_reviewer_inline "$prompt_file"
   fi
 }
 
@@ -364,7 +438,7 @@ review_exit_cleanup() {
     post_failure_status=1
   fi
   if [ "$post_failure_status" = "1" ]; then
-    post_review_status error "Claude review failed before verdict (exit $ec)"
+    post_review_status error "$REVIEWER_CLI_SELECTED review failed before verdict (exit $ec)"
   fi
   release_review_lock
   exit "$ec"
@@ -377,7 +451,7 @@ trap 'exit 129' HUP
 acquire_review_lock
 
 REVIEW_STATUS_STARTED=1
-post_review_status pending "Claude review running"
+post_review_status pending "$REVIEWER_CLI_SELECTED review running"
 
 # --- env --------------------------------------------------------------------
 
@@ -418,7 +492,7 @@ run_review_child make build-packages > "$BUILD_LOG" 2>&1
 BUILD_EXIT=$?
 set -e
 if [ $BUILD_EXIT -ne 0 ]; then
-  echo "!! build failed (exit $BUILD_EXIT) — proceeding so Claude can review the diff, but unit tests will likely fail" >&2
+  echo "!! build failed (exit $BUILD_EXIT) — proceeding so $REVIEWER_CLI_SELECTED can review the diff, but unit tests will likely fail" >&2
 fi
 
 # --- test suites ------------------------------------------------------------
@@ -461,6 +535,7 @@ run_review_unit_suites() {
   run_deterministic bash "$SCRIPT_DIR/lib/__tests__/review-lock.test.sh";               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   run_deterministic bash "$SCRIPT_DIR/lib/__tests__/review-database-url.test.sh";        ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   run_deterministic bash "$SCRIPT_DIR/lib/__tests__/review-process.test.sh";             ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic bash "$SCRIPT_DIR/lib/__tests__/review-reviewer.test.sh";            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # Shell lifecycle regressions: Herdr task/review tabs must be owned and
   # cleaned without invoking the real Herdr daemon.
   run_deterministic bash "$SCRIPT_DIR/lib/__tests__/herdr-lifecycle.test.sh";            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
@@ -478,7 +553,7 @@ run_review_unit_suites() {
   run_deterministic bun test packages/core packages/cli packages/connectors;          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   run_deterministic bun test packages/agent-worker;                                   ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   run_deterministic bun test packages/server/src/__tests__/unit;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  run_deterministic bun test packages/server/src/auth/__tests__/tool-access.test.ts;  ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  run_deterministic bun test packages/server/src/auth/__tests__/tool-access.test.ts packages/server/src/auth/__tests__/system-provider-resolution.test.ts;  ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   # NOTE: src/gateway/infrastructure/queue runs in the gateway integration loop
   # below (not here) — see #1238; running it in both jobs double-executes it.
   run_deterministic bun test packages/connector-worker;                               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
@@ -520,17 +595,19 @@ set -e
 
 echo ">> suite exit codes: typecheck=$TYPECHECK_EXIT unit=$UNIT_EXIT integration=$INTEGRATION_EXIT"
 
-# --- Claude review ----------------------------------------------------------
+# --- agent review -----------------------------------------------------------
 
 PROMPT_FILE="$(pwd)/prompts/review-prompt.md"
+SCHEMA_FILE="$(pwd)/prompts/review-output-schema.json"
 [ -f "$PROMPT_FILE" ] || { echo "prompt not found: $PROMPT_FILE" >&2; exit 2; }
+[ -f "$SCHEMA_FILE" ] || { echo "schema not found: $SCHEMA_FILE" >&2; exit 2; }
 
-echo ">> invoking Claude CLI (model: $CLAUDE_REVIEW_MODEL, effort: $CLAUDE_REVIEW_EFFORT)"
-CLAUDE_PROMPT_FILE="$(mktemp /tmp/lobu-review-prompt.XXXXXX)"
-herdr_review_track_prompt "$CLAUDE_PROMPT_FILE"
-cat "$PROMPT_FILE" > "$CLAUDE_PROMPT_FILE"
-printf '\n\nReview the diff. Emit only the JSON verdict.\n' >> "$CLAUDE_PROMPT_FILE"
-run_claude_review "$CLAUDE_PROMPT_FILE"
+echo ">> invoking $REVIEWER_CLI_SELECTED review"
+REVIEW_PROMPT_FILE="$(mktemp /tmp/lobu-review-prompt.XXXXXX)"
+herdr_review_track_prompt "$REVIEW_PROMPT_FILE"
+cat "$PROMPT_FILE" > "$REVIEW_PROMPT_FILE"
+printf '\n\nReview the diff. Emit only the JSON verdict.\n' >> "$REVIEW_PROMPT_FILE"
+run_reviewer "$REVIEW_PROMPT_FILE"
 herdr_review_release_prompt
 
 VERDICT="$RAW"
@@ -549,8 +626,13 @@ if ! echo "$VERDICT" | jq -e '
   (.notes | type == "string") and
   (.categories | type == "object")
 ' >/dev/null 2>&1; then
-  finalize_review_status error "Claude review did not produce a valid JSON verdict"
-  echo "Claude review did not produce a valid JSON verdict. claude exit=$CLAUDE_EXIT" >&2
+  if [ "$REVIEWER_EXIT" -ne 0 ]; then
+    REVIEW_FAILURE_DETAIL="reviewer process exited with status $REVIEWER_EXIT"
+  else
+    REVIEW_FAILURE_DETAIL="reviewer returned no schema-valid JSON verdict"
+  fi
+  finalize_review_status error "Independent $REVIEWER_CLI_SELECTED review could not be completed"
+  review_fail_closed_message "$REVIEWER_CLI_SELECTED" "$REVIEW_FAILURE_DETAIL" >&2
   echo "logs: $TYPECHECK_LOG $UNIT_LOG $INTEGRATION_LOG" >&2
   echo "raw output:" >&2
   printf '%s\n' "$RAW" >&2

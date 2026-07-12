@@ -104,6 +104,7 @@ export { getSentry, initSentry } from "./sentry";
 export { extractTraceId, generateTraceId } from "./trace";
 // Core types
 export type {
+  AgentErrorContext,
   AgentInlineGuardrail,
   AgentOptions,
   AuthProfile,
@@ -111,7 +112,6 @@ export type {
   ConversationMessage,
   DeclaredCredential,
   HistoryMessage,
-  InstalledProvider,
   InstructionContext,
   InstructionProvider,
   LogLevel,

@@ -18,6 +18,7 @@
 import { createLogger } from "@lobu/core";
 import { getDb } from "../../../../db/client";
 import { ChannelBindingService } from "../../../../gateway/channels/binding-service";
+import { resolveBindingTeam } from "../../../../gateway/channels/binding-scope-resolver";
 import { scheduleChannelBindConfirmation } from "../../../../gateway/channels/bind-channel-notify";
 import {
 	runtimeConnectionIdToSlug,
@@ -51,6 +52,11 @@ type ChannelBindingInput =
 
 type NormalizedChannelSpec = {
 	channelId: string;
+	/** The workspace parsed from a declarative `T…/channel` spec, when present.
+	 *  Preserved as a trusted per-channel workspace hint so a Grid org-wide
+	 *  install (whose connection tenant id is the enterprise `E…`) still stamps
+	 *  the real workspace on the binding instead of dropping it. */
+	teamHint?: string;
 	about?: Array<number | string>;
 };
 
@@ -63,20 +69,30 @@ function normalizeChannelSpec(
 		typeof input === "string" ? { channel_id: input, about: undefined } : input;
 	let channelId = raw.channel_id.trim();
 	if (!channelId) return { error: "Channel ids cannot be empty" };
+	let teamHint: string | undefined;
 	if (connectorKey === "slack") {
 		const slash = channelId.indexOf("/");
 		if (slash >= 0) {
 			const teamId = channelId.slice(0, slash);
 			channelId = channelId.slice(slash + 1);
-			if (externalTenantId && teamId !== externalTenantId) {
+			// Only reject a `T…/channel` spec against a WORKSPACE tenant id. A Grid
+			// org-wide install stores its enterprise `E…` in external_tenant_id, so
+			// a `T…` prefix there is the channel's real workspace, NOT a mismatch —
+			// preserve it as the binding team hint rather than reject.
+			if (
+				externalTenantId &&
+				externalTenantId.startsWith("T") &&
+				teamId !== externalTenantId
+			) {
 				return {
 					error: `Channel ${raw.channel_id} belongs to a different Slack workspace`,
 				};
 			}
+			if (teamId) teamHint = teamId;
 		}
 		channelId = canonicalSlackChannelId(channelId);
 	}
-	return { channelId, about: raw.about };
+	return { channelId, teamHint, about: raw.about };
 }
 
 const logger = createLogger("manage-connections-channels");
@@ -210,6 +226,42 @@ export async function handleListChannelBindings(
 	};
 }
 
+/**
+ * Validate a per-binding model override against the agent's `models` list.
+ * Returns an error string, or null when the model is acceptable.
+ *
+ * Rules:
+ *   - unset ⇒ ok (the binding inherits the agent/org default).
+ *   - "auto" (or any non-`<slug>/<model>` shape) ⇒ rejected: `auto` is gone
+ *     repo-wide, and a binding override must be an explicit concrete ref.
+ *   - non-empty agent `models` list ⇒ the override MUST be an exact member.
+ *   - empty/absent agent `models` list ⇒ any explicit `<slug>/<model>` ref is
+ *     accepted (the agent allows all providers).
+ */
+async function validateBindingModel(
+	organizationId: string,
+	agentId: string,
+	model: string | undefined,
+): Promise<string | null> {
+	const ref = model?.trim();
+	if (!ref) return null;
+	const slash = ref.indexOf("/");
+	if (slash <= 0 || slash === ref.length - 1 || ref.slice(slash + 1) === "auto") {
+		return `Invalid binding model "${ref}": use an explicit "<provider>/<model>" ref (\"auto\" is not supported).`;
+	}
+	const sql = getDb();
+	const rows = (await sql`
+		SELECT models FROM agents
+		WHERE id = ${agentId} AND organization_id = ${organizationId}
+		LIMIT 1
+	`) as Array<{ models: string[] | null }>;
+	const models = rows[0]?.models;
+	if (Array.isArray(models) && models.length > 0 && !models.includes(ref)) {
+		return `Model "${ref}" is not in this agent's allowed models list. Pick one of: ${models.join(", ")}.`;
+	}
+	return null;
+}
+
 /** Bind a chat channel to an agent (owner/admin tier). Materializes the
  *  channel's streaming feed via ChannelBindingService.createBinding. */
 export async function handleBindChannel(
@@ -222,6 +274,17 @@ export async function handleBindChannel(
 	}
 	const channelId = args.channel_id.trim();
 	if (!channelId) return { error: "Invalid channel_id" };
+
+	// Gate the per-binding model override against the agent's EXACT allowed
+	// list. A Listen binding must not be able to route this channel to a model
+	// the agent isn't allowed to use.
+	const modelError = await validateBindingModel(
+		organizationId,
+		args.agent_id,
+		args.model,
+	);
+	if (modelError) return { error: modelError };
+
 	const sql = getDb();
 	const connections = (await sql`
 		SELECT id, slug, connector_key, external_tenant_id
@@ -240,7 +303,20 @@ export async function handleBindChannel(
 	}>;
 	const connection = connections[0];
 	if (!connection) return { error: "Active chat connection not found" };
-	const teamId = connection.external_tenant_id ?? undefined;
+	// The binding's team is the CONCRETE workspace the channel lives in — the
+	// connector-owned resolver decides how to derive it (for Slack Grid the
+	// connection's tenant id is the enterprise `E…`, never the workspace). Null
+	// = unknown yet; the row heals from the first inbound message.
+	const teamId =
+		(await resolveBindingTeam({
+			connection: {
+				connectorKey: connection.connector_key,
+				externalTenantId: connection.external_tenant_id,
+				connectionId: connection.id,
+				organizationId,
+			},
+			channelId,
+		})) ?? undefined;
 
 	const svc = new ChannelBindingService();
 	const runtimeConnectionId = slugToRuntimeConnectionId(connection.slug);
@@ -376,14 +452,58 @@ export async function handleSyncChannelBindings(
 		await svc.listBindings(args.agent_id, organizationId)
 	).filter((binding) => binding.connectionId === String(connection.id));
 	const existingIds = new Set(existing.map((binding) => binding.channelId));
+	const existingTeamByChannel = new Map(
+		existing.map((binding) => [binding.channelId, binding.teamId]),
+	);
+
+	// Resolve each channel's CONCRETE workspace BEFORE opening the txn — the
+	// connector resolver may make a Slack HTTP round-trip (conversations.info), and
+	// an external call must never hold a pooled txn connection open. A declarative
+	// `T…/channel` spec supplies a trusted workspace hint; otherwise the resolver
+	// decides (returns null = unknown yet, healing from inbound — never the
+	// enterprise id). An EXISTING binding already carries its resolved team, so
+	// reuse it rather than re-round-trip. This same team keys BOTH the binding
+	// write and the about edge, so a Grid org-wide install (connection tenant =
+	// enterprise `E…`) never mis-keys the about edge onto a phantom `E…:C…` entity.
+	const teamHintByChannel = new Map(
+		normalized.map((c) => [c.channelId, c.teamHint]),
+	);
+	const resolvedTeamByChannel = new Map<string, string | undefined>();
+	for (const channelId of desired) {
+		const existingTeam = existingTeamByChannel.get(channelId);
+		if (existingTeam) {
+			resolvedTeamByChannel.set(channelId, existingTeam);
+			continue;
+		}
+		resolvedTeamByChannel.set(
+			channelId,
+			(await resolveBindingTeam({
+				connection: {
+					connectorKey: connection.connector_key,
+					externalTenantId: connection.external_tenant_id,
+					connectionId: connection.id,
+					organizationId,
+				},
+				channelId,
+				workspaceHint: teamHintByChannel.get(channelId) ?? null,
+			})) ?? undefined,
+		);
+	}
+
 	const aboutChannels: Array<{
 		channelId: string;
+		teamId: string | undefined;
 		aboutEntityIds: number[];
 	}> = [];
 	try {
 		for (const spec of normalized) {
+			const teamId = resolvedTeamByChannel.get(spec.channelId);
 			if (!spec.about?.length) {
-				aboutChannels.push({ channelId: spec.channelId, aboutEntityIds: [] });
+				aboutChannels.push({
+					channelId: spec.channelId,
+					teamId,
+					aboutEntityIds: [],
+				});
 				continue;
 			}
 			const aboutEntityIds = await resolveAboutEntityRefs(
@@ -392,7 +512,7 @@ export async function handleSyncChannelBindings(
 				sql,
 			);
 			await assertEntityIdsInOrg(sql, organizationId, aboutEntityIds);
-			aboutChannels.push({ channelId: spec.channelId, aboutEntityIds });
+			aboutChannels.push({ channelId: spec.channelId, teamId, aboutEntityIds });
 		}
 	} catch (error) {
 		return {
@@ -409,6 +529,7 @@ export async function handleSyncChannelBindings(
 		aboutLinked: number;
 		aboutRemoved: number;
 	};
+
 	try {
 		reconcileResult = await sql.begin(async (tx) => {
 			const bound: string[] = [];
@@ -418,7 +539,7 @@ export async function handleSyncChannelBindings(
 						args.agent_id,
 						connection.connector_key,
 						channelId,
-						connection.external_tenant_id ?? undefined,
+						resolvedTeamByChannel.get(channelId),
 						{
 							configuredBy: userId ?? undefined,
 							organizationId,
@@ -447,7 +568,6 @@ export async function handleSyncChannelBindings(
 				organizationId,
 				connectionId: connection.id,
 				connectorKey: connection.connector_key,
-				teamId: connection.external_tenant_id,
 				channels: aboutChannels,
 				userId,
 				sql: tx,
@@ -507,13 +627,39 @@ export async function handleSetChannelAbout(
 	}>;
 	const connection = rows[0];
 	if (!connection) return { error: "Chat connection not found" };
+	// The manual about edge must key on the channel's CONCRETE workspace — the
+	// SAME real team the binding uses — never the connection's stored tenant id
+	// (a Grid org-wide install stores the enterprise `E…` there). Prefer the team
+	// already stamped on this channel's binding; otherwise ask the connector's
+	// resolver (never the `E…`, null = unknown yet).
+	const boundTeamRows = (await sql`
+		SELECT team_id
+		FROM agent_channel_bindings
+		WHERE organization_id = ${organizationId}
+			AND connection_id = ${connection.id}
+			AND channel_id = ${args.channel_id}
+			AND team_id IS NOT NULL
+		LIMIT 1
+	`) as Array<{ team_id: string | null }>;
+	const teamId =
+		boundTeamRows[0]?.team_id ??
+		(await resolveBindingTeam({
+			connection: {
+				connectorKey: connection.connector_key,
+				externalTenantId: connection.external_tenant_id,
+				connectionId: connection.id,
+				organizationId,
+			},
+			channelId: args.channel_id,
+		})) ??
+		undefined;
 	try {
 		await assertEntityIdsInOrg(sql, organizationId, args.about_entity_ids);
 		await setManualChannelAboutEdges({
 			organizationId,
 			connectionId: connection.id,
 			connectorKey: connection.connector_key,
-			teamId: connection.external_tenant_id,
+			teamId,
 			channelId: args.channel_id,
 			aboutEntityIds: args.about_entity_ids,
 			userId,
@@ -608,11 +754,23 @@ export async function handleConnectChannelDm(
 		boundChannelId,
 		organizationId,
 	);
+	// Resolve the DM's concrete workspace (never the enterprise id on a Grid
+	// org-wide install). Null = unknown yet; heals from the first inbound DM.
+	const dmTeamId =
+		(await resolveBindingTeam({
+			connection: {
+				connectorKey: "slack",
+				externalTenantId: connection.external_tenant_id,
+				connectionId: connection.id,
+				organizationId,
+			},
+			channelId: boundChannelId,
+		})) ?? undefined;
 	await svc.createBinding(
 		args.agent_id,
 		"slack",
 		boundChannelId,
-		connection.external_tenant_id ?? undefined,
+		dmTeamId,
 		{
 			configuredBy: userId ?? undefined,
 			organizationId,

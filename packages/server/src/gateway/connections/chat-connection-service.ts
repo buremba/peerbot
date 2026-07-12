@@ -5,6 +5,7 @@ import {
 	slugToRuntimeConnectionId,
 } from "../../lobu/stores/connections-projection.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
+import { SLACK_INSTALLATION_ID_PREFIX } from "../../lobu/stores/slack-installations.js";
 import { PlatformAdapterConfigSchema } from "../routes/schemas/platform-config.js";
 import { isAdapterlessPlatform } from "./chat-instance-manager.js";
 import { getPlatformDescriptor } from "./platforms/index.js";
@@ -169,6 +170,11 @@ export async function upsertByoChatConnection(
 	created: boolean;
 	changed: boolean;
 }> {
+	if (input.stableId.startsWith(SLACK_INSTALLATION_ID_PREFIX)) {
+		throw new Error(
+			`Stable ID ${input.stableId} is reserved for managed Slack installations`,
+		);
+	}
 	return withStableChatLock(input.organizationId, input.stableId, async () => {
 		const sql = getDb();
 		const slug = runtimeConnectionIdToSlug(input.stableId);

@@ -15,7 +15,11 @@ import {
 	type MutationPrincipalKind,
 	runMutationGate,
 } from "../authz/entity-mutation-gate";
-import { mutationPrincipalId } from "../authz/entity-policy";
+import {
+	mutationPrincipalId,
+	type PrincipalMode,
+	watcherIdFromPrincipalId,
+} from "../authz/entity-policy";
 import {
 	createDbClientFromEnv,
 	type DbClient,
@@ -42,9 +46,27 @@ interface EntityUpdateOptions {
 	policyPrincipalKind?: MutationPrincipalKind;
 	/** Attribution for a deferred approval of blocked fields. Defaults to 'agent'. */
 	attribution?: MutationAttribution;
-	watcherId?: number | null;
 	/** Watcher-run window, so a deferred approval groups into its per-window batch. */
 	windowId?: number | null;
+	/**
+	 * The resolved acting-principal id (`watcher:<id>` / agent id / null), from the
+	 * shared {@link resolveActingPrincipal} seam. Used directly for per-principal
+	 * policy matching — the caller owns identity resolution, not this function.
+	 */
+	principalId?: string | null;
+	/**
+	 * The watcher's owning agent, folded into the gate so the agent's envelope
+	 * binds a watcher's direct update (a reaction script) — see the gate's
+	 * `ownerAgentId`. Null for agent/user writes.
+	 */
+	ownerAgentId?: string | null;
+	/**
+	 * False iff a watcher whose owning agent couldn't be resolved — the gate fails
+	 * closed (deny). See the gate's `ownerResolved`. Defaults true.
+	 */
+	ownerResolved?: boolean;
+	/** Attended vs autonomous acting mode for this update. Defaults attended. */
+	mode?: PrincipalMode;
 }
 
 // ============================================
@@ -541,12 +563,13 @@ export async function updateEntity(
 					principalKind,
 					sql: tx,
 					attribution: opts?.attribution ?? "agent",
-					watcherId: opts?.watcherId ?? null,
 					windowId: opts?.windowId ?? null,
-					principalId: mutationPrincipalId({
-						agentId: ctx.agentId,
-						watcherId: opts?.watcherId ?? null,
-					}),
+					principalId:
+						opts?.principalId ??
+						mutationPrincipalId({ agentId: ctx.agentId }),
+					ownerAgentId: opts?.ownerAgentId ?? null,
+					ownerResolved: opts?.ownerResolved ?? true,
+					mode: opts?.mode ?? "attended",
 					entityTypeSlug: String(current[0].entity_type),
 					entityId,
 					entityOrgId: String(current[0].organization_id),
@@ -651,7 +674,9 @@ export async function updateEntity(
 					blockedPaths.map((p) => [p, blocked[p].current]),
 				),
 				attribution: opts?.attribution ?? "agent",
-				watcherId: opts?.watcherId ?? null,
+				// The approval card groups by the acting watcher; recover its numeric
+				// id from the resolved principalId (`watcher:<id>`), null otherwise.
+				watcherId: watcherIdFromPrincipalId(opts?.principalId ?? null),
 				windowId: opts?.windowId ?? null,
 			}),
 		};

@@ -154,35 +154,34 @@ export async function listAgentInstalled(
 	}
 
 	if (wanted.has("providers")) {
-		const installed = settings.installedProviders ?? [];
-		const installedById = new Map(
-			installed.map((provider) => [provider.providerId, provider]),
-		);
+		// "Installed" = the provider's slug appears as a `<slug>/` prefix in the
+		// agent's `models` list.
+		const installedSlugs = new Set<string>();
+		for (const ref of settings.models ?? []) {
+			const slash = ref.indexOf("/");
+			if (slash > 0) installedSlugs.add(ref.slice(0, slash));
+		}
 		const modules = getModelProviderModules().filter(
 			(module) => module.catalogVisible !== false,
 		);
 		result.providers = {
 			kind: "providers",
-			items: modules.map((module) => {
-				const entry = installedById.get(module.providerId);
-				return {
-					id: module.providerId,
-					name: module.providerDisplayName,
-					detail: {
-						icon_url: module.providerIconUrl ?? "",
-						auth_type: module.authType ?? "api-key",
-						supported_auth_types: module.supportedAuthTypes ?? [
-							module.authType ?? "api-key",
-						],
-						api_key_instructions: module.apiKeyInstructions ?? "",
-						api_key_placeholder: module.apiKeyPlaceholder ?? "",
-						description: module.catalogDescription ?? "",
-						system_available: module.hasSystemKey(),
-						installed: Boolean(entry),
-						installed_at: entry?.installedAt,
-					},
-				};
-			}),
+			items: modules.map((module) => ({
+				id: module.providerId,
+				name: module.providerDisplayName,
+				detail: {
+					icon_url: module.providerIconUrl ?? "",
+					auth_type: module.authType ?? "api-key",
+					supported_auth_types: module.supportedAuthTypes ?? [
+						module.authType ?? "api-key",
+					],
+					api_key_instructions: module.apiKeyInstructions ?? "",
+					api_key_placeholder: module.apiKeyPlaceholder ?? "",
+					description: module.catalogDescription ?? "",
+					system_available: module.hasSystemKey(),
+					installed: installedSlugs.has(module.providerId),
+				},
+			})),
 		};
 	}
 

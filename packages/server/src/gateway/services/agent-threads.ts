@@ -96,6 +96,12 @@ export async function createThreadForAgent(
     status: "created",
     provider: "claude",
     agentId,
+    // Persist the owning org onto the session (previously only stamped into the
+    // token). Internal scheduled/repair threads read the session — not the
+    // token — at enqueue, and a missing org there makes the enqueue-time model
+    // gate query the agent id ACROSS orgs (a declared agent like `lobu-builder`
+    // exists in every org), enforcing another tenant's policy. Cross-tenant leak.
+    organizationId,
     dryRun: false,
   };
   await sessionManager.setSession(session);
@@ -161,6 +167,12 @@ export async function enqueueAgentMessage(
     channelId,
     teamId: "api",
     agentId: realAgentId,
+    // Top-level org so the enqueue-time model gate resolves the RIGHT tenant's
+    // policy. Without it, getModelPolicy(agentId, undefined) falls back to an
+    // id-only cross-org read and can enforce another org's models list.
+    ...(session.organizationId
+      ? { organizationId: session.organizationId }
+      : {}),
     botId: "lobu-api",
     platform: "api",
     messageText,

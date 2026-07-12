@@ -11,6 +11,8 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
+import { CrossOrgTransferBlockedError } from "../../lobu/stores/app-installation-store.js";
+import { ClaimMoveBlockedError } from "../connections/connection-claim.js";
 import { slackClaimProvider } from "../connections/slack-claim.js";
 import type { SlackClaimProviderDeps } from "../connections/slack-claim.js";
 import type { SlackPendingInstall } from "../../lobu/stores/slack-installations.js";
@@ -41,6 +43,7 @@ function makeDeps(overrides: Partial<SlackClaimProviderDeps> = {}): {
   const deps: SlackClaimProviderDeps = {
     resolvePending: mock(async () => pendingInstall()),
     resolveActiveOrgSlug: mock(async () => null),
+    resolveActiveBindingElsewhere: mock(async () => null),
     resolveClaimerSlackIdentities: mock(async () => [
       { teamId: TEAM, slackUserId: "U-ADMIN" },
     ]),
@@ -150,6 +153,50 @@ describe("slackClaimProvider.resolveExistingBinding", () => {
   });
 });
 
+describe("slackClaimProvider.resolveActiveBindingElsewhere", () => {
+  test("keys the store lookup on the pending's team + enterprise + org-wide flag + target org", async () => {
+    const resolveActiveBindingElsewhere = mock(async () => ({
+      orgSlug: "other",
+      orgName: "Other Org",
+      matchKind: "enterprise_scope_overlap" as const,
+    }));
+    const { deps } = makeDeps({ resolveActiveBindingElsewhere });
+    const foreign = await slackClaimProvider(deps).resolveActiveBindingElsewhere(
+      TEAM,
+      pendingInstall({ enterpriseId: "E-GRID", isEnterpriseInstall: true }),
+      "org-target",
+    );
+    expect(foreign).toEqual({
+      orgSlug: "other",
+      orgName: "Other Org",
+      matchKind: "enterprise_scope_overlap",
+    });
+    // Forwards enterprise id + the CLAIMING install's org-wide flag.
+    expect(resolveActiveBindingElsewhere).toHaveBeenCalledWith(
+      TEAM,
+      "E-GRID",
+      true,
+      "org-target",
+    );
+  });
+
+  test("passes a null enterpriseId + false org-wide flag for a plain workspace", async () => {
+    const resolveActiveBindingElsewhere = mock(async () => null);
+    const { deps } = makeDeps({ resolveActiveBindingElsewhere });
+    await slackClaimProvider(deps).resolveActiveBindingElsewhere(
+      TEAM,
+      pendingInstall({ enterpriseId: null, isEnterpriseInstall: false }),
+      "org-target",
+    );
+    expect(resolveActiveBindingElsewhere).toHaveBeenCalledWith(
+      TEAM,
+      null,
+      false,
+      "org-target",
+    );
+  });
+});
+
 describe("slackClaimProvider.bind", () => {
   test("maps the Slack installationId onto the engine's bindingId contract", async () => {
     const { deps, claim } = makeDeps();
@@ -157,11 +204,56 @@ describe("slackClaimProvider.bind", () => {
       pendingInstall(),
       "org-1",
       "user-1",
+      false,
     );
     expect(result).toEqual({ bindingId: "slackinst-bound" });
     expect(claim).toHaveBeenCalledTimes(1);
-    const [boundPending, boundOrg] = claim.mock.calls[0]!;
+    const [boundPending, boundOrg, boundConfirmMove] = claim.mock.calls[0]!;
     expect((boundPending as SlackPendingInstall).teamId).toBe(TEAM);
     expect(boundOrg).toBe("org-1");
+    expect(boundConfirmMove).toBe(false);
+  });
+
+  test("forwards confirmMove:true to the store claim (deliberate move)", async () => {
+    const { deps, claim } = makeDeps();
+    await slackClaimProvider(deps).bind(pendingInstall(), "org-1", "user-1", true);
+    expect(claim.mock.calls[0]![2]).toBe(true);
+  });
+
+  test("translates a store CrossOrgTransferBlockedError into ClaimMoveBlockedError carrying the other org", async () => {
+    // The atomic (raced) path: deps.claim throws the store-specific error; the
+    // adapter must re-resolve the incumbent org and rethrow the engine's
+    // provider-agnostic ClaimMoveBlockedError so the engine returns a 409.
+    const resolveActiveBindingElsewhere = mock(async () => ({
+      orgSlug: "incumbent",
+      orgName: "Incumbent Org",
+      matchKind: "same_workspace" as const,
+    }));
+    const { deps } = makeDeps({
+      resolveActiveBindingElsewhere,
+      claim: mock(async () => {
+        throw new CrossOrgTransferBlockedError("org-incumbent");
+      }),
+    });
+    const pending = pendingInstall({ enterpriseId: "E-GRID", isEnterpriseInstall: true });
+    let thrown: unknown;
+    try {
+      await slackClaimProvider(deps).bind(pending, "org-target", "user-1", false);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ClaimMoveBlockedError);
+    expect((thrown as ClaimMoveBlockedError).existing).toEqual({
+      orgSlug: "incumbent",
+      orgName: "Incumbent Org",
+      matchKind: "same_workspace",
+    });
+    // Re-resolved against the pending's team + enterprise + org-wide flag + target org.
+    expect(resolveActiveBindingElsewhere).toHaveBeenCalledWith(
+      TEAM,
+      "E-GRID",
+      true,
+      "org-target",
+    );
   });
 });

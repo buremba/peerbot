@@ -18,9 +18,9 @@ export async function validateCommand(cwd: string): Promise<boolean> {
 
   const warnings: string[] = [];
   for (const agent of state.agents) {
-    if (!agent.settings.installedProviders?.length) {
+    if (!agent.settings.models?.length) {
       warnings.push(
-        `agent "${agent.metadata.agentId}" has no providers configured. It will need provider keys at runtime.`
+        `agent "${agent.metadata.agentId}" has no models configured. It will need provider keys + a model at runtime.`
       );
     }
   }

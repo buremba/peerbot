@@ -25,14 +25,23 @@ export interface SlackWebApi {
    */
   conversationMembers(botToken: string, channelId: string): Promise<string[]>;
   /**
-   * `conversations.info` → the channel's human-readable name (e.g. `general`)
-   * and privacy flag. `name` is null when Slack omits it (e.g. a DM/MPIM or an
-   * unreadable channel); callers fall back to the channel id.
+   * `conversations.info` → the channel's human-readable name (e.g. `general`),
+   * privacy flag, and the CONCRETE workspace team the channel lives in
+   * (`context_team_id`). `name` is null when Slack omits it (e.g. a DM/MPIM or
+   * an unreadable channel); callers fall back to the channel id. `contextTeamId`
+   * is the real `T…` workspace id — on a Grid org-wide install this is the ONLY
+   * place a binding can learn the channel's workspace (the install identity is
+   * the enterprise `E…`, never a workspace), so the binding-team resolver reads
+   * it here. Null when Slack omits it or the channel is unreadable.
    */
   conversationInfo(
     botToken: string,
     channelId: string
-  ): Promise<{ name: string | null; isPrivate: boolean }>;
+  ): Promise<{
+    name: string | null;
+    isPrivate: boolean;
+    contextTeamId: string | null;
+  }>;
   /**
    * `users.info` → the workspace-admin flags for one user. Used by the
    * marketplace-claim flow to verify the claiming user is a workspace admin or
@@ -174,11 +183,15 @@ export function createSlackWebApi(): SlackWebApi {
         channel: channelId,
       });
       const ch = json.channel as
-        | { name?: string; is_private?: boolean }
+        | { name?: string; is_private?: boolean; context_team_id?: string }
         | undefined;
       return {
         name: typeof ch?.name === "string" ? ch.name : null,
         isPrivate: ch?.is_private === true,
+        contextTeamId:
+          typeof ch?.context_team_id === "string" && ch.context_team_id
+            ? ch.context_team_id
+            : null,
       };
     },
     async usersInfo(botToken, userId) {

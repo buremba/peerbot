@@ -42,7 +42,7 @@ async function handleListToolsAuthenticated(
 	if (!agentId || !requesterUserId) {
 		return c.json({ error: "Invalid authentication token" }, 401);
 	}
-	const httpServer = await proxy.configService.getHttpServer(mcpId, agentId);
+	const httpServer = await proxy.configService.getHttpServer(mcpId, agentId, auth.tokenData.organizationId);
 	if (!httpServer) {
 		return c.json({ error: `MCP server '${mcpId}' not found` }, 404);
 	}
@@ -105,7 +105,7 @@ async function handleCallToolAuthenticated(
 	if (!agentId || !requesterUserId) {
 		return c.json({ error: "Invalid authentication token" }, 401);
 	}
-	const httpServer = await proxy.configService.getHttpServer(mcpId, agentId);
+	const httpServer = await proxy.configService.getHttpServer(mcpId, agentId, auth.tokenData.organizationId);
 	if (!httpServer) {
 		return c.json({ error: `MCP server '${mcpId}' not found` }, 404);
 	}
@@ -310,7 +310,7 @@ async function handleListAllToolsAuthenticated(
 ): Promise<Response> {
 	const agentId = auth.tokenData.agentId || auth.tokenData.userId;
 
-	const allHttpServers = await proxy.configService.getAllHttpServers(agentId);
+	const allHttpServers = await proxy.configService.getAllHttpServers(agentId, auth.tokenData.organizationId);
 	const allMcpIds = Array.from(allHttpServers.keys());
 
 	const mcpServers: Record<string, { tools: McpTool[] }> = {};

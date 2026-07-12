@@ -28,7 +28,16 @@ interface McpStatus {
 }
 
 interface LobuMemoryConfigOptions {
-  resolveOrgSlug?: (agentId: string) => Promise<string | null>;
+  /**
+   * Resolve the org slug for the lobu-memory MCP endpoint. Takes the token's
+   * organizationId — NOT an id-only agent lookup — so a shared agent id can't
+   * derive an ARBITRARY org's slug. Returns null when the org can't be resolved
+   * (orgless db-backed agent) → no lobu-memory MCP for that turn (fail closed).
+   */
+  resolveOrgSlug?: (
+    agentId: string,
+    organizationId: string | undefined
+  ) => Promise<string | null>;
 }
 
 interface McpConfigServiceOptions {
@@ -75,7 +84,10 @@ export class McpConfigService {
     const effectiveAgentId = agentId || userId;
     logger.info(`Building MCP config for user ${userId}`);
 
-    const lobuMemory = await this.deriveLobuMemoryServer(effectiveAgentId);
+    const lobuMemory = await this.deriveLobuMemoryServer(
+      effectiveAgentId,
+      tokenData.organizationId
+    );
     if (lobuMemory) {
       workerConfig.mcpServers[LOBU_MEMORY_MCP_ID] = {
         ...lobuMemory,
@@ -104,9 +116,15 @@ export class McpConfigService {
     return workerConfig;
   }
 
-  /** Get status of system MCPs for a specific agent. */
-  async getMcpStatus(agentId: string): Promise<McpStatus[]> {
-    const lobuMemory = await this.deriveLobuMemoryServer(agentId);
+  /** Get status of system MCPs for a specific agent (org-scoped). */
+  async getMcpStatus(
+    agentId: string,
+    organizationId?: string
+  ): Promise<McpStatus[]> {
+    const lobuMemory = await this.deriveLobuMemoryServer(
+      agentId,
+      organizationId
+    );
     if (!lobuMemory) return [];
     return [
       {
@@ -118,13 +136,17 @@ export class McpConfigService {
     ];
   }
 
-  /** Get HTTP proxy metadata for a specific MCP server. */
+  /** Get HTTP proxy metadata for a specific MCP server (org-scoped). */
   async getHttpServer(
     id: string,
-    agentId?: string
+    agentId?: string,
+    organizationId?: string
   ): Promise<HttpMcpServerConfig | undefined> {
     if (id !== LOBU_MEMORY_MCP_ID || !agentId) return undefined;
-    const lobuMemory = await this.deriveLobuMemoryServer(agentId);
+    const lobuMemory = await this.deriveLobuMemoryServer(
+      agentId,
+      organizationId
+    );
     if (!lobuMemory) return undefined;
     return {
       id: LOBU_MEMORY_MCP_ID,
@@ -133,19 +155,25 @@ export class McpConfigService {
     };
   }
 
-  /** Get all HTTP proxy metadata for system MCPs. */
+  /** Get all HTTP proxy metadata for system MCPs (org-scoped). */
   async getAllHttpServers(
-    agentId?: string
+    agentId?: string,
+    organizationId?: string
   ): Promise<Map<string, HttpMcpServerConfig>> {
     const servers = new Map<string, HttpMcpServerConfig>();
     if (!agentId) return servers;
-    const lobuMemory = await this.getHttpServer(LOBU_MEMORY_MCP_ID, agentId);
+    const lobuMemory = await this.getHttpServer(
+      LOBU_MEMORY_MCP_ID,
+      agentId,
+      organizationId
+    );
     if (lobuMemory) servers.set(LOBU_MEMORY_MCP_ID, lobuMemory);
     return servers;
   }
 
   private async deriveLobuMemoryServer(
-    agentId: string
+    agentId: string,
+    organizationId: string | undefined
   ): Promise<{ url: string; type: "streamable-http"; internal: true } | null> {
     const resolveOrgSlug = this.lobuMemory?.resolveOrgSlug;
     if (!resolveOrgSlug) {
@@ -153,7 +181,7 @@ export class McpConfigService {
     }
 
     try {
-      const orgSlug = await resolveOrgSlug(agentId);
+      const orgSlug = await resolveOrgSlug(agentId, organizationId);
       if (!orgSlug) {
         return null;
       }

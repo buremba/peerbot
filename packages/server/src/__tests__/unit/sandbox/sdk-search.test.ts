@@ -80,25 +80,37 @@ describe("sdkSearch", () => {
 			"operations.execute",
 			"client.operations.execute({ connection_id: 42, operation_key: 'create_issue'",
 		],
-		["entitySchema.listRules", "client.entitySchema.listRules('employment')"],
-		["entitySchema.deleteType", "client.entitySchema.deleteType('widget')"],
+		["entitySchema.listRules", "client.entitySchema.listRules({ slug: 'works-at' })"],
+		["entitySchema.deleteType", "client.entitySchema.deleteType({ slug: 'widget' })"],
 		[
 			"entitySchema.deleteRelType",
-			"client.entitySchema.deleteRelType('employment')",
+			"client.entitySchema.deleteRelType({ slug: 'works-at' })",
 		],
-		["feeds.trigger", "client.feeds.trigger(42)"],
-		["feeds.delete", "client.feeds.delete(42)"],
-		["classifiers.delete", "client.classifiers.delete(42)"],
-		["schedules.cancel", "client.schedules.cancel('"],
-		["watchers.get", "client.watchers.get(42)"],
-		["watchers.trigger", "client.watchers.trigger(42)"],
-		["watchers.delete", "client.watchers.delete([42, 43])"],
+		["feeds.trigger", "client.feeds.trigger({ feed_id: 42 })"],
+		["feeds.delete", "client.feeds.delete({ feed_id: 42 })"],
+		["classifiers.delete", "client.classifiers.delete({ classifier_id: 42 })"],
+		["schedules.cancel", "client.schedules.cancel({ id: 'schedule-id' })"],
+		["watchers.get", "client.watchers.get({ watcher_id: '42' })"],
+		["watchers.trigger", "client.watchers.trigger({ watcher_id: '42' })"],
+		["watchers.delete", "client.watchers.delete({ watcher_ids: ['42'] })"],
 	])("renders the current %s signature in exact drill-down", async (path, snippet) => {
 		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
 
 		expect(result.match_count).toBe(1);
 		expect(result.results[0]).toContain("example:");
 		expect(result.results[0]).toContain(snippet);
+	});
+
+	it("documents the bounded ctx.sleep polling helper", async () => {
+		const result = await sdkSearch(
+			{ query: "ctx.sleep", mode: "read" },
+			stubEnv,
+			readCtx,
+		);
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain("ctx.sleep");
+		expect(result.results[0]).toContain("30000");
+		expect(result.results[0]).toContain("await ctx.sleep");
 	});
 
 	it("returns namespace listing for a top-level namespace at write tier", async () => {

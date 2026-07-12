@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { raceAbort } from "../../../utils/race-abort";
+import { sleepAgainstAbort } from "../../../sandbox/run-script";
 import { runOrSkip, stubSDK } from "./_helpers";
 
 describe("raceAbort", () => {
@@ -9,6 +10,25 @@ describe("raceAbort", () => {
     await expect(
       raceAbort(new Promise((r) => setTimeout(() => r("late"), 200)), controller.signal),
     ).rejects.toThrow(/deadline/);
+  });
+});
+
+describe("sandbox sleep", () => {
+  it("rejects invalid and over-limit durations", async () => {
+    const signal = new AbortController().signal;
+    await expect(sleepAgainstAbort(-1, signal)).rejects.toThrow(/InvalidSleepDuration/);
+    await expect(sleepAgainstAbort(30_001, signal)).rejects.toThrow(/SleepLimitExceeded/);
+  });
+
+  it("rejects promptly with the overall script abort reason", async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error("TimeoutError: script deadline")), 10);
+    const started = Date.now();
+
+    await expect(sleepAgainstAbort(1_000, controller.signal)).rejects.toThrow(
+      /script deadline/,
+    );
+    expect(Date.now() - started).toBeLessThan(200);
   });
 });
 

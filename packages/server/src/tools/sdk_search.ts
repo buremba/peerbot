@@ -1,13 +1,17 @@
 /**
- * Method discovery for the `ClientSDK`. Match order: exact path drill-down →
- * namespace prefix listing → substring on path + summary. Source of truth is
- * `method-metadata.ts`; visibility matches `query_sdk` / `run_sdk` manifests.
+ * Method and sandbox-helper discovery for `query_sdk` / `run_sdk`. Match order:
+ * exact path drill-down → namespace prefix listing → substring on path +
+ * summary. Client method visibility matches the sandbox dispatch manifests.
  */
 
 import { type Static, Type } from "@sinclair/typebox";
 import { resolveMaxAccessLevel } from "../auth/tool-access";
 import type { Env } from "../index";
-import { METHOD_METADATA, type MethodMetadata } from "../sandbox/method-metadata";
+import {
+	METHOD_METADATA,
+	RUNTIME_HELPER_METADATA,
+	type MethodMetadata,
+} from "../sandbox/method-metadata";
 import {
 	sdkMethodVisible,
 	type SdkDiscoveryMode,
@@ -15,9 +19,14 @@ import {
 import type { ToolContext } from "./registry";
 import { withValidatedArgs } from "./validate-args";
 
+const SDK_DISCOVERY_METADATA: Record<string, MethodMetadata> = {
+	...METHOD_METADATA,
+	...RUNTIME_HELPER_METADATA,
+};
+
 const NAMESPACES = [
 	...new Set(
-		Object.keys(METHOD_METADATA)
+		Object.keys(SDK_DISCOVERY_METADATA)
 			.filter((path) => path.includes("."))
 			.map((path) => path.split(".")[0]),
 	),
@@ -26,7 +35,7 @@ const NAMESPACES = [
 export const SdkSearchSchema = Type.Object({
 	query: Type.String({
 		description:
-			`Method-discovery query. Use a namespace (e.g. 'watchers'), a dotted path (e.g. 'watchers.create'), or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: ${NAMESPACES.join(", ")}.`,
+			`SDK method or runtime-helper discovery query. Use a namespace (e.g. 'watchers'), one or more dotted paths separated by whitespace (e.g. 'watchers.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: ${NAMESPACES.join(", ")}.`,
 		minLength: 1,
 	}),
 	mode: Type.Optional(
@@ -79,7 +88,7 @@ function catalogForCaller(
 	mode: SdkDiscoveryMode,
 ): Array<[string, MethodMetadata]> {
 	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
-	return Object.entries(METHOD_METADATA).filter(([, meta]) =>
+	return Object.entries(SDK_DISCOVERY_METADATA).filter(([, meta]) =>
 		sdkMethodVisible(meta.access, callerMax, mode),
 	);
 }
@@ -164,7 +173,7 @@ async function sdkSearchImpl(
 			);
 		}
 		for (const token of methodTokens) {
-			const meta = METHOD_METADATA[token];
+			const meta = SDK_DISCOVERY_METADATA[token];
 			if (meta && !matches.has(token)) {
 				notes.push(hiddenMethodNote(token, meta, mode));
 			}
@@ -186,8 +195,8 @@ async function sdkSearchImpl(
 		};
 	}
 
-	if (lower in METHOD_METADATA) {
-		const meta = METHOD_METADATA[lower];
+	if (lower in SDK_DISCOVERY_METADATA) {
+		const meta = SDK_DISCOVERY_METADATA[lower];
 		const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
 		if (!sdkMethodVisible(meta.access, callerMax, mode)) {
 			return {
@@ -243,8 +252,8 @@ async function sdkSearchImpl(
 
 	if (matches.length === 0) {
 		const existsButHidden =
-			lower in METHOD_METADATA
-				? hiddenMethodNote(lower, METHOD_METADATA[lower], mode)
+			lower in SDK_DISCOVERY_METADATA
+				? hiddenMethodNote(lower, SDK_DISCOVERY_METADATA[lower], mode)
 				: undefined;
 		return {
 			query,

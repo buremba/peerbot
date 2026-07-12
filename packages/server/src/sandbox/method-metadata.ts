@@ -17,6 +17,25 @@ export interface MethodMetadata {
 	cost?: "cheap" | "normal" | "expensive";
 }
 
+/** Runtime helpers passed through `ctx`, not dispatchable ClientSDK methods. */
+export const RUNTIME_HELPER_METADATA: Record<string, MethodMetadata> = {
+	"ctx.sleep": {
+		summary:
+			"Pause a sandbox script for 0–30000ms. The wait aborts at the script's overall timeout; use it between SDK reads when polling.",
+		access: "read",
+		example: "await ctx.sleep(1000);",
+		usageExample: `// Poll a run without exposing unrestricted timer globals.
+export default async (ctx, client) => {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const run = await client.operations.getRun(123);
+    if (run.status !== 'pending') return run;
+    await ctx.sleep(1000);
+  }
+  throw new Error('Run did not finish in time');
+};`,
+	},
+};
+
 export const METHOD_METADATA: Record<string, MethodMetadata> = {
 	// organizations
 	"organizations.list": {

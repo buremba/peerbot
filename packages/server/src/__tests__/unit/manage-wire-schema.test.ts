@@ -226,6 +226,8 @@ describe("run_sdk / query_sdk: script contract on the wire", () => {
 		for (const name of ["run_sdk", "query_sdk"]) {
 			const script = (byName.get(name)?.inputSchema as any)?.properties?.script;
 			expect(script?.description?.includes("organization_id"), `${name} script must document ctx`).toBe(true);
+			expect(script?.description?.includes("ctx.sleep"), `${name} script must document ctx.sleep`).toBe(true);
+			expect(script?.description?.includes("30000"), `${name} script must document the sleep limit`).toBe(true);
 			expect(script?.description?.includes("return_value"), `${name} script must document return_value`).toBe(true);
 			expect(script?.description?.includes("search_sdk"), `${name} script must point at search_sdk`).toBe(true);
 		}

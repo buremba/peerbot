@@ -52,6 +52,46 @@ describe("sandbox runtime", () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 
+  it("exposes bounded ctx.sleep without exposing unrestricted timers", async () => {
+    const stubSdk = { log: () => undefined } as unknown as ClientSDK;
+    const started = Date.now();
+    const result = await runScript({
+      source:
+        "export default async (ctx) => { await ctx.sleep(15); return { timer: typeof setTimeout }; };",
+      sdk: stubSdk,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toEqual({ timer: "undefined" });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(10);
+  });
+
+  it("rejects a sleep longer than the per-call limit", async () => {
+    const stubSdk = { log: () => undefined } as unknown as ClientSDK;
+    const result = await runScript({
+      source: "export default async (ctx) => ctx.sleep(30001);",
+      sdk: stubSdk,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain("SleepLimitExceeded");
+    expect(result.error?.message).toContain("30000ms");
+  });
+
+  it("aborts ctx.sleep at the overall script deadline", async () => {
+    const stubSdk = { log: () => undefined } as unknown as ClientSDK;
+    const started = Date.now();
+    const result = await runScript({
+      source: "export default async (ctx) => { await ctx.sleep(200); return 'late'; };",
+      sdk: stubSdk,
+      limits: { timeoutMs: 25 },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.name).toBe("TimeoutError");
+    expect(Date.now() - started).toBeLessThan(150);
+  });
+
   it("supports direct client.org(slug).namespace.method() chaining", async () => {
     const orgSdk = {
       entities: {

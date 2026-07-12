@@ -53,6 +53,28 @@ export const CreateAction = Type.Object({
    * each firing. When omitted, the job is one-shot.
    */
   cron: Type.Optional(Type.String()),
+  timezone: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: 64,
+      description:
+        "IANA timezone the cron is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Omit for server time (UTC).",
+    })
+  ),
+  until_at: Type.Optional(
+    Type.String({
+      description:
+        "ISO timestamp after which a recurring schedule stops firing and is retired. Must not be before run_at.",
+    })
+  ),
+  idempotency_key: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: 200,
+      description:
+        "Client-chosen dedup key. Retrying create with the same key returns the existing schedule instead of creating a duplicate.",
+    })
+  ),
   /** Handler-specific payload. The `type` field selects the handler. */
   payload: ActionUnion,
   /**
@@ -87,6 +109,12 @@ export const UpdateAction = Type.Object({
    * leave the cadence unchanged.
    */
   cron: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  /** New IANA timezone for cron evaluation, or `null` to clear (server time). Omit to leave unchanged. */
+  timezone: Type.Optional(
+    Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()])
+  ),
+  /** New end bound (ISO timestamp), or `null` to clear it (recur forever). Omit to leave unchanged. */
+  until_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   /** New `wake_agent` prompt (the only editable payload field). */
   prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
   /**

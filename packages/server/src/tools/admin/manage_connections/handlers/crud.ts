@@ -60,10 +60,12 @@ import {
 	buildAppInstallationSetupUrl,
 	rejectUnboundAppInstallationCreate,
 } from "../../helpers/app-installation-guard";
+import { buildOAuthAppProfileSetupError } from "../../helpers/connector-setup-errors";
 import {
   buildViewUrl,
   enrichWithAuthProfiles,
 	ensureEnvBackedOAuthAppProfile,
+  getConnectBaseUrl,
   getInteractiveMethods,
   isPersonalCredentialKind,
   isPersonalCredVisibilityViolation,
@@ -654,8 +656,10 @@ export async function handleCreate(
     connectorKey: args.connector_key,
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
+    gatewayBaseUrl: getConnectBaseUrl(ctx),
+    setupUrl: await buildViewUrl(ctx, args.connector_key),
   });
-	if (appInstallGuard) {
+  if (appInstallGuard) {
 		return {
 			...appInstallGuard,
 			setup_url: await buildAppInstallationSetupUrl(ctx, args.connector_key),
@@ -856,6 +860,13 @@ export async function handleCreate(
       });
     }
     if (!authSelection.appAuthProfile) {
+      if (authSelection.oauthMethod) {
+        return buildOAuthAppProfileSetupError({
+          connectorKey: args.connector_key,
+          method: authSelection.oauthMethod,
+          setupUrl: await buildViewUrl(ctx, args.connector_key),
+        });
+      }
       return {
         error: callerIsAdmin
 					? "Select or create an OAuth app profile before creating the connection."

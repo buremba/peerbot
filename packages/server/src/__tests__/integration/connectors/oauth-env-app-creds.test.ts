@@ -46,6 +46,7 @@ function ctxFor(organizationId: string, userId: string): ToolContext {
     tokenType: 'oauth',
     scopedToOrg: true,
     allowCrossOrg: false,
+		baseUrl: 'https://gateway.test/lobu',
   } as ToolContext;
 }
 
@@ -298,10 +299,66 @@ describe('connector OAuth connect — env-backed app credentials (DB-backed)', (
       ctx
     );
 
-    // No env creds AND no hand-made app profile → the original guidance stands.
-    expect('error' in connRes).toBe(true);
-    if ('error' in connRes) {
-      expect(connRes.error).toMatch(/OAuth app profile/i);
-    }
+    // No env creds AND no hand-made app profile → return machine-actionable
+    // setup guidance instead of leaving the caller to parse prose.
+    expect(connRes).toMatchObject({
+      error_code: 'connector_setup_required',
+      connector_key: 'demoenv.oauth',
+      provider: 'demoenv',
+      install_type: 'oauth_app_profile',
+      next_action: 'configure_oauth_app',
+      setup_url: expect.stringContaining('/demoenv.oauth'),
+    });
   });
+
+	it('returns Jira-specific setup guidance when its OAuth app profile is missing', async () => {
+		delete process.env.JIRA_CLIENT_ID;
+		delete process.env.JIRA_CLIENT_SECRET;
+
+		const org = await createTestOrganization({ name: 'Jira Setup Org' });
+		const user = await createTestUser({ name: 'Jira Setup User' });
+		await addUserToOrganization(user.id, org.id, 'owner');
+		const ctx = ctxFor(org.id, user.id);
+		await createTestConnectorDefinition({
+			key: 'jira',
+			name: 'Jira',
+			organization_id: org.id,
+			auth_schema: {
+				methods: [
+					{
+						type: 'oauth',
+						provider: 'jira',
+						requiredScopes: ['read:jira-work'],
+						clientIdKey: 'JIRA_CLIENT_ID',
+						clientSecretKey: 'JIRA_CLIENT_SECRET',
+						setupInstructions:
+							'Create an OAuth 2.0 (3LO) app in the Atlassian Developer Console.',
+					},
+				],
+			},
+		});
+
+		const result = await manageConnections(
+			{ action: 'connect', connector_key: 'jira' },
+			TEST_ENV,
+			ctx
+		);
+
+		expect(result).toMatchObject({
+			error_code: 'connector_setup_required',
+			connector_key: 'jira',
+			provider: 'jira',
+			install_type: 'oauth_app_profile',
+			next_action: 'configure_oauth_app',
+			setup_url: expect.stringContaining('/jira'),
+			setup_instructions: expect.stringContaining('Atlassian Developer Console'),
+		});
+		expect(result).not.toHaveProperty('install_url');
+
+		const rows = await getTestDb()`
+			SELECT id FROM connections
+			WHERE organization_id = ${org.id} AND connector_key = 'jira'
+		`;
+		expect(rows).toHaveLength(0);
+	});
 });

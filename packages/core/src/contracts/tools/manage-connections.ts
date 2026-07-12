@@ -544,9 +544,31 @@ const ConnectorGroupSchema = Type.Object({
 export const ManageConnectionsResultSchema = Type.Union([
   Type.Object({
     error: Type.String(),
+    error_code: Type.Optional(Type.Literal("connector_setup_required")),
+    connector_key: Type.Optional(Type.String()),
+    provider: Type.Optional(Type.String()),
+    install_type: Type.Optional(
+      Type.Union([
+        Type.Literal("app_installation"),
+        Type.Literal("oauth_app_profile"),
+      ])
+    ),
+    next_action: Type.Optional(
+      Type.Union([
+        Type.Literal("install_app"),
+        Type.Literal("configure_oauth_app"),
+        Type.Literal("open_setup"),
+      ])
+    ),
     setup_url: Type.Optional(Type.String()),
-    install_type: Type.Optional(Type.Literal("app_installation")),
-    next_action: Type.Optional(Type.Literal("open_setup_url")),
+    install_url: Type.Optional(Type.String()),
+    install_shape: Type.Optional(
+      Type.Union([
+        Type.Literal("oauth-code-exchange"),
+        Type.Literal("github-app"),
+      ])
+    ),
+    setup_instructions: Type.Optional(Type.String()),
   }),
   Type.Object({
     action: Type.Literal("list"),

@@ -48,6 +48,7 @@ type OAuthAuthMethod = {
   usePkce?: boolean;
   clientIdKey?: string;
   clientSecretKey?: string;
+  setupInstructions?: string;
   loginProvisioning?: {
     autoCreateConnection?: boolean;
   };

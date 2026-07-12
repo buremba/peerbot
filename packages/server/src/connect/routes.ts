@@ -11,7 +11,6 @@
  * - POST /connect/:token/cancel       → reset credentials and cancel validation
  * - GET  /connect/:token/oauth/start    → redirect to OAuth provider
  * - GET  /connect/oauth/callback        → stable OAuth callback (token from ?state=)
- * - GET  /connect/:token/oauth/callback → legacy per-token OAuth callback
  */
 
 import { type Context, Hono } from 'hono';
@@ -638,35 +637,6 @@ connectRoutes.get('/oauth/callback', async (c) => {
     tokenRow,
     code,
     authConfig?.redirectUri || `${baseUrl}/connect/oauth/callback`
-  );
-});
-
-/**
- * GET /connect/:token/oauth/callback
- * Legacy per-token OAuth callback -- kept for backwards compatibility.
- */
-connectRoutes.get('/:token/oauth/callback', requireConnectToken, async (c) => {
-  const tokenRow = c.get('tokenRow');
-  const token = c.req.param('token');
-  const code = c.req.query('code');
-  const state = c.req.query('state');
-  const error = c.req.query('error');
-
-  if (error) {
-    return c.redirect(`${getBaseUrl(c)}/connect/${token}?error=${encodeURIComponent(error)}`);
-  }
-
-  if (!code || state !== token) {
-    return c.json({ error: 'Invalid callback parameters' }, 400);
-  }
-
-  const baseUrl = getBaseUrl(c);
-  const authConfig = tokenRow.auth_config as OAuthAuthConfig | null;
-  return handleOAuthCallback(
-    c,
-    tokenRow,
-    code,
-    authConfig?.redirectUri || `${baseUrl}/connect/${token}/oauth/callback`
   );
 });
 

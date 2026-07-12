@@ -17,13 +17,8 @@ import type {
 } from "../../config/define.js";
 import { resolveApiClient } from "../../internal/index.js";
 import { printJson } from "../../internal/output.js";
+import type { CloudCommandOptions } from "../_lib/cloud-options.js";
 import { resolveSecretFlag } from "../_lib/secret-value.js";
-
-export interface ProviderCommandOptions {
-  context?: string;
-  org?: string;
-  json?: boolean;
-}
 
 /** Server-routable modalities (`isInferenceModality` in provider-secrets.ts). */
 const MODALITIES: ReadonlySet<string> = new Set([
@@ -71,7 +66,7 @@ function capabilitiesSummary(
 }
 
 export async function providersListCommand(
-  options: ProviderCommandOptions = {}
+  options: CloudCommandOptions = {}
 ): Promise<void> {
   const { client, orgSlug } = await resolveApiClient(options);
   const { providers } = await client.get<{ providers: OrgProviderRow[] }>(
@@ -108,7 +103,7 @@ export async function providersListCommand(
 }
 
 export async function providersCatalogCommand(
-  options: ProviderCommandOptions = {}
+  options: CloudCommandOptions = {}
 ): Promise<void> {
   const { client, orgSlug } = await resolveApiClient(options);
   const { catalog } = await client.get<{ catalog: CatalogEntry[] }>(
@@ -130,26 +125,31 @@ export async function providersCatalogCommand(
     const model = entry.defaultModel
       ? chalk.dim(`  default: ${entry.defaultModel}`)
       : "";
-    // "oauth" and "device-code" providers sign in through the web console —
-    // the server's OAuth routes require an interactive session, not a PAT.
-    const auth =
-      entry.authType === "api-key"
-        ? chalk.dim("  api key")
-        : chalk.yellow("  sign-in via web console");
+    // `supportedAuthTypes`, not `authType`: kinds like Claude list OAuth as
+    // primary but also take a key, and `create --key` works for them. Sign-in
+    // itself stays web-console-only (the OAuth routes reject PATs).
+    const supported = entry.supportedAuthTypes ?? [entry.authType];
+    const takesApiKey = supported.includes("api-key");
+    const signsIn = supported.some((t) => t !== "api-key");
+    const auth = takesApiKey
+      ? signsIn
+        ? chalk.dim("  api key or web sign-in")
+        : chalk.dim("  api key")
+      : chalk.yellow("  sign-in via web console");
     console.log(
       `  ${chalk.bold(entry.slug)} ${chalk.dim(entry.displayName)}${auth}${model}`
     );
   }
   console.log(
     chalk.dim(
-      "\n  Add one: lobu providers create <slug> --kind <kind> --key $MY_API_KEY\n"
+      "\n  Add one: lobu providers create <slug> --kind <kind> --key '$MY_API_KEY'\n"
     )
   );
 }
 
 export async function providersCreateCommand(
   slug: string,
-  options: ProviderCommandOptions & {
+  options: CloudCommandOptions & {
     kind: string;
     key: string;
     name?: string;
@@ -174,10 +174,22 @@ export async function providersCreateCommand(
   );
 
   if (options.default) {
-    await client.request(
-      "PUT",
-      `${providersBase(orgSlug)}/${encodeURIComponent(slug)}/default`
-    );
+    try {
+      await client.request(
+        "PUT",
+        `${providersBase(orgSlug)}/${encodeURIComponent(slug)}/default`
+      );
+    } catch (error) {
+      // The provider row exists at this point — a bare failure would read as
+      // "nothing happened" and a retried create then 409s on the slug.
+      console.error(
+        chalk.yellow(
+          `\n  Provider ${slug} was created, but setting it as org default failed.` +
+            `\n  Retry with: lobu providers set-default ${slug}\n`
+        )
+      );
+      throw error;
+    }
   }
 
   if (options.json) {
@@ -234,12 +246,8 @@ function buildCapabilities(
 
 export async function providersUpdateCommand(
   slug: string,
-  options: ProviderCommandOptions & { name?: string }
+  options: CloudCommandOptions & { name: string }
 ): Promise<void> {
-  if (!options.name?.trim()) {
-    console.error(chalk.red("\n  Pass --name <display name>.\n"));
-    process.exit(1);
-  }
   const { client, orgSlug } = await resolveApiClient(options);
   const { provider } = await client.request<{ provider: OrgProviderRow }>(
     "PUT",
@@ -256,7 +264,7 @@ export async function providersUpdateCommand(
 
 export async function providersSetKeyCommand(
   slug: string,
-  options: ProviderCommandOptions & { key: string }
+  options: CloudCommandOptions & { key: string }
 ): Promise<void> {
   const value = resolveSecretFlag(options.key, "--key");
   const { client, orgSlug } = await resolveApiClient(options);
@@ -271,7 +279,7 @@ export async function providersSetKeyCommand(
 export async function providersSetCapabilityCommand(
   slug: string,
   modality: string,
-  options: ProviderCommandOptions & {
+  options: CloudCommandOptions & {
     model?: string;
     baseUrl?: string;
     modelsEndpoint?: string;
@@ -312,7 +320,7 @@ export async function providersSetCapabilityCommand(
 
 export async function providersSetDefaultCommand(
   slug: string,
-  options: ProviderCommandOptions = {}
+  options: CloudCommandOptions = {}
 ): Promise<void> {
   const { client, orgSlug } = await resolveApiClient(options);
   await client.request(
@@ -324,7 +332,7 @@ export async function providersSetDefaultCommand(
 
 export async function providersDeleteCommand(
   slug: string,
-  options: ProviderCommandOptions & { yes?: boolean } = {}
+  options: CloudCommandOptions & { yes?: boolean } = {}
 ): Promise<void> {
   if (!options.yes) {
     console.error(chalk.red("\n  Refusing to delete without --yes.\n"));

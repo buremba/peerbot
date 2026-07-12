@@ -7,12 +7,7 @@
 import chalk from "chalk";
 import { resolveApiClient } from "../internal/index.js";
 import { printJson } from "../internal/output.js";
-
-export interface ClientsCommandOptions {
-  context?: string;
-  org?: string;
-  json?: boolean;
-}
+import type { CloudCommandOptions } from "./_lib/cloud-options.js";
 
 interface ClientRecord {
   id: string;
@@ -29,7 +24,7 @@ interface ClientRecord {
 }
 
 export async function clientsListCommand(
-  options: ClientsCommandOptions & { agent?: string } = {}
+  options: CloudCommandOptions & { agent?: string } = {}
 ): Promise<void> {
   const { client, orgSlug } = await resolveApiClient(options);
   const query = options.agent
@@ -78,7 +73,7 @@ export async function clientsListCommand(
 
 export async function clientsRevokeCommand(
   clientId: string,
-  options: ClientsCommandOptions & { yes?: boolean } = {}
+  options: CloudCommandOptions & { yes?: boolean } = {}
 ): Promise<void> {
   if (!options.yes) {
     console.error(chalk.red("\n  Refusing to revoke without --yes.\n"));

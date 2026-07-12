@@ -8,13 +8,8 @@
 import chalk from "chalk";
 import { resolveApiClient } from "../internal/index.js";
 import { printJson } from "../internal/output.js";
+import type { CloudCommandOptions } from "./_lib/cloud-options.js";
 import { parseKeyValueEntries } from "./_lib/secret-value.js";
-
-export interface EnvironmentCommandOptions {
-  context?: string;
-  org?: string;
-  json?: boolean;
-}
 
 interface EnvironmentRow {
   id: string;
@@ -32,7 +27,7 @@ interface EnvironmentListResponse {
 }
 
 export async function environmentListCommand(
-  options: EnvironmentCommandOptions = {}
+  options: CloudCommandOptions = {}
 ): Promise<void> {
   const { client, orgSlug } = await resolveApiClient(options);
   const body = await client.get<EnvironmentListResponse>(
@@ -82,7 +77,7 @@ export async function environmentListCommand(
 
 export async function environmentCreateCommand(
   name: string,
-  options: EnvironmentCommandOptions & {
+  options: CloudCommandOptions & {
     provider: string;
     scope?: string;
     credential?: string[];
@@ -114,7 +109,7 @@ export async function environmentCreateCommand(
   const credentialNote = credential
     ? ""
     : chalk.dim(
-        `  Add its credential with: lobu environment set-credential ${environment.id} --credential key=$VAR\n`
+        `  Add its credential with: lobu environment set-credential ${environment.id} --credential 'key=$VAR'\n`
       );
   console.log(
     chalk.green(
@@ -125,7 +120,7 @@ export async function environmentCreateCommand(
 
 export async function environmentSetCredentialCommand(
   id: string,
-  options: EnvironmentCommandOptions & { credential: string[] }
+  options: CloudCommandOptions & { credential: string[] }
 ): Promise<void> {
   if (!options.credential?.length) {
     console.error(chalk.red("\n  Pass at least one --credential key=value.\n"));
@@ -144,7 +139,7 @@ export async function environmentSetCredentialCommand(
 
 export async function environmentDeleteCommand(
   id: string,
-  options: EnvironmentCommandOptions & { yes?: boolean } = {}
+  options: CloudCommandOptions & { yes?: boolean } = {}
 ): Promise<void> {
   if (!options.yes) {
     console.error(chalk.red("\n  Refusing to delete without --yes.\n"));

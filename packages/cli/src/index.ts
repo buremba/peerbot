@@ -40,10 +40,8 @@ import { Command } from "commander";
 // (no runtime module load), so they do NOT defeat the lazy-import hot path —
 // the handler modules are still pulled in only inside each `.action`.
 import type { AgentCommandOptions } from "./commands/agent.js";
-import type { ClientsCommandOptions } from "./commands/clients.js";
-import type { EnvironmentCommandOptions } from "./commands/environment.js";
+import type { CloudCommandOptions } from "./commands/_lib/cloud-options.js";
 import type { InitOptions } from "./commands/init.js";
-import type { ProviderCommandOptions } from "./commands/providers/manage.js";
 import { GATEWAY_DEFAULT_URL } from "./internal/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -69,6 +67,14 @@ function withCommonOpts(
   if (opts.org) cmd.option("--org <slug>", "Org slug override");
   if (opts.json) cmd.option("--json", "Print JSON");
   return cmd;
+}
+
+/** Commander accumulator for repeatable `--flag <entry>` options. */
+function collectOption(
+  value: string,
+  previous: string[] | undefined
+): string[] {
+  return previous ? [...previous, value] : [value];
 }
 
 function handleCliError(error: unknown): void {
@@ -117,6 +123,9 @@ Cloud:
   link | unlink            Bind this directory to a (context, org)
   apply | deploy           Sync lobu.config.ts to cloud (idempotent)
   agent <subcmd>           CRUD agents via REST
+  providers <subcmd>       Manage org model providers (create, set-key, ...)
+  environment <subcmd>     Manage sandbox environments (runtime providers)
+  clients <subcmd>         List / revoke connected clients (MCP, messaging)
   call [tool]              Invoke an admin REST tool by name (--list to discover)
   token [create]           Print or mint personal access tokens
 
@@ -746,7 +755,7 @@ Memory:
   withCommonOpts(
     providers.command("list").description("List the org's model providers"),
     { org: true, json: true }
-  ).action(async (options: ProviderCommandOptions) => {
+  ).action(async (options: CloudCommandOptions) => {
     const { providersListCommand } = await import(
       "./commands/providers/manage.js"
     );
@@ -758,7 +767,7 @@ Memory:
       .command("catalog")
       .description("List provider kinds available to add"),
     { org: true, json: true }
-  ).action(async (options: ProviderCommandOptions) => {
+  ).action(async (options: CloudCommandOptions) => {
     const { providersCatalogCommand } = await import(
       "./commands/providers/manage.js"
     );
@@ -773,7 +782,10 @@ Memory:
         "--kind <kind>",
         "Provider kind (see `providers catalog`)"
       )
-      .requiredOption("--key <key>", "API key value or $ENV_VAR reference")
+      .requiredOption(
+        "--key <key>",
+        "API key value or '$ENV_VAR' env reference (quote it)"
+      )
       .option("--name <name>", "Display name")
       .option("--model <id>", "Default text model")
       .option(
@@ -785,7 +797,7 @@ Memory:
   ).action(
     async (
       slug: string,
-      options: ProviderCommandOptions & {
+      options: CloudCommandOptions & {
         kind: string;
         key: string;
         name?: string;
@@ -805,13 +817,10 @@ Memory:
     providers
       .command("update <slug>")
       .description("Rename a provider")
-      .option("--name <name>", "Display name"),
+      .requiredOption("--name <name>", "Display name"),
     { org: true, json: true }
   ).action(
-    async (
-      slug: string,
-      options: ProviderCommandOptions & { name?: string }
-    ) => {
+    async (slug: string, options: CloudCommandOptions & { name: string }) => {
       const { providersUpdateCommand } = await import(
         "./commands/providers/manage.js"
       );
@@ -823,10 +832,13 @@ Memory:
     providers
       .command("set-key <slug>")
       .description("Rotate a provider's API key")
-      .requiredOption("--key <key>", "API key value or $ENV_VAR reference"),
+      .requiredOption(
+        "--key <key>",
+        "API key value or '$ENV_VAR' env reference (quote it)"
+      ),
     { org: true }
   ).action(
-    async (slug: string, options: ProviderCommandOptions & { key: string }) => {
+    async (slug: string, options: CloudCommandOptions & { key: string }) => {
       const { providersSetKeyCommand } = await import(
         "./commands/providers/manage.js"
       );
@@ -849,7 +861,7 @@ Memory:
     async (
       slug: string,
       modality: string,
-      options: ProviderCommandOptions & {
+      options: CloudCommandOptions & {
         model?: string;
         baseUrl?: string;
         modelsEndpoint?: string;
@@ -867,7 +879,7 @@ Memory:
       .command("set-default <slug>")
       .description("Make a provider the org default"),
     { org: true }
-  ).action(async (slug: string, options: ProviderCommandOptions) => {
+  ).action(async (slug: string, options: CloudCommandOptions) => {
     const { providersSetDefaultCommand } = await import(
       "./commands/providers/manage.js"
     );
@@ -881,10 +893,7 @@ Memory:
       .option("--yes", "Confirm deletion"),
     { org: true }
   ).action(
-    async (
-      slug: string,
-      options: ProviderCommandOptions & { yes?: boolean }
-    ) => {
+    async (slug: string, options: CloudCommandOptions & { yes?: boolean }) => {
       const { providersDeleteCommand } = await import(
         "./commands/providers/manage.js"
       );
@@ -900,7 +909,7 @@ Memory:
   withCommonOpts(environment.command("list").description("List environments"), {
     org: true,
     json: true,
-  }).action(async (options: EnvironmentCommandOptions) => {
+  }).action(async (options: CloudCommandOptions) => {
     const { environmentListCommand } = await import(
       "./commands/environment.js"
     );
@@ -915,15 +924,14 @@ Memory:
       .option("--scope <scope>", "org (default) or private")
       .option(
         "--credential <entry>",
-        "Credential field as key=value or key=$ENV_VAR (repeatable)",
-        (value: string, previous: string[] | undefined) =>
-          previous ? [...previous, value] : [value]
+        "Credential field as 'key=value' or 'key=$ENV_VAR' (repeatable, quote it)",
+        collectOption
       ),
     { org: true, json: true }
   ).action(
     async (
       name: string,
-      options: EnvironmentCommandOptions & {
+      options: CloudCommandOptions & {
         provider: string;
         scope?: string;
         credential?: string[];
@@ -942,15 +950,14 @@ Memory:
       .description("Set or rotate an environment's credential")
       .requiredOption(
         "--credential <entry>",
-        "Credential field as key=value or key=$ENV_VAR (repeatable)",
-        (value: string, previous: string[] | undefined) =>
-          previous ? [...previous, value] : [value]
+        "Credential field as 'key=value' or 'key=$ENV_VAR' (repeatable, quote it)",
+        collectOption
       ),
     { org: true }
   ).action(
     async (
       id: string,
-      options: EnvironmentCommandOptions & { credential: string[] }
+      options: CloudCommandOptions & { credential: string[] }
     ) => {
       const { environmentSetCredentialCommand } = await import(
         "./commands/environment.js"
@@ -966,10 +973,7 @@ Memory:
       .option("--yes", "Confirm deletion"),
     { org: true }
   ).action(
-    async (
-      id: string,
-      options: EnvironmentCommandOptions & { yes?: boolean }
-    ) => {
+    async (id: string, options: CloudCommandOptions & { yes?: boolean }) => {
       const { environmentDeleteCommand } = await import(
         "./commands/environment.js"
       );
@@ -988,7 +992,7 @@ Memory:
       .description("List connected clients")
       .option("--agent <agentId>", "Only clients assigned to this agent"),
     { org: true, json: true }
-  ).action(async (options: ClientsCommandOptions & { agent?: string }) => {
+  ).action(async (options: CloudCommandOptions & { agent?: string }) => {
     const { clientsListCommand } = await import("./commands/clients.js");
     await clientsListCommand(options);
   });
@@ -1002,7 +1006,7 @@ Memory:
   ).action(
     async (
       clientId: string,
-      options: ClientsCommandOptions & { yes?: boolean }
+      options: CloudCommandOptions & { yes?: boolean }
     ) => {
       const { clientsRevokeCommand } = await import("./commands/clients.js");
       await clientsRevokeCommand(clientId, options);
@@ -1034,8 +1038,7 @@ Memory:
       .option(
         "--arg <entry>",
         "Add a top-level arg as key=string or key:=<json> (repeatable)",
-        (value: string, previous: string[] | undefined) =>
-          previous ? [...previous, value] : [value]
+        collectOption
       )
       .option("--raw", "Emit compact JSON (default is pretty-printed)")
       .option("--url <url>", "Server URL override"),

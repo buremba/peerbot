@@ -4,7 +4,7 @@
  * All routes are org-scoped via mcpAuth middleware and orgContext.
  */
 
-import { type AuthProfile, encrypt, isSdkCompat } from "@lobu/core";
+import { type AuthProfile, isSdkCompat } from "@lobu/core";
 import { Hono } from "hono";
 import { ensureBuilderAgent } from "../auth/builder-provisioning";
 import { mcpAuth } from "../auth/middleware";
@@ -44,12 +44,12 @@ import {
 	isInferenceModality,
 	isValidInferenceProviderSlug,
 	listInferenceProviders,
-	providerOrgSecretName,
 	rotateInferenceProviderKey,
 	setInferenceProviderDefault,
 	softDeleteInferenceProvider,
 	updateInferenceProviderCapabilities,
 	updateInferenceProviderCoreFields,
+	upsertInferenceProviderApiKey,
 	validateCapabilityBlock,
 } from "./stores/provider-secrets";
 
@@ -1411,16 +1411,19 @@ routes.get("/:agentId/guardrail-judge-default", async (c) => {
 // ── Set the org-shared API key for a provider ────────────────────────────────
 //
 // Writes (or rotates) the org-wide API key declared via `lobu apply` from
-// `[[agents.<id>.providers]] key = "$VAR"`. The key lands in `agent_secrets`
-// under `provider:<id>:apiKey`, scoped to the org. The worker's credential
-// resolution (base-provider-module.ts) checks per-user `auth_profiles` first,
-// then this row, then `process.env` — so per-user BYOK still wins.
+// `[[agents.<id>.providers]] key = "$VAR"`. Since the resolver cutover (issue
+// #1868) the key lands as an `inference_providers` row (kind = slug, empty
+// capabilities — byte-identical to the static catalog behavior) plus a
+// row-unique `<slug>-<id>` `agent_secrets` entry — the exact shape the
+// `backfill-inference-providers` job minted from the legacy
+// `provider:<id>:apiKey` rows, which are no longer written by anything. The
+// worker's credential resolution (base-provider-module.ts) checks per-user
+// `auth_profiles` first, then this org-shared key, then `process.env` — so
+// per-user BYOK still wins.
 //
 // `:agentId` is in the path so the auth/admin gate matches the rest of this
-// router; the secret itself is org-scoped, not per-agent (one z-ai key for the
-// whole org). PUT is idempotent; same name overwrites.
-
-// TODO(inference-providers): remove after resolver cutover
+// router; the key itself is org-scoped, not per-agent (one z-ai key for the
+// whole org). PUT is idempotent; the same slug rotates in place.
 routes.put("/:agentId/providers/:providerId/api-key", async (c) => {
 	const denied = requireSessionOrAdminPat(c);
 	if (denied) return denied;
@@ -1428,6 +1431,21 @@ routes.put("/:agentId/providers/:providerId/api-key", async (c) => {
 
 	if (!(await configStore.hasAgent(agentId))) {
 		return c.json({ error: "Agent not found" }, 404);
+	}
+
+	// The provider id doubles as the `inference_providers.slug` (every catalog
+	// provider id is a valid slug). Reject invalid ids outright instead of
+	// falling back to a legacy-named secret: the acceptance bar for #1868 is
+	// that NOTHING writes `provider:<id>:apiKey` anymore, and a legacy write
+	// would strand the key forever (the backfill skips invalid slugs too).
+	if (!isValidInferenceProviderSlug(providerId)) {
+		return c.json(
+			{
+				error:
+					"Invalid provider id: must be a lowercase alphanumeric slug (a-z, 0-9, hyphens; 1-63 chars)",
+			},
+			400,
+		);
 	}
 
 	let body: { value?: unknown };
@@ -1444,31 +1462,26 @@ routes.put("/:agentId/providers/:providerId/api-key", async (c) => {
 		);
 	}
 
-	const ciphertext = encrypt(value);
-	const name = providerOrgSecretName(providerId);
 	const orgId = (c.get("organizationId") as string | undefined) ?? null;
 	if (!orgId) {
 		return c.json({ error: "Organization context not available" }, 500);
 	}
 
-	const sql = getDb();
-	await sql`
-    INSERT INTO agent_secrets (organization_id, name, ciphertext, created_at, updated_at)
-    VALUES (${orgId}, ${name}, ${ciphertext}, now(), now())
-    ON CONFLICT (organization_id, name) DO UPDATE SET
-      ciphertext = EXCLUDED.ciphertext,
-      updated_at = now()
-  `;
+	const { created } = await upsertInferenceProviderApiKey(
+		orgId,
+		providerId,
+		value,
+	);
 	// Metadata-only: provider keys are audited but never snapshotted (the
 	// writer forces `state` to null for this kind regardless).
 	emitConfigChange(c, {
 		resourceKind: "provider-key",
 		resourceId: `${providerId}`,
-		op: "updated",
+		op: created ? "created" : "updated",
 		summary: `Org API key for provider '${providerId}' set`,
 		state: null,
 	});
-	return c.json({ success: true, name });
+	return c.json({ success: true, provider: providerId, created });
 });
 
 // ── Update agent config (settings) ───────────────────────────────────────────

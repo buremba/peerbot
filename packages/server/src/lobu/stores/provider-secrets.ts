@@ -5,8 +5,11 @@
  *
  * Resolution order (worker side, see base-provider-module.ts):
  *   1. Per-user `auth_profiles` (BYOK / personal OAuth)
- *   2. Org-shared `agent_secrets` row (this name) — declarative, set via
- *      `lobu apply` from `[[agents.<id>.providers]] key = "$VAR"`
+ *   2. Org-shared key — declarative, set via `lobu apply` from
+ *      `[[agents.<id>.providers]] key = "$VAR"`. Since the resolver cutover
+ *      (issue #1868) the writer lands this as an `inference_providers` row +
+ *      row-unique `<slug>-<id>` secret; the legacy `provider:<id>:apiKey`
+ *      name remains a READ-ONLY fallback for pre-existing rows.
  *   3. Deployment-wide `process.env` (operator's machine, last resort)
  *
  * The org-scoping is enforced by `(organization_id, name)` PK on the table;
@@ -689,6 +692,58 @@ export async function updateInferenceProviderCoreFields(
 }
 
 /**
+ * Create-or-rotate the org-shared provider key pushed by `lobu apply`
+ * (`PUT /:agentId/providers/:providerId/api-key`). This is the resolver-cutover
+ * writer (issue #1868): it produces EXACTLY the shape the
+ * `backfill-inference-providers` job mints from legacy secrets — an
+ * `inference_providers` row (kind = slug, `capabilities = {}` so behavior is
+ * byte-identical to the static catalog) plus a row-unique `<slug>-<id>` secret
+ * — and never touches the legacy `provider:<id>:apiKey` name.
+ *
+ * Race-safe across replicas: rotate-first (FOR UPDATE on the live row), then
+ * create (id minted → INSERT, unique-violation caught as slug_conflict with the
+ * whole tx rolled back, so no stranded vault write), then rotate again when a
+ * concurrent apply won the create. Two concurrent applies therefore converge on
+ * one row with one of the two keys.
+ *
+ * Callers MUST have validated `slug` via {@link isValidInferenceProviderSlug};
+ * an invalid slug throws (the DB CHECK would reject it anyway).
+ */
+export async function upsertInferenceProviderApiKey(
+	organizationId: string,
+	slug: string,
+	apiKey: string,
+): Promise<{ created: boolean }> {
+	if (!isValidInferenceProviderSlug(slug)) {
+		throw new Error(`Invalid inference-provider slug: ${slug}`);
+	}
+
+	if (await rotateInferenceProviderKey(organizationId, slug, apiKey)) {
+		return { created: false };
+	}
+
+	const created = await createInferenceProvider({
+		organizationId,
+		slug,
+		kind: slug,
+		apiKey,
+		capabilities: {},
+	});
+	if (!("error" in created)) return { created: true };
+
+	// Lost the create race to a concurrent apply — its row is live now; rotate
+	// the key into that row's ref instead.
+	if (await rotateInferenceProviderKey(organizationId, slug, apiKey)) {
+		return { created: false };
+	}
+	// Create conflicted but no live row rotates: the row was soft-deleted in the
+	// same instant. Vanishingly rare; surface it rather than looping.
+	throw new Error(
+		`Concurrent modification while writing provider key for ${organizationId}/${slug}`,
+	);
+}
+
+/**
  * Rotate a provider's api key: re-encrypt into the SAME api_key_ref name (the
  * ref is immutable). Returns false when no live row exists for the slug.
  */
@@ -747,7 +802,15 @@ export async function softDeleteInferenceProvider(
 	return rows.length > 0;
 }
 
-export function providerOrgSecretName(providerId: string): string {
+/**
+ * LEGACY org-shared provider secret name — READ path only. Nothing writes this
+ * name anymore (the `lobu apply` writer produces `inference_providers` rows +
+ * `<slug>-<id>` secrets, see {@link upsertInferenceProviderApiKey}); it exists
+ * so {@link readOrgSharedProviderApiKey} keeps resolving rows written before
+ * the cutover. Delete together with the legacy fallback once the fleet is
+ * converged (issue #1868, time-gated with the backfill-job removal).
+ */
+function providerOrgSecretName(providerId: string): string {
 	return `provider:${providerId}:apiKey`;
 }
 
@@ -830,12 +893,53 @@ export async function readEnvironmentSecret(
  * this tier: run dispatch checks it via `hasCredentials`, so a proxy that
  * skips it lets an apply-provisioned org dispatch its agent only to 401 at
  * the first provider call.
+ *
+ * Two storage shapes resolve here, row-unique first (issue #1868):
+ *   1. The org's live `inference_providers` row's `<slug>-<id>` secret (what
+ *      `lobu apply` writes since the resolver cutover, and what the backfill
+ *      minted from legacy rows). Preferred because rotations only ever rewrite
+ *      this name — a backfilled org's legacy copy goes stale after the first
+ *      post-cutover rotation.
+ *   2. The legacy `provider:<id>:apiKey` name — READ-ONLY fallback for
+ *      pre-existing rows (nothing writes it anymore).
+ *
+ * Rows with a custom text upstream are excluded from (1): the URL invariant
+ * (inference-invariant.ts) already short-circuits those to org-row-key-only /
+ * fail-closed BEFORE this tier, and excluding them here keeps this function
+ * safe standalone — its key can never chain onward as if the destination were
+ * the static catalog URL.
  */
 export async function readOrgSharedProviderApiKey(
 	providerId: string,
 	organizationId: string,
 ): Promise<string | null> {
 	const sql = getDb();
+
+	const rowKeyed = (await sql`
+    SELECT s.ciphertext
+    FROM inference_providers p
+    JOIN agent_secrets s
+      ON s.organization_id = p.organization_id
+     AND ('secret://' || p.organization_id || '/' || s.name) = p.api_key_ref
+     AND (s.expires_at IS NULL OR s.expires_at > now())
+    WHERE p.organization_id = ${organizationId}
+      AND p.slug = ${providerId}
+      AND p.deleted_at IS NULL
+      AND (p.capabilities -> 'text' ->> 'base_url') IS NULL
+    LIMIT 1
+  `) as Array<{ ciphertext: string }>;
+	const rowKeyedCiphertext = rowKeyed[0]?.ciphertext;
+	if (rowKeyedCiphertext) {
+		try {
+			return decrypt(rowKeyedCiphertext);
+		} catch (error) {
+			logger.warn(
+				`Failed to decrypt inference-provider row key for ${providerId}: ${getErrorMessage(error)}`,
+			);
+			// Fall through to the legacy name rather than dead-ending the chain.
+		}
+	}
+
 	const rows = (await sql`
     SELECT ciphertext
     FROM agent_secrets

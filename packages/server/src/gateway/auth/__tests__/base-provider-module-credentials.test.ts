@@ -12,6 +12,10 @@ let inferenceProviderRows: Array<{
   block: { base_url?: string; model?: string } | null;
   ciphertext: string | null;
 }> = [];
+// Rows returned for the row-unique `<slug>-<id>` secret lookup that
+// `readOrgSharedProviderApiKey` performs against the org's live
+// inference_providers row (the post-cutover write shape, issue #1868).
+let rowKeyedSecretRows: Array<{ ciphertext: string }> = [];
 
 // Mock the org-context AsyncLocalStorage lookup so we can simulate a worker
 // request that does (or doesn't) carry an org.
@@ -30,12 +34,15 @@ mock.module("../../../lobu/stores/org-context.js", () => ({
 mock.module("../../../db/client.js", () => ({
   PROD_PG_VALUE_OPTIONS: {},
   closeDbSingleton: async () => undefined,
-  getDb: () => (strings: TemplateStringsArray) =>
-    Promise.resolve(
-      strings.join(" ").includes("FROM inference_providers")
-        ? inferenceProviderRows
-        : orgSharedSecretRows
-    ),
+  getDb: () => (strings: TemplateStringsArray) => {
+    const query = strings.join(" ");
+    // `resolveInferenceProviderConfig` selects `capabilities -> $mod AS block`;
+    // the row-keyed secret read joins on api_key_ref without an AS block.
+    if (query.includes("AS block")) return Promise.resolve(inferenceProviderRows);
+    if (query.includes("FROM inference_providers"))
+      return Promise.resolve(rowKeyedSecretRows);
+    return Promise.resolve(orgSharedSecretRows);
+  },
 }));
 
 // Import AFTER mocks so the module graph picks them up.
@@ -68,6 +75,7 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     mockOrgId = null;
     orgSharedSecretRows = [];
     inferenceProviderRows = [];
+    rowKeyedSecretRows = [];
   });
 
   afterEach(() => {
@@ -125,6 +133,39 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     expect(await mod.hasCredentials("agent-1", context)).toBe(true);
     expect(await mod.buildEnvVars("agent-1", {}, context)).toEqual({
       Z_AI_API_KEY: "zai-inference-provider-key",
+    });
+  });
+
+  test("resolves the org key from a cutover-shape inference-provider row (no text block, row-unique secret)", async () => {
+    // Post-cutover write shape (issue #1868): `lobu apply` creates an
+    // inference_providers row with EMPTY capabilities plus a row-unique
+    // `<slug>-<id>` secret — and no legacy provider:<id>:apiKey row at all.
+    // `resolveInferenceProviderConfig` returns null for such a row (no text
+    // block), so tier 2 (`readOrgSharedProviderApiKey`) must find the
+    // row-keyed secret or apply-pushed keys silently stop working.
+    mockOrgId = "org-1";
+    inferenceProviderRows = []; // no text block ⇒ invariant: no-custom-upstream
+    rowKeyedSecretRows = [{ ciphertext: encrypt("zai-row-unique-key") }];
+    orgSharedSecretRows = []; // legacy name absent — nothing wrote it
+
+    const mod = makeModule(false);
+    const context = { organizationId: "org-1" };
+    expect(await mod.hasCredentials("agent-1", context)).toBe(true);
+    expect(await mod.buildEnvVars("agent-1", {}, context)).toEqual({
+      Z_AI_API_KEY: "zai-row-unique-key",
+    });
+  });
+
+  test("row-unique secret outranks a stale legacy provider:<id>:apiKey row", async () => {
+    // Backfilled org: both names exist. Rotation only rewrites the row-unique
+    // secret, so the read must prefer it over the stale legacy copy.
+    mockOrgId = "org-1";
+    rowKeyedSecretRows = [{ ciphertext: encrypt("fresh-rotated-key") }];
+    orgSharedSecretRows = [{ ciphertext: encrypt("stale-legacy-key") }];
+
+    const mod = makeModule(false);
+    expect(await mod.buildEnvVars("agent-1", {}, { organizationId: "org-1" })).toEqual({
+      Z_AI_API_KEY: "fresh-rotated-key",
     });
   });
 

@@ -197,8 +197,10 @@ export abstract class BaseProviderModule
     );
     if (hasProfile) return true;
     // Mirror the resolution chain in `buildEnvVars`: when no per-user auth
-    // profile exists, an org-shared API key written by `lobu apply`
-    // (`provider:<id>:apiKey` in agent_secrets) is a valid credential too.
+    // profile exists, an org-shared API key written by `lobu apply` is a valid
+    // credential too — the inference_providers row's `<slug>-<id>` secret
+    // (post-cutover shape, #1868) or the read-only legacy
+    // `provider:<id>:apiKey` row; `readOrgSharedProviderApiKey` resolves both.
     // Without this, `lobu apply`-provisioned providers report no credentials,
     // so primary-provider detection (and thus the worker's defaultProvider /
     // model resolution) silently fails until the gateway is restarted.

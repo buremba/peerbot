@@ -466,7 +466,9 @@ export class ApplyClient {
 
   /**
    * Set (or rotate) the org-shared API key for a provider. Idempotent.
-   * Lands in `agent_secrets` under `provider:<id>:apiKey`, scoped to the org.
+   * Lands as an org-scoped `inference_providers` row plus its row-unique
+   * `<slug>-<id>` secret (the server rejects provider ids that aren't valid
+   * slugs with a 400).
    */
   async setProviderApiKey(
     agentId: string,

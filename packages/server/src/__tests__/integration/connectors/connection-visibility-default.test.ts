@@ -220,7 +220,7 @@ describe('connection visibility default depends on credential kind', () => {
   });
 
   it('the OAuth-callback downgrade SQL flips org→private only when the attached profile is personal', async () => {
-    // The GET /:token/oauth/callback route attaches the freshly-created
+    // The GET /connect/oauth/callback route attaches the freshly-created
     // oauth_account profile and runs this exact CASE. The route wiring is not
     // unit-testable without full connect-token + provider scaffolding, so this
     // pins the mechanism it depends on: downgrade org→private for a personal

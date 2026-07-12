@@ -963,7 +963,7 @@ function formatManageWatchersResult(result: any, _options: FormatterOptions): st
  * Format database_query result as CSV
  */
 function formatQuerySqlResult(result: any, _options: FormatterOptions): string {
-  const { rows, row_count, execution_time_ms } = result;
+  const { rows, total_count, execution_time_ms } = result;
 
   let csv = '';
 
@@ -980,7 +980,7 @@ function formatQuerySqlResult(result: any, _options: FormatterOptions): string {
   }
 
   // Wrap in code block for easy copying
-  return `# 💾 SQL Query Results (CSV)\n\n**Rows**: ${row_count} • **Time**: ${execution_time_ms}ms\n\n\`\`\`csv\n${csv}\`\`\`\n\n*Copy the CSV above and paste into Excel/Google Sheets*`;
+  return `# 💾 SQL Query Results (CSV)\n\n**Rows**: ${total_count} • **Time**: ${execution_time_ms}ms\n\n\`\`\`csv\n${csv}\`\`\`\n\n*Copy the CSV above and paste into Excel/Google Sheets*`;
 }
 
 /**

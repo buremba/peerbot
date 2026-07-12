@@ -109,20 +109,33 @@ describe('formatToolResult', () => {
           { id: 1, name: 'Brand A' },
           { id: 2, name: 'Brand B' },
         ],
-        row_count: 2,
+        columns: [
+          { name: 'id', type: 'int4' },
+          { name: 'name', type: 'text' },
+        ],
+        total_count: 5,
+        has_more: true,
         execution_time_ms: 15,
       };
       const md = formatToolResult('query_sql', result);
       expect(md).toContain('SQL Query Results');
+      expect(md).toContain('**Rows**: 5');
+      expect(md).not.toContain('Rows**: undefined');
       expect(md).toContain('Brand A');
       expect(md).toContain('Brand B');
       expect(md).toContain('csv');
     });
 
     it('should handle empty SQL result', () => {
-      const result = { rows: [], row_count: 0, execution_time_ms: 5 };
+      const result = {
+        rows: [],
+        columns: [],
+        total_count: 0,
+        has_more: false,
+        execution_time_ms: 5,
+      };
       const md = formatToolResult('query_sql', result);
-      expect(md).toContain('0');
+      expect(md).toContain('**Rows**: 0');
     });
   });
 

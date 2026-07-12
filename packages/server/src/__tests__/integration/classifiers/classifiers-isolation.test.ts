@@ -59,7 +59,7 @@ async function seedClassifier(
 		slug,
 		name: `${slug} Classifier`,
 		attribute_key: slug,
-		watcher_id: Number(watcher.watcher_id),
+		watcher_id: watcher.watcher_id,
 		attribute_values: {
 			positive: {
 				description: "positive signal",
@@ -125,7 +125,7 @@ describe("classifier org isolation", () => {
 
 	it("delete() cannot archive another workspace classifier", async () => {
 		const error = await orgA.workspace.owner.classifiers
-			.delete(orgB.classifierId)
+			.delete({ classifier_id: orgB.classifierId })
 			.catch((reason: unknown) => reason);
 		expect(error).toBeInstanceOf(ClientSdkActionError);
 

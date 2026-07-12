@@ -24,7 +24,7 @@ export interface ClassifierCreateInput {
 		}
 	>;
 	entity_id?: number;
-	watcher_id: number;
+	watcher_id: string;
 	min_similarity?: number;
 	fallback_value?: unknown;
 	created_by?: string;
@@ -53,7 +53,7 @@ export interface ClassifiersNamespace {
 		classifier_id: number;
 		force_regenerate?: boolean;
 	}): Promise<unknown>;
-	delete(classifier_id: number): Promise<unknown>;
+	delete(input: { classifier_id: number }): Promise<unknown>;
 	classify(input: ClassifierClassifyInput): Promise<unknown>;
 }
 
@@ -68,7 +68,7 @@ export function buildClassifiersNamespace(
 		list: (input) => action("list", input),
 		create: (input) => action("create", input),
 		generateEmbeddings: (input) => action("generate_embeddings", input),
-		delete: (classifier_id) => action("delete", { classifier_id }),
+		delete: (input) => action("delete", input),
 		classify: (input) => action("classify", input),
 	};
 }

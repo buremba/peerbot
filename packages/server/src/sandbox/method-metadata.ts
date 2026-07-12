@@ -8,8 +8,6 @@ export type MethodAccess = "read" | "write" | "external" | "admin";
 export interface MethodMetadata {
 	summary: string;
 	access: MethodAccess;
-	/** Exact callable TypeScript signature, including whether pagination exists. */
-	signature?: string;
 	throws?: readonly string[];
 	/** Single-line copy-pasteable snippet. */
 	example?: string;
@@ -42,7 +40,6 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
 		summary:
 			"List entities in the current organization with optional filters. Returns `{ action, entities, metadata }` where `entities` is the page and `metadata` carries `total_count`, `has_more`, `limit`, `offset`.",
 		access: "read",
-		signature: "entities.list(input?: { entity_type?: string; parent_id?: number; search?: string; limit?: number; offset?: number }): Promise<unknown>",
 		example:
 			"const { entities } = await client.entities.list({ entity_type: 'company' });",
 		usageExample: `// All companies in the workspace, newest first.
@@ -59,9 +56,9 @@ export default async (_ctx, client) => {
 		summary: "Fetch a single entity by id.",
 		access: "read",
 		throws: ["EntityNotFound"],
-		example: "const entity = await client.entities.get(42);",
+		example: "const entity = await client.entities.get({ entity_id: 42 });",
 		usageExample: `export default async (_ctx, client) => {
-  const entity = await client.entities.get(42);
+  const entity = await client.entities.get({ entity_id: 42 });
   return { id: entity.id, name: entity.name, type: entity.entity_type };
 };`,
 	},
@@ -80,10 +77,14 @@ export default async (_ctx, client) => {
 	"entities.delete": {
 		summary: "Delete an entity, optionally cascading to descendants.",
 		access: "write",
+		example:
+			"await client.entities.delete({ entity_id: 42, force_delete_tree: true });",
 	},
 	"entities.link": {
 		summary: "Create a relationship between two entities.",
 		access: "write",
+		example:
+			"await client.entities.link({ from_entity_id: 42, to_entity_id: 43, relationship_type_slug: 'customer_of' });",
 	},
 	"entities.unlink": {
 		summary: "Soft-delete an entity relationship.",
@@ -116,10 +117,10 @@ export default async (_ctx, client) => {
 	},
 	"entitySchema.listTypes": {
 		summary:
-			"List entity types. Defaults to accessible (current org plus public schemas); pass list_scope: 'organization' for only the bound org.",
+			"List entity types with limit/offset pagination. Default scope 'accessible' includes the current organization plus public catalogs; scope 'current' excludes public catalogs. Returns metadata with total_count and has_more. Omitting limit preserves the unbounded legacy listing.",
 		access: "read",
-		signature:
-			"entitySchema.listTypes(input?: { list_scope?: 'accessible' | 'organization' }): Promise<unknown>",
+		example:
+			"const { entity_types, metadata } = await client.entitySchema.listTypes({ limit: 50, offset: 0, scope: 'current' });",
 	},
 	"entitySchema.getType": {
 		summary: "Get an entity type by slug.",
@@ -127,7 +128,7 @@ export default async (_ctx, client) => {
 	},
 	"entitySchema.createType": {
 		summary:
-			"Create an entity type. The metadata shape goes in `metadata_schema` (a JSON Schema); an invalid top-level `properties` alias is rejected.",
+			"Create an entity type. The metadata shape goes in `metadata_schema` (a JSON Schema), NOT `properties` — a top-level `properties` key is silently ignored.",
 		access: "write",
 		example:
 			"await client.entitySchema.createType({ slug: 'widget', name: 'Widget', metadata_schema: { type: 'object', properties: { color: { type: 'string' } } } });",
@@ -139,6 +140,7 @@ export default async (_ctx, client) => {
 	"entitySchema.deleteType": {
 		summary: "Delete an entity type.",
 		access: "write",
+		example: "await client.entitySchema.deleteType({ slug: 'widget' });",
 	},
 	"entitySchema.auditType": {
 		summary: "List historical changes to an entity type.",
@@ -146,10 +148,10 @@ export default async (_ctx, client) => {
 	},
 	"entitySchema.listRelTypes": {
 		summary:
-			"List relationship types. Defaults to accessible (current org plus public schemas); pass list_scope: 'organization' for only the bound org.",
+			"List relationship types with limit/offset pagination. Default scope 'accessible' includes the current organization plus public catalogs; scope 'current' excludes public catalogs. Returns metadata with total_count and has_more. Omitting limit preserves the unbounded legacy listing.",
 		access: "read",
-		signature:
-			"entitySchema.listRelTypes(input?: { list_scope?: 'accessible' | 'organization' }): Promise<unknown>",
+		example:
+			"const { relationship_types, metadata } = await client.entitySchema.listRelTypes({ limit: 50, offset: 0, scope: 'accessible' });",
 	},
 	"entitySchema.getRelType": {
 		summary: "Get a relationship type by slug.",
@@ -166,6 +168,8 @@ export default async (_ctx, client) => {
 	"entitySchema.deleteRelType": {
 		summary: "Delete a relationship type.",
 		access: "write",
+		example:
+			"await client.entitySchema.deleteRelType({ slug: 'works-at' });",
 	},
 	"entitySchema.addRule": {
 		summary:
@@ -179,6 +183,8 @@ export default async (_ctx, client) => {
 	"entitySchema.listRules": {
 		summary: "List rules attached to a relationship type.",
 		access: "read",
+		example:
+			"const rules = await client.entitySchema.listRules({ slug: 'works-at' });",
 	},
 
 	// knowledge
@@ -289,6 +295,7 @@ export default async (_ctx, client) => {
 	"schedules.cancel": {
 		summary: "Permanently delete a schedule. Requires admin.",
 		access: "admin",
+		example: "await client.schedules.cancel({ id: 'schedule-id' });",
 	},
 
 	// notifications
@@ -331,6 +338,7 @@ export default async (ctx, client) => {
 		summary: "Fetch a watcher by id.",
 		access: "read",
 		throws: ["WatcherNotFound"],
+		example: "const watcher = await client.watchers.get({ watcher_id: '42' });",
 	},
 	"watchers.create": {
 		summary:
@@ -371,14 +379,15 @@ export default async (_ctx, client) => {
 		summary:
 			"Trigger an immediate watcher run and dispatch it to its assigned agent.",
 		access: "external",
-		example: "await client.watchers.trigger(42);",
+		example: "await client.watchers.trigger({ watcher_id: '42' });",
 		usageExample: `export default async (_ctx, client) => {
-  return client.watchers.trigger(42);
+  return client.watchers.trigger({ watcher_id: '42' });
 };`,
 	},
 	"watchers.delete": {
 		summary: "Delete one or more watchers.",
 		access: "write",
+		example: "await client.watchers.delete({ watcher_ids: ['42'] });",
 	},
 	"watchers.setReactionScript": {
 		summary:
@@ -426,12 +435,10 @@ export default async (_ctx, client) => {
 	"connections.list": {
 		summary: "List configured connections in the current organization.",
 		access: "read",
-		signature: "connections.list(input?: { connector_key?: string; status?: string; limit?: number; offset?: number }): Promise<unknown>",
 	},
 	"catalog.listCatalog": {
 		summary: "List global catalog entries (connectors, skills, watchers).",
 		access: "read",
-		signature: "catalog.listCatalog(input?: { kinds?: Array<'connectors' | 'skills'> }): Promise<unknown> // not paginated",
 	},
 	"catalog.listInstalled": {
 		summary: "List installed org or agent resources.",
@@ -497,9 +504,12 @@ export default async (_ctx, client) => {
 		access: "read",
 	},
 	"operations.execute": {
-		summary: "Execute a connector action. Sends an external request.",
+		summary:
+			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, watcher_source?: { watcher_id: number, window_id: number } }). connector_key is not accepted. Sends an external request.",
 		access: "external",
 		cost: "expensive",
+		example:
+			"await client.operations.execute({ connection_id: 42, operation_key: 'create_issue', input: { title: 'Follow up' } });",
 	},
 	"operations.listRuns": {
 		summary: "List past operation runs.",
@@ -520,11 +530,7 @@ export default async (_ctx, client) => {
 		summary: "Raw manage_feeds action wrapper. Prefer named methods.",
 		access: "external",
 	},
-	"feeds.list": {
-		summary: "List data-sync feeds.",
-		access: "read",
-		signature: "feeds.list(input?: { connection_id?: number; status?: string; limit?: number; offset?: number }): Promise<unknown>",
-	},
+	"feeds.list": { summary: "List data-sync feeds.", access: "read" },
 	"feeds.get": { summary: "Get a feed by id.", access: "read" },
 	"feeds.readMany": {
 		summary:
@@ -536,10 +542,15 @@ export default async (_ctx, client) => {
 		access: "write",
 	},
 	"feeds.update": { summary: "Update a feed.", access: "write" },
-	"feeds.delete": { summary: "Delete a feed.", access: "write" },
+	"feeds.delete": {
+		summary: "Delete a feed.",
+		access: "write",
+		example: "await client.feeds.delete({ feed_id: 42 });",
+	},
 	"feeds.trigger": {
 		summary: "Trigger an immediate sync for a feed (external side-effect).",
 		access: "external",
+		example: "await client.feeds.trigger({ feed_id: 42 });",
 	},
 
 	// authProfiles
@@ -550,7 +561,6 @@ export default async (_ctx, client) => {
 	"authProfiles.list": {
 		summary: "List reusable auth profiles.",
 		access: "read",
-		signature: "authProfiles.list(input?: { connector_key?: string; provider?: string; profile_kind?: AuthProfileKind }): Promise<unknown> // not paginated",
 	},
 	"authProfiles.get": {
 		summary: "Get an auth profile by slug.",
@@ -581,7 +591,6 @@ export default async (_ctx, client) => {
 	"classifiers.list": {
 		summary: "List classifier templates.",
 		access: "read",
-		signature: "classifiers.list(input?: { entity_id?: number; status?: string }): Promise<unknown> // not paginated",
 	},
 	"classifiers.create": {
 		summary: "Create a classifier template.",
@@ -595,6 +604,7 @@ export default async (_ctx, client) => {
 	"classifiers.delete": {
 		summary: "Delete a classifier.",
 		access: "write",
+		example: "await client.classifiers.delete({ classifier_id: 42 });",
 	},
 	"classifiers.classify": {
 		summary:
@@ -635,7 +645,6 @@ export default async (_ctx, client) => {
 		summary:
 			"List declared metrics per entity type: measures, dimensions, and segments with descriptions. Keyword-search with `q`. Pair with `metrics.query`.",
 		access: "read",
-		signature: "metrics.list(input?: { entity_type?: string; q?: string }): Promise<unknown> // not paginated",
 		example: "const { entity_types } = await client.metrics.list({ q: 'spend' });",
 		usageExample: `// Discover governed measures before running one.
 export default async (_ctx, client) => {

@@ -54,7 +54,7 @@ describe('cross-org isolation', () => {
   });
 
   it('a different-org client cannot read another org\'s entity by id', async () => {
-    await expect(clientB.entities.get(entityIdA)).rejects.toThrow(/not found/i);
+    await expect(clientB.entities.get({ entity_id: entityIdA })).rejects.toThrow(/not found/i);
   });
 
   it('list() in org B does not surface org A entities', async () => {
@@ -66,7 +66,7 @@ describe('cross-org isolation', () => {
   });
 
   it('cannot delete an entity that lives in another org', async () => {
-    await expect(clientB.entities.delete(entityIdA)).rejects.toThrow(
+    await expect(clientB.entities.delete({ entity_id: entityIdA })).rejects.toThrow(
       /not found|access|admin/i
     );
   });
@@ -77,6 +77,6 @@ describe('cross-org isolation', () => {
       type: 'company',
       name: 'Org B Only',
     })) as { entity: { id: number } };
-    await expect(clientA.entities.get(entityB.entity.id)).rejects.toThrow(/not found/i);
+    await expect(clientA.entities.get({ entity_id: entityB.entity.id })).rejects.toThrow(/not found/i);
   });
 });

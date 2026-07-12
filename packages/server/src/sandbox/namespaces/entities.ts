@@ -55,13 +55,13 @@ export interface EntityLinkInput {
 export interface EntitiesNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
 	list(filter?: EntityListFilter): Promise<unknown>;
-	get(entity_id: number): Promise<unknown>;
+	get(input: { entity_id: number }): Promise<unknown>;
 	create(input: EntityCreateInput): Promise<unknown>;
 	update(input: EntityUpdateInput): Promise<unknown>;
-	delete(
-		entity_id: number,
-		options?: { force_delete_tree?: boolean },
-	): Promise<unknown>;
+	delete(input: {
+		entity_id: number;
+		force_delete_tree?: boolean;
+	}): Promise<unknown>;
 	link(input: EntityLinkInput): Promise<unknown>;
 	unlink(input: {
 		from_entity_id: number;
@@ -94,8 +94,8 @@ export function buildEntitiesNamespace(
 		list(filter) {
 			return action("list", filter);
 		},
-		get(entity_id) {
-			return action("get", { entity_id });
+		get(input) {
+			return action("get", input);
 		},
 		create(input) {
 			return action("create", {
@@ -111,11 +111,8 @@ export function buildEntitiesNamespace(
 		update(input) {
 			return action("update", input);
 		},
-		delete(entity_id, options) {
-			return action("delete", {
-				entity_id,
-				force_delete_tree: options?.force_delete_tree,
-			});
+		delete(input) {
+			return action("delete", input);
 		},
 		link(input) {
 			return action("link", input);

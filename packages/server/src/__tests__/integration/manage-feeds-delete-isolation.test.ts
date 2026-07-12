@@ -64,7 +64,7 @@ describe("manage_feeds delete_feed cross-org isolation", () => {
 
 	it("does not cancel another org's runs and reports the feed as not found", async () => {
 		const error = await attacker.feeds
-			.delete(victimFeedId)
+			.delete({ feed_id: victimFeedId })
 			.catch((reason: unknown) => reason);
 		expect(error).toBeInstanceOf(ClientSdkActionError);
 		expect((error as ClientSdkActionError).result.error).toBe(
@@ -94,7 +94,7 @@ describe("manage_feeds delete_feed cross-org isolation", () => {
 			userId: (await createTestUser({ email: "victim-owner@test.com" })).id,
 			memberRole: "owner",
 		});
-		const result = (await owner.feeds.delete(victimFeedId)) as {
+		const result = (await owner.feeds.delete({ feed_id: victimFeedId })) as {
 			deleted?: boolean;
 		};
 		expect(result.deleted).toBe(true);

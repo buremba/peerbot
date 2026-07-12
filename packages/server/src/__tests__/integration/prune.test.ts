@@ -166,7 +166,7 @@ describe('prune (server gate)', () => {
       })) as { watcher_id?: string };
       expect(created.watcher_id).toBeTruthy();
 
-      await owner.watchers.delete(created.watcher_id as string);
+      await owner.watchers.delete({ watcher_ids: [created.watcher_id as string] });
       const list = (await owner.watchers.list({})) as {
         watchers?: Array<{ slug: string }>;
       };

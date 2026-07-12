@@ -69,7 +69,7 @@ describe('entity metadata validation > watcher provenance keys', () => {
       },
     });
 
-    const got = (await owner.entities.get(created.entity.id)) as {
+    const got = (await owner.entities.get({ entity_id: created.entity.id })) as {
       entity?: { metadata?: Record<string, unknown> };
     };
     expect(got.entity?.metadata?.status).toBe('done');

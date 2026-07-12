@@ -72,18 +72,18 @@ describe('watcher CRUD', () => {
     const watcherId = created.watcher_id;
     expect(watcherId).toBeDefined();
 
-    const got = (await owner.watchers.get(watcherId)) as {
+    const got = (await owner.watchers.get({ watcher_id: watcherId })) as {
       watcher?: { watcher_name: string };
     };
     expect(got.watcher?.watcher_name).toBe('Lifecycle Watcher');
 
     await owner.watchers.update({ watcher_id: watcherId, schedule: '0 10 * * *' });
-    const after = (await owner.watchers.get(watcherId)) as {
+    const after = (await owner.watchers.get({ watcher_id: watcherId })) as {
       watcher?: { schedule: string | null };
     };
     expect(after.watcher?.schedule).toBe('0 10 * * *');
 
-    await owner.watchers.delete([watcherId]);
+    await owner.watchers.delete({ watcher_ids: [watcherId] });
     const list = (await owner.watchers.list({ entity_id: entityId })) as {
       watchers?: Array<{ watcher_id: string }>;
     };
@@ -99,7 +99,7 @@ describe('watcher CRUD', () => {
       agent_id: agentId,
     })) as { watcher_id: string };
 
-    const got = (await owner.watchers.get(created.watcher_id)) as {
+    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
       watcher?: { entity_id?: number | null };
     };
     expect(got.watcher?.entity_id ?? null).toBeNull();
@@ -127,14 +127,14 @@ describe('watcher CRUD', () => {
       // NOTE: no `sources` — the backend must derive them from the prompt token.
     })) as { watcher_id: string };
 
-    const got = (await owner.watchers.get(created.watcher_id)) as {
+    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
       watcher?: { sources?: Array<{ name: string; query: string }> | null };
     };
     expect(got.watcher?.sources).toEqual([
       { name: 'recent_events', query },
     ]);
 
-    await owner.watchers.delete([created.watcher_id]);
+    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('re-derives sources on a version bump — an edited SQL chip replaces (not strands) the old query', async () => {
@@ -165,14 +165,14 @@ describe('watcher CRUD', () => {
       change_notes: 'edit sql',
     });
 
-    const got = (await owner.watchers.get(created.watcher_id)) as {
+    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
       watcher?: { sources?: Array<{ name: string; query: string }> | null };
     };
     // Exactly one source, carrying the NEW query — the old one is gone, not
     // stranded under `recent`, and there is no `recent_2`.
     expect(got.watcher?.sources).toEqual([{ name: 'recent', query: newQuery }]);
 
-    await owner.watchers.delete([created.watcher_id]);
+    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('clears sources when an edited prompt removes every @-mention chip', async () => {
@@ -200,12 +200,12 @@ describe('watcher CRUD', () => {
       change_notes: 'remove chip',
     });
 
-    const got = (await owner.watchers.get(created.watcher_id)) as {
+    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
       watcher?: { sources?: Array<{ name: string; query: string }> | null };
     };
     expect(got.watcher?.sources ?? []).toEqual([]);
 
-    await owner.watchers.delete([created.watcher_id]);
+    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('round-trips execution_config through create → list → update', async () => {
@@ -260,7 +260,7 @@ describe('watcher CRUD', () => {
     };
     expect(findRow(cleared, watcherId)?.execution_config ?? null).toBeNull();
 
-    await owner.watchers.delete([watcherId]);
+    await owner.watchers.delete({ watcher_ids: [watcherId] });
   });
 
   it('leaves execution_config null when unset', async () => {
@@ -281,7 +281,7 @@ describe('watcher CRUD', () => {
     expect(row).toBeDefined();
     expect(row?.execution_config ?? null).toBeNull();
 
-    await owner.watchers.delete([created.watcher_id]);
+    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('rejects an invalid execution_config (type/range/unknown-key)', async () => {
@@ -332,12 +332,12 @@ describe('watcher CRUD', () => {
     })) as { watcher_id: string };
     expect(created.watcher_id).toBeDefined();
 
-    const got = (await owner.watchers.get(created.watcher_id)) as {
+    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
       watcher?: { entity_ids?: number[] };
     };
     expect(got.watcher?.entity_ids ?? []).toEqual([]);
 
-    await owner.watchers.delete([created.watcher_id]);
+    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('rejects an org-scoped watcher when there is no organization context', async () => {
@@ -360,7 +360,7 @@ describe('watcher CRUD', () => {
       agent_id: agentId,
     })) as { watcher_id: string };
 
-    await expect(intruder.watchers.get(created.watcher_id)).rejects.toThrow(
+    await expect(intruder.watchers.get({ watcher_id: created.watcher_id })).rejects.toThrow(
       /access|organization/i
     );
     await expect(
@@ -369,16 +369,16 @@ describe('watcher CRUD', () => {
         schedule: '0 11 * * *',
       })
     ).rejects.toThrow(/access|organization/i);
-    await expect(intruder.watchers.delete([created.watcher_id])).rejects.toThrow(
+    await expect(intruder.watchers.delete({ watcher_ids: [created.watcher_id] })).rejects.toThrow(
       /access|organization/i
     );
 
-    const got = (await owner.watchers.get(created.watcher_id)) as {
+    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
       watcher?: { schedule: string | null };
     };
     expect(got.watcher?.schedule).toBeNull();
 
-    await owner.watchers.delete([created.watcher_id]);
+    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('blocks a member from deleting watchers (admin-only)', async () => {
@@ -391,7 +391,7 @@ describe('watcher CRUD', () => {
     })) as { watcher_id: string };
 
     const member = owner.withAuth({ memberRole: 'member' });
-    await expect(member.watchers.delete([created.watcher_id])).rejects.toThrow(
+    await expect(member.watchers.delete({ watcher_ids: [created.watcher_id] })).rejects.toThrow(
       /admin|owner|access/i
     );
   });
@@ -436,11 +436,11 @@ describe('watcher CRUD', () => {
       })) as { watcher_id: string };
       expect(created.watcher_id).toBeDefined();
 
-      const got = (await owner.watchers.get(created.watcher_id)) as {
+      const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
         watcher?: { device_worker_id?: string | null };
       };
       expect(got.watcher?.device_worker_id).toBe(deviceId);
-      await owner.watchers.delete([created.watcher_id]);
+      await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
     });
 
     it("rejects pinning to a device in another org (create)", async () => {
@@ -500,7 +500,7 @@ describe('watcher CRUD', () => {
         })
       ).rejects.toThrow(/device you own|not found or not accessible/i);
 
-      await owner.watchers.delete([created.watcher_id]);
+      await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
     });
   });
 });

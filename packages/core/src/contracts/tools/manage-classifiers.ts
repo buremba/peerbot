@@ -34,9 +34,9 @@ export const ManageClassifiersSchema = Type.Object({
     })
   ),
   watcher_id: Type.Optional(
-    Type.Number({
+    Type.String({
       description:
-        "[create] Watcher ID (required — classifiers must belong to a watcher)",
+        "[create] Watcher ID as returned by the watcher APIs (numeric string; required)",
     })
   ),
   classifier_id: Type.Optional(

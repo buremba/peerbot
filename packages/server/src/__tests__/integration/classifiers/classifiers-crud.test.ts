@@ -17,7 +17,7 @@ import { cleanupTestDatabase } from '../../setup/test-db';
 describe('classifier CRUD', () => {
   let owner: TestApiClient;
   let entityId: number;
-  let watcherId: number;
+  let watcherId: string;
 
   beforeAll(async () => {
     await cleanupTestDatabase();
@@ -45,7 +45,7 @@ describe('classifier CRUD', () => {
       prompt: 'gather signals.',
       agent_id: agent.agentId,
     })) as { watcher_id: string };
-    watcherId = Number(w.watcher_id);
+    watcherId = w.watcher_id;
   });
 
   it('creates → reads back → deletes a classifier', async () => {
@@ -72,7 +72,7 @@ describe('classifier CRUD', () => {
     };
     expect(list.data?.classifiers?.some((c) => c.id === classifierId)).toBe(true);
 
-    await owner.classifiers.delete(classifierId);
+    await owner.classifiers.delete({ classifier_id: classifierId });
   });
 
   it('blocks a member from creating classifiers (admin-only)', async () => {

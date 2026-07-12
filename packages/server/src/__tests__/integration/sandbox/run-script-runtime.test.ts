@@ -74,7 +74,7 @@ describe("sandbox runtime", () => {
 
     const result = await runScript({
       source:
-        'export default async (_ctx, client) => client.org("atlas").entities.get({ id: 123 });',
+        'export default async (_ctx, client) => client.org("atlas").entities.get({ entity_id: 123 });',
       sdk: stubSdk,
       allowCrossOrg: true,
     });

@@ -39,7 +39,7 @@ export interface SchedulesNamespace {
 	create(input: SchedulesCreateInput): Promise<unknown>;
 	update(input: SchedulesUpdateInput): Promise<unknown>;
 	pause(input: { id: string; paused?: boolean }): Promise<unknown>;
-	cancel(id: string): Promise<unknown>;
+	cancel(input: { id: string }): Promise<unknown>;
 }
 
 export function buildSchedulesNamespace(
@@ -54,6 +54,6 @@ export function buildSchedulesNamespace(
 		create: (input) => action("create", input),
 		update: (input) => action("update", input),
 		pause: (input) => action("pause", input),
-		cancel: (id) => action("cancel", { id }),
+		cancel: (input) => action("cancel", input),
 	};
 }

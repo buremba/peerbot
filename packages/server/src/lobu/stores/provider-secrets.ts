@@ -690,7 +690,9 @@ export async function updateInferenceProviderCoreFields(
 
 /**
  * Rotate a provider's api key: re-encrypt into the SAME api_key_ref name (the
- * ref is immutable). Returns false when no live row exists for the slug.
+ * ref is immutable). Returns "not_found" when no live row exists for the slug
+ * and "oauth_provider" for an OAuth-backed row (its `oauth://` ref never reads
+ * the vault, so a write would be silently unused).
  */
 export type RotateInferenceProviderKeyResult =
 	| "rotated"

@@ -127,7 +127,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
         // `execute` dispatches on, and showing it invites the agent to look
         // for a separate MCP/HTTP tool that does not exist.
         'Run any connector operation the same way: `run_sdk` → `client.operations.execute({ connection_id, operation_key, input })`. There is no separate per-connector tool.',
-        'Discover each connection\'s `connection_id`, its `operation_key`s, and input schemas with `manage_operations.list_available({ include_input_schema: true })`.',
+        'Discover `operation_key`s and input schemas with `manage_operations.list_available({ include_input_schema: true })`; get the `connection_id` from `query_sdk` → `client.connections.list()`.',
         'Execution may be policy-gated: a gated op returns `status: "pending_approval"` (a run queued for a human). Surface that to the user rather than treating it as a failure.'
       );
       for (const conn of operationConnections) {

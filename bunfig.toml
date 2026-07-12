@@ -3,4 +3,7 @@ linker = "hoisted"
 
 [test]
 coverageDir = "coverage"
-coverageReporter = ["text", "lcov"]
+# lcov only: the text reporter's table deterministically crashes bun 1.3.5 with
+# "An internal error occurred (WriteFailed)" on large packages (server units) in
+# CI. CLI flags can't override this (bunfig wins over --coverage-reporter).
+coverageReporter = ["lcov"]

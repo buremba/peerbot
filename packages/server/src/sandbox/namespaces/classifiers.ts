@@ -15,7 +15,14 @@ export interface ClassifierCreateInput {
 	name: string;
 	description?: string;
 	attribute_key: string;
-	attribute_values?: Record<string, unknown>;
+	attribute_values?: Record<
+		string,
+		{
+			description: string;
+			examples: string[];
+			embedding?: number[] | null;
+		}
+	>;
 	entity_id?: number;
 	watcher_id: number;
 	min_similarity?: number;

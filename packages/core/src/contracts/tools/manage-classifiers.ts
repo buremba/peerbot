@@ -60,10 +60,27 @@ export const ManageClassifiersSchema = Type.Object({
     })
   ),
   attribute_values: Type.Optional(
-    Type.Any({
-      description:
-        "[create] Attribute values with descriptions, examples, and optional embeddings.",
-    })
+    Type.Record(
+      Type.String({ minLength: 1 }),
+      Type.Object(
+        {
+          description: Type.String(),
+          examples: Type.Array(Type.String()),
+          embedding: Type.Optional(
+            Type.Union([
+              Type.Array(Type.Number(), { minItems: 1 }),
+              Type.Null(),
+            ])
+          ),
+        },
+        { additionalProperties: false }
+      ),
+      {
+        minProperties: 1,
+        description:
+          "[create] Map of attribute values to descriptions, examples, and optional embeddings.",
+      }
+    )
   ),
   min_similarity: Type.Optional(
     Type.Number({

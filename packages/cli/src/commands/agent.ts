@@ -11,11 +11,9 @@ import { resolveApiClient } from "../internal/index.js";
 import { printJson } from "../internal/output.js";
 import { agentCountsText, fetchAgents } from "./_lib/agents-view.js";
 
-export interface AgentCommandOptions {
-  context?: string;
-  org?: string;
-  json?: boolean;
-}
+import type { CloudCommandOptions as AgentCommandOptions } from "./_lib/cloud-options.js";
+
+export type { AgentCommandOptions };
 
 export async function agentListCommand(
   options: AgentCommandOptions = {}

@@ -840,8 +840,8 @@ export async function readEnvironmentSecret(
  * Post-cutover this resolves through the org's `inference_providers` row for
  * the slug (= the module providerId) to its row-unique `<slug>-<id>` vault
  * name — the same name `createInferenceProvider` / `rotateInferenceProviderKey`
- * write. The legacy `provider:<id>:apiKey` rows are converged into these by
- * the backfill task (backfill-inference-providers.ts) and are no longer read.
+ * write. Legacy `provider:<id>:apiKey` rows were converged into these by the
+ * (since-retired) boot-time backfill and are never read.
  */
 export async function readOrgSharedProviderApiKey(
 	providerId: string,

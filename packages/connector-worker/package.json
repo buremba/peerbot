@@ -11,6 +11,10 @@
       "import": "./dist/daemon/index.js",
       "types": "./dist/daemon/index.d.ts"
     },
+    "./env": {
+      "import": "./dist/env.js",
+      "types": "./dist/env.d.ts"
+    },
     "./embeddings": {
       "import": "./dist/embeddings.js",
       "types": "./dist/embeddings.d.ts"
@@ -35,7 +39,9 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "!**/*.js.map",
+    "!**/*.d.ts.map"
   ],
   "scripts": {
     "build": "tsc",

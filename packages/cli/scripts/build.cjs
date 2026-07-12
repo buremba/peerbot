@@ -1,13 +1,21 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-function copyDirIfExists(src, dest) {
+function copyDirIfExists(src, dest, filter) {
   if (!fs.existsSync(src)) return;
   if (fs.existsSync(dest)) {
     fs.rmSync(dest, { recursive: true, force: true });
   }
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.cpSync(src, dest, { recursive: true });
+  fs.cpSync(src, dest, { recursive: true, filter });
+}
+
+// Skip internal test material (a __tests__ dir, or a *.test.* / *.spec.* file).
+// cpSync skips a directory's entire subtree when the filter returns false.
+function excludeTests(srcPath) {
+  const segments = srcPath.split(path.sep);
+  if (segments.includes("__tests__")) return false;
+  return !/\.(test|spec)\.[cm]?[jt]sx?$/.test(path.basename(srcPath));
 }
 
 // Copy templates
@@ -32,8 +40,9 @@ if (fs.existsSync(providersSrc)) {
 
 // Copy bundled connector source files next to the embedded server bundle.
 // The server lists these runtime code-based connectors for picker UIs and
-// compiles them on demand when a workspace installs or runs one.
-copyDirIfExists("../connectors/src", "dist/connectors");
+// compiles them on demand when a workspace installs or runs one. Only the
+// runtime connector source/manifests ship — internal tests are filtered out.
+copyDirIfExists("../connectors/src", "dist/connectors", excludeTests);
 
 // Vendor unified catalog manifests (`dist/catalogs/*.json`) for `lobu run`.
 // Runtime resolves them via LOBU_CATALOG_URIS (default dist/catalogs/). CI

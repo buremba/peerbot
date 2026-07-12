@@ -509,6 +509,23 @@ jobs:
             echo "::endgroup::"
           done
 
+      # `make build-packages` above deliberately skips the CLI, but the
+      # package-content gate must inspect the CLI's real dist/ — that's where
+      # scripts/build.cjs copies connector sources with tests filtered out,
+      # the exact artifact the gate exists to guard. All of the CLI build's
+      # inputs (pgvector-embedded dist+prebuilt, server bundle, catalogs) are
+      # produced by `make build-packages`, so this only adds the CLI itself.
+      - name: Build @lobu/cli (needed for the package-content check)
+        run: cd packages/cli && bun run build
+
+      # Hard gate: published tarballs must not ship internal tests or dangling
+      # sourcemaps. Uses the packages built above and `npm pack --dry-run` to
+      # inspect exactly what `npm publish` would include. Fails hard if a
+      # package declaring `dist` in `files` packs no dist/ entries, so a
+      # missing build step can't turn the gate into a trivial pass.
+      - name: Package-content check (no tests/sourcemaps in tarballs)
+        run: bun run check:packages
+
       # Report-only for now: knip surfaces unused files / exports / deps to
       # establish a baseline. Non-blocking (continue-on-error) until the
       # baseline is triaged — then this can be promoted to a hard gate.

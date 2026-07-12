@@ -30,18 +30,6 @@ packages/**/*.d.ts.map
 !packages/cli/bin/*.js
 # Hand-authored type shims for optional native modules (not build output)
 !packages/**/src/types/*.d.ts
-# Redirect packages publish a hand-written index.js + index.d.ts shim
-# (no build step — they re-export from the renamed package).
-!packages/lobu-sdk/index.js
-!packages/lobu-sdk/index.d.ts
-!packages/lobu-connectors/index.js
-!packages/lobu-connectors/index.d.ts
-!packages/lobu-worker/index.js
-!packages/lobu-worker/index.d.ts
-!packages/lobu-embeddings/index.js
-!packages/lobu-embeddings/index.d.ts
-!packages/lobu-openclaw/index.js
-!packages/lobu-openclaw/index.d.ts
 tsconfig.tsbuildinfo
 **/tsconfig.tsbuildinfo
 
@@ -90,6 +78,11 @@ packages/*/~/
 # Cleaned up on success; can leak when a run or test is killed.
 .connector-child-*.mjs
 **/.connector-child-*.mjs
+
+# Connector compile/metadata temp dirs (.connector-meta-<rand>/), created under
+# process.cwd() by compiler-core's mkdtemp. Removed in a finally block on success
+# and handled errors; can leak when a run or test is killed mid-extraction.
+.connector-meta-*/
 .claude/scheduled_tasks.lock
 
 # Embedded PGlite dev data (make dev without DATABASE_URL)

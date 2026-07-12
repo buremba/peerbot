@@ -5,7 +5,7 @@
 
 import { getDb } from '../../../db/client';
 import { recordToolConfigChange } from '../helpers/config-audit';
-import { nextRunAt, validateSchedule } from '../../../utils/cron';
+import { nextRunAt, validateSchedule, validateTimezone } from '../../../utils/cron';
 import { resolveUsernames } from '../../../utils/resolve-usernames';
 import { getNextNumericId } from '../helpers/db-helpers';
 import {
@@ -50,7 +50,8 @@ export async function handleCreateVersion(
   // identify the group and to apply the per-assignment writes (sources,
   // schedule, scheduler_client_id) to that specific row.
   const watcherRows = await sql`
-    SELECT i.id, i.version, i.current_version_id, i.watcher_group_id, i.sources, i.organization_id
+    SELECT i.id, i.version, i.current_version_id, i.watcher_group_id, i.sources, i.organization_id,
+           i.schedule, i.timezone
     FROM watchers i WHERE i.id = ${args.watcher_id}
   `;
   if (watcherRows.length === 0) {
@@ -132,6 +133,12 @@ export async function handleCreateVersion(
       throw new Error(scheduleError);
     }
   }
+  if (args.timezone) {
+    const tzError = validateTimezone(args.timezone);
+    if (tzError) {
+      throw new Error(tzError);
+    }
+  }
 
   const createdBy = ctx.userId ?? 'system';
   let versionId = 0;
@@ -186,8 +193,22 @@ export async function handleCreateVersion(
     const setAsCurrent = args.set_as_current !== false;
     if (setAsCurrent) {
       const shouldUpdateSchedule = args.schedule !== undefined;
+      const shouldUpdateTimezone = args.timezone !== undefined;
       const scheduleValue = shouldUpdateSchedule ? args.schedule || null : null;
-      const nextRunAtVal = scheduleValue ? nextRunAt(scheduleValue) : null;
+      const timezoneValue = shouldUpdateTimezone ? (args.timezone ?? null) : null;
+      // Recompute next_run_at when the cadence OR its zone changes, mixing
+      // incoming args with the stored row for whichever side was omitted.
+      const touchesCadence = shouldUpdateSchedule || shouldUpdateTimezone;
+      const effectiveSchedule = shouldUpdateSchedule
+        ? scheduleValue
+        : ((watcherRows[0].schedule as string | null) ?? null);
+      const effectiveTimezone = shouldUpdateTimezone
+        ? timezoneValue
+        : ((watcherRows[0].timezone as string | null) ?? null);
+      const nextRunAtVal =
+        touchesCadence && effectiveSchedule
+          ? nextRunAt(effectiveSchedule, new Date(), effectiveTimezone)
+          : null;
 
       // Group-shared cascade
       await tx`
@@ -207,7 +228,8 @@ export async function handleCreateVersion(
           sources = ${tx.json(sources)},
           scheduler_client_id = CASE WHEN ${args.scheduler_client_id !== undefined} THEN ${args.scheduler_client_id ?? null} ELSE scheduler_client_id END,
           schedule = CASE WHEN ${shouldUpdateSchedule} THEN ${scheduleValue} ELSE schedule END,
-          next_run_at = CASE WHEN ${shouldUpdateSchedule} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END
+          timezone = CASE WHEN ${shouldUpdateTimezone} THEN ${timezoneValue} ELSE timezone END,
+          next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END
         WHERE id = ${args.watcher_id}
       `;
     }
@@ -234,6 +256,8 @@ export async function handleCreateVersion(
         classifiers: classifiers ?? null,
         reactions_guidance: args.reactions_guidance ?? (prev.reactions_guidance as string) ?? null,
         change_notes: args.change_notes ?? null,
+        ...(args.schedule !== undefined ? { schedule: args.schedule ?? null } : {}),
+        ...(args.timezone !== undefined ? { timezone: args.timezone ?? null } : {}),
       },
       changedFields: [
         'version',
@@ -244,6 +268,7 @@ export async function handleCreateVersion(
         ...(args.classifiers !== undefined ? ['classifiers'] : []),
         ...(args.reactions_guidance !== undefined ? ['reactions_guidance'] : []),
         ...(args.schedule !== undefined ? ['schedule'] : []),
+        ...(args.timezone !== undefined ? ['timezone'] : []),
       ],
     });
   }

@@ -217,6 +217,12 @@ export const ManageWatchersSchema = Type.Object({
         '[create/update/create_version] Cron expression for watcher schedule (e.g. "0 * * * *" for hourly, "0 9 * * *" for daily at 9am). Null clears the schedule (an unscheduled/manual watcher).',
     })
   ),
+  timezone: Type.Optional(
+    Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()], {
+      description:
+        "[create/update/create_version] IANA timezone the schedule is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Null clears it (server time / UTC).",
+    })
+  ),
   agent_id: Type.Optional(
     Type.String({
       description: "[create/update] Agent ID that owns/executes this watcher.",

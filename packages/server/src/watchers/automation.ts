@@ -284,16 +284,17 @@ export async function advanceWatcherSchedule(
 	if (watcherId === undefined || watcherId === null) return;
 	try {
 		const rows = await sql`
-      SELECT schedule
+      SELECT schedule, timezone
       FROM watchers
       WHERE id = ${watcherId}
       LIMIT 1
     `;
 		const schedule = (rows[0]?.schedule as string | null) ?? null;
+		const timezone = (rows[0]?.timezone as string | null) ?? null;
 		if (!schedule) return;
 		await sql`
       UPDATE watchers
-      SET next_run_at = ${nextRunAt(schedule, new Date())}::timestamptz,
+      SET next_run_at = ${nextRunAt(schedule, new Date(), timezone)}::timestamptz,
           updated_at = NOW()
       WHERE id = ${watcherId}
     `;

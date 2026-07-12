@@ -6,7 +6,7 @@
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
-import { nextRunAt, validateSchedule } from '../../../utils/cron';
+import { nextRunAt, validateSchedule, validateTimezone } from '../../../utils/cron';
 import {
   recordChangeEvent,
   recordLifecycleEvent,
@@ -117,6 +117,12 @@ export async function handleCreate(
       throw new ToolUserError(scheduleError);
     }
   }
+  if (args.timezone) {
+    const tzError = validateTimezone(args.timezone);
+    if (tzError) {
+      throw new ToolUserError(tzError);
+    }
+  }
 
   interface EntityRow {
     entity_type: string;
@@ -186,13 +192,15 @@ export async function handleCreate(
   await sql.begin(async (tx) => {
     const entityIdsArray = entityId ? [entityId] : [];
 
-    const nextRunAtVal = args.schedule ? nextRunAt(args.schedule) : null;
+    const nextRunAtVal = args.schedule
+      ? nextRunAt(args.schedule, new Date(), args.timezone)
+      : null;
 
     // 1. Create watcher row
     await tx`
       INSERT INTO watchers (
         id, name, slug, organization_id, entity_ids,
-        schedule, next_run_at, agent_id, scheduler_client_id, model_config, sources, version,
+        schedule, timezone, next_run_at, agent_id, scheduler_client_id, model_config, sources, version,
         current_version_id, tags, status, created_by, created_at, updated_at,
         watcher_group_id,
         device_worker_id, agent_kind,
@@ -201,7 +209,7 @@ export async function handleCreate(
       ) VALUES (
         ${watcherId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
-        ${args.schedule ?? null}, ${nextRunAtVal},
+        ${args.schedule ?? null}, ${args.timezone ?? null}, ${nextRunAtVal},
         ${args.agent_id ?? null}, ${args.scheduler_client_id ?? null},
         ${sql.json(args.model_config || {})}, ${sql.json(sources)},
         1, NULL, ${toTextArrayParam(args.tags || [])}::text[],
@@ -290,6 +298,7 @@ export async function handleCreate(
         current_version_id: versionId,
         entity_ids: entityId ? [entityId] : [],
         schedule: args.schedule ?? null,
+        timezone: args.timezone ?? null,
         agent_id: args.agent_id ?? null,
         agent_kind: args.agent_kind ?? null,
         scheduler_client_id: args.scheduler_client_id ?? null,
@@ -349,6 +358,12 @@ export async function handleUpdate(
       return { error: scheduleError } as any;
     }
   }
+  if (args.timezone) {
+    const tzError = validateTimezone(args.timezone);
+    if (tzError) {
+      return { error: tzError } as any;
+    }
+  }
 
   // Match the invariant from handleCreate: a watcher with no agent_id is
   // a zombie the scheduler will never run (automation joins on
@@ -375,6 +390,7 @@ export async function handleUpdate(
   if (args.model_config !== undefined) updatedFields.push('model_config');
   if (args.execution_config !== undefined) updatedFields.push('execution_config');
   if (args.schedule !== undefined) updatedFields.push('schedule');
+  if (args.timezone !== undefined) updatedFields.push('timezone');
   if (args.agent_id !== undefined) updatedFields.push('agent_id');
   if (args.scheduler_client_id !== undefined) updatedFields.push('scheduler_client_id');
   if (args.tags !== undefined) updatedFields.push('tags');
@@ -393,7 +409,23 @@ export async function handleUpdate(
   }
 
   const scheduleValue = args.schedule || null;
-  const nextRunAtVal = scheduleValue ? nextRunAt(scheduleValue) : null;
+  // Recompute next_run_at when the cadence OR its zone changes; the effective
+  // pair mixes the incoming args with the stored row for whichever side was
+  // omitted, so a timezone-only update re-anchors the pending firing.
+  const touchesCadence = args.schedule !== undefined || args.timezone !== undefined;
+  let effectiveSchedule = args.schedule !== undefined ? scheduleValue : undefined;
+  let effectiveTimezone = args.timezone !== undefined ? (args.timezone ?? null) : undefined;
+  if (touchesCadence && (effectiveSchedule === undefined || effectiveTimezone === undefined)) {
+    const current = (await sql`
+      SELECT schedule, timezone FROM watchers WHERE id = ${args.watcher_id} LIMIT 1
+    `) as unknown as Array<{ schedule: string | null; timezone: string | null }>;
+    effectiveSchedule = effectiveSchedule === undefined ? (current[0]?.schedule ?? null) : effectiveSchedule;
+    effectiveTimezone = effectiveTimezone === undefined ? (current[0]?.timezone ?? null) : effectiveTimezone;
+  }
+  const nextRunAtVal =
+    touchesCadence && effectiveSchedule
+      ? nextRunAt(effectiveSchedule, new Date(), effectiveTimezone)
+      : null;
 
   const updatedRows = await sql`
     UPDATE watchers SET
@@ -401,7 +433,8 @@ export async function handleUpdate(
       model_config = CASE WHEN ${args.model_config !== undefined} THEN ${sql.json(args.model_config ?? {})} ELSE model_config END,
       execution_config = CASE WHEN ${args.execution_config !== undefined} THEN ${toJsonParam(sql, args.execution_config)} ELSE execution_config END,
       schedule = CASE WHEN ${args.schedule !== undefined} THEN ${scheduleValue} ELSE schedule END,
-      next_run_at = CASE WHEN ${args.schedule !== undefined} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
+      timezone = CASE WHEN ${args.timezone !== undefined} THEN ${args.timezone ?? null} ELSE timezone END,
+      next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
       agent_id = CASE WHEN ${args.agent_id !== undefined} THEN ${args.agent_id ?? null} ELSE agent_id END,
       scheduler_client_id = CASE WHEN ${args.scheduler_client_id !== undefined} THEN ${args.scheduler_client_id ?? null} ELSE scheduler_client_id END,
       tags = CASE WHEN ${args.tags !== undefined} THEN ${toTextArrayParam(args.tags || [])}::text[] ELSE tags END,

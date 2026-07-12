@@ -42,7 +42,7 @@ import { readVirtualFeed } from '../../lib/connector-pushdown';
 import { readChannelTranscript } from '../../gateway/connections/channel-transcript';
 import type { Env } from '../../index';
 import { getAuthProfileById } from '../../utils/auth-profiles';
-import { nextRunAt, validateSchedule } from '../../utils/cron';
+import { nextRunAt, validateSchedule, validateTimezone } from '../../utils/cron';
 import { getWorkspaceRole } from '../../utils/organization-access';
 import { recordChangeEvent } from '../../utils/insert-event';
 import { recordToolConfigChange } from './helpers/config-audit';
@@ -457,11 +457,21 @@ async function handleCreateFeed(
       return { error: scheduleError };
     }
   }
+  // Virtual feeds never sync, so a timezone is meaningless there — drop it.
+  const timezone = isVirtual ? null : (args.timezone ?? null);
+  if (timezone) {
+    const tzError = validateTimezone(timezone);
+    if (tzError) {
+      return { error: tzError };
+    }
+  }
 
   // Don't schedule a first run for a feed whose connection is still pending auth,
   // or for a virtual feed (never synced — schedule is NULL).
   const nextRunAtVal =
-    schedule && feedInitialStatus === 'active' ? nextRunAt(schedule) : null;
+    schedule && feedInitialStatus === 'active'
+      ? nextRunAt(schedule, new Date(), timezone)
+      : null;
   // Reject cross-org entity_ids: a feed pointing at another org's entity links
   // synced events to a non-existent in-org entity (silent data-correctness bug).
   try {
@@ -483,12 +493,12 @@ async function handleCreateFeed(
   const inserted = await sql`
     INSERT INTO feeds (
       organization_id, connection_id, feed_key, display_name, status,
-      entity_ids, config, schedule, next_run_at, kind, virtual
+      entity_ids, config, schedule, timezone, next_run_at, kind, virtual
     ) VALUES (
       ${organizationId}, ${args.connection_id}, ${args.feed_key}, ${displayName}, ${feedInitialStatus},
       ${entityIdsValue}::bigint[],
       ${args.config ? sql.json(args.config) : null},
-      ${schedule}, ${nextRunAtVal},
+      ${schedule}, ${timezone}, ${nextRunAtVal},
       ${isVirtual ? 'virtual' : 'collected'}, ${isVirtual}
     )
     RETURNING *
@@ -525,7 +535,7 @@ async function handleUpdateFeed(
   const { organizationId } = ctx;
 
   const existing = await sql`
-    SELECT f.id, c.auth_profile_id
+    SELECT f.id, f.schedule, f.timezone, c.auth_profile_id
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     WHERE f.id = ${args.feed_id} AND f.organization_id = ${organizationId}
@@ -555,6 +565,24 @@ async function handleUpdateFeed(
       return { error: scheduleError };
     }
   }
+  if (args.timezone) {
+    const tzError = validateTimezone(args.timezone);
+    if (tzError) {
+      return { error: tzError };
+    }
+  }
+  // Recompute next_run_at when the cadence OR its zone changes; the effective
+  // pair mixes the incoming args with the stored row for whichever side was
+  // omitted, so a timezone-only update re-anchors the pending sync.
+  const hasTimezoneArg = args.timezone !== undefined;
+  const touchesCadence = args.schedule !== undefined || hasTimezoneArg;
+  const currentFeed = existing[0] as { schedule: string | null; timezone: string | null };
+  const effectiveSchedule = args.schedule ?? currentFeed.schedule;
+  const effectiveTimezone = hasTimezoneArg ? (args.timezone ?? null) : currentFeed.timezone;
+  const nextRunAtVal =
+    touchesCadence && effectiveSchedule
+      ? nextRunAt(effectiveSchedule, new Date(), effectiveTimezone)
+      : null;
 
   // `repair_agent_id` is tri-state: undefined = leave alone, null = clear, string = set.
   // Use Object.hasOwn so an explicit null overwrites instead of being skipped.
@@ -576,7 +604,8 @@ async function handleUpdateFeed(
             : sql`CASE WHEN ${args.config ? sql.json(args.config) : null}::jsonb IS NOT NULL THEN COALESCE(config, '{}'::jsonb) || ${args.config ? sql.json(args.config) : null}::jsonb ELSE config END`
         },
         schedule = COALESCE(${args.schedule ?? null}::text, schedule),
-        next_run_at = CASE WHEN ${args.schedule ?? null}::text IS NOT NULL THEN ${args.schedule ? nextRunAt(args.schedule) : null}::timestamptz ELSE next_run_at END,
+        timezone = CASE WHEN ${hasTimezoneArg} THEN ${args.timezone ?? null} ELSE timezone END,
+        next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
         repair_agent_id = CASE WHEN ${hasRepairAgentArg} THEN ${repairAgentValue}::text ELSE repair_agent_id END,
         updated_at = NOW()
     WHERE id = ${args.feed_id} AND organization_id = ${organizationId}
@@ -599,6 +628,7 @@ async function handleUpdateFeed(
     ...(args.entity_ids !== undefined ? ['entity_ids'] : []),
     ...(args.config !== undefined ? ['config'] : []),
     ...(args.schedule !== undefined ? ['schedule'] : []),
+    ...(hasTimezoneArg ? ['timezone'] : []),
     ...(hasRepairAgentArg ? ['repair_agent_id'] : []),
   ];
   recordToolConfigChange(ctx, {

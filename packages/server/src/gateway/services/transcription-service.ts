@@ -3,12 +3,11 @@
  *
  * Supports speech-to-text and text-to-speech via auth profiles (installed providers):
  * - OpenAI (chatgpt auth profile) - Whisper for STT, TTS API for speech
- * - Google Gemini (gemini auth profile) - Audio input/output
- * - ElevenLabs (elevenlabs auth profile) - STT and high-quality TTS
  *
- * STT selection: built-ins (chatgpt/openai, gemini, elevenlabs) plus optional
- * config-driven STT providers declared in system-skills provider config.
- * TTS selection stays built-in only (openai → gemini → elevenlabs).
+ * STT selection: the OpenAI built-in plus optional config-driven
+ * OpenAI-compatible STT providers declared in system-skills provider config
+ * (Groq etc. — any provider with an OpenAI-shaped /audio/transcriptions).
+ * TTS selection stays built-in only (OpenAI).
  */
 
 import type { ProviderConfigEntry } from "@lobu/core";
@@ -37,7 +36,7 @@ const PROVIDER_FETCH_TIMEOUT_MS = Number(
   process.env.TRANSCRIPTION_FETCH_TIMEOUT_MS ?? 120_000
 );
 
-type TranscriptionProvider = "openai" | "gemini" | "elevenlabs";
+type TranscriptionProvider = "openai";
 
 interface TranscriptionConfig {
   profileProviderId: string;
@@ -96,16 +95,6 @@ const TTS_CAPABLE_PROVIDERS: {
     profileProviderId: "chatgpt",
     ttsProvider: "openai",
     displayName: "OpenAI",
-  },
-  {
-    profileProviderId: "gemini",
-    ttsProvider: "gemini",
-    displayName: "Google Gemini",
-  },
-  {
-    profileProviderId: "elevenlabs",
-    ttsProvider: "elevenlabs",
-    displayName: "ElevenLabs",
   },
 ];
 
@@ -202,7 +191,7 @@ export class TranscriptionService {
 
   /**
    * Get transcription config for an agent by checking installed auth profiles.
-   * First TTS-capable provider with a valid profile wins (openai → gemini → elevenlabs).
+   * First TTS-capable provider with a valid profile wins (OpenAI only).
    */
   async getConfig(agentId: string): Promise<TranscriptionConfig | null> {
     const configs = await this.getTranscriptionConfigs(agentId);
@@ -471,10 +460,6 @@ export class TranscriptionService {
           mimeType,
           config.openaiCompat
         );
-      case "gemini":
-        return this.transcribeWithGemini(buffer, config.apiKey, mimeType);
-      case "elevenlabs":
-        return this.transcribeWithElevenLabs(buffer, config.apiKey, mimeType);
       default:
         throw new Error(`Unknown provider: ${config.provider}`);
     }
@@ -514,81 +499,6 @@ export class TranscriptionService {
     return data.text;
   }
 
-  private async transcribeWithGemini(
-    buffer: Buffer,
-    apiKey: string,
-    mimeType: string
-  ): Promise<string> {
-    // Gemini uses inline audio data with base64 encoding
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: "Transcribe this audio exactly as spoken. Return only the transcription text, nothing else:",
-                },
-                {
-                  inline_data: {
-                    mime_type: mimeType,
-                    data: buffer.toString("base64"),
-                  },
-                },
-              ],
-            },
-          ],
-        }),
-        signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
-      }
-    );
-
-    if (!resp.ok) {
-      const error = await resp.text();
-      throw new Error(`Gemini API error: ${resp.status} - ${error}`);
-    }
-
-    const data = (await resp.json()) as {
-      candidates: Array<{
-        content: { parts: Array<{ text: string }> };
-      }>;
-    };
-    return data.candidates[0]?.content?.parts[0]?.text || "";
-  }
-
-  private async transcribeWithElevenLabs(
-    buffer: Buffer,
-    apiKey: string,
-    mimeType: string
-  ): Promise<string> {
-    // ElevenLabs speech-to-text API
-    const formData = new FormData();
-    const ext = this.getExtensionFromMime(mimeType);
-    formData.append(
-      "audio",
-      new Blob([buffer], { type: mimeType }),
-      `audio.${ext}`
-    );
-
-    const resp = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
-      method: "POST",
-      headers: { "xi-api-key": apiKey },
-      body: formData,
-      signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
-    });
-
-    if (!resp.ok) {
-      const error = await resp.text();
-      throw new Error(`ElevenLabs API error: ${resp.status} - ${error}`);
-    }
-
-    const data = (await resp.json()) as { text: string };
-    return data.text;
-  }
-
   // ==========================================================================
   // Provider-specific implementations - Synthesis (TTS)
   // ==========================================================================
@@ -601,10 +511,6 @@ export class TranscriptionService {
     switch (config.provider) {
       case "openai":
         return this.synthesizeWithOpenAI(text, config, options);
-      case "gemini":
-        return this.synthesizeWithGemini(text, config.apiKey);
-      case "elevenlabs":
-        return this.synthesizeWithElevenLabs(text, config.apiKey, options);
       default:
         throw new Error(`Unknown provider: ${config.provider}`);
     }
@@ -647,107 +553,6 @@ export class TranscriptionService {
     return {
       audioBuffer: Buffer.from(arrayBuffer),
       mimeType: "audio/opus",
-    };
-  }
-
-  private async synthesizeWithGemini(
-    text: string,
-    apiKey: string
-  ): Promise<{ audioBuffer: Buffer; mimeType: string }> {
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [{ text: `Please speak this text aloud: "${text}"` }],
-            },
-          ],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: "Aoede", // Default Gemini voice
-                },
-              },
-            },
-          },
-        }),
-        signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
-      }
-    );
-
-    if (!resp.ok) {
-      const error = await resp.text();
-      throw new Error(`Gemini TTS API error: ${resp.status} - ${error}`);
-    }
-
-    const data = (await resp.json()) as {
-      candidates: Array<{
-        content: {
-          parts: Array<{
-            inlineData?: { mimeType: string; data: string };
-          }>;
-        };
-      }>;
-    };
-
-    const audioPart = data.candidates[0]?.content?.parts?.find((p) =>
-      p.inlineData?.mimeType?.startsWith("audio/")
-    );
-
-    if (!audioPart?.inlineData) {
-      throw new Error("Gemini did not return audio data");
-    }
-
-    return {
-      audioBuffer: Buffer.from(audioPart.inlineData.data, "base64"),
-      mimeType: audioPart.inlineData.mimeType,
-    };
-  }
-
-  private async synthesizeWithElevenLabs(
-    text: string,
-    apiKey: string,
-    options: VoiceOptions
-  ): Promise<{ audioBuffer: Buffer; mimeType: string }> {
-    // ElevenLabs TTS API
-    // Default voice: Rachel (21m00Tcm4TlvDq8ikWAM)
-    const voiceId = options.voice || "21m00Tcm4TlvDq8ikWAM";
-
-    const resp = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-      {
-        method: "POST",
-        headers: {
-          "xi-api-key": apiKey,
-          "Content-Type": "application/json",
-          Accept: "audio/mpeg",
-        },
-        body: JSON.stringify({
-          text,
-          model_id: "eleven_monolingual_v1",
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.5,
-          },
-        }),
-        signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
-      }
-    );
-
-    if (!resp.ok) {
-      const error = await resp.text();
-      throw new Error(`ElevenLabs TTS API error: ${resp.status} - ${error}`);
-    }
-
-    const arrayBuffer = await resp.arrayBuffer();
-    return {
-      audioBuffer: Buffer.from(arrayBuffer),
-      mimeType: "audio/mpeg",
     };
   }
 

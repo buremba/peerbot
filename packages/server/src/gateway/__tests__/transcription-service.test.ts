@@ -6,26 +6,46 @@ describe("TranscriptionService provider fallback", () => {
     mock.restore();
   });
 
-  test("falls back to next configured provider when first fails", async () => {
+  test("falls back to a config-driven STT provider when the built-in fails", async () => {
     const authProfilesManager = {
       getBestProfile: mock(async (_agentId: string, providerId: string) => {
         if (providerId === "chatgpt") {
           return { credential: "openai-key" };
         }
-        if (providerId === "gemini") {
-          return { credential: "gemini-key" };
+        if (providerId === "groq") {
+          return { credential: "groq-key" };
         }
         return null;
       }),
     } as any;
 
-    const service = new TranscriptionService(authProfilesManager);
+    const providerConfigSource = mock(async () => ({
+      groq: {
+        displayName: "Groq",
+        iconUrl: "https://example.com/icon.png",
+        envVarName: "GROQ_API_KEY",
+        upstreamBaseUrl: "https://api.groq.com/openai/v1",
+        apiKeyInstructions: "x",
+        apiKeyPlaceholder: "x",
+        sdkCompat: "openai",
+        stt: {
+          enabled: true,
+          transcriptionPath: "/audio/transcriptions",
+          model: "whisper-large-v3-turbo",
+        },
+      },
+    }));
+
+    const service = new TranscriptionService(
+      authProfilesManager,
+      providerConfigSource
+    );
     const transcribeWithProvider = mock(
       async (_buffer: Buffer, config: any) => {
-        if (config.provider === "openai") {
+        if (config.profileProviderId === "chatgpt") {
           throw new Error("openai unauthorized");
         }
-        return "hello from gemini";
+        return "hello from groq";
       }
     );
     (service as any).transcribeWithProvider = transcribeWithProvider;
@@ -39,8 +59,8 @@ describe("TranscriptionService provider fallback", () => {
     expect(transcribeWithProvider).toHaveBeenCalledTimes(2);
     expect("text" in result).toBe(true);
     if ("text" in result) {
-      expect(result.text).toBe("hello from gemini");
-      expect(result.provider).toBe("gemini");
+      expect(result.text).toBe("hello from groq");
+      expect(result.provider).toBe("openai");
     }
   });
 

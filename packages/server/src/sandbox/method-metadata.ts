@@ -550,7 +550,11 @@ export default async (_ctx, client) => {
 		access: "external",
 	},
 	"feeds.list": { summary: "List data-sync feeds.", access: "read" },
-	"feeds.get": { summary: "Get a feed by id.", access: "read" },
+	"feeds.get": {
+		summary: "Get a feed by id.",
+		access: "read",
+		example: "const feed = await client.feeds.get({ feed_id: 42 });",
+	},
 	"feeds.readMany": {
 		summary:
 			"Read several feeds in parallel with per-feed successes/failures. Useful for live virtual feeds suggested by query_sql coverage hints.",

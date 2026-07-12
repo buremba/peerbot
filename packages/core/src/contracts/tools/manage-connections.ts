@@ -149,10 +149,16 @@ export const CreateAction = Type.Object({
 export const UpdateAction = Type.Object({
   action: Type.Literal("update", {
     description:
-      "Patch a connection's settings, status, slug, or device binding.",
+      "Patch a connection's settings, status, slug, device binding, or (chat connections) fallback agent.",
   }),
   connection_id: Type.Number({ description: "Connection ID" }),
   display_name: Type.Optional(Type.String()),
+  agent_id: Type.Optional(
+    Type.Union([Type.String(), Type.Null()], {
+      description:
+        "Fallback agent for a chat connection (used only when no channel binding matches; agent_channel_bindings remain authoritative). Null clears the fallback.",
+    })
+  ),
   slug: Type.Optional(
     Type.String({
       description:

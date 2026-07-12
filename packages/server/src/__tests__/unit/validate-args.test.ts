@@ -68,12 +68,70 @@ describe("validateToolArgs coercion", () => {
     expect(() => validateToolArgs("t", optSchema, { note: null })).toThrow(ToolUserError);
   });
 
-  it("rejects unknown properties only under additionalProperties:false", () => {
+  it("rejects unknown top-level keys, naming them and the valid set", () => {
+    // TypeBox Type.Object accepts extra keys, so an unknown argument used to
+    // be silently dropped — the call "succeeded" while ignoring the caller's
+    // intent (e.g. agent_id passed to an action that lacked it).
     const strict = Type.Object({ a: Type.String() }, { additionalProperties: false });
     const open = Type.Object({ a: Type.String() });
     expect(() => validateToolArgs("t", strict, { a: "x", extra: 1 })).toThrow(ToolUserError);
-    const out = validateToolArgs("t", open, { a: "x", extra: 1 }) as Record<string, unknown>;
+    let caught: unknown;
+    try {
+      validateToolArgs("t", open, { a: "x", extra: 1 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolUserError);
+    const msg = (caught as ToolUserError).message;
+    expect(msg).toMatch(/unknown argument\(s\): extra/);
+    expect(msg).toMatch(/valid arguments are: a/);
+  });
+
+  it("rejects Object.prototype-named keys (constructor, toString) — no prototype-chain false accept", () => {
+    // `key in properties` would walk Object.prototype and wrongly accept these
+    // as "known" keys; Object.hasOwn does not.
+    const s = Type.Object({ a: Type.String() });
+    for (const bad of ["constructor", "toString", "hasOwnProperty"]) {
+      let caught: unknown;
+      try {
+        validateToolArgs("t", s, { a: "x", [bad]: 1 });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(ToolUserError);
+      expect((caught as ToolUserError).message).toMatch(
+        new RegExp(`unknown argument\\(s\\): ${bad}`)
+      );
+    }
+  });
+
+  it("rejects a JSON __proto__ key as unknown and does not pollute the prototype", () => {
+    // JSON.parse produces `__proto__` as an OWN enumerable property (unlike a
+    // JS object literal, which sets the prototype). normalizeArgs must copy it
+    // as a real own key (via defineProperty), not through `obj[k] =` which
+    // would invoke the __proto__ setter and mutate the prototype — hiding it
+    // from Object.keys so rejectUnknownKeys can't reject it.
+    const s = Type.Object({ a: Type.String() });
+    const payload = JSON.parse('{"a":"x","__proto__":{"polluted":"yes"}}');
+    let caught: unknown;
+    try {
+      validateToolArgs("t", s, payload);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolUserError);
+    expect((caught as ToolUserError).message).toMatch(/unknown argument\(s\): __proto__/);
+    // No prototype pollution occurred.
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it("still passes extra keys through passthrough schemas (additionalProperties / Record)", () => {
+    const passthrough = Type.Object({ a: Type.String() }, { additionalProperties: true });
+    const out = validateToolArgs("t", passthrough, { a: "x", extra: 1 }) as Record<string, unknown>;
     expect(out.extra).toBe(1);
+    const record = Type.Record(Type.String(), Type.Number());
+    const rec = validateToolArgs("t", record, { anything: 2 }) as Record<string, unknown>;
+    expect(rec.anything).toBe(2);
   });
 
   it("accepts a valid uuid format and rejects a bad one", () => {
@@ -100,13 +158,31 @@ describe("validateToolArgs union variant dispatch", () => {
     expect(out.id).toBe(5);
   });
 
-  it("tolerates fields from other variants (flattened advertised schema)", () => {
-    const out = validateToolArgs("t", union, {
-      action: "create",
-      name: "x",
-      id: 99,
-    }) as Record<string, unknown>;
-    expect(out.name).toBe("x");
+  it("rejects a field from ANOTHER variant, naming the matched action's valid args", () => {
+    // `id` belongs to the delete variant; passing it to create used to be
+    // silently dropped. The unknown-key check runs against the MATCHED
+    // variant's properties (post-dispatch), so the error names the action
+    // and its actual argument set.
+    let caught: unknown;
+    try {
+      validateToolArgs("t", union, { action: "create", name: "x", id: 99 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolUserError);
+    const msg = (caught as ToolUserError).message;
+    expect(msg).toMatch(/unknown argument\(s\): id/);
+    expect(msg).toMatch(/action 'create'/);
+    expect(msg).toMatch(/name/);
+  });
+
+  it("accepts every declared arg of the matched variant, action key included (no flattened-union false positive)", () => {
+    const out = validateToolArgs("t", union, { action: "delete", id: 7 }) as Record<
+      string,
+      unknown
+    >;
+    expect(out.action).toBe("delete");
+    expect(out.id).toBe(7);
   });
 
   it("reports the variant's missing field, not a union blob", () => {

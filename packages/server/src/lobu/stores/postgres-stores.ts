@@ -8,7 +8,9 @@ import { createLogger } from "@lobu/core";
 import { getDb, tsTime, tsTimeOrNull } from "../../db/client";
 import { recordLifecycleEvent } from "../../utils/insert-event";
 import {
+	chatTenantAdvisoryLockKey,
 	connectionsRowToStored,
+	managedTenantAdvisoryLockKey,
 	runtimeConnectionIdToSlug,
 	softDeleteChatConnectionProjection,
 	upsertChatConnectionProjection,
@@ -392,17 +394,65 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 				() =>
 					sql.begin(async (tx: typeof sql) => {
 						const configToPersist = { ...connection.config };
+						// Universal lock order for chat writes (see
+						// chatTenantAdvisoryLockKey): org-tenant advisory →
+						// managed-workspace advisory → only then any `connections` row
+						// lock (the FOR UPDATE below, and every row lock in the
+						// projection). The managed lock is taken UNCONDITIONALLY rather
+						// than after peeking at credential_mode — the peek would be a
+						// TOCTOU (a concurrent managed install can flip the mode between
+						// peek and FOR UPDATE, reopening the advisory↔row cycle);
+						// over-acquiring on a BYO write merely serializes it against
+						// managed writes on the same tenant. Both locks are reentrant, so
+						// the projection re-taking them inside this txn is a no-op.
+						const tenantLockKey = chatTenantAdvisoryLockKey(connection, orgId);
+						if (tenantLockKey) {
+							await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+								tenantLockKey,
+							]);
+						}
+						const managedLockKey = managedTenantAdvisoryLockKey(connection);
+						if (managedLockKey) {
+							await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+								managedLockKey,
+							]);
+						}
+						// Scope to the LIVE row only, and lock it. Slug uniqueness holds
+						// solely for live rows (the projection's ON CONFLICT targets the
+						// `WHERE deleted_at IS NULL` partial index), so a same-slug
+						// tombstone — e.g. a deleted managed install whose slackinst-* id
+						// was later recreated as BYO — must NOT be read here. Without the
+						// filter, LIMIT 1 could pick the tombstone and its credential_mode
+						// would reclassify the live row (managed↔byo). FOR UPDATE ties the
+						// read to the same live row the upsert below writes.
 						const existingRows = await tx`
-          SELECT config
+          SELECT config, credential_mode
           FROM connections
           WHERE slug = ${slug} AND organization_id = ${orgId}
+            AND deleted_at IS NULL
           LIMIT 1
+          FOR UPDATE
         `;
 						const existingConfig =
 							existingRows[0] &&
 							typeof existingRows[0].config === "object" &&
 							existingRows[0].config
 								? (existingRows[0].config as Record<string, any>)
+								: null;
+
+						// The generic store has no notion of managed vs BYO — it always
+						// carried "byo" here, which reclassified an OAuth-MANAGED chat
+						// connection to BYO on any store-driven edit (e.g. setting a
+						// fallback agent_id via manage_connections update). A reclassified
+						// managed row skips revokeManagedConnection on delete (leaking the
+						// install's credentials) and loses managed-credential edit
+						// protection. Preserve the existing mode; only a brand-new row
+						// defaults to byo (managed rows are created by the Slack install
+						// path, which passes "managed" explicitly).
+						const existingCredentialMode =
+							existingRows[0]?.credential_mode === "managed" ||
+							existingRows[0]?.credential_mode === "byo"
+								? (existingRows[0].credential_mode as "managed" | "byo")
 								: null;
 
 						// ChatInstanceManager normalizes secret fields into `secret://` refs
@@ -431,7 +481,7 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 							(v) => sql.json(v),
 							{ ...connection, config: configToPersist },
 							orgId,
-							"byo",
+							existingCredentialMode ?? "byo",
 						);
 					}),
 			);

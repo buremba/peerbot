@@ -601,6 +601,15 @@ export function getChatInstanceManager(): any {
 	return chatInstanceManager;
 }
 
+/**
+ * Test-only seam: inject a ChatInstanceManager without full gateway startup
+ * (the integration suite runs `isolate:false`, where vi.mock on shared
+ * singletons is unreliable — see app-installation-credential.test.ts).
+ */
+export function __setChatInstanceManagerForTests(manager: unknown): void {
+	chatInstanceManager = manager;
+}
+
 export function getLobuCoreServices(): any {
 	return coreServices;
 }

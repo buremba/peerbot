@@ -115,6 +115,53 @@ export function connectionsRowToStored(
 }
 
 /**
+ * Advisory-lock key for a chat connection's tenant tuple — the FIRST lock in
+ * the universal order for chat-connection writes: org-tenant advisory →
+ * managed-workspace advisory (`managedTenantAdvisoryLockKey`) → only then any
+ * `connections` row lock. Returns null when the write is not an active
+ * tenant-bound activation (paused / tenantless), which takes no advisory lock
+ * anywhere. Every writer that row-locks a chat connection row (saveConnection's
+ * `FOR UPDATE`, this module's upsert/demotes) must derive its guard AND key
+ * from these helpers so they can never drift — row-locking before finishing
+ * the advisories inverts the order and deadlocks against a concurrent
+ * reinstall.
+ */
+export function chatTenantAdvisoryLockKey(
+  conn: StoredConnection,
+  orgId: string,
+): string | null {
+  const rawTeamId = conn.metadata?.teamId;
+  const externalTenantId =
+    typeof rawTeamId === "string" && rawTeamId.length > 0 ? rawTeamId : null;
+  return legacyStatusToConnections(conn.status) === "active" &&
+    externalTenantId
+    ? `chatconn:${orgId}:${conn.platform}:${externalTenantId}`
+    : null;
+}
+
+/**
+ * Advisory-lock key for the GLOBAL managed-workspace tuple — the SECOND lock
+ * in the order (see `chatTenantAdvisoryLockKey`), serializing the cross-org
+ * transfer/demote of a workspace across ALL orgs (hence org-independent). The
+ * key is MODE-INDEPENDENT — it names the (platform, tenant) workspace, not a
+ * credential mode — and is returned for EVERY active tenant-bound write, not
+ * just managed ones: only managed writes demote anyone, but a BYO write must
+ * already hold this lock before it row-locks anything or the advisory↔row
+ * cycle reopens. Over-acquiring on BYO merely serializes it against managed
+ * writes on the same tenant; under-acquiring is the only unsafe outcome.
+ */
+export function managedTenantAdvisoryLockKey(
+  conn: StoredConnection,
+): string | null {
+  const rawTeamId = conn.metadata?.teamId;
+  const externalTenantId =
+    typeof rawTeamId === "string" && rawTeamId.length > 0 ? rawTeamId : null;
+  return legacyStatusToConnections(conn.status) === "active" && externalTenantId
+    ? `chatconn:managed:${conn.platform}:${externalTenantId}`
+    : null;
+}
+
+/**
  * Write-through: upsert the `connections` projection of a chat connection by
  * (org, slug), INSIDE the caller's transaction so a crash can never diverge the
  * two sources. The folded `config` carries the adapter config (with `secret://`
@@ -131,6 +178,15 @@ export function connectionsRowToStored(
  *
  * `sql` is the transaction handle; `jsonOf` builds a json-bound param from the
  * outer sql instance (postgres.js `sql.json`).
+ *
+ * `opts.preserveAgentId`: the fallback `agent_id` is ROUTING state set by an
+ * admin (`manage_connections update`), not connection state the caller owns —
+ * a managed reinstall re-persists tokens/config but carries NO agent-routing
+ * intent, and `StoredConnection.agentId === undefined` cannot distinguish
+ * "no intent" from an explicit clear (the manager deletes the key on clear).
+ * So the caller declares intent: with `preserveAgentId` the conflict UPDATE
+ * keeps the existing row's `agent_id` (a fresh insert still starts NULL);
+ * without it, `agent_id` is written from `conn.agentId` (set or clear).
  */
 export async function upsertChatConnectionProjection(
   sql: any,
@@ -138,12 +194,15 @@ export async function upsertChatConnectionProjection(
   conn: StoredConnection,
   orgId: string,
   credentialMode: ChatCredentialMode,
+  opts?: { preserveAgentId?: boolean },
 ): Promise<void> {
   const slug = runtimeConnectionIdToSlug(conn.id);
   const status = legacyStatusToConnections(conn.status);
   const rawTeamId = conn.metadata?.teamId;
   const externalTenantId =
     typeof rawTeamId === "string" && rawTeamId.length > 0 ? rawTeamId : null;
+  const tenantLockKey = chatTenantAdvisoryLockKey(conn, orgId);
+  const managedLockKey = managedTenantAdvisoryLockKey(conn);
   const displayName =
     (typeof conn.metadata?.teamName === "string" && conn.metadata.teamName) ||
     conn.platform;
@@ -154,9 +213,24 @@ export async function upsertChatConnectionProjection(
   };
 
   if (status === "active" && externalTenantId) {
+    // Universal order (see chatTenantAdvisoryLockKey): BOTH advisories up
+    // front, before ANY row lock — in particular the same-org demote below is
+    // a row lock and must follow the managed-advisory, or a concurrent
+    // cross-org write (managed-advisory, then row-locks THIS org's sibling)
+    // inverts against it. Locks are reentrant, so a caller (saveConnection)
+    // that already holds them is a no-op here.
     await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
-      `chatconn:${orgId}:${conn.platform}:${externalTenantId}`,
+      tenantLockKey,
     ]);
+    if (managedLockKey) {
+      await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        managedLockKey,
+      ]);
+    }
+
+    // Same-org one-active-per-(org, platform, tenant): demote any OTHER active
+    // sibling in THIS org so the partial-unique `connections_active_chat_tenant`
+    // index is never contended.
     const demoted = await sql`
       UPDATE connections SET status = 'paused', updated_at = now()
       WHERE organization_id = ${orgId}
@@ -181,17 +255,13 @@ export async function upsertChatConnectionProjection(
       );
     }
 
-    // A MANAGED install binds a provider workspace (Slack team) to exactly ONE
-    // org — the OAuth install moves with the workspace. On a reinstall/transfer
-    // of the same team into a different org, the old org's managed projection
-    // would otherwise stay 'active', leaving a stale routing/ACL row for a team
-    // this org no longer owns. Demote any OTHER org's active managed projection
-    // for this team (global tenant lock so it serializes cross-replica). BYO
-    // connections can legitimately coexist cross-org, so this is managed-only.
-    if (credentialMode === "managed") {
-      await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
-        `chatconn:managed:${conn.platform}:${externalTenantId}`,
-      ]);
+    // Cross-org managed transfer/demote — managed writes ONLY. A MANAGED
+    // install binds a provider workspace (Slack team) to exactly ONE org: the
+    // OAuth install moves with the workspace, and without this the old org
+    // would keep a stale active routing/ACL row for a team it no longer owns.
+    // BYO connections legitimately coexist cross-org, so they demote no one
+    // (they hold the managed-advisory purely for lock-order uniformity).
+    if (managedLockKey && credentialMode === "managed") {
       const transferred = await sql`
         UPDATE connections SET status = 'paused', updated_at = now()
         WHERE connector_key = ${conn.platform}
@@ -233,7 +303,11 @@ export async function upsertChatConnectionProjection(
     ON CONFLICT (organization_id, slug) WHERE deleted_at IS NULL DO UPDATE SET
       connector_key = EXCLUDED.connector_key,
       external_tenant_id = EXCLUDED.external_tenant_id,
-      agent_id = EXCLUDED.agent_id,
+      agent_id = ${
+        opts?.preserveAgentId
+          ? sql`connections.agent_id`
+          : sql`EXCLUDED.agent_id`
+      },
       display_name = EXCLUDED.display_name,
       status = EXCLUDED.status,
       config = EXCLUDED.config,

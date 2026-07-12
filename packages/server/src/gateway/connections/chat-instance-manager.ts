@@ -779,7 +779,30 @@ export class ChatInstanceManager {
     } else {
       const instance = this.instances.get(id);
       if (instance) {
-        instance.connection = connection;
+        // Mutate the EXISTING connection object in place: message handlers
+        // captured this object at start time, so replacing the reference would
+        // hide the change from them until an unrelated restart. And never copy
+        // `config` here (no blanket Object.assign): this branch means config
+        // didn't meaningfully change, and the warm instance's config holds
+        // PLAINTEXT credentials resolved at startup while the store row holds
+        // `secret://` refs — clobbering it would make the live adapter read
+        // `secret://…` as the bot token. Only agentId / settings / metadata
+        // propagate.
+        const warm = instance.connection;
+        if (updates.agentId !== undefined) {
+          if (updates.agentId) {
+            warm.agentId = updates.agentId;
+          } else {
+            delete warm.agentId;
+          }
+        }
+        if (updates.settings !== undefined) {
+          warm.settings = { ...warm.settings, ...updates.settings };
+        }
+        if (updates.metadata !== undefined) {
+          warm.metadata = { ...(warm.metadata || {}), ...updates.metadata };
+        }
+        warm.updatedAt = connection.updatedAt;
         instance.rowVersion = reread.updatedAt;
       }
     }

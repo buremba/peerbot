@@ -74,7 +74,11 @@ export async function rejectUnboundAppInstallationCreate(params: {
   connectorKey: string;
   authProfileSlug?: string | null;
   appAuthProfileSlug?: string | null;
-}): Promise<{ error: string } | null> {
+	}): Promise<{
+		error: string;
+		install_type: 'app_installation';
+		next_action: 'open_setup_url';
+	} | null> {
   const schema = normalizeConnectorAuthSchema(params.authSchema);
   // Only connectors whose PRIMARY method is app_installation are in scope.
   if (!isPrimaryAuthMethodAppInstallation(schema)) return null;
@@ -130,5 +134,7 @@ export async function rejectUnboundAppInstallationCreate(params: {
       `Connector '${params.connectorKey}' is connected by installing its app (which links the connection automatically), not by creating a connection directly. ` +
       `Start the app install flow instead — for GitHub that's /github/app/install. ` +
       `(To use a different auth method this connector supports, pass an auth profile or credentials.)`,
+		install_type: 'app_installation',
+		next_action: 'open_setup_url',
   };
 }

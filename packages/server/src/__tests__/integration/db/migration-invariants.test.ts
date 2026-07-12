@@ -20,6 +20,7 @@ import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
   createTestConnectorDefinition,
+	createTestConnection,
   createTestOrganization,
   createTestUser,
 } from '../../setup/test-fixtures';
@@ -173,6 +174,28 @@ describe('migration invariants', () => {
       expect(def).toContain("'failed'::text");
       expect(def).toContain('action_input IS NOT NULL');
     });
+
+		it('paused feeds cannot retain a scheduler cursor', async () => {
+			const org = await createTestOrganization({ name: 'Paused Feed Invariant Org' });
+			await createTestConnectorDefinition({
+				organization_id: org.id,
+				key: 'paused-feed-invariant',
+				name: 'Paused Feed Invariant',
+			});
+			const connection = await createTestConnection({
+				organization_id: org.id,
+				connector_key: 'paused-feed-invariant',
+			});
+			const sql = getTestDb();
+			const [feed] = await sql`
+				UPDATE feeds
+				SET status = 'paused', next_run_at = NOW() - INTERVAL '1 hour'
+				WHERE connection_id = ${connection.id}
+				RETURNING status, next_run_at
+			`;
+			expect(feed.status).toBe('paused');
+			expect(feed.next_run_at).toBeNull();
+		});
 
     it('redundant/dead indexes are dropped while their covering indexes remain (2026-06-16 audit round 2)', async () => {
       const sql = getTestDb();

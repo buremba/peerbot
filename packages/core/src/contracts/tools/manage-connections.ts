@@ -545,6 +545,8 @@ export const ManageConnectionsResultSchema = Type.Union([
   Type.Object({
     error: Type.String(),
     setup_url: Type.Optional(Type.String()),
+    install_type: Type.Optional(Type.Literal("app_installation")),
+    next_action: Type.Optional(Type.Literal("open_setup_url")),
   }),
   Type.Object({
     action: Type.Literal("list"),

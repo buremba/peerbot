@@ -76,6 +76,18 @@ describe("sdkSearch", () => {
 		expect(result.match_count).toBeGreaterThan(0);
 	});
 
+	it("resolves multiple dotted method names independently", async () => {
+		const result = await sdkSearch(
+			{ query: "entities.get entities.delete entities.link" },
+			stubEnv,
+			writeCtx,
+		);
+		const joined = result.results.join("\n");
+		expect(joined).toContain("entities.get");
+		expect(joined).toContain("entities.delete");
+		expect(joined).toContain("entities.link");
+	});
+
 	it("returns empty + helpful note for unknown queries", async () => {
 		const result = await sdkSearch(
 			{ query: "definitelyNotAMethod" },
@@ -94,5 +106,21 @@ describe("sdkSearch", () => {
 		);
 		expect(result.results.length).toBeLessThanOrEqual(2);
 		expect(result.notes).toContain("more matches");
+	});
+
+	it("shows exact list signatures instead of implying uniform pagination", async () => {
+		const paginated = await sdkSearch(
+			{ query: "entities.list" },
+			stubEnv,
+			readCtx,
+		);
+		expect(paginated.results[0]).toContain("limit?: number");
+
+		const unpaginated = await sdkSearch(
+			{ query: "metrics.list" },
+			stubEnv,
+			readCtx,
+		);
+		expect(unpaginated.results[0]).toContain("not paginated");
 	});
 });

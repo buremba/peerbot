@@ -589,8 +589,11 @@ export interface ActionDefinition {
   description?: string;
   /** Whether this action requires human approval before execution */
   requiresApproval: boolean;
+	/** Semantic effect used by operation discovery and policy. Defaults to write. */
+	kind?: 'read' | 'write';
   /** MCP tool annotations for client-side confirmation UX */
   annotations?: {
+		readOnlyHint?: boolean;
     destructiveHint?: boolean;
     openWorldHint?: boolean;
     idempotentHint?: boolean;

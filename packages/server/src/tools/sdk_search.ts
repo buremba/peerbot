@@ -109,6 +109,9 @@ function renderDrillDown(path: string, meta: MethodMetadata): string {
 	lines.push(
 		`  access: ${meta.access}${meta.cost ? ` (cost: ${meta.cost})` : ""}`,
 	);
+	if (meta.signature) {
+		lines.push(`  signature: ${meta.signature}`);
+	}
 	if (meta.throws && meta.throws.length > 0) {
 		lines.push(`  throws: ${meta.throws.join(", ")}`);
 	}
@@ -136,6 +139,38 @@ async function sdkSearchImpl(
 	const lower = query.toLowerCase();
 	const mode: SdkDiscoveryMode = args.mode ?? "full";
 	const catalog = catalogForCaller(ctx, mode);
+	const methodTokens = lower
+		.split(/[\s,]+/)
+		.map((token) => token.replace(/^[`'"(]+|[`'").;]+$/g, ""))
+		.filter((token) => token.includes("."));
+
+	// Agents commonly ask for several exact methods in one discovery call. Treat
+	// each dotted token as its own query instead of searching for the entire
+	// whitespace-joined sentence as one impossible substring.
+	if (methodTokens.length > 1) {
+		const matches = new Map<string, MethodMetadata>();
+		for (const token of methodTokens) {
+			for (const [path, meta] of catalog) {
+				if (path.toLowerCase() === token || path.toLowerCase().includes(token)) {
+					matches.set(path, meta);
+				}
+			}
+		}
+		const entries = [...matches.entries()];
+		return {
+			query,
+			match_count: entries.length,
+			results: entries.slice(0, limit).map(([path, meta]) =>
+				methodTokens.includes(path.toLowerCase())
+					? renderDrillDown(path, meta)
+					: renderListLine(path, meta),
+			),
+			notes:
+				entries.length > limit
+					? `${entries.length - limit} more matches; raise \`limit\` or refine the query.`
+					: undefined,
+		};
+	}
 
 	if (lower in METHOD_METADATA) {
 		const meta = METHOD_METADATA[lower];

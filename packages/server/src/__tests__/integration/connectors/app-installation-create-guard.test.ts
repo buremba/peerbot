@@ -154,9 +154,18 @@ describe("manage_connections — app_installation create guard", () => {
 		);
 
 		expect("error" in res).toBe(true);
-		const err = (res as { error: string }).error;
+		const structured = res as {
+			error: string;
+			install_type?: string;
+			next_action?: string;
+			setup_url?: string;
+		};
+		const err = structured.error;
 		expect(err).toMatch(/install/i);
 		expect(err).toMatch(/\/github\/app\/install/);
+		expect(structured.install_type).toBe("app_installation");
+		expect(structured.next_action).toBe("open_setup_url");
+		expect(structured.setup_url).toBeDefined();
 		// Zero rows created.
 		expect(await connectionCount(org.id)).toBe(0);
 	});
@@ -180,6 +189,9 @@ describe("manage_connections — app_installation create guard", () => {
 
 		expect("error" in res).toBe(true);
 		expect((res as { error: string }).error).toMatch(/\/github\/app\/install/);
+		expect((res as { install_type?: string }).install_type).toBe("app_installation");
+		expect((res as { next_action?: string }).next_action).toBe("open_setup_url");
+		expect((res as { setup_url?: string }).setup_url).toBeDefined();
 		expect(await connectionCount(org.id)).toBe(0);
 	});
 

@@ -84,7 +84,13 @@ export async function handleConnect(
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
   });
-  if (appInstallGuard) return appInstallGuard;
+  if (appInstallGuard) {
+		return {
+			...appInstallGuard,
+			setup_url:
+				buildSetupUrl({ install: args.connector_key }) ?? "/github/app/install",
+		};
+	}
 
   const deviceBinding = await resolveDeviceBinding({
     organizationId,

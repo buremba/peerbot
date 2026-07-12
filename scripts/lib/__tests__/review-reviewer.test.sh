@@ -66,6 +66,9 @@ case "$failure_message" in
 esac
 
 review_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/review.sh"
+grep -Fq 'CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-fable}"' "$review_script" ||
+  fail "Claude reviewer must default to the Fable model"
+
 schema_arg_count="$(grep -F -- '--json-schema "$(cat "$SCHEMA_FILE")"' "$review_script" | wc -l | tr -d ' ')"
 [ "$schema_arg_count" -eq 2 ] ||
   fail "Claude reviewer must receive the verdict schema inline and in Herdr"

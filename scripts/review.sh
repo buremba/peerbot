@@ -63,7 +63,7 @@ elif git show-ref --verify --quiet refs/remotes/origin/main; then
 else
   BASE_BRANCH="main"
 fi
-CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-opus}"
+CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-fable}"
 CLAUDE_REVIEW_EFFORT="${CLAUDE_REVIEW_EFFORT:-high}"
 CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-}"
 REVIEWER_CLI="${REVIEWER_CLI:-auto}"

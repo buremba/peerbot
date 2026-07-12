@@ -49,7 +49,7 @@ export { ManageEntitySchemaResultSchema, ManageEntitySchemaSchema };
 const runEntityTypeActions = defineFlatActionTool<ManageEntitySchemaArgs, ManageEntitySchemaResult>(
   'manage_entity_schema',
   {
-    list: flatAction((_args, ctx) => etHandleList(ctx)),
+    list: flatAction(etHandleList),
     get: flatAction((args, ctx) => etHandleGet(args.slug, ctx)),
     create: flatAction((args, ctx) => etHandleCreate(args, ctx)),
     update: flatAction((args, ctx) => etHandleUpdate(args, ctx)),
@@ -83,6 +83,15 @@ async function manageEntitySchemaImpl(
   env: Env,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
+	if (
+		(args.action === 'create' || args.action === 'update') &&
+		Object.hasOwn(args as object, 'properties')
+	) {
+		throw new ToolUserError(
+			"[invalid_schema] top-level properties is not supported; put JSON Schema fields under metadata_schema.properties",
+			422
+		);
+	}
   if (args.schema_type === 'entity_type') {
     return runEntityTypeActions(args, env, ctx);
   }
@@ -246,15 +255,22 @@ async function recordAudit(
 // Entity Type Action Handlers
 // ============================================
 
-async function etHandleList(ctx: ToolContext): Promise<ManageEntitySchemaResult> {
+async function etHandleList(
+	args: ManageEntitySchemaArgs,
+	ctx: ToolContext
+): Promise<ManageEntitySchemaResult> {
   const sql = getDb();
+	const scopePredicate =
+		args.list_scope === 'organization'
+			? 'et.organization_id = $1'
+			: "(et.organization_id = $1 OR o.visibility = 'public')";
 
   const rows = await sql.unsafe(
     `SELECT ${ENTITY_TYPE_COLUMNS_WITH_ORG}
      FROM entity_types et
      LEFT JOIN organization o ON o.id = et.organization_id
      WHERE et.deleted_at IS NULL
-       AND (et.organization_id = $1 OR o.visibility = 'public')
+		 AND ${scopePredicate}
      ORDER BY (et.organization_id = $1) DESC, et.name ASC`,
     [ctx.organizationId]
   );
@@ -280,7 +296,13 @@ async function etHandleList(ctx: ToolContext): Promise<ManageEntitySchemaResult>
     return a.name.localeCompare(b.name);
   });
 
-  return { schema_type: 'entity_type', action: 'list', entity_types: entityTypes };
+	return {
+		schema_type: 'entity_type',
+		action: 'list',
+		entity_types: entityTypes,
+		list_scope: args.list_scope ?? 'accessible',
+		organization_id: ctx.organizationId,
+	};
 }
 
 /**
@@ -856,6 +878,10 @@ async function rtHandleList(
   const sql = getDb();
   const includeDeleted = args.include_deleted ?? false;
   const deletedClause = includeDeleted ? '' : 'AND rt.deleted_at IS NULL';
+	const scopePredicate =
+		args.list_scope === 'organization'
+			? 'rt.organization_id = $1'
+			: "(rt.organization_id = $1 OR o.visibility = 'public')";
 
   const rows = await sql.unsafe<RelationshipTypeRow>(
     `SELECT
@@ -875,7 +901,7 @@ async function rtHandleList(
         AND organization_id = $1
       GROUP BY relationship_type_id
     ) rc ON rc.relationship_type_id = rt.id
-    WHERE (rt.organization_id = $1 OR o.visibility = 'public')
+		WHERE ${scopePredicate}
       ${deletedClause}
     ORDER BY (rt.organization_id = $1) DESC, rt.name ASC`,
     [ctx.organizationId]
@@ -893,6 +919,8 @@ async function rtHandleList(
       ...(r as unknown as RelationshipTypeRow),
       relationship_count: Number(r.relationship_count) || 0,
     })),
+		list_scope: args.list_scope ?? 'accessible',
+		organization_id: ctx.organizationId,
   };
 }
 

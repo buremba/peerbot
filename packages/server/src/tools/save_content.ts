@@ -146,6 +146,9 @@ interface SaveContentResult {
   created_at: string;
   supersedes_event_id?: number;
   view_url?: string;
+	/** Semantic search is asynchronous; exact reads by id are available immediately. */
+	indexing_status: 'pending';
+	exact_read: { method: 'client.knowledge.read'; content_id: number };
 }
 
 // ============================================
@@ -418,6 +421,11 @@ async function saveContentImpl(
     title: row.title as string | null,
     semantic_type: semanticType,
     created_at: String(row.created_at),
+		indexing_status: 'pending',
+		exact_read: {
+			method: 'client.knowledge.read',
+			content_id: Number(row.id),
+		},
   };
   if (args.supersedes_event_id) {
     result.supersedes_event_id = args.supersedes_event_id;

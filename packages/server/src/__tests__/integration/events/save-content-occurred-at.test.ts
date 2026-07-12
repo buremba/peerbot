@@ -67,7 +67,17 @@ describe('saveContent > occurred_at default', () => {
       } as never,
       {} as never,
       ctx()
-    )) as { id: number };
+    )) as {
+			id: number;
+			indexing_status: string;
+			exact_read: { method: string; content_id: number };
+		};
+
+		expect(result.indexing_status).toBe('pending');
+		expect(result.exact_read).toEqual({
+			method: 'client.knowledge.read',
+			content_id: result.id,
+		});
 
     const sql = getTestDb();
     const [row] = await sql`

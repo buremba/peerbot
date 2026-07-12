@@ -626,7 +626,15 @@ const instagramTakeoutDir = localTakeoutDir(
   "INSTAGRAM_TAKEOUT_DIR",
   "instagram"
 );
-const linkedinTakeoutDir = localTakeoutDir("LINKEDIN_TAKEOUT_DIR", "linkedin");
+// LinkedIn is also a browser connector. Unlike takeout-only connections, never
+// synthesize a local path for it: a browser-only deployment must not provision
+// CSV feeds that can only fail forever. Opt in with either an explicit LinkedIn
+// directory or an explicitly configured shared takeout root.
+const linkedinTakeoutDir =
+  process.env.LINKEDIN_TAKEOUT_DIR ??
+  (process.env.LOCAL_TAKEOUT_ROOT
+    ? `${process.env.LOCAL_TAKEOUT_ROOT}/linkedin`
+    : null);
 
 const takeoutConnection = defineConnection({
   slug: "google-takeout-buremba",
@@ -688,16 +696,20 @@ const linkedinConnection = defineConnection({
   name: "LinkedIn",
   feeds: [
     // Local Data Export (CSV) feeds.
-    { feed: "messages", config: { takeout_dir: linkedinTakeoutDir } },
-    { feed: "connections", config: { takeout_dir: linkedinTakeoutDir } },
-    { feed: "invitations", config: { takeout_dir: linkedinTakeoutDir } },
-    { feed: "applied_jobs", config: { takeout_dir: linkedinTakeoutDir } },
-    { feed: "profile", config: { takeout_dir: linkedinTakeoutDir } },
-    { feed: "companies", config: { takeout_dir: linkedinTakeoutDir } },
-    { feed: "learning", config: { takeout_dir: linkedinTakeoutDir } },
-    { feed: "events", config: { takeout_dir: linkedinTakeoutDir } },
-    { feed: "endorsements", config: { takeout_dir: linkedinTakeoutDir } },
-    { feed: "media", config: { takeout_dir: linkedinTakeoutDir } },
+    ...(linkedinTakeoutDir
+      ? [
+          "messages",
+          "connections",
+          "invitations",
+          "applied_jobs",
+          "profile",
+          "companies",
+          "learning",
+          "events",
+          "endorsements",
+          "media",
+        ].map((feed) => ({ feed, config: { takeout_dir: linkedinTakeoutDir } }))
+      : []),
     // Live Chrome-extension feed (no company_url needed).
     { feed: "home_feed", config: { max_scrolls: 8 } },
   ],

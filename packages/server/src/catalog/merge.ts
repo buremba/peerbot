@@ -1,8 +1,15 @@
 import type { CatalogEntry, InstalledItem } from "./types";
 
-function actionCountFromSchema(actionsSchema: unknown): number {
-	if (!actionsSchema || typeof actionsSchema !== "object") return 0;
-	return Object.keys(actionsSchema).length;
+function actionCountsFromSchema(actionsSchema: unknown): { reads: number; writes: number } {
+	if (!actionsSchema || typeof actionsSchema !== "object") return { reads: 0, writes: 0 };
+	let reads = 0;
+	let writes = 0;
+	for (const action of Object.values(actionsSchema)) {
+		const def = action as { kind?: unknown; annotations?: { readOnlyHint?: unknown } };
+		if (def?.kind === "read" || def?.annotations?.readOnlyHint === true) reads += 1;
+		else writes += 1;
+	}
+	return { reads, writes };
 }
 
 function sortConnectorItems(items: InstalledItem[]): InstalledItem[] {
@@ -36,7 +43,8 @@ export function mergeConnectorInstalledWithCatalog(
 	for (const entry of catalog) {
 		if (merged.has(entry.id)) continue;
 		const detail = entry.detail;
-		const actionCount = actionCountFromSchema(detail.actions_schema);
+		const actionCounts = actionCountsFromSchema(detail.actions_schema);
+		const actionCount = actionCounts.reads + actionCounts.writes;
 		merged.set(entry.id, {
 			id: entry.id,
 			name: entry.name,
@@ -50,8 +58,8 @@ export function mergeConnectorInstalledWithCatalog(
 				catalog_origin: "catalog",
 				operations_summary: {
 					total: actionCount,
-					reads: 0,
-					writes: actionCount,
+					reads: actionCounts.reads,
+					writes: actionCounts.writes,
 					local_action: actionCount,
 					mcp_tool: 0,
 					http_operation: 0,

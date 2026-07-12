@@ -14,7 +14,9 @@
 	},
 	"files": [
 		"dist",
-		"openclaw.plugin.json"
+		"openclaw.plugin.json",
+		"!**/*.js.map",
+		"!**/*.d.ts.map"
 	],
 	"scripts": {
 		"build": "tsc && cp ./openclaw.plugin.json ./dist/openclaw.plugin.json",

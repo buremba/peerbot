@@ -11,7 +11,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "!**/*.js.map",
+    "!**/*.d.ts.map"
   ],
   "exports": {
     ".": {

@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 // Package-content guard: fail if any publishable workspace package would ship
-// internal test material in its npm tarball.
+// internal/dev artifacts (tests or sourcemaps) in its npm tarball.
 //
 // Publishing regressions (a `files` glob that pulls in `src`, a `tsconfig` that
 // compiles `**/*.test.ts` into `dist`, a recursive `cpSync` that copies a test
-// tree) are invisible in code review and only surface as bloated tarballs. This
-// runs `npm pack --dry-run --json` — the exact file selection `npm publish`
-// uses — for every non-private package and asserts none of the packed files are
-// tests.
+// tree, or dangling `.js.map`/`.d.ts.map` files) are invisible in code review
+// and only surface as bloated tarballs. This runs `npm pack --dry-run --json`
+// — the exact file selection `npm publish` uses — for every non-private package
+// and asserts none of the packed files are tests or sourcemaps.
 //
 // Run after building packages (unbuilt `dist` just yields empty tarballs):
 //   bun run build:packages && node scripts/check-package-contents.mjs
 //
-// Exit 0 = clean, 1 = a tarball contains test paths (or packing failed).
+// Exit 0 = clean, 1 = a tarball contains a disallowed file (or packing failed).
 
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
@@ -25,18 +25,26 @@ const REPO_ROOT = path.resolve(
 );
 const PACKAGES_DIR = path.join(REPO_ROOT, "packages");
 
-// A packed file is "internal test material" if any path segment is a __tests__
-// dir, or the basename is a *.test.* / *.spec.* file.
+// Internal test material: any __tests__ path segment, or a *.test.* / *.spec.*
+// basename.
 const TEST_PATH = /(^|\/)__tests__\//;
 const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/;
+// Sourcemaps: dev-only debug artifacts. They point at `src` that most packages
+// don't ship, so they're dead weight in the tarball.
+const SOURCEMAP = /\.(js|d\.ts)\.map$/;
 
 // Narrow allowlist for public compatibility files that legitimately match the
 // patterns above. Keep empty unless a genuinely-public export requires it;
 // entries are exact tarball-relative paths (npm prefixes them with `package/`).
 const ALLOWLIST = new Set([]);
 
-function isTestFile(file) {
-  return TEST_PATH.test(file) || TEST_FILE.test(path.basename(file));
+// Return why a packed file shouldn't ship, or null if it's fine.
+function disallowedReason(file) {
+  if (ALLOWLIST.has(file)) return null;
+  if (TEST_PATH.test(file) || TEST_FILE.test(path.basename(file)))
+    return "test";
+  if (SOURCEMAP.test(file)) return "sourcemap";
+  return null;
 }
 
 function publishablePackageDirs() {
@@ -84,20 +92,26 @@ for (const { name, dir } of publishablePackageDirs()) {
     failed = true;
     continue;
   }
-  const offenders = files.filter((f) => isTestFile(f) && !ALLOWLIST.has(f));
+  const offenders = files
+    .map((f) => ({ f, reason: disallowedReason(f) }))
+    .filter((o) => o.reason);
   if (offenders.length > 0) {
     failed = true;
-    console.error(`✗ ${name}: ${offenders.length} test file(s) in tarball:`);
-    for (const f of offenders) console.error(`    ${f}`);
+    console.error(
+      `✗ ${name}: ${offenders.length} disallowed file(s) in tarball:`
+    );
+    for (const { f, reason } of offenders)
+      console.error(`    [${reason}] ${f}`);
   } else {
-    console.log(`✓ ${name}: no test files (${files.length} files packed)`);
+    console.log(`✓ ${name}: clean (${files.length} files packed)`);
   }
 }
 
 if (failed) {
   console.error(
-    "\nPublishable tarballs must not contain __tests__/, *.test.*, or *.spec.* files."
+    "\nPublishable tarballs must not contain __tests__/, *.test.*, *.spec.*, " +
+      "or sourcemap (*.js.map / *.d.ts.map) files."
   );
   process.exit(1);
 }
-console.log("\nAll publishable tarballs are free of internal test material.");
+console.log("\nAll publishable tarballs are free of internal/dev artifacts.");

@@ -509,10 +509,10 @@ jobs:
             echo "::endgroup::"
           done
 
-      # Hard gate: published tarballs must not ship internal tests. Uses the
-      # packages built above (`make build-packages`) and `npm pack --dry-run`
-      # to inspect exactly what `npm publish` would include.
-      - name: Package-content check (no tests in tarballs)
+      # Hard gate: published tarballs must not ship internal tests or dangling
+      # sourcemaps. Uses the packages built above (`make build-packages`) and
+      # `npm pack --dry-run` to inspect exactly what `npm publish` would include.
+      - name: Package-content check (no tests/sourcemaps in tarballs)
         run: bun run check:packages
 
       # Report-only for now: knip surfaces unused files / exports / deps to

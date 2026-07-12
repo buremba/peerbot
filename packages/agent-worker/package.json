@@ -12,7 +12,9 @@
     "src",
     "!src/**/__tests__/**",
     "!src/**/*.test.ts",
-    "!src/**/*.spec.ts"
+    "!src/**/*.spec.ts",
+    "!**/*.js.map",
+    "!**/*.d.ts.map"
   ],
   "exports": {
     ".": {

@@ -116,14 +116,15 @@ export function connectionsRowToStored(
 
 /**
  * Advisory-lock key for a chat connection's tenant tuple — the FIRST lock in
- * the global lock order for chat-connection writes (tenant advisory lock →
- * `connections` row locks). Returns null when the write is not a tenant-bound
- * activation (paused / tenantless), in which case no advisory lock is taken
- * anywhere on the path. Every writer that row-locks a chat connection row
- * (saveConnection's `FOR UPDATE`, this module's upsert/demote) must derive its
- * guard AND key from THIS helper so the two can never drift — a writer that
- * row-locks first and only then reaches the advisory lock inverts the order
- * and deadlocks against a concurrent managed reinstall.
+ * the universal order for chat-connection writes: org-tenant advisory →
+ * managed-workspace advisory (`managedTenantAdvisoryLockKey`) → only then any
+ * `connections` row lock. Returns null when the write is not an active
+ * tenant-bound activation (paused / tenantless), which takes no advisory lock
+ * anywhere. Every writer that row-locks a chat connection row (saveConnection's
+ * `FOR UPDATE`, this module's upsert/demotes) must derive its guard AND key
+ * from these helpers so they can never drift — row-locking before finishing
+ * the advisories inverts the order and deadlocks against a concurrent
+ * reinstall.
  */
 export function chatTenantAdvisoryLockKey(
   conn: StoredConnection,
@@ -139,23 +140,15 @@ export function chatTenantAdvisoryLockKey(
 }
 
 /**
- * Advisory-lock key for the GLOBAL managed-workspace tuple — the SECOND lock in
- * a chat write's lock order (org-specific `chatTenantAdvisoryLockKey` FIRST,
- * then this one), serializing the cross-org transfer/demote of a workspace
- * across ALL orgs (hence org-independent, unlike the per-org key).
- *
- * The KEY is MODE-INDEPENDENT — it names a (platform, tenant) workspace, not a
- * credential mode. Only the ACT of demoting other orgs' rows is managed-only
- * (see the projection's demote block), but the LOCK ORDER must be honored by
- * every active tenant-bound write regardless of mode: a BYO write that later
- * turns out to race a managed transfer must already hold this lock before it
- * row-locks anything, or the advisory↔row cycle reopens. So this returns the
- * key for ANY active tenant-bound write. Over-acquiring on a BYO write only
- * serializes it against managed writes on the same tenant (harmless); the
- * danger is UNDER-acquiring. Returns null only when the write is not an active
- * tenant-bound activation (paused / tenantless — takes no advisory lock at
- * all). Both the projection and saveConnection derive the key HERE so they
- * can never drift.
+ * Advisory-lock key for the GLOBAL managed-workspace tuple — the SECOND lock
+ * in the order (see `chatTenantAdvisoryLockKey`), serializing the cross-org
+ * transfer/demote of a workspace across ALL orgs (hence org-independent). The
+ * key is MODE-INDEPENDENT — it names the (platform, tenant) workspace, not a
+ * credential mode — and is returned for EVERY active tenant-bound write, not
+ * just managed ones: only managed writes demote anyone, but a BYO write must
+ * already hold this lock before it row-locks anything or the advisory↔row
+ * cycle reopens. Over-acquiring on BYO merely serializes it against managed
+ * writes on the same tenant; under-acquiring is the only unsafe outcome.
  */
 export function managedTenantAdvisoryLockKey(
   conn: StoredConnection,
@@ -220,18 +213,12 @@ export async function upsertChatConnectionProjection(
   };
 
   if (status === "active" && externalTenantId) {
-    // UNIVERSAL lock order for chat writes: org-advisory → managed-advisory →
-    // ALL row locks. BOTH advisories are acquired UP FRONT, before ANY row is
-    // touched, so every path (this projection AND saveConnection) takes locks
-    // in the identical order and no advisory↔row cycle can form. In particular
-    // the same-org one-active demote below is a ROW lock — it MUST come AFTER
-    // the managed-advisory, or a concurrent cross-org write (which takes the
-    // managed-advisory then row-locks THIS org's sibling) would invert against
-    // it. The managed-advisory is mode-INDEPENDENT and taken for EVERY active
-    // tenant-bound write; over-acquiring on a BYO write only serializes it with
-    // managed writes on the same tenant (harmless). pg_advisory_xact_lock is
-    // reentrant, so a caller (saveConnection) that already holds these is a
-    // no-op here.
+    // Universal order (see chatTenantAdvisoryLockKey): BOTH advisories up
+    // front, before ANY row lock — in particular the same-org demote below is
+    // a row lock and must follow the managed-advisory, or a concurrent
+    // cross-org write (managed-advisory, then row-locks THIS org's sibling)
+    // inverts against it. Locks are reentrant, so a caller (saveConnection)
+    // that already holds them is a no-op here.
     await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
       tenantLockKey,
     ]);
@@ -243,8 +230,7 @@ export async function upsertChatConnectionProjection(
 
     // Same-org one-active-per-(org, platform, tenant): demote any OTHER active
     // sibling in THIS org so the partial-unique `connections_active_chat_tenant`
-    // index is never contended. First ROW lock — taken with BOTH advisories
-    // already held.
+    // index is never contended.
     const demoted = await sql`
       UPDATE connections SET status = 'paused', updated_at = now()
       WHERE organization_id = ${orgId}
@@ -269,16 +255,12 @@ export async function upsertChatConnectionProjection(
       );
     }
 
-    // Cross-org managed transfer/demote — managed writes ONLY. A MANAGED install
-    // binds a provider workspace (Slack team) to exactly ONE org — the OAuth
-    // install moves with the workspace. On a reinstall/transfer of the same team
-    // into a different org, the old org's managed projection would otherwise
-    // stay 'active', leaving a stale routing/ACL row for a team this org no
-    // longer owns. Demote any OTHER org's active managed projection. BYO
-    // connections can legitimately coexist cross-org, so they took the
-    // managed-advisory (for lock-order uniformity) but demote no one. The
-    // managed-advisory is already held above, so these other-org row locks
-    // never precede it.
+    // Cross-org managed transfer/demote — managed writes ONLY. A MANAGED
+    // install binds a provider workspace (Slack team) to exactly ONE org: the
+    // OAuth install moves with the workspace, and without this the old org
+    // would keep a stale active routing/ACL row for a team it no longer owns.
+    // BYO connections legitimately coexist cross-org, so they demote no one
+    // (they hold the managed-advisory purely for lock-order uniformity).
     if (managedLockKey && credentialMode === "managed") {
       const transferred = await sql`
         UPDATE connections SET status = 'paused', updated_at = now()

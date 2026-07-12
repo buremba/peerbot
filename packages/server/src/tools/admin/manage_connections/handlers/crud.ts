@@ -1242,15 +1242,11 @@ export async function handleUpdate(
     }
   }
 
-	// Reassigning a chat connection's fallback agent (or clearing it) is the
-	// same class of authority as a channel binding: it decides which agent an
-	// unbound DM/mention runs — and thus whose agent_users those platform
-	// people are recorded into. bind_channel is owner/admin-only for exactly
-	// this reason (OWNER_ADMIN_ACTIONS in auth/tool-access.ts). `update` is
-	// member-writable (a member may rename / rebind their OWN connection), so
-	// without this gate a member could point their connection's fallback at
-	// another member's agent — an escalation bind_channel forbids. Require
-	// admin to touch agent_id, matching the channel-binding tier.
+	// Setting/clearing the fallback agent is the same class of authority as a
+	// channel binding (bind_channel is owner/admin-only, OWNER_ADMIN_ACTIONS in
+	// auth/tool-access.ts): it decides which agent an unbound DM/mention runs.
+	// `update` itself is member-writable, so without this gate a member could
+	// point their own connection's fallback at another member's agent.
 	if (hasAgentIdArg && !callerIsAdmin) {
 		return {
 			error:

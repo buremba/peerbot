@@ -779,23 +779,15 @@ export class ChatInstanceManager {
     } else {
       const instance = this.instances.get(id);
       if (instance) {
-        // Mutate the EXISTING connection object in place (never replace the
-        // reference): registerMessageHandlers captured this same object at
-        // start time and reads `this.connection.agentId` per message, so a
-        // fresh object here would orphan that reference and the fallback-agent
-        // change would not take effect on a warm pod until an unrelated
-        // restart.
-        //
-        // Apply ONLY the fields that changed — NEVER a blanket
-        // `Object.assign(warm, fromStore)`. This branch runs with
-        // `needsRestart === false`, i.e. config did not meaningfully change,
-        // and the warm instance's `config` holds the PLAINTEXT credentials
-        // resolved at startup (`startInstanceUnscoped` → resolveConfigForRuntime)
-        // while the store's `connection.config` holds `secret://` refs.
-        // Copying config over (and then bumping rowVersion so it won't
-        // rehydrate) would make the live adapter read `secret://…` as the
-        // actual bot token. So propagate agentId / settings / metadata and
-        // leave the runtime config untouched.
+        // Mutate the EXISTING connection object in place: message handlers
+        // captured this object at start time, so replacing the reference would
+        // hide the change from them until an unrelated restart. And never copy
+        // `config` here (no blanket Object.assign): this branch means config
+        // didn't meaningfully change, and the warm instance's config holds
+        // PLAINTEXT credentials resolved at startup while the store row holds
+        // `secret://` refs — clobbering it would make the live adapter read
+        // `secret://…` as the bot token. Only agentId / settings / metadata
+        // propagate.
         const warm = instance.connection;
         if (updates.agentId !== undefined) {
           if (updates.agentId) {

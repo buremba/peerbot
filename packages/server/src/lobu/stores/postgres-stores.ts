@@ -350,40 +350,23 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			// defeat the cross-replica serialization.
 			await sql.begin(async (tx: typeof sql) => {
 				const configToPersist = { ...connection.config };
-				// Global lock order for chat-connection writes: BOTH tenant advisory
-				// locks FIRST — org-specific (`chatTenantAdvisoryLockKey`), then the
-				// GLOBAL managed-workspace lock (`managedTenantAdvisoryLockKey`) —
-				// THEN any `connections` row lock. This order is now UNIVERSAL: the
-				// projection (`upsertChatConnectionProjection`) takes both advisories
-				// up front too (org-advisory → managed-advisory → same-org demote →
-				// cross-org transfer demote → target upsert), so no path locks a
-				// `connections` row between the two advisories. saveConnection takes
-				// BOTH advisories before ANY row lock — which is strictly safe:
-				// a txn holding both advisories before it row-locks anything can
-				// never be the party that holds a row while waiting on an advisory,
-				// so it cannot participate in the advisory↔row cycle. pg_advisory_-
-				// xact_lock is reentrant, so the projection re-taking both inside
-				// this same txn is a harmless no-op.
-				//
-				// The managed-global lock is acquired UNCONDITIONALLY for every
-				// active tenant-bound write — NOT gated on credential_mode. A
-				// lock-free peek at the mode would be a TOCTOU: a concurrent managed
-				// install can flip a byo/empty row to managed between the peek and
-				// the FOR UPDATE, after which the projection (running with the now-
-				// managed mode) takes the managed lock while this txn already holds
-				// the target row → the cycle reopens. The managed key is
-				// mode-INDEPENDENT (it names the workspace, not the mode), and
-				// over-acquiring on a genuine BYO write only serializes it against
-				// managed writes on the same tenant (harmless); UNDER-acquiring is
-				// the only unsafe outcome, so we always take it.
-				const keyConn = { ...connection, organizationId: orgId };
-				const tenantLockKey = chatTenantAdvisoryLockKey(keyConn, orgId);
+				// Universal lock order for chat writes (see chatTenantAdvisoryLockKey):
+				// org-tenant advisory → managed-workspace advisory → only then any
+				// `connections` row lock (the FOR UPDATE below, and every row lock in
+				// the projection). The managed lock is taken UNCONDITIONALLY rather
+				// than after peeking at credential_mode — the peek would be a TOCTOU
+				// (a concurrent managed install can flip the mode between peek and
+				// FOR UPDATE, reopening the advisory↔row cycle); over-acquiring on a
+				// BYO write merely serializes it against managed writes on the same
+				// tenant. Both locks are reentrant, so the projection re-taking them
+				// inside this txn is a no-op.
+				const tenantLockKey = chatTenantAdvisoryLockKey(connection, orgId);
 				if (tenantLockKey) {
 					await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
 						tenantLockKey,
 					]);
 				}
-				const managedLockKey = managedTenantAdvisoryLockKey(keyConn);
+				const managedLockKey = managedTenantAdvisoryLockKey(connection);
 				if (managedLockKey) {
 					await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
 						managedLockKey,

@@ -34,8 +34,6 @@ const config: KnipConfig = {
         "integration-tests/**/*.test.ts",
       ],
       ignoreDependencies: [
-        // Loaded via dynamic specifier in src/index.ts.
-        "@lobu/worker",
         // Native media/ML deps reached at runtime by connector bundles
         // (embeddings, image processing), not statically imported in src/.
         "@xenova/transformers",

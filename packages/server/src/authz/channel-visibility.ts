@@ -234,7 +234,7 @@ export async function filterChannelsForRequester<T extends GatedChannelRow>(
   const enforcingTenants: EnforcingTenant[] = [];
   for (const r of rows) {
     if (states.get(r.id)?.status !== "enforced" || !r.team_id) continue;
-    const dedupe = `${r.platform} ${r.team_id}`;
+    const dedupe = `${r.platform}\u0000${r.team_id}`;
     if (seenTenant.has(dedupe)) continue;
     seenTenant.add(dedupe);
     enforcingTenants.push({ platform: r.platform, teamId: r.team_id });

@@ -117,20 +117,6 @@ export async function deleteEnvironment(
   return deleted;
 }
 
-export async function getEnvironmentProviderKind(
-  id: string,
-  organizationId: string
-): Promise<string | null> {
-  const sql = getDb();
-  const rows = (await sql`
-    SELECT provider_kind
-    FROM environments
-    WHERE id = ${id} AND organization_id = ${organizationId}
-    LIMIT 1
-  `) as Array<{ provider_kind: string }>;
-  return rows[0]?.provider_kind ?? null;
-}
-
 /**
  * Resolve an agent's selected environment to the runtime claims stamped into
  * its worker token. Returns `{}` for builtin/unset/unknown so the caller falls

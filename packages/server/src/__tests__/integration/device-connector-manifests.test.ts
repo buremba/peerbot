@@ -1,8 +1,10 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { generateSecureToken } from '../../auth/oauth/utils';
+import type { Env } from '../../index';
+import { materializeDueFeeds } from '../../scheduled/check-due-feeds';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { post } from '../setup/test-helpers';
 
@@ -115,12 +117,48 @@ async function poll(
   });
 }
 
-function loadOwlettoManifests(kind: 'mac' | 'chrome'): Array<Record<string, unknown>> {
+/**
+ * Poll and claim the just-installed connector's due feed run. When the poll
+ * handler's materialize cooldown is hot (see the primer comment below), the
+ * first poll installs the connector but claims nothing; running the
+ * materializer directly and re-polling is the deterministic equivalent of
+ * waiting out the 5s cooldown.
+ */
+async function pollClaimingDueFeed(workerId: string, connectorManifests: unknown[]) {
+  const first = await poll(workerId, connectorManifests);
+  expect(first.status).toBe(200);
+  const firstBody = await first.json();
+  if (firstBody.connector_key) {
+    return firstBody;
+  }
+
+  await materializeDueFeeds({} as Env, getTestDb());
+  const second = await poll(workerId, connectorManifests);
+  expect(second.status).toBe(200);
+  return second.json();
+}
+
+const OWLETTO_MANIFEST_DIRS = (() => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const dir =
-    kind === 'mac'
-      ? resolve(here, '../../../../owletto/apps/mac/Owletto/ConnectorManifests')
-      : resolve(here, '../../../../owletto/apps/chrome/connector-manifests');
+  return {
+    mac: resolve(here, '../../../../owletto/apps/mac/Owletto/ConnectorManifests'),
+    chrome: resolve(here, '../../../../owletto/apps/chrome/connector-manifests'),
+  };
+})();
+
+/**
+ * The owletto submodule is a private repo, so contributor sandboxes without
+ * access to it cannot init it. Skip the manifest-parity tests there — but in
+ * CI (which checks the submodule out) a missing dir must FAIL, not skip, or a
+ * broken submodule checkout would silently drop manifest validation.
+ */
+function itWithOwlettoManifests(kind: keyof typeof OWLETTO_MANIFEST_DIRS) {
+  if (existsSync(OWLETTO_MANIFEST_DIRS[kind])) return it;
+  return process.env.CI ? it : it.skip;
+}
+
+function loadOwlettoManifests(kind: 'mac' | 'chrome'): Array<Record<string, unknown>> {
+  const dir = OWLETTO_MANIFEST_DIRS[kind];
   return readdirSync(dir)
     .filter((file) => file.endsWith('.json'))
     .sort()
@@ -149,9 +187,16 @@ describe('device connector manifests', () => {
   it('installs a metadata-only device connector from poll and claims its feed run without compiled_code', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
 
-    const res = await poll(workerId, [manifest()]);
-    expect(res.status).toBe(200);
-    const body = await res.json();
+    // Prime the poll handler's module-level due-feed-materialize cooldown
+    // (worker-api/poll.ts). The integration suite runs singleFork +
+    // isolate:false, so any poll in the previous ~5s — from this file or any
+    // other — leaves the cooldown hot and the next poll skips materialization.
+    // Making that state explicit turns a timing-dependent flake into a
+    // deterministic scenario.
+    const primer = await poll(workerId, []);
+    expect(primer.status).toBe(200);
+
+    const body = await pollClaimingDueFeed(workerId, [manifest()]);
 
     const def = await readDefinition(orgId);
     expect(def?.key).toBe(CONNECTOR_KEY);
@@ -193,7 +238,7 @@ describe('device connector manifests', () => {
     expect(await readFeedStatus(orgId)).toBe('paused');
   });
 
-  it('accepts the actual Owletto Mac manifests and installs their connector definitions', async () => {
+  itWithOwlettoManifests('mac')('accepts the actual Owletto Mac manifests and installs their connector definitions', async () => {
     const { orgId, workerId } = await seedDeviceOwner('macos');
     const manifests = loadOwlettoManifests('mac');
 
@@ -206,7 +251,7 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
   });
 
-  it('accepts the actual Owletto Chrome manifests and installs their connector definitions', async () => {
+  itWithOwlettoManifests('chrome')('accepts the actual Owletto Chrome manifests and installs their connector definitions', async () => {
     const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
     const manifests = loadOwlettoManifests('chrome');
 

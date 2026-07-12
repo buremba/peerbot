@@ -67,8 +67,13 @@ describe("parseKeyValueEntries", () => {
   });
 
   test("never echoes entry content in errors — not even the key part", () => {
-    // A pasted secret can land on either side of the `=`.
-    for (const entry of ["sk-live-oops", "sk-live-oops=", "=sk-live-oops"]) {
+    // A pasted secret can land on either side of the `=`, or after a `$`.
+    for (const entry of [
+      "sk-live-oops",
+      "sk-live-oops=",
+      "=sk-live-oops",
+      "token=$sk-live-oops",
+    ]) {
       let message = "";
       try {
         parseKeyValueEntries([entry], "--credential");
@@ -79,5 +84,13 @@ describe("parseKeyValueEntries", () => {
       expect(message).not.toContain("sk-live-oops");
       expect(message).toContain("entry #1");
     }
+  });
+
+  test("unset $VAR errors name the variable only for valid identifiers", () => {
+    // A real env-var NAME is an identifier the user typed as a reference —
+    // naming it is safe and useful.
+    expect(() =>
+      parseKeyValueEntries(["token=$LOBU_TEST_UNSET_VAR"], "--credential")
+    ).toThrow("$LOBU_TEST_UNSET_VAR");
   });
 });

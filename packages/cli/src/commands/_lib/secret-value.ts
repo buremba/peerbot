@@ -8,6 +8,13 @@
  * and the real secret lands in argv anyway.
  */
 
+/**
+ * A `$`-prefixed value is only echoed back in errors when what follows is a
+ * plausible env-var NAME (an identifier). Anything else could be a pasted
+ * secret that happens to start with `$` — never put it on stderr.
+ */
+const ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /** Resolve a flag value that may be a `$VAR` environment reference. */
 export function resolveSecretFlag(raw: string, flagName: string): string {
   const value = raw.trim();
@@ -16,8 +23,10 @@ export function resolveSecretFlag(raw: string, flagName: string): string {
   }
   if (!value.startsWith("$")) return value;
   const name = value.slice(1);
-  if (!name) {
-    throw new Error(`${flagName} is "$" with no variable name.`);
+  if (!ENV_VAR_NAME.test(name)) {
+    throw new Error(
+      `${flagName} starts with "$" but is not a valid environment variable name (value not shown).`
+    );
   }
   const resolved = process.env[name];
   if (!resolved?.trim()) {

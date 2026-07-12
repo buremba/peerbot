@@ -38,13 +38,6 @@ import {
 import { errorResponse } from "../shared/helpers.js";
 import { verifySettingsSession } from "./settings-auth.js";
 
-export type { AgentThreadSummary } from "../../services/agent-thread-list.js";
-export {
-	buildApiConversationId,
-	extractThreadIdFromConversationId,
-} from "../../services/api-conversation-id.js";
-export { readSnapshotJsonl } from "../../services/transcript-snapshot.js";
-
 /**
  * Read the latest completed transcript snapshot for an agent's most-recent
  * conversation. Returns the raw JSONL content + sessionId-equivalent, or

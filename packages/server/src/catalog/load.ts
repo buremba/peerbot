@@ -146,14 +146,6 @@ export async function listCatalogEntries(
 	return result;
 }
 
-export async function getCatalogEntry(
-	kind: CatalogKind,
-	id: string,
-): Promise<CatalogEntry | undefined> {
-	const entries = (await listCatalogEntries([kind]))[kind];
-	return entries.find((entry) => entry.id === id);
-}
-
 export function clearCatalogCacheForTests(): void {
 	manifestCache.clear();
 	inMemoryFallback = null;

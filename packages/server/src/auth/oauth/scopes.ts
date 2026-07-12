@@ -41,13 +41,6 @@ export const AVAILABLE_PAT_SCOPES = [
 ] as const;
 
 /**
- * Default scope requested when device-authing against an external MCP server
- * (gateway device-auth flow). Includes `profile:read` so the gateway can
- * introspect who the credential belongs to.
- */
-export const DEFAULT_MCP_DEVICE_SCOPE = 'mcp:read mcp:write profile:read';
-
-/**
  * The least-privilege scope a token must carry to fetch a managed connector's
  * access token via POST /oauth/connection-token.
  *

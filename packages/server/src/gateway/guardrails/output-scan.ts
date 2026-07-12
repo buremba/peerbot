@@ -27,14 +27,6 @@ import { recordGuardrailTrip } from "./audit.js";
 
 const logger = createLogger("output-guardrail");
 
-/**
- * Streaming chunks split arbitrarily across token boundaries; a secret like
- * `sk-abc…` can arrive as `"sk-an"` then `"t-…"` and bypass any per-delta
- * regex. Callers keep a rolling tail of recent emitted text and scan
- * `tail + delta` so patterns straddling a chunk boundary still match.
- */
-export const OUTPUT_GUARDRAIL_TAIL_CHARS = 256;
-
 export interface OutputScanContext {
   agentId: string;
   organizationId?: string;

@@ -12,18 +12,12 @@ import {
   type ProviderUpstreamConfig,
 } from "../modules/module-system.js";
 import { ApiKeyProviderModule } from "./api-key-provider-module.js";
-import {
-  isUnresolvedModelRef,
-  UNRESOLVED_MODEL_SUFFIX,
-} from "./model-sentinel.js";
+import { isUnresolvedModelRef } from "./model-sentinel.js";
 import type { AgentSettingsStore } from "./settings/agent-settings-store.js";
 import type { AuthProfilesManager } from "./settings/auth-profiles-manager.js";
 import { enforceModelAllowList } from "./settings/model-selection.js";
 
 const logger = createLogger("provider-catalog");
-
-// Re-export the sentinel helpers so existing importers keep working.
-export { isUnresolvedModelRef, UNRESOLVED_MODEL_SUFFIX };
 
 /** Auth mechanism a provider supports. */
 export type ProviderAuthType = "oauth" | "device-code" | "api-key";

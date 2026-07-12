@@ -20,10 +20,8 @@ import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
 import type { McpConfigService } from "../auth/mcp/config-service.js";
 import type { McpProxy } from "../auth/mcp/proxy.js";
 import type { McpTool } from "../auth/mcp/tool-cache.js";
-import {
-	isUnresolvedModelRef,
-	type ProviderCatalogService,
-} from "../auth/provider-catalog.js";
+import { isUnresolvedModelRef } from "../auth/model-sentinel.js";
+import type { ProviderCatalogService } from "../auth/provider-catalog.js";
 import { composeEffectiveModelRef } from "../auth/settings/model-selection.js";
 import { getOrgDefaultModel } from "../../lobu/stores/provider-secrets.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";

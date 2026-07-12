@@ -1,6 +1,5 @@
-import type { InstructionContext } from "@lobu/core";
+import { BaseInstructionProvider, type InstructionContext } from "@lobu/core";
 import { orgContext } from "../../lobu/stores/org-context.js";
-import { BaseInstructionProvider } from "../services/instruction-service.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
 
 export class SlackInstructionProvider extends BaseInstructionProvider {

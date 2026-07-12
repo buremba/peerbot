@@ -12,10 +12,6 @@ import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.j
 
 const logger = createLogger("instruction-service");
 
-// Re-export so existing `import { BaseInstructionProvider } from
-// "../services/instruction-service"` paths keep working.
-export { BaseInstructionProvider };
-
 interface McpStatus {
   id: string;
   name: string;

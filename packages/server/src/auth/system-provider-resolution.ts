@@ -11,7 +11,7 @@ import type { ProviderConfigEntry } from "@lobu/core";
 import { getErrorMessage } from "@lobu/core";
 import { resolveEnv } from "../gateway/auth/mcp/string-substitution";
 import { collectProviderModelOptions } from "../gateway/auth/provider-model-options";
-import { UNRESOLVED_MODEL_SUFFIX } from "../gateway/auth/provider-catalog";
+import { UNRESOLVED_MODEL_SUFFIX } from "../gateway/auth/model-sentinel";
 import { getModelProviderModules } from "../gateway/modules/module-system";
 import {
 	ProviderRegistryService,

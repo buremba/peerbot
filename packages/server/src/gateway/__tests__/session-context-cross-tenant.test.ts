@@ -11,12 +11,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { InstructionContext } from "@lobu/core";
+import { BaseInstructionProvider, type InstructionContext } from "@lobu/core";
 import { McpConfigService } from "../auth/mcp/config-service.js";
-import {
-  BaseInstructionProvider,
-  InstructionService,
-} from "../services/instruction-service.js";
+import { InstructionService } from "../services/instruction-service.js";
 
 /** A platform provider that, if not gated, leaks a foreign tenant's identity. */
 class LeakyPlatformProvider extends BaseInstructionProvider {

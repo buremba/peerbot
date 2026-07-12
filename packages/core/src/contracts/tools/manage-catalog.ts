@@ -64,6 +64,9 @@ const CatalogConnectorEntrySchema = Type.Object({
       favicon_domain: Type.Optional(Type.Union([Type.String(), Type.Null()])),
       runtime: Type.Optional(Type.Unknown()),
       login_enabled: Type.Optional(Type.Boolean()),
+      installable: Type.Optional(Type.Boolean()),
+      installability_reason: Type.Optional(Type.String()),
+      installability_message: Type.Optional(Type.String()),
     },
     { additionalProperties: true }
   ),

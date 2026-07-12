@@ -7,8 +7,7 @@ import {
 	findBundledConnectorFile as findInDirs,
 } from "@lobu/connector-worker/compile";
 import { getErrorMessage } from "@lobu/core";
-import { isCloudMode } from "./cloud-mode";
-import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from "./connector-cloud-gate";
+import { getConnectorCloudAvailability } from "./connector-cloud-gate";
 import { extractConnectorMetadata } from "./connector-compiler";
 import logger from "./logger";
 
@@ -108,6 +107,40 @@ export function findBundledConnectorFile(key: string): string | null {
 	const found = findInDirs(key, DEFAULT_CONNECTOR_DIR_CANDIDATES);
 	bundledFileCache.set(key, found);
 	return found;
+}
+
+export type CatalogConnectorInstallability =
+	| { installable: true }
+	| {
+			installable: false;
+			reason: "cloud_restricted" | "bundled_source_unavailable";
+			message: string;
+	  };
+
+/**
+ * The capability decision shared by catalog presentation and connector-id
+ * installation. Catalog manifests are browse indexes and can outlive a bundled
+ * source file, so presence in a manifest alone is not an install guarantee.
+ */
+export function getCatalogConnectorInstallability(
+	connectorKey: string,
+): CatalogConnectorInstallability {
+	const cloud = getConnectorCloudAvailability(connectorKey);
+	if (!cloud.allowed) {
+		return {
+			installable: false,
+			reason: cloud.reason,
+			message: cloud.message,
+		};
+	}
+	if (!findBundledConnectorFile(connectorKey)) {
+		return {
+			installable: false,
+			reason: "bundled_source_unavailable",
+			message: `Catalog connector '${connectorKey}' does not resolve to a bundled connector source in this environment.`,
+		};
+	}
+	return { installable: true };
 }
 
 // Derive the persisted source_path (relative to the bundled-connectors
@@ -275,8 +308,7 @@ export async function listCatalogConnectorDefinitions(): Promise<
 	const definitions: CatalogConnectorDefinition[] = [];
 
 	for (const entry of entries) {
-		if (CLOUD_RESTRICTED_CONNECTOR_KEYS.has(entry.id) && isCloudMode())
-			continue;
+		if (!getCatalogConnectorInstallability(entry.id).installable) continue;
 		const detail = entry.detail;
 		const sourcePath =
 			typeof detail.source_path === "string" ? detail.source_path : entry.id;

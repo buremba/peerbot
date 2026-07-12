@@ -474,11 +474,11 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 
 		if (feedId) {
 			const feedRows = (await sql`
-      SELECT schedule FROM feeds WHERE id = ${feedId}
-    `) as unknown as Array<{ schedule: string | null }>;
+      SELECT schedule, timezone FROM feeds WHERE id = ${feedId}
+    `) as unknown as Array<{ schedule: string | null; timezone: string | null }>;
 
 			const schedule = feedRows[0]?.schedule ?? "0 */6 * * *";
-			const nextRun = nextRunAtFromCron(schedule);
+			const nextRun = nextRunAtFromCron(schedule, new Date(), feedRows[0]?.timezone ?? null);
 			const isSuccess = req.status === "success";
 
 			await sql`

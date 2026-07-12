@@ -17,6 +17,8 @@ export interface FeedsCreateInput {
 	entity_ids?: number[];
 	config?: Record<string, unknown>;
 	schedule?: string;
+	/** IANA zone the schedule is evaluated in; omit for server time (UTC). */
+	timezone?: string;
 }
 
 export interface FeedsNamespace {
@@ -38,6 +40,8 @@ export interface FeedsNamespace {
 		entity_ids?: number[];
 		config?: Record<string, unknown>;
 		schedule?: string;
+		/** IANA zone for the schedule; null clears it (server time). */
+		timezone?: string | null;
 	}): Promise<unknown>;
 	delete(feed_id: number): Promise<unknown>;
 	trigger(feed_id: number): Promise<unknown>;

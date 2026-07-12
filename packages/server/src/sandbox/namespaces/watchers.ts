@@ -60,6 +60,8 @@ export interface WatcherCreateInput {
 	prompt: string;
 	sources?: Source[];
 	schedule?: string;
+	/** IANA zone the schedule is evaluated in; omit for server time (UTC). */
+	timezone?: string;
 	slug?: string;
 	name?: string;
 	description?: string;
@@ -76,6 +78,8 @@ export interface WatcherCreateInput {
 export interface WatcherUpdateInput {
 	watcher_id: WatcherId;
 	schedule?: string;
+	/** IANA zone for the schedule; null clears it (server time). */
+	timezone?: string | null;
 	agent_id?: string;
 	scheduler_client_id?: string;
 	model_config?: Record<string, unknown>;

@@ -1,0 +1,182 @@
+/**
+ * Timezone-aware schedule evaluation for watchers and feeds.
+ *
+ * Same semantics as scheduled_jobs.timezone (#1866): the cron's wall-clock
+ * fields are evaluated in the stored IANA zone, DST included; NULL keeps the
+ * pre-existing server-time behavior. Asia/Taipei (UTC+8, no DST) makes the
+ * expected UTC instants deterministic: 9am Taipei is always 01:00Z.
+ */
+
+import { beforeAll, describe, expect, it } from 'vitest';
+import type { DbClient } from '../../db/client';
+import { nextRunAt } from '../../utils/cron';
+import { advanceWatcherSchedule } from '../../watchers/automation';
+import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
+import {
+  createTestAgent,
+  createTestConnection,
+  createTestEntity,
+  createTestUser,
+} from '../setup/test-fixtures';
+import { TestApiClient, TestWorkspace } from '../setup/test-mcp-client';
+
+function utcHour(ts: unknown): number {
+  return new Date(ts as string).getUTCHours();
+}
+
+// "No timezone" means the process's local zone (UTC in prod/CI, whatever the
+// dev machine runs locally) — compare against nextRunAt itself, not a fixed
+// hour, so the assertion holds in any environment.
+function serverTimeNineAmUtcHour(): number {
+  return utcHour(nextRunAt('0 9 * * *', new Date()));
+}
+
+describe('watchers/feeds timezone-aware schedules', () => {
+  let workspace: TestWorkspace;
+  let api: TestApiClient;
+  let entityId: number;
+
+  beforeAll(async () => {
+    await cleanupTestDatabase();
+    workspace = await TestWorkspace.create({ name: 'TZ Schedules Org' });
+    const entity = await createTestEntity({
+      name: 'TZ Entity',
+      organization_id: workspace.org.id,
+      created_by: workspace.users.owner.id,
+    });
+    entityId = entity.id;
+    await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId: workspace.users.owner.id,
+      agentId: 'tz-watcher-agent',
+      name: 'TZ Watcher Agent',
+    });
+    api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: workspace.users.owner.id,
+      memberRole: 'owner',
+    });
+  }, 60_000);
+
+  it('watcher create stores timezone and anchors next_run_at to the zone wall-clock', async () => {
+    const created = (await workspace.owner.watchers.create({
+      entity_id: entityId,
+      slug: 'tz-watcher',
+      name: 'TZ Watcher',
+      prompt: 'Summarize {{entities}}.',
+      schedule: '0 9 * * *',
+      timezone: 'Asia/Taipei',
+      agent_id: 'tz-watcher-agent',
+    })) as { watcher_id: string };
+    const watcherId = Number(created.watcher_id);
+
+    const sql = getTestDb();
+    const [row] = await sql`
+      SELECT timezone, next_run_at FROM watchers WHERE id = ${watcherId}
+    `;
+    expect(row.timezone).toBe('Asia/Taipei');
+    expect(utcHour(row.next_run_at)).toBe(1);
+
+    // Fire-time advance uses the stored zone, not server time.
+    await sql`
+      UPDATE watchers SET next_run_at = NOW() - INTERVAL '1 minute' WHERE id = ${watcherId}
+    `;
+    await advanceWatcherSchedule(sql as unknown as DbClient, watcherId);
+    const [advanced] = await sql`
+      SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+    `;
+    expect(utcHour(advanced.next_run_at)).toBe(1);
+    expect(new Date(advanced.next_run_at as string).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('watcher update: timezone-only change re-anchors the pending firing', async () => {
+    const created = (await workspace.owner.watchers.create({
+      entity_id: entityId,
+      slug: 'tz-watcher-update',
+      name: 'TZ Watcher Update',
+      prompt: 'Summarize {{entities}}.',
+      schedule: '0 9 * * *',
+      agent_id: 'tz-watcher-agent',
+    })) as { watcher_id: string };
+    const watcherId = Number(created.watcher_id);
+
+    const sql = getTestDb();
+    const [before] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+    expect(utcHour(before.next_run_at)).toBe(serverTimeNineAmUtcHour());
+
+    await workspace.owner.watchers.update({
+      watcher_id: watcherId,
+      timezone: 'Asia/Taipei',
+    });
+    const [after] = await sql`
+      SELECT timezone, next_run_at FROM watchers WHERE id = ${watcherId}
+    `;
+    expect(after.timezone).toBe('Asia/Taipei');
+    expect(utcHour(after.next_run_at)).toBe(1);
+  });
+
+  it('watcher create rejects an unknown timezone', async () => {
+    await expect(
+      workspace.owner.watchers.create({
+        entity_id: entityId,
+        slug: 'tz-watcher-bad',
+        name: 'Bad TZ',
+        prompt: 'Summarize {{entities}}.',
+        schedule: '0 9 * * *',
+        timezone: 'Mars/Olympus_Mons',
+        agent_id: 'tz-watcher-agent',
+      })
+    ).rejects.toThrow(/Unknown IANA timezone/);
+  });
+
+  it('feed update stores timezone and re-anchors next_run_at; null clears back to server time', async () => {
+    const user = await createTestUser({ email: 'tz-feeds@test.com' });
+    const conn = await createTestConnection({
+      organization_id: workspace.org.id,
+      connector_key: 'github',
+      created_by: user.id,
+    });
+    const sql = getTestDb();
+    const [feed] = await sql<{ id: number }[]>`
+      SELECT id FROM feeds WHERE connection_id = ${conn.id} LIMIT 1
+    `;
+    const feedId = Number(feed?.id);
+    expect(feedId).toBeGreaterThan(0);
+
+    await api.feeds.update({
+      feed_id: feedId,
+      schedule: '0 9 * * *',
+      timezone: 'Asia/Taipei',
+    });
+    const [tzRow] = await sql`
+      SELECT timezone, next_run_at FROM feeds WHERE id = ${feedId}
+    `;
+    expect(tzRow.timezone).toBe('Asia/Taipei');
+    expect(utcHour(tzRow.next_run_at)).toBe(1);
+
+    await api.feeds.update({ feed_id: feedId, timezone: null });
+    const [cleared] = await sql`
+      SELECT timezone, next_run_at FROM feeds WHERE id = ${feedId}
+    `;
+    expect(cleared.timezone).toBeNull();
+    expect(utcHour(cleared.next_run_at)).toBe(serverTimeNineAmUtcHour());
+  });
+
+  it('feed update rejects an unknown timezone', async () => {
+    const user = await createTestUser({ email: 'tz-feeds-bad@test.com' });
+    const conn = await createTestConnection({
+      organization_id: workspace.org.id,
+      connector_key: 'github',
+      created_by: user.id,
+    });
+    const sql = getTestDb();
+    const [feed] = await sql<{ id: number }[]>`
+      SELECT id FROM feeds WHERE connection_id = ${conn.id} LIMIT 1
+    `;
+    const result = (await api.feeds.update({
+      feed_id: Number(feed?.id),
+      timezone: 'Not/A_Zone',
+    })) as { error?: string };
+    expect(result.error).toContain('Unknown IANA timezone');
+  });
+});

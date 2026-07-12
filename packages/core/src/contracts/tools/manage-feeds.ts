@@ -116,6 +116,14 @@ export const CreateFeedAction = Type.Object({
       description: "Cron expression for sync schedule (default: every 6 hours)",
     })
   ),
+  timezone: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: 64,
+      description:
+        "IANA timezone the schedule is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Omit for server time (UTC).",
+    })
+  ),
   virtual: Type.Optional(
     Type.Boolean({
       description:
@@ -141,6 +149,12 @@ export const UpdateFeedAction = Type.Object({
   ),
   schedule: Type.Optional(
     Type.String({ description: "Cron expression for sync schedule" })
+  ),
+  timezone: Type.Optional(
+    Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()], {
+      description:
+        "IANA timezone the schedule is evaluated in. Null clears it (server time / UTC).",
+    })
   ),
   repair_agent_id: Type.Optional(
     Type.Union([Type.String(), Type.Null()], {

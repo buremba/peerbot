@@ -17,7 +17,6 @@ import { checkStalledExecutions } from './check-stalled-executions';
 import { runConnectorHealthCheck } from '../connectors/connector-health';
 import { runClassificationReconciliation } from './classification-reconciliation';
 import { refreshConnectorDefinitions } from './refresh-connector-definitions';
-import { backfillInferenceProviders } from './backfill-inference-providers';
 import {
   isDeliverableChatPlatform,
   registerScheduledJobsTicker,
@@ -68,35 +67,6 @@ export async function bootTaskScheduler(
   env: Env,
 ): Promise<TaskScheduler> {
   const scheduler = new TaskScheduler(coreServices.getQueue());
-
-  // Converge legacy provider secrets BEFORE this pod serves traffic: the org
-  // credential resolver reads ONLY inference_providers-backed vault names
-  // (resolver cutover), so a legacy-only org must have its rows minted before
-  // the first credential lookup. Idempotent and cheap once converged.
-  //
-  // Failure semantics are deliberately split: a WHOLE-PASS throw (candidate
-  // scan / freshness UPDATE) propagates and fails the boot — serving with
-  // unconverged or knowingly-stale keys is worse than a pod restart, and
-  // during a rolling deploy the old pods keep serving. PER-ROW failures do
-  // NOT throw (they're counted in `errors` and logged inside the backfill):
-  // one org's poisoned row must not become a fleet-wide deploy freeze; the
-  // hourly tick retries it.
-  const backfill = await backfillInferenceProviders();
-  if (backfill.errors > 0) {
-    logger.error(
-      { ...backfill },
-      '[boot] backfill-inference-providers PARTIALLY converged — some rows failed; hourly tick retries them',
-    );
-  } else if (
-    backfill.created > 0 ||
-    backfill.freshened > 0 ||
-    backfill.invalidSlug > 0
-  ) {
-    logger.info(
-      { ...backfill },
-      '[boot] backfill-inference-providers converged before serving',
-    );
-  }
 
   registerMaintenanceTasks(scheduler, env, coreServices);
   await scheduler.start();
@@ -272,29 +242,6 @@ function registerMaintenanceTasks(
       const result = await refreshConnectorDefinitions();
       if (result.refreshed > 0 || result.errored > 0) {
         logger.info({ ...result }, '[task] refresh-connector-definitions completed');
-      }
-    },
-    { cron: '0 * * * *' },
-  );
-
-  // Inference-provider backfill — seeds inference_providers rows from legacy
-  // `provider:<type>:apiKey` agent_secrets (copies the ciphertext into a new
-  // row-unique keyref, empty capabilities so behavior is byte-identical). App
-  // -level (NOT inline in a migration — the classifier-backfill outage
-  // precedent), idempotent (ON CONFLICT DO NOTHING + candidate anti-join),
-  // single-claimant per tick (multi-replica safe). The PRIMARY run is awaited
-  // at boot in bootTaskScheduler (the resolver reads only backfilled names, so
-  // convergence must precede traffic); this hourly tick is the retry safety
-  // net for a failed boot run.
-  scheduler.register(
-    'backfill-inference-providers',
-    async () => {
-      const result = await backfillInferenceProviders();
-      if (result.created > 0 || result.invalidSlug > 0) {
-        logger.info(
-          { ...result },
-          '[task] backfill-inference-providers completed',
-        );
       }
     },
     { cron: '0 * * * *' },

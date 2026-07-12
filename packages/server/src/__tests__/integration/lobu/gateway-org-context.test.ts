@@ -32,7 +32,7 @@ import {
   createLobuAuthBridge,
   createLobuOrgContextMiddleware,
 } from "../../../lobu/gateway";
-import { clearMultiTenantCachesForTests } from "../../../workspace/multi-tenant";
+import { clearMultiTenantCachesForTests } from "../../../workspace/multi-tenant-caches";
 import { cleanupTestDatabase } from "../../setup/test-db";
 import {
   addUserToOrganization,

@@ -1,13 +1,12 @@
 #!/usr/bin/env bun
 
 import { OpenAPIHono } from "@hono/zod-openapi";
-import { createLogger } from "@lobu/core";
+import { type AgentMetadata, createLogger } from "@lobu/core";
 import { apiReference } from "@scalar/hono-api-reference";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
-import type { AgentMetadata } from "../auth/agent-metadata-store.js";
 import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
 import { setEnvResolver } from "../auth/mcp/string-substitution.js";
 import { createAuthProfileLabel } from "../auth/settings/auth-profiles-manager.js";

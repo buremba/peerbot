@@ -18,18 +18,11 @@ import type {
   WorkspaceProvider,
 } from './types';
 import {
-  clearMultiTenantCachesForTests as clearMultiTenantCachesForTestsShared,
   memberRoleCache,
   orgSlugCache,
   ownerCache,
   sessionCache,
 } from './multi-tenant-caches';
-
-// Re-export the test-only cache clearer so existing imports
-// (`from '../workspace/multi-tenant'`) keep working; the cache instances
-// themselves live in `./multi-tenant-caches` to keep test cleanup off this
-// file's heavy import graph.
-export const clearMultiTenantCachesForTests = clearMultiTenantCachesForTestsShared;
 
 /**
  * Path namespaces that don't carry an org context. Authenticated requests to

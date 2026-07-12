@@ -1,9 +1,7 @@
 import type { AgentSettings, DeclaredCredential } from "@lobu/core";
 import { createLogger } from "@lobu/core";
-import {
-  buildProviderCatalog,
-  UNRESOLVED_MODEL_SUFFIX,
-} from "../auth/provider-catalog.js";
+import { UNRESOLVED_MODEL_SUFFIX } from "../auth/model-sentinel.js";
+import { buildProviderCatalog } from "../auth/provider-catalog.js";
 import type { AgentConfig } from "../config/index.js";
 
 const logger = createLogger("declared-agent-registry");

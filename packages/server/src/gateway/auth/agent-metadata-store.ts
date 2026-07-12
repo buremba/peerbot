@@ -4,9 +4,6 @@ import {
   createLogger,
 } from "@lobu/core";
 
-// Re-export so existing imports from this module keep working.
-export type { AgentMetadata };
-
 const logger = createLogger("agent-metadata-store");
 
 /**

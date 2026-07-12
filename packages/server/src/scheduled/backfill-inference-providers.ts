@@ -25,13 +25,11 @@
  */
 
 import { getDb } from '../db/client';
+import { isValidInferenceProviderSlug } from '../lobu/stores/provider-secrets';
 import logger from '../utils/logger';
 
 // Legacy org-shared provider secret name: `provider:<type>:apiKey`.
 const LEGACY_PROVIDER_SECRET_RE = /^provider:(.+):apiKey$/;
-
-// inference_providers.slug format: ^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 
 export interface BackfillInferenceProvidersResult {
   scanned: number;
@@ -80,11 +78,18 @@ export async function backfillInferenceProviders(): Promise<BackfillInferencePro
     result.scanned++;
     const match = LEGACY_PROVIDER_SECRET_RE.exec(row.name);
     const slug = match?.[1];
-    if (!slug || !SLUG_RE.test(slug)) {
+    if (!slug || !isValidInferenceProviderSlug(slug)) {
       // A legacy type that isn't a valid slug (uppercase, too long, etc.) —
-      // can't be represented as an inference_providers row. Leave it for the
-      // resolver's legacy path; count it so operators can see the gap.
+      // can't be represented as an inference_providers row, and the resolver
+      // no longer has a legacy path, so this credential is unreachable. That
+      // was already true pre-cutover for module lookups (module providerIds
+      // are valid slugs), but WARN loudly so an operator sees the stranded
+      // row instead of a silent counter.
       result.invalidSlug++;
+      logger.warn(
+        { organization_id: row.organization_id, name: row.name },
+        '[backfill-inference-providers] legacy secret name is not a valid provider slug — credential is unreachable; migrate or delete it manually',
+      );
       continue;
     }
 

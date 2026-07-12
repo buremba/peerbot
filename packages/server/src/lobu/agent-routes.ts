@@ -1162,8 +1162,18 @@ routes.put("/inference-providers/:slug/key", async (c) => {
 		);
 	}
 
-	const ok = await rotateInferenceProviderKey(orgId, slug, value);
-	if (!ok) return c.json({ error: "Provider not found" }, 404);
+	const outcome = await rotateInferenceProviderKey(orgId, slug, value);
+	if (outcome === "not_found") {
+		return c.json({ error: "Provider not found" }, 404);
+	}
+	if (outcome === "oauth_provider") {
+		return c.json(
+			{
+				error: `Provider '${slug}' signs in via OAuth — it has no API key to rotate`,
+			},
+			400,
+		);
+	}
 	// Metadata-only: key rotations are audited but the value is never snapshotted.
 	emitConfigChange(c, {
 		resourceKind: "inference-provider",

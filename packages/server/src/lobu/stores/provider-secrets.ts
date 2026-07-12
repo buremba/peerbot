@@ -692,25 +692,33 @@ export async function updateInferenceProviderCoreFields(
  * Rotate a provider's api key: re-encrypt into the SAME api_key_ref name (the
  * ref is immutable). Returns false when no live row exists for the slug.
  */
+export type RotateInferenceProviderKeyResult =
+	| "rotated"
+	| "not_found"
+	/** The row signs in via OAuth (`oauth://` api_key_ref) — it has no vault
+	 *  key to rotate, and writing one would be silently unread. */
+	| "oauth_provider";
+
 export async function rotateInferenceProviderKey(
 	organizationId: string,
 	slug: string,
 	apiKey: string,
-): Promise<boolean> {
+): Promise<RotateInferenceProviderKeyResult> {
 	const sql = getDb();
 	const ciphertext = encrypt(apiKey);
 
 	return await sql.begin(async (tx) => {
 		const rows = (await tx`
-			SELECT id
+			SELECT id, api_key_ref
 			FROM inference_providers
 			WHERE organization_id = ${organizationId} AND slug = ${slug}
 			  AND deleted_at IS NULL
 			LIMIT 1
 			FOR UPDATE
-		`) as Array<{ id: string | number }>;
+		`) as Array<{ id: string | number; api_key_ref: string }>;
 		const row = rows[0];
-		if (!row) return false;
+		if (!row) return "not_found";
+		if (isOAuthInferenceProviderRef(row.api_key_ref)) return "oauth_provider";
 
 		const secretName = inferenceProviderSecretName(slug, Number(row.id));
 
@@ -721,7 +729,7 @@ export async function rotateInferenceProviderKey(
 			DO UPDATE SET ciphertext = EXCLUDED.ciphertext, updated_at = now()
 		`;
 
-		return true;
+		return "rotated";
 	});
 }
 

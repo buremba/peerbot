@@ -68,6 +68,33 @@ export async function bootTaskScheduler(
   env: Env,
 ): Promise<TaskScheduler> {
   const scheduler = new TaskScheduler(coreServices.getQueue());
+
+  // Converge legacy provider secrets BEFORE this pod serves traffic: the org
+  // credential resolver reads ONLY inference_providers-backed vault names
+  // (resolver cutover), so a legacy-only org must have its rows minted before
+  // the first credential lookup. Idempotent and cheap once converged. Fail
+  // open on error — if this query fails the DB is unhealthy and credential
+  // reads would fail regardless; the hourly tick retries, and during a
+  // rolling deploy the old pods keep serving meanwhile.
+  try {
+    const backfill = await backfillInferenceProviders();
+    if (
+      backfill.created > 0 ||
+      backfill.freshened > 0 ||
+      backfill.invalidSlug > 0
+    ) {
+      logger.info(
+        { ...backfill },
+        '[boot] backfill-inference-providers converged before serving',
+      );
+    }
+  } catch (error) {
+    logger.error(
+      { err: error },
+      '[boot] backfill-inference-providers failed; hourly tick will retry',
+    );
+  }
+
   registerMaintenanceTasks(scheduler, env, coreServices);
   await scheduler.start();
 
@@ -252,9 +279,10 @@ function registerMaintenanceTasks(
   // row-unique keyref, empty capabilities so behavior is byte-identical). App
   // -level (NOT inline in a migration — the classifier-backfill outage
   // precedent), idempotent (ON CONFLICT DO NOTHING + candidate anti-join),
-  // single-claimant per tick (multi-replica safe). The first tick after a
-  // deploy converges the fleet without an operator step; hourly thereafter is
-  // plenty since it only matters until every legacy secret is migrated.
+  // single-claimant per tick (multi-replica safe). The PRIMARY run is awaited
+  // at boot in bootTaskScheduler (the resolver reads only backfilled names, so
+  // convergence must precede traffic); this hourly tick is the retry safety
+  // net for a failed boot run.
   scheduler.register(
     'backfill-inference-providers',
     async () => {

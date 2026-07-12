@@ -10,105 +10,128 @@
  *    create_feed({ virtual:true, schedule:'not-a-cron' }).
  */
 
-import { beforeAll, describe, expect, it } from 'vitest';
-import type { Env } from '../../../index';
-import { materializeDueFeeds } from '../../../scheduled/check-due-feeds';
-import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createTestConnection, createTestOrganization, createTestUser } from '../../setup/test-fixtures';
-import { TestApiClient } from '../../setup/test-mcp-client';
+import { beforeAll, describe, expect, it } from "vitest";
+import type { Env } from "../../../index";
+import { ClientSdkActionError } from "../../../sandbox/namespaces/action-call";
+import { materializeDueFeeds } from "../../../scheduled/check-due-feeds";
+import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
+import {
+	createTestConnection,
+	createTestOrganization,
+	createTestUser,
+} from "../../setup/test-fixtures";
+import { TestApiClient } from "../../setup/test-mcp-client";
 
-describe('manage_feeds create_feed (virtual)', () => {
-  let owner: TestApiClient;
-  let orgId: string;
-  let connectionId: number;
+describe("manage_feeds create_feed (virtual)", () => {
+	let owner: TestApiClient;
+	let orgId: string;
+	let connectionId: number;
 
-  beforeAll(async () => {
-    await cleanupTestDatabase();
-    const org = await createTestOrganization({ name: 'Virtual Create Org' });
-    orgId = org.id;
-    const user = await createTestUser({ email: 'vcreate@test.com' });
-    owner = await TestApiClient.for({ organizationId: org.id, userId: user.id, memberRole: 'owner' });
-    const conn = await createTestConnection({
-      organization_id: orgId,
-      connector_key: 'github',
-      created_by: user.id,
-      createDefaultFeed: false,
-    });
-    connectionId = Number(conn.id);
-  });
+	beforeAll(async () => {
+		await cleanupTestDatabase();
+		const org = await createTestOrganization({ name: "Virtual Create Org" });
+		orgId = org.id;
+		const user = await createTestUser({ email: "vcreate@test.com" });
+		owner = await TestApiClient.for({
+			organizationId: org.id,
+			userId: user.id,
+			memberRole: "owner",
+		});
+		const conn = await createTestConnection({
+			organization_id: orgId,
+			connector_key: "github",
+			created_by: user.id,
+			createDefaultFeed: false,
+		});
+		connectionId = Number(conn.id);
+	});
 
-  it('creates a virtual feed with schedule/next_run_at NULL and kind=virtual', async () => {
-    const result = (await owner.feeds.create({
-      connection_id: connectionId,
-      feed_key: 'issues',
-      virtual: true,
-      config: { query: 'is:issue is:open' },
-    })) as { error?: string; feed?: { id: number; kind: string; virtual: boolean; schedule: string | null; next_run_at: string | null } };
+	it("creates a virtual feed with schedule/next_run_at NULL and kind=virtual", async () => {
+		const result = (await owner.feeds.create({
+			connection_id: connectionId,
+			feed_key: "issues",
+			virtual: true,
+			config: { query: "is:issue is:open" },
+		})) as {
+			error?: string;
+			feed?: {
+				id: number;
+				kind: string;
+				virtual: boolean;
+				schedule: string | null;
+				next_run_at: string | null;
+			};
+		};
 
-    expect(result.error).toBeUndefined();
-    expect(result.feed?.kind).toBe('virtual');
-    expect(result.feed?.virtual).toBe(true);
-    expect(result.feed?.schedule).toBeNull();
-    expect(result.feed?.next_run_at).toBeNull();
-  });
+		expect(result.error).toBeUndefined();
+		expect(result.feed?.kind).toBe("virtual");
+		expect(result.feed?.virtual).toBe(true);
+		expect(result.feed?.schedule).toBeNull();
+		expect(result.feed?.next_run_at).toBeNull();
+	});
 
-  it('allows a virtual feed with no config.query (unbounded live read)', async () => {
-    const result = (await owner.feeds.create({
-      connection_id: connectionId,
-      feed_key: 'issues',
-      virtual: true,
-      config: { recall: true },
-    })) as { error?: string; feed?: { kind: string; virtual: boolean; config?: { recall?: boolean } } };
+	it("allows a virtual feed with no config.query (unbounded live read)", async () => {
+		const result = (await owner.feeds.create({
+			connection_id: connectionId,
+			feed_key: "issues",
+			virtual: true,
+			config: { recall: true },
+		})) as {
+			error?: string;
+			feed?: { kind: string; virtual: boolean; config?: { recall?: boolean } };
+		};
 
-    expect(result.error).toBeUndefined();
-    expect(result.feed?.kind).toBe('virtual');
-    expect(result.feed?.virtual).toBe(true);
-    expect(result.feed?.config?.recall).toBe(true);
-  });
+		expect(result.error).toBeUndefined();
+		expect(result.feed?.kind).toBe("virtual");
+		expect(result.feed?.virtual).toBe(true);
+		expect(result.feed?.config?.recall).toBe(true);
+	});
 
-  it('does NOT validate the sync schedule for a virtual feed (ordering fix)', async () => {
-    // A malformed schedule string that validateSchedule would reject — it must be
-    // ignored because a virtual feed persists schedule = NULL.
-    const result = (await owner.feeds.create({
-      connection_id: connectionId,
-      feed_key: 'issues',
-      virtual: true,
-      schedule: 'not-a-cron-expression',
-      config: { query: 'is:issue' },
-    })) as { error?: string; feed?: { schedule: string | null } };
+	it("does NOT validate the sync schedule for a virtual feed (ordering fix)", async () => {
+		// A malformed schedule string that validateSchedule would reject — it must be
+		// ignored because a virtual feed persists schedule = NULL.
+		const result = (await owner.feeds.create({
+			connection_id: connectionId,
+			feed_key: "issues",
+			virtual: true,
+			schedule: "not-a-cron-expression",
+			config: { query: "is:issue" },
+		})) as { error?: string; feed?: { schedule: string | null } };
 
-    expect(result.error).toBeUndefined();
-    expect(result.feed?.schedule).toBeNull();
-  });
+		expect(result.error).toBeUndefined();
+		expect(result.feed?.schedule).toBeNull();
+	});
 
-  it('still validates the schedule for a NON-virtual feed', async () => {
-    const result = (await owner.feeds.create({
-      connection_id: connectionId,
-      feed_key: 'issues',
-      schedule: 'not-a-cron-expression',
-    })) as { error?: string };
+	it("still validates the schedule for a NON-virtual feed", async () => {
+		const error = await owner.feeds
+			.create({
+				connection_id: connectionId,
+				feed_key: "issues",
+				schedule: "not-a-cron-expression",
+			})
+			.catch((reason: unknown) => reason);
 
-    expect(result.error).toBeTruthy();
-  });
+		expect(error).toBeInstanceOf(ClientSdkActionError);
+	});
 
-  it('materializeDueFeeds never creates a sync run for the virtual feed', async () => {
-    const created = (await owner.feeds.create({
-      connection_id: connectionId,
-      feed_key: 'issues',
-      virtual: true,
-      config: { query: 'is:issue is:open' },
-    })) as { feed?: { id: number } };
-    const feedId = Number(created.feed?.id);
+	it("materializeDueFeeds never creates a sync run for the virtual feed", async () => {
+		const created = (await owner.feeds.create({
+			connection_id: connectionId,
+			feed_key: "issues",
+			virtual: true,
+			config: { query: "is:issue is:open" },
+		})) as { feed?: { id: number } };
+		const feedId = Number(created.feed?.id);
 
-    // Force the virtual feed "due" (past next_run_at) so the `virtual` guard —
-    // not a NULL schedule — is what excludes it, then run the scheduler.
-    const sql = getTestDb();
-    await sql`UPDATE feeds SET next_run_at = NOW() - INTERVAL '1 minute' WHERE id = ${feedId}`;
-    await materializeDueFeeds({} as Env, sql);
+		// Force the virtual feed "due" (past next_run_at) so the `virtual` guard —
+		// not a NULL schedule — is what excludes it, then run the scheduler.
+		const sql = getTestDb();
+		await sql`UPDATE feeds SET next_run_at = NOW() - INTERVAL '1 minute' WHERE id = ${feedId}`;
+		await materializeDueFeeds({} as Env, sql);
 
-    const [runs] = await sql<{ n: number }[]>`
+		const [runs] = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM runs WHERE feed_id = ${feedId} AND run_type = 'sync'
     `;
-    expect(Number(runs?.n)).toBe(0);
-  });
+		expect(Number(runs?.n)).toBe(0);
+	});
 });

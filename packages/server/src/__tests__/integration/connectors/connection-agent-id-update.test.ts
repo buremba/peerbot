@@ -25,12 +25,13 @@ import { ChatInstanceManager } from "../../../gateway/connections/chat-instance-
 import type { PlatformConnection } from "../../../gateway/connections/types";
 import { SecretStoreRegistry } from "../../../gateway/secrets/index";
 import { __setChatInstanceManagerForTests } from "../../../lobu/gateway";
+import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-installation-store";
 import { upsertChatConnectionProjection } from "../../../lobu/stores/connections-projection";
 import { orgContext } from "../../../lobu/stores/org-context";
-import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-installation-store";
 import { PostgresSecretStore } from "../../../lobu/stores/postgres-secret-store";
 import { createPostgresAgentConnectionStore } from "../../../lobu/stores/postgres-stores";
 import { upsertSlackInstallByTeam } from "../../../lobu/stores/slack-installations";
+import { ClientSdkActionError } from "../../../sandbox/namespaces/action-call";
 import {
 	createTestAgent,
 	createTestConnection,
@@ -50,12 +51,16 @@ async function agentIdOf(connectionId: number): Promise<string | null> {
 	return rows[0]?.agent_id ?? null;
 }
 
-async function connRow(
-	connectionId: number,
-): Promise<{ credential_mode: string | null; config: Record<string, unknown> }> {
+async function connRow(connectionId: number): Promise<{
+	credential_mode: string | null;
+	config: Record<string, unknown>;
+}> {
 	const rows = (await getDb()`
 		SELECT credential_mode, config FROM connections WHERE id = ${connectionId}
-	`) as Array<{ credential_mode: string | null; config: Record<string, unknown> }>;
+	`) as Array<{
+		credential_mode: string | null;
+		config: Record<string, unknown>;
+	}>;
 	return rows[0];
 }
 
@@ -199,20 +204,28 @@ describe("manage_connections update — chat fallback agent_id", () => {
 
 	it("rejects an agent_id that does not exist in the org, leaving the row untouched", async () => {
 		const before = await agentIdOf(chatConnectionId);
-		const result = (await workspace.owner.connections.update({
-			connection_id: chatConnectionId,
-			agent_id: "agent-does-not-exist",
-		})) as { error?: string };
-		expect(result.error).toBe("Agent not found");
+		const error = await workspace.owner.connections
+			.update({
+				connection_id: chatConnectionId,
+				agent_id: "agent-does-not-exist",
+			})
+			.catch((reason: unknown) => reason);
+		expect(error).toBeInstanceOf(ClientSdkActionError);
+		expect((error as ClientSdkActionError).message).toBe("Agent not found");
 		expect(await agentIdOf(chatConnectionId)).toBe(before);
 	});
 
 	it("rejects agent_id on a non-chat connection", async () => {
-		const result = (await workspace.owner.connections.update({
-			connection_id: dataConnectionId,
-			agent_id: agentB,
-		})) as { error?: string };
-		expect(result.error).toMatch(/applies only to chat connections/);
+		const error = await workspace.owner.connections
+			.update({
+				connection_id: dataConnectionId,
+				agent_id: agentB,
+			})
+			.catch((reason: unknown) => reason);
+		expect(error).toBeInstanceOf(ClientSdkActionError);
+		expect((error as ClientSdkActionError).message).toMatch(
+			/applies only to chat connections/,
+		);
 		expect(await agentIdOf(dataConnectionId)).toBeNull();
 	});
 
@@ -236,7 +249,9 @@ describe("manage_connections update — chat fallback agent_id", () => {
 		const memberRuntimeId = "agentfb-member-1";
 		await orgContext.run({ organizationId: orgId }, () =>
 			(
-				manager as unknown as { connectionStore: { saveConnection: (c: unknown) => Promise<void> } }
+				manager as unknown as {
+					connectionStore: { saveConnection: (c: unknown) => Promise<void> };
+				}
 			).connectionStore.saveConnection({
 				id: memberRuntimeId,
 				platform: "slack",
@@ -261,11 +276,16 @@ describe("manage_connections update — chat fallback agent_id", () => {
 		`;
 
 		const before = await agentIdOf(memberConnId);
-		const result = (await workspace.member.connections.update({
-			connection_id: memberConnId,
-			agent_id: agentB,
-		})) as { error?: string };
-		expect(result.error).toMatch(/Only admins can set/);
+		const error = await workspace.member.connections
+			.update({
+				connection_id: memberConnId,
+				agent_id: agentB,
+			})
+			.catch((reason: unknown) => reason);
+		expect(error).toBeInstanceOf(ClientSdkActionError);
+		expect((error as ClientSdkActionError).message).toMatch(
+			/Only admins can set/,
+		);
 		// Row untouched — the escalation was blocked before any write.
 		expect(await agentIdOf(memberConnId)).toBe(before);
 	});
@@ -279,7 +299,12 @@ describe("manage_connections update — chat fallback agent_id", () => {
 		// replaced the reference instead of mutating in place, the captured
 		// object (and thus the live bridge) would keep routing to the old agent.
 		const instances = (
-			manager as unknown as { instances: Map<string, { connection: PlatformConnection; rowVersion: number }> }
+			manager as unknown as {
+				instances: Map<
+					string,
+					{ connection: PlatformConnection; rowVersion: number }
+				>;
+			}
 		).instances;
 
 		// Reset the fallback to agentA, then register the warm instance holding
@@ -314,9 +339,9 @@ describe("manage_connections update — chat fallback agent_id", () => {
 			// Config untouched — still the plaintext token, not a secret:// ref.
 			// (A blanket Object.assign from storage would have overwritten it.)
 			expect(warmConnection.config).toBe(configRef);
-			expect(
-				(warmConnection.config as Record<string, unknown>).botToken,
-			).toBe("xoxb-plaintext-live-token");
+			expect((warmConnection.config as Record<string, unknown>).botToken).toBe(
+				"xoxb-plaintext-live-token",
+			);
 
 			// Clearing to null must also propagate to the captured reference.
 			await workspace.owner.connections.update({
@@ -324,9 +349,9 @@ describe("manage_connections update — chat fallback agent_id", () => {
 				agent_id: null,
 			});
 			expect(warmConnection.agentId).toBeUndefined();
-			expect(
-				(warmConnection.config as Record<string, unknown>).botToken,
-			).toBe("xoxb-plaintext-live-token");
+			expect((warmConnection.config as Record<string, unknown>).botToken).toBe(
+				"xoxb-plaintext-live-token",
+			);
 		} finally {
 			instances.delete(RUNTIME_ID);
 		}
@@ -361,11 +386,14 @@ describe("manage_connections update — chat fallback agent_id", () => {
 		});
 		expect(await agentIdOf(chatConnectionId)).toBe(agentA);
 
-		const result = (await workspace.owner.connections.update({
-			connection_id: chatConnectionId,
-			agent_id: "",
-		})) as { error?: string };
-		expect(result.error).toMatch(/non-empty/);
+		const error = await workspace.owner.connections
+			.update({
+				connection_id: chatConnectionId,
+				agent_id: "",
+			})
+			.catch((reason: unknown) => reason);
+		expect(error).toBeInstanceOf(ClientSdkActionError);
+		expect((error as ClientSdkActionError).message).toMatch(/non-empty/);
 		// Fallback untouched — not cleared.
 		expect(await agentIdOf(chatConnectionId)).toBe(agentA);
 	});
@@ -550,9 +578,7 @@ describe("manage_connections update — chat fallback agent_id", () => {
 		// T2 — the reinstall's exact lock sequence: advisory tenant lock, then
 		// the connections row.
 		const reinstallTxn = sql.begin(async (tx: typeof sql) => {
-			await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
-				lockKey,
-			]);
+			await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [lockKey]);
 			advisoryHeld();
 			await reinstallGate;
 			await tx`

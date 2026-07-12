@@ -7,14 +7,19 @@ export type ConnectorCloudAvailability =
 /**
  * Connectors that open arbitrary outbound TCP (raw database sockets) and have no
  * tenant-supplied-URL egress hardening yet — resolve-then-pin IP, DNS-rebinding
- * guard, link-local/metadata + internal-CIDR blocking. They are first-party /
- * self-hosted only until that hardening lands, and must NOT be installable by
- * untrusted multi-tenant cloud tenants (plan §G). Snowflake/BigQuery join this
- * set when they ship.
+ * guard, forced TLS, link-local/metadata + internal-CIDR blocking. Such a
+ * connector is first-party / self-hosted only until its hardening lands, and
+ * must NOT be installable by untrusted multi-tenant cloud tenants (plan §G).
+ *
+ * The set is currently EMPTY — it stays as the kill-switch/holding pen for
+ * future warehouse connectors (Snowflake, BigQuery) until each ships its own
+ * hardening. `postgres` graduated: its egress guard (db-egress-guard.ts)
+ * classifies + rejects internal/metadata hosts under `block-private`, pins the
+ * socket to the validated IP (DNS-rebind closed), and forces TLS. A per-org
+ * destination allowlist is deliberately deferred as an enterprise policy
+ * feature — block-private + pin + TLS is the platform boundary.
  */
-export const CLOUD_RESTRICTED_CONNECTOR_KEYS: ReadonlySet<string> = new Set([
-  'postgres',
-]);
+export const CLOUD_RESTRICTED_CONNECTOR_KEYS: ReadonlySet<string> = new Set([]);
 
 export function getConnectorCloudAvailability(
   connectorKey: string | null | undefined

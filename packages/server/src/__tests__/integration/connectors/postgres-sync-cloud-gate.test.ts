@@ -1,11 +1,13 @@
 /**
- * Cloud gate on the postgres sync path, both layers:
- *  - CREATION (createSyncRun): under LOBU_CLOUD_MODE a postgres run is never
- *    queued; the feed is left intact (valid, just cloud-gated), not soft-deleted.
- *  - EXECUTION (pollWorkerJob): a run already in `pending` (e.g. queued before
- *    cloud mode flipped, or via another path) must be FAILED when a worker claims
- *    it under LOBU_CLOUD_MODE — the hard boundary, since createSyncRun alone can
- *    be bypassed. Self-hosted (cloud mode off) runs normally on both layers.
+ * Cloud gate on the postgres sync path, both layers — now OPEN for postgres.
+ * `postgres` graduated out of CLOUD_RESTRICTED_CONNECTOR_KEYS (egress hardening:
+ * block-private classify+reject, resolve-then-pin sockets, forced TLS), so:
+ *  - CREATION (createSyncRun): a postgres run IS queued under LOBU_CLOUD_MODE.
+ *  - EXECUTION (pollWorkerJob): a pending postgres run IS claimed and handed to
+ *    a worker under LOBU_CLOUD_MODE (the run itself then executes under the
+ *    injected block-private egress policy — covered by the connector tests).
+ * These are regression tests that the gate stays open; the gate MECHANISM for
+ * future warehouse connectors is covered by connector-cloud-gate.test.ts.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
@@ -68,19 +70,16 @@ describe('createSyncRun cloud gate (postgres) — queue-time', () => {
     process.env.LOBU_CLOUD_MODE = undefined;
   });
 
-  it('does NOT queue a postgres sync run under LOBU_CLOUD_MODE (feed left intact)', async () => {
+  it('queues a postgres sync run under LOBU_CLOUD_MODE (gate open)', async () => {
     const sql = getTestDb();
     const { feedId } = await setupPostgresFeed();
 
     process.env.LOBU_CLOUD_MODE = '1';
     const runId = await createSyncRun(feedId, {} as Env, sql);
 
-    expect(runId).toBeNull();
-    const runs = await sql`SELECT id FROM runs WHERE feed_id = ${feedId}`;
-    expect(runs.length).toBe(0);
-    // The feed is valid, just cloud-gated — it must NOT be soft-deleted.
-    const [after] = await sql`SELECT deleted_at FROM feeds WHERE id = ${feedId}`;
-    expect((after as { deleted_at: Date | null }).deleted_at).toBeNull();
+    expect(runId).not.toBeNull();
+    const runs = await sql`SELECT status FROM runs WHERE feed_id = ${feedId}`;
+    expect(runs.length).toBe(1);
   });
 
   it('queues the run normally when not in cloud mode (self-hosted)', async () => {
@@ -104,7 +103,7 @@ describe('pollWorkerJob cloud gate (postgres) — execution-time', () => {
     process.env.LOBU_CLOUD_MODE = undefined;
   });
 
-  it('FAILS a claimed postgres run under LOBU_CLOUD_MODE instead of handing it to a worker', async () => {
+  it('claims a postgres run for a worker under LOBU_CLOUD_MODE (gate open)', async () => {
     const sql = getTestDb();
     const { feedId, connId, orgId } = await setupPostgresFeed();
     const runId = await insertPendingPostgresRun(orgId, feedId, connId);
@@ -120,25 +119,15 @@ describe('pollWorkerJob cloud gate (postgres) — execution-time', () => {
         env: { WORKER_API_TOKEN: 'test-fleet-token' },
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as {
-        run_id?: number;
-        skipped_run_id?: number;
-        error?: string;
-      };
-      // The run was claimed, then the gate failed it — not dispatched.
-      expect(body.run_id).toBeUndefined();
-      expect(Number(body.skipped_run_id)).toBe(runId);
-      expect(String(body.error)).toMatch(/Lobu Cloud/i);
+      const body = (await res.json()) as { run_id?: number; error?: string };
+      // The run is dispatched, not failed by the gate.
+      expect(Number(body.run_id)).toBe(runId);
     } finally {
       process.env.LOBU_CLOUD_MODE = undefined;
     }
 
-    const [row] = await sql`
-      SELECT status, error_message, completed_at FROM runs WHERE id = ${runId}
-    `;
-    expect((row as { status: string }).status).toBe('failed');
-    expect((row as { completed_at: Date | null }).completed_at).not.toBeNull();
-    expect(String((row as { error_message: string }).error_message)).toMatch(/Lobu Cloud/i);
+    const [row] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+    expect((row as { status: string }).status).toBe('running');
   });
 
   it('claims the run for a worker when not in cloud mode (proves the gate, not the harness, fails it)', async () => {

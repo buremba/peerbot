@@ -82,11 +82,15 @@ export async function bootTaskScheduler(
   // one org's poisoned row must not become a fleet-wide deploy freeze; the
   // hourly tick retries it.
   const backfill = await backfillInferenceProviders();
-  if (
+  if (backfill.errors > 0) {
+    logger.error(
+      { ...backfill },
+      '[boot] backfill-inference-providers PARTIALLY converged — some rows failed; hourly tick retries them',
+    );
+  } else if (
     backfill.created > 0 ||
     backfill.freshened > 0 ||
-    backfill.invalidSlug > 0 ||
-    backfill.errors > 0
+    backfill.invalidSlug > 0
   ) {
     logger.info(
       { ...backfill },

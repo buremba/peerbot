@@ -170,10 +170,19 @@ describe('inference-provider store', () => {
     expect(await readOrgSharedProviderApiKey('claude', ORG)).toBeNull();
 
     // Rotating an OAuth-backed row is rejected: a vault write would be
-    // silently unread behind the oauth:// ref.
+    // silently unread behind the oauth:// ref. Prove the vault is untouched
+    // byte-for-byte, not merely unreadable.
+    const db = getTestDb();
+    const vaultBefore = await db`
+      SELECT name, ciphertext FROM agent_secrets ORDER BY name
+    `;
     expect(await rotateInferenceProviderKey(ORG, 'claude', 'sk-new')).toBe(
       'oauth_provider'
     );
+    const vaultAfter = await db`
+      SELECT name, ciphertext FROM agent_secrets ORDER BY name
+    `;
+    expect(Array.from(vaultAfter)).toEqual(Array.from(vaultBefore));
     expect(await readOrgSharedProviderApiKey('claude', ORG)).toBeNull();
 
     const listed = await getInferenceProviderBySlug(ORG, 'claude');

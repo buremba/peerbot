@@ -509,6 +509,16 @@ jobs:
         # another user's private-connection data through a new read path.
         run: bun scripts/check-connection-visibility-compiler.mjs
 
+      - name: Review tooling shell tests
+        # These previously ran inside scripts/review.sh's local unit stage; the
+        # review runner is now LLM-only (CI owns the deterministic suites), so
+        # the review tooling's own regression tests must run here instead.
+        run: |
+          bash scripts/lib/__tests__/review-commit-lock.test.sh
+          bash scripts/lib/__tests__/review-process.test.sh
+          bash scripts/lib/__tests__/review-reviewer.test.sh
+          bash scripts/lib/__tests__/herdr-lifecycle.test.sh
+
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 20

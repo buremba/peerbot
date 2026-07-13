@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
-# Local review runner: typecheck + unit + integration in cwd, then an independent
-# CLI reviewer with the diff against the base branch. Prints a JSON verdict on
-# the last line.
+# Local review runner: an independent CLI reviewer over the diff against the
+# base branch. Prints a JSON verdict on the last line.
+#
+# The deterministic suites (typecheck / unit / integration / migrations /
+# frontend) run in GitHub CI, NOT here — they are separate required status
+# checks on main, so auto-merge already blocks on them. This script's job is
+# only the agent verdict: it snapshots the head commit's CI check state for
+# the reviewer's context, runs the reviewer on the diff, and posts the
+# verdict. Because nothing here boots Postgres or binds ports, reviews of
+# different commits execute concurrently — there is no host-wide lock. The
+# one serialization left is per commit: every run posts the same pi-review
+# status for its HEAD sha, so a duplicate run of the SAME commit is refused
+# rather than allowed to race the owner's status posts.
 #
 # Usage:
 #   ./scripts/review.sh                 # base = origin/main when available
 #   ./scripts/review.sh --base develop  # override base
 #   BASE=develop ./scripts/review.sh    # env-var override
 #
-# Runs in $PWD — assumes deps installed, dist built, .env in place, postgres
-# reachable. Does NOT create a worktree, install deps, or manage the test DB.
+# Runs in $PWD — assumes deps installed. Push the branch first: the CI
+# snapshot is empty for unpushed commits (the review still runs, diff-only).
 #
 # If a PR exists for the current branch, also posts an idempotent PR comment
 # with the verdict (marker-keyed upsert). It posts a commit status named by
@@ -27,10 +37,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib/review-lock.sh
-. "$SCRIPT_DIR/lib/review-lock.sh"
-# shellcheck source=scripts/lib/review-database-url.sh
-. "$SCRIPT_DIR/lib/review-database-url.sh"
+# shellcheck source=scripts/lib/review-commit-lock.sh
+. "$SCRIPT_DIR/lib/review-commit-lock.sh"
 # shellcheck source=scripts/lib/review-process.sh
 . "$SCRIPT_DIR/lib/review-process.sh"
 # shellcheck source=scripts/lib/herdr-review-lifecycle.sh
@@ -73,7 +81,6 @@ PI_REVIEW_MAX_SLOP="${PI_REVIEW_MAX_SLOP:-15}"
 PI_REVIEW_MIN_SIMPLICITY="${PI_REVIEW_MIN_SIMPLICITY:-70}"
 # Existing Herdr control applies to either selected reviewer.
 CLAUDE_REVIEW_HERDR="${CLAUDE_REVIEW_HERDR:-auto}"
-REVIEW_DATABASE_URL="${REVIEW_DATABASE_URL:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE_BRANCH="$2"; shift 2 ;;
@@ -138,10 +145,7 @@ run_reviewer_inline() {
       run_review_child env \
         BASE_BRANCH="$BASE_BRANCH" \
         HEAD_SHA="$HEAD_SHA" \
-        TYPECHECK_LOG="$TYPECHECK_LOG" TYPECHECK_EXIT="$TYPECHECK_EXIT" \
-        UNIT_LOG="$UNIT_LOG" UNIT_EXIT="$UNIT_EXIT" \
-        INTEGRATION_LOG="$INTEGRATION_LOG" INTEGRATION_EXIT="$INTEGRATION_EXIT" \
-        DATABASE_URL="${DATABASE_URL:-}" \
+        CI_CHECKS_FILE="$CI_CHECKS_FILE" \
         claude -p "$(cat "$prompt_file")" \
           --model "$CLAUDE_REVIEW_MODEL" \
           --effort "$CLAUDE_REVIEW_EFFORT" \
@@ -167,10 +171,7 @@ run_reviewer_inline() {
       run_review_child env \
         BASE_BRANCH="$BASE_BRANCH" \
         HEAD_SHA="$HEAD_SHA" \
-        TYPECHECK_LOG="$TYPECHECK_LOG" TYPECHECK_EXIT="$TYPECHECK_EXIT" \
-        UNIT_LOG="$UNIT_LOG" UNIT_EXIT="$UNIT_EXIT" \
-        INTEGRATION_LOG="$INTEGRATION_LOG" INTEGRATION_EXIT="$INTEGRATION_EXIT" \
-        DATABASE_URL="${DATABASE_URL:-}" \
+        CI_CHECKS_FILE="$CI_CHECKS_FILE" \
         "${codex_args[@]}" "$(cat "$prompt_file")" < /dev/null > /dev/null 2> "$diagnostic_file"
       ;;
   esac
@@ -254,13 +255,7 @@ RUNNER
       --env "SHELL=${SHELL:-}" \
       --env "BASE_BRANCH=$BASE_BRANCH" \
       --env "HEAD_SHA=$HEAD_SHA" \
-      --env "TYPECHECK_LOG=$TYPECHECK_LOG" \
-      --env "TYPECHECK_EXIT=$TYPECHECK_EXIT" \
-      --env "UNIT_LOG=$UNIT_LOG" \
-      --env "UNIT_EXIT=$UNIT_EXIT" \
-      --env "INTEGRATION_LOG=$INTEGRATION_LOG" \
-      --env "INTEGRATION_EXIT=$INTEGRATION_EXIT" \
-      --env "DATABASE_URL=${DATABASE_URL:-}" \
+      --env "CI_CHECKS_FILE=$CI_CHECKS_FILE" \
       --env "REVIEWER_CLI_SELECTED=$REVIEWER_CLI_SELECTED" \
       --env "CLAUDE_REVIEW_MODEL=$CLAUDE_REVIEW_MODEL" \
       --env "CLAUDE_REVIEW_EFFORT=$CLAUDE_REVIEW_EFFORT" \
@@ -432,15 +427,14 @@ review_exit_cleanup() {
   # If the normal Herdr path completed, its tracked state is already empty.
   # Otherwise this closes the tab/process and keeps any non-empty partial raw
   # output for diagnosis before the script exits.
-  herdr_review_abort_until_safe_to_release_lock
-  if [ "$ec" -ne 0 ] && [ "$REVIEW_LOCK_HELD" = "1" ] && \
+  herdr_review_abort_until_runner_stopped
+  if [ "$ec" -ne 0 ] && \
      [ "$REVIEW_STATUS_STARTED" = "1" ] && [ "$REVIEW_STATUS_FINALIZED" != "1" ]; then
     post_failure_status=1
   fi
   if [ "$post_failure_status" = "1" ]; then
     post_review_status error "$REVIEWER_CLI_SELECTED review failed before verdict (exit $ec)"
   fi
-  release_review_lock
   exit "$ec"
 }
 trap review_exit_cleanup EXIT
@@ -448,43 +442,42 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-acquire_review_lock
+# Refuse duplicate reviews of this exact commit BEFORE posting any status:
+# a non-owner must never touch the owner's pi-review status lifecycle.
+acquire_commit_review_lock "$HEAD_SHA"
 
 REVIEW_STATUS_STARTED=1
 post_review_status pending "$REVIEWER_CLI_SELECTED review running"
 
-# --- env --------------------------------------------------------------------
+REVIEW_RUN_DIR="$(mktemp -d /tmp/lobu-review.XXXXXX)"
 
-if [ -f .env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . ./.env
-  set +a
+# --- CI check snapshot -------------------------------------------------------
+# The deterministic suites run in GitHub CI as their own required status
+# checks; branch protection enforces them independently of this verdict. The
+# snapshot is context for the reviewer (correlate failures with the diff), not
+# a gate — pending checks must not block or degrade the agent review.
+
+CI_CHECKS_FILE="$REVIEW_RUN_DIR/ci-checks.txt"
+CI_SNAPSHOT_OK=0
+if [ "$GH_AVAILABLE" = "1" ]; then
+  REPO_NWO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+  if [ -n "$REPO_NWO" ] && gh api "repos/$REPO_NWO/commits/$HEAD_SHA/check-runs" --paginate \
+      -q '.check_runs[] | "\(.name): \(.status)\(if .conclusion != null then " " + .conclusion else "" end)"' \
+      2>/dev/null | sort -u > "$CI_CHECKS_FILE" && [ -s "$CI_CHECKS_FILE" ]; then
+    CI_SNAPSHOT_OK=1
+  fi
 fi
-
-# Tests must NOT run against whatever DATABASE_URL .env points at (often a
-# shared/tailnet DB) — they run DDL like `DROP SCHEMA public`. By default the
-# test harness therefore spawns an isolated embedded Postgres. Parallel review
-# runs can instead opt into distinct pre-created test databases through the
-# deliberately named REVIEW_DATABASE_URL; reject non-test names defensively.
-if [ -n "$REVIEW_DATABASE_URL" ]; then
-  validate_review_database_url "$REVIEW_DATABASE_URL"
-  export DATABASE_URL="$REVIEW_DATABASE_URL"
-else
-  unset DATABASE_URL
+if [ "$CI_SNAPSHOT_OK" != "1" ]; then
+  echo "CI state unknown: no check runs found for $HEAD_SHA (unpushed commit, CI not started, or gh unavailable)" > "$CI_CHECKS_FILE"
 fi
-
-# The dev .env also sets PUBLIC_GATEWAY_URL=http://localhost:8787, which makes the
-# public-origin / public-pages-contract tests fail ("expected 'localhost' to be
-# null") — they assert the unconfigured-origin contract. It is the only var the
-# canonical-origin resolution reads (src/utils/public-origin.ts), so clear it.
-unset PUBLIC_GATEWAY_URL
+echo ">> CI check snapshot → $CI_CHECKS_FILE"
+sed 's/^/>>   /' "$CI_CHECKS_FILE"
 
 # --- build ------------------------------------------------------------------
-# Tests need workspace packages built. Worktree's `dist/` may be stale or
-# missing — always rebuild before tests. Cheap if up-to-date.
+# The reviewer's exploratory probes (targeted bun test runs, CLI invocations)
+# need workspace packages built. Worktree's `dist/` may be stale or missing —
+# always rebuild. Cheap if up-to-date.
 
-REVIEW_RUN_DIR="$(mktemp -d /tmp/lobu-review.XXXXXX)"
 BUILD_LOG="$REVIEW_RUN_DIR/build.log"
 echo ">> make build-packages → $BUILD_LOG"
 set +e
@@ -492,108 +485,8 @@ run_review_child make build-packages > "$BUILD_LOG" 2>&1
 BUILD_EXIT=$?
 set -e
 if [ $BUILD_EXIT -ne 0 ]; then
-  echo "!! build failed (exit $BUILD_EXIT) — proceeding so $REVIEWER_CLI_SELECTED can review the diff, but unit tests will likely fail" >&2
+  echo "!! build failed (exit $BUILD_EXIT) — proceeding so $REVIEWER_CLI_SELECTED can review the diff, but exploratory probes may fail" >&2
 fi
-
-# --- test suites ------------------------------------------------------------
-
-TYPECHECK_LOG="$REVIEW_RUN_DIR/typecheck.log"
-UNIT_LOG="$REVIEW_RUN_DIR/unit.log"
-INTEGRATION_LOG="$REVIEW_RUN_DIR/integration.log"
-DETERMINISTIC_TEST_ENV=(
-  env
-  ANTHROPIC_API_KEY=
-  ANTHROPIC_AUTH_TOKEN=
-  CLAUDE_CODE_OAUTH_TOKEN=
-  OPENAI_API_KEY=
-  OPENAI_AUTH_TOKEN=
-)
-
-run_deterministic() {
-  env \
-    ANTHROPIC_API_KEY= \
-    ANTHROPIC_AUTH_TOKEN= \
-    CLAUDE_CODE_OAUTH_TOKEN= \
-    OPENAI_API_KEY= \
-    OPENAI_AUTH_TOKEN= \
-    "$@"
-}
-export -f run_deterministic
-export SCRIPT_DIR
-
-echo ">> typecheck → $TYPECHECK_LOG"
-set +e
-run_review_child "${DETERMINISTIC_TEST_ENV[@]}" bun run typecheck > "$TYPECHECK_LOG" 2>&1
-TYPECHECK_EXIT=$?
-set -e
-
-echo ">> unit tests → $UNIT_LOG"
-set +e
-run_review_unit_suites() {
-  local ec
-  UNIT_EXIT=0
-  run_deterministic bash "$SCRIPT_DIR/lib/__tests__/review-lock.test.sh";               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  run_deterministic bash "$SCRIPT_DIR/lib/__tests__/review-database-url.test.sh";        ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  run_deterministic bash "$SCRIPT_DIR/lib/__tests__/review-process.test.sh";             ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  run_deterministic bash "$SCRIPT_DIR/lib/__tests__/review-reviewer.test.sh";            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  # Shell lifecycle regressions: Herdr task/review tabs must be owned and
-  # cleaned without invoking the real Herdr daemon.
-  run_deterministic bash "$SCRIPT_DIR/lib/__tests__/herdr-lifecycle.test.sh";            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  # Guard: every packages/server *.test.ts must run in >=1 runner (vitest or a
-  # bun job). Fails loudly if a file drifts into running nowhere — the
-  # silent-skip class this change fixes.
-  run_deterministic node scripts/check-test-runner-coverage.mjs;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  # Guard: no raw JS array bound as a SQL param (the fetch_types:false trap —
-  # a malformed array literal that Postgres rejects, historically silent).
-  run_deterministic node scripts/check-raw-array-params.mjs;                          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  # Guard: the per-user connection-visibility READ-SEAM gate must come from the
-  # one compiler (authz/connection-visibility.ts), not be re-derived inline —
-  # that is how the authz gate silently drifts and leaks private-connection data.
-  run_deterministic node scripts/check-connection-visibility-compiler.mjs;            ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  run_deterministic bun test packages/core packages/cli packages/connectors;          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  run_deterministic bun test packages/agent-worker;                                   ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  run_deterministic bun test packages/server/src/__tests__/unit;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  run_deterministic bun test packages/server/src/auth/__tests__/tool-access.test.ts packages/server/src/auth/__tests__/system-provider-resolution.test.ts;  ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  # NOTE: src/gateway/infrastructure/queue runs in the gateway integration loop
-  # below (not here) — see #1238; running it in both jobs double-executes it.
-  run_deterministic bun test packages/connector-worker;                               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  return "$UNIT_EXIT"
-}
-run_review_child run_review_unit_suites > "$UNIT_LOG" 2>&1
-UNIT_EXIT=$?
-set -e
-
-echo ">> integration tests → $INTEGRATION_LOG"
-set +e
-run_review_integration_suites() {
-  local ec
-  INTEGRATION_EXIT=0
-  (cd packages/server && run_deterministic node ../../node_modules/.bin/vitest run --reporter=default); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
-  # Each gateway test file runs in its own bun process: bun has no per-file
-  # isolation and the gateway suites aren't mutually hermetic, so co-running a
-  # whole __tests__ dir in one process leaks DB/module state across files (see
-  # #1238 and the ci.yml comment). `find` auto-discovers nested dirs; the
-  # coverage gate fails if any gateway test file escapes this loop. Run all,
-  # fail at the end.
-  ( cd packages/server
-    dirs=$(find src/gateway -type d -name __tests__ | sort)
-    [ -n "$dirs" ] || { echo "no gateway __tests__ dirs found" >&2; exit 1; }
-    rc=0
-    for d in $dirs; do
-      files=$(find "$d" -maxdepth 1 -type f -name '*.test.ts' | sort)
-      for f in $files; do
-        run_deterministic bun test "$f" || rc=1
-      done
-    done
-    exit $rc );                                                                        ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
-  (cd packages/server && run_deterministic bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
-  return "$INTEGRATION_EXIT"
-}
-run_review_child run_review_integration_suites > "$INTEGRATION_LOG" 2>&1
-INTEGRATION_EXIT=$?
-set -e
-
-echo ">> suite exit codes: typecheck=$TYPECHECK_EXIT unit=$UNIT_EXIT integration=$INTEGRATION_EXIT"
 
 # --- agent review -----------------------------------------------------------
 
@@ -633,7 +526,7 @@ if ! echo "$VERDICT" | jq -e '
   fi
   finalize_review_status error "Independent $REVIEWER_CLI_SELECTED review could not be completed"
   review_fail_closed_message "$REVIEWER_CLI_SELECTED" "$REVIEW_FAILURE_DETAIL" >&2
-  echo "logs: $TYPECHECK_LOG $UNIT_LOG $INTEGRATION_LOG" >&2
+  echo "logs: $BUILD_LOG $CI_CHECKS_FILE" >&2
   echo "raw output:" >&2
   printf '%s\n' "$RAW" >&2
   exit 1
@@ -666,7 +559,7 @@ fi
 echo ""
 echo "=========================================="
 echo "verdict: $HEADLINE"
-echo "  logs:  $TYPECHECK_LOG $UNIT_LOG $INTEGRATION_LOG"
+echo "  ci:    $CI_CHECKS_FILE"
 echo "=========================================="
 
 # --- optional GitHub post --------------------------------------------------

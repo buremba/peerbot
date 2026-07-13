@@ -9,9 +9,12 @@ unnecessary complexity. Do not rubber-stamp. Do not invent issues.
 Final output is exactly one JSON object matching `docs/REVIEW_SCHEMA.md`.
 No prose, no Markdown fences, no commentary before or after.
 
-The environment is ready: dependencies are installed, workspace packages are
-built, `.env` exists, and the review driver already ran the deterministic
-suites. You have bash for inspection.
+The environment is ready: dependencies are installed and workspace packages
+are built. The deterministic suites (typecheck / unit / integration /
+migrations / frontend) run in GitHub CI as separate required status checks —
+branch protection blocks merge on them independently of your verdict. The
+driver snapshotted the head commit's CI check state into `$CI_CHECKS_FILE`
+for your context. You have bash for inspection.
 
 Before scoring, answer these internally:
 
@@ -33,64 +36,58 @@ git diff --name-only "$BASE_BRANCH...HEAD"
 There may or may not be a PR for this branch — don't assume one exists.
 The review is on the local diff, not on PR metadata.
 
-## 2. Read Test Results
+## 2. Read CI State
 
-The driver script ran the deterministic suites before invoking you. Read the
-logs. Do NOT re-run these — that's wasted budget and the script already
-captured the canonical output.
-
-- Typecheck: exit `$TYPECHECK_EXIT` (log: `$TYPECHECK_LOG`)
-- Unit tests (bun): exit `$UNIT_EXIT` (log: `$UNIT_LOG`)
-- Integration tests (vitest + bun, Postgres-backed): exit `$INTEGRATION_EXIT` (log: `$INTEGRATION_LOG`)
+The deterministic suites run in GitHub CI, not locally. Read the snapshot:
 
 ```bash
-echo "typecheck=$TYPECHECK_EXIT unit=$UNIT_EXIT integration=$INTEGRATION_EXIT"
-tail -200 "$TYPECHECK_LOG" "$UNIT_LOG" "$INTEGRATION_LOG"
+cat "$CI_CHECKS_FILE"
 ```
 
-A non-zero exit code is **only** a `blocker` when the failing test (or the
-code it exercises) is in the diff. Failures in untouched code are
-pre-existing environmental issues — surface them in `notes` (prefix the
-line with `[env]`) but DO NOT add them to `blockers`, and DO NOT inflate
-`bugs`. To check: cross-reference failing test file paths against
-`git diff --name-only "$BASE_BRANCH...HEAD"`. If the failing test file
-(and the source it imports from) is not in the diff, it is environmental.
+Each line is `<check name>: <status> [<conclusion>]`. Interpretation:
 
-If a log file is missing or empty (`$..._EXIT` is empty), the test step
-itself was skipped by the script — record that as a blocker
-(`"test suite skipped: <suite>"`) rather than inferring pass.
+- A **completed failure** is only a `blocker` when the failing check's tests
+  (or the code they exercise) are in the diff. Failures in untouched code
+  are pre-existing environmental issues — surface them in `notes` (prefix
+  the line with `[env]`) but DO NOT add them to `blockers`, and DO NOT
+  inflate `bugs`. To attribute a failure, cross-reference against
+  `git diff --name-only "$BASE_BRANCH...HEAD"`; when the snapshot alone is
+  too coarse, reproduce the narrow test locally (section 3).
+- **Pending / in-progress / missing checks are NOT a defect and NOT a
+  blocker** — branch protection blocks the merge on them regardless of your
+  verdict. Do not penalize scores for unknown suite results; if you need
+  test evidence for a risky changed path, run that narrow test yourself.
+- If the snapshot says CI state is unknown (unpushed commit), note it as
+  `[env] CI state unknown` and rely on local narrow test runs.
 
-## 3. Optional Targeted Exploration
+## 3. Targeted Test Runs & Exploration
 
-After reading the test results, exercise the system for edge cases the
-deterministic suite doesn't cover. Pick what fits the diff:
+Ground your verdict in evidence for the paths the diff actually risks. Pick
+what fits:
 
-- **Server / worker changes**: boot the gateway in the background, hit a
-  representative endpoint, verify the shape. Example:
-  - `bun packages/server/dist/server.bundle.mjs &` then `curl -sf localhost:8787/health`
-  - Kill the process before exiting.
+- **The narrow test files covering the changed code** — this is the primary
+  grounding now that full suites run remotely. `bun test <file>` for
+  bun-runner suites, or `cd packages/server && node ../../node_modules/.bin/vitest run <file>`
+  for vitest ones. Test processes spawn their own isolated embedded
+  Postgres; running a few narrow files is cheap.
 - **CLI changes**: run the affected `lobu <subcommand>` with a
   representative invocation.
-- **DB / schema changes**: connect with `psql "$DATABASE_URL"` and inspect
-  the migrated state.
-- **Behavior-change PRs**: run the specific test file (or a narrow filter)
-  with a fresh invocation to verify it isn't flaky.
+- **DB / schema changes**: read the migration files; verify idempotency and
+  the `events` append-only rule from the SQL itself.
 
 Time budget for exploratory steps: ~8 min. Report what you exercised in
-`notes` (e.g. "Booted server, hit /health → 200, hit /api/v1/agents → 200
-with empty list"). If you skipped exploration, say so explicitly — don't
-lie by omission.
+`notes` (e.g. "Ran transcription-service.test.ts → 8/8 pass"). If you
+skipped exploration, say so explicitly — don't lie by omission.
 
 ## 4. Judgment Rules
 
-- ~15 min total compute budget on top of the script-run suites.
-- If the environment itself is broken beyond the suites the script
-  already ran (e.g. you can't even boot the server for an exploratory
-  endpoint check), record that as a `blocker` and finish with a partial
+- ~15 min total compute budget.
+- If the environment itself is broken (e.g. you cannot run even a narrow
+  test file), record that as a `blocker` and finish with a partial
   verdict. Do not retry indefinitely.
 - The numeric scores must reflect what you empirically verified — don't
-  inflate `bugs` from speculation. Confirmed by a failing script-run
-  suite OR a failure you reproduced in exploration = a bug. "This looks
+  inflate `bugs` from speculation. Confirmed by a CI failure you attributed
+  to the diff OR a failure you reproduced locally = a bug. "This looks
   suspicious but everything passed" = a note, not a bug.
 - A finding must name the broken contract and the changed file/line that
   causes it. If you cannot point to a changed line, it is probably a note.
@@ -128,9 +125,11 @@ own merits.
 
 How sure are you the change works correctly?
 
-- **90+** — "I'd stake the team on this not breaking prod." Every script-run
-  suite passed AND your exploratory probes lined up with expectations AND you
-  see no semantic risk you can name.
+- **90+** — "I'd stake the team on this not breaking prod." The CI snapshot
+  shows the completed checks green (or you ran the diff-relevant tests
+  yourself and they passed) AND your probes lined up with expectations AND
+  you see no semantic risk you can name. Do not reach 90+ purely from
+  reading code with zero test evidence.
 - **70–89** — Compiles + tests pass, but there's a code path you couldn't
   verify.
 - **40–69** — You found at least one thing that *might* break; can't rule it
@@ -194,7 +193,8 @@ Reserve `blockers` for things that should stop merge regardless of scores:
 - A `<Sheet>` primitive imported in `packages/owletto` (banned per
   DESIGN_GUIDELINES.md).
 - A `window.confirm` / `window.alert` / `window.prompt` call.
-- **A test you ran that actually failed and the diff is the cause.**
+- **A test you ran (or a CI check) that actually failed and the diff is
+  the cause.**
 
 Style and taste belong in `suggested_fixes`, not `blockers`.
 

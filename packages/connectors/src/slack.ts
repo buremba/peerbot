@@ -32,9 +32,10 @@ import {
 } from "@lobu/connector-sdk";
 
 /**
- * Bot scopes the hosted Lobu Slack app requests (mentions, threads, slash
- * commands, DM assistant chat). Kept in sync with
- * `config/slack-app-manifest.self-install.json`'s `oauth_config.scopes.bot`.
+ * Bot scopes requested by `/slack/install`. The Slack manifest does not drive
+ * that route: the generic install engine reads this connector declaration.
+ * Keep this list exactly aligned with the manifest, and never drop
+ * `mcp:connect` — without it Slackbot cannot discover Lobu's MCP server.
  */
 const SLACK_BOT_SCOPES = [
 	"app_mentions:read",

@@ -142,6 +142,7 @@ export function connectorSdkMock() {
     paginateByCursor,
     paginateByOffset,
     ConnectorRuntime: class {},
+    IntegrationConnector: class {},
     calculateEngagementScore: () => 0,
     extensionDomScrape: async (opts: DomScrapeOpts) => {
       const observation = await opts.dispatcher.dispatch('navigate', {

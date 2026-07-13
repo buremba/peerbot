@@ -88,6 +88,29 @@ describe("sdkSearch", () => {
 		expect(joined).toContain("entities.link");
 	});
 
+	it("explains restricted methods in a multi-method query", async () => {
+		const result = await sdkSearch(
+			{ query: "watchers.list agents.list" },
+			stubEnv,
+			writeCtx,
+		);
+		expect(result.results.join("\n")).toContain("watchers.list");
+		expect(result.results.join("\n")).not.toContain("agents.list");
+		expect(result.notes).toContain("agents.list requires workspace admin/owner");
+	});
+
+	it("explains write methods hidden from a multi-method read query", async () => {
+		const result = await sdkSearch(
+			{ query: "watchers.list watchers.create", mode: "read" },
+			stubEnv,
+			writeCtx,
+		);
+		expect(result.results.join("\n")).toContain("watchers.list");
+		expect(result.results.join("\n")).not.toContain("watchers.create");
+		expect(result.notes).toContain("watchers.create exists but requires run_sdk");
+		expect(result.notes).toContain("Showing query_sdk-safe methods only");
+	});
+
 	it("returns empty + helpful note for unknown queries", async () => {
 		const result = await sdkSearch(
 			{ query: "definitelyNotAMethod" },

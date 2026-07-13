@@ -157,6 +157,23 @@ async function sdkSearchImpl(
 			}
 		}
 		const entries = [...matches.entries()];
+		const notes: string[] = [];
+		if (entries.length > limit) {
+			notes.push(
+				`${entries.length - limit} more matches; raise \`limit\` or refine the query.`,
+			);
+		}
+		for (const token of methodTokens) {
+			const meta = METHOD_METADATA[token];
+			if (meta && !matches.has(token)) {
+				notes.push(hiddenMethodNote(token, meta, mode));
+			}
+		}
+		if (mode === "read") {
+			notes.push(
+				"Showing query_sdk-safe methods only. Pass mode='full' for write/admin methods.",
+			);
+		}
 		return {
 			query,
 			match_count: entries.length,
@@ -165,10 +182,7 @@ async function sdkSearchImpl(
 					? renderDrillDown(path, meta)
 					: renderListLine(path, meta),
 			),
-			notes:
-				entries.length > limit
-					? `${entries.length - limit} more matches; raise \`limit\` or refine the query.`
-					: undefined,
+			notes: notes.length > 0 ? notes.join(" ") : undefined,
 		};
 	}
 

@@ -27,7 +27,10 @@
  */
 
 import { parseJsonObject } from '@lobu/core';
+import { buildConnectionsUrl } from '../../../utils/url-builder';
 import { resolveAuthProfileSlugToId } from '../../../utils/auth-profiles';
+import type { ToolContext } from '../../registry';
+import { getOrgUrlContext } from '../../view-urls';
 import {
   getEnvAuthFieldKeys,
   isPrimaryAuthMethodAppInstallation,
@@ -49,6 +52,18 @@ function hasManagedByOrg(config: Record<string, unknown>): boolean {
   }
   const org = (managedBy as Record<string, unknown>).org;
   return typeof org === 'string' && org.trim().length > 0;
+}
+
+export async function buildAppInstallationSetupUrl(
+	ctx: ToolContext,
+	connectorKey: string,
+): Promise<string | undefined> {
+	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
+	return ownerSlug && baseUrl
+		? buildConnectionsUrl(ownerSlug, baseUrl, undefined, {
+				install: connectorKey,
+			})
+		: undefined;
 }
 
 /**
@@ -132,7 +147,7 @@ export async function rejectUnboundAppInstallationCreate(params: {
   return {
     error:
       `Connector '${params.connectorKey}' is connected by installing its app (which links the connection automatically), not by creating a connection directly. ` +
-      `Start the app install flow instead — for GitHub that's /github/app/install. ` +
+			`Start the connector's app install flow instead. ` +
       `(To use a different auth method this connector supports, pass an auth profile or credentials.)`,
 		install_type: 'app_installation',
 		next_action: 'open_setup_url',

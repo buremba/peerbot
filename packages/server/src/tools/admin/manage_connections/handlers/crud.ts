@@ -56,7 +56,10 @@ import {
 	runStatusLiteral,
 } from "../../../../utils/run-statuses";
 import type { ToolContext } from "../../../registry";
-import { rejectUnboundAppInstallationCreate } from "../../helpers/app-installation-guard";
+import {
+	buildAppInstallationSetupUrl,
+	rejectUnboundAppInstallationCreate,
+} from "../../helpers/app-installation-guard";
 import {
   buildViewUrl,
   enrichWithAuthProfiles,
@@ -652,11 +655,10 @@ export async function handleCreate(
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
   });
-  if (appInstallGuard) {
+	if (appInstallGuard) {
 		return {
 			...appInstallGuard,
-			setup_url:
-				(await buildViewUrl(ctx, args.connector_key)) ?? "/github/app/install",
+			setup_url: await buildAppInstallationSetupUrl(ctx, args.connector_key),
 		};
 	}
 

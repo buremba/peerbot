@@ -870,7 +870,7 @@ export async function handleCreate(
       return {
         error: callerIsAdmin
 					? "Select or create an OAuth app profile before creating the connection."
-          : `No OAuth app credentials configured for this connector. Ask an admin to set up the ${authSelection.oauthMethod?.provider ?? args.connector_key} app under the connector's Setup tab (Connectors › ${args.connector_key}) first.`,
+					: `No OAuth app credentials configured for this connector. Ask an admin to set up the ${args.connector_key} app under the connector's Setup tab (Connectors › ${args.connector_key}) first.`,
       };
     }
 		if (authSelection.appAuthProfile.status !== "active") {

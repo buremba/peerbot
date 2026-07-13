@@ -8,6 +8,8 @@ export type MethodAccess = "read" | "write" | "external" | "admin";
 export interface MethodMetadata {
 	summary: string;
 	access: MethodAccess;
+	/** Exact callable signature when the method shape is easy to misinfer. */
+	signature?: string;
 	throws?: readonly string[];
 	/** Single-line copy-pasteable snippet. */
 	example?: string;

@@ -9,7 +9,6 @@ import {
 } from "../utils/connector-definition-install";
 import {
 	getCatalogConnectorInstallability,
-	listCatalogConnectorDefinitions,
 } from "../utils/connector-catalog";
 import { upsertBundledConnectorForOrg } from "../utils/ensure-connector-installed";
 import logger from "../utils/logger";

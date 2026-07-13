@@ -1,0 +1,4 @@
+# Local secrets and embedded Postgres data created by `lobu run` / the scripts.
+.env
+.lobu-data/
+.connector-meta-*/

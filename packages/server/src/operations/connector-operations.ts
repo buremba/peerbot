@@ -398,6 +398,12 @@ async function getMcpOperations(
 	}));
 }
 
+export function getLocalActionKind(def: Record<string, any>): "read" | "write" {
+	return def.kind === "read" || def.annotations?.readOnlyHint === true
+		? "read"
+		: "write";
+}
+
 function getLocalActionOperations(
 	connectorKey: string,
 	connectorName: string,
@@ -410,7 +416,7 @@ function getLocalActionOperations(
 		operation_key: key,
 		name: def.name ?? humanizeOperationKey(key),
 		description: def.description,
-		kind: "write",
+		kind: getLocalActionKind(def),
 		backend: "local_action",
 		requires_approval: def.requiresApproval ?? false,
 		annotations:

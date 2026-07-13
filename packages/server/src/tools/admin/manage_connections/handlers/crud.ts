@@ -56,7 +56,10 @@ import {
 	runStatusLiteral,
 } from "../../../../utils/run-statuses";
 import type { ToolContext } from "../../../registry";
-import { rejectUnboundAppInstallationCreate } from "../../helpers/app-installation-guard";
+import {
+	buildAppInstallationSetupUrl,
+	rejectUnboundAppInstallationCreate,
+} from "../../helpers/app-installation-guard";
 import {
   buildViewUrl,
   enrichWithAuthProfiles,
@@ -652,7 +655,12 @@ export async function handleCreate(
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
   });
-  if (appInstallGuard) return appInstallGuard;
+	if (appInstallGuard) {
+		return {
+			...appInstallGuard,
+			setup_url: await buildAppInstallationSetupUrl(ctx, args.connector_key),
+		};
+	}
 
   const deviceBinding = await resolveDeviceBinding({
     organizationId,

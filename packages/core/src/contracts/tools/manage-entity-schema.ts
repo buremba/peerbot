@@ -106,6 +106,12 @@ export const ManageEntitySchemaSchema = Type.Object({
       description: "[create/update] JSON Schema for metadata validation",
     })
   ),
+  list_scope: Type.Optional(
+    Type.Union([Type.Literal("accessible"), Type.Literal("organization")], {
+      description:
+        "[list] accessible (default) includes the current org plus public schemas; organization returns only the bound org.",
+    })
+  ),
 
   // Entity type fields
   icon: Type.Optional(
@@ -332,6 +338,11 @@ export const ManageEntitySchemaResultSchema = Type.Union([
     schema_type: Type.Literal("entity_type"),
     action: Type.Literal("list"),
     entity_types: Type.Array(EntityTypeRowSchema),
+    list_scope: Type.Union([
+      Type.Literal("accessible"),
+      Type.Literal("organization"),
+    ]),
+    organization_id: Type.String(),
   }),
   Type.Object({
     schema_type: Type.Literal("entity_type"),
@@ -364,6 +375,11 @@ export const ManageEntitySchemaResultSchema = Type.Union([
     schema_type: Type.Literal("relationship_type"),
     action: Type.Literal("list"),
     relationship_types: Type.Array(RelationshipTypeRowSchema),
+    list_scope: Type.Union([
+      Type.Literal("accessible"),
+      Type.Literal("organization"),
+    ]),
+    organization_id: Type.String(),
   }),
   Type.Object({
     schema_type: Type.Literal("relationship_type"),

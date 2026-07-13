@@ -76,6 +76,41 @@ describe("sdkSearch", () => {
 		expect(result.match_count).toBeGreaterThan(0);
 	});
 
+	it("resolves multiple dotted method names independently", async () => {
+		const result = await sdkSearch(
+			{ query: "entities.get entities.delete entities.link" },
+			stubEnv,
+			writeCtx,
+		);
+		const joined = result.results.join("\n");
+		expect(joined).toContain("entities.get");
+		expect(joined).toContain("entities.delete");
+		expect(joined).toContain("entities.link");
+	});
+
+	it("explains restricted methods in a multi-method query", async () => {
+		const result = await sdkSearch(
+			{ query: "watchers.list agents.list" },
+			stubEnv,
+			writeCtx,
+		);
+		expect(result.results.join("\n")).toContain("watchers.list");
+		expect(result.results.join("\n")).not.toContain("agents.list");
+		expect(result.notes).toContain("agents.list requires workspace admin/owner");
+	});
+
+	it("explains write methods hidden from a multi-method read query", async () => {
+		const result = await sdkSearch(
+			{ query: "watchers.list watchers.create", mode: "read" },
+			stubEnv,
+			writeCtx,
+		);
+		expect(result.results.join("\n")).toContain("watchers.list");
+		expect(result.results.join("\n")).not.toContain("watchers.create");
+		expect(result.notes).toContain("watchers.create exists but requires run_sdk");
+		expect(result.notes).toContain("Showing query_sdk-safe methods only");
+	});
+
 	it("returns empty + helpful note for unknown queries", async () => {
 		const result = await sdkSearch(
 			{ query: "definitelyNotAMethod" },
@@ -94,5 +129,21 @@ describe("sdkSearch", () => {
 		);
 		expect(result.results.length).toBeLessThanOrEqual(2);
 		expect(result.notes).toContain("more matches");
+	});
+
+	it("shows exact list signatures instead of implying uniform pagination", async () => {
+		const paginated = await sdkSearch(
+			{ query: "entities.list" },
+			stubEnv,
+			readCtx,
+		);
+		expect(paginated.results[0]).toContain("limit?: number");
+
+		const unpaginated = await sdkSearch(
+			{ query: "metrics.list" },
+			stubEnv,
+			readCtx,
+		);
+		expect(unpaginated.results[0]).toContain("not paginated");
 	});
 });

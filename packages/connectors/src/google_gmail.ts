@@ -249,6 +249,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
       },
       search: {
         key: 'search',
+		kind: 'read',
         name: 'Search Emails',
         description: 'Search emails by query.',
         inputSchema: {
@@ -268,6 +269,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
       },
       get_thread: {
         key: 'get_thread',
+		kind: 'read',
         name: 'Get Thread',
         description: 'Read full thread content.',
         inputSchema: {

@@ -23,7 +23,7 @@ export interface EntitySchemaAddRuleInput {
 
 export interface EntitySchemaNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	listTypes(): Promise<unknown>;
+	listTypes(input?: { list_scope?: "accessible" | "organization" }): Promise<unknown>;
 	getType(slug: string): Promise<unknown>;
 	createType(input: {
 		slug: string;
@@ -59,7 +59,7 @@ export interface EntitySchemaNamespace {
 	deleteType(slug: string): Promise<unknown>;
 	auditType(slug: string): Promise<unknown>;
 
-	listRelTypes(): Promise<unknown>;
+	listRelTypes(input?: { list_scope?: "accessible" | "organization" }): Promise<unknown>;
 	getRelType(slug: string): Promise<unknown>;
 	createRelType(input: {
 		slug: string;
@@ -98,14 +98,14 @@ export function buildEntitySchemaNamespace(
 
 	return {
 		manage,
-		listTypes: () => callEntity({ action: "list" }),
+		listTypes: (input) => callEntity({ action: "list", ...input }),
 		getType: (slug) => callEntity({ action: "get", slug }),
 		createType: (input) => callEntity({ action: "create", ...input }),
 		updateType: (input) => callEntity({ action: "update", ...input }),
 		deleteType: (slug) => callEntity({ action: "delete", slug }),
 		auditType: (slug) => callEntity({ action: "audit", slug }),
 
-		listRelTypes: () => callRel({ action: "list" }),
+		listRelTypes: (input) => callRel({ action: "list", ...input }),
 		getRelType: (slug) => callRel({ action: "get", slug }),
 		createRelType: (input) => callRel({ action: "create", ...input }),
 		updateRelType: (input) => callRel({ action: "update", ...input }),

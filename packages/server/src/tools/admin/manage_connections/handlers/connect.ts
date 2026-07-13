@@ -24,7 +24,10 @@ import {
   resolveConnectionVisibility,
 } from '../../helpers/connection-helpers';
 import { assertEntityIdsInOrg } from '../../helpers/db-helpers';
-import { rejectUnboundAppInstallationCreate } from '../../helpers/app-installation-guard';
+import {
+	buildAppInstallationSetupUrl,
+	rejectUnboundAppInstallationCreate,
+} from '../../helpers/app-installation-guard';
 import { type FeedDefinition, splitConfigByFeedScope } from '../../helpers/feed-helpers';
 import { getScopedConnectorDefinition } from '../../../../catalog/connector-definitions';
 import { buildConnectionsUrl } from '../../../../utils/url-builder';
@@ -84,7 +87,12 @@ export async function handleConnect(
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
   });
-  if (appInstallGuard) return appInstallGuard;
+	if (appInstallGuard) {
+		return {
+			...appInstallGuard,
+			setup_url: await buildAppInstallationSetupUrl(ctx, args.connector_key),
+		};
+	}
 
   const deviceBinding = await resolveDeviceBinding({
     organizationId,

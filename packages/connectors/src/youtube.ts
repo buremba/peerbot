@@ -451,6 +451,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
     actions: {
       search: {
         key: 'search',
+		kind: 'read',
         name: 'Search Videos',
         description: 'Search public YouTube by keyword and return matching videos.',
         inputSchema: {
@@ -477,6 +478,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
       },
       get_video: {
         key: 'get_video',
+		kind: 'read',
         name: 'Get Video',
         description: 'Fetch metadata for one YouTube video by id or URL.',
         inputSchema: {
@@ -500,6 +502,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
       },
       search_liked_videos: {
         key: 'search_liked_videos',
+		kind: 'read',
         name: 'Search Liked Videos',
         description:
           "Filter the authenticated user's liked videos by title or channel name (substring match).",
@@ -523,6 +526,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
       },
       list_playlists: {
         key: 'list_playlists',
+		kind: 'read',
         name: 'List Playlists',
         description: "List the authenticated user's YouTube playlists.",
         inputSchema: {
@@ -539,6 +543,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
       },
       get_playlist: {
         key: 'get_playlist',
+		kind: 'read',
         name: 'Get Playlist',
         description: 'List videos in one of your playlists, with an optional title filter.',
         inputSchema: {

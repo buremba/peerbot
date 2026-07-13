@@ -204,6 +204,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
       },
       get_event: {
         key: 'get_event',
+		kind: 'read',
         name: 'Get Event',
         description: 'Get full event details.',
         inputSchema: {

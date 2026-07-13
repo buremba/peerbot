@@ -154,9 +154,19 @@ describe("manage_connections — app_installation create guard", () => {
 		);
 
 		expect("error" in res).toBe(true);
-		const err = (res as { error: string }).error;
+		const structured = res as {
+			error: string;
+			install_type?: string;
+			next_action?: string;
+			setup_url?: string;
+		};
+		const err = structured.error;
 		expect(err).toMatch(/install/i);
-		expect(err).toMatch(/\/github\/app\/install/);
+		expect(structured.install_type).toBe("app_installation");
+		expect(structured.next_action).toBe("open_setup_url");
+		const setupUrl = new URL(structured.setup_url as string);
+		expect(setupUrl.pathname).toContain("/connectors");
+		expect(setupUrl.searchParams.get("install")).toBe(CONNECTOR_KEY);
 		// Zero rows created.
 		expect(await connectionCount(org.id)).toBe(0);
 	});
@@ -179,7 +189,12 @@ describe("manage_connections — app_installation create guard", () => {
 		);
 
 		expect("error" in res).toBe(true);
-		expect((res as { error: string }).error).toMatch(/\/github\/app\/install/);
+		expect((res as { error: string }).error).toMatch(/install/i);
+		expect((res as { install_type?: string }).install_type).toBe("app_installation");
+		expect((res as { next_action?: string }).next_action).toBe("open_setup_url");
+		const setupUrl = new URL((res as { setup_url: string }).setup_url);
+		expect(setupUrl.pathname).toContain("/connectors");
+		expect(setupUrl.searchParams.get("install")).toBe(CONNECTOR_KEY);
 		expect(await connectionCount(org.id)).toBe(0);
 	});
 
@@ -224,8 +239,8 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 		if (res && typeof res === "object" && "error" in res) {
 			// A later failure (e.g. missing OAuth profile) is fine — it must just NOT
 			// be the install-flow guidance the guard produces.
-			expect((res as { error: string }).error).not.toMatch(
-				/\/github\/app\/install/,
+			expect((res as { error: string }).error).not.toContain(
+				"connected by installing its app",
 			);
 		}
 		// No error at all is also a pass (guard skipped, create proceeded).
@@ -234,7 +249,10 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 	/** Assert the create/connect WAS rejected by the app-install guard. */
 	function expectGuardRejected(res: unknown): void {
 		expect(res && typeof res === "object" && "error" in res).toBe(true);
-		expect((res as { error: string }).error).toMatch(/\/github\/app\/install/);
+		const structured = res as { error: string; setup_url: string };
+		expect(structured.error).toContain("connected by installing its app");
+		const setupUrl = new URL(structured.setup_url);
+		expect(setupUrl.searchParams.get("install")).toBe(CONNECTOR_KEY);
 	}
 
 	it("create WITH a RESOLVABLE auth_profile_slug (oauth intent) is ALLOWED past the guard", async () => {
@@ -566,8 +584,7 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 			TEST_ENV,
 			ctx,
 		);
-		expect("error" in res).toBe(true);
-		expect((res as { error: string }).error).toMatch(/\/github\/app\/install/);
+		expectGuardRejected(res);
 		expect(await connectionCount(org.id)).toBe(0);
 	});
 });

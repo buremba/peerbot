@@ -144,6 +144,44 @@ describe('entity schema CRUD', () => {
       await owner.entity_schema.deleteType('lst-asset');
     });
 
+		it('reports list scope and can restrict results to the bound organization', async () => {
+			const publicOrg = await createTestOrganization({
+				name: 'Public Schema Catalog',
+				visibility: 'public',
+			});
+			const publicOwner = await createTestUser({ email: 'public-schema-owner@test.com' });
+			await addUserToOrganization(publicOwner.id, publicOrg.id, 'owner');
+			const publicClient = await TestApiClient.for({
+				organizationId: publicOrg.id,
+				userId: publicOwner.id,
+				memberRole: 'owner',
+			});
+			await publicClient.entity_schema.createType({
+				slug: 'public-schema-only',
+				name: 'Public Schema Only',
+			});
+
+			const accessible = (await owner.entity_schema.listTypes()) as {
+				list_scope: string;
+				entity_types: Array<{ slug: string }>;
+			};
+			expect(accessible.list_scope).toBe('accessible');
+			expect(accessible.entity_types.map((type) => type.slug)).toContain(
+				'public-schema-only'
+			);
+
+			const local = (await owner.entity_schema.listTypes({
+				list_scope: 'organization',
+			})) as {
+				list_scope: string;
+				entity_types: Array<{ slug: string }>;
+			};
+			expect(local.list_scope).toBe('organization');
+			expect(local.entity_types.map((type) => type.slug)).not.toContain(
+				'public-schema-only'
+			);
+		});
+
     it('round-trips a derived backing (sql) and reverts to stored', async () => {
       type Got = {
         entity_type?: {
@@ -268,6 +306,16 @@ describe('entity schema CRUD', () => {
         })
       ).rejects.toThrow(/backing\.sql cannot be empty/i);
     });
+
+		it('rejects the silently ignored top-level properties alias', async () => {
+			await expect(
+				owner.entity_schema.createType({
+					slug: 'wrong-schema-shape',
+					name: 'Wrong Schema Shape',
+					properties: { title: { type: 'string' } },
+				} as never)
+			).rejects.toThrow(/properties.*metadata_schema/i);
+		});
   });
 
   describe('relationship_type', () => {

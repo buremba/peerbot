@@ -42,6 +42,26 @@ describe("catalog/merge", () => {
 		expect(merged[1]?.detail.installable).toBe(true);
 	});
 
+	it("counts explicitly read-only catalog actions as reads", () => {
+		const [item] = mergeConnectorInstalledWithCatalog([], [
+			{
+				id: "example",
+				name: "Example",
+				detail: {
+					actions_schema: {
+						search: { kind: "read" },
+						create: { kind: "write" },
+					},
+				},
+			},
+		]);
+		expect(item?.detail.operations_summary).toMatchObject({
+			total: 2,
+			reads: 1,
+			writes: 1,
+		});
+	});
+
 	it("mergeSkillInstalledWithCatalog skips hidden catalog skills", () => {
 		const merged = mergeSkillInstalledWithCatalog(
 			[

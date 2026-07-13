@@ -12,11 +12,11 @@ import {
 	resolveMaxAccessLevel,
 	SCOPE_CHECK_NOT_APPLICABLE,
 } from "./auth/tool-access";
+import { getScopedConnectorDefinition } from "./catalog/connector-definitions";
 import { listOrgInstalled } from "./catalog/installed";
 import { getDb } from "./db/client";
 import { streamInvalidationEvents } from "./events/sse";
 import type { Env } from "./index";
-import { getScopedConnectorDefinition } from "./catalog/connector-definitions";
 import { getOperationsSummary } from "./operations/connector-operations";
 import { manageClassifiers } from "./tools/admin/manage_classifiers";
 import { listWatchers } from "./tools/admin/manage_watchers";
@@ -330,21 +330,17 @@ export async function restListTools(c: Context<{ Bindings: Env }>) {
  * GET /api/knowledge/search
  * Wrapper for read_knowledge MCP tool (search mode)
  *
- * Query Parameters:
- * - query (required): Search text (min 3 characters)
- * - entity_id (optional): Filter by entity ID (integer)
- * - connection_id (optional): Filter by connection ID (integer)
- * - platform (optional): Filter by platform (reddit, trustpilot, etc.)
- * - platforms (optional): Comma-separated platform list
- * - since (optional): Filter by date (ISO date or relative like "7d", "30d")
- * - until (optional): Filter by date (ISO date)
- * - min_similarity (optional): Minimum similarity threshold (0.0-1.0, default: 0.6)
- * - include_classifications (optional): Include classification results (default: false)
- * - include_classification (optional): Include classification aggregates (summary)
- * - limit (optional): Max results (default: 50, max: 500)
- * - offset (optional): Pagination offset (default: 0)
- * - before_occurred_at / before_id (optional): Fetch the next older chronological slice
- * - after_occurred_at / after_id (optional): Fetch the next newer chronological slice
+ * Query Parameters (must be a subset of GetContentSchema — withValidatedArgs
+ * rejects unknown keys):
+ * - query (required on auth route): Search text (min 3 characters)
+ * - entity_id, connection_ids / connection_id, feed_ids, run_ids
+ * - platforms / platform (singular is mapped to platforms[])
+ * - since, until, min_similarity, limit, offset, cursors
+ * - include_classification (optional): aggregates only — "summary"
+ *
+ * Per-item classifications are always attached by the tool handler; there is
+ * no client flag for that (legacy `include_classifications` was internal-only
+ * and must never be forwarded into getContent).
  */
 function parseIdListParam(raw: string | undefined): number[] | undefined {
 	if (!raw) return undefined;
@@ -364,6 +360,19 @@ function parseStringListParam(raw: string | undefined): string[] | undefined {
 	return values.length > 0 ? values : undefined;
 }
 
+/** Merge `platforms=a,b` with legacy singular `platform=a` into schema `platforms`. */
+export function parsePlatformsQuery(
+	platformsCsv: string | undefined,
+	platformSingular: string | undefined,
+): string[] | undefined {
+	const fromList = parseStringListParam(platformsCsv);
+	const singular = platformSingular?.trim();
+	if (!singular) return fromList;
+	if (!fromList) return [singular];
+	if (fromList.includes(singular)) return fromList;
+	return [...fromList, singular];
+}
+
 export async function restSearchKnowledge(c: Context<{ Bindings: Env }>) {
 	try {
 		const query = c.req.query("query");
@@ -372,7 +381,6 @@ export async function restSearchKnowledge(c: Context<{ Bindings: Env }>) {
 		}
 
 		const connectionId = safeParseInt(c.req.query("connection_id"), { min: 1 });
-		const platforms = c.req.query("platforms");
 		const params = {
 			query,
 			entity_id: safeParseInt(c.req.query("entity_id"), { min: 1 }),
@@ -381,21 +389,16 @@ export async function restSearchKnowledge(c: Context<{ Bindings: Env }>) {
 				(connectionId ? [connectionId] : undefined),
 			feed_ids: parseIdListParam(c.req.query("feed_ids")),
 			run_ids: parseIdListParam(c.req.query("run_ids")),
-			platform: c.req.query("platform"),
-			platforms: platforms
-				? platforms
-						.split(",")
-						.map((platform) => platform.trim())
-						.filter(Boolean)
-				: undefined,
+			platforms: parsePlatformsQuery(
+				c.req.query("platforms"),
+				c.req.query("platform"),
+			),
 			since: c.req.query("since"),
 			until: c.req.query("until"),
 			min_similarity: safeParseFloat(c.req.query("min_similarity"), {
 				min: 0,
 				max: 1,
 			}),
-			include_classifications:
-				c.req.query("include_classifications") === "true",
 			include_classification:
 				c.req.query("include_classification") || undefined,
 			limit: safeParseInt(c.req.query("limit"), { min: 1, max: 500 }),
@@ -422,7 +425,6 @@ export async function publicRestSearchKnowledge(c: Context<{ Bindings: Env }>) {
 		const query = c.req.query("query");
 
 		const connectionId = safeParseInt(c.req.query("connection_id"), { min: 1 });
-		const platforms = c.req.query("platforms");
 		const contentIds = c.req.query("content_ids");
 		const params = {
 			query: query?.trim() || undefined,
@@ -432,13 +434,10 @@ export async function publicRestSearchKnowledge(c: Context<{ Bindings: Env }>) {
 				(connectionId ? [connectionId] : undefined),
 			feed_ids: parseIdListParam(c.req.query("feed_ids")),
 			run_ids: parseIdListParam(c.req.query("run_ids")),
-			platform: c.req.query("platform"),
-			platforms: platforms
-				? platforms
-						.split(",")
-						.map((platform) => platform.trim())
-						.filter(Boolean)
-				: undefined,
+			platforms: parsePlatformsQuery(
+				c.req.query("platforms"),
+				c.req.query("platform"),
+			),
 			since: c.req.query("since"),
 			until: c.req.query("until"),
 			engagement_min: safeParseInt(c.req.query("engagement_min"), {
@@ -470,8 +469,6 @@ export async function publicRestSearchKnowledge(c: Context<{ Bindings: Env }>) {
 				min: 0,
 				max: 1,
 			}),
-			include_classifications:
-				c.req.query("include_classifications") === "true",
 			include_classification:
 				c.req.query("include_classification") || undefined,
 			limit: safeParseInt(c.req.query("limit"), { min: 1, max: 500 }),

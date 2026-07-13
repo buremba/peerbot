@@ -76,4 +76,7 @@ schema_arg_count="$(grep -F -- '--json-schema "$(cat "$SCHEMA_FILE")"' "$review_
 grep -Fq '2> "$diagnostic_file"' "$review_script" ||
   fail "inline Codex reviewer stderr must be retained for fail-closed diagnostics"
 
+grep -Fq 'CLAUDE_REVIEW_HERDR="${CLAUDE_REVIEW_HERDR:-0}"' "$review_script" ||
+  fail "Herdr review tabs must default off (opt-in) to avoid stale empty tabs"
+
 echo "review reviewer selection tests passed"

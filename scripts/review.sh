@@ -79,8 +79,10 @@ PI_REVIEW_STATUS_CONTEXT="${PI_REVIEW_STATUS_CONTEXT:-pi-review}"
 PI_REVIEW_MIN_BUG_FREE="${PI_REVIEW_MIN_BUG_FREE:-80}"
 PI_REVIEW_MAX_SLOP="${PI_REVIEW_MAX_SLOP:-15}"
 PI_REVIEW_MIN_SIMPLICITY="${PI_REVIEW_MIN_SIMPLICITY:-70}"
-# Existing Herdr control applies to either selected reviewer.
-CLAUDE_REVIEW_HERDR="${CLAUDE_REVIEW_HERDR:-auto}"
+# Herdr review tabs are opt-in. Default is inline so agents don't spam empty
+# review tabs; set CLAUDE_REVIEW_HERDR=1 (or auto) when you want a visible tab.
+# Name is historical — applies to either selected reviewer (codex|claude).
+CLAUDE_REVIEW_HERDR="${CLAUDE_REVIEW_HERDR:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE_BRANCH="$2"; shift 2 ;;
@@ -220,8 +222,9 @@ case "$REVIEWER_CLI_SELECTED" in
     reviewer_exit=${PIPESTATUS[0]}
     ;;
   codex)
-    # Keep this command aligned with the inline path above. The Lobu prompt is
-    # required because it connects deterministic suite exits to the verdict.
+    # Keep this aligned with the inline path. Verdict is --output-last-message;
+    # the pane may stay quiet while Codex runs (that's fine — Herdr review is
+    # opt-in; default path is inline).
     codex_args=(
       codex exec
       --sandbox read-only
@@ -329,16 +332,19 @@ RUNNER
 
 run_reviewer() {
   local prompt_file="$1"
-  if [ "$CLAUDE_REVIEW_HERDR" != "0" ] &&
-     [ -n "${HERDR_WORKSPACE_ID:-}" ] &&
-     command -v herdr >/dev/null 2>&1; then
-    run_reviewer_herdr "$prompt_file"
-  else
-    if [ "$CLAUDE_REVIEW_HERDR" = "1" ]; then
-      echo ">> CLAUDE_REVIEW_HERDR=1 but no Herdr workspace is available; running $REVIEWER_CLI_SELECTED inline" >&2
-    fi
-    run_reviewer_inline "$prompt_file"
-  fi
+  # Opt-in: 1 or auto use Herdr when a workspace is available; default is 0.
+  case "$CLAUDE_REVIEW_HERDR" in
+    1|auto)
+      if [ -n "${HERDR_WORKSPACE_ID:-}" ] && command -v herdr >/dev/null 2>&1; then
+        run_reviewer_herdr "$prompt_file"
+        return
+      fi
+      if [ "$CLAUDE_REVIEW_HERDR" = "1" ]; then
+        echo ">> CLAUDE_REVIEW_HERDR=1 but no Herdr workspace is available; running $REVIEWER_CLI_SELECTED inline" >&2
+      fi
+      ;;
+  esac
+  run_reviewer_inline "$prompt_file"
 }
 
 extract_json_verdict() {

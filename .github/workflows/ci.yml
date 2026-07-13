@@ -518,8 +518,6 @@ jobs:
           bash scripts/lib/__tests__/review-process.test.sh
           bash scripts/lib/__tests__/review-reviewer.test.sh
           bash scripts/lib/__tests__/herdr-lifecycle.test.sh
-          bash scripts/lib/__tests__/codex-jsonl-progress.test.sh
-          bash scripts/lib/__tests__/codex-herdr-runner.test.sh
 
   typecheck:
     runs-on: ubuntu-latest

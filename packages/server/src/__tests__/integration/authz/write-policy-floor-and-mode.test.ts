@@ -224,6 +224,48 @@ describe("write-gate floor + single-envelope semantics", () => {
 		).toBe("allow");
 	});
 
+	it("agent_config read: default auto; per-target deny blocks that agent only", async () => {
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: orgId,
+				resourceClass: "agent_config",
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "read",
+				targetAgentId: "agent-auto",
+			}),
+		).toBe("allow");
+		await seedPolicy({
+			orgId,
+			resourceClass: "agent_config",
+			principalKind: "agent",
+			principalId: "agent-1",
+			targetAgentId: "agent-auto",
+			effects: [{ action: "read", effect: "deny" }],
+		});
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: orgId,
+				resourceClass: "agent_config",
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "read",
+				targetAgentId: "agent-auto",
+			}),
+		).toBe("deny");
+		// Other targets still auto.
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: orgId,
+				resourceClass: "agent_config",
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "read",
+				targetAgentId: "agent-deliv",
+			}),
+		).toBe("allow");
+	});
+
 	it("per-type override tightens only its type; other types follow the agent default", async () => {
 		// Agent default: delete auto. Per-type override for `trip`: delete deny.
 		await seedPolicy({

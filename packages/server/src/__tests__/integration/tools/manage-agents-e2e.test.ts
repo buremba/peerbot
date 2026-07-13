@@ -603,6 +603,62 @@ describe("manage_agents — builder gate e2e", () => {
 		expect(row?.is_system_agent).toBe(true);
 	});
 
+	it("agent principal: agent_config read deny filters list and blocks get", async () => {
+		const sql = getTestDb();
+		await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "visible-bot", name: "Visible" },
+			TEST_ENV,
+			ownerCtx,
+		);
+		await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "hidden-bot", name: "Hidden" },
+			TEST_ENV,
+			ownerCtx,
+		);
+
+		// Blacklist hidden-bot for builder-agent (default read stays auto).
+		const policyRows = await sql<{ id: number }>`
+			INSERT INTO write_approval_policies
+				(organization_id, resource_class, principal_kind, principal_id, target_agent_id)
+			VALUES
+				(${orgId}, 'agent_config', 'agent', 'builder-agent', 'hidden-bot')
+			RETURNING id
+		`;
+		await sql`
+			INSERT INTO write_policy_action_effects (policy_id, action, effect)
+			VALUES (${policyRows[0].id}, 'read', 'deny')
+		`;
+
+		const list = (await executeTool(
+			"manage_agents",
+			{ action: "list" },
+			TEST_ENV,
+			agentCtx,
+		)) as { agents: Array<{ id: string }> };
+		const ids = list.agents.map((a) => a.id);
+		expect(ids).toContain("visible-bot");
+		expect(ids).not.toContain("hidden-bot");
+
+		await expect(
+			executeTool(
+				"manage_agents",
+				{ action: "get", agent_id: "hidden-bot" },
+				TEST_ENV,
+				agentCtx,
+			),
+		).rejects.toThrow(/Policy denies reading agent/);
+
+		const got = (await executeTool(
+			"manage_agents",
+			{ action: "get", agent_id: "visible-bot" },
+			TEST_ENV,
+			agentCtx,
+		)) as { agent?: { id: string } };
+		expect(got.agent?.id).toBe("visible-bot");
+	});
+
 	it("a non-admin member cannot call admin-tier write actions", async () => {
 		await expect(
 			executeTool(

@@ -43,9 +43,10 @@ export type EntityMutationMode = "auto" | "approval" | "deny" | "disabled";
 
 /**
  * Which class of write a policy row governs. `entity` is the original class;
- * `agent_config` gates manage_agents create/update/delete; `connector_action`
- * gates connector operation execution. All three share this table + resolver so a
- * new class is a value, not a schema change (see docs/plans/write-gate-generalization.md).
+ * `agent_config` gates manage_agents read/list/get + create/update/delete;
+ * `connector_action` gates connector operation execution. All three share this
+ * table + resolver so a new class is a value, not a schema change (see
+ * docs/plans/write-gate-generalization.md).
  */
 export type WriteResourceClass = "entity" | "agent_config" | "connector_action";
 
@@ -512,12 +513,14 @@ function scopeSpecificity(row: EntityApprovalPolicyRow): number {
 	return (
 		(row.entity_id !== null ? 4 : 0) +
 		(row.field_path !== null ? 2 : 0) +
-		// operation_key (connector_action) and entity_type_slug (entity) are mutually
-		// exclusive scope dimensions on disjoint classes; both are the class's finest
-		// non-instance scope, so they share weight 1. A row with either set outranks
-		// the blanket row for its class.
+		// operation_key (connector_action), entity_type_slug (entity), and
+		// target_agent_id (agent_config) are mutually exclusive scope dimensions on
+		// disjoint classes; each is that class's finest non-instance scope, so they
+		// share weight 1. A row with any set outranks the blanket row for delivery
+		// target ordering (decision fold is still max-restrictive).
 		(row.entity_type_slug !== null ? 1 : 0) +
-		(row.operation_key !== null ? 1 : 0)
+		(row.operation_key !== null ? 1 : 0) +
+		(row.target_agent_id !== null ? 1 : 0)
 	);
 }
 
@@ -872,7 +875,7 @@ export async function resolveWritePolicyDecision(args: {
 	/** connector_action only: the operation being run — a per-op row tightens the
 	 * blanket execute rule for it alone. Forwarded to {@link resolveWriteEffect}. */
 	operationKey?: string | null;
-	/** agent_config only: target agent id for update/delete. */
+	/** agent_config only: target agent id for read/update/delete. */
 	targetAgentId?: string | null;
 	sql?: DbClient;
 }): Promise<EntityPolicyDecision> {
@@ -903,7 +906,7 @@ export async function resolveWriteEffect(args: {
 	/** connector_action only: the operation being run (e.g. 'slack.send_message').
 	 * A row scoped to this op tightens the blanket execute rule for it alone. */
 	operationKey?: string | null;
-	/** agent_config only: target agent id for update/delete. */
+	/** agent_config only: target agent id for read/update/delete. */
 	targetAgentId?: string | null;
 	sql?: DbClient;
 }): Promise<EntityMutationMode> {

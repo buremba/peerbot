@@ -5,7 +5,13 @@
  */
 
 import { type Static, Type } from "@sinclair/typebox";
+import {
+	resolveActingPrincipal,
+	resolveWriteEffect,
+} from "../authz/entity-policy";
+import type { WriteAction } from "../authz/write-action-manifest";
 import { resolveMaxAccessLevel } from "../auth/tool-access";
+import { getDb } from "../db/client";
 import type { Env } from "../index";
 import {
 	METHOD_METADATA,
@@ -18,6 +24,22 @@ import {
 } from "../sandbox/sdk-method-access";
 import type { ToolContext } from "./registry";
 import { withValidatedArgs } from "./validate-args";
+
+/**
+ * agents.* paths → agent_config action that must not be blanket-denied for the
+ * method to appear in discovery. list/get use read; mutate uses create/update/
+ * delete. setSystemAgent is treated as update. manage is raw — hide when every
+ * agent_config action is denied at the blanket.
+ */
+const AGENTS_SDK_ACTION: Record<string, WriteAction | "any"> = {
+	"agents.list": "read",
+	"agents.get": "read",
+	"agents.create": "create",
+	"agents.update": "update",
+	"agents.delete": "delete",
+	"agents.setSystemAgent": "update",
+	"agents.manage": "any",
+};
 
 const SDK_DISCOVERY_METADATA: Record<string, MethodMetadata> = {
 	...METHOD_METADATA,
@@ -90,21 +112,78 @@ export const SdkSearchResultSchema = Type.Object({
 
 export type SdkSearchResult = Static<typeof SdkSearchResultSchema>;
 
-function catalogForCaller(
+async function agentConfigBlanketDenied(
+	ctx: ToolContext,
+	action: WriteAction,
+): Promise<boolean> {
+	if (!ctx.organizationId || (!ctx.agentId && !ctx.actingWatcherId)) {
+		return false;
+	}
+	const actor = await resolveActingPrincipal(getDb(), {
+		organizationId: ctx.organizationId,
+		userId: ctx.userId,
+		agentId: ctx.agentId,
+		sessionWatcherId: ctx.actingWatcherId ?? null,
+		sourceForMode: ctx.sourceContext?.source,
+	});
+	if (actor.kind === "user") return false;
+	const effect = await resolveWriteEffect({
+		organizationId: ctx.organizationId,
+		resourceClass: "agent_config",
+		principalKind: actor.kind,
+		principalId: actor.id,
+		ownerAgentId: actor.ownerAgentId,
+		ownerResolved: actor.ownerResolved,
+		action,
+		targetAgentId: null,
+	});
+	return effect === "deny" || effect === "disabled";
+}
+
+/** Paths hidden for this agent principal by agent_config blanket policy. */
+async function deniedAgentsSdkPaths(ctx: ToolContext): Promise<Set<string>> {
+	const denied = new Set<string>();
+	if (!ctx.agentId && !ctx.actingWatcherId) return denied;
+
+	const actions: WriteAction[] = ["read", "create", "update", "delete"];
+	const denyByAction = new Map<WriteAction, boolean>();
+	for (const action of actions) {
+		denyByAction.set(action, await agentConfigBlanketDenied(ctx, action));
+	}
+	const allDenied = actions.every((a) => denyByAction.get(a));
+
+	for (const [path, mapped] of Object.entries(AGENTS_SDK_ACTION)) {
+		if (mapped === "any") {
+			if (allDenied) denied.add(path);
+			continue;
+		}
+		if (denyByAction.get(mapped)) denied.add(path);
+	}
+	return denied;
+}
+
+async function catalogForCaller(
 	ctx: ToolContext,
 	mode: SdkDiscoveryMode,
-): Array<[string, MethodMetadata]> {
+): Promise<Array<[string, MethodMetadata]>> {
 	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
-	return Object.entries(SDK_DISCOVERY_METADATA).filter(([, meta]) =>
-		sdkMethodVisible(meta.access, callerMax, mode),
-	);
+	const policyDenied = await deniedAgentsSdkPaths(ctx);
+	return Object.entries(SDK_DISCOVERY_METADATA).filter(([path, meta]) => {
+		if (!sdkMethodVisible(meta.access, callerMax, mode)) return false;
+		if (policyDenied.has(path)) return false;
+		return true;
+	});
 }
 
 function hiddenMethodNote(
 	path: string,
 	meta: MethodMetadata,
 	mode: SdkDiscoveryMode,
+	policyDenied: Set<string>,
 ): string {
+	if (policyDenied.has(path)) {
+		return `${path} is blocked by this agent's agent_config permissions.`;
+	}
 	if (mode === "read" && meta.access !== "read") {
 		return `${path} exists but requires run_sdk (access: ${meta.access}). Retry with mode='full' or call via run_sdk.`;
 	}
@@ -163,7 +242,8 @@ async function sdkSearchImpl(
 		.filter(Boolean);
 	const lower = normalizeQueryTerm(query);
 	const mode: SdkDiscoveryMode = args.mode ?? "full";
-	const catalog = catalogForCaller(ctx, mode);
+	const catalog = await catalogForCaller(ctx, mode);
+	const policyDenied = await deniedAgentsSdkPaths(ctx);
 	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
 	const isMultiMethodQuery =
 		terms.length > 1 &&
@@ -182,8 +262,11 @@ async function sdkSearchImpl(
 			const exact = METADATA_BY_LOWER_PATH.get(term);
 			if (exact) {
 				const [path, meta] = exact;
-				if (!sdkMethodVisible(meta.access, callerMax, mode)) {
-					hidden.push(hiddenMethodNote(path, meta, mode));
+				if (
+					!sdkMethodVisible(meta.access, callerMax, mode) ||
+					policyDenied.has(path)
+				) {
+					hidden.push(hiddenMethodNote(path, meta, mode, policyDenied));
 				} else if (!seen.has(path)) {
 					seen.add(path);
 					matches.push({ path, meta, exact: true });
@@ -238,12 +321,15 @@ async function sdkSearchImpl(
 	const exact = METADATA_BY_LOWER_PATH.get(lower);
 	if (exact) {
 		const [path, meta] = exact;
-		if (!sdkMethodVisible(meta.access, callerMax, mode)) {
+		if (
+			!sdkMethodVisible(meta.access, callerMax, mode) ||
+			policyDenied.has(path)
+		) {
 			return {
 				query,
 				match_count: 0,
 				results: [],
-				notes: hiddenMethodNote(path, meta, mode),
+				notes: hiddenMethodNote(path, meta, mode, policyDenied),
 			};
 		}
 		return {
@@ -293,7 +379,7 @@ async function sdkSearchImpl(
 	if (matches.length === 0) {
 		const hiddenExact = METADATA_BY_LOWER_PATH.get(lower);
 		const existsButHidden = hiddenExact
-			? hiddenMethodNote(hiddenExact[0], hiddenExact[1], mode)
+			? hiddenMethodNote(hiddenExact[0], hiddenExact[1], mode, policyDenied)
 			: undefined;
 		return {
 			query,

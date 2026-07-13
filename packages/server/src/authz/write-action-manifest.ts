@@ -17,11 +17,11 @@
 import type { WriteResourceClass } from "./entity-policy";
 
 /**
- * The verbs a write policy can govern. `read`/`create`/`update`/`delete` are the
- * entity actions (`read` scopes which types an agent may see); agent_config uses
- * create/update/delete; `execute` is the connector_action verb (running a write
- * connector operation). `install` is intentionally NOT declared until a class
- * actually uses it — an undeclared action is illegal, not a reserved no-op.
+ * The verbs a write policy can govern. `read`/`create`/`update`/`delete` are
+ * shared by entity and agent_config (`read` scopes which entity types / peer
+ * agents a principal may see); `execute` is the connector_action verb (running
+ * a write connector operation). `install` is intentionally NOT declared until a
+ * class actually uses it — an undeclared action is illegal, not a reserved no-op.
  */
 export type WriteAction = "read" | "create" | "update" | "delete" | "execute";
 
@@ -66,12 +66,18 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 		},
 	},
 	agent_config: {
-		actions: ["create", "update", "delete"],
+		// `read` = list/get other agents (and their config surface). Auto/deny in
+		// the UI; approval collapses to deny at the gate. create/update/delete
+		// remain definition CRUD; invoke/call is not a legal action until a
+		// first-class handoff path exists.
+		actions: ["read", "create", "update", "delete"],
 		effects: ["auto", "approval", "deny"],
 		// An agent editing agent definitions is high-trust: create/update queue an
 		// approval, delete is denied outright (a human must delete an agent).
+		// read defaults auto so existing agents keep unrestricted peer visibility
+		// (tighten via blanket deny + target whitelist, or per-target deny).
 		defaultEffect: {
-			read: "deny",
+			read: "auto",
 			create: "approval",
 			update: "approval",
 			delete: "deny",

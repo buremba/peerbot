@@ -1635,7 +1635,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		}
 	}
 
-	// target_agent_id: agent_config exception for update/delete of a specific agent.
+	// target_agent_id: agent_config exception for read/update/delete of a specific agent.
 	const targetPresent =
 		body.target_agent_id !== undefined && body.target_agent_id !== null;
 	if (targetPresent && resourceClass !== "agent_config") {

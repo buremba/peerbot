@@ -46,7 +46,6 @@ const WITH_AGENT_ID = "analyst";
 // strict:true} — it cannot retrieve business-event context, so the WITHOUT arm
 // is genuinely context-free, not just prompt-stripped.
 const BASELINE_AGENT_ID = "baseline";
-const RAW_MARCH = 550;
 const ADJUSTED_MARCH = 50;
 const MIGRATION_SOURCE = "https://linear.app/kelder/issue/DATA-142";
 
@@ -97,7 +96,16 @@ async function warehouseMarch(
       "AND to_char(date_trunc('month', cancelled_at), 'YYYY-MM') = '2026-03'",
   });
   if (res.error) throw new Error(`warehouse read failed: ${res.error}`);
-  return res.rows[0] ?? { raw: RAW_MARCH, adjusted: ADJUSTED_MARCH };
+  const row = res.rows[0];
+  if (!row) {
+    // No row = the rollup found no March cancellations, which means the seed
+    // didn't run (or the warehouse is empty). Fail loudly rather than fabricate
+    // the expected 550/50 and pass on data that isn't there.
+    throw new Error(
+      "warehouse returned no March row — run `bun run seed:warehouse` first"
+    );
+  }
+  return row;
 }
 
 /** Build the context block pushed to the agent in the WITH arm. */
@@ -212,15 +220,16 @@ function runAgentTurn(
 // vice-versa) slip through and the PASS would no longer prove the context
 // changed the answer.
 
-/** Does the answer cite the billing-migration cause / its source? */
+/**
+ * Does the answer cite the GOVERNED source, not just any plausible cause? We
+ * require the incident's identifier (DATA-142) or its exact source URL — a bare
+ * "migration"/"artifact" could be the model guessing, which would NOT prove it
+ * used the pushed record. The whole point is that the context, not a lucky
+ * guess, produced the answer.
+ */
 function citesMigration(answer: string): boolean {
   const a = answer.toLowerCase();
-  return (
-    a.includes("migration") ||
-    a.includes("data-142") ||
-    a.includes("artifact") ||
-    a.includes(MIGRATION_SOURCE.toLowerCase())
-  );
+  return a.includes("data-142") || a.includes(MIGRATION_SOURCE.toLowerCase());
 }
 
 /** Does the answer give the corrected March number (~50, not the raw 550)? */

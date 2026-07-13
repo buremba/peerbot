@@ -168,6 +168,17 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
       403
     );
   }
+  // MCP OAuth clients (Slack, Cursor, …) may receive `device_worker:run` in
+  // the token scope string for authorize-request compatibility when they
+  // over-request from a cached scopes_supported list. Those tokens are
+  // resource-bound to `/mcp` and must not mint sibling device credentials.
+  // Real device grants (device-code / lobu login) have no resource audience.
+  if (c.var.mcpAuthInfo?.resource) {
+    return c.json(
+      { error: 'insufficient_scope', required: 'device-bound token without MCP resource' },
+      403
+    );
+  }
 
   const body = await parseJsonBody<{
     platform?: string;

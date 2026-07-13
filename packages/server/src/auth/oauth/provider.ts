@@ -276,6 +276,11 @@ export class OAuthProvider {
       expires_in: ACCESS_TOKEN_LIFETIME_SECONDS,
       refresh_token: newRefreshToken,
       scope: scope || undefined,
+      ...(oldRefreshToken.resource
+        ? { resource: oldRefreshToken.resource }
+        : params.resource
+          ? { resource: params.resource }
+          : {}),
     };
   }
 
@@ -319,6 +324,9 @@ export class OAuthProvider {
       expires_in: ACCESS_TOKEN_LIFETIME_SECONDS,
       refresh_token: refreshToken,
       scope: scope || undefined,
+      // RFC 8707: echo the authorized resource so MCP clients can confirm the
+      // audience matches the protected resource they started from.
+      ...(resource ? { resource } : {}),
     };
   }
 

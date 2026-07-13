@@ -16,11 +16,7 @@ import { requireAuth } from '../middleware';
 import { findExistingPersonalOrg } from '../personal-org-provisioning';
 import { buildAuthMd } from './auth-md';
 import { OAuthProvider } from './provider';
-import {
-  DEFAULT_SCOPES_STRING,
-  filterScopeByRole,
-  stripNonPublicOAuthScopes,
-} from './scopes';
+import { DEFAULT_SCOPES_STRING, filterScopeByRole } from './scopes';
 import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } from './types';
 import { createOAuthError, validateRedirectUri } from './utils';
 import { getConfiguredPublicOrigin } from '../../utils/public-origin';
@@ -547,19 +543,18 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
     return c.redirect(loginUrl.toString());
   }
 
-  // MCP scopes or other scopes — show consent page as before
+  // MCP scopes or other scopes — show consent page as before.
+  // Pass the client-requested scope through unchanged. Discovery no longer
+  // advertises device-only scopes, but some MCP clients (Slack) cache an older
+  // scopes_supported list and keep requesting them. Stripping here made the
+  // token `scope` a subset of what the client asked for, and Slack then fails
+  // with "must accept all the required permissions".
   const webUrl = getBaseUrl(c);
   const consentUrl = new URL('/oauth/consent', webUrl);
 
-  // Pass params to consent page via query string. Strip first-party-only scopes
-  // so the UI (and the later consent POST) never offer device_worker:run /
-  // connections:token to third-party MCP clients that requested the full
-  // discovery list.
-  const publicScope =
-    stripNonPublicOAuthScopes(params.scope) || DEFAULT_SCOPES_STRING;
   consentUrl.searchParams.set('client_id', params.client_id);
   consentUrl.searchParams.set('redirect_uri', params.redirect_uri);
-  consentUrl.searchParams.set('scope', publicScope);
+  consentUrl.searchParams.set('scope', params.scope || DEFAULT_SCOPES_STRING);
   consentUrl.searchParams.set('state', params.state || '');
   consentUrl.searchParams.set('code_challenge', params.code_challenge);
   consentUrl.searchParams.set('code_challenge_method', params.code_challenge_method);
@@ -609,23 +604,13 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
     return c.json(createOAuthError('invalid_request', 'Invalid JSON body'), 400);
   }
 
-  // First-party scopes (`device_worker:run`, `connections:token`) are not
-  // grantable here. Clients that still request them (e.g. Slack after reading
-  // a broad cached scopes_supported) get them stripped rather than a hard
-  // invalid_scope, so MCP login can complete with the public scopes they need.
-  // Device workers continue to use the device-authorization flow, which never
-  // hits this path.
-  const publicConsentScope = stripNonPublicOAuthScopes(body.scope);
-  if ((body.scope ?? '').trim() && !publicConsentScope) {
-    return c.json(
-      createOAuthError(
-        'invalid_scope',
-        'Requested scopes are only available via the device-authorization flow or an explicit PAT'
-      ),
-      400
-    );
-  }
-  body.scope = publicConsentScope || DEFAULT_SCOPES_STRING;
+  // Keep the client-requested scope set. Discovery no longer advertises
+  // first-party-only scopes, but clients that cached an older scopes_supported
+  // (notably Slack MCP) still request them and require the token `scope` to
+  // cover every requested entry. Unknown values are filtered later via
+  // parseScopes / AVAILABLE_SCOPES at token use. Device-specific *behavior*
+  // (personal-org force-bind, mint-child-token) stays gated on the device
+  // flow / resource binding, not solely on the scope string.
   const consentHasMcpScopes = hasMcpScopes(body.scope);
 
   // User denied consent
@@ -699,9 +684,9 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
           400
         );
       }
-      // NOTE: `connections:token` / `device_worker:run` were already stripped
-      // above via stripNonPublicOAuthScopes. Only the first-party `lobu login`
-      // device-code grant (or an explicit PAT) gets those.
+      // Grant exactly the role-filtered request (may include first-party scope
+      // names when a client still over-requests them). Runtime capability gates
+      // stay separate from this compatibility grant.
       params.scope = filtered;
     }
 

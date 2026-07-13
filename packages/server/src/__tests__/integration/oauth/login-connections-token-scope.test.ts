@@ -166,12 +166,12 @@ describe('Stage 1 — login token carries connections:token', () => {
     expect((rows[0].scope ?? '').split(' ')).toContain('mcp:admin');
   });
 
-  it('an authorization-code grant does NOT get connections:token (no third-party over-grant)', async () => {
-    // The authorization-code consent path is used by arbitrary third-party MCP
-    // clients (Claude Desktop, Cursor, Slack, …). Even when they request the
-    // full first-party scope list (common when clients copy scopes_supported),
-    // device_worker:run / connections:token must be stripped — only `lobu login`
-    // (device-code) or an explicit PAT gets those.
+  it('an authorization-code grant covers Slack-style over-request of first-party scopes', async () => {
+    // Slack MCP caches scopes_supported and keeps requesting every entry it
+    // once saw (including device_worker:run / connections:token). The token
+    // `scope` field must cover the full request or Slack fails with
+    // "must accept all the required permissions". Discovery no longer
+    // advertises those scopes for new clients; this path is compatibility.
     const app = buildApp();
     const sql = getTestDb();
 
@@ -196,13 +196,13 @@ describe('Stage 1 — login token carries connections:token', () => {
     const verifier = randomBytes(32).toString('base64url');
     const challenge = createHash('sha256').update(verifier).digest('base64url');
 
-    // Consent — Slack-style over-request of every AVAILABLE_SCOPES entry.
+    const fullScope =
+      'mcp:read mcp:write mcp:admin profile:read device_worker:run connections:token';
     const authorize = await call(app, 'POST', '/oauth/authorize/consent', {
       body: {
         client_id: client.client_id,
         redirect_uri: redirectUri,
-        scope:
-          'mcp:read mcp:write mcp:admin profile:read device_worker:run connections:token',
+        scope: fullScope,
         code_challenge: challenge,
         code_challenge_method: 'S256',
         resource: `${ORIGIN}/mcp/${org.slug}`,
@@ -225,24 +225,29 @@ describe('Stage 1 — login token carries connections:token', () => {
       },
     });
     expect(tokenRes.status).toBe(200);
-    const tokens = (await tokenRes.json()) as { access_token: string };
+    const tokens = (await tokenRes.json()) as {
+      access_token: string;
+      scope?: string;
+      resource?: string;
+    };
+    // Token response must cover every requested scope (Slack checks this).
+    for (const s of fullScope.split(' ')) {
+      expect((tokens.scope ?? '').split(' ')).toContain(s);
+    }
+    expect(tokens.resource).toBe(`${ORIGIN}/mcp/${org.slug}`);
 
     const rows = (await sql`
-      SELECT scope FROM oauth_tokens
+      SELECT scope, resource FROM oauth_tokens
       WHERE token_hash = ${hashToken(tokens.access_token)}
         AND token_type = 'access'
       LIMIT 1
-    `) as unknown as Array<{ scope: string | null }>;
+    `) as unknown as Array<{ scope: string | null; resource: string | null }>;
     expect(rows.length).toBe(1);
     const granted = (rows[0].scope ?? '').split(' ').filter(Boolean);
-    // Public MCP scopes survive...
     expect(granted).toContain('mcp:read');
-    expect(granted).toContain('mcp:write');
-    expect(granted).toContain('mcp:admin');
-    expect(granted).toContain('profile:read');
-    // ...but first-party scopes are stripped, not hard-rejected.
-    expect(granted).not.toContain('connections:token');
-    expect(granted).not.toContain('device_worker:run');
+    expect(granted).toContain('device_worker:run');
+    expect(granted).toContain('connections:token');
+    expect(rows[0].resource).toBe(`${ORIGIN}/mcp/${org.slug}`);
   });
 
   it('a profile:read-only device grant (no MCP scopes) does NOT get connections:token', async () => {

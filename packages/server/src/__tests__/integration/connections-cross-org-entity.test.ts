@@ -16,6 +16,7 @@
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
+import { ClientSdkActionError } from "../../sandbox/namespaces/action-call";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestConnection,
@@ -117,13 +118,17 @@ describe("manage_connections entity association", () => {
 	});
 
 	it("rejects update when an entity_id belongs to another org", async () => {
-		const result = (await owner.connections.update({
-			connection_id: taggableConnectionId,
-			entity_ids: [foreignEntityId],
-		})) as { error?: string };
+		const error = await owner.connections
+			.update({
+				connection_id: taggableConnectionId,
+				entity_ids: [foreignEntityId],
+			})
+			.catch((reason: unknown) => reason);
 
-		expect(result.error).toBeTruthy();
-		expect(result.error).toContain(String(foreignEntityId));
+		expect(error).toBeInstanceOf(ClientSdkActionError);
+		expect((error as ClientSdkActionError).message).toContain(
+			String(foreignEntityId),
+		);
 
 		const sql = getTestDb();
 		const [row] = await sql<{ entity_ids: number[] | string | null }[]>`

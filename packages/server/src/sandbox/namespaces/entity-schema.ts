@@ -56,7 +56,7 @@ export interface EntitySchemaNamespace {
 		/** Set/clear declared metrics; `null` clears, omit to leave unchanged. */
 		metrics_config?: Record<string, unknown> | null;
 	}): Promise<unknown>;
-	deleteType(slug: string): Promise<unknown>;
+	deleteType(input: { slug: string }): Promise<unknown>;
 	auditType(slug: string): Promise<unknown>;
 
 	listRelTypes(input?: { list_scope?: "accessible" | "organization" }): Promise<unknown>;
@@ -73,11 +73,11 @@ export interface EntitySchemaNamespace {
 		description?: string;
 		inverse_type_slug?: string | null;
 	}): Promise<unknown>;
-	deleteRelType(slug: string): Promise<unknown>;
+	deleteRelType(input: { slug: string }): Promise<unknown>;
 
 	addRule(input: EntitySchemaAddRuleInput): Promise<unknown>;
 	removeRule(input: { slug: string; rule_id: number }): Promise<unknown>;
-	listRules(slug: string): Promise<unknown>;
+	listRules(input: { slug: string }): Promise<unknown>;
 }
 
 export function buildEntitySchemaNamespace(
@@ -102,17 +102,17 @@ export function buildEntitySchemaNamespace(
 		getType: (slug) => callEntity({ action: "get", slug }),
 		createType: (input) => callEntity({ action: "create", ...input }),
 		updateType: (input) => callEntity({ action: "update", ...input }),
-		deleteType: (slug) => callEntity({ action: "delete", slug }),
+		deleteType: (input) => callEntity({ action: "delete", ...input }),
 		auditType: (slug) => callEntity({ action: "audit", slug }),
 
 		listRelTypes: (input) => callRel({ action: "list", ...input }),
 		getRelType: (slug) => callRel({ action: "get", slug }),
 		createRelType: (input) => callRel({ action: "create", ...input }),
 		updateRelType: (input) => callRel({ action: "update", ...input }),
-		deleteRelType: (slug) => callRel({ action: "delete", slug }),
+		deleteRelType: (input) => callRel({ action: "delete", ...input }),
 
 		addRule: (input) => callRel({ action: "add_rule", ...input }),
 		removeRule: (input) => callRel({ action: "remove_rule", ...input }),
-		listRules: (slug) => callRel({ action: "list_rules", slug }),
+		listRules: (input) => callRel({ action: "list_rules", ...input }),
 	};
 }

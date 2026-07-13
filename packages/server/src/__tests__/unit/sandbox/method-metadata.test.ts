@@ -106,4 +106,26 @@ describe("method-metadata", () => {
     const example = METHOD_METADATA.query.example ?? "";
     expect(example).not.toMatch(/\$\d+/);
   });
+
+	it("documents object signatures for named id methods", () => {
+		const objectSignatureMethods = [
+			"entities.get",
+			"entities.delete",
+			"feeds.get",
+			"feeds.trigger",
+			"feeds.delete",
+			"classifiers.delete",
+			"schedules.cancel",
+			"watchers.get",
+			"watchers.trigger",
+			"watchers.delete",
+			"entitySchema.deleteType",
+			"entitySchema.deleteRelType",
+			"entitySchema.listRules",
+		];
+
+		for (const path of objectSignatureMethods) {
+			expect(METHOD_METADATA[path]?.example, path).toMatch(/\(\{/);
+		}
+	});
 });

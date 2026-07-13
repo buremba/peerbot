@@ -43,7 +43,7 @@ describe('prune (server gate)', () => {
   describe('definition deletes (prune targets)', () => {
     it('deletes an entity type with no instances', async () => {
       await owner.entity_schema.createType({ slug: 'prune-empty', name: 'Empty' });
-      await owner.entity_schema.deleteType('prune-empty');
+      await owner.entity_schema.deleteType({ slug: 'prune-empty' });
       const got = (await owner.entity_schema.getType('prune-empty')) as {
         entity_type: unknown;
       };
@@ -58,13 +58,13 @@ describe('prune (server gate)', () => {
         organization_id: orgId,
       });
       await expect(
-        owner.entity_schema.deleteType('prune-busy')
+        owner.entity_schema.deleteType({ slug: 'prune-busy' })
       ).rejects.toThrow(/entities of this type exist|cannot delete/i);
     });
 
     it('deletes a relationship type with no instances', async () => {
       await owner.entity_schema.createRelType({ slug: 'prune-rel', name: 'Rel' });
-      await owner.entity_schema.deleteRelType('prune-rel');
+      await owner.entity_schema.deleteRelType({ slug: 'prune-rel' });
       const list = (await owner.entity_schema.listTypes()) as {
         relationship_types?: Array<{ slug: string }>;
       };
@@ -101,7 +101,7 @@ describe('prune (server gate)', () => {
         VALUES (${orgId}, ${a.id}, ${b.id}, ${rt?.id}, ${userId})
       `;
       await expect(
-        owner.entity_schema.deleteRelType('prune-rel-busy')
+        owner.entity_schema.deleteRelType({ slug: 'prune-rel-busy' })
       ).rejects.toThrow(/relationships of this type exist|cannot delete/i);
     });
 
@@ -123,7 +123,7 @@ describe('prune (server gate)', () => {
       });
       // ...and DELETE resolves THIS org's own row (tenant-first), not the
       // foreign public one (which would otherwise raise access-denied).
-      await owner.entity_schema.deleteRelType('shared-rel');
+      await owner.entity_schema.deleteRelType({ slug: 'shared-rel' });
       // The foreign public row is untouched.
       const [foreign] = await sql<{ deleted_at: string | null }[]>`
         SELECT deleted_at FROM entity_relationship_types
@@ -143,7 +143,7 @@ describe('prune (server gate)', () => {
       // so it must report 'not found' — never 'access denied', which would leak
       // that the slug exists in another org.
       await expect(
-        owner.entity_schema.deleteRelType('foreign-only')
+        owner.entity_schema.deleteRelType({ slug: 'foreign-only' })
       ).rejects.toThrow(/not found/i);
       await expect(
         owner.entity_schema.updateRelType({ slug: 'foreign-only', name: 'x' })
@@ -166,7 +166,7 @@ describe('prune (server gate)', () => {
       })) as { watcher_id?: string };
       expect(created.watcher_id).toBeTruthy();
 
-      await owner.watchers.delete(created.watcher_id as string);
+      await owner.watchers.delete({ watcher_ids: [created.watcher_id as string] });
       const list = (await owner.watchers.list({})) as {
         watchers?: Array<{ slug: string }>;
       };
@@ -182,7 +182,7 @@ describe('prune (server gate)', () => {
       // status='archived' to vacate the index — `lobu apply` prune then re-add
       // must round-trip.
       await owner.entity_schema.createRelType({ slug: 'prune-readd', name: 'First' });
-      await owner.entity_schema.deleteRelType('prune-readd');
+      await owner.entity_schema.deleteRelType({ slug: 'prune-readd' });
       await owner.entity_schema.createRelType({ slug: 'prune-readd', name: 'Second' });
       const got = (await owner.entity_schema.getRelType('prune-readd')) as {
         relationship_type: { name: string; status: string } | null;

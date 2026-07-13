@@ -17,7 +17,7 @@ import { getWatcher } from "../../tools/get_watchers";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
-type WatcherId = string | number;
+type WatcherId = string;
 type Source = { name: string; query: string };
 type WatcherActionInput = Omit<ManageWatchersArgs, "action" | "watcher_id"> & {
 	watcher_id?: WatcherId;
@@ -138,14 +138,14 @@ export interface WatchersNamespace {
 	/** Raw escape hatch for any manage_watchers action. Prefer named methods. */
 	manage(input: ManageWatchersArgs): Promise<unknown>;
 	list(filter?: WatcherListFilter): Promise<unknown>;
-	get(watcher_id: WatcherId): Promise<unknown>;
+	get(input: { watcher_id: WatcherId }): Promise<unknown>;
 	create(input: WatcherCreateInput): Promise<unknown>;
 	update(input: WatcherUpdateInput): Promise<unknown>;
 	createVersion(input: WatcherCreateVersionInput): Promise<unknown>;
 	completeWindow(input: WatcherCompleteWindowInput): Promise<unknown>;
-	trigger(watcher_id: WatcherId): Promise<unknown>;
+	trigger(input: { watcher_id: WatcherId }): Promise<unknown>;
 	/** Delete one or more watchers. */
-	delete(watcher_id: WatcherId | WatcherId[]): Promise<unknown>;
+	delete(input: { watcher_ids: WatcherId[] }): Promise<unknown>;
 	setReactionScript(input: {
 		watcher_id: WatcherId;
 		/** TypeScript source. Empty string removes it. */
@@ -161,28 +161,13 @@ export interface WatchersNamespace {
 	createFromVersion(input: WatcherCreateFromVersionInput): Promise<unknown>;
 }
 
-function asWatcherIdString(v: WatcherId): string {
-	return typeof v === "number" ? String(v) : v;
-}
-
-function normalizeWatcherId<T extends { watcher_id?: WatcherId }>(
-	input: T,
-): Omit<T, "watcher_id"> & { watcher_id?: string } {
-	return {
-		...input,
-		...(input.watcher_id !== undefined
-			? { watcher_id: asWatcherIdString(input.watcher_id) }
-			: {}),
-	};
-}
-
 function normalizeVersionDetailsInput(
 	input: WatcherId | WatcherVersionDetailsInput,
 ): { watcher_id: string; version?: number } {
-	if (typeof input === "string" || typeof input === "number") {
-		return { watcher_id: asWatcherIdString(input) };
+	if (typeof input === "string") {
+		return { watcher_id: input };
 	}
-	return normalizeWatcherId(input) as { watcher_id: string; version?: number };
+	return input;
 }
 
 export function buildWatchersNamespace(
@@ -195,37 +180,26 @@ export function buildWatchersNamespace(
 		manage: (input) => manage(input as Record<string, unknown>),
 		list: (filter) =>
 			listWatchers((filter ?? {}) as never, env, ctx) as Promise<unknown>,
-		get(watcher_id) {
+		get(input) {
 			return getWatcher(
-				{ watcher_id: asWatcherIdString(watcher_id) } as never,
+				input as never,
 				env,
 				ctx,
 			) as Promise<unknown>;
 		},
 		create: (input) => action("create", input),
-		update: (input) => action("update", normalizeWatcherId(input)),
-		createVersion: (input) =>
-			action("create_version", normalizeWatcherId(input)),
-		completeWindow: (input) =>
-			action("complete_window", normalizeWatcherId(input)),
-		trigger: (watcher_id) =>
-			action("trigger", { watcher_id: asWatcherIdString(watcher_id) }),
-		delete(watcher_id) {
-			const watcher_ids = Array.isArray(watcher_id)
-				? watcher_id.map(asWatcherIdString)
-				: [asWatcherIdString(watcher_id)];
-			return action("delete", { watcher_ids });
-		},
-		setReactionScript: (input) =>
-			action("set_reaction_script", normalizeWatcherId(input)),
-		getVersions: (watcher_id) =>
-			action("get_versions", { watcher_id: asWatcherIdString(watcher_id) }),
+		update: (input) => action("update", input),
+		createVersion: (input) => action("create_version", input),
+		completeWindow: (input) => action("complete_window", input),
+		trigger: (input) => action("trigger", input),
+		delete: (input) => action("delete", input),
+		setReactionScript: (input) => action("set_reaction_script", input),
+		getVersions: (watcher_id) => action("get_versions", { watcher_id }),
 		getVersionDetails: (input) =>
 			action("get_version_details", normalizeVersionDetailsInput(input)),
 		getComponentReference: () => action("get_component_reference"),
-		submitFeedback: (input) =>
-			action("submit_feedback", normalizeWatcherId(input)),
-		getFeedback: (input) => action("get_feedback", normalizeWatcherId(input)),
+		submitFeedback: (input) => action("submit_feedback", input),
+		getFeedback: (input) => action("get_feedback", input),
 		createFromVersion: (input) => action("create_from_version", input),
 	};
 }

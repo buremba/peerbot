@@ -9,6 +9,7 @@
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
+import { ClientSdkActionError } from "../../sandbox/namespaces/action-call";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestConnection,
@@ -64,15 +65,18 @@ describe("manage_feeds cross-org entity_ids", () => {
 	});
 
 	it("rejects create_feed when an entity_id belongs to another org", async () => {
-		const result = (await owner.feeds.create({
-			connection_id: connectionId,
-			feed_key: "default",
-			entity_ids: [foreignEntityId],
-		})) as { error?: string; feed?: unknown };
+		const error = await owner.feeds
+			.create({
+				connection_id: connectionId,
+				feed_key: "default",
+				entity_ids: [foreignEntityId],
+			})
+			.catch((reason: unknown) => reason);
 
-		expect(result.error).toBeTruthy();
-		expect(result.error).toContain(String(foreignEntityId));
-		expect(result.feed).toBeUndefined();
+		expect(error).toBeInstanceOf(ClientSdkActionError);
+		expect((error as ClientSdkActionError).message).toContain(
+			String(foreignEntityId),
+		);
 
 		// No feed row leaked into the DB.
 		const sql = getTestDb();
@@ -104,13 +108,17 @@ describe("manage_feeds cross-org entity_ids", () => {
 		const feedId = Number(created.feed?.id);
 		expect(feedId).toBeGreaterThan(0);
 
-		const result = (await owner.feeds.update({
-			feed_id: feedId,
-			entity_ids: [foreignEntityId],
-		})) as { error?: string };
+		const error = await owner.feeds
+			.update({
+				feed_id: feedId,
+				entity_ids: [foreignEntityId],
+			})
+			.catch((reason: unknown) => reason);
 
-		expect(result.error).toBeTruthy();
-		expect(result.error).toContain(String(foreignEntityId));
+		expect(error).toBeInstanceOf(ClientSdkActionError);
+		expect((error as ClientSdkActionError).message).toContain(
+			String(foreignEntityId),
+		);
 
 		// The feed's entity_ids were NOT changed.
 		const sql = getTestDb();

@@ -39,6 +39,7 @@ function ctxFor(organizationId: string, userId: string): ToolContext {
 		tokenType: "oauth",
 		scopedToOrg: true,
 		allowCrossOrg: false,
+		baseUrl: "https://gateway.test/lobu",
 	} as ToolContext;
 }
 
@@ -57,14 +58,15 @@ async function seedAppInstallConnector(organizationId: string): Promise<void> {
 			methods: [
 				{
 					type: "app_installation",
-					provider: "github",
+					provider: "slack",
 					providerInstance: "cloud",
+					installShape: "oauth-code-exchange",
 					appIdKey: "DEMO_APP_ID",
 					privateKeyKey: "DEMO_APP_PRIVATE_KEY",
 				},
 				{
 					type: "oauth",
-					provider: "github",
+					provider: "slack",
 					requiredScopes: ["read:user"],
 					clientIdKey: "DEMO_CLIENT_ID",
 					clientSecretKey: "DEMO_CLIENT_SECRET",
@@ -154,19 +156,19 @@ describe("manage_connections — app_installation create guard", () => {
 		);
 
 		expect("error" in res).toBe(true);
-		const structured = res as {
-			error: string;
-			install_type?: string;
-			next_action?: string;
-			setup_url?: string;
-		};
-		const err = structured.error;
-		expect(err).toMatch(/install/i);
-		expect(structured.install_type).toBe("app_installation");
-		expect(structured.next_action).toBe("open_setup_url");
-		const setupUrl = new URL(structured.setup_url as string);
+		expect(res).toMatchObject({
+			error_code: "connector_setup_required",
+			connector_key: CONNECTOR_KEY,
+			provider: "slack",
+			install_type: "app_installation",
+			install_shape: "oauth-code-exchange",
+			next_action: "install_app",
+			install_url: "https://gateway.test/lobu/slack/install",
+		});
+		const setupUrl = new URL((res as { setup_url: string }).setup_url);
 		expect(setupUrl.pathname).toContain("/connectors");
 		expect(setupUrl.searchParams.get("install")).toBe(CONNECTOR_KEY);
+		expect((res as { error: string }).error).not.toMatch(/github/i);
 		// Zero rows created.
 		expect(await connectionCount(org.id)).toBe(0);
 	});
@@ -189,11 +191,13 @@ describe("manage_connections — app_installation create guard", () => {
 		);
 
 		expect("error" in res).toBe(true);
-		expect((res as { error: string }).error).toMatch(/install/i);
-		expect((res as { install_type?: string }).install_type).toBe("app_installation");
-		expect((res as { next_action?: string }).next_action).toBe("open_setup_url");
+		expect(res).toMatchObject({
+			error_code: "connector_setup_required",
+			provider: "slack",
+			next_action: "install_app",
+			install_url: "https://gateway.test/lobu/slack/install",
+		});
 		const setupUrl = new URL((res as { setup_url: string }).setup_url);
-		expect(setupUrl.pathname).toContain("/connectors");
 		expect(setupUrl.searchParams.get("install")).toBe(CONNECTOR_KEY);
 		expect(await connectionCount(org.id)).toBe(0);
 	});
@@ -224,9 +228,7 @@ describe("manage_connections — app_installation create guard", () => {
 		// The guard did not reject it: either it created the row, or it failed for
 		// some OTHER reason — but NOT with the install-flow guidance.
 		if ("error" in res) {
-			expect((res as { error: string }).error).not.toMatch(
-				/\/github\/app\/install/,
-			);
+			expect(res).not.toHaveProperty("next_action", "install_app");
 		} else {
 			expect(await connectionCount(org.id)).toBe(1);
 		}
@@ -239,9 +241,7 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 		if (res && typeof res === "object" && "error" in res) {
 			// A later failure (e.g. missing OAuth profile) is fine — it must just NOT
 			// be the install-flow guidance the guard produces.
-			expect((res as { error: string }).error).not.toContain(
-				"connected by installing its app",
-			);
+			expect(res).not.toHaveProperty("next_action", "install_app");
 		}
 		// No error at all is also a pass (guard skipped, create proceeded).
 	}
@@ -249,10 +249,11 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 	/** Assert the create/connect WAS rejected by the app-install guard. */
 	function expectGuardRejected(res: unknown): void {
 		expect(res && typeof res === "object" && "error" in res).toBe(true);
-		const structured = res as { error: string; setup_url: string };
-		expect(structured.error).toContain("connected by installing its app");
-		const setupUrl = new URL(structured.setup_url);
-		expect(setupUrl.searchParams.get("install")).toBe(CONNECTOR_KEY);
+		expect(res).toMatchObject({
+			error_code: "connector_setup_required",
+			provider: "slack",
+			next_action: "install_app",
+		});
 	}
 
 	it("create WITH a RESOLVABLE auth_profile_slug (oauth intent) is ALLOWED past the guard", async () => {

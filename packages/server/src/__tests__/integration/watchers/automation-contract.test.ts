@@ -769,7 +769,7 @@ describe("watcher automation contract", () => {
 			expect(String(reactionRows[0].reaction_type)).toBe("script_execution");
 
 			// The window surfaces its reaction log through get_watcher.
-			const detail = (await api.watchers.get(String(watcherId))) as {
+			const detail = (await api.watchers.get({ watcher_id: String(watcherId) })) as {
 				windows: Array<{
 					window_id: number;
 					reactions?: Array<{ tool_name: string }>;
@@ -1966,7 +1966,7 @@ describe("canvas-on-events window completion", () => {
 		expect(Number(head[0].root_event_id)).toBe(rootId);
 
 		// The read flip surfaces the HEAD payload via get_watcher.
-		const view = (await api.watchers.get(String(watcherId))) as {
+		const view = (await api.watchers.get({ watcher_id: String(watcherId) })) as {
 			windows: Array<{ extracted_data: Record<string, unknown> }>;
 		};
 		expect(view.windows[0].extracted_data.summary).toBe("v2");

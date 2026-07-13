@@ -54,7 +54,7 @@ describe('entity schema CRUD', () => {
       };
       expect(after.entity_type?.name).toBe('Asset (renamed)');
 
-      await owner.entity_schema.deleteType('lifecycle-asset');
+      await owner.entity_schema.deleteType({ slug: 'lifecycle-asset' });
       const tombstone = (await owner.entity_schema.getType('lifecycle-asset')) as {
         entity_type: null | unknown;
       };
@@ -88,7 +88,7 @@ describe('entity schema CRUD', () => {
       };
       expect(cleared.entity_type?.event_kinds ?? null).toBeNull();
 
-      await owner.entity_schema.deleteType('deal-ek');
+      await owner.entity_schema.deleteType({ slug: 'deal-ek' });
     });
 
     it('rejects a duplicate slug create with a coded 409', async () => {
@@ -102,7 +102,7 @@ describe('entity schema CRUD', () => {
       expect(err).not.toBeNull();
       expect(err?.message).toMatch(/\[entity_type_exists\].*already exists/);
       expect(err?.httpStatus).toBe(409);
-      await owner.entity_schema.deleteType('dup-asset');
+      await owner.entity_schema.deleteType({ slug: 'dup-asset' });
     });
 
     it('surfaces a 422 schema-validation error with the real message (issue #1177)', async () => {
@@ -141,7 +141,7 @@ describe('entity schema CRUD', () => {
       };
       const slugs = list.entity_types?.map((t) => t.slug) ?? [];
       expect(slugs).toContain('lst-asset');
-      await owner.entity_schema.deleteType('lst-asset');
+      await owner.entity_schema.deleteType({ slug: 'lst-asset' });
     });
 
 		it('reports list scope and can restrict results to the bound organization', async () => {
@@ -224,7 +224,7 @@ describe('entity schema CRUD', () => {
       expect(reverted.entity_type?.backing_sql ?? null).toBeNull();
       expect(reverted.entity_type?.measure_columns ?? []).toEqual([]);
 
-      await owner.entity_schema.deleteType('spend-by-vendor');
+      await owner.entity_schema.deleteType({ slug: 'spend-by-vendor' });
     });
 
     it('round-trips declared metrics_config verbatim (create → get → update → clear)', async () => {
@@ -284,7 +284,7 @@ describe('entity schema CRUD', () => {
       const cleared = (await owner.entity_schema.getType('metric-company')) as Got;
       expect(cleared.entity_type?.metrics_config ?? null).toBeNull();
 
-      await owner.entity_schema.deleteType('metric-company');
+      await owner.entity_schema.deleteType({ slug: 'metric-company' });
     });
 
     it('a stored type carries no backing_sql', async () => {
@@ -293,7 +293,7 @@ describe('entity schema CRUD', () => {
         entity_type?: { backing_sql?: string | null };
       };
       expect(got.entity_type?.backing_sql ?? null).toBeNull();
-      await owner.entity_schema.deleteType('plain-thing');
+      await owner.entity_schema.deleteType({ slug: 'plain-thing' });
     });
 
     it('rejects an empty / whitespace backing.sql (no corrupt derived type)', async () => {
@@ -326,7 +326,7 @@ describe('entity schema CRUD', () => {
       })) as { relationship_type?: { slug: string; status: string } };
       expect(result.relationship_type?.slug).toBe('collaborates-with');
       expect(result.relationship_type?.status).toBe('active');
-      await owner.entity_schema.deleteRelType('collaborates-with');
+      await owner.entity_schema.deleteRelType({ slug: 'collaborates-with' });
     });
 
     it('rejects a duplicate relationship slug with a coded 409', async () => {
@@ -338,7 +338,7 @@ describe('entity schema CRUD', () => {
       expect(err).not.toBeNull();
       expect(err?.message).toMatch(/\[relationship_type_exists\].*already exists/);
       expect(err?.httpStatus).toBe(409);
-      await owner.entity_schema.deleteRelType('dup-rel');
+      await owner.entity_schema.deleteRelType({ slug: 'dup-rel' });
     });
   });
 

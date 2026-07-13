@@ -7,6 +7,7 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import postgres from 'postgres';
 import { getDb } from '../../db/client';
 import {
   ensureDbForGatewayTests,
@@ -42,6 +43,7 @@ interface SeedRunOpts {
   claimedAtAgoSeconds?: number | null;
   runType?: 'sync' | 'action' | 'embed_backfill' | 'auth' | 'watcher';
   feedId?: number | null;
+  createdAtAgoSeconds?: number;
 }
 
 async function seedRun(opts: SeedRunOpts): Promise<number> {
@@ -55,13 +57,14 @@ async function seedRun(opts: SeedRunOpts): Promise<number> {
     opts.claimedAtAgoSeconds !== null && opts.claimedAtAgoSeconds !== undefined
       ? `current_timestamp - interval '${opts.claimedAtAgoSeconds} seconds'`
       : 'NULL';
+  const createdAt = `current_timestamp - interval '${opts.createdAtAgoSeconds ?? 0} seconds'`;
   const rows = (await sql.unsafe(
     `INSERT INTO runs (
        organization_id, run_type, feed_id, status, approval_status,
        claimed_at, last_heartbeat_at, claimed_by, created_at
      ) VALUES (
        $1, $2, $3, $4, 'auto',
-       ${claimInterval}, ${hbInterval}, 'test-worker', current_timestamp
+       ${claimInterval}, ${hbInterval}, 'test-worker', ${createdAt}
      )
      RETURNING id`,
     [ORG_ID, runType, opts.feedId ?? null, opts.status],
@@ -97,6 +100,90 @@ async function statusOf(runId: number): Promise<string> {
 }
 
 describe('reapStaleRuns — connector lanes', () => {
+  test('a stale never-claimed sync is finalized without an immediate retry', async () => {
+    const feedId = 3131;
+    await seedFeed(feedId);
+    const sql = getDb();
+    await sql`
+      UPDATE feeds
+      SET last_sync_status = 'pending',
+          next_run_at = current_timestamp + INTERVAL '1 hour'
+      WHERE id = ${feedId}
+    `;
+    const pendingId = await seedRun({
+      status: 'pending',
+      lastHeartbeatAgoSeconds: null,
+      runType: 'sync',
+      feedId,
+      createdAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+    });
+
+    const result = await reapStaleRuns();
+
+    expect(result.reaped).toBe(1);
+    expect(result.retriesCreated).toBe(0);
+    expect(await statusOf(pendingId)).toBe('timeout');
+
+    const pending = await sql`
+      SELECT id FROM runs
+      WHERE feed_id = ${feedId} AND run_type = 'sync' AND status = 'pending'
+    `;
+    expect(pending).toHaveLength(0);
+    const [feed] = await sql`
+      SELECT last_sync_status, last_error, consecutive_failures, next_run_at
+      FROM feeds WHERE id = ${feedId}
+    `;
+    expect(String(feed.last_sync_status)).toBe('failed');
+    expect(String(feed.last_error)).toBe('worker_claim_timeout');
+    expect(Number(feed.consecutive_failures)).toBe(1);
+    expect(new Date(String(feed.next_run_at)).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  test('a fresh never-claimed sync remains pending', async () => {
+    const pendingId = await seedRun({
+      status: 'pending',
+      lastHeartbeatAgoSeconds: null,
+      runType: 'sync',
+      createdAtAgoSeconds: 5,
+    });
+
+    const result = await reapStaleRuns();
+
+    expect(result.reaped).toBe(0);
+    expect(await statusOf(pendingId)).toBe('pending');
+  });
+
+  test('a worker claim holding the row lock wins over pending expiration', async () => {
+    const pendingId = await seedRun({
+      status: 'pending',
+      lastHeartbeatAgoSeconds: null,
+      runType: 'sync',
+      createdAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+    });
+    const locker = postgres(process.env.DATABASE_URL as string, { max: 1 });
+    try {
+      await locker.begin(async (tx) => {
+        await tx`SELECT id FROM runs WHERE id = ${pendingId} FOR UPDATE`;
+
+        const result = await reapStaleRuns();
+        expect(result.reaped).toBe(0);
+
+        await tx`
+          UPDATE runs
+          SET status = 'claimed', claimed_at = current_timestamp, claimed_by = 'winning-worker'
+          WHERE id = ${pendingId}
+        `;
+      });
+    } finally {
+      await locker.end();
+    }
+
+    expect(await statusOf(pendingId)).toBe('claimed');
+    const afterClaim = await reapStaleRuns();
+    expect(afterClaim.reaped).toBe(0);
+    expect(await statusOf(pendingId)).toBe('claimed');
+  });
+
   test('only the stale in-progress connector run is timed out', async () => {
     // 1. Fresh heartbeat — should be left alone.
     const freshId = await seedRun({

@@ -25,9 +25,10 @@ import {
 } from '../../helpers/connection-helpers';
 import { assertEntityIdsInOrg } from '../../helpers/db-helpers';
 import {
-	buildAppInstallationSetupUrl,
-	rejectUnboundAppInstallationCreate,
+  buildAppInstallationSetupUrl,
+  rejectUnboundAppInstallationCreate,
 } from '../../helpers/app-installation-guard';
+import { buildOAuthAppProfileSetupError } from '../../helpers/connector-setup-errors';
 import { type FeedDefinition, splitConfigByFeedScope } from '../../helpers/feed-helpers';
 import { getScopedConnectorDefinition } from '../../../../catalog/connector-definitions';
 import { buildConnectionsUrl } from '../../../../utils/url-builder';
@@ -74,6 +75,8 @@ export async function handleConnect(
     };
   }
 
+  const setupUrl = buildSetupUrl({ connectorKey: args.connector_key });
+
   // Reject a direct connect of an UNBOUND app_installation connection (no
   // installation_ref AND no other auth intent) — those are created only by the
   // App install callback. Selection-aware: a connect that supplies an auth
@@ -86,13 +89,15 @@ export async function handleConnect(
     connectorKey: args.connector_key,
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
+    gatewayBaseUrl: getConnectBaseUrl(ctx),
+    setupUrl,
   });
-	if (appInstallGuard) {
-		return {
-			...appInstallGuard,
-			setup_url: await buildAppInstallationSetupUrl(ctx, args.connector_key),
-		};
-	}
+  if (appInstallGuard) {
+    return {
+      ...appInstallGuard,
+      setup_url: await buildAppInstallationSetupUrl(ctx, args.connector_key),
+    };
+  }
 
   const deviceBinding = await resolveDeviceBinding({
     organizationId,
@@ -116,8 +121,6 @@ export async function handleConnect(
       };
     }
   }
-
-  const setupUrl = buildSetupUrl({ connectorKey: args.connector_key });
 
   // Validate an explicit slug up-front (same boundary check create does).
   const explicitSlug = args.slug?.trim();
@@ -470,12 +473,11 @@ export async function handleConnect(
   if (!appAuthProfile || appAuthProfile.status !== 'active') {
     await rollbackConnection();
 
-    return {
-      error:
-        `OAuth app profile not configured for '${oauthMethod.provider}'. ` +
-        'Create an OAuth app auth profile first, then retry.',
-      setup_url: setupUrl,
-    };
+    return buildOAuthAppProfileSetupError({
+      connectorKey: args.connector_key,
+      method: oauthMethod,
+      setupUrl,
+    });
   }
 
   // Link app auth profile to connection; user auth profile will be created

@@ -49,7 +49,7 @@ describe('entity CRUD', () => {
     expect(created.entity?.id).toBeGreaterThan(0);
     expect(created.entity?.name).toBe('Acme Corp');
 
-    const got = (await owner.entities.get(created.entity!.id)) as {
+    const got = (await owner.entities.get({ entity_id: created.entity!.id })) as {
       entity?: { name: string };
     };
     expect(got.entity?.name).toBe('Acme Corp');
@@ -66,7 +66,7 @@ describe('entity CRUD', () => {
       name: 'Old Name',
     })) as { entity: { id: number } };
     await owner.entities.update({ entity_id: created.entity.id, name: 'New Name' });
-    const got = (await owner.entities.get(created.entity.id)) as {
+    const got = (await owner.entities.get({ entity_id: created.entity.id })) as {
       entity: { name: string };
     };
     expect(got.entity.name).toBe('New Name');
@@ -118,9 +118,9 @@ describe('entity CRUD', () => {
       type: 'company',
       name: 'To Delete',
     })) as { entity: { id: number } };
-    await owner.entities.delete(created.entity.id);
+    await owner.entities.delete({ entity_id: created.entity.id });
     // Hard-deleted: get() throws not-found rather than returning a tombstone.
-    await expect(owner.entities.get(created.entity.id)).rejects.toThrow(/not found/i);
+    await expect(owner.entities.get({ entity_id: created.entity.id })).rejects.toThrow(/not found/i);
   });
 
   describe('access control', () => {
@@ -142,7 +142,7 @@ describe('entity CRUD', () => {
         type: 'company',
         name: 'Owner-Only-Delete',
       })) as { entity: { id: number } };
-      await expect(member.entities.delete(created.entity.id)).rejects.toThrow(
+      await expect(member.entities.delete({ entity_id: created.entity.id })).rejects.toThrow(
         /admin|owner|access/i
       );
     });

@@ -32,10 +32,27 @@ import { resolveAuthProfileSlugToId } from '../../../utils/auth-profiles';
 import type { ToolContext } from '../../registry';
 import { getOrgUrlContext } from '../../view-urls';
 import {
+  getAppInstallationAuthMethods,
   getEnvAuthFieldKeys,
   isPrimaryAuthMethodAppInstallation,
   normalizeConnectorAuthSchema,
 } from '../../../utils/connector-auth';
+import {
+  buildAppInstallationSetupError,
+  type ConnectorSetupError,
+} from './connector-setup-errors';
+
+export async function buildAppInstallationSetupUrl(
+  ctx: ToolContext,
+  connectorKey: string,
+): Promise<string | undefined> {
+  const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
+  return ownerSlug && baseUrl
+    ? buildConnectionsUrl(ownerSlug, baseUrl, undefined, {
+        install: connectorKey,
+      })
+    : undefined;
+}
 
 function hasInstallationRef(config: Record<string, unknown>): boolean {
   const ref = config.installation_ref;
@@ -54,21 +71,10 @@ function hasManagedByOrg(config: Record<string, unknown>): boolean {
   return typeof org === 'string' && org.trim().length > 0;
 }
 
-export async function buildAppInstallationSetupUrl(
-	ctx: ToolContext,
-	connectorKey: string,
-): Promise<string | undefined> {
-	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
-	return ownerSlug && baseUrl
-		? buildConnectionsUrl(ownerSlug, baseUrl, undefined, {
-				install: connectorKey,
-			})
-		: undefined;
-}
-
 /**
- * Returns an `{ error }` result to short-circuit the create/connect handler when
- * the connection would be an unbound app_installation connection, else null.
+ * Returns a structured connector-setup error to short-circuit the create/connect
+ * handler when the connection would be an unbound app_installation connection,
+ * else null.
  *
  * The caller passes the auth-INTENT signals it received so the guard can tell a
  * deliberate oauth/PAT/env/managed create from a bare one that falls through to
@@ -89,11 +95,9 @@ export async function rejectUnboundAppInstallationCreate(params: {
   connectorKey: string;
   authProfileSlug?: string | null;
   appAuthProfileSlug?: string | null;
-	}): Promise<{
-		error: string;
-		install_type: 'app_installation';
-		next_action: 'open_setup_url';
-	} | null> {
+  gatewayBaseUrl?: string;
+  setupUrl?: string;
+}): Promise<ConnectorSetupError | null> {
   const schema = normalizeConnectorAuthSchema(params.authSchema);
   // Only connectors whose PRIMARY method is app_installation are in scope.
   if (!isPrimaryAuthMethodAppInstallation(schema)) return null;
@@ -144,12 +148,12 @@ export async function rejectUnboundAppInstallationCreate(params: {
 
   // No installation_ref and no other auth intent → this would resolve to the
   // app_installation primary with nothing to bind. Reject with install guidance.
-  return {
-    error:
-      `Connector '${params.connectorKey}' is connected by installing its app (which links the connection automatically), not by creating a connection directly. ` +
-			`Start the connector's app install flow instead. ` +
-      `(To use a different auth method this connector supports, pass an auth profile or credentials.)`,
-		install_type: 'app_installation',
-		next_action: 'open_setup_url',
-  };
+  const method = getAppInstallationAuthMethods(schema)[0];
+  if (!method) return null;
+  return buildAppInstallationSetupError({
+    connectorKey: params.connectorKey,
+    method,
+    gatewayBaseUrl: params.gatewayBaseUrl,
+    setupUrl: params.setupUrl,
+  });
 }

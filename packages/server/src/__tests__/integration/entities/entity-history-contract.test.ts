@@ -102,7 +102,7 @@ describe('entity history contracts', () => {
     });
 
     await expect(
-      workspace.owner.entities.delete(root.entity.id, { force_delete_tree: true })
+      workspace.owner.entities.delete({ entity_id: root.entity.id, force_delete_tree: true })
     ).rejects.toThrow(/preserve event history/i);
 
     const remaining = await getTestDb()`
@@ -129,7 +129,8 @@ describe('entity history contracts', () => {
       parent_id: child.entity.id,
     })) as { entity: { id: number } };
 
-    const result = (await workspace.owner.entities.delete(root.entity.id, {
+    const result = (await workspace.owner.entities.delete({
+      entity_id: root.entity.id,
       force_delete_tree: true,
     })) as { action: string; deleted_count?: number };
     expect(result.action).toBe('delete');

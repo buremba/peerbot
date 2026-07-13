@@ -9,6 +9,7 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../db/client';
+import { ClientSdkActionError } from '../../sandbox/namespaces/action-call';
 import { nextRunAt } from '../../utils/cron';
 import { advanceWatcherSchedule } from '../../watchers/automation';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
@@ -173,10 +174,13 @@ describe('watchers/feeds timezone-aware schedules', () => {
     const [feed] = await sql<{ id: number }[]>`
       SELECT id FROM feeds WHERE connection_id = ${conn.id} LIMIT 1
     `;
-    const result = (await api.feeds.update({
-      feed_id: Number(feed?.id),
-      timezone: 'Not/A_Zone',
-    })) as { error?: string };
-    expect(result.error).toContain('Unknown IANA timezone');
+    const error = await api.feeds
+      .update({
+        feed_id: Number(feed?.id),
+        timezone: 'Not/A_Zone',
+      })
+      .catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ClientSdkActionError);
+    expect((error as ClientSdkActionError).message).toContain('Unknown IANA timezone');
   });
 });

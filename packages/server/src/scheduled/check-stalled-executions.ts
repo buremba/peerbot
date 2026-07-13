@@ -1,9 +1,9 @@
 /**
  * Stale-run reaper for the connector lanes.
  *
- * `reapStaleRuns()` marks runs as `failed` (or `timeout`, see below) when they
- * are stuck in an in-progress state (`claimed`/`running`) with a
- * `last_heartbeat_at` older than the configured threshold. Connector workers
+ * `reapStaleRuns()` marks runs as `timeout` when they are never claimed before
+ * the configured threshold, or are stuck `claimed`/`running` with a stale
+ * liveness timestamp. Connector workers
  * heartbeat every 30s via `/api/workers/heartbeat`; a missed heartbeat means
  * the worker crashed, was OOM-killed, or was scaled down mid-run. Without the
  * reaper those rows sit "running" forever and the feed never gets a retry.
@@ -58,7 +58,7 @@ interface ReapStaleRunsResult {
   acquired: boolean;
   /** Rows transitioned to a terminal state (failed/timeout) this tick. */
   reaped: number;
-  /** Retry rows inserted for stalled `sync` runs (one per stalled feed). */
+  /** Retry rows inserted for stalled claimed/running sync runs (never pending). */
   retriesCreated: number;
 }
 
@@ -79,6 +79,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
     heartbeatSemantics: 'any-heartbeat',
     heartbeatStaleInterval: `${thresholdSeconds} seconds`,
     coarseStaleInterval: `${thresholdSeconds} seconds`,
+    includePending: true,
   });
 
   // pg_try_advisory_lock is session-scoped — the connection holds the lock
@@ -100,11 +101,12 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
     }
 
     try {
-      const errorMessage = 'worker_heartbeat_lost';
-      // Reap + re-queue in a single statement using a CTE: the UPDATE
-      // writes the timeout, and `INSERT ... SELECT ... FROM timed_out`
-      // queues a fresh `pending` sync retry for every reaped `sync` row
-      // that still has a `feed_id`. Doing both in one statement makes
+      const heartbeatErrorMessage = 'worker_heartbeat_lost';
+      const claimErrorMessage = 'worker_claim_timeout';
+      // Reap + recover in a single statement using CTEs. Claimed/running sync
+      // rows get one fresh retry; never-claimed rows are finalized on the feed
+      // without a retry because another pending row would only repeat the same
+      // unavailable-worker failure. Doing this in one statement makes
       // the timeout + retry atomic — if the process crashes after the
       // statement returns, both writes are durable; if it crashes
       // before, neither is. The previous shape (bulk UPDATE RETURNING +
@@ -127,13 +129,24 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
       // narrows the window to "one transaction tick" but doesn't replace
       // the lock.
       const reaped = (await reserved`
-        WITH timed_out AS (
-          UPDATE public.runs
+        WITH stale_candidates AS (
+          SELECT id, status AS stale_status
+          FROM public.runs
+          WHERE ${reserved.unsafe(staleWhereSql)}
+          FOR UPDATE SKIP LOCKED
+        ),
+        timed_out AS (
+          UPDATE public.runs r
           SET status = 'timeout',
               completed_at = current_timestamp,
-              error_message = ${errorMessage}
-          WHERE ${reserved.unsafe(staleWhereSql)}
-          RETURNING id, run_type, feed_id, connection_id, connector_key, connector_version, organization_id
+              error_message = CASE
+                WHEN c.stale_status = 'pending' THEN ${claimErrorMessage}
+                ELSE ${heartbeatErrorMessage}
+              END
+          FROM stale_candidates c
+          WHERE r.id = c.id
+          RETURNING r.id, r.run_type, r.feed_id, r.connection_id, r.connector_key,
+                    r.connector_version, r.organization_id, c.stale_status
         ),
         retries AS (
           INSERT INTO public.runs (
@@ -145,6 +158,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
             t.connector_key, t.connector_version, 'pending', 'auto', current_timestamp
           FROM timed_out t
           WHERE t.run_type = 'sync'
+            AND t.stale_status IN ('claimed', 'running')
             AND t.feed_id IS NOT NULL
             AND NOT EXISTS (
               -- Look for an unrelated active sync run on the same feed.
@@ -160,12 +174,28 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
                 AND r.id NOT IN (SELECT id FROM timed_out)
             )
           RETURNING id, feed_id
+        ),
+        finalized_pending_feeds AS (
+          UPDATE public.feeds f
+          SET last_sync_at = current_timestamp,
+              last_sync_status = 'failed',
+              last_error = ${claimErrorMessage},
+              consecutive_failures = f.consecutive_failures + 1,
+              first_failure_at = COALESCE(f.first_failure_at, current_timestamp),
+              updated_at = current_timestamp
+          FROM timed_out t
+          WHERE t.run_type = 'sync'
+            AND t.stale_status = 'pending'
+            AND t.feed_id = f.id
+          RETURNING f.id
         )
         SELECT
           (SELECT count(*)::int FROM timed_out) AS reaped,
           (SELECT count(*)::int FROM retries) AS retries_created,
           (SELECT count(*)::int FROM timed_out
-            WHERE run_type = 'sync' AND feed_id IS NOT NULL) AS sync_eligible
+            WHERE run_type = 'sync'
+              AND stale_status IN ('claimed', 'running')
+              AND feed_id IS NOT NULL) AS sync_eligible
       `) as unknown as Array<{
         reaped: number;
         retries_created: number;
@@ -183,7 +213,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
 
       logger.warn(
         { reaped: reapedCount, retriesCreated, thresholdSeconds },
-        '[reaper] Marked stale connector runs as timeout (worker_heartbeat_lost)'
+        '[reaper] Marked stale connector runs as timeout'
       );
 
       // Surface the conflict-dedup count so operators can spot when two

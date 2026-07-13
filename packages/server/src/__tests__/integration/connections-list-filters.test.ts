@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { pgBigintArray } from "../../db/client";
+import { ClientSdkActionError } from "../../sandbox/namespaces/action-call";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { createTestConnection } from "../setup/test-fixtures";
 import { TestWorkspace } from "../setup/test-mcp-client";
@@ -134,7 +135,8 @@ describe("manage_connections and manage_feeds list filters", () => {
 			ORDER BY id
 		`) as unknown as Array<{ id: number; connection_id: number }>;
 		orgFeedId = Number(
-			feedRows.find((feed) => Number(feed.connection_id) === orgConnectionId)?.id,
+			feedRows.find((feed) => Number(feed.connection_id) === orgConnectionId)
+				?.id,
 		);
 		memberPrivateFeedId = Number(
 			feedRows.find(
@@ -170,11 +172,16 @@ describe("manage_connections and manage_feeds list filters", () => {
 		);
 		expect(ownerGithub?.connection_count).toBe(3);
 		expect(ids(ownerGithub?.connections)).toEqual(
-			[orgConnectionId, memberPrivateConnectionId, adminPrivateConnectionId].sort(
-				(a, b) => a - b,
-			),
+			[
+				orgConnectionId,
+				memberPrivateConnectionId,
+				adminPrivateConnectionId,
+			].sort((a, b) => a - b),
 		);
-		expect(ownerGithub?.connections.find((c) => c.id === orgConnectionId)?.feed_count).toBe(1);
+		expect(
+			ownerGithub?.connections.find((c) => c.id === orgConnectionId)
+				?.feed_count,
+		).toBe(1);
 
 		const memberGroups = (await workspace.member.connections.manage({
 			action: "list_connector_groups",
@@ -241,10 +248,10 @@ describe("manage_connections and manage_feeds list filters", () => {
 
 		await expect(
 			workspace.member.connections.get(adminPrivateConnectionId),
-		).resolves.toMatchObject({ error: "Connection not found" });
+		).rejects.toBeInstanceOf(ClientSdkActionError);
 		await expect(
 			workspace.asAnonymous().connections.get(memberPrivateConnectionId),
-		).resolves.toMatchObject({ error: "Connection not found" });
+		).rejects.toBeInstanceOf(ClientSdkActionError);
 		await expect(
 			workspace.member.connections.get(memberPrivateConnectionId),
 		).resolves.toMatchObject({ action: "get" });

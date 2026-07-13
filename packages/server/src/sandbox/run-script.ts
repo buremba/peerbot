@@ -1,7 +1,8 @@
 /**
  * Compiles a TypeScript user-script via esbuild, runs it in a V8 isolate, and
  * bridges SDK calls back to the host. Caps: 1 MB output, 200 SDK calls,
- * 180s wall-clock max (device-bound operations may wait up to ~155s).
+ * 180s wall-clock max (device-bound operations may wait up to ~155s), and
+ * 30s per `ctx.sleep()` call.
  * `client.org()` is stateless — each guest call carries
  * `orgPath` so the host re-walks org swaps without holding refs.
  */
@@ -92,6 +93,7 @@ const DEFAULT_LIMITS: Required<RunLimits> = {
 };
 /** Device action waits allow 60s queue + 95s post-claim; sandbox must outlive that. */
 export const MAX_SCRIPT_TIMEOUT_MS = 180_000;
+export const MAX_SLEEP_MS = 30_000;
 const MAX_TRACE_ARGS_BYTES = 8192;
 const SENSITIVE_TRACE_KEY =
 	/(api[_-]?key|apikey|auth[_-]?data|auth[_-]?values|authorization|cookie|credential|password|private[_-]?key|secret|token)/i;
@@ -208,6 +210,43 @@ function raceAgainstAbort<T>(
 	});
 }
 
+export function sleepAgainstAbort(ms: number, signal: AbortSignal): Promise<void> {
+	if (!Number.isFinite(ms) || !Number.isInteger(ms) || ms < 0) {
+		return Promise.reject(
+			new Error("InvalidSleepDuration: ctx.sleep(ms) requires a non-negative integer"),
+		);
+	}
+	if (ms > MAX_SLEEP_MS) {
+		return Promise.reject(
+			new Error(
+				`SleepLimitExceeded: ctx.sleep(ms) allows at most ${MAX_SLEEP_MS}ms per call`,
+			),
+		);
+	}
+	if (signal.aborted) {
+		return Promise.reject(
+			signal.reason instanceof Error
+				? signal.reason
+				: new Error("AbortError: signal aborted"),
+		);
+	}
+	return new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(
+				signal.reason instanceof Error
+					? signal.reason
+					: new Error("AbortError: signal aborted"),
+			);
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
 type IsolatedVmRuntime = typeof import("isolated-vm");
 
 function unwrapIsolatedVm(mod: unknown): IsolatedVmRuntime {
@@ -243,7 +282,11 @@ async function loadIsolatedVm(): Promise<IsolatedVmRuntime | null> {
 }
 
 const GUEST_PREAMBLE = `
-const ctx = JSON.parse(__ctx_json);
+const __ctxData = JSON.parse(__ctx_json);
+const ctx = Object.freeze({
+  ...__ctxData,
+  sleep: async (ms) => __sleep.apply(undefined, [ms], { result: { promise: true, copy: true } }),
+});
 const __manifest = JSON.parse(__sdk_manifest_json);
 const __namespaceMethods = __manifest.byNamespace;
 const __topLevelKeys = new Set(__manifest.topLevel);
@@ -592,6 +635,13 @@ export async function runScript(
 			}),
 		);
 
+		await jail.set(
+			"__sleep",
+			new ivm.Reference(async (ms: number) => {
+				await sleepAgainstAbort(ms, abortController.signal);
+			}),
+		);
+
 		await jail.set("__ctx_json", JSON.stringify(options.context ?? {}));
 		await jail.set(
 			"__extra_args_json",
@@ -638,17 +688,23 @@ export async function runScript(
 			e.message,
 		);
 		const isQuota = /QuotaExceeded/.test(e.message);
+		const isSleepLimit = /SleepLimitExceeded/.test(e.message);
+		const isInvalidSleep = /InvalidSleepDuration/.test(e.message);
 		const isOversize = /OutputSizeExceeded/.test(e.message);
 		const isOom = /memory|allocation|isolate was disposed/i.test(e.message);
 		const name = isTimeout
 			? "TimeoutError"
 			: isQuota
 				? "QuotaExceeded"
-				: isOversize
-					? "OutputSizeExceeded"
-					: isOom
-						? "OutOfMemory"
-						: "ScriptError";
+				: isSleepLimit
+					? "SleepLimitExceeded"
+					: isInvalidSleep
+						? "InvalidSleepDuration"
+						: isOversize
+							? "OutputSizeExceeded"
+							: isOom
+								? "OutOfMemory"
+								: "ScriptError";
 		return {
 			success: false,
 			logs,

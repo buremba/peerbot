@@ -24,7 +24,7 @@ export interface FeedsCreateInput {
 export interface FeedsNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
 	list(input?: { connection_id?: number; feed_ids?: number[] }): Promise<unknown>;
-	get(feed_id: number, opts?: { search_term?: string }): Promise<unknown>;
+	get(input: { feed_id: number; search_term?: string }): Promise<unknown>;
 	readMany(input: {
 		feed_ids: number[];
 		limit?: number;
@@ -43,8 +43,8 @@ export interface FeedsNamespace {
 		/** IANA zone for the schedule; null clears it (server time). */
 		timezone?: string | null;
 	}): Promise<unknown>;
-	delete(feed_id: number): Promise<unknown>;
-	trigger(feed_id: number): Promise<unknown>;
+	delete(input: { feed_id: number }): Promise<unknown>;
+	trigger(input: { feed_id: number }): Promise<unknown>;
 }
 
 export function buildFeedsNamespace(
@@ -56,12 +56,11 @@ export function buildFeedsNamespace(
 	return {
 		manage,
 		list: (input) => action("list_feeds", input),
-		get: (feed_id, opts) =>
-			action("read_feed", { feed_id, search_term: opts?.search_term }),
+		get: (input) => action("read_feed", input),
 		readMany: (input) => action("read_feeds", input),
 		create: (input) => action("create_feed", input),
 		update: (input) => action("update_feed", input),
-		delete: (feed_id) => action("delete_feed", { feed_id }),
-		trigger: (feed_id) => action("trigger_feed", { feed_id }),
+		delete: (input) => action("delete_feed", input),
+		trigger: (input) => action("trigger_feed", input),
 	};
 }

@@ -38,6 +38,81 @@ describe("sdkSearch", () => {
 		expect(result.results[0]).toContain("access:");
 	});
 
+	it("returns independent drill-downs for whitespace-separated method paths", async () => {
+		const result = await sdkSearch(
+			{ query: "entities.get entities.delete entities.link" },
+			stubEnv,
+			writeCtx,
+		);
+
+		expect(result.match_count).toBe(3);
+		expect(result.results).toHaveLength(3);
+		for (const path of ["entities.get", "entities.delete", "entities.link"]) {
+			const rendered = result.results.find((entry) => entry.startsWith(path));
+			expect(rendered).toContain("access:");
+			expect(rendered).toContain("example:");
+		}
+	});
+
+	it("keeps exact and partial terms independent in one query", async () => {
+		const result = await sdkSearch(
+			{ query: "entities.get operations.execu" },
+			stubEnv,
+			writeCtx,
+		);
+
+		expect(result.match_count).toBe(2);
+		expect(result.results[0]).toContain("entities.get\n");
+		expect(result.results[0]).toContain("access:");
+		expect(result.results[1]).toStartWith("operations.execute —");
+	});
+
+	it("discovers top-level methods with the client prefix callers use", async () => {
+		const result = await sdkSearch({ query: "client.org" }, stubEnv, readCtx);
+
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain("org");
+		expect(result.results[0]).toContain("client.org('acme')");
+	});
+
+	it.each([
+		[
+			"operations.execute",
+			"client.operations.execute({ connection_id: 42, operation_key: 'create_issue'",
+		],
+		["entitySchema.listRules", "client.entitySchema.listRules({ slug: 'works-at' })"],
+		["entitySchema.deleteType", "client.entitySchema.deleteType({ slug: 'widget' })"],
+		[
+			"entitySchema.deleteRelType",
+			"client.entitySchema.deleteRelType({ slug: 'works-at' })",
+		],
+		["feeds.trigger", "client.feeds.trigger({ feed_id: 42 })"],
+		["feeds.delete", "client.feeds.delete({ feed_id: 42 })"],
+		["classifiers.delete", "client.classifiers.delete({ classifier_id: 42 })"],
+		["schedules.cancel", "client.schedules.cancel({ id: 'schedule-id' })"],
+		["watchers.get", "client.watchers.get({ watcher_id: '42' })"],
+		["watchers.trigger", "client.watchers.trigger({ watcher_id: '42' })"],
+		["watchers.delete", "client.watchers.delete({ watcher_ids: ['42'] })"],
+	])("renders the current %s signature in exact drill-down", async (path, snippet) => {
+		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
+
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain("example:");
+		expect(result.results[0]).toContain(snippet);
+	});
+
+	it("documents the bounded ctx.sleep polling helper", async () => {
+		const result = await sdkSearch(
+			{ query: "ctx.sleep", mode: "read" },
+			stubEnv,
+			readCtx,
+		);
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain("ctx.sleep");
+		expect(result.results[0]).toContain("30000");
+		expect(result.results[0]).toContain("await ctx.sleep");
+	});
+
 	it("returns namespace listing for a top-level namespace at write tier", async () => {
 		const result = await sdkSearch({ query: "watchers" }, stubEnv, writeCtx);
 		expect(result.match_count).toBeGreaterThan(2);
@@ -76,39 +151,15 @@ describe("sdkSearch", () => {
 		expect(result.match_count).toBeGreaterThan(0);
 	});
 
-	it("resolves multiple dotted method names independently", async () => {
+	it("preserves phrase matching for free-text queries", async () => {
 		const result = await sdkSearch(
-			{ query: "entities.get entities.delete entities.link" },
+			{ query: "connector action" },
 			stubEnv,
 			writeCtx,
 		);
-		const joined = result.results.join("\n");
-		expect(joined).toContain("entities.get");
-		expect(joined).toContain("entities.delete");
-		expect(joined).toContain("entities.link");
-	});
 
-	it("explains restricted methods in a multi-method query", async () => {
-		const result = await sdkSearch(
-			{ query: "watchers.list agents.list" },
-			stubEnv,
-			writeCtx,
-		);
-		expect(result.results.join("\n")).toContain("watchers.list");
-		expect(result.results.join("\n")).not.toContain("agents.list");
-		expect(result.notes).toContain("agents.list requires workspace admin/owner");
-	});
-
-	it("explains write methods hidden from a multi-method read query", async () => {
-		const result = await sdkSearch(
-			{ query: "watchers.list watchers.create", mode: "read" },
-			stubEnv,
-			writeCtx,
-		);
-		expect(result.results.join("\n")).toContain("watchers.list");
-		expect(result.results.join("\n")).not.toContain("watchers.create");
-		expect(result.notes).toContain("watchers.create exists but requires run_sdk");
-		expect(result.notes).toContain("Showing query_sdk-safe methods only");
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toStartWith("operations.execute —");
 	});
 
 	it("returns empty + helpful note for unknown queries", async () => {
@@ -145,5 +196,22 @@ describe("sdkSearch", () => {
 			readCtx,
 		);
 		expect(unpaginated.results[0]).toContain("not paginated");
+	});
+
+	it("shows object signatures for id-targeted methods", async () => {
+		for (const path of [
+			"entities.get",
+			"feeds.get",
+			"feeds.trigger",
+			"classifiers.delete",
+			"schedules.cancel",
+			"watchers.get",
+			"watchers.trigger",
+		]) {
+			const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
+			expect(result.match_count, path).toBe(1);
+			expect(result.results[0], path).toContain("client.");
+			expect(result.results[0], path).toMatch(/\(\{/);
+		}
 	});
 });

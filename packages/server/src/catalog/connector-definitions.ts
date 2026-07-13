@@ -7,9 +7,12 @@ import {
 	resolveConnectorInstallSource,
 	upsertConnectorDefinitionRecords,
 } from "../utils/connector-definition-install";
-import { listCatalogConnectorDefinitions } from "../utils/connector-catalog";
+import {
+	getCatalogConnectorInstallability,
+} from "../utils/connector-catalog";
 import { upsertBundledConnectorForOrg } from "../utils/ensure-connector-installed";
 import logger from "../utils/logger";
+import { listCatalogEntries } from "./load";
 
 type AuthSchema =
 	| { methods?: Array<Record<string, unknown>> }
@@ -181,16 +184,18 @@ export async function installCatalogConnectorDefinition(params: {
 	organizationId: string;
 	connectorId: string;
 }): Promise<ConnectorInstallResult> {
-	const catalog = await listCatalogConnectorDefinitions();
-	const entry = catalog.find((item) => item.key === params.connectorId);
+	const catalog = (await listCatalogEntries(["connectors"])).connectors;
+	const entry = catalog.find((item) => item.id === params.connectorId);
 	if (!entry) {
 		throw new Error(
-			`Catalog connector '${params.connectorId}' was not found or is not available in this environment.`,
+			`Catalog connector '${params.connectorId}' was not found.`,
 		);
 	}
+	const availability = getCatalogConnectorInstallability(entry.id);
+	if (!availability.installable) throw new Error(availability.message);
 	const installed = await upsertBundledConnectorForOrg({
 		organizationId: params.organizationId,
-		connectorKey: entry.key,
+		connectorKey: entry.id,
 	});
 	if (!installed) {
 		throw new Error(

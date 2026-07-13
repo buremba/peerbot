@@ -110,7 +110,7 @@ describe("guest-side proxy traps", () => {
   it("calling an absent method surfaces as TypeError", async () => {
     const result = await runOrSkip({
       source:
-        "export default async (_ctx, client) => client.entities.delete(42);",
+        "export default async (_ctx, client) => client.entities.delete({ entity_id: 42 });",
       sdk: stubEntitiesList,
       sdkMode: "read",
     });

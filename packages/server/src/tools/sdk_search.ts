@@ -1,13 +1,17 @@
 /**
- * Method discovery for the `ClientSDK`. Match order: exact path drill-down →
- * namespace prefix listing → substring on path + summary. Source of truth is
- * `method-metadata.ts`; visibility matches `query_sdk` / `run_sdk` manifests.
+ * Method and sandbox-helper discovery for `query_sdk` / `run_sdk`. Match order:
+ * exact path drill-down → namespace prefix listing → substring on path +
+ * summary. Client method visibility matches the sandbox dispatch manifests.
  */
 
 import { type Static, Type } from "@sinclair/typebox";
 import { resolveMaxAccessLevel } from "../auth/tool-access";
 import type { Env } from "../index";
-import { METHOD_METADATA, type MethodMetadata } from "../sandbox/method-metadata";
+import {
+	METHOD_METADATA,
+	RUNTIME_HELPER_METADATA,
+	type MethodMetadata,
+} from "../sandbox/method-metadata";
 import {
 	sdkMethodVisible,
 	type SdkDiscoveryMode,
@@ -15,18 +19,30 @@ import {
 import type { ToolContext } from "./registry";
 import { withValidatedArgs } from "./validate-args";
 
+const SDK_DISCOVERY_METADATA: Record<string, MethodMetadata> = {
+	...METHOD_METADATA,
+	...RUNTIME_HELPER_METADATA,
+};
+
 const NAMESPACES = [
 	...new Set(
-		Object.keys(METHOD_METADATA)
+		Object.keys(SDK_DISCOVERY_METADATA)
 			.filter((path) => path.includes("."))
 			.map((path) => path.split(".")[0]),
 	),
 ].sort();
 
+const METADATA_BY_LOWER_PATH = new Map(
+	Object.entries(SDK_DISCOVERY_METADATA).map(([path, meta]) => [
+		path.toLowerCase(),
+		[path, meta] as const,
+	]),
+);
+
 export const SdkSearchSchema = Type.Object({
 	query: Type.String({
 		description:
-			`Method-discovery query. Use a namespace (e.g. 'watchers'), a dotted path (e.g. 'watchers.create'), or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: ${NAMESPACES.join(", ")}.`,
+			`SDK method or runtime-helper discovery query. Use a namespace (e.g. 'watchers'), one or more dotted paths separated by whitespace (e.g. 'watchers.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: ${NAMESPACES.join(", ")}.`,
 		minLength: 1,
 	}),
 	mode: Type.Optional(
@@ -79,7 +95,7 @@ function catalogForCaller(
 	mode: SdkDiscoveryMode,
 ): Array<[string, MethodMetadata]> {
 	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
-	return Object.entries(METHOD_METADATA).filter(([, meta]) =>
+	return Object.entries(SDK_DISCOVERY_METADATA).filter(([, meta]) =>
 		sdkMethodVisible(meta.access, callerMax, mode),
 	);
 }
@@ -127,6 +143,11 @@ function renderDrillDown(path: string, meta: MethodMetadata): string {
 	return lines.join("\n");
 }
 
+function normalizeQueryTerm(term: string): string {
+	const lower = term.toLowerCase();
+	return lower.startsWith("client.") ? lower.slice("client.".length) : lower;
+}
+
 export const sdkSearch = withValidatedArgs("search_sdk", SdkSearchSchema, sdkSearchImpl);
 
 async function sdkSearchImpl(
@@ -136,71 +157,99 @@ async function sdkSearchImpl(
 ): Promise<SdkSearchResult> {
 	const limit = Math.min(args.limit ?? 20, 100);
 	const query = args.query.trim();
-	const lower = query.toLowerCase();
+	const terms = query
+		.split(/[\s,]+/)
+		.map(normalizeQueryTerm)
+		.filter(Boolean);
+	const lower = normalizeQueryTerm(query);
 	const mode: SdkDiscoveryMode = args.mode ?? "full";
 	const catalog = catalogForCaller(ctx, mode);
-	const methodTokens = lower
-		.split(/[\s,]+/)
-		.map((token) => token.replace(/^[`'"(]+|[`'").;]+$/g, ""))
-		.filter((token) => token.includes("."));
+	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
+	const isMultiMethodQuery =
+		terms.length > 1 &&
+		terms.every((term) => term.includes(".") || METADATA_BY_LOWER_PATH.has(term));
 
-	// Agents commonly ask for several exact methods in one discovery call. Treat
-	// each dotted token as its own query instead of searching for the entire
-	// whitespace-joined sentence as one impossible substring.
-	if (methodTokens.length > 1) {
-		const matches = new Map<string, MethodMetadata>();
-		for (const token of methodTokens) {
+	if (isMultiMethodQuery) {
+		const seen = new Set<string>();
+		const matches: Array<{
+			path: string;
+			meta: MethodMetadata;
+			exact: boolean;
+		}> = [];
+		const hidden: string[] = [];
+
+		for (const term of terms) {
+			const exact = METADATA_BY_LOWER_PATH.get(term);
+			if (exact) {
+				const [path, meta] = exact;
+				if (!sdkMethodVisible(meta.access, callerMax, mode)) {
+					hidden.push(hiddenMethodNote(path, meta, mode));
+				} else if (!seen.has(path)) {
+					seen.add(path);
+					matches.push({ path, meta, exact: true });
+				}
+				continue;
+			}
+
 			for (const [path, meta] of catalog) {
-				if (path.toLowerCase() === token || path.toLowerCase().includes(token)) {
-					matches.set(path, meta);
+				if (path.toLowerCase().includes(term) && !seen.has(path)) {
+					seen.add(path);
+					matches.push({ path, meta, exact: false });
+				}
+			}
+			for (const [path, meta] of catalog) {
+				if (meta.summary.toLowerCase().includes(term) && !seen.has(path)) {
+					seen.add(path);
+					matches.push({ path, meta, exact: false });
 				}
 			}
 		}
-		const entries = [...matches.entries()];
-		const notes: string[] = [];
-		if (entries.length > limit) {
-			notes.push(
-				`${entries.length - limit} more matches; raise \`limit\` or refine the query.`,
-			);
+
+		if (matches.length > 0) {
+			return {
+				query,
+				match_count: matches.length,
+				results: matches
+					.slice(0, limit)
+					.map(({ path, meta, exact }) =>
+						exact ? renderDrillDown(path, meta) : renderListLine(path, meta),
+					),
+				notes:
+					matches.length > limit
+						? `${matches.length - limit} more matches; raise \`limit\` or refine the query.`
+						: hidden.length > 0
+							? hidden.join(" ")
+							: mode === "read"
+								? "Showing query_sdk-safe methods only. Pass mode='full' for write/admin methods."
+								: undefined,
+			};
 		}
-		for (const token of methodTokens) {
-			const meta = METHOD_METADATA[token];
-			if (meta && !matches.has(token)) {
-				notes.push(hiddenMethodNote(token, meta, mode));
-			}
-		}
-		if (mode === "read") {
-			notes.push(
-				"Showing query_sdk-safe methods only. Pass mode='full' for write/admin methods.",
-			);
-		}
+
 		return {
 			query,
-			match_count: entries.length,
-			results: entries.slice(0, limit).map(([path, meta]) =>
-				methodTokens.includes(path.toLowerCase())
-					? renderDrillDown(path, meta)
-					: renderListLine(path, meta),
-			),
-			notes: notes.length > 0 ? notes.join(" ") : undefined,
+			match_count: 0,
+			results: [],
+			notes:
+				hidden.join(" ") ||
+				`No matches at your access tier. Try a namespace (${NAMESPACES.join(", ")}), mode='read' for query_sdk, or a verb (create, list, search).`,
 		};
 	}
 
-	if (lower in METHOD_METADATA) {
-		const meta = METHOD_METADATA[lower];
-		const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
+	const exact = METADATA_BY_LOWER_PATH.get(lower);
+	if (exact) {
+		const [path, meta] = exact;
 		if (!sdkMethodVisible(meta.access, callerMax, mode)) {
 			return {
 				query,
 				match_count: 0,
 				results: [],
-				notes: hiddenMethodNote(lower, meta, mode),
+				notes: hiddenMethodNote(path, meta, mode),
 			};
 		}
 		return {
 			query,
 			match_count: 1,
-			results: [renderDrillDown(lower, meta)],
+			results: [renderDrillDown(path, meta)],
 		};
 	}
 
@@ -242,10 +291,10 @@ async function sdkSearchImpl(
 	}
 
 	if (matches.length === 0) {
-		const existsButHidden =
-			lower in METHOD_METADATA
-				? hiddenMethodNote(lower, METHOD_METADATA[lower], mode)
-				: undefined;
+		const hiddenExact = METADATA_BY_LOWER_PATH.get(lower);
+		const existsButHidden = hiddenExact
+			? hiddenMethodNote(hiddenExact[0], hiddenExact[1], mode)
+			: undefined;
 		return {
 			query,
 			match_count: 0,

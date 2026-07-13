@@ -6,6 +6,7 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { ClientSdkActionError } from '../../../sandbox/namespaces/action-call';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEvent } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
@@ -51,7 +52,7 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
     slug,
     name: `${slug} Classifier`,
     attribute_key: slug,
-    watcher_id: Number(watcher.watcher_id),
+    watcher_id: watcher.watcher_id,
     attribute_values: {
       positive: { description: 'positive signal', examples: ['great'], embedding: stubEmbedding },
       negative: { description: 'negative signal', examples: ['bad'], embedding: stubEmbedding },
@@ -100,10 +101,10 @@ describe('classifier org isolation', () => {
   });
 
   it('delete() cannot archive another workspace classifier', async () => {
-    const result = (await orgA.workspace.owner.classifiers.delete(orgB.classifierId)) as {
-      success: boolean;
-    };
-    expect(result.success).toBe(false);
+    const error = await orgA.workspace.owner.classifiers
+      .delete({ classifier_id: orgB.classifierId })
+      .catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ClientSdkActionError);
 
     const listB = (await orgB.workspace.owner.classifiers.list({})) as {
       data?: { classifiers?: Array<{ id: number; status: string }> };
@@ -112,13 +113,15 @@ describe('classifier org isolation', () => {
   });
 
   it('classify() cannot write to another workspace event/classifier pair', async () => {
-    const result = (await orgA.workspace.owner.classifiers.classify({
-      classifier_slug: 'sentiment',
-      content_id: orgB.eventId,
-      value: 'positive',
-    })) as { success: boolean; data?: { failed?: number } };
+    const error = await orgA.workspace.owner.classifiers
+      .classify({
+        classifier_slug: 'sentiment',
+        content_id: orgB.eventId,
+        value: 'positive',
+      })
+      .catch((reason: unknown) => reason);
 
-    expect(result.success).toBe(false);
-    expect(result.data?.failed).toBe(1);
+    expect(error).toBeInstanceOf(ClientSdkActionError);
+    expect((error as ClientSdkActionError).result.data).toMatchObject({ failed: 1 });
   });
 });

@@ -1,8 +1,8 @@
 /**
  * Shared stale-run reaping core.
  *
- * Two reapers mark in-progress `runs` rows (`claimed`/`running`) as `timeout`
- * when their liveness signal lapses:
+ * Two reapers mark stale `runs` rows as `timeout` when their liveness signal
+ * lapses. Callers may additionally include never-claimed `pending` rows:
  *
  *   - the connector-lane reaper (scheduled/check-stalled-executions.ts) —
  *     sync/action/embed_backfill/auth, single 120s threshold
@@ -45,6 +45,8 @@ interface StaleRunSweepSpec {
   /** Postgres interval literal. Non-heartbeating rows whose
    *  `COALESCE(claimed_at, created_at)` is older than this are reaped. */
   coarseStaleInterval: string;
+  /** Include never-claimed pending rows, judged solely on created_at. */
+  includePending?: boolean;
 }
 
 const RUN_TYPE_PATTERN = /^[a-z_]+$/;
@@ -92,27 +94,35 @@ function neverHeartbeatedSql(semantics: StaleRunSweepSpec['heartbeatSemantics'])
 }
 
 /**
- * WHERE fragment selecting the stale in-progress rows for this spec.
+ * WHERE fragment selecting the stale rows for this spec.
  * Column references are unqualified — embed in an `UPDATE runs` (or
  * `UPDATE public.runs`) without an alias.
  */
 export function buildStaleRunWhereSql(spec: StaleRunSweepSpec): string {
+  const inProgressPredicate = `
+      (status IN ('claimed', 'running')
+       AND (
+         -- Fast path: the executor was heartbeating, then went silent.
+         (${hasHeartbeatSql(spec.heartbeatSemantics)}
+          AND last_heartbeat_at
+              < current_timestamp - ${intervalSql(spec.heartbeatStaleInterval)})
+         OR
+         -- Coarse backstop: ONLY for runs without a live heartbeat signal, so a
+         -- heartbeating run that legitimately outlives the coarse TTL (fresh
+         -- heartbeat) is never killed here.
+         (${neverHeartbeatedSql(spec.heartbeatSemantics)}
+          AND COALESCE(claimed_at, created_at)
+              < current_timestamp - ${intervalSql(spec.coarseStaleInterval)})
+       ))`;
+  const statusPredicate = spec.includePending
+    ? `((status = 'pending'
+         AND created_at < current_timestamp - ${intervalSql(spec.coarseStaleInterval)})
+        OR ${inProgressPredicate})`
+    : inProgressPredicate;
+
   return `
     run_type IN (${runTypeListSql(spec.runTypes)})
-    AND status IN ('claimed', 'running')
-    AND (
-      -- Fast path: the executor was heartbeating, then went silent.
-      (${hasHeartbeatSql(spec.heartbeatSemantics)}
-       AND last_heartbeat_at
-           < current_timestamp - ${intervalSql(spec.heartbeatStaleInterval)})
-      OR
-      -- Coarse backstop: ONLY for runs without a live heartbeat signal, so a
-      -- heartbeating run that legitimately outlives the coarse TTL (fresh
-      -- heartbeat) is never killed here.
-      (${neverHeartbeatedSql(spec.heartbeatSemantics)}
-       AND COALESCE(claimed_at, created_at)
-           < current_timestamp - ${intervalSql(spec.coarseStaleInterval)})
-    )
+    AND ${statusPredicate}
   `;
 }
 

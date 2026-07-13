@@ -1,4 +1,5 @@
 import type { CatalogEntry, InstalledItem } from "./types";
+import { withConnectorInstallability } from "./responses";
 
 function actionCountsFromSchema(actionsSchema: unknown): { reads: number; writes: number } {
 	if (!actionsSchema || typeof actionsSchema !== "object") return { reads: 0, writes: 0 };
@@ -42,7 +43,8 @@ export function mergeConnectorInstalledWithCatalog(
 
 	for (const entry of catalog) {
 		if (merged.has(entry.id)) continue;
-		const detail = entry.detail;
+		const availableEntry = withConnectorInstallability(entry);
+		const detail = availableEntry.detail;
 		const actionCounts = actionCountsFromSchema(detail.actions_schema);
 		const actionCount = actionCounts.reads + actionCounts.writes;
 		merged.set(entry.id, {
@@ -54,7 +56,6 @@ export function mergeConnectorInstalledWithCatalog(
 				description: entry.description ?? null,
 				status: "active",
 				installed: false,
-				installable: true,
 				catalog_origin: "catalog",
 				operations_summary: {
 					total: actionCount,

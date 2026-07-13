@@ -76,4 +76,13 @@ schema_arg_count="$(grep -F -- '--json-schema "$(cat "$SCHEMA_FILE")"' "$review_
 grep -Fq '2> "$diagnostic_file"' "$review_script" ||
   fail "inline Codex reviewer stderr must be retained for fail-closed diagnostics"
 
+grep -Fq 'CLAUDE_REVIEW_HERDR="${CLAUDE_REVIEW_HERDR:-0}"' "$review_script" ||
+  fail "Herdr review tabs must default off (opt-in) to avoid stale empty tabs"
+
+grep -Fq 'codex-jsonl-progress.py' "$review_script" ||
+  fail "Herdr Codex path must stream progress via codex-jsonl-progress.py"
+
+grep -Eq -- '^[[:space:]]*--json[[:space:]]*$' "$review_script" ||
+  fail "Herdr Codex path must use --json so the pane receives event stream"
+
 echo "review reviewer selection tests passed"

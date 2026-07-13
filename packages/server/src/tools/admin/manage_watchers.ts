@@ -796,7 +796,7 @@ export async function applyManageWatchersProposal(
           principalId: proposal.actingAgentId,
           ownerAgentId: proposal.actingAgentId,
           ownerResolved: true,
-          mode: 'unattended',
+          mode: 'autonomous',
           action: writeGateAction,
         });
         // Only `deny` blocks the apply: this run IS the approval, so a
@@ -842,7 +842,8 @@ async function gateWatcherWrite(
   // queued) the proposal. Same formula the gate has always used.
   const actingAgentId =
     actor.kind !== 'user' ? (actor.ownerAgentId ?? actor.id) : null;
-  const actingWatcherId = ctx.actingWatcherId ?? null;
+  const actingWatcherId =
+    ctx.actingWatcherId != null ? String(ctx.actingWatcherId) : null;
 
   // Escalation guard: a non-human caller must not end up installing behavior OWNED by
   // another agent. A watcher's `agent_id` IS its policy principal, so if restricted

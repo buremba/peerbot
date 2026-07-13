@@ -62,7 +62,11 @@ export function startEmbeddedConnectorWorker(
       apiUrl,
       workerId,
       workerApiToken: serverEnv.WORKER_API_TOKEN,
-      capabilities: {},
+      // Fleet worker: advertise DB-egress hardening so the gateway will
+      // dispatch db-egress-hardened connector runs (e.g. postgres) here. This
+      // in-process worker ships the same code as the gateway, so it always
+      // folds in the gateway's authoritative db_egress_policy.
+      capabilities: { db_egress_hardening: true },
       pollIntervalMs: intervals.embeddedWorkerPollIntervalMs,
       maxConcurrentJobs: 1,
     },

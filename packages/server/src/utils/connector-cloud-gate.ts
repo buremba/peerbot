@@ -21,6 +21,22 @@ export type ConnectorCloudAvailability =
  */
 export const CLOUD_RESTRICTED_CONNECTOR_KEYS: ReadonlySet<string> = new Set([]);
 
+/**
+ * Connectors that open a raw tenant-supplied DB socket and rely on the
+ * connector-worker subprocess enforcing `block-private` egress (resolve-then-pin
+ * IP, DNS-rebind guard, forced TLS, internal/metadata blocking). In cloud mode a
+ * FLEET worker may only CLAIM a run for one of these connectors if it advertises
+ * the `db_egress_hardening` capability — i.e. it is running the worker code that
+ * folds in the gateway's authoritative `db_egress_policy`. This closes the
+ * rolling-deploy gap where a NEW gateway could hand a claimed `postgres` run to
+ * an OLD worker that ignores the policy and reopens private-IP/plaintext egress.
+ *
+ * Self-hosted (isCloudMode() false) is unaffected — the run is claimable by any
+ * worker. An EMPTY set is a no-op. Future warehouse connectors (snowflake,
+ * bigquery) join this set when they ship their own worker-side hardening.
+ */
+export const DB_EGRESS_HARDENED_CONNECTOR_KEYS: ReadonlySet<string> = new Set(['postgres']);
+
 export function getConnectorCloudAvailability(
   connectorKey: string | null | undefined
 ): ConnectorCloudAvailability {

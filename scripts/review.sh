@@ -7,8 +7,11 @@
 # checks on main, so auto-merge already blocks on them. This script's job is
 # only the agent verdict: it snapshots the head commit's CI check state for
 # the reviewer's context, runs the reviewer on the diff, and posts the
-# verdict. Because nothing here boots Postgres or binds ports, any number of
-# review runs can execute concurrently — there is no host lock.
+# verdict. Because nothing here boots Postgres or binds ports, reviews of
+# different commits execute concurrently — there is no host-wide lock. The
+# one serialization left is per commit: every run posts the same pi-review
+# status for its HEAD sha, so a duplicate run of the SAME commit is refused
+# rather than allowed to race the owner's status posts.
 #
 # Usage:
 #   ./scripts/review.sh                 # base = origin/main when available
@@ -34,6 +37,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/review-commit-lock.sh
+. "$SCRIPT_DIR/lib/review-commit-lock.sh"
 # shellcheck source=scripts/lib/review-process.sh
 . "$SCRIPT_DIR/lib/review-process.sh"
 # shellcheck source=scripts/lib/herdr-review-lifecycle.sh
@@ -43,7 +48,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- preflight --------------------------------------------------------------
 
-for cmd in jq git node python3; do
+for cmd in jq git node perl python3; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "$cmd not found on PATH." >&2; exit 2; }
 done
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "Not inside a git work tree." >&2; exit 2; }
@@ -436,6 +441,10 @@ trap review_exit_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
+
+# Refuse duplicate reviews of this exact commit BEFORE posting any status:
+# a non-owner must never touch the owner's pi-review status lifecycle.
+acquire_commit_review_lock "$HEAD_SHA"
 
 REVIEW_STATUS_STARTED=1
 post_review_status pending "$REVIEWER_CLI_SELECTED review running"

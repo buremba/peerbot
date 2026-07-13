@@ -7,8 +7,9 @@ It snapshots the head commit's CI check state for reviewer context, invokes
 an independent CLI reviewer against `git diff <base>...HEAD` (base defaults
 to `origin/main` when available, override with `BASE=<branch>` or
 `--base <branch>`), and prints a JSON verdict matching this schema. Because
-nothing runs locally besides the reviewer, review runs need no host lock and
-any number can execute concurrently. Codex harnesses use Claude; other
+nothing runs locally besides the reviewer, reviews of different commits
+execute concurrently with no host-wide lock; a duplicate run of the same
+commit is refused so the `pi-review` status has exactly one owner per sha. Codex harnesses use Claude; other
 environments, including Claude Code, use Codex. Set
 `REVIEWER_CLI=codex|claude` to override automatic selection. The script
 also accepts `CLAUDE_REVIEW_MODEL`, `CLAUDE_REVIEW_EFFORT`, and

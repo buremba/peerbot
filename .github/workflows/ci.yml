@@ -514,6 +514,7 @@ jobs:
         # review runner is now LLM-only (CI owns the deterministic suites), so
         # the review tooling's own regression tests must run here instead.
         run: |
+          bash scripts/lib/__tests__/review-commit-lock.test.sh
           bash scripts/lib/__tests__/review-process.test.sh
           bash scripts/lib/__tests__/review-reviewer.test.sh
           bash scripts/lib/__tests__/herdr-lifecycle.test.sh

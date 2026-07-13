@@ -85,7 +85,10 @@ async function warehouseMarch(
     connection: WAREHOUSE_CONNECTION_SLUG,
     sql:
       "SELECT count(*)::int AS raw, " +
-      "count(*) FILTER (WHERE cancel_reason <> 'billing_migration_artifact')::int AS adjusted " +
+      // NULL-safe: `IS DISTINCT FROM` keeps a NULL-reason cancellation in the
+      // repaired count (a plain `<>` would go NULL → dropped from the FILTER),
+      // matching compose.ts's artifact predicate.
+      "count(*) FILTER (WHERE cancel_reason IS DISTINCT FROM 'billing_migration_artifact')::int AS adjusted " +
       "FROM subscriptions WHERE cancelled_at IS NOT NULL " +
       "AND to_char(date_trunc('month', cancelled_at), 'YYYY-MM') = '2026-03'",
   });
@@ -269,6 +272,15 @@ if (probe.noModel) {
   // ── Real agent: two live turns ───────────────────────────────────────────
   mode = "live-agent";
   console.log("Model provider detected — running two REAL agent turns.\n");
+  // CAVEAT (honest limitation): both arms hit the SAME `analyst` agent, whose
+  // lobu.config.ts prompt instructs it to consult business-event records and
+  // whose tools can reach them. So the baseline arm is only prompt-isolated
+  // (no context in the message) — a tool-enabled agent could still retrieve the
+  // withheld context itself, which weakens the isolation. A fully isolated live
+  // eval needs a SECOND agent with no memory/business-event tools (same model +
+  // settings). `lobu chat` has no per-turn tool-strip flag today, so that agent
+  // is owed alongside wiring a provider. The deterministic proxy above does not
+  // have this gap: it asserts on the exact context bundle each arm would push.
   withAnswer = runAgentTurn(
     gw,
     `${withBlock}\n\nQuestion: ${QUESTION}\n` +

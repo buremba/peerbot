@@ -9,7 +9,7 @@ import type { DbClient } from '../../db/client';
 import { findExistingPersonalOrg } from '../personal-org-provisioning';
 import { PersonalAccessTokenService } from '../tokens';
 import { OAuthClientsStore } from './clients';
-import { AVAILABLE_SCOPES } from './scopes';
+import { DISCOVERY_SCOPES } from './scopes';
 import type {
   AuthInfo,
   AuthorizationParams,
@@ -782,7 +782,10 @@ export class OAuthProvider {
       token_endpoint: `${this.baseUrl}/oauth/token`,
       registration_endpoint: `${this.baseUrl}/oauth/register`,
       revocation_endpoint: `${this.baseUrl}/oauth/revoke`,
-      scopes_supported: [...AVAILABLE_SCOPES],
+      // Only scopes grantable to third-party auth-code MCP clients. Device-
+      // only scopes stay off discovery so clients like Slack do not request
+      // them (they often ask for every entry in scopes_supported).
+      scopes_supported: [...DISCOVERY_SCOPES],
       response_types_supported: ['code'],
       response_modes_supported: ['query'],
       device_authorization_endpoint: `${this.baseUrl}/oauth/device_authorization`,
@@ -819,7 +822,7 @@ export class OAuthProvider {
     return {
       resource: `${this.baseUrl}/mcp`,
       authorization_servers: [this.baseUrl],
-      scopes_supported: [...AVAILABLE_SCOPES],
+      scopes_supported: [...DISCOVERY_SCOPES],
       bearer_methods_supported: ['header'],
       resource_name: 'Lobu',
       resource_documentation: `${this.baseUrl}/docs`,

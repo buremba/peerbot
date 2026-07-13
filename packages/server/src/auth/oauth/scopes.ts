@@ -5,7 +5,7 @@
  * that normalize, compare, and persist scope lists across auth_data records.
  */
 
-/** All available scopes */
+/** All available scopes (including first-party / device-flow-only grants). */
 export const AVAILABLE_SCOPES = [
   'mcp:read',
   'mcp:write',
@@ -19,6 +19,29 @@ export const AVAILABLE_SCOPES = [
   // (`lobu token create --scope connections:token`).
   'connections:token',
 ] as const;
+
+/**
+ * Scopes that must not appear in AS/PRM `scopes_supported` and must never be
+ * granted on the authorization-code consent path.
+ *
+ * Third-party MCP clients (Slack, Claude Desktop, Cursor, …) often request
+ * every scope listed in discovery. Advertising these first-party scopes there
+ * caused Slack to ask for `device_worker:run`, which the auth-code consent
+ * handler correctly refused.
+ *
+ * - `device_worker:run` — personal device workers only (device-code grant).
+ * - `connections:token` — first-party `lobu login` device-code grant or an
+ *   explicitly minted PAT; never third-party auth-code tokens.
+ */
+export const NON_PUBLIC_OAUTH_SCOPES = ['device_worker:run', 'connections:token'] as const;
+
+/**
+ * Scopes advertised via OAuth discovery (RFC 8414 / RFC 9728).
+ * Subset of AVAILABLE_SCOPES that third-party auth-code clients may receive.
+ */
+export const DISCOVERY_SCOPES = AVAILABLE_SCOPES.filter(
+  (scope) => !(NON_PUBLIC_OAUTH_SCOPES as readonly string[]).includes(scope)
+) as readonly string[];
 
 /** Default scopes for MCP access */
 export const DEFAULT_SCOPES = ['mcp:read', 'mcp:write'] as const;
@@ -62,6 +85,22 @@ export const CONNECTIONS_TOKEN_SCOPE = 'connections:token';
 
 /** Default scopes as a space-separated string (for OAuth params) */
 export const DEFAULT_SCOPES_STRING = DEFAULT_SCOPES.join(' ');
+
+/**
+ * Drop first-party-only scopes from an authorization-code request.
+ *
+ * MCP clients that already cached a broad `scopes_supported` list may still
+ * request `device_worker:run` / `connections:token`. Stripping (rather than
+ * rejecting) lets them complete consent with the scopes they actually need.
+ */
+export function stripNonPublicOAuthScopes(scope: string | undefined | null): string {
+  return (scope || '')
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .filter((s) => !(NON_PUBLIC_OAUTH_SCOPES as readonly string[]).includes(s))
+    .join(' ');
+}
 
 /**
  * Strip `mcp:admin` from a requested scope string when the user is not an

@@ -28,9 +28,15 @@ describe('OAuth Discovery Endpoints', () => {
       expect(body.authorization_servers).toBeInstanceOf(Array);
       expect(body.authorization_servers.length).toBeGreaterThan(0);
 
-      // Supported features
+      // Supported features — only scopes third-party auth-code clients may receive
       expect(body.scopes_supported).toContain('mcp:read');
       expect(body.scopes_supported).toContain('mcp:write');
+      expect(body.scopes_supported).toContain('mcp:admin');
+      expect(body.scopes_supported).toContain('profile:read');
+      // First-party device/login scopes must not be advertised (Slack et al.
+      // request every scopes_supported entry).
+      expect(body.scopes_supported).not.toContain('device_worker:run');
+      expect(body.scopes_supported).not.toContain('connections:token');
       expect(body.bearer_methods_supported).toContain('header');
 
       // Resource documentation
@@ -75,6 +81,11 @@ describe('OAuth Discovery Endpoints', () => {
       // Token endpoint auth methods
       expect(body.token_endpoint_auth_methods_supported).toBeInstanceOf(Array);
       expect(body.token_endpoint_auth_methods_supported).toContain('client_secret_post');
+
+      // First-party device/login scopes stay off discovery
+      expect(body.scopes_supported).toContain('mcp:read');
+      expect(body.scopes_supported).not.toContain('device_worker:run');
+      expect(body.scopes_supported).not.toContain('connections:token');
     });
 
     it('should support OAuth 2.1 features', async () => {

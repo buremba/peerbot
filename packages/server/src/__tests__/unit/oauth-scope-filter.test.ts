@@ -1,5 +1,41 @@
 import { describe, expect, it } from 'bun:test';
-import { filterScopeByRole } from '../../auth/oauth/scopes';
+import {
+  DISCOVERY_SCOPES,
+  filterScopeByRole,
+  NON_PUBLIC_OAUTH_SCOPES,
+  stripNonPublicOAuthScopes,
+} from '../../auth/oauth/scopes';
+
+describe('DISCOVERY_SCOPES', () => {
+  it('excludes first-party-only scopes that third-party MCP clients must not request', () => {
+    expect(DISCOVERY_SCOPES).toContain('mcp:read');
+    expect(DISCOVERY_SCOPES).toContain('mcp:write');
+    expect(DISCOVERY_SCOPES).toContain('mcp:admin');
+    expect(DISCOVERY_SCOPES).toContain('profile:read');
+    for (const scope of NON_PUBLIC_OAUTH_SCOPES) {
+      expect(DISCOVERY_SCOPES).not.toContain(scope);
+    }
+  });
+});
+
+describe('stripNonPublicOAuthScopes', () => {
+  it('strips device_worker:run and connections:token from a Slack-style full-list request', () => {
+    const result = stripNonPublicOAuthScopes(
+      'mcp:read mcp:write mcp:admin profile:read device_worker:run connections:token'
+    );
+    expect(result).toBe('mcp:read mcp:write mcp:admin profile:read');
+  });
+
+  it('returns empty string when only non-public scopes were requested', () => {
+    expect(stripNonPublicOAuthScopes('device_worker:run connections:token')).toBe('');
+  });
+
+  it('passes public scopes through unchanged', () => {
+    expect(stripNonPublicOAuthScopes('mcp:read mcp:write profile:read')).toBe(
+      'mcp:read mcp:write profile:read'
+    );
+  });
+});
 
 describe('filterScopeByRole', () => {
   it('keeps mcp:admin when the user is an owner', () => {

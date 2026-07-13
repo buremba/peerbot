@@ -168,9 +168,10 @@ describe('Stage 1 — login token carries connections:token', () => {
 
   it('an authorization-code grant does NOT get connections:token (no third-party over-grant)', async () => {
     // The authorization-code consent path is used by arbitrary third-party MCP
-    // clients (Claude Desktop, Cursor, …). Approving the SAME MCP scopes the CLI
-    // requests must NOT silently add connections:token — only `lobu login`
-    // (device-code) gets it.
+    // clients (Claude Desktop, Cursor, Slack, …). Even when they request the
+    // full first-party scope list (common when clients copy scopes_supported),
+    // device_worker:run / connections:token must be stripped — only `lobu login`
+    // (device-code) or an explicit PAT gets those.
     const app = buildApp();
     const sql = getTestDb();
 
@@ -195,12 +196,13 @@ describe('Stage 1 — login token carries connections:token', () => {
     const verifier = randomBytes(32).toString('base64url');
     const challenge = createHash('sha256').update(verifier).digest('base64url');
 
-    // Consent — approve the same MCP scopes `lobu login` requests.
+    // Consent — Slack-style over-request of every AVAILABLE_SCOPES entry.
     const authorize = await call(app, 'POST', '/oauth/authorize/consent', {
       body: {
         client_id: client.client_id,
         redirect_uri: redirectUri,
-        scope: 'mcp:read mcp:write mcp:admin profile:read',
+        scope:
+          'mcp:read mcp:write mcp:admin profile:read device_worker:run connections:token',
         code_challenge: challenge,
         code_challenge_method: 'S256',
         resource: `${ORIGIN}/mcp/${org.slug}`,
@@ -232,10 +234,15 @@ describe('Stage 1 — login token carries connections:token', () => {
       LIMIT 1
     `) as unknown as Array<{ scope: string | null }>;
     expect(rows.length).toBe(1);
-    // The requested MCP scopes are present...
-    expect((rows[0].scope ?? '').split(' ')).toContain('mcp:read');
-    // ...but connections:token was NOT silently added to a third-party token.
-    expect((rows[0].scope ?? '').split(' ')).not.toContain('connections:token');
+    const granted = (rows[0].scope ?? '').split(' ').filter(Boolean);
+    // Public MCP scopes survive...
+    expect(granted).toContain('mcp:read');
+    expect(granted).toContain('mcp:write');
+    expect(granted).toContain('mcp:admin');
+    expect(granted).toContain('profile:read');
+    // ...but first-party scopes are stripped, not hard-rejected.
+    expect(granted).not.toContain('connections:token');
+    expect(granted).not.toContain('device_worker:run');
   });
 
   it('a profile:read-only device grant (no MCP scopes) does NOT get connections:token', async () => {

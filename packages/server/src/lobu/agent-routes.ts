@@ -1376,40 +1376,33 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 	const row = rows[0];
 	if (!row) return c.json({ error: "No pending proposal for this run" }, 404);
 
-	const resourceKind =
-		row.tool === "manage_watchers"
-			? "watcher"
-			: row.tool === "manage_agents"
-				? "agent"
-				: null;
-	// manage_watchers stores the proposal as `{ args }`; flatten to the fields
-	// the config form binds (mirrors agent-history.ts normalization).
+	// Scoped to manage_agents: this feeds the AGENT config form (name /
+	// description / identity), which binds agent fields only. manage_watchers
+	// proposals are shaped `{ args: {...}, actingAgentId, ... }` (agent_id lives
+	// in `args`, and the fields are watcher-shaped) — they belong to a separate
+	// watcher review surface, not this endpoint. A watcher/other run 404s.
 	const rawProposal = row.proposal ?? null;
-	const proposal =
-		resourceKind === "watcher" &&
-		rawProposal &&
-		typeof rawProposal === "object" &&
-		(rawProposal as { args?: unknown }).args &&
-		typeof (rawProposal as { args: unknown }).args === "object"
-			? (rawProposal as { args: Record<string, unknown> }).args
-			: rawProposal;
+	if (
+		row.tool !== "manage_agents" ||
+		!rawProposal ||
+		typeof rawProposal !== "object"
+	) {
+		return c.json({ error: "No pending proposal for this run" }, 404);
+	}
 
-	// The held proposal must target the agent in the path (agent_id is top-level
-	// on both manage_agents and manage_watchers proposals). Don't leak whether a
-	// run exists for another agent — same 404 as "no pending proposal".
-	const targetAgentId =
-		rawProposal && typeof rawProposal === "object"
-			? ((rawProposal as { agent_id?: unknown }).agent_id ?? null)
-			: null;
+	// The held proposal must target the agent in the path (manage_agents keeps
+	// agent_id top-level). Don't leak whether a run exists for another agent —
+	// same 404 as "no pending proposal".
+	const targetAgentId = (rawProposal as { agent_id?: unknown }).agent_id ?? null;
 	if (targetAgentId !== agentId) {
 		return c.json({ error: "No pending proposal for this run" }, 404);
 	}
 
 	return c.json({
 		runId,
-		resourceKind,
+		resourceKind: "agent" as const,
 		action: row.action,
-		proposal,
+		proposal: rawProposal,
 		current: row.current ?? null,
 	});
 });

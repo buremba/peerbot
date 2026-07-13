@@ -138,25 +138,23 @@ describe("GET /:agentId/config/pending/:runId", () => {
 		expect(body.current).toMatchObject({ id: AGENT });
 	});
 
-	test("flattens manage_watchers { args } proposal, keeps top-level agent_id", async () => {
+	test("404 for a manage_watchers run (real shape: agent_id nested in args)", async () => {
+		// buildWatcherProposal returns `{ args, actingAgentId, actingWatcherId }`
+		// with agent_id INSIDE args — a watcher-shaped proposal can't prefill the
+		// agent config form, so this endpoint excludes it (watcher review is a
+		// separate surface). Fixture matches the real ManageWatchersProposal shape.
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
 			tool: "manage_watchers",
 			proposal: {
-				action: "update",
-				agent_id: AGENT,
-				args: { watcher_id: "w1", prompt: "watch for X" },
+				args: { action: "update", watcher_id: "w1", agent_id: AGENT, prompt: "x" },
+				actingAgentId: null,
+				actingWatcherId: null,
 			},
 		});
 
 		const res = await app.request(`/${AGENT}/config/pending/${runId}`);
-		expect(res.status).toBe(200);
-		const body = (await res.json()) as {
-			resourceKind: string | null;
-			proposal: Record<string, unknown> | null;
-		};
-		expect(body.resourceKind).toBe("watcher");
-		expect(body.proposal).toMatchObject({ watcher_id: "w1", prompt: "watch for X" });
+		expect(res.status).toBe(404);
 	});
 
 	test("404 when the proposal targets a DIFFERENT agent (authz boundary)", async () => {

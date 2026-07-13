@@ -1330,6 +1330,90 @@ routes.get("/:agentId/config", async (c) => {
 	return c.json({ ...settings, authProfiles });
 });
 
+// ── Pending builder write-gate proposal (config-approval prefill) ────────────
+//
+// A config change a builder agent proposes (from Slack or elsewhere) is held as
+// a pending internal run; the chat-history replay only surfaces its approval
+// card in the EXACT originating conversation, so a web deep link to the config
+// form never sees it. This conversation-agnostic read returns the held proposal
+// by run_id so a prefilled deep link (`/agents/:agentId/settings?run_id=…`) can
+// render the proposed change for review + approve. Org-scoped + Postgres-backed,
+// so correct under N replicas.
+//
+// AuthZ: org-scoped by the middleware `organizationId`; the held proposal must
+// also TARGET `:agentId` (read from the RAW proposal — manage_watchers keeps
+// agent_id top-level while nesting editable fields under `args`).
+routes.get("/:agentId/config/pending/:runId", async (c) => {
+	const { agentId } = c.req.param();
+	const organizationId = c.get("organizationId") as string;
+	const runId = Number(c.req.param("runId"));
+	if (!Number.isInteger(runId) || runId <= 0) {
+		return c.json({ error: "Invalid run id" }, 400);
+	}
+
+	const rows = await getDb()<{
+		action: string | null;
+		proposal: Record<string, unknown> | null;
+		current: Record<string, unknown> | null;
+		tool: string | null;
+	}>`
+		SELECT e.metadata->>'action' AS action,
+		       e.metadata->'proposal' AS proposal,
+		       e.metadata->'current' AS current,
+		       e.metadata->>'tool' AS tool
+		FROM runs r
+		JOIN current_event_records e
+		  ON e.run_id = r.id
+		 AND e.interaction_type = 'approval'
+		 AND e.interaction_status = 'pending'
+		WHERE r.id = ${runId}
+		  AND r.organization_id = ${organizationId}
+		  AND r.run_type = 'internal'
+		  AND r.approval_status = 'pending'
+		ORDER BY e.id DESC
+		LIMIT 1
+	`;
+	const row = rows[0];
+	if (!row) return c.json({ error: "No pending proposal for this run" }, 404);
+
+	const resourceKind =
+		row.tool === "manage_watchers"
+			? "watcher"
+			: row.tool === "manage_agents"
+				? "agent"
+				: null;
+	// manage_watchers stores the proposal as `{ args }`; flatten to the fields
+	// the config form binds (mirrors agent-history.ts normalization).
+	const rawProposal = row.proposal ?? null;
+	const proposal =
+		resourceKind === "watcher" &&
+		rawProposal &&
+		typeof rawProposal === "object" &&
+		(rawProposal as { args?: unknown }).args &&
+		typeof (rawProposal as { args: unknown }).args === "object"
+			? (rawProposal as { args: Record<string, unknown> }).args
+			: rawProposal;
+
+	// The held proposal must target the agent in the path (agent_id is top-level
+	// on both manage_agents and manage_watchers proposals). Don't leak whether a
+	// run exists for another agent — same 404 as "no pending proposal".
+	const targetAgentId =
+		rawProposal && typeof rawProposal === "object"
+			? ((rawProposal as { agent_id?: unknown }).agent_id ?? null)
+			: null;
+	if (targetAgentId !== agentId) {
+		return c.json({ error: "No pending proposal for this run" }, 404);
+	}
+
+	return c.json({
+		runId,
+		resourceKind,
+		action: row.action,
+		proposal,
+		current: row.current ?? null,
+	});
+});
+
 // ── Recent guardrail trips ───────────────────────────────────────────────────
 //
 // Read-only audit feed for the agent's Guardrails tab. Each `guardrail-trip`

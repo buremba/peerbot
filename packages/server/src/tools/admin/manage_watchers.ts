@@ -426,6 +426,54 @@ function buildWatcherProposal(args: ManageWatchersArgs): ManageWatchersProposal 
   return { args };
 }
 
+/** Flat watcher fields shown on the events-tab ActionApprovalCard fallback. */
+const WATCHER_APPROVAL_DISPLAY_KEYS = [
+  'action',
+  'slug',
+  'name',
+  'prompt',
+  'schedule',
+  'timezone',
+  'agent_id',
+  'watcher_id',
+  'watcher_ids',
+] as const;
+
+function pickWatcherApprovalDisplayFields(
+  args: ManageWatchersArgs,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of WATCHER_APPROVAL_DISPLAY_KEYS) {
+    const value = args[key as keyof ManageWatchersArgs];
+    if (value === undefined || value === null) continue;
+    out[key] = Array.isArray(value) ? value.join(', ') : value;
+  }
+  return out;
+}
+
+function buildWatcherApprovalInputSchema(
+  fields: Record<string, unknown>,
+): Record<string, unknown> {
+  const titles: Record<string, string> = {
+    action: 'Action',
+    slug: 'Slug',
+    name: 'Name',
+    prompt: 'Prompt',
+    schedule: 'Schedule',
+    timezone: 'Timezone',
+    agent_id: 'Agent',
+    watcher_id: 'Watcher ID',
+    watcher_ids: 'Watcher IDs',
+  };
+  const properties: Record<string, unknown> = {};
+  for (const key of Object.keys(fields)) {
+    if (titles[key]) {
+      properties[key] = { type: 'string', title: titles[key] };
+    }
+  }
+  return { type: 'object', properties };
+}
+
 /**
  * Queue a manage_watchers write for approval instead of running it. Writes a
  * pending `runs` row (run_type='internal', action_key='manage_watchers') plus an
@@ -468,6 +516,11 @@ async function queueWatcherWriteForApproval(
   const runId = Number((inserted[0] as { id: unknown }).id);
 
   const label = watcherActionLabel(args);
+  // Flat display fields for the events-tab fallback card (ActionApprovalCard
+  // only renders input when interactionInputSchema is present). Keep the
+  // nested proposal in metadata for the apply path / history replay.
+  const displayInput = pickWatcherApprovalDisplayFields(args);
+  const inputSchema = buildWatcherApprovalInputSchema(displayInput);
   const event = await insertEvent({
     entityIds: args.entity_id != null ? [args.entity_id] : [],
     organizationId: ctx.organizationId,
@@ -478,16 +531,20 @@ async function queueWatcherWriteForApproval(
     runId,
     interactionType: 'approval',
     interactionStatus: 'pending',
-    interactionInput: proposal as unknown as Record<string, unknown>,
+    interactionInputSchema: inputSchema,
+    interactionInput: displayInput,
     metadata: {
       tool: 'manage_watchers',
       action_key: MANAGE_WATCHERS_ACTION_KEY,
       action: args.action,
+      resourceKind: 'watcher',
       watcher_id: args.watcher_id ?? null,
       proposal,
       current: current ?? null,
       status: 'pending_approval',
       run_id: runId,
+      input_schema: inputSchema,
+      action_input: displayInput,
     },
     authorName: ctx.clientId ?? 'agent',
   });

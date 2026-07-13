@@ -1431,6 +1431,20 @@ async function tryApproveManageWatchersRun(
 			env,
 			requesterUserId,
 		);
+		// handleCreate throws on invalid schedule/timezone, but handleUpdate
+		// returns `{ error }` and handleDelete returns a summary with
+		// failed/successful counts (no throw). Detect soft failures here so we
+		// don't mark the run completed when nothing applied.
+		const softFailure = detectManageWatchersApplyFailure(output);
+		if (softFailure) {
+			return failManageWatchersApproval(
+				args.run_id,
+				ctx.organizationId,
+				action,
+				softFailure,
+				reviewer,
+			);
+		}
 		await getDb()`
       UPDATE runs SET status = 'completed', completed_at = NOW(),
         action_output = ${getDb().json(output as unknown as Record<string, unknown>)}
@@ -1454,27 +1468,77 @@ async function tryApproveManageWatchersRun(
 		};
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		await getDb()`
-      UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage}
-      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-    `;
-		const eventId = await supersedeActionEvent(
+		return failManageWatchersApproval(
 			args.run_id,
 			ctx.organizationId,
-			"failed",
-			`manage_watchers.${action} — failed`,
-			`Builder action failed: ${action} — ${errorMessage}`,
-			{ error_message: errorMessage },
+			action,
+			errorMessage,
 			reviewer,
 		);
-		return {
-			action: "approve",
-			approved: true,
-			run_id: args.run_id,
-			event_id: eventId,
-			message: `Watcher ${action} approved but failed: ${errorMessage}`,
-		};
 	}
+}
+
+/**
+ * Detect soft failures from manage_watchers write handlers that return errors
+ * instead of throwing. create throws (ToolUserError); update returns
+ * `{ error: string }` for invalid cron/timezone; delete returns a summary with
+ * per-id results and never throws on individual archive failures.
+ *
+ * Partial delete success (some succeeded, some failed) is treated as completed
+ * — the summary is preserved in action_output so the reviewer can see which
+ * ids failed.
+ */
+function detectManageWatchersApplyFailure(output: unknown): string | null {
+	if (!output || typeof output !== "object") return null;
+	const result = output as Record<string, unknown>;
+	if (result.error) {
+		return typeof result.error === "string"
+			? result.error
+			: String(result.error);
+	}
+	const summary = result.summary as
+		| { total?: number; successful?: number; failed?: number }
+		| undefined;
+	if (
+		summary &&
+		typeof summary.failed === "number" &&
+		summary.failed > 0 &&
+		summary.successful === 0
+	) {
+		const total =
+			typeof summary.total === "number" ? summary.total : summary.failed;
+		return `Watcher delete failed: 0 of ${total} succeeded`;
+	}
+	return null;
+}
+
+async function failManageWatchersApproval(
+	runId: number,
+	organizationId: string,
+	action: string,
+	errorMessage: string,
+	reviewer: ApprovalReviewer | null,
+): Promise<ManageOperationsResult> {
+	await getDb()`
+    UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage}
+    WHERE id = ${runId} AND organization_id = ${organizationId}
+  `;
+	const eventId = await supersedeActionEvent(
+		runId,
+		organizationId,
+		"failed",
+		`manage_watchers.${action} — failed`,
+		`Builder action failed: ${action} — ${errorMessage}`,
+		{ error_message: errorMessage },
+		reviewer,
+	);
+	return {
+		action: "approve",
+		approved: true,
+		run_id: runId,
+		event_id: eventId,
+		message: `Watcher ${action} approved but failed: ${errorMessage}`,
+	};
 }
 
 /**

@@ -178,8 +178,68 @@ describe("maybePostApprovalCard (builder gate)", () => {
       interactionType: "tool_approval",
       runId: 99,
       action: "update",
+      resourceKind: "agent",
       proposal: { agent_id: "support-bot", name: "v2" },
       current: { id: "support-bot", name: "v1" },
+    });
+  });
+
+  test("posts a tool_approval card for a manage_watchers pending_approval result", async () => {
+    const posts: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = mock(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        posts.push({
+          url,
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        return Response.json({ id: "appr-w1" });
+      }
+    ) as unknown as typeof fetch;
+
+    const resultText = JSON.stringify({
+      action: "create",
+      run_id: 77,
+      status: "pending_approval",
+      message: "needs approval",
+      // Server stores proposal as `{ args }` — card body flattens for the SPA.
+      proposal: {
+        args: {
+          action: "create",
+          slug: "launch-tracker",
+          name: "Launch Tracker",
+          prompt: "Track launches.",
+          schedule: "0 * * * *",
+          timezone: "UTC",
+          agent_id: "builder-agent",
+        },
+      },
+      current: null,
+    });
+
+    const posted = await maybePostApprovalCard(
+      gw,
+      "manage_watchers",
+      resultText
+    );
+
+    expect(posted).toBe(true);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.body).toMatchObject({
+      interactionType: "tool_approval",
+      runId: 77,
+      action: "create",
+      resourceKind: "watcher",
+      proposal: {
+        action: "create",
+        slug: "launch-tracker",
+        name: "Launch Tracker",
+        prompt: "Track launches.",
+        schedule: "0 * * * *",
+        timezone: "UTC",
+        agent_id: "builder-agent",
+      },
+      current: null,
     });
   });
 

@@ -305,4 +305,64 @@ describe("manage_watchers — builder gate e2e", () => {
 		`;
 		expect(runRows.length).toBe(0);
 	});
+
+	it("approve of update with invalid timezone marks run failed (not completed)", async () => {
+		// Seed a watcher via the human path so there is a target to update.
+		const created = (await executeTool(
+			"manage_watchers",
+			{
+				action: "create",
+				slug: "tz-fail-watcher",
+				name: "TZ Fail Watcher",
+				prompt: "Track timezone failures.",
+				agent_id: agentId,
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { watcher_id?: string; status?: string };
+		expect(created.watcher_id).toBeDefined();
+		const watcherId = created.watcher_id!;
+
+		// Agent proposes an update with a bad timezone — queues for approval.
+		// handleUpdate returns `{ error }` (does not throw); the apply boundary
+		// must treat that as failure so we never mark the run completed.
+		const pending = (await executeTool(
+			"manage_watchers",
+			{
+				action: "update",
+				watcher_id: watcherId,
+				timezone: "Not/A_Real_Zone",
+			},
+			TEST_ENV,
+			agentCtx,
+		)) as PendingApproval;
+		expect(pending.status).toBe("pending_approval");
+		expect(typeof pending.run_id).toBe("number");
+
+		const approveRes = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: pending.run_id },
+			TEST_ENV,
+			ownerCtx,
+		)) as { approved?: true; message?: string };
+		expect(approveRes.approved).toBe(true);
+		expect(approveRes.message).toMatch(/failed/i);
+		expect(approveRes.message).not.toMatch(/applied/i);
+
+		const sql = getTestDb();
+		const runRows = await sql`
+			SELECT approval_status, status, error_message FROM runs
+			WHERE id = ${pending.run_id} AND organization_id = ${orgId}
+		`;
+		expect(runRows[0]?.approval_status).toBe("approved");
+		expect(runRows[0]?.status).toBe("failed");
+		expect(String(runRows[0]?.error_message ?? "")).toMatch(/timezone|IANA/i);
+
+		const eventRows = await sql`
+			SELECT interaction_status FROM current_event_records
+			WHERE run_id = ${pending.run_id} AND organization_id = ${orgId}
+				AND semantic_type = 'operation' AND interaction_type = 'approval'
+		`;
+		expect(eventRows[0]?.interaction_status).toBe("failed");
+	});
 });

@@ -104,6 +104,13 @@ export class ApiPlatform implements PlatformAdapter {
     // bridge does NOT subscribe to this event, so it never mis-renders it.
     interactionService.on("tool:durable-approval-card", (event: any) => {
       if (event.platform !== "api") return;
+      const resourceKind: string | null = event.resourceKind ?? null;
+      const toolName =
+        event.fields
+          ? "manage_entity"
+          : resourceKind === "watcher"
+            ? "manage_watchers"
+            : "manage_agents";
       this.enqueueInteractionCard(queue, event, "tool-approval", {
         type: "tool-approval",
         requestId: event.id,
@@ -116,7 +123,8 @@ export class ApiPlatform implements PlatformAdapter {
         // card. manage_agents leaves these null and renders its agent-row diff.
         fields: event.fields ?? null,
         attribution: event.attribution ?? null,
-        toolName: event.fields ? "manage_entity" : "manage_agents",
+        resourceKind,
+        toolName,
       });
     });
 

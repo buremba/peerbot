@@ -103,13 +103,22 @@ if (!metricEntityId) {
   );
 }
 
+// Each version carries a machine-usable `governing_predicate` in its metadata —
+// NOT just prose. compose.ts reads the version in effect for a month and builds
+// that month's rollup SQL from this predicate, so the definition GOVERNS the
+// query (the same warehouse yields a different number under v2 than v1), it does
+// not merely label it after the fact.
+//
+//   exclude_payment_failure_in_grace — v2's rule: a payment_failure cancelled
+//     within `dunning_grace_days` of its dunning_started_at is a retry-window
+//     artifact, not churn, so it is filtered OUT of the count.
 const v1 = await callTool<{ id?: number; event_id?: number }>(
   gw,
   "save_memory",
   {
     content:
       "churn_rate v1 = subscriptions cancelled in month / active subscriptions at month start. " +
-      "A subscription churns the day cancelled_at is set.",
+      "A subscription churns the day cancelled_at is set. Every cancellation counts.",
     semantic_type: "definition",
     title: "churn_rate v1",
     entity_ids: [metricEntityId],
@@ -117,6 +126,9 @@ const v1 = await callTool<{ id?: number; event_id?: number }>(
       version: "v1",
       effective_from: "2025-07-01",
       approved_by: "head-of-data",
+      governing_predicate: {
+        exclude_payment_failure_in_grace: false,
+      },
     },
   }
 );
@@ -128,7 +140,8 @@ if (!v1EventId) {
 await callTool(gw, "save_memory", {
   content:
     "churn_rate v2 = cancellations excluding payment-failure cancellations inside a 28-day " +
-    "dunning grace / active subscriptions at month start.",
+    "dunning grace / active subscriptions at month start. A payment_failure cancelled within " +
+    "28 days of dunning_started_at is a retry-window artifact (usually self-recovers), not churn.",
   semantic_type: "definition",
   title: "churn_rate v2",
   entity_ids: [metricEntityId],
@@ -137,6 +150,10 @@ await callTool(gw, "save_memory", {
     version: "v2",
     effective_from: "2026-05-01",
     approved_by: "head-of-data",
+    governing_predicate: {
+      exclude_payment_failure_in_grace: true,
+      dunning_grace_days: 28,
+    },
   },
 });
 console.log(
@@ -152,10 +169,18 @@ const businessEvents = [
       event_date: "2026-03-12",
       event_type: "data_incident",
       affected_metrics: ["churn_rate"],
+      // Structured, warehouse-derivable adjustment. compose.ts SUBTRACTS exactly
+      // the rows this names (cancel_reason = billing_migration_artifact) from the
+      // affected month — it does NOT throw the whole month away. March keeps its
+      // ~50 real cancellations; only the ~500 artifacts are removed.
+      adjustment: {
+        op: "subtract_reason",
+        cancel_reason: "billing_migration_artifact",
+      },
       expected_effect:
-        "Exclude 2026-03 from churn trend analysis: ~500 cancellations recorded on " +
-        "2026-03-12/13 are migration artifacts (cancel_reason=billing_migration_artifact), " +
-        "not customers leaving.",
+        "Repair 2026-03: ~500 cancellations recorded on 2026-03-12/13 are migration " +
+        "artifacts (cancel_reason=billing_migration_artifact), not customers leaving. " +
+        "Subtract those rows; the ~50 real cancellations that month still stand.",
       owner: "data-platform",
       source_link: "https://linear.app/kelder/issue/DATA-142",
     },
@@ -201,10 +226,10 @@ console.log(`Created ${businessEvents.length} business events`);
 
 // ── 4. Monthly observations (feed the DECLARED metric) ─────────────────────
 const observations: Array<[string, number]> = [
-  ["2026-01", 30],
-  ["2026-02", 30],
-  ["2026-03", 530],
-  ["2026-04", 30],
+  ["2026-01", 50],
+  ["2026-02", 50],
+  ["2026-03", 550],
+  ["2026-04", 50],
 ];
 for (const [month, cancellations] of observations) {
   await callTool(gw, "save_memory", {

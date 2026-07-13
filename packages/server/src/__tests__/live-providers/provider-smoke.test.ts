@@ -10,7 +10,7 @@
  * This suite walks EVERY provider in config/providers.json and, for each one
  * whose API key is present in the environment, performs a real round-trip:
  *   1. list models            — validates auth + the models endpoint
- *      (skipped for providers with no model-listing surface: z-ai, elevenlabs)
+ *      (skipped for providers with no model-listing surface: z-ai)
  *   2. chat completion        — validates the OpenAI-compatible chat surface
  *   3. tool-calling (lenient) — validates the agent's primary capability,
  *                               warn-only since model support varies
@@ -58,8 +58,6 @@ const flattened = registry.providers.flatMap((entry) =>
  * Chat models for providers whose registry entry has no defaultModel.
  * Mirrors DEFAULT_PROVIDER_MODELS in agent-worker/src/openclaw/model-resolver.ts
  * (not importable here — agent-worker is not a dependency of server).
- * elevenlabs is voice-only and deliberately absent: with no model, the chat
- * and tool tests below no-op for it.
  */
 const FALLBACK_CHAT_MODELS: Record<string, string> = {
 	"z-ai": "glm-4.7",

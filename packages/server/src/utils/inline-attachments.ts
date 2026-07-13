@@ -189,8 +189,9 @@ function inferKindFromMime(mime: string): string {
  * recoverable history.
  *
  * Picks the first agent in the org whose auth profiles include an STT
- * provider (OpenAI, Gemini, or ElevenLabs). If none exists, leaves the
- * placeholder untouched — graceful degradation.
+ * provider (OpenAI, or any OpenAI-compatible provider with a declared
+ * `stt` block). If none exists, leaves the placeholder untouched —
+ * graceful degradation.
  */
 export function triggerAudioTranscriptions(
   organizationId: string,

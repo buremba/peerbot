@@ -7,14 +7,11 @@ interface AudioProviderSuggestions {
   usedFallback: boolean;
 }
 
-const FALLBACK_PROVIDER_IDS = ["chatgpt", "gemini", "elevenlabs"] as const;
+const FALLBACK_PROVIDER_IDS = ["chatgpt"] as const;
 
 const KNOWN_PROVIDER_LABELS: Record<string, string> = {
   chatgpt: "ChatGPT/OpenAI",
   openai: "OpenAI",
-  gemini: "Google Gemini",
-  google: "Google Gemini",
-  elevenlabs: "ElevenLabs",
 };
 
 function normalizeProviderId(raw: unknown): string | null {
@@ -28,9 +25,6 @@ function prefillProviderIdsFromCapabilityProvider(
 ): string[] {
   if (providerId === "openai") {
     return ["chatgpt", "openai"];
-  }
-  if (providerId === "google") {
-    return ["gemini"];
   }
   return [providerId];
 }

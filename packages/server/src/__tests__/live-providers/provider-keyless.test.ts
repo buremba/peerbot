@@ -46,9 +46,6 @@ const flattened = registry.providers.flatMap((entry) =>
 	(entry.providers || []).map((provider) => ({ id: entry.id, provider })),
 );
 
-// Providers with no chat surface at all (voice/STT only).
-const VOICE_ONLY = new Set(["elevenlabs"]);
-
 const TIMEOUT_MS = 20_000;
 setDefaultTimeout(60_000);
 
@@ -73,7 +70,7 @@ for (const { id, provider } of flattened) {
 	const base = provider.upstreamBaseUrl.replace(/\/$/, "");
 
 	describe(`keyless: ${id} (${provider.displayName})`, () => {
-		test.skipIf(VOICE_ONLY.has(id))(
+		test(
 			"chat endpoint exists (route must not 404)",
 			async () => {
 				const { status } = await probe(`${base}/chat/completions`, {

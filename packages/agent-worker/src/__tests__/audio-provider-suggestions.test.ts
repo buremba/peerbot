@@ -26,14 +26,14 @@ describe("audio provider suggestions", () => {
       available: false,
       providers: [
         { provider: "openai", name: "OpenAI" },
-        { provider: "gemini", name: "Google Gemini" },
+        { provider: "acme-voice", name: "Acme Voice" },
       ],
     });
 
     expect(normalized.available).toBe(false);
     expect(normalized.usedFallback).toBe(false);
-    expect(normalized.providerIds).toEqual(["chatgpt", "openai", "gemini"]);
-    expect(normalized.providerDisplayList).toBe("OpenAI, Google Gemini");
+    expect(normalized.providerIds).toEqual(["chatgpt", "openai", "acme-voice"]);
+    expect(normalized.providerDisplayList).toBe("OpenAI, Acme Voice");
   });
 
   test("falls back safely when capability payload is malformed", () => {
@@ -44,7 +44,7 @@ describe("audio provider suggestions", () => {
 
     expect(normalized.available).toBe(true);
     expect(normalized.usedFallback).toBe(true);
-    expect(normalized.providerIds).toEqual(["chatgpt", "gemini", "elevenlabs"]);
+    expect(normalized.providerIds).toEqual(["chatgpt"]);
     expect(normalized.providerDisplayList).toBe("");
   });
 
@@ -60,7 +60,7 @@ describe("audio provider suggestions", () => {
 
     expect(normalized.available).toBeNull();
     expect(normalized.usedFallback).toBe(true);
-    expect(normalized.providerIds).toEqual(["chatgpt", "gemini", "elevenlabs"]);
+    expect(normalized.providerIds).toEqual(["chatgpt"]);
     expect(normalized.providerDisplayList).toBe("");
   });
 });
@@ -80,10 +80,7 @@ describe("generate_audio dynamic provider messaging", () => {
           return new Response(
             JSON.stringify({
               available: true,
-              providers: [
-                { provider: "openai", name: "OpenAI" },
-                { provider: "gemini", name: "Google Gemini" },
-              ],
+              providers: [{ provider: "openai", name: "OpenAI" }],
             }),
             { status: 200, headers: { "Content-Type": "application/json" } }
           );
@@ -118,7 +115,7 @@ describe("generate_audio dynamic provider messaging", () => {
 
     const text = extractText(result as any);
 
-    expect(text).toContain("OpenAI, Google Gemini");
+    expect(text).toContain("OpenAI");
     expect(text).toContain("Ask an admin");
   });
 });
@@ -136,10 +133,7 @@ describe("OpenClawWorker audio permission hint", () => {
         return new Response(
           JSON.stringify({
             available: true,
-            providers: [
-              { provider: "openai", name: "OpenAI" },
-              { provider: "elevenlabs", name: "ElevenLabs" },
-            ],
+            providers: [{ provider: "openai", name: "OpenAI" }],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
@@ -157,7 +151,7 @@ describe("OpenClawWorker audio permission hint", () => {
       "token"
     );
 
-    expect(hint).toContain("OpenAI, ElevenLabs");
+    expect(hint).toContain("OpenAI");
     expect(hint).toContain("Ask an admin");
   });
 

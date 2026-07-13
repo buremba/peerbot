@@ -1,9 +1,10 @@
 /**
  * Seed the CONTEXT LAYER itself — the org data that explains the warehouse:
  *
- *  1. A `postgres` connection to the Kelder warehouse (env auth profile) and a
- *     VIRTUAL feed on it: the monthly churn rollup, read LIVE at request time
- *     through the connector pushdown. Nothing is copied into Lobu.
+ *  1. (declared in lobu.config.ts, not here) A `postgres` connection to the
+ *     Kelder warehouse (env auth profile) and a VIRTUAL feed on it: the monthly
+ *     churn rollup, read LIVE at request time through the connector pushdown.
+ *     Nothing is copied into Lobu. `lobu run` creates both.
  *  2. The `churn_rate` metric-definition entity, with its definition history
  *     as a supersede chain: v1 (2025-07) superseded by v2 (2026-05, dunning
  *     grace). The chain IS the changelog.
@@ -40,45 +41,9 @@ if ((existing.entities ?? []).length > 0) {
   process.exit(0);
 }
 
-// ── 1. VIRTUAL feed on the warehouse connection ─────────────────────────────
-// The `kelder-warehouse` auth profile + connection are declared in
-// lobu.config.ts and created by `lobu run` (config-as-constructor), which also
-// installs the bundled `postgres` connector. Here we just resolve that
-// connection and add the live churn-rollup feed on top of it.
-const connList = await callTool<{
-  connections?: Array<{ id: number; slug: string; status: string }>;
-}>(gw, "manage_connections", { action: "list", connector_key: "postgres" });
-const warehouseConn = (connList.connections ?? []).find(
-  (c) => c.slug === "kelder-warehouse"
-);
-if (!warehouseConn) {
-  throw new Error(
-    "kelder-warehouse connection not found — did `lobu run` finish applying " +
-      "lobu.config.ts? (it declares the connection). Restart `lobu run` and retry."
-  );
-}
-const connectionId = warehouseConn.id;
-console.log(
-  `Using warehouse connection kelder-warehouse (id ${connectionId}, ${warehouseConn.status})`
-);
-
-const feedRes = await callTool<{ feed?: { id?: number } }>(gw, "manage_feeds", {
-  action: "create_feed",
-  connection_id: connectionId,
-  feed_key: "query",
-  display_name: "Monthly churn rollup (live)",
-  virtual: true,
-  config: { query: CHURN_ROLLUP_SQL },
-});
-const feedId = feedRes.feed?.id;
-if (!feedId) {
-  throw new Error(`feed create returned no id: ${JSON.stringify(feedRes)}`);
-}
-console.log(
-  `Created VIRTUAL feed ${feedId} — churn rollup is read live, never copied`
-);
-
-// ── 2. Metric definition entity + versioned definition chain ───────────────
+// ── 1. Metric definition entity + versioned definition chain ───────────────
+// (The warehouse connection + its VIRTUAL churn-rollup feed are declared in
+// lobu.config.ts and created by `lobu run` — see the file header.)
 const metricRes = await callTool<{ entity?: { id?: number } }>(
   gw,
   "manage_entity",
@@ -160,7 +125,7 @@ console.log(
   `Created churn_rate definition chain: v1 (event ${v1EventId}) superseded by v2`
 );
 
-// ── 3. Business events — the governed "why" records ────────────────────────
+// ── 2. Business events — the governed "why" records ────────────────────────
 const businessEvents = [
   {
     name: "Recharge billing migration wrote false cancellations",
@@ -224,7 +189,7 @@ for (const evt of businessEvents) {
 }
 console.log(`Created ${businessEvents.length} business events`);
 
-// ── 4. Monthly observations (feed the DECLARED metric) ─────────────────────
+// ── 3. Monthly observations (feed the DECLARED metric) ─────────────────────
 const observations: Array<[string, number]> = [
   ["2026-01", 50],
   ["2026-02", 50],
@@ -241,7 +206,7 @@ for (const [month, cancellations] of observations) {
 }
 console.log(`Recorded ${observations.length} monthly churn observations`);
 
-// ── 5. Verified query: pin the approved answer from the live warehouse ─────
+// ── 4. Verified query: pin the approved answer from the live warehouse ─────
 const sql = postgres(WAREHOUSE_URL, { max: 1 });
 const approvedAnswer = (await sql.unsafe(CHURN_ROLLUP_SQL)).map((r) => ({
   ...r,

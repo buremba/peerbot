@@ -18,6 +18,7 @@ import {
   defineConnection,
   defineEntityType,
 } from "@lobu/cli/config";
+import { CHURN_ROLLUP_SQL } from "./scripts/lib/env.ts";
 
 const analyst = defineAgent({
   id: "analyst",
@@ -50,11 +51,11 @@ const baseline = defineAgent({
 
 /**
  * The warehouse connection, declared as config (config-as-constructor). `lobu
- * run` applies this: it installs the bundled `postgres` connector and creates
- * an authenticated, read-only connection to the fake Kelder warehouse. The
- * credential is a `$VAR` reference resolved from the environment at apply time —
- * it never lives in committed code. The seed then adds a VIRTUAL feed on top of
- * this connection (the live churn rollup).
+ * run` applies this: it installs the bundled `postgres` connector, creates an
+ * authenticated, read-only connection to the fake Kelder warehouse, AND creates
+ * the VIRTUAL churn-rollup feed on it (declared below). The credential is a
+ * `$VAR` reference resolved from the environment at apply time — it never lives
+ * in committed code.
  */
 const warehouseAuth = defineAuthProfile({
   slug: "kelder-warehouse",
@@ -69,6 +70,18 @@ const warehouse = defineConnection({
   connector: "postgres",
   name: "Kelder warehouse",
   authProfile: warehouseAuth,
+  // The monthly churn rollup as a VIRTUAL (federated) feed: read LIVE at
+  // request time through the connector pushdown, never copied into Lobu. A
+  // virtual feed never syncs, so it carries no schedule. Declared here so the
+  // whole warehouse-federation story lives in config — `lobu run` creates it.
+  feeds: [
+    {
+      feed: "query",
+      name: "Monthly churn rollup (live)",
+      virtual: true,
+      config: { query: CHURN_ROLLUP_SQL },
+    },
+  ],
 });
 
 /**

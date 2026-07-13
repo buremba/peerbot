@@ -3,6 +3,8 @@
  */
 
 import { getDb } from '../db/client';
+import { type EventKindDefinition, primeMemberEventKinds } from './event-kind-validation';
+import { GUIDANCE_SEMANTIC_TYPE } from './org-guidance';
 
 interface MemberSchemaProperty {
   type?: string;
@@ -71,6 +73,13 @@ const DEFAULT_MEMBER_EVENT_KINDS = {
   summary: { description: 'Summaries and digests' },
   content: { description: 'Generic content' },
   change: { description: 'Entity field changes and audit trail' },
+  // Built-in org-wide context kind. Anchored by organization_id + semantic_type
+  // (no $member/entity subject), it renders as "Organization Context" in every
+  // agent prompt. Declared here so it validates through the normal $member
+  // event_kinds registry rather than a code-level bypass in save_content; the
+  // admin-only authorship/removal gates (org-guidance.ts) are orthogonal and
+  // still apply. See issue #1913.
+  guidance: { description: 'Organization-wide context injected into every agent prompt' },
 } as const;
 
 const DEFAULT_MEMBER_METADATA_SCHEMA = {
@@ -255,6 +264,15 @@ export async function ensureMemberEntityType(organizationId: string): Promise<vo
       )
       ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL DO NOTHING
     `;
+    // Prime this pod's cache with the seeded registry. A prior read may have
+    // cached a `null` (no $member yet); overwrite it so the next validation in
+    // this request sees the built-in kinds. (ON CONFLICT DO NOTHING means a
+    // racing replica may have inserted first, but its event_kinds is the same
+    // DEFAULT set, so priming with the default is still DB-accurate.)
+    primeMemberEventKinds(
+      organizationId,
+      DEFAULT_MEMBER_EVENT_KINDS as unknown as Record<string, EventKindDefinition>
+    );
     return;
   }
 
@@ -267,19 +285,59 @@ export async function ensureMemberEntityType(organizationId: string): Promise<vo
     existingMetadataSchema,
     mergedMetadataSchema
   );
-  const shouldUpdateEventKinds = existing.event_kinds == null;
 
-  if (!shouldUpdateMetadataSchema && !shouldUpdateEventKinds) {
-    return;
+  if (shouldUpdateMetadataSchema) {
+    await sql`
+      UPDATE entity_types
+      SET metadata_schema = ${sql.json(mergedMetadataSchema)},
+          updated_at = current_timestamp
+      WHERE id = ${existing.id}
+    `;
   }
 
-  await sql`
-    UPDATE entity_types
-    SET metadata_schema = ${shouldUpdateMetadataSchema ? sql.json(mergedMetadataSchema) : existing.metadata_schema},
-        event_kinds = ${shouldUpdateEventKinds ? sql.json(DEFAULT_MEMBER_EVENT_KINDS) : existing.event_kinds},
-        updated_at = current_timestamp
-    WHERE id = ${existing.id}
+  // Backfill ONLY the `guidance` built-in kind an org's registry may lack —
+  // guidance became a required built-in after orgs were provisioned, and it now
+  // validates through this registry instead of a code bypass, so a pre-guidance
+  // org would otherwise reject it. We deliberately do NOT restore other default
+  // kinds an org omits: `manage_entity_schema` lets an org intentionally remove a
+  // kind from its $member.event_kinds allowlist, and silently re-adding it on the
+  // next save would override that choice. Only the newly-mandatory key is added.
+  //
+  // One atomic statement does BOTH the conditional backfill and the read of the
+  // resulting truth, so there is no read-modify-write window to lose a write in:
+  // - The UPDATE merges `{guidance:…} || COALESCE(event_kinds,'{}')` — a JSONB
+  //   concat where the RIGHT (live DB) side wins per key, so an org's authored
+  //   kinds, including any a CONCURRENT $member schema edit committed since our
+  //   SELECT, are preserved; only a missing `guidance` is added. The `?` guard
+  //   skips the write when `guidance` is already present (the hot path: this runs
+  //   on every save).
+  // - The UNION ALL returns exactly one row — the updated value if the UPDATE
+  //   fired, otherwise the current row. Both read in the SAME statement, so the
+  //   primed value is always consistent with the write this statement performed,
+  //   and a guard no-op means the row already carried `guidance` as of this
+  //   statement's snapshot. That is strictly better than reusing the earlier
+  //   `existing.event_kinds` snapshot from the top-of-function SELECT (which could
+  //   predate another replica's backfill). Residual window: a backfill another
+  //   replica COMMITS after this statement's snapshot opens isn't reflected until
+  //   the 60s TTL lapses — the same bounded staleness every $member.event_kinds
+  //   edit already has (the cache is TTL-only, never cross-pod busted), not a new
+  //   regression.
+  const guidanceKindPatch = { guidance: DEFAULT_MEMBER_EVENT_KINDS.guidance };
+  const resolved = await sql<{ event_kinds: Record<string, EventKindDefinition> | null }>`
+    WITH upd AS (
+      UPDATE entity_types
+      SET event_kinds = ${sql.json(guidanceKindPatch)} || COALESCE(event_kinds, '{}'::jsonb),
+          updated_at = current_timestamp
+      WHERE id = ${existing.id}
+        AND NOT (COALESCE(event_kinds, '{}'::jsonb) ? ${GUIDANCE_SEMANTIC_TYPE})
+      RETURNING event_kinds
+    )
+    SELECT event_kinds FROM upd
+    UNION ALL
+    SELECT event_kinds FROM entity_types
+    WHERE id = ${existing.id} AND NOT EXISTS (SELECT 1 FROM upd)
   `;
+  primeMemberEventKinds(organizationId, resolved.length > 0 ? resolved[0].event_kinds : null);
 }
 
 export function resolveMemberSchemaFieldsFromSchema(

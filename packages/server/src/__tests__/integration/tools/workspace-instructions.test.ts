@@ -29,6 +29,8 @@ import {
   ORG_GUIDANCE_CHAR_BUDGET,
   ORG_GUIDANCE_TRUNCATION_MARKER,
 } from '../../../utils/org-guidance';
+import { primeMemberEventKinds } from '../../../utils/event-kind-validation';
+import { ensureMemberEntityType } from '../../../utils/member-entity-type';
 import { buildWorkspaceInstructions } from '../../../utils/workspace-instructions';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -201,6 +203,167 @@ describe('org-wide guidance context', () => {
     const schemaIdx = out!.indexOf('### Tool surface');
     expect(ctxIdx).toBeGreaterThan(-1);
     expect(ctxIdx).toBeLessThan(schemaIdx);
+  });
+
+  it('backfills `guidance` into a pre-guidance $member registry so authorship still validates (#1913)', async () => {
+    // Simulate an org provisioned before `guidance` was a built-in kind: a
+    // populated $member.event_kinds registry that does NOT list `guidance`.
+    // With `guidance` now validated through the registry (no code bypass), the
+    // write would be rejected as an unknown kind unless ensureMemberEntityType
+    // additively backfills the missing built-in on the next save.
+    const sql = getTestDb();
+    const preOrg = await createTestOrganization({ name: 'Pre-guidance Org' });
+    const admin = await createTestUser({ name: 'Admin' });
+    await addUserToOrganization(admin.id, preOrg.id, 'admin');
+    const adminCtx = { ...ownerToolContext(preOrg.id, admin.id), memberRole: 'admin' };
+
+    // Force the $member type to exist with a registry that omits `guidance`.
+    await saveContent(
+      { content: 'seed note', semantic_type: 'note', metadata: {} } as never,
+      env,
+      adminCtx
+    );
+    await sql`
+      UPDATE entity_types
+      SET event_kinds = event_kinds - 'guidance'
+      WHERE slug = '$member' AND organization_id = ${preOrg.id} AND deleted_at IS NULL
+    `;
+    const stripped = await sql<{ event_kinds: Record<string, unknown> }>`
+      SELECT event_kinds FROM entity_types
+      WHERE slug = '$member' AND organization_id = ${preOrg.id} AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    expect(stripped[0].event_kinds).not.toHaveProperty('guidance');
+
+    // The very next guidance write must succeed: ensureMemberEntityType backfills
+    // the missing built-in AND busts the stale validation cache in the same call.
+    const saved = (await saveContent(
+      {
+        content: 'Backfilled guidance renders.',
+        semantic_type: GUIDANCE_SEMANTIC_TYPE,
+        metadata: {},
+      } as never,
+      env,
+      adminCtx
+    )) as { id: number };
+    expect(saved.id).toBeGreaterThan(0);
+
+    const backfilled = await sql<{ event_kinds: Record<string, unknown> }>`
+      SELECT event_kinds FROM entity_types
+      WHERE slug = '$member' AND organization_id = ${preOrg.id} AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    expect(backfilled[0].event_kinds).toHaveProperty('guidance');
+
+    const out = await buildWorkspaceInstructions(preOrg.id);
+    expect(out).toContain('Backfilled guidance renders.');
+  });
+
+  it('re-primes a stale cache when another replica already backfilled guidance (#1913 cross-replica)', async () => {
+    // Two-replica repro: pod A cached a pre-guidance $member registry; pod B
+    // (or a migration) then added `guidance` to the DB row. On pod A the next
+    // ensureMemberEntityType reads the fresh DB row, finds nothing to write, and
+    // takes the no-op path — but it MUST still refresh its own stale cache, or
+    // guidance saves on pod A are rejected until the 60s TTL expires.
+    const sql = getTestDb();
+    const raceOrg = await createTestOrganization({ name: 'Cross-replica Org' });
+    const admin = await createTestUser({ name: 'Race Admin' });
+    await addUserToOrganization(admin.id, raceOrg.id, 'admin');
+    const adminCtx = { ...ownerToolContext(raceOrg.id, admin.id), memberRole: 'admin' };
+
+    // Materialize a $member row that ALREADY contains guidance (as if pod B just
+    // backfilled it), so ensureMemberEntityType has nothing to write and takes
+    // the guarded no-op path — the exact path that must still prime from DB truth.
+    await saveContent(
+      { content: 'seed', semantic_type: 'note', metadata: {} } as never,
+      env,
+      adminCtx
+    );
+    const before = await sql<{ updated_at: Date }>`
+      SELECT updated_at FROM entity_types
+      WHERE slug = '$member' AND organization_id = ${raceOrg.id} AND deleted_at IS NULL
+      LIMIT 1
+    `;
+
+    // Simulate pod A's stale per-pod cache: prime it with a registry missing
+    // guidance. Without the fix, this stale value survives the no-op path.
+    primeMemberEventKinds(raceOrg.id, { note: { description: 'General notes' } });
+
+    // Pod A's ensureMemberEntityType runs (as it does at the top of every save):
+    // it reads the DB (guidance present), writes nothing, and must re-prime from
+    // the live row — not the snapshot it read before a hypothetical concurrent
+    // backfill — via the atomic UPDATE ... UNION ALL read.
+    await ensureMemberEntityType(raceOrg.id);
+
+    // Prove the no-op path was taken: the guarded UPDATE did not fire, so the row
+    // was NOT rewritten. (If it had, this would be the backfill path, not the
+    // stale-cache-only path we mean to exercise.)
+    const after = await sql<{ updated_at: Date }>`
+      SELECT updated_at FROM entity_types
+      WHERE slug = '$member' AND organization_id = ${raceOrg.id} AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    expect(after[0].updated_at.getTime()).toBe(before[0].updated_at.getTime());
+
+    // The guidance save must now validate against the refreshed cache.
+    const saved = (await saveContent(
+      {
+        content: 'Cross-replica guidance renders.',
+        semantic_type: GUIDANCE_SEMANTIC_TYPE,
+        metadata: {},
+      } as never,
+      env,
+      adminCtx
+    )) as { id: number };
+    expect(saved.id).toBeGreaterThan(0);
+
+    const out = await buildWorkspaceInstructions(raceOrg.id);
+    expect(out).toContain('Cross-replica guidance renders.');
+  });
+
+  it('backfills only guidance: preserves a concurrent add AND an intentional omission (#1913)', async () => {
+    // The backfill adds ONLY the newly-required `guidance` kind, atomically
+    // (`{guidance} || event_kinds`, live DB wins per key). It must therefore:
+    //  - add `guidance` when missing;
+    //  - preserve a kind a concurrent $member schema edit added (no clobber);
+    //  - NOT resurrect a default kind the org intentionally REMOVED via
+    //    manage_entity_schema (e.g. `todo`) — silently re-enabling it would
+    //    override the org's choice.
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Concurrent-edit Org' });
+    const admin = await createTestUser({ name: 'Concurrent Admin' });
+    await addUserToOrganization(admin.id, org.id, 'admin');
+    const adminCtx = { ...ownerToolContext(org.id, admin.id), memberRole: 'admin' };
+
+    // Materialize $member, then: strip `guidance` (pre-guidance org), strip a
+    // default the org chose to remove (`todo`), and add an org-authored kind.
+    await saveContent(
+      { content: 'seed', semantic_type: 'note', metadata: {} } as never,
+      env,
+      adminCtx
+    );
+    await sql`
+      UPDATE entity_types
+      SET event_kinds = (event_kinds - 'guidance' - 'todo')
+        || '{"org_special": {"description": "authored by the org"}}'::jsonb
+      WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL
+    `;
+
+    // Backfill runs (as at the top of every save).
+    await ensureMemberEntityType(org.id);
+
+    const after = await sql<{ event_kinds: Record<string, { description?: string }> }>`
+      SELECT event_kinds FROM entity_types
+      WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    const kinds = after[0].event_kinds;
+    // guidance backfilled…
+    expect(kinds).toHaveProperty('guidance');
+    // …the concurrently-authored kind is preserved (not clobbered)…
+    expect(kinds.org_special?.description).toBe('authored by the org');
+    // …and the intentionally-omitted default stays omitted (not resurrected).
+    expect(kinds).not.toHaveProperty('todo');
   });
 
   it('supersede replaces guidance: only the current event renders', async () => {

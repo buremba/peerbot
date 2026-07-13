@@ -286,7 +286,6 @@ describe("environment", () => {
     responses = [{ environment: { id: "env_1", name: "prod" } }];
     await environmentCreateCommand("prod", {
       provider: "vercel",
-      scope: "org",
       credential: ["token=tok-1", "teamId=team_1"],
       json: true,
     });
@@ -297,7 +296,6 @@ describe("environment", () => {
         body: {
           name: "prod",
           provider_kind: "vercel",
-          scope: "org",
           credential: { token: "tok-1", teamId: "team_1" },
         },
       },

@@ -150,7 +150,6 @@ routes.post("/", async (c) => {
   let body: {
     name?: unknown;
     provider_kind?: unknown;
-    scope?: unknown;
     credential?: unknown;
   };
   try {
@@ -166,7 +165,6 @@ routes.post("/", async (c) => {
   if (!getGatewayRuntimeProvider(providerKind)) {
     return c.json({ error: `Unknown runtime provider: ${providerKind}` }, 400);
   }
-  const scope = body.scope === "private" ? "private" : "org";
 
   // Validate the credential BEFORE inserting the row, so a bad credential can't
   // leave an orphaned environment behind.
@@ -180,7 +178,7 @@ routes.post("/", async (c) => {
     if (invalid) return c.json({ error: invalid.error }, 400);
   }
 
-  const env = await createEnvironment(orgId, { name, providerKind, scope });
+  const env = await createEnvironment(orgId, { name, providerKind });
 
   if (hasCredential) {
     const result = await applyCredential(

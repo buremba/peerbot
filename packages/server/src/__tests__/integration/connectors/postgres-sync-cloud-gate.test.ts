@@ -117,7 +117,7 @@ describe('pollWorkerJob cloud gate (postgres) — execution-time', () => {
       // so authenticate as a trusted fleet worker — the execution-time gate
       // inside pollWorkerJob is what this test is about.
       const res = await post('/api/workers/poll', {
-        body: { worker_id: 'cloud-gate-worker', capabilities: {} },
+        body: { worker_id: 'cloud-gate-worker', capabilities: { db_egress_hardening: true } },
         token: 'test-fleet-token',
         env: { WORKER_API_TOKEN: 'test-fleet-token' },
       });
@@ -166,7 +166,7 @@ describe('pollWorkerJob — gateway is authoritative for the egress policy', () 
     process.env.LOBU_CLOUD_MODE = '1';
     try {
       const res = await post('/api/workers/poll', {
-        body: { worker_id: 'cloud-policy-worker', capabilities: {} },
+        body: { worker_id: 'cloud-policy-worker', capabilities: { db_egress_hardening: true } },
         token: 'test-fleet-token',
         env: { WORKER_API_TOKEN: 'test-fleet-token' },
       });
@@ -200,7 +200,7 @@ describe('pollWorkerJob — gateway is authoritative for the egress policy', () 
     process.env.LOBU_CLOUD_MODE = '1';
     try {
       const res = await post('/api/workers/poll', {
-        body: { worker_id: 'cloud-policy-worker-2', capabilities: {} },
+        body: { worker_id: 'cloud-policy-worker-2', capabilities: { db_egress_hardening: true } },
         token: 'test-fleet-token',
         env: { WORKER_API_TOKEN: 'test-fleet-token' },
       });

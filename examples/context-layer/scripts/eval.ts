@@ -161,12 +161,23 @@ function runAgentTurn(prompt: string): ChatOutcome {
       const ev = JSON.parse(trimmed) as {
         event?: string;
         errorCode?: string;
+        error?: string;
         text?: string;
         content?: string;
         delta?: string;
         message?: { content?: unknown };
       };
-      if (ev.errorCode === "NO_MODEL_CONFIGURED") noModel = true;
+      // No-model shows up two ways depending on the gateway path: a typed
+      // `errorCode: NO_MODEL_CONFIGURED`, OR a plain error event whose message
+      // is "No model resolved for this run…" (no errorCode). Match BOTH — a
+      // false negative here sends the eval down the live path and reports a
+      // misleading FAIL (empty answers) instead of the honest proxy fallback.
+      if (
+        ev.errorCode === "NO_MODEL_CONFIGURED" ||
+        (ev.event === "error" && /no model/i.test(ev.error ?? ""))
+      ) {
+        noModel = true;
+      }
       // Accumulate any assistant text the stream carries; the exact field name
       // varies by event kind, so pull whichever text-bearing field is present.
       const chunk =

@@ -128,6 +128,8 @@ export interface PostedDurableApproval extends BaseMessage {
   fields: Record<string, unknown> | null;
   /** Who proposed the entity_field_change: 'agent' | 'watcher'. Null for manage_agents. */
   attribution: string | null;
+  /** Discriminator for the SPA: "agent" | "watcher" | "entity". */
+  resourceKind: string | null;
   /** Headless-origin marker (parity with PostedQuestion/PostedToolApproval). */
   source?: string;
 }
@@ -266,7 +268,8 @@ export class InteractionService extends EventEmitter {
     current: Record<string, unknown> | null,
     source?: string,
     fields: Record<string, unknown> | null = null,
-    attribution: string | null = null
+    attribution: string | null = null,
+    resourceKind: string | null = null
   ): Promise<PostedDurableApproval> {
     assertRoutableInteraction(connectionId, platform, "approval card");
     if (this.beforeCreateHook) {
@@ -287,6 +290,7 @@ export class InteractionService extends EventEmitter {
       current,
       fields,
       attribution,
+      resourceKind,
       source,
     };
 

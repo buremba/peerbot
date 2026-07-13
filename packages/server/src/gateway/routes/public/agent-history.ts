@@ -71,6 +71,8 @@ type ToolApprovalHistoryInteraction = {
 	current: Record<string, unknown> | null;
 	fields: Record<string, unknown> | null;
 	attribution: string | null;
+	/** Discriminator: "agent" | "watcher" | "entity". */
+	resourceKind: string | null;
 };
 
 type AgentErrorHistoryInteraction = {
@@ -523,6 +525,8 @@ export function createAgentHistoryRoutes(deps: {
 				current: Record<string, unknown> | null;
 				fields: Record<string, unknown> | null;
 				attribution: string | null;
+				resource_kind: string | null;
+				tool: string | null;
 			}>`
 				SELECT run_id,
 				       metadata->>'action' AS action,
@@ -532,7 +536,9 @@ export function createAgentHistoryRoutes(deps: {
 				       -- human-owned-field diff + attribution; manage_agents
 				       -- leaves these null and replays its agent-row proposal.
 				       metadata->'fields' AS fields,
-				       metadata->>'attribution' AS attribution
+				       metadata->>'attribution' AS attribution,
+				       metadata->>'resourceKind' AS resource_kind,
+				       metadata->>'tool' AS tool
 				FROM current_event_records
 				WHERE organization_id = ${scope.organizationId}
 				  AND interaction_type = 'approval'
@@ -540,15 +546,37 @@ export function createAgentHistoryRoutes(deps: {
 				  AND metadata->>'conversationId' = ${conversationId}
 				ORDER BY run_id
 			`;
-			interactions = rows.map((r) => ({
-				type: "tool-approval" as const,
-				runId: Number(r.run_id),
-				action: r.action,
-				proposal: r.proposal ?? null,
-				current: r.current ?? null,
-				fields: r.fields ?? null,
-				attribution: r.attribution ?? null,
-			}));
+			interactions = rows.map((r) => {
+				const resourceKind =
+					r.resource_kind ??
+					(r.tool === "manage_watchers"
+						? "watcher"
+						: r.tool === "manage_agents"
+							? "agent"
+							: r.tool === "entity_field_change" || r.tool === "entity_change"
+								? "entity"
+								: null);
+				// manage_watchers stores proposal as `{ args }`; SPA expects flat fields.
+				const rawProposal = r.proposal ?? null;
+				const proposal =
+					resourceKind === "watcher" &&
+					rawProposal &&
+					typeof rawProposal === "object" &&
+					(rawProposal as { args?: unknown }).args &&
+					typeof (rawProposal as { args: unknown }).args === "object"
+						? ((rawProposal as { args: Record<string, unknown> }).args)
+						: rawProposal;
+				return {
+					type: "tool-approval" as const,
+					runId: Number(r.run_id),
+					action: r.action,
+					proposal,
+					current: r.current ?? null,
+					fields: r.fields ?? null,
+					attribution: r.attribution ?? null,
+					resourceKind,
+				};
+			});
 			const errorInteraction = await readLatestAgentErrorInteraction(
 				scope.organizationId,
 				conversationId,

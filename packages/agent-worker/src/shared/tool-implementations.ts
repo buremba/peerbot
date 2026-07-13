@@ -1154,6 +1154,9 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
   // not formatted markdown, to forward an approval card into the chat (see
   // maybePostApprovalCard / createMcpToolDefinitions).
   "manage_agents",
+  // Same shape as manage_agents: watcher definition create/update/delete may
+  // return pending_approval under the agent_config write-gate.
+  "manage_watchers",
   // manage_entity's update path queues a human-owned-field change for approval
   // (approval_queued + approval_run_id + approval_fields/current). Same reason:
   // we need the JSON to forward the entity_field_change approval card.
@@ -1163,9 +1166,11 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
 /**
  * Approval-gate bridge: when a gated write returns a pending-approval result,
  * post a durable approval card into the chat so the SPA renders the interactive
- * Approve/Reject diff. Handles two producers:
+ * Approve/Reject diff. Handles three producers:
  *   - manage_agents write gate → `{ status: 'pending_approval', run_id,
  *     action, proposal, current }` (the builder agent's create/update/delete).
+ *   - manage_watchers write gate → same `pending_approval` shape (watcher
+ *     definition create/update/delete under agent_config).
  *   - manage_entity update gate → `{ approval_queued: true, approval_run_id,
  *     approval_fields, approval_current, approval_attribution }` (a human-owned
  *     entity field the agent proposed changing).
@@ -1212,7 +1217,8 @@ export async function maybePostApprovalCard(
  * Parse a gated tool result into the /internal/interactions/create body, or
  * null when the result is not a pending approval. entity_field_change carries
  * `fields`/`attribution` (the human-owned-field diff); manage_agents carries
- * `proposal` (the agent row diff). Both share the `tool_approval` transport.
+ * `proposal` (the agent row diff); manage_watchers carries flat watcher args
+ * plus `resourceKind: "watcher"`. All share the `tool_approval` transport.
  */
 function buildApprovalCardBody(
   toolName: string,
@@ -1223,6 +1229,33 @@ function buildApprovalCardBody(
     parsed = JSON.parse(rawResultText);
   } catch {
     return null;
+  }
+
+  if (toolName === "manage_watchers") {
+    if (
+      parsed.status !== "pending_approval" ||
+      typeof parsed.run_id !== "number"
+    ) {
+      return null;
+    }
+    // Server proposal is `{ args: ManageWatchersArgs }`; SPA renderer needs the
+    // flat watcher fields (action, slug, prompt, schedule, …).
+    const rawProposal = parsed.proposal;
+    const flatProposal =
+      rawProposal &&
+      typeof rawProposal === "object" &&
+      (rawProposal as { args?: unknown }).args &&
+      typeof (rawProposal as { args: unknown }).args === "object"
+        ? (rawProposal as { args: Record<string, unknown> }).args
+        : ((rawProposal as Record<string, unknown> | null) ?? null);
+    return {
+      interactionType: "tool_approval",
+      runId: parsed.run_id,
+      action: typeof parsed.action === "string" ? parsed.action : "change",
+      resourceKind: "watcher",
+      proposal: flatProposal,
+      current: parsed.current ?? null,
+    };
   }
 
   if (toolName === "manage_agents") {
@@ -1236,6 +1269,7 @@ function buildApprovalCardBody(
       interactionType: "tool_approval",
       runId: parsed.run_id,
       action: typeof parsed.action === "string" ? parsed.action : "change",
+      resourceKind: "agent",
       proposal: parsed.proposal ?? null,
       current: parsed.current ?? null,
     };
@@ -1255,6 +1289,7 @@ function buildApprovalCardBody(
         typeof parsed.approval_action === "string"
           ? parsed.approval_action
           : "change",
+      resourceKind: "entity",
       proposal: parsed.approval_proposal ?? null,
       // entity_field_change diff: field_path -> proposed / current. The SPA
       // routes on `fields` (non-empty) to the entity-field-change card.

@@ -109,6 +109,50 @@ wait
 [ "$(find "$tmp/acquired" -type f | wc -l | tr -d ' ')" -eq 40 ] ||
   fail "not every high-contention owner acquired the lock"
 
+# FIFO: the oldest waiter takes the next turn even when a younger waiter
+# polls far more aggressively. Without ticket ordering this race is ~50/50
+# per release and the oldest waiter can starve indefinitely.
+fifo_tmp="$tmp/fifo"
+mkdir -p "$fifo_tmp"
+REVIEW_LOCK_ROOT_FOR_TESTS="$fifo_tmp/lock" bash -c '
+  set -euo pipefail
+  . "$1"
+  acquire_review_lock
+  touch "$2/held"
+  while [ ! -f "$2/release" ]; do sleep 0.02; done
+  release_review_lock
+' bash "$repo_root/scripts/lib/review-lock.sh" "$fifo_tmp" &
+holder_pid=$!
+wait_for_file "$fifo_tmp/held" "fifo lock holder"
+
+REVIEW_LOCK_ROOT_FOR_TESTS="$fifo_tmp/lock" REVIEW_LOCK_TIMEOUT_SECONDS=20 \
+  REVIEW_LOCK_POLL_SECONDS=0.5 bash -c '
+    set -euo pipefail
+    . "$1"
+    acquire_review_lock >/dev/null
+    echo A >> "$2/order"
+    release_review_lock
+  ' bash "$repo_root/scripts/lib/review-lock.sh" "$fifo_tmp" &
+waiter_a=$!
+# Distinct ticket epoch-seconds make arrival order unambiguous.
+sleep 1.1
+REVIEW_LOCK_ROOT_FOR_TESTS="$fifo_tmp/lock" REVIEW_LOCK_TIMEOUT_SECONDS=20 \
+  REVIEW_LOCK_POLL_SECONDS=0.01 bash -c '
+    set -euo pipefail
+    . "$1"
+    acquire_review_lock >/dev/null
+    echo B >> "$2/order"
+    release_review_lock
+  ' bash "$repo_root/scripts/lib/review-lock.sh" "$fifo_tmp" &
+waiter_b=$!
+sleep 0.5
+touch "$fifo_tmp/release"
+wait "$holder_pid"
+holder_pid=""
+wait "$waiter_a" "$waiter_b"
+[ "$(sed -n '1p' "$fifo_tmp/order")" = "A" ] ||
+  fail "younger fast-polling waiter jumped the FIFO queue: $(tr '\n' ' ' < "$fifo_tmp/order")"
+
 # Signals stop and reap the active child before the host lock is released.
 signal_tmp="$tmp/signal"
 mkdir -p "$signal_tmp"

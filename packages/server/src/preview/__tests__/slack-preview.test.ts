@@ -12,6 +12,7 @@ import {
 import { getDb } from "../../db/client.js";
 import { registerBuiltInCommands } from "../../gateway/commands/built-in-commands.js";
 import type { Env } from "../../index";
+import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 import {
   bindChatToAgentForOwner,
   bindChatToPreviewAgent,
@@ -20,7 +21,6 @@ import {
   createPreviewClaim,
   listPreviewAgents,
   previewAgentMenu,
-  resolveChatUserIdentity,
 } from "../slack";
 
 /** Inlined from preview/slack.ts — DM channels start with `D`. */

@@ -19,13 +19,13 @@ import { getDb } from "../../db/client.js";
 /**
  * The Lobu user id a chat-platform user has linked to, or null.
  *
- * Collision-safe: `platform_user_id` is only unique WITHIN a workspace, so the
- * same id can exist for two different Lobu users across workspaces. We scope by
- * `team_id` and require EXACTLY one match — if two rows come back (a genuine
- * cross-workspace collision, or a stale/duplicate link) we return null rather
- * than pick one arbitrarily. Callers use this to grant privilege (builder admin
- * tools, owner re-bind), so an ambiguous identity must resolve to "unknown",
- * never to the wrong user.
+ * Scoped by workspace: `platform_user_id` is only unique WITHIN a workspace, so
+ * the same id can map to different Lobu users across workspaces. This query
+ * filters on all three columns of the `(platform, team_id, platform_user_id)`
+ * primary key, so it returns at most one row — the workspace scoping is what
+ * makes the lookup unambiguous. Callers use this to grant privilege (builder
+ * admin tools, owner re-bind), so an unlinked id must resolve to null, never to
+ * the wrong user.
  */
 export async function resolveChatUserIdentity(
 	platform: string,
@@ -35,10 +35,9 @@ export async function resolveChatUserIdentity(
 	const rows = await getDb()<{ lobu_user_id: string }>`
     SELECT lobu_user_id FROM chat_user_identities
     WHERE platform = ${platform} AND team_id = ${teamId ?? ""} AND platform_user_id = ${platformUserId}
-    LIMIT 2
+    LIMIT 1
   `;
-	if (rows.length !== 1) return null;
-	return rows[0].lobu_user_id;
+	return rows[0]?.lobu_user_id ?? null;
 }
 
 /**

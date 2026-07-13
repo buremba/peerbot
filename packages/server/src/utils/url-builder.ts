@@ -60,13 +60,17 @@ export async function getOrganizationSlug(
 export async function buildAgentSettingsUrl(
   publicGatewayUrl: string | undefined,
   organizationId: string | undefined,
-  agentId: string | undefined
+  agentId: string | undefined,
+  // A pending manage_agents update run to review: appends `?run_id=<id>` so the
+  // settings form prefills the proposed change for Approve/Reject (WI-0.3).
+  opts?: { runId?: number }
 ): Promise<string | null> {
   if (!publicGatewayUrl || !organizationId || !agentId) return null;
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
   const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
-  return `${webOrigin}/${encodeURIComponent(slug)}/agents/${encodeURIComponent(agentId)}/settings`;
+  const base = `${webOrigin}/${encodeURIComponent(slug)}/agents/${encodeURIComponent(agentId)}/settings`;
+  return opts?.runId ? `${base}?run_id=${opts.runId}` : base;
 }
 
 /**

@@ -18,6 +18,11 @@ import { ToolUserError } from '../utils/errors';
 import { validateSaveContentSemanticType } from '../utils/event-kind-validation';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
+import {
+  assertCanAuthorGuidance,
+  assertCanRemoveGuidance,
+  GUIDANCE_SEMANTIC_TYPE,
+} from '../utils/org-guidance';
 import { ensureMemberEntityType } from '../utils/member-entity-type';
 import { requireWriteAccess } from '../utils/organization-access';
 import { trackWatcherReaction } from '../utils/watcher-reactions';
@@ -183,7 +188,36 @@ async function saveContentImpl(
   const semanticType = args.semantic_type;
   if (!semanticType) throw new ToolUserError('semantic_type is required');
 
+  // `guidance` is the built-in org-wide context kind: current guidance events
+  // are injected into EVERY agent's system prompt (workspace instructions +
+  // worker session context), which makes authorship a prompt-injection
+  // surface. Fail closed: only org owners/admins may author it — system
+  // contexts (watcher reactions, memberRole=null) and plain members are
+  // rejected. This is the single choke point for both the MCP tool and the
+  // SDK delegate (`client.knowledge.save`).
+  const isOrgGuidance = semanticType === GUIDANCE_SEMANTIC_TYPE;
+  assertCanAuthorGuidance(semanticType, ctx.memberRole);
+
   const payloadType = args.payload_type ?? 'text';
+
+  // Guidance renders from `payload_text` only (loadOrgGuidanceBlock), so a
+  // media/json_template/empty guidance event would save yet render as nothing.
+  // Constrain authorship to non-whitespace text/markdown rather than silently
+  // storing an un-renderable row.
+  if (isOrgGuidance) {
+    if (payloadType !== 'text' && payloadType !== 'markdown') {
+      throw new ToolUserError(
+        `semantic_type '${GUIDANCE_SEMANTIC_TYPE}' requires payload_type 'text' or 'markdown'.`,
+        422
+      );
+    }
+    if (!args.content || !args.content.trim()) {
+      throw new ToolUserError(
+        `semantic_type '${GUIDANCE_SEMANTIC_TYPE}' requires non-empty content.`,
+        422
+      );
+    }
+  }
 
   // Validate content requirement based on payload_type
   if ((payloadType === 'text' || payloadType === 'markdown') && !args.content) {
@@ -198,15 +232,23 @@ async function saveContentImpl(
     await requireWriteAccess(sql, eid, ctx);
   }
 
-  // 2. Validate semantic_type against $member.event_kinds + entity type event_kinds
-  const kindValidation = await validateSaveContentSemanticType(
-    semanticType,
-    args.metadata,
-    ctx.organizationId,
-    entityIds.length > 0 ? entityIds : undefined
-  );
-  if (!kindValidation.valid) {
-    throw new ToolUserError(kindValidation.errors.join('\n'), 422);
+  // 2. Validate semantic_type against $member.event_kinds + entity type event_kinds.
+  //    `guidance` skips this: it is a code-level built-in kind (org-anchored,
+  //    not declared in the $member/entity event_kinds registries — its
+  //    long-term registry home is a `$org` singleton entity type mirroring
+  //    $member, not built yet). Guidance events may still carry entity anchors
+  //    in entity_ids; type-level guidance is deliberately NOT modeled via this
+  //    kind (entity-type/field `description` columns carry that instead).
+  if (!isOrgGuidance) {
+    const kindValidation = await validateSaveContentSemanticType(
+      semanticType,
+      args.metadata,
+      ctx.organizationId,
+      entityIds.length > 0 ? entityIds : undefined
+    );
+    if (!kindValidation.valid) {
+      throw new ToolUserError(kindValidation.errors.join('\n'), 422);
+    }
   }
 
   // 3. Validate event metadata against entity type's event kind schema (if entity-associated)
@@ -304,6 +346,15 @@ async function saveContentImpl(
 
   // 5. Validate supersedes target exists and belongs to this org
   if (args.supersedes_event_id) {
+    // Superseding a `guidance` target stamps its superseded_by, removing it
+    // from every prompt — the same effect as delete_knowledge. Authorship is
+    // admin-gated, so removal must be too, regardless of the NEW row's kind
+    // (a member could otherwise erase guidance by superseding it with a note).
+    await assertCanRemoveGuidance(
+      ctx.organizationId,
+      [args.supersedes_event_id],
+      ctx.memberRole
+    );
     const existing = await sql`
       SELECT id FROM events
       WHERE id = ${args.supersedes_event_id}

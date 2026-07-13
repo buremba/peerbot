@@ -233,22 +233,19 @@ async function saveContentImpl(
   }
 
   // 2. Validate semantic_type against $member.event_kinds + entity type event_kinds.
-  //    `guidance` skips this: it is a code-level built-in kind (org-anchored,
-  //    not declared in the $member/entity event_kinds registries — its
-  //    long-term registry home is a `$org` singleton entity type mirroring
-  //    $member, not built yet). Guidance events may still carry entity anchors
-  //    in entity_ids; type-level guidance is deliberately NOT modeled via this
-  //    kind (entity-type/field `description` columns carry that instead).
-  if (!isOrgGuidance) {
-    const kindValidation = await validateSaveContentSemanticType(
-      semanticType,
-      args.metadata,
-      ctx.organizationId,
-      entityIds.length > 0 ? entityIds : undefined
-    );
-    if (!kindValidation.valid) {
-      throw new ToolUserError(kindValidation.errors.join('\n'), 422);
-    }
+  //    `guidance` is a built-in org-wide kind registered in the $member
+  //    event_kinds registry (ensureMemberEntityType), so it validates through
+  //    this same path as every other kind — no code-level bypass. Its admin-only
+  //    authorship/removal gates (org-guidance.ts) are orthogonal and applied
+  //    above/below. See issue #1913.
+  const kindValidation = await validateSaveContentSemanticType(
+    semanticType,
+    args.metadata,
+    ctx.organizationId,
+    entityIds.length > 0 ? entityIds : undefined
+  );
+  if (!kindValidation.valid) {
+    throw new ToolUserError(kindValidation.errors.join('\n'), 422);
   }
 
   // 3. Validate event metadata against entity type's event kind schema (if entity-associated)

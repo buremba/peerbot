@@ -26,7 +26,7 @@ interface KindValidationResult {
   suggestion: string | null;
 }
 
-interface EventKindDefinition {
+export interface EventKindDefinition {
   description?: string;
   metadataSchema?: Record<string, unknown>;
   /**
@@ -89,6 +89,24 @@ const eventKindsCache = new TtlCache<Record<string, EventKindDefinition> | null>
 // ============================================
 // Event Kinds Resolution
 // ============================================
+
+/**
+ * Overwrite this pod's cached $member event_kinds for an org with a
+ * DB-authoritative value. ensureMemberEntityType calls this on EVERY invocation
+ * with the event_kinds it just read/wrote, so a later validation in the same
+ * request (and the 60s TTL window after) resolves against current DB truth — not
+ * a stale copy. This closes a cross-replica gap: if another replica performed the
+ * `guidance` backfill, this pod would otherwise take ensureMemberEntityType's
+ * no-op path and keep serving a pre-guidance cache, rejecting guidance saves for
+ * up to the TTL. `null` means "no $member registry" (accept-any), matching the
+ * loader's own null semantics.
+ */
+export function primeMemberEventKinds(
+  orgId: string,
+  kinds: Record<string, EventKindDefinition> | null
+): void {
+  eventKindsCache.set(`${orgId}:$member`, kinds);
+}
 
 /**
  * Fetch event_kinds for the $member entity type in a given org.

@@ -5,150 +5,123 @@
  * classifiers are scoped to their workspace for list/read/mutate/classify.
  */
 
-import { beforeAll, describe, expect, it } from "vitest";
-import { ClientSdkActionError } from "../../../sandbox/namespaces/action-call";
-import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
-import { createTestAgent, createTestEvent } from "../../setup/test-fixtures";
-import { TestWorkspace } from "../../setup/test-mcp-client";
+import { beforeAll, describe, expect, it } from 'vitest';
+import { ClientSdkActionError } from '../../../sandbox/namespaces/action-call';
+import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
+import { createTestAgent, createTestEvent } from '../../setup/test-fixtures';
+import { TestWorkspace } from '../../setup/test-mcp-client';
 
 const stubEmbedding = Array.from({ length: 768 }, () => 0);
 
 type SeededClassifier = {
-	workspace: TestWorkspace;
-	entityId: number;
-	watcherId: number;
-	classifierId: number;
-	eventId: number;
+  workspace: TestWorkspace;
+  entityId: number;
+  watcherId: number;
+  classifierId: number;
+  eventId: number;
 };
 
-async function seedEntityType(
-	workspace: TestWorkspace,
-	slug: string,
-	name: string,
-) {
-	const sql = getTestDb();
-	await sql`
+async function seedEntityType(workspace: TestWorkspace, slug: string, name: string) {
+  const sql = getTestDb();
+  await sql`
     INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
     VALUES (${workspace.org.id}, ${slug}, ${name}, NOW(), NOW())
   `;
 }
 
-async function seedClassifier(
-	workspace: TestWorkspace,
-	slug: string,
-): Promise<SeededClassifier> {
-	await seedEntityType(workspace, "company", "Company");
-	const entity = (await workspace.owner.entities.create({
-		type: "company",
-		name: `${slug} Target`,
-	})) as { entity: { id: number } };
+async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<SeededClassifier> {
+  await seedEntityType(workspace, 'company', 'Company');
+  const entity = (await workspace.owner.entities.create({
+    type: 'company',
+    name: `${slug} Target`,
+  })) as { entity: { id: number } };
 
-	const agent = await createTestAgent({
-		organizationId: workspace.org.id,
-		ownerUserId: workspace.users.owner.id,
-	});
-	const watcher = (await workspace.owner.watchers.create({
-		entity_id: entity.entity.id,
-		slug: `${slug}-watcher`,
-		name: `${slug} Watcher`,
-		prompt: "collect signals.",
-		agent_id: agent.agentId,
-	})) as { watcher_id: string };
+  const agent = await createTestAgent({
+    organizationId: workspace.org.id,
+    ownerUserId: workspace.users.owner.id,
+  });
+  const watcher = (await workspace.owner.watchers.create({
+    entity_id: entity.entity.id,
+    slug: `${slug}-watcher`,
+    name: `${slug} Watcher`,
+    prompt: 'collect signals.',
+    agent_id: agent.agentId,
+  })) as { watcher_id: string };
 
-	const created = (await workspace.owner.classifiers.create({
-		slug,
-		name: `${slug} Classifier`,
-		attribute_key: slug,
-		watcher_id: watcher.watcher_id,
-		attribute_values: {
-			positive: {
-				description: "positive signal",
-				examples: ["great"],
-				embedding: stubEmbedding,
-			},
-			negative: {
-				description: "negative signal",
-				examples: ["bad"],
-				embedding: stubEmbedding,
-			},
-		},
-	})) as { data?: { classifier_id: number } };
+  const created = (await workspace.owner.classifiers.create({
+    slug,
+    name: `${slug} Classifier`,
+    attribute_key: slug,
+    watcher_id: watcher.watcher_id,
+    attribute_values: {
+      positive: { description: 'positive signal', examples: ['great'], embedding: stubEmbedding },
+      negative: { description: 'negative signal', examples: ['bad'], embedding: stubEmbedding },
+    },
+  })) as { data?: { classifier_id: number } };
 
-	const event = await createTestEvent({
-		entity_id: entity.entity.id,
-		organization_id: workspace.org.id,
-		title: `${slug} event`,
-		content: "A workspace-local event.",
-	});
+  const event = await createTestEvent({
+    entity_id: entity.entity.id,
+    organization_id: workspace.org.id,
+    title: `${slug} event`,
+    content: 'A workspace-local event.',
+  });
 
-	return {
-		workspace,
-		entityId: entity.entity.id,
-		watcherId: Number(watcher.watcher_id),
-		classifierId: created.data!.classifier_id,
-		eventId: event.id,
-	};
+  return {
+    workspace,
+    entityId: entity.entity.id,
+    watcherId: Number(watcher.watcher_id),
+    classifierId: created.data!.classifier_id,
+    eventId: event.id,
+  };
 }
 
-describe("classifier org isolation", () => {
-	let orgA: SeededClassifier;
-	let orgB: SeededClassifier;
+describe('classifier org isolation', () => {
+  let orgA: SeededClassifier;
+  let orgB: SeededClassifier;
 
-	beforeAll(async () => {
-		await cleanupTestDatabase();
-		const { a, b } = await TestWorkspace.pair();
-		orgA = await seedClassifier(a, "sentiment");
-		orgB = await seedClassifier(b, "sentiment");
-	});
+  beforeAll(async () => {
+    await cleanupTestDatabase();
+    const { a, b } = await TestWorkspace.pair();
+    orgA = await seedClassifier(a, 'sentiment');
+    orgB = await seedClassifier(b, 'sentiment');
+  });
 
-	it("list() only returns classifiers from the caller workspace", async () => {
-		const listA = (await orgA.workspace.owner.classifiers.list({})) as {
-			data?: { classifiers?: Array<{ id: number }> };
-		};
-		const listB = (await orgB.workspace.owner.classifiers.list({})) as {
-			data?: { classifiers?: Array<{ id: number }> };
-		};
+  it('list() only returns classifiers from the caller workspace', async () => {
+    const listA = (await orgA.workspace.owner.classifiers.list({})) as {
+      data?: { classifiers?: Array<{ id: number }> };
+    };
+    const listB = (await orgB.workspace.owner.classifiers.list({})) as {
+      data?: { classifiers?: Array<{ id: number }> };
+    };
 
-		expect(
-			listA.data?.classifiers?.some((c) => c.id === orgA.classifierId),
-		).toBe(true);
-		expect(
-			listA.data?.classifiers?.some((c) => c.id === orgB.classifierId),
-		).toBe(false);
-		expect(
-			listB.data?.classifiers?.some((c) => c.id === orgB.classifierId),
-		).toBe(true);
-		expect(
-			listB.data?.classifiers?.some((c) => c.id === orgA.classifierId),
-		).toBe(false);
-	});
+    expect(listA.data?.classifiers?.some((c) => c.id === orgA.classifierId)).toBe(true);
+    expect(listA.data?.classifiers?.some((c) => c.id === orgB.classifierId)).toBe(false);
+    expect(listB.data?.classifiers?.some((c) => c.id === orgB.classifierId)).toBe(true);
+    expect(listB.data?.classifiers?.some((c) => c.id === orgA.classifierId)).toBe(false);
+  });
 
-	it("delete() cannot archive another workspace classifier", async () => {
-		const error = await orgA.workspace.owner.classifiers
-			.delete({ classifier_id: orgB.classifierId })
-			.catch((reason: unknown) => reason);
-		expect(error).toBeInstanceOf(ClientSdkActionError);
+  it('delete() cannot archive another workspace classifier', async () => {
+    const error = await orgA.workspace.owner.classifiers
+      .delete({ classifier_id: orgB.classifierId })
+      .catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ClientSdkActionError);
 
-		const listB = (await orgB.workspace.owner.classifiers.list({})) as {
-			data?: { classifiers?: Array<{ id: number; status: string }> };
-		};
-		expect(
-			listB.data?.classifiers?.find((c) => c.id === orgB.classifierId)?.status,
-		).toBe("active");
-	});
+    const listB = (await orgB.workspace.owner.classifiers.list({})) as {
+      data?: { classifiers?: Array<{ id: number; status: string }> };
+    };
+    expect(listB.data?.classifiers?.find((c) => c.id === orgB.classifierId)?.status).toBe('active');
+  });
 
-	it("classify() cannot write to another workspace event/classifier pair", async () => {
-		const error = await orgA.workspace.owner.classifiers
-			.classify({
-				classifier_slug: "sentiment",
-				content_id: orgB.eventId,
-				value: "positive",
-			})
-			.catch((reason: unknown) => reason);
+  it('classify() cannot write to another workspace event/classifier pair', async () => {
+    const error = await orgA.workspace.owner.classifiers
+      .classify({
+        classifier_slug: 'sentiment',
+        content_id: orgB.eventId,
+        value: 'positive',
+      })
+      .catch((reason: unknown) => reason);
 
-		expect(error).toBeInstanceOf(ClientSdkActionError);
-		expect((error as ClientSdkActionError).result.data).toMatchObject({
-			failed: 1,
-		});
-	});
+    expect(error).toBeInstanceOf(ClientSdkActionError);
+    expect((error as ClientSdkActionError).result.data).toMatchObject({ failed: 1 });
+  });
 });

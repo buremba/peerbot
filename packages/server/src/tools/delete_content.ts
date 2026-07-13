@@ -23,6 +23,7 @@ import { getDb, pgBigintArray } from '../db/client';
 import type { Env } from '../index';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
+import { assertCanRemoveGuidance } from '../utils/org-guidance';
 import { isSystemContext } from './access-control';
 import { TOMBSTONE_SEMANTIC_TYPE } from './constants';
 import type { ToolContext } from './registry';
@@ -105,6 +106,12 @@ async function deleteContentImpl(
   const alreadySupersededSet = new Set(alreadySupersededIds);
 
   const targetIds = candidateIds.filter((id) => !alreadySupersededSet.has(id));
+
+  // Deleting a `guidance` target tombstones it out of every agent prompt — the
+  // same removal that supersede performs. Authorship is admin-gated (and rejects
+  // system contexts), so removal is too: a watcher/automation must not be able
+  // to erase admin org-context either. memberRole is owner/admin only.
+  await assertCanRemoveGuidance(ctx.organizationId, targetIds, ctx.memberRole);
 
   const tombstoneIds: number[] = [];
   for (const targetId of targetIds) {

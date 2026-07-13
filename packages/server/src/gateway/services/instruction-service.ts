@@ -321,6 +321,14 @@ export class InstructionService {
       }
     }
 
+    // NOTE: org-wide `guidance` is NOT injected here. Workers receive it
+    // through the mandatory `lobu-memory` MCP server's instructions
+    // (buildWorkspaceInstructions renders the "Organization Context" section),
+    // which the worker folds into its prompt as MCP server instructions. Both
+    // that server and this injection are gated by the same org-scope condition,
+    // so injecting here too would place identical guidance in the prompt twice.
+    // buildWorkspaceInstructions is the single render site for both surfaces.
+
     // Get skills instructions (includes enabled skills from agent settings)
     let skillsInstructions = "";
     try {

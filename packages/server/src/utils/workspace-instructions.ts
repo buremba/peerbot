@@ -8,6 +8,37 @@
 
 import { getDb } from '../db/client';
 import logger from './logger';
+import { loadOrgGuidanceBlock } from './org-guidance';
+
+/** Collapse whitespace/newlines so an authored description stays one line. */
+function singleLine(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+/**
+ * Render a metadata schema's fields as a compact `name (description)` list.
+ * Accepts both a real JSON Schema (descends into `.properties` — the old
+ * render printed the envelope keys "type, properties" instead) and a legacy
+ * bare field map. Field descriptions are authored schema — surface them.
+ */
+function renderSchemaFields(schema: unknown): string {
+  if (!schema || typeof schema !== 'object') return '';
+  const s = schema as Record<string, unknown>;
+  let props: Record<string, unknown> | null = null;
+  if (s.properties && typeof s.properties === 'object' && !Array.isArray(s.properties)) {
+    props = s.properties as Record<string, unknown>;
+  } else if (typeof s.type !== 'string') {
+    // Legacy shape: the schema IS the field map.
+    props = s;
+  }
+  if (!props) return '';
+  return Object.entries(props)
+    .map(([field, def]) => {
+      const desc = singleLine((def as Record<string, unknown> | null)?.description);
+      return desc ? `${field} (${desc})` : field;
+    })
+    .join(', ');
+}
 
 export async function buildWorkspaceInstructions(organizationId: string): Promise<string | null> {
   const sql = getDb();
@@ -17,17 +48,18 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
     // of the cached system prompt, and live counts would mutate it on every
     // memory write, busting the prompt cache (and all downstream message
     // history) on each context refresh. Only stable schema belongs here; the
-    // agent gets live counts from tool calls at runtime.
-    const [entityTypeRows, relationshipTypes] = await Promise.all([
+    // agent gets live counts from tool calls at runtime. (Org guidance below
+    // also qualifies: admin-authored text that only mutates on explicit edit.)
+    const [entityTypeRows, relationshipTypes, orgGuidance] = await Promise.all([
       sql.unsafe(
-        `SELECT slug, name, metadata_schema, event_kinds FROM entity_types
+        `SELECT slug, name, description, metadata_schema, event_kinds FROM entity_types
          WHERE deleted_at IS NULL
            AND organization_id = $1
          ORDER BY name ASC`,
         [organizationId]
       ),
       sql.unsafe(
-        `SELECT rt.slug, rt.name, rt.is_symmetric, inv.slug as inverse_type_slug
+        `SELECT rt.slug, rt.name, rt.description, rt.is_symmetric, inv.slug as inverse_type_slug
          FROM entity_relationship_types rt
          LEFT JOIN entity_relationship_types inv ON rt.inverse_type_id = inv.id
          WHERE rt.status = 'active'
@@ -36,11 +68,13 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
          ORDER BY rt.name ASC`,
         [organizationId]
       ),
+      loadOrgGuidanceBlock(organizationId),
     ]);
 
     const entityTypeLines = entityTypeRows.map((et: any) => {
-      const fields = et.metadata_schema ? Object.keys(et.metadata_schema).join(', ') : '';
-      return `- ${et.slug} ("${et.name}")${fields ? ` — fields: ${fields}` : ''}`;
+      const desc = singleLine(et.description);
+      const fields = renderSchemaFields(et.metadata_schema);
+      return `- ${et.slug} ("${et.name}")${desc ? ` — ${desc}` : ''}${fields ? ` — fields: ${fields}` : ''}`;
     });
 
     const emittedRelSlugs = new Set<string>();
@@ -54,7 +88,8 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       if (rt.is_symmetric) parts.push('symmetric');
       if (inverseSlug) parts.push(`inverse: ${inverseSlug}`);
       const meta = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-      relTypeLines.push(`- ${slug}${meta}`);
+      const desc = singleLine(rt.description);
+      relTypeLines.push(`- ${slug}${meta}${desc ? ` — ${desc}` : ''}`);
     }
 
     // Assemble
@@ -63,6 +98,17 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       '',
       "You have persistent memory. Use it proactively — don't wait to be asked.",
     ];
+
+    // Org-wide admin-authored context goes near the top: it is the governed
+    // "why" that frames everything below (schema, tools, saving rules).
+    if (orgGuidance) {
+      sections.push(
+        '',
+        '### Organization Context',
+        'Org-wide guidance authored by workspace admins (event kind `guidance`; admins edit it via save_memory with supersedes_event_id).',
+        orgGuidance
+      );
+    }
 
     if (entityTypeLines.length > 0) {
       sections.push('', '### Schema: Entity Types', ...entityTypeLines);
@@ -104,6 +150,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       SELECT DISTINCT ON (cd.key)
         cd.key,
         cd.name,
+        cd.description,
         cd.actions_schema,
         cd.mcp_config,
         cd.openapi_config
@@ -145,7 +192,8 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
           localOps.length > 0
             ? localOps.join(', ')
             : 'operations via `manage_operations.list_available`';
-        sections.push(`- ${conn.key}: ${detail}`);
+        const desc = singleLine(conn.description);
+        sections.push(`- ${conn.key}${desc ? ` (${desc})` : ''}: ${detail}`);
       }
     }
 

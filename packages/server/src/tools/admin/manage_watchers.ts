@@ -392,7 +392,7 @@ async function fetchCurrentWatcher(
  */
 function buildWatcherProposal(
   args: ManageWatchersArgs,
-  acting: { actingAgentId: string | null; actingWatcherId: string | null },
+  acting: { actingAgentId: string | null; actingWatcherId: number | null },
 ): ManageWatchersProposal {
   const writeAction = watcherWriteAction(args.action);
   if (!writeAction) {
@@ -615,7 +615,7 @@ function buildWatcherApprovalInputSchema(
 async function queueWatcherWriteForApproval(
   args: ManageWatchersArgs,
   ctx: ToolContext,
-  acting: { actingAgentId: string | null; actingWatcherId: string | null },
+  acting: { actingAgentId: string | null; actingWatcherId: number | null },
 ): Promise<ManageWatchersResult> {
   const proposal = buildWatcherProposal(args, acting);
   const writeAction = watcherWriteAction(args.action)!;
@@ -796,7 +796,10 @@ export async function applyManageWatchersProposal(
           principalId: proposal.actingAgentId,
           ownerAgentId: proposal.actingAgentId,
           ownerResolved: true,
-          mode: 'unattended',
+          // Apply-time re-check of an already-approved proposal: headless, no
+          // human in the loop, so the run mode is autonomous (matching the
+          // token minted for the approved run).
+          mode: 'autonomous',
           action: writeGateAction,
         });
         // Only `deny` blocks the apply: this run IS the approval, so a

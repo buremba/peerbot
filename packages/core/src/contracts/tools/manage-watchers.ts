@@ -621,8 +621,8 @@ export interface ManageWatchersProposal {
   args: ManageWatchersArgs;
   /** Resolved `actor.ownerAgentId ?? actor.id` at queue time; null for humans. */
   actingAgentId: string | null;
-  /** Session `actingWatcherId` at queue time, if any. */
-  actingWatcherId: string | null;
+  /** Session `actingWatcherId` at queue time, if any (numeric watcher id). */
+  actingWatcherId: number | null;
 }
 export const ListWatchersSchema = Type.Object({
   watcher_id: Type.Optional(

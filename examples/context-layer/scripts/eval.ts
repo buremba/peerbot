@@ -132,7 +132,7 @@ interface ChatOutcome {
   noModel: boolean;
 }
 
-function runAgentTurn(prompt: string): ChatOutcome {
+function runAgentTurn(gw: Gateway, prompt: string): ChatOutcome {
   const res = spawnSync(
     "bunx",
     [
@@ -140,10 +140,12 @@ function runAgentTurn(prompt: string): ChatOutcome {
       "chat",
       "--agent",
       AGENT_ID,
+      // Thread the SAME gateway URL + org the scripts connected to (honors the
+      // documented LOBU_URL override), instead of hardcoding a default.
       "--gateway",
-      "http://127.0.0.1:8787",
+      gw.base,
       "--org",
-      "local-install",
+      gw.org,
       "--json",
       "--auto-approve",
       "--new",
@@ -165,7 +167,6 @@ function runAgentTurn(prompt: string): ChatOutcome {
         text?: string;
         content?: string;
         delta?: string;
-        message?: { content?: unknown };
       };
       // No-model shows up two ways depending on the gateway path: a typed
       // `errorCode: NO_MODEL_CONFIGURED`, OR a plain error event whose message
@@ -193,22 +194,32 @@ function runAgentTurn(prompt: string): ChatOutcome {
 }
 
 // ── Assertions ─────────────────────────────────────────────────────────────
+//
+// Two SEPARATE signals, deliberately not folded into one. A context-aware
+// answer must show BOTH; the baseline must show NEITHER. Folding them would let
+// a one-sided answer (cites the migration but never corrects the number, or
+// vice-versa) slip through and the PASS would no longer prove the context
+// changed the answer.
 
-/** A "context-aware" answer cites the migration and corrects the number. */
+/** Does the answer cite the billing-migration cause / its source? */
 function citesMigration(answer: string): boolean {
   const a = answer.toLowerCase();
-  const mentionsMigration =
+  return (
     a.includes("migration") ||
     a.includes("data-142") ||
     a.includes("artifact") ||
-    a.includes(MIGRATION_SOURCE.toLowerCase());
+    a.includes(MIGRATION_SOURCE.toLowerCase())
+  );
+}
+
+/** Does the answer give the corrected March number (~50, not the raw 550)? */
+function correctsNumber(answer: string): boolean {
   // Match the corrected number as a WHOLE number token — a bare `includes("50")`
   // would also match inside the raw "550", so an answer that only ever repeats
   // 550 would be scored as if it had corrected to 50. Require ADJUSTED_MARCH to
   // appear with non-digit boundaries on both sides.
   const correctedToken = new RegExp(`(?:^|\\D)${ADJUSTED_MARCH}(?:\\D|$)`);
-  const corrects = correctedToken.test(a);
-  return mentionsMigration && corrects;
+  return correctedToken.test(answer.toLowerCase());
 }
 
 // ── Run ─────────────────────────────────────────────────────────────────────
@@ -232,7 +243,7 @@ const baseBlock = baselineBlock(march);
 
 // Probe: is a model wired up? One throwaway turn tells us.
 console.log("\nProbing for a configured model provider…");
-const probe = runAgentTurn("Reply with the single word READY.");
+const probe = runAgentTurn(gw, "Reply with the single word READY.");
 
 let withAnswer: string;
 let baseAnswer: string;
@@ -260,28 +271,34 @@ if (probe.noModel) {
   mode = "live-agent";
   console.log("Model provider detected — running two REAL agent turns.\n");
   withAnswer = runAgentTurn(
+    gw,
     `${withBlock}\n\nQuestion: ${QUESTION}\n` +
       "Use the governed context above. Cite the source and give the corrected number."
   ).text;
-  baseAnswer = runAgentTurn(`${baseBlock}\n\nQuestion: ${QUESTION}`).text;
+  baseAnswer = runAgentTurn(gw, `${baseBlock}\n\nQuestion: ${QUESTION}`).text;
 }
 
 // ── Assert + report ──────────────────────────────────────────────────────────
 
-const withPass = citesMigration(withAnswer);
-const basePass = !citesMigration(baseAnswer);
+// WITH context must show BOTH signals; the baseline must show NEITHER.
+const withCites = citesMigration(withAnswer);
+const withCorrects = correctsNumber(withAnswer);
+const withPass = withCites && withCorrects;
+const baseCites = citesMigration(baseAnswer);
+const baseCorrects = correctsNumber(baseAnswer);
+const basePass = !baseCites && !baseCorrects;
 const pass = withPass && basePass;
 
 console.log(`=== Agent eval (${mode}) ===\n`);
 console.log("(A) WITH context layer:");
 console.log(indent(withAnswer));
 console.log(
-  `\n  → cites migration + corrects to ~${ADJUSTED_MARCH}? ${withPass ? "YES ✅" : "NO ❌"}`
+  `\n  → cites migration? ${withCites ? "YES" : "NO"}; corrects to ~${ADJUSTED_MARCH}? ${withCorrects ? "YES" : "NO"} ⇒ ${withPass ? "PASS ✅" : "FAIL ❌"}`
 );
 console.log("\n(B) WITHOUT context layer (baseline):");
 console.log(indent(baseAnswer));
 console.log(
-  `\n  → correctly LACKS the governed correction? ${basePass ? "YES ✅" : "NO ❌"}`
+  `\n  → cites migration? ${baseCites ? "YES" : "NO"}; corrects the number? ${baseCorrects ? "YES" : "NO"} ⇒ correctly has neither? ${basePass ? "PASS ✅" : "FAIL ❌"}`
 );
 
 console.log(

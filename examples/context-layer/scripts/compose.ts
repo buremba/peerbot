@@ -59,7 +59,7 @@ interface BusinessEvent {
   date: string;
   source: string;
   affected_metrics: string[];
-  adjustment: { op: string; cancel_reason?: string; value?: number } | null;
+  adjustment: { op: string; cancel_reason?: string } | null;
 }
 
 interface ContextLayer {
@@ -128,8 +128,11 @@ function versionPredicate(v: DefinitionVersion): string {
     const graceDays = Number(p.dunning_grace_days ?? 28);
     // A payment_failure cancelled within `graceDays` of its dunning start is a
     // retry-window artifact, not churn — exclude it. Everything else counts.
+    // NULL-safe: `IS DISTINCT FROM` keeps a NULL-reason cancellation counted (a
+    // plain `cancel_reason = 'x'` would go NULL → NOT NULL → the row silently
+    // dropped from the FILTER).
     return (
-      `NOT (cancel_reason = 'payment_failure' ` +
+      `NOT (cancel_reason IS NOT DISTINCT FROM 'payment_failure' ` +
       `AND dunning_started_at IS NOT NULL ` +
       `AND cancelled_at <= dunning_started_at + interval '${graceDays} days')`
     );
@@ -138,31 +141,58 @@ function versionPredicate(v: DefinitionVersion): string {
 }
 
 /**
- * The data-incident WHERE fragment: rows the structured `adjustment` says to
- * subtract are excluded from the adjusted count for the affected month. Only a
- * subtract_reason adjustment is derivable purely from the warehouse, so that is
- * what we apply here.
+ * A single data-incident's structured subtraction, keyed by BOTH the incident's
+ * month (from event_date) AND its cancel_reason. Only a subtract_reason
+ * adjustment is derivable purely from the warehouse, so that is what we apply.
  */
-function incidentReasons(
+interface IncidentAdjustment {
+  /** YYYY-MM the incident occurred in — the ONLY month its rows are subtracted from. */
+  month: string;
+  /** SQL string literal for the reason (already single-quoted + escaped). */
+  reasonLiteral: string;
+}
+
+function incidentAdjustments(
   events: BusinessEvent[],
   metricSlug: string
-): string[] {
+): IncidentAdjustment[] {
   return events
     .filter(
       (e) =>
         e.type === "data_incident" &&
         e.affected_metrics.includes(metricSlug) &&
         e.adjustment?.op === "subtract_reason" &&
-        e.adjustment.cancel_reason
+        e.adjustment.cancel_reason &&
+        e.date
     )
-    .map((e) => `'${String(e.adjustment!.cancel_reason).replace(/'/g, "''")}'`);
+    .map((e) => ({
+      month: String(e.date).slice(0, 7),
+      reasonLiteral: `'${String(e.adjustment!.cancel_reason).replace(/'/g, "''")}'`,
+    }));
+}
+
+/**
+ * A row is an "incident artifact" iff it falls in an incident's month AND
+ * carries that incident's cancel_reason. Keyed by month so a March incident
+ * only ever touches March — it does NOT subtract the reason from every month.
+ * NULL-safe via `IS NOT DISTINCT FROM`.
+ */
+function artifactPredicateSql(adjustments: IncidentAdjustment[]): string {
+  if (adjustments.length === 0) return "FALSE";
+  const clauses = adjustments.map(
+    (a) =>
+      `(to_char(date_trunc('month', cancelled_at), 'YYYY-MM') = '${a.month}' ` +
+      `AND cancel_reason IS NOT DISTINCT FROM ${a.reasonLiteral})`
+  );
+  return clauses.join(" OR ");
 }
 
 /**
  * Build ONE governed rollup SQL over the warehouse. Per month it returns:
  *   raw          — every cancellation (churn v1, no governance)
  *   adjusted     — counted under the version in effect for that month AND with
- *                  the data-incident rows subtracted (only the affected metric)
+ *                  the data-incident rows subtracted (only the affected metric,
+ *                  only the incident's own month)
  *   subtracted   — the count of exactly the incident-named rows (the artifacts).
  *                  Derived from the incident predicate alone, so it stays honest
  *                  even if an incident ever lands in a version-governed month
@@ -171,13 +201,13 @@ function incidentReasons(
  * so the SAME query counts pre-May months under v1 and post-May under v2.
  */
 function buildGovernedSql(ctx: ContextLayer): string {
-  const reasons = incidentReasons(ctx.events, ctx.metric_slug);
+  const adjustments = incidentAdjustments(ctx.events, ctx.metric_slug);
+  const artifactPredicate = artifactPredicateSql(adjustments);
+  // Keep everything that is NOT an incident artifact. `NOT (artifact)` is
+  // NULL-safe because artifactPredicate uses IS [NOT] DISTINCT FROM, so it is a
+  // total boolean (never NULL) — a NULL-reason row is simply not an artifact.
   const keepPredicate =
-    reasons.length === 0
-      ? "TRUE"
-      : `cancel_reason NOT IN (${reasons.join(", ")})`;
-  const artifactPredicate =
-    reasons.length === 0 ? "FALSE" : `cancel_reason IN (${reasons.join(", ")})`;
+    adjustments.length === 0 ? "TRUE" : `NOT (${artifactPredicate})`;
 
   const chrono = [...ctx.changelog].sort((a, b) =>
     a.effective_from.localeCompare(b.effective_from)

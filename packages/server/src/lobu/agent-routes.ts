@@ -1341,8 +1341,9 @@ routes.get("/:agentId/config", async (c) => {
 // so correct under N replicas.
 //
 // AuthZ: org-scoped by the middleware `organizationId`; the held proposal must
-// also TARGET `:agentId` (read from the RAW proposal — manage_watchers keeps
-// agent_id top-level while nesting editable fields under `args`).
+// also TARGET `:agentId`. Scoped to manage_agents update runs, whose proposal
+// carries agent_id at the top level (manage_watchers, whose proposal nests
+// agent_id under `args`, is excluded — see below).
 routes.get("/:agentId/config/pending/:runId", async (c) => {
 	const { agentId } = c.req.param();
 	const organizationId = c.get("organizationId") as string;

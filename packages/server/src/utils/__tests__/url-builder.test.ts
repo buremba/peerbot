@@ -116,6 +116,30 @@ describe('buildAgentSettingsUrl', () => {
     expect(url?.endsWith('/settings')).toBe(true);
   });
 
+  // WI-0.3 config-prefill: an update proposal's approval CTA appends ?run_id=<id>
+  // so the settings form opens the review flow prefilled with the held change.
+  it('appends ?run_id when a review run is given', async () => {
+    const url = await buildAgentSettingsUrl(
+      'https://app.lobu.com/lobu',
+      'org-1',
+      'lobu-builder',
+      { runId: 42 }
+    );
+    expect(url).toBe(
+      'https://app.lobu.com/acme/agents/lobu-builder/settings?run_id=42'
+    );
+  });
+
+  it('omits ?run_id when no review run is given', async () => {
+    const url = await buildAgentSettingsUrl(
+      'https://app.lobu.com',
+      'org-1',
+      'lobu-builder',
+      {}
+    );
+    expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/settings');
+  });
+
   it('strips the embedded-mode /lobu suffix from the web origin', async () => {
     const url = await buildAgentSettingsUrl(
       'https://app.lobu.com/lobu/',

@@ -222,3 +222,329 @@ describe('assertConnectionStringAllowed — multi-host + policy', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cloud hardening: forced TLS + resolve-then-pin (block-private only)
+// ---------------------------------------------------------------------------
+
+import {
+  buildDbEgressHardening,
+  createPinnedSocketFactory,
+  requiredTlsMode,
+  resolvePinnedDbHosts,
+} from '../db-egress-guard.ts';
+
+/** Records connect() calls instead of dialing; shaped like net.Socket enough for the factory. */
+class FakeSocket {
+  connects: Array<{ port: number; address: string }> = [];
+  host?: string;
+  port?: number;
+  connect(port: number, address: string): this {
+    this.connects.push({ port, address });
+    return this;
+  }
+}
+const fakeSocketFactory = (created: FakeSocket[]) => () => {
+  const s = new FakeSocket();
+  created.push(s);
+  return s as unknown as import('node:net').Socket;
+};
+
+describe('requiredTlsMode — forced TLS under block-private', () => {
+  test('rejects sslmode=disable with a clear error', () => {
+    expect(() => requiredTlsMode('postgres://u:p@db.example.com:5432/x?sslmode=disable')).toThrow(
+      /TLS is required/i
+    );
+  });
+
+  test('rejects ssl=false and ssl=disable (postgres.js aliases)', () => {
+    expect(() => requiredTlsMode('postgres://u:p@db.example.com/x?ssl=false')).toThrow(
+      /TLS is required/i
+    );
+    expect(() => requiredTlsMode('postgres://u:p@db.example.com/x?ssl=disable')).toThrow(
+      /TLS is required/i
+    );
+  });
+
+  test('forces "require" when the URL says nothing about TLS', () => {
+    expect(requiredTlsMode('postgres://u:p@db.example.com:5432/x')).toBe('require');
+  });
+
+  test('upgrades the weak modes (allow/prefer) to "require"', () => {
+    expect(requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=allow')).toBe('require');
+    expect(requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=prefer')).toBe('require');
+    expect(requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=require')).toBe('require');
+  });
+
+  test('never downgrades verify-ca / verify-full', () => {
+    expect(requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=verify-ca')).toBe('verify-ca');
+    expect(requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=verify-full')).toBe(
+      'verify-full'
+    );
+  });
+
+  // postgres.js applies `sslrootcert=system` LAST and unconditionally forces
+  // ssl=verify-full (connection.js), overriding sslmode. Our returned value is
+  // authoritative in openGuardedPool (explicit ssl beats the URL), so it must
+  // report verify-full too — otherwise a system-CA URL is silently DOWNGRADED
+  // to require, disabling certificate verification (MITM exposure).
+  test('sslrootcert=system forces verify-full (no downgrade to require)', () => {
+    expect(requiredTlsMode('postgres://u:p@db.example.com/x?sslrootcert=system')).toBe(
+      'verify-full'
+    );
+    // sslmode=require alone would resolve to require; sslrootcert=system upgrades it.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=require&sslrootcert=system')
+    ).toBe('verify-full');
+    // postgres.js applies it even over sslmode=disable, so we must not reject as plaintext.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=disable&sslrootcert=system')
+    ).toBe('verify-full');
+  });
+
+  // postgres.js parses via `new URL()`: the fragment (`#...`) is NOT part of the
+  // query, so `sslrootcert=system#frag` still reads `system` and forces
+  // verify-full. A naive `?`-slice would fold `#frag` into the value and
+  // silently DOWNGRADE to require — the fragment must be stripped first.
+  test('URL fragment does not downgrade sslrootcert=system (WHATWG semantics)', () => {
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslrootcert=system#frag')
+    ).toBe('verify-full');
+    // Fragment after another param must not corrupt the last param either.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=require&sslrootcert=system#frag')
+    ).toBe('verify-full');
+    // A fragment carrying an sslmode-looking string must be ignored, not parsed.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=verify-full#sslmode=disable')
+    ).toBe('verify-full');
+    // `#` BEFORE `?`: the `?` lives inside the fragment, so there is NO query.
+    // A `sslmode=disable` after such a `?` must NOT be parsed (and must not
+    // throw as plaintext) — new URL() treats the whole tail as fragment.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x#label?sslmode=disable')
+    ).toBe('require');
+    // Same, with an sslrootcert in the fragment: it must not force verify-full.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x#frag?sslrootcert=system')
+    ).toBe('require');
+  });
+
+  test('sslmode beats a contradictory ssl param (postgres.js precedence)', () => {
+    expect(() =>
+      requiredTlsMode('postgres://u:p@db.example.com/x?ssl=require&sslmode=disable')
+    ).toThrow(/TLS is required/i);
+  });
+
+  // postgres.js reduces searchParams last-wins on duplicate keys. Reading the
+  // FIRST value would DOWNGRADE the strict TLS the driver actually applies.
+  test('duplicate sslmode: LAST value wins (no TLS downgrade)', () => {
+    // Driver would apply verify-full; we must not report require and downgrade it.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=require&sslmode=verify-full')
+    ).toBe('verify-full');
+    // Last value require ⇒ require (not a downgrade; both encrypt).
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=verify-full&sslmode=require')
+    ).toBe('require');
+  });
+
+  test('duplicate sslmode: a trailing disable is rejected (matches driver)', () => {
+    expect(() =>
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=require&sslmode=disable')
+    ).toThrow(/TLS is required/i);
+  });
+
+  test('duplicate ssl (no sslmode): LAST value wins', () => {
+    expect(requiredTlsMode('postgres://u:p@db.example.com/x?ssl=require&ssl=verify-full')).toBe(
+      'verify-full'
+    );
+  });
+
+  test('sslrootcert other than system does not force verify-full', () => {
+    // A non-"system" sslrootcert (e.g. a file path) does not trigger the driver
+    // override, so normal sslmode resolution applies.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=require&sslrootcert=/etc/ca.pem')
+    ).toBe('require');
+  });
+});
+
+describe('resolvePinnedDbHosts — resolve-then-pin', () => {
+  test('pins a hostname to its first validated address', async () => {
+    const pinned = await resolvePinnedDbHosts(
+      'postgres://u:p@db.example.com:5432/x',
+      fakeLookup(['93.184.216.34', '93.184.216.35'])
+    );
+    expect(pinned.get('db.example.com')).toBe('93.184.216.34');
+  });
+
+  test('an IP-literal host pins to its normalized form', async () => {
+    const pinned = await resolvePinnedDbHosts('postgres://u:p@8.8.8.8:5432/x', fakeLookup([]));
+    expect(pinned.get('8.8.8.8')).toBe('8.8.8.8');
+    // IPv4-mapped IPv6 collapses to the v4 it hides.
+    const mapped = await resolvePinnedDbHosts(
+      'postgres://u:p@[::ffff:8.8.8.8]:5432/x',
+      fakeLookup([])
+    );
+    expect(mapped.get('::ffff:8.8.8.8')).toBe('8.8.8.8');
+  });
+
+  test('throws when ANY resolved address is blocked (multi-record rebind)', async () => {
+    await expect(
+      resolvePinnedDbHosts(
+        'postgres://u:p@evil.example.com/x',
+        fakeLookup(['93.184.216.34', '169.254.169.254'])
+      )
+    ).rejects.toThrow(/blocked internal\/metadata/i);
+  });
+
+  test('multi-host URL pins every host', async () => {
+    const byHost: Record<string, string[]> = {
+      h1: ['203.0.113.10'],
+      h2: ['203.0.113.20'],
+    };
+    const lookup: HostLookup = async (host) =>
+      (byHost[host] ?? []).map((address) => ({ address }));
+    const pinned = await resolvePinnedDbHosts('postgres://u:p@h1:5432,h2:5433/x', lookup);
+    expect(pinned.get('h1')).toBe('203.0.113.10');
+    expect(pinned.get('h2')).toBe('203.0.113.20');
+  });
+
+  test('fails closed on an unparseable authority', async () => {
+    await expect(resolvePinnedDbHosts('host=localhost dbname=x', fakeLookup([]))).rejects.toThrow(
+      /could not be parsed/i
+    );
+  });
+});
+
+describe('createPinnedSocketFactory — the socket dials the pinned IP, never re-resolves', () => {
+  test('dials the pinned address but keeps the ORIGINAL hostname on socket.host (TLS SNI)', () => {
+    const created: FakeSocket[] = [];
+    const factory = createPinnedSocketFactory(
+      new Map([['db.example.com', '93.184.216.34']]),
+      fakeSocketFactory(created)
+    );
+    const s = factory({ host: ['db.example.com'], port: [5432] }) as unknown as FakeSocket;
+    expect(s.connects).toEqual([{ port: 5432, address: '93.184.216.34' }]);
+    expect(s.host).toBe('db.example.com');
+    expect(s.port).toBe(5432);
+  });
+
+  test('rotates across a multi-host URL with per-host ports (failover parity)', () => {
+    const created: FakeSocket[] = [];
+    const factory = createPinnedSocketFactory(
+      new Map([
+        ['h1', '203.0.113.10'],
+        ['h2', '203.0.113.20'],
+      ]),
+      fakeSocketFactory(created)
+    );
+    const opts = { host: ['h1', 'h2'], port: [5432, 5433] };
+    factory(opts);
+    factory(opts);
+    factory(opts);
+    expect(created.map((s) => s.connects[0])).toEqual([
+      { port: 5432, address: '203.0.113.10' },
+      { port: 5433, address: '203.0.113.20' },
+      { port: 5432, address: '203.0.113.10' },
+    ]);
+  });
+
+  test('strips IPv6 brackets and matches host case-insensitively', () => {
+    const created: FakeSocket[] = [];
+    const factory = createPinnedSocketFactory(
+      new Map([
+        ['2001:db8::1', '2001:db8::1'],
+        ['db.example.com', '93.184.216.34'],
+      ]),
+      fakeSocketFactory(created)
+    );
+    const s1 = factory({ host: ['[2001:db8::1]'], port: [5432] }) as unknown as FakeSocket;
+    expect(s1.connects).toEqual([{ port: 5432, address: '2001:db8::1' }]);
+    const s2 = factory({ host: ['DB.Example.COM'], port: [5432] }) as unknown as FakeSocket;
+    expect(s2.connects).toEqual([{ port: 5432, address: '93.184.216.34' }]);
+  });
+
+  test('fails closed for a host the guard never validated', () => {
+    const factory = createPinnedSocketFactory(
+      new Map([['db.example.com', '93.184.216.34']]),
+      fakeSocketFactory([])
+    );
+    expect(() => factory({ host: ['other.example.com'], port: [5432] })).toThrow(
+      /not validated/i
+    );
+  });
+});
+
+describe('buildDbEgressHardening — policy plumbing', () => {
+  test('allow-private: no overrides, and a hostname is NOT resolved', async () => {
+    let calls = 0;
+    const counting: HostLookup = async () => {
+      calls++;
+      return [{ address: '10.0.0.5' }];
+    };
+    const hardening = await buildDbEgressHardening(
+      'postgres://u:p@internal.db.local:5432/x',
+      ALLOW,
+      counting
+    );
+    expect(hardening.ssl).toBeUndefined();
+    expect(hardening.socket).toBeUndefined();
+    expect(calls).toBe(0);
+  });
+
+  test('allow-private still rejects a metadata IP literal', async () => {
+    await expect(
+      buildDbEgressHardening('postgres://u:p@169.254.169.254:5432/x', ALLOW, fakeLookup([]))
+    ).rejects.toThrow(/blocked/i);
+  });
+
+  test('block-private: returns forced TLS + a pinning socket factory', async () => {
+    const hardening = await buildDbEgressHardening(
+      'postgres://u:p@db.example.com:5432/x',
+      BLOCK,
+      fakeLookup(['93.184.216.34'])
+    );
+    expect(hardening.ssl).toBe('require');
+    expect(typeof hardening.socket).toBe('function');
+  });
+
+  test('block-private: sslmode=disable is rejected BEFORE any DNS resolution', async () => {
+    let calls = 0;
+    const counting: HostLookup = async () => {
+      calls++;
+      return [{ address: '93.184.216.34' }];
+    };
+    await expect(
+      buildDbEgressHardening('postgres://u:p@db.example.com/x?sslmode=disable', BLOCK, counting)
+    ).rejects.toThrow(/TLS is required/i);
+    expect(calls).toBe(0);
+  });
+
+  test('DNS rebind after validation cannot move the socket (pin holds, no re-resolve)', async () => {
+    // A "rebinding" resolver: first answer is a clean public IP, every later
+    // answer is the metadata IP. The guard resolves ONCE at build time; every
+    // socket the pool opens afterwards must dial the first (validated) answer.
+    let calls = 0;
+    const rebinding: HostLookup = async () => {
+      calls++;
+      return [{ address: calls === 1 ? '93.184.216.34' : '169.254.169.254' }];
+    };
+    const created: FakeSocket[] = [];
+    const hardening = await buildDbEgressHardening(
+      'postgres://u:p@rebind.example.com:5432/x',
+      BLOCK,
+      rebinding,
+      fakeSocketFactory(created)
+    );
+    const opts = { host: ['rebind.example.com'], port: [5432] };
+    hardening.socket?.(opts);
+    hardening.socket?.(opts);
+    expect(calls).toBe(1);
+    expect(created.map((s) => s.connects[0]?.address)).toEqual([
+      '93.184.216.34',
+      '93.184.216.34',
+    ]);
+  });
+});

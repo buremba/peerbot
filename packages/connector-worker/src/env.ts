@@ -33,8 +33,14 @@ export function buildConnectorWorkerEnv(): Env {
     REDDIT_CLIENT_SECRET: process.env.REDDIT_CLIENT_SECRET,
     REDDIT_USER_AGENT: process.env.REDDIT_USER_AGENT,
     WORKER_API_TOKEN: process.env.WORKER_API_TOKEN,
-    // DB connectors reject internal/metadata hosts under cloud mode; self-hosted
-    // reaches its own private DB. Delivered to the connector subprocess as config.
+    // WORKER-DERIVED DEFAULT egress policy. The gateway ships its OWN
+    // cloud-mode decision on the poll response (`db_egress_policy`); the daemon's
+    // resolveEffectiveEnv() folds it in and takes the STRICTER of the two, so a
+    // gateway that says block-private raises the floor even if this worker's
+    // LOBU_CLOUD_MODE is unset (which would otherwise leave allow-private and the
+    // SSRF guard OFF). This value is the fallback when the gateway response
+    // predates that field. DB connectors reject internal/metadata hosts under
+    // block-private; self-hosted (allow-private) reaches its own private DB.
     LOBU_DB_EGRESS_POLICY: cloudModeOn() ? 'block-private' : 'allow-private',
   };
 }

@@ -21,14 +21,15 @@
  *  - origin_id = "<feed>:<pk>" so two feeds on one connection never collide, and
  *    re-emitting a row supersedes (events ingestion dedupes by origin_id).
  *
- * V1 trust model (plan §G): the DATABASE_URL host is checked before connecting
- * (guardDbHost → db-egress-guard). Under the default `allow-private` policy
+ * Trust model (plan §G): the DATABASE_URL host is checked before connecting
+ * (openGuardedPool → db-egress-guard). Under the default `allow-private` policy
  * (first-party / operator-set URL) private IPs are allowed — the dogfood reaches
  * Lobu's own private PG — and only metadata/link-local literals are blocked.
  * Under `block-private` (injected by the server in cloud mode) every non-public
- * host is rejected. Untrusted multi-tenant cloud exposure is ALSO gated
- * separately (the bundled connector is restricted under LOBU_CLOUD_MODE) until
- * the full hardening (IP pin / force-TLS) lands and that gate is lifted.
+ * host is rejected, TLS is forced (sslmode=disable is refused), and the socket
+ * is pinned to the guard-validated IP so the driver never re-resolves DNS
+ * (rebind TOCTOU closed). A per-org destination allowlist is a deferred
+ * enterprise policy layer — see db-egress-guard's module header.
  */
 
 import {
@@ -42,7 +43,7 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import postgres from 'postgres';
-import { assertConnectionStringAllowed, readEgressPolicy } from './db-egress-guard.js';
+import { buildDbEgressHardening, readEgressPolicy } from './db-egress-guard.js';
 
 interface PgQueryConfig {
   /** ONE read-only base SELECT. No WHERE-cursor / ORDER BY / top-level LIMIT — the connector wraps it. */
@@ -274,14 +275,29 @@ const POOL_OPTS = {
 } as const;
 
 /**
- * SSRF/egress pre-flight, run before any socket opens on BOTH sync() and
- * query(). Policy comes from ctx.config.LOBU_DB_EGRESS_POLICY — the server
- * injects `block-private` under cloud mode; everything else defaults to the
- * trusted `allow-private`. The host parsing + per-host validation (incl. the
- * multi-host failover case) lives in db-egress-guard.
+ * SSRF/egress pre-flight + guarded pool, run before any socket opens on sync(),
+ * query(), and search(). Policy comes from ctx.config.LOBU_DB_EGRESS_POLICY —
+ * the server injects `block-private` under cloud mode; everything else defaults
+ * to the trusted `allow-private`. Under block-private the guard's option
+ * overrides make the validation stick: forced TLS (sslmode=disable rejected)
+ * and a `socket` factory that dials the guard-validated IP so the driver never
+ * re-resolves DNS (rebind TOCTOU closed). Under allow-private the overrides are
+ * empty — native driver behavior. The overrides land AFTER POOL_OPTS so nothing
+ * can shadow them. `socket` isn't in postgres.js's published Options type
+ * (supported since 3.4: connection.js `options.socket`), hence the cast.
  */
-async function guardDbHost(connectionString: string, config: Record<string, unknown>): Promise<void> {
-  await assertConnectionStringAllowed(connectionString, readEgressPolicy(config.LOBU_DB_EGRESS_POLICY));
+async function openGuardedPool(
+  connectionString: string,
+  config: Record<string, unknown>,
+): Promise<postgres.Sql> {
+  const hardening = await buildDbEgressHardening(
+    connectionString,
+    readEgressPolicy(config.LOBU_DB_EGRESS_POLICY),
+  );
+  return postgres(connectionString, {
+    ...POOL_OPTS,
+    ...hardening,
+  } as unknown as postgres.Options<Record<string, never>>);
 }
 
 /** Seal a transaction read-only with a statement timeout — the hard write/time
@@ -367,8 +383,7 @@ export default class PostgresConnector extends ConnectorRuntime {
 
     const checkpoint = (ctx.checkpoint as PgCheckpoint | null) ?? {};
 
-    await guardDbHost(connectionString, ctx.config as Record<string, unknown>);
-    const sql = postgres(connectionString, POOL_OPTS);
+    const sql = await openGuardedPool(connectionString, ctx.config as Record<string, unknown>);
 
     try {
       // Everything runs inside ONE read-only transaction — the probe included —
@@ -478,8 +493,7 @@ export default class PostgresConnector extends ConnectorRuntime {
     // path. baseSql has no top-level LIMIT (rejected above), so this is exact.
     const countSql = `SELECT count(*)::int AS n FROM (\n${baseSql}\n) q`;
 
-    await guardDbHost(connectionString, ctx.config as Record<string, unknown>);
-    const sql = postgres(connectionString, POOL_OPTS);
+    const sql = await openGuardedPool(connectionString, ctx.config as Record<string, unknown>);
     try {
       const { data, total } = (await sql.begin(async (tx) => {
         await setReadOnly(tx, 30000);
@@ -532,8 +546,7 @@ export default class PostgresConnector extends ConnectorRuntime {
       orderBy = `ORDER BY q."${col}" ${ctx.sort.order === 'desc' ? 'DESC' : 'ASC'}`;
     }
 
-    await guardDbHost(connectionString, ctx.config as Record<string, unknown>);
-    const sql = postgres(connectionString, POOL_OPTS);
+    const sql = await openGuardedPool(connectionString, ctx.config as Record<string, unknown>);
     try {
       const { data, columns, total } = (await sql.begin(async (tx) => {
         await setReadOnly(tx, 30000);

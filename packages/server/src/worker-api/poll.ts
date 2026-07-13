@@ -21,7 +21,10 @@ import {
 } from '../auth/default-provisioning';
 import { reconcileDeviceCapabilities } from './device-reconcile';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
-import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
+import {
+  DB_EGRESS_HARDENED_CONNECTOR_KEYS,
+  assertConnectorAllowedInCloud,
+} from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveDeviceClaimableOrgs } from '../utils/device-claimable-orgs';
 import { errorMessage } from '../utils/errors';
@@ -203,6 +206,17 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const capabilityMatchSet = isUserScopedWorker
     ? authorizedCapabilities
     : [''].concat(authorizedCapabilities);
+
+  // Capability negotiation for DB-egress-hardened connectors (postgres, future
+  // warehouses). A run for one of these connectors opens a raw tenant DB socket
+  // and depends on the worker enforcing block-private egress. During a rolling
+  // deploy a NEW gateway must NOT hand such a run to an OLD fleet worker that
+  // predates the hardening (it would default to allow-private and reopen
+  // private-IP/plaintext egress). Read the RAW advertised map — this is a fleet
+  // worker, not a device-authorized one, so the platform-authorized set does not
+  // apply. Gated in the (1A) fleet claim branch below; only active in cloud mode.
+  const workerHardensDbEgress = capabilities.db_egress_hardening === true;
+  const dbEgressHardenedKeys = pgTextArray([...DB_EGRESS_HARDENED_CONNECTOR_KEYS]);
 
   // Device-worker registry: upsert device_workers row for user-scoped workers
   // so /api/me/devices can enumerate them. Also ensure advertised capability
@@ -425,6 +439,19 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 (
                   ${!isUserScopedWorker}
                   AND COALESCE(cd.required_capability, '') = ANY(${pgTextArray(capabilityMatchSet)}::text[])
+                  -- Capability negotiation: in cloud mode, a fleet worker may
+                  -- only claim a DB-egress-hardened connector run (postgres,
+                  -- future warehouses) if it advertises db_egress_hardening.
+                  -- Old workers that predate the hardening advertise nothing and
+                  -- leave the run pending for a new worker. Empty set / non-cloud
+                  -- / hardened worker => no-op. Device (user-scoped) branches
+                  -- below are untouched: postgres is a fleet no-capability
+                  -- connector, never a device-pinned one, so they never see it.
+                  AND (
+                    ${!isCloudMode()}
+                    OR ${workerHardensDbEgress}
+                    OR NOT (r.connector_key = ANY(${dbEgressHardenedKeys}::text[]))
+                  )
                   AND (
                     con.device_worker_id IS NULL
                     OR (
@@ -837,6 +864,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     feed_id: row.feed_id ?? undefined,
     connection_id: row.connection_id ?? undefined,
     config: mergeExecutionConfig(row.connection_config, row.feed_config),
+    // The DB egress boundary (private-IP block + IP pin + forced TLS) is decided
+    // by the GATEWAY, which authoritatively knows cloud mode. The out-of-process
+    // connector-worker must NOT re-derive it from its own `LOBU_CLOUD_MODE` — a
+    // fleet worker missing that flag would run `allow-private` and reach private/
+    // metadata IPs (SSRF). Shipped as a dedicated top-level field (not in tenant
+    // `config`) so the worker installs it as authoritative `job.env` and takes the
+    // STRICTER of gateway-vs-worker; block-private can never be downgraded.
+    db_egress_policy: isCloudMode() ? 'block-private' : 'allow-private',
     checkpoint: row.checkpoint ?? undefined,
     entity_ids: row.feed_entity_ids ?? undefined,
     credentials,

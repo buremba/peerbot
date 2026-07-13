@@ -159,11 +159,17 @@ describe('query_sql connection pushdown', () => {
     expect(ok.error).toBeUndefined();
   }, 60_000);
 
-  it('refuses pushdown for an existing connection under LOBU_CLOUD_MODE', async () => {
+  it('under LOBU_CLOUD_MODE the gate is open but block-private egress fails an internal host closed', async () => {
+    // postgres graduated out of CLOUD_RESTRICTED_CONNECTOR_KEYS, so pushdown is
+    // no longer refused up front ("not available on Lobu Cloud"). Instead the
+    // injected block-private policy takes over — and the test DB is on loopback
+    // (and/or sslmode=disable), so the connector's egress guard rejects it
+    // before any socket opens. That is the cloud security boundary now.
     process.env.LOBU_CLOUD_MODE = '1';
     try {
       const res = await querySql({ sql: 'SELECT 1', connection: 'qsp-ext-db' }, {}, ctx);
-      expect(res.error).toMatch(/Lobu Cloud/i);
+      expect(res.error).not.toMatch(/Lobu Cloud/i);
+      expect(res.error).toMatch(/blocked internal\/metadata|TLS is required/i);
     } finally {
       process.env.LOBU_CLOUD_MODE = undefined;
     }

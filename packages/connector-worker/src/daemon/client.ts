@@ -79,6 +79,16 @@ export interface PollResponse {
   feed_key?: string;
   /** Feed config */
   config?: Record<string, unknown>;
+  /**
+   * DB egress boundary the GATEWAY authoritatively decided from its own cloud
+   * mode: `'block-private'` (reject internal/metadata hosts, pin the resolved
+   * IP, force TLS) on Lobu Cloud, else `'allow-private'`. The worker installs
+   * this as `job.env.LOBU_DB_EGRESS_POLICY`, taking the STRICTER of gateway vs.
+   * its own env-derived default — a fleet worker missing `LOBU_CLOUD_MODE` can
+   * never downgrade a gateway that said block-private. Absent on legacy gateway
+   * responses; the worker then falls back to its own env-derived default.
+   */
+  db_egress_policy?: 'block-private' | 'allow-private';
   /** Feed checkpoint */
   checkpoint?: Record<string, unknown>;
   /** Entity IDs from feed */

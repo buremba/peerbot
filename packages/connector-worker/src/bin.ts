@@ -128,7 +128,13 @@ async function main(): Promise<void> {
           workerId,
           version,
           workerApiToken: process.env.WORKER_API_TOKEN,
-          capabilities: {},
+          // Advertise DB-egress hardening: this worker folds the gateway's
+          // authoritative `db_egress_policy` into the connector subprocess env
+          // (resolve-then-pin IP, DNS-rebind guard, forced TLS). The gateway
+          // refuses to dispatch db-egress-hardened connector runs (e.g.
+          // postgres) to workers that do NOT advertise this, so an old worker
+          // can never claim one during a rolling deploy.
+          capabilities: { db_egress_hardening: true },
           ...(Number.isFinite(maxConcurrentJobs) ? { maxConcurrentJobs } : {}),
         },
         env

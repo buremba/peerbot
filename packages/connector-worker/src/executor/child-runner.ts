@@ -20,6 +20,38 @@ interface ChildMessage {
   job: ExecutorJob;
 }
 
+/**
+ * Keys the trusted gateway sets on `job.env` that a tenant's connection/feed
+ * `job.config` must NEVER be able to override. Normal precedence is
+ * config-wins (a connector's config legitimately shadows ambient env), but a
+ * security control injected by the gateway is authoritative. `job.env` is
+ * built by the gateway from cloud mode, `job.config` is tenant-supplied — so
+ * merge config over env, then re-assert these keys from env as last-wins.
+ *
+ * `LOBU_DB_EGRESS_POLICY`: the DB egress boundary (private-IP block + IP pin +
+ * forced TLS). The in-process paths already inject it last into `job.config`
+ * (feed-sync / connector-pushdown); the out-of-process worker delivers it via
+ * `job.env`, and this is where it must beat tenant config.
+ */
+const GATEWAY_AUTHORITATIVE_CONFIG_KEYS = ['LOBU_DB_EGRESS_POLICY'] as const;
+
+/**
+ * Merge the connector's runtime config with config-wins precedence for normal
+ * keys, but force the gateway's authoritative security keys to win. Used at
+ * every executor entry point so a tenant-controlled config cannot downgrade a
+ * gateway-injected control (e.g. flipping block-private → allow-private).
+ */
+export function buildConnectorConfig(job: {
+  env: Record<string, string | undefined>;
+  config: Record<string, unknown>;
+}): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...job.env, ...job.config };
+  for (const key of GATEWAY_AUTHORITATIVE_CONFIG_KEYS) {
+    if (key in job.env && job.env[key] !== undefined) merged[key] = job.env[key];
+  }
+  return merged;
+}
+
 function findRuntimeClass(mod: Record<string, unknown>) {
   const isConnectorRuntimeClass = (val: unknown): val is new () => any =>
     typeof val === 'function' &&
@@ -196,7 +228,7 @@ async function executeConnectorRuntime(
       input: job.actionInput,
       sessionState: sessionStateForAction,
       credentials: job.credentials,
-      config: { ...job.env, ...job.config },
+      config: buildConnectorConfig(job),
     });
 
     if (!actionResult?.success) {
@@ -208,7 +240,7 @@ async function executeConnectorRuntime(
 
   if (job.mode === 'webhook_register') {
     const registration = await instance.registerWebhook({
-      config: { ...job.env, ...job.config },
+      config: buildConnectorConfig(job),
       credentials: job.credentials,
       sessionState: job.sessionState,
       callbackUrl: job.callbackUrl,
@@ -225,7 +257,7 @@ async function executeConnectorRuntime(
 
   if (job.mode === 'webhook_unregister') {
     await instance.unregisterWebhook({
-      config: { ...job.env, ...job.config },
+      config: buildConnectorConfig(job),
       credentials: job.credentials,
       sessionState: job.sessionState,
       externalId: job.externalId,
@@ -238,7 +270,7 @@ async function executeConnectorRuntime(
     const queryResult = await instance.query({
       feedKey: job.feedKey ?? undefined,
       query: job.query,
-      config: { ...job.env, ...job.config },
+      config: buildConnectorConfig(job),
       credentials: job.credentials,
       sessionState: job.sessionState,
       limit: job.limit,
@@ -260,7 +292,7 @@ async function executeConnectorRuntime(
       feedKey: job.feedKey ?? undefined,
       query: job.query,
       terms: job.terms,
-      config: { ...job.env, ...job.config },
+      config: buildConnectorConfig(job),
       credentials: job.credentials,
       sessionState: job.sessionState,
       limit: job.limit,
@@ -306,7 +338,7 @@ async function executeConnectorRuntime(
   const syncResult = (await instance.sync({
     feedKey: job.feedKey,
     feedId: job.feedId,
-    config: { ...job.env, ...job.config },
+    config: buildConnectorConfig(job),
     checkpoint: job.checkpoint,
     credentials: job.credentials,
     entityIds: job.entityIds,

@@ -71,17 +71,19 @@ scrapers' block-all-private-IPs rule can't be reused.
 - **Self-hosted / first-party:** `DATABASE_URL` is an operator-set secret — same
   trust boundary as any other env secret. Private IPs allowed. Ships now.
 - **Untrusted multi-tenant cloud:** a tenant-supplied `DATABASE_URL` (metadata
-  IPs, internal CIDRs, another tenant's DB) is an exfil/scan vector. **Not allowed
-  yet.** Under `LOBU_CLOUD_MODE=1` the postgres connector is hidden from the
-  catalog (`LOBU_CATALOG_URIS` / `manage_catalog list_catalog`) and connection-create is hard-blocked
-  (`manage_connections.ts` via `connector-cloud-gate.ts`). Execution is gated
-  independently at every run path, not just by catalog-hide: scheduled-sync run
-  creation (`runs/queue-service.ts`), the production worker poll (`worker-api.ts`), the
-  dev-CLI sync (`feed-sync.ts`), and the live pushdown (`connector-pushdown.ts`)
-  each refuse a cloud-restricted connector under `LOBU_CLOUD_MODE`.
+  IPs, internal CIDRs, another tenant's DB) is an exfil/scan vector. **Allowed,
+  hardened.** Under `LOBU_CLOUD_MODE=1` the server injects the `block-private`
+  egress policy on every run path, which classifies + rejects internal hosts,
+  pins the socket to the validated IP, and forces TLS (below). The
+  `CLOUD_RESTRICTED_CONNECTOR_KEYS` set in `connector-cloud-gate.ts` is now an
+  empty kill-switch, still enforced at connection-create, catalog, scheduled-sync
+  run creation (`runs/queue-service.ts`), the production worker poll
+  (`worker-api.ts`), the dev-CLI sync (`feed-sync.ts`), and the live pushdown
+  (`connector-pushdown.ts`) — future warehouse connectors (Snowflake, BigQuery)
+  sit in it until they ship equivalent hardening.
 
 **Egress guard (`packages/connectors/src/db-egress-guard.ts`).** The connector
-runs a pre-connect host check on both `sync()` and `query()`. Policy comes from
+runs a pre-connect host check on `sync()`, `query()`, and `search()`. Policy comes from
 `ctx.config.LOBU_DB_EGRESS_POLICY`, injected by the server from cloud mode:
 
 - `allow-private` (self-hosted, the default) — allows loopback / RFC1918 / CGNAT
@@ -90,13 +92,26 @@ runs a pre-connect host check on both `sync()` and `query()`. Policy comes from
 - `block-private` (cloud) — blocks **every** non-public address. A hostname is
   resolved and rejected if ANY returned address is blocked (multi-record rebind),
   with IPv4-mapped / NAT64 / zone-id normalization and fail-closed on malformed
-  literals.
+  literals. On top of classify-and-reject (`buildDbEgressHardening`):
+  - **Resolve-then-pin:** each hostname is resolved once at guard time and the
+    postgres.js pool gets a custom `socket` factory that dials the validated IP
+    directly — the driver never re-resolves DNS, closing the rebind TOCTOU
+    across pool reconnects. Multi-host failover URLs pin every host and keep the
+    driver's rotation. The TLS `servername` stays the ORIGINAL hostname, so
+    SNI-routed servers (and cert verification, when enabled) see the configured
+    name, not the IP.
+  - **Forced TLS:** the connection is encrypted regardless of URL params.
+    `sslmode=disable` (or `ssl=false`) is rejected with a clear error; absent /
+    `allow` / `prefer` / `require` become `require` (encrypt always);
+    `verify-ca` / `verify-full` pass through untouched. The floor is `require`
+    rather than `verify-full` because tenant DBs commonly present self-signed /
+    private-CA certs — upgrading the floor once per-connection CA upload exists
+    is the noted follow-up.
 
-**Remaining before enabling on cloud** (then remove the key from
-`CLOUD_RESTRICTED_CONNECTOR_KEYS`): pin the resolved IP into the socket to close
-the DNS-rebind TOCTOU across the pool, force TLS when the URL omits it, and a
-per-org allowlist. The classifier + reject is in place and tested; the gate is
-what currently keeps untrusted tenants out.
+**Deferred (explicit follow-up):** a per-org destination allowlist ("this org
+may only reach these DB hosts"). block-private + pin + forced TLS protects the
+platform boundary; an allowlist is an enterprise policy feature layered on top
+later.
 
 ## Entitlement boundary (design-only — not yet built)
 

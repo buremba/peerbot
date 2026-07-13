@@ -73,6 +73,33 @@ const DEFAULT_CONFIG: ExecutorConfig = {
 };
 
 /**
+ * Fold the gateway's authoritative DB egress decision into the worker's env.
+ *
+ * The gateway (which knows cloud mode authoritatively) ships `db_egress_policy`
+ * on the poll response. The worker's own `env.LOBU_DB_EGRESS_POLICY` is derived
+ * from the worker process's `LOBU_CLOUD_MODE`, which a fleet worker may not have
+ * set — leaving it `allow-private` and the SSRF guard silently OFF.
+ *
+ * We resolve the STRICTER of the two: `block-private` wins over `allow-private`
+ * from either side. This makes the gateway able to *raise* the boundary (a
+ * block-private gateway forces block-private even on a worker missing the flag)
+ * while never letting a stale/misconfigured gateway response *downgrade* a
+ * worker that already decided block-private. The result is re-asserted as
+ * authoritative `job.env.LOBU_DB_EGRESS_POLICY` by `buildConnectorConfig` in the
+ * child so tenant config can't override it either.
+ */
+export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
+  const workerPolicy = (env as Record<string, string | undefined>).LOBU_DB_EGRESS_POLICY;
+  const gatewayPolicy = job.db_egress_policy;
+  // block-private is the strict setting; take it if either side asks for it.
+  const effective =
+    workerPolicy === 'block-private' || gatewayPolicy === 'block-private'
+      ? 'block-private'
+      : (gatewayPolicy ?? workerPolicy ?? 'allow-private');
+  return { ...env, LOBU_DB_EGRESS_POLICY: effective };
+}
+
+/**
  * Execute a run (sync, action, or watcher).
  *
  * Dispatches to sync, action, or watcher execution based on run_type.
@@ -80,10 +107,14 @@ const DEFAULT_CONFIG: ExecutorConfig = {
 export async function executeRun(
   client: ExecutorClient,
   job: PollResponse,
-  env: Env,
+  workerEnv: Env,
   config: Partial<ExecutorConfig> = {}
 ): Promise<{ itemsCollected: number; error?: string }> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
+  // Fold the gateway's authoritative egress decision in ONCE here, so every
+  // downstream mode handler (sync/action/auth/embed) gets the same non-
+  // downgradable `LOBU_DB_EGRESS_POLICY`.
+  const env = resolveEffectiveEnv(workerEnv, job);
   switch (job.run_type) {
     case 'action':
       return executeActionRun(client, job, env, cfg);

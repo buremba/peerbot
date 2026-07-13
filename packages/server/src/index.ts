@@ -1277,7 +1277,6 @@ function serializeEntityApprovalPolicy(policy: EntityApprovalPolicy) {
 		resource_class: policy.resourceClass,
 		principal_kind: policy.principalKind,
 		principal_id: policy.principalId,
-		principal_mode: policy.principalMode,
 		operation_key: policy.operationKey,
 		entity_type_slug: policy.entityTypeSlug,
 		field_path: policy.fieldPath,
@@ -1346,15 +1345,7 @@ app.get("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
 		return c.json({ error: "Organization context required" }, 401);
 	}
 	const policy = await getGlobalEntityApprovalPolicy(organizationId);
-	// This legacy org-settings surface is MODE-BLIND: its PATCH/DELETE key a row by
-	// scope+principal WITHOUT principal_mode, so it can only address the both-mode
-	// (principal_mode NULL) rows. Autonomous-only rows are created and managed solely
-	// by the agent Permissions UI; surfacing them here would let a delete of the
-	// displayed autonomous row hit the same-scope attended row instead. Filter them
-	// out so this endpoint neither shows nor mutates them.
-	const policies = (
-		await listEntityApprovalPolicies(organizationId, "entity")
-	).filter((p) => p.principalMode === null);
+	const policies = await listEntityApprovalPolicies(organizationId, "entity");
 	const channelRows = await resolveBoundChannelRows(getDb(), {
 		organizationId,
 	});
@@ -1653,6 +1644,7 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			(p.principalKind === null ||
 				(p.principalKind === "agent" && p.principalId === null)),
 	);
+	// Agent rows: this agent only.
 	const agent = all.filter(
 		(p) =>
 			p.principalKind === "agent" &&
@@ -1677,43 +1669,21 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
     ) t
     ORDER BY name ASC
   `;
-	// The org's WRITE connector operations, so the matrix can render one row per
-	// operation under connector_action (always-expanded). Only write ops are gated —
-	// reads never mutate, so they carry no per-op rule. The row's `operation_key` is
-	// the CONNECTOR-QUALIFIED key (`connector_key::op`) — the exact value the policy
-	// row and the execute gate bind to — so Linear's and GitHub's `create_issue`
-	// stay distinct rows. Deduped by that qualified key (the same op can surface from
-	// multiple connections OF THE SAME connector).
-	const opList = await listOperations({
-		organizationId,
-		kind: "write",
-		includeInputSchema: false,
-		includeOutputSchema: false,
-		limit: Number.MAX_SAFE_INTEGER,
-	});
-	const seenOps = new Set<string>();
-	const operations: Array<{
-		operation_key: string;
-		name: string;
-		connector_key: string;
-		connector_name: string;
-	}> = [];
-	for (const op of opList.operations) {
-		const key = qualifiedOperationKey(op.connector_key, op.operation_key);
-		if (seenOps.has(key)) continue;
-		seenOps.add(key);
-		operations.push({
-			operation_key: key,
-			name: op.name,
-			connector_key: op.connector_key,
-			connector_name: op.connector_name,
-		});
-	}
+	// connector_operations is intentionally empty: per-op limits live on each
+	// connection (action_modes). The agent matrix only edits the blanket
+	// connector_action.execute envelope. Runtime still enforces any legacy
+	// operation_key policy rows via the write-gate; the UI no longer catalogs every
+	// write op here.
 	return c.json({
 		floor: floor.map(serializeEntityApprovalPolicy),
 		agent: agent.map(serializeEntityApprovalPolicy),
 		entity_types: typeRows.map((r) => ({ slug: r.slug, name: r.name })),
-		connector_operations: operations,
+		connector_operations: [] as Array<{
+			operation_key: string;
+			name: string;
+			connector_key: string;
+			connector_name: string;
+		}>,
 	});
 });
 
@@ -1803,28 +1773,10 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		effects[action as WriteAction] = effect;
 	}
 
-	// principal_mode selects WHICH row this write targets: omitted/null = the
-	// both-mode row, 'autonomous' = the autonomous-only override. Silently coercing
-	// any other value to null would make a typo'd/unsupported mode clobber the
-	// ATTENDED row instead of the intended autonomous one — so reject it.
-	if (
-		body.principal_mode !== undefined &&
-		body.principal_mode !== null &&
-		body.principal_mode !== "autonomous"
-	) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message: "principal_mode must be omitted, null, or 'autonomous'.",
-			},
-			400,
-		);
-	}
-	const principalMode = body.principal_mode === "autonomous" ? "autonomous" : null;
 	// entity_type_slug selects the per-type row (null = the blanket all-types row).
 	// Only the `entity` class is type-scoped. A present-but-invalid slug (number,
 	// whitespace) OR a slug on a NON-entity class must not silently coerce to null and
-	// overwrite the broad blanket policy — 400, same as principal_mode.
+	// overwrite the broad blanket policy — 400.
 	const slugPresent =
 		body.entity_type_slug !== undefined && body.entity_type_slug !== null;
 	if (slugPresent && resourceClass !== "entity") {
@@ -1937,7 +1889,6 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		resourceClass,
 		principalKind: "agent",
 		principalId: agentId,
-		principalMode,
 		operationKey,
 		entityTypeSlug,
 		effects,
@@ -1972,25 +1923,6 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			400,
 		);
 	}
-	// Same rule as the PUT: principal_mode picks the target row (null = the both-mode
-	// row). ONLY a truly-ABSENT param maps to null — a PRESENT value that isn't exactly
-	// 'autonomous' (a typo, whitespace, or empty `?principal_mode=`) must 400, else the
-	// DELETE would fall through to null and destroy the attended/both-mode row.
-	const principalModeParam = c.req.query("principal_mode");
-	if (
-		principalModeParam !== undefined &&
-		principalModeParam.trim() !== "autonomous"
-	) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message: "principal_mode must be omitted or 'autonomous'.",
-			},
-			400,
-		);
-	}
-	const principalMode =
-		principalModeParam?.trim() === "autonomous" ? "autonomous" : null;
 	// entity_type_slug picks WHICH row to delete (null = the blanket all-types row).
 	// A present-but-empty slug, or a slug on a non-entity class, must NOT coerce to
 	// null and delete the blanket policy instead of the intended per-type override.
@@ -2048,7 +1980,6 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		resourceClass,
 		principalKind: "agent",
 		principalId: agentId,
-		principalMode,
 		operationKey,
 		entityTypeSlug,
 	});

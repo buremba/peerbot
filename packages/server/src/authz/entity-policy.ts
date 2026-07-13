@@ -53,47 +53,22 @@ export type WriteResourceClass = "entity" | "agent_config" | "connector_action";
 export type PolicyPrincipalKind = "agent" | "watcher";
 
 /**
- * How the principal is acting. `attended` — a human is driving (chat, tool call).
- * `autonomous` — a scheduled/watcher run with no human in the loop. A policy row
- * scoped to `autonomous` (principal_mode='autonomous') applies only to
- * autonomous runs; a row with NULL principal_mode applies to BOTH. Autonomous is
- * always evaluated as at-least-as-strict as attended (attended is its floor), so
- * a watcher can never out-permission the same agent acting live.
+ * Headless vs interactive run label for SSE-owner gating and run attribution.
+ * NOT used by write-policy fold (one envelope for all agent runs).
+ * Keep in lockstep with HEADLESS_SOURCES in unified-thread-consumer.ts.
  */
 export type PrincipalMode = "attended" | "autonomous";
 
-/**
- * Worker-token `source` values that mark a run as AUTONOMOUS — a server-dispatched
- * turn with NO human in the loop. Any run whose `sourceContext.source` is one of
- * these evaluates its write-gate decisions in autonomous mode (so an agent's
- * autonomous-only tighter rules bind). Everything else — an interactive turn
- * (`direct-api`, a slack/telegram/web platform turn), a user session — is attended.
- *
- * This MUST stay in lockstep with `HEADLESS_SOURCES` in
- * gateway/platform/unified-thread-consumer.ts: every source that bypasses the
- * SSE-owner gate there is a no-human dispatch and so must be governed
- * autonomously here. Adding a source to one without the other is a bug — a new
- * headless dispatch would otherwise be evaluated as attended and skip an agent's
- * autonomous-only restrictions. Producers of these claims:
- *   - `watcher-run`      gateway/routes/public/agent.ts (session.intent=watcher_run)
- *   - `scheduled-job`    scheduled/jobs.ts (a scheduled agent wake)
- *   - `connector-repair` connectors/repair-agent.ts (auto-fixing a broken connector)
- *   - `internal`         gateway/services/agent-threads.ts (server-dispatched default)
- * An unknown source falls to attended (never LOOSER than autonomous, per the
- * resolver's floor), so the failure mode of a missed source is over-, not
- * under-, restriction for the interactive path — but under-restriction for the
- * headless path, which is why the two sets must not drift.
- */
-const AUTONOMOUS_SOURCES: ReadonlySet<string> = new Set([
-	"watcher-run", // a watcher-dispatched agent turn (agent.ts intent=watcher_run)
-	"scheduled-job", // a scheduled agent wake (scheduled/jobs.ts)
-	"connector-repair", // a repair agent auto-fixing a connector (repair-agent.ts)
-	"internal", // server-dispatched default turn (agent-threads.ts)
+const HEADLESS_RUN_SOURCES: ReadonlySet<string> = new Set([
+	"watcher-run",
+	"scheduled-job",
+	"connector-repair",
+	"internal",
 ]);
 
-/** The acting mode implied by a run's `source` (see {@link AUTONOMOUS_SOURCES}). */
+/** Whether a worker-token source is a headless (no interactive user) dispatch. */
 export function modeForSource(source: string | null | undefined): PrincipalMode {
-	return source != null && AUTONOMOUS_SOURCES.has(source)
+	return source != null && HEADLESS_RUN_SOURCES.has(source)
 		? "autonomous"
 		: "attended";
 }
@@ -112,8 +87,6 @@ export interface EntityApprovalPolicy {
 	/** Non-human principal this row targets; NULL = any principal of its kind. */
 	principalKind: PolicyPrincipalKind | null;
 	principalId: string | null;
-	/** 'autonomous' = watcher-only override; NULL = applies to both acting modes. */
-	principalMode: PrincipalMode | null;
 	/** Connector operation this row scopes to (connector_action only); NULL = the
 	 * blanket row governing every operation. */
 	operationKey: string | null;
@@ -137,8 +110,6 @@ export interface EntityApprovalPolicyInput {
 	resourceClass?: WriteResourceClass;
 	principalKind?: PolicyPrincipalKind | null;
 	principalId?: string | null;
-	/** 'autonomous' scopes this row to watcher runs only; null = both modes. */
-	principalMode?: PrincipalMode | null;
 	/** Scopes a connector_action row to one operation (e.g. 'slack.send_message');
 	 * null = the blanket row for every operation. */
 	operationKey?: string | null;
@@ -184,8 +155,6 @@ type EntityApprovalPolicyRow = {
 	resource_class: string;
 	principal_kind: string | null;
 	principal_id: string | null;
-	/** 'autonomous' = watcher-only override; NULL = applies to both modes. */
-	principal_mode: string | null;
 	/** Connector operation this row scopes to (e.g. 'slack.send_message'); NULL =
 	 * the blanket row governing every operation. Only set for connector_action. */
 	operation_key: string | null;
@@ -240,12 +209,6 @@ function normalizePrincipalKind(value: unknown): PolicyPrincipalKind | null {
 	return value === "agent" || value === "watcher" ? value : null;
 }
 
-/** Stored principal_mode → typed. Only 'autonomous' is a scoping value; anything
- * else (including NULL/'attended') means "applies to both modes". */
-function normalizePrincipalMode(value: unknown): PrincipalMode | null {
-	return value === "autonomous" ? "autonomous" : null;
-}
-
 /**
  * The stored effect a policy attaches to `action`, or the class default if the
  * policy declares no row for that action. A policy is a SPARSE override: a scope
@@ -270,7 +233,6 @@ function rowToPolicy(row: EntityApprovalPolicyRow): EntityApprovalPolicy {
 		resourceClass,
 		principalKind: normalizePrincipalKind(row.principal_kind),
 		principalId: row.principal_id,
-		principalMode: normalizePrincipalMode(row.principal_mode),
 		operationKey: row.operation_key,
 		entityTypeSlug: row.entity_type_slug,
 		fieldPath: row.field_path,
@@ -297,7 +259,6 @@ export function defaultEntityApprovalPolicy(
 		resourceClass: "entity",
 		principalKind: null,
 		principalId: null,
-		principalMode: null,
 		operationKey: null,
 		entityTypeSlug: null,
 		fieldPath: null,
@@ -626,43 +587,10 @@ function foldEffectForAction(
 	return folded ?? defaultEffectFor(resourceClass, action);
 }
 
-/** True when a candidate row applies to autonomous runs only (not attended). */
-function isAutonomousOnlyRow(row: EntityApprovalPolicyRow): boolean {
-	return row.principal_mode === "autonomous";
-}
-
-/**
- * The effective effect for one action AT a given acting mode, layering the
- * attended/autonomous relationship on top of the max-restrictive fold.
- *
- *  - `attended`: fold over rows that apply to attended runs (principal_mode
- *    NULL — "both modes"). Autonomous-only rows are ignored.
- *  - `autonomous`: the ATTENDED result is the floor (a watcher can never be more
- *    permissive than the same agent acting live), then tightened by any
- *    autonomous-only override. So autonomous ≥ attended always holds structurally
- *    — an autonomous-only row that tried to LOOSEN is a no-op because we fold
- *    max-restrictive against the attended floor.
- */
-function foldEffectWithMode(
-	candidates: EntityApprovalPolicyRow[],
-	resourceClass: WriteResourceClass,
-	action: WriteAction,
-	mode: PrincipalMode,
-): EntityMutationMode {
-	const attendedRows = candidates.filter((r) => !isAutonomousOnlyRow(r));
-	const attended = foldEffectForAction(attendedRows, resourceClass, action);
-	if (mode === "attended") return attended;
-	// Autonomous: attended is the floor; autonomous-only overrides can only tighten.
-	// A sparse autonomous row that does NOT name this action ABSTAINS (same rule as
-	// foldEffectForAction) — it must not pull the action toward its class default,
-	// which would tighten an action the admin never touched autonomously.
-	let effect = attended;
-	for (const row of candidates.filter(isAutonomousOnlyRow)) {
-		const stored = row.effects[action];
-		if (stored === undefined) continue; // row abstains on this action
-		effect = moreRestrictive(effect, stored);
-	}
-	return effect;
+/** Effective effect for one action (single envelope for all agent runs). */
+function foldEffectForDecision(
+	candidates: EntityApprovalPolicyRow[], resourceClass: WriteResourceClass, action: WriteAction): EntityMutationMode {
+	return foldEffectForAction(candidates, resourceClass, action);
 }
 
 /**
@@ -774,7 +702,7 @@ async function loadCandidatePolicies(args: {
 	const ownerAgentId = args.ownerAgentId ?? null;
 	const rows = await sql<EntityApprovalPolicyRow>`
     SELECT id, organization_id, resource_class, principal_kind, principal_id,
-       principal_mode, operation_key, entity_type_slug, field_path, entity_id,
+       operation_key, entity_type_slug, field_path, entity_id,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM write_approval_policies
@@ -895,7 +823,7 @@ export async function evaluateEntityMutation(args: {
 	// the attended/autonomous relationship.
 	const forEntity = candidates.filter((row) => row.field_path === null);
 	return modeToDecision(
-		foldEffectWithMode(forEntity, "entity", args.action, args.mode ?? "attended"),
+		foldEffectForDecision(forEntity, "entity", args.action),
 	);
 }
 
@@ -976,12 +904,8 @@ export async function resolveWriteEffect(args: {
 		operationKey: args.operationKey ?? null,
 		sql: args.sql,
 	});
-	return foldEffectWithMode(
-		candidates,
-		args.resourceClass,
-		args.action,
-		args.mode ?? "attended",
-	);
+	return foldEffectForDecision(
+		candidates, args.resourceClass, args.action);
 }
 
 /**
@@ -1029,7 +953,6 @@ export async function evaluateEntityFieldUpdates(args: {
 		principalId: args.principalId ?? null,
 		ownerAgentId: args.ownerAgentId ?? null,
 	});
-	const mode = args.mode ?? "attended";
 	for (const [field, owner] of Object.entries(args.fields)) {
 		// Fold max-restrictive over every candidate that applies to THIS field
 		// (its own field_path row, plus all field-agnostic rows). The org floor
@@ -1038,7 +961,7 @@ export async function evaluateEntityFieldUpdates(args: {
 			(row) => row.field_path === null || row.field_path === field,
 		);
 		const policyDecision = modeToDecision(
-			foldEffectWithMode(forField, "entity", "update", mode),
+			foldEffectForDecision(forField, "entity", "update"),
 		);
 		// A human-owned field always needs approval regardless of policy mode; a
 		// deny/disabled policy stops even a human-owned change (deny is a hard floor).
@@ -1058,7 +981,7 @@ export async function getGlobalEntityApprovalPolicy(
 	const sql = getDb();
 	const rows = await sql<EntityApprovalPolicyRow>`
     SELECT id, organization_id, resource_class, principal_kind, principal_id,
-       principal_mode, operation_key, entity_type_slug, field_path, entity_id,
+       operation_key, entity_type_slug, field_path, entity_id,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM write_approval_policies
@@ -1086,7 +1009,7 @@ export async function listEntityApprovalPolicies(
 	const sql = getDb();
 	const rows = await sql<EntityApprovalPolicyRow>`
     SELECT id, organization_id, resource_class, principal_kind, principal_id,
-       principal_mode, operation_key, entity_type_slug, field_path, entity_id,
+       operation_key, entity_type_slug, field_path, entity_id,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     FROM write_approval_policies
@@ -1190,10 +1113,6 @@ export async function upsertEntityApprovalPolicy(
 	const principalKind = normalizePrincipalKind(input.principalKind);
 	// A principal id is only meaningful with a kind; ignore it otherwise.
 	const principalId = principalKind ? input.principalId?.trim() || null : null;
-	// A mode scoping is only meaningful for a principal-targeted row.
-	const principalMode = principalKind
-		? normalizePrincipalMode(input.principalMode)
-		: null;
 	// operation_key scopes a connector_action row to one operation; meaningless (and
 	// dropped) for any other class so an entity/agent_config row can't smuggle one in.
 	const operationKey =
@@ -1237,13 +1156,12 @@ export async function upsertEntityApprovalPolicy(
         AND resource_class = ${resourceClass}
         AND principal_kind IS NOT DISTINCT FROM ${principalKind}
         AND principal_id IS NOT DISTINCT FROM ${principalId}
-        AND principal_mode IS NOT DISTINCT FROM ${principalMode}
         AND operation_key IS NOT DISTINCT FROM ${operationKey}
         AND entity_type_slug IS NOT DISTINCT FROM ${entityTypeSlug}
         AND field_path IS NOT DISTINCT FROM ${fieldPath}
         AND entity_id IS NOT DISTINCT FROM ${entityId}
       RETURNING id, organization_id, resource_class, principal_kind, principal_id,
-       principal_mode, operation_key, entity_type_slug, field_path, entity_id,
+       operation_key, entity_type_slug, field_path, entity_id,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     `;
@@ -1255,19 +1173,19 @@ export async function upsertEntityApprovalPolicy(
 			const inserted = await tx<EntityApprovalPolicyRow>`
       INSERT INTO write_approval_policies (
         organization_id, resource_class, principal_kind, principal_id,
-        principal_mode, operation_key, entity_type_slug, field_path, entity_id,
+        operation_key, entity_type_slug, field_path, entity_id,
         approval_connection_id, approval_channel_id, approval_team_id,
         approval_channel_name, created_at, updated_at
       ) VALUES (
         ${organizationId}, ${resourceClass}, ${principalKind}, ${principalId},
-        ${principalMode}, ${operationKey}, ${entityTypeSlug}, ${fieldPath}, ${entityId},
+        ${operationKey}, ${entityTypeSlug}, ${fieldPath}, ${entityId},
         ${approvalConnectionId},
         ${approvalChannelId}, ${approvalTeamId}, ${approvalChannelName},
         now(), now()
       )
       ON CONFLICT DO NOTHING
       RETURNING id, organization_id, resource_class, principal_kind, principal_id,
-       principal_mode, operation_key, entity_type_slug, field_path, entity_id,
+       operation_key, entity_type_slug, field_path, entity_id,
        approval_connection_id, approval_channel_id, approval_team_id,
        approval_channel_name
     `;
@@ -1291,7 +1209,6 @@ export async function deleteEntityApprovalPolicy(args: {
 	resourceClass?: WriteResourceClass;
 	principalKind?: PolicyPrincipalKind | null;
 	principalId?: string | null;
-	principalMode?: PrincipalMode | null;
 	operationKey?: string | null;
 	entityTypeSlug?: string | null;
 	fieldPath?: string | null;
@@ -1300,9 +1217,6 @@ export async function deleteEntityApprovalPolicy(args: {
 	const resourceClass = normalizeResourceClass(args.resourceClass);
 	const principalKind = normalizePrincipalKind(args.principalKind);
 	const principalId = principalKind ? args.principalId?.trim() || null : null;
-	const principalMode = principalKind
-		? normalizePrincipalMode(args.principalMode)
-		: null;
 	const operationKey =
 		resourceClass === "connector_action"
 			? args.operationKey?.trim() || null
@@ -1328,7 +1242,6 @@ export async function deleteEntityApprovalPolicy(args: {
       AND resource_class = ${resourceClass}
       AND principal_kind IS NOT DISTINCT FROM ${principalKind}
       AND principal_id IS NOT DISTINCT FROM ${principalId}
-      AND principal_mode IS NOT DISTINCT FROM ${principalMode}
       AND operation_key IS NOT DISTINCT FROM ${operationKey}
       AND entity_type_slug IS NOT DISTINCT FROM ${entityTypeSlug}
       AND field_path IS NOT DISTINCT FROM ${fieldPath}

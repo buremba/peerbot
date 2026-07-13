@@ -506,20 +506,11 @@ async function handleListAvailable(
       principalId: actor.id,
       ownerAgentId: actor.ownerAgentId,
       ownerResolved: actor.ownerResolved,
-      mode: actor.mode,
       action: 'execute',
       operationKey: operationKey ?? null,
     });
-  // Cheap early exit: a blanket disable hides everything without listing.
-  if ((await effectFor(null)) === 'disabled') {
-    return {
-      action: 'list_available',
-      operations: [],
-      total: 0,
-      limit: args.limit ?? 0,
-      offset: args.offset ?? 0,
-    };
-  }
+  // Blanket disable hides WRITE ops only — reads always list (policy is write-only).
+  const blanketDisabled = (await effectFor(null)) === 'disabled';
 
   // Fetch the FULL filtered set (offset 0, no caller limit), drop per-op-disabled
   // ops across the WHOLE set, THEN paginate. Filtering a single page and subtracting
@@ -544,13 +535,14 @@ async function handleListAvailable(
     offset: 0,
   });
 
-  // Hide any single operation whose PER-OP rule resolves to disabled (the blanket
-  // isn't disabled or we'd have returned above). Humans always resolve auto, so this
-  // only filters non-human principals; the effect calls short-circuit for users.
+  // Hide WRITE ops whose per-op (or blanket) policy is disabled. Reads are never
+  // filtered by agent write-policy. Humans always resolve auto for policy.
   const visibleFlags = await Promise.all(
-    full.operations.map((op) =>
-      effectFor(qualifiedOperationKey(op.connector_key, op.operation_key)),
-    ),
+    full.operations.map(async (op) => {
+      if (op.kind === 'read') return 'auto' as const;
+      if (blanketDisabled) return 'disabled' as const;
+      return effectFor(qualifiedOperationKey(op.connector_key, op.operation_key));
+    }),
   );
   const visible = full.operations.filter(
     (_op, i) => visibleFlags[i] !== 'disabled',
@@ -769,24 +761,28 @@ async function handleExecute(
 		sessionWatcherId: ctx.actingWatcherId ?? null,
 		sourceForMode: ctx.sourceContext?.source,
 	});
-	const policyDecision = await resolveWritePolicyDecision({
-		organizationId: ctx.organizationId,
-		resourceClass: "connector_action",
-		principalKind: actor.kind,
-		principalId: actor.id,
-		ownerAgentId: actor.ownerAgentId,
-		ownerResolved: actor.ownerResolved,
-		mode: actor.mode,
-		action: "execute",
-		// A per-operation rule (e.g. deliveroo::place_order = approval) tightens the
-		// blanket execute for this op alone; the blanket applies to every other op. The
-		// key is connector-qualified so the rule can't leak to another connector that
-		// exposes the same bare operation key.
-		operationKey: qualifiedOperationKey(
-			connection.connector_key,
-			operation.operation_key,
-		),
-	});
+	// Agent write-policy applies to WRITE ops only. Reads stay available under
+	// connection action_modes alone (default auto) — same idea as MCP readOnlyHint.
+	const policyDecision =
+		operation.kind === "read"
+			? "allow"
+			: await resolveWritePolicyDecision({
+					organizationId: ctx.organizationId,
+					resourceClass: "connector_action",
+					principalKind: actor.kind,
+					principalId: actor.id,
+					ownerAgentId: actor.ownerAgentId,
+					ownerResolved: actor.ownerResolved,
+					action: "execute",
+					// A per-operation rule (e.g. deliveroo::place_order = approval) tightens the
+					// blanket execute for this op alone; the blanket applies to every other op. The
+					// key is connector-qualified so the rule can't leak to another connector that
+					// exposes the same bare operation key.
+					operationKey: qualifiedOperationKey(
+						connection.connector_key,
+						operation.operation_key,
+					),
+				});
 	if (policyDecision === "deny") {
 		return {
 			error: `Policy denies '${operation.operation_key}' for this principal.`,
@@ -1765,16 +1761,6 @@ async function handleApprove(
 					principalId: pendingRun.policy_principal_id,
 					ownerAgentId: recheckOwner.ownerAgentId,
 					ownerResolved: recheckOwner.resolved,
-					// Recheck in the SAME mode the run was queued under. Both modes are now
-					// persisted EXPLICITLY ('attended' | 'autonomous'), so an attended run
-					// isn't over-denied by an autonomous-only rule, and an autonomous run
-					// still can't dodge its autonomous-only tightening. NULL is a LEGACY row
-					// (queued before the column) whose true mode is unknown — fail closed to
-					// autonomous (the stricter direction) for those.
-					mode:
-						pendingRun.policy_principal_mode === "attended"
-							? "attended"
-							: "autonomous",
 					action: "execute",
 					// Recheck against the SAME operation the run was queued under, using the
 					// connector-qualified key (connector_key from the resolved connection +

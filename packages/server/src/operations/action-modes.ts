@@ -35,19 +35,30 @@ function getActionModes(
 }
 
 /**
- * Default mode for an operation the user never explicitly configured.
- * Preserves today's "all on" behavior: anything that previously required
- * approval still requires approval; anything else auto-approves.
+ * Default mode when the user never set this op on the connection.
+ * - reads → auto (never approval-gated by default)
+ * - writes with requires_approval / destructiveHint → approval
+ * - other writes → auto
  * `disabled` requires an explicit user opt-in.
  */
 function defaultModeFromOperation(operation: {
   requires_approval: boolean;
+  kind?: 'read' | 'write';
+  annotations?: { destructiveHint?: boolean };
 }): ActionMode {
-  return operation.requires_approval ? 'approval' : 'auto';
+  if (operation.kind === 'read') return 'auto';
+  if (operation.requires_approval) return 'approval';
+  if (operation.annotations?.destructiveHint === true) return 'approval';
+  return 'auto';
 }
 
 export function resolveActionMode(
-  operation: { requires_approval: boolean; operation_key: string },
+  operation: {
+    requires_approval: boolean;
+    operation_key: string;
+    kind?: 'read' | 'write';
+    annotations?: { destructiveHint?: boolean };
+  },
   config: Record<string, unknown> | null | undefined
 ): ActionMode {
   const modes = getActionModes(config);

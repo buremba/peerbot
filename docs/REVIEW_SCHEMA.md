@@ -1,20 +1,26 @@
 # PR Review Verdict Schema
 
-After making changes on a feature branch, the agent runs `make review`
-locally. `scripts/review.sh` drives the deterministic test suites in cwd,
-invokes an independent CLI reviewer against `git diff <base>...HEAD` (base
-defaults to `origin/main` when available, override with `BASE=<branch>` or
-`--base <branch>`), and prints a JSON verdict matching this schema. Codex
-harnesses use Claude; other environments, including Claude Code, use Codex.
-Set `REVIEWER_CLI=codex|claude` to override automatic selection. The script
+After making changes on a feature branch, the agent pushes and runs
+`make review` locally. The deterministic test suites run in GitHub CI as
+their own required status checks — `scripts/review.sh` does NOT run them.
+It snapshots the head commit's CI check state for reviewer context, invokes
+an independent CLI reviewer against `git diff <base>...HEAD` (base defaults
+to `origin/main` when available, override with `BASE=<branch>` or
+`--base <branch>`), and prints a JSON verdict matching this schema. Because
+nothing runs locally besides the reviewer, review runs need no host lock and
+any number can execute concurrently. Codex harnesses use Claude; other
+environments, including Claude Code, use Codex. Set
+`REVIEWER_CLI=codex|claude` to override automatic selection. The script
 also accepts `CLAUDE_REVIEW_MODEL`, `CLAUDE_REVIEW_EFFORT`, and
 `CODEX_REVIEW_MODEL` overrides. It posts a `pi-review` commit status
 whenever GitHub auth is available; if a PR exists for the current branch, it
 also posts an idempotent PR comment (marker-keyed upsert) with the verdict.
-**GitHub Actions does not run review** — it's a local-driven gate owned by
-the agent doing the work.
+**GitHub Actions does not run the agent review** — it's a local-driven gate
+owned by the agent doing the work; CI owns the deterministic suites.
 
-Branch protection can require the `pi-review` status. The status fails when
+Branch protection requires the `pi-review` status alongside the CI checks,
+so `gh pr merge --auto` completes only when both the suites and the agent
+verdict are green. The status fails when
 any merge gate below fails: `bug_free_confidence < 80`, `bugs > 0`,
 `slop > 15`, `simplicity < 70`, `blockers` is non-empty,
 `tests_adequate == false`, or `behavior_change_risk == "high"`. Thresholds

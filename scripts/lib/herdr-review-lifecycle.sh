@@ -301,11 +301,11 @@ herdr_review_abort() {
   herdr_review_forget_files
 }
 
-# The Herdr runner is external to this shell and cannot inherit the host flock.
-# If exact tab closure is ambiguous, keep this process (and therefore FD 9)
-# alive until either a retry confirms the tab is absent or the runner writes its
-# terminal exit marker. Only then can another destructive review safely start.
-herdr_review_abort_until_safe_to_release_lock() {
+# The Herdr runner is external to this shell. If exact tab closure is
+# ambiguous, keep this process alive until either a retry confirms the tab is
+# absent or the runner writes its terminal exit marker — an aborted review
+# must not leave a zombie reviewer running unsupervised.
+herdr_review_abort_until_runner_stopped() {
   local announced=0 retry_seconds="${REVIEW_CLOSE_RETRY_SECONDS_FOR_TESTS:-0.25}"
   while true; do
     if herdr_review_abort; then
@@ -316,7 +316,7 @@ herdr_review_abort_until_safe_to_release_lock() {
       return 0
     fi
     if [ "$announced" = "0" ]; then
-      echo ">> retaining full review lock until the Herdr runner is confirmed stopped" >&2
+      echo ">> waiting for the Herdr review runner to be confirmed stopped" >&2
       announced=1
     fi
     sleep "$retry_seconds"

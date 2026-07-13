@@ -45,7 +45,7 @@ import {
   type SlackHomeContext,
   type SlackHomeInbox,
 } from "./slack-platform-bridge.js";
-import { createGatewayStateAdapter } from "./state-adapter.js";
+import { createConnectedGatewayStateAdapter } from "./state-adapter.js";
 import {
   type ConnectionSettings,
   isSecretField,
@@ -1681,8 +1681,15 @@ export class ChatInstanceManager {
     return this.ensurePlatformWebhookSecret(connection);
   }
 
+  /**
+   * Postgres-backed Chat SDK state, already connected. Fresh adapters outside a
+   * warm Chat instance (removeConnection history clear, listHistoryChannels
+   * fallback, multi-connection channel resolution) must connect before any
+   * store op — otherwise LobuStateAdapter throws "not connected" (which used
+   * to block BYO chat connection delete when no warm instance existed).
+   */
   private async createStateAdapter(): Promise<any> {
-    return createGatewayStateAdapter();
+    return createConnectedGatewayStateAdapter();
   }
 
   /**

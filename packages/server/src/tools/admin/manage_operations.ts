@@ -1210,277 +1210,44 @@ async function resolveReviewer(ctx: ToolContext): Promise<ApprovalReviewer | nul
 }
 
 /**
- * Claim a pending builder-gate run (manage_agents create/update/delete) for the
- * given action. Returns the claimed run row (with the held proposal +
- * requester) or null when this run_id isn't a pending manage_agents run — in
- * which case the caller falls through to the connector-operation path.
+ * Builder-gate approval handler: the per-family knobs the ONE generic
+ * claim/approve/reject path varies over. manage_agents and manage_watchers both
+ * queue a pending `run_type='internal'` run keyed by `action_key`, hold the
+ * proposal in `action_input`, and apply it via `apply(proposal, ctx, env,
+ * ownerUserId)` on approval — so the whole lifecycle is shared and only these
+ * fields differ. Add a new builder family by registering another handler here.
  */
-async function claimManageAgentsRun(
-	runId: number,
-	organizationId: string,
-	decision: "approved" | "rejected",
-	rejectReason?: string,
-): Promise<{
-	proposal: ManageAgentsProposal;
-	requesterUserId: string | null;
-} | null> {
-	const sql = getDb();
-	const rows =
-		decision === "approved"
-			? await sql`
-          UPDATE runs
-          SET approval_status = 'approved', status = 'running'
-          WHERE id = ${runId}
-            AND organization_id = ${organizationId}
-            AND approval_status = 'pending'
-            AND run_type = 'internal'
-            AND action_key = ${MANAGE_AGENTS_ACTION_KEY}
-          RETURNING action_input, created_by_user_id
-        `
-      : await sql`
-          UPDATE runs
-          SET approval_status = 'rejected', status = 'cancelled',
-              error_message = ${rejectReason ?? 'Rejected by user'}, completed_at = NOW()
-          WHERE id = ${runId}
-            AND organization_id = ${organizationId}
-            AND approval_status = 'pending'
-            AND run_type = 'internal'
-            AND action_key = ${MANAGE_AGENTS_ACTION_KEY}
-          RETURNING action_input, created_by_user_id
-        `;
-  if (rows.length === 0) return null;
-  const row = rows[0] as {
-    action_input: ManageAgentsProposal | null;
-    created_by_user_id: string | null;
-  };
-  if (!row.action_input) return null;
-  return { proposal: row.action_input, requesterUserId: row.created_by_user_id };
+interface BuilderApprovalHandler {
+	/** `runs.action_key` this family's pending rows carry. */
+	actionKey: string;
+	/** Noun for the result message, e.g. "Agent" / "Watcher". */
+	nounLabel: string;
+	/** The proposal shape stored in `action_input` is valid for this family. */
+	isValidProposal(proposal: unknown): boolean;
+	/** Apply the held proposal on approval (the family's write handler). */
+	apply(
+		proposal: unknown,
+		ctx: ToolContext,
+		env: Env,
+		ownerUserId: string | null,
+	): Promise<unknown>;
+	/** One-line action id for event summaries, e.g. `create agent-7`. */
+	describe(proposal: unknown): string;
+	/**
+	 * Optional soft-failure detector for handlers that return `{ error }` /
+	 * partial-failure summaries instead of throwing (manage_watchers). A non-null
+	 * string marks the apply failed even though it didn't throw.
+	 */
+	detectSoftFailure?(output: unknown): string | null;
 }
 
 /**
- * Approve + apply a builder-gate manage_agents run. Returns a result when the
- * run was a pending manage_agents run; null to fall through to the
- * connector-operation approval path.
- */
-async function tryApproveManageAgentsRun(
-	args: Static<typeof ApproveAction>,
-	ctx: ToolContext,
-	env: Env,
-): Promise<ManageOperationsResult | null> {
-	const claimed = await claimManageAgentsRun(
-		args.run_id,
-		ctx.organizationId,
-		"approved",
-	);
-	if (!claimed) return null;
-
-	const { proposal, requesterUserId } = claimed;
-	const reviewer = await resolveReviewer(ctx);
-	await supersedeActionEvent(
-		args.run_id,
-		ctx.organizationId,
-		"confirmed",
-		`manage_agents.${proposal.action} — executing`,
-		`Builder action confirmed: ${proposal.action} ${proposal.agent_id}`,
-		{},
-		reviewer,
-	);
-
-	try {
-		const output = await applyManageAgentsProposal(
-			proposal,
-			ctx,
-			env,
-			requesterUserId,
-		);
-		await getDb()`
-      UPDATE runs SET status = 'completed', completed_at = NOW(),
-        action_output = ${getDb().json(output as unknown as Record<string, unknown>)}
-      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-    `;
-		const eventId = await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"completed",
-			`manage_agents.${proposal.action} — completed`,
-			`Builder action completed: ${proposal.action} ${proposal.agent_id}`,
-			{ output: output as unknown as Record<string, unknown> },
-			reviewer,
-		);
-		return {
-			action: "approve",
-			approved: true,
-			run_id: args.run_id,
-			event_id: eventId,
-			message: `Agent ${proposal.action} approved and applied.`,
-		};
-	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		await getDb()`
-      UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage}
-      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-    `;
-		const eventId = await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"failed",
-			`manage_agents.${proposal.action} — failed`,
-			`Builder action failed: ${proposal.action} ${proposal.agent_id} — ${errorMessage}`,
-			{ error_message: errorMessage },
-			reviewer,
-		);
-		return {
-			action: "approve",
-			approved: true,
-			run_id: args.run_id,
-			event_id: eventId,
-			message: `Agent ${proposal.action} approved but failed: ${errorMessage}`,
-		};
-	}
-}
-
-/**
- * Claim a pending builder-gate manage_watchers run (create/update/delete/…).
- * Mirrors {@link claimManageAgentsRun}. Returns null when this run_id isn't a
- * pending manage_watchers run — caller falls through to the next approval path.
- */
-async function claimManageWatchersRun(
-	runId: number,
-	organizationId: string,
-	decision: "approved" | "rejected",
-	rejectReason?: string,
-): Promise<{
-	proposal: ManageWatchersProposal;
-	requesterUserId: string | null;
-} | null> {
-	const sql = getDb();
-	const rows =
-		decision === "approved"
-			? await sql`
-          UPDATE runs
-          SET approval_status = 'approved', status = 'running'
-          WHERE id = ${runId}
-            AND organization_id = ${organizationId}
-            AND approval_status = 'pending'
-            AND run_type = 'internal'
-            AND action_key = ${MANAGE_WATCHERS_ACTION_KEY}
-          RETURNING action_input, created_by_user_id
-        `
-			: await sql`
-          UPDATE runs
-          SET approval_status = 'rejected', status = 'cancelled',
-              error_message = ${rejectReason ?? "Rejected by user"}, completed_at = NOW()
-          WHERE id = ${runId}
-            AND organization_id = ${organizationId}
-            AND approval_status = 'pending'
-            AND run_type = 'internal'
-            AND action_key = ${MANAGE_WATCHERS_ACTION_KEY}
-          RETURNING action_input, created_by_user_id
-        `;
-	if (rows.length === 0) return null;
-	const row = rows[0] as {
-		action_input: ManageWatchersProposal | null;
-		created_by_user_id: string | null;
-	};
-	if (!row.action_input?.args) return null;
-	return { proposal: row.action_input, requesterUserId: row.created_by_user_id };
-}
-
-/**
- * Approve + apply a builder-gate manage_watchers run. Returns a result when the
- * run was a pending manage_watchers run; null to fall through to the next path.
- * Routes the terminal event through {@link supersedeActionEvent} (must pass
- * supersedesEventId explicitly — origin-based auto-supersede needs a non-null
- * connection_id, which internal approval events don't have).
- */
-async function tryApproveManageWatchersRun(
-	args: Static<typeof ApproveAction>,
-	ctx: ToolContext,
-	env: Env,
-): Promise<ManageOperationsResult | null> {
-	const claimed = await claimManageWatchersRun(
-		args.run_id,
-		ctx.organizationId,
-		"approved",
-	);
-	if (!claimed) return null;
-
-	const { proposal, requesterUserId } = claimed;
-	const action = proposal.args.action;
-	const reviewer = await resolveReviewer(ctx);
-	await supersedeActionEvent(
-		args.run_id,
-		ctx.organizationId,
-		"confirmed",
-		`manage_watchers.${action} — executing`,
-		`Builder action confirmed: ${action}`,
-		{},
-		reviewer,
-	);
-
-	try {
-		const output = await applyManageWatchersProposal(
-			proposal,
-			ctx,
-			env,
-			requesterUserId,
-		);
-		// handleCreate throws on invalid schedule/timezone, but handleUpdate
-		// returns `{ error }` and handleDelete returns a summary with
-		// failed/successful counts (no throw). Detect soft failures here so we
-		// don't mark the run completed when nothing applied.
-		const softFailure = detectManageWatchersApplyFailure(output);
-		if (softFailure) {
-			return failManageWatchersApproval(
-				args.run_id,
-				ctx.organizationId,
-				action,
-				softFailure,
-				reviewer,
-			);
-		}
-		await getDb()`
-      UPDATE runs SET status = 'completed', completed_at = NOW(),
-        action_output = ${getDb().json(output as unknown as Record<string, unknown>)}
-      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-    `;
-		const eventId = await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"completed",
-			`manage_watchers.${action} — completed`,
-			`Builder action completed: ${action}`,
-			{ output: output as unknown as Record<string, unknown> },
-			reviewer,
-		);
-		return {
-			action: "approve",
-			approved: true,
-			run_id: args.run_id,
-			event_id: eventId,
-			message: `Watcher ${action} approved and applied.`,
-		};
-	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		return failManageWatchersApproval(
-			args.run_id,
-			ctx.organizationId,
-			action,
-			errorMessage,
-			reviewer,
-		);
-	}
-}
-
-/**
- * Detect soft failures from manage_watchers write handlers that return errors
- * instead of throwing. create throws (ToolUserError); update returns
- * `{ error: string }` for invalid cron/timezone; delete returns a summary with
- * per-id results and never throws on individual archive failures.
- *
- * Partial delete success (some succeeded, some failed) is treated as completed
- * — the summary is preserved in action_output so the reviewer can see which
- * ids failed.
+ * Soft failures from manage_watchers write handlers that return errors instead
+ * of throwing. create throws (ToolUserError); update returns `{ error: string }`
+ * for invalid cron/timezone; delete returns a summary with per-id results and
+ * never throws on individual archive failures. Partial delete success (some
+ * succeeded, some failed) is treated as completed — the summary is preserved in
+ * action_output so the reviewer can see which ids failed.
  */
 function detectManageWatchersApplyFailure(output: unknown): string | null {
 	if (!output || typeof output !== "object") return null;
@@ -1506,10 +1273,97 @@ function detectManageWatchersApplyFailure(output: unknown): string | null {
 	return null;
 }
 
-async function failManageWatchersApproval(
+const BUILDER_APPROVAL_HANDLERS: BuilderApprovalHandler[] = [
+	{
+		actionKey: MANAGE_AGENTS_ACTION_KEY,
+		nounLabel: "Agent",
+		isValidProposal: (p) => p != null,
+		apply: (p, ctx, env, owner) =>
+			applyManageAgentsProposal(p as ManageAgentsProposal, ctx, env, owner),
+		describe: (p) => {
+			const proposal = p as ManageAgentsProposal;
+			return `${proposal.action} ${proposal.agent_id}`;
+		},
+	},
+	{
+		actionKey: MANAGE_WATCHERS_ACTION_KEY,
+		nounLabel: "Watcher",
+		isValidProposal: (p) => (p as ManageWatchersProposal | null)?.args != null,
+		apply: (p, ctx, env, owner) =>
+			applyManageWatchersProposal(p as ManageWatchersProposal, ctx, env, owner),
+		describe: (p) => (p as ManageWatchersProposal).args.action,
+		detectSoftFailure: detectManageWatchersApplyFailure,
+	},
+];
+
+/**
+ * Atomically claim a pending builder-gate run for ANY registered family. The
+ * `action_key = ANY(...)` predicate + `RETURNING action_key` lets one query
+ * cover every family and hand back the matching handler. Returns null when this
+ * run_id isn't a pending builder run (caller falls through to the next approval
+ * path). `run_type = 'internal'` scopes to builder runs; connector-operation
+ * runs (`run_type='action'`) are handled separately.
+ */
+async function claimBuilderRun(
 	runId: number,
 	organizationId: string,
-	action: string,
+	decision: "approved" | "rejected",
+	rejectReason?: string,
+): Promise<{
+	handler: BuilderApprovalHandler;
+	proposal: unknown;
+	requesterUserId: string | null;
+} | null> {
+	const sql = getDb();
+	const actionKeys = pgTextArray(
+		BUILDER_APPROVAL_HANDLERS.map((h) => h.actionKey),
+	);
+	const rows =
+		decision === "approved"
+			? await sql`
+          UPDATE runs
+          SET approval_status = 'approved', status = 'running'
+          WHERE id = ${runId}
+            AND organization_id = ${organizationId}
+            AND approval_status = 'pending'
+            AND run_type = 'internal'
+            AND action_key = ANY(${actionKeys})
+          RETURNING action_input, created_by_user_id, action_key
+        `
+			: await sql`
+          UPDATE runs
+          SET approval_status = 'rejected', status = 'cancelled',
+              error_message = ${rejectReason ?? "Rejected by user"}, completed_at = NOW()
+          WHERE id = ${runId}
+            AND organization_id = ${organizationId}
+            AND approval_status = 'pending'
+            AND run_type = 'internal'
+            AND action_key = ANY(${actionKeys})
+          RETURNING action_input, created_by_user_id, action_key
+        `;
+	if (rows.length === 0) return null;
+	const row = rows[0] as {
+		action_input: unknown;
+		created_by_user_id: string | null;
+		action_key: string;
+	};
+	const handler = BUILDER_APPROVAL_HANDLERS.find(
+		(h) => h.actionKey === row.action_key,
+	);
+	if (!handler || !handler.isValidProposal(row.action_input)) return null;
+	return {
+		handler,
+		proposal: row.action_input,
+		requesterUserId: row.created_by_user_id,
+	};
+}
+
+/** Mark a claimed builder run failed + supersede its card to 'failed'. */
+async function failBuilderRun(
+	runId: number,
+	organizationId: string,
+	handler: BuilderApprovalHandler,
+	desc: string,
 	errorMessage: string,
 	reviewer: ApprovalReviewer | null,
 ): Promise<ManageOperationsResult> {
@@ -1521,8 +1375,8 @@ async function failManageWatchersApproval(
 		runId,
 		organizationId,
 		"failed",
-		`manage_watchers.${action} — failed`,
-		`Builder action failed: ${action} — ${errorMessage}`,
+		`${handler.actionKey}.${desc} — failed`,
+		`Builder action failed: ${desc} — ${errorMessage}`,
 		{ error_message: errorMessage },
 		reviewer,
 	);
@@ -1531,13 +1385,133 @@ async function failManageWatchersApproval(
 		approved: true,
 		run_id: runId,
 		event_id: eventId,
-		message: `Watcher ${action} approved but failed: ${errorMessage}`,
+		message: `${handler.nounLabel} ${desc} approved but failed: ${errorMessage}`,
+	};
+}
+
+/**
+ * Approve + apply a builder-gate run of ANY registered family. Returns a result
+ * when the run was a pending builder run; null to fall through to the next
+ * approval path. Routes terminal events through {@link supersedeActionEvent}
+ * (supersedesEventId is passed explicitly — origin-based auto-supersede needs a
+ * non-null connection_id, which internal approval events don't have).
+ */
+async function tryApproveBuilderRun(
+	args: Static<typeof ApproveAction>,
+	ctx: ToolContext,
+	env: Env,
+): Promise<ManageOperationsResult | null> {
+	const claimed = await claimBuilderRun(
+		args.run_id,
+		ctx.organizationId,
+		"approved",
+	);
+	if (!claimed) return null;
+
+	const { handler, proposal, requesterUserId } = claimed;
+	const desc = handler.describe(proposal);
+	const reviewer = await resolveReviewer(ctx);
+	await supersedeActionEvent(
+		args.run_id,
+		ctx.organizationId,
+		"confirmed",
+		`${handler.actionKey}.${desc} — executing`,
+		`Builder action confirmed: ${desc}`,
+		{},
+		reviewer,
+	);
+
+	try {
+		const output = await handler.apply(proposal, ctx, env, requesterUserId);
+		// Some handlers return `{ error }` / partial-failure summaries instead of
+		// throwing — treat those as failures so the run isn't marked completed
+		// when nothing applied.
+		const softFailure = handler.detectSoftFailure?.(output) ?? null;
+		if (softFailure) {
+			return failBuilderRun(
+				args.run_id,
+				ctx.organizationId,
+				handler,
+				desc,
+				softFailure,
+				reviewer,
+			);
+		}
+		await getDb()`
+      UPDATE runs SET status = 'completed', completed_at = NOW(),
+        action_output = ${getDb().json(output as unknown as Record<string, unknown>)}
+      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+    `;
+		const eventId = await supersedeActionEvent(
+			args.run_id,
+			ctx.organizationId,
+			"completed",
+			`${handler.actionKey}.${desc} — completed`,
+			`Builder action completed: ${desc}`,
+			{ output: output as unknown as Record<string, unknown> },
+			reviewer,
+		);
+		return {
+			action: "approve",
+			approved: true,
+			run_id: args.run_id,
+			event_id: eventId,
+			message: `${handler.nounLabel} ${desc} approved and applied.`,
+		};
+	} catch (error) {
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		return failBuilderRun(
+			args.run_id,
+			ctx.organizationId,
+			handler,
+			desc,
+			errorMessage,
+			reviewer,
+		);
+	}
+}
+
+/**
+ * Reject a builder-gate run of ANY registered family: cancel it without
+ * applying the held mutation + supersede its card to 'rejected'. Returns a
+ * result when the run was a pending builder run; null to fall through.
+ */
+async function tryRejectBuilderRun(
+	args: Static<typeof RejectAction>,
+	ctx: ToolContext,
+	reason: string,
+	reviewer: ApprovalReviewer | null,
+): Promise<ManageOperationsResult | null> {
+	const claimed = await claimBuilderRun(
+		args.run_id,
+		ctx.organizationId,
+		"rejected",
+		reason,
+	);
+	if (!claimed) return null;
+
+	const { handler, proposal } = claimed;
+	const desc = handler.describe(proposal);
+	const eventId = await supersedeActionEvent(
+		args.run_id,
+		ctx.organizationId,
+		"rejected",
+		`${handler.actionKey}.${desc} — rejected`,
+		`Builder action rejected: ${desc}${args.reason ? ` — ${args.reason}` : ""}`,
+		{ reason },
+		reviewer,
+	);
+	return {
+		action: "reject",
+		rejected: true,
+		run_id: args.run_id,
+		event_id: eventId,
 	};
 }
 
 /**
  * Claim a pending entity_field_change run (a watcher field-change held for
- * approval). Mirrors claimManageAgentsRun. Returns the held proposal, or null when
+ * approval). Mirrors claimBuilderRun. Returns the held proposal, or null when
  * this run isn't a pending field-change run.
  */
 async function claimEntityChangeRun(
@@ -1850,13 +1824,10 @@ async function handleApprove(
 
 	// Builder-gate runs (manage_agents / manage_watchers create/update/delete)
 	// reuse this same durable approval path but have run_type='internal' + no
-	// connection. Apply them via their handlers rather than the connector-
-	// operation executor.
-	const builderResult = await tryApproveManageAgentsRun(args, ctx, env);
+	// connection. One generic path applies them via their registered handler
+	// rather than the connector-operation executor.
+	const builderResult = await tryApproveBuilderRun(args, ctx, env);
 	if (builderResult) return builderResult;
-
-	const watchersBuilderResult = await tryApproveManageWatchersRun(args, ctx, env);
-	if (watchersBuilderResult) return watchersBuilderResult;
 
 	// Watcher field-change gate (run_type='internal', action_key='entity_field_change'):
 	// approve applies the proposed value to the entity (now human-owned).
@@ -2106,54 +2077,8 @@ async function handleReject(
 	const reviewer = await resolveReviewer(ctx);
 
 	// Builder-gate run? Cancel it without applying the held mutation.
-	const claimedBuilder = await claimManageAgentsRun(
-		args.run_id,
-		ctx.organizationId,
-		"rejected",
-		reason,
-	);
-	if (claimedBuilder) {
-		const eventId = await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"rejected",
-			`manage_agents.${claimedBuilder.proposal.action} — rejected`,
-			`Builder action rejected: ${claimedBuilder.proposal.action} ${claimedBuilder.proposal.agent_id}${args.reason ? ` — ${args.reason}` : ""}`,
-			{ reason },
-			reviewer,
-		);
-		return {
-			action: "reject",
-			rejected: true,
-			run_id: args.run_id,
-			event_id: eventId,
-		};
-	}
-
-	const claimedWatchersBuilder = await claimManageWatchersRun(
-		args.run_id,
-		ctx.organizationId,
-		"rejected",
-		reason,
-	);
-	if (claimedWatchersBuilder) {
-		const action = claimedWatchersBuilder.proposal.args.action;
-		const eventId = await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"rejected",
-			`manage_watchers.${action} — rejected`,
-			`Builder action rejected: ${action}${args.reason ? ` — ${args.reason}` : ""}`,
-			{ reason },
-			reviewer,
-		);
-		return {
-			action: "reject",
-			rejected: true,
-			run_id: args.run_id,
-			event_id: eventId,
-		};
-	}
+	const builderReject = await tryRejectBuilderRun(args, ctx, reason, reviewer);
+	if (builderReject) return builderReject;
 
 	// Watcher field-change gate? Cancel it; the entity keeps its human-owned value.
 	const fieldChangeReject = await tryRejectEntityChangeRun(args, ctx);

@@ -6,8 +6,8 @@ import {
   consumePreviewClaim,
   listPreviewAgents,
   previewAgentMenu,
-  resolveChatUserIdentity,
 } from "../../preview/slack.js";
+import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import {
   resolveEffectiveModelRef,

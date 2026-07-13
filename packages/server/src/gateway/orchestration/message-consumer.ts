@@ -41,6 +41,7 @@ import {
 } from "./deployment-manager.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { resolveAgentRuntimeSelection } from "../../lobu/stores/environment-store.js";
+import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 import { getDb } from "../../db/client.js";
 
 const logger = createLogger("orchestrator");
@@ -89,15 +90,36 @@ export async function resolveBuilderAdminTools(args: {
   agentId?: string;
   organizationId?: string;
   userId?: string;
+  /**
+   * Platform this turn originated from. On a chat platform (slack/telegram/…)
+   * `userId` is the PLATFORM user id (e.g. Slack `U…`), NOT a Lobu user id, so
+   * the member lookup below would never match and an org owner driving the
+   * builder from Slack would silently lose the admin grant. We resolve the
+   * platform id → linked Lobu user first. Absent / "api" → `userId` is already
+   * the session's Lobu user id and is used directly.
+   */
+  platform?: string;
+  teamId?: string;
 }): Promise<string[] | undefined> {
   if (!args.agentId || !args.organizationId || !args.userId) return undefined;
   try {
+    // Map a platform user id to its linked Lobu user before the member join.
+    // resolveChatUserIdentity is workspace-scoped (keyed on the PK
+    // platform+team_id+platform_user_id) and returns null when the id isn't
+    // linked, so a grant is only ever made for a linked, known user.
+    const platform = args.platform;
+    const isChatPlatform =
+      platform != null && platform !== "api" && platform !== "";
+    const lobuUserId = isChatPlatform
+      ? await resolveChatUserIdentity(platform, args.teamId, args.userId)
+      : args.userId;
+    if (!lobuUserId) return undefined;
     const sql = getDb();
     const rows = (await sql`
       SELECT o.system_agent_id, m.role
       FROM organization o
       LEFT JOIN "member" m
-        ON m."organizationId" = o.id AND m."userId" = ${args.userId}
+        ON m."organizationId" = o.id AND m."userId" = ${lobuUserId}
       WHERE o.id = ${args.organizationId}
       LIMIT 1
     `) as unknown as Array<{ system_agent_id: string | null; role: string | null }>;
@@ -351,6 +373,8 @@ export class MessageConsumer {
         agentId: data.agentId,
         organizationId: data.organizationId,
         userId: data.userId,
+        platform: data.platform,
+        teamId: data.teamId,
       });
 
       // Resolve the agent's selected execution environment → runtime provider +

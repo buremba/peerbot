@@ -2,6 +2,7 @@ import { createHash, randomInt } from "node:crypto";
 import { slugify } from "@lobu/core";
 import type { Context } from "hono";
 import { getDb } from "../db/client";
+import { linkChatUserIdentity } from "../lobu/stores/chat-identity";
 import { maybeSendSlackWorkspaceWelcome } from "../gateway/connections/slack-connection-coordinator";
 import { parseJsonBody } from "../gateway/routes/shared/helpers";
 import { SecretStoreRegistry } from "../gateway/secrets";
@@ -378,13 +379,15 @@ export async function consumePreviewClaim(args: {
 		// org admin/owner. Real identity proof (Slack OAuth / email match) is a
 		// follow-up.
 		if (claim.createdBy && platformUserId) {
-			await tx`
-        INSERT INTO chat_user_identities (platform, team_id, platform_user_id, lobu_user_id, updated_at)
-        VALUES (${platform}, ${teamId ?? ""}, ${platformUserId}, ${claim.createdBy}, now())
-        ON CONFLICT (platform, team_id, platform_user_id)
-          DO UPDATE SET updated_at = now()
-          WHERE chat_user_identities.lobu_user_id = EXCLUDED.lobu_user_id
-      `;
+			await linkChatUserIdentity(
+				{
+					platform,
+					teamId,
+					platformUserId,
+					lobuUserId: claim.createdBy,
+				},
+				tx,
+			);
 		}
 
 		return {
@@ -717,20 +720,6 @@ export async function workspaceUnlinkedNotice(
 
 	// No agents yet (or the lookup failed) — CLI path only.
 	return [header, "", cliLine].join("\n");
-}
-
-/** The Lobu user id a chat-platform user has linked to, or null. */
-export async function resolveChatUserIdentity(
-	platform: string,
-	teamId: string | undefined,
-	platformUserId: string,
-): Promise<string | null> {
-	const rows = await getDb()<{ lobu_user_id: string }>`
-    SELECT lobu_user_id FROM chat_user_identities
-    WHERE platform = ${platform} AND team_id = ${teamId ?? ""} AND platform_user_id = ${platformUserId}
-    LIMIT 1
-  `;
-	return rows[0]?.lobu_user_id ?? null;
 }
 
 type BindForOwnerResult = { status: "bound" } | { status: "forbidden" };

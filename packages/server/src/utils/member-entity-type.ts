@@ -310,40 +310,40 @@ export async function ensureMemberEntityType(organizationId: string): Promise<vo
   //   allowlist, and silently re-adding it would override that choice. Only the
   //   newly-mandatory key is added.
   //
-  // One atomic statement does BOTH the conditional backfill and the read of the
-  // resulting truth, so there is no read-modify-write window to lose a write in:
+  // Guarded UPDATE, then a SEPARATE read that primes the cache from current
+  // committed truth:
   // - The UPDATE merges `{guidance:…} || event_kinds` — a JSONB concat where the
   //   RIGHT (live DB) side wins per key, so an org's authored kinds, including any
-  //   a CONCURRENT $member schema edit committed since our SELECT, are preserved;
-  //   only a missing `guidance` is added. The guard skips the write when the
-  //   registry is NULL or `guidance` is already present (the hot path: this runs
-  //   on every save).
-  // - The UNION ALL returns exactly one row — the updated value if the UPDATE
-  //   fired, otherwise the current row. Both read in the SAME statement, so the
-  //   primed value is always consistent with the write this statement performed,
-  //   and a guard no-op means the row already carried `guidance` (or a NULL
-  //   registry) as of this statement's snapshot. That is strictly better than
-  //   reusing the earlier `existing.event_kinds` snapshot from the top-of-function
-  //   SELECT (which could predate another replica's backfill). Residual window: a
-  //   backfill another replica COMMITS after this statement's snapshot opens isn't
+  //   a CONCURRENT $member schema edit committed since our top-of-function SELECT,
+  //   are preserved; only a missing `guidance` is added. The guard skips the write
+  //   when the registry is NULL (permissive) or `guidance` is already present (the
+  //   hot path: this runs on every save).
+  // - The read is a fresh statement whose snapshot opens AFTER the UPDATE returns,
+  //   so it always reflects committed truth — including a `guidance` another
+  //   replica backfilled concurrently. Two replicas racing this backfill: the one
+  //   that loses the row-lock wait re-checks its WHERE against the winner's
+  //   committed row (guidance now present), updates zero rows, then its SELECT
+  //   still reads the winner's `guidance` and primes a registry that carries it.
+  //   (A single-statement CTE that RETURNs-or-falls-back happens to be correct too
+  //   — READ COMMITTED advances a blocked modifying statement's snapshot past the
+  //   lock, so even its fallback SELECT sees the committed row — but two plain
+  //   statements make that correctness obvious without leaning on EvalPlanQual
+  //   snapshot-advance semantics. Verified against live PG.) Residual window: a
+  //   backfill another replica COMMITS after this SELECT's snapshot opens isn't
   //   reflected until the 60s TTL lapses — the same bounded staleness every
   //   $member.event_kinds edit already has (the cache is TTL-only, never cross-pod
   //   busted), not a new regression.
   const guidanceKindPatch = { guidance: DEFAULT_MEMBER_EVENT_KINDS.guidance };
+  await sql`
+    UPDATE entity_types
+    SET event_kinds = ${sql.json(guidanceKindPatch)} || event_kinds,
+        updated_at = current_timestamp
+    WHERE id = ${existing.id}
+      AND event_kinds IS NOT NULL
+      AND NOT (event_kinds ? ${GUIDANCE_SEMANTIC_TYPE})
+  `;
   const resolved = await sql<{ event_kinds: Record<string, EventKindDefinition> | null }>`
-    WITH upd AS (
-      UPDATE entity_types
-      SET event_kinds = ${sql.json(guidanceKindPatch)} || event_kinds,
-          updated_at = current_timestamp
-      WHERE id = ${existing.id}
-        AND event_kinds IS NOT NULL
-        AND NOT (event_kinds ? ${GUIDANCE_SEMANTIC_TYPE})
-      RETURNING event_kinds
-    )
-    SELECT event_kinds FROM upd
-    UNION ALL
-    SELECT event_kinds FROM entity_types
-    WHERE id = ${existing.id} AND NOT EXISTS (SELECT 1 FROM upd)
+    SELECT event_kinds FROM entity_types WHERE id = ${existing.id}
   `;
   primeMemberEventKinds(organizationId, resolved.length > 0 ? resolved[0].event_kinds : null);
 }

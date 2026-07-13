@@ -19,7 +19,9 @@
  *     save time; owners/admins are accepted
  */
 
+import postgres from 'postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { PROD_PG_VALUE_OPTIONS } from '../../../db/client';
 import { deleteContent } from '../../../tools/delete_content';
 import { saveContent } from '../../../tools/save_content';
 import type { ToolContext } from '../../../tools/registry';
@@ -316,6 +318,89 @@ describe('org-wide guidance context', () => {
 
     const out = await buildWorkspaceInstructions(raceOrg.id);
     expect(out).toContain('Cross-replica guidance renders.');
+  });
+
+  it('concurrent cross-replica backfill: the losing UPDATE still primes committed guidance (#1913)', async () => {
+    // Two replicas run the guarded backfill on the same pre-guidance row at once.
+    // Under READ COMMITTED the second UPDATE blocks on the first's row lock, then
+    // re-checks its WHERE against the winner's committed row (guidance now present)
+    // and matches ZERO rows. The loser must STILL prime a guidance-bearing
+    // registry — its post-UPDATE read has to observe the winner's committed
+    // guidance, or it would reject guidance saves until the 60s TTL. This pins
+    // that invariant for the two-statement (UPDATE, then fresh-snapshot SELECT)
+    // shape the code uses.
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Concurrent-backfill Org' });
+    const admin = await createTestUser({ name: 'Backfill Admin' });
+    await addUserToOrganization(admin.id, org.id, 'admin');
+    const adminCtx = { ...ownerToolContext(org.id, admin.id), memberRole: 'admin' };
+
+    // Materialize $member, strip guidance → an explicit pre-guidance registry.
+    await saveContent(
+      { content: 'seed', semantic_type: 'note', metadata: {} } as never,
+      env,
+      adminCtx
+    );
+    await sql`
+      UPDATE entity_types SET event_kinds = event_kinds - 'guidance'
+      WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL
+    `;
+    const row = await sql<{ id: number }>`
+      SELECT id FROM entity_types
+      WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    const typeId = row[0].id;
+    const patch = { guidance: { description: 'Organization-wide context injected into every agent prompt' } };
+
+    // A second, independent connection = the winning replica. Hold its guarded
+    // UPDATE open in a transaction so the loser (main pool) blocks on the lock.
+    const url = process.env.DATABASE_URL as string;
+    const winner = postgres(url, { max: 1, onnotice: () => {}, ...PROD_PG_VALUE_OPTIONS });
+    try {
+      // Loser's guarded UPDATE + separate post-UPDATE read (the fix's exact
+      // shape). Started while the winner's tx is open so it BLOCKS on the row
+      // lock; awaited only after the winner commits.
+      let loserUpdate: Promise<Array<{ event_kinds: Record<string, { description?: string }> | null }>>;
+      await winner.begin(async (w) => {
+        // Winner backfills guidance but does NOT commit yet (tx still open).
+        await w`
+          UPDATE entity_types
+          SET event_kinds = ${w.json(patch)} || event_kinds, updated_at = current_timestamp
+          WHERE id = ${typeId} AND event_kinds IS NOT NULL AND NOT (event_kinds ? 'guidance')
+        `;
+
+        loserUpdate = sql`
+          UPDATE entity_types
+          SET event_kinds = ${sql.json(patch)} || event_kinds, updated_at = current_timestamp
+          WHERE id = ${typeId} AND event_kinds IS NOT NULL AND NOT (event_kinds ? 'guidance')
+        `.then(() =>
+          sql<{ event_kinds: Record<string, { description?: string }> | null }>`
+            SELECT event_kinds FROM entity_types WHERE id = ${typeId}
+          `
+        );
+        // Give the loser a beat to actually reach the lock wait before we commit.
+        await new Promise((r) => setTimeout(r, 200));
+        // Winner commits on return from this callback, unblocking the loser.
+      });
+
+      // Now the winner has committed; the loser's UPDATE re-checks (0 rows) and
+      // its fresh SELECT observes the winner's committed guidance.
+      const loserResolved = await loserUpdate!;
+      expect(loserResolved[0].event_kinds).toHaveProperty('guidance');
+    } finally {
+      await winner.end();
+    }
+
+    // End state carries guidance; a guidance save validates and renders.
+    const saved = (await saveContent(
+      { content: 'Concurrent-backfill guidance renders.', semantic_type: GUIDANCE_SEMANTIC_TYPE, metadata: {} } as never,
+      env,
+      adminCtx
+    )) as { id: number };
+    expect(saved.id).toBeGreaterThan(0);
+    const out = await buildWorkspaceInstructions(org.id);
+    expect(out).toContain('Concurrent-backfill guidance renders.');
   });
 
   it('backfills only guidance: preserves a concurrent add AND an intentional omission (#1913)', async () => {

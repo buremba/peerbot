@@ -7,6 +7,7 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import type { AgentConfigStore, ModelOption, SkillConfig } from "@lobu/core";
 import type { Context } from "hono";
+import { getDb } from "../../../db/client.js";
 import {
 	buildProviderCatalog,
 	type ProviderCatalogService,
@@ -372,6 +373,97 @@ export function createAgentConfigRoutes(
 				providerModels,
 			),
 		);
+	});
+
+	/**
+	 * GET /pending/:runId — read the held proposal of a pending builder write-gate
+	 * run so a config form can PREFILL the proposed change for human review.
+	 *
+	 * This is the conversation-agnostic read the chat-thread history endpoint
+	 * (agent-history.ts) cannot serve: history replays pending cards only for the
+	 * exact originating conversationId, so a change proposed from Slack never
+	 * surfaces in the web /chat thread. A prefilled deep link
+	 * (`/agents/:agentId/settings?run_id=…`) needs the proposal by run_id alone.
+	 *
+	 * AuthZ boundary: `requireConfigAuth` verifies the caller for `:agentId`; we
+	 * then require the run's held proposal to TARGET that same agentId, so an
+	 * agent-scoped token can't read another agent's pending change. Watcher runs
+	 * (manage_watchers) store the proposal under `{ args }` and target the
+	 * builder's agentId; they're returned with the same normalization the history
+	 * endpoint applies so the SPA sees flat fields.
+	 */
+	app.get("/pending/:runId", async (c) => {
+		const auth = await requireConfigAuth(c);
+		if (auth instanceof Response) return auth;
+		const runId = Number(c.req.param("runId"));
+		if (!Number.isInteger(runId) || runId <= 0) {
+			return errorResponse(c, "Invalid run id", 400);
+		}
+
+		const rows = await getDb()<{
+			action_key: string;
+			action: string | null;
+			proposal: Record<string, unknown> | null;
+			current: Record<string, unknown> | null;
+			tool: string | null;
+		}>`
+			SELECT r.action_key,
+			       e.metadata->>'action' AS action,
+			       e.metadata->'proposal' AS proposal,
+			       e.metadata->'current' AS current,
+			       e.metadata->>'tool' AS tool
+			FROM runs r
+			JOIN current_event_records e
+			  ON e.run_id = r.id
+			 AND e.interaction_type = 'approval'
+			 AND e.interaction_status = 'pending'
+			WHERE r.id = ${runId}
+			  AND r.run_type = 'internal'
+			  AND r.approval_status = 'pending'
+			ORDER BY e.id DESC
+			LIMIT 1
+		`;
+		const row = rows[0];
+		if (!row) return errorResponse(c, "No pending proposal for this run", 404);
+
+		const resourceKind =
+			row.tool === "manage_watchers"
+				? "watcher"
+				: row.tool === "manage_agents"
+					? "agent"
+					: null;
+		// manage_watchers stores the proposal as `{ args }`; flatten to the fields
+		// the config form binds (mirrors agent-history.ts normalization).
+		const rawProposal = row.proposal ?? null;
+		const proposal =
+			resourceKind === "watcher" &&
+			rawProposal &&
+			typeof rawProposal === "object" &&
+			(rawProposal as { args?: unknown }).args &&
+			typeof (rawProposal as { args: unknown }).args === "object"
+				? (rawProposal as { args: Record<string, unknown> }).args
+				: rawProposal;
+
+		// AuthZ: the held proposal must target the agent this token is scoped to.
+		// Read agent_id from the RAW proposal — manage_watchers keeps agent_id at
+		// the top level while nesting the editable fields under `args`, so the
+		// flattened `proposal` above may not carry it.
+		const targetAgentId =
+			rawProposal && typeof rawProposal === "object"
+				? ((rawProposal as { agent_id?: unknown }).agent_id ?? null)
+				: null;
+		if (targetAgentId !== auth.agentId) {
+			// Do not leak whether the run exists for another agent.
+			return errorResponse(c, "No pending proposal for this run", 404);
+		}
+
+		return c.json({
+			runId,
+			resourceKind,
+			action: row.action,
+			proposal,
+			current: row.current ?? null,
+		});
 	});
 
 	// ===== Grant Endpoints (read-only) =====

@@ -48,6 +48,7 @@ import { createConnectToken } from '../../utils/connect-tokens';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 import { getScopedConnectorDefinition } from "../../catalog/connector-definitions";
+import { ensureConnectorInstalled } from '../../utils/ensure-connector-installed';
 import { callerIsAdmin } from './helpers/db-helpers';
 import {
   buildOAuthConnectConfig,
@@ -337,6 +338,18 @@ async function handleCreateAuthProfile(
         error: `Only admins can create ${args.profile_kind} auth profiles. Ask an organization owner or admin to configure these credentials.`,
       };
     }
+  }
+
+  // Auto-install the connector from the bundled catalog if the org hasn't
+  // installed it yet — parity with `manage_connections create`. Without this,
+  // seeding a fresh org hits a chicken/egg: an auth profile needs the connector
+  // installed, but the only other installer is creating a connection, which
+  // needs the auth profile. A no-op when already installed or not bundled.
+  if (args.connector_key) {
+    await ensureConnectorInstalled({
+      organizationId: ctx.organizationId,
+      connectorKey: args.connector_key,
+    });
   }
 
   // browser_session profiles are device-scoped; connector_key is optional

@@ -138,6 +138,29 @@ describe("GET /:agentId/config/pending/:runId", () => {
 		expect(body.current).toMatchObject({ id: AGENT });
 	});
 
+	test("404 for a manage_agents DELETE proposal (not config-form-shaped)", async () => {
+		// A delete would otherwise render ordinary config fields + a generic
+		// Approve that silently deletes the agent — the endpoint + form only
+		// support update review, so delete/create keep the run-permalink path.
+		const app = await importAgentRoutes();
+		const runId = await insertPendingProposal({
+			tool: "manage_agents",
+			proposal: { action: "delete", agent_id: AGENT },
+		});
+		const res = await app.request(`/${AGENT}/config/pending/${runId}`);
+		expect(res.status).toBe(404);
+	});
+
+	test("404 for a manage_agents CREATE proposal", async () => {
+		const app = await importAgentRoutes();
+		const runId = await insertPendingProposal({
+			tool: "manage_agents",
+			proposal: { action: "create", agent_id: AGENT, name: "New" },
+		});
+		const res = await app.request(`/${AGENT}/config/pending/${runId}`);
+		expect(res.status).toBe(404);
+	});
+
 	test("404 for a manage_watchers run (real shape: agent_id nested in args)", async () => {
 		// buildWatcherProposal returns `{ args, actingAgentId, actingWatcherId }`
 		// with agent_id INSIDE args — a watcher-shaped proposal can't prefill the

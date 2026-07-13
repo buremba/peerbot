@@ -1376,14 +1376,17 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 	const row = rows[0];
 	if (!row) return c.json({ error: "No pending proposal for this run" }, 404);
 
-	// Scoped to manage_agents: this feeds the AGENT config form (name /
-	// description / identity), which binds agent fields only. manage_watchers
-	// proposals are shaped `{ args: {...}, actingAgentId, ... }` (agent_id lives
-	// in `args`, and the fields are watcher-shaped) — they belong to a separate
-	// watcher review surface, not this endpoint. A watcher/other run 404s.
+	// Scoped to manage_agents UPDATE: this feeds the AGENT config form (name /
+	// description / identity), which binds agent fields only and only makes sense
+	// for an update. A create has no existing agent to render; a delete would show
+	// ordinary config fields + a generic Approve that silently DELETES the agent —
+	// so both 404 here (they keep the run-permalink review path). manage_watchers
+	// proposals (`{ args, actingAgentId, ... }`, watcher-shaped, agent_id in args)
+	// belong to a separate watcher review surface. Anything else 404s.
 	const rawProposal = row.proposal ?? null;
 	if (
 		row.tool !== "manage_agents" ||
+		row.action !== "update" ||
 		!rawProposal ||
 		typeof rawProposal !== "object"
 	) {

@@ -40,7 +40,10 @@ import { isValidAgentId } from '../../lobu/stores/postgres-stores';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { insertEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
-import { buildResourcePermalink } from '../../utils/url-builder';
+import {
+  buildAgentSettingsUrl,
+  buildResourcePermalink,
+} from '../../utils/url-builder';
 import { ToolUserError } from '../../utils/errors';
 import { requireOrgReadAccess, requireOrgWriteAccess } from '../../utils/organization-access';
 import type { ToolContext } from '../registry';
@@ -567,10 +570,21 @@ async function queueWriteForApproval(
   const eventId = Number(event.id);
 
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
-  // Run-scoped: the pending event is superseded on approve→complete; a run link
-  // stays valid across the chain. (Read-side content_ids resolution also covers
-  // the event id below, carried for the notification's resourceId.)
-  const approvalUrl = buildResourcePermalink(ownerSlug, { kind: 'run', runId }, baseUrl);
+  // An `update` proposal is config-shaped (name/description/identity), so its
+  // review surface is the agent settings form prefilled via `?run_id=` (WI-0.3):
+  // the reviewer sees the proposed change in the real form and Approves/Rejects.
+  // create/delete aren't config-form-shaped, so they keep the run permalink
+  // (a run-scoped link that survives the supersede chain on approve→complete;
+  // read-side content_ids resolution also covers the event id carried below).
+  const settingsReviewUrl =
+    proposal.action === 'update'
+      ? await buildAgentSettingsUrl(baseUrl, ctx.organizationId, proposal.agent_id, {
+          runId,
+        }).catch(() => null)
+      : null;
+  const approvalUrl =
+    settingsReviewUrl ??
+    buildResourcePermalink(ownerSlug, { kind: 'run', runId }, baseUrl);
 
   notifyActionApprovalNeeded({
     orgId: ctx.organizationId,

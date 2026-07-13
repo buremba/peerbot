@@ -74,8 +74,9 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 		effects: ["auto", "approval", "deny"],
 		// An agent editing agent definitions is high-trust: create/update queue an
 		// approval, delete is denied outright (a human must delete an agent).
-		// read defaults auto so existing agents keep unrestricted peer visibility
-		// (tighten via blanket deny + target whitelist, or per-target deny).
+		// read defaults auto so existing agents keep unrestricted peer visibility.
+		// Target exceptions only tighten (max-restrictive fold): use default auto +
+		// per-target deny to blacklist; a per-target auto cannot open a blanket deny.
 		defaultEffect: {
 			read: "auto",
 			create: "approval",

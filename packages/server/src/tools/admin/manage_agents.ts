@@ -17,8 +17,9 @@
  * organization.system_agent_id here (default-org provisioning is the other).
  *
  * Agent/watcher principals: list/get honor agent_config `read` (default auto;
- * per-target exceptions via target_agent_id). Humans skip the write-gate
- * (role tier is separate). create/update/delete still go through the write-gate.
+ * per-target deny tightens via target_agent_id — max-restrictive fold, so
+ * targets cannot loosen a blanket deny). Humans skip the write-gate (role
+ * tier is separate). create/update/delete still go through the write-gate.
  */
 
 import {
@@ -94,7 +95,8 @@ async function assertAgentConfigReadAllowed(
     action: "read",
     targetAgentId,
   });
-  if (decision === "deny") {
+  // require_approval collapses to deny for read (see resolveWritePolicyDecision).
+  if (decision !== "allow") {
     const label = targetAgentId?.trim() || "agents";
     throw new ToolUserError(
       `Policy denies reading agent '${label}' for this principal.`,
@@ -119,7 +121,7 @@ async function agentConfigReadAllowed(
     action: "read",
     targetAgentId,
   });
-  return decision !== "deny";
+  return decision === "allow";
 }
 
 async function handleList(
@@ -148,8 +150,8 @@ async function handleList(
   if (actor.kind === "user") {
     return { action: "list", agents };
   }
-  // Per-target read: drop peers the agent_config envelope denies (whitelist /
-  // blacklist via default + target_agent_id exceptions). Cache by agent id.
+  // Per-target read: drop peers the agent_config envelope denies (blacklist via
+  // default auto + target_agent_id deny). Cache by agent id.
   const allowed: AgentRecord[] = [];
   const cache = new Map<string, boolean>();
   for (const agent of agents) {

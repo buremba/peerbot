@@ -866,10 +866,8 @@ export async function resolveWritePolicyDecision(args: {
 	ownerResolved?: boolean;
 	action: WriteAction;
 	/**
-	 * Whether the principal is acting attended (a human is driving the agent) or
-	 * autonomously (a watcher / scheduled run). Autonomous folds the attended
-	 * decision as its floor, then tightens with any autonomous-only override — a
-	 * watcher can never be more permissive than the same agent acting live.
+	 * Attribution / SSE labeling only. Write-policy fold is a single envelope
+	 * (principal_mode dropped) — `mode` does not change the decision.
 	 */
 	mode?: PrincipalMode;
 	/** connector_action only: the operation being run — a per-op row tightens the
@@ -879,7 +877,10 @@ export async function resolveWritePolicyDecision(args: {
 	targetAgentId?: string | null;
 	sql?: DbClient;
 }): Promise<EntityPolicyDecision> {
-	return modeToDecision(await resolveWriteEffect(args));
+	const decision = modeToDecision(await resolveWriteEffect(args));
+	// Reads cannot usefully queue approval; treat like entity evaluateEntityMutation.
+	if (args.action === "read" && decision === "require_approval") return "deny";
+	return decision;
 }
 
 /**
@@ -902,6 +903,7 @@ export async function resolveWriteEffect(args: {
 	 */
 	ownerResolved?: boolean;
 	action: WriteAction;
+	/** Attribution only — ignored by the single-envelope fold. */
 	mode?: PrincipalMode;
 	/** connector_action only: the operation being run (e.g. 'slack.send_message').
 	 * A row scoped to this op tightens the blanket execute rule for it alone. */

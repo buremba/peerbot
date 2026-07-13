@@ -86,6 +86,7 @@ neutral_after AS (
 merged AS (
   SELECT
     n.policy_id,
+    a.resource_class,
     a.action,
     a.auto_effect,
     e.effect AS neutral_effect
@@ -102,18 +103,43 @@ merged AS (
   LEFT JOIN write_policy_action_effects e
     ON e.policy_id = n.policy_id AND e.action = a.action
 ),
+-- Old runtime attended floor = COALESCE(neutral_effect, class_default). Fold
+-- autonomous against THAT, never against bare COALESCE(..., 'auto'), so an
+-- autonomous-only delete=auto cannot displace entity delete default approval
+-- (or agent_config delete default deny) into an explicit looser neutral row.
+class_default AS (
+  SELECT
+    m.*,
+    CASE
+      WHEN m.resource_class = 'entity' AND m.action = 'delete' THEN 'approval'
+      WHEN m.resource_class = 'agent_config' AND m.action IN ('create', 'update') THEN 'approval'
+      WHEN m.resource_class = 'agent_config' AND m.action = 'delete' THEN 'deny'
+      WHEN m.resource_class = 'connector_action' AND m.action = 'execute' THEN 'auto'
+      -- entity create/update/read, agent_config read, and unknown → auto
+      ELSE 'auto'
+    END AS class_default_effect
+  FROM merged m
+),
+attended AS (
+  SELECT
+    policy_id,
+    action,
+    auto_effect,
+    COALESCE(neutral_effect, class_default_effect) AS attended_effect
+  FROM class_default
+),
 -- Rank: deny=3, disabled=2, approval=1, auto=0; pick the max rank.
 picked AS (
   SELECT
     policy_id,
     action,
     CASE
-      WHEN auto_effect = 'deny' OR neutral_effect = 'deny' THEN 'deny'
-      WHEN auto_effect = 'disabled' OR neutral_effect = 'disabled' THEN 'disabled'
-      WHEN auto_effect = 'approval' OR neutral_effect = 'approval' THEN 'approval'
-      ELSE COALESCE(auto_effect, neutral_effect, 'auto')
+      WHEN auto_effect = 'deny' OR attended_effect = 'deny' THEN 'deny'
+      WHEN auto_effect = 'disabled' OR attended_effect = 'disabled' THEN 'disabled'
+      WHEN auto_effect = 'approval' OR attended_effect = 'approval' THEN 'approval'
+      ELSE COALESCE(auto_effect, attended_effect, 'auto')
     END AS effect
-  FROM merged
+  FROM attended
 )
 INSERT INTO write_policy_action_effects (policy_id, action, effect)
 SELECT policy_id, action, effect FROM picked

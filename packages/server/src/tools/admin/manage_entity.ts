@@ -1385,6 +1385,19 @@ async function handleListLinks(
 		throw new ToolUserError("entity_id is required for list_links", 400);
 
 	const sql = getDb();
+	const typeRows = await sql<{ entity_type: string }>`
+		SELECT et.slug AS entity_type
+		FROM entities e
+		JOIN entity_types et ON et.id = e.entity_type_id
+		WHERE e.id = ${args.entity_id}
+		  AND e.organization_id = ${ctx.organizationId}
+		LIMIT 1
+	`;
+	if (typeRows.length === 0) {
+		throw new ToolUserError(`Entity ${args.entity_id} not found`, 404);
+	}
+	await assertEntityReadAllowed(args, ctx, typeRows[0].entity_type);
+
 	const direction = args.direction ?? "both";
 	const includeDeleted = args.include_deleted ?? false;
 	const limit = Math.min(Math.max(args.limit ?? 100, 1), 500);

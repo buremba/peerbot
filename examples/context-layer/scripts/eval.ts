@@ -40,7 +40,7 @@ import { WAREHOUSE_CONNECTION_SLUG } from "./lib/env.ts";
 import { callTool, connectLocalGateway, type Gateway } from "./lib/gateway.ts";
 
 const QUESTION =
-	"Churn spiked to 550 in March 2026. Is that real, and what should the number be?";
+  "Churn spiked to 550 in March 2026. Is that real, and what should the number be?";
 const AGENT_ID = "analyst";
 const RAW_MARCH = 550;
 const ADJUSTED_MARCH = 50;
@@ -49,13 +49,13 @@ const MIGRATION_SOURCE = "https://linear.app/kelder/issue/DATA-142";
 // ── Pull the governed context out of the running gateway ───────────────────
 
 interface BusinessEvent {
-	event: string;
-	type: string;
-	date: string;
-	source: string;
-	affected_metrics: string[];
-	expected_effect: string;
-	adjustment: { op: string; cancel_reason?: string } | null;
+  event: string;
+  type: string;
+  date: string;
+  source: string;
+  affected_metrics: string[];
+  expected_effect: string;
+  adjustment: { op: string; cancel_reason?: string } | null;
 }
 
 const CONTEXT_SCRIPT = `
@@ -76,121 +76,121 @@ export default async (_ctx, client) => {
 
 /** The live raw + repaired March numbers, straight from the warehouse. */
 async function warehouseMarch(
-	gw: Gateway,
+  gw: Gateway
 ): Promise<{ raw: number; adjusted: number }> {
-	const res = await callTool<{
-		rows: Array<{ raw: number; adjusted: number }>;
-		error?: string;
-	}>(gw, "query_sql", {
-		connection: WAREHOUSE_CONNECTION_SLUG,
-		sql:
-			"SELECT count(*)::int AS raw, " +
-			"count(*) FILTER (WHERE cancel_reason <> 'billing_migration_artifact')::int AS adjusted " +
-			"FROM subscriptions WHERE cancelled_at IS NOT NULL " +
-			"AND to_char(date_trunc('month', cancelled_at), 'YYYY-MM') = '2026-03'",
-	});
-	if (res.error) throw new Error(`warehouse read failed: ${res.error}`);
-	return res.rows[0] ?? { raw: RAW_MARCH, adjusted: ADJUSTED_MARCH };
+  const res = await callTool<{
+    rows: Array<{ raw: number; adjusted: number }>;
+    error?: string;
+  }>(gw, "query_sql", {
+    connection: WAREHOUSE_CONNECTION_SLUG,
+    sql:
+      "SELECT count(*)::int AS raw, " +
+      "count(*) FILTER (WHERE cancel_reason <> 'billing_migration_artifact')::int AS adjusted " +
+      "FROM subscriptions WHERE cancelled_at IS NOT NULL " +
+      "AND to_char(date_trunc('month', cancelled_at), 'YYYY-MM') = '2026-03'",
+  });
+  if (res.error) throw new Error(`warehouse read failed: ${res.error}`);
+  return res.rows[0] ?? { raw: RAW_MARCH, adjusted: ADJUSTED_MARCH };
 }
 
 /** Build the context block pushed to the agent in the WITH arm. */
 function withContextBlock(
-	events: BusinessEvent[],
-	march: {
-		raw: number;
-		adjusted: number;
-	},
+  events: BusinessEvent[],
+  march: {
+    raw: number;
+    adjusted: number;
+  }
 ): string {
-	const relevant = events.filter((e) =>
-		e.affected_metrics.includes("churn_rate"),
-	);
-	const lines = relevant.map(
-		(e) =>
-			`- [${e.type}] ${e.event} (on ${e.date}, source ${e.source})\n` +
-			`    ${e.expected_effect}` +
-			(e.adjustment
-				? `\n    structured adjustment: ${JSON.stringify(e.adjustment)}`
-				: ""),
-	);
-	return (
-		"GOVERNED CONTEXT (business events affecting churn_rate):\n" +
-		lines.join("\n") +
-		`\n\nComposed adjusted series for 2026-03: raw ${march.raw}, ` +
-		`adjusted ${march.adjusted} (billing_migration_artifact rows subtracted).`
-	);
+  const relevant = events.filter((e) =>
+    e.affected_metrics.includes("churn_rate")
+  );
+  const lines = relevant.map(
+    (e) =>
+      `- [${e.type}] ${e.event} (on ${e.date}, source ${e.source})\n` +
+      `    ${e.expected_effect}` +
+      (e.adjustment
+        ? `\n    structured adjustment: ${JSON.stringify(e.adjustment)}`
+        : "")
+  );
+  return (
+    "GOVERNED CONTEXT (business events affecting churn_rate):\n" +
+    lines.join("\n") +
+    `\n\nComposed adjusted series for 2026-03: raw ${march.raw}, ` +
+    `adjusted ${march.adjusted} (billing_migration_artifact rows subtracted).`
+  );
 }
 
 /** Baseline arm: raw number only, no governed context. */
 function baselineBlock(march: { raw: number }): string {
-	return `The warehouse reports ${march.raw} cancellations for 2026-03. No other context is available.`;
+  return `The warehouse reports ${march.raw} cancellations for 2026-03. No other context is available.`;
 }
 
 // ── Real-agent turn via `lobu chat` (used when a model provider is wired) ───
 
 interface ChatOutcome {
-	text: string;
-	noModel: boolean;
+  text: string;
+  noModel: boolean;
 }
 
 function runAgentTurn(gw: Gateway, prompt: string): ChatOutcome {
-	const res = spawnSync(
-		"bunx",
-		[
-			"@lobu/cli",
-			"chat",
-			"--agent",
-			AGENT_ID,
-			// Thread the SAME gateway URL + org the scripts connected to (honors the
-			// documented LOBU_URL override), instead of hardcoding a default.
-			"--gateway",
-			gw.base,
-			"--org",
-			gw.org,
-			"--json",
-			"--auto-approve",
-			"--new",
-			prompt,
-		],
-		{ encoding: "utf8", timeout: 180_000 },
-	);
-	const out = `${res.stdout ?? ""}\n${res.stderr ?? ""}`;
-	let text = "";
-	let noModel = false;
-	for (const line of out.split("\n")) {
-		const trimmed = line.trim();
-		if (!trimmed.startsWith("{")) continue;
-		try {
-			const ev = JSON.parse(trimmed) as {
-				event?: string;
-				errorCode?: string;
-				error?: string;
-				text?: string;
-				content?: string;
-				delta?: string;
-			};
-			// No-model shows up two ways depending on the gateway path: a typed
-			// `errorCode: NO_MODEL_CONFIGURED`, OR a plain error event whose message
-			// is "No model resolved for this run…" (no errorCode). Match BOTH — a
-			// false negative here sends the eval down the live path and reports a
-			// misleading FAIL (empty answers) instead of the honest proxy fallback.
-			if (
-				ev.errorCode === "NO_MODEL_CONFIGURED" ||
-				(ev.event === "error" && /no model/i.test(ev.error ?? ""))
-			) {
-				noModel = true;
-			}
-			// Accumulate any assistant text the stream carries; the exact field name
-			// varies by event kind, so pull whichever text-bearing field is present.
-			const chunk =
-				(typeof ev.text === "string" ? ev.text : "") ||
-				(typeof ev.content === "string" ? ev.content : "") ||
-				(typeof ev.delta === "string" ? ev.delta : "");
-			if (chunk) text += chunk;
-		} catch {
-			// non-JSON line (dependency-resolution noise) — ignore
-		}
-	}
-	return { text: text.trim(), noModel };
+  const res = spawnSync(
+    "bunx",
+    [
+      "@lobu/cli",
+      "chat",
+      "--agent",
+      AGENT_ID,
+      // Thread the SAME gateway URL + org the scripts connected to (honors the
+      // documented LOBU_URL override), instead of hardcoding a default.
+      "--gateway",
+      gw.base,
+      "--org",
+      gw.org,
+      "--json",
+      "--auto-approve",
+      "--new",
+      prompt,
+    ],
+    { encoding: "utf8", timeout: 180_000 }
+  );
+  const out = `${res.stdout ?? ""}\n${res.stderr ?? ""}`;
+  let text = "";
+  let noModel = false;
+  for (const line of out.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const ev = JSON.parse(trimmed) as {
+        event?: string;
+        errorCode?: string;
+        error?: string;
+        text?: string;
+        content?: string;
+        delta?: string;
+      };
+      // No-model shows up two ways depending on the gateway path: a typed
+      // `errorCode: NO_MODEL_CONFIGURED`, OR a plain error event whose message
+      // is "No model resolved for this run…" (no errorCode). Match BOTH — a
+      // false negative here sends the eval down the live path and reports a
+      // misleading FAIL (empty answers) instead of the honest proxy fallback.
+      if (
+        ev.errorCode === "NO_MODEL_CONFIGURED" ||
+        (ev.event === "error" && /no model/i.test(ev.error ?? ""))
+      ) {
+        noModel = true;
+      }
+      // Accumulate any assistant text the stream carries; the exact field name
+      // varies by event kind, so pull whichever text-bearing field is present.
+      const chunk =
+        (typeof ev.text === "string" ? ev.text : "") ||
+        (typeof ev.content === "string" ? ev.content : "") ||
+        (typeof ev.delta === "string" ? ev.delta : "");
+      if (chunk) text += chunk;
+    } catch {
+      // non-JSON line (dependency-resolution noise) — ignore
+    }
+  }
+  return { text: text.trim(), noModel };
 }
 
 // ── Assertions ─────────────────────────────────────────────────────────────
@@ -203,23 +203,23 @@ function runAgentTurn(gw: Gateway, prompt: string): ChatOutcome {
 
 /** Does the answer cite the billing-migration cause / its source? */
 function citesMigration(answer: string): boolean {
-	const a = answer.toLowerCase();
-	return (
-		a.includes("migration") ||
-		a.includes("data-142") ||
-		a.includes("artifact") ||
-		a.includes(MIGRATION_SOURCE.toLowerCase())
-	);
+  const a = answer.toLowerCase();
+  return (
+    a.includes("migration") ||
+    a.includes("data-142") ||
+    a.includes("artifact") ||
+    a.includes(MIGRATION_SOURCE.toLowerCase())
+  );
 }
 
 /** Does the answer give the corrected March number (~50, not the raw 550)? */
 function correctsNumber(answer: string): boolean {
-	// Match the corrected number as a WHOLE number token — a bare `includes("50")`
-	// would also match inside the raw "550", so an answer that only ever repeats
-	// 550 would be scored as if it had corrected to 50. Require ADJUSTED_MARCH to
-	// appear with non-digit boundaries on both sides.
-	const correctedToken = new RegExp(`(?:^|\\D)${ADJUSTED_MARCH}(?:\\D|$)`);
-	return correctedToken.test(answer.toLowerCase());
+  // Match the corrected number as a WHOLE number token — a bare `includes("50")`
+  // would also match inside the raw "550", so an answer that only ever repeats
+  // 550 would be scored as if it had corrected to 50. Require ADJUSTED_MARCH to
+  // appear with non-digit boundaries on both sides.
+  const correctedToken = new RegExp(`(?:^|\\D)${ADJUSTED_MARCH}(?:\\D|$)`);
+  return correctedToken.test(answer.toLowerCase());
 }
 
 // ── Run ─────────────────────────────────────────────────────────────────────
@@ -228,12 +228,12 @@ const gw = await connectLocalGateway();
 console.log(`Connected to local gateway (org: ${gw.org})`);
 
 const ctxRes = await callTool<{
-	return_value?: { events: BusinessEvent[] };
-	success: boolean;
-	error?: { message: string };
+  return_value?: { events: BusinessEvent[] };
+  success: boolean;
+  error?: { message: string };
 }>(gw, "run_sdk", { script: CONTEXT_SCRIPT, timeout_ms: 60_000 });
 if (!ctxRes.success || !ctxRes.return_value) {
-	throw new Error(`context read failed: ${ctxRes.error?.message ?? "unknown"}`);
+  throw new Error(`context read failed: ${ctxRes.error?.message ?? "unknown"}`);
 }
 const events = ctxRes.return_value.events;
 const march = await warehouseMarch(gw);
@@ -250,31 +250,31 @@ let baseAnswer: string;
 let mode: "live-agent" | "deterministic-proxy";
 
 if (probe.noModel) {
-	// ── Fallback: deterministic proxy ────────────────────────────────────────
-	mode = "deterministic-proxy";
-	console.log(
-		"No model provider configured on this local install — the gateway cannot\n" +
-			"run a live model (this is expected for a throwaway `lobu run`). Falling\n" +
-			"back to the DETERMINISTIC PROXY: assert on the exact context bundle that\n" +
-			"WOULD be pushed to the agent in each arm.\n",
-	);
-	// The proxy asserts on the RAW context bundle each arm would push — no
-	// fabricated answer. If the WITH block genuinely carries the migration source
-	// and the adjusted number, it passes; if the composition ever stops emitting
-	// them, it fails. (Appending a hand-written "an agent would say…" answer would
-	// rig the assertion to pass regardless of what the context actually contains.)
-	withAnswer = withBlock;
-	baseAnswer = baseBlock;
+  // ── Fallback: deterministic proxy ────────────────────────────────────────
+  mode = "deterministic-proxy";
+  console.log(
+    "No model provider configured on this local install — the gateway cannot\n" +
+      "run a live model (this is expected for a throwaway `lobu run`). Falling\n" +
+      "back to the DETERMINISTIC PROXY: assert on the exact context bundle that\n" +
+      "WOULD be pushed to the agent in each arm.\n"
+  );
+  // The proxy asserts on the RAW context bundle each arm would push — no
+  // fabricated answer. If the WITH block genuinely carries the migration source
+  // and the adjusted number, it passes; if the composition ever stops emitting
+  // them, it fails. (Appending a hand-written "an agent would say…" answer would
+  // rig the assertion to pass regardless of what the context actually contains.)
+  withAnswer = withBlock;
+  baseAnswer = baseBlock;
 } else {
-	// ── Real agent: two live turns ───────────────────────────────────────────
-	mode = "live-agent";
-	console.log("Model provider detected — running two REAL agent turns.\n");
-	withAnswer = runAgentTurn(
-		gw,
-		`${withBlock}\n\nQuestion: ${QUESTION}\n` +
-			"Use the governed context above. Cite the source and give the corrected number.",
-	).text;
-	baseAnswer = runAgentTurn(gw, `${baseBlock}\n\nQuestion: ${QUESTION}`).text;
+  // ── Real agent: two live turns ───────────────────────────────────────────
+  mode = "live-agent";
+  console.log("Model provider detected — running two REAL agent turns.\n");
+  withAnswer = runAgentTurn(
+    gw,
+    `${withBlock}\n\nQuestion: ${QUESTION}\n` +
+      "Use the governed context above. Cite the source and give the corrected number."
+  ).text;
+  baseAnswer = runAgentTurn(gw, `${baseBlock}\n\nQuestion: ${QUESTION}`).text;
 }
 
 // ── Assert + report ──────────────────────────────────────────────────────────
@@ -292,32 +292,32 @@ console.log(`=== Agent eval (${mode}) ===\n`);
 console.log("(A) WITH context layer:");
 console.log(indent(withAnswer));
 console.log(
-	`\n  → cites migration? ${withCites ? "YES" : "NO"}; corrects to ~${ADJUSTED_MARCH}? ${withCorrects ? "YES" : "NO"} ⇒ ${withPass ? "PASS ✅" : "FAIL ❌"}`,
+  `\n  → cites migration? ${withCites ? "YES" : "NO"}; corrects to ~${ADJUSTED_MARCH}? ${withCorrects ? "YES" : "NO"} ⇒ ${withPass ? "PASS ✅" : "FAIL ❌"}`
 );
 console.log("\n(B) WITHOUT context layer (baseline):");
 console.log(indent(baseAnswer));
 console.log(
-	`\n  → cites migration? ${baseCites ? "YES" : "NO"}; corrects the number? ${baseCorrects ? "YES" : "NO"} ⇒ correctly has neither? ${basePass ? "PASS ✅" : "FAIL ❌"}`,
+  `\n  → cites migration? ${baseCites ? "YES" : "NO"}; corrects the number? ${baseCorrects ? "YES" : "NO"} ⇒ correctly has neither? ${basePass ? "PASS ✅" : "FAIL ❌"}`
 );
 
 console.log(
-	`\n${pass ? "PASS ✅" : "FAIL ❌"} — pushing the context layer ${
-		pass ? "changed" : "did NOT change"
-	} the answer.`,
+  `\n${pass ? "PASS ✅" : "FAIL ❌"} — pushing the context layer ${
+    pass ? "changed" : "did NOT change"
+  } the answer.`
 );
 if (mode === "deterministic-proxy") {
-	console.log(
-		"\n(This was the deterministic proxy: it proves the pushed context contains " +
-			"the governed correction and the baseline does not. Wire a model provider " +
-			"via `lobu agents inference-providers` and re-run for the live-agent eval.)",
-	);
+  console.log(
+    "\n(This was the deterministic proxy: it proves the pushed context contains " +
+      "the governed correction and the baseline does not. Wire a model provider " +
+      "via `lobu agents inference-providers` and re-run for the live-agent eval.)"
+  );
 }
 
 if (!pass) process.exitCode = 1;
 
 function indent(s: string): string {
-	return s
-		.split("\n")
-		.map((l) => `    ${l}`)
-		.join("\n");
+  return s
+    .split("\n")
+    .map((l) => `    ${l}`)
+    .join("\n");
 }

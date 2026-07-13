@@ -43,30 +43,30 @@ import { callTool, connectLocalGateway } from "./lib/gateway.ts";
 // ── Types shared between the two phases ────────────────────────────────────
 
 interface DefinitionVersion {
-	version: string;
-	effective_from: string;
-	definition: string;
-	is_current: boolean;
-	governing_predicate: {
-		exclude_payment_failure_in_grace?: boolean;
-		dunning_grace_days?: number;
-	} | null;
+  version: string;
+  effective_from: string;
+  definition: string;
+  is_current: boolean;
+  governing_predicate: {
+    exclude_payment_failure_in_grace?: boolean;
+    dunning_grace_days?: number;
+  } | null;
 }
 
 interface BusinessEvent {
-	event: string;
-	type: string;
-	date: string;
-	source: string;
-	affected_metrics: string[];
-	adjustment: { op: string; cancel_reason?: string } | null;
+  event: string;
+  type: string;
+  date: string;
+  source: string;
+  affected_metrics: string[];
+  adjustment: { op: string; cancel_reason?: string } | null;
 }
 
 interface ContextLayer {
-	metric: string;
-	metric_slug: string;
-	changelog: DefinitionVersion[];
-	events: BusinessEvent[];
+  metric: string;
+  metric_slug: string;
+  changelog: DefinitionVersion[];
+  events: BusinessEvent[];
 }
 
 /**
@@ -123,21 +123,21 @@ export default async (_ctx, client) => {
  * from `governing_predicate` — the definition literally governs the SQL.
  */
 function versionPredicate(v: DefinitionVersion): string {
-	const p = v.governing_predicate;
-	if (p?.exclude_payment_failure_in_grace) {
-		const graceDays = Number(p.dunning_grace_days ?? 28);
-		// A payment_failure cancelled within `graceDays` of its dunning start is a
-		// retry-window artifact, not churn — exclude it. Everything else counts.
-		// NULL-safe: `IS DISTINCT FROM` keeps a NULL-reason cancellation counted (a
-		// plain `cancel_reason = 'x'` would go NULL → NOT NULL → the row silently
-		// dropped from the FILTER).
-		return (
-			`NOT (cancel_reason IS NOT DISTINCT FROM 'payment_failure' ` +
-			`AND dunning_started_at IS NOT NULL ` +
-			`AND cancelled_at <= dunning_started_at + interval '${graceDays} days')`
-		);
-	}
-	return "TRUE"; // v1: every cancellation counts.
+  const p = v.governing_predicate;
+  if (p?.exclude_payment_failure_in_grace) {
+    const graceDays = Number(p.dunning_grace_days ?? 28);
+    // A payment_failure cancelled within `graceDays` of its dunning start is a
+    // retry-window artifact, not churn — exclude it. Everything else counts.
+    // NULL-safe: `IS DISTINCT FROM` keeps a NULL-reason cancellation counted (a
+    // plain `cancel_reason = 'x'` would go NULL → NOT NULL → the row silently
+    // dropped from the FILTER).
+    return (
+      `NOT (cancel_reason IS NOT DISTINCT FROM 'payment_failure' ` +
+      `AND dunning_started_at IS NOT NULL ` +
+      `AND cancelled_at <= dunning_started_at + interval '${graceDays} days')`
+    );
+  }
+  return "TRUE"; // v1: every cancellation counts.
 }
 
 /**
@@ -146,29 +146,29 @@ function versionPredicate(v: DefinitionVersion): string {
  * adjustment is derivable purely from the warehouse, so that is what we apply.
  */
 interface IncidentAdjustment {
-	/** YYYY-MM the incident occurred in — the ONLY month its rows are subtracted from. */
-	month: string;
-	/** SQL string literal for the reason (already single-quoted + escaped). */
-	reasonLiteral: string;
+  /** YYYY-MM the incident occurred in — the ONLY month its rows are subtracted from. */
+  month: string;
+  /** SQL string literal for the reason (already single-quoted + escaped). */
+  reasonLiteral: string;
 }
 
 function incidentAdjustments(
-	events: BusinessEvent[],
-	metricSlug: string,
+  events: BusinessEvent[],
+  metricSlug: string
 ): IncidentAdjustment[] {
-	return events
-		.filter(
-			(e) =>
-				e.type === "data_incident" &&
-				e.affected_metrics.includes(metricSlug) &&
-				e.adjustment?.op === "subtract_reason" &&
-				e.adjustment.cancel_reason &&
-				e.date,
-		)
-		.map((e) => ({
-			month: String(e.date).slice(0, 7),
-			reasonLiteral: `'${String(e.adjustment?.cancel_reason).replace(/'/g, "''")}'`,
-		}));
+  return events
+    .filter(
+      (e) =>
+        e.type === "data_incident" &&
+        e.affected_metrics.includes(metricSlug) &&
+        e.adjustment?.op === "subtract_reason" &&
+        e.adjustment.cancel_reason &&
+        e.date
+    )
+    .map((e) => ({
+      month: String(e.date).slice(0, 7),
+      reasonLiteral: `'${String(e.adjustment?.cancel_reason).replace(/'/g, "''")}'`,
+    }));
 }
 
 /**
@@ -178,13 +178,13 @@ function incidentAdjustments(
  * NULL-safe via `IS NOT DISTINCT FROM`.
  */
 function artifactPredicateSql(adjustments: IncidentAdjustment[]): string {
-	if (adjustments.length === 0) return "FALSE";
-	const clauses = adjustments.map(
-		(a) =>
-			`(to_char(date_trunc('month', cancelled_at), 'YYYY-MM') = '${a.month}' ` +
-			`AND cancel_reason IS NOT DISTINCT FROM ${a.reasonLiteral})`,
-	);
-	return clauses.join(" OR ");
+  if (adjustments.length === 0) return "FALSE";
+  const clauses = adjustments.map(
+    (a) =>
+      `(to_char(date_trunc('month', cancelled_at), 'YYYY-MM') = '${a.month}' ` +
+      `AND cancel_reason IS NOT DISTINCT FROM ${a.reasonLiteral})`
+  );
+  return clauses.join(" OR ");
 }
 
 /**
@@ -201,64 +201,64 @@ function artifactPredicateSql(adjustments: IncidentAdjustment[]): string {
  * so the SAME query counts pre-May months under v1 and post-May under v2.
  */
 function buildGovernedSql(ctx: ContextLayer): string {
-	const adjustments = incidentAdjustments(ctx.events, ctx.metric_slug);
-	const artifactPredicate = artifactPredicateSql(adjustments);
-	// Keep everything that is NOT an incident artifact. `NOT (artifact)` is
-	// NULL-safe because artifactPredicate uses IS [NOT] DISTINCT FROM, so it is a
-	// total boolean (never NULL) — a NULL-reason row is simply not an artifact.
-	const keepPredicate =
-		adjustments.length === 0 ? "TRUE" : `NOT (${artifactPredicate})`;
+  const adjustments = incidentAdjustments(ctx.events, ctx.metric_slug);
+  const artifactPredicate = artifactPredicateSql(adjustments);
+  // Keep everything that is NOT an incident artifact. `NOT (artifact)` is
+  // NULL-safe because artifactPredicate uses IS [NOT] DISTINCT FROM, so it is a
+  // total boolean (never NULL) — a NULL-reason row is simply not an artifact.
+  const keepPredicate =
+    adjustments.length === 0 ? "TRUE" : `NOT (${artifactPredicate})`;
 
-	const chrono = [...ctx.changelog].sort((a, b) =>
-		a.effective_from.localeCompare(b.effective_from),
-	);
-	const earliest = chrono[0];
-	if (!earliest) {
-		throw new Error(
-			"metric-definition has no versioned definition — run `bun run seed` first",
-		);
-	}
-	// CASE arms newest-first: the first month-boundary that is <= the row's month
-	// wins, i.e. the version in effect. Falls through to the earliest version.
-	const arms = [...chrono]
-		.reverse()
-		.map(
-			(v) =>
-				`      WHEN to_char(date_trunc('month', cancelled_at), 'YYYY-MM') >= '${v.effective_from.slice(
-					0,
-					7,
-				)}'\n        THEN (${versionPredicate(v)})`,
-		)
-		.join("\n");
-	const fallback = versionPredicate(earliest);
+  const chrono = [...ctx.changelog].sort((a, b) =>
+    a.effective_from.localeCompare(b.effective_from)
+  );
+  const earliest = chrono[0];
+  if (!earliest) {
+    throw new Error(
+      "metric-definition has no versioned definition — run `bun run seed` first"
+    );
+  }
+  // CASE arms newest-first: the first month-boundary that is <= the row's month
+  // wins, i.e. the version in effect. Falls through to the earliest version.
+  const arms = [...chrono]
+    .reverse()
+    .map(
+      (v) =>
+        `      WHEN to_char(date_trunc('month', cancelled_at), 'YYYY-MM') >= '${v.effective_from.slice(
+          0,
+          7
+        )}'\n        THEN (${versionPredicate(v)})`
+    )
+    .join("\n");
+  const fallback = versionPredicate(earliest);
 
-	const governedExpr = `CASE\n${arms}\n      ELSE (${fallback})\n    END`;
+  const governedExpr = `CASE\n${arms}\n      ELSE (${fallback})\n    END`;
 
-	return (
-		`SELECT to_char(date_trunc('month', cancelled_at), 'YYYY-MM') AS month,\n` +
-		`       count(*)::int AS raw,\n` +
-		`       count(*) FILTER (\n` +
-		`         WHERE (${keepPredicate})\n` +
-		`           AND (${governedExpr})\n` +
-		`       )::int AS adjusted,\n` +
-		`       count(*) FILTER (WHERE ${artifactPredicate})::int AS subtracted\n` +
-		`  FROM subscriptions\n` +
-		` WHERE cancelled_at IS NOT NULL\n` +
-		` GROUP BY 1\n` +
-		` ORDER BY 1`
-	);
+  return (
+    `SELECT to_char(date_trunc('month', cancelled_at), 'YYYY-MM') AS month,\n` +
+    `       count(*)::int AS raw,\n` +
+    `       count(*) FILTER (\n` +
+    `         WHERE (${keepPredicate})\n` +
+    `           AND (${governedExpr})\n` +
+    `       )::int AS adjusted,\n` +
+    `       count(*) FILTER (WHERE ${artifactPredicate})::int AS subtracted\n` +
+    `  FROM subscriptions\n` +
+    ` WHERE cancelled_at IS NOT NULL\n` +
+    ` GROUP BY 1\n` +
+    ` ORDER BY 1`
+  );
 }
 
 // ── Compose ────────────────────────────────────────────────────────────────
 
 interface QuerySqlResult {
-	rows: Array<{
-		month: string;
-		raw: number;
-		adjusted: number;
-		subtracted: number;
-	}>;
-	error?: string;
+  rows: Array<{
+    month: string;
+    raw: number;
+    adjusted: number;
+    subtracted: number;
+  }>;
+  error?: string;
 }
 
 const gw = await connectLocalGateway();
@@ -266,121 +266,121 @@ console.log(`Connected to local gateway (org: ${gw.org})`);
 
 // Phase 1: the context layer.
 const ctxResult = await callTool<{
-	return_value?: ContextLayer;
-	success: boolean;
-	error?: { message: string };
+  return_value?: ContextLayer;
+  success: boolean;
+  error?: { message: string };
 }>(gw, "run_sdk", { script: CONTEXT_SCRIPT, timeout_ms: 60_000 });
 if (!ctxResult.success || !ctxResult.return_value) {
-	throw new Error(
-		`context read failed: ${ctxResult.error?.message ?? "unknown"}`,
-	);
+  throw new Error(
+    `context read failed: ${ctxResult.error?.message ?? "unknown"}`
+  );
 }
 const ctx = ctxResult.return_value;
 
 // Phase 2: GENERATE the governed SQL from that context, run it LIVE.
 const governedSql = buildGovernedSql(ctx);
 const live = await callTool<QuerySqlResult>(gw, "query_sql", {
-	connection: WAREHOUSE_CONNECTION_SLUG,
-	sql: governedSql,
+  connection: WAREHOUSE_CONNECTION_SLUG,
+  sql: governedSql,
 });
 if (live.error) {
-	throw new Error(`governed query failed: ${live.error}\n---\n${governedSql}`);
+  throw new Error(`governed query failed: ${live.error}\n---\n${governedSql}`);
 }
 const liveRows = live.rows;
 
 // Which definition version governs a given YYYY-MM month?
 const versionFor = (month: string): DefinitionVersion | undefined => {
-	let current = ctx.changelog[0];
-	for (const def of ctx.changelog) {
-		if (def.effective_from.slice(0, 7) <= month) current = def;
-	}
-	return current;
+  let current = ctx.changelog[0];
+  for (const def of ctx.changelog) {
+    if (def.effective_from.slice(0, 7) <= month) current = def;
+  }
+  return current;
 };
 
 // Join the live governed series with the business-event flags per month.
 const months = liveRows.map((row) => {
-	const month = row.month;
-	const flags = ctx.events
-		.filter((ev) => String(ev.date ?? "").slice(0, 7) === month)
-		.filter((ev) => ev.affected_metrics.includes(ctx.metric_slug))
-		.map((ev) => ({ event: ev.event, type: ev.type, source: ev.source }));
-	const gov = versionFor(month);
-	return {
-		month,
-		raw: row.raw,
-		adjusted: row.adjusted,
-		definition_version: gov?.version ?? null,
-		flags,
-		// Exactly the incident-named (artifact) rows for this month, straight from
-		// the warehouse — never derived as raw−adjusted, so a version-governed month
-		// can never inflate the "subtracted" figure.
-		subtracted: row.subtracted,
-	};
+  const month = row.month;
+  const flags = ctx.events
+    .filter((ev) => String(ev.date ?? "").slice(0, 7) === month)
+    .filter((ev) => ev.affected_metrics.includes(ctx.metric_slug))
+    .map((ev) => ({ event: ev.event, type: ev.type, source: ev.source }));
+  const gov = versionFor(month);
+  return {
+    month,
+    raw: row.raw,
+    adjusted: row.adjusted,
+    definition_version: gov?.version ?? null,
+    flags,
+    // Exactly the incident-named (artifact) rows for this month, straight from
+    // the warehouse — never derived as raw−adjusted, so a version-governed month
+    // can never inflate the "subtracted" figure.
+    subtracted: row.subtracted,
+  };
 });
 
 // ── Output ─────────────────────────────────────────────────────────────────
 
 console.log(`\n=== Adjusted churn for ${ctx.metric} ===\n`);
 console.table(
-	months.map((m) => ({
-		month: m.month,
-		raw: m.raw,
-		adjusted: m.adjusted,
-		def: m.definition_version,
-		flags: m.flags.map((f) => f.type).join(", ") || "",
-	})),
+  months.map((m) => ({
+    month: m.month,
+    raw: m.raw,
+    adjusted: m.adjusted,
+    def: m.definition_version,
+    flags: m.flags.map((f) => f.type).join(", ") || "",
+  }))
 );
 
 console.log("\n=== Definition changelog (governs the query) ===");
 for (const d of ctx.changelog) {
-	const pred = d.governing_predicate?.exclude_payment_failure_in_grace
-		? ` [predicate: exclude payment_failure inside ${d.governing_predicate.dunning_grace_days}-day grace]`
-		: " [predicate: count every cancellation]";
-	console.log(
-		`  ${d.version} (from ${d.effective_from})${d.is_current ? " [current]" : ""}: ${d.definition}${pred}`,
-	);
+  const pred = d.governing_predicate?.exclude_payment_failure_in_grace
+    ? ` [predicate: exclude payment_failure inside ${d.governing_predicate.dunning_grace_days}-day grace]`
+    : " [predicate: count every cancellation]";
+  console.log(
+    `  ${d.version} (from ${d.effective_from})${d.is_current ? " [current]" : ""}: ${d.definition}${pred}`
+  );
 }
 
 // Prove the definition MOVES the number, not just labels it: pick a v2-governed
 // plain month and show what v1 would have counted vs what v2 actually counts.
 const v2Month = months.find(
-	(m) => m.definition_version === "v2" && m.flags.length === 0,
+  (m) => m.definition_version === "v2" && m.flags.length === 0
 );
 if (v2Month) {
-	console.log("\n=== Definition governs the number (not just the label) ===");
-	console.log(
-		`  ${v2Month.month}: raw ${v2Month.raw} counted under v1 would be ${v2Month.raw}; ` +
-			`under the v2 predicate the governed count is ${v2Month.adjusted}. ` +
-			`Same warehouse, different number — because the definition changed the WHERE.`,
-	);
+  console.log("\n=== Definition governs the number (not just the label) ===");
+  console.log(
+    `  ${v2Month.month}: raw ${v2Month.raw} counted under v1 would be ${v2Month.raw}; ` +
+      `under the v2 predicate the governed count is ${v2Month.adjusted}. ` +
+      `Same warehouse, different number — because the definition changed the WHERE.`
+  );
 }
 
 console.log("\n=== Narrative ===");
 for (const m of months) {
-	for (const f of m.flags) {
-		if (f.type === "data_incident") {
-			console.log(
-				`  • ${m.month}: raw ${m.raw} REPAIRED to ${m.adjusted} — ${f.event} ` +
-					`(${f.source}). Subtracted ${m.subtracted} artifact rows; the real ` +
-					`cancellations that month still stand.`,
-			);
-		} else if (f.type === "definition_change") {
-			console.log(
-				`  • ${m.month}: definition moved to ${m.definition_version} — ${f.event} ` +
-					`(${f.source}). Post-boundary months are counted under the new predicate.`,
-			);
-		} else {
-			console.log(
-				`  • ${m.month}: raw ${m.raw} genuinely elevated — ${f.event} ` +
-					`(${f.source}). Real but flagged; do not extrapolate.`,
-			);
-		}
-	}
+  for (const f of m.flags) {
+    if (f.type === "data_incident") {
+      console.log(
+        `  • ${m.month}: raw ${m.raw} REPAIRED to ${m.adjusted} — ${f.event} ` +
+          `(${f.source}). Subtracted ${m.subtracted} artifact rows; the real ` +
+          `cancellations that month still stand.`
+      );
+    } else if (f.type === "definition_change") {
+      console.log(
+        `  • ${m.month}: definition moved to ${m.definition_version} — ${f.event} ` +
+          `(${f.source}). Post-boundary months are counted under the new predicate.`
+      );
+    } else {
+      console.log(
+        `  • ${m.month}: raw ${m.raw} genuinely elevated — ${f.event} ` +
+          `(${f.source}). Real but flagged; do not extrapolate.`
+      );
+    }
+  }
 }
 
 console.log(
-	"\nAdjusted churn is computed by letting the governed context drive the query: " +
-		"each month is counted under the definition version in effect, data-incident " +
-		"artifacts are subtracted (not nulled), and external shocks are kept but " +
-		"flagged. Every deviation cites its source of truth.",
+  "\nAdjusted churn is computed by letting the governed context drive the query: " +
+    "each month is counted under the definition version in effect, data-incident " +
+    "artifacts are subtracted (not nulled), and external shocks are kept but " +
+    "flagged. Every deviation cites its source of truth."
 );

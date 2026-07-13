@@ -206,11 +206,9 @@ describe('org-wide guidance context', () => {
   });
 
   it('backfills `guidance` into a pre-guidance $member registry so authorship still validates (#1913)', async () => {
-    // Simulate an org provisioned before `guidance` was a built-in kind: a
-    // populated $member.event_kinds registry that does NOT list `guidance`.
-    // With `guidance` now validated through the registry (no code bypass), the
-    // write would be rejected as an unknown kind unless ensureMemberEntityType
-    // additively backfills the missing built-in on the next save.
+    // Org provisioned before `guidance` was a built-in: a populated registry
+    // that omits it. Now validated through the registry, the write is rejected
+    // unless ensureMemberEntityType additively backfills it on the next save.
     const sql = getTestDb();
     const preOrg = await createTestOrganization({ name: 'Pre-guidance Org' });
     const admin = await createTestUser({ name: 'Admin' });
@@ -235,8 +233,7 @@ describe('org-wide guidance context', () => {
     `;
     expect(stripped[0].event_kinds).not.toHaveProperty('guidance');
 
-    // The very next guidance write must succeed: ensureMemberEntityType backfills
-    // the missing built-in AND busts the stale validation cache in the same call.
+    // The next guidance write must succeed: backfill + cache re-prime in one call.
     const saved = (await saveContent(
       {
         content: 'Backfilled guidance renders.',
@@ -364,6 +361,63 @@ describe('org-wide guidance context', () => {
     expect(kinds.org_special?.description).toBe('authored by the org');
     // …and the intentionally-omitted default stays omitted (not resurrected).
     expect(kinds).not.toHaveProperty('todo');
+  });
+
+  it('leaves a NULL $member registry NULL (permissive): ordinary saves still validate (#1913)', async () => {
+    // A NULL event_kinds registry means "no allowlist, accept any kind". The
+    // guidance backfill must NOT materialize `{guidance}` onto it — that would
+    // flip the org from accept-any to accept-ONLY-guidance and reject the next
+    // ordinary note/fact save. NULL stays NULL; guidance already validates under
+    // permissive mode.
+    const sql = getTestDb();
+    const nullOrg = await createTestOrganization({ name: 'Null-registry Org' });
+    const admin = await createTestUser({ name: 'Null Admin' });
+    await addUserToOrganization(admin.id, nullOrg.id, 'admin');
+    const adminCtx = { ...ownerToolContext(nullOrg.id, admin.id), memberRole: 'admin' };
+
+    // Materialize $member, then force its registry to NULL (permissive org).
+    await saveContent(
+      { content: 'seed', semantic_type: 'note', metadata: {} } as never,
+      env,
+      adminCtx
+    );
+    await sql`
+      UPDATE entity_types
+      SET event_kinds = NULL
+      WHERE slug = '$member' AND organization_id = ${nullOrg.id} AND deleted_at IS NULL
+    `;
+
+    // Backfill runs (as at the top of every save) — must be a no-op on NULL.
+    await ensureMemberEntityType(nullOrg.id);
+
+    const after = await sql<{ event_kinds: Record<string, unknown> | null }>`
+      SELECT event_kinds FROM entity_types
+      WHERE slug = '$member' AND organization_id = ${nullOrg.id} AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    expect(after[0].event_kinds).toBeNull();
+
+    // An ordinary (non-guidance) save must still validate under permissive mode.
+    const note = (await saveContent(
+      { content: 'ordinary note still saves', semantic_type: 'note', metadata: {} } as never,
+      env,
+      adminCtx
+    )) as { id: number };
+    expect(note.id).toBeGreaterThan(0);
+
+    // Guidance also validates (permissive accepts any kind) and renders.
+    const guided = (await saveContent(
+      {
+        content: 'Null-registry guidance renders.',
+        semantic_type: GUIDANCE_SEMANTIC_TYPE,
+        metadata: {},
+      } as never,
+      env,
+      adminCtx
+    )) as { id: number };
+    expect(guided.id).toBeGreaterThan(0);
+    const out = await buildWorkspaceInstructions(nullOrg.id);
+    expect(out).toContain('Null-registry guidance renders.');
   });
 
   it('supersede replaces guidance: only the current event renders', async () => {

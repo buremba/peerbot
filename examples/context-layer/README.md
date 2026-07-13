@@ -146,9 +146,13 @@ governed predicates + adjustments and runs it live against the warehouse.
 
 Asks the March question WITH the governed context pushed vs a WITHOUT baseline
 and asserts the pushed context changed the answer. When the local install has a
-model provider wired, both arms are real agent turns; otherwise it runs the
-labelled deterministic proxy (below) — asserting the pushed context bundle
-carries the migration citation + corrected number and the baseline does not.
+model provider wired, both arms are real agent turns: the WITH arm runs the
+`analyst` agent (governed context in the prompt), the WITHOUT arm runs the
+`baseline` agent — declared in `lobu.config.ts` with `tools: { allowed: [],
+strict: true }` so it *cannot* retrieve the withheld context, making the A/B a
+real isolation of the variable. With no model provider it runs the labelled
+deterministic proxy (below) — asserting the pushed context bundle carries the
+migration citation + corrected number and the baseline does not.
 
 ```
 === Agent eval (deterministic-proxy) ===

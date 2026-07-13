@@ -41,7 +41,11 @@ import { callTool, connectLocalGateway, type Gateway } from "./lib/gateway.ts";
 
 const QUESTION =
   "Churn spiked to 550 in March 2026. Is that real, and what should the number be?";
-const AGENT_ID = "analyst";
+const WITH_AGENT_ID = "analyst";
+// The baseline agent is declared in lobu.config.ts with tools:{allowed:[],
+// strict:true} — it cannot retrieve business-event context, so the WITHOUT arm
+// is genuinely context-free, not just prompt-stripped.
+const BASELINE_AGENT_ID = "baseline";
 const RAW_MARCH = 550;
 const ADJUSTED_MARCH = 50;
 const MIGRATION_SOURCE = "https://linear.app/kelder/issue/DATA-142";
@@ -135,14 +139,18 @@ interface ChatOutcome {
   noModel: boolean;
 }
 
-function runAgentTurn(gw: Gateway, prompt: string): ChatOutcome {
+function runAgentTurn(
+  gw: Gateway,
+  agentId: string,
+  prompt: string
+): ChatOutcome {
   const res = spawnSync(
     "bunx",
     [
       "@lobu/cli",
       "chat",
       "--agent",
-      AGENT_ID,
+      agentId,
       // Thread the SAME gateway URL + org the scripts connected to (honors the
       // documented LOBU_URL override), instead of hardcoding a default.
       "--gateway",
@@ -246,7 +254,11 @@ const baseBlock = baselineBlock(march);
 
 // Probe: is a model wired up? One throwaway turn tells us.
 console.log("\nProbing for a configured model provider…");
-const probe = runAgentTurn(gw, "Reply with the single word READY.");
+const probe = runAgentTurn(
+  gw,
+  WITH_AGENT_ID,
+  "Reply with the single word READY."
+);
 
 let withAnswer: string;
 let baseAnswer: string;
@@ -272,21 +284,21 @@ if (probe.noModel) {
   // ── Real agent: two live turns ───────────────────────────────────────────
   mode = "live-agent";
   console.log("Model provider detected — running two REAL agent turns.\n");
-  // CAVEAT (honest limitation): both arms hit the SAME `analyst` agent, whose
-  // lobu.config.ts prompt instructs it to consult business-event records and
-  // whose tools can reach them. So the baseline arm is only prompt-isolated
-  // (no context in the message) — a tool-enabled agent could still retrieve the
-  // withheld context itself, which weakens the isolation. A fully isolated live
-  // eval needs a SECOND agent with no memory/business-event tools (same model +
-  // settings). `lobu chat` has no per-turn tool-strip flag today, so that agent
-  // is owed alongside wiring a provider. The deterministic proxy above does not
-  // have this gap: it asserts on the exact context bundle each arm would push.
+  // Isolation is real: the WITH arm runs the `analyst` (governed context in the
+  // prompt), the WITHOUT arm runs the `baseline` agent, declared in
+  // lobu.config.ts with tools:{allowed:[],strict:true} so it CANNOT retrieve the
+  // withheld context. Same model/settings, only the context differs.
   withAnswer = runAgentTurn(
     gw,
+    WITH_AGENT_ID,
     `${withBlock}\n\nQuestion: ${QUESTION}\n` +
       "Use the governed context above. Cite the source and give the corrected number."
   ).text;
-  baseAnswer = runAgentTurn(gw, `${baseBlock}\n\nQuestion: ${QUESTION}`).text;
+  baseAnswer = runAgentTurn(
+    gw,
+    BASELINE_AGENT_ID,
+    `${baseBlock}\n\nQuestion: ${QUESTION}`
+  ).text;
 }
 
 // ── Assert + report ──────────────────────────────────────────────────────────

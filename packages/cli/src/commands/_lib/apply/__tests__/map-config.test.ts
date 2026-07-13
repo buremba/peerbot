@@ -617,6 +617,45 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/more than once/);
   });
 
+  test("maps a virtual feed to DesiredFeed.virtual (config-as-constructor, #1899)", () => {
+    const conn = defineConnection({
+      slug: "warehouse",
+      connector: "postgres",
+      feeds: [
+        {
+          feed: "query",
+          name: "Churn rollup (live)",
+          virtual: true,
+          config: { query: "SELECT 1" },
+        },
+      ],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], connections: [conn] })
+    );
+    expect(state.connectors.connections[0]?.feeds).toEqual([
+      {
+        feedKey: "query",
+        name: "Churn rollup (live)",
+        config: { query: "SELECT 1" },
+        virtual: true,
+      },
+    ]);
+  });
+
+  test("rejects a virtual feed that also declares a schedule (#1899)", () => {
+    const conn = defineConnection({
+      slug: "warehouse",
+      connector: "postgres",
+      feeds: [{ feed: "query", virtual: true, schedule: "0 * * * *" }],
+    });
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({ agents: [], connections: [conn] })
+      )
+    ).toThrow(/virtual.*cannot have a schedule/);
+  });
+
   test("--only skips connectors and their secrets", () => {
     const auth = defineAuthProfile({
       slug: "gh-app",

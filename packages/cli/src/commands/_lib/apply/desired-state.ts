@@ -141,6 +141,8 @@ export interface DesiredFeed {
   name?: string;
   schedule?: string;
   config?: Record<string, unknown>;
+  /** Federated (live-pushdown, no-copy) feed — never synced; schedule is NULL. */
+  virtual?: boolean;
 }
 
 export interface DesiredConnection {

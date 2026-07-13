@@ -13,7 +13,8 @@
 - **Workers never receive real credentials.** They may receive only placeholders/proxied access.
 - Default to static `import`. New dynamic imports require measured cost justification here or in the package AGENTS plus a rationale comment at the call site. Tests may dynamically import after mocks.
 - Bug fixes require red→fix→green evidence. If you cannot reproduce, bail and report the dead end.
-- Run `make review` before PR/merge.
+- Run `make pre-pr` (fast no-DB CI gates: typecheck + knip + lint) AND `make review` (LLM verdict) before PR/merge. `make review` does NOT run typecheck/knip/tests — it is not proof CI will pass. If you touch server/runtime code, also run the relevant `bun test`/`make test-integration` suite.
+- After committing a fix, verify it landed with `git show HEAD:<file>` (or `git diff --stat origin/main...HEAD`). A fix left in the working tree but never committed will not reach CI — confirm HEAD, not just the working tree.
 
 ## Agent workflow
 - Do only what was asked. Delete ephemeral files you create. Do not create `*.md` unless asked.

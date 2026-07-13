@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review owletto-mac owletto-mac-e2e
+.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review pre-pr owletto-mac owletto-mac-e2e
 
 # Default target
 help:
@@ -287,3 +287,22 @@ clean-test-pg:
 
 review:
 	@./scripts/review.sh $(if $(BASE),--base $(BASE),)
+
+# Fast, deterministic CI gates that need NO database — the exact checks that
+# `make review` (LLM-verdict only) does NOT run. Run this before opening/updating
+# a PR so knip / typecheck / lint failures don't surface only in CI.
+# NOT a substitute for the DB-backed suites (make test-integration) when you
+# touch server/runtime code — but it catches the cheap, common misses.
+pre-pr:
+	@echo "🔎 [1/3] Strict typecheck (root + excluded packages)..."
+	@bun run typecheck
+	@for pkg in server connector-worker connector-sdk openclaw-plugin embeddings cli; do \
+		echo "   typecheck packages/$$pkg..."; \
+		( cd "packages/$$pkg" && bunx tsc --noEmit ) || exit $$?; \
+	done
+	@echo "🔎 [2/3] Dead-code gate (knip --include files)..."
+	@bun run knip --include files
+	@echo "🔎 [3/3] Lint/format (biome)..."
+	@bun run check
+	@echo "✅ pre-pr gates clean. NOTE: confirm your fix is in 'git show HEAD:<file>',"
+	@echo "   not just the working tree — a fix that isn't committed won't reach CI."

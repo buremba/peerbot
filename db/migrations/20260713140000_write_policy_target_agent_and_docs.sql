@@ -53,13 +53,18 @@ ALTER TABLE write_approval_policies
       (entity_type_slug IS NULL AND field_path IS NULL AND entity_id IS NULL)
       OR resource_class = 'entity'
     )
-  );
+  ) NOT VALID;
+ALTER TABLE write_approval_policies
+  VALIDATE CONSTRAINT write_approval_policies_scope_class_check;
 
 -- Rebuild unique identity to include target_agent_id.
+-- squawk-ignore require-concurrent-index-deletion -- low-row-count policy table; brief lock negligible at this scale
 DROP INDEX IF EXISTS write_approval_policies_class_principal_op_scope_key;
+-- squawk-ignore require-concurrent-index-deletion -- low-row-count policy table; brief lock negligible at this scale
 DROP INDEX IF EXISTS write_approval_policies_identity;
 
-CREATE UNIQUE INDEX write_approval_policies_identity
+-- squawk-ignore require-concurrent-index-creation,prefer-robust-stmts -- low-row-count policy table; brief lock negligible at this scale
+CREATE UNIQUE INDEX IF NOT EXISTS write_approval_policies_identity
   ON write_approval_policies (
     organization_id,
     resource_class,
@@ -77,11 +82,15 @@ CREATE UNIQUE INDEX write_approval_policies_identity
 ALTER TABLE write_approval_policies
   DROP CONSTRAINT IF EXISTS write_approval_policies_target_agent_fkey;
 
+-- squawk-ignore adding-foreign-key-constraint -- low-row-count policy table; brief scan negligible
 ALTER TABLE write_approval_policies
   ADD CONSTRAINT write_approval_policies_target_agent_fkey
   FOREIGN KEY (organization_id, target_agent_id)
   REFERENCES agents (organization_id, id)
-  ON DELETE CASCADE;
+  ON DELETE CASCADE
+  NOT VALID;
+ALTER TABLE write_approval_policies
+  VALIDATE CONSTRAINT write_approval_policies_target_agent_fkey;
 
 -- migrate:down
 ALTER TABLE write_approval_policies
@@ -90,8 +99,10 @@ ALTER TABLE write_approval_policies
 ALTER TABLE write_approval_policies
   DROP CONSTRAINT IF EXISTS write_approval_policies_scope_class_check;
 
+-- squawk-ignore require-concurrent-index-deletion -- rollback path; brief lock negligible at this scale
 DROP INDEX IF EXISTS write_approval_policies_identity;
 
+-- squawk-ignore require-concurrent-index-creation -- rollback path; low row count
 CREATE UNIQUE INDEX IF NOT EXISTS write_approval_policies_class_principal_op_scope_key
   ON write_approval_policies (
     organization_id,

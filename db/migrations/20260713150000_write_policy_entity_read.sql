@@ -10,7 +10,9 @@ ALTER TABLE write_policy_action_effects
 
 ALTER TABLE write_policy_action_effects
   ADD CONSTRAINT write_policy_action_effects_action_check
-  CHECK (action IN ('create', 'update', 'delete', 'execute', 'read'));
+  CHECK (action IN ('create', 'update', 'delete', 'execute', 'read')) NOT VALID;
+ALTER TABLE write_policy_action_effects
+  VALIDATE CONSTRAINT write_policy_action_effects_action_check;
 
 -- migrate:down
 ALTER TABLE write_policy_action_effects
@@ -21,4 +23,6 @@ DELETE FROM write_policy_action_effects WHERE action = 'read';
 
 ALTER TABLE write_policy_action_effects
   ADD CONSTRAINT write_policy_action_effects_action_check
-  CHECK (action IN ('create', 'update', 'delete', 'execute'));
+  CHECK (action IN ('create', 'update', 'delete', 'execute')) NOT VALID;
+ALTER TABLE write_policy_action_effects
+  VALIDATE CONSTRAINT write_policy_action_effects_action_check;

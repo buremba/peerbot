@@ -2231,19 +2231,8 @@ app.delete("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 	const targetAgentId =
 		resourceClass === "agent_config" ? (targetRaw?.trim() ?? null) || null : null;
 
-	// Never delete the unscoped entity workspace default via this path either —
-	// deleteEntityApprovalPolicy already guards it; surface a clear error.
-	if (
-		resourceClass === "entity" &&
-		!entityTypeSlug &&
-		!operationKey &&
-		!targetAgentId
-	) {
-		// Blanket entity floor may be cleared of *exception* rows only; deleting
-		// the unscoped entity default is blocked by the policy helper (returns false).
-		// Still allow deleting blanket agent_config / connector_action floor rows.
-	}
-
+	// Unscoped entity floor delete is blocked inside deleteEntityApprovalPolicy
+	// (returns false). Blanket agent_config / connector_action floor rows may clear.
 	const deleted = await deleteEntityApprovalPolicy({
 		organizationId,
 		resourceClass,

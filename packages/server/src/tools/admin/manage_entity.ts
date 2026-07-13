@@ -821,11 +821,11 @@ async function handleList(
 				}
 				if (ok) allowed.push(e);
 			}
-			// Pagination totals are approximate when filtered; prefer not leaking denied rows.
+			// Prefer not leaking exact denied-row counts; keep hasMore from the
+			// underlying query so later pages with allowed types still surface.
 			if (allowed.length !== entities.length) {
 				entities = allowed;
 				totalCount = allowed.length;
-				hasMore = false;
 			}
 		}
 	}

@@ -363,11 +363,11 @@ function getMcpToolKind(tool: DiscoveredTool): "read" | "write" {
 }
 
 function getMcpToolRequiresApproval(tool: DiscoveredTool): boolean {
-	// Align with MCP destructiveHint (and connection defaultModeFromOperation):
-	// only destructive writes default to approval. Non-destructive writes stay
-	// auto at the connection layer unless the user tightens action_modes or the
-	// agent/org connector_action policy tightens execute.
-	return tool.annotations?.destructiveHint === true;
+	// MCP ToolAnnotations are pessimistic: when destructiveHint is omitted on a
+	// write tool, clients treat it as potentially destructive (spec default true).
+	// Only an explicit destructiveHint: false keeps the connection default auto.
+	if (getMcpToolKind(tool) === "read") return false;
+	return tool.annotations?.destructiveHint !== false;
 }
 
 async function getMcpOperations(

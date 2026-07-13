@@ -118,6 +118,53 @@ describe("createActionCaller", () => {
 		},
 	);
 
+	it("rejects a named call when status is timeout", async () => {
+		const failure = {
+			status: "timeout",
+			error_message: "Device action run timed out",
+		};
+		const handler = async () => failure;
+		const { action } = createActionCaller(
+			handler as never,
+			{} as never,
+			{} as never,
+		);
+
+		await expect(action("execute", {})).rejects.toMatchObject({
+			name: "ClientSdkActionError",
+			action: "execute",
+			message: failure.error_message,
+			result: failure,
+		});
+	});
+
+	it("rejects a named call when every aggregate item failed", async () => {
+		const failure = {
+			action: "delete",
+			results: [
+				{
+					watcher_id: "missing-watcher",
+					success: false,
+					message: "Watcher not found or already archived",
+				},
+			],
+			summary: { total: 1, successful: 0, failed: 1 },
+		};
+		const handler = async () => failure;
+		const { action } = createActionCaller(
+			handler as never,
+			{} as never,
+			{} as never,
+		);
+
+		await expect(action("delete", {})).rejects.toMatchObject({
+			name: "ClientSdkActionError",
+			action: "delete",
+			message: failure.results[0].message,
+			result: failure,
+		});
+	});
+
 	it("returns a queued approval even when its mutation success is false", async () => {
 		const queued = {
 			success: false,

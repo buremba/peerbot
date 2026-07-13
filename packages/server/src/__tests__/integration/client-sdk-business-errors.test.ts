@@ -50,4 +50,15 @@ describe("ClientSDK business failure boundary", () => {
 			httpStatus: 400,
 		});
 	});
+
+	it("throws when watchers.delete returns an all-failed aggregate", async () => {
+		await expect(
+			workspace.owner.watchers.delete({ watcher_ids: ["999999"] }),
+		).rejects.toMatchObject({
+			name: "ClientSdkActionError",
+			action: "delete",
+			message: "Watcher not found or already archived",
+			httpStatus: 400,
+		});
+	});
 });

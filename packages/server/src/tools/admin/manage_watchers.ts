@@ -464,13 +464,20 @@ function pickWatcherApprovalDisplayFields(
       continue;
     }
     if (Array.isArray(value)) {
-      // Primitive arrays (watcher_ids, entity_ids, tags) collapse for display;
-      // object arrays (sources) keep structure via JSON in the schema renderer.
+      // Primitive arrays (watcher_ids, entity_ids, tags) collapse to a readable
+      // list; object arrays (sources) serialize to JSON so the schema's string
+      // field renders the actual structure, not "[object Object]".
       out[key] = value.every(
         (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v),
       )
         ? value.join(', ')
-        : value;
+        : JSON.stringify(value);
+      continue;
+    }
+    // Structured objects (execution_config, model_config) serialize to JSON for
+    // the same reason — the approval card field is a readOnly string.
+    if (typeof value === 'object') {
+      out[key] = JSON.stringify(value);
       continue;
     }
     out[key] = value;
@@ -519,19 +526,29 @@ function buildWatcherApprovalInputSchema(
     const baseTitle = WATCHER_APPROVAL_FIELD_TITLES[key] ?? key;
     const title =
       value === WATCHER_APPROVAL_CLEARED ? `${baseTitle} (cleared)` : baseTitle;
+    // Every field is readOnly: the watcher approval card is a review-and-decide
+    // surface, not an editor. The apply path always executes the ORIGINAL
+    // proposal.args, so an editable field would silently discard the reviewer's
+    // change. readOnly makes the form render the proposed value as inspectable
+    // text without pretending it can be edited.
+    const base = { title, readOnly: true } as const;
+    // Structured values (execution_config, model_config, sources, arrays of
+    // objects) have no nested schema, so the generic form would coerce them to
+    // "[object Object]". Serialize to a JSON string so the reviewer sees the
+    // actual proposed configuration.
     if (typeof value === 'object' && value !== null) {
-      properties[key] = { type: 'object', title };
+      properties[key] = { ...base, type: 'string' };
       continue;
     }
     if (typeof value === 'number') {
-      properties[key] = { type: 'number', title };
+      properties[key] = { ...base, type: 'number' };
       continue;
     }
     if (typeof value === 'boolean') {
-      properties[key] = { type: 'boolean', title };
+      properties[key] = { ...base, type: 'boolean' };
       continue;
     }
-    properties[key] = { type: 'string', title };
+    properties[key] = { ...base, type: 'string' };
   }
   return { type: 'object', properties };
 }
@@ -715,6 +732,34 @@ export async function applyManageWatchersProposal(
       proposal.actingAgentId ?? null,
       'agent',
     );
+    // Re-run the CURRENT write-gate before applying: policy may have flipped to
+    // `deny` (or the acting principal may have been deleted) while the approval
+    // sat pending. Fail closed rather than execute a now-denied proposal — the
+    // approve handler supersedes the card to 'failed'. Humans (null actingAgentId)
+    // are ungoverned here, matching the request-path gate.
+    if (proposal.actingAgentId != null) {
+      const writeGateAction = watcherWriteAction(args.action);
+      if (writeGateAction) {
+        const decision = await resolveWritePolicyDecision({
+          organizationId: applyCtx.organizationId,
+          resourceClass: 'agent_config',
+          principalKind: 'agent',
+          principalId: proposal.actingAgentId,
+          ownerAgentId: proposal.actingAgentId,
+          ownerResolved: true,
+          mode: 'unattended',
+          action: writeGateAction,
+        });
+        // Only `deny` blocks the apply: this run IS the approval, so a
+        // `require_approval` decision is already satisfied and must not re-block.
+        if (decision === 'deny') {
+          throw new ToolUserError(
+            `Policy now denies ${writeGateAction} of watchers for this principal; the approved change was not applied.`,
+            403,
+          );
+        }
+      }
+    }
     return runManageWatchers(args, env, applyCtx);
   });
 }

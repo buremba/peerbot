@@ -194,10 +194,11 @@ export interface ConnectionFeed {
   config?: Record<string, unknown>;
   /**
    * A virtual feed is federated: rows are read LIVE at request time via
-   * pushdown and never copied into `events`. It is never synced, so `schedule`
-   * is ignored (a virtual feed always persists `schedule = NULL`). Declaring a
-   * `virtual` feed here lets the whole warehouse-federation story live in
-   * `lobu.config.ts` instead of an imperative `manage_feeds create_feed` call.
+   * pushdown and never copied into `events`. It is never synced, so pairing it
+   * with a `schedule` is rejected at apply time (a virtual feed always persists
+   * `schedule = NULL`). Declaring a `virtual` feed here lets the whole
+   * warehouse-federation story live in `lobu.config.ts` instead of an imperative
+   * `manage_feeds create_feed` call.
    */
   virtual?: boolean;
 }

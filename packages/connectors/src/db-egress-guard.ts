@@ -421,7 +421,30 @@ export function readEgressPolicy(value: unknown): DbEgressPolicy {
 export function requiredTlsMode(connectionString: string): string {
   const q = connectionString.indexOf('?');
   const params = new URLSearchParams(q === -1 ? '' : connectionString.slice(q + 1));
-  const mode = (params.get('sslmode') ?? params.get('ssl') ?? '').toLowerCase();
+  // Match postgres.js's own precedence exactly (connection.js parseOptions):
+  // it reduces searchParams into an object so on DUPLICATE keys the LAST value
+  // wins, then maps `sslmode` over `ssl` (sslmode present ⇒ ssl := sslmode).
+  // `URLSearchParams.get` returns the FIRST value, so using it would let
+  // `?sslmode=require&sslmode=verify-full` read `require` and silently DOWNGRADE
+  // the strict TLS the driver would actually apply. Read last-wins for both keys,
+  // sslmode taking priority when present.
+  // postgres.js only maps sslmode over ssl when the (last) sslmode is truthy
+  // (`query.sslmode && ...`), so an empty `?sslmode=` falls through to `ssl`.
+  const lastSslmode = params.getAll('sslmode').at(-1);
+  const lastSsl = params.getAll('ssl').at(-1);
+  const mode = ((lastSslmode || lastSsl) ?? '').toLowerCase();
+  // postgres.js applies `sslrootcert=system` LAST and UNCONDITIONALLY forces
+  // `ssl = 'verify-full'` (connection.js) — it runs after the sslmode→ssl
+  // mapping and even overrides `sslmode=disable`, so the driver would encrypt
+  // and verify regardless. Our returned value is authoritative in
+  // openGuardedPool (an explicit `ssl` option beats the URL), so we must honor
+  // it: otherwise a URL trusting the system CA store would be silently
+  // DOWNGRADED from verify-full to require (or wrongly rejected as plaintext),
+  // disabling certificate verification.
+  const usesSystemCa = params.getAll('sslrootcert').at(-1)?.toLowerCase() === 'system';
+  if (usesSystemCa) {
+    return 'verify-full';
+  }
   if (mode === 'disable' || mode === 'false') {
     throw new Error(
       'DATABASE_URL disables TLS (sslmode=disable), but TLS is required on this deployment (egress policy: block-private). Use sslmode=require or stronger.',

@@ -26,8 +26,10 @@ acquire_commit_review_lock() {
   candidate="$lock_root/commit-$sha.lock"
   mkdir -p "$lock_root"
   chmod 700 "$lock_root"
-  # Old per-commit locks are one-shot litter; a live review never runs a day.
-  find "$lock_root" -name 'commit-*.lock' -mtime +1 -delete 2>/dev/null || true
+  # Never delete lock files, even old ones: unlinking a path whose flock is
+  # still held would let a fresh run recreate the name on a new inode and
+  # become a second owner of the same sha. They are ~6 bytes each and /tmp
+  # clears on reboot — litter is the safe choice.
   touch "$candidate"
   chmod 600 "$candidate"
   exec 9>>"$candidate"

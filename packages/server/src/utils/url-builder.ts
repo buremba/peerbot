@@ -74,6 +74,35 @@ export async function buildAgentSettingsUrl(
 }
 
 /**
+ * Build a watcher's edit URL —
+ * `<webOrigin>/<orgSlug>/agents/<agentId>/behaviors/watcher/<watcherId>` — the
+ * review target for a pending `manage_watchers` update. Mirrors
+ * {@link buildAgentSettingsUrl}: `?run_id=<id>` prefills the watcher edit form
+ * with the proposed change for Approve/Reject (WI-0.3, watcher parity).
+ *
+ * A watcher is owned by an agent (`watchers.agent_id`), so the route is nested
+ * under that agent — the caller passes the owning agent id (from the current
+ * watcher row). Returns null when any required piece is missing; the producer
+ * falls back to the run permalink.
+ */
+export async function buildWatcherSettingsUrl(
+  publicGatewayUrl: string | undefined,
+  organizationId: string | undefined,
+  agentId: string | undefined,
+  watcherId: string | number | undefined,
+  opts?: { runId?: number }
+): Promise<string | null> {
+  if (!publicGatewayUrl || !organizationId || !agentId || watcherId == null) {
+    return null;
+  }
+  const slug = await getOrganizationSlug(organizationId).catch(() => null);
+  if (!slug) return null;
+  const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
+  const base = `${webOrigin}/${encodeURIComponent(slug)}/agents/${encodeURIComponent(agentId)}/behaviors/watcher/${encodeURIComponent(String(watcherId))}`;
+  return opts?.runId ? `${base}?run_id=${opts.runId}` : base;
+}
+
+/**
  * Build the org's "connect a provider" URL — `<webOrigin>/<orgSlug>/
  * inference-providers/new` — the preflight CTA target when the selected model's
  * provider is not connected yet, as opposed to *picking a model* on an agent

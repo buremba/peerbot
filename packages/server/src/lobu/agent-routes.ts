@@ -1411,6 +1411,91 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 	});
 });
 
+// GET /:agentId/watchers/:watcherId/pending/:runId — the watcher parity of the
+// agent config-prefill endpoint above. A pending `manage_watchers` update run is
+// reviewed on the watcher edit form (nested under its owning agent), prefilled
+// via `?run_id=`. Returns the held proposal so the form can render + approve it.
+//
+// AuthZ: org-scoped by middleware; the held proposal must target `:watcherId`
+// AND be owned by `:agentId`. A manage_watchers proposal is `{ args, ... }` with
+// watcher_id / agent_id nested INSIDE `args` (unlike manage_agents, top-level) —
+// hence a separate endpoint rather than folding into the agent one.
+routes.get("/:agentId/watchers/:watcherId/pending/:runId", async (c) => {
+	const { agentId, watcherId } = c.req.param();
+	const organizationId = c.get("organizationId") as string;
+	const runId = Number(c.req.param("runId"));
+	if (!Number.isInteger(runId) || runId <= 0) {
+		return c.json({ error: "Invalid run id" }, 400);
+	}
+
+	const rows = await getDb()<{
+		action: string | null;
+		proposal: Record<string, unknown> | null;
+		current: Record<string, unknown> | null;
+		tool: string | null;
+	}>`
+		SELECT e.metadata->>'action' AS action,
+		       e.metadata->'proposal' AS proposal,
+		       e.metadata->'current' AS current,
+		       e.metadata->>'tool' AS tool
+		FROM runs r
+		JOIN current_event_records e
+		  ON e.run_id = r.id
+		 AND e.interaction_type = 'approval'
+		 AND e.interaction_status = 'pending'
+		WHERE r.id = ${runId}
+		  AND r.organization_id = ${organizationId}
+		  AND r.run_type = 'internal'
+		  AND r.approval_status = 'pending'
+		ORDER BY e.id DESC
+		LIMIT 1
+	`;
+	const row = rows[0];
+	if (!row) return c.json({ error: "No pending proposal for this run" }, 404);
+
+	// Scoped to manage_watchers UPDATE: the watcher edit form reviews a single
+	// existing watcher's config. create / create_from_version / set_reaction_script
+	// aren't a single-form review (they keep the run-permalink path), so 404 here.
+	const rawProposal = row.proposal ?? null;
+	if (
+		row.tool !== "manage_watchers" ||
+		row.action !== "update" ||
+		!rawProposal ||
+		typeof rawProposal !== "object"
+	) {
+		return c.json({ error: "No pending proposal for this run" }, 404);
+	}
+
+	// manage_watchers proposal nests the target under `args`. The held proposal
+	// must target the watcher in the path, and its owning agent (args.agent_id ??
+	// current owner) must be the agent in the path. Don't leak cross-target/agent
+	// existence — same 404 as "no pending proposal".
+	const args = (rawProposal as { args?: Record<string, unknown> }).args ?? null;
+	if (!args || typeof args !== "object") {
+		return c.json({ error: "No pending proposal for this run" }, 404);
+	}
+	const targetWatcherId = args.watcher_id ?? null;
+	if (String(targetWatcherId) !== String(watcherId)) {
+		return c.json({ error: "No pending proposal for this run" }, 404);
+	}
+	const current = row.current ?? null;
+	const ownerAgentId =
+		(args.agent_id as string | null | undefined) ??
+		(current?.agent_id as string | null | undefined) ??
+		null;
+	if (ownerAgentId !== agentId) {
+		return c.json({ error: "No pending proposal for this run" }, 404);
+	}
+
+	return c.json({
+		runId,
+		resourceKind: "watcher" as const,
+		action: row.action,
+		proposal: rawProposal,
+		current,
+	});
+});
+
 // ── Recent guardrail trips ───────────────────────────────────────────────────
 //
 // Read-only audit feed for the agent's Guardrails tab. Each `guardrail-trip`

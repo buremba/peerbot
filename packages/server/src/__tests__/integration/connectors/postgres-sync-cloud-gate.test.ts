@@ -22,7 +22,9 @@ import {
 
 const CONNECTOR_VERSION = '1.0.0';
 
-async function setupPostgresFeed(): Promise<{ feedId: number; connId: number; orgId: string }> {
+async function setupPostgresFeed(
+  connectionConfig?: Record<string, unknown>
+): Promise<{ feedId: number; connId: number; orgId: string }> {
   const sql = getTestDb();
   const org = await createTestOrganization();
   await createTestConnectorDefinition({
@@ -36,6 +38,7 @@ async function setupPostgresFeed(): Promise<{ feedId: number; connId: number; or
   const conn = await createTestConnection({
     organization_id: org.id,
     connector_key: 'postgres',
+    ...(connectionConfig ? { config: connectionConfig } : {}),
   });
   const [feed] = await sql`SELECT id FROM feeds WHERE connection_id = ${conn.id}`;
   return { feedId: Number((feed as { id: number }).id), connId: conn.id, orgId: org.id };
@@ -145,5 +148,90 @@ describe('pollWorkerJob cloud gate (postgres) — execution-time', () => {
 
     const [row] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
     expect((row as { status: string }).status).toBe('running');
+  });
+});
+
+describe('pollWorkerJob — gateway is authoritative for the egress policy', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+  afterEach(() => {
+    process.env.LOBU_CLOUD_MODE = undefined;
+  });
+
+  it('stamps block-private on the poll response under LOBU_CLOUD_MODE (worker cannot re-derive it)', async () => {
+    const { feedId, connId, orgId } = await setupPostgresFeed();
+    const runId = await insertPendingPostgresRun(orgId, feedId, connId);
+
+    process.env.LOBU_CLOUD_MODE = '1';
+    try {
+      const res = await post('/api/workers/poll', {
+        body: { worker_id: 'cloud-policy-worker', capabilities: {} },
+        token: 'test-fleet-token',
+        env: { WORKER_API_TOKEN: 'test-fleet-token' },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        run_id?: number;
+        db_egress_policy?: string;
+        config?: Record<string, unknown>;
+      };
+      expect(Number(body.run_id)).toBe(runId);
+      // The gateway decides the policy on a dedicated top-level field — the
+      // worker's own env must not. It is NOT in tenant `config` (which a tenant
+      // controls), so the worker can install it as authoritative job.env.
+      expect(body.db_egress_policy).toBe('block-private');
+      expect(body.config?.LOBU_DB_EGRESS_POLICY).toBeUndefined();
+    } finally {
+      process.env.LOBU_CLOUD_MODE = undefined;
+    }
+  });
+
+  it('keeps db_egress_policy block-private even when a tenant plants allow-private in connection config', async () => {
+    // A tenant that plants LOBU_DB_EGRESS_POLICY=allow-private in their
+    // connection config must NOT be able to bypass block-private on cloud: the
+    // gateway ships the authoritative decision on a dedicated field the tenant
+    // does not control, and it does not leak into tenant `config`.
+    const { feedId, connId, orgId } = await setupPostgresFeed({
+      LOBU_DB_EGRESS_POLICY: 'allow-private',
+    });
+    const runId = await insertPendingPostgresRun(orgId, feedId, connId);
+
+    process.env.LOBU_CLOUD_MODE = '1';
+    try {
+      const res = await post('/api/workers/poll', {
+        body: { worker_id: 'cloud-policy-worker-2', capabilities: {} },
+        token: 'test-fleet-token',
+        env: { WORKER_API_TOKEN: 'test-fleet-token' },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        run_id?: number;
+        db_egress_policy?: string;
+        config?: Record<string, unknown>;
+      };
+      expect(Number(body.run_id)).toBe(runId);
+      expect(body.db_egress_policy).toBe('block-private');
+    } finally {
+      process.env.LOBU_CLOUD_MODE = undefined;
+    }
+  });
+
+  it('stamps allow-private when not in cloud mode (self-hosted)', async () => {
+    const { feedId, connId, orgId } = await setupPostgresFeed();
+    const runId = await insertPendingPostgresRun(orgId, feedId, connId);
+
+    process.env.LOBU_CLOUD_MODE = undefined;
+    const res = await post('/api/workers/poll', {
+      body: { worker_id: 'self-hosted-policy-worker', capabilities: {} },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      run_id?: number;
+      db_egress_policy?: string;
+      config?: Record<string, unknown>;
+    };
+    expect(Number(body.run_id)).toBe(runId);
+    expect(body.db_egress_policy).toBe('allow-private');
   });
 });

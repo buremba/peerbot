@@ -837,6 +837,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     feed_id: row.feed_id ?? undefined,
     connection_id: row.connection_id ?? undefined,
     config: mergeExecutionConfig(row.connection_config, row.feed_config),
+    // The DB egress boundary (private-IP block + IP pin + forced TLS) is decided
+    // by the GATEWAY, which authoritatively knows cloud mode. The out-of-process
+    // connector-worker must NOT re-derive it from its own `LOBU_CLOUD_MODE` — a
+    // fleet worker missing that flag would run `allow-private` and reach private/
+    // metadata IPs (SSRF). Shipped as a dedicated top-level field (not in tenant
+    // `config`) so the worker installs it as authoritative `job.env` and takes the
+    // STRICTER of gateway-vs-worker; block-private can never be downgraded.
+    db_egress_policy: isCloudMode() ? 'block-private' : 'allow-private',
     checkpoint: row.checkpoint ?? undefined,
     entity_ids: row.feed_entity_ids ?? undefined,
     credentials,

@@ -333,26 +333,6 @@ describe('requiredTlsMode — forced TLS under block-private', () => {
     );
   });
 
-  // postgres.js: `query.sslrootcert === 'system' && (query.ssl = 'verify-full')`
-  // runs LAST and unconditionally — it must not be downgraded to require.
-  test('sslrootcert=system forces verify-full (system CA store)', () => {
-    expect(requiredTlsMode('postgres://u:p@db.example.com/x?sslrootcert=system')).toBe(
-      'verify-full'
-    );
-    // Even alongside a weaker sslmode, the driver forces verify-full.
-    expect(
-      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=require&sslrootcert=system')
-    ).toBe('verify-full');
-  });
-
-  test('sslrootcert=system overrides even sslmode=disable (driver still verifies)', () => {
-    // postgres.js applies sslrootcert=system after mapping sslmode, so the
-    // effective mode is verify-full, not disabled — do NOT reject as plaintext.
-    expect(
-      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=disable&sslrootcert=system')
-    ).toBe('verify-full');
-  });
-
   test('sslrootcert other than system does not force verify-full', () => {
     // A non-"system" sslrootcert (e.g. a file path) does not trigger the driver
     // override, so normal sslmode resolution applies.

@@ -1029,6 +1029,7 @@ export async function executePlan(
         name: feed.name,
         schedule: feed.schedule,
         config: feed.config,
+        virtual: feed.virtual,
       });
     }
     printText(renderProgress(row.verb, "feed", row.id));

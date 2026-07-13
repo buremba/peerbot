@@ -302,6 +302,24 @@ describe('requiredTlsMode — forced TLS under block-private', () => {
     ).toBe('verify-full');
   });
 
+  // postgres.js parses via `new URL()`: the fragment (`#...`) is NOT part of the
+  // query, so `sslrootcert=system#frag` still reads `system` and forces
+  // verify-full. A naive `?`-slice would fold `#frag` into the value and
+  // silently DOWNGRADE to require — the fragment must be stripped first.
+  test('URL fragment does not downgrade sslrootcert=system (WHATWG semantics)', () => {
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslrootcert=system#frag')
+    ).toBe('verify-full');
+    // Fragment after another param must not corrupt the last param either.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=require&sslrootcert=system#frag')
+    ).toBe('verify-full');
+    // A fragment carrying an sslmode-looking string must be ignored, not parsed.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=verify-full#sslmode=disable')
+    ).toBe('verify-full');
+  });
+
   test('sslmode beats a contradictory ssl param (postgres.js precedence)', () => {
     expect(() =>
       requiredTlsMode('postgres://u:p@db.example.com/x?ssl=require&sslmode=disable')

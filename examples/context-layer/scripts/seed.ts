@@ -41,14 +41,9 @@ if ((existing.entities ?? []).length > 0) {
   process.exit(0);
 }
 
-// ── 1. Warehouse connection + VIRTUAL feed ──────────────────────────────────
-// Both are declared in lobu.config.ts and created by `lobu run`
-// (config-as-constructor): the `kelder-warehouse` auth profile + connection AND
-// the live churn-rollup virtual feed on top of it. `lobu run` also installs the
-// bundled `postgres` connector. Nothing to do here — the whole
-// warehouse-federation story lives in config.
-
-// ── 2. Metric definition entity + versioned definition chain ───────────────
+// ── 1. Metric definition entity + versioned definition chain ───────────────
+// (The warehouse connection + its VIRTUAL churn-rollup feed are declared in
+// lobu.config.ts and created by `lobu run` — see the file header.)
 const metricRes = await callTool<{ entity?: { id?: number } }>(
   gw,
   "manage_entity",
@@ -130,7 +125,7 @@ console.log(
   `Created churn_rate definition chain: v1 (event ${v1EventId}) superseded by v2`
 );
 
-// ── 3. Business events — the governed "why" records ────────────────────────
+// ── 2. Business events — the governed "why" records ────────────────────────
 const businessEvents = [
   {
     name: "Recharge billing migration wrote false cancellations",
@@ -194,7 +189,7 @@ for (const evt of businessEvents) {
 }
 console.log(`Created ${businessEvents.length} business events`);
 
-// ── 4. Monthly observations (feed the DECLARED metric) ─────────────────────
+// ── 3. Monthly observations (feed the DECLARED metric) ─────────────────────
 const observations: Array<[string, number]> = [
   ["2026-01", 50],
   ["2026-02", 50],
@@ -211,7 +206,7 @@ for (const [month, cancellations] of observations) {
 }
 console.log(`Recorded ${observations.length} monthly churn observations`);
 
-// ── 5. Verified query: pin the approved answer from the live warehouse ─────
+// ── 4. Verified query: pin the approved answer from the live warehouse ─────
 const sql = postgres(WAREHOUSE_URL, { max: 1 });
 const approvedAnswer = (await sql.unsafe(CHURN_ROLLUP_SQL)).map((r) => ({
   ...r,

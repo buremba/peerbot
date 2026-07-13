@@ -51,11 +51,11 @@ const baseline = defineAgent({
 
 /**
  * The warehouse connection, declared as config (config-as-constructor). `lobu
- * run` applies this: it installs the bundled `postgres` connector and creates
- * an authenticated, read-only connection to the fake Kelder warehouse. The
- * credential is a `$VAR` reference resolved from the environment at apply time —
- * it never lives in committed code. The seed then adds a VIRTUAL feed on top of
- * this connection (the live churn rollup).
+ * run` applies this: it installs the bundled `postgres` connector, creates an
+ * authenticated, read-only connection to the fake Kelder warehouse, AND creates
+ * the VIRTUAL churn-rollup feed on it (declared below). The credential is a
+ * `$VAR` reference resolved from the environment at apply time — it never lives
+ * in committed code.
  */
 const warehouseAuth = defineAuthProfile({
   slug: "kelder-warehouse",

@@ -18,6 +18,7 @@ import {
   defineConnection,
   defineEntityType,
 } from "@lobu/cli/config";
+import { CHURN_ROLLUP_SQL } from "./scripts/lib/env.ts";
 
 const analyst = defineAgent({
   id: "analyst",
@@ -69,6 +70,18 @@ const warehouse = defineConnection({
   connector: "postgres",
   name: "Kelder warehouse",
   authProfile: warehouseAuth,
+  // The monthly churn rollup as a VIRTUAL (federated) feed: read LIVE at
+  // request time through the connector pushdown, never copied into Lobu. A
+  // virtual feed never syncs, so it carries no schedule. Declared here so the
+  // whole warehouse-federation story lives in config — `lobu run` creates it.
+  feeds: [
+    {
+      feed: "query",
+      name: "Monthly churn rollup (live)",
+      virtual: true,
+      config: { query: CHURN_ROLLUP_SQL },
+    },
+  ],
 });
 
 /**

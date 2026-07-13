@@ -365,4 +365,68 @@ describe("manage_watchers — builder gate e2e", () => {
 		`;
 		expect(eventRows[0]?.interaction_status).toBe("failed");
 	});
+
+	it("stale cross-owner approval is rejected on apply after the watcher is reassigned", async () => {
+		// Agent A creates a watcher it owns (queue + approve so A is the owner).
+		const created = (await executeTool(
+			"manage_watchers",
+			{
+				action: "create",
+				slug: "a-owned-then-reassigned",
+				name: "A owned",
+				prompt: "Owned by agent A at queue time.",
+				agent_id: agentId,
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { watcher_id?: string };
+		const watcherId = created.watcher_id!;
+		expect(watcherId).toBeDefined();
+
+		// Agent A queues an update. The proposal captures A as the acting agent.
+		const pending = (await executeTool(
+			"manage_watchers",
+			{
+				action: "update",
+				watcher_id: watcherId,
+				description: "A's held edit",
+			},
+			TEST_ENV,
+			agentCtx,
+		)) as PendingApproval;
+		expect(pending.status).toBe("pending_approval");
+
+		// Race: the watcher is reassigned to agent B while the approval is pending.
+		const sql = getTestDb();
+		await sql`
+			UPDATE watchers SET agent_id = ${otherAgentId}
+			WHERE id = ${watcherId} AND organization_id = ${orgId}
+		`;
+
+		// Approving must NOT apply A's held mutation to B-owned behavior: the
+		// apply path re-checks ownership against the persisted acting agent under
+		// the group lock and fails closed.
+		const approveRes = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: pending.run_id },
+			TEST_ENV,
+			ownerCtx,
+		)) as { approved?: true; message?: string };
+		expect(approveRes.message).toMatch(/failed/i);
+		expect(approveRes.message).not.toMatch(/applied/i);
+
+		// The held edit was NOT applied.
+		const watcherRows = await sql`
+			SELECT description FROM watchers
+			WHERE id = ${watcherId} AND organization_id = ${orgId}
+		`;
+		expect(watcherRows[0]?.description).not.toBe("A's held edit");
+
+		// Run marked failed; card superseded to failed.
+		const runRows = await sql`
+			SELECT status FROM runs
+			WHERE id = ${pending.run_id} AND organization_id = ${orgId}
+		`;
+		expect(runRows[0]?.status).toBe("failed");
+	});
 });

@@ -608,12 +608,21 @@ export type ManageWatchersResult = Static<typeof ManageWatchersResultSchema>;
  * builder-gate run. Captures the original manage_watchers args so approve can
  * re-run the same write handler.
  *
+ * Also persists the acting principal resolved at queue time so apply can
+ * re-validate the foreign-owner guard against the ORIGINAL actor (not the
+ * human approver). Without this, a group reassigned between queue and approve
+ * would let A's pending mutation land on B-owned behavior.
+ *
  * Watcher definition writes have no per-field pre-image (unlike manage_agents
  * update `base`); a straight re-run is the launch path — a stale approval may
- * clobber a newer edit.
+ * clobber a newer edit (ownership re-check still rejects foreign owners).
  */
 export interface ManageWatchersProposal {
   args: ManageWatchersArgs;
+  /** Resolved `actor.ownerAgentId ?? actor.id` at queue time; null for humans. */
+  actingAgentId: string | null;
+  /** Session `actingWatcherId` at queue time, if any. */
+  actingWatcherId: string | null;
 }
 export const ListWatchersSchema = Type.Object({
   watcher_id: Type.Optional(

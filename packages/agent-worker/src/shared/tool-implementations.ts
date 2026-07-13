@@ -1246,7 +1246,7 @@ function buildApprovalCardBody(
       typeof rawProposal === "object" &&
       (rawProposal as { args?: unknown }).args &&
       typeof (rawProposal as { args: unknown }).args === "object"
-        ? ((rawProposal as { args: Record<string, unknown> }).args)
+        ? (rawProposal as { args: Record<string, unknown> }).args
         : ((rawProposal as Record<string, unknown> | null) ?? null);
     return {
       interactionType: "tool_approval",

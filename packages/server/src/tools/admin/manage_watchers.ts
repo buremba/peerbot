@@ -387,9 +387,13 @@ async function fetchCurrentWatcher(
  *
  * Watcher definition writes have no per-field pre-image; the proposal is the
  * full original args for a straight re-run on approve (a stale approval may
- * clobber a newer edit — acceptable for launch).
+ * clobber a newer edit — acceptable for launch). Acting principal is persisted
+ * so apply can re-run the foreign-owner guard against the original actor.
  */
-function buildWatcherProposal(args: ManageWatchersArgs): ManageWatchersProposal {
+function buildWatcherProposal(
+  args: ManageWatchersArgs,
+  acting: { actingAgentId: string | null; actingWatcherId: string | null },
+): ManageWatchersProposal {
   const writeAction = watcherWriteAction(args.action);
   if (!writeAction) {
     throw new ToolUserError(`action "${args.action}" is not a gated watcher write`);
@@ -423,53 +427,111 @@ function buildWatcherProposal(args: ManageWatchersArgs): ManageWatchersProposal 
       throw new ToolUserError('entity_ids is required for create_from_version action');
     }
   }
-  return { args };
+  return {
+    args,
+    actingAgentId: acting.actingAgentId,
+    actingWatcherId: acting.actingWatcherId,
+  };
 }
 
-/** Flat watcher fields shown on the events-tab ActionApprovalCard fallback. */
-const WATCHER_APPROVAL_DISPLAY_KEYS = [
-  'action',
-  'slug',
-  'name',
-  'prompt',
-  'schedule',
-  'timezone',
-  'agent_id',
-  'watcher_id',
-  'watcher_ids',
-] as const;
+/**
+ * Routing-only key rendered in the card title, not the field list. Everything
+ * else present on the proposed args is a mutation input humans must be able to
+ * review (reaction script, execution_config, explicit null clears, …).
+ */
+const WATCHER_APPROVAL_ROUTING_KEYS = new Set(['action']);
 
+/** Display sentinel for an explicit null clear (field present, value null). */
+const WATCHER_APPROVAL_CLEARED = '(cleared)';
+
+/**
+ * Flat watcher mutation fields for the events-tab ActionApprovalCard fallback.
+ * Includes every proposed arg that is present (including explicit `null`
+ * clears); only `action` is omitted (shown in the title). Absent fields
+ * (`undefined`) are excluded so the card does not invent values.
+ */
 function pickWatcherApprovalDisplayFields(
   args: ManageWatchersArgs,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const key of WATCHER_APPROVAL_DISPLAY_KEYS) {
-    const value = args[key as keyof ManageWatchersArgs];
-    if (value === undefined || value === null) continue;
-    out[key] = Array.isArray(value) ? value.join(', ') : value;
+  for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+    if (WATCHER_APPROVAL_ROUTING_KEYS.has(key)) continue;
+    if (value === undefined) continue;
+    // Explicit null = clear (e.g. schedule: null). Render as a visible sentinel
+    // so the card can show the clear rather than dropping the field.
+    if (value === null) {
+      out[key] = WATCHER_APPROVAL_CLEARED;
+      continue;
+    }
+    if (Array.isArray(value)) {
+      // Primitive arrays (watcher_ids, entity_ids, tags) collapse for display;
+      // object arrays (sources) keep structure via JSON in the schema renderer.
+      out[key] = value.every(
+        (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v),
+      )
+        ? value.join(', ')
+        : value;
+      continue;
+    }
+    out[key] = value;
   }
   return out;
 }
 
+/** Human-readable titles for common watcher approval fields. */
+const WATCHER_APPROVAL_FIELD_TITLES: Record<string, string> = {
+  slug: 'Slug',
+  name: 'Name',
+  description: 'Description',
+  prompt: 'Prompt',
+  schedule: 'Schedule',
+  timezone: 'Timezone',
+  agent_id: 'Agent',
+  watcher_id: 'Watcher ID',
+  watcher_ids: 'Watcher IDs',
+  version_id: 'Version ID',
+  entity_id: 'Entity ID',
+  entity_ids: 'Entity IDs',
+  reaction_script: 'Reaction script',
+  execution_config: 'Execution config',
+  device_worker_id: 'Device worker',
+  scheduler_client_id: 'Scheduler client',
+  agent_kind: 'Agent kind',
+  sources: 'Sources',
+  model_config: 'Model config',
+  keying_config: 'Keying config',
+  classifiers: 'Classifiers',
+  tags: 'Tags',
+  change_notes: 'Change notes',
+  set_as_current: 'Set as current',
+  reactions_guidance: 'Reactions guidance',
+  notification_channel: 'Notification channel',
+  notification_priority: 'Notification priority',
+  min_cooldown_seconds: 'Min cooldown (seconds)',
+  name_pattern: 'Name pattern',
+};
+
 function buildWatcherApprovalInputSchema(
   fields: Record<string, unknown>,
 ): Record<string, unknown> {
-  const titles: Record<string, string> = {
-    action: 'Action',
-    slug: 'Slug',
-    name: 'Name',
-    prompt: 'Prompt',
-    schedule: 'Schedule',
-    timezone: 'Timezone',
-    agent_id: 'Agent',
-    watcher_id: 'Watcher ID',
-    watcher_ids: 'Watcher IDs',
-  };
   const properties: Record<string, unknown> = {};
-  for (const key of Object.keys(fields)) {
-    if (titles[key]) {
-      properties[key] = { type: 'string', title: titles[key] };
+  for (const [key, value] of Object.entries(fields)) {
+    const baseTitle = WATCHER_APPROVAL_FIELD_TITLES[key] ?? key;
+    const title =
+      value === WATCHER_APPROVAL_CLEARED ? `${baseTitle} (cleared)` : baseTitle;
+    if (typeof value === 'object' && value !== null) {
+      properties[key] = { type: 'object', title };
+      continue;
     }
+    if (typeof value === 'number') {
+      properties[key] = { type: 'number', title };
+      continue;
+    }
+    if (typeof value === 'boolean') {
+      properties[key] = { type: 'boolean', title };
+      continue;
+    }
+    properties[key] = { type: 'string', title };
   }
   return { type: 'object', properties };
 }
@@ -480,12 +542,16 @@ function buildWatcherApprovalInputSchema(
  * `interaction_type='approval'` event holding the proposed args. The mutation is
  * applied later by manage_operations' approve handler via
  * {@link applyManageWatchersProposal}.
+ *
+ * `acting` is the principal resolved at gate time (same seam as the foreign-
+ * owner check) and is persisted on the proposal so apply can re-validate.
  */
 async function queueWatcherWriteForApproval(
   args: ManageWatchersArgs,
   ctx: ToolContext,
+  acting: { actingAgentId: string | null; actingWatcherId: string | null },
 ): Promise<ManageWatchersResult> {
-  const proposal = buildWatcherProposal(args);
+  const proposal = buildWatcherProposal(args, acting);
   const writeAction = watcherWriteAction(args.action)!;
 
   // create attributes ownership via created_by — fail at request time rather
@@ -587,14 +653,46 @@ async function queueWatcherWriteForApproval(
 }
 
 /**
+ * Foreign-owner escalation guard shared by the request-time gate and the
+ * approve-time apply path. Every effective owner the write would install must
+ * equal `actingAgentId`. Pass null to skip (humans are ungoverned here — same
+ * as the gate's `actor.kind === 'user'` branch). Throws ToolUserError 403.
+ *
+ * Uses {@link resolveEffectiveWatcherOwners} so the check matches what each
+ * handler actually persists (not the supplied args.agent_id alone).
+ */
+async function assertWatcherOwnersMatchActingAgent(
+  args: ManageWatchersArgs,
+  ctx: ToolContext,
+  actingAgentId: string | null,
+  actorKind: string = 'agent',
+): Promise<void> {
+  if (actingAgentId == null) return;
+  const owners = await resolveEffectiveWatcherOwners(args, ctx);
+  const foreign = owners.find((o) => o !== actingAgentId);
+  if (foreign !== undefined) {
+    throw new ToolUserError(
+      `A ${actorKind} cannot install watcher behavior owned by another agent — every affected owner must be itself (${actingAgentId}); found ${foreign ?? 'none'}.`,
+      403,
+    );
+  }
+}
+
+/**
  * Apply a previously-queued manage_watchers proposal. Called by
  * manage_operations' approve handler once a human confirms. Re-runs the original
  * write handler with the held args. `ownerUserId` is the original requester
  * (persisted on the run), so an approving admin doesn't become the created
  * watcher's `created_by`.
  *
+ * Re-takes the watcher-group advisory lock and re-runs the foreign-owner guard
+ * against the PERSISTED acting agent (not the approver). If ownership changed
+ * between queue and approve (e.g. group reassigned to another agent), the apply
+ * fails closed — the approve handler supersedes the card to 'failed'.
+ *
  * Watcher definition writes have no per-field pre-image; this is a straight
- * re-run — a stale approval may clobber a newer edit (acceptable for launch).
+ * re-run — a stale approval may clobber a newer edit (acceptable for launch)
+ * when ownership is still valid.
  */
 export async function applyManageWatchersProposal(
   proposal: ManageWatchersProposal,
@@ -607,7 +705,18 @@ export async function applyManageWatchersProposal(
   // create attributes ownership to the ORIGINAL requester, not the approver.
   const applyCtx: ToolContext =
     writeAction === 'create' ? { ...ctx, userId: ownerUserId } : ctx;
-  return runManageWatchers(args, env, applyCtx);
+  // Lock + re-gate under the same session advisory lock as the request path so
+  // a concurrent reassign can't slip between the ownership re-check and the write.
+  return withWatcherGroupLock(args, applyCtx, async () => {
+    // Humans leave actingAgentId null — skip, matching the gate.
+    await assertWatcherOwnersMatchActingAgent(
+      args,
+      applyCtx,
+      proposal.actingAgentId ?? null,
+      'agent',
+    );
+    return runManageWatchers(args, env, applyCtx);
+  });
 }
 
 /**
@@ -635,6 +744,12 @@ async function gateWatcherWrite(
     sessionWatcherId: ctx.actingWatcherId ?? null,
     sourceForMode: ctx.sourceContext?.source,
   });
+  // Non-human principal identity captured for the ownership guard AND (when
+  // queued) the proposal. Same formula the gate has always used.
+  const actingAgentId =
+    actor.kind !== 'user' ? (actor.ownerAgentId ?? actor.id) : null;
+  const actingWatcherId = ctx.actingWatcherId ?? null;
+
   // Escalation guard: a non-human caller must not end up installing behavior OWNED by
   // another agent. A watcher's `agent_id` IS its policy principal, so if restricted
   // agent A could create/clone/edit a watcher (or a group-shared prompt/reaction)
@@ -645,17 +760,12 @@ async function gateWatcherWrite(
   // and ALL owners a group-wide write touches. EVERY affected owner must be the actor
   // itself. Humans are ungoverned here and may own/assign freely.
   // MUST run BEFORE queueing so a foreign-owner proposal never becomes a pending card.
-  if (actor.kind !== 'user') {
-    const ownAgentId = actor.ownerAgentId ?? actor.id;
-    const owners = await resolveEffectiveWatcherOwners(args, ctx);
-    const foreign = owners.find((o) => o !== ownAgentId);
-    if (foreign !== undefined) {
-      throw new ToolUserError(
-        `A ${actor.kind} cannot install watcher behavior owned by another agent — every affected owner must be itself (${ownAgentId ?? 'none'}); found ${foreign ?? 'none'}.`,
-        403,
-      );
-    }
-  }
+  await assertWatcherOwnersMatchActingAgent(
+    args,
+    ctx,
+    actingAgentId,
+    actor.kind,
+  );
 
   const decision = await resolveWritePolicyDecision({
     organizationId: ctx.organizationId,
@@ -669,7 +779,10 @@ async function gateWatcherWrite(
   });
   if (decision === 'allow') return null;
   if (decision === 'require_approval') {
-    return queueWatcherWriteForApproval(args, ctx);
+    return queueWatcherWriteForApproval(args, ctx, {
+      actingAgentId,
+      actingWatcherId,
+    });
   }
   throw new ToolUserError(
     `Policy denies ${action} of watchers (agent config) for this principal.`,

@@ -14,8 +14,6 @@ export interface EnvironmentRow {
   organizationId: string;
   name: string;
   providerKind: string;
-  scope: "org" | "private";
-  ownerUserId: string | null;
   /** True once a credential has been written to the vault for this environment. */
   connected: boolean;
   config: Record<string, unknown>;
@@ -29,8 +27,6 @@ function rowToEnvironment(row: Record<string, unknown>): EnvironmentRow {
     organizationId: String(row.organization_id),
     name: String(row.name),
     providerKind: String(row.provider_kind),
-    scope: row.scope === "private" ? "private" : "org",
-    ownerUserId: (row.owner_user_id as string | null) ?? null,
     connected: row.credential_name != null,
     config: (row.config as Record<string, unknown>) ?? {},
     createdAt: row.created_at ? String(row.created_at) : null,
@@ -43,7 +39,7 @@ export async function listEnvironments(
 ): Promise<EnvironmentRow[]> {
   const sql = getDb();
   const rows = (await sql`
-    SELECT id, organization_id, name, provider_kind, scope, owner_user_id,
+    SELECT id, organization_id, name, provider_kind,
            credential_name, config, created_at, updated_at
     FROM environments
     WHERE organization_id = ${organizationId}
@@ -57,19 +53,14 @@ export async function createEnvironment(
   input: {
     name: string;
     providerKind: string;
-    scope?: "org" | "private";
-    ownerUserId?: string | null;
   }
 ): Promise<EnvironmentRow> {
   const sql = getDb();
   const id = `env-${randomUUID()}`;
   const rows = (await sql`
-    INSERT INTO environments (id, organization_id, name, provider_kind, scope, owner_user_id)
-    VALUES (
-      ${id}, ${organizationId}, ${input.name}, ${input.providerKind},
-      ${input.scope ?? "org"}, ${input.ownerUserId ?? null}
-    )
-    RETURNING id, organization_id, name, provider_kind, scope, owner_user_id,
+    INSERT INTO environments (id, organization_id, name, provider_kind)
+    VALUES (${id}, ${organizationId}, ${input.name}, ${input.providerKind})
+    RETURNING id, organization_id, name, provider_kind,
               credential_name, config, created_at, updated_at
   `) as Array<Record<string, unknown>>;
   return rowToEnvironment(rows[0]);

@@ -51,6 +51,7 @@ const SLACK_BOT_SCOPES = [
 	"im:history",
 	"im:read",
 	"im:write",
+	"mcp:connect",
 	"mpim:history",
 	"mpim:read",
 	"reactions:read",

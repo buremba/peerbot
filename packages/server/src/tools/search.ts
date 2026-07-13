@@ -915,10 +915,10 @@ async function searchImpl(
   }
 
   if (results.length > 0) {
-    results = await filterEntitiesByReadPolicy(ctx, results);
-  }
-  if (results.length > 0) {
-    return withRecall(await formatEntityResult(results, args, ctx), recall);
+    const readable = await filterEntitiesByReadPolicy(ctx, [...results]);
+    if (readable.length > 0) {
+      return withRecall(await formatEntityResult(readable, args, ctx), recall);
+    }
   }
 
   // ========================================

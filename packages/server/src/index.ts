@@ -25,12 +25,9 @@ import {
 	deleteEntityApprovalPolicy,
 	type EntityApprovalPolicy,
 	type EntityMutationMode,
-	getGlobalEntityApprovalPolicy,
-	isEntityApprovalUiMode,
 	isEntityMutationMode,
 	listEntityApprovalPolicies,
 	upsertEntityApprovalPolicy,
-	upsertGlobalEntityApprovalPolicy,
 } from "./authz/entity-policy";
 import { listOperations } from "./operations/connector-operations";
 import { qualifiedOperationKey } from "./tools/admin/manage_operations";
@@ -49,10 +46,6 @@ import { getDb } from "./db/client";
 import * as invalidationEmitter from "./events/emitter";
 import { streamInvalidationEvents } from "./events/sse";
 import { invalidationSseAuth } from "./events/sse-invalidation-auth";
-import {
-	resolveBoundChannelRows,
-	stripPlatformPrefix,
-} from "./gateway/channels/bound-channels";
 import {
 	type ClaimEligibleOrg,
 	type ClaimEngineDeps,
@@ -1338,275 +1331,6 @@ async function requireOrganizationSettingsAdmin(c: Context) {
 	return null;
 }
 
-app.get("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
-	const authError = await requireOrganizationSettingsAdmin(c);
-	if (authError) return authError;
-	const organizationId = c.get("organizationId");
-	if (!organizationId) {
-		return c.json({ error: "Organization context required" }, 401);
-	}
-	const policy = await getGlobalEntityApprovalPolicy(organizationId);
-	const policies = await listEntityApprovalPolicies(organizationId, "entity");
-	const channelRows = await resolveBoundChannelRows(getDb(), {
-		organizationId,
-	});
-	const availableChannels = channelRows.map((row) => {
-		const nativeChannelId = stripPlatformPrefix(row.platform, row.channel_id);
-		return {
-			connection_id: row.id,
-			platform: row.platform,
-			channel_id: row.channel_id,
-			team_id: row.team_id,
-			label: `${row.platform} ${nativeChannelId}`,
-		};
-	});
-
-	return c.json({
-		policy: serializeEntityApprovalPolicy(policy),
-		policies: policies.map(serializeEntityApprovalPolicy),
-		available_channels: availableChannels,
-	});
-});
-
-app.patch("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
-	const authError = await requireOrganizationSettingsAdmin(c);
-	if (authError) return authError;
-	const organizationId = c.get("organizationId");
-	if (!organizationId) {
-		return c.json({ error: "Organization context required" }, 401);
-	}
-
-	let body: Record<string, unknown>;
-	try {
-		body = await c.req.json();
-	} catch {
-		return c.json(
-			{ error: "invalid_request", message: "Request body must be JSON." },
-			400,
-		);
-	}
-
-	const createMode = body.create_mode;
-	const updateMode = body.update_mode;
-	const deleteMode = body.delete_mode;
-	if (
-		!isEntityApprovalUiMode(createMode) ||
-		!isEntityApprovalUiMode(updateMode) ||
-		!isEntityApprovalUiMode(deleteMode)
-	) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message:
-					'create_mode, update_mode, and delete_mode must be "auto" or "approval".',
-			},
-			400,
-		);
-	}
-
-	// Optional per-principal targeting: an admin can pin one agent/watcher to a
-	// stricter mode. principal_id is only meaningful with a kind. Class is fixed to
-	// 'entity' on this endpoint — connector_action policy rows are ENFORCED by the
-	// gate (manage_operations.execute) but set via SDK/SQL until their own UI
-	// surface lands; this endpoint stays entity-only so its auto/approval mode
-	// validation doesn't have to fork for the deny/disabled connector modes.
-	const principalKind: "agent" | "watcher" | null =
-		body.principal_kind === "agent" || body.principal_kind === "watcher"
-			? body.principal_kind
-			: null;
-	const principalId =
-		principalKind &&
-		typeof body.principal_id === "string" &&
-		body.principal_id.trim()
-			? body.principal_id.trim()
-			: null;
-
-	const approvalConnectionId =
-		typeof body.approval_connection_id === "string" &&
-		body.approval_connection_id.trim()
-			? body.approval_connection_id.trim()
-			: null;
-	const approvalChannelId =
-		typeof body.approval_channel_id === "string" &&
-		body.approval_channel_id.trim()
-			? body.approval_channel_id.trim()
-			: null;
-	const approvalTeamId =
-		typeof body.approval_team_id === "string" && body.approval_team_id.trim()
-			? body.approval_team_id.trim()
-			: null;
-
-	let approvalChannelName =
-		typeof body.approval_channel_name === "string" &&
-		body.approval_channel_name.trim()
-			? body.approval_channel_name.trim()
-			: null;
-
-	if (approvalConnectionId || approvalChannelId || approvalTeamId) {
-		if (!approvalConnectionId || !approvalChannelId) {
-			return c.json(
-				{
-					error: "invalid_request",
-					message:
-						"Approval channel selection requires a connection and channel.",
-				},
-				400,
-			);
-		}
-		const rows = await resolveBoundChannelRows(getDb(), { organizationId });
-		const selected = rows.find((row) => {
-			const rowChannelKey = row.channel_id.includes(":")
-				? row.channel_id
-				: `${row.platform}:${row.channel_id}`;
-			const requestedChannelKey = approvalChannelId.includes(":")
-				? approvalChannelId
-				: `${row.platform}:${approvalChannelId}`;
-			return (
-				row.id === approvalConnectionId &&
-				rowChannelKey === requestedChannelKey &&
-				(!approvalTeamId || row.team_id === approvalTeamId)
-			);
-		});
-		if (!selected) {
-			return c.json(
-				{
-					error: "invalid_request",
-					message: "Approval channel is not available to this workspace.",
-				},
-				400,
-			);
-		}
-		approvalChannelName =
-			approvalChannelName ??
-			`${selected.platform} ${stripPlatformPrefix(selected.platform, selected.channel_id)}`;
-	}
-
-	const entityTypeSlug =
-		typeof body.entity_type_slug === "string" && body.entity_type_slug.trim()
-			? body.entity_type_slug.trim()
-			: null;
-	const fieldPath =
-		typeof body.field_path === "string" && body.field_path.trim()
-			? body.field_path.trim()
-			: null;
-	const entityId =
-		typeof body.entity_id === "number" && Number.isInteger(body.entity_id)
-			? body.entity_id
-			: null;
-
-	if (fieldPath && !entityTypeSlug) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message: "A field-path approval policy requires an entity type.",
-			},
-			400,
-		);
-	}
-	if (entityId !== null) {
-		const entityRows = await getDb()<{ id: number }>`
-      SELECT id FROM entities
-      WHERE id = ${entityId}
-        AND organization_id = ${organizationId}
-        AND deleted_at IS NULL
-      LIMIT 1
-    `;
-		if (!entityRows[0]) {
-			return c.json(
-				{
-					error: "invalid_request",
-					message: "Entity not found in this workspace.",
-				},
-				400,
-			);
-		}
-	}
-
-	const policyInput = {
-		resourceClass: "entity" as const,
-		principalKind,
-		principalId,
-		entityTypeSlug,
-		fieldPath,
-		entityId,
-		createMode,
-		updateMode,
-		deleteMode,
-		approvalConnectionId,
-		approvalChannelId,
-		approvalTeamId,
-		approvalChannelName,
-	};
-	// Only the unscoped, any-principal entity row is the workspace default; a
-	// principal-targeted or scoped row is a specific override.
-	const isWorkspaceDefault =
-		!principalKind && !entityTypeSlug && !fieldPath && entityId === null;
-	const policy = isWorkspaceDefault
-		? await upsertGlobalEntityApprovalPolicy(organizationId, policyInput)
-		: await upsertEntityApprovalPolicy(organizationId, policyInput);
-
-	invalidationEmitter.emit(organizationId, {
-		keys: ["entity-approval-policy"],
-	});
-
-	return c.json({ policy: serializeEntityApprovalPolicy(policy) });
-});
-
-app.delete("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
-	const authError = await requireOrganizationSettingsAdmin(c);
-	if (authError) return authError;
-	const organizationId = c.get("organizationId");
-	if (!organizationId) {
-		return c.json({ error: "Organization context required" }, 401);
-	}
-	const principalKindRaw = c.req.query("principal_kind")?.trim();
-	const principalKind =
-		principalKindRaw === "agent" || principalKindRaw === "watcher"
-			? principalKindRaw
-			: null;
-	const principalId = principalKind
-		? c.req.query("principal_id")?.trim() || null
-		: null;
-	const entityTypeSlug = c.req.query("entity_type_slug")?.trim() || null;
-	const fieldPath = c.req.query("field_path")?.trim() || null;
-	const entityIdRaw = c.req.query("entity_id")?.trim();
-	const entityId =
-		entityIdRaw && /^\d+$/.test(entityIdRaw) ? Number(entityIdRaw) : null;
-	// A principal-targeted row is deletable even with no scope; only the unscoped,
-	// any-principal default is protected.
-	if (!principalKind && !entityTypeSlug && !fieldPath && entityId === null) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message: "The workspace default policy cannot be deleted.",
-			},
-			400,
-		);
-	}
-	if (fieldPath && !entityTypeSlug) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message: "A field-path approval policy requires an entity type.",
-			},
-			400,
-		);
-	}
-	const deleted = await deleteEntityApprovalPolicy({
-		organizationId,
-		resourceClass: "entity",
-		principalKind,
-		principalId,
-		entityTypeSlug,
-		fieldPath,
-		entityId,
-	});
-	invalidationEmitter.emit(organizationId, {
-		keys: ["entity-approval-policy"],
-	});
-	return c.json({ deleted });
-});
-
 // ---------------------------------------------------------------------------
 // Agent permissions ("Guardrails" is the separate LLM-judge surface; this is the
 // deterministic write-gate envelope). Returns the ORG FLOOR rows (principal_kind
@@ -1986,7 +1710,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		preserveDelivery: true,
 	});
 	invalidationEmitter.emit(organizationId, {
-		keys: ["entity-approval-policy"],
+		keys: ["write-permissions", "agent-permissions"],
 	});
 	return c.json({ policy: serializeEntityApprovalPolicy(policy) });
 });
@@ -2100,7 +1824,7 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		entityTypeSlug,
 	});
 	invalidationEmitter.emit(organizationId, {
-		keys: ["entity-approval-policy"],
+		keys: ["write-permissions", "agent-permissions"],
 	});
 	return c.json({ deleted });
 });
@@ -2108,7 +1832,7 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // Org write-permissions floor (principal_kind NULL). Same matrix shape as agent
 // permissions, but the editable rows ARE the floor agents inherit (and can only
-// tighten). Delivery channels stay on entity-approval-policy.
+// tighten).
 // ---------------------------------------------------------------------------
 app.get("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 	const authError = await requireOrganizationSettingsAdmin(c);
@@ -2410,7 +2134,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 		preserveDelivery: true,
 	});
 	invalidationEmitter.emit(organizationId, {
-		keys: ["entity-approval-policy", "write-permissions"],
+		keys: ["write-permissions", "agent-permissions"],
 	});
 	return c.json({ policy: serializeEntityApprovalPolicy(policy) });
 });
@@ -2530,7 +2254,7 @@ app.delete("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 		entityTypeSlug,
 	});
 	invalidationEmitter.emit(organizationId, {
-		keys: ["entity-approval-policy", "write-permissions"],
+		keys: ["write-permissions", "agent-permissions"],
 	});
 	return c.json({ deleted });
 });

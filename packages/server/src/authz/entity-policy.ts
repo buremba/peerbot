@@ -186,11 +186,6 @@ export function isEntityMutationMode(
 	);
 }
 
-/** The two modes the entity-approval UI/API accept for create/update/delete. */
-export function isEntityApprovalUiMode(value: unknown): value is "auto" | "approval" {
-	return value === "auto" || value === "approval";
-}
-
 /**
  * Coerce user INPUT to a caller-chosen default when it isn't a legal mode.
  * (Stored effects READ from the DB fail closed differently — see
@@ -995,32 +990,9 @@ export async function evaluateEntityFieldUpdates(args: {
 	return decisions;
 }
 
-export async function getGlobalEntityApprovalPolicy(
-	organizationId: string,
-): Promise<EntityApprovalPolicy> {
-	const sql = getDb();
-	const rows = await sql<EntityApprovalPolicyRow>`
-    SELECT id, organization_id, resource_class, principal_kind, principal_id,
-       operation_key, target_agent_id, entity_type_slug, field_path, entity_id,
-       approval_connection_id, approval_channel_id, approval_team_id,
-       approval_channel_name
-    FROM write_approval_policies
-    WHERE organization_id = ${organizationId}
-      AND resource_class = 'entity'
-      AND principal_kind IS NULL
-      AND entity_type_slug IS NULL
-      AND field_path IS NULL
-      AND entity_id IS NULL
-    LIMIT 1
-  `;
-	if (!rows[0]) return defaultEntityApprovalPolicy(organizationId);
-	await attachEffects(sql, rows as EntityApprovalPolicyRow[]);
-	return rowToPolicy(rows[0]);
-}
-
 /**
  * Every policy row for an org, most-general first. Filter by class to list one
- * class's rows (the entity settings page passes `entity`); omit to list all.
+ * class's rows; omit to list all.
  */
 export async function listEntityApprovalPolicies(
 	organizationId: string,
@@ -1054,24 +1026,12 @@ export async function listEntityApprovalPolicies(
 	return rows.map(rowToPolicy);
 }
 
-export async function upsertGlobalEntityApprovalPolicy(
-	organizationId: string,
-	input: EntityApprovalPolicyInput,
-): Promise<EntityApprovalPolicy> {
-	return upsertEntityApprovalPolicy(organizationId, {
-		...input,
-		entityTypeSlug: null,
-		fieldPath: null,
-		entityId: null,
-	});
-}
-
 /**
  * Turn a policy input into the action→effect set to persist for the given class.
- * For the entity-shaped classes the effects come from create/update/delete; for
- * connector_action the single `execute` effect is taken from `createMode` (the
- * field the API carries it in until the connector-action UI ships a dedicated
- * one). Effects are clamped to what the manifest declares legal for the class.
+ * For the entity-shaped classes the effects come from create/update/delete (and
+ * read); for connector_action the single `execute` effect is taken from
+ * `createMode` when no effects map is provided. Effects are clamped to what the
+ * manifest declares legal for the class.
  */
 function actionEffectSetForInput(
 	resourceClass: WriteResourceClass,

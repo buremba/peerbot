@@ -97,7 +97,6 @@ function actingPrincipalFor(
 		agentId: ctx.agentId,
 		explicitWatcherId: args?.watcher_source?.watcher_id ?? null,
 		sessionWatcherId: ctx.actingWatcherId ?? null,
-		sourceForMode: ctx.sourceContext?.source,
 	});
 }
 
@@ -118,7 +117,6 @@ async function assertEntityReadAllowed(
 		principalId: actor.id,
 		ownerAgentId: actor.ownerAgentId,
 		ownerResolved: actor.ownerResolved,
-		mode: actor.mode,
 		action: "read",
 		entityTypeSlug: entityTypeSlug ?? null,
 		sql: getDb(),
@@ -307,7 +305,6 @@ async function handleCreate(
 		principalId: actor.id,
 		ownerAgentId: actor.ownerAgentId,
 		ownerResolved: actor.ownerResolved,
-		mode: actor.mode,
 		entityTypeSlug: args.entity_type,
 		entityData,
 		proposal,
@@ -461,7 +458,6 @@ async function handleUpdate(
 		windowId: ctx.actingWindowId ?? args.watcher_source?.window_id ?? null,
 		ownerAgentId: updateActor.ownerAgentId,
 		ownerResolved: updateActor.ownerResolved,
-		mode: updateActor.mode,
 	});
 	const entityDetails =
 		(await getEntity(updatedEntity.id, env, ctx)) ?? updatedEntity;
@@ -811,7 +807,6 @@ async function handleList(
 						principalId: actor.id,
 						ownerAgentId: actor.ownerAgentId,
 						ownerResolved: actor.ownerResolved,
-						mode: actor.mode,
 						action: "read",
 						entityTypeSlug: slug,
 						sql,
@@ -1106,7 +1101,6 @@ async function handleDelete(
 		principalId: deleteActor.id,
 		ownerAgentId: deleteActor.ownerAgentId,
 		ownerResolved: deleteActor.ownerResolved,
-		mode: deleteActor.mode,
 		entityTypeSlug: entity.entity_type,
 		entityId,
 		entityOrgId: null,

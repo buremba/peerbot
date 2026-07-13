@@ -127,7 +127,6 @@ async function getContentImpl(
       userId: ctx.userId,
       agentId: ctx.agentId,
       sessionWatcherId: ctx.actingWatcherId ?? null,
-      sourceForMode: ctx.sourceContext?.source,
     });
     if (actor.kind !== 'user') {
       const typeSlugs = new Set<string>();
@@ -156,7 +155,6 @@ async function getContentImpl(
           principalId: actor.id,
           ownerAgentId: actor.ownerAgentId,
           ownerResolved: actor.ownerResolved,
-          mode: actor.mode,
           action: 'read',
           entityTypeSlug: slug,
           sql: getDb(),

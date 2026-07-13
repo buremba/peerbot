@@ -501,7 +501,6 @@ async function handleListAvailable(
     userId: ctx.userId,
     agentId: ctx.agentId,
     sessionWatcherId: ctx.actingWatcherId ?? null,
-    sourceForMode: ctx.sourceContext?.source,
   });
   const effectFor = (operationKey?: string | null) =>
     resolveWriteEffect({
@@ -764,7 +763,6 @@ async function handleExecute(
 		agentId: ctx.agentId,
 		explicitWatcherId: args.watcher_source?.watcher_id ?? null,
 		sessionWatcherId: ctx.actingWatcherId ?? null,
-		sourceForMode: ctx.sourceContext?.source,
 	});
 	// Agent write-policy applies to WRITE ops only. Reads stay available under
 	// connection action_modes alone (default auto) — same idea as MCP readOnlyHint.
@@ -831,10 +829,6 @@ async function handleExecute(
 		// rule isn't lost to an attended recheck.
 		policyPrincipalKind: actor.kind,
 		policyPrincipalId: actor.id,
-		// Persist the acting mode EXPLICITLY ('attended' | 'autonomous') so the
-		// approve-time recheck evaluates in the same mode and doesn't over-deny a
-		// genuine attended run. NULL is reserved for legacy rows (fail-closed there).
-		policyPrincipalMode: actor.mode === "autonomous" ? "autonomous" : "attended",
 	});
 
 	if (args.watcher_source) {
@@ -1871,7 +1865,7 @@ async function handleApprove(
 
 	const pendingRows = await sql`
     SELECT id, connection_id, action_key, action_input,
-           policy_principal_kind, policy_principal_id, policy_principal_mode
+           policy_principal_kind, policy_principal_id
     FROM runs
     WHERE id = ${args.run_id}
       AND organization_id = ${ctx.organizationId}
@@ -1890,7 +1884,6 @@ async function handleApprove(
 		action_input: Record<string, unknown> | null;
 		policy_principal_kind: string | null;
 		policy_principal_id: string | null;
-		policy_principal_mode: string | null;
 	};
 	const resolved = await getOperationForConnection(
 		ctx.organizationId,

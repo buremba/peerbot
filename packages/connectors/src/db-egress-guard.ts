@@ -419,16 +419,18 @@ export function readEgressPolicy(value: unknown): DbEgressPolicy {
  * against the name the tenant configured.
  */
 export function requiredTlsMode(connectionString: string): string {
-  const q = connectionString.indexOf('?');
   // postgres.js parses the URL with `new URL()`, whose `.searchParams` follows
-  // WHATWG URL semantics: the fragment (everything from the first `#`) is NOT
-  // part of the query. A naive `slice(q + 1)` would fold `#frag` into the last
-  // param's value, so `?sslrootcert=system#frag` would read `system#frag` and
-  // silently DOWNGRADE verify-full to require. Cut the fragment first to match.
-  let query = q === -1 ? '' : connectionString.slice(q + 1);
-  const hash = query.indexOf('#');
-  if (hash !== -1) query = query.slice(0, hash);
-  const params = new URLSearchParams(query);
+  // WHATWG URL semantics: the fragment (everything from the FIRST `#`) is NOT
+  // part of the query, and a `?` that appears AFTER that `#` is fragment text,
+  // not a query delimiter. So cut the fragment off the WHOLE string first, then
+  // locate `?`. This closes both `?x=y#frag` (folding `#frag` into the last
+  // value) and `#frag?sslmode=disable` (a `?` living inside the fragment being
+  // misread as a real query) — either would silently corrupt the TLS decision.
+  const hash = connectionString.indexOf('#');
+  const beforeFragment =
+    hash === -1 ? connectionString : connectionString.slice(0, hash);
+  const q = beforeFragment.indexOf('?');
+  const params = new URLSearchParams(q === -1 ? '' : beforeFragment.slice(q + 1));
   // Match postgres.js's own precedence exactly (connection.js parseOptions):
   // it reduces searchParams into an object so on DUPLICATE keys the LAST value
   // wins, then maps `sslmode` over `ssl` (sslmode present ⇒ ssl := sslmode).

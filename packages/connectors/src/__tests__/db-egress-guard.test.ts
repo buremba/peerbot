@@ -318,6 +318,16 @@ describe('requiredTlsMode — forced TLS under block-private', () => {
     expect(
       requiredTlsMode('postgres://u:p@db.example.com/x?sslmode=verify-full#sslmode=disable')
     ).toBe('verify-full');
+    // `#` BEFORE `?`: the `?` lives inside the fragment, so there is NO query.
+    // A `sslmode=disable` after such a `?` must NOT be parsed (and must not
+    // throw as plaintext) — new URL() treats the whole tail as fragment.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x#label?sslmode=disable')
+    ).toBe('require');
+    // Same, with an sslrootcert in the fragment: it must not force verify-full.
+    expect(
+      requiredTlsMode('postgres://u:p@db.example.com/x#frag?sslrootcert=system')
+    ).toBe('require');
   });
 
   test('sslmode beats a contradictory ssl param (postgres.js precedence)', () => {

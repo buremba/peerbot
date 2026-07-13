@@ -89,9 +89,14 @@ export async function setEnvironmentCredentialName(
 }
 
 /**
- * Delete an environment and null out any agent pinned to it (so dependent
- * agents fall back to the default runtime). The vault credential rows are left
- * in place — credential lifecycle is independent of the row.
+ * Delete an environment, null out any agent pinned to it (so dependent agents
+ * fall back to the default runtime), and purge its runtime-connection
+ * credentials from the vault — all in ONE transaction. The vault rows
+ * (`environment:<id>:<field>`) are deleted atomically with the environment row,
+ * so a transient failure rolls the whole thing back rather than leaving a
+ * decryptable provider token behind (which a post-commit purge could do — a
+ * retry would see the row already gone and skip the purge). The `:` suffix on
+ * the prefix prevents collisions (env-1 vs env-11).
  */
 export async function deleteEnvironment(
   id: string,
@@ -111,6 +116,11 @@ export async function deleteEnvironment(
         UPDATE agents
         SET environment_id = NULL
         WHERE environment_id = ${id} AND organization_id = ${organizationId}
+      `;
+      await tx`
+        DELETE FROM agent_secrets
+        WHERE organization_id = ${organizationId}
+          AND name LIKE ${`environment:${id}:%`}
       `;
     }
   });

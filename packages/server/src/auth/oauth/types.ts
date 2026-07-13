@@ -79,6 +79,8 @@ export interface OAuthTokenResponse {
   expires_in: number;
   refresh_token?: string;
   scope?: string;
+  /** RFC 8707 authorized resource (MCP audience), when the grant was resource-bound. */
+  resource?: string;
 }
 
 /**

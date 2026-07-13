@@ -921,7 +921,6 @@ Memory:
       .command("create <name>")
       .description("Create an environment")
       .requiredOption("--provider <kind>", "Runtime provider kind")
-      .option("--scope <scope>", "org (default) or private")
       .option(
         "--credential <entry>",
         "Credential field as 'key=value' or 'key=$ENV_VAR' (repeatable, quote it)",
@@ -933,7 +932,6 @@ Memory:
       name: string,
       options: CloudCommandOptions & {
         provider: string;
-        scope?: string;
         credential?: string[];
       }
     ) => {

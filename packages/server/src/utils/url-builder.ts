@@ -129,32 +129,6 @@ export async function buildProviderManagementUrl(
   return url.toString();
 }
 
-/**
- * Build the org's sandbox-provider management URL — `<webOrigin>/<orgSlug>/
- * infrastructure/sandboxes` — the sibling of {@link buildProviderManagementUrl}
- * for the runtime/sandbox side of the providers surface. Optional `provider`
- * (a runtime provider kind, e.g. `vercel`) prefills the Add-provider form so an
- * agent can hand a human a deep link scoped to the sandbox it wants added; the
- * human reviews the real form and saves (a human save applies immediately, so
- * this needs no pending run). Returns null when any required piece is missing.
- */
-export async function buildSandboxManagementUrl(
-  publicGatewayUrl: string | undefined,
-  organizationId: string | undefined,
-  target?: { provider?: string }
-): Promise<string | null> {
-  if (!publicGatewayUrl || !organizationId) return null;
-  const slug = await getOrganizationSlug(organizationId).catch(() => null);
-  if (!slug) return null;
-  const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
-  const url = new URL(
-    `/${encodeURIComponent(slug)}/infrastructure/sandboxes`,
-    `${webOrigin}/`
-  );
-  if (target?.provider) url.searchParams.set('provider', target.provider);
-  return url.toString();
-}
-
 export interface RenderedAgentError {
   /** User-facing body (no link appended — carry `ctaUrl` separately). */
   text: string;

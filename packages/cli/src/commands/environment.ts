@@ -15,7 +15,6 @@ interface EnvironmentRow {
   id: string;
   name: string;
   providerKind: string;
-  scope?: string;
   connected?: boolean;
   details?: Record<string, string>;
 }
@@ -79,14 +78,9 @@ export async function environmentCreateCommand(
   name: string,
   options: CloudCommandOptions & {
     provider: string;
-    scope?: string;
     credential?: string[];
   }
 ): Promise<void> {
-  if (options.scope && options.scope !== "org" && options.scope !== "private") {
-    console.error(chalk.red("\n  --scope must be `org` or `private`.\n"));
-    process.exit(1);
-  }
   const credential = options.credential?.length
     ? parseKeyValueEntries(options.credential, "--credential")
     : undefined;
@@ -97,7 +91,6 @@ export async function environmentCreateCommand(
     {
       name,
       provider_kind: options.provider,
-      ...(options.scope ? { scope: options.scope } : {}),
       ...(credential ? { credential } : {}),
     }
   );

@@ -1154,6 +1154,9 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
   // not formatted markdown, to forward an approval card into the chat (see
   // maybePostApprovalCard / createMcpToolDefinitions).
   "manage_agents",
+  // Same shape as manage_agents: watcher definition create/update/delete may
+  // return pending_approval under the agent_config write-gate.
+  "manage_watchers",
   // manage_entity's update path queues a human-owned-field change for approval
   // (approval_queued + approval_run_id + approval_fields/current). Same reason:
   // we need the JSON to forward the entity_field_change approval card.
@@ -1163,9 +1166,11 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
 /**
  * Approval-gate bridge: when a gated write returns a pending-approval result,
  * post a durable approval card into the chat so the SPA renders the interactive
- * Approve/Reject diff. Handles two producers:
+ * Approve/Reject diff. Handles three producers:
  *   - manage_agents write gate → `{ status: 'pending_approval', run_id,
  *     action, proposal, current }` (the builder agent's create/update/delete).
+ *   - manage_watchers write gate → same `pending_approval` shape (watcher
+ *     definition create/update/delete under agent_config).
  *   - manage_entity update gate → `{ approval_queued: true, approval_run_id,
  *     approval_fields, approval_current, approval_attribution }` (a human-owned
  *     entity field the agent proposed changing).
@@ -1225,7 +1230,7 @@ function buildApprovalCardBody(
     return null;
   }
 
-  if (toolName === "manage_agents") {
+  if (toolName === "manage_agents" || toolName === "manage_watchers") {
     if (
       parsed.status !== "pending_approval" ||
       typeof parsed.run_id !== "number"

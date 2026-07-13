@@ -577,9 +577,44 @@ export const ManageWatchersResultSchema = Type.Union([
       })
     ),
   }),
+  // Builder-gate: non-human principal queued a watcher definition write.
+  // Mirrors manage_agents' pending_approval shape so the worker can forward a
+  // chat approval card from the same result fields (run_id + proposal).
+  Type.Object({
+    action: Type.Union([
+      Type.Literal("create"),
+      Type.Literal("update"),
+      Type.Literal("create_version"),
+      Type.Literal("create_from_version"),
+      Type.Literal("set_reaction_script"),
+      Type.Literal("delete"),
+    ]),
+    run_id: Type.Integer(),
+    event_id: Type.Optional(Type.Integer()),
+    status: Type.Literal("pending_approval"),
+    message: Type.String(),
+    proposal: Type.Unknown(),
+    current: Type.Union([
+      Type.Record(Type.String(), Type.Unknown()),
+      Type.Null(),
+    ]),
+  }),
 ]);
 
 export type ManageWatchersResult = Static<typeof ManageWatchersResultSchema>;
+
+/**
+ * Proposed watcher-definition mutation held in `runs.action_input` for a
+ * builder-gate run. Captures the original manage_watchers args so approve can
+ * re-run the same write handler.
+ *
+ * Watcher definition writes have no per-field pre-image (unlike manage_agents
+ * update `base`); a straight re-run is the launch path — a stale approval may
+ * clobber a newer edit.
+ */
+export interface ManageWatchersProposal {
+  args: ManageWatchersArgs;
+}
 export const ListWatchersSchema = Type.Object({
   watcher_id: Type.Optional(
     Type.String({

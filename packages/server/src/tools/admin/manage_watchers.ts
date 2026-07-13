@@ -29,6 +29,7 @@ import {
   type ListWatchersArgs,
   type ListWatchersResult,
   type ManageWatchersArgs,
+  type ManageWatchersProposal,
   type ManageWatchersResult,
 } from '@lobu/core/contracts/tools/manage-watchers';
 import type { ReservedSql } from 'postgres';
@@ -38,6 +39,10 @@ import {
 } from '../../authz/entity-policy';
 import { createDbClientFromEnv, getDb } from '../../db/client';
 import type { Env } from '../../index';
+import { notifyActionApprovalNeeded } from '../../notifications/triggers';
+import { insertEvent } from '../../utils/insert-event';
+import logger from '../../utils/logger';
+import { buildResourcePermalink } from '../../utils/url-builder';
 import { ToolUserError } from '../../utils/errors';
 import {
   requireOrgReadAccess,
@@ -47,6 +52,7 @@ import {
 } from '../../utils/organization-access';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
+import { getOrgUrlContext } from '../view-urls';
 import { defineFlatActionTool, flatAction } from './action-tool';
 import { requireWatcherAccess } from './manage_watchers/shared';
 import { handleCreate, handleUpdate, handleDelete, handleCreateFromVersion } from './manage_watchers/crud';
@@ -67,7 +73,17 @@ export {
   ManageWatchersResultSchema,
   ManageWatchersSchema,
 };
-export type { ManageWatchersArgs, ManageWatchersResult };
+export type { ManageWatchersArgs, ManageWatchersProposal, ManageWatchersResult };
+
+/**
+ * Synthetic `runs.action_key` tagging a manage_watchers write held for approval.
+ * `manage_operations`' approve/reject handlers branch on this value to apply
+ * (or cancel) the held mutation, reusing the same durable runs/events approval
+ * primitive that manage_agents uses. These rows have run_type='internal'
+ * (no connector / connection), so the operation lookup in the connector path is
+ * skipped.
+ */
+export const MANAGE_WATCHERS_ACTION_KEY = 'manage_watchers';
 
 // ============================================
 // Main Function
@@ -140,8 +156,12 @@ async function manageWatchersImpl(
   // takes the lock — human or non-human — because the racing reassign is itself an
   // `update` that flows through this same path, so the lock makes them mutually
   // exclusive. Actions with no existing target group (`create`) skip the lock.
+  //
+  // `require_approval` queues a pending run + card (does NOT apply); `allow`
+  // proceeds to the handler; `deny` / foreign-owner still throw.
   return withWatcherGroupLock(args, ctx, async () => {
-    await gateWatcherWrite(args, ctx);
+    const gated = await gateWatcherWrite(args, ctx);
+    if (gated) return gated;
     return runManageWatchers(args, env, ctx);
   });
 }
@@ -321,18 +341,231 @@ async function resolveEffectiveWatcherOwners(
   }
 }
 
+/** Human label for each gated action, used in card titles + notifications. */
+function watcherActionLabel(args: ManageWatchersArgs): string {
+  switch (args.action) {
+    case 'create':
+      return `Create watcher "${args.slug ?? args.name ?? 'new'}"`;
+    case 'create_from_version':
+      return `Create watchers from version ${args.version_id ?? '?'}`;
+    case 'update':
+      return `Update watcher ${args.watcher_id ?? '?'}`;
+    case 'create_version':
+      return `Create version for watcher ${args.watcher_id ?? '?'}`;
+    case 'set_reaction_script':
+      return `Set reaction script on watcher ${args.watcher_id ?? '?'}`;
+    case 'delete':
+      return `Delete watcher(s) ${(args.watcher_ids ?? []).join(', ') || '?'}`;
+    default:
+      return `Watcher ${args.action}`;
+  }
+}
+
+/**
+ * Fetch a compact current watcher row for the approval card diff. Returns null
+ * when there is no single target (create / bulk delete / missing id).
+ */
+async function fetchCurrentWatcher(
+  organizationId: string,
+  args: ManageWatchersArgs,
+): Promise<Record<string, unknown> | null> {
+  if (args.watcher_id == null) return null;
+  const sql = getDb();
+  const rows = await sql`
+    SELECT id, slug, name, description, agent_id, schedule, timezone, status
+    FROM watchers
+    WHERE organization_id = ${organizationId} AND id = ${Number(args.watcher_id)}
+    LIMIT 1
+  `;
+  return (rows[0] as Record<string, unknown> | undefined) ?? null;
+}
+
+/**
+ * Build the proposed-change payload held on the run. Validates required fields
+ * for the gated write so a malformed proposal is rejected at request time, not
+ * at approve time.
+ *
+ * Watcher definition writes have no per-field pre-image; the proposal is the
+ * full original args for a straight re-run on approve (a stale approval may
+ * clobber a newer edit — acceptable for launch).
+ */
+function buildWatcherProposal(args: ManageWatchersArgs): ManageWatchersProposal {
+  const writeAction = watcherWriteAction(args.action);
+  if (!writeAction) {
+    throw new ToolUserError(`action "${args.action}" is not a gated watcher write`);
+  }
+  if (args.action === 'create') {
+    if (!args.slug) throw new ToolUserError('slug is required for create action');
+    if (!args.prompt) throw new ToolUserError('prompt is required for create action');
+    if (!args.agent_id) {
+      throw new ToolUserError(
+        'agent_id is required to create a watcher (the agent that executes it).',
+      );
+    }
+  }
+  if (args.action === 'update' && args.watcher_id == null) {
+    throw new ToolUserError('watcher_id is required for update action');
+  }
+  if (args.action === 'delete' && (!args.watcher_ids || args.watcher_ids.length === 0)) {
+    throw new ToolUserError('watcher_ids is required for delete action');
+  }
+  if (
+    (args.action === 'create_version' || args.action === 'set_reaction_script') &&
+    args.watcher_id == null
+  ) {
+    throw new ToolUserError(`watcher_id is required for ${args.action} action`);
+  }
+  if (args.action === 'create_from_version') {
+    if (args.version_id == null) {
+      throw new ToolUserError('version_id is required for create_from_version action');
+    }
+    if (!args.entity_ids || args.entity_ids.length === 0) {
+      throw new ToolUserError('entity_ids is required for create_from_version action');
+    }
+  }
+  return { args };
+}
+
+/**
+ * Queue a manage_watchers write for approval instead of running it. Writes a
+ * pending `runs` row (run_type='internal', action_key='manage_watchers') plus an
+ * `interaction_type='approval'` event holding the proposed args. The mutation is
+ * applied later by manage_operations' approve handler via
+ * {@link applyManageWatchersProposal}.
+ */
+async function queueWatcherWriteForApproval(
+  args: ManageWatchersArgs,
+  ctx: ToolContext,
+): Promise<ManageWatchersResult> {
+  const proposal = buildWatcherProposal(args);
+  const writeAction = watcherWriteAction(args.action)!;
+
+  // create attributes ownership via created_by — fail at request time rather
+  // than after the human approves an unattributable create.
+  if (writeAction === 'create' && !ctx.userId) {
+    throw new ToolUserError(
+      'create requires an authenticated caller to own the new watcher',
+    );
+  }
+
+  const current = await fetchCurrentWatcher(ctx.organizationId, args);
+  if (args.action === 'update' && !current) {
+    throw new ToolUserError(`Watcher "${args.watcher_id}" not found`, 404);
+  }
+
+  const sql = getDb();
+  const inserted = await sql`
+    INSERT INTO runs (
+      organization_id, run_type, action_key, action_input,
+      created_by_user_id, approval_status, status, created_at
+    ) VALUES (
+      ${ctx.organizationId}, 'internal', ${MANAGE_WATCHERS_ACTION_KEY},
+      ${sql.json(proposal as unknown as Record<string, unknown>)},
+      ${ctx.userId ?? null}, 'pending', 'pending', current_timestamp
+    )
+    RETURNING id
+  `;
+  const runId = Number((inserted[0] as { id: unknown }).id);
+
+  const label = watcherActionLabel(args);
+  const event = await insertEvent({
+    entityIds: args.entity_id != null ? [args.entity_id] : [],
+    organizationId: ctx.organizationId,
+    originId: `run_${runId}_pending`,
+    title: `${label} — pending approval`,
+    content: `Builder requested: ${label}`,
+    semanticType: 'operation',
+    runId,
+    interactionType: 'approval',
+    interactionStatus: 'pending',
+    interactionInput: proposal as unknown as Record<string, unknown>,
+    metadata: {
+      tool: 'manage_watchers',
+      action_key: MANAGE_WATCHERS_ACTION_KEY,
+      action: args.action,
+      watcher_id: args.watcher_id ?? null,
+      proposal,
+      current: current ?? null,
+      status: 'pending_approval',
+      run_id: runId,
+    },
+    authorName: ctx.clientId ?? 'agent',
+  });
+  const eventId = Number(event.id);
+
+  const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
+  // Run-scoped: the pending event is superseded on approve→complete; a run link
+  // stays valid across the chain.
+  const approvalUrl = buildResourcePermalink(ownerSlug, { kind: 'run', runId }, baseUrl);
+
+  notifyActionApprovalNeeded({
+    orgId: ctx.organizationId,
+    runId,
+    actionKey: MANAGE_WATCHERS_ACTION_KEY,
+    connectionName: label,
+    eventId,
+    approvalUrl,
+  }).catch((error) =>
+    logger.error(error, 'Failed to send manage_watchers approval notification')
+  );
+
+  return {
+    action: args.action as
+      | 'create'
+      | 'update'
+      | 'create_version'
+      | 'create_from_version'
+      | 'set_reaction_script'
+      | 'delete',
+    run_id: runId,
+    event_id: eventId,
+    status: 'pending_approval',
+    // An interactive approval card (change details + Approve/Reject buttons) is
+    // rendered into the chat from this result — so instruct the model to stay
+    // terse and NOT restate the change or paste a link.
+    message: `${label} is queued for approval. A confirmation card with the change details and Approve/Reject buttons is now shown to the user in the chat — reply with at most one short sentence and do NOT restate the change or include an approval link.`,
+    proposal,
+    current,
+  };
+}
+
+/**
+ * Apply a previously-queued manage_watchers proposal. Called by
+ * manage_operations' approve handler once a human confirms. Re-runs the original
+ * write handler with the held args. `ownerUserId` is the original requester
+ * (persisted on the run), so an approving admin doesn't become the created
+ * watcher's `created_by`.
+ *
+ * Watcher definition writes have no per-field pre-image; this is a straight
+ * re-run — a stale approval may clobber a newer edit (acceptable for launch).
+ */
+export async function applyManageWatchersProposal(
+  proposal: ManageWatchersProposal,
+  ctx: ToolContext,
+  env: Env,
+  ownerUserId: string | null,
+): Promise<ManageWatchersResult> {
+  const args = proposal.args;
+  const writeAction = watcherWriteAction(args.action);
+  // create attributes ownership to the ORIGINAL requester, not the approver.
+  const applyCtx: ToolContext =
+    writeAction === 'create' ? { ...ctx, userId: ownerUserId } : ctx;
+  return runManageWatchers(args, env, applyCtx);
+}
+
 /**
  * Enforce the `agent_config` write-gate for a watcher definition write. No-op for
  * read-only actions and for human members (whose decision is always 'allow').
- * A non-human principal is refused on `deny` AND on `require_approval` — there is
- * no watcher-definition approval queue, so fail closed rather than silently apply.
+ * Returns a pending_approval result when the policy requires approval (queued
+ * via the same runs/events primitive manage_agents uses); throws on deny or
+ * foreign-owner escalation; returns null when the write may apply now.
  */
 async function gateWatcherWrite(
   args: ManageWatchersArgs,
   ctx: ToolContext,
-): Promise<void> {
+): Promise<ManageWatchersResult | null> {
   const action = watcherWriteAction(args.action);
-  if (!action) return;
+  if (!action) return null;
   // Resolve the actor through the shared seam. A reaction script editing watchers
   // acts as its own watcher (ctx.actingWatcherId) — the seam folds that watcher's
   // owning agent so the agent's agent_config envelope binds and the reaction can't
@@ -354,6 +587,7 @@ async function gateWatcherWrite(
   // `agent_id` (create_from_version/create_version/set_reaction_script ignore it) —
   // and ALL owners a group-wide write touches. EVERY affected owner must be the actor
   // itself. Humans are ungoverned here and may own/assign freely.
+  // MUST run BEFORE queueing so a foreign-owner proposal never becomes a pending card.
   if (actor.kind !== 'user') {
     const ownAgentId = actor.ownerAgentId ?? actor.id;
     const owners = await resolveEffectiveWatcherOwners(args, ctx);
@@ -376,11 +610,12 @@ async function gateWatcherWrite(
     mode: actor.mode,
     action,
   });
-  if (decision === 'allow') return;
+  if (decision === 'allow') return null;
+  if (decision === 'require_approval') {
+    return queueWatcherWriteForApproval(args, ctx);
+  }
   throw new ToolUserError(
-    decision === 'require_approval'
-      ? `Editing watchers (agent config) requires approval for this principal; a watcher cannot be ${action}d autonomously.`
-      : `Policy denies ${action} of watchers (agent config) for this principal.`,
+    `Policy denies ${action} of watchers (agent config) for this principal.`,
     403,
   );
 }

@@ -344,8 +344,7 @@ async function upsertKeyedEntity(params: {
       // The watcher is the acting principal (its OWN rows bind); its owning agent
       // is folded in as the ancestor via `ownerAgentId` so the agent's envelope
       // ALSO binds — max-restrictive, so the agent can tighten but a watcher-
-      // specific restriction is never loosened away. `mode: 'autonomous'` applies
-      // the agent's autonomous-only rules (watchers are never human).
+      // specific restriction is never loosened away.
       principalKind: 'watcher',
       sql: tx,
       attribution: 'watcher',
@@ -353,7 +352,6 @@ async function upsertKeyedEntity(params: {
       principalId: mutationPrincipalId({ watcherId: params.watcherId }),
       ownerAgentId: params.watcherAgentId,
       ownerResolved: params.watcherOwnerResolved,
-      mode: 'autonomous',
       entityTypeSlug: params.entityTypeSlug,
       entityId,
       fields: Object.fromEntries(
@@ -526,8 +524,7 @@ export async function promoteKeyedEntities(
     // specific deny). Its owning agent is folded in as the ancestor via
     // `ownerAgentId` so the agent's envelope ALSO binds — max-restrictive, so
     // the agent envelope can tighten but a watcher-specific restriction can only
-    // tighten further, never be loosened away. Evaluated in autonomous mode
-    // (watchers are never human) so the agent's autonomous-only rules apply.
+    // tighten further, never be loosened away.
     principalKind: 'watcher',
     sql: tx,
     attribution: 'watcher',
@@ -535,7 +532,6 @@ export async function promoteKeyedEntities(
     principalId: mutationPrincipalId({ watcherId }),
     ownerAgentId: watcherOwner.ownerAgentId,
     ownerResolved: watcherOwner.resolved,
-    mode: 'autonomous',
     entityTypeSlug,
     entityData: { entity_type: entityTypeSlug, name: '' },
     proposal: {},

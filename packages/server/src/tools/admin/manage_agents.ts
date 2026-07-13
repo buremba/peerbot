@@ -71,7 +71,6 @@ async function actingPrincipalFor(ctx: ToolContext): Promise<ActingPrincipal> {
     userId: ctx.userId,
     agentId: ctx.agentId,
     sessionWatcherId: ctx.actingWatcherId ?? null,
-    sourceForMode: ctx.sourceContext?.source,
   });
 }
 

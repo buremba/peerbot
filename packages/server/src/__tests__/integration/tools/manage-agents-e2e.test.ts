@@ -232,7 +232,6 @@ describe("manage_agents — builder gate e2e", () => {
 		const live = await resolveActingPrincipal(sql, {
 			organizationId: orgId,
 			agentId: "ghost-bot",
-			sourceForMode: "direct-api",
 		});
 		expect(live.ownerResolved).toBe(true);
 
@@ -249,7 +248,6 @@ describe("manage_agents — builder gate e2e", () => {
 		const stale = await resolveActingPrincipal(sql, {
 			organizationId: orgId,
 			agentId: "ghost-bot",
-			sourceForMode: "direct-api",
 		});
 		expect(stale.ownerResolved).toBe(false);
 		const decision = await evaluateEntityMutation({

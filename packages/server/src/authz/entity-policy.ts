@@ -53,27 +53,6 @@ export type WriteResourceClass = "entity" | "agent_config" | "connector_action";
 /** A non-human principal a policy row may target. NULL principal = any of this kind. */
 export type PolicyPrincipalKind = "agent" | "watcher";
 
-/**
- * Headless vs interactive run label for SSE-owner gating and run attribution.
- * NOT used by write-policy fold (one envelope for all agent runs).
- * Keep in lockstep with HEADLESS_SOURCES in unified-thread-consumer.ts.
- */
-export type PrincipalMode = "attended" | "autonomous";
-
-const HEADLESS_RUN_SOURCES: ReadonlySet<string> = new Set([
-	"watcher-run",
-	"scheduled-job",
-	"connector-repair",
-	"internal",
-]);
-
-/** Whether a worker-token source is a headless (no interactive user) dispatch. */
-export function modeForSource(source: string | null | undefined): PrincipalMode {
-	return source != null && HEADLESS_RUN_SOURCES.has(source)
-		? "autonomous"
-		: "attended";
-}
-
 export interface EntityApprovalDeliveryTarget {
 	connectionId: string | null;
 	channelId: string | null;
@@ -381,8 +360,6 @@ export interface ActingPrincipal {
 	 * agent/user turn and every watcher whose owner resolved (incl. legitimately null).
 	 */
 	ownerResolved: boolean;
-	/** attended vs autonomous. A watcher is always autonomous. */
-	mode: PrincipalMode;
 }
 
 /**
@@ -398,13 +375,11 @@ export interface ActingPrincipal {
  * loosen, its agent), so there's no way to "spoof a watcher tag" to escape agent
  * policy.
  *
- * When a watcher acts, this looks up its owning agent (folded max-restrictive) and
- * pins the mode to autonomous. With no watcher channel, an agent/user turn takes
- * `sourceForMode` for its attended-vs-autonomous classification. This is THE seam
- * every write surface (manage_entity/agents/operations/watchers, promotion)
- * resolves identity through.
+ * When a watcher acts, this looks up its owning agent (folded max-restrictive).
+ * This is THE seam every write surface (manage_entity/agents/operations/watchers,
+ * promotion) resolves identity through.
  */
-/** A watcher acting principal: autonomous, folding its (already-resolved) owner. */
+/** A watcher acting principal, folding its (already-resolved) owner agent. */
 function watcherPrincipal(
 	watcherId: number,
 	owner: { ownerAgentId: string | null; resolved: boolean },
@@ -414,7 +389,6 @@ function watcherPrincipal(
 		id: `watcher:${watcherId}`,
 		ownerAgentId: owner.ownerAgentId,
 		ownerResolved: owner.resolved,
-		mode: "autonomous",
 	};
 }
 
@@ -426,8 +400,6 @@ export async function resolveActingPrincipal(
 		agentId?: string | null;
 		explicitWatcherId?: number | null;
 		sessionWatcherId?: number | null;
-		/** The run source, used for mode ONLY when the actor is an agent/user. */
-		sourceForMode?: string | null;
 	},
 ): Promise<ActingPrincipal> {
 	// The trusted SESSION watcher (stamped by the reaction executor) always wins and
@@ -474,7 +446,6 @@ export async function resolveActingPrincipal(
 		id: mutationPrincipalId({ agentId: args.agentId }),
 		ownerAgentId: null,
 		ownerResolved,
-		mode: modeForSource(args.sourceForMode),
 	};
 }
 
@@ -811,8 +782,6 @@ export async function evaluateEntityMutation(args: {
 	 * true (agent/user turns, and watchers whose owner resolved).
 	 */
 	ownerResolved?: boolean;
-	/** Headless vs interactive label only — write-policy is one envelope. */
-	mode?: PrincipalMode;
 	sql?: DbClient;
 }): Promise<EntityPolicyDecision> {
 	if (args.entityOrgId && args.entityOrgId !== args.organizationId) {
@@ -865,11 +834,6 @@ export async function resolveWritePolicyDecision(args: {
 	/** See {@link resolveWriteEffect}. Fail closed (deny) when a watcher owner is unresolved. */
 	ownerResolved?: boolean;
 	action: WriteAction;
-	/**
-	 * Attribution / SSE labeling only. Write-policy fold is a single envelope
-	 * (principal_mode dropped) — `mode` does not change the decision.
-	 */
-	mode?: PrincipalMode;
 	/** connector_action only: the operation being run — a per-op row tightens the
 	 * blanket execute rule for it alone. Forwarded to {@link resolveWriteEffect}. */
 	operationKey?: string | null;
@@ -903,8 +867,6 @@ export async function resolveWriteEffect(args: {
 	 */
 	ownerResolved?: boolean;
 	action: WriteAction;
-	/** Attribution only — ignored by the single-envelope fold. */
-	mode?: PrincipalMode;
 	/** connector_action only: the operation being run (e.g. 'slack.send_message').
 	 * A row scoped to this op tightens the blanket execute rule for it alone. */
 	operationKey?: string | null;
@@ -950,8 +912,6 @@ export async function evaluateEntityFieldUpdates(args: {
 	entityOrgId?: string | null;
 	/** field path -> current owner ("human" pins the field). */
 	fields: Record<string, "human" | "none">;
-	/** Attended (human-driven) vs autonomous (watcher). Defaults attended. */
-	mode?: PrincipalMode;
 	sql?: DbClient;
 }): Promise<Record<string, EntityPolicyDecision>> {
 	const decisions: Record<string, EntityPolicyDecision> = {};

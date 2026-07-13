@@ -796,7 +796,6 @@ export async function applyManageWatchersProposal(
           principalId: proposal.actingAgentId,
           ownerAgentId: proposal.actingAgentId,
           ownerResolved: true,
-          mode: 'autonomous',
           action: writeGateAction,
         });
         // Only `deny` blocks the apply: this run IS the approval, so a
@@ -836,7 +835,6 @@ async function gateWatcherWrite(
     userId: ctx.userId,
     agentId: ctx.agentId,
     sessionWatcherId: ctx.actingWatcherId ?? null,
-    sourceForMode: ctx.sourceContext?.source,
   });
   // Non-human principal identity captured for the ownership guard AND (when
   // queued) the proposal. Same formula the gate has always used.
@@ -869,7 +867,6 @@ async function gateWatcherWrite(
     principalId: actor.id,
     ownerAgentId: actor.ownerAgentId,
     ownerResolved: actor.ownerResolved,
-    mode: actor.mode,
     action,
   });
   if (decision === 'allow') return null;

@@ -745,7 +745,6 @@ async function filterEntitiesByReadPolicy<T extends { entity_type: string }>(
     agentId: ctx.agentId,
     explicitWatcherId: null,
     sessionWatcherId: ctx.actingWatcherId ?? null,
-    sourceForMode: ctx.sourceContext?.source,
   });
   if (actor.kind === "user") return entities;
   const typeCache = new Map<string, boolean>();
@@ -760,7 +759,6 @@ async function filterEntitiesByReadPolicy<T extends { entity_type: string }>(
         principalId: actor.id,
         ownerAgentId: actor.ownerAgentId,
         ownerResolved: actor.ownerResolved,
-        mode: actor.mode,
         action: "read",
         entityTypeSlug: slug,
         sql: getDb(),

@@ -124,7 +124,6 @@ async function agentConfigBlanketDenied(
 		userId: ctx.userId,
 		agentId: ctx.agentId,
 		sessionWatcherId: ctx.actingWatcherId ?? null,
-		sourceForMode: ctx.sourceContext?.source,
 	});
 	if (actor.kind === "user") return false;
 	const effect = await resolveWriteEffect({

@@ -5,7 +5,7 @@ import { resolveActingPrincipal } from "../entity-policy";
 /**
  * The single seam every write surface resolves identity through. It merges the
  * two channels an acting watcher arrives on (an explicit `watcher_source` and the
- * reaction session's own watcher), looks up the owning agent, and pins the mode —
+ * reaction session's own watcher), looks up the owning agent —
  * so no call site has to merge them and a reaction can't dodge its agent's
  * envelope by omitting attribution.
  *
@@ -48,7 +48,6 @@ describe("resolveActingPrincipal", () => {
 			agentId: "agent-1",
 			explicitWatcherId: 7,
 			sessionWatcherId: 9,
-			sourceForMode: "direct-api",
 		});
 		expect(actor).toEqual({
 			kind: "watcher",
@@ -56,7 +55,6 @@ describe("resolveActingPrincipal", () => {
 			id: "watcher:9",
 			ownerAgentId: "owner-agent",
 			ownerResolved: true,
-			mode: "autonomous",
 		});
 	});
 
@@ -68,14 +66,12 @@ describe("resolveActingPrincipal", () => {
 			organizationId: ORG,
 			agentId: "agent-1",
 			explicitWatcherId: 7,
-			sourceForMode: "direct-api",
 		});
 		expect(actor).toEqual({
 			kind: "agent",
 			id: "agent-1",
 			ownerAgentId: null,
 			ownerResolved: true,
-			mode: "attended",
 		});
 	});
 
@@ -84,29 +80,25 @@ describe("resolveActingPrincipal", () => {
 			organizationId: ORG,
 			agentId: "agent-1",
 			explicitWatcherId: 7,
-			sourceForMode: "direct-api",
 		});
 		expect(actor).toEqual({
 			kind: "watcher",
 			id: "watcher:7",
 			ownerAgentId: "agent-1",
 			ownerResolved: true,
-			mode: "autonomous",
 		});
 	});
 
-	it("an explicit watcher_source binds the watcher + folds its owning agent, autonomous", async () => {
+	it("an explicit watcher_source binds the watcher + folds its owning agent", async () => {
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			organizationId: ORG,
 			explicitWatcherId: 7,
-			sourceForMode: "direct-api",
 		});
 		expect(actor).toEqual({
 			kind: "watcher",
 			id: "watcher:7",
 			ownerAgentId: "owner-agent",
 			ownerResolved: true,
-			mode: "autonomous",
 		});
 	});
 
@@ -122,7 +114,6 @@ describe("resolveActingPrincipal", () => {
 			id: "watcher:9",
 			ownerAgentId: "owner-agent",
 			ownerResolved: true,
-			mode: "autonomous",
 		});
 	});
 
@@ -135,28 +126,17 @@ describe("resolveActingPrincipal", () => {
 		expect(actor.id).toBe("watcher:9");
 	});
 
-	it("a plain user turn is attended with no owner to fold", async () => {
+	it("a plain user turn has no owner to fold", async () => {
 		const actor = await resolveActingPrincipal(stubSql(null), {
 			organizationId: ORG,
 			userId: "user-1",
-			sourceForMode: "direct-api",
 		});
 		expect(actor).toEqual({
 			kind: "user",
 			id: null,
 			ownerAgentId: null,
 			ownerResolved: true,
-			mode: "attended",
 		});
-	});
-
-	it("an agent on a watcher-run source is autonomous", async () => {
-		const actor = await resolveActingPrincipal(stubSql(null), {
-			organizationId: ORG,
-			agentId: "agent-1",
-			sourceForMode: "watcher-run",
-		});
-		expect(actor.mode).toBe("autonomous");
 	});
 
 	it("a session watcher whose row is GONE resolves ownerResolved=false (gate fails closed)", async () => {
@@ -172,7 +152,6 @@ describe("resolveActingPrincipal", () => {
 			id: "watcher:9",
 			ownerAgentId: null,
 			ownerResolved: false,
-			mode: "autonomous",
 		});
 	});
 
@@ -185,14 +164,12 @@ describe("resolveActingPrincipal", () => {
 		const actor = await resolveActingPrincipal(stubSql(null, false), {
 			organizationId: ORG,
 			agentId: "deleted-agent",
-			sourceForMode: "direct-api",
 		});
 		expect(actor).toEqual({
 			kind: "agent",
 			id: "deleted-agent",
 			ownerAgentId: null,
 			ownerResolved: false,
-			mode: "attended",
 		});
 	});
 

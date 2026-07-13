@@ -17,7 +17,6 @@ import {
 } from "../authz/entity-mutation-gate";
 import {
 	mutationPrincipalId,
-	type PrincipalMode,
 	watcherIdFromPrincipalId,
 } from "../authz/entity-policy";
 import {
@@ -65,8 +64,6 @@ interface EntityUpdateOptions {
 	 * closed (deny). See the gate's `ownerResolved`. Defaults true.
 	 */
 	ownerResolved?: boolean;
-	/** Attended vs autonomous acting mode for this update. Defaults attended. */
-	mode?: PrincipalMode;
 }
 
 // ============================================
@@ -569,7 +566,6 @@ export async function updateEntity(
 						mutationPrincipalId({ agentId: ctx.agentId }),
 					ownerAgentId: opts?.ownerAgentId ?? null,
 					ownerResolved: opts?.ownerResolved ?? true,
-					mode: opts?.mode ?? "attended",
 					entityTypeSlug: String(current[0].entity_type),
 					entityId,
 					entityOrgId: String(current[0].organization_id),

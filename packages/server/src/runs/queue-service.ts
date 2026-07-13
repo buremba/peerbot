@@ -559,10 +559,6 @@ export async function createConnectorOperationRun(params: {
    */
   policyPrincipalKind?: 'agent' | 'watcher' | 'user' | null;
   policyPrincipalId?: string | null;
-  /** Acting mode the run was queued under; the approve-time recheck reuses it so
-   * an autonomous run isn't re-evaluated (looser) as attended, and an attended run
-   * isn't over-denied by an autonomous-only rule. NULL = legacy (pre-column). */
-  policyPrincipalMode?: 'attended' | 'autonomous' | null;
 }): Promise<number> {
   const sql = getDb();
 
@@ -595,14 +591,13 @@ export async function createConnectorOperationRun(params: {
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key, connector_version,
       action_key, action_input, approval_status, status,
-      policy_principal_kind, policy_principal_id, policy_principal_mode, created_at
+      policy_principal_kind, policy_principal_id, created_at
     ) VALUES (
       ${params.organizationId}, 'action', ${params.connectionId},
       ${params.connectorKey}, ${connectorVersion},
       ${params.operationKey}, ${sql.json(params.operationInput)},
       ${approvalStatus}, ${status},
       ${params.policyPrincipalKind ?? null}, ${params.policyPrincipalId ?? null},
-      ${params.policyPrincipalMode ?? null},
       current_timestamp
     )
     RETURNING id

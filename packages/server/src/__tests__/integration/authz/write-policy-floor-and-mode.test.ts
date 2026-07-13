@@ -169,7 +169,6 @@ describe("write-gate floor + single-envelope semantics", () => {
 				principalId: "agent-1",
 				action: "delete",
 				entityTypeSlug: "task",
-				mode: "attended",
 			}),
 		).toBe("deny");
 		expect(
@@ -179,7 +178,6 @@ describe("write-gate floor + single-envelope semantics", () => {
 				principalId: "agent-1",
 				action: "delete",
 				entityTypeSlug: "task",
-				mode: "autonomous",
 			}),
 		).toBe("deny");
 	});
@@ -324,7 +322,6 @@ describe("write-gate floor + single-envelope semantics", () => {
 				ownerAgentId: "agent-1",
 				action: "delete",
 				entityTypeSlug: "task",
-				mode: "autonomous",
 			}),
 		).toBe("deny");
 	});
@@ -355,7 +352,6 @@ describe("write-gate floor + single-envelope semantics", () => {
 				ownerAgentId: "agent-1",
 				action: "delete",
 				entityTypeSlug: "task",
-				mode: "autonomous",
 			}),
 		).toBe("deny");
 	});

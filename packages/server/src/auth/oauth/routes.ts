@@ -274,6 +274,18 @@ function getProvider(c: { env: Env; req: { url: string } }): OAuthProvider {
 // ============================================
 
 /**
+ * OAuth discovery metadata must never be CDN-cached. Cloudflare's public-HTML
+ * rule respects origin Cache-Control for `/.well-known/*`; without an explicit
+ * no-store, a deploy that changes scopes_supported can stay invisible for
+ * hours — third-party MCP clients (Slack) then request stale scopes, we grant
+ * a subset, and the client reports "must accept all required permissions".
+ */
+function setOAuthDiscoveryNoCache(c: { header: (name: string, value: string) => void }) {
+  c.header('Cache-Control', 'no-store');
+  c.header('Pragma', 'no-cache');
+}
+
+/**
  * GET /.well-known/oauth-protected-resource
  * RFC 9728 - OAuth Protected Resource Metadata
  *
@@ -285,11 +297,13 @@ oauthRoutes.get('/.well-known/oauth-protected-resource/:path{.+}', (c) => {
   const resourcePath = c.req.param('path');
   const origin = getBaseUrl(c);
   metadata.resource = `${origin}/${resourcePath}`;
+  setOAuthDiscoveryNoCache(c);
   return c.json(metadata);
 });
 
 oauthRoutes.get('/.well-known/oauth-protected-resource', (c) => {
   const provider = getProvider(c);
+  setOAuthDiscoveryNoCache(c);
   return c.json(provider.getProtectedResourceMetadata());
 });
 
@@ -301,12 +315,14 @@ oauthRoutes.get('/.well-known/oauth-protected-resource', (c) => {
  */
 oauthRoutes.get('/.well-known/openid-configuration', (c) => {
   const provider = getProvider(c);
+  setOAuthDiscoveryNoCache(c);
   return c.json(provider.getAuthorizationServerMetadata());
 });
 
 // Also serve at /oauth-authorization-server for strict RFC 8414 compliance
 oauthRoutes.get('/.well-known/oauth-authorization-server', (c) => {
   const provider = getProvider(c);
+  setOAuthDiscoveryNoCache(c);
   return c.json(provider.getAuthorizationServerMetadata());
 });
 
@@ -320,6 +336,7 @@ oauthRoutes.get('/.well-known/oauth-authorization-server', (c) => {
 oauthRoutes.get('/auth.md', (c) => {
   return c.body(buildAuthMd(getBaseUrl(c)), 200, {
     'Content-Type': 'text/markdown; charset=utf-8',
+    'Cache-Control': 'no-store',
   });
 });
 

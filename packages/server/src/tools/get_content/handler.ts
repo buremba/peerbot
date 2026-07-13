@@ -7,6 +7,10 @@
  */
 
 import type { ContentItem } from '@lobu/connector-sdk';
+import {
+  evaluateEntityMutation,
+  resolveActingPrincipal,
+} from '../../authz/entity-policy';
 import { hasRequiredMcpScope } from '../../auth/tool-access';
 import { createDbClientFromEnv, getDb, pgBigintArray } from '../../db/client';
 import type { Env } from '../../index';
@@ -113,6 +117,58 @@ async function getContentImpl(
   // Validate entity access if entity_id provided (auth query stays on PG)
   if (args.entity_id) {
     await requireReadAccess(pgSql, args.entity_id, ctx);
+  }
+
+  // Agent/watcher: entity-type read policy (same envelope as manage_entity /
+  // search_memory). Humans skip — role ACL is separate.
+  if (ctx.agentId || ctx.actingWatcherId) {
+    const actor = await resolveActingPrincipal(getDb(), {
+      organizationId: ctx.organizationId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
+      sessionWatcherId: ctx.actingWatcherId ?? null,
+      sourceForMode: ctx.sourceContext?.source,
+    });
+    if (actor.kind !== 'user') {
+      const typeSlugs = new Set<string>();
+      if (args.entity_types?.length) {
+        for (const t of args.entity_types) {
+          if (typeof t === 'string' && t.trim()) typeSlugs.add(t.trim());
+        }
+      }
+      if (args.entity_id) {
+        const typeRows = await sql`
+          SELECT et.slug AS entity_type
+          FROM entities e
+          JOIN entity_types et ON et.id = e.entity_type_id
+          WHERE e.id = ${args.entity_id}
+            AND e.organization_id = ${ctx.organizationId}
+          LIMIT 1
+        `;
+        if (typeRows[0]?.entity_type) {
+          typeSlugs.add(String(typeRows[0].entity_type));
+        }
+      }
+      for (const slug of typeSlugs) {
+        const decision = await evaluateEntityMutation({
+          organizationId: ctx.organizationId,
+          principalKind: actor.kind,
+          principalId: actor.id,
+          ownerAgentId: actor.ownerAgentId,
+          ownerResolved: actor.ownerResolved,
+          mode: actor.mode,
+          action: 'read',
+          entityTypeSlug: slug,
+          sql: getDb(),
+        });
+        if (decision === 'deny') {
+          throw new ToolUserError(
+            `Policy denies reading entities of type '${slug}' for this principal.`,
+            403,
+          );
+        }
+      }
+    }
   }
   // Stats are now opt-in: callers must explicitly pass `include_classification=summary`
   // (the Atlas events page used to set this unconditionally, which fired a heavy

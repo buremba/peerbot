@@ -358,11 +358,16 @@ async function getOpenApiOperations(
 }
 
 function getMcpToolKind(tool: DiscoveredTool): "read" | "write" {
+	// MCP ToolAnnotations: readOnlyHint ⇒ safe for side-effect-free calls.
 	return tool.annotations?.readOnlyHint ? "read" : "write";
 }
 
 function getMcpToolRequiresApproval(tool: DiscoveredTool): boolean {
-	return !tool.annotations?.readOnlyHint;
+	// MCP ToolAnnotations are pessimistic: when destructiveHint is omitted on a
+	// write tool, clients treat it as potentially destructive (spec default true).
+	// Only an explicit destructiveHint: false keeps the connection default auto.
+	if (getMcpToolKind(tool) === "read") return false;
+	return tool.annotations?.destructiveHint !== false;
 }
 
 async function getMcpOperations(

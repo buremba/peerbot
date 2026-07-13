@@ -17,12 +17,13 @@
 import type { WriteResourceClass } from "./entity-policy";
 
 /**
- * The verbs a write policy can govern. `create`/`update`/`delete` are the entity
- * and agent_config actions; `execute` is the connector_action verb (running a
- * connector operation). `install` is intentionally NOT declared until a class
- * actually uses it — an undeclared action is illegal, not a reserved no-op.
+ * The verbs a write policy can govern. `read`/`create`/`update`/`delete` are
+ * shared by entity and agent_config (`read` scopes which entity types / peer
+ * agents a principal may see); `execute` is the connector_action verb (running
+ * a write connector operation). `install` is intentionally NOT declared until a
+ * class actually uses it — an undeclared action is illegal, not a reserved no-op.
  */
-export type WriteAction = "create" | "update" | "delete" | "execute";
+export type WriteAction = "read" | "create" | "update" | "delete" | "execute";
 
 /**
  * The decision a policy attaches to an action. `auto` applies inline; `approval`
@@ -50,10 +51,14 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 	Record<WriteResourceClass, ClassManifest>
 > = {
 	entity: {
-		actions: ["create", "update", "delete"],
+		// `read` is auto/deny in the UI (approval is legal but treated as deny at
+		// the read gate — you can't "queue" a read for human review usefully).
+		actions: ["read", "create", "update", "delete"],
 		effects: ["auto", "approval", "deny"],
 		// Matches the historical entity default (create/update auto, delete approval).
+		// read defaults auto so existing agents keep unrestricted org-entity access.
 		defaultEffect: {
+			read: "auto",
 			create: "auto",
 			update: "auto",
 			delete: "approval",
@@ -61,11 +66,19 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 		},
 	},
 	agent_config: {
-		actions: ["create", "update", "delete"],
+		// `read` = list/get other agents (and their config surface). Auto/deny in
+		// the UI; approval collapses to deny at the gate. create/update/delete
+		// remain definition CRUD; invoke/call is not a legal action until a
+		// first-class handoff path exists.
+		actions: ["read", "create", "update", "delete"],
 		effects: ["auto", "approval", "deny"],
 		// An agent editing agent definitions is high-trust: create/update queue an
 		// approval, delete is denied outright (a human must delete an agent).
+		// read defaults auto so existing agents keep unrestricted peer visibility.
+		// Target exceptions only tighten (max-restrictive fold): use default auto +
+		// per-target deny to blacklist; a per-target auto cannot open a blanket deny.
 		defaultEffect: {
+			read: "auto",
 			create: "approval",
 			update: "approval",
 			delete: "deny",
@@ -73,12 +86,16 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 		},
 	},
 	connector_action: {
+		// `execute` covers WRITE ops only. Reads stay on connection action_modes
+		// (MCP readOnlyHint → kind=read → default auto). Destructive writes map
+		// via requires_approval / destructiveHint on the connection layer.
 		actions: ["execute"],
 		effects: ["auto", "approval", "deny", "disabled"],
 		// No org connector-action policy → auto, so the per-connection action_modes
 		// alone decide (today's behavior). A row only ever tightens.
 		defaultEffect: {
 			execute: "auto",
+			read: "deny",
 			create: "deny",
 			update: "deny",
 			delete: "deny",

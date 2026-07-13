@@ -249,34 +249,39 @@ export default async (_ctx, client) => {
 };`,
 	},
 
-	// agents
+	// agents — admin tier for discovery; agent_config write-policy further
+	// gates list/get (read) and create/update/delete for agent principals.
 	"agents.manage": {
 		summary: "Raw manage_agents action wrapper. Prefer named methods.",
 		access: "admin",
 	},
 	"agents.list": {
-		summary: "List agents in the org (marks the system agent). Requires admin.",
+		summary:
+			"List agents the principal may read (agent_config read; default all). Requires admin tier.",
 		access: "admin",
 		example: "const { agents } = await client.agents.list();",
 	},
 	"agents.get": {
-		summary: "Fetch one agent by id. Requires admin.",
+		summary:
+			"Fetch one agent by id when agent_config read allows that target. Requires admin tier.",
 		access: "admin",
 		example: "const { agent } = await client.agents.get('builder');",
 	},
 	"agents.create": {
 		summary:
-			"Create an agent (queued for approval when invoked by the builder agent). Requires admin.",
+			"Create an agent (queued for approval when invoked by an agent principal). Requires admin tier + agent_config create.",
 		access: "admin",
 		example:
 			"await client.agents.create({ agent_id: 'researcher', name: 'Researcher' });",
 	},
 	"agents.update": {
-		summary: "Update agent fields (may queue for approval). Requires admin.",
+		summary:
+			"Update agent fields (may queue for approval). Requires admin tier + agent_config update.",
 		access: "admin",
 	},
 	"agents.delete": {
-		summary: "Delete an agent (may queue for approval). Requires admin.",
+		summary:
+			"Delete an agent (may queue for approval). Requires admin tier + agent_config delete.",
 		access: "admin",
 	},
 	"agents.setSystemAgent": {

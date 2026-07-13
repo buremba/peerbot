@@ -1,15 +1,12 @@
 /**
- * Real-PG tests for the write-gate v1.1 agent-envelope semantics (PR2):
+ * Real-PG tests for write-gate floor + single-envelope semantics:
  *
  *  - ORG FLOOR is a hard floor: a per-agent row can never LOOSEN a broader
  *    any-principal (org) row. The strictest matched effect wins.
  *  - The class default is a STARTING POINT, not a floor: an explicit row may
  *    loosen the default (agent_config update = auto → allow).
- *  - AUTONOMOUS ≥ ATTENDED: an autonomous-only row (principal_mode='autonomous')
- *    can only tighten the attended decision, never loosen it.
- *
- * These encode the three gaps Fable flagged; each asserts the fixed behavior
- * against a migrated database so a regression in the fold is caught here.
+ *  - One envelope for chat and watchers (principal_mode dropped): watchers
+ *    inherit the owning agent's envelope via ownerAgentId.
  */
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
@@ -31,22 +28,23 @@ async function seedPolicy(args: {
 	resourceClass: string;
 	principalKind?: string | null;
 	principalId?: string | null;
-	principalMode?: string | null;
 	entityTypeSlug?: string | null;
 	fieldPath?: string | null;
 	entityId?: number | null;
+	operationKey?: string | null;
+	targetAgentId?: string | null;
 	effects: Array<{ action: string; effect: string }>;
 }): Promise<number> {
 	const sql = getTestDb();
 	const rows = await sql<{ id: number }>`
     INSERT INTO write_approval_policies
       (organization_id, resource_class, principal_kind, principal_id,
-       principal_mode, entity_type_slug, field_path, entity_id)
+       operation_key, target_agent_id, entity_type_slug, field_path, entity_id)
     VALUES
       (${args.orgId}, ${args.resourceClass}, ${args.principalKind ?? null},
-       ${args.principalId ?? null}, ${args.principalMode ?? null},
-       ${args.entityTypeSlug ?? null}, ${args.fieldPath ?? null},
-       ${args.entityId ?? null})
+       ${args.principalId ?? null}, ${args.operationKey ?? null},
+       ${args.targetAgentId ?? null}, ${args.entityTypeSlug ?? null},
+       ${args.fieldPath ?? null}, ${args.entityId ?? null})
     RETURNING id
   `;
 	const id = Number(rows[0].id);
@@ -59,7 +57,7 @@ async function seedPolicy(args: {
 	return id;
 }
 
-describe("write-gate v1.1 floor + mode semantics", () => {
+describe("write-gate floor + single-envelope semantics", () => {
 	afterAll(async () => {
 		await cleanupTestDatabase();
 	});
@@ -156,24 +154,14 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 		).toBe("require_approval");
 	});
 
-	it("autonomous ≥ attended: an autonomous-only deny tightens, attended stays auto", async () => {
-		// A both-mode row makes delete auto; an autonomous-only row makes it deny.
+	it("chat and watcher share one envelope: same agent policy binds both modes", async () => {
 		await seedPolicy({
 			orgId,
 			resourceClass: "entity",
 			principalKind: "agent",
 			principalId: "agent-1",
-			effects: [{ action: "delete", effect: "auto" }],
-		});
-		await seedPolicy({
-			orgId,
-			resourceClass: "entity",
-			principalKind: "agent",
-			principalId: "agent-1",
-			principalMode: "autonomous",
 			effects: [{ action: "delete", effect: "deny" }],
 		});
-		// Attended: the autonomous-only row does not apply → auto.
 		expect(
 			await evaluateEntityMutation({
 				organizationId: orgId,
@@ -183,8 +171,7 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 				entityTypeSlug: "task",
 				mode: "attended",
 			}),
-		).toBe("allow");
-		// Autonomous (watcher): the autonomous-only deny binds → deny.
+		).toBe("deny");
 		expect(
 			await evaluateEntityMutation({
 				organizationId: orgId,
@@ -197,79 +184,86 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 		).toBe("deny");
 	});
 
-	it("autonomous cannot loosen attended: an autonomous 'auto' can't undo an attended 'approval'", async () => {
-		// Attended row: update approval. Autonomous-only row tries to set auto.
-		await seedPolicy({
-			orgId,
-			resourceClass: "entity",
-			principalKind: "agent",
-			principalId: "agent-1",
-			effects: [{ action: "update", effect: "approval" }],
-		});
-		await seedPolicy({
-			orgId,
-			resourceClass: "entity",
-			principalKind: "agent",
-			principalId: "agent-1",
-			principalMode: "autonomous",
-			effects: [{ action: "update", effect: "auto" }],
-		});
-		// Autonomous folds the attended decision (approval) as its floor → the
-		// autonomous 'auto' is a no-op; the write still needs approval.
+	it("entity read: default auto; per-type deny blocks that type only", async () => {
+		// No row → class default read=auto.
 		expect(
 			await evaluateEntityMutation({
 				organizationId: orgId,
 				principalKind: "agent",
 				principalId: "agent-1",
-				action: "update",
+				action: "read",
 				entityTypeSlug: "task",
-				entityId: 123,
-				mode: "autonomous",
-			}),
-		).toBe("require_approval");
-	});
-
-	it("a sparse autonomous row abstains on actions it does not name", async () => {
-		// Attended: create=auto. An autonomous-only row names ONLY delete=deny.
-		// create must stay auto in autonomous mode — the sparse autonomous row must
-		// NOT pull create toward the class default.
-		await seedPolicy({
-			orgId,
-			resourceClass: "entity",
-			principalKind: "agent",
-			principalId: "agent-1",
-			effects: [{ action: "create", effect: "auto" }],
-		});
-		await seedPolicy({
-			orgId,
-			resourceClass: "entity",
-			principalKind: "agent",
-			principalId: "agent-1",
-			principalMode: "autonomous",
-			effects: [{ action: "delete", effect: "deny" }],
-		});
-		// autonomous create: the autonomous row abstains → inherits attended auto.
-		expect(
-			await evaluateEntityMutation({
-				organizationId: orgId,
-				principalKind: "agent",
-				principalId: "agent-1",
-				action: "create",
-				entityTypeSlug: "task",
-				mode: "autonomous",
 			}),
 		).toBe("allow");
-		// autonomous delete: the autonomous row names it → deny.
+		await seedPolicy({
+			orgId,
+			resourceClass: "entity",
+			principalKind: "agent",
+			principalId: "agent-1",
+			entityTypeSlug: "secret",
+			effects: [{ action: "read", effect: "deny" }],
+		});
 		expect(
 			await evaluateEntityMutation({
 				organizationId: orgId,
 				principalKind: "agent",
 				principalId: "agent-1",
-				action: "delete",
-				entityTypeSlug: "task",
-				mode: "autonomous",
+				action: "read",
+				entityTypeSlug: "secret",
 			}),
 		).toBe("deny");
+		// Other types still auto.
+		expect(
+			await evaluateEntityMutation({
+				organizationId: orgId,
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "read",
+				entityTypeSlug: "task",
+			}),
+		).toBe("allow");
+	});
+
+	it("agent_config read: default auto; per-target deny blocks that agent only", async () => {
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: orgId,
+				resourceClass: "agent_config",
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "read",
+				targetAgentId: "agent-auto",
+			}),
+		).toBe("allow");
+		await seedPolicy({
+			orgId,
+			resourceClass: "agent_config",
+			principalKind: "agent",
+			principalId: "agent-1",
+			targetAgentId: "agent-auto",
+			effects: [{ action: "read", effect: "deny" }],
+		});
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: orgId,
+				resourceClass: "agent_config",
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "read",
+				targetAgentId: "agent-auto",
+			}),
+		).toBe("deny");
+		// Other targets still auto.
+		expect(
+			await resolveWritePolicyDecision({
+				organizationId: orgId,
+				resourceClass: "agent_config",
+				principalKind: "agent",
+				principalId: "agent-1",
+				action: "read",
+				targetAgentId: "agent-deliv",
+			}),
+		).toBe("allow");
 	});
 
 	it("per-type override tightens only its type; other types follow the agent default", async () => {
@@ -402,14 +396,12 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 	});
 
 	it("a sparse effects input persists ONLY the named actions (untouched stay abstaining)", async () => {
-		// An autonomous {delete: deny} override must NOT also pin create/update — a
-		// stored row for those would stop them inheriting later attended/blanket
-		// changes. The write path mirrors the resolver's sparse-row semantics.
+		// A sparse {delete: deny} override must NOT also pin create/update — a
+		// stored row for those would stop them inheriting later blanket changes.
 		await upsertEntityApprovalPolicy(orgId, {
 			resourceClass: "entity",
 			principalKind: "agent",
 			principalId: "agent-1",
-			principalMode: "autonomous",
 			effects: { delete: "deny" },
 		});
 		const rows = await listEntityApprovalPolicies(orgId);
@@ -417,7 +409,7 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 			(r) =>
 				r.principalKind === "agent" &&
 				r.principalId === "agent-1" &&
-				r.principalMode === "autonomous",
+				r.entityTypeSlug === null,
 		);
 		expect(stored).toBeTruthy();
 		// Exactly one child effect row — create/update absent (abstaining).
@@ -459,40 +451,6 @@ describe("write-gate v1.1 floor + mode semantics", () => {
 			action: "execute",
 		});
 		expect(effect).toBe("deny");
-	});
-
-	it("the legacy org-settings list hides autonomous-only rows (codex-8)", async () => {
-		// The new agent UI can create an autonomous-only entity row for an agent. The
-		// legacy mode-blind org-settings endpoint must NOT surface it (its DELETE keys
-		// by scope without principal_mode → would hit the wrong row).
-		await upsertEntityApprovalPolicy(orgId, {
-			resourceClass: "entity",
-			principalKind: "agent",
-			principalId: "agent-auto",
-			principalMode: "autonomous",
-			entityTypeSlug: "task",
-			effects: { delete: "deny" },
-		});
-		await upsertEntityApprovalPolicy(orgId, {
-			resourceClass: "entity",
-			principalKind: "agent",
-			principalId: "agent-auto",
-			entityTypeSlug: "task",
-			effects: { delete: "approval" },
-		});
-		// Mirror the endpoint's filter: only principal_mode NULL rows are shown.
-		const shown = (await listEntityApprovalPolicies(orgId, "entity")).filter(
-			(p) => p.principalMode === null,
-		);
-		const autoRows = shown.filter((p) => p.principalMode === "autonomous");
-		expect(autoRows).toHaveLength(0);
-		// The both-mode row for the same scope IS still shown.
-		expect(
-			shown.some(
-				(p) =>
-					p.principalId === "agent-auto" && p.entityTypeSlug === "task",
-			),
-		).toBe(true);
 	});
 
 	it("preserveDelivery keeps a stored approval target across an effect-only update (codex-7)", async () => {

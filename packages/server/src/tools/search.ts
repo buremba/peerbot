@@ -9,6 +9,10 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
+import {
+  evaluateEntityMutation,
+  resolveActingPrincipal,
+} from '../authz/entity-policy';
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb } from '../db/client';
@@ -723,6 +727,52 @@ export async function gatherRecall(
 
 export const search = withValidatedArgs('search_memory', SearchSchema, searchImpl);
 
+/**
+ * Drop entity hits the acting agent/watcher is not allowed to read. Humans skip.
+ * Default entity read is auto (unrestricted); a type-scoped deny removes those
+ * results so search can't leak around manage_entity get/list.
+ */
+async function filterEntitiesByReadPolicy<T extends { entity_type: string }>(
+  ctx: ToolContext,
+  entities: T[],
+): Promise<T[]> {
+  if (entities.length === 0 || !ctx.organizationId) return entities;
+  // Human-driven tools (no agent/watcher) keep full org entity search.
+  if (!ctx.agentId && !ctx.actingWatcherId) return entities;
+  const actor = await resolveActingPrincipal(getDb(), {
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+    agentId: ctx.agentId,
+    explicitWatcherId: null,
+    sessionWatcherId: ctx.actingWatcherId ?? null,
+    sourceForMode: ctx.sourceContext?.source,
+  });
+  if (actor.kind === "user") return entities;
+  const typeCache = new Map<string, boolean>();
+  const out: T[] = [];
+  for (const entity of entities) {
+    const slug = entity.entity_type;
+    let ok = typeCache.get(slug);
+    if (ok === undefined) {
+      const decision = await evaluateEntityMutation({
+        organizationId: ctx.organizationId,
+        principalKind: actor.kind,
+        principalId: actor.id,
+        ownerAgentId: actor.ownerAgentId,
+        ownerResolved: actor.ownerResolved,
+        mode: actor.mode,
+        action: "read",
+        entityTypeSlug: slug,
+        sql: getDb(),
+      });
+      ok = decision === "allow";
+      typeCache.set(slug, ok);
+    }
+    if (ok) out.push(entity);
+  }
+  return out;
+}
+
 async function searchImpl(
   args: SearchArgs,
   env: Env,
@@ -749,6 +799,19 @@ async function searchImpl(
   // Validate: must have either query, ID, or embedding
   if (!args.query && !args.entity_id && !args.query_embedding?.length) {
     throw new ToolUserError('Must provide either query, entity_id, or query_embedding', 400);
+  }
+
+  // Type-scoped search: fail closed before querying when the agent can't read that type.
+  if (args.entity_type) {
+    const probe = await filterEntitiesByReadPolicy(ctx, [
+      { entity_type: args.entity_type },
+    ]);
+    if (probe.length === 0) {
+      throw new ToolUserError(
+        `Policy denies reading entities of type '${args.entity_type}' for this principal.`,
+        403,
+      );
+    }
   }
 
   // Helper to run content search in parallel. Runs when we have either a text
@@ -793,7 +856,17 @@ async function searchImpl(
       recallPromise,
     ]);
     if (entity) {
-      return withRecall(await formatEntityResult([entity], args, ctx), recall);
+      const readable = await filterEntitiesByReadPolicy(ctx, [entity]);
+      if (readable.length === 0) {
+        return withRecall(
+          emptyResult({
+            entity_type: entity.entity_type,
+            suggestion: `Entity with ID ${args.entity_id} is not readable under this agent's entity read policy`,
+          }),
+          recall,
+        );
+      }
+      return withRecall(await formatEntityResult(readable, args, ctx), recall);
     }
     return withRecall(
       emptyResult({
@@ -842,7 +915,10 @@ async function searchImpl(
   }
 
   if (results.length > 0) {
-    return withRecall(await formatEntityResult(results, args, ctx), recall);
+    const readable = await filterEntitiesByReadPolicy(ctx, [...results]);
+    if (readable.length > 0) {
+      return withRecall(await formatEntityResult(readable, args, ctx), recall);
+    }
   }
 
   // ========================================
@@ -858,8 +934,24 @@ async function searchImpl(
     '3. Wait for ingestion to start automatically, then discover watchers with `client.watchers.list(...)` and inspect results with `client.knowledge.read(...)` / `client.watchers.get(...)`.\n\n' +
     '**Alternative:** If you know this entity should exist, verify the spelling or try a different search term.';
 
-  // Fetch top entities per type so the LLM knows what exists
-  const existing_entities = await fetchTopEntitiesByType(ctx.organizationId);
+  // Fetch top entities per type so the LLM knows what exists (still filtered by read policy).
+  let existing_entities = await fetchTopEntitiesByType(ctx.organizationId);
+  if (existing_entities.length > 0) {
+    const flat = existing_entities.flatMap((g) =>
+      g.entities.map((e) => ({ ...e, entity_type: g.entity_type })),
+    );
+    const allowed = await filterEntitiesByReadPolicy(ctx, flat);
+    const byType = new Map<string, Array<{ id: number; name: string }>>();
+    for (const e of allowed) {
+      const list = byType.get(e.entity_type) ?? [];
+      list.push({ id: e.id, name: e.name });
+      byType.set(e.entity_type, list);
+    }
+    existing_entities = [...byType.entries()].map(([entity_type, entities]) => ({
+      entity_type,
+      entities,
+    }));
+  }
 
   return withRecall(
     emptyResult({ suggestion: suggestionText, existing_entities }),

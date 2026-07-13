@@ -25,12 +25,9 @@ import {
 	deleteEntityApprovalPolicy,
 	type EntityApprovalPolicy,
 	type EntityMutationMode,
-	getGlobalEntityApprovalPolicy,
-	isEntityApprovalUiMode,
 	isEntityMutationMode,
 	listEntityApprovalPolicies,
 	upsertEntityApprovalPolicy,
-	upsertGlobalEntityApprovalPolicy,
 } from "./authz/entity-policy";
 import { listOperations } from "./operations/connector-operations";
 import { qualifiedOperationKey } from "./tools/admin/manage_operations";
@@ -49,10 +46,6 @@ import { getDb } from "./db/client";
 import * as invalidationEmitter from "./events/emitter";
 import { streamInvalidationEvents } from "./events/sse";
 import { invalidationSseAuth } from "./events/sse-invalidation-auth";
-import {
-	resolveBoundChannelRows,
-	stripPlatformPrefix,
-} from "./gateway/channels/bound-channels";
 import {
 	type ClaimEligibleOrg,
 	type ClaimEngineDeps,
@@ -1277,8 +1270,8 @@ function serializeEntityApprovalPolicy(policy: EntityApprovalPolicy) {
 		resource_class: policy.resourceClass,
 		principal_kind: policy.principalKind,
 		principal_id: policy.principalId,
-		principal_mode: policy.principalMode,
 		operation_key: policy.operationKey,
+		target_agent_id: policy.targetAgentId,
 		entity_type_slug: policy.entityTypeSlug,
 		field_path: policy.fieldPath,
 		entity_id: policy.entityId,
@@ -1338,283 +1331,6 @@ async function requireOrganizationSettingsAdmin(c: Context) {
 	return null;
 }
 
-app.get("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
-	const authError = await requireOrganizationSettingsAdmin(c);
-	if (authError) return authError;
-	const organizationId = c.get("organizationId");
-	if (!organizationId) {
-		return c.json({ error: "Organization context required" }, 401);
-	}
-	const policy = await getGlobalEntityApprovalPolicy(organizationId);
-	// This legacy org-settings surface is MODE-BLIND: its PATCH/DELETE key a row by
-	// scope+principal WITHOUT principal_mode, so it can only address the both-mode
-	// (principal_mode NULL) rows. Autonomous-only rows are created and managed solely
-	// by the agent Permissions UI; surfacing them here would let a delete of the
-	// displayed autonomous row hit the same-scope attended row instead. Filter them
-	// out so this endpoint neither shows nor mutates them.
-	const policies = (
-		await listEntityApprovalPolicies(organizationId, "entity")
-	).filter((p) => p.principalMode === null);
-	const channelRows = await resolveBoundChannelRows(getDb(), {
-		organizationId,
-	});
-	const availableChannels = channelRows.map((row) => {
-		const nativeChannelId = stripPlatformPrefix(row.platform, row.channel_id);
-		return {
-			connection_id: row.id,
-			platform: row.platform,
-			channel_id: row.channel_id,
-			team_id: row.team_id,
-			label: `${row.platform} ${nativeChannelId}`,
-		};
-	});
-
-	return c.json({
-		policy: serializeEntityApprovalPolicy(policy),
-		policies: policies.map(serializeEntityApprovalPolicy),
-		available_channels: availableChannels,
-	});
-});
-
-app.patch("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
-	const authError = await requireOrganizationSettingsAdmin(c);
-	if (authError) return authError;
-	const organizationId = c.get("organizationId");
-	if (!organizationId) {
-		return c.json({ error: "Organization context required" }, 401);
-	}
-
-	let body: Record<string, unknown>;
-	try {
-		body = await c.req.json();
-	} catch {
-		return c.json(
-			{ error: "invalid_request", message: "Request body must be JSON." },
-			400,
-		);
-	}
-
-	const createMode = body.create_mode;
-	const updateMode = body.update_mode;
-	const deleteMode = body.delete_mode;
-	if (
-		!isEntityApprovalUiMode(createMode) ||
-		!isEntityApprovalUiMode(updateMode) ||
-		!isEntityApprovalUiMode(deleteMode)
-	) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message:
-					'create_mode, update_mode, and delete_mode must be "auto" or "approval".',
-			},
-			400,
-		);
-	}
-
-	// Optional per-principal targeting: an admin can pin one agent/watcher to a
-	// stricter mode. principal_id is only meaningful with a kind. Class is fixed to
-	// 'entity' on this endpoint — connector_action policy rows are ENFORCED by the
-	// gate (manage_operations.execute) but set via SDK/SQL until their own UI
-	// surface lands; this endpoint stays entity-only so its auto/approval mode
-	// validation doesn't have to fork for the deny/disabled connector modes.
-	const principalKind: "agent" | "watcher" | null =
-		body.principal_kind === "agent" || body.principal_kind === "watcher"
-			? body.principal_kind
-			: null;
-	const principalId =
-		principalKind &&
-		typeof body.principal_id === "string" &&
-		body.principal_id.trim()
-			? body.principal_id.trim()
-			: null;
-
-	const approvalConnectionId =
-		typeof body.approval_connection_id === "string" &&
-		body.approval_connection_id.trim()
-			? body.approval_connection_id.trim()
-			: null;
-	const approvalChannelId =
-		typeof body.approval_channel_id === "string" &&
-		body.approval_channel_id.trim()
-			? body.approval_channel_id.trim()
-			: null;
-	const approvalTeamId =
-		typeof body.approval_team_id === "string" && body.approval_team_id.trim()
-			? body.approval_team_id.trim()
-			: null;
-
-	let approvalChannelName =
-		typeof body.approval_channel_name === "string" &&
-		body.approval_channel_name.trim()
-			? body.approval_channel_name.trim()
-			: null;
-
-	if (approvalConnectionId || approvalChannelId || approvalTeamId) {
-		if (!approvalConnectionId || !approvalChannelId) {
-			return c.json(
-				{
-					error: "invalid_request",
-					message:
-						"Approval channel selection requires a connection and channel.",
-				},
-				400,
-			);
-		}
-		const rows = await resolveBoundChannelRows(getDb(), { organizationId });
-		const selected = rows.find((row) => {
-			const rowChannelKey = row.channel_id.includes(":")
-				? row.channel_id
-				: `${row.platform}:${row.channel_id}`;
-			const requestedChannelKey = approvalChannelId.includes(":")
-				? approvalChannelId
-				: `${row.platform}:${approvalChannelId}`;
-			return (
-				row.id === approvalConnectionId &&
-				rowChannelKey === requestedChannelKey &&
-				(!approvalTeamId || row.team_id === approvalTeamId)
-			);
-		});
-		if (!selected) {
-			return c.json(
-				{
-					error: "invalid_request",
-					message: "Approval channel is not available to this workspace.",
-				},
-				400,
-			);
-		}
-		approvalChannelName =
-			approvalChannelName ??
-			`${selected.platform} ${stripPlatformPrefix(selected.platform, selected.channel_id)}`;
-	}
-
-	const entityTypeSlug =
-		typeof body.entity_type_slug === "string" && body.entity_type_slug.trim()
-			? body.entity_type_slug.trim()
-			: null;
-	const fieldPath =
-		typeof body.field_path === "string" && body.field_path.trim()
-			? body.field_path.trim()
-			: null;
-	const entityId =
-		typeof body.entity_id === "number" && Number.isInteger(body.entity_id)
-			? body.entity_id
-			: null;
-
-	if (fieldPath && !entityTypeSlug) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message: "A field-path approval policy requires an entity type.",
-			},
-			400,
-		);
-	}
-	if (entityId !== null) {
-		const entityRows = await getDb()<{ id: number }>`
-      SELECT id FROM entities
-      WHERE id = ${entityId}
-        AND organization_id = ${organizationId}
-        AND deleted_at IS NULL
-      LIMIT 1
-    `;
-		if (!entityRows[0]) {
-			return c.json(
-				{
-					error: "invalid_request",
-					message: "Entity not found in this workspace.",
-				},
-				400,
-			);
-		}
-	}
-
-	const policyInput = {
-		resourceClass: "entity" as const,
-		principalKind,
-		principalId,
-		entityTypeSlug,
-		fieldPath,
-		entityId,
-		createMode,
-		updateMode,
-		deleteMode,
-		approvalConnectionId,
-		approvalChannelId,
-		approvalTeamId,
-		approvalChannelName,
-	};
-	// Only the unscoped, any-principal entity row is the workspace default; a
-	// principal-targeted or scoped row is a specific override.
-	const isWorkspaceDefault =
-		!principalKind && !entityTypeSlug && !fieldPath && entityId === null;
-	const policy = isWorkspaceDefault
-		? await upsertGlobalEntityApprovalPolicy(organizationId, policyInput)
-		: await upsertEntityApprovalPolicy(organizationId, policyInput);
-
-	invalidationEmitter.emit(organizationId, {
-		keys: ["entity-approval-policy"],
-	});
-
-	return c.json({ policy: serializeEntityApprovalPolicy(policy) });
-});
-
-app.delete("/api/:orgSlug/entity-approval-policy", mcpAuth, async (c) => {
-	const authError = await requireOrganizationSettingsAdmin(c);
-	if (authError) return authError;
-	const organizationId = c.get("organizationId");
-	if (!organizationId) {
-		return c.json({ error: "Organization context required" }, 401);
-	}
-	const principalKindRaw = c.req.query("principal_kind")?.trim();
-	const principalKind =
-		principalKindRaw === "agent" || principalKindRaw === "watcher"
-			? principalKindRaw
-			: null;
-	const principalId = principalKind
-		? c.req.query("principal_id")?.trim() || null
-		: null;
-	const entityTypeSlug = c.req.query("entity_type_slug")?.trim() || null;
-	const fieldPath = c.req.query("field_path")?.trim() || null;
-	const entityIdRaw = c.req.query("entity_id")?.trim();
-	const entityId =
-		entityIdRaw && /^\d+$/.test(entityIdRaw) ? Number(entityIdRaw) : null;
-	// A principal-targeted row is deletable even with no scope; only the unscoped,
-	// any-principal default is protected.
-	if (!principalKind && !entityTypeSlug && !fieldPath && entityId === null) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message: "The workspace default policy cannot be deleted.",
-			},
-			400,
-		);
-	}
-	if (fieldPath && !entityTypeSlug) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message: "A field-path approval policy requires an entity type.",
-			},
-			400,
-		);
-	}
-	const deleted = await deleteEntityApprovalPolicy({
-		organizationId,
-		resourceClass: "entity",
-		principalKind,
-		principalId,
-		entityTypeSlug,
-		fieldPath,
-		entityId,
-	});
-	invalidationEmitter.emit(organizationId, {
-		keys: ["entity-approval-policy"],
-	});
-	return c.json({ deleted });
-});
-
 // ---------------------------------------------------------------------------
 // Agent permissions ("Guardrails" is the separate LLM-judge surface; this is the
 // deterministic write-gate envelope). Returns the ORG FLOOR rows (principal_kind
@@ -1653,6 +1369,7 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			(p.principalKind === null ||
 				(p.principalKind === "agent" && p.principalId === null)),
 	);
+	// Agent rows: this agent only.
 	const agent = all.filter(
 		(p) =>
 			p.principalKind === "agent" &&
@@ -1665,9 +1382,13 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	// (e.g. `company`) must be offerable as a per-type exception. Dedupe by slug,
 	// preferring the org-owned row, and drop `$member` (per-tenant, never a public
 	// catalog type) to mirror the entity-write resolver.
-	const typeRows = await getDb()<{ slug: string; name: string }>`
-    SELECT slug, name FROM (
-      SELECT DISTINCT ON (et.slug) et.slug, et.name
+	const typeRows = await getDb()<{
+		slug: string;
+		name: string;
+		icon: string | null;
+	}>`
+    SELECT slug, name, icon FROM (
+      SELECT DISTINCT ON (et.slug) et.slug, et.name, et.icon
       FROM entity_types et
       LEFT JOIN organization o ON o.id = et.organization_id
       WHERE et.deleted_at IS NULL
@@ -1677,13 +1398,9 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
     ) t
     ORDER BY name ASC
   `;
-	// The org's WRITE connector operations, so the matrix can render one row per
-	// operation under connector_action (always-expanded). Only write ops are gated —
-	// reads never mutate, so they carry no per-op rule. The row's `operation_key` is
-	// the CONNECTOR-QUALIFIED key (`connector_key::op`) — the exact value the policy
-	// row and the execute gate bind to — so Linear's and GitHub's `create_issue`
-	// stay distinct rows. Deduped by that qualified key (the same op can surface from
-	// multiple connections OF THE SAME connector).
+	// Write ops for the connector exception picker (opt-in rows, not always expanded).
+	// Only write ops — reads are not gated by agent connector_action policy
+	// (MCP readOnlyHint / kind=read stay on connection action_modes alone).
 	const opList = await listOperations({
 		organizationId,
 		kind: "write",
@@ -1697,6 +1414,9 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		name: string;
 		connector_key: string;
 		connector_name: string;
+		kind: "read" | "write";
+		requires_approval: boolean;
+		destructive: boolean;
 	}> = [];
 	for (const op of opList.operations) {
 		const key = qualifiedOperationKey(op.connector_key, op.operation_key);
@@ -1707,13 +1427,28 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			name: op.name,
 			connector_key: op.connector_key,
 			connector_name: op.connector_name,
+			kind: op.kind === "read" ? "read" : "write",
+			requires_approval: op.requires_approval === true,
+			destructive: op.annotations?.destructiveHint === true,
 		});
 	}
+	// Agents in this org (for agent_config target exceptions). Exclude the agent
+	// whose envelope we're editing so self-target rows aren't offered by default.
+	const agentRows = await getDb()<{ id: string; name: string }>`
+    SELECT id, name FROM agents
+    WHERE organization_id = ${organizationId}
+    ORDER BY name ASC, id ASC
+  `;
 	return c.json({
 		floor: floor.map(serializeEntityApprovalPolicy),
 		agent: agent.map(serializeEntityApprovalPolicy),
-		entity_types: typeRows.map((r) => ({ slug: r.slug, name: r.name })),
+		entity_types: typeRows.map((r) => ({
+			slug: r.slug,
+			name: r.name,
+			icon: r.icon,
+		})),
 		connector_operations: operations,
+		agents: agentRows.map((a) => ({ id: a.id, name: a.name })),
 	});
 });
 
@@ -1803,28 +1538,10 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		effects[action as WriteAction] = effect;
 	}
 
-	// principal_mode selects WHICH row this write targets: omitted/null = the
-	// both-mode row, 'autonomous' = the autonomous-only override. Silently coercing
-	// any other value to null would make a typo'd/unsupported mode clobber the
-	// ATTENDED row instead of the intended autonomous one — so reject it.
-	if (
-		body.principal_mode !== undefined &&
-		body.principal_mode !== null &&
-		body.principal_mode !== "autonomous"
-	) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message: "principal_mode must be omitted, null, or 'autonomous'.",
-			},
-			400,
-		);
-	}
-	const principalMode = body.principal_mode === "autonomous" ? "autonomous" : null;
 	// entity_type_slug selects the per-type row (null = the blanket all-types row).
 	// Only the `entity` class is type-scoped. A present-but-invalid slug (number,
 	// whitespace) OR a slug on a NON-entity class must not silently coerce to null and
-	// overwrite the broad blanket policy — 400, same as principal_mode.
+	// overwrite the broad blanket policy — 400.
 	const slugPresent =
 		body.entity_type_slug !== undefined && body.entity_type_slug !== null;
 	if (slugPresent && resourceClass !== "entity") {
@@ -1918,6 +1635,54 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		}
 	}
 
+	// target_agent_id: agent_config exception for read/update/delete of a specific agent.
+	const targetPresent =
+		body.target_agent_id !== undefined && body.target_agent_id !== null;
+	if (targetPresent && resourceClass !== "agent_config") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `target_agent_id is only valid for resource_class 'agent_config', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
+	if (
+		targetPresent &&
+		(typeof body.target_agent_id !== "string" ||
+			body.target_agent_id.trim() === "")
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "target_agent_id must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
+	const targetAgentId =
+		resourceClass === "agent_config" &&
+		typeof body.target_agent_id === "string" &&
+		body.target_agent_id.trim()
+			? body.target_agent_id.trim()
+			: null;
+	if (targetAgentId) {
+		const targetExists = await getDb()<{ id: string }>`
+      SELECT id FROM agents
+      WHERE id = ${targetAgentId} AND organization_id = ${organizationId}
+      LIMIT 1
+    `;
+		if (!targetExists[0]) {
+			return c.json(
+				{
+					error: "invalid_request",
+					message: `Unknown target agent '${targetAgentId}' for this workspace.`,
+				},
+				400,
+			);
+		}
+	}
+
 	// The policy row targets this agent by id (a reusable slug). Confirm the agent
 	// EXISTS in this org before persisting — else a stale/typo'd URL would leave an
 	// orphan row that a future agent recreated with the same id silently inherits.
@@ -1937,15 +1702,15 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		resourceClass,
 		principalKind: "agent",
 		principalId: agentId,
-		principalMode,
 		operationKey,
+		targetAgentId,
 		entityTypeSlug,
 		effects,
 		// Effect-only endpoint: keep any approval delivery target already on the row.
 		preserveDelivery: true,
 	});
 	invalidationEmitter.emit(organizationId, {
-		keys: ["entity-approval-policy"],
+		keys: ["write-permissions", "agent-permissions"],
 	});
 	return c.json({ policy: serializeEntityApprovalPolicy(policy) });
 });
@@ -1972,25 +1737,6 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 			400,
 		);
 	}
-	// Same rule as the PUT: principal_mode picks the target row (null = the both-mode
-	// row). ONLY a truly-ABSENT param maps to null — a PRESENT value that isn't exactly
-	// 'autonomous' (a typo, whitespace, or empty `?principal_mode=`) must 400, else the
-	// DELETE would fall through to null and destroy the attended/both-mode row.
-	const principalModeParam = c.req.query("principal_mode");
-	if (
-		principalModeParam !== undefined &&
-		principalModeParam.trim() !== "autonomous"
-	) {
-		return c.json(
-			{
-				error: "invalid_request",
-				message: "principal_mode must be omitted or 'autonomous'.",
-			},
-			400,
-		);
-	}
-	const principalMode =
-		principalModeParam?.trim() === "autonomous" ? "autonomous" : null;
 	// entity_type_slug picks WHICH row to delete (null = the blanket all-types row).
 	// A present-but-empty slug, or a slug on a non-entity class, must NOT coerce to
 	// null and delete the blanket policy instead of the intended per-type override.
@@ -2043,17 +1789,461 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	}
 	const operationKey =
 		resourceClass === "connector_action" ? (opKeyRaw?.trim() ?? null) || null : null;
+	const targetRaw = c.req.query("target_agent_id");
+	if (
+		targetRaw !== undefined &&
+		targetRaw !== "" &&
+		resourceClass !== "agent_config"
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `target_agent_id is only valid for resource_class 'agent_config', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
+	if (targetRaw !== undefined && targetRaw.trim() === "") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "target_agent_id must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
+	const targetAgentId =
+		resourceClass === "agent_config" ? (targetRaw?.trim() ?? null) || null : null;
 	const deleted = await deleteEntityApprovalPolicy({
 		organizationId,
 		resourceClass,
 		principalKind: "agent",
 		principalId: agentId,
-		principalMode,
 		operationKey,
+		targetAgentId,
 		entityTypeSlug,
 	});
 	invalidationEmitter.emit(organizationId, {
-		keys: ["entity-approval-policy"],
+		keys: ["write-permissions", "agent-permissions"],
+	});
+	return c.json({ deleted });
+});
+
+// ---------------------------------------------------------------------------
+// Org write-permissions floor (principal_kind NULL). Same matrix shape as agent
+// permissions, but the editable rows ARE the floor agents inherit (and can only
+// tighten).
+// ---------------------------------------------------------------------------
+app.get("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
+	const authError = await requireOrganizationSettingsAdmin(c);
+	if (authError) return authError;
+	const organizationId = c.get("organizationId");
+	if (!organizationId) {
+		return c.json({ error: "Organization context required" }, 401);
+	}
+	const all = await listEntityApprovalPolicies(organizationId);
+	const typeScoped = (p: EntityApprovalPolicy) =>
+		p.fieldPath === null && p.entityId === null;
+	// Editable floor = any-principal rows. Kind-wide agent rows (principal_kind
+	// agent, principal_id null) also bind as floor for agents but are rare; include
+	// them so the matrix doesn't under-report the bound.
+	const floor = all.filter(
+		(p) =>
+			typeScoped(p) &&
+			(p.principalKind === null ||
+				(p.principalKind === "agent" && p.principalId === null)),
+	);
+	const typeRows = await getDb()<{
+		slug: string;
+		name: string;
+		icon: string | null;
+	}>`
+    SELECT slug, name, icon FROM (
+      SELECT DISTINCT ON (et.slug) et.slug, et.name, et.icon
+      FROM entity_types et
+      LEFT JOIN organization o ON o.id = et.organization_id
+      WHERE et.deleted_at IS NULL
+        AND et.slug <> '$member'
+        AND (et.organization_id = ${organizationId} OR o.visibility = 'public')
+      ORDER BY et.slug, (et.organization_id = ${organizationId}) DESC, et.id ASC
+    ) t
+    ORDER BY name ASC
+  `;
+	const opList = await listOperations({
+		organizationId,
+		kind: "write",
+		includeInputSchema: false,
+		includeOutputSchema: false,
+		limit: Number.MAX_SAFE_INTEGER,
+	});
+	const seenOps = new Set<string>();
+	const operations: Array<{
+		operation_key: string;
+		name: string;
+		connector_key: string;
+		connector_name: string;
+		kind: "read" | "write";
+		requires_approval: boolean;
+		destructive: boolean;
+	}> = [];
+	for (const op of opList.operations) {
+		const key = qualifiedOperationKey(op.connector_key, op.operation_key);
+		if (seenOps.has(key)) continue;
+		seenOps.add(key);
+		operations.push({
+			operation_key: key,
+			name: op.name,
+			connector_key: op.connector_key,
+			connector_name: op.connector_name,
+			kind: op.kind === "read" ? "read" : "write",
+			requires_approval: op.requires_approval === true,
+			destructive: op.annotations?.destructiveHint === true,
+		});
+	}
+	const agentRows = await getDb()<{ id: string; name: string }>`
+    SELECT id, name FROM agents
+    WHERE organization_id = ${organizationId}
+    ORDER BY name ASC, id ASC
+  `;
+	return c.json({
+		// Matrix adapter: floor is empty (no parent bound); `agent` holds the
+		// editable org-floor rows so the shared UI model can treat them as the
+		// override layer with no floor-tightening bound.
+		floor: [],
+		agent: floor.map(serializeEntityApprovalPolicy),
+		entity_types: typeRows.map((r) => ({
+			slug: r.slug,
+			name: r.name,
+			icon: r.icon,
+		})),
+		connector_operations: operations,
+		agents: agentRows.map((a) => ({ id: a.id, name: a.name })),
+	});
+});
+
+app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
+	const authError = await requireOrganizationSettingsAdmin(c);
+	if (authError) return authError;
+	const organizationId = c.get("organizationId");
+	if (!organizationId) {
+		return c.json({ error: "Organization context required" }, 401);
+	}
+
+	let body: Record<string, unknown>;
+	try {
+		body = await c.req.json();
+	} catch {
+		return c.json(
+			{ error: "invalid_request", message: "Request body must be JSON." },
+			400,
+		);
+	}
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		return c.json(
+			{ error: "invalid_request", message: "Request body must be a JSON object." },
+			400,
+		);
+	}
+
+	const resourceClass =
+		body.resource_class === "entity" ||
+		body.resource_class === "agent_config" ||
+		body.resource_class === "connector_action"
+			? body.resource_class
+			: null;
+	if (!resourceClass) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message:
+					"resource_class must be entity, agent_config, or connector_action.",
+			},
+			400,
+		);
+	}
+
+	const rawEffects =
+		typeof body.effects === "object" &&
+		body.effects !== null &&
+		!Array.isArray(body.effects)
+			? (body.effects as Record<string, unknown>)
+			: null;
+	if (!rawEffects) {
+		return c.json(
+			{ error: "invalid_request", message: "effects must be a JSON object." },
+			400,
+		);
+	}
+	const effects: Partial<Record<WriteAction, EntityMutationMode>> = {};
+	for (const [action, effect] of Object.entries(rawEffects)) {
+		if (
+			!isEntityMutationMode(effect) ||
+			!isLegalActionEffect(resourceClass, action as WriteAction, effect)
+		) {
+			return c.json(
+				{
+					error: "invalid_request",
+					message: `Illegal effect for ${resourceClass}: '${action}' = '${String(effect)}'.`,
+				},
+				400,
+			);
+		}
+		effects[action as WriteAction] = effect;
+	}
+
+	const slugPresent =
+		body.entity_type_slug !== undefined && body.entity_type_slug !== null;
+	if (slugPresent && resourceClass !== "entity") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `entity_type_slug is only valid for resource_class 'entity', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
+	if (
+		slugPresent &&
+		(typeof body.entity_type_slug !== "string" ||
+			body.entity_type_slug.trim() === "")
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "entity_type_slug must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
+	const entityTypeSlug =
+		resourceClass === "entity" &&
+		typeof body.entity_type_slug === "string" &&
+		body.entity_type_slug.trim()
+			? body.entity_type_slug.trim()
+			: null;
+
+	const opKeyPresent =
+		body.operation_key !== undefined && body.operation_key !== null;
+	if (opKeyPresent && resourceClass !== "connector_action") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `operation_key is only valid for resource_class 'connector_action', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
+	if (
+		opKeyPresent &&
+		(typeof body.operation_key !== "string" ||
+			body.operation_key.trim() === "")
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "operation_key must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
+	const operationKey =
+		resourceClass === "connector_action" &&
+		typeof body.operation_key === "string" &&
+		body.operation_key.trim()
+			? body.operation_key.trim()
+			: null;
+	if (operationKey) {
+		const known = await listOperations({
+			organizationId,
+			kind: "write",
+			includeInputSchema: false,
+			includeOutputSchema: false,
+			limit: Number.MAX_SAFE_INTEGER,
+		});
+		const knownQualified = new Set(
+			known.operations.map((op) =>
+				qualifiedOperationKey(op.connector_key, op.operation_key),
+			),
+		);
+		if (!knownQualified.has(operationKey)) {
+			return c.json(
+				{
+					error: "invalid_request",
+					message: `Unknown connector operation '${operationKey}' for this workspace.`,
+				},
+				400,
+			);
+		}
+	}
+
+	const targetPresent =
+		body.target_agent_id !== undefined && body.target_agent_id !== null;
+	if (targetPresent && resourceClass !== "agent_config") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `target_agent_id is only valid for resource_class 'agent_config', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
+	if (
+		targetPresent &&
+		(typeof body.target_agent_id !== "string" ||
+			body.target_agent_id.trim() === "")
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "target_agent_id must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
+	const targetAgentId =
+		resourceClass === "agent_config" &&
+		typeof body.target_agent_id === "string" &&
+		body.target_agent_id.trim()
+			? body.target_agent_id.trim()
+			: null;
+	if (targetAgentId) {
+		const targetExists = await getDb()<{ id: string }>`
+      SELECT id FROM agents
+      WHERE id = ${targetAgentId} AND organization_id = ${organizationId}
+      LIMIT 1
+    `;
+		if (!targetExists[0]) {
+			return c.json(
+				{
+					error: "invalid_request",
+					message: `Unknown target agent '${targetAgentId}' for this workspace.`,
+				},
+				400,
+			);
+		}
+	}
+
+	const policy = await upsertEntityApprovalPolicy(organizationId, {
+		resourceClass,
+		principalKind: null,
+		principalId: null,
+		operationKey,
+		targetAgentId,
+		entityTypeSlug,
+		effects,
+		preserveDelivery: true,
+	});
+	invalidationEmitter.emit(organizationId, {
+		keys: ["write-permissions", "agent-permissions"],
+	});
+	return c.json({ policy: serializeEntityApprovalPolicy(policy) });
+});
+
+app.delete("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
+	const authError = await requireOrganizationSettingsAdmin(c);
+	if (authError) return authError;
+	const organizationId = c.get("organizationId");
+	if (!organizationId) {
+		return c.json({ error: "Organization context required" }, 401);
+	}
+	const resourceClassRaw = c.req.query("resource_class")?.trim();
+	const resourceClass =
+		resourceClassRaw === "entity" ||
+		resourceClassRaw === "agent_config" ||
+		resourceClassRaw === "connector_action"
+			? resourceClassRaw
+			: null;
+	if (!resourceClass) {
+		return c.json(
+			{ error: "invalid_request", message: "resource_class is required." },
+			400,
+		);
+	}
+	const slugRaw = c.req.query("entity_type_slug");
+	if (slugRaw !== undefined && slugRaw !== "" && resourceClass !== "entity") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `entity_type_slug is only valid for resource_class 'entity', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
+	if (slugRaw !== undefined && slugRaw.trim() === "") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "entity_type_slug must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
+	const entityTypeSlug =
+		resourceClass === "entity" ? (slugRaw?.trim() ?? null) || null : null;
+	const opKeyRaw = c.req.query("operation_key");
+	if (
+		opKeyRaw !== undefined &&
+		opKeyRaw !== "" &&
+		resourceClass !== "connector_action"
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `operation_key is only valid for resource_class 'connector_action', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
+	if (opKeyRaw !== undefined && opKeyRaw.trim() === "") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "operation_key must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
+	const operationKey =
+		resourceClass === "connector_action" ? (opKeyRaw?.trim() ?? null) || null : null;
+	const targetRaw = c.req.query("target_agent_id");
+	if (
+		targetRaw !== undefined &&
+		targetRaw !== "" &&
+		resourceClass !== "agent_config"
+	) {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: `target_agent_id is only valid for resource_class 'agent_config', not '${resourceClass}'.`,
+			},
+			400,
+		);
+	}
+	if (targetRaw !== undefined && targetRaw.trim() === "") {
+		return c.json(
+			{
+				error: "invalid_request",
+				message: "target_agent_id must be a non-empty string or omitted.",
+			},
+			400,
+		);
+	}
+	const targetAgentId =
+		resourceClass === "agent_config" ? (targetRaw?.trim() ?? null) || null : null;
+
+	// Unscoped entity floor delete is blocked inside deleteEntityApprovalPolicy
+	// (returns false). Blanket agent_config / connector_action floor rows may clear.
+	const deleted = await deleteEntityApprovalPolicy({
+		organizationId,
+		resourceClass,
+		principalKind: null,
+		principalId: null,
+		operationKey,
+		targetAgentId,
+		entityTypeSlug,
+	});
+	invalidationEmitter.emit(organizationId, {
+		keys: ["write-permissions", "agent-permissions"],
 	});
 	return c.json({ deleted });
 });

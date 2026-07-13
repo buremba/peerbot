@@ -4,8 +4,8 @@
  * Manage agent definitions within an organization.
  *
  * Actions:
- * - list: List all agents in the org (marks the org's system agent)
- * - get: Get one agent's row
+ * - list: List agents the principal may read (agent_config read policy)
+ * - get: Get one agent when agent_config read allows that target
  * - create: Create an agent owned by the authenticated caller (owner_platform=
  *   'external' + an agent_users mapping, so the per-user chat path can reach it)
  * - update: Update name/description/identity_md on an agent
@@ -15,6 +15,11 @@
  * The org's "system" agent is the builder/console agent backing the
  * org-management surface. `set_system_agent` is the only writer of
  * organization.system_agent_id here (default-org provisioning is the other).
+ *
+ * Agent/watcher principals: list/get honor agent_config `read` (default auto;
+ * per-target deny tightens via target_agent_id — max-restrictive fold, so
+ * targets cannot loosen a blanket deny). Humans skip the write-gate (role
+ * tier is separate). create/update/delete still go through the write-gate.
  */
 
 import {
@@ -27,6 +32,7 @@ import {
 import {
   resolveActingPrincipal,
   resolveWritePolicyDecision,
+  type ActingPrincipal,
 } from '../../authz/entity-policy';
 import { createDbClientFromEnv, getDb } from '../../db/client';
 import type { Env } from '../../index';
@@ -56,8 +62,67 @@ export type { ManageAgentsProposal };
 export const MANAGE_AGENTS_ACTION_KEY = 'manage_agents';
 
 // ============================================
-// Typeon handlers
+// Type handlers
 // ============================================
+
+async function actingPrincipalFor(ctx: ToolContext): Promise<ActingPrincipal> {
+  return resolveActingPrincipal(getDb(), {
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+    agentId: ctx.agentId,
+    sessionWatcherId: ctx.actingWatcherId ?? null,
+    sourceForMode: ctx.sourceContext?.source,
+  });
+}
+
+/**
+ * agent_config read gate for list/get. Humans skip (admin tier is separate).
+ * Default is auto; deny by target via target_agent_id (or blanket deny + whitelist).
+ */
+async function assertAgentConfigReadAllowed(
+  ctx: ToolContext,
+  targetAgentId: string | null,
+): Promise<void> {
+  const actor = await actingPrincipalFor(ctx);
+  if (actor.kind === "user") return;
+  const decision = await resolveWritePolicyDecision({
+    organizationId: ctx.organizationId,
+    resourceClass: "agent_config",
+    principalKind: actor.kind,
+    principalId: actor.id,
+    ownerAgentId: actor.ownerAgentId,
+    ownerResolved: actor.ownerResolved,
+    action: "read",
+    targetAgentId,
+  });
+  // require_approval collapses to deny for read (see resolveWritePolicyDecision).
+  if (decision !== "allow") {
+    const label = targetAgentId?.trim() || "agents";
+    throw new ToolUserError(
+      `Policy denies reading agent '${label}' for this principal.`,
+      403,
+    );
+  }
+}
+
+async function agentConfigReadAllowed(
+  ctx: ToolContext,
+  actor: ActingPrincipal,
+  targetAgentId: string,
+): Promise<boolean> {
+  if (actor.kind === "user") return true;
+  const decision = await resolveWritePolicyDecision({
+    organizationId: ctx.organizationId,
+    resourceClass: "agent_config",
+    principalKind: actor.kind,
+    principalId: actor.id,
+    ownerAgentId: actor.ownerAgentId,
+    ownerResolved: actor.ownerResolved,
+    action: "read",
+    targetAgentId,
+  });
+  return decision === "allow";
+}
 
 async function handleList(
   _args: ManageAgentsArgs,
@@ -80,7 +145,24 @@ async function handleList(
     WHERE a.organization_id = ${ctx.organizationId}
     ORDER BY a.created_at ASC
   `;
-  return { action: 'list', agents: rows as unknown as AgentRecord[] };
+  const agents = rows as unknown as AgentRecord[];
+  const actor = await actingPrincipalFor(ctx);
+  if (actor.kind === "user") {
+    return { action: "list", agents };
+  }
+  // Per-target read: drop peers the agent_config envelope denies (blacklist via
+  // default auto + target_agent_id deny). Cache by agent id.
+  const allowed: AgentRecord[] = [];
+  const cache = new Map<string, boolean>();
+  for (const agent of agents) {
+    let ok = cache.get(agent.id);
+    if (ok === undefined) {
+      ok = await agentConfigReadAllowed(ctx, actor, agent.id);
+      cache.set(agent.id, ok);
+    }
+    if (ok) allowed.push(agent);
+  }
+  return { action: "list", agents: allowed };
 }
 
 async function handleGet(
@@ -91,6 +173,9 @@ async function handleGet(
   if (!args.agent_id) {
     throw new ToolUserError('agent_id is required for get action');
   }
+  // Gate before the lookup so a denied target does not distinguish "exists" vs
+  // "forbidden" via timing alone more than a 404 would — we still 403 on deny
+  // after confirming org membership of the id when found; missing stays 404.
   const sql = createDbClientFromEnv(env);
   const rows = await sql`
     SELECT
@@ -109,6 +194,7 @@ async function handleGet(
   if (rows.length === 0) {
     throw new ToolUserError(`Agent "${args.agent_id}" not found`, 404);
   }
+  await assertAgentConfigReadAllowed(ctx, args.agent_id.trim());
   return { action: 'get', agent: rows[0] as unknown as AgentRecord };
 }
 
@@ -593,13 +679,10 @@ async function dispatchAgentWrite(
   // envelope — otherwise it would gate as a null-id agent and skip the owner's
   // approval/deny override. manage_agents has no watcher_source arg, so only the
   // trusted session watcher applies.
-  const actor = await resolveActingPrincipal(getDb(), {
-    organizationId: ctx.organizationId,
-    userId: ctx.userId,
-    agentId: ctx.agentId,
-    sessionWatcherId: ctx.actingWatcherId ?? null,
-    sourceForMode: ctx.sourceContext?.source,
-  });
+  const actor = await actingPrincipalFor(ctx);
+  // update/delete name the target agent; create has no target (blanket only).
+  const targetAgentId =
+    action === 'create' ? null : (args.agent_id?.trim() || null);
   const decision = await resolveWritePolicyDecision({
     organizationId: ctx.organizationId,
     resourceClass: 'agent_config',
@@ -607,8 +690,8 @@ async function dispatchAgentWrite(
     principalId: actor.id,
     ownerAgentId: actor.ownerAgentId,
     ownerResolved: actor.ownerResolved,
-    mode: actor.mode,
     action,
+    targetAgentId,
   });
   if (decision === 'deny') {
     throw new ToolUserError(
@@ -632,11 +715,9 @@ async function dispatchAgentWrite(
   }
 }
 
-// Write actions (create/update/delete) consult the agent_config write-gate:
-// a human member applies immediately; an agent/watcher-driven write follows the
-// org policy and may queue a pending run + approval card (applied later by
-// manage_operations' approve handler via applyManageAgentsProposal → the apply*
-// functions). list/get/set_system_agent stay immediate.
+// create/update/delete consult the agent_config write-gate (human immediate;
+// agent/watcher may queue approval). list/get honor agent_config `read` for
+// agent/watcher principals. set_system_agent stays human/admin immediate.
 const runManageAgents = defineFlatActionTool<ManageAgentsArgs, ManageAgentsResult>(
   'manage_agents',
   {

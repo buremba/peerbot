@@ -5,6 +5,7 @@ import {
   buildProviderConnectUrl,
   buildProviderManagementUrl,
   buildResourcePermalink,
+  buildSandboxManagementUrl,
   getPublicWebUrl,
 } from '../url-builder';
 import {
@@ -209,6 +210,37 @@ describe('buildProviderManagementUrl', () => {
     expect(await buildProviderManagementUrl('https://x', undefined)).toBeNull();
     expect(
       await buildProviderManagementUrl('https://x', 'unknown-org')
+    ).toBeNull();
+  });
+});
+
+describe('buildSandboxManagementUrl', () => {
+  stubOrgSlug();
+
+  it('targets the sandboxes tab and prefills the provider kind', async () => {
+    const url = await buildSandboxManagementUrl(
+      'https://app.lobu.com/lobu',
+      'org-1',
+      { provider: 'vercel' }
+    );
+    expect(url).toBe(
+      'https://app.lobu.com/acme/infrastructure/sandboxes?provider=vercel'
+    );
+  });
+
+  it('omits the query when no provider is given', async () => {
+    const url = await buildSandboxManagementUrl(
+      'https://app.lobu.com',
+      'org-1'
+    );
+    expect(url).toBe('https://app.lobu.com/acme/infrastructure/sandboxes');
+  });
+
+  it('returns null when org slug or gateway url is missing', async () => {
+    expect(await buildSandboxManagementUrl(undefined, 'org-1')).toBeNull();
+    expect(await buildSandboxManagementUrl('https://x', undefined)).toBeNull();
+    expect(
+      await buildSandboxManagementUrl('https://x', 'unknown-org')
     ).toBeNull();
   });
 });

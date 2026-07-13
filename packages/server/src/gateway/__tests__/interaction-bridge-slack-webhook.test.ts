@@ -1,7 +1,16 @@
 import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Chat } from "chat";
 import { createSlackAdapter } from "@chat-adapter/slack";
+import {
+  addUserToOrganization,
+  createTestEntity,
+  createTestOrganization,
+  createTestUser,
+} from "../../__tests__/setup/test-fixtures.js";
 import { getDb } from "../../db/client.js";
+import { proposeEntityFieldChange } from "../../tools/admin/entity-field-approval.js";
+import type { ToolContext } from "../../tools/registry.js";
+import { initWorkspaceProvider } from "../../workspace/index.js";
 import { storePendingTool, type PendingToolInvocation } from "../auth/mcp/pending-tool-store.js";
 import { registerActionHandlers } from "../connections/interaction-bridge.js";
 import type { PlatformConnection } from "../connections/types.js";
@@ -67,16 +76,16 @@ function createHarness(options: {
   };
 }
 
-/** Wait for an expectation to pass, polling briefly. */
+/** Wait for an expectation to pass, polling briefly. Supports async checks. */
 async function waitFor(
-  check: () => void,
-  { timeoutMs = 1000, intervalMs = 10 } = {}
+  check: () => void | Promise<void>,
+  { timeoutMs = 3000, intervalMs = 20 } = {}
 ): Promise<void> {
   const start = Date.now();
   let lastErr: unknown;
   while (Date.now() - start < timeoutMs) {
     try {
-      check();
+      await check();
       return;
     } catch (err) {
       lastErr = err;
@@ -226,5 +235,229 @@ describe("Slack block_actions → registerActionHandlers (Tier B integration)", 
     expect(h.grantStore.grant).not.toHaveBeenCalled();
     expect(h.executeToolDirect).not.toHaveBeenCalled();
     expect(h.postMessage).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Durable entity_field_change approvals ride the same Slack block_actions
+ * webhook as tool grants / ask_user, but take a different branch
+ * (`run-approval:{runId}:approve|reject` → manage_operations). Agents built
+ * the card + direct-handler path first; this seals the signed-webhook → apply
+ * seam so a Preview/tenant bot click actually mutates the entity.
+ */
+describe("Slack block_actions → run-approval entity_field_change (Tier B)", () => {
+  beforeAll(async () => {
+    await ensureDbForGatewayTests();
+    await initWorkspaceProvider();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+  });
+
+  async function seedPendingFieldChange(): Promise<{
+    orgId: string;
+    entityId: number;
+    runId: number;
+    adminSlackId: string;
+    teamId: string;
+  }> {
+    const TEAM_ID = "T-RUNAPPROVE";
+    const org = await createTestOrganization({ name: "Run Approval Webhook Org" });
+    const admin = await createTestUser({ name: "Admin Reviewer" });
+    await addUserToOrganization(admin.id, org.id, "admin");
+    await getDb()`
+      INSERT INTO chat_user_identities (platform, team_id, platform_user_id, lobu_user_id)
+      VALUES ('slack', ${TEAM_ID}, 'U-ADMIN-RA', ${admin.id})
+    `;
+
+    const entity = await createTestEntity({
+      name: "Payment Gateway Latency",
+      organization_id: org.id,
+      created_by: admin.id,
+    });
+    await getDb()`
+      UPDATE entities SET
+        metadata = ${getDb().json({ severity: "critical" })},
+        field_controls = ${getDb().json({
+          severity: { set_by: admin.id, set_at: new Date().toISOString() },
+        })}
+      WHERE id = ${entity.id}
+    `;
+
+    const proposeCtx = {
+      organizationId: org.id,
+      userId: null,
+      agentId: "peerbot",
+      memberRole: null,
+      isAuthenticated: true,
+      tokenType: "oauth",
+      scopedToOrg: true,
+    } as unknown as ToolContext;
+    const proposed = await proposeEntityFieldChange(proposeCtx, {
+      entity_id: entity.id,
+      fields: { severity: "high" },
+      current: { severity: "critical" },
+      attribution: "agent",
+      reason: "An agent proposes updating severity on this entity.",
+    });
+
+    return {
+      orgId: org.id,
+      entityId: entity.id,
+      runId: proposed.runId,
+      adminSlackId: "U-ADMIN-RA",
+      teamId: TEAM_ID,
+    };
+  }
+
+  function createRunApprovalHarness(opts: {
+    organizationId: string;
+    teamId: string;
+  }) {
+    const adapter = createSlackAdapter({
+      signingSecret: SIGNING_SECRET,
+      botToken: BOT_TOKEN,
+      botUserId: BOT_USER_ID,
+    });
+    const postMessage = mock(async () => ({ ts: "1700000000.000999" }) as any);
+    (adapter as any).postMessage = postMessage;
+
+    const state = new InMemoryStateAdapter();
+    const chat = new Chat({
+      userName: "lobu",
+      adapters: { slack: adapter },
+      state,
+    });
+
+    registerActionHandlers(
+      chat as any,
+      {
+        id: "conn-run-approval",
+        platform: "slack",
+        organizationId: opts.organizationId,
+        config: {},
+        settings: {},
+        metadata: { teamId: opts.teamId },
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      } as unknown as PlatformConnection,
+    );
+
+    return { chat, postMessage };
+  }
+
+  test("signed Approve button applies the pending severity change", async () => {
+    const fx = await seedPendingFieldChange();
+    const h = createRunApprovalHarness({
+      organizationId: fx.orgId,
+      teamId: fx.teamId,
+    });
+
+    const request = buildSignedBlockActionsRequest(
+      SIGNING_SECRET,
+      blockActionsPayload({
+        teamId: fx.teamId,
+        userId: fx.adminSlackId,
+        channelId: "C_APPROVALS",
+        messageTs: "1700000000.000400",
+        actionId: `run-approval:${fx.runId}:approve`,
+        value: "approve",
+      }),
+    );
+
+    const response = await h.chat.webhooks.slack(request);
+    expect(response.status).toBe(200);
+
+    await waitFor(async () => {
+      const [run] = await getDb()<{
+        approval_status: string | null;
+        status: string | null;
+      }>`SELECT approval_status, status FROM runs WHERE id = ${fx.runId}`;
+      expect(run.approval_status).toBe("approved");
+      expect(run.status).toBe("completed");
+    });
+
+    const [entity] = await getDb()<{ metadata: Record<string, unknown> }>`
+      SELECT metadata FROM entities WHERE id = ${fx.entityId}
+    `;
+    expect(entity.metadata.severity).toBe("high");
+    expect(h.postMessage).toHaveBeenCalled();
+  });
+
+  test("signed Reject button leaves the entity unchanged", async () => {
+    const fx = await seedPendingFieldChange();
+    const h = createRunApprovalHarness({
+      organizationId: fx.orgId,
+      teamId: fx.teamId,
+    });
+
+    const request = buildSignedBlockActionsRequest(
+      SIGNING_SECRET,
+      blockActionsPayload({
+        teamId: fx.teamId,
+        userId: fx.adminSlackId,
+        channelId: "C_APPROVALS",
+        messageTs: "1700000000.000500",
+        actionId: `run-approval:${fx.runId}:reject`,
+        value: "reject",
+      }),
+    );
+
+    const response = await h.chat.webhooks.slack(request);
+    expect(response.status).toBe(200);
+
+    await waitFor(async () => {
+      const [run] = await getDb()<{ approval_status: string | null }>`
+        SELECT approval_status FROM runs WHERE id = ${fx.runId}
+      `;
+      expect(run.approval_status).toBe("rejected");
+    });
+
+    const [entity] = await getDb()<{ metadata: Record<string, unknown> }>`
+      SELECT metadata FROM entities WHERE id = ${fx.entityId}
+    `;
+    expect(entity.metadata.severity).toBe("critical");
+  });
+
+  test("unverified Slack user cannot approve — entity stays critical", async () => {
+    const fx = await seedPendingFieldChange();
+    const h = createRunApprovalHarness({
+      organizationId: fx.orgId,
+      teamId: fx.teamId,
+    });
+
+    const request = buildSignedBlockActionsRequest(
+      SIGNING_SECRET,
+      blockActionsPayload({
+        teamId: fx.teamId,
+        userId: "U-STRANGER",
+        channelId: "C_APPROVALS",
+        messageTs: "1700000000.000600",
+        actionId: `run-approval:${fx.runId}:approve`,
+        value: "approve",
+      }),
+    );
+
+    const response = await h.chat.webhooks.slack(request);
+    expect(response.status).toBe(200);
+
+    await waitFor(() => expect(h.postMessage).toHaveBeenCalled());
+
+    const [run] = await getDb()<{ approval_status: string | null }>`
+      SELECT approval_status FROM runs WHERE id = ${fx.runId}
+    `;
+    expect(run.approval_status).toBe("pending");
+
+    const [entity] = await getDb()<{ metadata: Record<string, unknown> }>`
+      SELECT metadata FROM entities WHERE id = ${fx.entityId}
+    `;
+    expect(entity.metadata.severity).toBe("critical");
+
+    const postedArg = h.postMessage.mock.calls[0]?.[1];
+    const postedText =
+      typeof postedArg === "string" ? postedArg : postedArg?.markdown;
+    expect(String(postedText)).toContain("couldn’t verify");
   });
 });

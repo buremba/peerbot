@@ -129,6 +129,17 @@ describe('migration invariants', () => {
       expect(rows).toHaveLength(0);
     });
 
+    it('environments.scope + owner_user_id are dropped (contract phase of the #1914 env→provider unification)', async () => {
+      const sql = getTestDb();
+      const rows = await sql<{ column_name: string }[]>`
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'environments'
+          AND column_name IN ('scope', 'owner_user_id')
+      `;
+      expect(rows).toHaveLength(0);
+    });
+
     it('missing FK indexes were added and the duplicate token_hash index removed (2026-06-16 audit)', async () => {
       const sql = getTestDb();
       const present = await sql<{ indexname: string }[]>`

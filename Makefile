@@ -294,15 +294,20 @@ review:
 # NOT a substitute for the DB-backed suites (make test-integration) when you
 # touch server/runtime code — but it catches the cheap, common misses.
 pre-pr:
-	@echo "🔎 [1/3] Strict typecheck (root + excluded packages)..."
+	@echo "🔎 [1/4] Build workspace packages (fresh dist)..."
+	@# Typecheck resolves @lobu/* against built dist, not src. Without this a
+	@# stale core dist yields PHANTOM errors on any contract change (e.g. a new
+	@# field the dist predates) — the exact trap CI avoids by building first.
+	@make build-packages
+	@echo "🔎 [2/4] Strict typecheck (root + excluded packages)..."
 	@bun run typecheck
 	@for pkg in server connector-worker connector-sdk openclaw-plugin embeddings cli; do \
 		echo "   typecheck packages/$$pkg..."; \
 		( cd "packages/$$pkg" && bunx tsc --noEmit ) || exit $$?; \
 	done
-	@echo "🔎 [2/3] Dead-code gate (knip --include files)..."
+	@echo "🔎 [3/4] Dead-code gate (knip --include files)..."
 	@bun run knip --include files
-	@echo "🔎 [3/3] Lint/format (biome)..."
+	@echo "🔎 [4/4] Lint/format (biome)..."
 	@bun run check
 	@echo "✅ pre-pr gates clean. NOTE: confirm your fix is in 'git show HEAD:<file>',"
 	@echo "   not just the working tree — a fix that isn't committed won't reach CI."

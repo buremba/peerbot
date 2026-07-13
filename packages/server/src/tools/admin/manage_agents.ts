@@ -600,6 +600,9 @@ async function dispatchAgentWrite(
     sessionWatcherId: ctx.actingWatcherId ?? null,
     sourceForMode: ctx.sourceContext?.source,
   });
+  // update/delete name the target agent; create has no target (blanket only).
+  const targetAgentId =
+    action === 'create' ? null : (args.agent_id?.trim() || null);
   const decision = await resolveWritePolicyDecision({
     organizationId: ctx.organizationId,
     resourceClass: 'agent_config',
@@ -607,8 +610,8 @@ async function dispatchAgentWrite(
     principalId: actor.id,
     ownerAgentId: actor.ownerAgentId,
     ownerResolved: actor.ownerResolved,
-    mode: actor.mode,
     action,
+    targetAgentId,
   });
   if (decision === 'deny') {
     throw new ToolUserError(

@@ -26,6 +26,7 @@ import {
 } from "@lobu/core/contracts/tools/manage-entity";
 import {
 	type ActingPrincipal,
+	evaluateEntityMutation,
 	resolveActingPrincipal,
 } from "../../authz/entity-policy";
 import { runMutationGate } from "../../authz/entity-mutation-gate";
@@ -98,6 +99,37 @@ function actingPrincipalFor(
 		sessionWatcherId: ctx.actingWatcherId ?? null,
 		sourceForMode: ctx.sourceContext?.source,
 	});
+}
+
+/**
+ * Entity read gate for agents/watchers. Humans skip (role ACL is separate).
+ * Default is auto (unrestricted within org); a policy can deny by type.
+ */
+async function assertEntityReadAllowed(
+	args: ManageEntityArgs | undefined,
+	ctx: ToolContext,
+	entityTypeSlug: string | null | undefined,
+): Promise<void> {
+	const actor = await actingPrincipalFor(args, ctx);
+	if (actor.kind === "user") return;
+	const decision = await evaluateEntityMutation({
+		organizationId: ctx.organizationId,
+		principalKind: actor.kind,
+		principalId: actor.id,
+		ownerAgentId: actor.ownerAgentId,
+		ownerResolved: actor.ownerResolved,
+		mode: actor.mode,
+		action: "read",
+		entityTypeSlug: entityTypeSlug ?? null,
+		sql: getDb(),
+	});
+	if (decision === "deny") {
+		const label = entityTypeSlug?.trim() || "this entity type";
+		throw new ToolUserError(
+			`Policy denies reading entities of type '${label}' for this principal.`,
+			403,
+		);
+	}
 }
 
 // ============================================
@@ -726,6 +758,12 @@ async function handleList(
 		);
 	}
 
+	// Type-scoped list: fail closed before querying when the principal can't read
+	// that type. Cross-type list filters after (see below).
+	if (args.entity_type) {
+		await assertEntityReadAllowed(args, ctx, args.entity_type);
+	}
+
 	const sql = getDb();
 
 	// Run list query and entity type schema fetch in parallel
@@ -753,8 +791,44 @@ async function handleList(
 			: Promise.resolve(null),
 	]);
 
-	const { entities, hasMore, totalCount, limit, offset, sortBy, sortOrder } =
+	let { entities, hasMore, totalCount, limit, offset, sortBy, sortOrder } =
 		listResult;
+
+	// Cross-type list: drop rows whose type the agent may not read. Humans skip
+	// the gate above; agents with a blanket auto keep everything.
+	if (!args.entity_type && entities.length > 0) {
+		const actor = await actingPrincipalFor(args, ctx);
+		if (actor.kind !== "user") {
+			const typeCache = new Map<string, boolean>();
+			const allowed: typeof entities = [];
+			for (const e of entities) {
+				const slug = e.entity_type;
+				let ok = typeCache.get(slug);
+				if (ok === undefined) {
+					const decision = await evaluateEntityMutation({
+						organizationId: ctx.organizationId,
+						principalKind: actor.kind,
+						principalId: actor.id,
+						ownerAgentId: actor.ownerAgentId,
+						ownerResolved: actor.ownerResolved,
+						mode: actor.mode,
+						action: "read",
+						entityTypeSlug: slug,
+						sql,
+					});
+					ok = decision === "allow";
+					typeCache.set(slug, ok);
+				}
+				if (ok) allowed.push(e);
+			}
+			// Pagination totals are approximate when filtered; prefer not leaking denied rows.
+			if (allowed.length !== entities.length) {
+				entities = allowed;
+				totalCount = allowed.length;
+				hasMore = false;
+			}
+		}
+	}
 
 	// Batch-load relationships if schema declares x-table-relationships
 	const schema = entityTypeRow?.metadata_schema as Record<
@@ -949,6 +1023,8 @@ async function handleGet(
 	if (!entity) {
 		throw new Error(`Entity with ID ${entityId} not found`);
 	}
+
+	await assertEntityReadAllowed(undefined, ctx, entity.entity_type);
 
 	if (
 		entity.entity_type === MEMBER_ENTITY_TYPE_SLUG &&

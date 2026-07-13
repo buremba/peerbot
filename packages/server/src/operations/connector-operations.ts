@@ -358,11 +358,16 @@ async function getOpenApiOperations(
 }
 
 function getMcpToolKind(tool: DiscoveredTool): "read" | "write" {
+	// MCP ToolAnnotations: readOnlyHint ⇒ safe for side-effect-free calls.
 	return tool.annotations?.readOnlyHint ? "read" : "write";
 }
 
 function getMcpToolRequiresApproval(tool: DiscoveredTool): boolean {
-	return !tool.annotations?.readOnlyHint;
+	// Align with MCP destructiveHint (and connection defaultModeFromOperation):
+	// only destructive writes default to approval. Non-destructive writes stay
+	// auto at the connection layer unless the user tightens action_modes or the
+	// agent/org connector_action policy tightens execute.
+	return tool.annotations?.destructiveHint === true;
 }
 
 async function getMcpOperations(

@@ -17,12 +17,13 @@
 import type { WriteResourceClass } from "./entity-policy";
 
 /**
- * The verbs a write policy can govern. `create`/`update`/`delete` are the entity
- * and agent_config actions; `execute` is the connector_action verb (running a
+ * The verbs a write policy can govern. `read`/`create`/`update`/`delete` are the
+ * entity actions (`read` scopes which types an agent may see); agent_config uses
+ * create/update/delete; `execute` is the connector_action verb (running a write
  * connector operation). `install` is intentionally NOT declared until a class
  * actually uses it — an undeclared action is illegal, not a reserved no-op.
  */
-export type WriteAction = "create" | "update" | "delete" | "execute";
+export type WriteAction = "read" | "create" | "update" | "delete" | "execute";
 
 /**
  * The decision a policy attaches to an action. `auto` applies inline; `approval`
@@ -50,10 +51,14 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 	Record<WriteResourceClass, ClassManifest>
 > = {
 	entity: {
-		actions: ["create", "update", "delete"],
+		// `read` is auto/deny in the UI (approval is legal but treated as deny at
+		// the read gate — you can't "queue" a read for human review usefully).
+		actions: ["read", "create", "update", "delete"],
 		effects: ["auto", "approval", "deny"],
 		// Matches the historical entity default (create/update auto, delete approval).
+		// read defaults auto so existing agents keep unrestricted org-entity access.
 		defaultEffect: {
+			read: "auto",
 			create: "auto",
 			update: "auto",
 			delete: "approval",
@@ -66,6 +71,7 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 		// An agent editing agent definitions is high-trust: create/update queue an
 		// approval, delete is denied outright (a human must delete an agent).
 		defaultEffect: {
+			read: "deny",
 			create: "approval",
 			update: "approval",
 			delete: "deny",
@@ -73,12 +79,16 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 		},
 	},
 	connector_action: {
+		// `execute` covers WRITE ops only. Reads stay on connection action_modes
+		// (MCP readOnlyHint → kind=read → default auto). Destructive writes map
+		// via requires_approval / destructiveHint on the connection layer.
 		actions: ["execute"],
 		effects: ["auto", "approval", "deny", "disabled"],
 		// No org connector-action policy → auto, so the per-connection action_modes
 		// alone decide (today's behavior). A row only ever tightens.
 		defaultEffect: {
 			execute: "auto",
+			read: "deny",
 			create: "deny",
 			update: "deny",
 			delete: "deny",

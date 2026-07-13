@@ -407,8 +407,22 @@ function buildWatcherProposal(
       );
     }
   }
-  if (args.action === 'update' && args.watcher_id == null) {
-    throw new ToolUserError('watcher_id is required for update action');
+  if (args.action === 'update') {
+    if (args.watcher_id == null) {
+      throw new ToolUserError('watcher_id is required for update action');
+    }
+    // Reject a no-op update: with only watcher_id (or only fields handleUpdate
+    // ignores), the apply returns updated_fields:[] but the run would be marked
+    // completed and reported "applied". Require at least one patch field so the
+    // approval reflects a real change.
+    const patchKeys = WATCHER_UPDATE_PATCH_KEYS.filter(
+      (k) => args[k as keyof ManageWatchersArgs] !== undefined,
+    );
+    if (patchKeys.length === 0) {
+      throw new ToolUserError(
+        'update requires at least one field to change (e.g. name, description, prompt, schedule, agent_id).',
+      );
+    }
   }
   if (args.action === 'delete' && (!args.watcher_ids || args.watcher_ids.length === 0)) {
     throw new ToolUserError('watcher_ids is required for delete action');
@@ -418,6 +432,14 @@ function buildWatcherProposal(
     args.watcher_id == null
   ) {
     throw new ToolUserError(`watcher_id is required for ${args.action} action`);
+  }
+  if (args.action === 'set_reaction_script' && args.reaction_script === undefined) {
+    // An omitted script silently REMOVES the existing reaction (handleSetReactionScript
+    // treats missing as falsy). Require the field explicitly; an empty string is the
+    // documented way to clear it.
+    throw new ToolUserError(
+      'reaction_script is required for set_reaction_script (pass an empty string to clear the existing script).',
+    );
   }
   if (args.action === 'create_from_version') {
     if (args.version_id == null) {
@@ -443,6 +465,33 @@ const WATCHER_APPROVAL_ROUTING_KEYS = new Set(['action']);
 
 /** Display sentinel for an explicit null clear (field present, value null). */
 const WATCHER_APPROVAL_CLEARED = '(cleared)';
+
+/**
+ * Fields `handleUpdate` actually patches (mirrors its `updatedFields.push` list
+ * plus the direct name/description/prompt/status/sources/entity_ids columns). An
+ * `update` with none of these present is a no-op that would otherwise be reported
+ * as "applied" — {@link buildWatcherProposal} rejects that.
+ */
+const WATCHER_UPDATE_PATCH_KEYS = [
+  'name',
+  'description',
+  'prompt',
+  'status',
+  'sources',
+  'entity_ids',
+  'model_config',
+  'execution_config',
+  'schedule',
+  'timezone',
+  'agent_id',
+  'scheduler_client_id',
+  'tags',
+  'device_worker_id',
+  'agent_kind',
+  'notification_channel',
+  'notification_priority',
+  'min_cooldown_seconds',
+] as const;
 
 /**
  * Flat watcher mutation fields for the events-tab ActionApprovalCard fallback.

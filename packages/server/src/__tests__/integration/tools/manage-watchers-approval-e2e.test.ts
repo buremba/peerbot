@@ -366,6 +366,54 @@ describe("manage_watchers — builder gate e2e", () => {
 		expect(eventRows[0]?.interaction_status).toBe("failed");
 	});
 
+	it("rejects a no-op update (only watcher_id, no patch fields)", async () => {
+		const created = (await executeTool(
+			"manage_watchers",
+			{
+				action: "create",
+				slug: "noop-update-target",
+				name: "Noop target",
+				prompt: "Target.",
+				agent_id: agentId,
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { watcher_id?: string };
+		const watcherId = created.watcher_id!;
+		await expect(
+			executeTool(
+				"manage_watchers",
+				{ action: "update", watcher_id: watcherId },
+				TEST_ENV,
+				agentCtx,
+			),
+		).rejects.toThrow(/at least one field to change/i);
+	});
+
+	it("rejects set_reaction_script with no reaction_script (would silently clear)", async () => {
+		const created = (await executeTool(
+			"manage_watchers",
+			{
+				action: "create",
+				slug: "reaction-target",
+				name: "Reaction target",
+				prompt: "Target.",
+				agent_id: agentId,
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { watcher_id?: string };
+		const watcherId = created.watcher_id!;
+		await expect(
+			executeTool(
+				"manage_watchers",
+				{ action: "set_reaction_script", watcher_id: watcherId },
+				TEST_ENV,
+				agentCtx,
+			),
+		).rejects.toThrow(/reaction_script is required/i);
+	});
+
 	it("stale cross-owner approval is rejected on apply after the watcher is reassigned", async () => {
 		// Agent A creates a watcher it owns (queue + approve so A is the owner).
 		const created = (await executeTool(

@@ -16,7 +16,11 @@ import { requireAuth } from '../middleware';
 import { findExistingPersonalOrg } from '../personal-org-provisioning';
 import { buildAuthMd } from './auth-md';
 import { OAuthProvider } from './provider';
-import { DEFAULT_SCOPES_STRING, filterScopeByRole } from './scopes';
+import {
+  DEFAULT_SCOPES_STRING,
+  filterScopeByRole,
+  stripNonPublicOAuthScopes,
+} from './scopes';
 import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } from './types';
 import { createOAuthError, validateRedirectUri } from './utils';
 import { getConfiguredPublicOrigin } from '../../utils/public-origin';
@@ -530,10 +534,15 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
   const webUrl = getBaseUrl(c);
   const consentUrl = new URL('/oauth/consent', webUrl);
 
-  // Pass params to consent page via query string
+  // Pass params to consent page via query string. Strip first-party-only scopes
+  // so the UI (and the later consent POST) never offer device_worker:run /
+  // connections:token to third-party MCP clients that requested the full
+  // discovery list.
+  const publicScope =
+    stripNonPublicOAuthScopes(params.scope) || DEFAULT_SCOPES_STRING;
   consentUrl.searchParams.set('client_id', params.client_id);
   consentUrl.searchParams.set('redirect_uri', params.redirect_uri);
-  consentUrl.searchParams.set('scope', params.scope || DEFAULT_SCOPES_STRING);
+  consentUrl.searchParams.set('scope', publicScope);
   consentUrl.searchParams.set('state', params.state || '');
   consentUrl.searchParams.set('code_challenge', params.code_challenge);
   consentUrl.searchParams.set('code_challenge_method', params.code_challenge_method);
@@ -583,25 +592,24 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
     return c.json(createOAuthError('invalid_request', 'Invalid JSON body'), 400);
   }
 
-  const consentHasMcpScopes = hasMcpScopes(body.scope);
-
-  // `device_worker:run` is device-code-only — it mints a personal-device
-  // credential that the Owletto Mac app / Chrome extension / local runner
-  // authenticate `/api/workers/*` with, and device tokens are force-bound to
-  // the personal org in the device/approve handler below. Letting it slip in
-  // via the authorization-code consent path would bypass that invariant and
-  // bind a team-org token a device client could mistake for its identity.
-  // Third-party MCP clients (the only consent-path users) never need it.
-  const requestedConsentScopes = (body.scope ?? '').split(/\s+/).filter(Boolean);
-  if (requestedConsentScopes.includes('device_worker:run')) {
+  // First-party scopes (`device_worker:run`, `connections:token`) are not
+  // grantable here. Clients that still request them (e.g. Slack after reading
+  // a broad cached scopes_supported) get them stripped rather than a hard
+  // invalid_scope, so MCP login can complete with the public scopes they need.
+  // Device workers continue to use the device-authorization flow, which never
+  // hits this path.
+  const publicConsentScope = stripNonPublicOAuthScopes(body.scope);
+  if ((body.scope ?? '').trim() && !publicConsentScope) {
     return c.json(
       createOAuthError(
         'invalid_scope',
-        '`device_worker:run` is only available via the device-authorization flow'
+        'Requested scopes are only available via the device-authorization flow or an explicit PAT'
       ),
       400
     );
   }
+  body.scope = publicConsentScope || DEFAULT_SCOPES_STRING;
+  const consentHasMcpScopes = hasMcpScopes(body.scope);
 
   // User denied consent
   if (!body.approved) {
@@ -674,13 +682,9 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
           400
         );
       }
-      // NOTE: `connections:token` is deliberately NOT granted here. The
-      // authorization-code consent path is used by arbitrary third-party MCP
-      // clients (Claude Desktop, Cursor, ChatGPT, …); granting it here would
-      // silently widen their tokens beyond the scopes they requested/consented
-      // to. Only the first-party `lobu login` device-code grant gets it (see
-      // POST /oauth/device/approve) — that is the credential the local
-      // instance's managed-connector resolver uses.
+      // NOTE: `connections:token` / `device_worker:run` were already stripped
+      // above via stripNonPublicOAuthScopes. Only the first-party `lobu login`
+      // device-code grant (or an explicit PAT) gets those.
       params.scope = filtered;
     }
 

@@ -188,6 +188,10 @@ const config: KnipConfig = {
         "examples/**/*.connector.ts",
         "examples/**/*.reaction.ts",
         "examples/**/evals/**/*.ts",
+        // Standalone example run scripts (`bun run seed`, `bun run compose`,
+        // etc. in an example's package.json) are file-path entrypoints, not
+        // imported by the workspace graph — treat them as entries.
+        "examples/**/scripts/**/*.ts",
         // Example test suites run in CI (`bun test examples/personal-agent`,
         // `bun test examples/brand-intelligence`) and locally for the rest.
         "examples/**/__tests__/**/*.ts",

@@ -1,0 +1,17 @@
+{
+  "name": "@lobu/example-context-layer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed:warehouse": "bun scripts/seed-warehouse.ts",
+    "seed": "bun scripts/seed.ts",
+    "compose": "bun scripts/compose.ts",
+    "drift": "bun scripts/drift-check.ts",
+    "drift:simulate": "bun scripts/simulate-drift.ts"
+  },
+  "devDependencies": {
+    "@lobu/cli": "^14.0.0",
+    "postgres": "^3.4.7"
+  }
+}

@@ -379,9 +379,22 @@ class LobuStateAdapter implements StateAdapter {
 /**
  * Build the Chat SDK `StateAdapter` backed by Postgres.
  *
+ * The adapter is **not** connected yet — callers must `await adapter.connect()`
+ * before any store op (or use {@link createConnectedGatewayStateAdapter}).
  * Tests that don't have a live Postgres can pass an in-memory adapter via
  * the dedicated test fixture instead of calling this function.
  */
 export function createGatewayStateAdapter(): StateAdapter {
   return new LobuStateAdapter({ keyPrefix: "chat-conn" });
+}
+
+/**
+ * Same as {@link createGatewayStateAdapter} but already connected. Prefer this
+ * anywhere a fresh adapter is used outside of a boot path that connects itself
+ * (e.g. chat-instance-manager history helpers).
+ */
+export async function createConnectedGatewayStateAdapter(): Promise<StateAdapter> {
+  const adapter = createGatewayStateAdapter();
+  await adapter.connect();
+  return adapter;
 }

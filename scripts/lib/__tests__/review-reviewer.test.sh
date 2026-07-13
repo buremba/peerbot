@@ -85,4 +85,9 @@ grep -Fq 'codex-jsonl-progress.py' "$review_script" ||
 grep -Eq -- '^[[:space:]]*--json[[:space:]]*$' "$review_script" ||
   fail "Herdr Codex path must use --json so the pane receives event stream"
 
+# Executable runner coverage (stub codex) lives in codex-herdr-runner.test.sh —
+# keep that file linked from this suite's contract surface.
+runner_test="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-herdr-runner.test.sh"
+[ -f "$runner_test" ] || fail "missing executable Herdr Codex runner test: $runner_test"
+
 echo "review reviewer selection tests passed"

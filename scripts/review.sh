@@ -222,25 +222,21 @@ case "$REVIEWER_CLI_SELECTED" in
     reviewer_exit=${PIPESTATUS[0]}
     ;;
   codex)
-    # Structured verdict still lands in RAW_FILE via --output-last-message.
-    # --json + the progress filter stream human-readable activity into the
-    # Herdr pane so the tab is watchable (Codex alone is nearly silent here).
+    # Keep this aligned with the inline path. Verdict is --output-last-message;
+    # the pane may stay quiet while Codex runs (that's fine — Herdr review is
+    # opt-in; default path is inline).
     codex_args=(
       codex exec
       --sandbox read-only
       --output-schema "$SCHEMA_FILE"
       --output-last-message "$RAW_FILE"
       --ephemeral
-      --json
-      --color never
     )
     if [ -n "$CODEX_REVIEW_MODEL" ]; then
       codex_args+=(--model "$CODEX_REVIEW_MODEL")
     fi
-    set -o pipefail
-    "${codex_args[@]}" "$(cat "$PROMPT_FILE")" < /dev/null 2>&1 \
-      | python3 -u "$CODEX_PROGRESS_FILTER"
-    reviewer_exit=${PIPESTATUS[0]}
+    "${codex_args[@]}" "$(cat "$PROMPT_FILE")" < /dev/null
+    reviewer_exit=$?
     ;;
 esac
 exit_tmp="${EXIT_FILE}.tmp.$$"
@@ -270,8 +266,7 @@ RUNNER
       --env "PROMPT_FILE=$prompt_file" \
       --env "SCHEMA_FILE=$SCHEMA_FILE" \
       --env "RAW_FILE=$raw_file" \
-      --env "EXIT_FILE=$exit_file" \
-      --env "CODEX_PROGRESS_FILTER=$SCRIPT_DIR/lib/codex-jsonl-progress.py" 2>&1
+      --env "EXIT_FILE=$exit_file" 2>&1
   )"
   local start_exit=$?
   if [ $start_exit -eq 0 ]; then

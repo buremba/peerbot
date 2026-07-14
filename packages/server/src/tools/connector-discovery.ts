@@ -136,21 +136,32 @@ export async function searchLiveConnectors(
       const feeds = feedKeysOf(i.detail);
       const feedKeyHint = feeds?.[0] ? `'${feeds[0]}'` : '<feed_key>';
       const feedKeysNote = feeds ? ` Feed keys: ${feeds.join(', ')}.` : '';
+      // A connector with NO feeds_schema (e.g. an action/chat connector like
+      // Slack) does not sync via feeds — telling the agent to feeds.create would
+      // send it down an invalid lifecycle. Point it at operations instead.
+      const hasFeeds = !!feeds;
+      const useHint = hasFeeds
+        ? `To add a feed: run_sdk → client.feeds.create({ connection_id, feed_key: ${feedKeyHint}, config }); then query_sql on events or search_memory to read.`
+        : `This connector has no data feeds — it exposes operations/actions. Discover them via query_sdk → client.operations.listAvailable({ connector_key: '${i.id}' }) and run with client.operations.execute.`;
       const status = bestStatus(i.id);
       if (status && USABLE.has(status)) {
-        // Healthy live connection — add a feed / read, don't re-connect.
         lines.push(
-          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED and CONNECTED (active connection).${feedKeysNote} To add a feed: run_sdk → client.feeds.create({ connection_id, feed_key: ${feedKeyHint}, config }); then query_sql on events or search_memory to read. Get the connection_id via query_sdk → client.connections.list({ connector_key: '${i.id}' }).`
+          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED and CONNECTED (active connection).${feedKeysNote} ${useHint} Get the connection_id via query_sdk → client.connections.list({ connector_key: '${i.id}' }).`
         );
       } else if (status) {
         // Connection exists but is NOT usable (revoked/error/paused/pending) —
-        // it must be repaired before any feed will sync.
+        // repair it before use.
         lines.push(
           `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED with a connection that needs attention (status: ${status}).${feedKeysNote} Reauthenticate/repair before use: run_sdk → client.connections.reauthenticate(<connection_id>) (or reconnect). Find the connection via query_sdk → client.connections.list({ connector_key: '${i.id}' }).`
         );
-      } else {
+      } else if (hasFeeds) {
         lines.push(
           `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED, not yet configured.${feedKeysNote} Lifecycle: run_sdk → client.connections.connect({ connector_key: '${i.id}' }) → client.feeds.create({ connection_id, feed_key: ${feedKeyHint}, config }) → client.feeds.trigger({ feed_id }); then query_sql on events or search_memory to read. Use search_sdk 'feeds.create feeds.trigger' for signatures.`
+        );
+      } else {
+        // Feedless connector, not yet connected — connect, then use operations.
+        lines.push(
+          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED, not yet connected. It has no data feeds — it exposes operations/actions. Lifecycle: run_sdk → client.connections.connect({ connector_key: '${i.id}' }); then query_sdk → client.operations.listAvailable({ connector_key: '${i.id}' }) and run with client.operations.execute.`
         );
       }
     }

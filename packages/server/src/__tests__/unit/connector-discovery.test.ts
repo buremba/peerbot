@@ -139,6 +139,47 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 		expect(hits[0]).not.toMatch(/needs attention/);
 	});
 
+	it("does NOT tell the agent to create a feed on a feedless connector (Slack-style)", async () => {
+		// The review-caught bug: a connector with feeds_schema=null (an action/chat
+		// connector) was sent down the feeds.create lifecycle, which is invalid. It
+		// must be pointed at operations instead.
+		const deps = makeDeps({
+			installed: {
+				installed: {
+					connectors: {
+						items: [
+							{
+								id: "slack",
+								name: "Slack",
+								detail: { description: "Chat", feeds_schema: null },
+							},
+						],
+					},
+				},
+			},
+		});
+		const notConnected = await searchLiveConnectors("slack", env, ctx, deps);
+		expect(notConnected[0]).not.toMatch(/feeds\.create/);
+		expect(notConnected[0]).toMatch(/no data feeds|operations/i);
+		expect(notConnected[0]).toMatch(/operations\.listAvailable/);
+
+		// Same when already connected: add-feed guidance must not appear.
+		const connectedDeps = makeDeps({
+			installed: {
+				installed: {
+					connectors: {
+						items: [{ id: "slack", name: "Slack", detail: { feeds_schema: null } }],
+					},
+				},
+			},
+			connectionsByKey: { slack: [{ status: "active" }] },
+		});
+		const connected = await searchLiveConnectors("slack", env, ctx, connectedDeps);
+		expect(connected[0]).toMatch(/CONNECTED/);
+		expect(connected[0]).not.toMatch(/feeds\.create/);
+		expect(connected[0]).toMatch(/operations/i);
+	});
+
 	it("surfaces a global-catalog connector as installable when not installed", async () => {
 		const hits = await searchLiveConnectors("slack", env, ctx, makeDeps());
 		expect(hits.some((h) => h.includes("'slack'") && /CATALOG/.test(h))).toBe(true);

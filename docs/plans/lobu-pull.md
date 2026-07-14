@@ -206,7 +206,7 @@ If any step fails, the PR is not ready.
 
 ## Cross-cutting concerns
 
-- **Auth**: pull uses `_lib/openclaw-auth.ts:getUsableToken` and `deriveApiBaseUrl(mcpUrl)` from `_lib/openclaw-cmd.ts` — same path as apply. No new auth.
+- **Auth**: pull uses `_lib/memory-auth.ts:getUsableToken` and the shared API-base/client helpers — same path as apply. No new auth.
 - **Org selection**: `--org <slug>` flag matches apply's. Without it, pull uses the default-org from `~/.lobu/config.toml` (or whatever the CLI's existing default-org logic is — verify against `apply.ts` at PR time).
 - **Redacted values from GET**: cloud GET responses redact secrets (`***1234`). Pull's secret detector treats any `***`-prefixed value or any `lobu_secret_<uuid>`-shaped value as "this is a secret reference" → emit `$VAR`. Never the literal redacted string.
 - **TOML schema validation before write**: pull runs the emitted TOML through `lobu-toml-schema.ts` Zod parse before writing. Validation failure = pull bug; abort with clear error. This catches writer drift early.

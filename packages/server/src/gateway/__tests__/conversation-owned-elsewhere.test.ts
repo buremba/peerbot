@@ -64,6 +64,12 @@ function makeConfig(): OrchestratorConfig {
   } as unknown as OrchestratorConfig;
 }
 
+const recordValidInput = mock(async (payload: MessagePayload) => {
+  if (!payload.organizationId || typeof payload.runId !== "number") {
+    throw new Error("Durable agent input requires organizationId and runId");
+  }
+});
+
 // A deployment manager whose `createWorkerDeployment` throws a caller-supplied
 // error. `listDeployments` returns empty so `ensureWorkerExists` takes the
 // "new thread → create" branch.
@@ -145,6 +151,7 @@ describe("multi-replica: conversation owned by another pod", () => {
         new ConversationOwnedElsewhereError("owned by another replica"),
       ),
       makeFakeQueue(),
+      recordValidInput,
     );
 
     const dm = (consumer as unknown as { deploymentManager: DeploymentManager })
@@ -176,6 +183,7 @@ describe("multi-replica: conversation owned by another pod", () => {
       makeConfig(),
       makeDeploymentManager(new Error("worker spawn failed: OOM")),
       makeFakeQueue(),
+      recordValidInput,
     );
 
     const trackSpy = spyOn(
@@ -197,7 +205,12 @@ describe("multi-replica: conversation owned by another pod", () => {
     const dm = makeDeploymentManager(
       new ConversationOwnedElsewhereError("owned by another replica"),
     );
-    const consumer = new MessageConsumer(makeConfig(), dm, makeFakeQueue());
+    const consumer = new MessageConsumer(
+      makeConfig(),
+      dm,
+      makeFakeQueue(),
+      recordValidInput,
+    );
 
     spyOn(
       consumer as unknown as {

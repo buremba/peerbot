@@ -45,10 +45,7 @@ export type {
   ProviderRegistryEntry,
   ProvidersConfigFile,
 } from "./integration-types";
-// Lobu memory guidance (rendered into the OpenClaw plugin's fallback system
-// context and into the bundled `lobu` skill's "Memory Defaults" section). Lives
-// in core so the openclaw-plugin and the server-side skill-sync test can both
-// import it via the package name instead of a cross-package relative path.
+// Lobu memory guidance shared by the runtime and bundled skill.
 export {
   renderFallbackSystemContext,
   renderSkillMemorySection,
@@ -74,14 +71,6 @@ export {
   withChildSpan,
   withSpan,
 } from "./otel";
-// Plugin types
-export type {
-  PluginConfig,
-  PluginManifest,
-  PluginSlot,
-  PluginsConfig,
-  ProviderRegistration,
-} from "./plugin-types";
 // Config-driven provider types
 export type {
   ConfigProviderMeta,
@@ -142,7 +131,7 @@ export * from "./utils/network-domains";
 export * from "./utils/retry";
 export * from "./utils/sanitize";
 export * from "./utils/secret-redaction";
-// Shared OpenClaw session.jsonl parser (gateway + worker).
+// Shared Lobu runtime session.jsonl parser (gateway + worker).
 export {
   entryToMessage,
   type ParsedMessage,

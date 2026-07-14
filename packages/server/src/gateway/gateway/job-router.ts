@@ -2,6 +2,11 @@
 
 import { createLogger } from "@lobu/core";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
+import {
+  attachFreshRunJobToken,
+  listPendingAgentRunInputs,
+  type PendingAgentRunInput,
+} from "../orchestration/agent-run-input.js";
 import type { WorkerConnectionManager } from "./connection-manager.js";
 
 const logger = createLogger("worker-job-router");
@@ -22,7 +27,10 @@ export class WorkerJobRouter {
 
   constructor(
     private queue: IMessageQueue,
-    private connectionManager: WorkerConnectionManager
+    private connectionManager: WorkerConnectionManager,
+    private loadPendingInputs: (
+      deploymentName: string
+    ) => Promise<PendingAgentRunInput[]> = listPendingAgentRunInputs,
   ) {}
 
   /**
@@ -48,6 +56,21 @@ export class WorkerJobRouter {
       },
       { startPaused: true }
     );
+
+    const pendingInputs = await this.loadPendingInputs(deploymentName);
+    for (const input of pendingInputs) {
+      const payload = attachFreshRunJobToken(input);
+      await this.queue.send(queueName, payload, {
+        retryLimit: 3,
+        retryDelay: 2,
+        priority: 10,
+      });
+    }
+    if (pendingInputs.length > 0) {
+      logger.info(
+        `Replayed ${pendingInputs.length} durable agent input(s) for ${deploymentName}`,
+      );
+    }
 
     logger.info(`Registered worker for queue ${queueName}`);
   }

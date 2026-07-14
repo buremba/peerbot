@@ -6,80 +6,13 @@
 import {
   createLogger,
   type MessagePayload,
-  type PluginConfig,
-  type PluginsConfig,
 } from "@lobu/core";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { composeEffectiveModelRef } from "../auth/settings/model-selection.js";
 import { getOrgDefaultModel } from "../../lobu/stores/provider-secrets.js";
 import type { ChannelBindingService } from "../channels/binding-service.js";
-import { buildMemoryPlugins, getInternalGatewayUrl } from "../config/index.js";
 
 const logger = createLogger("platform-helpers");
-const LOBU_PLUGIN_SOURCE = "@lobu/openclaw-plugin";
-
-function readLobuRuntimeDefaults(): PluginConfig | null {
-  const configuredPlugin = buildMemoryPlugins().find(
-    (plugin) =>
-			plugin.source === LOBU_PLUGIN_SOURCE && plugin.slot === "memory",
-  );
-  if (configuredPlugin) {
-    return configuredPlugin;
-  }
-
-  const gatewayUrl = getInternalGatewayUrl();
-  return {
-    source: LOBU_PLUGIN_SOURCE,
-    slot: "memory",
-    enabled: true,
-    config: {
-      mcpUrl: `${gatewayUrl}/mcp/lobu-memory`,
-      gatewayAuthUrl: gatewayUrl,
-    },
-  };
-}
-
-function normalizeLobuPluginConfig(
-  plugin: PluginConfig,
-	runtimeDefault: PluginConfig | null,
-): PluginConfig {
-  if (
-    plugin.source !== LOBU_PLUGIN_SOURCE ||
-    plugin.slot !== "memory" ||
-    !runtimeDefault?.config
-  ) {
-    return plugin;
-  }
-
-  return {
-    ...plugin,
-    config: {
-      ...plugin.config,
-      mcpUrl: runtimeDefault.config.mcpUrl,
-      gatewayAuthUrl: runtimeDefault.config.gatewayAuthUrl,
-    },
-  };
-}
-
-function normalizePluginsConfig(
-	pluginsConfig: PluginsConfig | undefined,
-): PluginsConfig | undefined {
-  if (!pluginsConfig?.plugins?.length) {
-    return pluginsConfig;
-  }
-
-  const runtimeDefault = readLobuRuntimeDefaults();
-  let changed = false;
-  const plugins = pluginsConfig.plugins.map((plugin) => {
-    const normalized = normalizeLobuPluginConfig(plugin, runtimeDefault);
-    if (normalized !== plugin) {
-      changed = true;
-    }
-    return normalized;
-  });
-
-  return changed ? { ...pluginsConfig, plugins } : pluginsConfig;
-}
 
 /**
  * Resolve agent options by merging base options with per-agent settings.
@@ -168,15 +101,6 @@ export async function resolveAgentOptions(
   if (settings.preApprovedTools?.length) {
     mergedOptions.preApprovedTools = settings.preApprovedTools;
   }
-  if (settings.pluginsConfig) {
-    mergedOptions.pluginsConfig = normalizePluginsConfig(
-			settings.pluginsConfig,
-    );
-  }
-  // Apply default memory plugins if no pluginsConfig from settings or baseOptions
-  if (!mergedOptions.pluginsConfig) {
-    mergedOptions.pluginsConfig = { plugins: buildMemoryPlugins() };
-  }
   if (settings.verboseLogging !== undefined) {
     mergedOptions.verboseLogging = settings.verboseLogging;
   }
@@ -200,8 +124,8 @@ export function buildMessagePayload(params: {
   // rather than stamping a placeholder.
   teamId?: string;
   agentId: string;
-  organizationId?: string;
-	connectionId?: string;
+  organizationId: string;
+  connectionId?: string;
   messageId: string;
   messageText: string;
   channelId: string;

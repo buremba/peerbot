@@ -1,5 +1,5 @@
 /**
- * Worker-facing snapshot endpoints for OpenClaw transcripts.
+ * Worker-facing snapshot endpoints for Lobu agent transcripts.
  *
  * Mounted at `/worker/transcript/snapshot`:
  *   GET  → return the latest `terminal_status='completed'` snapshot for
@@ -229,24 +229,30 @@ export function createTranscriptRoutes(): Hono {
 
     const sql = getDb();
     try {
-      // ON CONFLICT keeps the existing row. Two pods racing under a partially-
-      // broken advisory lock (e.g. lock dropped mid-flight) would both POST;
-      // first writer wins, second sees the unique-violation and 409s. The
-      // worker treats 409 as benign and returns silently.
+      // A retry may hydrate the snapshot written by an earlier attempt, append
+      // more transcript, then checkpoint the SAME run again after terminal
+      // delivery failed. Permit that monotonic extension atomically. Reject a
+      // divergent branch: two pods racing from the same base cannot overwrite
+      // each other's different continuation, and the loser must not
+      // acknowledge completion against bytes it did not persist.
       const inserted = await sql<{ id: number }>`
-        INSERT INTO public.agent_transcript_snapshot
+        INSERT INTO public.agent_transcript_snapshot AS existing
           (organization_id, agent_id, conversation_id, run_id,
            snapshot_jsonl, byte_size, terminal_status)
         VALUES
           (${organizationId}, ${agentId}, ${conversationId}, ${runId},
            ${snapshotJsonl}, ${byteSize}, ${terminalStatus})
         ON CONFLICT (organization_id, agent_id, conversation_id, run_id)
-          DO NOTHING
+          DO UPDATE SET
+            snapshot_jsonl = EXCLUDED.snapshot_jsonl,
+            byte_size = EXCLUDED.byte_size,
+            terminal_status = EXCLUDED.terminal_status
+          WHERE left(EXCLUDED.snapshot_jsonl, length(existing.snapshot_jsonl))
+            = existing.snapshot_jsonl
         RETURNING id
       `;
       if (inserted.length === 0) {
-        // ON CONFLICT DO NOTHING returned no row → snapshot already exists.
-        return c.json({ error: "Snapshot already exists for run" }, 409);
+        return c.json({ error: "Snapshot conflicts with durable run" }, 409);
       }
       logger.info(
         `Wrote snapshot id=${inserted[0]!.id} run_id=${runId} byte_size=${byteSize} status=${terminalStatus}`

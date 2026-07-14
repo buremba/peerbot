@@ -21,7 +21,7 @@ import {
   isToolAllowedByPolicy,
   normalizeToolList,
   type BashCommandPolicy,
-} from "../openclaw/tool-policy";
+} from "../runtime/tool-policy";
 
 // ---------------------------------------------------------------------------
 // isDirectPackageInstallCommand

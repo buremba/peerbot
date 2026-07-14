@@ -211,7 +211,7 @@ describe('fake-llm-server', () => {
 
   // ── Provider-integration features ─────────────────────────────────────
   // Auth capture, optional auth enforcement, and OpenAI-format tool_calls.
-  // These pin the wire shapes that the openclaw e2e harness drives an agent
+  // These pin the wire shapes that the Lobu worker harness drives an agent
   // loop through AND that live-providers/provider-smoke.test.ts asserts
   // against real providers — if the fake drifts from the OpenAI spec, the
   // smoke would be testing a fiction.

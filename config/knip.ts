@@ -93,14 +93,6 @@ const config: KnipConfig = {
         "@vitest/coverage-v8",
       ],
     },
-    "packages/openclaw-plugin": {
-      entry: [
-        // Referenced only as `vitest run --config …` CLI flags (test:e2e /
-        // test:unit scripts), which knip can't trace.
-        "test/e2e/vitest.config.ts",
-        "test/unit/vitest.config.ts",
-      ],
-    },
     "packages/cli": {
       entry: [
         // Tests run via `bun test packages/cli` in CI (nested __tests__ dirs).

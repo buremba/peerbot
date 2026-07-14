@@ -5,7 +5,7 @@ import {
   enforceBashCommandPolicy,
   isToolAllowedByPolicy,
   normalizeToolList,
-} from "../openclaw/tool-policy";
+} from "../runtime/tool-policy";
 
 describe("normalizeToolList", () => {
   test("returns empty array for undefined", () => {

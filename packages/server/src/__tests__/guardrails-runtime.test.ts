@@ -9,8 +9,7 @@
  *   - the block message is delivered (chat target / queue / JSON-RPC reply)
  *   - the `events` row lands with `semantic_type='guardrail-trip'`
  *   - the rolling output buffer catches secrets split across stream chunks
- *   - the audit org id falls back to the connection / agent metadata when the
- *     payload doesn't carry it
+ *   - the audit org id comes from the required, authoritative payload identity
  *
  * Tests use `flushPendingGuardrailAudits()` (the production hook) instead of
  * a sleep — fire-and-forget audit writes are explicitly awaitable.
@@ -139,6 +138,17 @@ async function fetchGuardrailEvents(orgId: string, stage: string) {
       AND origin_type = ${`guardrail-${stage}`}
     ORDER BY id DESC
   `;
+}
+
+async function createQueuedMessageRun(orgId: string): Promise<string> {
+  const db = getTestDb();
+  const [run] = await db<{ id: number }[]>`
+    INSERT INTO public.runs (organization_id, run_type, queue_name, status)
+    VALUES (${orgId}, 'chat_message', 'messages', 'claimed')
+    RETURNING id
+  `;
+  if (!run) throw new Error('Failed to create queued message run');
+  return String(run.id);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -626,7 +636,7 @@ describe('MessageConsumer — wired input guardrail', () => {
     expect(rows[0]!.metadata.guardrail).toBe('test-input-tripper');
   });
 
-  it('falls back to agent-metadata orgId when payload omits organizationId', async () => {
+  it('audits with the required payload organization when platform metadata omits it', async () => {
     const sentToQueue: Array<{ queue: string; data: any }> = [];
     const fakeQueue = {
       start: async () => {},
@@ -673,7 +683,7 @@ describe('MessageConsumer — wired input guardrail', () => {
           channelId: 'c1',
           teamId: 't1',
           agentId,
-          // organizationId intentionally absent — exercises metadata fallback
+          organizationId: orgId,
           botId: 'bot',
           platform: 'telegram',
           messageText: 'leaking SECRET data',
@@ -873,9 +883,10 @@ describe('MessageConsumer — wired custom inline guardrail', () => {
       new AgentSettingsStore(createPostgresAgentConfigStore())
     );
 
+    const runId = await createQueuedMessageRun(orgId);
     await orgContext.run({ organizationId: orgId }, async () => {
       await consumer.invokeHandleMessage({
-        id: '1',
+        id: runId,
         data: {
           userId: 'u1',
           conversationId: 'conv-1',

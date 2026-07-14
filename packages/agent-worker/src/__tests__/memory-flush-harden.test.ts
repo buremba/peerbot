@@ -14,10 +14,10 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { SettingsManager } from "@mariozechner/pi-coding-agent";
 import {
-  OpenClawWorker,
+  LobuAgentWorker,
   estimatePromptTokenCost,
   resolveMemoryFlushConfig,
-} from "../openclaw/worker";
+} from "../runtime/worker";
 import { mockWorkerConfig } from "./setup";
 
 // ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ describe("maybeRunPreCompactionMemoryFlush — enabled=false", () => {
   });
 
   test("skips flush when memoryFlushConfig.enabled=false regardless of context usage", async () => {
-    const worker = new OpenClawWorker(mockWorkerConfig);
+    const worker = new LobuAgentWorker(mockWorkerConfig);
     const settingsManager = SettingsManager.inMemory();
 
     let silentCallCount = 0;
@@ -195,7 +195,7 @@ describe("maybeRunPreCompactionMemoryFlush — 'stored' outcome", () => {
   });
 
   test("records 'stored' outcome when latest assistant message is not NO_REPLY", async () => {
-    const worker = new OpenClawWorker(mockWorkerConfig);
+    const worker = new LobuAgentWorker(mockWorkerConfig);
     const settingsManager = SettingsManager.inMemory();
 
     const branchEntries: Array<Record<string, unknown>> = [];
@@ -261,7 +261,7 @@ describe("maybeRunPreCompactionMemoryFlush — NO_REPLY case-insensitivity", () 
   });
 
   test("lowercase 'no_reply' is treated as NO_REPLY outcome", async () => {
-    const worker = new OpenClawWorker(mockWorkerConfig);
+    const worker = new LobuAgentWorker(mockWorkerConfig);
     const settingsManager = SettingsManager.inMemory();
 
     const branchEntries: Array<Record<string, unknown>> = [];
@@ -311,7 +311,7 @@ describe("maybeRunPreCompactionMemoryFlush — NO_REPLY case-insensitivity", () 
   });
 
   test("array-content NO_REPLY is detected", async () => {
-    const worker = new OpenClawWorker(mockWorkerConfig);
+    const worker = new LobuAgentWorker(mockWorkerConfig);
     const settingsManager = SettingsManager.inMemory();
 
     const branchEntries: Array<Record<string, unknown>> = [];

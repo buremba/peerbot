@@ -26,7 +26,7 @@ import {
   adoptWorkerToken,
   getWorkerTokenManager,
 } from "../gateway/worker-token-manager";
-import { writeSnapshot } from "../openclaw/transcript-snapshot";
+import { writeSnapshot } from "../runtime/transcript-snapshot";
 
 let originalFetch: typeof globalThis.fetch;
 let capturedAuth: string[];
@@ -115,7 +115,7 @@ describe("per-turn token adoption (transport reads the live manager token)", () 
   test("adopting the fresh per-run token flips the bearer on the wire", async () => {
     stubFetch();
     const transport = makeTransport("stale-deployment-token");
-    // Mirrors OpenClawWorker.execute(): adopt the freshly-minted runJobToken.
+    // Mirrors LobuAgentWorker.execute(): adopt the freshly-minted runJobToken.
     adoptWorkerToken("fresh-run-token");
     await transport.signalCompletion();
     expect(capturedAuth).not.toContain("Bearer stale-deployment-token");
@@ -158,12 +158,31 @@ describe("per-turn token adoption (transport reads the live manager token)", () 
       errorContext: { provider: "z-ai", model: "glm-5.2" },
     });
   });
+
+  test("error responses complete every accepted steer and cancel input", async () => {
+    stubFetch();
+    const transport = makeTransport("deployment-token");
+    transport.processedMessageIds = ["initial-message"];
+    transport.addProcessedMessageId("steered-message");
+    transport.addProcessedMessageId("cancel-message");
+
+    await transport.signalError(new Error("provider failed"));
+
+    expect(capturedBodies.at(-1)).toMatchObject({
+      error: "provider failed",
+      processedMessageIds: [
+        "initial-message",
+        "steered-message",
+        "cancel-message",
+      ],
+    });
+  });
 });
 
 describe("seed() never clobbers a live token (aux-transport rollback guard)", () => {
   test("constructing an aux transport after adopt cannot roll the token back", async () => {
     stubFetch();
-    // Turn start: adopt the live per-run token (mirrors OpenClawWorker.execute).
+    // Turn start: adopt the live per-run token (mirrors LobuAgentWorker.execute).
     adoptWorkerToken("live-run-token");
     // An exec job mid-turn constructs an auxiliary transport from the STALE boot
     // token — its constructor seed() must no-op, not clobber the live token.
@@ -178,7 +197,7 @@ describe("seed() never clobbers a live token (aux-transport rollback guard)", ()
     stubFetch();
     // Turn 1 on a warm worker left its token in the process-wide manager.
     adoptWorkerToken("turn-1-token");
-    // Turn 2 re-adopts its own fresh per-run token (OpenClawWorker.execute).
+    // Turn 2 re-adopts its own fresh per-run token (LobuAgentWorker.execute).
     adoptWorkerToken("turn-2-token");
     // A transport built for turn 2 seeds (no-op) and must use turn-2's token.
     const aux = makeTransport("boot-token");
@@ -406,7 +425,7 @@ describe("refreshed token propagation (the refresh must not be a no-op)", () => 
     const { promises: fsp } = await import("node:fs");
     await fsp.writeFile(tmp, '{"role":"user","content":"hi"}\n', "utf-8");
     try {
-      // Mirrors OpenClawWorker.cleanup(): bearer = getWorkerTokenManager().getToken().
+      // Mirrors LobuAgentWorker.cleanup(): bearer = getWorkerTokenManager().getToken().
       await writeSnapshot({
         sessionFile: tmp,
         gatewayUrl: "http://gw.test/lobu",

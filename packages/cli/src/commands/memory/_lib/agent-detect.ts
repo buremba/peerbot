@@ -61,12 +61,6 @@ const AGENT_PROBES: AgentProbe[] = [
     detect: () => whichBinary("gemini"),
   },
   {
-    id: "openclaw",
-    name: "OpenClaw",
-    kind: "cli",
-    detect: () => whichBinary("openclaw"),
-  },
-  {
     id: "cursor",
     name: "Cursor",
     kind: "app",

@@ -1,5 +1,5 @@
 /**
- * Shared parser for OpenClaw `session.jsonl` files.
+ * Shared parser for Lobu runtime `session.jsonl` files.
  *
  * Two HTTP surfaces read these files: the worker's `/session/messages` /
  * `/session/stats` endpoints (rooted at the worker's own `WORKSPACE_DIR`)

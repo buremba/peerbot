@@ -5,7 +5,7 @@ import {
   getUsableToken,
   orgFromMcpUrl,
   resolveServerUrl,
-} from "./openclaw-auth.js";
+} from "./memory-auth.js";
 
 const JSON_MCP_ACCEPT = "application/json";
 

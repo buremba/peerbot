@@ -10,7 +10,7 @@ import { Type } from "@sinclair/typebox";
 import {
   TurnController,
   wrapToolsWithTurnGuard,
-} from "../openclaw/turn-controller";
+} from "../runtime/turn-controller";
 
 /**
  * These tests exercise the REAL pi agent loop (the same `Agent`/`agent-loop`

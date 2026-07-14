@@ -21,7 +21,7 @@ import { describe, expect, test } from "bun:test";
 import {
   type BashCommandPolicy,
   enforceBashCommandPolicy,
-} from "../openclaw/tool-policy";
+} from "../runtime/tool-policy";
 
 describe("enforceBashCommandPolicy command-chaining bypass", () => {
   const denyPolicy: BashCommandPolicy = {

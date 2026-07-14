@@ -14,7 +14,7 @@ import {
   expect,
   test,
 } from "bun:test";
-import { AgentErrorCode } from "@lobu/core";
+import { AgentErrorCode, generateWorkerToken } from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import { RunsQueue } from "../infrastructure/queue/runs-queue.js";
 import {
@@ -27,6 +27,10 @@ import {
   sweepExpiredTurns,
   type TurnRouting,
 } from "../orchestration/turn-liveness.js";
+import {
+  listPendingAgentRunInputs,
+  recordAgentRunInput,
+} from "../orchestration/agent-run-input.js";
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,
@@ -113,7 +117,158 @@ function reply(deploymentName: string, messageId: string) {
   };
 }
 
+async function durableInput(
+  deploymentName: string,
+  messageId: string,
+  organizationId = `org-${deploymentName}`,
+) {
+  const sql = getDb();
+  await sql`
+    INSERT INTO public.organization (id, name, slug)
+    VALUES (${organizationId}, ${organizationId}, ${organizationId})
+    ON CONFLICT (id) DO NOTHING
+  `;
+  const runs = await sql<{ id: number }>`
+    INSERT INTO public.runs (
+      organization_id, run_type, status, queue_name, action_input
+    ) VALUES (
+      ${organizationId}, 'chat_message', 'completed', 'message_queue',
+      ${sql.json({ messageId })}
+    ) RETURNING id
+  `;
+  const runId = Number(runs[0]!.id);
+  const payload = {
+    userId: "user-1",
+    conversationId: `conv-${deploymentName}`,
+    messageId,
+    channelId: "chan",
+    agentId: "agent-1",
+    organizationId,
+    botId: "bot",
+    platform: "api",
+    messageText: `input-${messageId}`,
+    platformMetadata: {},
+    agentOptions: {},
+    runId,
+    runJobToken: generateWorkerToken(
+      "user-1",
+      `conv-${deploymentName}`,
+      deploymentName,
+      {
+        channelId: "chan",
+        agentId: "agent-1",
+        organizationId,
+        platform: "api",
+        runId,
+        messageId,
+      },
+    ),
+  };
+  await recordAgentRunInput(payload, deploymentName);
+  const storedPayload = { ...payload };
+  delete storedPayload.runJobToken;
+  return { organizationId, payload, storedPayload };
+}
+
 describe("turn-liveness", () => {
+  test("durable inputs replay while live and complete atomically with the terminal reply", async () => {
+    await armTurnTimeout(queue, routing("dep-durable", "m-durable"));
+    const { organizationId, storedPayload } = await durableInput(
+      "dep-durable",
+      "m-durable",
+    );
+
+    expect(
+      (await listPendingAgentRunInputs("dep-durable")).map(
+        (input) => input.payload,
+      ),
+    ).toEqual([storedPayload]);
+    const durableRows = await getDb()<{
+      stores_token: boolean;
+      stores_timestamp: boolean;
+    }>`
+      SELECT
+        payload ? 'runJobToken' AS stores_token,
+        token_claims ? 'timestamp' AS stores_timestamp
+      FROM public.agent_run_input
+      WHERE organization_id = ${organizationId}
+        AND deployment_name = 'dep-durable'
+        AND message_id = 'm-durable'
+    `;
+    expect(durableRows[0]).toEqual({
+      stores_token: false,
+      stores_timestamp: false,
+    });
+
+    await commitTerminalReply(
+      "dep-durable",
+      ["m-durable"],
+      reply("dep-durable", "m-durable"),
+      organizationId,
+    );
+
+    expect(await listPendingAgentRunInputs("dep-durable")).toEqual([]);
+    const rows = await getDb()<{
+      status: string;
+      completed_at: Date | null;
+    }>`
+      SELECT status, completed_at
+      FROM public.agent_run_input
+      WHERE organization_id = ${organizationId}
+        AND deployment_name = 'dep-durable'
+        AND message_id = 'm-durable'
+    `;
+    expect(rows[0]?.status).toBe("completed");
+    expect(rows[0]?.completed_at).toBeTruthy();
+  });
+
+  test("scopes identical platform message ids to their deployments", async () => {
+    const organizationId = "org-shared-message-id";
+    await armTurnTimeout(queue, routing("dep-scope-a", "same-id"));
+    await armTurnTimeout(queue, routing("dep-scope-b", "same-id"));
+    const a = await durableInput("dep-scope-a", "same-id", organizationId);
+    const b = await durableInput("dep-scope-b", "same-id", organizationId);
+
+    expect(
+      (await listPendingAgentRunInputs("dep-scope-a")).map(
+        (input) => input.payload,
+      ),
+    ).toEqual([a.storedPayload]);
+    expect(
+      (await listPendingAgentRunInputs("dep-scope-b")).map(
+        (input) => input.payload,
+      ),
+    ).toEqual([b.storedPayload]);
+
+    await commitTerminalReply(
+      "dep-scope-a",
+      ["same-id"],
+      reply("dep-scope-a", "same-id"),
+      organizationId,
+    );
+
+    expect(await listPendingAgentRunInputs("dep-scope-a")).toEqual([]);
+    expect(
+      (await listPendingAgentRunInputs("dep-scope-b")).map(
+        (input) => input.payload,
+      ),
+    ).toEqual([b.storedPayload]);
+  });
+
+  test("does not replay an input after its liveness marker terminalizes as an error", async () => {
+    await armTurnTimeout(queue, routing("dep-failed-input", "m-failed"));
+    await durableInput("dep-failed-input", "m-failed");
+    expect(await listPendingAgentRunInputs("dep-failed-input")).toHaveLength(1);
+
+    await failTurnIfPending(
+      "dep-failed-input",
+      "m-failed",
+      AgentErrorCode.WORKER_DIED,
+    );
+
+    expect(await listPendingAgentRunInputs("dep-failed-input")).toEqual([]);
+  });
+
   test("arm then discharge: a real reply leaves no marker and no error", async () => {
     await armTurnTimeout(queue, routing("dep-1", "m1"));
     expect(await markerCount("dep-1")).toBe(1);

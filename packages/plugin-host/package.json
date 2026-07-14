@@ -1,0 +1,40 @@
+{
+  "name": "@lobu/plugin-host",
+  "version": "14.0.0",
+  "description": "Deterministic host for trusted first-party Lobu plugins",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!**/*.js.map",
+    "!**/*.d.ts.map"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@lobu/plugin-api": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.9",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22 <25 || >=26"
+  },
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  }
+}

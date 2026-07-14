@@ -16,6 +16,8 @@ interface BatcherConfig {
  */
 export class MessageBatcher {
   private messageQueue: QueuedMessage[] = [];
+  private readonly seenMessageIds = new Set<string>();
+  private readonly seenMessageOrder: string[] = [];
   private isProcessing = false;
   private batchTimer: NodeJS.Timeout | null = null;
   private readonly batchWindowMs: number;
@@ -28,6 +30,31 @@ export class MessageBatcher {
   }
 
   async addMessage(message: QueuedMessage): Promise<void> {
+    if (!this.claimMessageId(message.payload.messageId)) return;
+    await this.addClaimedMessage(message);
+  }
+
+  /**
+   * Atomically reserve a delivery before any await or live-steering side
+   * effect. The SSE client uses this before steering so a redelivery cannot be
+   * injected into an active model turn twice.
+   */
+  claimMessageId(messageId: string): boolean {
+    if (this.seenMessageIds.has(messageId)) {
+      logger.info(`Ignoring duplicate message ${messageId}`);
+      return false;
+    }
+    this.seenMessageIds.add(messageId);
+    this.seenMessageOrder.push(messageId);
+    if (this.seenMessageOrder.length > 10_000) {
+      const oldest = this.seenMessageOrder.shift();
+      if (oldest) this.seenMessageIds.delete(oldest);
+    }
+    return true;
+  }
+
+  /** Queue a message whose ID was already reserved by claimMessageId(). */
+  async addClaimedMessage(message: QueuedMessage): Promise<void> {
     this.messageQueue.push(message);
 
     // If already processing, message will be picked up in next batch

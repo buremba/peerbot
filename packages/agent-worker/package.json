@@ -53,6 +53,8 @@
   "dependencies": {
     "@hono/node-server": "^1.19.9",
     "@lobu/core": "workspace:*",
+    "@lobu/plugin-api": "workspace:*",
+    "@lobu/plugin-host": "workspace:*",
     "@mariozechner/pi-agent-core": "^0.73.1",
     "@mariozechner/pi-ai": "^0.73.1",
     "@mariozechner/pi-coding-agent": "^0.73.1",

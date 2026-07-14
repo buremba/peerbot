@@ -1,5 +1,5 @@
 /**
- * Hardening tests for OpenClawProgressProcessor.
+ * Hardening tests for AgentProgressProcessor.
  *
  * Covers gaps in the existing processor.test.ts:
  * - Malformed / missing fields on events (robustness, no throws)
@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { OpenClawProgressProcessor } from "../openclaw/processor";
+import { AgentProgressProcessor } from "../runtime/processor";
 
 function makeTextDelta(delta: string, role = "assistant"): any {
   return {
@@ -44,9 +44,9 @@ function makeMessageEnd(opts: {
 // Malformed event fields
 // ---------------------------------------------------------------------------
 
-describe("OpenClawProgressProcessor — malformed events don't throw", () => {
+describe("AgentProgressProcessor — malformed events don't throw", () => {
   test("message_update with null assistantMessageEvent returns false without throwing", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     const event = {
       type: "message_update",
       message: { role: "assistant" },
@@ -61,7 +61,7 @@ describe("OpenClawProgressProcessor — malformed events don't throw", () => {
   });
 
   test("tool_execution_start with null args does not throw", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     expect(() =>
       p.processEvent({
         type: "tool_execution_start",
@@ -72,7 +72,7 @@ describe("OpenClawProgressProcessor — malformed events don't throw", () => {
   });
 
   test("tool_execution_start with string args does not throw", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     expect(() =>
       p.processEvent({
         type: "tool_execution_start",
@@ -83,14 +83,14 @@ describe("OpenClawProgressProcessor — malformed events don't throw", () => {
   });
 
   test("compaction_end with neither aborted nor result returns true", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     // No aborted, no result — the current implementation still returns true
     const result = p.processEvent({ type: "compaction_end" } as any);
     expect(result).toBe(true);
   });
 
   test("auto_retry_end with success=true and no finalError returns false", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     const result = p.processEvent({
       type: "auto_retry_end",
       success: true,
@@ -106,14 +106,14 @@ describe("OpenClawProgressProcessor — malformed events don't throw", () => {
 
 describe("message_end content extraction", () => {
   test("empty content array produces no output", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     const result = p.processEvent(makeMessageEnd({ content: [] }));
     expect(result).toBe(false);
     expect(p.getDelta()).toBeNull();
   });
 
   test("whitespace-only text block produces no output", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     const result = p.processEvent(
       makeMessageEnd({ content: [{ type: "text", text: "   \n\t  " }] })
     );
@@ -122,7 +122,7 @@ describe("message_end content extraction", () => {
   });
 
   test("non-text blocks are skipped", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     const result = p.processEvent(
       makeMessageEnd({ content: [{ type: "tool_use", id: "x" }] })
     );
@@ -130,7 +130,7 @@ describe("message_end content extraction", () => {
   });
 
   test("multiple text blocks concatenated", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     p.processEvent(
       makeMessageEnd({
         content: [
@@ -143,7 +143,7 @@ describe("message_end content extraction", () => {
   });
 
   test("message_end with error does not append content text", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     p.processEvent(
       makeMessageEnd({
         stopReason: "error",
@@ -156,7 +156,7 @@ describe("message_end content extraction", () => {
   });
 
   test("message_end after streaming skips re-extraction", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     p.processEvent(makeTextDelta("streamed text"));
     p.getDelta();
 
@@ -169,7 +169,7 @@ describe("message_end content extraction", () => {
   });
 
   test("after reset(), message_end re-extracts text even if streaming happened before", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     p.processEvent(makeTextDelta("before reset"));
     p.getDelta();
 
@@ -190,7 +190,7 @@ describe("message_end content extraction", () => {
 
 describe("getDelta and getOutputSnapshot", () => {
   test("multiple incremental deltas return cumulative suffix each time", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     p.processEvent(makeTextDelta("A"));
     expect(p.getDelta()).toBe("A");
 
@@ -202,7 +202,7 @@ describe("getDelta and getOutputSnapshot", () => {
   });
 
   test("getOutputSnapshot returns full accumulated output", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     p.processEvent(makeTextDelta("part1"));
     p.getDelta(); // consume
 
@@ -214,7 +214,7 @@ describe("getDelta and getOutputSnapshot", () => {
   });
 
   test("getDelta returns full content when it diverges from lastSentContent", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     p.processEvent(makeTextDelta("original"));
     p.getDelta(); // lastSentContent = "original"
 
@@ -232,7 +232,7 @@ describe("getDelta and getOutputSnapshot", () => {
 
 describe("thinking events non-verbose", () => {
   test("thinking deltas do not append output in non-verbose mode", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     p.processEvent({
       type: "message_update",
       message: { role: "assistant" },
@@ -247,7 +247,7 @@ describe("thinking events non-verbose", () => {
   });
 
   test("reset() does not carry over thinking into next session", () => {
-    const p = new OpenClawProgressProcessor();
+    const p = new AgentProgressProcessor();
     p.setVerboseLogging(true);
     p.processEvent({
       type: "message_update",

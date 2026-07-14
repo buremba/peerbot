@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
-  OpenClawCoreInstructionProvider,
-  OpenClawPromptIntentInstructionProvider,
-} from "../openclaw/instructions";
+  LobuCoreInstructionProvider,
+  LobuPromptIntentInstructionProvider,
+} from "../runtime/instructions";
 
-describe("OpenClawCoreInstructionProvider", () => {
+describe("LobuCoreInstructionProvider", () => {
   test("includes baseline policy and always-on tool rules", async () => {
-    const provider = new OpenClawCoreInstructionProvider();
+    const provider = new LobuCoreInstructionProvider();
     const instructions = await provider.getInstructions({
       userId: "user-1",
       workingDirectory: "/workspace/thread-1",
@@ -19,7 +19,7 @@ describe("OpenClawCoreInstructionProvider", () => {
   });
 
   test("includes grounding and internal detail guardrails", async () => {
-    const provider = new OpenClawCoreInstructionProvider();
+    const provider = new LobuCoreInstructionProvider();
     const instructions = await provider.getInstructions({
       userId: "user-1",
       workingDirectory: "/workspace/thread-1",
@@ -31,9 +31,9 @@ describe("OpenClawCoreInstructionProvider", () => {
   });
 });
 
-describe("OpenClawPromptIntentInstructionProvider", () => {
+describe("LobuPromptIntentInstructionProvider", () => {
   test("injects file delivery guidance for prompts that ask to send a file", async () => {
-    const provider = new OpenClawPromptIntentInstructionProvider();
+    const provider = new LobuPromptIntentInstructionProvider();
     const instructions = await provider.getInstructions({
       userPrompt:
         "Create a CSV report and send the file to me as an attachment",
@@ -50,7 +50,7 @@ describe("OpenClawPromptIntentInstructionProvider", () => {
   });
 
   test("returns empty string when no intent-specific guidance matches", async () => {
-    const provider = new OpenClawPromptIntentInstructionProvider();
+    const provider = new LobuPromptIntentInstructionProvider();
     const instructions = await provider.getInstructions({
       userPrompt: "hello there",
     } as any);

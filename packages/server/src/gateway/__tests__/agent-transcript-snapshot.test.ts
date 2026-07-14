@@ -5,7 +5,7 @@
  * Covers the gateway-side surface: HTTP snapshot routes, advisory lock,
  * /agent-history fallback resolver, and schema constraints. The worker-side
  * helpers (hydrate / writeSnapshot) are tested in
- * `packages/agent-worker/src/openclaw/__tests__/transcript-snapshot.test.ts`.
+ * `packages/agent-worker/src/runtime/__tests__/transcript-snapshot.test.ts`.
  */
 
 import {
@@ -406,7 +406,7 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     expect(await res.text()).toBe(prior);
   });
 
-  test("two-pod race: second writer for same run_id returns 409 via UNIQUE", async () => {
+  test("same-run retries extend monotonically and reject divergent snapshots", async () => {
     const orgId = await seedAgentRow("agent-race", {
       organizationId: "org_race",
     });
@@ -424,25 +424,33 @@ describe("agent_transcript_snapshot — snapshot route", () => {
       runId: raceRunId,
     });
 
-    const winningJsonl = `{"type":"session","id":"first-writer"}\n`;
+    const baseJsonl = `{"type":"session","id":"base"}\n`;
     const first = await callRoute("POST", "/snapshot", token, {
       terminalStatus: "completed",
-      snapshotJsonl: winningJsonl,
+      snapshotJsonl: baseJsonl,
       runId: raceRunId,
     });
     expect(first.status).toBe(200);
 
+    const extendedJsonl = `${baseJsonl}{"type":"message","id":"continued"}\n`;
     const second = await callRoute("POST", "/snapshot", token, {
       terminalStatus: "completed",
-      snapshotJsonl: `${winningJsonl}{"type":"message","id":"loser"}\n`,
+      snapshotJsonl: extendedJsonl,
       runId: raceRunId,
     });
-    expect(second.status).toBe(409);
+    expect(second.status).toBe(200);
 
-    // First writer's bytes survive.
+    const divergent = await callRoute("POST", "/snapshot", token, {
+      terminalStatus: "completed",
+      snapshotJsonl: `${baseJsonl}{"type":"message","id":"divergent"}\n`,
+      runId: raceRunId,
+    });
+    expect(divergent.status).toBe(409);
+
+    // The monotonic extension survives; the divergent branch cannot replace it.
     const get = await callRoute("GET", "/snapshot", token);
     expect(get.status).toBe(200);
-    expect(await get.text()).toBe(winningJsonl);
+    expect(await get.text()).toBe(extendedJsonl);
   });
 
   test("rejects token without (org, agent, conv) scope", async () => {

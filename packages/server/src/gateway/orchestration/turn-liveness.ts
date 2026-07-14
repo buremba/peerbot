@@ -49,6 +49,7 @@ import { intervals } from "../../config/intervals.js";
 import { getDb, type DbClient } from "../../db/client.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
 import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
+import { completeAgentRunInputs } from "./agent-run-input.js";
 
 const logger = createLogger("turn-liveness");
 
@@ -405,6 +406,12 @@ async function enqueueTerminalError(
     buildTerminalErrorPayload(routing, code),
     routing.organizationId ?? null
   );
+  await completeAgentRunInputs(
+    tx,
+    routing.organizationId ?? null,
+    routing.deploymentName,
+    [routing.messageId]
+  );
 }
 
 /**
@@ -483,6 +490,12 @@ export async function commitTerminalReply(
       deleted += rows.length;
     }
     if (deleted === 0) return false; // already terminalized — drop the late reply
+    await completeAgentRunInputs(
+      tx,
+      organizationId,
+      deploymentName,
+      messageIds
+    );
     await insertThreadResponseRow(tx, replyPayload, organizationId);
     return true;
   });

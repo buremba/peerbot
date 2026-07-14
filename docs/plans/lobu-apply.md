@@ -40,7 +40,7 @@ desired state (lobu.config.ts + agent dirs)
 2. **No new server-side apply API.** CLI loops over existing endpoints in dependency order. Every endpoint is or becomes idempotent in v1.
 3. **No new state table.** Drift detection is "live state vs desired state" computed client-side at plan time. No `managed_by` marker → no safe `--prune` in v1; drift is reported, never deleted.
 4. **CLI parses `lobu.config.ts`, not server.** Reuses existing `cli/src/config/loader.ts:loadConfig`. Server reuses its existing route handlers — no parser duplication, no multipart upload.
-5. **Same base host for `/api` and `/mcp`.** `deriveApiBaseUrl(mcpUrl)` (already in `_lib/openclaw-cmd.ts`) gives the API root; apply hits `/api/:orgSlug/agents/...`, MCP commands hit `/mcp/:orgSlug` — same server, different paths.
+5. **Same base host for `/api` and `/mcp`.** The shared API-base helper gives the API root; apply hits `/api/:orgSlug/agents/...`, MCP commands hit `/mcp/:orgSlug` — same server, different paths.
 6. **Skills**: normalized via the existing file-loader transformation into `agents.skills_config` (already a JSON column). Sent through `PATCH /:agentId/config`. Raw `SKILL.md` round-trip is v2.
 7. **Secrets**: deferred to v3. v1 reads `$VAR` references in `lobu.config.ts`, queries the org's existing-secrets list, fails the plan loudly if any are missing. v1 never reads `.env` and never uploads values.
 8. **Memory data deferred to v3**. v1 ships memory **schema** only (entity + relationship types via existing admin tools). Watchers, entities, relationships, knowledge are out.
@@ -128,7 +128,7 @@ Scope:
 - New `packages/cli/src/commands/apply.ts` (top-level command).
 - New `packages/cli/src/commands/_lib/apply/`:
   - `desired-state.ts` — wraps `loadConfig` from `cli/src/config/loader.ts`. Walks `$VAR` refs and produces a `requiredSecrets: string[]` list. Reuses `buildStablePlatformId` (re-export from cli or inline a copy with a comment pointing at the source of truth).
-  - `client.ts` — thin wrapper over fetch using `_lib/openclaw-auth.ts` (`getUsableToken`) and `_lib/openclaw-cmd.ts:postJson` from PR #459. One method per resource: `getAgents`, `upsertAgent`, `patchSettings`, `getConnections`, `upsertConnection`, `getEntityTypes`, `upsertEntityType`, etc.
+  - `client.ts` — thin wrapper over fetch using `_lib/memory-auth.ts` (`getUsableToken`) and the shared HTTP client. One method per resource: `getAgents`, `upsertAgent`, `patchSettings`, `getConnections`, `upsertConnection`, `getEntityTypes`, `upsertEntityType`, etc.
   - `diff.ts` — given desired and current, return `{ creates, updates, noops, drift }`. Drift = remote has resource not in desired. No deletes (no `--prune` in v1).
   - `render.ts` — pretty diff output via chalk: `+` for creates, `~` for updates, `=` for noops, `?` for drift.
   - `prompt.ts` — confirmation prompt; honors `--yes`; non-TTY without `--yes` exits non-zero.

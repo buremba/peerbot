@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   estimatePromptTokenCost,
   resolveMemoryFlushConfig,
-} from "../openclaw/worker";
+} from "../runtime/worker";
 
 describe("memory flush config", () => {
   test("uses defaults when config missing", () => {

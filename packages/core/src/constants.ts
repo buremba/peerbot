@@ -23,7 +23,7 @@ export const TIME = {
 
 /**
  * MCP protocol version this codebase advertises on `initialize` handshakes.
- * Kept in one place so the gateway, CLI, and openclaw plugin stay in lockstep.
+ * Kept in one place so the gateway, CLI, and native runtime stay in lockstep.
  */
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
 

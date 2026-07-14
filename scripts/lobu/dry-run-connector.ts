@@ -4,7 +4,7 @@
  * Usage: DATABASE_URL=... npx tsx scripts/dry-run-connector.ts <connector-file> [feed-config-json]
  *
  * Example:
- *   DATABASE_URL="postgresql://..." npx tsx scripts/dry-run-connector.ts connectors/reddit.ts '{"subreddit":"openclaw","content_type":"post"}'
+ *   DATABASE_URL="postgresql://..." npx tsx scripts/dry-run-connector.ts connectors/reddit.ts '{"subreddit":"lobu","content_type":"post"}'
  */
 
 import { readFileSync } from 'node:fs';

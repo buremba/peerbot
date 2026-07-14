@@ -226,7 +226,7 @@ async function findSessionFile(agentId: string): Promise<string | null> {
 	const workspaceDir = resolve(workspacesRoot, agentId);
 	if (!workspaceDir.startsWith(`${workspacesRoot}/`)) return null;
 
-	const directPath = join(workspaceDir, ".openclaw", "session.jsonl");
+	const directPath = join(workspaceDir, ".lobu", "session.jsonl");
 	try {
 		await stat(directPath);
 		return directPath;
@@ -243,7 +243,7 @@ async function findSessionFile(agentId: string): Promise<string | null> {
 			const entries = await readdir(dir, { withFileTypes: true });
 			for (const entry of entries) {
 				if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-				const sessionPath = join(dir, entry.name, ".openclaw", "session.jsonl");
+				const sessionPath = join(dir, entry.name, ".lobu", "session.jsonl");
 				try {
 					await stat(sessionPath);
 					return sessionPath;

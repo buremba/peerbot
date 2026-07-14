@@ -62,7 +62,7 @@ jobs:
         # install it in the worker runtime image" before it ships.
         run: node scripts/check-connector-runtime-deps.mjs
 
-      - name: Build core + sdk + embeddings + connector-worker + pgvector-embedded + cli for downstream type-resolution
+      - name: Build core + plugins + sdk + embeddings + connector-worker + pgvector-embedded + cli for downstream type-resolution
         # connector-worker integration tests import from its compiled `dist/`
         # (subprocess-mode tests spawn the built executor); build it here
         # so those run. embeddings must build before connector-worker —
@@ -74,6 +74,8 @@ jobs:
         # tarball, so pgvector-embedded must build first.
         run: |
           cd packages/core && bun run build && cd ../..
+          cd packages/plugin-api && bun run build && cd ../..
+          cd packages/plugin-host && bun run build && cd ../..
           cd packages/connector-sdk && bun run build && cd ../..
           cd packages/embeddings && bun run build && cd ../..
           cd packages/connector-worker && bun run build && cd ../..
@@ -87,6 +89,11 @@ jobs:
         run: |
           bun test packages/core packages/cli --coverage
           mv coverage/lcov.info coverage/core-cli.lcov.info
+
+      - name: native plugin packages (bun:test)
+        run: |
+          bun test packages/plugin-api packages/plugin-host --coverage
+          mv coverage/lcov.info coverage/plugin-runtime.lcov.info
 
       - name: worker (bun:test, full suite)
         # The previous CI cherry-picked 8 of 18 files because pi-coding-agent
@@ -111,8 +118,6 @@ jobs:
           mv coverage/lcov.info coverage/server-units-auth.lcov.info
 
       - name: connector-worker (bun:test)
-        # openclaw-plugin e2e tests need a live backend and belong in the
-        # smoke-example workflow, not the unit job.
         run: |
           bun test packages/connector-worker --coverage
           mv coverage/lcov.info coverage/connector-worker.lcov.info
@@ -147,7 +152,7 @@ jobs:
         if: always()
         uses: codecov/codecov-action@v7
         with:
-          files: coverage/core-cli.lcov.info,coverage/agent-worker.lcov.info,coverage/server-units.lcov.info,coverage/server-units-auth.lcov.info,coverage/connector-worker.lcov.info,coverage/client-promptfoo.lcov.info,coverage/connector-sdk.lcov.info,coverage/connectors.lcov.info
+          files: coverage/core-cli.lcov.info,coverage/plugin-runtime.lcov.info,coverage/agent-worker.lcov.info,coverage/server-units.lcov.info,coverage/server-units-auth.lcov.info,coverage/connector-worker.lcov.info,coverage/client-promptfoo.lcov.info,coverage/connector-sdk.lcov.info,coverage/connectors.lcov.info
           flags: unit
           fail_ci_if_error: false
 
@@ -402,7 +407,7 @@ jobs:
         # independently asserts zero failures — and a missing/unparseable
         # report (crashed run) also fails.
         run: |
-          node ../../node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/vitest-report.json" \
+          node node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/vitest-report.json" \
             --coverage.enabled --coverage.provider=v8 --coverage.reporter=lcov --coverage.reportsDirectory=coverage
           # vitest writes coverage/lcov.info; rename so later bun steps don't clobber it.
           mv coverage/lcov.info coverage/vitest.lcov.info
@@ -550,7 +555,7 @@ jobs:
         # preconditions (DOM lib) that belong to its own build pipeline.
         run: |
           set -euo pipefail
-          for pkg in server connector-worker connector-sdk openclaw-plugin embeddings cli; do
+          for pkg in server connector-worker connector-sdk plugin-api plugin-host embeddings cli; do
             echo "::group::typecheck $pkg"
             (cd "packages/$pkg" && bunx tsc --noEmit)
             echo "::endgroup::"

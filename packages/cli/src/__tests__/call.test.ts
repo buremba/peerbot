@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { buildArgs, callCommand, parseArgEntry } from "../commands/call";
 import { ValidationError } from "../commands/memory/_lib/errors";
-import * as openclawAuth from "../commands/memory/_lib/openclaw-auth";
+import * as memoryAuth from "../commands/memory/_lib/memory-auth";
 
 const originalFetch = globalThis.fetch;
 const originalStdoutWrite = process.stdout.write.bind(process.stdout);
@@ -114,8 +114,8 @@ describe("buildArgs", () => {
 
 describe("callCommand", () => {
   function stubAuth() {
-    spyOn(openclawAuth, "resolveOrg").mockResolvedValue("acme");
-    spyOn(openclawAuth, "getSessionForOrg").mockResolvedValue({
+    spyOn(memoryAuth, "resolveOrg").mockResolvedValue("acme");
+    spyOn(memoryAuth, "getSessionForOrg").mockResolvedValue({
       session: {
         mcpUrl: "https://example.test/mcp/acme",
         org: "acme",
@@ -123,7 +123,7 @@ describe("callCommand", () => {
       },
       key: "https://example.test/mcp/acme",
     });
-    spyOn(openclawAuth, "getUsableToken").mockResolvedValue({
+    spyOn(memoryAuth, "getUsableToken").mockResolvedValue({
       token: "test-token",
       contextName: "default",
       session: {
@@ -242,7 +242,7 @@ describe("callCommand", () => {
   });
 
   test("missing org slug surfaces a ValidationError", async () => {
-    spyOn(openclawAuth, "resolveOrg").mockResolvedValue(undefined);
+    spyOn(memoryAuth, "resolveOrg").mockResolvedValue(undefined);
     expect(callCommand("manage_feeds", {})).rejects.toThrow(ValidationError);
   });
 

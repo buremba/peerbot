@@ -45,7 +45,7 @@ if [ -x /opt/homebrew/opt/node@22/bin/node ] && ! node --version 2>/dev/null | g
 fi
 
 # Isolate ALL global CLI state under a throwaway HOME. The CLI reads/writes
-# ~/.config/lobu/{config,credentials,threads}.json, ~/.openclaw/openclaw.json,
+# ~/.config/lobu/{config,credentials,threads}.json,
 # and the embedded Postgres data dir defaults to ~/.lobu/pgdata. Overriding HOME
 # contains every one of those in $RUN_DIR so the gate never clobbers the dev's
 # real contexts/login (and gives a fresh DB each run).
@@ -330,7 +330,6 @@ expect_grep "lobu memory health -c local" "ok: true" "$PROJ" memory health -c lo
 expect_grep "lobu memory run (list tools) -c local" "tool(s)" "$PROJ" memory run -c local
 expect_grep "lobu memory org current -c local" "org:" "$PROJ" memory org current -c local
 expect_grep "lobu memory org set -c local" "memory org" "$PROJ" memory org set "$ORG" -c local
-expect_grep "lobu memory configure" "Updated" "$PROJ" memory configure -c local
 # memory seed needs a config with `org` set -- use a dedicated minimal project.
 SEEDPROJ="$RUN_DIR/seedproj"; mkdir -p "$SEEDPROJ"
 cat > "$SEEDPROJ/lobu.config.ts" <<TS
@@ -343,9 +342,9 @@ expect_grep "lobu memory seed --dry-run" "Dry run" "$SEEDPROJ" memory seed --dry
 echo 'export default async () => "cli-smoke-exec-ok";' > "$RUN_DIR/exec.ts"
 expect_ok "lobu memory exec (ClientSDK script)" "$PROJ" memory exec "$RUN_DIR/exec.ts" -c local
 # memory init -- wire a local MCP CLIENT (the --agent is a coding tool like
-# openclaw/claude-code, NOT a Lobu agent id) to the memory MCP url. --url skips
+# codex/claude-code, NOT a Lobu agent id) to the memory MCP url. --url skips
 # the picker; --skip-auth skips the login step; isolated HOME contains the write.
-( cd "$PROJ" && timeout 30 node "$LOBU_BIN" memory init --url "http://localhost:$GW_PORT/mcp" --agent openclaw --skip-auth ) > "$OUT" 2>&1 </dev/null; RC=$?
+( cd "$PROJ" && timeout 30 node "$LOBU_BIN" memory init --url "http://localhost:$GW_PORT/mcp" --agent codex --skip-auth ) > "$OUT" 2>&1 </dev/null; RC=$?
 [ "$RC" -eq 0 ] && pass "lobu memory init --url --agent --skip-auth" || softfail "lobu memory init (exit=$RC)"
 expect_grep "lobu doctor --memory-only" "ok: true" "$PROJ" doctor --memory-only
 

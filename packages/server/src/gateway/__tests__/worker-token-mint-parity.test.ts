@@ -139,8 +139,4 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
       assertRoutableInteraction(decoded?.connectionId, "slack", "question")
     ).toThrow();
   });
-
-  test("legacy direct-enqueue (no runId) mints no per-run token", () => {
-    expect(buildRunJobToken(baseArgs)).toBeUndefined();
-  });
 });

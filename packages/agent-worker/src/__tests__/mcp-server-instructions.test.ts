@@ -3,7 +3,7 @@ import {
   buildMcpServerInstructions,
   resetLastGoodMcpInstructions,
   withLastGoodMcpInstructions,
-} from "../openclaw/session-context";
+} from "../runtime/session-context";
 
 describe("buildMcpServerInstructions", () => {
   test("renders entries in stable sorted order regardless of key order", () => {

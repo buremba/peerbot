@@ -5,11 +5,12 @@ import path from "node:path";
 
 const PACKAGES = [
   "packages/core",
+  "packages/plugin-api",
+  "packages/plugin-host",
   "packages/agent-worker",
   "packages/cli",
   "packages/connector-sdk",
   "packages/client",
-  "packages/openclaw-plugin",
   "packages/connector-worker",
   "packages/embeddings",
 ];

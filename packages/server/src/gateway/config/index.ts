@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgentOptions, LogLevel, PluginConfig } from "@lobu/core";
+import type { AgentOptions, LogLevel } from "@lobu/core";
 import {
   DEFAULTS as CORE_DEFAULTS,
   createLogger,
@@ -20,14 +20,6 @@ import { normalizePublicGatewayUrl } from "../../utils/public-origin.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const logger = createLogger("cli-config");
-const LOBU_PLUGIN_SOURCE = "@lobu/openclaw-plugin";
-const NATIVE_MEMORY_PLUGIN_SOURCE = "@openclaw/native-memory";
-const WORKER_PACKAGE_JSON_CANDIDATES = [
-  path.resolve(process.cwd(), "packages/agent-worker/package.json"),
-  "/app/packages/agent-worker/package.json",
-] as const;
-
-// Gateway-specific constants; core ones (TIME, DEFAULTS) come from @lobu/core.
 const GATEWAY_DEFAULTS = {
   HTTP_PORT: 3000,
   PUBLIC_GATEWAY_URL: "",
@@ -144,89 +136,6 @@ export function getInternalGatewayUrl(): string {
  */
 export function getLobuMemoryUpstreamOrigin(): string {
   return new URL(getInternalGatewayUrl()).origin;
-}
-
-/**
- * Build the default memory plugin list. LOBU memory MCP routing is resolved by
- * the gateway at request time, so the worker only needs the stable gateway MCP
- * proxy URL; it must not depend on a process-global MEMORY_URL.
- */
-function isPluginInstalled(source: string): boolean {
-  const resolverPaths = new Set<string>([__filename]);
-  const packagePathParts = source.split("/");
-
-  for (const candidate of WORKER_PACKAGE_JSON_CANDIDATES) {
-    if (existsSync(candidate)) {
-      resolverPaths.add(candidate);
-    }
-  }
-
-  for (const resolverPath of resolverPaths) {
-    try {
-      createRequire(resolverPath).resolve(source);
-      return true;
-    } catch {
-      // require.resolve() can fail for ESM-only packages whose `exports` map
-      // omits a `require`/`default` condition (e.g. @lobu/openclaw-plugin).
-      // Fall back to walking up parent directories looking for the package
-      // folder under any ancestor `node_modules`, mirroring Node's module
-      // resolution algorithm.
-      let dir = path.dirname(resolverPath);
-      while (true) {
-        const packageDir = path.join(dir, "node_modules", ...packagePathParts);
-        if (existsSync(path.join(packageDir, "package.json"))) {
-          return true;
-        }
-        const parent = path.dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-      }
-    }
-  }
-
-  return false;
-}
-
-export function buildMemoryPlugins(options?: {
-  hasLobuPlugin?: boolean;
-  hasNativeMemoryPlugin?: boolean;
-}): PluginConfig[] {
-  const nativeMemoryPlugin: PluginConfig = {
-    source: NATIVE_MEMORY_PLUGIN_SOURCE,
-    slot: "memory",
-    enabled: true,
-  };
-  const hasNativeMemoryPlugin =
-    options?.hasNativeMemoryPlugin ??
-    isPluginInstalled(NATIVE_MEMORY_PLUGIN_SOURCE);
-
-  const hasLobuPlugin =
-    options?.hasLobuPlugin ?? isPluginInstalled(LOBU_PLUGIN_SOURCE);
-  if (!hasLobuPlugin) {
-    if (hasNativeMemoryPlugin) {
-      logger.warn(
-        `${LOBU_PLUGIN_SOURCE} is not installed; falling back to ${NATIVE_MEMORY_PLUGIN_SOURCE}`
-      );
-      return [nativeMemoryPlugin];
-    }
-    logger.warn(
-      `${LOBU_PLUGIN_SOURCE} is not installed and ${NATIVE_MEMORY_PLUGIN_SOURCE} is unavailable; continuing without a memory plugin`
-    );
-    return [];
-  }
-
-  const gatewayUrl = getInternalGatewayUrl();
-  return [
-    {
-      source: LOBU_PLUGIN_SOURCE,
-      slot: "memory",
-      enabled: true,
-      config: {
-        mcpUrl: `${gatewayUrl}/mcp/lobu-memory`,
-        gatewayAuthUrl: gatewayUrl,
-      },
-    },
-  ];
 }
 
 /** Deep-merge utility: merges source into target, recursing into plain objects */
@@ -385,9 +294,6 @@ export function buildGatewayConfig(
           prompt: defaultMemoryFlushPrompt,
         },
       },
-      pluginsConfig: {
-        plugins: buildMemoryPlugins(),
-      },
     },
     sessionTimeoutMinutes: getOptionalNumber(
       "SESSION_TIMEOUT_MINUTES",
@@ -492,4 +398,3 @@ export function buildGatewayConfig(
 
   return config;
 }
-

@@ -16,13 +16,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAgentSession } from "../openclaw/session-runner";
-import { createOpenClawTools } from "../openclaw/tools";
+import { buildAgentSession } from "../runtime/session-runner";
+import { createLobuTools } from "../runtime/tools";
 import {
   buildRunContextBlock,
   replaceBasePromptIdentity,
   resolveAgentIdentity,
-} from "../openclaw/worker";
+} from "../runtime/worker";
 
 let tempDir: string;
 
@@ -49,7 +49,7 @@ const GATEWAY_TAIL = [
 ].join("\n");
 
 async function realBasePrompt(): Promise<string> {
-  const tools = createOpenClawTools(tempDir);
+  const tools = createLobuTools(tempDir);
   const { session } = await buildAgentSession({
     cwd: tempDir,
     tools: tools.map((t) => t.name),

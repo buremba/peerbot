@@ -23,7 +23,7 @@ import {
   logoutMcp,
   startMcpLogin,
 } from "../shared/tool-implementations";
-import { isDirectPackageInstallCommand } from "../openclaw/tool-policy";
+import { isDirectPackageInstallCommand } from "../runtime/tool-policy";
 
 const logger = createLogger("mcp-cli");
 

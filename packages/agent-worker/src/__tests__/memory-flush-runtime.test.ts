@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { SettingsManager } from "@mariozechner/pi-coding-agent";
-import { OpenClawWorker } from "../openclaw/worker";
+import { LobuAgentWorker } from "../runtime/worker";
 import { mockWorkerConfig } from "./setup";
 
 describe("pre-compaction memory flush runtime", () => {
@@ -10,7 +10,7 @@ describe("pre-compaction memory flush runtime", () => {
   });
 
   test("runs silent flush once per compaction cycle and persists NO_REPLY outcome", async () => {
-    const worker = new OpenClawWorker(mockWorkerConfig);
+    const worker = new LobuAgentWorker(mockWorkerConfig);
     const settingsManager = SettingsManager.inMemory();
 
     const branchEntries: Array<Record<string, unknown>> = [];
@@ -95,7 +95,7 @@ describe("pre-compaction memory flush runtime", () => {
   });
 
   test("skips flush when projected context is below threshold", async () => {
-    const worker = new OpenClawWorker(mockWorkerConfig);
+    const worker = new LobuAgentWorker(mockWorkerConfig);
     const settingsManager = SettingsManager.inMemory();
 
     const sessionManager = {

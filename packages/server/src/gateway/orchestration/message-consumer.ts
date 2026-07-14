@@ -33,6 +33,7 @@ import {
   TERMINAL_DELIVERY_SEND_OPTS,
 } from "../infrastructure/queue/index.js";
 import { armTurnTimeout, failTurnIfPending } from "./turn-liveness.js";
+import { recordAgentRunInput } from "./agent-run-input.js";
 import {
   buildCanonicalConversationKey,
   type DeploymentManager,
@@ -57,10 +58,6 @@ const logger = createLogger("orchestrator");
  * token (connectionId, source, platform, teamId, agentId, organizationId,
  * runId, …) MUST be set here; the test asserts that so the next omitted
  * claim fails red instead of in prod.
- *
- * Returns `undefined` when `runId` is absent (legacy direct-enqueue path):
- * the worker then falls back to the deployment-lifetime WORKER_TOKEN and the
- * snapshot route declines to write.
  */
 /**
  * Internal admin tools the org's builder agent may call from its worker. The
@@ -142,17 +139,17 @@ export function buildRunJobToken(args: {
   deploymentName: string;
   channelId: string;
   teamId?: string;
-  agentId?: string;
-  organizationId?: string;
-  platform?: string;
-  platformMetadata?: Record<string, unknown>;
-  runId?: number;
+  agentId: string;
+  organizationId: string;
+  platform: string;
+  platformMetadata: Record<string, unknown>;
+  runId: number;
   /**
    * Per-turn binding for token refresh: the turn-timeout marker is armed with
    * this SAME messageId, so the refresh gate requires a live marker for THIS
    * turn (deploymentName:messageId), not merely any live turn on the deployment.
    */
-  messageId?: string;
+  messageId: string;
   /**
    * Builder admin-tool allowlist for this turn (system agent + owner/admin
    * initiator only). Carried in the encrypted token and enforced at the
@@ -169,8 +166,7 @@ export function buildRunJobToken(args: {
   runtimeExplicit?: boolean;
   /** Resolved egress allowlist for a remote runtime sandbox (signed claim). */
   allowedDomains?: string[];
-}): string | undefined {
-  if (args.runId === undefined) return undefined;
+}): string {
   return generateWorkerToken(
     args.userId,
     args.conversationId,
@@ -205,17 +201,19 @@ export class MessageConsumer {
   private deploymentLocks = new Set<string>();
   private agentSettingsStore?: AgentSettingsStore;
   private guardrailRegistry?: GuardrailRegistry;
+  private recordRunInput: typeof recordAgentRunInput;
   constructor(
     config: OrchestratorConfig,
     deploymentManager: DeploymentManager,
-    // Test seam: the production path always uses the real Postgres-backed
-    // RunsQueue. Tests inject a fake so `handleMessage` can be driven without a
-    // database. Not a configuration knob — no caller passes this outside tests.
+    // Test seams: production uses the real Postgres-backed queue and durable
+    // input journal. Unit tests can capture either boundary without a database.
     queue: IMessageQueue = new RunsQueue(),
+    recordRunInput: typeof recordAgentRunInput = recordAgentRunInput,
   ) {
     this.config = config;
     this.deploymentManager = deploymentManager;
     this.queue = queue;
+    this.recordRunInput = recordRunInput;
   }
 
   /**
@@ -327,12 +325,24 @@ export class MessageConsumer {
       // it survives the thread_message_{deployment} hop and reaches the
       // worker — the per-run agent_transcript_snapshot POST needs it to
       // attribute snapshots to the right run (codex P1#1 on PR #865).
-      // Best-effort parse; non-numeric ids (legacy direct enqueue paths)
-      // leave the field undefined and the snapshot path falls back to
-      // skipping the write.
       const parsedRunId = Number(jobId);
-      if (Number.isFinite(parsedRunId) && parsedRunId > 0) {
-        data.runId = parsedRunId;
+      if (!Number.isSafeInteger(parsedRunId) || parsedRunId <= 0) {
+        throw new OrchestratorError(
+          ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+          "A claimed runs.id is required for message routing",
+          { jobId, messageId: data.messageId },
+          false
+        );
+      }
+      data.runId = parsedRunId;
+
+      if (!data.organizationId) {
+        throw new OrchestratorError(
+          ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+          "organizationId is required for message routing",
+          { jobId, messageId: data.messageId },
+          false
+        );
       }
 
       // CRITICAL: For consistent worker naming, conversationId must be the root conversation ID
@@ -364,9 +374,7 @@ export class MessageConsumer {
       // it to enforce `tokenData.runId === body.runId`, so a worker
       // bearing a same-(org, agent, conv) deployment-lifetime token
       // cannot POST under a different run's slot. Codex round 2 finding
-      // A on PR #865. Without a parsed runId (legacy direct-enqueue
-      // path) we skip the mint; the snapshot path then declines to write
-      // (worker-side runId is undefined and writeSnapshot bails).
+      // A on PR #865. Every dispatch is bound to its claimed runs.id.
       // Builder admin-tool grant: only the org's system agent, only when the
       // human driving this turn is an owner/admin. Fails closed.
       const adminTools = await resolveBuilderAdminTools({
@@ -448,30 +456,8 @@ export class MessageConsumer {
               conversationId: effectiveConversationId,
             });
             if (outcome.tripped) {
-              // Resolve org id with a metadata fallback so a trip never
-              // silently drops the audit — legacy/test enqueues can omit it.
-              let resolvedOrgId = data.organizationId;
-              if (!resolvedOrgId && this.agentSettingsStore) {
-                try {
-                  const md = await this.agentSettingsStore.getMetadata(
-                    data.agentId
-                  );
-                  resolvedOrgId = md?.organizationId;
-                } catch (lookupErr) {
-                  logger.warn(
-                    {
-                      agentId: data.agentId,
-                      err:
-                        lookupErr instanceof Error
-                          ? lookupErr.message
-                          : String(lookupErr),
-                    },
-                    "Input guardrail trip: orgId metadata lookup failed (audit may be skipped)"
-                  );
-                }
-              }
               void recordGuardrailTrip({
-                organizationId: resolvedOrgId,
+                organizationId: data.organizationId,
                 agentId: data.agentId,
                 userId: data.userId,
                 conversationId: effectiveConversationId,
@@ -565,6 +551,9 @@ export class MessageConsumer {
       // late — warm workers never re-run createWorkerDeployment. So enforce the
       // agent's exact allow-list on the payload model NOW, before it's persisted.
       await this.enforceModelPolicyAtEnqueue(data);
+
+      // Persist before queue delivery so a worker reconnect cannot lose the input.
+      await this.recordRunInput(data, deploymentName);
 
       // 1) Send to thread queue immediately (queue persists; worker will drain on attach)
       await Sentry.startSpan(

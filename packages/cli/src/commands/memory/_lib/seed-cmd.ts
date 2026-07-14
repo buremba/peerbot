@@ -14,7 +14,7 @@ import {
   orgFromMcpUrl,
   resolveOrg,
   resolveServerUrl,
-} from "./openclaw-auth.js";
+} from "./memory-auth.js";
 import { printError, printText } from "../../../internal/output.js";
 import {
   type DataRecordType,

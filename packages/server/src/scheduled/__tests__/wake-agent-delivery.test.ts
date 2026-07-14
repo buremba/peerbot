@@ -237,6 +237,7 @@ test("internal API-thread dispatch marks a supplied model as a behavior override
         userId: USER,
         conversationId: "thread-1",
         agentId: AGENT,
+        organizationId: ORG,
         provider: "claude",
         model: "claude/claude-sonnet-4-5",
       }),

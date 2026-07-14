@@ -189,6 +189,12 @@ function makePayload(model: string | undefined): MessagePayload {
   } as unknown as MessagePayload;
 }
 
+const recordValidInput = mock(async (payload: MessagePayload) => {
+  if (!payload.organizationId || typeof payload.runId !== "number") {
+    throw new Error("Durable agent input requires organizationId and runId");
+  }
+});
+
 async function drive(
   consumer: MessageConsumer,
   model: string | undefined
@@ -207,7 +213,8 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
     const consumer = new MessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(["openai/gpt-5"]),
-      queue
+      queue,
+      recordValidInput
     );
 
     await drive(consumer, "openai/gpt-4o");
@@ -223,7 +230,8 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
     const consumer = new MessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(["openai/gpt-5", "claude/claude-sonnet-5"]),
-      queue
+      queue,
+      recordValidInput
     );
 
     await drive(consumer, "claude/claude-sonnet-5");
@@ -236,7 +244,8 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
     const consumer = new MessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(null),
-      queue
+      queue,
+      recordValidInput
     );
 
     await drive(consumer, "anything/goes");
@@ -249,7 +258,8 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
     const consumer = new MessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(["chatgpt/__unresolved__"]),
-      queue
+      queue,
+      recordValidInput
     );
 
     await drive(consumer, "chatgpt/gpt-4o");
@@ -266,7 +276,8 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
     const consumer = new MessageConsumer(
       makeConfig(),
       makeThrowingDeploymentManager(),
-      queue
+      queue,
+      recordValidInput
     );
 
     await drive(consumer, "openai/forbidden");
@@ -275,12 +286,13 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
     expect(sends[0]?.data.agentOptions?.model).toBeUndefined();
   });
 
-  test("#2 CROSS-TENANT GUARD: a payload with NO organizationId drops the model (never id-only lookup)", async () => {
+  test("#2 CROSS-TENANT GUARD: a payload with NO organizationId is rejected before enqueue", async () => {
     const { queue, sends } = makeCapturingQueue();
     const consumer = new MessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(["openai/gpt-5"]),
-      queue
+      queue,
+      recordValidInput
     );
 
     // No org → the gate must fail closed rather than query the agent id across
@@ -289,13 +301,14 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
     // helper would trigger its default).
     const payload = makePayload("openai/gpt-4o");
     delete (payload as { organizationId?: string }).organizationId;
-    await (
+    const dispatch = (
       consumer as unknown as { handleMessage: (job: unknown) => Promise<void> }
     ).handleMessage({ id: "1", data: payload });
-    await new Promise((r) => setTimeout(r, 60));
 
-    expect(sends).toHaveLength(1);
-    expect(sends[0]?.data.agentOptions?.model).toBeUndefined();
+    await expect(dispatch).rejects.toThrow(
+      "organizationId is required for message routing"
+    );
+    expect(sends).toHaveLength(0);
   });
 
   test("#4 ROUTABILITY: replacement picks the first non-sentinel ROUTABLE ref, not just non-sentinel", async () => {
@@ -309,7 +322,8 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
         ["xai/grok-4", "openai/gpt-5"],
         new Set(["openai/gpt-5"])
       ),
-      queue
+      queue,
+      recordValidInput
     );
 
     await drive(consumer, "claude/forbidden");
@@ -325,7 +339,8 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
     const consumer = new MessageConsumer(
       makeConfig(),
       makeUnwiredCatalogDeploymentManager(),
-      queue
+      queue,
+      recordValidInput
     );
 
     await drive(consumer, "openai/forbidden");

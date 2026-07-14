@@ -34,7 +34,7 @@ agreed: A 17–28% / 0 fumbles, B 0% / ~50% fumbles.) See numbers below.
 ## The two surfaces and the toggle
 
 The worker chooses the surface from `mcpExposure` in
-`packages/agent-worker/src/openclaw/worker.ts`:
+`packages/agent-worker/src/runtime/worker.ts`:
 
 ```ts
 const mcpExposure =
@@ -61,7 +61,7 @@ const mcpExposure =
   `save_memory`, `search_memory`, `query_sql`, …) over a real Postgres
   (server-package fixtures + migrations on `lobu_test`).
 - **Real surfaces:** Arm A from `getAllTools()`; Arm B from the worker's real
-  `buildMcpCliCommands` + `createOpenClawTools` bash + just-bash interpreter.
+  `buildMcpCliCommands` + `createLobuTools` bash + just-bash interpreter.
 - **Success checks** assert resulting DB / entity / event STATE, not the reply.
   Read tasks additionally score the reply text.
 

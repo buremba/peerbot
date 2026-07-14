@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review pre-pr owletto-mac owletto-mac-e2e
+.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review pre-pr owletto-mac owletto-mac-e2e
 
 # Default target
 help:
@@ -12,7 +12,6 @@ help:
 	@echo "  make test                                  - Run test bot"
 	@echo "  make test-unit                             - Run the CI unit suite (no Postgres needed)"
 	@echo "  make test-integration                      - Run the CI integration suite (needs DATABASE_URL with pgvector)"
-	@echo "  make test-e2e                              - Boot the dev server + run openclaw-plugin e2e against it"
 	@echo "  make test-e2e-cli                          - Boot lobu run + walk every CLI command (the CI cli-smoke gate)"
 	@echo "  make test-providers-live                   - Validate every provider against its live API (keyless tier + key-gated smoke)"
 	@echo "  make clean-workers                         - Stop any running embedded worker subprocesses"
@@ -41,7 +40,7 @@ typecheck:
 # Build all TypeScript packages in dependency order
 build-packages:
 	@echo "📦 Building all TypeScript packages..."
-	@for pkg in core pgvector-embedded connector-sdk client agent-worker openclaw-plugin embeddings connector-worker promptfoo-provider; do \
+	@for pkg in core plugin-api plugin-host pgvector-embedded connector-sdk client agent-worker embeddings connector-worker promptfoo-provider; do \
 		echo "   📦 Building packages/$$pkg..."; \
 		( cd packages/$$pkg && bun run build ) || exit $$?; \
 	done
@@ -161,7 +160,7 @@ bump:
 # Unit suite — bun:test on the per-package units that don't need Postgres.
 test-unit:
 	@echo "🧪 Unit suite (no Postgres)…"
-	@bun test packages/core packages/cli
+	@bun test packages/core packages/plugin-api packages/plugin-host packages/cli
 	@bun test packages/agent-worker
 	@bun test packages/server/src/__tests__/unit
 	@bun test packages/server/src/auth/__tests__/tool-access.test.ts
@@ -197,14 +196,6 @@ test-integration:
 		done; exit $$rc
 	@bun test packages/server/src/lobu/__tests__ packages/server/src/scheduled packages/server/src/workspace/__tests__
 	@bun test packages/connector-worker/integration-tests
-
-# End-to-end — openclaw-plugin tests against a real running dev server.
-# Starts the server, waits for /health, runs vitest, kills the server.
-# Pass ZAI_API_KEY in env to also run the memory-loop tests; without it
-# they cleanly skip (12 of 14 will run).
-test-e2e:
-	@: $${DATABASE_URL?Set DATABASE_URL=postgres://… (with pgvector) before running}
-	@./scripts/run-e2e.sh
 
 # SDK lifecycle e2e: boots `lobu run` (embedded Postgres), auto-applies a
 # prune:true fixture, and drives a real agent turn through a spawned worker
@@ -301,7 +292,7 @@ pre-pr:
 	@make build-packages
 	@echo "🔎 [2/4] Strict typecheck (root + excluded packages)..."
 	@bun run typecheck
-	@for pkg in server connector-worker connector-sdk openclaw-plugin embeddings cli; do \
+	@for pkg in server connector-worker connector-sdk plugin-api plugin-host embeddings cli; do \
 		echo "   typecheck packages/$$pkg..."; \
 		( cd "packages/$$pkg" && bunx tsc --noEmit ) || exit $$?; \
 	done

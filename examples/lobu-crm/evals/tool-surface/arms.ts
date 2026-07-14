@@ -34,13 +34,13 @@ import {
   buildMcpCliCommands,
   type McpRuntimeRef,
 } from "../../../../packages/agent-worker/src/embedded/mcp-cli-commands";
-import { createOpenClawTools } from "../../../../packages/agent-worker/src/openclaw/tools";
+import { createLobuTools } from "../../../../packages/agent-worker/src/runtime/tools";
 import { dispatchTool, discreteToolDefs, type ScenarioOrg } from "./scenario";
 
 /**
  * Verbatim copy of the worker's `buildMcpCliInstructions` (not exported from
  * session-context.ts). Kept in sync with
- * packages/agent-worker/src/openclaw/session-context.ts so Arm B sees the exact
+ * packages/agent-worker/src/runtime/session-context.ts so Arm B sees the exact
  * MCP-as-CLI prompt the real embedded worker injects.
  */
 function buildMcpCliInstructions(mcpStatus: McpStatus[]): string {
@@ -356,10 +356,10 @@ export async function buildArmB(
     // our embedded bashOps wired into bash, then keep only the bash tool — Arm
     // B's whole point is "one bash tool". createAgentSession rebuilds built-ins
     // from the active-name list, so we swap our hardened bash back in afterward.
-    const openClawTools = createOpenClawTools(workspaceDir, {
+    const lobuTools = createLobuTools(workspaceDir, {
       bashOperations: bashOps,
     });
-    const bashTool = openClawTools.find((t) => t.name === "bash");
+    const bashTool = lobuTools.find((t) => t.name === "bash");
     if (!bashTool) throw new Error("bash tool not built");
 
     const result = await createAgentSession({

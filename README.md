@@ -2,7 +2,7 @@
 
 **Lobu** is open-source infrastructure for autonomous agents that **watch**, **remember**, and **act** where your team already works. Connect company tools, build living memory, and let agents run on schedules, in Slack threads, or over MCP — with sandboxed execution per user or channel and credentials agents never see.
 
-Under the hood, workers run an [OpenClaw](https://openclaw.ai/)-style agent loop (bash, files, MCP tools, skills) inside an isolated sandbox per conversation. One Node process serves many agents and channels; shared memory and connectors live in Postgres (pgvector). Embed agents in your product, or give your team their own without running a separate instance per person.
+Under the hood, workers run Lobu's Pi-based agent loop (bash, files, MCP tools, skills) inside an isolated sandbox per conversation. One Node process serves many agents and channels; shared memory and connectors live in Postgres (pgvector). Embed agents in your product, or give your team their own without running a separate instance per person.
 
 https://github.com/user-attachments/assets/d72a9286-0325-4b8b-afc0-c1efe9c96f4e
 
@@ -33,7 +33,7 @@ claude mcp add --transport http lobu https://lobu.ai/mcp   # or http://localhost
 
 Complete the OAuth flow when prompted, then enable the connector. Pair it with a project instruction or skill that tells Claude when to search memory and when to save what it learned.
 
-Works the same for [ChatGPT](https://lobu.ai/connect-from/chatgpt/) and [OpenClaw](https://lobu.ai/connect-from/openclaw/) — one memory backend across clients.
+Works the same for [ChatGPT](https://lobu.ai/connect-from/chatgpt/) and other MCP clients — one memory backend across clients.
 
 ## Architecture
 

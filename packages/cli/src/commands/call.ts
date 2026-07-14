@@ -25,7 +25,7 @@ import {
   mcpUrlForOrg,
   resolveOrg,
   resolveServerUrl,
-} from "./memory/_lib/openclaw-auth.js";
+} from "./memory/_lib/memory-auth.js";
 
 interface CallOptions {
   org?: string;

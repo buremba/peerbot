@@ -1218,6 +1218,14 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
 
     const msgAccess = await authorizeAgentAccess(c, resolvedAgentId, preSession);
     if (msgAccess instanceof Response) return msgAccess;
+    if (!msgAccess.organizationId) {
+      return c.json(
+        { success: false, error: "Organization scope required" },
+        403,
+      );
+    }
+
+    const messageOrganizationId = msgAccess.organizationId;
 
     // Parse body — multipart for file uploads, JSON otherwise
     const contentType = c.req.header("content-type") || "";
@@ -1406,6 +1414,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       try {
         const result = await adapter.sendMessage(rawToken, messageContent, {
           agentId,
+          organizationId: messageOrganizationId,
           channelId,
           conversationId,
           teamId,
@@ -1461,7 +1470,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         realAgentId,
         baseOptions,
         agentSettingsStore,
-        session.organizationId
+        messageOrganizationId
       );
 
       const {
@@ -1511,9 +1520,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         channelId,
         teamId: "api",
         agentId: realAgentId,
-        ...(session.organizationId
-          ? { organizationId: session.organizationId }
-          : {}),
+        organizationId: messageOrganizationId,
         botId: "lobu-api",
         platform: "api",
         messageText: messageTextForTranscript,
@@ -1522,12 +1529,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
           : {}),
         platformMetadata: {
           agentId: realAgentId,
-          // Echoed back on every response row (gateway-integration carries
-          // platformMetadata) so the API/SSE output-guardrail scan can attribute
-          // a trip to the right org (the audit `events` row is org-scoped).
-          ...(session.organizationId
-            ? { organizationId: session.organizationId }
-            : {}),
+          // Echoed back on every response row so output-guardrail audit events
+          // remain scoped to the authoritative organization.
+          organizationId: messageOrganizationId,
           source: session.intent?.kind === "watcher_run" ? "watcher-run" : "direct-api",
           traceparent: traceparent || undefined,
           dryRun: session.dryRun || false,

@@ -78,7 +78,10 @@ function publishablePackageDirs() {
 // corresponding wildcard keys and is outside this guard's current scope.
 function explicitExportTargets(exports) {
   const targets = new Set();
-  function visit(value) {
+  function visit(value, condition) {
+    // The publish transform strips monorepo-only Bun source conditions before
+    // npm publish. Validate the conditions that are present in the tarball.
+    if (condition === "bun") return;
     if (typeof value === "string") {
       if (value.startsWith("./") && !value.includes("*")) {
         targets.add(value.slice(2));
@@ -90,7 +93,7 @@ function explicitExportTargets(exports) {
       return;
     }
     if (value && typeof value === "object") {
-      for (const item of Object.values(value)) visit(item);
+      for (const [key, item] of Object.entries(value)) visit(item, key);
     }
   }
   visit(exports);

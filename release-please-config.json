@@ -43,7 +43,12 @@
         },
         {
           "type": "json",
-          "path": "packages/openclaw-plugin/package.json",
+          "path": "packages/plugin-api/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/plugin-host/package.json",
           "jsonpath": "$.version"
         },
         {

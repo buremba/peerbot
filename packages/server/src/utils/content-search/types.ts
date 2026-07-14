@@ -44,8 +44,8 @@ export interface ContentSearchOptions {
 
   // Per-agent memory scope. Filters events whose `metadata->>'agent_id'`
   // matches this string. Threaded through search_memory's top-level
-  // `agent_id` arg; populated automatically on saves by the
-  // `@lobu/openclaw-plugin` autoCapture path. Note: `metadata.agent_id`
+  // `agent_id` arg; populated automatically by Lobu-owned save paths.
+  // Note: `metadata.agent_id`
   // is the memory-scope axis, NOT the identity-namespace column
   // (`entity_identities.namespace`) — see identity-normalize.ts.
   agent_id?: string;

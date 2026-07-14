@@ -29,7 +29,6 @@
       "!**/packages/server/**",
       "!**/packages/client/src/generated/**",
       "!**/packages/connector-sdk/**",
-      "!**/packages/openclaw-plugin/**",
       "!**/packages/connector-worker/**",
       "!**/packages/connectors/**",
       "!**/packages/embeddings/**",

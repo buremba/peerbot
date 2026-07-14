@@ -2,7 +2,7 @@
  * Reproducer for the WORKER_TOKEN / DISPATCHER_URL leak (Finding #1) and the
  * discarded embeddedBashOps (Finding #10).
  *
- * The worker builds its bash tool via createOpenClawTools() with a spawnHook
+ * The worker builds its bash tool via createLobuTools() with a spawnHook
  * that strips SENSITIVE_WORKER_ENV_KEYS and (optionally) custom BashOperations.
  * Those instances must be the ones the agent actually runs. We assert that the
  * bash tool the session ends up with both strips the secrets and uses the
@@ -14,8 +14,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
-import { buildAgentSession } from "../openclaw/session-runner";
-import { createOpenClawTools } from "../openclaw/tools";
+import { buildAgentSession } from "../runtime/session-runner";
+import { createLobuTools } from "../runtime/tools";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 
 let tempDir: string;
@@ -54,7 +54,7 @@ function getBashTool(tools: { name: string }[]) {
 
 describe("agent session bash inherits Lobu-built bash (Findings #1, #10)", () => {
   test("session bash strips SENSITIVE_WORKER_ENV_KEYS from the spawned env", async () => {
-    const builtins = createOpenClawTools(tempDir);
+    const builtins = createLobuTools(tempDir);
     const { session } = await buildAgentSession({
       cwd: tempDir,
       tools: builtins.map((t) => t.name),
@@ -93,7 +93,7 @@ describe("agent session bash inherits Lobu-built bash (Findings #1, #10)", () =>
       },
     };
 
-    const builtins = createOpenClawTools(tempDir, {
+    const builtins = createLobuTools(tempDir, {
       bashOperations: mockBashOps,
     });
     const { session } = await buildAgentSession({
@@ -122,7 +122,7 @@ describe("agent session bash inherits Lobu-built bash (Findings #1, #10)", () =>
   });
 
   test("the agent's active built-ins ARE the Lobu-built instances", async () => {
-    const lobuTools = createOpenClawTools(tempDir);
+    const lobuTools = createLobuTools(tempDir);
     const lobuByName = new Map(lobuTools.map((t) => [t.name, t]));
 
     const { session } = await buildAgentSession({

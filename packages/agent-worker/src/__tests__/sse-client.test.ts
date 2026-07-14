@@ -34,6 +34,7 @@ describe("GatewayClient heartbeat ACKs", () => {
         payload: {
           botId: "lobu-api",
           userId: "watcher_218",
+          organizationId: "org-1",
           agentId: "marketing",
           conversationId: "marketing_watcher_218_run_120947",
           platform: "api",
@@ -46,6 +47,8 @@ describe("GatewayClient heartbeat ACKs", () => {
             intent: { kind: "watcher_run", runId: 120947, watcherId: 218 },
           },
           agentOptions: {},
+          runId: 120947,
+          runJobToken: "per-run-watcher-token",
         },
       })
     );
@@ -83,6 +86,7 @@ describe("GatewayClient heartbeat ACKs", () => {
         payload: {
           botId: "lobu-bot",
           userId: "telegram-user-1",
+          organizationId: "org-1",
           agentId: "default",
           conversationId: "telegram:6570514069",
           platform: "telegram",
@@ -117,6 +121,7 @@ describe("GatewayClient heartbeat ACKs", () => {
     const config = (client as any).payloadToWorkerConfig({
       botId: "lobu-bot",
       userId: "telegram-user-1",
+      organizationId: "org-1",
       agentId: "default",
       conversationId: "telegram:6570514069",
       platform: "telegram",
@@ -130,32 +135,6 @@ describe("GatewayClient heartbeat ACKs", () => {
     });
     expect(config.runId).toBe(67890);
     expect(config.runJobToken).toBe("per-run-jwt-xyz");
-  });
-
-  test("payloadToWorkerConfig leaves runId/runJobToken undefined when absent (legacy direct-enqueue path)", async () => {
-    // Backwards-compat: legacy direct-enqueue paths don't set runId. The
-    // fields must survive end-to-end as `undefined`, not be coerced into
-    // NaN/empty-string.
-    const client = new GatewayClient(
-      "https://gateway.example.com",
-      "worker-token",
-      "user-1",
-      "worker-1"
-    );
-    const config = (client as any).payloadToWorkerConfig({
-      botId: "lobu-bot",
-      userId: "user-1",
-      agentId: "default",
-      conversationId: "conv",
-      platform: "api",
-      channelId: "channel",
-      messageId: "msg-1",
-      messageText: "hi",
-      platformMetadata: {},
-      agentOptions: {},
-    });
-    expect(config.runId).toBeUndefined();
-    expect(config.runJobToken).toBeUndefined();
   });
 
   test("batched messages merge attachment files from every message (no data loss)", async () => {
@@ -182,6 +161,7 @@ describe("GatewayClient heartbeat ACKs", () => {
         payload: {
           botId: "lobu-bot",
           userId: "user-1",
+          organizationId: "org-1",
           agentId: "default",
           conversationId: "conv",
           platform: "telegram",
@@ -190,6 +170,8 @@ describe("GatewayClient heartbeat ACKs", () => {
           messageText: "first",
           platformMetadata: { files: [file1] },
           agentOptions: {},
+          runId: 1,
+          runJobToken: "per-run-token-1",
         },
       },
       {
@@ -197,6 +179,7 @@ describe("GatewayClient heartbeat ACKs", () => {
         payload: {
           botId: "lobu-bot",
           userId: "user-1",
+          organizationId: "org-1",
           agentId: "default",
           conversationId: "conv",
           platform: "telegram",
@@ -206,6 +189,8 @@ describe("GatewayClient heartbeat ACKs", () => {
           // 2nd message carries the attachment that used to be dropped.
           platformMetadata: { files: [file2] },
           agentOptions: {},
+          runId: 2,
+          runJobToken: "per-run-token-2",
         },
       },
     ]);

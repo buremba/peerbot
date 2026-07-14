@@ -84,35 +84,48 @@ export function buildEntitySchemaNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): EntitySchemaNamespace {
-	const { manage, action } = createActionCaller(manageEntitySchema, env, ctx);
-	const callEntity = <T>(payload: Record<string, unknown>): Promise<T> =>
-		action(payload.action as string, {
-			schema_type: "entity_type",
-			...payload,
-		});
-	const callRel = <T>(payload: Record<string, unknown>): Promise<T> =>
-		action(payload.action as string, {
-			schema_type: "relationship_type",
-			...payload,
-		});
+	const { manage, action } = createActionCaller(
+		manageEntitySchema,
+		env,
+		ctx,
+		"entitySchema",
+	);
+	const callEntity = <T>(
+		payload: Record<string, unknown>,
+		publicMethod: string,
+	): Promise<T> =>
+		action(
+			payload.action as string,
+			{ schema_type: "entity_type", ...payload },
+			publicMethod,
+		);
+	const callRel = <T>(
+		payload: Record<string, unknown>,
+		publicMethod: string,
+	): Promise<T> =>
+		action(
+			payload.action as string,
+			{ schema_type: "relationship_type", ...payload },
+			publicMethod,
+		);
 
 	return {
 		manage,
-		listTypes: (input) => callEntity({ action: "list", ...input }),
-		getType: (slug) => callEntity({ action: "get", slug }),
-		createType: (input) => callEntity({ action: "create", ...input }),
-		updateType: (input) => callEntity({ action: "update", ...input }),
-		deleteType: (input) => callEntity({ action: "delete", ...input }),
-		auditType: (slug) => callEntity({ action: "audit", slug }),
+		listTypes: (input) => callEntity({ action: "list", ...input }, "listTypes"),
+		getType: (slug) => callEntity({ action: "get", slug }, "getType"),
+		createType: (input) => callEntity({ action: "create", ...input }, "createType"),
+		updateType: (input) => callEntity({ action: "update", ...input }, "updateType"),
+		deleteType: (input) => callEntity({ action: "delete", ...input }, "deleteType"),
+		auditType: (slug) => callEntity({ action: "audit", slug }, "auditType"),
 
-		listRelTypes: (input) => callRel({ action: "list", ...input }),
-		getRelType: (slug) => callRel({ action: "get", slug }),
-		createRelType: (input) => callRel({ action: "create", ...input }),
-		updateRelType: (input) => callRel({ action: "update", ...input }),
-		deleteRelType: (input) => callRel({ action: "delete", ...input }),
+		listRelTypes: (input) => callRel({ action: "list", ...input }, "listRelTypes"),
+		getRelType: (slug) => callRel({ action: "get", slug }, "getRelType"),
+		createRelType: (input) => callRel({ action: "create", ...input }, "createRelType"),
+		updateRelType: (input) => callRel({ action: "update", ...input }, "updateRelType"),
+		deleteRelType: (input) => callRel({ action: "delete", ...input }, "deleteRelType"),
 
-		addRule: (input) => callRel({ action: "add_rule", ...input }),
-		removeRule: (input) => callRel({ action: "remove_rule", ...input }),
-		listRules: (input) => callRel({ action: "list_rules", ...input }),
+		addRule: (input) => callRel({ action: "add_rule", ...input }, "addRule"),
+		removeRule: (input) => callRel({ action: "remove_rule", ...input }, "removeRule"),
+		listRules: (input) => callRel({ action: "list_rules", ...input }, "listRules"),
 	};
 }

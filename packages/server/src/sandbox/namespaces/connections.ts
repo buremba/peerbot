@@ -67,7 +67,12 @@ export function buildConnectionsNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): ConnectionsNamespace {
-	const { manage, action } = createActionCaller(manageConnections, env, ctx);
+	const { manage, action } = createActionCaller(
+		manageConnections,
+		env,
+		ctx,
+		"connections",
+	);
 
 	return {
 		manage,
@@ -77,7 +82,7 @@ export function buildConnectionsNamespace(
 				connection_id: requirePositionalNumber(
 					"connections.get",
 					connection_id,
-					"client.connections.get(418)",
+					"client.connections.get(<connection_id>)",
 				),
 			}),
 		create: (input) => action("create", input),
@@ -88,7 +93,7 @@ export function buildConnectionsNamespace(
 				connection_id: requirePositionalNumber(
 					"connections.delete",
 					connection_id,
-					"client.connections.delete(418)",
+					"client.connections.delete(<connection_id>)",
 				),
 			}),
 		reauthenticate: async (connection_id) =>
@@ -96,7 +101,7 @@ export function buildConnectionsNamespace(
 				connection_id: requirePositionalNumber(
 					"connections.reauthenticate",
 					connection_id,
-					"client.connections.reauthenticate(418)",
+					"client.connections.reauthenticate(<connection_id>)",
 				),
 			}),
 		test: async (connection_id) =>
@@ -104,17 +109,20 @@ export function buildConnectionsNamespace(
 				connection_id: requirePositionalNumber(
 					"connections.test",
 					connection_id,
-					"client.connections.test(418)",
+					"client.connections.test(<connection_id>)",
 				),
 			}),
-		installConnector: (input) => action("install_connector", input),
+		installConnector: (input) =>
+			action("install_connector", input, "installConnector"),
 		uninstallConnector: (connector_key) =>
-			action("uninstall_connector", { connector_key }),
-		toggleConnectorLogin: (input) => action("toggle_connector_login", input),
-		updateConnectorAuth: (input) => action("update_connector_auth", input),
+			action("uninstall_connector", { connector_key }, "uninstallConnector"),
+		toggleConnectorLogin: (input) =>
+			action("toggle_connector_login", input, "toggleConnectorLogin"),
+		updateConnectorAuth: (input) =>
+			action("update_connector_auth", input, "updateConnectorAuth"),
 		updateConnectorDefaultConfig: (input) =>
-			action("update_connector_default_config", input),
+			action("update_connector_default_config", input, "updateConnectorDefaultConfig"),
 		updateConnectorDefaultRepairAgent: (input) =>
-			action("update_connector_default_repair_agent", input),
+			action("update_connector_default_repair_agent", input, "updateConnectorDefaultRepairAgent"),
 	};
 }

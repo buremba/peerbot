@@ -144,6 +144,61 @@ describe("validateToolArgs coercion", () => {
   });
 });
 
+describe("validateToolArgs error humanization", () => {
+  it("enumerates allowed literals for a union-of-literals field (not 'Expected union value')", () => {
+    // list_scope: Type.Union([Type.Literal('accessible'), Type.Literal('organization')]).
+    // TypeBox emits the bare "Expected union value" with no literals — useless for
+    // autonomous recovery. The message must name the valid values.
+    const schema = Type.Object({
+      list_scope: Type.Union([Type.Literal("accessible"), Type.Literal("organization")]),
+    });
+    let caught: unknown;
+    try {
+      validateToolArgs("t", schema, { list_scope: "org" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolUserError);
+    const msg = (caught as ToolUserError).message;
+    expect(msg).not.toMatch(/Expected union value/);
+    expect(msg).toMatch(/accessible/);
+    expect(msg).toMatch(/organization/);
+  });
+
+  it("enumerates allowed literals for a bare enum field", () => {
+    const schema = Type.Object({
+      kind: Type.Union([Type.Literal("connectors"), Type.Literal("agents")]),
+    });
+    let caught: unknown;
+    try {
+      validateToolArgs("t", schema, { kind: "bogus" });
+    } catch (err) {
+      caught = err;
+    }
+    const msg = (caught as ToolUserError).message;
+    expect(msg).toMatch(/connectors/);
+    expect(msg).toMatch(/agents/);
+  });
+
+  it("reports a missing required field AND an unknown field together (not just the first)", () => {
+    // { id: 1 } for a schema wanting { feed_id } used to report only the missing
+    // feed_id, never that `id` is unknown — so the agent fixes one problem at a
+    // time. Both must surface in one message.
+    const schema = Type.Object({ feed_id: Type.Number() }, { additionalProperties: false });
+    let caught: unknown;
+    try {
+      validateToolArgs("t", schema, { id: 1 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolUserError);
+    const msg = (caught as ToolUserError).message;
+    expect(msg).toMatch(/feed_id/); // missing required
+    expect(msg).toMatch(/id/); // unknown supplied
+    expect(msg).toMatch(/unknown/i);
+  });
+});
+
 describe("validateToolArgs union variant dispatch", () => {
   const union = Type.Union([
     Type.Object({ action: Type.Literal("create"), name: Type.String() }),

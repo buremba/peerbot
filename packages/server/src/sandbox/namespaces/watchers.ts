@@ -174,7 +174,7 @@ export function buildWatchersNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): WatchersNamespace {
-	const { manage, action } = createActionCaller(manageWatchers, env, ctx);
+	const { manage, action } = createActionCaller(manageWatchers, env, ctx, "watchers");
 
 	return {
 		manage: (input) => manage(input as Record<string, unknown>),

@@ -165,6 +165,62 @@ describe("createActionCaller", () => {
 		});
 	});
 
+	it("rewrites an internal manage_* validation error to the public SDK method", async () => {
+		// A client.feeds.get({ id: 1 }) whose internal handler (manage_feeds)
+		// rejects the args must NOT leak `manage_feeds` — the caller can only
+		// recover against `client.feeds.get`.
+		const handler = async () => {
+			throw new ToolUserError(
+				"Invalid arguments for manage_feeds: /feed_id: Expected required property",
+			);
+		};
+		const { action } = createActionCaller(
+			handler as never,
+			{} as never,
+			{} as never,
+			"feeds",
+		);
+		const thrown = (await action("read_feed", { id: 1 }, "get").catch(
+			(e: unknown) => e,
+		)) as ToolUserError;
+		expect(thrown).toBeInstanceOf(ToolUserError);
+		expect(thrown.message).not.toMatch(/manage_feeds/);
+		expect(thrown.message).toMatch(/client\.feeds\.get/);
+		expect(thrown.message).toMatch(/feed_id/);
+	});
+
+	it("derives a CAMEL-CASE public method from a snake_case action when none is supplied", async () => {
+		// `generate_embeddings` (internal) → the real method is
+		// client.classifiers.generateEmbeddings, NOT ...generate_embeddings.
+		const handler = async () => {
+			throw new ToolUserError(
+				"Invalid arguments for manage_classifiers: /entity_type: Expected required property",
+			);
+		};
+		const { action } = createActionCaller(
+			handler as never,
+			{} as never,
+			{} as never,
+			"classifiers",
+		);
+		const thrown = (await action("generate_embeddings", {}).catch(
+			(e: unknown) => e,
+		)) as ToolUserError;
+		expect(thrown.message).not.toMatch(/manage_classifiers/);
+		expect(thrown.message).not.toMatch(/generate_embeddings/);
+		expect(thrown.message).toMatch(/client\.classifiers\.generateEmbeddings/);
+	});
+
+	it("leaves errors from callers with no declared namespace untouched", async () => {
+		const handler = async () => {
+			throw new ToolUserError("Invalid arguments for manage_feeds: boom");
+		};
+		const { action } = createActionCaller(handler as never, {} as never, {} as never);
+		const thrown = (await action("read_feed", {}).catch((e: unknown) => e)) as ToolUserError;
+		// No namespace → nothing to rewrite to; message passes through.
+		expect(thrown.message).toBe("Invalid arguments for manage_feeds: boom");
+	});
+
 	it("returns a queued approval even when its mutation success is false", async () => {
 		const queued = {
 			success: false,

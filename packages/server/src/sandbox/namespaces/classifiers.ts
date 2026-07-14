@@ -61,7 +61,7 @@ export function buildClassifiersNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): ClassifiersNamespace {
-	const { manage, action } = createActionCaller(manageClassifiers, env, ctx);
+	const { manage, action } = createActionCaller(manageClassifiers, env, ctx, "classifiers");
 
 	return {
 		manage,

@@ -24,6 +24,7 @@ import {
 } from "../sandbox/sdk-method-access";
 import type { ToolContext } from "./registry";
 import { withValidatedArgs } from "./validate-args";
+import { searchLiveConnectors } from "./connector-discovery";
 
 /**
  * agents.* paths → agent_config action that must not be blanket-denied for the
@@ -230,6 +231,52 @@ export const sdkSearch = withValidatedArgs("search_sdk", SdkSearchSchema, sdkSea
 
 async function sdkSearchImpl(
 	args: SdkSearchArgs,
+	env: Env,
+	ctx: ToolContext,
+): Promise<SdkSearchResult> {
+	// Unified-catalog search (executor pattern): a query like "website" or "slack"
+	// names a CONNECTOR, not an SDK method, so pure method search returns nothing
+	// useful. Search live connectors and surface them (+ lifecycle) ABOVE method
+	// docs. Skip the connector lookup ONLY for genuine method paths — a
+	// `client.`-prefixed term, or a dotted path whose FIRST segment is a real SDK
+	// namespace (`feeds.create`). A dotted CONNECTOR id (`google.calendar`) must
+	// still be searched: its first segment (`google`) is not an SDK namespace.
+	const q = args.query.trim();
+	// NAMESPACES preserves SDK casing (entitySchema, authProfiles); the query is
+	// lowercased — compare case-insensitively so `entitySchema.listTypes` is
+	// recognized as a method path.
+	const firstSegment = normalizeQueryTerm(q).split(".")[0];
+	const isSdkNamespace = NAMESPACES.some((ns) => ns.toLowerCase() === firstSegment);
+	const looksLikeMethodPath = /^client\b/i.test(q) || (q.includes(".") && isSdkNamespace);
+	const connectorHits = looksLikeMethodPath
+		? []
+		: await searchLiveConnectors(q, env, ctx);
+	const methodResult = await sdkMethodSearch(args, env, ctx);
+	if (connectorHits.length === 0) return methodResult;
+
+	// Cap the COMBINED list at the same limit the method search honors, so
+	// prepended connector hits can't push the response past the documented max.
+	// Connector hits are the more specific answer, so they keep priority.
+	const limit = Math.min(args.limit ?? 20, 100);
+	const combined = [...connectorHits, ...methodResult.results];
+	const results = combined.slice(0, limit);
+	const dropped = combined.length - results.length;
+	const baseNote =
+		methodResult.results.length > 0
+			? "Top matches are live connectors (with lifecycle); method docs follow."
+			: "Matched live connectors (not SDK methods). Follow the lifecycle shown; query a namespace (e.g. 'feeds') for method signatures.";
+	const truncNote =
+		dropped > 0 ? ` ${dropped} more result(s) truncated; raise \`limit\` or refine the query.` : "";
+	return {
+		query: methodResult.query,
+		match_count: results.length,
+		results,
+		notes: `${baseNote}${truncNote}`.trim(),
+	};
+}
+
+async function sdkMethodSearch(
+	args: SdkSearchArgs,
 	_env: Env,
 	ctx: ToolContext,
 ): Promise<SdkSearchResult> {
@@ -399,6 +446,9 @@ async function sdkSearchImpl(
 	}
 
 	if (matches.length === 0) {
+		// Connector intent-search is handled by the sdkSearchImpl wrapper, which
+		// merges live-connector hits ahead of these method results — so a
+		// zero-method query like "website" still returns the connector.
 		const hiddenExact = METADATA_BY_LOWER_PATH.get(lower);
 		const existsButHidden = hiddenExact
 			? hiddenMethodNote(hiddenExact[0], hiddenExact[1], mode, policyDenied)

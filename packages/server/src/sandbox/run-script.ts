@@ -170,13 +170,24 @@ function classifyRuntimeError(error: {
 	details?: unknown;
 }): NonNullable<RunScriptResult["error"]> {
 	const message = error.message ?? "Script execution failed";
+	// Expected user-input errors (bad SDK args, business-rule failures) must NOT
+	// leak a server-bundle stack to the client — the message already carries the
+	// actionable "Invalid arguments for client.x.y: …" guidance, and the full
+	// stack stays in server logs/observability. An unexpected ScriptError keeps
+	// its stack (a genuine bug the developer needs to trace).
+	const isExpectedUserError =
+		error.name === "ClientSdkActionError" ||
+		error.name === "ToolUserError" ||
+		/^Invalid arguments for /.test(message);
 	if (error.name === "ClientSdkActionError") {
 		return {
 			name: "ClientSdkActionError",
 			message,
-			...(error.stack ? { stack: error.stack } : {}),
 			...(error.details === undefined ? {} : { details: error.details }),
 		};
+	}
+	if (isExpectedUserError) {
+		return { name: "ValidationError", message };
 	}
 
 	const isTimeout = /script execution timed out|TimeoutError/i.test(message);
@@ -423,9 +434,17 @@ function __makeClient(orgPath) {
     get(_, key) {
       if (__isReservedKey(key)) return undefined;
       const k = String(key);
+      // client.org is advertised by search_sdk with a "Throws
+      // CrossOrgAccessDenied on scoped/PAT endpoints" note. When cross-org is
+      // unavailable the manifest omits it from __topLevelKeys -- but returning
+      // undefined makes client.org('x') fail with the opaque
+      // "client.org is not a function", contradicting the docs. Return a stub
+      // that throws the SAME structured error the host path raises, so
+      // discovery and runtime agree. (This block lives inside a template
+      // literal; keep it free of backticks and dollar-brace sequences.)
       if (k === 'org') return __topLevelKeys.has('org')
         ? (slug) => __makeClient([...orgPath, String(slug)])
-        : undefined;
+        : () => { throw new Error('CrossOrgAccessDenied: cross-org access is not available on this connection. Use the unscoped /mcp endpoint with an OAuth session, or reconnect to the target workspace.'); };
       if (__topLevelKeys.has(k)) return __dispatchCall(k, orgPath);
       if (__namespaceKeys.has(k)) return __makeNamespaceProxy(k, orgPath);
       return undefined;

@@ -108,10 +108,53 @@ function failureMessage(
 	};
 }
 
+/** `generate_embeddings` → `generateEmbeddings`; leaves already-camel/plain names intact. */
+function snakeToCamel(name: string): string {
+	return name.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+}
+
+/**
+ * Rewrite a leaked internal tool name in a validation error to the public SDK
+ * method the caller actually invoked. An arg-validation failure raised deep in
+ * an admin handler reads `Invalid arguments for manage_feeds: …`, but a fresh
+ * agent only ever called `client.feeds.get` — `manage_feeds` is internal
+ * plumbing it cannot search or recover against. When the namespace is known,
+ * swap `manage_<x>` for `client.<namespace>.<method>` and keep the field-level
+ * detail (`/feed_id: Expected required property`) intact.
+ */
+function rewriteInternalToolName(
+	err: unknown,
+	sdkNamespace: string | undefined,
+	publicMethod: string,
+): unknown {
+	if (!sdkNamespace || !(err instanceof ToolUserError)) return err;
+	const rewritten = err.message
+		.replace(
+			/Invalid arguments for manage_[a-z_]+/,
+			`Invalid arguments for client.${sdkNamespace}.${publicMethod}`,
+		)
+		// The valid-args list is scoped to the INTERNAL action (`for action
+		// 'read_feed'`) — drop that fragment once the public method already names
+		// the call, so no internal action name survives in the message.
+		.replace(/ for action '[a-z_]+'/, "");
+	if (rewritten === err.message) return err;
+	// ClientSdkActionError carries extra fields — but it is raised by THIS module
+	// from a result value, never by the arg validator, so a match here is always
+	// a plain ToolUserError. Preserve the httpStatus.
+	return new ToolUserError(rewritten, err.httpStatus);
+}
+
 export function createActionCaller(
 	handler: AdminHandler,
 	env: Env,
 	ctx: ToolContext,
+	/**
+	 * Public ClientSDK namespace (e.g. `"feeds"`) this caller belongs to. When
+	 * set, arg-validation errors that leak the internal `manage_*` tool name are
+	 * rewritten to `client.<namespace>.<method>`. Omit for callers with no public
+	 * SDK surface (errors then pass through unchanged).
+	 */
+	sdkNamespace?: string,
 ) {
 	const manage = <T>(payload: object): Promise<T> =>
 		handler(payload as never, env, ctx) as Promise<T>;
@@ -119,12 +162,26 @@ export function createActionCaller(
 	const action = async <T>(
 		actionName: string,
 		input: object = {},
+		/**
+		 * Public SDK method name. Defaults to the CAMEL-CASE of the internal
+		 * action (`generate_embeddings` → `generateEmbeddings`), which is the
+		 * actual method on most namespaces — a bare snake_case default would
+		 * render a nonexistent path like `client.classifiers.generate_embeddings`.
+		 * Namespaces whose public name diverges from the action (e.g. feeds
+		 * `read_feed` → `get`) pass it explicitly.
+		 */
+		publicMethod: string = snakeToCamel(actionName),
 	): Promise<T> => {
 		// Spread caller input FIRST, then force `action` so a caller-supplied
 		// `action` key (e.g. from a read-only query_sdk script) can never override
 		// the discriminator and reach a write/delete handler.
 		const { action: _ignored, ...rest } = input as Record<string, unknown>;
-		const result = await manage<T>({ ...rest, action: actionName });
+		let result: T;
+		try {
+			result = await manage<T>({ ...rest, action: actionName });
+		} catch (err) {
+			throw rewriteInternalToolName(err, sdkNamespace, publicMethod);
+		}
 		const failure = failureMessage(actionName, result);
 		if (failure) {
 			throw new ClientSdkActionError(

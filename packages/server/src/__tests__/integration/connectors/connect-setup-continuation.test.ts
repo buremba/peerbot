@@ -700,7 +700,7 @@ describe("connections.connect — setup_required continuation", () => {
 			return_value?: unknown;
 			error?: { name: string; message: string };
 		}>(
-			`export default async (_ctx, client) => { return await client.connections.connect({ connector_key: ${JSON.stringify(CONNECTORS.appInstall)} }); }`,
+			'export default async (_ctx, client) => { return await client.connections.connect({ connector_key: "demo.cont.appinstall.cont" }); }',
 		);
 
 		// The continuation must survive as a return value — NOT a thrown ScriptError.

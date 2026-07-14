@@ -269,25 +269,25 @@ export async function handleConnect(
 		!authSelection.browserMethod;
 	const profileDeviceWorkerIdConnect =
 		authSelection.authProfile?.device_worker_id ?? null;
-  let effectiveDeviceWorkerIdConnect = deviceBinding.deviceWorkerId;
-  if (profileDeviceWorkerIdConnect) {
-    if (!effectiveDeviceWorkerIdConnect) {
-      effectiveDeviceWorkerIdConnect = profileDeviceWorkerIdConnect;
+	let effectiveDeviceWorkerIdConnect = deviceBinding.deviceWorkerId;
+	if (profileDeviceWorkerIdConnect) {
+		if (!effectiveDeviceWorkerIdConnect) {
+			effectiveDeviceWorkerIdConnect = profileDeviceWorkerIdConnect;
 		} else if (
 			effectiveDeviceWorkerIdConnect !== profileDeviceWorkerIdConnect
 		) {
-      return {
-        error: `Auth profile '${authSelection.authProfile!.slug}' lives on a different device than the one selected; pick that device or a different profile.`,
-        setup_url: setupUrl,
-      };
-    }
-  }
-  const isDeviceBoundBrowserSessionConnect =
+			return {
+				error: `Auth profile '${authSelection.authProfile!.slug}' lives on a different device than the one selected; pick that device or a different profile.`,
+				setup_url: setupUrl,
+			};
+		}
+	}
+	const isDeviceBoundBrowserSessionConnect =
 		authSelection.authProfile?.profile_kind === "browser_session" &&
-    !!profileDeviceWorkerIdConnect;
-  // Same guard as create-path: when the profile contributed a device we
-  // didn't already check against, re-run the duplicate-connection check now
-  // so the partial unique index never decides the outcome with a raw error.
+		!!profileDeviceWorkerIdConnect;
+	// Same guard as create-path: when the profile contributed a device we
+	// didn't already check against, re-run the duplicate-connection check now
+	// so the partial unique index never decides the outcome with a raw error.
 	if (
 		effectiveDeviceWorkerIdConnect &&
 		effectiveDeviceWorkerIdConnect !== deviceBinding.deviceWorkerId

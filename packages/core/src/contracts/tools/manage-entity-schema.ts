@@ -162,7 +162,7 @@ export const ManageEntitySchemaSchema = Type.Object({
   is_symmetric: Type.Optional(
     Type.Boolean({
       description:
-        "[relationship_type: create] Whether the relationship is symmetric (A↔B = B↔A). Default false.",
+        "[relationship_type: create] Whether the relationship is symmetric (A↔B = B↔A). Default false. Create-only: affects relationship canonicalization/dedup for existing rows, so an update carrying is_symmetric is rejected (not silently dropped). To change it, create a new type and migrate.",
     })
   ),
   inverse_type_slug: Type.Optional(

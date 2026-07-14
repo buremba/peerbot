@@ -1065,6 +1065,20 @@ async function rtHandleUpdate(
 ): Promise<ManageEntitySchemaResult> {
   const { typeId, sql } = await requireRelationshipType(args.slug, 'update', ctx);
 
+  // `is_symmetric` is create-only (contract: `[relationship_type: create]`).
+  // It's load-bearing for relationship canonicalization/dedup at write time
+  // (manage_entity.ts canonicalizes a→b / b→a as one edge when symmetric), so
+  // flipping it on a populated type would not migrate existing rows and would
+  // change dedup semantics for new ones. Reject on update instead of silently
+  // dropping (the UPDATE SET clause below has no is_symmetric arm, so before
+  // this guard an update carrying it returned success with the row unchanged).
+  if (args.is_symmetric !== undefined) {
+    throw new ToolUserError(
+      "is_symmetric is create-only and cannot be changed on update — it affects relationship canonicalization/dedup for existing rows. To change it, create a new relationship type and migrate.",
+      422,
+    );
+  }
+
   let inverseTypeId: number | null | undefined;
   if (args.inverse_type_slug !== undefined) {
     if (args.inverse_type_slug === null || args.inverse_type_slug === '') {

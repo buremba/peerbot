@@ -31,6 +31,7 @@ export interface ConnectionsNamespace {
 		entity_id?: number;
 		created_by?: string;
 		connection_ids?: number[];
+		setup_attempt_id?: string;
 		limit?: number;
 		offset?: number;
 	}): Promise<unknown>;

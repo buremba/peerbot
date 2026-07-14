@@ -467,8 +467,8 @@ export async function createAuthRun(params: {
   connectorKey: string;
   authProfileId: number;
   createdByUserId: string;
-}): Promise<number> {
-  const sql = getDb();
+}, db: DbClient = getDb()): Promise<number> {
+  const sql = db;
 
   // Resolve + verify the connector version is runnable.
   const resolved = await resolveActiveConnectorVersion(sql, {

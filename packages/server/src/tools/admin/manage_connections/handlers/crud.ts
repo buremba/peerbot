@@ -7,10 +7,12 @@ import { getErrorMessage, parseJsonObject } from "@lobu/core";
 import { getScopedConnectorDefinition } from "../../../../catalog/connector-definitions";
 import { enrichConnectorGroupsWithCatalogDisplay } from "../../../../catalog/connector-group-display";
 import { unregisterConnectorWebhook } from "../../../../connect/webhook-registration";
+import { createAuthRun } from "../../../../runs/queue-service";
 import {
 	getDb,
 	parsePgNumberArray,
 	pgBigintArray,
+	type DbClient,
 } from "../../../../db/client";
 import { recordToolConfigChange } from "../../helpers/config-audit";
 import {
@@ -92,6 +94,13 @@ import {
 	deriveConnectionFacets,
 	deriveEffectiveCredentialMode,
 } from "./facets";
+import {
+	activeConnectionPoll,
+	appendSetupAttemptId,
+	buildConnectionSetupContinuation,
+	buildSafeConnectionResumeCall,
+	installedConnectorPoll,
+} from "../../helpers/connect-setup-continuation";
 
 // ============================================
 // handleListConnectorGroups
@@ -182,7 +191,11 @@ export async function handleListConnectorGroups(
 
   if (args.entity_id) {
     query = sql`${query} AND ${sql.unsafe(
-      connectionLinkedToBusinessEntitySql(String(args.entity_id), "c", `'${organizationId}'`),
+			connectionLinkedToBusinessEntitySql(
+				String(args.entity_id),
+				"c",
+				`'${organizationId}'`,
+			),
     )}`;
   }
 
@@ -288,7 +301,7 @@ export async function handleList(
              SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)
              FROM entities ent
              WHERE ent.deleted_at IS NULL
-               AND ent.id IN ${sql.unsafe(connectionLinkedEntityIdsSql('c'))}
+               AND ent.id IN ${sql.unsafe(connectionLinkedEntityIdsSql("c"))}
            ) AS entity_names
     FROM connections c
     LEFT JOIN LATERAL (
@@ -318,7 +331,11 @@ export async function handleList(
   }
   if (args.entity_id) {
     query = sql`${query} AND ${sql.unsafe(
-      connectionLinkedToBusinessEntitySql(String(args.entity_id), "c", `'${organizationId}'`),
+			connectionLinkedToBusinessEntitySql(
+				String(args.entity_id),
+				"c",
+				`'${organizationId}'`,
+			),
     )}`;
   }
   if (args.created_by) {
@@ -326,6 +343,11 @@ export async function handleList(
   }
   if (args.connection_ids?.length) {
     query = sql`${query} AND c.id = ANY(${pgBigintArray(args.connection_ids)}::bigint[])`;
+  }
+  if (args.setup_attempt_id) {
+    query = sql`${query} AND c.config->'setup_attempt_ids' @> ${sql.json([
+			args.setup_attempt_id,
+		])}::jsonb`;
   }
 
   // Visibility: anonymous readers see org-visible connections only; non-admin
@@ -539,6 +561,10 @@ export async function handleCreate(
 ): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId, userId } = ctx;
+	const createResumeCall = buildSafeConnectionResumeCall(
+		"connections.create",
+		args,
+	);
 
   // Cloud gate: a raw-DB connector (postgres) has no tenant-URL egress hardening
   // yet, so it can't be installed under LOBU_CLOUD_MODE. (The catalog also hides
@@ -660,10 +686,49 @@ export async function handleCreate(
     setupUrl: await buildViewUrl(ctx, args.connector_key),
   });
   if (appInstallGuard) {
-		return {
-			...appInstallGuard,
-			setup_url: await buildAppInstallationSetupUrl(ctx, args.connector_key),
-		};
+		const setupAttemptId =
+			appInstallGuard.provider === "github" && appInstallGuard.install_url
+				? randomUUID()
+				: undefined;
+		return buildConnectionSetupContinuation({
+			action: "create",
+			connectorKey: args.connector_key,
+			setupFamily: "app_installation",
+			nextAction:
+				appInstallGuard.next_action === "install_app"
+					? "install_app"
+					: "open_setup",
+			instructions: appInstallGuard.error,
+			errorCode: appInstallGuard.error_code,
+			installType: appInstallGuard.install_type,
+			...(appInstallGuard.install_shape
+				? { installShape: appInstallGuard.install_shape }
+				: {}),
+			...(appInstallGuard.setup_instructions
+				? { setupInstructions: appInstallGuard.setup_instructions }
+				: {}),
+			setupUrl: await buildAppInstallationSetupUrl(ctx, args.connector_key),
+			...(appInstallGuard.install_url
+				? {
+						installUrl: setupAttemptId
+							? appendSetupAttemptId(
+									appInstallGuard.install_url,
+									setupAttemptId,
+								)
+							: appInstallGuard.install_url,
+					}
+				: {}),
+			provider: appInstallGuard.provider,
+			...(setupAttemptId
+				? {
+						completionCheck: installedConnectorPoll(
+							args.connector_key,
+							setupAttemptId,
+						),
+						setupAttemptId,
+					}
+				: {}),
+		});
 	}
 
   const deviceBinding = await resolveDeviceBinding({
@@ -672,7 +737,19 @@ export async function handleCreate(
     connector,
     deviceWorkerId: args.device_worker_id,
   });
-	if ("error" in deviceBinding) return deviceBinding;
+	if ("error" in deviceBinding) {
+		if (connector.required_capability && !args.device_worker_id) {
+			return buildConnectionSetupContinuation({
+				action: "create",
+				connectorKey: args.connector_key,
+				setupFamily: "device_bound",
+				nextAction: "connect_device",
+				instructions: deviceBinding.error,
+				setupUrl: await buildViewUrl(ctx, args.connector_key),
+			});
+		}
+		return deviceBinding;
+	}
   if (deviceBinding.deviceWorkerId) {
     const dup = (await sql`
       SELECT id FROM connections
@@ -720,6 +797,9 @@ export async function handleCreate(
   // that emits artifacts (qr/code/etc.) for the UI to render.
 	const interactiveMethod =
 		getInteractiveMethods(connector.auth_schema)[0] ?? null;
+	if (interactiveMethod && !userId) {
+		return { error: "Interactive pairing requires an authenticated user." };
+	}
 
   // A `managedBy` connection's OAuth grant lives in a cloud (public) org — the
   // local instance fetches the token at runtime (execution-context.ts) and never
@@ -773,15 +853,28 @@ export async function handleCreate(
 			!!authSelection.envMethod ||
 			!!authSelection.browserMethod;
     if (requiresAuth && !authSelection.authProfile) {
-      return {
-        error: authSelection.browserMethod
+			const setupFamily = authSelection.browserMethod
+				? "browser"
+				: authSelection.envMethod
+					? "env_keys"
+					: "oauth";
+			return buildConnectionSetupContinuation({
+				action: "create",
+				connectorKey: args.connector_key,
+				setupFamily,
+				nextAction: authSelection.browserMethod
+					? "pair_browser"
+					: "select_auth_profile",
+				instructions: authSelection.browserMethod
 					? "Select or create a browser auth profile before creating the connection."
           : authSelection.oauthMethod && authSelection.envMethod
 						? "Select an auth profile for this connector before creating the connection."
             : authSelection.oauthMethod
 							? "Select or create an OAuth account profile before creating the connection."
 							: "Select or create an auth profile before creating the connection.",
-      };
+				setupUrl: await buildViewUrl(ctx, args.connector_key),
+				resumeCall: createResumeCall,
+			});
     }
   }
 
@@ -861,11 +954,28 @@ export async function handleCreate(
     }
     if (!authSelection.appAuthProfile) {
       if (authSelection.oauthMethod) {
-        return buildOAuthAppProfileSetupError({
+				const setupError = buildOAuthAppProfileSetupError({
           connectorKey: args.connector_key,
           method: authSelection.oauthMethod,
           setupUrl: await buildViewUrl(ctx, args.connector_key),
         });
+				return buildConnectionSetupContinuation({
+					action: "create",
+					connectorKey: args.connector_key,
+					setupFamily: "oauth",
+					nextAction: "configure_oauth_app",
+					instructions: setupError.setup_instructions
+						? `${setupError.error} ${setupError.setup_instructions}`
+						: setupError.error,
+					setupUrl: setupError.setup_url,
+					provider: authSelection.oauthMethod.provider,
+					errorCode: setupError.error_code,
+					installType: setupError.install_type,
+					...(setupError.setup_instructions
+						? { setupInstructions: setupError.setup_instructions }
+						: {}),
+					resumeCall: createResumeCall,
+				});
       }
       return {
         error: callerIsAdmin
@@ -963,24 +1073,6 @@ export async function handleCreate(
         }
       : null;
 
-  // Interactive auth: always create a fresh `interactive` auth profile scoped to
-  // this connection. Connection starts in pending_auth; feed is paused; an auth
-  // run drives the authenticate() lifecycle which writes credentials on success.
-  let interactiveAuthProfileId: number | null = null;
-  if (interactiveMethod) {
-    const profile = await createAuthProfile({
-      organizationId,
-      connectorKey: args.connector_key,
-      displayName: `${displayName} (pairing)`,
-      slug: `${args.connector_key}-interactive-${Date.now()}`,
-			profileKind: "interactive",
-      authData: {},
-			status: "pending_auth",
-      createdBy: effectiveCreatedBy ?? null,
-    });
-    interactiveAuthProfileId = profile.id;
-  }
-
   // Device-bound browser auth profiles live on a specific Mac. Pin the
   // connection there automatically; reject mismatches.
   let effectiveDeviceWorkerId = deviceBinding.deviceWorkerId;
@@ -1063,16 +1155,20 @@ export async function handleCreate(
   });
 	if ("error" in slugResult) return { error: slugResult.error };
 
-  // biome-ignore lint/suspicious/noExplicitAny: postgres.js row shape
-  let inserted: any[];
-  try {
-    inserted = await insertConnectionWithSlug({
+	const insertConnection = (
+		db: DbClient,
+		authProfileId: number | null,
+		useSavepoint: boolean,
+	) =>
+		insertConnectionWithSlug({
       organizationId,
       connectorKey: args.connector_key,
       displayName,
       initialSlug: slugResult.slug,
       explicit: !!args.slug?.trim(),
-      doInsert: (slug) => sql`
+			db,
+			doInsert: (slug) => {
+				const insert = () => db`
         INSERT INTO connections (
           organization_id, connector_key, slug, display_name, status,
           auth_profile_id, app_auth_profile_id, config, created_by, visibility, device_worker_id,
@@ -1082,21 +1178,63 @@ export async function handleCreate(
           ${slug},
           ${displayName},
           ${connectionStatus},
-          ${interactiveAuthProfileId ?? authSelection?.authProfile?.id ?? null},
+            ${authProfileId ?? authSelection?.authProfile?.id ?? null},
           ${authSelection?.appAuthProfile?.id ?? null},
-          ${connectionConfigToInsert ? sql.json(connectionConfigToInsert) : null},
+            ${connectionConfigToInsert ? db.json(connectionConfigToInsert) : null},
           ${effectiveCreatedBy},
           ${visibility},
           ${effectiveDeviceWorkerId},
           ${entityIdsValue}::bigint[]
         )
         RETURNING *
-      `,
+        `;
+				return useSavepoint ? db.savepoint(insert) : insert();
+			},
+		});
+
+	let inserted: Record<string, unknown>[];
+	let interactiveAuthRunId: number | null = null;
+	try {
+		if (interactiveMethod) {
+			const bundle = await sql.begin(async (tx) => {
+				const profile = await createAuthProfile(
+					{
+						organizationId,
+						connectorKey: args.connector_key,
+						displayName: `${displayName} (pairing)`,
+						slug: `${args.connector_key}-interactive-${Date.now()}`,
+						profileKind: "interactive",
+						authData: {},
+						status: "pending_auth",
+						createdBy: effectiveCreatedBy ?? null,
+					},
+					tx,
+				);
+				const rows = await insertConnection(tx, profile.id, true);
+				const authRunId = await createAuthRun(
+					{
+						organizationId,
+						connectorKey: args.connector_key,
+						authProfileId: profile.id,
+						createdByUserId: effectiveCreatedBy!,
+					},
+					tx,
+				);
+				return { rows, authRunId };
     });
+			inserted = bundle.rows as Record<string, unknown>[];
+			interactiveAuthRunId = bundle.authRunId;
+		} else {
+			inserted = (await insertConnection(sql, null, false)) as Record<
+				string,
+				unknown
+			>[];
+		}
   } catch (err) {
 		if (err instanceof ConnectionSlugConflictError)
 			return { error: err.message };
-    if (isPersonalCredVisibilityViolation(err)) return { error: PERSONAL_CRED_ORG_VISIBILITY_ERROR };
+		if (isPersonalCredVisibilityViolation(err))
+			return { error: PERSONAL_CRED_ORG_VISIBILITY_ERROR };
     throw err;
   }
 
@@ -1120,18 +1258,35 @@ export async function handleCreate(
     organizationId,
 		entityType: "connection",
 		op: "created",
-    entityId: inserted[0].id,
+		entityId: Number(inserted[0].id),
     summary: `Connection "${displayName}" created`,
     extra: { connector_key: args.connector_key, slug: inserted[0].slug },
   });
 
   recordToolConfigChange(ctx, {
 		resourceKind: "connection",
-    resourceId: inserted[0].id,
+		resourceId: Number(inserted[0].id),
 		op: "created",
     summary: `Connection '${displayName}' created`,
     state: inserted[0] as Record<string, unknown>,
   });
+
+	if (interactiveMethod) {
+		const connectionId = Number(inserted[0].id);
+		return buildConnectionSetupContinuation({
+			action: "create",
+			connectorKey: args.connector_key,
+			setupFamily: "interactive",
+			nextAction: "pair_interactive",
+			instructions:
+				"Connection created as pending_auth. Complete the interactive pairing run, then poll the connection until it is active.",
+			setupUrl: await buildViewUrl(ctx, args.connector_key),
+			connectionId,
+			slug: String(inserted[0].slug),
+			authRunId: interactiveAuthRunId!,
+			completionCheck: activeConnectionPoll(connectionId),
+		});
+	}
 
   return {
 		action: "create",
@@ -1640,7 +1795,8 @@ export async function handleUpdate(
 				error: `Connection slug '${updateExplicitSlug}' already exists for this organization.`,
 			};
     }
-    if (isPersonalCredVisibilityViolation(err)) return { error: PERSONAL_CRED_ORG_VISIBILITY_ERROR };
+		if (isPersonalCredVisibilityViolation(err))
+			return { error: PERSONAL_CRED_ORG_VISIBILITY_ERROR };
     throw err;
   }
 
@@ -1652,8 +1808,7 @@ export async function handleUpdate(
     // Re-pinning (or clearing) the device also clears the "Device was removed"
     // tombstone left by DELETE /api/me/devices — otherwise the connection stays
     // active but UI-flagged error forever after the user picks a new device.
-		const previousError = (updated[0] as Record<string, unknown>)
-			.error_message;
+		const previousError = (updated[0] as Record<string, unknown>).error_message;
 		clearedDeviceTombstone =
 			previousError === "Device was removed" ||
 			previousError === "Device was moved to another workspace";

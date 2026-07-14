@@ -36,10 +36,7 @@
  */
 
 import { Hono } from "hono";
-import {
-	createLogger,
-	getErrorMessage,
-} from "@lobu/core";
+import { createLogger, getErrorMessage } from "@lobu/core";
 import type { ConnectorAuthAppInstallation } from "@lobu/connector-sdk";
 import { getDb } from "../../../db/client.js";
 import { getConfiguredPublicOrigin } from "../../../utils/public-origin.js";
@@ -250,7 +247,9 @@ async function defaultFetchInstallationAccount(
 		}
 		const body = result.data;
 		total = typeof body.total_count === "number" ? body.total_count : seen;
-		const installs = Array.isArray(body.installations) ? body.installations : [];
+		const installs = Array.isArray(body.installations)
+			? body.installations
+			: [];
 		if (installs.length === 0) break;
 		for (const inst of installs) {
 			seen += 1;
@@ -314,7 +313,9 @@ async function defaultFetchSoleAccessibleInstallation(
 		}
 		const body = result.data;
 		total = typeof body.total_count === "number" ? body.total_count : seen;
-		const installs = Array.isArray(body.installations) ? body.installations : [];
+		const installs = Array.isArray(body.installations)
+			? body.installations
+			: [];
 		if (installs.length === 0) break;
 		for (const inst of installs) {
 			seen += 1;
@@ -429,6 +430,7 @@ export async function linkGithubAppInstallation(params: {
 	/** Account/metadata stamped onto the install row (account login, etc.). */
 	metadata?: Record<string, unknown>;
 	createdBy?: string | null;
+	setupAttemptId?: string;
 }): Promise<LinkGithubInstallationResult> {
 	const sql = getDb();
 	const accountLogin =
@@ -486,9 +488,23 @@ export async function linkGithubAppInstallation(params: {
 
 		if (existing.length > 0) {
 			const connectionId = Number(existing[0].id);
+			const setupAttemptIds = Array.isArray(
+				existing[0].config?.setup_attempt_ids,
+			)
+				? existing[0].config.setup_attempt_ids.filter(
+						(value): value is string => typeof value === "string",
+					)
+				: [];
 			const mergedConfig = {
 				...(existing[0].config ?? {}),
 				installation_ref: install.id,
+				...(params.setupAttemptId
+					? {
+							setup_attempt_ids: [
+								...new Set([...setupAttemptIds, params.setupAttemptId]),
+							],
+						}
+					: {}),
 			};
 			await tx`
 				UPDATE connections
@@ -538,12 +554,18 @@ export async function linkGithubAppInstallation(params: {
 					organization_id, connector_key, slug, display_name, status, config, created_by
 				) VALUES (
 					${params.organizationId}, ${GITHUB_CONNECTOR_KEY}, ${slug}, ${displayName},
-					'active', ${tx.json({ installation_ref: install.id })}, ${params.createdBy ?? null}
+					'active', ${tx.json({
+						installation_ref: install.id,
+						...(params.setupAttemptId
+							? { setup_attempt_ids: [params.setupAttemptId] }
+							: {}),
+					})}, ${params.createdBy ?? null}
 				)
 				RETURNING id, slug
 			`,
 		}).catch((err) => {
-			if (err instanceof ConnectionSlugConflictError) throw new Error(err.message);
+			if (err instanceof ConnectionSlugConflictError)
+				throw new Error(err.message);
 			throw err;
 		});
 
@@ -616,8 +638,11 @@ async function defaultFetchInstallationRepositories(
 				owner?: { login?: string };
 			}>;
 		};
-		total = typeof body.total_count === "number" ? body.total_count : repos.length;
-		const page_repos = Array.isArray(body.repositories) ? body.repositories : [];
+		total =
+			typeof body.total_count === "number" ? body.total_count : repos.length;
+		const page_repos = Array.isArray(body.repositories)
+			? body.repositories
+			: [];
 		if (page_repos.length === 0) break;
 		for (const r of page_repos) {
 			const owner = r.owner?.login;
@@ -690,13 +715,15 @@ export async function autoProvisionGithubIssueFeeds(params: {
 		metadata: {
 			...install.metadata,
 			appIdKey: install.metadata?.appIdKey ?? "GITHUB_APP_ID",
-			privateKeyKey: install.metadata?.privateKeyKey ?? "GITHUB_APP_PRIVATE_KEY",
+			privateKeyKey:
+				install.metadata?.privateKeyKey ?? "GITHUB_APP_PRIVATE_KEY",
 		},
 	};
 
 	let token: string;
 	try {
-		const minted = await getInstallationTokenRegistry().mintFor(installWithKeys);
+		const minted =
+			await getInstallationTokenRegistry().mintFor(installWithKeys);
 		token = minted.token;
 	} catch (error) {
 		logger.warn(
@@ -711,7 +738,8 @@ export async function autoProvisionGithubIssueFeeds(params: {
 	}
 
 	const fetchRepos =
-		params.fetchInstallationRepositories ?? defaultFetchInstallationRepositories;
+		params.fetchInstallationRepositories ??
+		defaultFetchInstallationRepositories;
 	const repos = await fetchRepos(token);
 	if (repos.length === 0) {
 		logger.info(
@@ -841,13 +869,15 @@ export async function provisionGithubTeamGraph(params: {
 		metadata: {
 			...install.metadata,
 			appIdKey: install.metadata?.appIdKey ?? "GITHUB_APP_ID",
-			privateKeyKey: install.metadata?.privateKeyKey ?? "GITHUB_APP_PRIVATE_KEY",
+			privateKeyKey:
+				install.metadata?.privateKeyKey ?? "GITHUB_APP_PRIVATE_KEY",
 		},
 	};
 
 	let token: string;
 	try {
-		const minted = await getInstallationTokenRegistry().mintFor(installWithKeys);
+		const minted =
+			await getInstallationTokenRegistry().mintFor(installWithKeys);
 		token = minted.token;
 	} catch (error) {
 		logger.warn(
@@ -1261,15 +1291,25 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		// the install page would dead-end). Recovery needs the App's OAuth client id
 		// to send the user through user-authorization.
 		const explicitRecovery = c.req.query("recovery") === "1";
+		const rawSetupAttemptId = c.req.query("setup_attempt_id");
+		const setupAttemptId =
+			rawSetupAttemptId &&
+			/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+				rawSetupAttemptId,
+			)
+				? rawSetupAttemptId
+				: undefined;
 		const clientId = creds?.clientId;
 		const alreadyHasInstallRow = await orgHasGithubInstallRow(orgId, appId);
-		const useRecovery = (explicitRecovery || alreadyHasInstallRow) && !!clientId;
+		const useRecovery =
+			(explicitRecovery || alreadyHasInstallRow) && !!clientId;
 
 		const stateStore = createGithubInstallStateStore();
 		if (useRecovery && clientId) {
 			const state = await stateStore.create({
 				organizationId: orgId,
 				recovery: true,
+				...(setupAttemptId ? { setupAttemptId } : {}),
 			});
 			const callbackUrl = githubInstallCallbackUrl(
 				deps.getPublicGatewayUrl?.(),
@@ -1281,7 +1321,10 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			);
 		}
 
-		const state = await stateStore.create({ organizationId: orgId });
+		const state = await stateStore.create({
+			organizationId: orgId,
+			...(setupAttemptId ? { setupAttemptId } : {}),
+		});
 		const installUrl =
 			renderAppInstallUrl(creds?.installUrlTemplate, appSlug, state) ??
 			githubAppInstallUrl(appSlug, state);
@@ -1478,7 +1521,8 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			installationId: suppliedInstallationId,
 			recovery: isRecovery,
 			redirectUri: callbackUrl,
-			exchange: deps.exchangeInstallOAuthCode ?? defaultExchangeInstallOAuthCode,
+			exchange:
+				deps.exchangeInstallOAuthCode ?? defaultExchangeInstallOAuthCode,
 			fetchAccount:
 				deps.fetchInstallationAccount ?? defaultFetchInstallationAccount,
 			fetchLogin: deps.fetchAuthedUserLogin ?? defaultFetchAuthedUserLogin,
@@ -1522,8 +1566,9 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		`) as unknown as Array<{ auth_schema: unknown }>;
 		const hasAppInstallMethod =
 			defRows.length > 0 &&
-			getAppInstallationAuthMethods(normalizeConnectorAuthSchema(defRows[0].auth_schema))
-				.length > 0;
+			getAppInstallationAuthMethods(
+				normalizeConnectorAuthSchema(defRows[0].auth_schema),
+			).length > 0;
 		if (!hasAppInstallMethod) {
 			return c.html(
 				renderOAuthErrorPage(
@@ -1558,6 +1603,9 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				installationId: String(installationId),
 				store: deps.installationStore,
 				providerAppId: appId,
+				...(consumed.setupAttemptId
+					? { setupAttemptId: consumed.setupAttemptId }
+					: {}),
 				// Record the ownership-verified account (GitHub omits it from the
 				// redirect query) so the install row carries the org login/type/id the
 				// team-graph build and UI rely on, falling back to any query value.
@@ -1672,7 +1720,9 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 }
 
 /** Pull the account login GitHub passes (when present) into install metadata. */
-function buildInstallMetadata(c: import("hono").Context): Record<string, unknown> {
+function buildInstallMetadata(
+	c: import("hono").Context,
+): Record<string, unknown> {
 	const metadata: Record<string, unknown> = {};
 	// GitHub doesn't pass the account login on the install redirect, but a
 	// future state-bound flow / the owletto UI can; accept it if present.
@@ -1718,7 +1768,10 @@ interface OAuthInstallStateData {
 function oauthInstallStateStore(
 	provider: string,
 ): OAuthStateStore<OAuthInstallStateData> {
-	return new OAuthStateStore(`${provider}:oauth:state`, `${provider}-install-state`);
+	return new OAuthStateStore(
+		`${provider}:oauth:state`,
+		`${provider}-install-state`,
+	);
 }
 
 /**
@@ -1817,7 +1870,11 @@ function mountOAuthCodeExchangeRoutes(
 		// the primed bundled method (slack-connection-coordinator).
 		const method =
 			(installOrgId
-				? await getOrgAppInstallationMethod(installOrgId, connectorKey, provider)
+				? await getOrgAppInstallationMethod(
+						installOrgId,
+						connectorKey,
+						provider,
+					)
 				: null) ??
 			getPrimedBundledMethod(connectorKey, provider) ??
 			null;
@@ -1951,9 +2008,7 @@ function mountOAuthCodeExchangeRoutes(
 			return c.html(
 				renderOAuthErrorPage(
 					`${provider}_install_failed`,
-					error instanceof Error
-						? error.message
-						: `${display} install failed.`,
+					error instanceof Error ? error.message : `${display} install failed.`,
 				),
 				500,
 			);
@@ -2051,9 +2106,15 @@ export function createInstallRoutes(deps: InstallEngineDeps): Hono {
 			);
 			continue;
 		}
-		if (integration.deliveryKind !== "chat" || !deps.completeChatPendingInstall) {
+		if (
+			integration.deliveryKind !== "chat" ||
+			!deps.completeChatPendingInstall
+		) {
 			oauthInstallLogger.warn(
-				{ provider: integration.provider, deliveryKind: integration.deliveryKind },
+				{
+					provider: integration.provider,
+					deliveryKind: integration.deliveryKind,
+				},
 				"Skipping oauth-code-exchange install routes: no post-install completion for this delivery kind",
 			);
 			continue;

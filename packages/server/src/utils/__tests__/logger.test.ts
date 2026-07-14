@@ -12,8 +12,47 @@
  * so per-file module mocks of an already-loaded singleton are unreliable.
  */
 
-import { describe, expect, it } from 'vitest';
-import { isExpectedClientFaultLog } from '../logger';
+import { describe, expect, it, vi } from 'vitest';
+import logger, { isExpectedClientFaultLog } from '../logger';
+
+describe('HTTP secret redaction', () => {
+  it('redacts credentials from request and response headers', () => {
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let output = '';
+
+    try {
+      logger.info(
+        {
+          req: {
+            headers: {
+              authorization: 'Bearer request-secret',
+              cookie: 'session=request-cookie',
+              'proxy-authorization': 'Basic proxy-secret',
+              'x-api-key': 'api-key-secret',
+            },
+          },
+          res: {
+            headers: {
+              'set-cookie': 'session=response-cookie',
+            },
+          },
+        },
+        'request completed',
+      );
+      output = write.mock.calls.map(([line]) => String(line)).join('');
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(output).toContain('request completed');
+    expect(output).not.toContain('request-secret');
+    expect(output).not.toContain('request-cookie');
+    expect(output).not.toContain('proxy-secret');
+    expect(output).not.toContain('api-key-secret');
+    expect(output).not.toContain('response-cookie');
+    expect(output).toContain('[redacted]');
+  });
+});
 
 describe('isExpectedClientFaultLog', () => {
   it('skips a ToolUserError regardless of status', () => {

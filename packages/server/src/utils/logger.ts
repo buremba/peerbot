@@ -34,6 +34,14 @@ const getLogLevel = (): pino.Level => {
 // and hid `column "events.search_tsv" does not exist`.
 const errSerializer = pino.stdSerializers.err;
 
+const HTTP_SECRET_HEADER_PATHS = [
+  'req.headers.authorization',
+  'req.headers.cookie',
+  'req.headers["proxy-authorization"]',
+  'req.headers["x-api-key"]',
+  'res.headers["set-cookie"]',
+] as const;
+
 /**
  * Sentry forwarding for logger.error() and logger.fatal().
  *
@@ -173,6 +181,10 @@ const logger = pino(
       level: (label) => {
         return { level: label };
       },
+    },
+    redact: {
+      paths: [...HTTP_SECRET_HEADER_PATHS],
+      censor: '[redacted]',
     },
     serializers: {
       err: errSerializer,

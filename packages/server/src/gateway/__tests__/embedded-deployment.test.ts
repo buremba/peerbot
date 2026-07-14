@@ -455,7 +455,11 @@ describe("DeploymentManager", () => {
       }
     });
 
-    test("forwards runtime provider selector without provider credentials", async () => {
+    test("never forwards a runtime selector or provider credentials to the worker", async () => {
+      // Runtime routing rides the conversation's per-turn pin (signed token +
+      // payload), NOT a spawned env var. The worker env must carry neither a
+      // LOBU_RUNTIME_PROVIDER selector nor any provider credential — even when
+      // the gateway process itself has them set.
       const previous = {
         LOBU_RUNTIME_PROVIDER: process.env.LOBU_RUNTIME_PROVIDER,
         VERCEL_TOKEN: process.env.VERCEL_TOKEN,
@@ -476,7 +480,7 @@ describe("DeploymentManager", () => {
           | { env?: Record<string, string> }
           | undefined;
 
-        expect(spawnOptions?.env?.LOBU_RUNTIME_PROVIDER).toBe("vercel");
+        expect(spawnOptions?.env?.LOBU_RUNTIME_PROVIDER).toBeUndefined();
         expect(spawnOptions?.env?.VERCEL_TOKEN).toBeUndefined();
         expect(spawnOptions?.env?.VERCEL_TEAM_ID).toBeUndefined();
         expect(spawnOptions?.env?.VERCEL_PROJECT_ID).toBeUndefined();

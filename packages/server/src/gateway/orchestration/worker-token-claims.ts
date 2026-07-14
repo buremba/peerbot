@@ -20,21 +20,14 @@ export interface WorkerTokenClaimsArgs {
   platform?: string;
   platformMetadata?: Record<string, unknown>;
   /**
-   * Selected runtime provider for this agent, resolved from its environment by
-   * the caller (which has the agent settings + environments store). When
-   * omitted, falls back to the deployment-wide `LOBU_RUNTIME_PROVIDER` (self-
-   * host / org default). The generic runtime route reads this claim to pick a
-   * provider — see WorkerTokenData.runtimeProviderId.
+   * Selected runtime provider for this conversation, resolved from the agent's
+   * Environment by the caller (which has the agent settings + environments
+   * store). Undefined → local just-bash. The generic runtime route reads this
+   * claim to pick a provider — see WorkerTokenData.runtimeProviderId.
    */
   runtimeProviderId?: string;
   /** The `environments.id` whose vault credential backs the provider above. */
   environmentId?: string;
-  /**
-   * True when the agent has an explicit runtime selection (a provider or
-   * builtin). When true, the env-var fallback below is suppressed so an agent
-   * pinned to builtin doesn't inherit the deployment-wide LOBU_RUNTIME_PROVIDER.
-   */
-  runtimeExplicit?: boolean;
   /**
    * The agent's resolved egress allowlist (`networkConfig.allowedDomains`). Set
    * here so the runtime route can read it off the SIGNED token instead of
@@ -69,15 +62,9 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
   environmentId?: string;
   allowedDomains?: string[];
 } {
-  // Per-agent environment selection wins; otherwise the deployment-wide
-  // selector covers self-host / org-default — UNLESS the agent made an explicit
-  // selection (e.g. pinned to builtin), in which case we honor it and skip the
-  // env-var fallback. Resolving here keeps both mints in lockstep.
-  const runtimeProviderId =
-    args.runtimeProviderId ??
-    (args.runtimeExplicit
-      ? undefined
-      : process.env.LOBU_RUNTIME_PROVIDER?.trim() || undefined);
+  // Provider comes solely from the conversation's pinned Environment; there is
+  // no deployment-wide env-var fallback. Undefined → local just-bash.
+  const runtimeProviderId = args.runtimeProviderId;
   return {
     channelId: args.channelId,
     teamId: args.teamId,
@@ -93,9 +80,6 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
         ? args.platformMetadata.source
         : undefined,
     runtimeProviderId,
-    // Only meaningful when a per-agent environment drove the selection; the
-    // env-var fallback has no environment row, so credentials resolve from
-    // system env.
     environmentId: runtimeProviderId ? args.environmentId : undefined,
     // Non-empty only; an empty list is equivalent to absent (deny-all) and
     // keeps the token payload minimal.

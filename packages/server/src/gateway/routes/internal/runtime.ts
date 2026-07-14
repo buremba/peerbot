@@ -56,12 +56,14 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
         worker.environmentId
       );
       if (!credentials) {
-        // No vault/system credential configured. A provider that can
-        // self-authenticate (e.g. Vercel via an ambient VERCEL_OIDC_TOKEN when
-        // Lobu runs on Vercel) is allowed to proceed with no explicit creds;
-        // otherwise fail closed so a misconfigured environment can't run
-        // unauthenticated.
-        if (provider.canSelfAuth?.()) {
+        // No vault/system credential resolved. Provider self-auth (e.g. Vercel
+        // via an ambient VERCEL_OIDC_TOKEN when Lobu itself runs on Vercel) is
+        // the HOST realm — permissible ONLY for an env-LESS resolution (self-host
+        // / org default). An ENVIRONMENT-BOUND miss must fail closed: a
+        // conversation pinned to a specific Environment that's been deleted or
+        // misconfigured must NOT silently execute in the host realm under ambient
+        // OIDC — that would break the one-conversation-one-realm pin contract.
+        if (!worker.environmentId && provider.canSelfAuth?.()) {
           credentials = { values: {}, source: "system" };
         } else {
           return errorResponse(

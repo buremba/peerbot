@@ -472,6 +472,12 @@ interface RunAISessionParams {
   runId: number;
   messageId: string;
   connectionId?: string;
+  /**
+   * This conversation's pinned bash-backend provider (from WorkerConfig).
+   * Selects the bash backend per-turn: a provider id → that remote runtime;
+   * undefined → local just-bash.
+   */
+  runtimeProviderId?: string;
 
   // Resolved workspace directory (from WorkspaceManager)
   workspaceDir: string;
@@ -538,6 +544,7 @@ export async function runAISession(
     runId,
     messageId,
     connectionId,
+    runtimeProviderId,
     workspaceDir,
     progressProcessor,
     onSessionFilePathResolved,
@@ -942,6 +949,8 @@ export async function runAISession(
       mcpRuntimeRef,
       gw: gwParams,
       mcpExposure,
+      // Per-turn pinned provider from the sandbox pin; selects the bash backend.
+      runtimeProviderId,
     });
   let tools = createLobuTools(workspaceDir, {
     bashOperations: embeddedBashOps,

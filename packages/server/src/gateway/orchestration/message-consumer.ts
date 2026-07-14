@@ -41,7 +41,7 @@ import {
   type OrchestratorConfig,
 } from "./deployment-manager.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
-import { resolveAgentRuntimeSelection } from "../../lobu/stores/environment-store.js";
+import { resolvePinnedSelection } from "../../lobu/stores/environment-store.js";
 import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 import { getDb } from "../../db/client.js";
 import {
@@ -162,13 +162,12 @@ export function buildRunJobToken(args: {
    */
   adminTools?: string[];
   /**
-   * Resolved runtime provider + environment for this agent (from its selected
-   * Environment). Stamped into the token so the generic runtime route picks the
-   * provider + vault credential. Undefined → deployment-wide LOBU_RUNTIME_PROVIDER.
+   * Resolved runtime provider + environment for this conversation (from its
+   * pinned Environment). Stamped into the token so the generic runtime route
+   * picks the provider + vault credential. Undefined → local just-bash.
    */
   runtimeProviderId?: string;
   environmentId?: string;
-  runtimeExplicit?: boolean;
   /** Resolved egress allowlist for a remote runtime sandbox (signed claim). */
   allowedDomains?: string[];
 }): string {
@@ -409,13 +408,38 @@ export class MessageConsumer {
         teamId: data.teamId,
       });
 
-      // Resolve the agent's selected execution environment → runtime provider +
-      // credential, stamped into the per-run token. Falls back to the
-      // deployment-wide selector when no environment is pinned.
-      const runtimeSelection = await resolveAgentRuntimeSelection(
-        data.agentId,
-        data.organizationId
-      );
+      // Resolve THIS CONVERSATION's pinned runtime provider from its Environment.
+      // The pin is frozen on the first turn and read thereafter, so an agent
+      // repoint never moves an existing conversation's sandbox. Undefined →
+      // local just-bash.
+      //
+      // Best-effort at the enqueue site: resolvePinnedSelection throws on a total
+      // DB failure (to fail-closed the RUNTIME realm decision), but dispatch
+      // liveness must not hinge on a pin read — a blip here degrades this ONE turn
+      // to unpinned rather than dropping the message. The pin self-heals on the
+      // next turn (the CAS guard means an unpinned dispatch never overwrites an
+      // existing pin), and the runtime route re-resolves the realm from the token.
+      let runtimeSelection: Awaited<ReturnType<typeof resolvePinnedSelection>>;
+      try {
+        runtimeSelection = await resolvePinnedSelection({
+          organizationId: data.organizationId,
+          agentId: data.agentId,
+          platform: data.platform,
+          conversationId: effectiveConversationId,
+        });
+      } catch (err) {
+        logger.warn(
+          { traceId, agentId: data.agentId, error: getErrorMessage(err) },
+          "Pin resolution failed at enqueue; dispatching this turn unpinned"
+        );
+        runtimeSelection = {};
+      }
+
+      // Stamp the pinned provider onto the payload body so the worker selects its
+      // bash backend per-turn (a warm deployment is reused across conversations
+      // pinned to different realms). The REMOTE runtime route still reads the
+      // provider from the signed runJobToken below, never this body field.
+      data.runtimeProviderId = runtimeSelection.runtimeProviderId;
 
       data.runJobToken = buildRunJobToken({
         userId: data.userId,
@@ -436,7 +460,6 @@ export class MessageConsumer {
         adminTools,
         runtimeProviderId: runtimeSelection.runtimeProviderId,
         environmentId: runtimeSelection.environmentId,
-        runtimeExplicit: runtimeSelection.explicit,
         // Egress allowlist as a signed claim (kept in lockstep with the
         // deployment-token mint) — the runtime route reads it, never the body.
         allowedDomains: data.networkConfig?.allowedDomains,

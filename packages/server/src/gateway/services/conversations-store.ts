@@ -60,8 +60,12 @@ export interface ConversationUpsert {
 export async function upsertConversation(
 	row: ConversationUpsert,
 ): Promise<void> {
-	const sql = getDb();
+	// getDb() inside the try: it throws when DATABASE_URL is unset (or the pool
+	// can't init), and a listing-materialization hiccup must never fail a live
+	// turn — so the swallow below must cover the client acquisition too, not just
+	// the query.
 	try {
+		const sql = getDb();
 		await sql`
       INSERT INTO public.conversations (
         organization_id, agent_id, platform, conversation_id,

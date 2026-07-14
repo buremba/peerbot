@@ -381,6 +381,14 @@ interface EmbeddedBashOpsOptions {
   gw?: GatewayParams;
   /** `"tools"` (default) keeps today's first-class MCP tools. `"cli"` swaps to sandboxed bash CLIs. */
   mcpExposure?: "tools" | "cli";
+  /**
+   * This conversation's pinned bash-backend provider (per-turn, from the sandbox
+   * pin), so a warm deployment reused across conversations with different pins
+   * routes each turn correctly:
+   *  - a provider id (e.g. `"vercel"`) → that remote runtime;
+   *  - undefined → local just-bash.
+   */
+  runtimeProviderId?: string;
 }
 
 /**
@@ -398,24 +406,23 @@ async function adaptMcpCliCommand(
 }
 
 /**
- * Create a BashOperations adapter backed by a just-bash Bash instance.
- * Reads configuration from environment variables.
+ * Create a BashOperations adapter backed by a just-bash Bash instance. The
+ * conversation's pinned provider (`options.runtimeProviderId`) selects the
+ * backend; undefined → local just-bash.
  */
 export async function createEmbeddedBashOps(
   options: EmbeddedBashOpsOptions = {}
 ): Promise<BashOperations> {
-  const runtimeProvider = getWorkerRuntimeProvider(
-    process.env.LOBU_RUNTIME_PROVIDER
-  );
+  const runtimeProvider = getWorkerRuntimeProvider(options.runtimeProviderId);
   if (runtimeProvider) {
     if (!options.gw) {
       throw new Error(
-        `LOBU_RUNTIME_PROVIDER=${runtimeProvider.id} requires gateway parameters`
+        `runtime provider ${runtimeProvider.id} requires gateway parameters`
       );
     }
     if (options.mcpExposure === "cli") {
       console.warn(
-        `[embedded] LOBU_RUNTIME_PROVIDER=${runtimeProvider.id} routes bash through a remote runtime; MCP CLI exposure is unavailable there. Use MCP tools exposure instead.`
+        `[embedded] runtime provider ${runtimeProvider.id} routes bash through a remote runtime; MCP CLI exposure is unavailable there. Use MCP tools exposure instead.`
       );
     }
     console.log(

@@ -14,6 +14,7 @@ const originalEnv = {
   LOBU_EXEC_SANDBOX: process.env.LOBU_EXEC_SANDBOX,
   LOBU_ALLOW_UNSANDBOXED_EXEC: process.env.LOBU_ALLOW_UNSANDBOXED_EXEC,
   LOBU_WORKSPACE_BACKEND: process.env.LOBU_WORKSPACE_BACKEND,
+  LOBU_RUNTIME_PROVIDER: process.env.LOBU_RUNTIME_PROVIDER,
 };
 
 function restoreEnv(name: keyof typeof originalEnv): void {
@@ -33,6 +34,7 @@ afterEach(() => {
   restoreEnv("LOBU_EXEC_SANDBOX");
   restoreEnv("LOBU_ALLOW_UNSANDBOXED_EXEC");
   restoreEnv("LOBU_WORKSPACE_BACKEND");
+  restoreEnv("LOBU_RUNTIME_PROVIDER");
   resetSandboxProbeForTests();
 });
 
@@ -63,6 +65,43 @@ describe("createEmbeddedBashOps", () => {
 
     expect(result.exitCode).not.toBe(0);
     expect(chunks.join("")).not.toContain("root:");
+  });
+
+  // The pin is load-bearing and the SOLE selector: on a warm deployment reused
+  // across conversations pinned to different realms, the per-turn
+  // `runtimeProviderId` selects the bash backend and LOBU_RUNTIME_PROVIDER is
+  // never consulted. A remote-provider backend requires `gw` params and throws
+  // without them; we use that throw as an observable signal of which backend was
+  // selected (no live sandbox needed).
+  describe("per-turn runtimeProviderId is the sole backend selector", () => {
+    test("no pinned provider runs local just-bash even when LOBU_RUNTIME_PROVIDER=vercel", async () => {
+      const workspace = fs.realpathSync(
+        fs.mkdtempSync(path.join(os.tmpdir(), "lobu-pin-local-"))
+      );
+      tempDirs.push(workspace);
+      // The env var is deliberately set to a remote provider to prove it is
+      // ignored: with no pin and no `gw`, a legacy env-var read would throw
+      // "requires gateway parameters". Instead it resolves to local just-bash.
+      process.env.LOBU_RUNTIME_PROVIDER = "vercel";
+
+      const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+      const chunks: string[] = [];
+      const result = await ops.exec("echo pinned-local", "/", {
+        onData: (chunk) => chunks.push(chunk.toString()),
+        timeout: 5,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(chunks.join("")).toContain("pinned-local");
+    });
+
+    test("a 'vercel' pin routes remote even when LOBU_RUNTIME_PROVIDER is unset", async () => {
+      delete process.env.LOBU_RUNTIME_PROVIDER;
+      // A remote provider without `gw` throws — proving the PIN (not the unset
+      // env var) drove selection to the remote backend.
+      await expect(
+        createEmbeddedBashOps({ runtimeProviderId: "vercel" })
+      ).rejects.toThrow(/requires gateway parameters/);
+    });
   });
 });
 

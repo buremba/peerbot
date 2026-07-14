@@ -97,6 +97,22 @@ export interface MessagePayload {
   runJobToken?: string;
 
   /**
+   * This conversation's PINNED runtime provider for the bash backend, resolved
+   * per-turn by the gateway from the immutable sandbox pin (`resolvePinnedSelection`).
+   * Frozen on the conversation's first turn so an agent repoint never moves an
+   * existing conversation's sandbox realm.
+   *
+   *  - a provider id (e.g. `"vercel"`) → route bash to that remote runtime;
+   *  - absent → local just-bash.
+   *
+   * The pinned provider is ALSO a signed claim in `runJobToken` (the remote
+   * runtime route reads it from the token, never this body field) — this field
+   * exists only so the worker's backend selection is per-turn-accurate on a warm
+   * deployment reused across conversations pinned to different realms.
+   */
+  runtimeProviderId?: string;
+
+  /**
    * Per-agent operator-authored inline guardrails. Threaded alongside
    * `networkConfig` so the deployment manager can sync the `egress`-stage
    * entries into the egress policy store (the proxy-plane LLM judge). The

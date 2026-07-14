@@ -117,6 +117,11 @@ function failureMessage(
  * swap `manage_<x>` for `client.<namespace>.<method>` and keep the field-level
  * detail (`/feed_id: Expected required property`) intact.
  */
+/** `generate_embeddings` → `generateEmbeddings`; leaves already-camel/plain names intact. */
+function snakeToCamel(name: string): string {
+	return name.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+}
+
 function rewriteInternalToolName(
 	err: unknown,
 	sdkNamespace: string | undefined,
@@ -157,8 +162,15 @@ export function createActionCaller(
 	const action = async <T>(
 		actionName: string,
 		input: object = {},
-		/** Public method name (e.g. `"get"`); defaults to the internal action. */
-		publicMethod: string = actionName,
+		/**
+		 * Public SDK method name. Defaults to the CAMEL-CASE of the internal
+		 * action (`generate_embeddings` → `generateEmbeddings`), which is the
+		 * actual method on most namespaces — a bare snake_case default would
+		 * render a nonexistent path like `client.classifiers.generate_embeddings`.
+		 * Namespaces whose public name diverges from the action (e.g. feeds
+		 * `read_feed` → `get`) pass it explicitly.
+		 */
+		publicMethod: string = snakeToCamel(actionName),
 	): Promise<T> => {
 		// Spread caller input FIRST, then force `action` so a caller-supplied
 		// `action` key (e.g. from a read-only query_sdk script) can never override

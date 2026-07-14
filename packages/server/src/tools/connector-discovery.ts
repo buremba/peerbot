@@ -100,32 +100,44 @@ export async function searchLiveConnectors(
       cat.catalogs?.connectors?.entries
     );
     const configured = asArray<{ connector_key: string; status: string }>(conn.connections);
-    const configuredByKey = new Map<string, string>();
+    // Aggregate connections per connector and pick the BEST status — an active
+    // connection means "ready to use", but a revoked/error connection must not
+    // be reported as usable (it needs reauthentication, not a new feed). Prefer
+    // an active connection when the connector has several.
+    const USABLE = new Set(['active']);
+    const statusesByKey = new Map<string, string[]>();
     for (const c of configured) {
-      if (!configuredByKey.has(c.connector_key)) configuredByKey.set(c.connector_key, c.status);
+      const list = statusesByKey.get(c.connector_key) ?? [];
+      list.push(c.status);
+      statusesByKey.set(c.connector_key, list);
     }
+    const bestStatus = (key: string): string | undefined => {
+      const list = statusesByKey.get(key);
+      if (!list || list.length === 0) return undefined;
+      return list.find((s) => USABLE.has(s)) ?? list[0];
+    };
     const installedIds = new Set(installed.map((i) => i.id));
 
     for (const i of installed) {
       if (!matchesQueryTokens(q, i.id, i.name, i.detail?.description)) continue;
       const feeds = feedKeysOf(i.detail);
-      const status = configuredByKey.get(i.id);
-      if (status) {
-        // Already has a live connection — read/verify, don't re-connect.
+      const feedKeyHint = feeds?.[0] ? `'${feeds[0]}'` : '<feed_key>';
+      const feedKeysNote = feeds ? ` Feed keys: ${feeds.join(', ')}.` : '';
+      const status = bestStatus(i.id);
+      if (status && USABLE.has(status)) {
+        // Healthy live connection — add a feed / read, don't re-connect.
         lines.push(
-          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED and already CONFIGURED (a connection exists, status: ${status}).${
-            feeds ? ` Feed keys: ${feeds.join(', ')}.` : ''
-          } To add a feed: run_sdk → client.feeds.create({ connection_id, feed_key: ${
-            feeds?.[0] ? `'${feeds[0]}'` : '<feed_key>'
-          }, config }). To read collected data: query_sql on events or search_memory. Get the connection_id via query_sdk → client.connections.list({ connector_key: '${i.id}' }).`
+          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED and CONNECTED (active connection).${feedKeysNote} To add a feed: run_sdk → client.feeds.create({ connection_id, feed_key: ${feedKeyHint}, config }); then query_sql on events or search_memory to read. Get the connection_id via query_sdk → client.connections.list({ connector_key: '${i.id}' }).`
+        );
+      } else if (status) {
+        // Connection exists but is NOT usable (revoked/error/paused/pending) —
+        // it must be repaired before any feed will sync.
+        lines.push(
+          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED with a connection that needs attention (status: ${status}).${feedKeysNote} Reauthenticate/repair before use: run_sdk → client.connections.reauthenticate(<connection_id>) (or reconnect). Find the connection via query_sdk → client.connections.list({ connector_key: '${i.id}' }).`
         );
       } else {
         lines.push(
-          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED, not yet configured.${
-            feeds ? ` Feed keys: ${feeds.join(', ')}.` : ''
-          } Lifecycle: run_sdk → client.connections.connect({ connector_key: '${i.id}' }) → client.feeds.create({ connection_id, feed_key: ${
-            feeds?.[0] ? `'${feeds[0]}'` : '<feed_key>'
-          }, config }) → client.feeds.trigger({ feed_id }); then query_sql on events or search_memory to read. Use search_sdk 'feeds.create feeds.trigger' for signatures.`
+          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED, not yet configured.${feedKeysNote} Lifecycle: run_sdk → client.connections.connect({ connector_key: '${i.id}' }) → client.feeds.create({ connection_id, feed_key: ${feedKeyHint}, config }) → client.feeds.trigger({ feed_id }); then query_sql on events or search_memory to read. Use search_sdk 'feeds.create feeds.trigger' for signatures.`
         );
       }
     }

@@ -189,23 +189,26 @@ describe("createActionCaller", () => {
 		expect(thrown.message).toMatch(/feed_id/);
 	});
 
-	it("falls back to the action name when no public method is supplied", async () => {
+	it("derives a CAMEL-CASE public method from a snake_case action when none is supplied", async () => {
+		// `generate_embeddings` (internal) → the real method is
+		// client.classifiers.generateEmbeddings, NOT ...generate_embeddings.
 		const handler = async () => {
 			throw new ToolUserError(
-				"Invalid arguments for manage_operations: /limit: Expected number",
+				"Invalid arguments for manage_classifiers: /entity_type: Expected required property",
 			);
 		};
 		const { action } = createActionCaller(
 			handler as never,
 			{} as never,
 			{} as never,
-			"operations",
+			"classifiers",
 		);
-		const thrown = (await action("list_available", { limit: "x" }).catch(
+		const thrown = (await action("generate_embeddings", {}).catch(
 			(e: unknown) => e,
 		)) as ToolUserError;
-		expect(thrown.message).not.toMatch(/manage_operations/);
-		expect(thrown.message).toMatch(/client\.operations\.list_available/);
+		expect(thrown.message).not.toMatch(/manage_classifiers/);
+		expect(thrown.message).not.toMatch(/generate_embeddings/);
+		expect(thrown.message).toMatch(/client\.classifiers\.generateEmbeddings/);
 	});
 
 	it("leaves errors from callers with no declared namespace untouched", async () => {

@@ -88,14 +88,42 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 		}
 	});
 
-	it("reports an already-configured connector as configured (read, don't re-connect)", async () => {
+	it("reports an active connection as CONNECTED (add feed / read, don't re-connect)", async () => {
 		const deps = makeDeps({
 			connections: { connections: [{ connector_key: "website", status: "active" }] },
 		});
 		const hits = await searchLiveConnectors("website", env, ctx, deps);
-		expect(hits[0]).toMatch(/already CONFIGURED/);
-		expect(hits[0]).toMatch(/status: active/);
+		expect(hits[0]).toMatch(/CONNECTED/);
+		expect(hits[0]).toMatch(/feeds\.create/);
 		expect(hits[0]).not.toMatch(/not yet configured/);
+		expect(hits[0]).not.toMatch(/reauthenticate/i);
+	});
+
+	it("tells the agent to REPAIR a revoked/error connection, not create a feed on it", async () => {
+		// The review-caught bug: a revoked connection was labeled 'already
+		// CONFIGURED' and told to create feeds, which would silently never sync.
+		const deps = makeDeps({
+			connections: { connections: [{ connector_key: "website", status: "revoked" }] },
+		});
+		const hits = await searchLiveConnectors("website", env, ctx, deps);
+		expect(hits[0]).toMatch(/needs attention/);
+		expect(hits[0]).toMatch(/status: revoked/);
+		expect(hits[0]).toMatch(/reauthenticate|repair|reconnect/i);
+		expect(hits[0]).not.toMatch(/CONNECTED \(active/);
+	});
+
+	it("prefers an ACTIVE connection when a connector has several (active + revoked)", async () => {
+		const deps = makeDeps({
+			connections: {
+				connections: [
+					{ connector_key: "website", status: "revoked" },
+					{ connector_key: "website", status: "active" },
+				],
+			},
+		});
+		const hits = await searchLiveConnectors("website", env, ctx, deps);
+		expect(hits[0]).toMatch(/CONNECTED/);
+		expect(hits[0]).not.toMatch(/needs attention/);
 	});
 
 	it("surfaces a global-catalog connector as installable when not installed", async () => {

@@ -234,14 +234,11 @@ async function sdkSearchImpl(
 	env: Env,
 	ctx: ToolContext,
 ): Promise<SdkSearchResult> {
-	// Unified-catalog search (executor pattern): a query like "website" or
-	// "slack" names a CONNECTOR, not an SDK method, so pure method search returns
-	// nothing useful. Search live connectors first; when the query names one,
-	// surface it (+ lifecycle) ABOVE method docs so the agent doesn't have to
-	// know that connectors and methods live in different discovery paths. Skip
-	// the (2 DB reads) connector lookup for queries that are obviously method
-	// paths — a dotted path (`feeds.create`) or a `client.`-prefixed term — since
-	// those never name a connector; a plain word like "website" still triggers it.
+	// Unified-catalog search (executor pattern): a query like "website" or "slack"
+	// names a CONNECTOR, not an SDK method, so pure method search returns nothing
+	// useful. Search live connectors and surface them (+ lifecycle) ABOVE method
+	// docs. Skip the connector lookup for obvious method paths — a dotted path
+	// (`feeds.create`) or a `client.`-prefixed term never names a connector.
 	const q = args.query.trim();
 	const looksLikeMethodPath = q.includes(".") || /^client\b/i.test(q);
 	const connectorHits = looksLikeMethodPath
@@ -249,16 +246,25 @@ async function sdkSearchImpl(
 		: await searchLiveConnectors(q, env, ctx);
 	const methodResult = await sdkMethodSearch(args, env, ctx);
 	if (connectorHits.length === 0) return methodResult;
-	const merged = [...connectorHits, ...methodResult.results];
+
+	// Cap the COMBINED list at the same limit the method search honors, so
+	// prepended connector hits can't push the response past the documented max.
+	// Connector hits are the more specific answer, so they keep priority.
+	const limit = Math.min(args.limit ?? 20, 100);
+	const combined = [...connectorHits, ...methodResult.results];
+	const results = combined.slice(0, limit);
+	const dropped = combined.length - results.length;
+	const baseNote =
+		methodResult.results.length > 0
+			? "Top matches are live connectors (with lifecycle); method docs follow."
+			: "Matched live connectors (not SDK methods). Follow the lifecycle shown; query a namespace (e.g. 'feeds') for method signatures.";
+	const truncNote =
+		dropped > 0 ? ` ${dropped} more result(s) truncated; raise \`limit\` or refine the query.` : "";
 	return {
 		query: methodResult.query,
-		match_count: merged.length,
-		results: merged,
-		notes:
-			methodResult.results.length > 0
-				? "Top matches are live connectors (with lifecycle); method docs follow. " +
-					(methodResult.notes ?? "")
-				: "Matched live connectors (not SDK methods). Follow the lifecycle shown; query a namespace (e.g. 'feeds') for method signatures.",
+		match_count: results.length,
+		results,
+		notes: `${baseNote}${truncNote}`.trim(),
 	};
 }
 

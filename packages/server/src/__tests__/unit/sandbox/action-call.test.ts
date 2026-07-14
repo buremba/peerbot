@@ -165,6 +165,59 @@ describe("createActionCaller", () => {
 		});
 	});
 
+	it("rewrites an internal manage_* validation error to the public SDK method", async () => {
+		// A client.feeds.get({ id: 1 }) whose internal handler (manage_feeds)
+		// rejects the args must NOT leak `manage_feeds` — the caller can only
+		// recover against `client.feeds.get`.
+		const handler = async () => {
+			throw new ToolUserError(
+				"Invalid arguments for manage_feeds: /feed_id: Expected required property",
+			);
+		};
+		const { action } = createActionCaller(
+			handler as never,
+			{} as never,
+			{} as never,
+			"feeds",
+		);
+		const thrown = (await action("read_feed", { id: 1 }, "get").catch(
+			(e: unknown) => e,
+		)) as ToolUserError;
+		expect(thrown).toBeInstanceOf(ToolUserError);
+		expect(thrown.message).not.toMatch(/manage_feeds/);
+		expect(thrown.message).toMatch(/client\.feeds\.get/);
+		expect(thrown.message).toMatch(/feed_id/);
+	});
+
+	it("falls back to the action name when no public method is supplied", async () => {
+		const handler = async () => {
+			throw new ToolUserError(
+				"Invalid arguments for manage_operations: /limit: Expected number",
+			);
+		};
+		const { action } = createActionCaller(
+			handler as never,
+			{} as never,
+			{} as never,
+			"operations",
+		);
+		const thrown = (await action("list_available", { limit: "x" }).catch(
+			(e: unknown) => e,
+		)) as ToolUserError;
+		expect(thrown.message).not.toMatch(/manage_operations/);
+		expect(thrown.message).toMatch(/client\.operations\.list_available/);
+	});
+
+	it("leaves errors from callers with no declared namespace untouched", async () => {
+		const handler = async () => {
+			throw new ToolUserError("Invalid arguments for manage_feeds: boom");
+		};
+		const { action } = createActionCaller(handler as never, {} as never, {} as never);
+		const thrown = (await action("read_feed", {}).catch((e: unknown) => e)) as ToolUserError;
+		// No namespace → nothing to rewrite to; message passes through.
+		expect(thrown.message).toBe("Invalid arguments for manage_feeds: boom");
+	});
+
 	it("returns a queued approval even when its mutation success is false", async () => {
 		const queued = {
 			success: false,

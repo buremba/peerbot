@@ -87,7 +87,7 @@ export function buildEntitiesNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): EntitiesNamespace {
-	const { manage, action } = createActionCaller(manageEntity, env, ctx);
+	const { manage, action } = createActionCaller(manageEntity, env, ctx, "entities");
 
 	return {
 		manage,

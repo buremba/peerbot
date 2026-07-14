@@ -151,15 +151,17 @@ describe("ClientSDK object signature contract", () => {
 		const connections = builders.connections(ctx, env);
 		const authProfiles = builders.authProfiles(ctx, env);
 
+		// Placeholders are neutral (`<connection_id>`, `<auth_profile_slug>`), NOT
+		// real-looking ids — a fresh agent must not copy a fabricated id verbatim.
 		await expect(
 			connections.reauthenticate({ connection_id: 418 } as never),
 		).rejects.toThrow(
-			"connections.reauthenticate expects a positional number. Call client.connections.reauthenticate(418); do not pass an object.",
+			"connections.reauthenticate expects a positional number. Call client.connections.reauthenticate(<connection_id>); do not pass an object.",
 		);
 		await expect(
 			authProfiles.get({ auth_profile_slug: "google-calendar-account" } as never),
 		).rejects.toThrow(
-			"authProfiles.get expects a positional string. Call client.authProfiles.get('google-calendar-account'); do not pass an object.",
+			"authProfiles.get expects a positional string. Call client.authProfiles.get('<auth_profile_slug>'); do not pass an object.",
 		);
 	});
 });

@@ -51,16 +51,16 @@ export function buildFeedsNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): FeedsNamespace {
-	const { manage, action } = createActionCaller(manageFeeds, env, ctx);
+	const { manage, action } = createActionCaller(manageFeeds, env, ctx, "feeds");
 
 	return {
 		manage,
-		list: (input) => action("list_feeds", input),
-		get: (input) => action("read_feed", input),
-		readMany: (input) => action("read_feeds", input),
-		create: (input) => action("create_feed", input),
-		update: (input) => action("update_feed", input),
-		delete: (input) => action("delete_feed", input),
-		trigger: (input) => action("trigger_feed", input),
+		list: (input) => action("list_feeds", input, "list"),
+		get: (input) => action("read_feed", input, "get"),
+		readMany: (input) => action("read_feeds", input, "readMany"),
+		create: (input) => action("create_feed", input, "create"),
+		update: (input) => action("update_feed", input, "update"),
+		delete: (input) => action("delete_feed", input, "delete"),
+		trigger: (input) => action("trigger_feed", input, "trigger"),
 	};
 }

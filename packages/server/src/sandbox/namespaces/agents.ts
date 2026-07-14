@@ -35,7 +35,7 @@ export function buildAgentsNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): AgentsNamespace {
-	const { manage, action } = createActionCaller(manageAgents, env, ctx);
+	const { manage, action } = createActionCaller(manageAgents, env, ctx, "agents");
 
 	return {
 		manage,

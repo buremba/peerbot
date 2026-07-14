@@ -43,7 +43,7 @@ export function buildNotificationsNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): NotificationsNamespace {
-	const { action } = createActionCaller(notify, env, ctx);
+	const { action } = createActionCaller(notify, env, ctx, "notifications");
 
 	return {
 		send: (input) => action("send", input),

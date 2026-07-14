@@ -134,24 +134,69 @@ function compileSchema(schema: TSchema): TypeCheck<TSchema> {
  * than `false` (e.g. `Type.Record` passthrough) or has no `properties` at
  * all — those schemas accept arbitrary keys by design.
  */
-function rejectUnknownKeys(toolName: string, schema: TSchema, coerced: unknown): void {
+/**
+ * Return the allowed string literals of a subschema when it is a single
+ * literal, an enum, or a union of literals — so an "Expected union value"
+ * error (which names none) can be rewritten as `Expected one of: "a", "b"`.
+ * Returns null for any other schema shape.
+ */
+function allowedLiterals(schema: unknown): string[] | null {
+  if (!schema || typeof schema !== 'object') return null;
+  const s = schema as {
+    const?: unknown;
+    enum?: unknown[];
+    anyOf?: unknown[];
+    oneOf?: unknown[];
+  };
+  if (Array.isArray(s.enum)) {
+    return s.enum.map((v) => String(v));
+  }
+  if (s.const !== undefined) return [String(s.const)];
+  const variants = s.anyOf ?? s.oneOf;
+  if (Array.isArray(variants)) {
+    const lits: string[] = [];
+    for (const v of variants) {
+      const inner = allowedLiterals(v);
+      if (!inner) return null; // a non-literal member → not a pure literal union
+      lits.push(...inner);
+    }
+    return lits.length > 0 ? lits : null;
+  }
+  return null;
+}
+
+/** Resolve the subschema at a TypeBox error `path` (e.g. `/list_scope`). */
+function subschemaAtPath(schema: TSchema, path: string): unknown {
+  const segments = path.split('/').filter(Boolean);
+  let current: unknown = schema;
+  for (const seg of segments) {
+    if (!current || typeof current !== 'object') return undefined;
+    const props = (current as { properties?: Record<string, unknown> }).properties;
+    current = props ? props[seg] : undefined;
+  }
+  return current;
+}
+
+/**
+ * Find top-level keys the schema does not declare, so they can be reported
+ * ALONGSIDE any missing/typed-wrong fields (a caller who passes `{ id }` for a
+ * `{ feed_id }` schema must learn both that `feed_id` is missing AND that `id`
+ * is unknown — fixing one at a time is the failure the audit flagged).
+ *
+ * Returns `null` when the schema accepts arbitrary keys by design
+ * (`additionalProperties` non-false, or no `properties`); empty array when all
+ * keys are known. Object.hasOwn (not `key in`) so prototype-named keys
+ * (`constructor`, `toString`) are correctly treated as unknown.
+ */
+function unknownKeys(schema: TSchema, coerced: unknown): string[] | null {
   const { properties, additionalProperties } = schema as {
     properties?: Record<string, unknown>;
     additionalProperties?: unknown;
   };
-  if (!properties) return;
-  if (additionalProperties !== undefined && additionalProperties !== false) return;
-  if (!coerced || typeof coerced !== 'object' || Array.isArray(coerced)) return;
-  // Object.hasOwn, NOT `key in properties`: `in` walks Object.prototype, so
-  // args named `constructor`, `toString`, `hasOwnProperty`, etc. would be
-  // wrongly accepted as "known" keys.
-  const unknown = Object.keys(coerced).filter((key) => !Object.hasOwn(properties, key));
-  if (unknown.length === 0) return;
-  const action = (properties.action as { const?: unknown } | undefined)?.const;
-  const scope = action !== undefined ? ` for action '${String(action)}'` : '';
-  throw new ToolUserError(
-    `Invalid arguments for ${toolName}: unknown argument(s): ${unknown.join(', ')} — valid arguments${scope} are: ${Object.keys(properties).join(', ')}`
-  );
+  if (!properties) return null;
+  if (additionalProperties !== undefined && additionalProperties !== false) return null;
+  if (!coerced || typeof coerced !== 'object' || Array.isArray(coerced)) return [];
+  return Object.keys(coerced).filter((key) => !Object.hasOwn(properties, key));
 }
 
 function checkAgainst(toolName: string, schema: TSchema, args: unknown): unknown {
@@ -164,22 +209,60 @@ function checkAgainst(toolName: string, schema: TSchema, args: unknown): unknown
   // path requires sort_by to be UNSET; injecting the default broke it.
   const coerced = Value.Convert(schema, normalizeArgs(args));
   const validator = compileSchema(schema);
-  if (validator.Check(coerced)) {
-    rejectUnknownKeys(toolName, schema, coerced);
+  const checkPassed = validator.Check(coerced);
+
+  const unknown = unknownKeys(schema, coerced);
+  const action = (
+    (schema as { properties?: Record<string, { const?: unknown }> }).properties?.action
+  )?.const;
+  const scope = action !== undefined ? ` for action '${String(action)}'` : '';
+
+  if (checkPassed) {
+    if (unknown && unknown.length > 0) {
+      const valid = Object.keys(
+        (schema as { properties?: Record<string, unknown> }).properties ?? {}
+      );
+      throw new ToolUserError(
+        `Invalid arguments for ${toolName}: unknown argument(s): ${unknown.join(', ')} — valid arguments${scope} are: ${valid.join(', ')}`
+      );
+    }
     return coerced;
   }
 
   // Deduplicate by path — TypeBox emits both `Expected required property` and
   // `Expected <type>` against the same missing field, which would otherwise
-  // duplicate the field name in the error message.
+  // duplicate the field name in the error message. Humanize enum failures by
+  // listing the allowed literals (TypeBox's "Expected union value" names none).
+  const unknownSet = new Set(unknown ?? []);
   const seen = new Set<string>();
   const errs: string[] = [];
   for (const e of validator.Errors(coerced)) {
     const path = e.path || '/';
     if (seen.has(path)) continue;
+    // Skip TypeBox's raw `Unexpected property` — the humanized "unknown
+    // argument(s)" line below re-reports every unknown key at once with the
+    // valid-argument set, so leaving the raw one in would double-list the key.
+    const key = path.replace(/^\//, '');
+    if (unknownSet.has(key)) continue;
     seen.add(path);
-    errs.push(`${path}: ${e.message}`);
+    const literals = allowedLiterals(subschemaAtPath(schema, path));
+    const message = literals
+      ? `Expected one of: ${literals.map((l) => JSON.stringify(l)).join(', ')}`
+      : e.message;
+    errs.push(`${path}: ${message}`);
     if (errs.length >= 3) break;
+  }
+
+  // Report unknown keys in the SAME message as the type/required failures, so a
+  // caller who supplied the wrong field name (dropping the required one) sees
+  // both problems at once instead of fixing them serially.
+  if (unknown && unknown.length > 0) {
+    const valid = Object.keys(
+      (schema as { properties?: Record<string, unknown> }).properties ?? {}
+    );
+    errs.push(
+      `unknown argument(s): ${unknown.join(', ')} — valid arguments${scope} are: ${valid.join(', ')}`
+    );
   }
   throw new ToolUserError(`Invalid arguments for ${toolName}: ${errs.join('; ')}`);
 }

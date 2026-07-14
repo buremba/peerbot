@@ -65,37 +65,54 @@ export function buildAuthProfilesNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): AuthProfilesNamespace {
-	const { manage, action } = createActionCaller(manageAuthProfiles, env, ctx);
+	const { manage, action } = createActionCaller(
+		manageAuthProfiles,
+		env,
+		ctx,
+		"authProfiles",
+	);
 
 	return {
 		manage,
-		list: (input) => action("list_auth_profiles", input),
+		list: (input) => action("list_auth_profiles", input, "list"),
 		get: async (auth_profile_slug) =>
-			action("get_auth_profile", {
-				auth_profile_slug: requirePositionalString(
-					"authProfiles.get",
-					auth_profile_slug,
-					"client.authProfiles.get('google-calendar-account')",
-				),
-			}),
+			action(
+				"get_auth_profile",
+				{
+					auth_profile_slug: requirePositionalString(
+						"authProfiles.get",
+						auth_profile_slug,
+						"client.authProfiles.get('<auth_profile_slug>')",
+					),
+				},
+				"get",
+			),
 		test: async (auth_profile_slug) =>
-			action("test_auth_profile", {
-				auth_profile_slug: requirePositionalString(
-					"authProfiles.test",
-					auth_profile_slug,
-					"client.authProfiles.test('google-calendar-account')",
-				),
-			}),
-		create: (input) => action("create_auth_profile", input),
-		update: (input) => action("update_auth_profile", input),
+			action(
+				"test_auth_profile",
+				{
+					auth_profile_slug: requirePositionalString(
+						"authProfiles.test",
+						auth_profile_slug,
+						"client.authProfiles.test('<auth_profile_slug>')",
+					),
+				},
+				"test",
+			),
+		create: (input) => action("create_auth_profile", input, "create"),
+		update: (input) => action("update_auth_profile", input, "update"),
 		delete: async (auth_profile_slug, options) =>
-			action("delete_auth_profile", {
-				auth_profile_slug: requirePositionalString(
-					"authProfiles.delete",
-					auth_profile_slug,
-					"client.authProfiles.delete('google-calendar-account')",
-				),
-				...options,
-			}),
+			action(
+				"delete_auth_profile",
+				{
+					auth_profile_slug: requirePositionalString(
+						"authProfiles.delete",
+						auth_profile_slug,
+						"client.authProfiles.delete('<auth_profile_slug>')",
+					),
+					...options,
+				},
+				"delete",
+			),
 	};
 }

@@ -50,7 +50,7 @@ export function buildViewTemplatesNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): ViewTemplatesNamespace {
-	const { manage, action } = createActionCaller(manageViewTemplates, env, ctx);
+	const { manage, action } = createActionCaller(manageViewTemplates, env, ctx, "viewTemplates");
 
 	return {
 		manage,

@@ -1,10 +1,10 @@
 import type { McpToolDef } from "@lobu/core";
+import type { PluginLogger } from "@lobu/plugin-api";
 import { createConversationPlugin } from "@lobu/plugin-conversations";
 import { PluginHost } from "@lobu/plugin-host";
-import { createMcpPlugin, callMcpTool } from "@lobu/plugin-mcp";
+import { callMcpTool, createMcpPlugin } from "@lobu/plugin-mcp";
 import { createMediaPlugin } from "@lobu/plugin-media";
 import { createMemoryPlugin } from "@lobu/plugin-memory";
-import type { PluginLogger, PluginRuntimeContext } from "@lobu/plugin-api";
 import type { GatewayParams } from "@lobu/plugin-toolkit";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 
@@ -44,61 +44,6 @@ export function createRuntimePluginHost(params: RuntimePluginParams) {
     );
   }
   return new PluginHost<ToolDefinition>(plugins);
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : { value };
-}
-
-export function wrapToolsWithPluginHooks(
-  tools: ToolDefinition[],
-  host: PluginHost<ToolDefinition>,
-  context: PluginRuntimeContext
-): ToolDefinition[] {
-  return tools.map((tool) => ({
-    ...tool,
-    execute: async (toolCallId, params, signal, onUpdate, executionContext) => {
-      const before = await host.beforeToolCall(
-        { toolName: tool.name, toolCallId, params: asRecord(params) },
-        context
-      );
-      if (before.blockReason) throw new Error(before.blockReason);
-      try {
-        const result = await tool.execute(
-          toolCallId,
-          before.params as typeof params,
-          signal,
-          onUpdate,
-          executionContext
-        );
-        await host.afterToolCall(
-          {
-            toolName: tool.name,
-            toolCallId,
-            params: before.params,
-            result,
-            isError: false,
-          },
-          context
-        );
-        return result;
-      } catch (error) {
-        await host.afterToolCall(
-          {
-            toolName: tool.name,
-            toolCallId,
-            params: before.params,
-            result: error instanceof Error ? error.message : String(error),
-            isError: true,
-          },
-          context
-        );
-        throw error;
-      }
-    },
-  }));
 }
 
 export function createPluginLogger(logger: {

@@ -63,22 +63,6 @@ describe("PluginHost", () => {
     ).toEqual(["zeta", "alpha"]);
   });
 
-  test("fails closed when a pre-tool hook throws", async () => {
-    const host = new PluginHost([
-      plugin("policy", {
-        beforeToolCall: () => {
-          throw new Error("policy unavailable");
-        },
-      }),
-    ]);
-
-    const result = await host.beforeToolCall(
-      { toolName: "bash", toolCallId: "call-1", params: {} },
-      context
-    );
-    expect(result.blockReason).toContain("failed closed");
-  });
-
   test("rejects duplicate plugin names", () => {
     expect(() => new PluginHost([plugin("same"), plugin("same")])).toThrow(
       "Duplicate Lobu plugin"

@@ -41,7 +41,6 @@ import {
 import {
   createPluginLogger,
   createRuntimePluginHost,
-  wrapToolsWithPluginHooks,
 } from "./plugin-composition";
 import type { AgentProgressProcessor } from "./processor";
 import { resetSessionForProviderChange } from "./provider-session";
@@ -1173,19 +1172,9 @@ user references earlier discussion or you need prior context.`);
       // `customTools` option below.)
       tools: activeToolNames(tools, customTools),
       builtinOverrides: wrapToolsWithTurnGuard(tools, turnController),
-      // Wrap custom tools (plugin + MCP) so plugin before_tool_call/
-      // after_tool_call hooks fire around in-process execution — these never
-      // hit the gateway proxy, so this is the only place the hooks can run.
-      // Then layer the runaway guard on top so AskUser/MCP/plugin tools are
-      // bounded identically.
-      customTools: wrapToolsWithTurnGuard(
-        wrapToolsWithPluginHooks(
-          customTools,
-          runtimePluginHost,
-          pluginRuntimeContext
-        ),
-        turnController
-      ),
+      // Layer the runaway guard over every custom tool so AskUser/MCP/capability
+      // tools are bounded identically to the built-ins.
+      customTools: wrapToolsWithTurnGuard(customTools, turnController),
       sessionManager,
       settingsManager,
       authStorage,

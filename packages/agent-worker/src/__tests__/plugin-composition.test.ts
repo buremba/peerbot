@@ -1,17 +1,9 @@
 import { describe, expect, mock, test } from "bun:test";
-import {
-  defineLobuPlugin,
-  type PluginLogger,
-  type PluginRuntimeContext,
-} from "@lobu/plugin-api";
+import type { PluginLogger, PluginRuntimeContext } from "@lobu/plugin-api";
 import { PluginHost } from "@lobu/plugin-host";
 import { createMemoryPlugin } from "@lobu/plugin-memory";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
-import {
-  createRuntimePluginHost,
-  wrapToolsWithPluginHooks,
-} from "../runtime/plugin-composition";
+import { createRuntimePluginHost } from "../runtime/plugin-composition";
 
 const logger: PluginLogger = {
   debug: () => undefined,
@@ -34,17 +26,7 @@ const context: PluginRuntimeContext = {
   logger,
 };
 
-function tool(execute: ToolDefinition["execute"]): ToolDefinition {
-  return {
-    name: "test_tool",
-    label: "test_tool",
-    description: "Plugin adapter fixture",
-    parameters: Type.Object({ value: Type.String() }),
-    execute,
-  };
-}
-
-describe("plugin composition tool adapter", () => {
+describe("runtime plugin composition", () => {
   test("composes concrete packages in the existing model-visible tool order", async () => {
     const host = createRuntimePluginHost({
       gatewayUrl: "http://gateway",
@@ -81,86 +63,6 @@ describe("plugin composition tool adapter", () => {
       "ask_user",
       "search_issues",
     ]);
-  });
-
-  test("fails closed before invoking a tool", async () => {
-    const execute = mock(async () => ({
-      content: [{ type: "text" as const, text: "should not run" }],
-      details: {},
-    }));
-    const host = new PluginHost<ToolDefinition>([
-      defineLobuPlugin<ToolDefinition>({
-        manifest: {
-          name: "policy",
-          version: "1.0.0",
-          apiVersion: 1,
-          description: "Block fixture",
-        },
-        hooks: {
-          beforeToolCall: () => ({
-            block: true,
-            blockReason: "denied by native policy",
-          }),
-        },
-      }),
-    ]);
-    const [wrapped] = wrapToolsWithPluginHooks([tool(execute)], host, context);
-
-    await expect(
-      wrapped.execute("call", { value: "x" }, undefined, undefined)
-    ).rejects.toThrow("denied by native policy");
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  test("passes transformed parameters and observes the result", async () => {
-    const execute = mock(async (_id: string, params: { value: string }) => ({
-      content: [{ type: "text" as const, text: params.value }],
-      details: {},
-    }));
-    const afterToolCall = mock(() => undefined);
-    const host = new PluginHost<ToolDefinition>([
-      defineLobuPlugin<ToolDefinition>({
-        manifest: {
-          name: "observer",
-          version: "1.0.0",
-          apiVersion: 1,
-          description: "Transform and observe fixture",
-        },
-        hooks: {
-          beforeToolCall: () => ({ params: { value: "rewritten" } }),
-          afterToolCall,
-        },
-      }),
-    ]);
-    const [wrapped] = wrapToolsWithPluginHooks(
-      [tool(execute as ToolDefinition["execute"])],
-      host,
-      context
-    );
-
-    const result = await wrapped.execute(
-      "call",
-      { value: "original" },
-      undefined,
-      undefined
-    );
-
-    expect(execute).toHaveBeenCalledWith(
-      "call",
-      { value: "rewritten" },
-      undefined,
-      undefined,
-      undefined
-    );
-    expect(result.content).toEqual([{ type: "text", text: "rewritten" }]);
-    expect(afterToolCall).toHaveBeenCalledWith(
-      expect.objectContaining({
-        toolName: "test_tool",
-        params: { value: "rewritten" },
-        isError: false,
-      }),
-      context
-    );
   });
 });
 

@@ -1,11 +1,9 @@
 import {
-  assertPluginManifest,
   type AgentEndEvent,
-  type AfterToolCallEvent,
+  assertPluginManifest,
   type BeforeAgentStartEvent,
   type LobuPlugin,
   type PluginRuntimeContext,
-  type ToolCallEvent,
 } from "@lobu/plugin-api";
 
 export class PluginHost<TTool = never> {
@@ -51,52 +49,6 @@ export class PluginHost<TTool = never> {
       if (value) prependContext.push(value);
     }
     return prependContext;
-  }
-
-  async beforeToolCall(
-    event: ToolCallEvent,
-    context: PluginRuntimeContext
-  ): Promise<{ params: Record<string, unknown>; blockReason?: string }> {
-    let params = { ...event.params };
-    for (const plugin of this.plugins) {
-      const hook = plugin.hooks?.beforeToolCall;
-      if (!hook) continue;
-      let result;
-      try {
-        result = await hook({ ...event, params }, context);
-      } catch (error) {
-        return {
-          params,
-          blockReason: `Plugin ${plugin.manifest.name} failed closed: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-      if (result?.params) params = { ...params, ...result.params };
-      if (result?.block) {
-        return {
-          params,
-          blockReason:
-            result.blockReason?.trim() ||
-            `Blocked by plugin ${plugin.manifest.name}`,
-        };
-      }
-    }
-    return { params };
-  }
-
-  async afterToolCall(
-    event: AfterToolCallEvent,
-    context: PluginRuntimeContext
-  ): Promise<void> {
-    for (const plugin of this.plugins) {
-      try {
-        await plugin.hooks?.afterToolCall?.(event, context);
-      } catch (error) {
-        context.logger.error("Plugin afterToolCall hook failed", {
-          plugin: plugin.manifest.name,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
   }
 
   async agentEnd(

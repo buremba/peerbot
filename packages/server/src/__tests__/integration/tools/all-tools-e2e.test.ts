@@ -173,6 +173,13 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				coverage: "reachable",
 				note: "lists agents for the org",
 			},
+			manage_conversations: {
+				// `list` drives the read path model-free (send would enqueue a real
+				// turn, which needs a model). agent_id is the seeded fixture agent.
+				args: () => ({ action: "list", agent_id: agentId }),
+				coverage: "reachable",
+				note: "lists an agent's conversations (send/get covered by unit tests)",
+			},
 			manage_feeds: {
 				args: { action: "list_feeds" },
 				coverage: "reachable",

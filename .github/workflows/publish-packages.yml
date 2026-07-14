@@ -37,7 +37,7 @@ jobs:
         with:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           # Node 24 ships with npm >= 11.5.1 which supports OIDC trusted
           # publishing. Do NOT downgrade below 24 without re-adding the

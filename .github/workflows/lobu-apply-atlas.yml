@@ -58,7 +58,7 @@ jobs:
 
       # `node packages/cli/bin/lobu.js` is the runtime entrypoint; Node 22 is the
       # repo's supported major (see AGENTS.md prereqs).
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: steps.gate.outputs.skip != 'true'
         with:
           node-version: "22"

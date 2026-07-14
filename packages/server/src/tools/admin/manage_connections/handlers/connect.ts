@@ -8,7 +8,6 @@ import { notifyConnectionPermissionRequest } from "../../../../notifications/tri
 import {
 	getPrimaryAuthProfileForKind,
 	getBrowserSessionReadiness,
-	createAuthProfile,
 } from "../../../../utils/auth-profiles";
 import {
   ConnectionSlugConflictError,
@@ -44,7 +43,6 @@ import { buildConnectionsUrl } from "../../../../utils/url-builder";
 import { getOrgUrlContext } from "../../../view-urls";
 import { createConnectToken } from "../../../../utils/connect-tokens";
 import { registerConnectorWebhook } from "../../../../connect/webhook-registration";
-import { createAuthRun } from "../../../../runs/queue-service";
 import { resolveUsernames } from "../../../../utils/resolve-usernames";
 import type { ToolContext } from "../../../registry";
 import type { ManageConnectionsResult, ConnectionsArgs } from "../schemas";
@@ -62,6 +60,7 @@ import {
 	type ConnectionSetupFamily,
 	type ConnectionSetupNextAction,
 } from "../../helpers/connect-setup-continuation";
+import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
 
 export async function handleConnect(
 	args: Extract<ConnectionsArgs, { action: "connect" }>,
@@ -521,43 +520,19 @@ export async function handleConnect(
 	// creation rolls back both rows, so another replica can never observe an
 	// orphaned pending connection that has no pairing work queued.
 	let insertedConn: Record<string, unknown>[];
-	let interactiveAuthRunId: number | null = null;
+	let interactiveAuthRunId: number | null;
 	try {
-		if (isInteractiveConnect) {
-			const bundle = await sql.begin(async (tx) => {
-				const profile = await createAuthProfile(
-					{
-						organizationId,
-						connectorKey: args.connector_key,
-						displayName: `${connectDisplayName} (pairing)`,
-						slug: `${args.connector_key}-interactive-${Date.now()}`,
-						profileKind: "interactive",
-						authData: {},
-						status: "pending_auth",
-						createdBy: userId,
-					},
-					tx,
-				);
-				const rows = await insertConnection(tx, profile.id, true);
-				const authRunId = await createAuthRun(
-					{
-						organizationId,
-						connectorKey: args.connector_key,
-						authProfileId: profile.id,
-						createdByUserId: userId!,
-					},
-					tx,
-				);
-				return { rows, authRunId };
-			});
-			insertedConn = bundle.rows as Record<string, unknown>[];
-			interactiveAuthRunId = bundle.authRunId;
-		} else {
-			insertedConn = (await insertConnection(sql, null, false)) as Record<
-				string,
-				unknown
-			>[];
-		}
+		const bundle = await createConnectionSetupBundle({
+			db: sql,
+			interactive: isInteractiveConnect,
+			organizationId,
+			connectorKey: args.connector_key,
+			displayName: connectDisplayName,
+			createdByUserId: userId!,
+			insertConnection,
+		});
+		insertedConn = bundle.rows;
+		interactiveAuthRunId = bundle.authRunId;
   } catch (err) {
 		if (err instanceof ConnectionSlugConflictError)
 			return { error: err.message, setup_url: setupUrl };

@@ -7,7 +7,6 @@ import { getErrorMessage, parseJsonObject } from "@lobu/core";
 import { getScopedConnectorDefinition } from "../../../../catalog/connector-definitions";
 import { enrichConnectorGroupsWithCatalogDisplay } from "../../../../catalog/connector-group-display";
 import { unregisterConnectorWebhook } from "../../../../connect/webhook-registration";
-import { createAuthRun } from "../../../../runs/queue-service";
 import {
 	getDb,
 	parsePgNumberArray,
@@ -26,7 +25,6 @@ import {
   getOperationsSummaryBatch,
 } from "../../../../operations/connector-operations";
 import {
-  createAuthProfile,
   getAuthProfileById,
   getAuthProfileBySlug,
   getBrowserSessionReadiness,
@@ -101,6 +99,7 @@ import {
 	buildSafeConnectionResumeCall,
 	installedConnectorPoll,
 } from "../../helpers/connect-setup-continuation";
+import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
 
 // ============================================
 // handleListConnectorGroups
@@ -1193,43 +1192,19 @@ export async function handleCreate(
 		});
 
 	let inserted: Record<string, unknown>[];
-	let interactiveAuthRunId: number | null = null;
+	let interactiveAuthRunId: number | null;
 	try {
-		if (interactiveMethod) {
-			const bundle = await sql.begin(async (tx) => {
-				const profile = await createAuthProfile(
-					{
-						organizationId,
-						connectorKey: args.connector_key,
-						displayName: `${displayName} (pairing)`,
-						slug: `${args.connector_key}-interactive-${Date.now()}`,
-						profileKind: "interactive",
-						authData: {},
-						status: "pending_auth",
-						createdBy: effectiveCreatedBy ?? null,
-					},
-					tx,
-				);
-				const rows = await insertConnection(tx, profile.id, true);
-				const authRunId = await createAuthRun(
-					{
-						organizationId,
-						connectorKey: args.connector_key,
-						authProfileId: profile.id,
-						createdByUserId: effectiveCreatedBy!,
-					},
-					tx,
-				);
-				return { rows, authRunId };
-    });
-			inserted = bundle.rows as Record<string, unknown>[];
-			interactiveAuthRunId = bundle.authRunId;
-		} else {
-			inserted = (await insertConnection(sql, null, false)) as Record<
-				string,
-				unknown
-			>[];
-		}
+		const bundle = await createConnectionSetupBundle({
+			db: sql,
+			interactive: Boolean(interactiveMethod),
+			organizationId,
+			connectorKey: args.connector_key,
+			displayName,
+			createdByUserId: effectiveCreatedBy!,
+			insertConnection,
+		});
+		inserted = bundle.rows;
+		interactiveAuthRunId = bundle.authRunId;
   } catch (err) {
 		if (err instanceof ConnectionSlugConflictError)
 			return { error: err.message };

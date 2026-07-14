@@ -1,4 +1,3 @@
-import type { GuardrailStage } from "./guardrails/types";
 import type { SecretRef } from "./secret-refs";
 
 /**
@@ -92,11 +91,13 @@ export interface ConversationMessage {
   timestamp: number;
 }
 
-/**
- * Per-skill thinking budget level.
- * Controls how much reasoning the model applies when executing a skill.
- */
-export type ThinkingLevel = "off" | "low" | "medium" | "high";
+// Agent-settings nested types (NetworkConfig, NixConfig, ToolsConfig,
+// SkillConfig, SkillsConfig, AgentInlineGuardrail, ThinkingLevel,
+// SkillPreToolGuardrail) now live in ./contracts/agent-settings.ts as the
+// single TypeBox-schema source (Static<typeof ...>). They are re-exported
+// from there at the bottom of this file so the @lobu/core public surface and
+// core-internal imports keep resolving. The hand-written duplicates that
+// lived here were structurally identical but a separate drift surface.
 
 export interface McpOAuthConfig {
   /** Authorization endpoint (user verification page for device-code flow). */
@@ -117,72 +118,10 @@ export interface McpOAuthConfig {
   resource?: string;
 }
 
-/**
- * Individual skill configuration.
- * Skills are SKILL.md files from GitHub repos that provide instructions to Claude.
- */
-export interface SkillConfig {
-  /** Skill repository in owner/repo format (e.g., "anthropics/skills/pdf") */
-  repo: string;
-  /** Skill name derived from SKILL.md frontmatter or folder name */
-  name: string;
-  /** Optional description from SKILL.md frontmatter */
-  description?: string;
-  /** Short always-inlined instruction block for critical rules */
-  instructions?: string;
-  /** Whether this skill is currently enabled */
-  enabled: boolean;
-  /** True for non-user-managed runtime skills. */
-  system?: boolean;
-  /** Cached SKILL.md content (fetched from GitHub) */
-  content?: string;
-  /** When the content was last fetched (timestamp ms) */
-  contentFetchedAt?: number;
-  /** System packages declared by the skill (nix) */
-  nixPackages?: string[];
-  /** AI providers the skill requires */
-  providers?: string[];
-  /** Preferred model for this skill (e.g., "anthropic/claude-opus-4") */
-  modelPreference?: string;
-  /** Thinking level budget for this skill */
-  thinkingLevel?: ThinkingLevel;
-  /**
-   * Guardrails declared by the skill.
-   *
-   * Skills may only declare `pre-tool` guardrails — the asymmetry is
-   * deliberate. `input` (user message → worker) and `output` (worker text →
-   * user) are agent-wide concerns: a skill can't decide for the operator
-   * which messages should reach which agent or which words an agent may
-   * speak. `pre-tool` is scoped to specific tool invocations, which is what
-   * a skill knows about — it can reasonably say "before this tool runs,
-   * apply this judge".
-   *
-   * Discriminated by `kind` so invalid combinations (neither / both) are
-   * compile-time TS errors instead of runtime warnings:
-   *   - `{ kind: "builtin", name }` — reference a registered guardrail.
-   *     The optional `tools` field is ignored for builtins (built-ins
-   *     decide their own input filtering); use an inline judge if you
-   *     want per-tool narrowing.
-   *   - `{ kind: "judge", policy, tools?, model? }` — ad-hoc LLM-judge policy;
-   *     `tools` narrows the judge to specific tool names (matched against
-   *     `toolName` in {@link PreToolGuardrailContext}); when absent, the
-   *     guardrail runs on every pre-tool invocation. `model` pins the judge
-   *     model; when omitted it uses the gateway default (`EGRESS_JUDGE_MODEL`),
-   *     and with neither set the judge fails closed.
-   */
-  guardrails?: {
-    "pre-tool"?: Array<SkillPreToolGuardrail>;
-  };
-}
-
-/**
- * Discriminated union of legal skill-declared pre-tool guardrail entries.
- * Each entry must be either a built-in reference or an inline judge --
- * setting both, or neither, is rejected by the type checker.
- */
-export type SkillPreToolGuardrail =
-  | { kind: "builtin"; name: string }
-  | { kind: "judge"; policy: string; tools?: string[]; model?: string };
+// SkillConfig and SkillPreToolGuardrail now come from
+// ./contracts/agent-settings (re-exported at the bottom). The hand-written
+// duplicates that lived here were structurally identical but a separate drift
+// surface; removed when the schema became the single source.
 
 /**
  * An operator-authored custom guardrail stored on an agent (`AgentSettings.
@@ -196,32 +135,13 @@ export type SkillPreToolGuardrail =
  * name recorded on every `guardrail-trip` event, so it has to be stable and
  * collision-free or the aggregator's name-keyed dedup would silently drop it.
  */
-export interface AgentInlineGuardrail {
-  name: string;
-  /** When false the guardrail is kept but not resolved into the run. */
-  enabled: boolean;
-  stage: GuardrailStage;
-  /** The judge policy prompt. */
-  policy: string;
-  /** Optional model override; defaults to the gateway's judge default. */
-  model?: string;
-  /** `pre-tool` only: narrow to specific tool names (empty = every tool). */
-  tools?: string[];
-  /**
-   * `egress` only: hostnames this judge gates (exact or `.wildcard`), mirroring
-   * `tools` for pre-tool. Empty/omitted = no egress routing.
-   */
-  domains?: string[];
-}
+// AgentInlineGuardrail now comes from ./contracts/agent-settings
+// (re-exported at the bottom). Removed the hand-written duplicate.
 
-/**
- * Skills configuration for agent settings.
- * Contains list of configured skills that can be enabled/disabled.
- */
-export interface SkillsConfig {
-  /** List of configured skills */
-  skills: SkillConfig[];
-}
+//
+// SkillsConfig now comes from ./contracts/agent-settings (re-exported at the
+// bottom). Removed the hand-written duplicate.
+//
 
 /**
  * Platform-agnostic history message format.
@@ -237,91 +157,8 @@ export interface HistoryMessage {
   messageId?: string;
 }
 
-/**
- * Network configuration for worker sandbox isolation.
- * Controls which domains the worker can access via HTTP proxy.
- *
- * Filtering rules:
- * - deniedDomains are checked first (take precedence)
- * - allowedDomains are checked second
- * - If neither matches, request is denied
- *
- * Domain pattern format:
- * - "example.com" - exact match
- * - ".example.com" - canonical wildcard form (matches root + subdomains)
- * - "*.example.com" - accepted as input and normalized to ".example.com"
- */
-export interface NetworkConfig {
-  /** Domains the worker is allowed to access. Empty array = no network access. */
-  allowedDomains?: string[];
-  /** Domains explicitly blocked (takes precedence over allowedDomains). */
-  deniedDomains?: string[];
-}
-
-/**
- * Nix environment configuration for agent workspace.
- * Allows agents to run with specific Nix packages or flakes.
- *
- * Resolution priority:
- * 1. API-provided flakeUrl (highest)
- * 2. API-provided packages
- * 3. flake.nix in git repo
- * 4. shell.nix in git repo
- * 5. .nix-packages file in git repo
- */
-export interface NixConfig {
-  /** Nix flake URL (e.g., "github:user/repo#devShell") */
-  flakeUrl?: string;
-  /** Nixpkgs packages to install (e.g., ["python311", "ffmpeg"]) */
-  packages?: string[];
-}
-
-/**
- * Tool permission configuration for agent settings.
- * Follows Claude Code's permission patterns for consistency.
- *
- * Pattern formats (Claude Code compatible):
- * - "Read" - exact tool match
- * - "Bash(git:*)" - Bash with command filter (only git commands)
- * - "Bash(npm:*)" - Bash with npm commands only
- * - "mcp__servername__*" - all tools from an MCP server
- * - "*" - wildcard (all tools)
- *
- * Filtering rules:
- * - deniedTools are checked first (take precedence)
- * - allowedTools are checked second
- * - If strictMode=true, only allowedTools are permitted
- * - If strictMode=false, defaults + allowedTools are permitted
- */
-export interface ToolsConfig {
-  /**
-   * Tools to auto-allow (in addition to defaults unless strictMode=true).
-   * Supports patterns like "Bash(git:*)" or "mcp__github__*".
-   */
-  allowedTools?: string[];
-
-  /**
-   * Tools to always deny (takes precedence over allowedTools).
-   * Use to block specific tools even if they're in defaults.
-   */
-  deniedTools?: string[];
-
-  /**
-   * If true, ONLY allowedTools are permitted (ignores defaults).
-   * If false (default), allowedTools are ADDED to default permissions.
-   */
-  strictMode?: boolean;
-
-  /**
-   * How MCP tools are exposed to the agent.
-   * - "tools" (default): each MCP tool is registered as a first-class
-   *   function-call tool with its JSON Schema.
-   * - "cli": MCP servers are exposed as one `just-bash` command per server
-   *   (e.g. `lobu search_memory <<<'{...}'`). Keeps the first-class
-   *   tool list small; relies on the sandboxed bash to invoke MCP tools.
-   */
-  mcpExposure?: "tools" | "cli";
-}
+// NetworkConfig / NixConfig / ToolsConfig now come from
+// ./contracts/agent-settings (re-exported at the bottom).
 
 interface MemoryFlushOptions {
   enabled?: boolean;
@@ -507,3 +344,20 @@ export interface UserSuggestion {
 
   prompts: SuggestedPrompt[];
 }
+
+// Re-export the agent-settings nested types from the single TypeBox-schema
+// source so the @lobu/core public surface (index.ts re-exports these via
+// `./types`) and any core-internal `from "./types"` import resolve to the
+// schema's Static<> definitions. This is what makes the schema the real single
+// source: the hand-written interfaces that used to live above were removed and
+// these names now point at one definition in ./contracts/agent-settings.
+export type {
+  AgentInlineGuardrail,
+  NetworkConfig,
+  NixConfig,
+  SkillConfig,
+  SkillPreToolGuardrail,
+  SkillsConfig,
+  ThinkingLevel,
+  ToolsConfig,
+} from "./contracts/agent-settings";

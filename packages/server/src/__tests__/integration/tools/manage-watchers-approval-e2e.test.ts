@@ -437,7 +437,7 @@ describe("manage_watchers — builder gate e2e", () => {
 			{
 				action: "update",
 				watcher_id: watcherId,
-				description: "A's held edit",
+				schedule: "0 9 * * *",
 			},
 			TEST_ENV,
 			agentCtx,
@@ -465,10 +465,10 @@ describe("manage_watchers — builder gate e2e", () => {
 
 		// The held edit was NOT applied.
 		const watcherRows = await sql`
-			SELECT description FROM watchers
+			SELECT schedule FROM watchers
 			WHERE id = ${watcherId} AND organization_id = ${orgId}
 		`;
-		expect(watcherRows[0]?.description).not.toBe("A's held edit");
+		expect(watcherRows[0]?.schedule).not.toBe("0 9 * * *");
 
 		// Run marked failed; card superseded to failed.
 		const runRows = await sql`

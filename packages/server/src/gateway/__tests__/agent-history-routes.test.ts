@@ -15,10 +15,8 @@ import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
-import {
-	buildApiConversationId,
-	extractThreadIdFromConversationId,
-} from "../services/api-conversation-id.js";
+import { buildApiConversationId } from "../services/api-conversation-id.js";
+import { webThreadIdFromConversationId } from "../services/conversations-store.js";
 import {
 	ensureDbForGatewayTests,
 	resetTestDatabase,
@@ -475,6 +473,16 @@ describe("agent history routes", () => {
         (${ORG_ID}, ${agentId}, ${conversationId}, ${runId},
          ${jsonl}, ${Buffer.byteLength(jsonl, "utf-8")}, 'completed')
     `;
+		// The sidebar listing now reads the `conversations` entity (dual-written on
+		// every turn), so materialize its row alongside the transcript.
+		await sql`
+      INSERT INTO public.conversations
+        (organization_id, agent_id, platform, conversation_id,
+         kind, user_id, title, last_activity_at)
+      VALUES
+        (${ORG_ID}, ${agentId}, 'web', ${conversationId},
+         'owned', ${USER_ID}, 'Hello from server', now())
+    `;
 
 		const threadsRes = await orgContext.run({ organizationId: ORG_ID }, () =>
 			createApp().request("/api/v1/agents/agent-1/history/threads", {
@@ -516,25 +524,7 @@ describe("agent history routes", () => {
 });
 
 describe("agent history conversation id helpers", () => {
-	test("extractThreadIdFromConversationId ignores watcher and run sessions", () => {
-		expect(
-			extractThreadIdFromConversationId(
-				"agent-1_user-1_org-1_watcher_abc",
-				"agent-1",
-				"user-1",
-				"org-1",
-			),
-		).toBeNull();
-		expect(
-			extractThreadIdFromConversationId(
-				"agent-1_user-1_run_99",
-				"agent-1",
-				"user-1",
-			),
-		).toBeNull();
-	});
-
-	test("buildApiConversationId round-trips through extractThreadIdFromConversationId", () => {
+	test("buildApiConversationId packs agent/user/org/thread deterministically", () => {
 		const conversationId = buildApiConversationId({
 			agentId: "owletto-default",
 			userId: "auth-user-1",
@@ -544,13 +534,25 @@ describe("agent history conversation id helpers", () => {
 		expect(conversationId).toBe(
 			"owletto-default_auth-user-1_org__abc_d108bc64-64f",
 		);
+	});
+
+	test("webThreadIdFromConversationId strips the known-column prefix", () => {
 		expect(
-			extractThreadIdFromConversationId(
-				conversationId,
+			webThreadIdFromConversationId(
+				"owletto-default_auth-user-1_org__abc_d108bc64-64f",
 				"owletto-default",
 				"auth-user-1",
 				"org__abc",
 			),
 		).toBe("d108bc64-64f");
+		// prefix-only "default thread" id → no routable thread id
+		expect(
+			webThreadIdFromConversationId(
+				"owletto-default_auth-user-1_org__abc",
+				"owletto-default",
+				"auth-user-1",
+				"org__abc",
+			),
+		).toBeNull();
 	});
 });

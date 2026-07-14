@@ -1,17 +1,17 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { sanitizeConversationId, titleFromSessionJsonl } from "@lobu/core";
+import { sanitizeConversationId } from "@lobu/core";
 import { filterChannelsForRequester } from "../../authz/channel-visibility.js";
 import { type DbClient, getDb } from "../../db/client.js";
 import {
 	resolveBoundChannelRows,
 	stripPlatformPrefix,
 } from "../channels/bound-channels.js";
+import { buildApiConversationId } from "./api-conversation-id.js";
 import {
-	buildApiConversationId,
-	extractThreadIdFromConversationId,
-	isUserOwnedApiConversationId,
-} from "./api-conversation-id.js";
+	listConversations,
+	webThreadIdFromConversationId,
+} from "./conversations-store.js";
 import { paginateSessionMessages } from "./session-message-page.js";
 import { readSnapshotJsonl } from "./transcript-snapshot.js";
 
@@ -40,21 +40,6 @@ export interface AgentThreadSummary {
 	conversationId: string;
 	/** Set on `platform: "watcher"` entries — routes to the watcher's page. */
 	watcherId?: number;
-}
-
-/**
- * Platform a conversation originated on, derived from its conversation id.
- * Platform sessions key on a colon-prefixed id (e.g. `slack:{channel}:{ts}`,
- * `telegram:{chat}:{topic}`); the app's own threads use `{agentId}_{userId}_…`
- * (no colon) and are "web".
- */
-export function deriveConversationPlatform(conversationId: string): string {
-	const colon = conversationId.indexOf(":");
-	if (colon > 0) {
-		const prefix = conversationId.slice(0, colon).toLowerCase();
-		if (/^[a-z][a-z0-9_-]*$/.test(prefix)) return prefix;
-	}
-	return "web";
 }
 
 /** `{platform}:{team}:{channel}` — team-scoped so the same channel id in two
@@ -168,38 +153,6 @@ async function findConversationSessionFile(
 	}
 }
 
-async function listWorkspaceConversationIds(
-	agentId: string,
-): Promise<string[]> {
-	if (!isSafeAgentId(agentId)) return [];
-	const workspacesRoot = resolve("workspaces");
-	const workspaceDir = resolve(workspacesRoot, agentId);
-	if (!workspaceDir.startsWith(`${workspacesRoot}/`)) return [];
-
-	try {
-		const entries = await readdir(workspaceDir, { withFileTypes: true });
-		const ids: string[] = [];
-		for (const entry of entries) {
-			if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-			const sessionPath = join(
-				workspaceDir,
-				entry.name,
-				".lobu",
-				"session.jsonl",
-			);
-			try {
-				await stat(sessionPath);
-				ids.push(entry.name);
-			} catch {
-				// not a conversation workspace
-			}
-		}
-		return ids;
-	} catch {
-		return [];
-	}
-}
-
 export async function listAgentThreads(args: {
 	agentId: string;
 	organizationId?: string;
@@ -209,141 +162,94 @@ export async function listAgentThreads(args: {
 	scope?: "user" | "all";
 }): Promise<AgentThreadSummary[]> {
 	const { agentId, organizationId, userId, scope = "user" } = args;
-	const conversationPrefix = organizationId
-		? `${agentId}_${userId}_${organizationId}_`
-		: `${agentId}_${userId}_`;
+	// No org → no tenant scope → nothing to list from the (org-keyed) entity.
+	if (!organizationId) return [];
 
-	const byThreadId = new Map<string, AgentThreadSummary>();
+	const byKey = new Map<string, AgentThreadSummary>();
 
-	if (organizationId) {
-		const sql = getDb();
-		const rows = await sql<{
-			conversation_id: string;
-			snapshot_jsonl: string;
-			created_at: Date;
-		}>`
-      SELECT DISTINCT ON (conversation_id)
-        conversation_id, snapshot_jsonl, created_at
-      FROM public.agent_transcript_snapshot
-      WHERE organization_id = ${organizationId}
-        AND agent_id = ${agentId}
-        AND terminal_status = 'completed'
-        AND conversation_id LIKE ${`${conversationPrefix}%`}
-      ORDER BY conversation_id, run_id DESC
-    `;
+	// Owned + platform conversations come from the `conversations` entity — the
+	// single listing source. This replaces the old
+	// `DISTINCT ON (conversation_id) FROM agent_transcript_snapshot` derive path
+	// AND the workspace-directory scan.
+	const rows = await listConversations({
+		organizationId,
+		agentId,
+		scope,
+		userId,
+	});
 
-		for (const row of rows) {
-			const threadId = extractThreadIdFromConversationId(
-				row.conversation_id,
+	// Platform ("all" scope) rows are ACL-gated: a platform conversation is only
+	// listed if its channel is in the agent's bound channels AND (for ACL-graphed
+	// connections) the requester is a member — so a user never sees a channel
+	// transcript they can't read.
+	let channelVis: ChannelVisibility | null = null;
+	if (scope === "all") {
+		channelVis = await resolveChannelVisibility(getDb(), {
+			organizationId,
+			agentId,
+			userId,
+		});
+	}
+
+	for (const row of rows) {
+		const at = row.lastActivityAt.getTime();
+		const createdAt = row.createdAt.getTime();
+		if (row.kind === "owned") {
+			const threadId = webThreadIdFromConversationId(
+				row.conversationId,
 				agentId,
 				userId,
 				organizationId,
 			);
-			if (!threadId || !isSafeThreadId(threadId)) continue;
-			const at = row.created_at.getTime();
-			byThreadId.set(threadId, {
+			// Prefix-only "default thread" ids carry no routable thread id and were
+			// never listed by the legacy path either — skip them.
+			if (!threadId || !isSafeThreadId(threadId) || byKey.has(threadId)) {
+				continue;
+			}
+			byKey.set(threadId, {
 				id: threadId,
-				title: titleFromSessionJsonl(
-					row.snapshot_jsonl,
-					`Conversation ${byThreadId.size + 1}`,
-				),
-				createdAt: at,
+				title: row.title ?? `Conversation ${byKey.size + 1}`,
+				createdAt,
 				updatedAt: at,
 				platform: "web",
-				conversationId: row.conversation_id,
+				conversationId: row.conversationId,
 			});
-		}
-	}
-
-	for (const workspaceConversationId of await listWorkspaceConversationIds(
-		agentId,
-	)) {
-		if (
-			!isUserOwnedApiConversationId(
-				workspaceConversationId,
-				agentId,
-				userId,
-				organizationId,
-			)
-		) {
-			continue;
-		}
-		const threadId = extractThreadIdFromConversationId(
-			workspaceConversationId,
-			agentId,
-			userId,
-			organizationId,
-		);
-		if (!threadId || !isSafeThreadId(threadId) || byThreadId.has(threadId)) {
-			continue;
-		}
-		const sessionPath = await findConversationSessionFile(
-			agentId,
-			workspaceConversationId,
-		);
-		if (!sessionPath) continue;
-		const content = await readFile(sessionPath, "utf-8");
-		const at = (await stat(sessionPath)).mtimeMs;
-		byThreadId.set(threadId, {
-			id: threadId,
-			title: titleFromSessionJsonl(
-				content,
-				`Conversation ${byThreadId.size + 1}`,
-			),
-			createdAt: at,
-			updatedAt: at,
-			platform: "web",
-			conversationId: workspaceConversationId,
-		});
-	}
-
-	// "all" scope: also surface this agent's PLATFORM conversations (Slack,
-	// Telegram, …). Those key on a colon-prefixed conversation id rather than
-	// the `{agentId}_{userId}_…` app-thread prefix, so they're excluded above.
-	if (scope === "all" && organizationId) {
-		const sql = getDb();
-		// ACL: a platform conversation is only listed if its channel is in the
-		// agent's bound channels AND (for ACL-graphed connections) the requester
-		// is a member — so a user never sees a channel transcript they can't read.
-		const channelVis = await resolveChannelVisibility(sql, {
-			organizationId,
-			agentId,
-			userId,
-		});
-		const platformRows = await sql<{
-			conversation_id: string;
-			snapshot_jsonl: string;
-			created_at: Date;
-		}>`
-      SELECT DISTINCT ON (conversation_id)
-        conversation_id, snapshot_jsonl, created_at
-      FROM public.agent_transcript_snapshot
-      WHERE organization_id = ${organizationId}
-        AND agent_id = ${agentId}
-        AND terminal_status = 'completed'
-        AND conversation_id LIKE '%:%'
-      ORDER BY conversation_id, run_id DESC
-    `;
-		for (const row of platformRows) {
-			if (byThreadId.has(row.conversation_id)) continue;
-			if (!isConversationVisible(row.conversation_id, channelVis)) continue;
-			const at = row.created_at.getTime();
-			byThreadId.set(row.conversation_id, {
-				id: row.conversation_id,
-				title: titleFromSessionJsonl(
-					row.snapshot_jsonl,
-					row.conversation_id,
-				),
-				createdAt: at,
+		} else if (row.kind === "platform") {
+			// One entry per conversationId — that's the whole identity of a platform
+			// conversation (the connection that delivered it is routing, not identity;
+			// a reconnect changes it without changing the conversation). The ACL and
+			// transcript read address it by conversationId alone, consistent with this.
+			//
+			// isConversationVisible extracts platform:channel from the id, so an
+			// opaque/no-colon platform id fails closed (unlisted) — same as the prior
+			// path, which only ever listed `LIKE '%:%'` platform ids. Failing closed
+			// is safe; the same-channel-across-two-workspaces (Grid) case is likewise
+			// handled by isConversationVisible failing closed on team ambiguity.
+			if (byKey.has(row.conversationId)) continue;
+			if (channelVis && !isConversationVisible(row.conversationId, channelVis)) {
+				continue;
+			}
+			byKey.set(row.conversationId, {
+				id: row.conversationId,
+				title: row.title ?? row.conversationId,
+				createdAt,
 				updatedAt: at,
-				platform: deriveConversationPlatform(row.conversation_id),
-				conversationId: row.conversation_id,
+				// Label from the EXPLICIT stored platform, not by parsing the id — an
+				// opaque/no-colon platform id (e.g. gchat spaces_A_threads_B) would
+				// otherwise mislabel as "web".
+				platform: row.platform,
+				conversationId: row.conversationId,
 			});
 		}
+	}
 
-		// One entry per WATCHER (not per run) — its latest run time + name, so the
-		// activity panel can show watcher activity alongside chats and route to the
-		// watcher's page.
+	// Watcher activity stays DERIVED from transcript snapshots — one entry per
+	// WATCHER (not per run), its latest run time + name, so the activity panel
+	// can route to the watcher's page. Watcher runs deliberately get no
+	// `conversations` row (their id is globally unique and downstream correlation
+	// relies on the raw `..._watcher_<id>_run_<id>` shape).
+	if (scope === "all") {
+		const sql = getDb();
 		const watcherRows = await sql<{
 			watcher_id: number;
 			name: string | null;
@@ -365,7 +271,7 @@ export async function listAgentThreads(args: {
 		for (const row of watcherRows) {
 			const key = `watcher_${row.watcher_id}`;
 			const at = row.last_at.getTime();
-			byThreadId.set(key, {
+			byKey.set(key, {
 				id: key,
 				title: row.name ?? `Watcher ${row.watcher_id}`,
 				createdAt: at,
@@ -377,7 +283,7 @@ export async function listAgentThreads(args: {
 		}
 	}
 
-	return [...byThreadId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+	return [...byKey.values()].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /**

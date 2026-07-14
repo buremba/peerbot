@@ -44,6 +44,11 @@ import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { resolveAgentRuntimeSelection } from "../../lobu/stores/environment-store.js";
 import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 import { getDb } from "../../db/client.js";
+import {
+  classifyConversation,
+  isWatcherConversationId,
+  upsertConversation,
+} from "../services/conversations-store.js";
 
 const logger = createLogger("orchestrator");
 
@@ -355,6 +360,25 @@ export class MessageConsumer {
           { messageId: data.messageId, userId: data.userId },
           true
         );
+      }
+
+      // Materialize the `conversations` listing row for this turn (the single
+      // sidebar source). Watcher runs stay derived from transcript snapshots
+      // (one entry per watcher, not per run), so they're excluded here. Best-
+      // effort: upsertConversation swallows its own errors so a listing hiccup
+      // never fails a live turn.
+      if (!isWatcherConversationId(effectiveConversationId)) {
+        const { kind, storedPlatform } = classifyConversation(data.platform);
+        await upsertConversation({
+          organizationId: data.organizationId,
+          agentId: data.agentId,
+          platform: storedPlatform,
+          conversationId: effectiveConversationId,
+          kind,
+          userId: data.userId,
+          title: data.messageText?.slice(0, 200) || null,
+          lastActivityAt: new Date(),
+        });
       }
 
       const canonicalConversationKey = buildCanonicalConversationKey({

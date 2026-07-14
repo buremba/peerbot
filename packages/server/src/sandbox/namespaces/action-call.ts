@@ -108,6 +108,11 @@ function failureMessage(
 	};
 }
 
+/** `generate_embeddings` → `generateEmbeddings`; leaves already-camel/plain names intact. */
+function snakeToCamel(name: string): string {
+	return name.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+}
+
 /**
  * Rewrite a leaked internal tool name in a validation error to the public SDK
  * method the caller actually invoked. An arg-validation failure raised deep in
@@ -117,11 +122,6 @@ function failureMessage(
  * swap `manage_<x>` for `client.<namespace>.<method>` and keep the field-level
  * detail (`/feed_id: Expected required property`) intact.
  */
-/** `generate_embeddings` → `generateEmbeddings`; leaves already-camel/plain names intact. */
-function snakeToCamel(name: string): string {
-	return name.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
-}
-
 function rewriteInternalToolName(
 	err: unknown,
 	sdkNamespace: string | undefined,

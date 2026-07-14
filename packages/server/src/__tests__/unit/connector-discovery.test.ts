@@ -132,6 +132,36 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 		expect(hits.some((h) => /installConnector/.test(h))).toBe(true);
 	});
 
+	it("does NOT recommend installConnector for a non-installable catalog entry", async () => {
+		// The review-caught bug: a stale/unavailable catalog entry
+		// (installable:false) was still told to run installConnector, which is
+		// guaranteed to fail. Surface the reason instead.
+		const deps = makeDeps({
+			catalog: {
+				catalogs: {
+					connectors: {
+						entries: [
+							{
+								id: "spotify",
+								name: "Spotify",
+								description: "Music",
+								detail: {
+									installable: false,
+									installability_message: "Connector source is no longer available.",
+								},
+							},
+						],
+					},
+				},
+			},
+		});
+		const hits = await searchLiveConnectors("spotify", env, ctx, deps);
+		expect(hits).toHaveLength(1);
+		expect(hits[0]).toMatch(/NOT currently installable/);
+		expect(hits[0]).toMatch(/no longer available/);
+		expect(hits[0]).not.toMatch(/installConnector/);
+	});
+
 	it("never leaks credentials or raw connector config", async () => {
 		const hits = await searchLiveConnectors("website", env, ctx, makeDeps());
 		const json = JSON.stringify(hits);

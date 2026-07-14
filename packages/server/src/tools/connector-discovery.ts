@@ -96,9 +96,12 @@ export async function searchLiveConnectors(
       name?: string;
       detail?: { description?: string; feeds_schema?: unknown };
     }>(inst.installed?.connectors?.items);
-    const catalog = asArray<{ id: string; name?: string; description?: string }>(
-      cat.catalogs?.connectors?.entries
-    );
+    const catalog = asArray<{
+      id: string;
+      name?: string;
+      description?: string;
+      detail?: { installable?: boolean; installability_message?: string; installability_reason?: string };
+    }>(cat.catalogs?.connectors?.entries);
     const configured = asArray<{ connector_key: string; status: string }>(conn.connections);
     // Aggregate connections per connector and pick the BEST status — an active
     // connection means "ready to use", but a revoked/error connection must not
@@ -144,6 +147,18 @@ export async function searchLiveConnectors(
     for (const c of catalog) {
       if (installedIds.has(c.id)) continue; // installed line already covers it
       if (!matchesQueryTokens(q, c.id, c.name, c.description)) continue;
+      // A catalog entry can be non-installable (e.g. a stale/unavailable
+      // connector). installConnector on it is guaranteed to fail, so surface the
+      // reason instead of the install lifecycle.
+      if (c.detail?.installable === false) {
+        const why = c.detail.installability_message ?? c.detail.installability_reason;
+        lines.push(
+          `connector '${c.id}' (${c.name ?? c.id}) — in the global CATALOG but NOT currently installable${
+            why ? `: ${why}` : ' here'
+          }. It cannot be configured right now.`
+        );
+        continue;
+      }
       lines.push(
         `connector '${c.id}' (${c.name ?? c.id}) — in the global CATALOG, not yet installed here. Install with run_sdk → client.connections.installConnector({ connector_id: '${c.id}' }), then connect + create feed.`
       );

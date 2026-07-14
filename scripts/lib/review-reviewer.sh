@@ -25,6 +25,16 @@ review_select_reviewer() {
   esac
 }
 
+review_validate_claude_model() {
+  case "$1" in
+    fable|opus|claude-opus-?*) return 0 ;;
+    *)
+      echo "invalid CLAUDE_REVIEW_MODEL=$1 (only fable, opus, or a claude-opus-* model is allowed)" >&2
+      return 2
+      ;;
+  esac
+}
+
 review_should_retry_inline() {
   [ "$1" -eq 0 ] || return 1
   [ -z "$(printf '%s' "$2" | tr -d '[:space:]')" ]

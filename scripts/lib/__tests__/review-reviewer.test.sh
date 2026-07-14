@@ -42,6 +42,17 @@ if review_select_reviewer invalid >/dev/null 2>&1; then
   fail "invalid reviewer override unexpectedly succeeded"
 fi
 
+for allowed_model in fable opus claude-opus-4-6 claude-opus-4-5-20251101; do
+  review_validate_claude_model "$allowed_model" ||
+    fail "allowed Claude reviewer model '$allowed_model' was rejected"
+done
+
+for rejected_model in "" sonnet claude-sonnet-4-6 haiku claude-haiku-4-5 arbitrary; do
+  if review_validate_claude_model "$rejected_model" >/dev/null 2>&1; then
+    fail "disallowed Claude reviewer model '$rejected_model' was accepted"
+  fi
+done
+
 review_should_retry_inline 0 "" || fail "empty successful output did not request an inline retry"
 review_should_retry_inline 0 $' \n\t' || fail "whitespace-only successful output did not request an inline retry"
 if review_should_retry_inline 0 '{"ok":true}'; then
@@ -68,6 +79,9 @@ esac
 review_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/review.sh"
 grep -Fq 'CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-fable}"' "$review_script" ||
   fail "Claude reviewer must default to the Fable model"
+
+grep -Fq 'review_validate_claude_model "$CLAUDE_REVIEW_MODEL"' "$review_script" ||
+  fail "review.sh must fail closed on disallowed Claude reviewer models"
 
 schema_arg_count="$(grep -F -- '--json-schema "$(cat "$SCHEMA_FILE")"' "$review_script" | wc -l | tr -d ' ')"
 [ "$schema_arg_count" -eq 2 ] ||

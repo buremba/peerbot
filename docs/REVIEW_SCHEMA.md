@@ -13,7 +13,10 @@ commit is refused so the `pi-review` status has exactly one owner per sha. Codex
 environments, including Claude Code, use Codex. Set
 `REVIEWER_CLI=codex|claude` to override automatic selection. The script
 also accepts `CLAUDE_REVIEW_MODEL`, `CLAUDE_REVIEW_EFFORT`, and
-`CODEX_REVIEW_MODEL` overrides. It posts a `pi-review` commit status
+`CODEX_REVIEW_MODEL` overrides. Claude reviews fail closed unless
+`CLAUDE_REVIEW_MODEL` is `fable`, `opus`, or a full `claude-opus-*` model ID;
+Sonnet, Haiku, empty, and arbitrary model values are rejected before the
+review starts. It posts a `pi-review` commit status
 whenever GitHub auth is available; if a PR exists for the current branch, it
 also posts an idempotent PR comment (marker-keyed upsert) with the verdict.
 **GitHub Actions does not run the agent review** — it's a local-driven gate

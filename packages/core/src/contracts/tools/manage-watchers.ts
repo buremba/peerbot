@@ -196,7 +196,7 @@ export const ManageWatchersSchema = Type.Object({
   sources: Type.Optional(
     Type.Array(SourceSchema, {
       description:
-        "[create/create_version/update] Array of SQL data sources. Each source is { name, query }.",
+        "[create/create_version] Array of SQL data sources. Each source is { name, query }. Sources are version-owned — to change them on an existing watcher, publish a new version with action: 'create_version'.",
     })
   ),
   keying_config: Type.Optional(

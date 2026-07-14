@@ -152,7 +152,7 @@ describe("manage_watchers owner-escalation guard", () => {
 				{
 					action: "update",
 					watcher_id: bWatcher.watcher_id,
-					name: "renamed-by-a",
+					schedule: "0 9 * * *",
 				},
 				TEST_ENV,
 				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),

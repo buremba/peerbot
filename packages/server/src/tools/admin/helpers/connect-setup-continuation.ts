@@ -22,6 +22,14 @@ function omitSecretValues(value: unknown): unknown {
 	);
 }
 
+function omitUndefinedProperties(
+	value: Record<string, unknown>,
+): Record<string, unknown> {
+	return Object.fromEntries(
+		Object.entries(value).filter(([, child]) => child !== undefined),
+	);
+}
+
 /**
  * Build a retry descriptor without reflecting caller-supplied secrets back to
  * the agent. Secret keys are omitted instead of replaced: a redaction sentinel
@@ -71,34 +79,28 @@ interface ConnectionSetupContinuationInput {
 export function buildConnectionSetupContinuation(
 	input: ConnectionSetupContinuationInput,
 ): ManageConnectionsResult {
-	return {
+	return omitUndefinedProperties({
 		action: input.action,
 		status: "setup_required",
 		connector_key: input.connectorKey,
 		setup_family: input.setupFamily,
 		next_action: input.nextAction,
 		instructions: input.instructions,
-		...(input.errorCode ? { error_code: input.errorCode } : {}),
-		...(input.installType ? { install_type: input.installType } : {}),
-		...(input.installShape ? { install_shape: input.installShape } : {}),
-		...(input.setupInstructions
-			? { setup_instructions: input.setupInstructions }
-			: {}),
-		...(input.resumeCall ? { resume_call: input.resumeCall } : {}),
-		...(input.completionCheck
-			? { completion_check: input.completionCheck }
-			: {}),
-		...(input.setupUrl ? { setup_url: input.setupUrl } : {}),
-		...(input.installUrl ? { install_url: input.installUrl } : {}),
-		...(input.connectUrl ? { connect_url: input.connectUrl } : {}),
-		...(input.provider ? { provider: input.provider } : {}),
-		...(input.connectionId !== undefined
-			? { connection_id: input.connectionId }
-			: {}),
-		...(input.slug ? { slug: input.slug } : {}),
-		...(input.authRunId !== undefined ? { auth_run_id: input.authRunId } : {}),
-		...(input.setupAttemptId ? { setup_attempt_id: input.setupAttemptId } : {}),
-	};
+		error_code: input.errorCode,
+		install_type: input.installType,
+		install_shape: input.installShape,
+		setup_instructions: input.setupInstructions,
+		resume_call: input.resumeCall,
+		completion_check: input.completionCheck,
+		setup_url: input.setupUrl,
+		install_url: input.installUrl,
+		connect_url: input.connectUrl,
+		provider: input.provider,
+		connection_id: input.connectionId,
+		slug: input.slug,
+		auth_run_id: input.authRunId,
+		setup_attempt_id: input.setupAttemptId,
+	}) as ManageConnectionsResult;
 }
 
 export function activeConnectionPoll(

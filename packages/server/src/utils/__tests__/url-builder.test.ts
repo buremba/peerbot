@@ -5,6 +5,7 @@ import {
   buildProviderConnectUrl,
   buildProviderManagementUrl,
   buildResourcePermalink,
+  buildWatcherSettingsUrl,
   getPublicWebUrl,
 } from '../url-builder';
 import {
@@ -169,6 +170,63 @@ describe('buildAgentSettingsUrl', () => {
     expect(await buildAgentSettingsUrl(undefined, 'org-1', 'a')).toBeNull();
     expect(await buildAgentSettingsUrl('https://x', undefined, 'a')).toBeNull();
     expect(await buildAgentSettingsUrl('https://x', 'org-1', undefined)).toBeNull();
+  });
+});
+
+describe('buildWatcherSettingsUrl', () => {
+  stubOrgSlug();
+  // WI-0.3 watcher parity: an update proposal's review CTA deep-links to the
+  // watcher edit form (nested under its owning agent), prefilled via ?run_id=.
+  it('deep-links to the watcher edit route under its owning agent', async () => {
+    const url = await buildWatcherSettingsUrl(
+      'https://app.lobu.com/lobu',
+      'org-1',
+      'lobu-builder',
+      7
+    );
+    expect(url).toBe(
+      'https://app.lobu.com/acme/agents/lobu-builder/behaviors/watcher/7'
+    );
+  });
+
+  it('appends ?run_id when a review run is given', async () => {
+    const url = await buildWatcherSettingsUrl(
+      'https://app.lobu.com/lobu',
+      'org-1',
+      'lobu-builder',
+      7,
+      { runId: 42 }
+    );
+    expect(url).toBe(
+      'https://app.lobu.com/acme/agents/lobu-builder/behaviors/watcher/7?run_id=42'
+    );
+  });
+
+  it('accepts a string watcher id and percent-encodes agent + slug', async () => {
+    const url = await buildWatcherSettingsUrl(
+      'https://app.lobu.com',
+      'org-special',
+      'my agent/id',
+      '7'
+    );
+    expect(url).toBe(
+      'https://app.lobu.com/acme%2Fteam/agents/my%20agent%2Fid/behaviors/watcher/7'
+    );
+  });
+
+  it('returns null when the org slug cannot be resolved', async () => {
+    expect(
+      await buildWatcherSettingsUrl('https://app.lobu.com', 'unknown-org', 'a', 7)
+    ).toBeNull();
+  });
+
+  it('returns null when any required piece is missing', async () => {
+    expect(await buildWatcherSettingsUrl(undefined, 'org-1', 'a', 7)).toBeNull();
+    expect(await buildWatcherSettingsUrl('https://x', undefined, 'a', 7)).toBeNull();
+    expect(await buildWatcherSettingsUrl('https://x', 'org-1', undefined, 7)).toBeNull();
+    expect(
+      await buildWatcherSettingsUrl('https://x', 'org-1', 'a', undefined)
+    ).toBeNull();
   });
 });
 

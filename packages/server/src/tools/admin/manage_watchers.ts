@@ -42,7 +42,10 @@ import type { Env } from '../../index';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { insertEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
-import { buildResourcePermalink } from '../../utils/url-builder';
+import {
+  buildResourcePermalink,
+  buildWatcherSettingsUrl,
+} from '../../utils/url-builder';
 import { ToolUserError } from '../../utils/errors';
 import {
   requireOrgReadAccess,
@@ -683,9 +686,28 @@ async function queueWatcherWriteForApproval(
   const eventId = Number(event.id);
 
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
-  // Run-scoped: the pending event is superseded on approve→complete; a run link
-  // stays valid across the chain.
-  const approvalUrl = buildResourcePermalink(ownerSlug, { kind: 'run', runId }, baseUrl);
+  // An `update` is config-shaped, so its review surface is the watcher edit form
+  // prefilled via `?run_id=` (WI-0.3, watcher parity with manage_agents): the
+  // reviewer sees the proposed change in the real form and Approves/Rejects. The
+  // route is nested under the OWNING agent (an update may reassign the owner via
+  // args.agent_id, so prefer the proposed owner, else the current one). create /
+  // create_from_version / set_reaction_script etc. aren't a single-form review,
+  // so they keep the run permalink (valid across the supersede chain on approve).
+  const ownerAgentId =
+    args.agent_id ?? (current?.agent_id as string | null | undefined) ?? null;
+  const settingsReviewUrl =
+    args.action === 'update' && args.watcher_id != null && ownerAgentId
+      ? await buildWatcherSettingsUrl(
+          baseUrl,
+          ctx.organizationId,
+          ownerAgentId,
+          args.watcher_id,
+          { runId },
+        ).catch(() => null)
+      : null;
+  const approvalUrl =
+    settingsReviewUrl ??
+    buildResourcePermalink(ownerSlug, { kind: 'run', runId }, baseUrl);
 
   notifyActionApprovalNeeded({
     orgId: ctx.organizationId,

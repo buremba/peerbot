@@ -49,6 +49,11 @@ async function insertPendingProposal(opts: {
 	tool: "manage_agents" | "manage_watchers";
 	proposal: Record<string, unknown>;
 	current?: Record<string, unknown> | null;
+	// The event's top-level action. manage_agents keeps `action` on the proposal;
+	// manage_watchers nests it in `args`, so the producer stamps args.action into
+	// metadata.action explicitly — mirror that here rather than reading it off the
+	// (possibly nested) proposal.
+	action?: string;
 }): Promise<number> {
 	const organizationId = opts.organizationId ?? ORG;
 	const { getDb } = await import("../../db/client.js");
@@ -78,7 +83,11 @@ async function insertPendingProposal(opts: {
 			interactionInput: opts.proposal,
 			metadata: {
 				tool: opts.tool,
-				action: (opts.proposal as { action?: string }).action ?? null,
+				action:
+					opts.action ??
+					(opts.proposal as { action?: string }).action ??
+					(opts.proposal as { args?: { action?: string } }).args?.action ??
+					null,
 				proposal: opts.proposal,
 				current: opts.current ?? null,
 				status: "pending_approval",
@@ -217,6 +226,172 @@ describe("GET /:agentId/config/pending/:runId", () => {
 	test("400 on a non-numeric run id", async () => {
 		const app = await importAgentRoutes();
 		const res = await app.request(`/${AGENT}/config/pending/not-a-number`);
+		expect(res.status).toBe(400);
+	});
+});
+
+const WATCHER_ID = 501;
+
+// The endpoint reads the watcher's owner + target from the held proposal/event
+// metadata (`current.agent_id`, `args.watcher_id`), NOT from the `watchers`
+// table — so no watcher row needs seeding; the proposal fixtures carry it all.
+
+/** A real ManageWatchersProposal: `{ args: {...}, actingAgentId, actingWatcherId }`
+ *  with watcher_id / agent_id nested INSIDE args. */
+function watcherProposal(
+	args: Record<string, unknown>,
+): Record<string, unknown> {
+	return { args, actingAgentId: null, actingWatcherId: null };
+}
+
+describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
+	test("returns the held manage_watchers update proposal for the target watcher", async () => {
+		const app = await importAgentRoutes();
+		const runId = await insertPendingProposal({
+			tool: "manage_watchers",
+			proposal: watcherProposal({
+				action: "update",
+				watcher_id: WATCHER_ID,
+				name: "New Watcher Name",
+				prompt: "Watch for X",
+			}),
+			current: { id: WATCHER_ID, agent_id: AGENT, name: "Old" },
+		});
+
+		const res = await app.request(
+			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+		);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			runId: number;
+			resourceKind: string | null;
+			action: string | null;
+			proposal: Record<string, unknown> | null;
+			current: Record<string, unknown> | null;
+		};
+		expect(body.runId).toBe(runId);
+		expect(body.resourceKind).toBe("watcher");
+		expect(body.action).toBe("update");
+		expect(
+			(body.proposal as { args?: { name?: string } }).args?.name,
+		).toBe("New Watcher Name");
+		expect(body.current).toMatchObject({ id: WATCHER_ID });
+	});
+
+	test("resolves the owning agent from the proposal args when it reassigns owner", async () => {
+		// An update may reassign the owner via args.agent_id; the endpoint prefers
+		// the PROPOSED owner over the current row so the review lands on the right
+		// agent-nested route.
+		const app = await importAgentRoutes();
+		const runId = await insertPendingProposal({
+			tool: "manage_watchers",
+			proposal: watcherProposal({
+				action: "update",
+				watcher_id: WATCHER_ID,
+				agent_id: AGENT,
+				name: "N",
+			}),
+			current: { id: WATCHER_ID, agent_id: "old-owner" },
+		});
+		const res = await app.request(
+			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+		);
+		expect(res.status).toBe(200);
+	});
+
+	test("404 for a manage_watchers CREATE proposal (not single-form review)", async () => {
+		const app = await importAgentRoutes();
+		const runId = await insertPendingProposal({
+			tool: "manage_watchers",
+			proposal: watcherProposal({
+				action: "create",
+				watcher_id: WATCHER_ID,
+				agent_id: AGENT,
+			}),
+		});
+		const res = await app.request(
+			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+		);
+		expect(res.status).toBe(404);
+	});
+
+	test("404 for a manage_agents run on the watcher endpoint (wrong tool)", async () => {
+		const app = await importAgentRoutes();
+		const runId = await insertPendingProposal({
+			tool: "manage_agents",
+			proposal: { action: "update", agent_id: AGENT, name: "X" },
+		});
+		const res = await app.request(
+			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+		);
+		expect(res.status).toBe(404);
+	});
+
+	test("404 when the proposal targets a DIFFERENT watcher", async () => {
+		const app = await importAgentRoutes();
+		const runId = await insertPendingProposal({
+			tool: "manage_watchers",
+			proposal: watcherProposal({
+				action: "update",
+				watcher_id: 999,
+				name: "X",
+			}),
+			current: { id: 999, agent_id: AGENT },
+		});
+		const res = await app.request(
+			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+		);
+		expect(res.status).toBe(404);
+	});
+
+	test("404 when the watcher is owned by a DIFFERENT agent (authz boundary)", async () => {
+		const app = await importAgentRoutes();
+		const runId = await insertPendingProposal({
+			tool: "manage_watchers",
+			proposal: watcherProposal({
+				action: "update",
+				watcher_id: WATCHER_ID,
+				name: "X",
+			}),
+			current: { id: WATCHER_ID, agent_id: "other-agent" },
+		});
+		// Path agent is AGENT, but the watcher's owner (current + no args.agent_id)
+		// is other-agent → 404.
+		const res = await app.request(
+			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+		);
+		expect(res.status).toBe(404);
+	});
+
+	test("404 when the run belongs to a different org", async () => {
+		const app = await importAgentRoutes();
+		const { getDb } = await import("../../db/client.js");
+		await getDb()`
+			INSERT INTO organization (id, name, slug)
+			VALUES ('other-w-org', 'other-w-org', 'other-w-org')
+			ON CONFLICT (id) DO NOTHING
+		`;
+		const runId = await insertPendingProposal({
+			organizationId: "other-w-org",
+			tool: "manage_watchers",
+			proposal: watcherProposal({
+				action: "update",
+				watcher_id: WATCHER_ID,
+				name: "X",
+			}),
+			current: { id: WATCHER_ID, agent_id: AGENT },
+		});
+		const res = await app.request(
+			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+		);
+		expect(res.status).toBe(404);
+	});
+
+	test("400 on a non-numeric run id", async () => {
+		const app = await importAgentRoutes();
+		const res = await app.request(
+			`/${AGENT}/watchers/${WATCHER_ID}/pending/not-a-number`,
+		);
 		expect(res.status).toBe(400);
 	});
 });

@@ -109,3 +109,14 @@ test('non-HTML/non-OK results do NOT trip the egress short-circuit', async () =>
   expect(result.events[3]?.content).toBeTruthy();
   expect(result.events[0]?.content).toBeFalsy();
 }, 20_000);
+
+test('front-page schema accepts every story kind the mapper emits', async () => {
+  const { default: HackerNewsConnector } = await import('../hackernews');
+  const connector = new HackerNewsConnector();
+
+  expect(Object.keys(connector.definition.feeds.front_page.eventKinds ?? {}).sort()).toEqual([
+    'ask_hn',
+    'show_hn',
+    'story',
+  ]);
+});

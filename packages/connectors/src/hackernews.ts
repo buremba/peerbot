@@ -179,6 +179,31 @@ export default class HackerNewsConnector extends ConnectorRuntime {
               },
             },
           },
+          ask_hn: {
+            description: 'An Ask HN post on the front page',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                story_type: { type: 'string' },
+                tags: { type: 'array', items: { type: 'string' } },
+                score: { type: 'number' },
+                reply_count: { type: 'number' },
+              },
+            },
+          },
+          show_hn: {
+            description: 'A Show HN post on the front page',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                story_type: { type: 'string' },
+                tags: { type: 'array', items: { type: 'string' } },
+                external_url: { type: 'string', format: 'uri' },
+                score: { type: 'number' },
+                reply_count: { type: 'number' },
+              },
+            },
+          },
         },
       },
       comments: {

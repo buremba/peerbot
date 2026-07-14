@@ -162,6 +162,17 @@ describe("sdkSearch", () => {
 		expect(result.results[0]).toStartWith("operations.execute —");
 	});
 
+	it("recovers useful methods from natural multi-word queries", async () => {
+		const result = await sdkSearch(
+			{ query: "connections sync run", mode: "read" },
+			stubEnv,
+			readCtx,
+		);
+
+		expect(result.match_count).toBeGreaterThan(0);
+		expect(result.results.some((line) => line.startsWith("operations.listRuns —"))).toBe(true);
+	});
+
 	it("returns empty + helpful note for unknown queries", async () => {
 		const result = await sdkSearch(
 			{ query: "definitelyNotAMethod" },
@@ -216,6 +227,11 @@ describe("sdkSearch", () => {
 	});
 
 	it.each([
+		[
+			"operations.getRun",
+			"operations.getRun(run_id: number)",
+			"client.operations.getRun(123)",
+		],
 		[
 			"connections.reauthenticate",
 			"connections.reauthenticate(connection_id: number)",

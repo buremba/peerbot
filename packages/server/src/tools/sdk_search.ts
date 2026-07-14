@@ -375,6 +375,29 @@ async function sdkSearchImpl(
 		}
 	}
 
+	// Natural-language clients commonly search with a bag of concepts rather
+	// than an exact phrase (for example "connections sync run"). Preserve the
+	// precise phrase results above, then fall back to token-ranked matches so a
+	// single extra word does not turn valid discovery into zero results.
+	if (matches.length === 0 && terms.length > 1) {
+		const ranked = catalog
+			.map(([path, meta]) => {
+				const pathText = path.toLowerCase();
+				const summaryText = meta.summary.toLowerCase();
+				const score = terms.reduce(
+					(total, term) =>
+						total +
+						(pathText.includes(term) ? 2 : 0) +
+						(summaryText.includes(term) ? 1 : 0),
+					0,
+				);
+				return { path, meta, score };
+			})
+			.filter((entry) => entry.score > 0)
+			.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+		for (const { path, meta } of ranked) matches.push([path, meta]);
+	}
+
 	if (matches.length === 0) {
 		const hiddenExact = METADATA_BY_LOWER_PATH.get(lower);
 		const existsButHidden = hiddenExact

@@ -453,6 +453,24 @@ export function getConnectBaseUrl(ctx: ToolContext): string {
     }
   }
 
+  const appBase = contextBase ?? (ctx.requestUrl ? new URL(ctx.requestUrl).origin : '');
+  if (appBase) return new URL(appBase).origin.replace(/\/+$/, '');
+
+  const configuredGateway = getConfiguredPublicGatewayUrl();
+  return configuredGateway ? new URL(configuredGateway).origin.replace(/\/+$/, '') : '';
+}
+
+export function getGatewayBaseUrl(ctx: ToolContext): string {
+  const contextBase = ctx.baseUrl?.trim().replace(/\/+$/, '');
+  if (contextBase) {
+    try {
+      const path = new URL(contextBase).pathname.replace(/\/+$/, '');
+      if (path && path !== '/') return contextBase;
+    } catch {
+      return contextBase;
+    }
+  }
+
   return (
     getConfiguredPublicGatewayUrl() ??
     contextBase ??

@@ -435,6 +435,7 @@ function formatContentSnippets(content: any[]): string {
     if (item.author_name) md += ` | **Author**: ${item.author_name}`;
     if (item.occurred_at) md += ` | **Date**: ${new Date(item.occurred_at).toLocaleDateString()}`;
     md += '\n\n';
+    if (item.id != null) md += `**Lobu event ID**: ${item.id}\n\n`;
 
     const text = item.text_content || '';
     const excerpt = text.length > 300 ? text.slice(0, 300) + '...' : text;

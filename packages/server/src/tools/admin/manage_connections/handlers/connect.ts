@@ -22,6 +22,7 @@ import {
   buildOAuthConnectConfig,
   ensureEnvBackedOAuthAppProfile,
   getConnectBaseUrl,
+	getGatewayBaseUrl,
 	getInteractiveMethods,
   resolveConnectionAuthSelection,
   resolveConnectionDisplayName,
@@ -116,7 +117,7 @@ export async function handleConnect(
     connectorKey: args.connector_key,
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
-    gatewayBaseUrl: getConnectBaseUrl(ctx),
+    gatewayBaseUrl: getGatewayBaseUrl(ctx),
     setupUrl,
   });
   if (appInstallGuard) {

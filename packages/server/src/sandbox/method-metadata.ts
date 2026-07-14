@@ -561,7 +561,12 @@ export default async (_ctx, client) => {
 		summary: "List past operation runs.",
 		access: "read",
 	},
-	"operations.getRun": { summary: "Get a single run by id.", access: "read" },
+	"operations.getRun": {
+		summary: "Get a single run by id.",
+		access: "read",
+		signature: "operations.getRun(run_id: number): Promise<unknown>",
+		example: "const run = await client.operations.getRun(123);",
+	},
 	"operations.approve": {
 		summary: "Approve a pending run that required human approval.",
 		access: "write",
@@ -582,14 +587,18 @@ export default async (_ctx, client) => {
 		signature: "feeds.list(input?: { connection_id?: number; status?: string; limit?: number; offset?: number }): Promise<unknown>",
 	},
 	"feeds.get": {
-		summary: "Get a feed by id.",
+		summary:
+			"Get a feed by id. Collected feeds return feed metadata and recent runs, not stored records; search collected records with knowledge.search/search_memory or client.query. Virtual feeds return live rows.",
 		access: "read",
+		signature: "feeds.get(input: { feed_id: number; limit?: number }): Promise<unknown>",
 		example: "const feed = await client.feeds.get({ feed_id: 42 });",
 	},
 	"feeds.readMany": {
 		summary:
-			"Read several feeds in parallel with per-feed successes/failures. Useful for live virtual feeds suggested by query_sql coverage hints.",
+			"Read several feeds in parallel with per-feed successes/failures. Collected feeds return metadata and recent runs; virtual feeds return live rows. Search collected records with knowledge.search/search_memory or client.query.",
 		access: "read",
+		signature: "feeds.readMany(input: { feed_ids: number[]; limit?: number }): Promise<unknown>",
+		example: "const feeds = await client.feeds.readMany({ feed_ids: [42, 43], limit: 25 });",
 	},
 	"feeds.create": {
 		summary: "Create a data-sync feed for a connection.",

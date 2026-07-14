@@ -73,6 +73,24 @@ describe('formatToolResult', () => {
       expect(md).toContain('Alice');
     });
 
+    it('renders stable event ids for related content follow-ups', () => {
+      const result = {
+        entity: null,
+        matches: [],
+        content: [
+          {
+            id: 66,
+            title: 'A collected item',
+            platform: 'hackernews',
+            text_content: 'Collected text',
+          },
+        ],
+      };
+
+      const md = formatToolResult('search_memory', result);
+      expect(md).toContain('Lobu event ID**: 66');
+    });
+
     it('renders virtual-feed rows as a table and escapes cell delimiters', () => {
       const result = {
         entity: null,

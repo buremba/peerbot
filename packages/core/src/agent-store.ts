@@ -39,8 +39,6 @@ export interface AgentSettings {
   networkConfig?: NetworkConfig;
   /** Nix environment configuration */
   nixConfig?: NixConfig;
-  /** Internal marker: MCP IDs already acknowledged to the user in chat */
-  mcpInstallNotified?: Record<string, number>;
   /** Workspace identity/instruction files (markdown content) */
   soulMd?: string;
   userMd?: string;

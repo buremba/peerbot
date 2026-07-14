@@ -3,6 +3,8 @@ import { getDb } from "../db/client";
 import { resolveCredentialsByConnectionId } from "../mcp-proxy/credential-resolver";
 import type { OperationDescriptor } from "./types";
 
+const DEFAULT_HTTP_OPERATION_FETCH_TIMEOUT_MS = 120_000;
+
 export type HttpOperationExecutionResult =
 	| {
 			status: "completed";
@@ -75,6 +77,41 @@ async function failRun(
 	return { status: "failed", error_message: errorMessage };
 }
 
+function requestAbortSignal(parent?: AbortSignal): {
+	signal: AbortSignal;
+	cleanup: () => void;
+} {
+	const configuredTimeout = Number(
+		process.env.HTTP_OPERATION_FETCH_TIMEOUT_MS ??
+			DEFAULT_HTTP_OPERATION_FETCH_TIMEOUT_MS,
+	);
+	const timeoutMs =
+		Number.isFinite(configuredTimeout) && configuredTimeout > 0
+			? configuredTimeout
+			: DEFAULT_HTTP_OPERATION_FETCH_TIMEOUT_MS;
+	const controller = new AbortController();
+	const relayParentAbort = () => controller.abort(parent?.reason);
+	if (parent?.aborted) {
+		relayParentAbort();
+	} else {
+		parent?.addEventListener("abort", relayParentAbort, { once: true });
+	}
+	const timeout = setTimeout(
+		() =>
+			controller.abort(
+				new Error(`HTTP operation timed out after ${timeoutMs}ms`),
+			),
+		timeoutMs,
+	);
+	return {
+		signal: controller.signal,
+		cleanup: () => {
+			clearTimeout(timeout);
+			parent?.removeEventListener("abort", relayParentAbort);
+		},
+	};
+}
+
 /** Execute one OpenAPI-derived HTTP operation and finalize its run row. */
 export async function executeHttpOperation(
 	runId: number,
@@ -82,76 +119,87 @@ export async function executeHttpOperation(
 	connection: HttpOperationConnection,
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
+	abortSignal?: AbortSignal,
 ): Promise<HttpOperationExecutionResult> {
 	const sql = getDb();
 	if (operation.backend_config.backend !== "http_operation") {
-		return {
-			status: "failed",
-			error_message: "Invalid HTTP operation backend config",
-		};
+		return failRun(
+			runId,
+			organizationId,
+			"Invalid HTTP operation backend config",
+		);
 	}
-
-	const credentials = await resolveCredentialsByConnectionId(
-		connection.id,
-		organizationId,
-	);
-	if (!credentials) {
-		return {
-			status: "failed",
-			error_message: `No active OAuth credentials found for '${connection.connector_key}'.`,
-		};
-	}
-
-	const headersInput =
-		actionInput.headers && typeof actionInput.headers === "object"
-			? (actionInput.headers as Record<string, unknown>)
-			: {};
-	const headers = new Headers();
-	for (const [key, value] of Object.entries(headersInput)) {
-		if (
-			/^(authorization|host)$/i.test(key) ||
-			value === undefined ||
-			value === null
-		) {
-			continue;
-		}
-		headers.set(key, String(value));
-	}
-	headers.set(
-		"Authorization",
-		`${credentials.tokenType} ${credentials.accessToken}`,
-	);
-
-	const body = actionInput.body;
-	let requestBody: string | undefined;
-	if (body !== undefined) {
-		requestBody = typeof body === "string" ? body : JSON.stringify(body);
-		if (
-			!headers.has("content-type") &&
-			typeof body === "object" &&
-			body !== null
-		) {
-			headers.set("content-type", "application/json");
-		}
-	}
-
-	const url = buildResolvedUrl(
-		operation.backend_config.serverUrl,
-		operation.backend_config.pathTemplate,
-		actionInput,
-	);
 
 	try {
-		const response = await fetch(url, {
-			method: operation.backend_config.method,
-			headers,
-			body: ["GET", "HEAD"].includes(operation.backend_config.method)
-				? undefined
-				: requestBody,
-			redirect: "manual",
-		});
+		const credentials = await resolveCredentialsByConnectionId(
+			connection.id,
+			organizationId,
+		);
+		if (!credentials) {
+			return failRun(
+				runId,
+				organizationId,
+				`No active OAuth credentials found for '${connection.connector_key}'.`,
+			);
+		}
 
-		const text = await response.text();
+		const headersInput =
+			actionInput.headers && typeof actionInput.headers === "object"
+				? (actionInput.headers as Record<string, unknown>)
+				: {};
+		const headers = new Headers();
+		for (const [key, value] of Object.entries(headersInput)) {
+			if (
+				/^(authorization|host)$/i.test(key) ||
+				value === undefined ||
+				value === null
+			) {
+				continue;
+			}
+			headers.set(key, String(value));
+		}
+		headers.set(
+			"Authorization",
+			`${credentials.tokenType} ${credentials.accessToken}`,
+		);
+
+		const body = actionInput.body;
+		let requestBody: string | undefined;
+		if (body !== undefined) {
+			requestBody = typeof body === "string" ? body : JSON.stringify(body);
+			if (
+				!headers.has("content-type") &&
+				typeof body === "object" &&
+				body !== null
+			) {
+				headers.set("content-type", "application/json");
+			}
+		}
+
+		const url = buildResolvedUrl(
+			operation.backend_config.serverUrl,
+			operation.backend_config.pathTemplate,
+			actionInput,
+		);
+
+		const requestAbort = requestAbortSignal(abortSignal);
+		let response: Response;
+		let text: string;
+		try {
+			response = await fetch(url, {
+				method: operation.backend_config.method,
+				headers,
+				body: ["GET", "HEAD"].includes(operation.backend_config.method)
+					? undefined
+					: requestBody,
+				redirect: "manual",
+				signal: requestAbort.signal,
+			});
+			text = await response.text();
+		} finally {
+			requestAbort.cleanup();
+		}
+
 		let parsedBody: unknown = text;
 		try {
 			parsedBody = text ? JSON.parse(text) : null;

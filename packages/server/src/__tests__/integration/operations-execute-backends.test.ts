@@ -197,7 +197,22 @@ describe("operations.execute backend lifecycle", () => {
 					});
 				}
 				if (url === "https://api.example.test/items") {
-					return jsonResponse({ created: true, body: JSON.parse(String(init?.body)) });
+					const body = JSON.parse(String(init?.body)) as { value?: string };
+					if (
+						body.value === "wait-for-abort" ||
+						body.value === "wait-for-timeout"
+					) {
+						const signal = init?.signal;
+						if (!signal)
+							throw new Error("HTTP operation request has no abort signal");
+						if (signal.aborted) throw signal.reason;
+						return await new Promise<Response>((_resolve, reject) => {
+							signal.addEventListener("abort", () => reject(signal.reason), {
+								once: true,
+							});
+						});
+					}
+					return jsonResponse({ created: true, body });
 				}
 				if (url === "https://mcp.example.test/mcp") {
 					const request = JSON.parse(String(init?.body)) as {
@@ -228,7 +243,9 @@ describe("operations.execute backend lifecycle", () => {
 						) {
 							throw new Error("upstream transport failed");
 						}
-						const authorization = new Headers(init?.headers).get("authorization");
+						const authorization = new Headers(init?.headers).get(
+							"authorization",
+						);
 						return jsonResponse({
 							jsonrpc: "2.0",
 							id: request.id,
@@ -408,5 +425,109 @@ describe("operations.execute backend lifecycle", () => {
 				body: { created: true, body: { value: "http-ok" } },
 			},
 		});
+	});
+
+	it("finalizes the run when HTTP credentials are missing", async () => {
+		const sql = getTestDb();
+		const [connection] = await sql<{ auth_profile_id: string }>`
+			SELECT auth_profile_id FROM connections WHERE id = ${httpConnectionId}
+		`;
+		await sql`UPDATE connections SET auth_profile_id = NULL WHERE id = ${httpConnectionId}`;
+
+		try {
+			const result = await manageOperations(
+				{
+					action: "execute",
+					connection_id: httpConnectionId,
+					operation_key: "create_item",
+					input: { body: { value: "missing-credentials" } },
+				},
+				{} as Env,
+				ctx,
+			);
+			expect(result).toMatchObject({
+				action: "execute",
+				status: "failed",
+			});
+			const [run] = await sql<{ status: string; completed_at: Date | null }>`
+				SELECT status, completed_at FROM runs
+				WHERE id = ${(result as { run_id: number }).run_id}
+			`;
+			expect(run.status).toBe("failed");
+			expect(run.completed_at).not.toBeNull();
+		} finally {
+			await sql`
+				UPDATE connections SET auth_profile_id = ${connection.auth_profile_id}
+				WHERE id = ${httpConnectionId}
+			`;
+		}
+	});
+
+	it("propagates caller cancellation to an HTTP operation and finalizes the run", async () => {
+		const controller = new AbortController();
+		const pending = manageOperations(
+			{
+				action: "execute",
+				connection_id: httpConnectionId,
+				operation_key: "create_item",
+				input: { body: { value: "wait-for-abort" } },
+			},
+			{} as Env,
+			{ ...ctx, abortSignal: controller.signal },
+		);
+		setTimeout(() => controller.abort(new Error("cancelled by test")), 10);
+
+		const result = await pending;
+		expect(result).toMatchObject({
+			action: "execute",
+			status: "failed",
+			error_message: "cancelled by test",
+		});
+		const [run] = await getTestDb()<{
+			status: string;
+			completed_at: Date | null;
+		}>`
+			SELECT status, completed_at FROM runs
+			WHERE id = ${(result as { run_id: number }).run_id}
+		`;
+		expect(run.status).toBe("failed");
+		expect(run.completed_at).not.toBeNull();
+	});
+
+	it("times out a stalled HTTP operation and finalizes the run", async () => {
+		const previousTimeout = process.env.HTTP_OPERATION_FETCH_TIMEOUT_MS;
+		process.env.HTTP_OPERATION_FETCH_TIMEOUT_MS = "10";
+		try {
+			const result = await manageOperations(
+				{
+					action: "execute",
+					connection_id: httpConnectionId,
+					operation_key: "create_item",
+					input: { body: { value: "wait-for-timeout" } },
+				},
+				{} as Env,
+				ctx,
+			);
+			expect(result).toMatchObject({
+				action: "execute",
+				status: "failed",
+				error_message: "HTTP operation timed out after 10ms",
+			});
+			const [run] = await getTestDb()<{
+				status: string;
+				completed_at: Date | null;
+			}>`
+				SELECT status, completed_at FROM runs
+				WHERE id = ${(result as { run_id: number }).run_id}
+			`;
+			expect(run.status).toBe("failed");
+			expect(run.completed_at).not.toBeNull();
+		} finally {
+			if (previousTimeout === undefined) {
+				delete process.env.HTTP_OPERATION_FETCH_TIMEOUT_MS;
+			} else {
+				process.env.HTTP_OPERATION_FETCH_TIMEOUT_MS = previousTimeout;
+			}
+		}
 	});
 });

@@ -393,6 +393,7 @@ async function executeOperationInline(
 		connection,
 		operation,
 		actionInput,
+		abortSignal,
 	);
 }
 

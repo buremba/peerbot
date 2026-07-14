@@ -26,6 +26,28 @@ export class ClientSdkActionError extends ToolUserError {
 	}
 }
 
+export function requirePositionalNumber(
+	method: string,
+	value: unknown,
+	example: string,
+): number {
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	throw new ToolUserError(
+		`${method} expects a positional number. Call ${example}; do not pass an object.`,
+	);
+}
+
+export function requirePositionalString(
+	method: string,
+	value: unknown,
+	example: string,
+): string {
+	if (typeof value === "string") return value;
+	throw new ToolUserError(
+		`${method} expects a positional string. Call ${example}; do not pass an object.`,
+	);
+}
+
 function failureMessage(
 	actionName: string,
 	value: unknown,

@@ -162,6 +162,17 @@ describe("sdkSearch", () => {
 		expect(result.results[0]).toStartWith("operations.execute —");
 	});
 
+	it("recovers useful methods from natural multi-word queries", async () => {
+		const result = await sdkSearch(
+			{ query: "connections sync run", mode: "read" },
+			stubEnv,
+			readCtx,
+		);
+
+		expect(result.match_count).toBeGreaterThan(0);
+		expect(result.results.some((line) => line.startsWith("operations.listRuns —"))).toBe(true);
+	});
+
 	it("returns empty + helpful note for unknown queries", async () => {
 		const result = await sdkSearch(
 			{ query: "definitelyNotAMethod" },
@@ -213,5 +224,29 @@ describe("sdkSearch", () => {
 			expect(result.results[0], path).toContain("client.");
 			expect(result.results[0], path).toMatch(/\(\{/);
 		}
+	});
+
+	it.each([
+		[
+			"operations.getRun",
+			"operations.getRun(run_id: number)",
+			"client.operations.getRun(123)",
+		],
+		[
+			"connections.reauthenticate",
+			"connections.reauthenticate(connection_id: number)",
+			"client.connections.reauthenticate(42)",
+		],
+		[
+			"authProfiles.get",
+			"authProfiles.get(auth_profile_slug: string)",
+			"client.authProfiles.get('google-calendar-account')",
+		],
+		["authProfiles.update", "reconnect?: boolean", "reconnect: true"],
+	])("documents the exact %s call shape", async (path, signature, example) => {
+		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain(signature);
+		expect(result.results[0]).toContain(example);
 	});
 });

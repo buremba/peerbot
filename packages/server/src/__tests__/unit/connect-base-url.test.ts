@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { getConnectBaseUrl } from "../../tools/admin/helpers/connection-helpers";
+import {
+	getConnectBaseUrl,
+	getGatewayBaseUrl,
+} from "../../tools/admin/helpers/connection-helpers";
 import { __resetPublicOriginCachesForTests } from "../../utils/public-origin";
 
 const ORIGINAL_PUBLIC_GATEWAY_URL = process.env.PUBLIC_GATEWAY_URL;
@@ -14,7 +17,7 @@ afterEach(() => {
 });
 
 describe("getConnectBaseUrl", () => {
-	test("uses the configured gateway mount when the tool context has only the web origin", () => {
+	test("keeps token-gated connector auth on the app root", () => {
 		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
 		__resetPublicOriginCachesForTests();
 
@@ -23,7 +26,7 @@ describe("getConnectBaseUrl", () => {
 				baseUrl: "https://app.lobu.ai",
 				requestUrl: "https://app.lobu.ai/mcp",
 			} as Parameters<typeof getConnectBaseUrl>[0]),
-		).toBe("https://app.lobu.ai/lobu");
+		).toBe("https://app.lobu.ai");
 	});
 
 	test("preserves an explicit path-aware context base in tests and self-hosted mounts", () => {
@@ -35,5 +38,19 @@ describe("getConnectBaseUrl", () => {
 				baseUrl: "https://gateway.test/custom-mount/",
 			} as Parameters<typeof getConnectBaseUrl>[0]),
 		).toBe("https://gateway.test/custom-mount");
+	});
+});
+
+describe("getGatewayBaseUrl", () => {
+	test("uses the configured gateway mount for gateway-owned install routes", () => {
+		process.env.PUBLIC_GATEWAY_URL = "https://app.lobu.ai/lobu";
+		__resetPublicOriginCachesForTests();
+
+		expect(
+			getGatewayBaseUrl({
+				baseUrl: "https://app.lobu.ai",
+				requestUrl: "https://app.lobu.ai/mcp",
+			} as Parameters<typeof getGatewayBaseUrl>[0]),
+		).toBe("https://app.lobu.ai/lobu");
 	});
 });

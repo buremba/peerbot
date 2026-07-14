@@ -584,7 +584,7 @@ function buildOperationNextAction(args: {
 	}
 	if (
 		["pending_auth", "error", "revoked"].includes(readiness) &&
-		remediationAuthKind === "interactive"
+		["interactive", "oauth_account"].includes(remediationAuthKind ?? "")
 	) {
 		return {
 			action: "reauthenticate",

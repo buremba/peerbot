@@ -15,7 +15,7 @@ import type { Env } from "../../index";
 import { manageAuthProfiles } from "../../tools/admin/manage_auth_profiles";
 import type { ToolContext } from "../../tools/registry";
 import type { AuthProfileKind as StoredAuthProfileKind } from "../../utils/auth-profiles";
-import { createActionCaller } from "./action-call";
+import { createActionCaller, requirePositionalString } from "./action-call";
 
 /** Kinds manageable through the SDK — the stored kinds minus the internal-only `interactive`. */
 export type AuthProfileKind = Exclude<StoredAuthProfileKind, "interactive">;
@@ -70,13 +70,32 @@ export function buildAuthProfilesNamespace(
 	return {
 		manage,
 		list: (input) => action("list_auth_profiles", input),
-		get: (auth_profile_slug) =>
-			action("get_auth_profile", { auth_profile_slug }),
-		test: (auth_profile_slug) =>
-			action("test_auth_profile", { auth_profile_slug }),
+		get: async (auth_profile_slug) =>
+			action("get_auth_profile", {
+				auth_profile_slug: requirePositionalString(
+					"authProfiles.get",
+					auth_profile_slug,
+					"client.authProfiles.get('google-calendar-account')",
+				),
+			}),
+		test: async (auth_profile_slug) =>
+			action("test_auth_profile", {
+				auth_profile_slug: requirePositionalString(
+					"authProfiles.test",
+					auth_profile_slug,
+					"client.authProfiles.test('google-calendar-account')",
+				),
+			}),
 		create: (input) => action("create_auth_profile", input),
 		update: (input) => action("update_auth_profile", input),
-		delete: (auth_profile_slug, options) =>
-			action("delete_auth_profile", { auth_profile_slug, ...options }),
+		delete: async (auth_profile_slug, options) =>
+			action("delete_auth_profile", {
+				auth_profile_slug: requirePositionalString(
+					"authProfiles.delete",
+					auth_profile_slug,
+					"client.authProfiles.delete('google-calendar-account')",
+				),
+				...options,
+			}),
 	};
 }

@@ -310,11 +310,12 @@ export const DeleteAction = Type.Object({
 
 export const ReauthenticateAction = Type.Object({
   action: Type.Literal("reauthenticate", {
-    description: "Re-pair a connection's interactive auth via a new auth run.",
+    description:
+      "Start a fresh OAuth authorization or interactive pairing flow for an existing connection.",
   }),
   connection_id: Type.Number({
     description:
-      "Connection ID whose interactive auth profile should be re-paired via a new auth run.",
+      "Connection ID whose OAuth-account or interactive auth profile should be reauthenticated.",
   }),
 });
 
@@ -762,6 +763,13 @@ export const ManageConnectionsResultSchema = Type.Union([
     action: Type.Literal("reauthenticate"),
     connection_id: Type.Integer(),
     auth_run_id: Type.Integer(),
+  }),
+  Type.Object({
+    action: Type.Literal("reauthenticate"),
+    connection_id: Type.Integer(),
+    auth_profile_slug: Type.String(),
+    connect_url: Type.String(),
+    expires_at: Type.String(),
   }),
   Type.Object({
     action: Type.Literal("test"),

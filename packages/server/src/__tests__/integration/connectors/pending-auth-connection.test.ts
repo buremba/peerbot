@@ -14,6 +14,7 @@ import type { ToolContext } from '../../../tools/registry';
 import { manageAuthProfiles } from '../../../tools/admin/manage_auth_profiles';
 import { manageConnections } from '../../../tools/admin/manage_connections';
 import { manageFeeds } from '../../../tools/admin/manage_feeds';
+import { buildClientSDK } from '../../../sandbox/client-sdk';
 import { getTestDb, cleanupTestDatabase } from '../../setup/test-db';
 import { initWorkspaceProvider } from '../../../workspace';
 import {
@@ -37,6 +38,7 @@ function ctxFor(organizationId: string, userId: string): ToolContext {
     tokenType: 'oauth',
     scopedToOrg: true,
     allowCrossOrg: false,
+    baseUrl: 'https://gateway.test/lobu',
   } as ToolContext;
 }
 
@@ -177,6 +179,50 @@ describe('connectors — pending-auth oauth_account in the same apply', () => {
     expect(feedRows).toHaveLength(1);
     expect((feedRows[0] as { status: string }).status).toBe('paused');
     expect((feedRows[0] as { next_run_at: unknown }).next_run_at).toBeNull();
+
+    // The SDK's positional lookup and reauthentication methods must work as
+    // advertised. OAuth reauthentication issues a fresh profile-scoped token;
+    // the callback then activates every connection bound to this profile.
+    const sdk = buildClientSDK(ctx, TEST_ENV);
+    const profileResult = (await sdk.authProfiles.get('demo-account')) as {
+      auth_profile: { id: number; slug: string; profile_kind: string };
+    };
+    expect(profileResult.auth_profile).toMatchObject({
+      id: profileId,
+      slug: 'demo-account',
+      profile_kind: 'oauth_account',
+    });
+
+    const reconnectResult = (await sdk.connections.reauthenticate(connectionId)) as {
+      action: string;
+      connection_id: number;
+      auth_profile_slug: string;
+      connect_url: string;
+      expires_at: string;
+    };
+    expect(reconnectResult).toMatchObject({
+      action: 'reauthenticate',
+      connection_id: connectionId,
+      auth_profile_slug: 'demo-account',
+    });
+    expect(reconnectResult.connect_url).toMatch(
+      /^https:\/\/gateway\.test\/lobu\/connect\/[A-Za-z0-9_-]+\/oauth\/start$/
+    );
+    expect(Number.isNaN(Date.parse(reconnectResult.expires_at))).toBe(false);
+
+    const reconnectTokens = await sql`
+      SELECT connection_id, auth_profile_id
+      FROM connect_tokens
+      WHERE organization_id = ${org.id}
+        AND connector_key = 'demo.oauth'
+        AND status = 'pending'
+      ORDER BY created_at DESC
+    `;
+    expect(reconnectTokens).toHaveLength(2);
+    expect(reconnectTokens[0]).toMatchObject({
+      connection_id: null,
+      auth_profile_id: profileId,
+    });
 
     // Re-creating the account profile is idempotent — reuses the row, returns a fresh token.
     const accRes2 = await manageAuthProfiles(

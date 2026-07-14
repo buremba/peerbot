@@ -65,7 +65,7 @@ import {
   buildViewUrl,
   enrichWithAuthProfiles,
 	ensureEnvBackedOAuthAppProfile,
-  getConnectBaseUrl,
+	getGatewayBaseUrl,
   getInteractiveMethods,
   isPersonalCredentialKind,
   isPersonalCredVisibilityViolation,
@@ -681,7 +681,7 @@ export async function handleCreate(
     connectorKey: args.connector_key,
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
-    gatewayBaseUrl: getConnectBaseUrl(ctx),
+    gatewayBaseUrl: getGatewayBaseUrl(ctx),
     setupUrl: await buildViewUrl(ctx, args.connector_key),
   });
   if (appInstallGuard) {

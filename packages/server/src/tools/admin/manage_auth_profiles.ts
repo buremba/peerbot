@@ -57,6 +57,7 @@ import {
   getEnvKeyMethods,
   getOAuthCredentialKeys,
   getOAuthMethods,
+  issueOAuthReconnectLink,
   resolveRequestedOAuthScopes,
   serializeAuthProfile,
 } from './helpers/connection-helpers';
@@ -707,58 +708,23 @@ async function handleUpdateAuthProfile(
     }
   }
 
-  if (
-    args.reconnect &&
-    authProfile.profile_kind === 'oauth_account' &&
-    authProfileProvider &&
-    authProfile.connector_key
-  ) {
-    const profileConnectorKey = authProfile.connector_key;
-    const connector = await getScopedConnectorDefinition({
-      organizationId: ctx.organizationId,
-      connectorKey: profileConnectorKey,
+  if (args.reconnect) {
+    const reconnect = await issueOAuthReconnectLink({
+      authProfile,
+      ctx,
+      requestedScopes: args.requested_scopes,
     });
-    const oauthMethod = connector
-      ? getOAuthMethods(connector.auth_schema).find((m) => m.provider === authProfileProvider)
-      : undefined;
+    if ('error' in reconnect) return reconnect;
 
-    if (oauthMethod) {
-      const requestedScopes = resolveRequestedOAuthScopes(
-        oauthMethod,
-        args.requested_scopes ??
-          (authProfile.auth_data?.requested_scopes as string[] | undefined) ??
-          undefined
-      );
-      authProfile =
-        (await updateAuthProfile({
-          organizationId: ctx.organizationId,
-          slug: authProfile.slug,
-          authData: {
-            ...(authProfile.auth_data ?? {}),
-            requested_scopes: requestedScopes,
-          },
-        })) ?? authProfile;
+    authProfile = reconnect.authProfile;
+    emitUpdateConfigChange(authProfile);
 
-      const connectToken = await createConnectToken({
-        organizationId: ctx.organizationId,
-        authProfileId: authProfile.id,
-        connectorKey: profileConnectorKey,
-        authType: 'oauth',
-        authConfig: {
-          ...buildOAuthConnectConfig(oauthMethod, requestedScopes),
-          requestedScopes,
-        },
-        createdBy: ctx.userId,
-      });
-
-      emitUpdateConfigChange(authProfile);
-
-      return {
-        action: 'update_auth_profile',
-        auth_profile: serializeAuthProfile(authProfile),
-        connect_url: `${getConnectBaseUrl(ctx)}/connect/${connectToken.token}/oauth/start`,
-      };
-    }
+    return {
+      action: 'update_auth_profile',
+      auth_profile: serializeAuthProfile(authProfile),
+      connect_url: reconnect.connectUrl,
+      expires_at: reconnect.expiresAt,
+    };
   }
 
   if (authProfile.profile_kind === 'browser_session') {

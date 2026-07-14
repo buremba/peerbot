@@ -2,8 +2,9 @@
  * ClientSDK `connections` namespace. Thin, action-complete wrapper over
  * `manageConnections`.
  *
- * `connect` / `reauthenticate` return a `connect_url` the caller should show to
- * the user. Field names follow the handler schema.
+ * `connect` returns a `connect_url`. `reauthenticate` returns a `connect_url`
+ * for OAuth accounts or an `auth_run_id` for interactive pairing. Field names
+ * follow the handler schema.
  */
 
 import type {
@@ -15,7 +16,7 @@ import type {
 import type { Env } from "../../index";
 import { manageConnections } from "../../tools/admin/manage_connections";
 import type { ToolContext } from "../../tools/registry";
-import { createActionCaller } from "./action-call";
+import { createActionCaller, requirePositionalNumber } from "./action-call";
 
 export type ConnectionsConnectInput = ConnectionConnectInput;
 export type ConnectionsCreateInput = ConnectionCreateInput;
@@ -71,14 +72,41 @@ export function buildConnectionsNamespace(
 	return {
 		manage,
 		list: (input) => action("list", input),
-		get: (connection_id) => action("get", { connection_id }),
+		get: async (connection_id) =>
+			action("get", {
+				connection_id: requirePositionalNumber(
+					"connections.get",
+					connection_id,
+					"client.connections.get(418)",
+				),
+			}),
 		create: (input) => action("create", input),
 		connect: (input) => action("connect", input),
 		update: (input) => action("update", input),
-		delete: (connection_id) => action("delete", { connection_id }),
-		reauthenticate: (connection_id) =>
-			action("reauthenticate", { connection_id }),
-		test: (connection_id) => action("test", { connection_id }),
+		delete: async (connection_id) =>
+			action("delete", {
+				connection_id: requirePositionalNumber(
+					"connections.delete",
+					connection_id,
+					"client.connections.delete(418)",
+				),
+			}),
+		reauthenticate: async (connection_id) =>
+			action("reauthenticate", {
+				connection_id: requirePositionalNumber(
+					"connections.reauthenticate",
+					connection_id,
+					"client.connections.reauthenticate(418)",
+				),
+			}),
+		test: async (connection_id) =>
+			action("test", {
+				connection_id: requirePositionalNumber(
+					"connections.test",
+					connection_id,
+					"client.connections.test(418)",
+				),
+			}),
 		installConnector: (input) => action("install_connector", input),
 		uninstallConnector: (connector_key) =>
 			action("uninstall_connector", { connector_key }),

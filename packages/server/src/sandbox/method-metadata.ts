@@ -473,7 +473,12 @@ export default async (_ctx, client) => {
 		summary: "List installed org or agent resources.",
 		access: "read",
 	},
-	"connections.get": { summary: "Get a connection by id.", access: "read" },
+	"connections.get": {
+		summary: "Get a connection by id.",
+		access: "read",
+		signature: "connections.get(connection_id: number): Promise<unknown>",
+		example: "await client.connections.get(42);",
+	},
 	"connections.create": {
 		summary:
 			"Create from an existing auth profile. Setup gaps return a structured setup_required continuation with next_action and an optional resume_call/completion_check.",
@@ -488,14 +493,25 @@ export default async (_ctx, client) => {
 		summary: "Update connection config or auth profile.",
 		access: "write",
 	},
-	"connections.delete": { summary: "Delete a connection.", access: "write" },
-	"connections.reauthenticate": {
-		summary: "Start a fresh auth flow for an existing connection.",
+	"connections.delete": {
+		summary: "Delete a connection.",
 		access: "write",
+		signature: "connections.delete(connection_id: number): Promise<unknown>",
+		example: "await client.connections.delete(42);",
+	},
+	"connections.reauthenticate": {
+		summary:
+			"Start a fresh auth flow for an existing OAuth-account or interactive connection. Returns connect_url for OAuth or auth_run_id for interactive pairing.",
+		access: "write",
+		signature:
+			"connections.reauthenticate(connection_id: number): Promise<unknown>",
+		example: "await client.connections.reauthenticate(42);",
 	},
 	"connections.test": {
 		summary: "Test connection credentials (sends an external probe).",
 		access: "external",
+		signature: "connections.test(connection_id: number): Promise<unknown>",
+		example: "await client.connections.test(42);",
 	},
 	"connections.installConnector": {
 		summary:
@@ -545,7 +561,12 @@ export default async (_ctx, client) => {
 		summary: "List past operation runs.",
 		access: "read",
 	},
-	"operations.getRun": { summary: "Get a single run by id.", access: "read" },
+	"operations.getRun": {
+		summary: "Get a single run by id.",
+		access: "read",
+		signature: "operations.getRun(run_id: number): Promise<unknown>",
+		example: "const run = await client.operations.getRun(123);",
+	},
 	"operations.approve": {
 		summary: "Approve a pending run that required human approval.",
 		access: "write",
@@ -566,14 +587,18 @@ export default async (_ctx, client) => {
 		signature: "feeds.list(input?: { connection_id?: number; status?: string; limit?: number; offset?: number }): Promise<unknown>",
 	},
 	"feeds.get": {
-		summary: "Get a feed by id.",
+		summary:
+			"Get a feed by id. Collected feeds return feed metadata and recent runs, not stored records; search collected records with knowledge.search/search_memory or client.query. Virtual feeds return live rows.",
 		access: "read",
+		signature: "feeds.get(input: { feed_id: number; limit?: number }): Promise<unknown>",
 		example: "const feed = await client.feeds.get({ feed_id: 42 });",
 	},
 	"feeds.readMany": {
 		summary:
-			"Read several feeds in parallel with per-feed successes/failures. Useful for live virtual feeds suggested by query_sql coverage hints.",
+			"Read several feeds in parallel with per-feed successes/failures. Collected feeds return metadata and recent runs; virtual feeds return live rows. Search collected records with knowledge.search/search_memory or client.query.",
 		access: "read",
+		signature: "feeds.readMany(input: { feed_ids: number[]; limit?: number }): Promise<unknown>",
+		example: "const feeds = await client.feeds.readMany({ feed_ids: [42, 43], limit: 25 });",
 	},
 	"feeds.create": {
 		summary: "Create a data-sync feed for a connection.",
@@ -604,22 +629,39 @@ export default async (_ctx, client) => {
 	"authProfiles.get": {
 		summary: "Get an auth profile by slug.",
 		access: "read",
+		signature:
+			"authProfiles.get(auth_profile_slug: string): Promise<unknown>",
+		example:
+			"await client.authProfiles.get('google-calendar-account');",
 	},
 	"authProfiles.test": {
 		summary: "Test auth-profile credentials.",
 		access: "external",
+		signature:
+			"authProfiles.test(auth_profile_slug: string): Promise<unknown>",
+		example:
+			"await client.authProfiles.test('google-calendar-account');",
 	},
 	"authProfiles.create": {
 		summary: "Create an auth profile.",
 		access: "write",
 	},
 	"authProfiles.update": {
-		summary: "Update an auth profile.",
+		summary:
+			"Update an auth profile. Set reconnect=true on an OAuth-account profile to issue a fresh connect_url.",
 		access: "write",
+		signature:
+			"authProfiles.update(input: { auth_profile_slug: string; display_name?: string; slug?: string; credentials?: Record<string, string>; auth_data?: Record<string, unknown>; requested_scopes?: string[]; status?: string; reconnect?: boolean }): Promise<unknown>",
+		example:
+			"await client.authProfiles.update({ auth_profile_slug: 'google-calendar-account', reconnect: true });",
 	},
 	"authProfiles.delete": {
 		summary: "Delete an auth profile.",
 		access: "write",
+		signature:
+			"authProfiles.delete(auth_profile_slug: string, options?: { force?: boolean }): Promise<unknown>",
+		example:
+			"await client.authProfiles.delete('google-calendar-account');",
 	},
 
 	// classifiers

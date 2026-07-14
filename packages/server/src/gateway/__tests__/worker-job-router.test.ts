@@ -3,7 +3,8 @@
  * Tests job routing from queues to workers, acknowledgments, and timeouts
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { encrypt, verifyWorkerToken } from "@lobu/core";
 import { WorkerConnectionManager } from "../gateway/connection-manager.js";
 import { WorkerJobRouter } from "../gateway/job-router.js";
 import {
@@ -24,7 +25,11 @@ describe("WorkerJobRouter", () => {
     queue = new MockMessageQueue();
     connectionManager = new WorkerConnectionManager();
 
-    router = new WorkerJobRouter(queue as any, connectionManager);
+    router = new WorkerJobRouter(
+      queue as any,
+      connectionManager,
+      async () => [],
+    );
   });
 
   afterEach(() => {
@@ -67,6 +72,85 @@ describe("WorkerJobRouter", () => {
       expect(queue.getQueue("thread_message_worker-1")).toBeDefined();
       expect(queue.getQueue("thread_message_worker-2")).toBeDefined();
       expect(queue.getQueue("thread_message_worker-3")).toBeDefined();
+    });
+
+    test("re-enqueues durable pending inputs with a freshly minted run token", async () => {
+      const agedToken = encrypt(
+        JSON.stringify({
+          userId: "user",
+          conversationId: "conversation",
+          channelId: "channel",
+          agentId: "agent",
+          organizationId: "org",
+          deploymentName: "worker-1",
+          platform: "api",
+          runId: 42,
+          messageId: "durable-message",
+          timestamp: Date.now() - 3 * 60 * 60 * 1000,
+        }),
+      );
+      expect(verifyWorkerToken(agedToken)).toBeNull();
+      const payload = {
+        botId: "bot",
+        userId: "user",
+        organizationId: "org",
+        agentId: "agent",
+        conversationId: "conversation",
+        platform: "api",
+        channelId: "channel",
+        messageId: "durable-message",
+        messageText: "steer this run",
+        platformMetadata: {},
+        agentOptions: {},
+        runId: 42,
+        runJobToken: agedToken,
+      };
+      const input = {
+        payload,
+        tokenClaims: {
+          userId: payload.userId,
+          conversationId: payload.conversationId,
+          channelId: payload.channelId,
+          agentId: payload.agentId,
+          organizationId: payload.organizationId,
+          deploymentName: "worker-1",
+          platform: payload.platform,
+          runId: payload.runId,
+          messageId: payload.messageId,
+        },
+      };
+      const send = mock(async () => undefined);
+      (queue as any).send = send;
+      router.shutdown();
+      router = new WorkerJobRouter(
+        queue as any,
+        connectionManager,
+        async () => [input],
+      );
+
+      await router.registerWorker("worker-1");
+
+      expect(send).toHaveBeenCalledTimes(1);
+      const replayed = send.mock.calls[0]?.[1] as typeof payload;
+      expect(replayed.runJobToken).not.toBe(agedToken);
+      expect(verifyWorkerToken(replayed.runJobToken)).toEqual(
+        expect.objectContaining({
+          userId: payload.userId,
+          organizationId: payload.organizationId,
+          deploymentName: "worker-1",
+          runId: payload.runId,
+          messageId: payload.messageId,
+        }),
+      );
+      expect(send).toHaveBeenCalledWith(
+        "thread_message_worker-1",
+        replayed,
+        {
+          retryLimit: 3,
+          retryDelay: 2,
+          priority: 10,
+        },
+      );
     });
   });
 

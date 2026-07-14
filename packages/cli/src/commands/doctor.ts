@@ -3,8 +3,8 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import chalk from "chalk";
 import postgres from "postgres";
-import { checkMemoryHealth } from "./memory/_lib/openclaw-cmd.js";
-import { resolveServerUrl } from "./memory/_lib/openclaw-auth.js";
+import { checkMemoryHealth } from "./memory/_lib/memory-health.js";
+import { resolveServerUrl } from "./memory/_lib/memory-auth.js";
 import {
   isExternalDatabaseUrl,
   isPortFree,

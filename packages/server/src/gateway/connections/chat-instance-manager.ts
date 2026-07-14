@@ -2414,6 +2414,13 @@ export class ChatInstanceManager {
     if (!connection) {
       throw new Error(`No active ${name} connection is available`);
     }
+    if (!connection.organizationId) {
+      throw new Error(
+        `Active ${name} connection is missing organization scope`,
+      );
+    }
+
+    const organizationId = connection.organizationId;
 
     const sessionManager = this.services.getSessionManager();
     const queueProducer = this.services.getQueueProducer();
@@ -2426,8 +2433,8 @@ export class ChatInstanceManager {
     const agentOptions = await resolveAgentOptions(
       options.agentId,
       {},
-			agentSettingsStore,
-      connection.organizationId,
+      agentSettingsStore,
+      organizationId,
     );
 
     await sessionManager.setSession({
@@ -2448,7 +2455,7 @@ export class ChatInstanceManager {
       channelId: options.channelId,
       teamId: options.teamId,
       agentId: options.agentId,
-      organizationId: connection.organizationId,
+      organizationId,
       botId: `${name}-platform`,
       platform: name,
       messageText: message,

@@ -4,7 +4,7 @@
  *
  * This drives the SAME wiring production uses: the worker captures
  * WORKER_TOKEN / DISPATCHER_URL from process.env for its OWN gateway calls,
- * builds the agent's built-in tools via createOpenClawTools (carrying the
+ * builds the agent's built-in tools via createLobuTools (carrying the
  * env-strip spawnHook), and hands them to buildAgentSession. We then invoke
  * the resulting agent bash tool DIRECTLY with `printenv WORKER_TOKEN` /
  * `printenv DISPATCHER_URL` and assert both come back EMPTY — using a real
@@ -19,9 +19,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAgentSession } from "../openclaw/session-runner";
-import { createOpenClawTools } from "../openclaw/tools";
-import { OpenClawWorker } from "../openclaw/worker";
+import { buildAgentSession } from "../runtime/session-runner";
+import { createLobuTools } from "../runtime/tools";
+import { LobuAgentWorker } from "../runtime/worker";
 import {
   callMcpTool,
   type GatewayParams,
@@ -71,11 +71,11 @@ describe("worker agent bash secret leak (E2E, Finding #1)", () => {
   test("agent bash sees NEITHER WORKER_TOKEN NOR DISPATCHER_URL", async () => {
     // Constructing the worker mirrors production startup: the constructor reads
     // the gateway credentials from process.env (and throws if absent).
-    const worker = new OpenClawWorker(mockWorkerConfig);
+    const worker = new LobuAgentWorker(mockWorkerConfig);
     expect(worker).toBeDefined();
 
     // The agent's built-in tools the worker hands to the session.
-    const tools = createOpenClawTools(tempDir);
+    const tools = createLobuTools(tempDir);
     const { session } = await buildAgentSession({
       cwd: tempDir,
       tools: tools.map((t) => t.name),

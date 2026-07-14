@@ -1010,6 +1010,9 @@ export class MessageHandlerBridge {
       logMessage,
       logExtra,
     } = args;
+    if (!organizationId) {
+      throw new Error("organizationId is required for agent message routing");
+    }
     const platform = this.connection.platform;
 
     const conversationState = this.conversationState();

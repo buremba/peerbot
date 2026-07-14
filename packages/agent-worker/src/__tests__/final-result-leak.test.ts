@@ -14,8 +14,8 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
-import type { OpenClawProgressProcessor } from "../openclaw/processor";
-import { OpenClawWorker } from "../openclaw/worker";
+import type { AgentProgressProcessor } from "../runtime/processor";
+import { LobuAgentWorker } from "../runtime/worker";
 import { mockWorkerConfig } from "./setup";
 
 let originalDispatcherUrl: string | undefined;
@@ -48,7 +48,7 @@ type SentDelta = {
 };
 
 function streamLeakyAssistantText(
-  processor: OpenClawProgressProcessor,
+  processor: AgentProgressProcessor,
   text: string
 ) {
   const event: AgentSessionEvent = {
@@ -60,7 +60,7 @@ function streamLeakyAssistantText(
 }
 
 function buildWorkerWithRecorder() {
-  const worker = new OpenClawWorker(mockWorkerConfig);
+  const worker = new LobuAgentWorker(mockWorkerConfig);
   const sent: SentDelta[] = [];
   const noop = () => undefined;
   const asyncNoop = async () => undefined;
@@ -75,8 +75,7 @@ function buildWorkerWithRecorder() {
     sendStatusUpdate: asyncNoop,
     sendCustomEvent: asyncNoop,
   };
-  const processor = (worker as any)
-    .progressProcessor as OpenClawProgressProcessor;
+  const processor = (worker as any).progressProcessor as AgentProgressProcessor;
   const deliverFinalResult = (worker as any).deliverFinalResult.bind(
     worker
   ) as (sawUploadedFileEvent: boolean) => Promise<void>;

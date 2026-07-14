@@ -18,7 +18,7 @@ import {
   PROVIDER_REGISTRY_ALIASES,
   registerDynamicProvider,
   resolveModelRef,
-} from "../openclaw/model-resolver";
+} from "../runtime/model-resolver";
 
 // Unique-enough prefix to avoid clashing with parallel test workers
 const PREFIX = `test-${process.pid}-${Date.now()}`;

@@ -133,7 +133,6 @@ Memory:
   memory run [tool]        Invoke a memory MCP tool
   memory exec <script>     Run a ClientSDK script
   memory health            Validate login + MCP connectivity
-  memory configure         Wire OpenClaw config
   memory seed [path]       Provision a memory workspace
   memory init              Wire agents to a memory MCP endpoint
 `
@@ -1225,38 +1224,6 @@ Memory:
       await memoryHealthCommand(options);
     }
   );
-
-  withCommonOpts(
-    memory
-      .command("configure")
-      .description(
-        "Write OpenClaw plugin config pointing at the active memory MCP"
-      )
-      .option("--url <url>", "Server URL override"),
-    { org: true }
-  )
-    .option(
-      "--config-path <path>",
-      "OpenClaw config path (defaults to ~/.openclaw/openclaw.json)"
-    )
-    .option(
-      "--token-command <cmd>",
-      "Override the plugin's token retrieval command"
-    )
-    .action(
-      async (options: {
-        url?: string;
-        org?: string;
-        context?: string;
-        configPath?: string;
-        tokenCommand?: string;
-      }) => {
-        const { memoryConfigureCommand } = await import(
-          "./commands/memory/configure.js"
-        );
-        await memoryConfigureCommand(options);
-      }
-    );
 
   memory
     .command("seed [path]")

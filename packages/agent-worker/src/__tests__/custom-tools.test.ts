@@ -3,19 +3,19 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createOpenClawCustomTools } from "../openclaw/custom-tools";
+import { createLobuCustomTools } from "../runtime/custom-tools";
 import { maybePostApprovalCard } from "../shared/tool-implementations";
 
 const originalFetch = globalThis.fetch;
 
-describe("createOpenClawCustomTools", () => {
+describe("createLobuCustomTools", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     mock.restore();
   });
 
   test("registers every built-in Lobu tool", () => {
-    const tools = createOpenClawCustomTools({
+    const tools = createLobuCustomTools({
       gatewayUrl: "http://gateway",
       workerToken: "worker-token",
       channelId: "channel-1",
@@ -57,7 +57,7 @@ describe("createOpenClawCustomTools", () => {
     }) as unknown as typeof fetch;
 
     try {
-      const uploadTool = createOpenClawCustomTools({
+      const uploadTool = createLobuCustomTools({
         gatewayUrl: "http://gateway",
         workerToken: "worker-token",
         channelId: "channel-1",
@@ -106,7 +106,7 @@ describe("createOpenClawCustomTools", () => {
     }) as unknown as typeof fetch;
 
     let posted = 0;
-    const askTool = createOpenClawCustomTools({
+    const askTool = createLobuCustomTools({
       gatewayUrl: "http://gateway",
       workerToken: "worker-token",
       channelId: "channel-1",

@@ -139,6 +139,7 @@ export interface PlatformAdapter {
     message: string,
     options: {
       agentId: string;
+      organizationId: string;
       channelId: string;
       conversationId?: string;
       teamId: string;

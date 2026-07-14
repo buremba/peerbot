@@ -230,7 +230,7 @@ export function createLobuAuthBridge() {
  * id from AsyncLocalStorage via `getOrgId()`) work for routes that don't carry
  * an explicit org slug in the path — `POST /api/v1/agents` in particular, which
  * auto-provisions ephemeral agents and needs the user's existing agents to
- * inherit `pluginsConfig`. (The mainApp's `workspace/multi-tenant.ts` already
+ * inherit runtime agent options. (The mainApp's `workspace/multi-tenant.ts` already
  * handles `/api/:orgSlug/*`; this is the equivalent for the lobu-app's unscoped
  * routes.)
  *

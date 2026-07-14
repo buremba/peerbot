@@ -13,7 +13,7 @@ run against the **real glm-4.7 model via the z-ai provider**:
 The toggle that selects between them in production is the worker's
 `mcpExposure` (set per-agent via `toolsConfig.mcpExposure` or the
 `LOBU_MCP_EXPOSURE=cli` env var) — see
-`packages/agent-worker/src/openclaw/worker.ts`.
+`packages/agent-worker/src/runtime/worker.ts`.
 
 ## What is real vs. reconstructed
 
@@ -26,7 +26,7 @@ The toggle that selects between them in production is the worker's
 - **Arm A surface:** the real discrete tool list from
   `getAllTools()` (names/descriptions/JSON schemas).
 - **Arm B surface:** the real `buildMcpCliCommands` + the worker's real
-  `createOpenClawTools` bash + just-bash interpreter. The only swap is the
+  `createLobuTools` bash + just-bash interpreter. The only swap is the
   gateway HTTP `callTool` → an out-of-process dispatcher (see below).
 
 ## The one deliberate divergence (and why)

@@ -50,7 +50,7 @@ later, at runtime:
 - **`secret://` refs**: `packages/core/src/secret-refs.ts` parses `<scheme>://<path>#<fragment>` URIs. `secret://` is the default writable scheme; `aws-sm://` is read-only. Anything stored via `secrets push` becomes `secret://<orgSlug>/user/<name>` (see Locked Decisions #6).
 - **Auth**: `mcpAuth` middleware (`packages/server/src/auth/middleware.ts`, mounted in `src/index.ts:660+`) validates the bearer token, attaches `c.var.userId` and the resolved `orgSlug`. Org member roles are computed in `auth/oauth/scopes.ts` (`owner | admin | member`). Reuse both — no new auth surface.
 - **CLI today** (`packages/cli/src/commands/secrets.ts`): `secrets set/list/delete` operate **only on local `.env`**. The header comment promises "Cloud secrets will use the API when available." This plan delivers that API.
-- **CLI auth helpers**: `_lib/openclaw-auth.ts:getUsableToken` and `_lib/openclaw-cmd.ts:postJson` + `deriveApiBaseUrl` (introduced in PR #459). Reuse, don't duplicate.
+- **CLI auth helpers**: `_lib/memory-auth.ts:getUsableToken` plus the shared HTTP/API-base helpers. Reuse, don't duplicate.
 
 What's **not** there: no `org_id` on `agent_secrets`, no audit log for secret writes, no HTTP route, no per-key confirm UX, no fingerprint helper.
 
@@ -126,7 +126,7 @@ Scope:
 - New `packages/cli/src/commands/secrets-push.ts` (top-level command implementation).
 - New `packages/cli/src/commands/_lib/secrets/`:
   - `source.ts` — three readers: `readFromEnv(cwd)`, `readFromFile(path)`, `readFromStdin()`. Each returns `Map<string, string>`. The `.env` reader warns if `.env` isn't in `.gitignore` of cwd. None of them log values; on parse error they print `failed to parse <path> at line N` without including the line content. Stdin reader fails clean if stdin is a TTY and `--from-stdin` was set.
-  - `client.ts` — thin wrapper over `postJson` from `_lib/openclaw-cmd.ts`. Methods: `listSecrets(orgSlug)`, `manageSecrets(orgSlug, actions)`. Wraps every error so the error message can never include the request body. Re-throws with a sanitized message.
+  - `client.ts` — thin wrapper over the shared HTTP client. Methods: `listSecrets(orgSlug)`, `manageSecrets(orgSlug, actions)`. Wraps every error so the error message can never include the request body. Re-throws with a sanitized message.
   - `diff.ts` — given desired (local map) and current (cloud names + fingerprints), produces `{ creates, rotates, unchanged, missingFromSource }`. Honors `--rotate` and `--rotate <key>...` selectors.
   - `prompt.ts` — per-key confirm with `y/n/a/q`. `--yes` short-circuits to yes-to-all; `--yes-rotate` is required to flip rotates from no-to-all to confirm-individually (or yes-to-all if also `--yes`). Non-TTY without `--yes` exits non-zero with a clear message.
   - `render.ts` — diff output. Format: `~ FOO  a3f1 → 9b22  (rotate, source=env)`. Never values, even for unchanged keys (which only show fingerprint to confirm cloud and source agree — handy for "did my .env drift from cloud?" sanity checks; note this means we send the fingerprint of every desired key, not the value).

@@ -12,12 +12,12 @@ import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import {
   createMcpAuthToolDefinitions,
   createMcpToolDefinitions,
-} from "../openclaw/custom-tools";
+} from "../runtime/custom-tools";
 import {
-  getOpenClawSessionContext,
+  getAgentSessionContext,
   invalidateSessionContextCache,
-} from "../openclaw/session-context";
-import { createOpenClawTools } from "../openclaw/tools";
+} from "../runtime/session-context";
+import { createLobuTools } from "../runtime/tools";
 import { callMcpTool } from "../shared/tool-implementations";
 
 let tempDir: string;
@@ -31,12 +31,12 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// createOpenClawTools — tool count and names
+// createLobuTools — tool count and names
 // ---------------------------------------------------------------------------
 
-describe("createOpenClawTools", () => {
+describe("createLobuTools", () => {
   test("returns 7 tools (read, write, edit, bash, grep, find, ls)", () => {
-    const tools = createOpenClawTools(tempDir);
+    const tools = createLobuTools(tempDir);
     expect(tools).toHaveLength(7);
     const names = tools.map((t) => t.name);
     expect(names).toContain("read");
@@ -66,7 +66,7 @@ describe("bash tool with BashOperations", () => {
       },
     };
 
-    const tools = createOpenClawTools(tempDir, {
+    const tools = createLobuTools(tempDir, {
       bashOperations: mockBashOps,
     });
     const bashTool = tools.find((t) => t.name === "bash")!;
@@ -98,7 +98,7 @@ describe("bash tool with BashOperations", () => {
       },
     };
 
-    const tools = createOpenClawTools(tempDir, {
+    const tools = createLobuTools(tempDir, {
       bashOperations: mockBashOps,
     });
     const bashTool = tools.find((t) => t.name === "bash")!;
@@ -123,7 +123,7 @@ describe("file tools use real filesystem", () => {
     const filePath = join(tempDir, "hello.txt");
     writeFileSync(filePath, "hello world");
 
-    const tools = createOpenClawTools(tempDir);
+    const tools = createLobuTools(tempDir);
     const readTool = tools.find((t) => t.name === "read")!;
     const result = await readTool.execute(
       "call-read",
@@ -141,7 +141,7 @@ describe("file tools use real filesystem", () => {
   test("write tool creates a real file", async () => {
     const filePath = join(tempDir, "output.txt");
 
-    const tools = createOpenClawTools(tempDir);
+    const tools = createLobuTools(tempDir);
     const writeTool = tools.find((t) => t.name === "write")!;
     await writeTool.execute(
       "call-write",
@@ -167,7 +167,7 @@ describe("bash tool proxy hint", () => {
       },
     };
 
-    const tools = createOpenClawTools(tempDir, {
+    const tools = createLobuTools(tempDir, {
       bashOperations: mockBashOps,
     });
     const bashTool = tools.find((t) => t.name === "bash")!;
@@ -196,7 +196,7 @@ describe("bash tool proxy hint", () => {
       },
     };
 
-    const tools = createOpenClawTools(tempDir, {
+    const tools = createLobuTools(tempDir, {
       bashOperations: mockBashOps,
     });
     const bashTool = tools.find((t) => t.name === "bash")!;
@@ -225,7 +225,7 @@ describe("bash tool proxy hint", () => {
     process.env.WORKER_TOKEN = "secret-token";
 
     try {
-      const tools = createOpenClawTools(tempDir, {
+      const tools = createLobuTools(tempDir, {
         bashOperations: mockBashOps,
       });
       const bashTool = tools.find((t) => t.name === "bash")!;
@@ -689,8 +689,8 @@ describe("session context cache TTL", () => {
       });
     };
 
-    const first = await getOpenClawSessionContext();
-    const second = await getOpenClawSessionContext();
+    const first = await getAgentSessionContext();
+    const second = await getAgentSessionContext();
 
     expect(fetchCount).toBe(1);
     expect(first.mcpContext).toEqual({ lobu: "Check memory" });
@@ -710,17 +710,17 @@ describe("session context cache TTL", () => {
       });
     };
 
-    await getOpenClawSessionContext();
+    await getAgentSessionContext();
     expect(fetchCount).toBe(1);
 
     // Still within TTL (4 minutes later)
     currentTime += 4 * 60 * 1000;
-    await getOpenClawSessionContext();
+    await getAgentSessionContext();
     expect(fetchCount).toBe(1);
 
     // Past TTL (6 minutes from original)
     currentTime += 2 * 60 * 1000;
-    await getOpenClawSessionContext();
+    await getAgentSessionContext();
     expect(fetchCount).toBe(2);
   });
 
@@ -734,11 +734,11 @@ describe("session context cache TTL", () => {
       });
     };
 
-    await getOpenClawSessionContext();
+    await getAgentSessionContext();
     expect(fetchCount).toBe(1);
 
     invalidateSessionContextCache();
-    await getOpenClawSessionContext();
+    await getAgentSessionContext();
     expect(fetchCount).toBe(2);
   });
 });

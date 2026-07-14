@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildRunContextBlock } from "../openclaw/worker";
+import { buildRunContextBlock } from "../runtime/worker";
 
 describe("buildRunContextBlock", () => {
   test("renders platform, channel, sender, thread from platformMetadata", () => {

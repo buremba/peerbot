@@ -300,7 +300,7 @@ export async function searchContentBySingleQuery(
   // filtered result sets, totals, and offsets retain their historical semantics.
   // The bounded candidate path is opt-in for recall/search_memory snippets: the
   // caller ignores exact totals/pagination and only needs a small set of highly
-  // relevant rows under the OpenClaw recall timeout.
+  // relevant rows under the agent recall timeout.
   const useCandidatePath =
     options.approximate_candidate_search === true &&
     entityId == null &&

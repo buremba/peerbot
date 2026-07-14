@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { checkSandboxLeak } from "../openclaw/sandbox-leak";
+import { checkSandboxLeak } from "../runtime/sandbox-leak";
 
 describe("checkSandboxLeak", () => {
   test("passes through empty input", () => {
@@ -29,7 +29,7 @@ describe("checkSandboxLeak", () => {
       "**Workspace Location:** `/app/workspaces/careops/C09EH3ASNQ1`",
       "",
       "**Directory Structure:**",
-      "- `.openclaw/` - Configuration files",
+      "- `.lobu/` - Configuration files",
       "- `input/` - Empty",
     ].join("\n");
     const res = checkSandboxLeak(text, false);

@@ -68,6 +68,12 @@ export class HttpWorkerTransport implements WorkerTransport {
     this.jobId = jobId;
   }
 
+  addProcessedMessageId(messageId: string): void {
+    if (!this.processedMessageIds.includes(messageId)) {
+      this.processedMessageIds.push(messageId);
+    }
+  }
+
   async signalDone(finalDelta?: string): Promise<void> {
     // Send final delta if there is one
     if (finalDelta) {
@@ -189,6 +195,7 @@ export class HttpWorkerTransport implements WorkerTransport {
     await this.sendResponse(
       this.buildBaseResponse({
         error: error.message,
+        processedMessageIds: this.processedMessageIds,
         ...(errorCode && { errorCode }),
         ...(errorContext && { errorContext }),
       })

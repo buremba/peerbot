@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { openInBrowser } from "./browser.js";
-import { checkMemoryHealth, configureMemoryPlugin } from "./openclaw-cmd.js";
 
 interface ConfigureResult {
   status: "configured" | "handoff" | "manual" | "failed";
@@ -124,41 +123,6 @@ export const INSTALL_TARGETS: InstallTarget[] = [
         return { status: "configured", message: "MCP server added" };
       } catch (e) {
         return { status: "failed", message: (e as Error).message };
-      }
-    },
-  },
-  {
-    id: "openclaw",
-    name: "OpenClaw",
-    mode: "auto",
-    async configure(mcpUrl) {
-      try {
-        runCommand("openclaw", ["plugins", "install", "@lobu/openclaw-plugin"]);
-      } catch (e) {
-        return {
-          status: "failed",
-          message: `Plugin install failed: ${(e as Error).message}`,
-        };
-      }
-      try {
-        await configureMemoryPlugin({ url: mcpUrl });
-      } catch (e) {
-        return {
-          status: "failed",
-          message: `Configure failed: ${(e as Error).message}`,
-        };
-      }
-      try {
-        await checkMemoryHealth({ url: mcpUrl });
-        return {
-          status: "configured",
-          message: "Plugin installed and verified",
-        };
-      } catch (e) {
-        return {
-          status: "failed",
-          message: `Health check failed: ${(e as Error).message}`,
-        };
       }
     },
   },

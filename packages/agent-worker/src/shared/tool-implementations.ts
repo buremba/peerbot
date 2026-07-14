@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createLogger } from "@lobu/core";
 import FormData from "form-data";
-import { invalidateSessionContextCache } from "../openclaw/session-context";
+import { invalidateSessionContextCache } from "../runtime/session-context";
 import { fetchAudioProviderSuggestions } from "./audio-provider-suggestions";
 import { createGatewayClient } from "./gateway-client";
 
@@ -1307,7 +1307,8 @@ export async function callMcpTool(
   gw: GatewayParams,
   mcpId: string,
   toolName: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  options?: { timeoutMs?: number }
 ): Promise<TextResult> {
   return withErrorHandling(`${mcpId}/${toolName}`, async () => {
     let response: Response;
@@ -1327,7 +1328,7 @@ export async function callMcpTool(
         body: JSON.stringify(args),
         // Third-party MCP server on the other side — give it a generous
         // budget but never wait forever.
-        timeoutMs: 120_000,
+        timeoutMs: options?.timeoutMs ?? 120_000,
       });
     } catch (err) {
       if (err instanceof Error && err.name === "TimeoutError") {

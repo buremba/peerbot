@@ -6,7 +6,6 @@
  *   - Host-provided store (embedded backend, e.g. PostgresAgentStore in Lobu)
  */
 
-import type { PluginsConfig } from "./plugin-types";
 import type {
   AgentInlineGuardrail,
   AuthProfile,
@@ -70,8 +69,6 @@ export interface AgentSettings {
    * vault credential at worker-token mint time.
    */
   environmentId?: string;
-  /** OpenClaw plugin configuration */
-  pluginsConfig?: PluginsConfig;
   /**
    * Reusable auth profiles persisted by host stores (e.g. Lobu's Postgres
    * store). Lobu's gateway runtime uses UserAuthProfileStore instead, but the

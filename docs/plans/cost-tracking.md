@@ -27,7 +27,7 @@ Locked product decisions:
 
 ## 3. Architecture overview
 
-The data already exists: pi's `SessionManager` writes every assistant turn's full `Usage` (input / output / cacheRead / cacheWrite / totalTokens + nested per-bucket `cost`) **and** the per-message `model`/`provider` into the worker's `.openclaw/session.jsonl` (`@mariozechner/pi-ai/dist/types.d.ts:80-110`). Everything downstream throws it away. The feature is: **stop discarding it, persist a per-run ledger row, freeze the price, roll it up by dimension, and gate the next admission against a windowed sum.**
+The data already exists: pi's `SessionManager` writes every assistant turn's full `Usage` (input / output / cacheRead / cacheWrite / totalTokens + nested per-bucket `cost`) **and** the per-message `model`/`provider` into the worker's `.lobu/session.jsonl` (`@mariozechner/pi-ai/dist/types.d.ts:80-110`). Everything downstream throws it away. The feature is: **stop discarding it, persist a per-run ledger row, freeze the price, roll it up by dimension, and gate the next admission against a windowed sum.**
 
 Three slices, shipped in order:
 1. **Ledger + visibility/showback** (MVP, low risk).
@@ -91,14 +91,14 @@ model_price_overrides(organization_id, provider, model,
 Confirm `cacheRead`/`cacheWrite` are actually populated in captured `Usage` for **Anthropic vs openai-completions vs third-party openai-compat** (z.ai/gemini/nvidia/together often return 0). This gates the whole accuracy story; do it before building persistence.
 
 ### 5.3 Write point & transport
-Natural persist-once seam: `OpenClawWorker.cleanup()` on the success path holds the runId, the full JSONL, and a per-run JWT (`packages/agent-worker/src/openclaw/worker.ts:406-429`; snapshot via `transcript-snapshot.ts:137-151`). Workers have **no `DATABASE_URL`** — persistence rides the authenticated `/worker/*` hop.
+Natural persist-once seam: `LobuWorker.cleanup()` on the success path holds the runId, the full JSONL, and a per-run JWT (`packages/agent-worker/src/runtime/worker.ts`; snapshot via `transcript-snapshot.ts`). Workers have **no `DATABASE_URL`** — persistence rides the authenticated `/worker/*` hop.
 
 **Transport decision:** worker aggregates per-turn usage from its own `session.jsonl` at cleanup and includes a **structured `usage` field in the completion response** (`signalCompletion`/`buildBaseResponse`, `packages/agent-worker/src/gateway/gateway-integration.ts:162-184`), so the gateway has usage at the completion seam without re-parsing the opaque `snapshot_jsonl` blob cross-pod. The gateway computes USD (price table) and writes `run_usage` **inside the claimant-gated completion UPDATE** (§9). One row per run + a `turn_breakdown` JSONB column to preserve mixed-model detail (each turn stamps its own model; a `model_change` entry marks mid-session swaps — `session-file.ts:120-129`).
 
 ### 5.4 Known capture gaps to handle
 - Usage currently reaches PG only on `terminalStatus==='completed'` (`worker.ts:291-297`). **Capture on ALL terminal states incl. failure/timeout/cancelled** — a timed-out 200k-token run still cost money, and runaway loops live exactly there.
 - A **provider change deletes `session.jsonl` and purges snapshots** (`session-runner.ts:710-760`) — another reason to capture per-run at completion, not rely on the file surviving.
-- **Device-worker CLI watcher runs** (Owletto local claude/codex) report back **no cost** today (`run-lifecycle.ts:604-622`) and have no `session.jsonl` on the gateway side. Cloud watcher runs (OpenClaw worker) are covered; the device-CLI path needs separate handling (claude/codex CLIs can emit cost JSON) — scope as a follow-up, flag in v1 that device-CLI watcher spend is not captured.
+- **Device-worker CLI watcher runs** (Owletto local claude/codex) report back **no cost** today (`run-lifecycle.ts:604-622`) and have no `session.jsonl` on the gateway side. Cloud Lobu worker runs are covered; the device-CLI path needs separate handling (claude/codex CLIs can emit cost JSON) — scope as a follow-up, flag in v1 that device-CLI watcher spend is not captured.
 
 ## 6. Cost computation (tokens → USD)
 

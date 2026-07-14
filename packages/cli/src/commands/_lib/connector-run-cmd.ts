@@ -28,7 +28,7 @@ import type { EventEnvelope } from "@lobu/connector-sdk";
 import { resolveContext } from "../../internal/context.js";
 import { fetchWithRetry } from "../../internal/http.js";
 import { printText } from "../../internal/output.js";
-import { getUsableToken, resolveOrg } from "../memory/_lib/openclaw-auth.js";
+import { getUsableToken, resolveOrg } from "../memory/_lib/memory-auth.js";
 import {
   compileConnectorFromFile,
   findBundledConnectorFile,

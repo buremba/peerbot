@@ -3,7 +3,7 @@ import {
   DEFAULT_MAX_IDENTICAL_TOOL_CALLS,
   DEFAULT_MAX_TOOL_CALLS_PER_TURN,
   TurnController,
-} from "../openclaw/turn-controller";
+} from "../runtime/turn-controller";
 
 describe("TurnController", () => {
   test("terminate() aborts the turn and is idempotent within a turn", () => {

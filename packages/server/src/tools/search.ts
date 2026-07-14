@@ -122,7 +122,7 @@ export const SearchSchema = Type.Object({
   agent_id: Type.Optional(
     Type.String({
       description:
-        "Limit results to memory written by this agent. Filters events where `metadata.agent_id` matches the given id. Agents that opt in (via the `@lobu/openclaw-plugin` autoCapture path) get their saves stamped with their own id automatically; pass the same id here to scope recall to that agent's own writes.",
+        "Limit results to memory written by this agent. Filters events where `metadata.agent_id` matches the given id; pass the same id here to scope recall to that agent's own writes.",
     })
   ),
   limit: Type.Optional(

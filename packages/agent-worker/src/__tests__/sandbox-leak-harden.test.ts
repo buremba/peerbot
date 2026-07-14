@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { checkSandboxLeak } from "../openclaw/sandbox-leak";
+import { checkSandboxLeak } from "../runtime/sandbox-leak";
 
 // ---------------------------------------------------------------------------
 // Multiple patterns in one message

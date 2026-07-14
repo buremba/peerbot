@@ -3,7 +3,7 @@ import {
   LOBU_DEFAULT_IDENTITY,
   replaceBasePromptIdentity,
   resolveAgentIdentity,
-} from "../openclaw/worker";
+} from "../runtime/worker";
 
 const PI_OPENER =
   "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";

@@ -5,7 +5,7 @@ import {
   mcpUrlForOrg,
   resolveOrg,
   resolveServerUrl,
-} from "./_lib/openclaw-auth.js";
+} from "./_lib/memory-auth.js";
 import { printText } from "../../internal/output.js";
 
 interface RunOptions {

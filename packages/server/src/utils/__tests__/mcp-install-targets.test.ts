@@ -34,30 +34,17 @@ describeIfSubmodule('getMcpInstallTargets', () => {
       'gemini-cli',
       'cursor',
       'lobu-cli',
-      'openclaw',
     ]);
   });
 
   it('uses the runtime mcpUrl in generated commands', () => {
     const targets = getMcpInstallTargets(mcpUrl);
     const codex = targets.find((target) => target.id === 'codex');
-    const openclaw = targets.find((target) => target.id === 'openclaw');
 
     expect(codex?.actions).toContainEqual({
       type: 'command',
       label: 'Add MCP server',
       value: `codex mcp add lobu --url ${mcpUrl}`,
-    });
-
-    // openclaw's four install steps were consolidated into a single chained
-    // command for tile-grid parity with the other CLI targets (#118).
-    expect(openclaw?.actions).toContainEqual({
-      type: 'command',
-      label: 'Install and configure',
-      value: `openclaw plugins install @lobu/openclaw-plugin
-lobu login
-lobu memory configure --url ${mcpUrl}
-lobu memory health --url ${mcpUrl}`,
     });
   });
 

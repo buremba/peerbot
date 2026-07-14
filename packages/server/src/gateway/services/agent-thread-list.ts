@@ -157,7 +157,7 @@ async function findConversationSessionFile(
 	const sessionPath = join(
 		workspaceDir,
 		sanitized,
-		".openclaw",
+		".lobu",
 		"session.jsonl",
 	);
 	try {
@@ -184,7 +184,7 @@ async function listWorkspaceConversationIds(
 			const sessionPath = join(
 				workspaceDir,
 				entry.name,
-				".openclaw",
+				".lobu",
 				"session.jsonl",
 			);
 			try {

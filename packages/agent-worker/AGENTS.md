@@ -1,6 +1,6 @@
 # Agent worker package agent rules
 
-Read root `AGENTS.md` first. This package owns agent execution and OpenClaw integration.
+Read root `AGENTS.md` first. This package owns agent execution and Lobu integration.
 
 ## Boundaries
 - Agent workers talk only to the gateway/agent APIs. They must not gain platform-specific knowledge or receive real credentials.
@@ -13,7 +13,7 @@ Read root `AGENTS.md` first. This package owns agent execution and OpenClaw inte
 - If the selected provider changes for a persisted session, preserve a system note and reset incompatible provider state rather than mixing provider histories.
 - Workers discover MCP tools at startup and call them through the gateway proxy using JWT.
 - MCP auth tools (`auth login|check|logout`) route through the gateway/device-auth flow; worker code should refresh MCP context after auth changes.
-- Built-in OpenClaw tools are registered in `src/openclaw/custom-tools.ts` and use snake_case names.
+- Built-in Lobu tools are registered in `src/runtime/custom-tools.ts` and use snake_case names.
 - Past channel conversation is read through `search_memory`, which also scans `channel_messages`.
 
 ## Network and runtime

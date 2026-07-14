@@ -24,10 +24,11 @@ COPY patches/ ./patches/
 
 # Workspace package manifests needed to resolve the backend + its deps.
 COPY packages/core/package.json packages/core/
+COPY packages/plugin-api/package.json packages/plugin-api/
+COPY packages/plugin-host/package.json packages/plugin-host/
 COPY packages/agent-worker/package.json packages/agent-worker/
 COPY packages/server/package.json packages/server/
 COPY packages/connector-sdk/package.json packages/connector-sdk/
-COPY packages/openclaw-plugin/package.json packages/openclaw-plugin/
 COPY packages/connectors/package.json packages/connectors/
 COPY packages/embeddings/package.json packages/embeddings/
 COPY packages/connector-worker/package.json packages/connector-worker/
@@ -63,9 +64,10 @@ RUN echo "Build: ${CACHEBUST}" && date > /tmp/.build-time
 # Source code
 COPY config/ config/
 COPY packages/core/ packages/core/
+COPY packages/plugin-api/ packages/plugin-api/
+COPY packages/plugin-host/ packages/plugin-host/
 COPY packages/agent-worker/ packages/agent-worker/
 COPY packages/connector-sdk/ packages/connector-sdk/
-COPY packages/openclaw-plugin/ packages/openclaw-plugin/
 COPY packages/connectors/ packages/connectors/
 COPY packages/embeddings/ packages/embeddings/
 COPY packages/connector-worker/ packages/connector-worker/
@@ -75,15 +77,14 @@ COPY packages/server/ packages/server/
 COPY packages/owletto packages/owletto
 
 # Build dist for shared workspace packages whose `exports` map points at
-# dist subpaths. server imports @lobu/core from its dist barrel,
-# and worker/openclaw plugin-loader resolves @lobu/openclaw-plugin by name
-# at runtime (ESM-only export, not bundled), so dist/ must exist on disk.
+# dist subpaths. server and worker import these packages from their dist barrels.
 RUN cd packages/core && bunx tsc \
+    && cd ../plugin-api && bunx tsc \
+    && cd ../plugin-host && bunx tsc \
     && cd ../connector-sdk && bunx tsc \
     && cd ../embeddings && bunx tsc \
     && cd ../connector-worker && bunx tsc \
-    && cd ../pgvector-embedded && bunx tsc \
-    && cd ../openclaw-plugin && bun run build
+    && cd ../pgvector-embedded && bunx tsc
 
 # Type check
 RUN cd packages/server && bunx tsc --noEmit
@@ -144,9 +145,10 @@ COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.json ./
 COPY --from=builder /app/config ./config
 COPY --from=builder /app/packages/core ./packages/core
+COPY --from=builder /app/packages/plugin-api ./packages/plugin-api
+COPY --from=builder /app/packages/plugin-host ./packages/plugin-host
 COPY --from=builder /app/packages/agent-worker ./packages/agent-worker
 COPY --from=builder /app/packages/connector-sdk ./packages/connector-sdk
-COPY --from=builder /app/packages/openclaw-plugin ./packages/openclaw-plugin
 COPY --from=builder /app/packages/connectors ./packages/connectors
 COPY --from=builder /app/packages/embeddings ./packages/embeddings
 COPY --from=builder /app/packages/connector-worker ./packages/connector-worker

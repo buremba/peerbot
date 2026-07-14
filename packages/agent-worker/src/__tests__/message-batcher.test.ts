@@ -245,3 +245,41 @@ describe("MessageBatcher — error resilience", () => {
     expect(batcher.isCurrentlyProcessing()).toBe(false);
   });
 });
+
+describe("MessageBatcher — durable replay deduplication", () => {
+  test("processes a message id only once when Postgres replay races SSE delivery", async () => {
+    const batches: QueuedMessage[][] = [];
+    const batcher = new MessageBatcher({
+      onBatchReady: async (messages) => {
+        batches.push(messages);
+      },
+      batchWindowMs: 1,
+    });
+    const message = makeMsg("same-id", "hello", 1);
+
+    await batcher.addMessage(message);
+    await batcher.addMessage({ ...message, timestamp: 2 });
+
+    expect(batches.flat().map((entry) => entry.payload.messageId)).toEqual([
+      "same-id",
+    ]);
+  });
+
+  test("can reserve a message before steering and queue it without a second claim", async () => {
+    const batches: QueuedMessage[][] = [];
+    const batcher = new MessageBatcher({
+      onBatchReady: async (messages) => {
+        batches.push(messages);
+      },
+    });
+    const message = makeMsg("steered-or-queued", "hello", 1);
+
+    expect(batcher.claimMessageId(message.payload.messageId)).toBe(true);
+    expect(batcher.claimMessageId(message.payload.messageId)).toBe(false);
+    await batcher.addClaimedMessage(message);
+
+    expect(batches.flat().map((entry) => entry.payload.messageId)).toEqual([
+      "steered-or-queued",
+    ]);
+  });
+});

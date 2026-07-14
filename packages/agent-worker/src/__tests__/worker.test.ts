@@ -1,14 +1,14 @@
 /**
- * Tests for OpenClawWorker constructor validation and basic setup.
- * Full execution tests require the OpenClaw runtime and are covered
+ * Tests for LobuAgentWorker constructor validation and basic setup.
+ * Full execution tests require the Lobu runtime and are covered
  * by integration tests via test-bot.sh.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { OpenClawWorker } from "../openclaw/worker";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { LobuAgentWorker } from "../runtime/worker";
 import { mockWorkerConfig, TestHelpers } from "./setup";
 
-describe("OpenClawWorker", () => {
+describe("LobuAgentWorker", () => {
   let restoreFetch: () => void;
   let originalDispatcherUrl: string | undefined;
   let originalWorkerToken: string | undefined;
@@ -40,7 +40,7 @@ describe("OpenClawWorker", () => {
     delete process.env.DISPATCHER_URL;
 
     expect(
-      () => new OpenClawWorker({ ...mockWorkerConfig, sessionKey: "missing" })
+      () => new LobuAgentWorker({ ...mockWorkerConfig, sessionKey: "missing" })
     ).toThrow(
       "DISPATCHER_URL and WORKER_TOKEN environment variables are required"
     );
@@ -53,7 +53,7 @@ describe("OpenClawWorker", () => {
     delete process.env.WORKER_TOKEN;
 
     expect(
-      () => new OpenClawWorker({ ...mockWorkerConfig, sessionKey: "missing" })
+      () => new LobuAgentWorker({ ...mockWorkerConfig, sessionKey: "missing" })
     ).toThrow(
       "DISPATCHER_URL and WORKER_TOKEN environment variables are required"
     );
@@ -63,14 +63,14 @@ describe("OpenClawWorker", () => {
 
   test("constructor requires teamId", () => {
     expect(
-      () => new OpenClawWorker({ ...mockWorkerConfig, teamId: undefined })
+      () => new LobuAgentWorker({ ...mockWorkerConfig, teamId: undefined })
     ).toThrow("teamId is required for worker initialization");
   });
 
   test("constructor requires conversationId", () => {
     expect(
       () =>
-        new OpenClawWorker({
+        new LobuAgentWorker({
           ...mockWorkerConfig,
           conversationId: undefined as any,
         })
@@ -78,12 +78,56 @@ describe("OpenClawWorker", () => {
   });
 
   test("getWorkerTransport returns transport after construction", () => {
-    const worker = new OpenClawWorker(mockWorkerConfig);
+    const worker = new LobuAgentWorker(mockWorkerConfig);
     expect(worker.getWorkerTransport()).not.toBeNull();
   });
 
   test("cleanup completes without error", async () => {
-    const worker = new OpenClawWorker(mockWorkerConfig);
+    const worker = new LobuAgentWorker(mockWorkerConfig);
     await expect(worker.cleanup()).resolves.toBeUndefined();
+  });
+
+  test("a successful session reset acknowledges completion without checkpointing the deleted transcript", async () => {
+    const worker = new LobuAgentWorker({
+      ...mockWorkerConfig,
+      runId: 1,
+      runJobToken: "reset-run-token",
+      platformMetadata: { sessionReset: true },
+    });
+    const checkpointSuccessfulRun = mock(async () => {
+      throw new Error("reset transcript should not be checkpointed");
+    });
+    const signalDone = mock(async () => undefined);
+    const asyncNoop = async () => undefined;
+
+    (worker as any).workspaceManager = {
+      setupWorkspace: asyncNoop,
+      getCurrentWorkingDirectory: () => "/tmp",
+    };
+    (worker as any).setupIODirectories = asyncNoop;
+    (worker as any).downloadInputFiles = asyncNoop;
+    (worker as any).getFileIOInstructions = () => "";
+    (worker as any).runAISession = async () => ({
+      success: true,
+      exitCode: 0,
+      output: "Context saved. Starting fresh.",
+      sessionKey: mockWorkerConfig.sessionKey,
+    });
+    (worker as any).checkpointSuccessfulRun = checkpointSuccessfulRun;
+    (worker as any).deliverFinalResult = asyncNoop;
+    worker.workerTransport = {
+      setJobId: () => undefined,
+      sendStreamDelta: asyncNoop,
+      signalDone,
+      signalCompletion: asyncNoop,
+      signalError: asyncNoop,
+      sendStatusUpdate: asyncNoop,
+      sendCustomEvent: asyncNoop,
+    };
+
+    await worker.execute();
+
+    expect(checkpointSuccessfulRun).not.toHaveBeenCalled();
+    expect(signalDone).toHaveBeenCalledTimes(1);
   });
 });

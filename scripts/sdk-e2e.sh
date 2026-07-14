@@ -422,10 +422,10 @@ TRIG_RUN_ID="$(jget run_id < "$TW" 2>/dev/null || echo)"
 grep -qi "Failed to generate an embedded Lobu service token" "$RUN_LOG" \
   && fail "watcher dispatch failed on the service token (lobu-internal oauth_client missing)"
 for _ in $(seq 1 30); do
-  grep -qiE "OpenClaw worker for session: session-[^ ]*watcher_${WATCHER_ID}_run" "$RUN_LOG" && break
+  grep -qiE "Lobu worker for session: session-[^ ]*watcher_${WATCHER_ID}_run" "$RUN_LOG" && break
   sleep 1
 done
-grep -qiE "OpenClaw worker for session: session-[^ ]*watcher_${WATCHER_ID}_run" "$RUN_LOG" \
+grep -qiE "Lobu worker for session: session-[^ ]*watcher_${WATCHER_ID}_run" "$RUN_LOG" \
   || fail "watcher run ${TRIG_RUN_ID} did not dispatch to a worker"
 echo "✓ watcher trigger dispatched a run to a worker (run_id=$TRIG_RUN_ID)"
 

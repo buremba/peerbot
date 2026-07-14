@@ -159,6 +159,9 @@ export async function enqueueAgentMessage(
 
   const realAgentId = session.agentId || threadId;
   const channelId = session.channelId || `api_${session.userId}`;
+  if (!session.organizationId) {
+    throw new Error(`Thread ${threadId} is missing organization scope`);
+  }
 
   const jobId = await queueProducer.enqueueMessage({
     userId: session.userId,
@@ -167,12 +170,9 @@ export async function enqueueAgentMessage(
     channelId,
     teamId: "api",
     agentId: realAgentId,
-    // Top-level org so the enqueue-time model gate resolves the RIGHT tenant's
-    // policy. Without it, getModelPolicy(agentId, undefined) falls back to an
-    // id-only cross-org read and can enforce another org's models list.
-    ...(session.organizationId
-      ? { organizationId: session.organizationId }
-      : {}),
+    // Required top-level scope ensures model policy and routing cannot fall
+    // back to an id-only cross-organization lookup.
+    organizationId: session.organizationId,
     botId: "lobu-api",
     platform: "api",
     messageText,

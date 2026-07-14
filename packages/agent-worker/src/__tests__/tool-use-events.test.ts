@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildToolUseEventPayload } from "../openclaw/tool-use-events";
+import { buildToolUseEventPayload } from "../runtime/tool-use-events";
 
 // pi-agent's `tool_execution_end` event omits `args` (those live on the
 // matching `tool_execution_start`); worker.ts re-attaches them from a Map

@@ -230,6 +230,7 @@ export class ApiPlatform implements PlatformAdapter {
     message: string,
     options: {
       agentId: string;
+      organizationId: string;
       channelId: string;
       conversationId: string;
       teamId: string;
@@ -244,7 +245,7 @@ export class ApiPlatform implements PlatformAdapter {
       throw new Error("API platform not initialized");
     }
 
-    const { agentId } = options;
+    const { agentId, organizationId } = options;
     const sessionManager = this.services.getSessionManager();
     const queueProducer = this.services.getQueueProducer();
     const messageId = randomUUID();
@@ -264,25 +265,26 @@ export class ApiPlatform implements PlatformAdapter {
         createdAt: Date.now(),
         status: "created",
         provider: "claude",
+        organizationId,
       };
 
       await sessionManager.setSession(session);
       logger.info(`Created new API session: ${agentId}`);
+    } else if (session.organizationId !== organizationId) {
+      throw new Error(
+        `API session ${agentId} is not scoped to organization ${organizationId}`,
+      );
     }
 
     // Update session activity
     await sessionManager.touchSession(agentId);
 
-    // Prepare message with file info if provided. Carry organizationId when the
-    // session has it so an output-guardrail trip audit (org-scoped `events`)
-    // can attribute the org — without it a trip still blocks but writes no
-    // audit row.
+    // Carry the authoritative organization scope so downstream guardrails and
+    // response routing cannot fall back to stale session metadata.
     const platformMetadata: Record<string, any> = {
       agentId,
       source: "messaging-api",
-      ...(session.organizationId
-        ? { organizationId: session.organizationId }
-        : {}),
+      organizationId,
     };
 
     if (options.files && options.files.length > 0) {
@@ -300,7 +302,8 @@ export class ApiPlatform implements PlatformAdapter {
       messageId,
       channelId: agentId,
       teamId: "api",
-      agentId: agentId, // agentId is the isolation boundary
+      agentId: agentId,
+      organizationId,
       botId: "lobu-api",
       platform: "api",
       messageText: message,

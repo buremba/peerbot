@@ -11,8 +11,8 @@
  *  - Hydrate failures are non-fatal at the caller's discretion (we re-throw,
  *    caller logs+continues; behaviour verified in worker.ts but we assert
  *    the throw shape here).
- *  - writeSnapshot reads the session file, POSTs body, handles 409 (race
- *    win), missing file (early-exit worker), and empty file all silently.
+ *  - writeSnapshot reads the session file, POSTs body, refuses to acknowledge
+ *    409 conflicts, and skips missing or empty session files.
  *  - The transport layer never throws — `cleanup()` runs in the worker's
  *    dying breath and any throw would abort the surrounding `finally`.
  *
@@ -29,7 +29,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import {
   hydrateFromSnapshot,
   writeSnapshot,
-} from "../openclaw/transcript-snapshot";
+} from "../runtime/transcript-snapshot";
 
 let tmp: string;
 let originalFetch: typeof globalThis.fetch;
@@ -57,7 +57,7 @@ function stubFetch(
 
 describe("hydrateFromSnapshot", () => {
   test("boot-hydrate-fsync: writes bytes verbatim, file size matches body length", async () => {
-    const sessionFile = join(tmp, ".openclaw", "session.jsonl");
+    const sessionFile = join(tmp, ".lobu", "session.jsonl");
     const expected =
       `{"type":"session","version":3,"id":"hydrate","timestamp":"2026-05-18T10:00:00Z","cwd":"/w"}\n` +
       `{"type":"message","id":"m1","parentId":null,"timestamp":"2026-05-18T10:00:01Z","message":{"role":"user","content":[{"type":"text","text":"resume"}]}}\n`;
@@ -86,7 +86,7 @@ describe("hydrateFromSnapshot", () => {
   });
 
   test("returns false on 404 and does not touch the file", async () => {
-    const sessionFile = join(tmp, ".openclaw", "session.jsonl");
+    const sessionFile = join(tmp, ".lobu", "session.jsonl");
     stubFetch(() => new Response("", { status: 404 }));
 
     const hydrated = await hydrateFromSnapshot({
@@ -107,7 +107,7 @@ describe("hydrateFromSnapshot", () => {
   });
 
   test("throws on non-2xx, non-404 — caller logs + continues with local file", async () => {
-    const sessionFile = join(tmp, ".openclaw", "session.jsonl");
+    const sessionFile = join(tmp, ".lobu", "session.jsonl");
     stubFetch(() => new Response("boom", { status: 500 }));
     await expect(
       hydrateFromSnapshot({
@@ -121,8 +121,8 @@ describe("hydrateFromSnapshot", () => {
 
 describe("writeSnapshot", () => {
   test("happy path: reads file, POSTs body + terminalStatus, gateway 200", async () => {
-    const sessionFile = join(tmp, ".openclaw", "session.jsonl");
-    await fs.mkdir(join(tmp, ".openclaw"), { recursive: true });
+    const sessionFile = join(tmp, ".lobu", "session.jsonl");
+    await fs.mkdir(join(tmp, ".lobu"), { recursive: true });
     const body =
       `{"type":"session","version":3,"id":"write","timestamp":"2026-05-18T10:00:00Z","cwd":"/w"}\n` +
       `{"type":"message","id":"u1","parentId":null,"timestamp":"2026-05-18T10:00:01Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}\n`;
@@ -136,13 +136,14 @@ describe("writeSnapshot", () => {
       return new Response('{"id":1}', { status: 200 });
     });
 
-    await writeSnapshot({
+    const durable = await writeSnapshot({
       sessionFile,
       gatewayUrl: "http://gw.test/lobu",
       workerToken: "test-jwt",
       terminalStatus: "completed",
       runId: 42,
     });
+    expect(durable).toBe(true);
     expect(postedBody).not.toBeNull();
     const parsed = JSON.parse(postedBody!);
     expect(parsed.snapshotJsonl).toBe(body);
@@ -160,8 +161,8 @@ describe("writeSnapshot", () => {
     // `terminalStatus === "completed"`, but writeSnapshot defends in
     // depth so any future caller can't accidentally write a row that
     // hydrate will never read.
-    const sessionFile = join(tmp, ".openclaw", "session.jsonl");
-    await fs.mkdir(join(tmp, ".openclaw"), { recursive: true });
+    const sessionFile = join(tmp, ".lobu", "session.jsonl");
+    await fs.mkdir(join(tmp, ".lobu"), { recursive: true });
     await fs.writeFile(sessionFile, `{"type":"session"}\n`, "utf-8");
 
     let calls = 0;
@@ -182,26 +183,28 @@ describe("writeSnapshot", () => {
     expect(calls).toBe(0);
   });
 
-  test("race-win-409 is benign — no throw", async () => {
-    const sessionFile = join(tmp, ".openclaw", "session.jsonl");
-    await fs.mkdir(join(tmp, ".openclaw"), { recursive: true });
+  test("409 conflict is non-durable but does not throw", async () => {
+    const sessionFile = join(tmp, ".lobu", "session.jsonl");
+    await fs.mkdir(join(tmp, ".lobu"), { recursive: true });
     await fs.writeFile(sessionFile, `{"type":"session"}\n`, "utf-8");
 
     stubFetch(() => new Response("conflict", { status: 409 }));
 
-    // No throw — cleanup() in the worker's dying breath must never
-    // re-throw inside a `finally`.
-    await writeSnapshot({
+    // No throw — cleanup() in the worker's dying breath must never re-throw
+    // inside a `finally`. False prevents terminal acknowledgement from being
+    // bound to transcript bytes this worker did not persist.
+    const durable = await writeSnapshot({
       sessionFile,
       gatewayUrl: "http://gw.test/lobu",
       workerToken: "test-jwt",
       terminalStatus: "completed",
       runId: 42,
     });
+    expect(durable).toBe(false);
   });
 
   test("no session file (early-exit worker): silently skips, no fetch", async () => {
-    const sessionFile = join(tmp, ".openclaw", "session.jsonl");
+    const sessionFile = join(tmp, ".lobu", "session.jsonl");
     let calls = 0;
     stubFetch(() => {
       calls++;
@@ -219,8 +222,8 @@ describe("writeSnapshot", () => {
   });
 
   test("empty session file is skipped — never POST an empty snapshot", async () => {
-    const sessionFile = join(tmp, ".openclaw", "session.jsonl");
-    await fs.mkdir(join(tmp, ".openclaw"), { recursive: true });
+    const sessionFile = join(tmp, ".lobu", "session.jsonl");
+    await fs.mkdir(join(tmp, ".lobu"), { recursive: true });
     await fs.writeFile(sessionFile, "", "utf-8");
     let calls = 0;
     stubFetch(() => {
@@ -239,8 +242,8 @@ describe("writeSnapshot", () => {
   });
 
   test("server 500 is logged, not thrown", async () => {
-    const sessionFile = join(tmp, ".openclaw", "session.jsonl");
-    await fs.mkdir(join(tmp, ".openclaw"), { recursive: true });
+    const sessionFile = join(tmp, ".lobu", "session.jsonl");
+    await fs.mkdir(join(tmp, ".lobu"), { recursive: true });
     await fs.writeFile(sessionFile, `{"type":"session"}\n`, "utf-8");
     stubFetch(() => new Response("boom", { status: 500 }));
 
@@ -256,8 +259,8 @@ describe("writeSnapshot", () => {
   });
 
   test("fetch throw is caught — cleanup() must never re-throw", async () => {
-    const sessionFile = join(tmp, ".openclaw", "session.jsonl");
-    await fs.mkdir(join(tmp, ".openclaw"), { recursive: true });
+    const sessionFile = join(tmp, ".lobu", "session.jsonl");
+    await fs.mkdir(join(tmp, ".lobu"), { recursive: true });
     await fs.writeFile(sessionFile, `{"type":"session"}\n`, "utf-8");
     globalThis.fetch = (() => {
       throw new Error("ECONNREFUSED");

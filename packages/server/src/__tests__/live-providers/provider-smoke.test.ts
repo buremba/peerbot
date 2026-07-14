@@ -56,7 +56,7 @@ const flattened = registry.providers.flatMap((entry) =>
 
 /**
  * Chat models for providers whose registry entry has no defaultModel.
- * Mirrors DEFAULT_PROVIDER_MODELS in agent-worker/src/openclaw/model-resolver.ts
+ * Mirrors DEFAULT_PROVIDER_MODELS in agent-worker/src/runtime/model-resolver.ts
  * (not importable here — agent-worker is not a dependency of server).
  */
 const FALLBACK_CHAT_MODELS: Record<string, string> = {

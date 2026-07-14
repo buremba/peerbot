@@ -6,7 +6,7 @@ import {
   PROVIDER_REGISTRY_ALIASES,
   registerDynamicProvider,
   resolveModelRef,
-} from "../openclaw/model-resolver";
+} from "../runtime/model-resolver";
 
 describe("resolveModelRef", () => {
   test("parses provider/model format", () => {

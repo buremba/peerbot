@@ -3,8 +3,7 @@ import { createLogger } from "./logger";
 const logger = createLogger("command-registry");
 
 /**
- * Context passed to command handlers.
- * Shaped to match OpenClaw's registerCommand() API for future migration.
+ * Context passed to Lobu command handlers.
  */
 export interface CommandContext {
   userId: string;
@@ -36,7 +35,6 @@ export interface CommandDefinition {
 
 /**
  * Shared command registry used by all platform adapters.
- * Matches OpenClaw's registerCommand() shape so migration is a simple swap.
  */
 export class CommandRegistry {
   private commands = new Map<string, CommandDefinition>();

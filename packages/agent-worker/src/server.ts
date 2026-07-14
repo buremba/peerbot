@@ -22,7 +22,7 @@ const logger = createLogger("worker-http");
 const app = new Hono();
 
 /**
- * Locate a `.openclaw/session.jsonl` under the worker's own `WORKSPACE_DIR`.
+ * Locate a `.lobu/session.jsonl` under the worker's own `WORKSPACE_DIR`.
  *
  * Different from the gateway-side `findSessionFile` (in
  * `packages/server/src/gateway/routes/public/agent-history.ts`) on purpose
@@ -34,8 +34,8 @@ const app = new Hono();
 async function findSessionFile(): Promise<string | null> {
   const workspaceDir = getOptionalEnv("WORKSPACE_DIR", "/workspace");
 
-  // Direct path: {WORKSPACE_DIR}/.openclaw/session.jsonl
-  const directPath = join(workspaceDir, ".openclaw", "session.jsonl");
+  // Direct path: {WORKSPACE_DIR}/.lobu/session.jsonl
+  const directPath = join(workspaceDir, ".lobu", "session.jsonl");
   try {
     await stat(directPath);
     return directPath;
@@ -43,7 +43,7 @@ async function findSessionFile(): Promise<string | null> {
     // Not found, search subdirectories
   }
 
-  // Search one level deep: {WORKSPACE_DIR}/{subdir}/.openclaw/session.jsonl
+  // Search one level deep: {WORKSPACE_DIR}/{subdir}/.lobu/session.jsonl
   try {
     const entries = await readdir(workspaceDir, { withFileTypes: true });
     for (const entry of entries) {
@@ -51,7 +51,7 @@ async function findSessionFile(): Promise<string | null> {
         const subPath = join(
           workspaceDir,
           entry.name,
-          ".openclaw",
+          ".lobu",
           "session.jsonl"
         );
         try {

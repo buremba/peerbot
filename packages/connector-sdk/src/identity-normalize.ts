@@ -15,7 +15,7 @@
  *
  *   It is NOT the memory-scope axis. Per-agent memory scoping lives on
  *   `events.metadata.agent_id` (filtered via `search_memory`'s `agent_id`
- *   arg, populated by `@lobu/openclaw-plugin` autoCapture). Identity
+ *   arg, populated by Lobu runtime capture). Identity
  *   namespaces and memory scopes are unrelated subsystems that happen to
  *   share an English word — don't conflate them when reading this file.
  */

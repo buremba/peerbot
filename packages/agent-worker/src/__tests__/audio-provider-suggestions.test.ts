@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { classifyError } from "../core/error-handler";
-import { OpenClawWorker } from "../openclaw/worker";
+import { LobuAgentWorker } from "../runtime/worker";
 import {
   fetchAudioProviderSuggestions,
   normalizeAudioProviderSuggestions,
@@ -120,7 +120,7 @@ describe("generate_audio dynamic provider messaging", () => {
   });
 });
 
-describe("OpenClawWorker audio permission hint", () => {
+describe("LobuAgentWorker audio permission hint", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     mock.restore();
@@ -144,7 +144,7 @@ describe("OpenClawWorker audio permission hint", () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     const hint = await (
-      OpenClawWorker.prototype as any
+      LobuAgentWorker.prototype as any
     ).maybeBuildAudioPermissionHintMessage(
       "Audio generation failed because token lacks api.model.audio.request",
       "http://gateway",
@@ -163,7 +163,7 @@ describe("OpenClawWorker audio permission hint", () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     const hint = await (
-      OpenClawWorker.prototype as any
+      LobuAgentWorker.prototype as any
     ).maybeBuildAudioPermissionHintMessage(
       "api.model.audio.request is missing",
       "http://gateway",

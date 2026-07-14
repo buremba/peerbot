@@ -2,7 +2,7 @@
 
 ## Repo map
 - Bun workspace under `packages/*`; TS source is in `src`, tests in `__tests__`.
-- Main packages: `core` shared types/utils, `server` gateway + embedded runtime, `agent-worker` OpenClaw execution, `connectors` built-in connectors, `owletto` frontend submodule.
+- Main packages: `core` shared types/utils, `plugin-api` native plugin contracts, `plugin-host` deterministic plugin composition, `server` gateway + embedded runtime, `agent-worker` Lobu agent execution, `connectors` built-in connectors, `owletto` frontend submodule.
 - Before editing a package, read its nearest `AGENTS.md` if present.
 
 ## Hard invariants

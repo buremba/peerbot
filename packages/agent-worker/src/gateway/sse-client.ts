@@ -15,17 +15,17 @@ import {
 } from "@lobu/core";
 import { z } from "zod";
 import type { WorkerConfig, WorkerExecutor } from "../core/types";
+import { invalidateSessionContextCache } from "../runtime/session-context";
+import { LobuAgentWorker } from "../runtime/worker";
 import { createGatewayClient } from "../shared/gateway-client";
-import { getWorkerTokenManager } from "./worker-token-manager";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
-import { OpenClawWorker } from "../openclaw/worker";
-import { invalidateSessionContextCache } from "../openclaw/session-context";
 import { HttpWorkerTransport } from "./gateway-integration";
 import { MessageBatcher } from "./message-batcher";
 import {
   type ConfigChangeEntry,
   pushPendingConfigNotifications,
 } from "./pending-config-notifications";
+import { getWorkerTokenManager } from "./worker-token-manager";
 
 const logger = createLogger("sse-client");
 
@@ -74,6 +74,7 @@ const JobEventSchema = z.object({
     .object({
       botId: z.string(),
       userId: z.string(),
+      organizationId: z.string(),
       agentId: z.string(),
       conversationId: z.string(),
       platform: z.string(),
@@ -93,8 +94,8 @@ const JobEventSchema = z.object({
       // future MessagePayload field (nixConfig, egressConfig, preApprovedTools,
       // exec* fields, organizationId, networkConfig...) from regressing the
       // same way.
-      runId: z.number().optional(),
-      runJobToken: z.string().optional(),
+      runId: z.number(),
+      runJobToken: z.string(),
     })
     .passthrough(),
   processedIds: z.array(z.string()).optional(),
@@ -111,6 +112,7 @@ export class GatewayClient {
   private deploymentName: string;
   private isRunning = false;
   private currentWorker: WorkerExecutor | null = null;
+  private currentWorkerUserId: string | null = null;
   private abortController?: AbortControllerLike;
   private currentJobId?: string;
   private currentTraceId?: string; // Trace ID for end-to-end observability
@@ -358,6 +360,7 @@ export class GatewayClient {
         await this.currentWorker.cleanup();
         this.currentWorker = null;
       }
+      this.currentWorkerUserId = null;
 
       logger.info("✅ Gateway client stopped");
     } catch (error) {
@@ -521,13 +524,55 @@ export class GatewayClient {
       return;
     }
 
+    // Reserve the ID before any awaited steering/cancellation side effect.
+    // Durable replay and SSE redelivery can race while a turn is active; only
+    // the first delivery may affect the live model or enter the next batch.
+    if (!this.messageBatcher.claimMessageId(data.messageId)) {
+      return;
+    }
+
+    if (
+      this.currentWorker &&
+      this.messageBatcher.isCurrentlyProcessing() &&
+      this.currentWorkerUserId === data.userId &&
+      isExplicitCancelMessage(data)
+    ) {
+      const cancelled = await this.currentWorker.cancel(data.messageId);
+      if (cancelled) {
+        logger.info(
+          { traceId, messageId: data.messageId, conversationId },
+          "Explicit cancel aborted active agent turn"
+        );
+        return;
+      }
+    }
+
+    if (
+      this.currentWorker &&
+      this.messageBatcher.isCurrentlyProcessing() &&
+      this.currentWorkerUserId === data.userId &&
+      isSteerableHumanMessage(data)
+    ) {
+      const steered = await this.currentWorker.steer(
+        data.messageText,
+        data.messageId
+      );
+      if (steered) {
+        logger.info(
+          { traceId, messageId: data.messageId, conversationId },
+          "Message steered into active agent turn"
+        );
+        return;
+      }
+    }
+
     // Default: message job
     const queuedMessage: QueuedMessage = {
       payload: data,
       timestamp: Date.now(),
     };
 
-    await this.messageBatcher.addMessage(queuedMessage);
+    await this.messageBatcher.addClaimedMessage(queuedMessage);
     logger.info(
       { traceId, messageId: data.messageId, conversationId },
       "Message queued for processing"
@@ -588,7 +633,7 @@ export class GatewayClient {
       // that ends up under `sh -c`; leaking WORKER_TOKEN / DISPATCHER_URL
       // into that environment would let a malicious or buggy exec impersonate
       // the worker against its own gateway. The bash-tool and just-bash
-      // spawners already apply the same filter (see openclaw/tools.ts and
+      // spawners already apply the same filter (see runtime/tools.ts and
       // embedded/just-bash-bootstrap.ts) — keep parity here.
       const baseEnv = stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS);
       const proc = spawn("sh", ["-c", execCommand], {
@@ -723,6 +768,17 @@ export class GatewayClient {
       return;
     }
 
+    // A shared channel has one conversation worker but each user's run token
+    // carries that user's credential subject and grants. Never combine users
+    // into one prompt under the first message's token; preserve arrival order
+    // and execute each subject with its own token instead.
+    if (new Set(messages.map((message) => message.payload.userId)).size > 1) {
+      for (const message of messages) {
+        await this.processSingleMessage(message, [message.payload.messageId]);
+      }
+      return;
+    }
+
     logger.info(`Batching ${messages.length} messages for combined processing`);
 
     const firstMessage = messages[0];
@@ -810,7 +866,8 @@ export class GatewayClient {
       );
 
       // Worker will decide whether to continue session based on workspace state
-      this.currentWorker = new OpenClawWorker(workerConfig);
+      this.currentWorkerUserId = message.payload.userId;
+      this.currentWorker = new LobuAgentWorker(workerConfig);
 
       const workerTransport = this.currentWorker.getWorkerTransport();
 
@@ -894,10 +951,24 @@ export class GatewayClient {
         }
         this.currentWorker = null;
       }
+      this.currentWorkerUserId = null;
     }
   }
 
   private payloadToWorkerConfig(payload: MessagePayload): WorkerConfig {
+    if (!payload.organizationId) {
+      throw new Error("organizationId is required for agent execution");
+    }
+    if (
+      typeof payload.runId !== "number" ||
+      !Number.isFinite(payload.runId) ||
+      payload.runId <= 0
+    ) {
+      throw new Error("runId is required for agent execution");
+    }
+    if (!payload.runJobToken) {
+      throw new Error("runJobToken is required for agent execution");
+    }
     const conversationId = payload.conversationId || "default";
     const platformMetadata: Record<string, unknown> = {
       ...payload.platformMetadata,
@@ -922,6 +993,8 @@ export class GatewayClient {
     return {
       sessionKey: `session-${conversationId}`,
       userId: payload.userId,
+      organizationId: payload.organizationId,
+      messageId: payload.messageId,
       agentId: payload.agentId,
       channelId: payload.channelId,
       conversationId,
@@ -947,18 +1020,12 @@ export class GatewayClient {
       // Threaded through from MessageConsumer (set from the runs-queue
       // claim's job.id). Used by cleanup() to attribute the snapshot to
       // the correct run; codex P1#1 on PR #865.
-      runId:
-        typeof payload.runId === "number" && Number.isFinite(payload.runId)
-          ? payload.runId
-          : undefined,
+      runId: payload.runId,
       // Per-run JWT minted by MessageConsumer alongside runId. Worker
       // uses this for the snapshot POST instead of the deployment-
       // lifetime WORKER_TOKEN, so the gateway can enforce
       // tokenData.runId === body.runId — codex round 2 finding A.
-      runJobToken:
-        typeof payload.runJobToken === "string" && payload.runJobToken
-          ? payload.runJobToken
-          : undefined,
+      runJobToken: payload.runJobToken,
     };
   }
 
@@ -981,6 +1048,7 @@ export class GatewayClient {
         }
         this.currentWorker = null;
       }
+      this.currentWorkerUserId = null;
 
       // Reset current job
       if (this.currentJobId) {
@@ -1025,4 +1093,40 @@ export class GatewayClient {
       pendingMessages: this.messageBatcher.getPendingCount(),
     };
   }
+}
+
+const AUTOMATION_SOURCES = new Set([
+  "watcher-run",
+  "scheduled-job",
+  "connector-repair",
+  "internal",
+  "automation",
+]);
+
+export function isSteerableHumanMessage(payload: MessagePayload): boolean {
+  // `/new` must run after the active turn: it flushes memory, deletes the
+  // transcript, and purges durable snapshots. Steering it into the current Pi
+  // session would treat the control command as ordinary text and preserve the
+  // history the user explicitly asked to reset.
+  if (payload.platformMetadata?.sessionReset === true) return false;
+  const source = payload.platformMetadata?.source;
+  if (typeof source === "string" && AUTOMATION_SOURCES.has(source)) {
+    return false;
+  }
+  const files = payload.platformMetadata?.files;
+  return !Array.isArray(files) || files.length === 0;
+}
+
+export function isExplicitCancelMessage(payload: MessagePayload): boolean {
+  const metadata = payload.platformMetadata;
+  if (metadata?.control === "cancel") return true;
+  const intent = metadata?.intent;
+  if (
+    typeof intent === "object" &&
+    intent !== null &&
+    (intent as Record<string, unknown>).kind === "cancel"
+  ) {
+    return true;
+  }
+  return payload.messageText.trim().toLowerCase() === "/cancel";
 }

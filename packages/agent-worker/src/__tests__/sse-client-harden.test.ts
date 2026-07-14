@@ -17,7 +17,11 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { consumePendingConfigNotifications } from "../gateway/pending-config-notifications";
-import { GatewayClient } from "../gateway/sse-client";
+import {
+  GatewayClient,
+  isExplicitCancelMessage,
+  isSteerableHumanMessage,
+} from "../gateway/sse-client";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,6 +32,9 @@ function makeJobEvent(overrides: Record<string, unknown> = {}): string {
     payload: {
       botId: "lobu-api",
       userId: "user-1",
+      organizationId: "org-1",
+      runId: 1,
+      runJobToken: "run-token",
       agentId: "agent-1",
       conversationId: "conv-1",
       platform: "api",
@@ -451,6 +458,9 @@ describe("payloadToWorkerConfig: secret placeholder invariant", () => {
     const payload = {
       botId: "bot",
       userId: "user-1",
+      organizationId: "org-1",
+      runId: 1,
+      runJobToken: "run-token",
       agentId: "agent-1",
       conversationId: "conv-1",
       platform: "api",
@@ -476,6 +486,9 @@ describe("payloadToWorkerConfig: secret placeholder invariant", () => {
     const payload = {
       botId: "bot",
       userId: "user-1",
+      organizationId: "org-1",
+      runId: 1,
+      runJobToken: "run-token",
       agentId: "agent-1",
       conversationId: "conv-1",
       platform: "api",
@@ -497,6 +510,9 @@ describe("payloadToWorkerConfig: secret placeholder invariant", () => {
     const payload = {
       botId: "bot",
       userId: "user-1",
+      organizationId: "org-1",
+      runId: 1,
+      runJobToken: "run-token",
       agentId: "agent-1",
       conversationId: "conv-1",
       platform: "api",
@@ -524,6 +540,9 @@ describe("payloadToWorkerConfig: secret placeholder invariant", () => {
     const payload = {
       botId: "bot",
       userId: "user-1",
+      organizationId: "org-1",
+      runId: 1,
+      runJobToken: "run-token",
       agentId: "agent-1",
       conversationId: "conv-1",
       platform: "api",
@@ -582,5 +601,235 @@ describe("stop() mid-run cleanup", () => {
   test("stop() without a running worker does not throw", async () => {
     const client = makeClient();
     await expect(client.stop()).resolves.toBeUndefined();
+  });
+});
+
+describe("live steering classification", () => {
+  const payload = {
+    botId: "bot",
+    userId: "user",
+    agentId: "agent",
+    conversationId: "conversation",
+    platform: "api",
+    channelId: "channel",
+    messageId: "message",
+    messageText: "change direction",
+    platformMetadata: {},
+    agentOptions: {},
+  } as any;
+
+  test("allows same-conversation human text", () => {
+    expect(isSteerableHumanMessage(payload)).toBe(true);
+  });
+
+  test("keeps a session reset as a standalone turn", () => {
+    expect(
+      isSteerableHumanMessage({
+        ...payload,
+        messageText: "/new",
+        platformMetadata: { sessionReset: true },
+      })
+    ).toBe(false);
+  });
+
+  test("keeps automation and attachments as follow-up turns", () => {
+    for (const source of [
+      "watcher-run",
+      "scheduled-job",
+      "connector-repair",
+      "internal",
+    ]) {
+      expect(
+        isSteerableHumanMessage({
+          ...payload,
+          platformMetadata: { source },
+        })
+      ).toBe(false);
+    }
+    expect(
+      isSteerableHumanMessage({
+        ...payload,
+        platformMetadata: { files: [{ id: "file" }] },
+      })
+    ).toBe(false);
+  });
+
+  test("recognizes only explicit cancellation controls", () => {
+    expect(
+      isExplicitCancelMessage({ ...payload, messageText: " /CANCEL " })
+    ).toBe(true);
+    expect(
+      isExplicitCancelMessage({
+        ...payload,
+        platformMetadata: { control: "cancel" },
+      })
+    ).toBe(true);
+    expect(
+      isExplicitCancelMessage({
+        ...payload,
+        platformMetadata: { intent: { kind: "cancel" } },
+      })
+    ).toBe(true);
+    expect(
+      isExplicitCancelMessage({
+        ...payload,
+        messageText: "cancel that search and use another source",
+      })
+    ).toBe(false);
+  });
+
+  test("routes human text into the active worker instead of the next batch", async () => {
+    const client = makeClient();
+    const steer = mock(async () => true);
+    const claimMessageId = mock(() => true);
+    const addClaimedMessage = mock(async () => undefined);
+    (client as any).currentWorker = { steer };
+    (client as any).currentWorkerUserId = "user";
+    (client as any).messageBatcher = {
+      isCurrentlyProcessing: () => true,
+      claimMessageId,
+      addClaimedMessage,
+    };
+
+    await (client as any).handleThreadMessage(payload);
+
+    expect(claimMessageId).toHaveBeenCalledWith("message");
+    expect(steer).toHaveBeenCalledWith("change direction", "message");
+    expect(addClaimedMessage).not.toHaveBeenCalled();
+  });
+
+  test("queues a session reset behind the active turn instead of steering it", async () => {
+    const client = makeClient();
+    const steer = mock(async () => true);
+    const addClaimedMessage = mock(async () => undefined);
+    (client as any).currentWorker = { steer };
+    (client as any).currentWorkerUserId = "user";
+    (client as any).messageBatcher = {
+      isCurrentlyProcessing: () => true,
+      claimMessageId: () => true,
+      addClaimedMessage,
+    };
+    const resetPayload = {
+      ...payload,
+      messageId: "reset-message",
+      messageText: "/new",
+      platformMetadata: { sessionReset: true },
+    };
+
+    await (client as any).handleThreadMessage(resetPayload);
+
+    expect(steer).not.toHaveBeenCalled();
+    expect(addClaimedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ payload: resetPayload })
+    );
+  });
+
+  test("queues human text when the active prompt has already settled", async () => {
+    const client = makeClient();
+    const steer = mock(async () => false);
+    const addClaimedMessage = mock(async () => undefined);
+    (client as any).currentWorker = { steer };
+    (client as any).currentWorkerUserId = "user";
+    (client as any).messageBatcher = {
+      isCurrentlyProcessing: () => true,
+      claimMessageId: () => true,
+      addClaimedMessage,
+    };
+
+    await (client as any).handleThreadMessage(payload);
+
+    expect(steer).toHaveBeenCalledWith("change direction", "message");
+    expect(addClaimedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ payload })
+    );
+  });
+
+  test("deduplicates an active message before live steering", async () => {
+    const client = makeClient();
+    const seen = new Set<string>();
+    const steer = mock(async () => true);
+    const addClaimedMessage = mock(async () => undefined);
+    (client as any).currentWorker = { steer };
+    (client as any).currentWorkerUserId = "user";
+    (client as any).messageBatcher = {
+      isCurrentlyProcessing: () => true,
+      claimMessageId: (messageId: string) => {
+        if (seen.has(messageId)) return false;
+        seen.add(messageId);
+        return true;
+      },
+      addClaimedMessage,
+    };
+
+    await (client as any).handleThreadMessage(payload);
+    await (client as any).handleThreadMessage(payload);
+
+    expect(steer).toHaveBeenCalledTimes(1);
+    expect(addClaimedMessage).not.toHaveBeenCalled();
+  });
+
+  test("queues another user's message under its own run credentials", async () => {
+    const client = makeClient();
+    const steer = mock(async () => true);
+    const cancel = mock(async () => true);
+    const addClaimedMessage = mock(async () => undefined);
+    (client as any).currentWorker = { steer, cancel };
+    (client as any).currentWorkerUserId = "first-user";
+    (client as any).messageBatcher = {
+      isCurrentlyProcessing: () => true,
+      claimMessageId: () => true,
+      addClaimedMessage,
+    };
+
+    await (client as any).handleThreadMessage(payload);
+
+    expect(steer).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(addClaimedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ payload })
+    );
+  });
+
+  test("does not combine different users into one credential-scoped batch", async () => {
+    const client = makeClient();
+    const processSingleMessage = mock(async () => undefined);
+    (client as any).processSingleMessage = processSingleMessage;
+    const first = {
+      payload: { ...payload, messageId: "first", userId: "first-user" },
+      timestamp: 1,
+    };
+    const second = {
+      payload: { ...payload, messageId: "second", userId: "second-user" },
+      timestamp: 2,
+    };
+
+    await (client as any).processBatchedMessages([first, second]);
+
+    expect(processSingleMessage).toHaveBeenNthCalledWith(1, first, ["first"]);
+    expect(processSingleMessage).toHaveBeenNthCalledWith(2, second, ["second"]);
+  });
+
+  test("routes explicit cancel to the active worker before steering", async () => {
+    const client = makeClient();
+    const cancel = mock(async () => true);
+    const steer = mock(async () => true);
+    const addClaimedMessage = mock(async () => undefined);
+    (client as any).currentWorker = { cancel, steer };
+    (client as any).currentWorkerUserId = "user";
+    (client as any).messageBatcher = {
+      isCurrentlyProcessing: () => true,
+      claimMessageId: () => true,
+      addClaimedMessage,
+    };
+
+    await (client as any).handleThreadMessage({
+      ...payload,
+      messageId: "cancel-message",
+      messageText: "/cancel",
+    });
+
+    expect(cancel).toHaveBeenCalledWith("cancel-message");
+    expect(steer).not.toHaveBeenCalled();
+    expect(addClaimedMessage).not.toHaveBeenCalled();
   });
 });

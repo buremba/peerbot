@@ -1,7 +1,7 @@
 /**
  * OAuth 2.0 device-code client used by `lobu login`.
  *
- * Mirrors the same flow that `@lobu/openclaw-plugin` uses against
+ * Shared OAuth flow used by Lobu MCP clients against
  * Lobu-hosted issuers: dynamic client registration (RFC 7591) +
  * device authorization grant (RFC 8628) + refresh-token grant.
  */

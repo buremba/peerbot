@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { activeToolNames } from "../openclaw/active-tool-names";
+import { activeToolNames } from "../runtime/active-tool-names";
 
 /**
  * Regression for the pi 0.73.x P0: `options.tools` is a HARD allowlist, so the

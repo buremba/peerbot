@@ -6,7 +6,7 @@ import * as p from "@clack/prompts";
 import { loginCommand } from "../../login.js";
 import { type DetectedAgent, detectAgents } from "./agent-detect.js";
 import { getInstallTarget, INSTALL_TARGETS } from "./install-targets.js";
-import { getUsableToken } from "./openclaw-auth.js";
+import { getUsableToken } from "./memory-auth.js";
 
 function isLocalUrl(url: string): boolean {
   try {
@@ -147,7 +147,7 @@ async function configureAgents(
     const target = getInstallTarget(id);
     if (!target) continue;
 
-    if (isLocal && (id === "openclaw" || id === "codex")) {
+    if (isLocal && id === "codex") {
       p.log.warning(
         `  ${target.name} may run on a remote server where ${mcpUrl} isn't reachable.\n` +
           "  Consider using a tunnel (ngrok, Tailscale) or a public URL."

@@ -441,7 +441,7 @@ export class ChatResponseBridge implements ResponseRenderer {
           const sessionPath = resolve(
             "workspaces",
             agentId,
-            ".openclaw",
+            ".lobu",
             "session.jsonl"
           );
           await unlink(sessionPath);

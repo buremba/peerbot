@@ -53,7 +53,7 @@ export interface MessagePayload {
    * (grants, user-agents, channel-bindings, secrets) can scope by org —
    * agent IDs are per-org-unique, so `agent_id = ?` alone is ambiguous.
    */
-  organizationId?: string;
+  organizationId: string;
 
   // ── Bot & platform info (passed through to worker) ─────────────────
   /** Bot identifier. */

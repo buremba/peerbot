@@ -78,6 +78,12 @@ export async function searchLiveConnectors(
   const { manageCatalog, manageConnections } = deps;
   const q = query.trim();
   if (!q) return [];
+  // Connector inventory is workspace-member context, not anonymous public data.
+  // `search_sdk` is publicly readable (method docs are org-independent), so an
+  // anonymous session on a public workspace can reach here — but it must NOT be
+  // handed the org's installed/configured connectors. Gate the enrichment on an
+  // authenticated member session; anon simply gets method docs, no connectors.
+  if (!ctx.userId || !ctx.memberRole) return [];
   const lines: string[] = [];
   try {
     const [inst, cat] = await Promise.all([

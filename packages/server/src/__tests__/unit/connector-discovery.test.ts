@@ -73,7 +73,7 @@ function makeDeps(over?: {
 }
 
 const env = {} as Env;
-const ctx = { organizationId: "org-1", userId: "u1" } as ToolContext;
+const ctx = { organizationId: "org-1", userId: "u1", memberRole: "member" } as ToolContext;
 
 describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 	it("surfaces an installed-but-unconfigured connector with feed key + connect lifecycle", async () => {
@@ -231,6 +231,15 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 	it("returns empty for a blank query (never dumps the whole catalog)", async () => {
 		expect(await searchLiveConnectors("", env, ctx, makeDeps())).toEqual([]);
 		expect(await searchLiveConnectors("   ", env, ctx, makeDeps())).toEqual([]);
+	});
+
+	it("returns nothing for an anonymous / non-member session (no connector inventory to strangers)", async () => {
+		// search_sdk is publicly readable, so an anon session on a public workspace
+		// can call it — but connector inventory is member context, not public data.
+		const anon = { organizationId: "org-1", userId: null } as ToolContext;
+		const nonMember = { organizationId: "org-1", userId: "u1", memberRole: null } as ToolContext;
+		expect(await searchLiveConnectors("website", env, anon, makeDeps())).toEqual([]);
+		expect(await searchLiveConnectors("website", env, nonMember, makeDeps())).toEqual([]);
 	});
 
 	it("matches a dotted CONNECTOR id (google.calendar), not just single words", async () => {

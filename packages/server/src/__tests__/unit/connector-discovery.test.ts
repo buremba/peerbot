@@ -233,13 +233,23 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 		expect(await searchLiveConnectors("   ", env, ctx, makeDeps())).toEqual([]);
 	});
 
-	it("returns nothing for an anonymous / non-member session (no connector inventory to strangers)", async () => {
+	it("returns nothing for a truly anonymous session (no userId) — no inventory to strangers", async () => {
 		// search_sdk is publicly readable, so an anon session on a public workspace
-		// can call it — but connector inventory is member context, not public data.
+		// can call it — but connector inventory is member context. Anon has no
+		// userId, so it's gated here (and the downstream visibility gate would also
+		// restrict it).
 		const anon = { organizationId: "org-1", userId: null } as ToolContext;
-		const nonMember = { organizationId: "org-1", userId: "u1", memberRole: null } as ToolContext;
 		expect(await searchLiveConnectors("website", env, anon, makeDeps())).toEqual([]);
-		expect(await searchLiveConnectors("website", env, nonMember, makeDeps())).toEqual([]);
+	});
+
+	it("STILL returns connectors for a logged-in user whose memberRole isn't populated (scoped /mcp/{slug} session)", async () => {
+		// Regression: scoped-endpoint sessions carry a userId but often a null
+		// memberRole. Gating on memberRole wrongly suppressed discovery for real
+		// members. Gate on userId only; the downstream handler enforces the actual
+		// per-user visibility.
+		const scopedMember = { organizationId: "org-1", userId: "u1", memberRole: null } as ToolContext;
+		const hits = await searchLiveConnectors("website", env, scopedMember, makeDeps());
+		expect(hits.some((h) => h.includes("'website'"))).toBe(true);
 	});
 
 	it("matches a dotted CONNECTOR id (google.calendar), not just single words", async () => {

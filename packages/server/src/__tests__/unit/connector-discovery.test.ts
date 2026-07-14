@@ -179,6 +179,25 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 		expect(await searchLiveConnectors("   ", env, ctx, makeDeps())).toEqual([]);
 	});
 
+	it("matches a dotted CONNECTOR id (google.calendar), not just single words", async () => {
+		// Connector ids are commonly dotted; searchLiveConnectors must find them by
+		// exact id. (search_sdk's method-path skip must not swallow these — its
+		// first segment 'google' is not an SDK namespace.)
+		const deps = makeDeps({
+			catalog: {
+				catalogs: {
+					connectors: {
+						entries: [
+							{ id: "google.calendar", name: "Google Calendar", description: "Calendar sync" },
+						],
+					},
+				},
+			},
+		});
+		const hits = await searchLiveConnectors("google.calendar", env, ctx, deps);
+		expect(hits.some((h) => h.includes("'google.calendar'"))).toBe(true);
+	});
+
 	it("drops stopword-only queries so filler words don't match every connector", async () => {
 		// "connect a source" is all stopwords → no token → no match (else it would
 		// spuriously match on the word 'connect' inside connector descriptions).

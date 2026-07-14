@@ -237,10 +237,17 @@ async function sdkSearchImpl(
 	// Unified-catalog search (executor pattern): a query like "website" or "slack"
 	// names a CONNECTOR, not an SDK method, so pure method search returns nothing
 	// useful. Search live connectors and surface them (+ lifecycle) ABOVE method
-	// docs. Skip the connector lookup for obvious method paths — a dotted path
-	// (`feeds.create`) or a `client.`-prefixed term never names a connector.
+	// docs. Skip the connector lookup ONLY for genuine method paths — a
+	// `client.`-prefixed term, or a dotted path whose FIRST segment is a real SDK
+	// namespace (`feeds.create`). A dotted CONNECTOR id (`google.calendar`) must
+	// still be searched: its first segment (`google`) is not an SDK namespace.
 	const q = args.query.trim();
-	const looksLikeMethodPath = q.includes(".") || /^client\b/i.test(q);
+	// NAMESPACES preserves SDK casing (entitySchema, authProfiles); the query is
+	// lowercased — compare case-insensitively so `entitySchema.listTypes` is
+	// recognized as a method path.
+	const firstSegment = normalizeQueryTerm(q).split(".")[0];
+	const isSdkNamespace = NAMESPACES.some((ns) => ns.toLowerCase() === firstSegment);
+	const looksLikeMethodPath = /^client\b/i.test(q) || (q.includes(".") && isSdkNamespace);
 	const connectorHits = looksLikeMethodPath
 		? []
 		: await searchLiveConnectors(q, env, ctx);

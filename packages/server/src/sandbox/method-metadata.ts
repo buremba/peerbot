@@ -529,7 +529,8 @@ export default async (_ctx, client) => {
 		access: "external",
 	},
 	"operations.listAvailable": {
-		summary: "List operations exposed by the active connections.",
+		summary:
+			"Search declared connector capabilities, including disconnected connectors. Returns readiness plus every visible execution target; backend configuration is never exposed.",
 		access: "read",
 	},
 	"operations.execute": {

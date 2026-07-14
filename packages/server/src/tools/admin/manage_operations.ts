@@ -34,24 +34,36 @@ import {
 	agentExistsInOrg,
 	resolveActingPrincipal,
 	resolveWatcherOwner,
-	resolveWriteEffect,
+	resolveWriteEffects,
 	resolveWritePolicyDecision,
 	watcherIdFromPrincipalId,
 } from "../../authz/entity-policy";
+import { compileConnectionRowVisibility } from "../../authz/connection-visibility";
+import { authzScopeFromToolContext } from "../../authz/scope";
 import { notifyActionApprovalNeeded } from "../../notifications/triggers";
-import { resolveActionMode } from "../../operations/action-modes";
+import {
+	defaultActionModeForOperation,
+	getActionModes,
+	resolveActionMode,
+} from "../../operations/action-modes";
 import {
 	getOperationForConnection,
 	listOperations,
 } from "../../operations/connector-operations";
 import { validateOperationInput } from "../../operations/input-validation";
-import type { OperationDescriptor } from "../../operations/types";
+import type {
+	AvailableOperation,
+	OperationDescriptor,
+} from "../../operations/types";
 import { createConnectorOperationRun } from "../../runs/queue-service";
 import { resolveConnectorCode } from "../../utils/ensure-connector-installed";
 import { resolveExecutionAuth } from "../../utils/execution-context";
 import { insertEvent } from "../../utils/insert-event";
 import logger from "../../utils/logger";
-import { buildResourcePermalink } from "../../utils/url-builder";
+import {
+	buildConnectionsUrl,
+	buildResourcePermalink,
+} from "../../utils/url-builder";
 import { trackWatcherReaction } from "../../utils/watcher-reactions";
 import { dispatchChromeActionToExtension } from "../../worker-api/dispatch-chrome-action";
 import { isAdminOrOwnerRole } from "../access-control";
@@ -93,6 +105,33 @@ type ConnectionRow = {
   name: string;
 };
 
+type ExecutionTarget = {
+	connection_id: number;
+	slug: string;
+	display_name: string;
+	status: string;
+	executable: boolean;
+	reason: string;
+};
+
+type InternalExecutionTarget = ExecutionTarget & {
+	config: Record<string, unknown> | null;
+	auth_profile_kind: string | null;
+};
+
+type OperationTargetRow = {
+	id: number;
+	connector_key: string;
+	slug: string;
+	display_name: string | null;
+	status: string;
+	config: Record<string, unknown> | null;
+	device_worker_id: string | null;
+	device_online: boolean;
+	device_bound: boolean;
+	auth_profile_kind: string | null;
+};
+
 /**
  * The write-gate scope key for one connector operation: `${connector_key}::${op}`.
  * Operation keys (e.g. `send_message`, `create_issue`, `navigate`) are NOT unique
@@ -109,7 +148,7 @@ export function qualifiedOperationKey(
   return `${connectorKey}::${operationKey}`;
 }
 
-const manageOperationsTool = defineActionTool('manage_operations', {
+const manageOperationsTool = defineActionTool("manage_operations", {
   list_available: action(ListAvailableAction, handleListAvailable),
   execute: action(ExecuteAction, handleExecute),
   list_runs: action(ListRunsAction, handleListRuns),
@@ -158,7 +197,11 @@ export function buildActionConfig(
 	connectionCredentials: Record<string, unknown>,
 	connectionConfig: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
-  return { ...envStrings, ...connectionCredentials, ...(connectionConfig ?? {}) };
+	return {
+		...envStrings,
+		...connectionCredentials,
+		...(connectionConfig ?? {}),
+	};
 }
 
 async function executeLocalActionInline(
@@ -280,30 +323,41 @@ async function executeMcpToolInline(
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
 ): Promise<InlineExecutionResult> {
-  if (operation.backend_config.backend !== 'mcp_tool') {
-    return { status: 'failed', error_message: 'Invalid MCP operation backend config' };
+	if (operation.backend_config.backend !== "mcp_tool") {
+		return {
+			status: "failed",
+			error_message: "Invalid MCP operation backend config",
+		};
   }
 
-  const result = await callProxyTool(
+	let result: Awaited<ReturnType<typeof callProxyTool>>;
+	try {
+		result = await callProxyTool(
     connection.connector_key,
     {
       upstream_url: operation.backend_config.upstreamUrl,
-      tool_prefix: '',
+				tool_prefix: "",
     },
     organizationId,
     operation.backend_config.toolName,
-    actionInput
+			actionInput,
+			connection.id,
   );
+	} catch (error) {
+		return failRunInline(runId, organizationId, getErrorMessage(error));
+	}
 
   if (result.isError) {
     const errorText =
       (result.content as Array<{ type: string; text?: string }>).find(
-        (item) => item?.type === 'text'
-      )?.text ?? 'Upstream MCP error';
+				(item) => item?.type === "text",
+			)?.text ?? "Upstream MCP error";
     return failRunInline(runId, organizationId, errorText);
   }
 
-  return completeRunInline(runId, organizationId, { content: result.content } as Record<string, unknown>);
+	return completeRunInline(runId, organizationId, {
+		content: result.content,
+	} as Record<string, unknown>);
 }
 
 function buildResolvedUrl(
@@ -339,12 +393,19 @@ function buildResolvedUrl(
 	return url;
 }
 
-function pickInterestingHeaders(headers: Headers): Record<string, unknown> | undefined {
-  const interestingHeaders = ['content-type', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'link'];
+function pickInterestingHeaders(
+	headers: Headers,
+): Record<string, unknown> | undefined {
+	const interestingHeaders = [
+		"content-type",
+		"x-ratelimit-remaining",
+		"x-ratelimit-reset",
+		"link",
+	];
   const values = Object.fromEntries(
     interestingHeaders
       .map((header) => [header, headers.get(header)])
-      .filter(([, value]) => value !== null)
+			.filter(([, value]) => value !== null),
   );
   return Object.keys(values).length > 0 ? values : undefined;
 }
@@ -470,7 +531,7 @@ async function executeOperationInline(
 	env: Env,
 	abortSignal?: AbortSignal,
 ): Promise<InlineExecutionResult> {
-  if (operation.backend === 'local_action') {
+	if (operation.backend === "local_action") {
     return executeLocalActionInline(
       runId,
       organizationId,
@@ -478,19 +539,357 @@ async function executeOperationInline(
       operation,
       actionInput,
       env,
-      abortSignal
+			abortSignal,
     );
   }
-  if (operation.backend === 'mcp_tool') {
-    return executeMcpToolInline(runId, organizationId, connection, operation, actionInput);
+	if (operation.backend === "mcp_tool") {
+		return executeMcpToolInline(
+			runId,
+			organizationId,
+			connection,
+			operation,
+			actionInput,
+		);
   }
-  return executeHttpOperationInline(runId, organizationId, connection, operation, actionInput);
+	return executeHttpOperationInline(
+		runId,
+		organizationId,
+		connection,
+		operation,
+		actionInput,
+	);
+}
+
+function executionTargetFromRow(row: OperationTargetRow): InternalExecutionTarget {
+	const base = {
+		connection_id: Number(row.id),
+		slug: row.slug,
+		display_name: row.display_name ?? row.slug,
+		config: row.config,
+		auth_profile_kind: row.auth_profile_kind,
+	};
+	if (row.status !== "active") {
+		return {
+			...base,
+			status: row.status,
+			executable: false,
+			reason: `Connection status is ${row.status}.`,
+		};
+	}
+	if (row.device_bound && !row.device_online) {
+		return {
+			...base,
+			status: "device_offline",
+			executable: false,
+			reason: "The connection's paired device is offline.",
+		};
+	}
+	return {
+		...base,
+		status: "ready",
+		executable: true,
+		reason: "Connection is ready for execution.",
+	};
+}
+
+function groupExecutionTargets(
+	rows: OperationTargetRow[],
+): Map<string, InternalExecutionTarget[]> {
+	const grouped = new Map<string, InternalExecutionTarget[]>();
+	for (const row of rows) {
+		const targets = grouped.get(row.connector_key) ?? [];
+		targets.push(executionTargetFromRow(row));
+		grouped.set(row.connector_key, targets);
+	}
+	return grouped;
+}
+
+function operationReadinessReason(
+	readiness: string,
+	executable: boolean,
+): string {
+	if (executable) return "At least one visible connection is ready.";
+	if (readiness === "disconnected") {
+		return "No visible connection exists for this connector.";
+	}
+	if (readiness === "device_offline") {
+		return "Every visible active device-bound connection is offline.";
+	}
+	if (readiness === "disabled") {
+		return "This operation is disabled on every visible connection.";
+	}
+	return `A visible connection has status ${readiness}.`;
+}
+
+function resolveOperationReadiness(targets: ExecutionTarget[]): {
+	readyTarget: ExecutionTarget | undefined;
+	executable: boolean;
+	readiness: string;
+} {
+	const readyTarget = targets.find((target) => target.executable);
+	if (readyTarget) {
+		return { readyTarget, executable: true, readiness: "ready" };
+	}
+	if (targets.length === 0) {
+		return { readyTarget: undefined, executable: false, readiness: "disconnected" };
+	}
+	if (targets.every((target) => target.status === "disabled")) {
+		return { readyTarget: undefined, executable: false, readiness: "disabled" };
+	}
+	return {
+		readyTarget: undefined,
+		executable: false,
+		readiness:
+			targets.find((target) => target.status !== "disabled")?.status ??
+			"inactive",
+	};
+}
+
+function operationMatchesQuery(
+	operation: AvailableOperation & Record<string, unknown>,
+	queryTokens: string[],
+): boolean {
+	if (queryTokens.length === 0) return true;
+	const haystack = [
+		operation.connector_key,
+		operation.connector_name,
+		operation.operation_key,
+		operation.name,
+		operation.description ?? "",
+		JSON.stringify(operation.input_schema ?? {}),
+	]
+		.join(" ")
+		.toLocaleLowerCase();
+	return queryTokens.every((token) => haystack.includes(token));
+}
+
+function buildOperationNextAction(args: {
+	operation: OperationDescriptor;
+	readyTarget: ExecutionTarget | undefined;
+	readiness: string;
+	remediationTarget: ExecutionTarget | undefined;
+	remediationConfig: Record<string, unknown> | null | undefined;
+	remediationAuthKind: string | null | undefined;
+	viewUrl: string | undefined;
+}): Record<string, unknown> {
+	const {
+		operation,
+		readyTarget,
+		readiness,
+		remediationTarget,
+		remediationConfig,
+		remediationAuthKind,
+		viewUrl,
+	} = args;
+	if (readyTarget) {
+		const requiredInput =
+			Array.isArray(operation.input_schema?.required) &&
+			operation.input_schema.required.length > 0;
+		if (requiredInput) {
+			return {
+				action: "provide_input",
+				sdk_method: "operations.execute",
+				requires_input: true,
+				input_schema: operation.input_schema,
+				arguments: [
+					{
+						connection_id: readyTarget.connection_id,
+						operation_key: operation.operation_key,
+					},
+				],
+			};
+		}
+		return {
+			action: "execute",
+			sdk_method: "operations.execute",
+			arguments: [
+				{
+					connection_id: readyTarget.connection_id,
+					operation_key: operation.operation_key,
+					input: {},
+				},
+			],
+		};
+	}
+	if (readiness === "disconnected") {
+		return {
+			action: "connect",
+			sdk_method: "connections.connect",
+			arguments: [{ connector_key: operation.connector_key }],
+		};
+	}
+	if (readiness === "disabled") {
+		return {
+			action: "enable_operation",
+			sdk_method: "connections.update",
+			arguments: [
+				{
+					connection_id: remediationTarget?.connection_id,
+					config: {
+						action_modes: {
+							...getActionModes(remediationConfig),
+							[operation.operation_key]:
+								defaultActionModeForOperation(operation),
+						},
+					},
+				},
+			],
+		};
+	}
+	if (readiness === "paused") {
+		return {
+			action: "resume_connection",
+			sdk_method: "connections.update",
+			arguments: [
+				{ connection_id: remediationTarget?.connection_id, status: "active" },
+			],
+		};
+	}
+	if (
+		["pending_auth", "error", "revoked"].includes(readiness) &&
+		remediationAuthKind === "interactive"
+	) {
+		return {
+			action: "reauthenticate",
+			sdk_method: "connections.reauthenticate",
+			arguments: [remediationTarget?.connection_id],
+			...(viewUrl ? { view_url: viewUrl } : {}),
+		};
+	}
+	return {
+		action:
+			readiness === "device_offline" ? "bring_device_online" : "open_setup",
+		manual: true,
+		...(viewUrl ? { view_url: viewUrl } : {}),
+	};
+}
+
+function buildAvailableOperation(args: {
+	operation: OperationDescriptor;
+	internalTargets: InternalExecutionTarget[];
+	includeInputSchema: boolean;
+	viewUrl: string | undefined;
+}): AvailableOperation & Record<string, unknown> {
+	const { operation, internalTargets, includeInputSchema, viewUrl } = args;
+	const { backend_config: _privateBackendConfig, ...publicOperation } = operation;
+	const targets = internalTargets.map((target): ExecutionTarget => {
+		const {
+			config,
+			auth_profile_kind: _authProfileKind,
+			...publicTarget
+		} = target;
+		if (resolveActionMode(operation, config) !== "disabled") {
+			return publicTarget;
+		}
+		return {
+			...publicTarget,
+			status: "disabled",
+			executable: false,
+			reason: "This operation is disabled on the connection.",
+		};
+	});
+	const { readyTarget, executable, readiness } =
+		resolveOperationReadiness(targets);
+	const remediationTarget =
+		targets.find((target) => target.status === readiness) ?? targets[0];
+	const remediationInternalTarget = internalTargets.find(
+		(target) => target.connection_id === remediationTarget?.connection_id,
+	);
+	return {
+		...(publicOperation as AvailableOperation),
+		...(includeInputSchema ? {} : { input_schema: undefined }),
+		executable,
+		readiness,
+		reason: operationReadinessReason(readiness, executable),
+		connection_count: targets.length,
+		execution_targets: targets,
+		next_action: buildOperationNextAction({
+			operation,
+			readyTarget,
+			readiness,
+			remediationTarget,
+			remediationConfig: remediationInternalTarget?.config,
+			remediationAuthKind: remediationInternalTarget?.auth_profile_kind,
+			viewUrl,
+		}),
+	};
+}
+
+async function loadVisibleOperationTargets(
+	args: Static<typeof ListAvailableAction>,
+	ctx: ToolContext,
+): Promise<OperationTargetRow[]> {
+	const visibility = compileConnectionRowVisibility(
+		authzScopeFromToolContext(ctx),
+		2,
+		"c",
+	);
+	return (await getDb().unsafe(
+		`SELECT c.id,
+		        c.connector_key,
+		        c.slug,
+		        c.display_name,
+		        c.status,
+		        c.config,
+		        c.device_worker_id,
+		        ap.profile_kind AS auth_profile_kind,
+		        COALESCE(dw.last_seen_at > now() - interval '20 minutes', false) AS device_online,
+		        (c.device_worker_id IS NOT NULL OR latest.runtime IS NOT NULL) AS device_bound
+		 FROM connections c
+		 LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
+		 LEFT JOIN auth_profiles ap ON ap.id = c.auth_profile_id
+		 LEFT JOIN LATERAL (
+		   SELECT cd.runtime
+		   FROM connector_definitions cd
+		   WHERE cd.organization_id = c.organization_id
+		     AND cd.key = c.connector_key
+		     AND cd.status = 'active'
+		   ORDER BY cd.updated_at DESC, cd.id DESC
+		   LIMIT 1
+		 ) latest ON TRUE
+		 WHERE c.organization_id = $1
+		   AND c.deleted_at IS NULL
+		   ${visibility.sql}
+		   AND ($3::bigint IS NULL OR c.id = $3)
+		   AND ($4::text IS NULL OR c.connector_key = $4)
+		   AND ($5::bigint IS NULL OR EXISTS (
+		     SELECT 1 FROM feeds f
+		     WHERE f.connection_id = c.id
+		       AND f.deleted_at IS NULL
+		       AND $5 = ANY(f.entity_ids)
+		   ))
+		 ORDER BY c.connector_key, c.id`,
+		[
+			ctx.organizationId,
+			...visibility.params,
+			args.connection_id ?? null,
+			args.connector_key ?? null,
+			args.entity_id ?? null,
+		],
+	)) as unknown as OperationTargetRow[];
 }
 
 async function handleListAvailable(
 	args: Static<typeof ListAvailableAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
+	const targetRows = await loadVisibleOperationTargets(args, ctx);
+
+	// An explicit connection filter is also an authorization lookup. Returning
+	// an empty list for a hidden/private connection avoids leaking its connector
+	// key through the operation catalog.
+	if (args.connection_id !== undefined && targetRows.length === 0) {
+		return {
+			action: "list_available",
+			operations: [],
+			total: 0,
+			limit: args.limit ?? 100,
+			offset: args.offset ?? 0,
+		};
+	}
+
+	const targetsByConnector = groupExecutionTargets(targetRows);
+
   // A `disabled` connector_action effect turns an operation OFF for this principal
   // — it shouldn't be listed at all (Disabled HIDES the action, unlike deny/approval
   // which surface then gate on execute). Two levels now: the BLANKET `execute` rule
@@ -502,34 +901,30 @@ async function handleListAvailable(
     agentId: ctx.agentId,
     sessionWatcherId: ctx.actingWatcherId ?? null,
   });
-  const effectFor = (operationKey?: string | null) =>
-    resolveWriteEffect({
-      organizationId: ctx.organizationId,
-      resourceClass: 'connector_action',
-      principalKind: actor.kind,
-      principalId: actor.id,
-      ownerAgentId: actor.ownerAgentId,
-      ownerResolved: actor.ownerResolved,
-      action: 'execute',
-      operationKey: operationKey ?? null,
-    });
-  // Blanket disable hides WRITE ops only — reads always list (policy is write-only).
-  const blanketDisabled = (await effectFor(null)) === 'disabled';
-
   // Fetch the FULL filtered set (offset 0, no caller limit), drop per-op-disabled
   // ops across the WHOLE set, THEN paginate. Filtering a single page and subtracting
   // its hidden count from the global total gives an inconsistent `total` across pages
   // and can return a short page while visible ops remain past the offset (a client
   // treating "short page = end" would silently truncate the catalog). Pagination must
   // run on the post-filter list.
+	// For an explicit connection, targetRows already performed the visibility and
+	// authorization lookup. Query the connector catalog by that row's key instead
+	// of applying listOperations' legacy per-connection action-mode filter; the
+	// readiness mapper below must retain disabled capabilities and explain how to
+	// enable them.
+	const catalogConnectorKey =
+		args.connection_id !== undefined
+			? targetRows[0]?.connector_key
+			: args.connector_key;
   const full = await listOperations({
     organizationId: ctx.organizationId,
-    connectorKey: args.connector_key,
-    connectionId: args.connection_id,
+		connectorKey: catalogConnectorKey,
     entityId: args.entity_id,
     kind: args.kind,
     backend: args.backend,
-    includeInputSchema: args.include_input_schema ?? true,
+		// Required-input detection still needs the schema when the caller hides the
+		// descriptor copy from the public response.
+		includeInputSchema: true,
     includeOutputSchema: args.include_output_schema ?? false,
     // Fetch the WHOLE filtered set — listOperations defaults to limit 100, which
     // would silently drop ops past index 100 and make them unreachable at any
@@ -538,26 +933,70 @@ async function handleListAvailable(
     limit: Number.MAX_SAFE_INTEGER,
     offset: 0,
   });
+	const qualifiedWriteKeys = full.operations
+		.filter((operation) => operation.kind === "write")
+		.map((operation) =>
+			qualifiedOperationKey(operation.connector_key, operation.operation_key),
+		);
+	const policyEffects = await resolveWriteEffects({
+		organizationId: ctx.organizationId,
+		resourceClass: "connector_action",
+		principalKind: actor.kind,
+		principalId: actor.id,
+		ownerAgentId: actor.ownerAgentId,
+		ownerResolved: actor.ownerResolved,
+		action: "execute",
+		operationKeys: qualifiedWriteKeys,
+	});
+	const blanketDisabled = policyEffects.get(null) === "disabled";
 
   // Hide WRITE ops whose per-op (or blanket) policy is disabled. Reads are never
   // filtered by agent write-policy. Humans always resolve auto for policy.
-  const visibleFlags = await Promise.all(
-    full.operations.map(async (op) => {
-      if (op.kind === 'read') return 'auto' as const;
-      if (blanketDisabled) return 'disabled' as const;
-      return effectFor(qualifiedOperationKey(op.connector_key, op.operation_key));
-    }),
+	const visibleFlags = full.operations.map((op) => {
+			if (op.kind === "read") return "auto" as const;
+			if (blanketDisabled) return "disabled" as const;
+			return (
+				policyEffects.get(
+					qualifiedOperationKey(op.connector_key, op.operation_key),
+				) ?? "auto"
   );
-  const visible = full.operations.filter(
-    (_op, i) => visibleFlags[i] !== 'disabled',
+		});
+	const policyVisible = full.operations.filter(
+		(_op, i) => visibleFlags[i] !== "disabled",
   );
 
+	const queryTokens = (args.query ?? "")
+		.toLocaleLowerCase()
+		.split(/\s+/)
+		.filter(Boolean);
+	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
+	const connectorViewUrl = (connectorKey: string): string | undefined =>
+		ownerSlug && baseUrl
+			? buildConnectionsUrl(ownerSlug, baseUrl, connectorKey)
+			: undefined;
+	const publicOperations = policyVisible
+		.map((operation) =>
+			buildAvailableOperation({
+				operation,
+				internalTargets:
+					targetsByConnector.get(operation.connector_key) ?? [],
+				includeInputSchema: args.include_input_schema !== false,
+				viewUrl: connectorViewUrl(operation.connector_key),
+			}),
+		)
+		.filter((operation) => {
+			if (args.include_disconnected === false && !operation.executable) {
+				return false;
+			}
+			return operationMatchesQuery(operation, queryTokens);
+		});
+
   const offset = args.offset ?? 0;
-  const limit = args.limit ?? visible.length;
+	const limit = args.limit ?? 100;
   return {
-    action: 'list_available',
-    operations: visible.slice(offset, offset + limit),
-    total: visible.length,
+		action: "list_available",
+		operations: publicOperations.slice(offset, offset + limit),
+		total: publicOperations.length,
     limit,
     offset,
   };
@@ -666,7 +1105,7 @@ export async function waitForDeviceActionRun(
     UPDATE runs
     SET status = 'timeout',
         completed_at = current_timestamp,
-        error_message = ${'waitForDeviceActionRun: device worker did not complete in time'}
+        error_message = ${"waitForDeviceActionRun: device worker did not complete in time"}
     WHERE id = ${runId}
       AND organization_id = ${organizationId}
       AND status IN ('pending', 'running')
@@ -716,6 +1155,23 @@ async function handleExecute(
 	env: Env,
 ): Promise<ManageOperationsResult> {
 	const sql = getDb();
+	const scope = authzScopeFromToolContext(ctx);
+	const visibility = compileConnectionRowVisibility(scope, 3, "c");
+	const visibleRows = await sql.unsafe(
+		`SELECT 1
+		 FROM connections c
+		 WHERE c.organization_id = $1
+		   AND c.id = $2
+		   AND c.deleted_at IS NULL
+		   ${visibility.sql}
+		 LIMIT 1`,
+		[ctx.organizationId, args.connection_id, ...visibility.params],
+	);
+	if (visibleRows.length === 0) {
+		return {
+			error: "Connection not found or not visible.",
+		};
+	}
 	const resolved = await getOperationForConnection(
 		ctx.organizationId,
 		args.connection_id,
@@ -791,7 +1247,8 @@ async function handleExecute(
 			error: `Policy denies '${operation.operation_key}' for this principal.`,
 		};
 	}
-	const shouldQueue = mode === "approval" || policyDecision === "require_approval";
+	const shouldQueue =
+		mode === "approval" || policyDecision === "require_approval";
 
 	// Detect device-bound connector by reading the connector definition's
 	// `runtime` field. When set (e.g. chrome-extension, macos, ios), the
@@ -1064,7 +1521,7 @@ async function handleListRuns(
   const [countResult, rows] = await Promise.all([countQuery, query]);
 
   return {
-    action: 'list_runs',
+		action: "list_runs",
     runs: rows,
     total: Number(countResult[0]?.total ?? 0),
     limit,
@@ -1089,8 +1546,8 @@ async function handleGetRun(
       AND r.run_type = 'action'
     LIMIT 1
   `;
-  if (rows.length === 0) return { error: 'Run not found' };
-  return { action: 'get_run', run: rows[0] };
+	if (rows.length === 0) return { error: "Run not found" };
+	return { action: "get_run", run: rows[0] };
 }
 
 /**
@@ -1201,7 +1658,9 @@ export async function supersedeActionEvent(
  * are web-session only (`ctx.clientId` is rejected upstream), so `ctx.userId` is
  * always a real human here; we still guard on null for safety.
  */
-async function resolveReviewer(ctx: ToolContext): Promise<ApprovalReviewer | null> {
+async function resolveReviewer(
+	ctx: ToolContext,
+): Promise<ApprovalReviewer | null> {
   if (!ctx.userId) return null;
   const rows = await getDb()<{ name: string | null }>`
     SELECT name FROM "user" WHERE id = ${ctx.userId} LIMIT 1
@@ -1537,7 +1996,7 @@ async function claimEntityChangeRun(
       : await sql`
           UPDATE runs
           SET approval_status = 'rejected', status = 'cancelled',
-              error_message = ${rejectReason ?? 'Rejected by user'}, completed_at = NOW()
+              error_message = ${rejectReason ?? "Rejected by user"}, completed_at = NOW()
           WHERE id = ${runId}
             AND organization_id = ${organizationId}
             AND approval_status = 'pending'
@@ -2145,7 +2604,10 @@ async function handleApproveBatch(
 ): Promise<ManageOperationsResult> {
 	const humanGate = requireHumanApprovalContext(ctx, "approve");
 	if (humanGate) return humanGate;
-	const runIds = await pendingRunIdsForWindow(args.window_id, ctx.organizationId);
+	const runIds = await pendingRunIdsForWindow(
+		args.window_id,
+		ctx.organizationId,
+	);
 	if (runIds.length === 0) {
 		return {
 			action: "approve_batch",
@@ -2159,7 +2621,11 @@ async function handleApproveBatch(
 	let approved = 0;
 	let failed = 0;
 	for (const runId of runIds) {
-		const result = await handleApprove({ action: "approve", run_id: runId }, ctx, env);
+		const result = await handleApprove(
+			{ action: "approve", run_id: runId },
+			ctx,
+			env,
+		);
 		if ("error" in result) failed += 1;
 		else approved += 1;
 	}
@@ -2218,11 +2684,17 @@ async function handleRejectBatch(
 ): Promise<ManageOperationsResult> {
 	const humanGate = requireHumanApprovalContext(ctx, "reject");
 	if (humanGate) return humanGate;
-	const runIds = await pendingRunIdsForWindow(args.window_id, ctx.organizationId);
+	const runIds = await pendingRunIdsForWindow(
+		args.window_id,
+		ctx.organizationId,
+	);
 	const reason = args.reason ?? "Rejected by user";
 	let rejected = 0;
 	for (const runId of runIds) {
-		const result = await handleReject({ action: "reject", run_id: runId, reason }, ctx);
+		const result = await handleReject(
+			{ action: "reject", run_id: runId, reason },
+			ctx,
+		);
 		if (!("error" in result)) rejected += 1;
 	}
 	if (rejected > 0) {

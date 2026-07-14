@@ -25,7 +25,8 @@ export const KindLiteral = Type.Union(
 
 export const ListAvailableAction = Type.Object({
   action: Type.Literal("list_available", {
-    description: "List connector/MCP/HTTP operations available for execution.",
+    description:
+      "Discover connector operations (capabilities) across bundled, custom, and device connectors, with per-operation connection readiness. Returns a PUBLIC DTO (no backend_config). Capabilities stay discoverable even with no connection; use the readiness + next_action fields to drive discover → connect/setup → poll → execute.",
   }),
   connector_key: Type.Optional(
     Type.String({ description: "Filter by connector key" })
@@ -36,6 +37,19 @@ export const ListAvailableAction = Type.Object({
   entity_id: Type.Optional(Type.Number({ description: "Filter by entity ID" })),
   kind: Type.Optional(KindLiteral),
   backend: Type.Optional(BackendLiteral),
+  query: Type.Optional(
+    Type.String({
+      description:
+        "Data-driven search over connector name/key, operation name/key, description, and input-schema property names/terms. A query like 'github create issue' returns matching capabilities across every installed connector (including ones with no connection yet).",
+    })
+  ),
+  include_disconnected: Type.Optional(
+    Type.Boolean({
+      default: true,
+      description:
+        "Include capabilities whose connector has NO ready connection (default true). Set false to list only executable operations.",
+    })
+  ),
   include_input_schema: Type.Optional(
     Type.Boolean({
       default: true,

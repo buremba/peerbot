@@ -555,7 +555,7 @@ export async function listOperations(params: {
 	limit?: number;
 	offset?: number;
 }): Promise<{
-	operations: AvailableOperation[];
+	operations: OperationDescriptor[];
 	total: number;
 	limit: number;
 	offset: number;

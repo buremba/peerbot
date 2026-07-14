@@ -6,7 +6,11 @@
  */
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { resolveWriteEffect } from "../../../authz/entity-policy";
+import {
+	resolveWriteEffect,
+	resolveWriteEffects,
+} from "../../../authz/entity-policy";
+import type { DbClient } from "../../../db/client";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	createTestAgent,
@@ -151,5 +155,49 @@ describe("connector_action per-operation scope", () => {
 		expect(await execFor(orgId, "op-agent", "github::create_issue")).toBe(
 			"auto",
 		);
+	});
+
+	it("batches blanket and per-operation effects into one header/effects query pair", async () => {
+		await seedConnectorPolicy({
+			orgId,
+			principalKind: "agent",
+			principalId: "op-agent",
+			effect: "auto",
+		});
+		await seedConnectorPolicy({
+			orgId,
+			principalKind: "agent",
+			principalId: "op-agent",
+			operationKey: "github::create_issue",
+			effect: "disabled",
+		});
+
+		let queryCount = 0;
+		const raw = getTestDb();
+		const counting = new Proxy(raw, {
+			apply(target, thisArg, args) {
+				queryCount += 1;
+				return Reflect.apply(target, thisArg, args);
+			},
+		}) as DbClient;
+		const effects = await resolveWriteEffects({
+			organizationId: orgId,
+			resourceClass: "connector_action",
+			principalKind: "agent",
+			principalId: "op-agent",
+			action: "execute",
+			operationKeys: [
+				"github::create_issue",
+				"github::list_issues",
+				"linear::create_issue",
+			],
+			sql: counting,
+		});
+
+		expect(queryCount).toBe(2);
+		expect(effects.get(null)).toBe("auto");
+		expect(effects.get("github::create_issue")).toBe("disabled");
+		expect(effects.get("github::list_issues")).toBe("auto");
+		expect(effects.get("linear::create_issue")).toBe("auto");
 	});
 });

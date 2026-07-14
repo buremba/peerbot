@@ -131,6 +131,111 @@ export interface ConversationListRow {
 }
 
 /**
+ * Read one conversation row by its full PK. Returns null when the row does not
+ * exist (or is soft-deleted). The single get source, mirroring
+ * {@link listConversations}'s read of the materialized entity.
+ */
+export async function getConversation(args: {
+	organizationId: string;
+	agentId: string;
+	platform: string;
+	conversationId: string;
+}): Promise<ConversationListRow | null> {
+	const { organizationId, agentId, platform, conversationId } = args;
+	const sql = getDb();
+	const rows = await sql<{
+		platform: string;
+		conversation_id: string;
+		kind: ConversationKind;
+		user_id: string | null;
+		title: string | null;
+		last_activity_at: Date | null;
+		created_at: Date;
+	}>`
+    SELECT platform, conversation_id, kind, user_id, title,
+           last_activity_at, created_at
+    FROM public.conversations
+    WHERE organization_id = ${organizationId}
+      AND agent_id = ${agentId}
+      AND platform = ${platform}
+      AND conversation_id = ${conversationId}
+      AND archived_at IS NULL
+    LIMIT 1
+  `;
+	const r = rows[0];
+	if (!r) return null;
+	return {
+		platform: r.platform,
+		conversationId: r.conversation_id,
+		kind: r.kind,
+		userId: r.user_id,
+		title: r.title,
+		lastActivityAt: r.last_activity_at ?? r.created_at,
+		createdAt: r.created_at,
+	};
+}
+
+/**
+ * A turn's terminal outcome, read from the durable `runs` thread-response rows
+ * the worker writes on completion. Cross-replica-safe (Postgres, not the
+ * pod-local SSE buffer) — so `conversations.send({ wait: true })` can await a
+ * reply without holding an SSE socket.
+ */
+export type ConversationReply =
+	| { status: "complete"; text: string }
+	| { status: "error"; error: string };
+
+/**
+ * Poll for the terminal outcome of a dispatched message. Matches the completion
+ * row the worker writes to `public.runs` (queue_name='thread_response') whose
+ * payload lists `messageId` in `processedMessageIds` (a turn can batch several).
+ * Returns null while the turn is still in flight. `finalText` carries the full
+ * assistant reply on the terminal row (see ThreadResponsePayload.finalText).
+ */
+export async function readConversationReply(args: {
+	organizationId: string;
+	conversationId: string;
+	messageId: string;
+}): Promise<ConversationReply | null> {
+	const { organizationId, conversationId, messageId } = args;
+	const sql = getDb();
+	const rows = await sql<{ payload: Record<string, unknown> | null }>`
+    WITH response_rows AS (
+      SELECT id,
+             CASE
+               WHEN jsonb_typeof(action_input) = 'string'
+                 THEN (action_input #>> '{}')::jsonb
+               ELSE action_input
+             END AS payload
+      FROM public.runs
+      WHERE organization_id = ${organizationId}
+        AND run_type = 'chat_message'
+        AND queue_name = 'thread_response'
+        AND status IN ('completed', 'failed')
+        AND action_input IS NOT NULL
+    )
+    SELECT payload
+    FROM response_rows
+    WHERE payload->>'conversationId' = ${conversationId}
+      AND (
+        payload->>'messageId' = ${messageId}
+        OR payload->'processedMessageIds' ? ${messageId}
+      )
+      AND (payload ? 'error' OR payload ? 'processedMessageIds')
+    ORDER BY id DESC
+    LIMIT 1
+  `;
+	const payload = rows[0]?.payload;
+	if (!payload || typeof payload !== "object") return null;
+	if (typeof payload.error === "string" && payload.error.length > 0) {
+		return { status: "error", error: payload.error };
+	}
+	const finalText =
+		typeof payload.finalText === "string" ? payload.finalText : "";
+	return { status: "complete", text: finalText };
+}
+
+/**
  * List an agent's conversations for the sidebar, newest-first. The single
  * listing source: reads the materialized entity instead of deriving from
  * `DISTINCT ON (conversation_id) FROM agent_transcript_snapshot`.

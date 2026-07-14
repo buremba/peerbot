@@ -54,6 +54,11 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 		"approve_batch",
 		"reject_batch",
 	]),
+	// A member sends a message to their own agent's conversation. `send` runs the
+	// turn in the conversation's pinned sandbox; the handler binds the
+	// conversation to ctx.userId and fences on agent-in-org. list/get are
+	// read-tier (PUBLIC_READ_ACTIONS).
+	manage_conversations: new Set(["send"]),
 };
 
 const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {

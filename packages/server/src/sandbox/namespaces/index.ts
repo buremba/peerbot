@@ -7,6 +7,7 @@ export { buildAuthProfilesNamespace } from "./auth-profiles";
 export { buildCatalogNamespace } from "./catalog";
 export { buildClassifiersNamespace } from "./classifiers";
 export { buildConnectionsNamespace } from "./connections";
+export { buildConversationsNamespace } from "./conversations";
 export { buildEntitiesNamespace } from "./entities";
 export { buildEntitySchemaNamespace } from "./entity-schema";
 export { buildFeedsNamespace } from "./feeds";

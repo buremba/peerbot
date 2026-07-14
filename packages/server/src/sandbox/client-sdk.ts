@@ -25,6 +25,7 @@ import {
 	buildCatalogNamespace,
 	buildClassifiersNamespace,
 	buildConnectionsNamespace,
+	buildConversationsNamespace,
 	buildEntitiesNamespace,
 	buildEntitySchemaNamespace,
 	buildFeedsNamespace,
@@ -42,6 +43,7 @@ import type { AuthProfilesNamespace } from "./namespaces/auth-profiles";
 import type { CatalogNamespace } from "./namespaces/catalog";
 import type { ClassifiersNamespace } from "./namespaces/classifiers";
 import type { ConnectionsNamespace } from "./namespaces/connections";
+import type { ConversationsNamespace } from "./namespaces/conversations";
 import type { EntitiesNamespace } from "./namespaces/entities";
 import type { EntitySchemaNamespace } from "./namespaces/entity-schema";
 import type { FeedsNamespace } from "./namespaces/feeds";
@@ -60,6 +62,7 @@ export interface ClientSDK {
 	entitySchema: EntitySchemaNamespace;
 	catalog: CatalogNamespace;
 	connections: ConnectionsNamespace;
+	conversations: ConversationsNamespace;
 	feeds: FeedsNamespace;
 	authProfiles: AuthProfilesNamespace;
 	operations: OperationsNamespace;
@@ -176,6 +179,7 @@ export function buildClientSDK(
 		entitySchema: buildEntitySchemaNamespace(ctx, env),
 		catalog: buildCatalogNamespace(ctx, env),
 		connections: buildConnectionsNamespace(ctx, env),
+		conversations: buildConversationsNamespace(ctx, env),
 		feeds: buildFeedsNamespace(ctx, env),
 		authProfiles: buildAuthProfilesNamespace(ctx, env),
 		operations: buildOperationsNamespace(ctx, env),

@@ -34,6 +34,7 @@ const ADMIN_TOOL_SDK_NAMESPACE: Record<string, keyof ReturnType<typeof buildClie
 	manage_connections: "connections",
 	manage_catalog: "catalog",
 	manage_agents: "agents",
+	manage_conversations: "conversations",
 	manage_feeds: "feeds",
 	manage_auth_profiles: "authProfiles",
 	manage_operations: "operations",

@@ -92,7 +92,7 @@ done
 
 REVIEWER_CLI_SELECTED="$(review_select_reviewer "$REVIEWER_CLI")"
 if [ "$REVIEWER_CLI_SELECTED" = "claude" ]; then
-  review_validate_claude_model "$CLAUDE_REVIEW_MODEL"
+  review_validate_claude_model "$CLAUDE_REVIEW_MODEL" || exit $?
 fi
 command -v "$REVIEWER_CLI_SELECTED" >/dev/null 2>&1 || {
   review_fail_closed_message "$REVIEWER_CLI_SELECTED" "command not found on PATH" >&2

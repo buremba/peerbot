@@ -435,6 +435,100 @@ export const ManageWatchersSchema = Type.Object({
 export type ManageWatchersArgs = Static<typeof ManageWatchersSchema>;
 
 /**
+ * The watcher columns a `manage_watchers` UPDATE persists — a type-only `Pick`
+ * of {@link ManageWatchersArgs} so the field TYPES are reused from the single
+ * source (no re-typing); the STORED shape is these fields after the
+ * write-normalization {@link normalizeWatcherUpdatePatch} applies.
+ *
+ * EXCLUDES: name/description/prompt/sources (version-owned — an update can't
+ * change them, changing them needs create_version) and routing keys
+ * (action/watcher_id/entity_id/version_id). `next_run_at` is omitted too — a
+ * DERIVED column, not a proposable field.
+ */
+export type WatcherUpdatePatch = Pick<
+  ManageWatchersArgs,
+  | "model_config"
+  | "execution_config"
+  | "schedule"
+  | "timezone"
+  | "agent_id"
+  | "scheduler_client_id"
+  | "tags"
+  | "device_worker_id"
+  | "agent_kind"
+  | "notification_channel"
+  | "notification_priority"
+  | "min_cooldown_seconds"
+>;
+
+/**
+ * Canonical tag normalization for a watcher write — trim, drop empties, dedupe,
+ * preserving first-seen order. The SINGLE source for how tags are STORED: the
+ * server's `toTextArrayParam` (SQL array param) and `normalizeWatcherUpdatePatch`
+ * (review `proposedAfter`) both go through this, so the displayed tags equal the
+ * stored tags exactly (e.g. `["  a  ", "a", ""]` → `["a"]`).
+ */
+export function normalizeWatcherTags(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of values) {
+    const s = typeof v === "string" ? v.trim() : "";
+    if (s.length === 0 || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+/**
+ * The SINGLE SOURCE OF TRUTH for a `manage_watchers` UPDATE's write-normalization
+ * — the exact value each applied field STORES. Shared by the apply handler
+ * (feeds the UPDATE SET clause) and the config-approval review's `proposedAfter`
+ * (the pending-proposal endpoint), so "displayed == applied" can't drift: the
+ * review shows precisely what this same function tells the handler to write.
+ *
+ * A `manage_watchers` update is a PATCH — only keys PRESENT in `args` are
+ * returned (absent keys keep their current values). Coercions mirror the stored
+ * shape EXACTLY, incl. the ones that used to live only in the SQL params:
+ *   - model_config ?? {}
+ *   - schedule || null (falsy incl. "")
+ *   - tags → normalizeWatcherTags (trim/drop-empty/dedupe)
+ *   - notification_channel ?? 'canvas', notification_priority ?? 'normal',
+ *     min_cooldown_seconds ?? 0
+ *   - null-clearable scalars (timezone/agent_id/scheduler_client_id/
+ *     device_worker_id/agent_kind) and execution_config keep null (a real clear
+ *     the write applies) — NOT coerced to undefined, which would hide the clear.
+ */
+export function normalizeWatcherUpdatePatch(
+  args: ManageWatchersArgs
+): WatcherUpdatePatch {
+  const patch: WatcherUpdatePatch = {};
+  if (args.model_config !== undefined)
+    patch.model_config = args.model_config ?? {};
+  // null is a REAL clear the write stores (toJsonParam(null) → SQL null); keep it
+  // so the review shows the clear rather than hiding it (serializing away).
+  if (args.execution_config !== undefined)
+    patch.execution_config = args.execution_config ?? null;
+  if (args.schedule !== undefined) patch.schedule = args.schedule || null;
+  if (args.timezone !== undefined) patch.timezone = args.timezone ?? null;
+  if (args.agent_id !== undefined) patch.agent_id = args.agent_id ?? null;
+  if (args.scheduler_client_id !== undefined)
+    patch.scheduler_client_id = args.scheduler_client_id ?? null;
+  if (args.tags !== undefined) patch.tags = normalizeWatcherTags(args.tags);
+  if (args.device_worker_id !== undefined)
+    patch.device_worker_id = args.device_worker_id ?? null;
+  if (args.agent_kind !== undefined) patch.agent_kind = args.agent_kind ?? null;
+  if (args.notification_channel !== undefined)
+    patch.notification_channel = args.notification_channel ?? "canvas";
+  if (args.notification_priority !== undefined)
+    patch.notification_priority = args.notification_priority ?? "normal";
+  if (args.min_cooldown_seconds !== undefined)
+    patch.min_cooldown_seconds = args.min_cooldown_seconds ?? 0;
+  return patch;
+}
+
+/**
  * Result of `manage_watchers` — a discriminated union keyed on `action`.
  * TypeBox-first: the TS type is `Static<>`-derived, and the same schema is the
  * tool's `outputSchema`. Well-structured variants are precise; the genuinely

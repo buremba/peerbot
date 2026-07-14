@@ -278,6 +278,35 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 		expect(body.current).toMatchObject({ id: WATCHER_ID });
 	});
 
+	test("returns a normalized proposedAfter (displayed == applied)", async () => {
+		// The endpoint computes proposedAfter with the SAME normalizer handleUpdate
+		// uses, so the review shows STORED values: schedule "" → null, and
+		// version-owned/routing keys (name/watcher_id/action) are excluded.
+		const app = await importAgentRoutes();
+		const runId = await insertPendingProposal({
+			tool: "manage_watchers",
+			proposal: watcherProposal({
+				action: "update",
+				watcher_id: WATCHER_ID,
+				schedule: "",
+				timezone: "UTC",
+				name: "ignored-version-owned",
+			}),
+			current: { id: WATCHER_ID, agent_id: AGENT },
+		});
+		const res = await app.request(
+			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+		);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			proposedAfter: Record<string, unknown> | null;
+		};
+		expect(body.proposedAfter).toEqual({ schedule: null, timezone: "UTC" });
+		// version-owned/routing keys never appear in the applied patch
+		expect(body.proposedAfter && "name" in body.proposedAfter).toBe(false);
+		expect(body.proposedAfter && "watcher_id" in body.proposedAfter).toBe(false);
+	});
+
 	test("resolves the owning agent from the proposal args when it reassigns owner", async () => {
 		// An update may reassign the owner via args.agent_id; the endpoint prefers
 		// the PROPOSED owner over the current row so the review lands on the right

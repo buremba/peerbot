@@ -25,6 +25,10 @@ import { assertEntityIdsInOrg, getNextNumericId, requireExists } from '../helper
 import type { ToolContext } from '../../registry';
 import type { ManageWatchersArgs } from '../manage_watchers';
 import {
+  normalizeWatcherUpdatePatch,
+  type WatcherUpdatePatch,
+} from '@lobu/core/contracts/tools/manage-watchers';
+import {
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
   parseJsonInput,
@@ -408,13 +412,19 @@ export async function handleUpdate(
     };
   }
 
-  const scheduleValue = args.schedule || null;
+  // Single source of truth for the stored write-normalization — the SAME
+  // function feeds the config-approval review's `proposedAfter`, so what the
+  // reviewer saw is byte-for-byte what this UPDATE writes (displayed == applied,
+  // drift-impossible). `field in patch` reproduces the prior `args.field !==
+  // undefined` guard: normalize only emits keys present in args.
+  const patch = normalizeWatcherUpdatePatch(args);
+  const has = (k: keyof WatcherUpdatePatch) => k in patch;
   // Recompute next_run_at when the cadence OR its zone changes; the effective
   // pair mixes the incoming args with the stored row for whichever side was
   // omitted, so a timezone-only update re-anchors the pending firing.
   const touchesCadence = args.schedule !== undefined || args.timezone !== undefined;
-  let effectiveSchedule = args.schedule !== undefined ? scheduleValue : undefined;
-  let effectiveTimezone = args.timezone !== undefined ? (args.timezone ?? null) : undefined;
+  let effectiveSchedule = has('schedule') ? (patch.schedule ?? null) : undefined;
+  let effectiveTimezone = has('timezone') ? (patch.timezone ?? null) : undefined;
   if (touchesCadence && (effectiveSchedule === undefined || effectiveTimezone === undefined)) {
     const current = (await sql`
       SELECT schedule, timezone FROM watchers WHERE id = ${args.watcher_id} LIMIT 1
@@ -430,19 +440,19 @@ export async function handleUpdate(
   const updatedRows = await sql`
     UPDATE watchers SET
       updated_at = NOW(),
-      model_config = CASE WHEN ${args.model_config !== undefined} THEN ${sql.json(args.model_config ?? {})} ELSE model_config END,
-      execution_config = CASE WHEN ${args.execution_config !== undefined} THEN ${toJsonParam(sql, args.execution_config)} ELSE execution_config END,
-      schedule = CASE WHEN ${args.schedule !== undefined} THEN ${scheduleValue} ELSE schedule END,
-      timezone = CASE WHEN ${args.timezone !== undefined} THEN ${args.timezone ?? null} ELSE timezone END,
+      model_config = CASE WHEN ${has('model_config')} THEN ${toJsonParam(sql, patch.model_config)} ELSE model_config END,
+      execution_config = CASE WHEN ${has('execution_config')} THEN ${toJsonParam(sql, patch.execution_config)} ELSE execution_config END,
+      schedule = CASE WHEN ${has('schedule')} THEN ${patch.schedule ?? null} ELSE schedule END,
+      timezone = CASE WHEN ${has('timezone')} THEN ${patch.timezone ?? null} ELSE timezone END,
       next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
-      agent_id = CASE WHEN ${args.agent_id !== undefined} THEN ${args.agent_id ?? null} ELSE agent_id END,
-      scheduler_client_id = CASE WHEN ${args.scheduler_client_id !== undefined} THEN ${args.scheduler_client_id ?? null} ELSE scheduler_client_id END,
-      tags = CASE WHEN ${args.tags !== undefined} THEN ${toTextArrayParam(args.tags || [])}::text[] ELSE tags END,
-      device_worker_id = CASE WHEN ${args.device_worker_id !== undefined} THEN ${args.device_worker_id ?? null}::uuid ELSE device_worker_id END,
-      agent_kind = CASE WHEN ${args.agent_kind !== undefined} THEN ${args.agent_kind ?? null} ELSE agent_kind END,
-      notification_channel = CASE WHEN ${args.notification_channel !== undefined} THEN ${args.notification_channel ?? 'canvas'} ELSE notification_channel END,
-      notification_priority = CASE WHEN ${args.notification_priority !== undefined} THEN ${args.notification_priority ?? 'normal'} ELSE notification_priority END,
-      min_cooldown_seconds = CASE WHEN ${args.min_cooldown_seconds !== undefined} THEN ${args.min_cooldown_seconds ?? 0} ELSE min_cooldown_seconds END
+      agent_id = CASE WHEN ${has('agent_id')} THEN ${patch.agent_id ?? null} ELSE agent_id END,
+      scheduler_client_id = CASE WHEN ${has('scheduler_client_id')} THEN ${patch.scheduler_client_id ?? null} ELSE scheduler_client_id END,
+      tags = CASE WHEN ${has('tags')} THEN ${toTextArrayParam(patch.tags ?? [])}::text[] ELSE tags END,
+      device_worker_id = CASE WHEN ${has('device_worker_id')} THEN ${patch.device_worker_id ?? null}::uuid ELSE device_worker_id END,
+      agent_kind = CASE WHEN ${has('agent_kind')} THEN ${patch.agent_kind ?? null} ELSE agent_kind END,
+      notification_channel = CASE WHEN ${has('notification_channel')} THEN ${patch.notification_channel ?? 'canvas'} ELSE notification_channel END,
+      notification_priority = CASE WHEN ${has('notification_priority')} THEN ${patch.notification_priority ?? 'normal'} ELSE notification_priority END,
+      min_cooldown_seconds = CASE WHEN ${has('min_cooldown_seconds')} THEN ${patch.min_cooldown_seconds ?? 0} ELSE min_cooldown_seconds END
     WHERE id = ${args.watcher_id}
     RETURNING *
   `;

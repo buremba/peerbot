@@ -5,6 +5,10 @@
  */
 
 import { type AuthProfile, isSdkCompat } from "@lobu/core";
+import {
+	type ManageWatchersArgs,
+	normalizeWatcherUpdatePatch,
+} from "@lobu/core/contracts/tools/manage-watchers";
 import { Hono } from "hono";
 import { ensureBuilderAgent } from "../auth/builder-provisioning";
 import { mcpAuth } from "../auth/middleware";
@@ -1487,12 +1491,19 @@ routes.get("/:agentId/watchers/:watcherId/pending/:runId", async (c) => {
 		return c.json({ error: "No pending proposal for this run" }, 404);
 	}
 
+	// `proposedAfter` = the STORED values this update will write, computed by the
+	// SAME normalizer the apply handler (handleUpdate) uses. The review renders
+	// current→proposedAfter directly, so "displayed == applied" needs no coercion
+	// knowledge on the client and can't drift from the handler.
+	const proposedAfter = normalizeWatcherUpdatePatch(args as ManageWatchersArgs);
+
 	return c.json({
 		runId,
 		resourceKind: "watcher" as const,
 		action: row.action,
 		proposal: rawProposal,
 		current,
+		proposedAfter,
 	});
 });
 

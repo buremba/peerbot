@@ -58,6 +58,12 @@
       "import": "./dist/contracts/tools/manage-classifiers.js",
       "require": "./dist/contracts/tools/manage-classifiers.js"
     },
+    "./contracts/agent-settings": {
+      "types": "./dist/contracts/agent-settings.d.ts",
+      "bun": "./src/contracts/agent-settings.ts",
+      "import": "./dist/contracts/agent-settings.js",
+      "require": "./dist/contracts/agent-settings.js"
+    },
     "./contracts/tools/manage-agents": {
       "types": "./dist/contracts/tools/manage-agents.d.ts",
       "bun": "./src/contracts/tools/manage-agents.ts",

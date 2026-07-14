@@ -4,6 +4,7 @@
  * Used by manage_connections, manage_feeds, and manage_auth_profiles.
  */
 
+import { getScopedConnectorDefinition } from '../../../catalog/connector-definitions';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import {
@@ -20,6 +21,7 @@ import {
   updateAuthProfile,
 } from '../../../utils/auth-profiles';
 import { DEFAULT_SCHEDULE } from '../../../utils/cron';
+import { createConnectToken } from '../../../utils/connect-tokens';
 import { getConfiguredPublicGatewayUrl } from '../../../utils/public-origin';
 import {
   readGrantedScopesFromAuthData,
@@ -456,6 +458,84 @@ export function getConnectBaseUrl(ctx: ToolContext): string {
     contextBase ??
     (ctx.requestUrl ? new URL(ctx.requestUrl).origin : '')
   ).replace(/\/+$/, '');
+}
+
+export async function issueOAuthReconnectLink(params: {
+  authProfile: AuthProfileRow;
+  ctx: ToolContext;
+  requestedScopes?: string[];
+}): Promise<
+  | { error: string }
+  | {
+      authProfile: AuthProfileRow;
+      connectUrl: string;
+      expiresAt: string;
+    }
+> {
+  const { authProfile, ctx } = params;
+  if (
+    authProfile.profile_kind !== 'oauth_account' ||
+    !authProfile.provider ||
+    !authProfile.connector_key
+  ) {
+    return {
+      error: `Auth profile '${authProfile.slug}' is not a reconnectable OAuth account profile`,
+    };
+  }
+
+  const connector = await getScopedConnectorDefinition({
+    organizationId: ctx.organizationId,
+    connectorKey: authProfile.connector_key,
+  });
+  if (!connector) {
+    return {
+      error: `Connector '${authProfile.connector_key}' not found or not active`,
+    };
+  }
+
+  const provider = authProfile.provider.toLowerCase();
+  const oauthMethod = getOAuthMethods(connector.auth_schema).find(
+    (method) => method.provider.toLowerCase() === provider
+  );
+  if (!oauthMethod) {
+    return {
+      error: `Connector '${authProfile.connector_key}' no longer supports OAuth provider '${authProfile.provider}'`,
+    };
+  }
+
+  const requestedScopes = resolveRequestedOAuthScopes(
+    oauthMethod,
+    params.requestedScopes ??
+      (authProfile.auth_data.requested_scopes as string[] | undefined) ??
+      undefined
+  );
+  const updatedProfile =
+    (await updateAuthProfile({
+      organizationId: ctx.organizationId,
+      slug: authProfile.slug,
+      authData: {
+        ...authProfile.auth_data,
+        requested_scopes: requestedScopes,
+      },
+    })) ?? authProfile;
+
+  const connectToken = await createConnectToken({
+    organizationId: ctx.organizationId,
+    authProfileId: updatedProfile.id,
+    connectorKey: authProfile.connector_key,
+    authType: 'oauth',
+    authConfig: {
+      ...buildOAuthConnectConfig(oauthMethod, requestedScopes),
+      requestedScopes,
+    },
+    createdBy: ctx.userId,
+  });
+
+  return {
+    authProfile: updatedProfile,
+    connectUrl: `${getConnectBaseUrl(ctx)}/connect/${connectToken.token}/oauth/start`,
+    expiresAt: new Date(connectToken.expires_at).toISOString(),
+  };
 }
 
 export async function buildViewUrl(

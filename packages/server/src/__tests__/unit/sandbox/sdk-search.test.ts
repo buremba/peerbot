@@ -214,4 +214,23 @@ describe("sdkSearch", () => {
 			expect(result.results[0], path).toMatch(/\(\{/);
 		}
 	});
+
+	it.each([
+		[
+			"connections.reauthenticate",
+			"connections.reauthenticate(connection_id: number)",
+			"client.connections.reauthenticate(42)",
+		],
+		[
+			"authProfiles.get",
+			"authProfiles.get(auth_profile_slug: string)",
+			"client.authProfiles.get('google-calendar-account')",
+		],
+		["authProfiles.update", "reconnect?: boolean", "reconnect: true"],
+	])("documents the exact %s call shape", async (path, signature, example) => {
+		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain(signature);
+		expect(result.results[0]).toContain(example);
+	});
 });

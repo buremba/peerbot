@@ -190,6 +190,7 @@ export const ManageAuthProfilesResultSchema = Type.Union([
     action: Type.Literal("update_auth_profile"),
     auth_profile: Type.Record(Type.String(), Type.Unknown()),
     connect_url: Type.Optional(Type.String()),
+    expires_at: Type.Optional(Type.String()),
   }),
   Type.Object({
     action: Type.Literal("delete_auth_profile"),

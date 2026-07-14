@@ -14,6 +14,7 @@ import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../../../utils/run-sta
 import type { ToolContext } from '../../../registry';
 import type { ManageConnectionsResult, ConnectionsArgs } from '../schemas';
 import { callerIsAdmin as resolveCallerIsAdmin } from '../../helpers/db-helpers';
+import { issueOAuthReconnectLink } from '../../helpers/connection-helpers';
 
 // ============================================
 // handleReauthenticate
@@ -61,17 +62,42 @@ export async function handleReauthenticate(
     auth_profile_status: string | null;
   };
 
-  // `reauthenticate` flips the connection + its interactive profile to
-  // `pending_auth` and kicks off an auth run — that has to be the connection
-  // owner or an admin/owner. Without this gate, any org member could disrupt
-  // (or hijack the pairing of) another member's interactive connection.
+  // Starting either auth family must be limited to the connection owner or an
+  // admin/owner. Otherwise any org member could disrupt or hijack another
+  // member's personal credential flow.
   const callerIsAdmin = await resolveCallerIsAdmin(sql, { organizationId, userId: ctx.userId });
   if (!callerIsAdmin && row.connection_created_by !== ctx.userId) {
     return { error: 'You can only re-authenticate connections you created.' };
   }
 
-  if (!row.auth_profile_id || row.profile_kind !== 'interactive') {
-    return { error: 'Connection does not use an interactive auth profile' };
+  if (!row.auth_profile_id) {
+    return { error: 'Connection does not have an auth profile' };
+  }
+
+  if (row.profile_kind === 'oauth_account') {
+    const authProfile = await getAuthProfileById(organizationId, row.auth_profile_id);
+    if (!authProfile) return { error: 'Connection auth profile not found' };
+    // Defense in depth for legacy/admin-bound rows where connection and profile
+    // creators may differ: owning the connection must not grant profile access.
+    if (!callerIsAdmin && authProfile.created_by !== ctx.userId) {
+      return { error: 'You can only re-authenticate OAuth profiles you created.' };
+    }
+
+    const reconnect = await issueOAuthReconnectLink({ authProfile, ctx });
+    if ('error' in reconnect) return reconnect;
+    return {
+      action: 'reauthenticate',
+      connection_id: row.id,
+      auth_profile_slug: reconnect.authProfile.slug,
+      connect_url: reconnect.connectUrl,
+      expires_at: reconnect.expiresAt,
+    };
+  }
+
+  if (row.profile_kind !== 'interactive') {
+    return {
+      error: `Connection auth profile kind '${row.profile_kind ?? 'unknown'}' cannot be reauthenticated`,
+    };
   }
 
   const activeRuns = await sql`

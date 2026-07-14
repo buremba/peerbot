@@ -26,6 +26,12 @@ mock.module("../../../tools/admin/manage_schedules", () => ({
 mock.module("../../../tools/admin/manage_entity_schema", () => ({
 	manageEntitySchema: captureAction,
 }));
+mock.module("../../../tools/admin/manage_connections", () => ({
+	manageConnections: captureAction,
+}));
+mock.module("../../../tools/admin/manage_auth_profiles", () => ({
+	manageAuthProfiles: captureAction,
+}));
 
 mock.module("../../../tools/get_watchers", () => ({
 	getWatcher: async (input: Record<string, unknown>) => {
@@ -50,10 +56,21 @@ describe("ClientSDK object signature contract", () => {
 		schedules: typeof import("../../../sandbox/namespaces/schedules").buildSchedulesNamespace;
 		watchers: typeof import("../../../sandbox/namespaces/watchers").buildWatchersNamespace;
 		entitySchema: typeof import("../../../sandbox/namespaces/entity-schema").buildEntitySchemaNamespace;
+		connections: typeof import("../../../sandbox/namespaces/connections").buildConnectionsNamespace;
+		authProfiles: typeof import("../../../sandbox/namespaces/auth-profiles").buildAuthProfilesNamespace;
 	};
 
 	beforeAll(async () => {
-		const [entities, feeds, classifiers, schedules, watchers, entitySchema] =
+		const [
+			entities,
+			feeds,
+			classifiers,
+			schedules,
+			watchers,
+			entitySchema,
+			connections,
+			authProfiles,
+		] =
 			await Promise.all([
 				import("../../../sandbox/namespaces/entities"),
 				import("../../../sandbox/namespaces/feeds"),
@@ -61,6 +78,8 @@ describe("ClientSDK object signature contract", () => {
 				import("../../../sandbox/namespaces/schedules"),
 				import("../../../sandbox/namespaces/watchers"),
 				import("../../../sandbox/namespaces/entity-schema"),
+				import("../../../sandbox/namespaces/connections"),
+				import("../../../sandbox/namespaces/auth-profiles"),
 			]);
 		builders = {
 			entities: entities.buildEntitiesNamespace,
@@ -69,6 +88,8 @@ describe("ClientSDK object signature contract", () => {
 			schedules: schedules.buildSchedulesNamespace,
 			watchers: watchers.buildWatchersNamespace,
 			entitySchema: entitySchema.buildEntitySchemaNamespace,
+			connections: connections.buildConnectionsNamespace,
+			authProfiles: authProfiles.buildAuthProfilesNamespace,
 		};
 	});
 
@@ -124,5 +145,21 @@ describe("ClientSDK object signature contract", () => {
 				input: { schema_type: "relationship_type", slug: "works-at" },
 			},
 		]);
+	});
+
+	it("explains positional connection and auth-profile arguments", async () => {
+		const connections = builders.connections(ctx, env);
+		const authProfiles = builders.authProfiles(ctx, env);
+
+		await expect(
+			connections.reauthenticate({ connection_id: 418 } as never),
+		).rejects.toThrow(
+			"connections.reauthenticate expects a positional number. Call client.connections.reauthenticate(418); do not pass an object.",
+		);
+		await expect(
+			authProfiles.get({ auth_profile_slug: "google-calendar-account" } as never),
+		).rejects.toThrow(
+			"authProfiles.get expects a positional string. Call client.authProfiles.get('google-calendar-account'); do not pass an object.",
+		);
 	});
 });

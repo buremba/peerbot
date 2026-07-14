@@ -323,7 +323,7 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 		});
 	});
 
-	it("offers and invokes reauthenticate only for an interactive auth profile", async () => {
+	it("offers and invokes reauthenticate for an interactive auth profile", async () => {
 		const { org, user } = await setupOwner("Ops Interactive Org");
 		await seedConnector(org.id, KEY_INACTIVE, "Interactive Connector");
 		const profile = await createAuthProfile({
@@ -368,6 +368,71 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 			action: "reauthenticate",
 			connection_id: conn.id,
 			auth_run_id: expect.any(Number),
+		});
+	});
+
+	it("offers and invokes reauthenticate for an OAuth account profile", async () => {
+		const { org, user } = await setupOwner("Ops OAuth Org");
+		await seedConnector(org.id, KEY_INACTIVE, "OAuth Connector");
+		await getTestDb()`
+			UPDATE connector_definitions
+			SET auth_schema = ${getTestDb().json({
+				methods: [
+					{
+						type: "oauth",
+						provider: "demo",
+						requiredScopes: ["read"],
+						clientIdKey: "DEMO_CLIENT_ID",
+						clientSecretKey: "DEMO_CLIENT_SECRET",
+					},
+				],
+			})}
+			WHERE organization_id = ${org.id} AND key = ${KEY_INACTIVE}
+		`;
+		const profile = await createAuthProfile({
+			organizationId: org.id,
+			connectorKey: KEY_INACTIVE,
+			displayName: "OAuth repair",
+			profileKind: "oauth_account",
+			provider: "demo",
+			status: "pending_auth",
+			createdBy: user.id,
+		});
+		const conn = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_INACTIVE,
+			status: "error",
+			created_by: user.id,
+			visibility: "private",
+			createDefaultFeed: false,
+		});
+		await getTestDb()`
+			UPDATE connections SET auth_profile_id = ${profile.id} WHERE id = ${conn.id}
+		`;
+
+		const { operations } = await listAll(org.id, user.id, {
+			connection_id: conn.id,
+		});
+		const create = getOperation(operations, "create_issue");
+		expect(create.next_action).toMatchObject({
+			action: "reauthenticate",
+			sdk_method: "connections.reauthenticate",
+			arguments: [conn.id],
+		});
+
+		const repaired = await manageConnections(
+			{ action: "reauthenticate", connection_id: conn.id },
+			TEST_ENV(),
+			ctxFor(org.id, user.id),
+		);
+		expect(repaired).toMatchObject({
+			action: "reauthenticate",
+			connection_id: conn.id,
+			auth_profile_slug: profile.slug,
+			connect_url: expect.stringMatching(
+				/^https:\/\/gateway\.test\/lobu\/connect\/[A-Za-z0-9_-]+\/oauth\/start$/,
+			),
+			expires_at: expect.any(String),
 		});
 	});
 

@@ -6,6 +6,7 @@
  * or OpenAPI-derived HTTP operations.
  */
 
+import { executeCompiledConnector } from "@lobu/connector-worker/executor/runtime";
 import { getErrorMessage } from "@lobu/core";
 import {
 	ApproveAction,
@@ -250,9 +251,6 @@ async function executeLocalActionInline(
 		});
 
 	try {
-		const { executeCompiledConnector } = await import(
-			"@lobu/connector-worker/executor/runtime"
-		);
 		const envStrings = Object.fromEntries(
 			Object.entries(env).filter(([, value]) => typeof value === "string"),
 		);

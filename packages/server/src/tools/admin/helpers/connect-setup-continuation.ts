@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { isSecretKey } from "@lobu/core";
 import type {
 	ConnectCompletionCheckType,
@@ -6,6 +7,7 @@ import type {
 	ConnectSetupNextActionType,
 	ManageConnectionsResult,
 } from "@lobu/core/contracts/tools/manage-connections";
+import type { ConnectorSetupError } from "./connector-setup-errors";
 
 export type ConnectionSetupFamily = ConnectSetupFamilyType;
 export type ConnectionSetupNextAction = ConnectSetupNextActionType;
@@ -149,4 +151,62 @@ export function appendSetupAttemptId(
 	const url = new URL(installUrl);
 	url.searchParams.set("setup_attempt_id", setupAttemptId);
 	return url.toString();
+}
+
+export function appInstallationSetupContinuation(params: {
+	action: "connect" | "create";
+	connectorKey: string;
+	setup: ConnectorSetupError;
+	setupUrl?: string;
+}): ManageConnectionsResult {
+	const { action, connectorKey, setup, setupUrl } = params;
+	const setupAttemptId =
+		setup.provider === "github" && setup.install_url ? randomUUID() : undefined;
+	return buildConnectionSetupContinuation({
+		action,
+		connectorKey,
+		setupFamily: "app_installation",
+		nextAction:
+			setup.next_action === "install_app" ? "install_app" : "open_setup",
+		instructions: setup.error,
+		errorCode: setup.error_code,
+		installType: setup.install_type,
+		installShape: setup.install_shape,
+		setupInstructions: setup.setup_instructions,
+		setupUrl,
+		installUrl:
+			setup.install_url && setupAttemptId
+				? appendSetupAttemptId(setup.install_url, setupAttemptId)
+				: setup.install_url,
+		provider: setup.provider,
+		completionCheck: setupAttemptId
+			? installedConnectorPoll(connectorKey, setupAttemptId)
+			: undefined,
+		setupAttemptId,
+	});
+}
+
+export function oauthAppSetupContinuation(params: {
+	action: "connect" | "create";
+	connectorKey: string;
+	setup: ConnectorSetupError;
+	resumeCall: SdkCallDescriptor;
+	fallbackSetupUrl?: string;
+}): ManageConnectionsResult {
+	const { action, connectorKey, setup, resumeCall, fallbackSetupUrl } = params;
+	return buildConnectionSetupContinuation({
+		action,
+		connectorKey,
+		setupFamily: "oauth",
+		nextAction: "configure_oauth_app",
+		instructions: setup.setup_instructions
+			? `${setup.error} ${setup.setup_instructions}`
+			: setup.error,
+		setupUrl: setup.setup_url ?? fallbackSetupUrl,
+		provider: setup.provider,
+		errorCode: setup.error_code,
+		installType: setup.install_type,
+		setupInstructions: setup.setup_instructions,
+		resumeCall,
+	});
 }

@@ -104,10 +104,6 @@ export const ConnectCompletionCheck = Type.Object({
       }),
       Type.Object({
         path: Type.String(),
-        contains: Type.Record(Type.String(), Type.Unknown()),
-      }),
-      Type.Object({
-        path: Type.String(),
         includes: Type.Unknown(),
       }),
     ],

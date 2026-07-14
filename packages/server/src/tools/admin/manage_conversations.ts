@@ -298,18 +298,20 @@ async function handleSend(
   // FIRST, then sleep only the time left to the deadline — so a reply landing
   // during the final window is still caught by the post-loop read, and a short
   // timeout (e.g. 1000ms) doesn't overshoot into a full extra POLL_INTERVAL.
-  // readConversationReply reads the RAW worker-written finalText from the runs
-  // row — the UnifiedThreadResponseConsumer's output guardrail only rewrote an
-  // in-memory copy for the SSE/history path, never that persisted row. So this
+  // readConversationReply reads the RAW worker-written finalText/error from the
+  // runs row — the UnifiedThreadResponseConsumer's output guardrail only rewrote
+  // an in-memory copy for the SSE/history path, never that persisted row. So this
   // SDK read must run the SAME output-stage scan itself, or a secret/PII the
-  // agent's output guardrail blocks would leak through conversations.send. Fails
-  // open (returns the text) on infra error, matching the renderer path.
+  // agent's output guardrail blocks would leak through conversations.send. The
+  // consumer scans BOTH finalText AND error (a provider/runtime error can carry
+  // secrets), so scan both terminal texts here too. Fails open (returns the
+  // text) on infra error, matching the renderer path.
   const guardrailRegistry = coreServices?.getGuardrailRegistry?.() ?? undefined;
-  const scanReply = async (replyText: string): Promise<string> => {
+  const scanTerminalText = async (text: string): Promise<string> => {
     const trip = await runOutputGuardrailScan(
       guardrailRegistry,
       agentSettingsStore,
-      replyText,
+      text,
       {
         agentId: args.agent_id,
         organizationId: ctx.organizationId,
@@ -320,7 +322,7 @@ async function handleSend(
     );
     return trip
       ? `Message blocked by guardrail: ${trip.reason ?? trip.guardrail}`
-      : replyText;
+      : text;
   };
 
   const terminal = async (
@@ -332,7 +334,7 @@ async function handleSend(
         conversation_id: conversationId,
         message_id: messageId,
         status: "complete" as const,
-        reply: await scanReply(reply.text),
+        reply: await scanTerminalText(reply.text),
       };
     }
     if (reply?.status === "error") {
@@ -341,7 +343,7 @@ async function handleSend(
         conversation_id: conversationId,
         message_id: messageId,
         status: "error" as const,
-        error: reply.error,
+        error: await scanTerminalText(reply.error),
       };
     }
     return null;

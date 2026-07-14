@@ -33,7 +33,7 @@ export interface ConversationsSendInput {
   model?: string;
   /** Await the reply (default true); false returns immediately with the id. */
   wait?: boolean;
-  /** [wait=true] Max wait (ms). Default 60000, capped at 170000. */
+  /** [wait=true] Max wait (ms). Default 45000, capped at 170000. */
   timeout_ms?: number;
 }
 

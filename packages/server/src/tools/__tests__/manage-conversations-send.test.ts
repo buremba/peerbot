@@ -205,6 +205,25 @@ describe("manage_conversations send", () => {
 		expect(String(res.reply)).toMatch(/blocked by guardrail/i);
 	});
 
+	it("runs the output guardrail on a terminal ERROR too (a provider error can carry secrets)", async () => {
+		vi.resetModules();
+		mockDeps({
+			reply: { status: "error", error: "auth failed for key sk-live-999" },
+			guardrailTrip: { guardrail: "secret-scan", reason: "api key" },
+		});
+		const manageConversations = await loadHandler();
+
+		const res = (await manageConversations(
+			{ action: "send", agent_id: "researcher", text: "hi" },
+			env,
+			ctx,
+		)) as Record<string, unknown>;
+
+		expect(res.status).toBe("error");
+		expect(res.error).not.toContain("sk-live-999");
+		expect(String(res.error)).toMatch(/blocked by guardrail/i);
+	});
+
 	it("returns timeout when no reply lands before the deadline", async () => {
 		vi.resetModules();
 		mockDeps({ reply: null }); // never completes

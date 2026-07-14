@@ -135,13 +135,13 @@ export interface AgentRuntimeSelection {
 }
 
 /**
- * Resolve the agent's Environment, THROWING on a database error. The pin path
- * needs to tell "resolved to builtin" apart from "resolution failed" — freezing a
- * transient failure to builtin would poison the pin permanently — so it calls
- * this and skips pinning on throw. Token mints that want the fail-safe `{}` use
- * {@link resolveAgentRuntimeSelection}.
+ * Resolve the agent's Environment. THROWS on a database error — the pin path
+ * must tell "resolved to builtin" apart from "resolution failed" (freezing a
+ * transient failure to builtin would poison the pin permanently), and both
+ * callers of {@link resolvePinnedSelection} handle the throw (the enqueue site
+ * best-effort, the spawn site by retry). Callers pre-guard org/agent presence.
  */
-async function resolveAgentRuntimeSelectionOrThrow(
+async function resolveAgentRuntimeSelection(
   agentId: string,
   organizationId: string
 ): Promise<AgentRuntimeSelection> {
@@ -156,7 +156,9 @@ async function resolveAgentRuntimeSelectionOrThrow(
   `) as Array<{ environment_id: string | null; provider_kind: string | null }>;
   const row = rows[0];
   // A provider Environment → run there. Anything else (no environment, builtin,
-  // or a deleted env row) → local just-bash.
+  // or a deleted env row) → local just-bash. Throws on a DB error: the pin path
+  // must NOT freeze a failed lookup, and the enqueue caller wraps this
+  // best-effort while the spawn caller retries — neither wants a silent {}.
   if (row?.provider_kind && row.environment_id != null) {
     return {
       runtimeProviderId: row.provider_kind,
@@ -164,19 +166,6 @@ async function resolveAgentRuntimeSelectionOrThrow(
     };
   }
   return {};
-}
-
-async function resolveAgentRuntimeSelection(
-  agentId: string | undefined,
-  organizationId: string | undefined
-): Promise<AgentRuntimeSelection> {
-  if (!agentId || !organizationId) return {};
-  try {
-    return await resolveAgentRuntimeSelectionOrThrow(agentId, organizationId);
-  } catch {
-    // Fail safe: a resolution error must not block worker spawn or token mint.
-    return {};
-  }
 }
 
 /**
@@ -242,19 +231,14 @@ export async function resolvePinnedSelection(args: {
   //    `WHERE sandbox_mode IS NULL` guard is suppressed when a pin already
   //    exists, so its reread returns the ACTUAL frozen pin, not the live env.
   try {
-    const pinned = (await sql`
-      SELECT sandbox_mode, sandbox_provider_id, sandbox_environment_id
-      FROM public.conversations
-      WHERE organization_id = ${organizationId} AND agent_id = ${agentId}
-        AND platform = ${platform} AND conversation_id = ${conversationId}
-        AND sandbox_mode IS NOT NULL
-      LIMIT 1
-    `) as Array<{
-      sandbox_mode: string;
-      sandbox_provider_id: string | null;
-      sandbox_environment_id: string | null;
-    }>;
-    if (pinned[0]) return pinFromRow(pinned[0]);
+    const pinned = await readPin(
+      sql,
+      organizationId,
+      agentId,
+      platform,
+      conversationId
+    );
+    if (pinned) return pinned;
   } catch {
     // Fall through to the upsert path — it re-reads the real pin if one exists.
   }
@@ -264,7 +248,7 @@ export async function resolvePinnedSelection(args: {
   //    lookup to builtin would permanently misroute a provider-backed
   //    conversation), and must NOT pin a guessed realm. Let it propagate so the
   //    dispatch caller retries the turn once the DB recovers.
-  const live = await resolveAgentRuntimeSelectionOrThrow(agentId, organizationId);
+  const live = await resolveAgentRuntimeSelection(agentId, organizationId);
   const frozen = freezeSelection(live);
 
   // 3. Durably pin via an UPSERT — so the pin survives even when the best-effort
@@ -291,27 +275,18 @@ export async function resolvePinnedSelection(args: {
             updated_at = now()
         WHERE public.conversations.sandbox_mode IS NULL
       RETURNING sandbox_mode, sandbox_provider_id, sandbox_environment_id
-    `) as Array<{
-      sandbox_mode: string;
-      sandbox_provider_id: string | null;
-      sandbox_environment_id: string | null;
-    }>;
+    `) as PinRow[];
     if (rows[0]) return pinFromRow(rows[0]);
     // 0 rows: a racer pinned first (the DO UPDATE WHERE guard suppressed our
     // write). Re-read the winner's pin.
-    const reread = (await sql`
-      SELECT sandbox_mode, sandbox_provider_id, sandbox_environment_id
-      FROM public.conversations
-      WHERE organization_id = ${organizationId} AND agent_id = ${agentId}
-        AND platform = ${platform} AND conversation_id = ${conversationId}
-        AND sandbox_mode IS NOT NULL
-      LIMIT 1
-    `) as Array<{
-      sandbox_mode: string;
-      sandbox_provider_id: string | null;
-      sandbox_environment_id: string | null;
-    }>;
-    if (reread[0]) return pinFromRow(reread[0]);
+    const reread = await readPin(
+      sql,
+      organizationId,
+      agentId,
+      platform,
+      conversationId
+    );
+    if (reread) return reread;
   } catch (err) {
     // Both the pin read AND the upsert/reread errored (a DB outage). We can't
     // read the frozen realm and can't durably pin, so ANY value we return risks
@@ -329,12 +304,38 @@ export async function resolvePinnedSelection(args: {
   );
 }
 
-/** Reconstruct an AgentRuntimeSelection from a pinned conversations row. */
-function pinFromRow(row: {
+/** The pin columns both the read and the upsert-RETURNING project. */
+type PinRow = {
   sandbox_mode: string;
   sandbox_provider_id: string | null;
   sandbox_environment_id: string | null;
-}): AgentRuntimeSelection {
+};
+
+/**
+ * Read an existing (non-null) pin for one conversation, or null if unpinned.
+ * Shared by the fast-path read and the post-CAS reread so the SELECT + row shape
+ * live in one place.
+ */
+async function readPin(
+  sql: ReturnType<typeof getDb>,
+  organizationId: string,
+  agentId: string,
+  platform: string,
+  conversationId: string
+): Promise<AgentRuntimeSelection | null> {
+  const rows = (await sql`
+    SELECT sandbox_mode, sandbox_provider_id, sandbox_environment_id
+    FROM public.conversations
+    WHERE organization_id = ${organizationId} AND agent_id = ${agentId}
+      AND platform = ${platform} AND conversation_id = ${conversationId}
+      AND sandbox_mode IS NOT NULL
+    LIMIT 1
+  `) as PinRow[];
+  return rows[0] ? pinFromRow(rows[0]) : null;
+}
+
+/** Reconstruct an AgentRuntimeSelection from a pinned conversations row. */
+function pinFromRow(row: PinRow): AgentRuntimeSelection {
   if (row.sandbox_mode === "provider" && row.sandbox_provider_id) {
     return {
       runtimeProviderId: row.sandbox_provider_id,

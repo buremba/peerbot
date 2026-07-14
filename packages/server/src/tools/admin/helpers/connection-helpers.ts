@@ -20,6 +20,7 @@ import {
   updateAuthProfile,
 } from '../../../utils/auth-profiles';
 import { DEFAULT_SCHEDULE } from '../../../utils/cron';
+import { getConfiguredPublicGatewayUrl } from '../../../utils/public-origin';
 import {
   readGrantedScopesFromAuthData,
   readRequestedScopesFromAuthData,
@@ -440,10 +441,21 @@ export function enrichWithAuthProfiles(
 }
 
 export function getConnectBaseUrl(ctx: ToolContext): string {
-  return (ctx.baseUrl ?? (ctx.requestUrl ? new URL(ctx.requestUrl).origin : '')).replace(
-    /\/+$/,
-    ''
-  );
+  const contextBase = ctx.baseUrl?.trim().replace(/\/+$/, '');
+  if (contextBase) {
+    try {
+      const path = new URL(contextBase).pathname.replace(/\/+$/, '');
+      if (path && path !== '/') return contextBase;
+    } catch {
+      return contextBase;
+    }
+  }
+
+  return (
+    getConfiguredPublicGatewayUrl() ??
+    contextBase ??
+    (ctx.requestUrl ? new URL(ctx.requestUrl).origin : '')
+  ).replace(/\/+$/, '');
 }
 
 export async function buildViewUrl(

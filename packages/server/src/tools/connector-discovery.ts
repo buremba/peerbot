@@ -80,15 +80,12 @@ export async function searchLiveConnectors(
   if (!q) return [];
   const lines: string[] = [];
   try {
-    const [inst, cat, conn] = await Promise.all([
+    const [inst, cat] = await Promise.all([
       manageCatalog({ action: 'list_installed', kinds: ['connectors'] } as never, env, ctx) as Promise<{
         installed?: { connectors?: { items?: unknown } };
       }>,
       manageCatalog({ action: 'list_catalog', kinds: ['connectors'] } as never, env, ctx) as Promise<{
         catalogs?: { connectors?: { entries?: unknown } };
-      }>,
-      manageConnections({ action: 'list', limit: 200 } as never, env, ctx) as Promise<{
-        connections?: unknown;
       }>,
     ]);
     const installed = asArray<{
@@ -102,27 +99,33 @@ export async function searchLiveConnectors(
       description?: string;
       detail?: { installable?: boolean; installability_message?: string; installability_reason?: string };
     }>(cat.catalogs?.connectors?.entries);
-    const configured = asArray<{ connector_key: string; status: string }>(conn.connections);
-    // Aggregate connections per connector and pick the BEST status — an active
-    // connection means "ready to use", but a revoked/error connection must not
-    // be reported as usable (it needs reauthentication, not a new feed). Prefer
-    // an active connection when the connector has several.
-    const USABLE = new Set(['active']);
-    const statusesByKey = new Map<string, string[]>();
-    for (const c of configured) {
-      const list = statusesByKey.get(c.connector_key) ?? [];
-      list.push(c.status);
-      statusesByKey.set(c.connector_key, list);
-    }
-    const bestStatus = (key: string): string | undefined => {
-      const list = statusesByKey.get(key);
-      if (!list || list.length === 0) return undefined;
-      return list.find((s) => USABLE.has(s)) ?? list[0];
-    };
     const installedIds = new Set(installed.map((i) => i.id));
 
-    for (const i of installed) {
-      if (!matchesQueryTokens(q, i.id, i.name, i.detail?.description)) continue;
+    // Only the installed connectors that MATCH the query need a status — resolve
+    // their connections filtered by connector_key. Filtering (not a single
+    // unpaginated page) is size-independent: an active connection in a large
+    // workspace can't fall off page 1 and be misreported as absent/unhealthy.
+    const matchedInstalled = installed.filter((i) =>
+      matchesQueryTokens(q, i.id, i.name, i.detail?.description)
+    );
+    const USABLE = new Set(['active']);
+    const bestStatusByKey = new Map<string, string>();
+    await Promise.all(
+      matchedInstalled.map(async (i) => {
+        const res = (await manageConnections(
+          { action: 'list', connector_key: i.id, limit: 200 } as never,
+          env,
+          ctx
+        )) as { connections?: unknown };
+        const rows = asArray<{ status: string }>(res.connections);
+        if (rows.length === 0) return;
+        const best = rows.find((r) => USABLE.has(r.status))?.status ?? rows[0].status;
+        bestStatusByKey.set(i.id, best);
+      })
+    );
+    const bestStatus = (key: string): string | undefined => bestStatusByKey.get(key);
+
+    for (const i of matchedInstalled) {
       const feeds = feedKeysOf(i.detail);
       const feedKeyHint = feeds?.[0] ? `'${feeds[0]}'` : '<feed_key>';
       const feedKeysNote = feeds ? ` Feed keys: ${feeds.join(', ')}.` : '';

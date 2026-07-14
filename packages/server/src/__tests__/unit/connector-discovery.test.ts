@@ -48,19 +48,24 @@ const catalogResult = {
 	},
 };
 
-const noConnections = { connections: [] };
 
 function makeDeps(over?: {
 	installed?: unknown;
 	catalog?: unknown;
-	connections?: unknown;
+	// Connections keyed by connector_key — the tool queries connections FILTERED
+	// by connector_key, so the mock returns only the matching key's rows (models
+	// the real filter and proves an active connection is found regardless of how
+	// many other connections exist).
+	connectionsByKey?: Record<string, Array<{ status: string }>>;
 }): ConnectorDiscoveryDeps {
 	return {
 		manageCatalog: (async (args: { action: string }) =>
 			args.action === "list_catalog"
 				? (over?.catalog ?? catalogResult)
 				: (over?.installed ?? installedResult)) as never,
-		manageConnections: (async () => over?.connections ?? noConnections) as never,
+		manageConnections: (async (args: { connector_key?: string }) => ({
+			connections: over?.connectionsByKey?.[args.connector_key ?? ""] ?? [],
+		})) as never,
 	};
 }
 
@@ -89,9 +94,7 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 	});
 
 	it("reports an active connection as CONNECTED (add feed / read, don't re-connect)", async () => {
-		const deps = makeDeps({
-			connections: { connections: [{ connector_key: "website", status: "active" }] },
-		});
+		const deps = makeDeps({ connectionsByKey: { website: [{ status: "active" }] } });
 		const hits = await searchLiveConnectors("website", env, ctx, deps);
 		expect(hits[0]).toMatch(/CONNECTED/);
 		expect(hits[0]).toMatch(/feeds\.create/);
@@ -102,9 +105,7 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 	it("tells the agent to REPAIR a revoked/error connection, not create a feed on it", async () => {
 		// The review-caught bug: a revoked connection was labeled 'already
 		// CONFIGURED' and told to create feeds, which would silently never sync.
-		const deps = makeDeps({
-			connections: { connections: [{ connector_key: "website", status: "revoked" }] },
-		});
+		const deps = makeDeps({ connectionsByKey: { website: [{ status: "revoked" }] } });
 		const hits = await searchLiveConnectors("website", env, ctx, deps);
 		expect(hits[0]).toMatch(/needs attention/);
 		expect(hits[0]).toMatch(/status: revoked/);
@@ -114,16 +115,22 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 
 	it("prefers an ACTIVE connection when a connector has several (active + revoked)", async () => {
 		const deps = makeDeps({
-			connections: {
-				connections: [
-					{ connector_key: "website", status: "revoked" },
-					{ connector_key: "website", status: "active" },
-				],
-			},
+			connectionsByKey: { website: [{ status: "revoked" }, { status: "active" }] },
 		});
 		const hits = await searchLiveConnectors("website", env, ctx, deps);
 		expect(hits[0]).toMatch(/CONNECTED/);
 		expect(hits[0]).not.toMatch(/needs attention/);
+	});
+
+	it("finds a connector's active connection via connector_key filter, not a single unfiltered page", async () => {
+		// The review-caught bug: scanning one unfiltered page (limit 200) would
+		// miss an active connection in a large workspace. The tool queries
+		// connections FILTERED by connector_key, so it's found regardless of how
+		// many OTHER connectors' connections exist. The mock returns rows only for
+		// the queried key — proving the tool passes the filter.
+		const deps = makeDeps({ connectionsByKey: { website: [{ status: "active" }] } });
+		const hits = await searchLiveConnectors("website", env, ctx, deps);
+		expect(hits[0]).toMatch(/CONNECTED/);
 	});
 
 	it("surfaces a global-catalog connector as installable when not installed", async () => {

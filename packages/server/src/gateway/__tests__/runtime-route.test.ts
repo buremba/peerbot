@@ -67,6 +67,13 @@ mock.module("@vercel/sandbox", () => ({
   Sandbox: { getOrCreate: getOrCreateMock },
 }));
 
+// Env-bound credential resolution reads the vault. Mock it to a MISS (null) so
+// the "environment pinned but deleted" case is deterministic and DB-free: the
+// scoped key is gone, so an env-bound resolution must fail closed.
+mock.module("../../lobu/stores/provider-secrets.js", () => ({
+  readEnvironmentSecret: async () => null,
+}));
+
 // Importing the route pulls in the gateway runtime registry barrel, which
 // registers the Vercel provider. The @vercel/sandbox mock above is installed
 // first so the provider module binds to it.
@@ -96,6 +103,7 @@ function token(
   options: {
     agentId?: string;
     runtimeProviderId?: string;
+    environmentId?: string;
     allowedDomains?: string[];
   } = {}
 ): string {
@@ -106,6 +114,7 @@ function token(
     organizationId: "org-1",
     agentId: options.agentId,
     runtimeProviderId: options.runtimeProviderId,
+    environmentId: options.environmentId,
     allowedDomains: options.allowedDomains,
   });
 }
@@ -252,6 +261,40 @@ describe("createRuntimeRoutes", () => {
     expect(getOrCreateMock).toHaveBeenCalledTimes(1);
     // SDK self-resolves OIDC — no explicit token/teamId/projectId passed in.
     expect(getOrCreateMock.mock.calls[0]?.[0]).not.toHaveProperty("token");
+  });
+
+  test("424s for an ENVIRONMENT-BOUND vault miss even when VERCEL_OIDC_TOKEN is present (no host-realm self-auth)", async () => {
+    // The token names a specific environmentId (a pinned Environment), but the
+    // vault read misses (mocked null → the environment was deleted). OIDC is
+    // present, so the env-LESS path would self-auth into the host realm. An
+    // env-bound miss must fail closed instead — a conversation pinned to a
+    // deleted Environment must NOT execute in the host realm.
+    delete process.env.VERCEL_TOKEN;
+    delete process.env.VERCEL_TEAM_ID;
+    delete process.env.VERCEL_PROJECT_ID;
+    process.env.VERCEL_OIDC_TOKEN = "oidc.test.token";
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          environmentId: "env-deleted",
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "pwd", workspaceDir }),
+    });
+
+    expect(res.status).toBe(424);
+    expect(await res.json()).toEqual({
+      error: "Runtime provider credentials unavailable",
+    });
+    // Fail closed → no sandbox was created in the host realm.
+    expect(getOrCreateMock).not.toHaveBeenCalled();
   });
 
   test("424s when required credentials are only partially configured", async () => {

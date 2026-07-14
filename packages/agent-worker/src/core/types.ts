@@ -48,6 +48,14 @@ export interface WorkerConfig {
    * equality with body.runId (codex round 2 finding A on PR #865).
    */
   runJobToken: string;
+  /**
+   * Pinned bash-backend provider for this conversation, resolved per-turn by the
+   * gateway from the immutable sandbox pin. Selects the worker's bash backend so
+   * a warm deployment routes on the pin:
+   *  - a provider id (e.g. `"vercel"`) → that remote runtime;
+   *  - undefined → local just-bash.
+   */
+  runtimeProviderId?: string;
 }
 
 export interface WorkspaceSetupConfig {

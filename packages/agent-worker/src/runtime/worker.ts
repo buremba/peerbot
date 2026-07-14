@@ -561,6 +561,7 @@ export class LobuAgentWorker implements WorkerExecutor {
         typeof this.config.platformMetadata?.connectionId === "string"
           ? this.config.platformMetadata.connectionId
           : undefined,
+      runtimeProviderId: this.config.runtimeProviderId,
       workspaceDir: this.workspaceManager.getCurrentWorkingDirectory(),
       progressProcessor: this.progressProcessor,
       onSessionFilePathResolved: (filePath) => {

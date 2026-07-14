@@ -83,4 +83,20 @@ describe("resolveRuntimeCredentials", () => {
     const result = await resolveRuntimeCredentials(provider, "org-1", undefined);
     expect(result).toBeNull();
   });
+
+  test("env-bound with a vault MISS fails closed — never leaks system env", async () => {
+    // The pinned environment was deleted (its vault keys purged), so the scoped
+    // read returns null. System env is fully populated, but an environment-bound
+    // resolution must NOT splice it in — it fails closed so the route 424s,
+    // rather than running the pinned conversation under the host's ambient creds.
+    process.env.VERCEL_TOKEN = "env-token";
+    process.env.VERCEL_TEAM_ID = "env-team";
+    process.env.VERCEL_PROJECT_ID = "env-project";
+    readEnvironmentSecretMock.mockImplementation(async () => null);
+
+    const result = await resolveRuntimeCredentials(provider, "org-1", "env-deleted");
+    expect(result).toBeNull();
+    // The vault was consulted (env-bound path), not the system env.
+    expect(readEnvironmentSecretMock).toHaveBeenCalled();
+  });
 });

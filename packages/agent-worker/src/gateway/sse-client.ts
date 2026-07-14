@@ -96,6 +96,10 @@ const JobEventSchema = z.object({
       // same way.
       runId: z.number(),
       runJobToken: z.string(),
+      // Pinned bash-backend provider for THIS conversation (resolved per-turn by
+      // the gateway from the immutable sandbox pin). Selects the worker's bash
+      // backend so a warm deployment routes on the pin. Absent → local just-bash.
+      runtimeProviderId: z.string().optional(),
     })
     .passthrough(),
   processedIds: z.array(z.string()).optional(),
@@ -1026,6 +1030,9 @@ export class GatewayClient {
       // lifetime WORKER_TOKEN, so the gateway can enforce
       // tokenData.runId === body.runId — codex round 2 finding A.
       runJobToken: payload.runJobToken,
+      // Pinned bash-backend provider for this conversation; drives the worker's
+      // local backend selection (see WorkerConfig.runtimeProviderId).
+      runtimeProviderId: payload.runtimeProviderId,
     };
   }
 

@@ -412,12 +412,28 @@ export class MessageConsumer {
       // The pin is frozen on the first turn and read thereafter, so an agent
       // repoint never moves an existing conversation's sandbox. Undefined →
       // local just-bash.
-      const runtimeSelection = await resolvePinnedSelection({
-        organizationId: data.organizationId,
-        agentId: data.agentId,
-        platform: data.platform,
-        conversationId: effectiveConversationId,
-      });
+      //
+      // Best-effort at the enqueue site: resolvePinnedSelection throws on a total
+      // DB failure (to fail-closed the RUNTIME realm decision), but dispatch
+      // liveness must not hinge on a pin read — a blip here degrades this ONE turn
+      // to unpinned rather than dropping the message. The pin self-heals on the
+      // next turn (the CAS guard means an unpinned dispatch never overwrites an
+      // existing pin), and the runtime route re-resolves the realm from the token.
+      let runtimeSelection: Awaited<ReturnType<typeof resolvePinnedSelection>>;
+      try {
+        runtimeSelection = await resolvePinnedSelection({
+          organizationId: data.organizationId,
+          agentId: data.agentId,
+          platform: data.platform,
+          conversationId: effectiveConversationId,
+        });
+      } catch (err) {
+        logger.warn(
+          { traceId, agentId: data.agentId, error: getErrorMessage(err) },
+          "Pin resolution failed at enqueue; dispatching this turn unpinned"
+        );
+        runtimeSelection = {};
+      }
 
       // Stamp the pinned provider onto the payload body so the worker selects its
       // bash backend per-turn (a warm deployment is reused across conversations

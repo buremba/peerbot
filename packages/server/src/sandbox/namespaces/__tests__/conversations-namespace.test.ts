@@ -7,39 +7,49 @@
  * result with `status:"error"` / `status:"timeout"` (or an `error` field) into a
  * thrown ClientSdkActionError. So `send` must route through `manage()` (raw),
  * NOT `action()`. This test pins that: a mocked handler returning each status
- * comes back as a VALUE, and list/get still throw a real ToolUserError.
+ * comes back as a VALUE, and a genuine handler throw still propagates.
+ *
+ * Uses vi.doMock + vi.resetModules + dynamic import (NOT hoisted vi.mock): the
+ * integration suite shares a module registry across files, where a hoisted
+ * vi.mock does not reliably replace the module — the namespace would then call
+ * the REAL manageConversations and hit routeAction's access gate. doMock scoped
+ * per test + a fresh import registry keeps the mock hermetic. [[vitest module-
+ * mock isolation]]
  */
 
-import { describe, expect, it, vi } from "vitest";
-
-const handlerResult = { current: undefined as unknown, throws: false };
-
-vi.mock("../../../tools/admin/manage_conversations", () => ({
-	manageConversations: () => {
-		if (handlerResult.throws) {
-			return Promise.reject(new Error("boom"));
-		}
-		return Promise.resolve(handlerResult.current);
-	},
-}));
-
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
-import { buildConversationsNamespace } from "../conversations";
 
 const env = { ENVIRONMENT: "test" } as Env;
 const ctx = { organizationId: "o", userId: "u" } as ToolContext;
 
+/** Register the handler mock, then dynamic-import the namespace against it. */
+async function loadNamespaceWith(handler: () => Promise<unknown>) {
+	vi.resetModules();
+	vi.doMock("../../../tools/admin/manage_conversations", () => ({
+		manageConversations: handler,
+	}));
+	const { buildConversationsNamespace } = await import("../conversations.js");
+	return buildConversationsNamespace(ctx, env);
+}
+
+afterEach(() => {
+	vi.resetModules();
+	vi.doUnmock("../../../tools/admin/manage_conversations");
+});
+
 describe("conversations namespace — send does not throw on error/timeout status", () => {
 	it("returns a status:'error' result as a VALUE (not thrown)", async () => {
-		handlerResult.current = {
-			action: "send",
-			conversation_id: "c",
-			message_id: "m",
-			status: "error",
-			error: "provider down",
-		};
-		const ns = buildConversationsNamespace(ctx, env);
+		const ns = await loadNamespaceWith(() =>
+			Promise.resolve({
+				action: "send",
+				conversation_id: "c",
+				message_id: "m",
+				status: "error",
+				error: "provider down",
+			}),
+		);
 		const res = (await ns.send({ agent_id: "a", text: "hi" })) as Record<
 			string,
 			unknown
@@ -49,13 +59,14 @@ describe("conversations namespace — send does not throw on error/timeout statu
 	});
 
 	it("returns a status:'timeout' result as a VALUE (not thrown)", async () => {
-		handlerResult.current = {
-			action: "send",
-			conversation_id: "c",
-			message_id: "m",
-			status: "timeout",
-		};
-		const ns = buildConversationsNamespace(ctx, env);
+		const ns = await loadNamespaceWith(() =>
+			Promise.resolve({
+				action: "send",
+				conversation_id: "c",
+				message_id: "m",
+				status: "timeout",
+			}),
+		);
 		const res = (await ns.send({ agent_id: "a", text: "hi" })) as Record<
 			string,
 			unknown
@@ -64,14 +75,15 @@ describe("conversations namespace — send does not throw on error/timeout statu
 	});
 
 	it("returns a status:'complete' reply as a VALUE", async () => {
-		handlerResult.current = {
-			action: "send",
-			conversation_id: "c",
-			message_id: "m",
-			status: "complete",
-			reply: "the answer",
-		};
-		const ns = buildConversationsNamespace(ctx, env);
+		const ns = await loadNamespaceWith(() =>
+			Promise.resolve({
+				action: "send",
+				conversation_id: "c",
+				message_id: "m",
+				status: "complete",
+				reply: "the answer",
+			}),
+		);
 		const res = (await ns.send({ agent_id: "a", text: "hi" })) as Record<
 			string,
 			unknown
@@ -81,11 +93,11 @@ describe("conversations namespace — send does not throw on error/timeout statu
 	});
 
 	it("still propagates a genuine handler throw", async () => {
-		handlerResult.throws = true;
-		const ns = buildConversationsNamespace(ctx, env);
+		const ns = await loadNamespaceWith(() =>
+			Promise.reject(new Error("boom")),
+		);
 		await expect(ns.send({ agent_id: "a", text: "hi" })).rejects.toThrow(
 			/boom/,
 		);
-		handlerResult.throws = false;
 	});
 });

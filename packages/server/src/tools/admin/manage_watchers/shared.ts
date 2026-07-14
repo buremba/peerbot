@@ -15,6 +15,7 @@ import { validateTemplate } from '../../../watchers/renderer';
 import { queryProjectsIdColumn } from '../../../utils/execute-data-sources';
 import { validateWatcherSourceRef, resolveWatcherSourcesForSave } from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
+import { normalizeWatcherTags } from '@lobu/core/contracts/tools/manage-watchers';
 
 // ============================================
 // Types
@@ -112,17 +113,6 @@ export function normalizeExtractedData(value: unknown): Record<string, unknown> 
   });
 }
 
-function normalizeStringArray(values: unknown): string[] {
-  if (!Array.isArray(values)) return [];
-  return Array.from(
-    new Set(
-      values
-        .map((value) => (typeof value === 'string' ? value.trim() : ''))
-        .filter((value) => value.length > 0)
-    )
-  );
-}
-
 export function parseJsonInput<T>(value: unknown, label: string): T | undefined {
   return coerceJson<T>(value, { onError: 'throw', label });
 }
@@ -137,7 +127,9 @@ export function toJsonParam(sql: DbClient, value: unknown): unknown {
 }
 
 export function toTextArrayParam(values: string[]): string {
-  const arr = normalizeStringArray(values);
+  // Same trim/drop-empty/dedupe as the review's proposedAfter (one core helper),
+  // so displayed tags == stored tags.
+  const arr = normalizeWatcherTags(values);
   if (arr.length === 0) return '{}';
   return (
     '{' + arr.map((v) => '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"').join(',') + '}'

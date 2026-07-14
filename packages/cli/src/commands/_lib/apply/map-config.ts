@@ -10,6 +10,53 @@
 
 import { validateEntityMetrics } from "@lobu/connector-sdk/metrics";
 import { type AgentSettings, isHostedChatEntry } from "@lobu/core";
+import type { AgentSettingsStored } from "@lobu/core/contracts/agent-settings";
+
+/**
+ * Exhaustiveness projection over the stored AgentSettings shape. Every key is
+ * REQUIRED (the `-?` removes optionality) so a new field added to the schema
+ * that this mapper doesn't handle is a compile error, not a silent drop.
+ *
+ * `authProfiles` is excluded (separate-store, merged on GET).
+ * `updatedAt` is excluded (store-owned, set by the DB).
+ *
+ * This is the compile-time drift guarantee: the declarative mapper cannot
+ * forget a field. See /tmp/lobu-spike-4b-finding.md for the proof.
+ */
+type AgentSettingsProjection = {
+  [K in Exclude<keyof AgentSettingsStored, "updatedAt" | "authProfiles">]-?:
+    | AgentSettingsStored[K]
+    | undefined;
+};
+
+/**
+ * Marker for each stored field's declarative status. Also exhaustive over the
+ * same key set, so a new field with no policy entry also fails to compile.
+ * - "mapped": produced by this converter
+ * - "unsupported": not declarable in lobu.config.ts (intentional)
+ * - "post-load": filled later by mergeAgentDirArtifacts
+ */
+const AGENT_SETTINGS_FIELD_POLICY = {
+  models: "mapped",
+  networkConfig: "mapped",
+  nixConfig: "mapped",
+  soulMd: "post-load",
+  userMd: "post-load",
+  identityMd: "post-load",
+  skillsConfig: "post-load",
+  toolsConfig: "mapped",
+  guardrails: "mapped",
+  guardrailsInline: "unsupported",
+  environmentId: "unsupported",
+  pluginsConfig: "unsupported",
+  verboseLogging: "unsupported",
+  showToolCalls: "unsupported",
+  preApprovedTools: "mapped",
+} as const satisfies Record<
+  Exclude<keyof AgentSettingsStored, "updatedAt" | "authProfiles">,
+  "mapped" | "post-load" | "unsupported"
+>;
+void AGENT_SETTINGS_FIELD_POLICY;
 import { CronExpressionParser } from "cron-parser";
 import type {
   Agent,
@@ -417,6 +464,33 @@ function mapAgent(
     name: agent.name ?? agent.id,
   };
   if (agent.description) metadata.description = agent.description;
+
+  // Exhaustiveness guard (compile-time): construct a projection object that
+  // includes EVERY stored key (mapped → the computed value, unsupported/post-
+  // load → undefined) and assert it satisfies AgentSettingsProjection. If a
+  // field is added to AgentSettingsStoredSchema without an entry here, tsc
+  // fails with "Property X is missing". This makes "declarative layer forgot
+  // to wire a field" a compile error — the whole point of the schema. The
+  // projection object is discarded; the real `settings` (Partial, only the
+  // non-undefined fields) is what flows to apply.
+  const _exhaustive: AgentSettingsProjection = {
+    models: settings.models,
+    networkConfig: settings.networkConfig,
+    nixConfig: settings.nixConfig,
+    soulMd: settings.soulMd,
+    userMd: settings.userMd,
+    identityMd: settings.identityMd,
+    skillsConfig: settings.skillsConfig,
+    toolsConfig: settings.toolsConfig,
+    guardrails: settings.guardrails,
+    guardrailsInline: settings.guardrailsInline,
+    environmentId: settings.environmentId,
+    pluginsConfig: settings.pluginsConfig,
+    verboseLogging: settings.verboseLogging,
+    showToolCalls: settings.showToolCalls,
+    preApprovedTools: settings.preApprovedTools,
+  };
+  void _exhaustive;
 
   return { metadata, settings, platforms, providerKeys };
 }

@@ -1,8 +1,21 @@
 import type { AgentSettings, DeclaredCredential } from "@lobu/core";
 import { createLogger } from "@lobu/core";
+import type { AgentSettingsStored } from "@lobu/core/contracts/agent-settings";
 import { UNRESOLVED_MODEL_SUFFIX } from "../auth/model-sentinel.js";
 import { buildProviderCatalog } from "../auth/provider-catalog.js";
 import type { AgentConfig } from "../config/index.js";
+
+/**
+ * Compile-time exhaustiveness guard (see /tmp/lobu-spike-4b-finding.md).
+ * Adding a field to AgentSettingsStoredSchema that this converter doesn't
+ * handle is a compile error, not a silent drop. `authProfiles` excluded
+ * (separate-store), `updatedAt` excluded (store-owned).
+ */
+type AgentSettingsProjection = {
+	[K in Exclude<keyof AgentSettingsStored, "updatedAt" | "authProfiles">]-?:
+		| AgentSettingsStored[K]
+		| undefined;
+};
 
 const logger = createLogger("declared-agent-registry");
 
@@ -111,6 +124,27 @@ export function entryFromAgentConfig(agent: AgentConfig): DeclaredAgentEntry {
       ...(p.key ? { key: p.key } : {}),
       ...(p.secretRef ? { secretRef: p.secretRef } : {}),
     }));
+
+  // Exhaustiveness guard: see the comment on AgentSettingsProjection above.
+  // Every stored key is present; the projection object is discarded.
+  const _exhaustive: AgentSettingsProjection = {
+    models: settings.models,
+    networkConfig: settings.networkConfig,
+    nixConfig: settings.nixConfig,
+    soulMd: settings.soulMd,
+    userMd: settings.userMd,
+    identityMd: settings.identityMd,
+    skillsConfig: settings.skillsConfig,
+    toolsConfig: settings.toolsConfig,
+    guardrails: settings.guardrails,
+    guardrailsInline: settings.guardrailsInline,
+    environmentId: settings.environmentId,
+    pluginsConfig: settings.pluginsConfig,
+    verboseLogging: settings.verboseLogging,
+    showToolCalls: settings.showToolCalls,
+    preApprovedTools: settings.preApprovedTools,
+  };
+  void _exhaustive;
 
   return { settings, credentials };
 }

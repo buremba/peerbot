@@ -172,9 +172,6 @@ const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	]),
 	manage_classifiers: new Set(["list"]),
 	manage_view_templates: new Set(["get"]),
-	// Reading an agent's conversations (the listing entity) is member/read-tier;
-	// the handler fences on agent-in-org and scopes a member to their own threads.
-	manage_conversations: new Set(["list", "get"]),
 };
 
 function getAction(args: unknown): string | null {

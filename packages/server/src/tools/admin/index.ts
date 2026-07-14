@@ -14,6 +14,10 @@ import { GetWatcherSchema, GetWatcherResultSchema, getWatcher } from "../get_wat
 import type { ToolAnnotations, ToolContext, ToolDefinition } from "../registry";
 import { ManageAgentsSchema, manageAgents } from "./manage_agents";
 import {
+	ManageConversationsSchema,
+	manageConversations,
+} from "./manage_conversations";
+import {
 	ManageAuthProfilesResultSchema,
 	ManageAuthProfilesSchema,
 	manageAuthProfiles,
@@ -131,6 +135,15 @@ const ENTRIES: AdminToolEntry[] = [
 		schema: ManageAgentsSchema,
 		handler: manageAgents,
 		annotations: DESTRUCTIVE_WITH_TITLE("Manage agents"),
+	},
+	{
+		name: "manage_conversations",
+		description:
+			"List/get an agent's conversations and send a turn (awaits the reply). SDK alternative: client.conversations.",
+		schema: ManageConversationsSchema,
+		handler: manageConversations,
+		// send is a write (no delete), list/get are reads — WRITE, not DESTRUCTIVE.
+		annotations: WRITE_WITH_TITLE("Manage conversations"),
 	},
 	{
 		name: "manage_feeds",

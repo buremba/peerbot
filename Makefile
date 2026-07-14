@@ -40,7 +40,7 @@ typecheck:
 # Build all TypeScript packages in dependency order
 build-packages:
 	@echo "📦 Building all TypeScript packages..."
-	@for pkg in core plugin-api plugin-host pgvector-embedded connector-sdk client agent-worker embeddings connector-worker promptfoo-provider; do \
+	@for pkg in core plugin-api plugin-host plugin-toolkit plugin-memory plugin-conversations plugin-media plugin-mcp pgvector-embedded connector-sdk client agent-worker embeddings connector-worker promptfoo-provider; do \
 		echo "   📦 Building packages/$$pkg..."; \
 		( cd packages/$$pkg && bun run build ) || exit $$?; \
 	done
@@ -160,7 +160,7 @@ bump:
 # Unit suite — bun:test on the per-package units that don't need Postgres.
 test-unit:
 	@echo "🧪 Unit suite (no Postgres)…"
-	@bun test packages/core packages/plugin-api packages/plugin-host packages/cli
+	@bun test packages/core packages/plugin-api packages/plugin-host packages/plugin-toolkit packages/plugin-memory packages/plugin-conversations packages/plugin-media packages/plugin-mcp packages/cli
 	@bun test packages/agent-worker
 	@bun test packages/server/src/__tests__/unit
 	@bun test packages/server/src/auth/__tests__/tool-access.test.ts
@@ -292,7 +292,7 @@ pre-pr:
 	@make build-packages
 	@echo "🔎 [2/4] Strict typecheck (root + excluded packages)..."
 	@bun run typecheck
-	@for pkg in server connector-worker connector-sdk plugin-api plugin-host embeddings cli; do \
+	@for pkg in server connector-worker connector-sdk plugin-api plugin-host plugin-toolkit plugin-memory plugin-conversations plugin-media plugin-mcp embeddings cli; do \
 		echo "   typecheck packages/$$pkg..."; \
 		( cd "packages/$$pkg" && bunx tsc --noEmit ) || exit $$?; \
 	done

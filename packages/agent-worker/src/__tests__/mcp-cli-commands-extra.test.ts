@@ -10,7 +10,7 @@ import {
   summariseAuthCheck,
   summariseAuthStart,
 } from "../embedded/mcp-cli-commands";
-import type { GatewayParams } from "../shared/tool-implementations";
+import type { GatewayParams } from "@lobu/plugin-toolkit";
 
 const gw: GatewayParams = {
   gatewayUrl: "http://gateway",

@@ -3,9 +3,9 @@ import { classifyError } from "../core/error-handler";
 import { LobuAgentWorker } from "../runtime/worker";
 import {
   fetchAudioProviderSuggestions,
+  generateAudio,
   normalizeAudioProviderSuggestions,
-} from "../shared/audio-provider-suggestions";
-import { generateAudio } from "../shared/tool-implementations";
+} from "@lobu/plugin-media";
 
 const originalFetch = globalThis.fetch;
 

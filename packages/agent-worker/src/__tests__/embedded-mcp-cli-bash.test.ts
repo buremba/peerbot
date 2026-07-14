@@ -8,7 +8,7 @@ import {
   type McpCliDeps,
   type McpRuntimeRef,
 } from "../embedded/mcp-cli-commands";
-import type { GatewayParams } from "../shared/tool-implementations";
+import type { GatewayParams } from "@lobu/plugin-toolkit";
 
 const tempDirs: string[] = [];
 

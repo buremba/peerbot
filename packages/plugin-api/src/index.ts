@@ -9,11 +9,6 @@ export const PluginManifestSchema = Type.Object(
     version: Type.String({ minLength: 1 }),
     apiVersion: Type.Literal(LOBU_PLUGIN_API_VERSION),
     description: Type.String({ minLength: 1 }),
-    capabilities: Type.Optional(
-      Type.Array(Type.String({ pattern: "^[a-z][a-z0-9_.:-]*$" }), {
-        uniqueItems: true,
-      })
-    ),
   },
   { additionalProperties: false }
 );
@@ -27,11 +22,8 @@ export interface PluginLogger {
   error(message: string, data?: Record<string, unknown>): void;
 }
 
-export interface PluginHostContext {
+export interface PluginRuntimeContext {
   logger: PluginLogger;
-}
-
-export interface PluginRuntimeContext extends PluginHostContext {
   organizationId: string;
   actorId: string;
   credentialSubject: string;
@@ -101,25 +93,17 @@ export interface PluginHooks {
   ): void | Promise<void>;
 }
 
-export interface PluginService {
-  id: string;
-  start(context: PluginHostContext): void | Promise<void>;
-  stop(context: PluginHostContext): void | Promise<void>;
-}
-
-export interface LobuPlugin<TTool = never, TProvider = never> {
+export interface LobuPlugin<TTool = never> {
   manifest: PluginManifest;
   hooks?: PluginHooks;
   tools?(
     context: PluginRuntimeContext
   ): readonly TTool[] | Promise<readonly TTool[]>;
-  providers?: readonly TProvider[];
-  services?: readonly PluginService[];
 }
 
-export function defineLobuPlugin<TTool = never, TProvider = never>(
-  plugin: LobuPlugin<TTool, TProvider>
-): LobuPlugin<TTool, TProvider> {
+export function defineLobuPlugin<TTool = never>(
+  plugin: LobuPlugin<TTool>
+): LobuPlugin<TTool> {
   assertPluginManifest(plugin.manifest);
   return plugin;
 }

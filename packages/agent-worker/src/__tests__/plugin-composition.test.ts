@@ -5,13 +5,13 @@ import {
   type PluginRuntimeContext,
 } from "@lobu/plugin-api";
 import { PluginHost } from "@lobu/plugin-host";
+import { createMemoryPlugin } from "@lobu/plugin-memory";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
-  createNativeMemoryPlugin,
-  RUNTIME_MEMORY_CAPABILITY,
-  wrapToolsWithNativePluginHooks,
-} from "../runtime/native-plugin-runtime";
+  createRuntimePluginHost,
+  wrapToolsWithPluginHooks,
+} from "../runtime/plugin-composition";
 
 const logger: PluginLogger = {
   debug: () => undefined,
@@ -38,42 +38,73 @@ function tool(execute: ToolDefinition["execute"]): ToolDefinition {
   return {
     name: "test_tool",
     label: "test_tool",
-    description: "Native plugin adapter fixture",
+    description: "Plugin adapter fixture",
     parameters: Type.Object({ value: Type.String() }),
     execute,
   };
 }
 
-describe("native plugin runtime tool adapter", () => {
+describe("plugin composition tool adapter", () => {
+  test("composes concrete packages in the existing model-visible tool order", async () => {
+    const host = createRuntimePluginHost({
+      gatewayUrl: "http://gateway",
+      workerToken: "token",
+      channelId: "channel",
+      conversationId: "conversation",
+      workspaceDir: "/workspace",
+      onCustomEvent: async () => undefined,
+      onAskUserPosted: () => undefined,
+      includeMcpTools: true,
+      mcpTools: {
+        github: [
+          {
+            name: "search_issues",
+            description: "Search issues",
+            inputSchema: { type: "object" },
+          },
+        ],
+      },
+      mcpStatus: [],
+      onMcpAuthChanged: () => undefined,
+    });
+
+    expect((await host.tools(context)).map((entry) => entry.name)).toEqual([
+      "upload_file",
+      "generate_image",
+      "generate_audio",
+      "list_conversations",
+      "read_conversation",
+      "send_message",
+      "react",
+      "edit_message",
+      "delete_message",
+      "ask_user",
+      "search_issues",
+    ]);
+  });
+
   test("fails closed before invoking a tool", async () => {
     const execute = mock(async () => ({
       content: [{ type: "text" as const, text: "should not run" }],
       details: {},
     }));
-    const host = new PluginHost<ToolDefinition>(
-      [
-        defineLobuPlugin<ToolDefinition>({
-          manifest: {
-            name: "policy",
-            version: "1.0.0",
-            apiVersion: 1,
-            description: "Block fixture",
-          },
-          hooks: {
-            beforeToolCall: () => ({
-              block: true,
-              blockReason: "denied by native policy",
-            }),
-          },
-        }),
-      ],
-      new Set()
-    );
-    const [wrapped] = wrapToolsWithNativePluginHooks(
-      [tool(execute)],
-      host,
-      context
-    );
+    const host = new PluginHost<ToolDefinition>([
+      defineLobuPlugin<ToolDefinition>({
+        manifest: {
+          name: "policy",
+          version: "1.0.0",
+          apiVersion: 1,
+          description: "Block fixture",
+        },
+        hooks: {
+          beforeToolCall: () => ({
+            block: true,
+            blockReason: "denied by native policy",
+          }),
+        },
+      }),
+    ]);
+    const [wrapped] = wrapToolsWithPluginHooks([tool(execute)], host, context);
 
     await expect(
       wrapped.execute("call", { value: "x" }, undefined, undefined)
@@ -87,24 +118,21 @@ describe("native plugin runtime tool adapter", () => {
       details: {},
     }));
     const afterToolCall = mock(() => undefined);
-    const host = new PluginHost<ToolDefinition>(
-      [
-        defineLobuPlugin<ToolDefinition>({
-          manifest: {
-            name: "observer",
-            version: "1.0.0",
-            apiVersion: 1,
-            description: "Transform and observe fixture",
-          },
-          hooks: {
-            beforeToolCall: () => ({ params: { value: "rewritten" } }),
-            afterToolCall,
-          },
-        }),
-      ],
-      new Set()
-    );
-    const [wrapped] = wrapToolsWithNativePluginHooks(
+    const host = new PluginHost<ToolDefinition>([
+      defineLobuPlugin<ToolDefinition>({
+        manifest: {
+          name: "observer",
+          version: "1.0.0",
+          apiVersion: 1,
+          description: "Transform and observe fixture",
+        },
+        hooks: {
+          beforeToolCall: () => ({ params: { value: "rewritten" } }),
+          afterToolCall,
+        },
+      }),
+    ]);
+    const [wrapped] = wrapToolsWithPluginHooks(
       [tool(execute as ToolDefinition["execute"])],
       host,
       context
@@ -136,7 +164,7 @@ describe("native plugin runtime tool adapter", () => {
   });
 });
 
-describe("native memory plugin", () => {
+describe("memory plugin composition", () => {
   const gateway = {
     gatewayUrl: "http://gateway.test",
     workerToken: "worker-token",
@@ -150,10 +178,9 @@ describe("native memory plugin", () => {
     const invokeTool = mock(async () => ({
       content: [{ type: "text" as const, text: "Decision: ship native hooks" }],
     }));
-    const host = new PluginHost<ToolDefinition>(
-      [createNativeMemoryPlugin(gateway, invokeTool)],
-      new Set([RUNTIME_MEMORY_CAPABILITY])
-    );
+    const host = new PluginHost<ToolDefinition>([
+      createMemoryPlugin(gateway, invokeTool),
+    ]);
 
     const prepend = await host.beforeAgentStart(
       { prompt: "what did we decide?", messages: [] },
@@ -180,10 +207,9 @@ describe("native memory plugin", () => {
 
   test("skips internal heartbeat recall", async () => {
     const invokeTool = mock(async () => ({ content: [] }));
-    const host = new PluginHost<ToolDefinition>(
-      [createNativeMemoryPlugin(gateway, invokeTool)],
-      new Set([RUNTIME_MEMORY_CAPABILITY])
-    );
+    const host = new PluginHost<ToolDefinition>([
+      createMemoryPlugin(gateway, invokeTool),
+    ]);
 
     expect(
       await host.beforeAgentStart(
@@ -196,15 +222,14 @@ describe("native memory plugin", () => {
 
   test("captures the final user and assistant exchange with agent scope", async () => {
     const invokeTool = mock(async () => ({ content: [] }));
-    const host = new PluginHost<ToolDefinition>(
-      [createNativeMemoryPlugin(gateway, invokeTool)],
-      new Set([RUNTIME_MEMORY_CAPABILITY])
-    );
+    const host = new PluginHost<ToolDefinition>([
+      createMemoryPlugin(gateway, invokeTool),
+    ]);
 
     await host.agentEnd(
       {
         messages: [
-          { role: "user", content: "Prefer the native plugin host" },
+          { role: "user", content: "Prefer the plugin host" },
           { role: "assistant", content: "I will keep the core boundary small" },
         ],
       },
@@ -217,7 +242,7 @@ describe("native memory plugin", () => {
       "save_memory",
       {
         content:
-          "User: Prefer the native plugin host\nAssistant: I will keep the core boundary small",
+          "User: Prefer the plugin host\nAssistant: I will keep the core boundary small",
         semantic_type: "observation",
         metadata: { agent_id: "agent" },
       },
@@ -227,10 +252,9 @@ describe("native memory plugin", () => {
 
   test("does not capture a failed turn", async () => {
     const invokeTool = mock(async () => ({ content: [] }));
-    const host = new PluginHost<ToolDefinition>(
-      [createNativeMemoryPlugin(gateway, invokeTool)],
-      new Set([RUNTIME_MEMORY_CAPABILITY])
-    );
+    const host = new PluginHost<ToolDefinition>([
+      createMemoryPlugin(gateway, invokeTool),
+    ]);
 
     await host.agentEnd(
       {
@@ -248,10 +272,9 @@ describe("native memory plugin", () => {
 
   test("pairs a live steering message with the final assistant answer", async () => {
     const invokeTool = mock(async () => ({ content: [] }));
-    const host = new PluginHost<ToolDefinition>(
-      [createNativeMemoryPlugin(gateway, invokeTool)],
-      new Set([RUNTIME_MEMORY_CAPABILITY])
-    );
+    const host = new PluginHost<ToolDefinition>([
+      createMemoryPlugin(gateway, invokeTool),
+    ]);
 
     await host.beforeAgentStart(
       { prompt: "Design the plugin API", messages: [] },

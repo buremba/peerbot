@@ -8,8 +8,8 @@ import {
   deleteMessage,
   editMessage,
   reactToMessage,
-  uploadUserFile,
-} from "../shared/tool-implementations";
+} from "@lobu/plugin-conversations";
+import { uploadUserFile } from "@lobu/plugin-media";
 
 const originalFetch = globalThis.fetch;
 

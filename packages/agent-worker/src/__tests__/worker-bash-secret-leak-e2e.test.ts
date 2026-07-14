@@ -22,10 +22,8 @@ import { join } from "node:path";
 import { buildAgentSession } from "../runtime/session-runner";
 import { createLobuTools } from "../runtime/tools";
 import { LobuAgentWorker } from "../runtime/worker";
-import {
-  callMcpTool,
-  type GatewayParams,
-} from "../shared/tool-implementations";
+import { callMcpTool } from "@lobu/plugin-mcp";
+import type { GatewayParams } from "@lobu/plugin-toolkit";
 import { mockWorkerConfig } from "./setup";
 
 const SECRET_TOKEN = "e2e-super-secret-worker-token";

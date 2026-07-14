@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { generateAudio, generateImage } from "../shared/tool-implementations";
+import { generateAudio, generateImage } from "@lobu/plugin-media";
 
 const originalFetch = globalThis.fetch;
 

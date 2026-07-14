@@ -1,0 +1,247 @@
+import { createLogger } from "@lobu/core";
+import {
+  createGatewayClient,
+  gatewayFetch,
+  joinTextContent,
+  textResult,
+  withErrorHandling,
+  type GatewayParams,
+  type TextResult,
+} from "@lobu/plugin-toolkit";
+
+const logger = createLogger("plugin-mcp");
+
+// ============================================================================
+// MCP Tools (route to MCP proxy /mcp/{mcpId}/tools/{toolName})
+// ============================================================================
+
+/**
+ * Retrieval tools that we ask the upstream MCP server to return as JSON instead
+ * of formatted markdown so the worker can include structured `result_summary`
+ * (event IDs, snippet text) in the `tool_use` SSE event for RAG assertions.
+ */
+const TOOLS_REQUESTING_JSON_FORMAT = new Set([
+  "search_memory",
+  "lobu_search_memory",
+  // The builder agent's manage_agents write gate returns a structured
+  // `pending_approval` result (run_id + proposed/current). We need the JSON,
+  // not formatted markdown, to forward an approval card into the chat (see
+  // maybePostApprovalCard / createMcpToolDefinitions).
+  "manage_agents",
+  // Same shape as manage_agents: watcher definition create/update/delete may
+  // return pending_approval under the agent_config write-gate.
+  "manage_watchers",
+  // manage_entity's update path queues a human-owned-field change for approval
+  // (approval_queued + approval_run_id + approval_fields/current). Same reason:
+  // we need the JSON to forward the entity_field_change approval card.
+  "manage_entity",
+]);
+
+/**
+ * Approval-gate bridge: when a gated write returns a pending-approval result,
+ * post a durable approval card into the chat so the SPA renders the interactive
+ * Approve/Reject diff. Handles three producers:
+ *   - manage_agents write gate → `{ status: 'pending_approval', run_id,
+ *     action, proposal, current }` (the builder agent's create/update/delete).
+ *   - manage_watchers write gate → same `pending_approval` shape (watcher
+ *     definition create/update/delete under agent_config).
+ *   - manage_entity update gate → `{ approval_queued: true, approval_run_id,
+ *     approval_fields, approval_current, approval_attribution }` (a human-owned
+ *     entity field the agent proposed changing).
+ *
+ * Fire-and-forget — a failed post never breaks the tool call (the agent still
+ * narrates the result, and the events-tab approval card remains the fallback).
+ * Returns true when a card was posted (caller logs at debug only).
+ *
+ * The card rides the SAME owner-gated thread_response delivery as ask_user:
+ * POST /internal/interactions/create → InteractionService → API platform →
+ * Postgres thread_response queue → SSE-owning pod. Multi-replica safe by reuse.
+ */
+export async function maybePostApprovalCard(
+  gw: GatewayParams,
+  toolName: string,
+  rawResultText: string
+): Promise<boolean> {
+  const body = buildApprovalCardBody(toolName, rawResultText);
+  if (!body) return false;
+
+  // Fire-and-forget: a failed post must never break the tool call (the agent
+  // still narrates the result, and the events-tab approval card is the
+  // fallback). gatewayFetch throws on a hard network error, so guard it too.
+  let error: TextResult | undefined;
+  try {
+    ({ error } = await gatewayFetch<{ id: string }>(
+      gw,
+      "/internal/interactions/create",
+      { method: "POST", body: JSON.stringify(body) },
+      "Failed to post approval card"
+    ));
+  } catch {
+    logger.warn(`${toolName} approval card post threw`);
+    return false;
+  }
+  if (error) {
+    logger.warn(`${toolName} approval card post failed`);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Parse a gated tool result into the /internal/interactions/create body, or
+ * null when the result is not a pending approval. entity_field_change carries
+ * `fields`/`attribution` (the human-owned-field diff); manage_agents carries
+ * `proposal` (the agent row diff); manage_watchers carries flat watcher args
+ * plus `resourceKind: "watcher"`. All share the `tool_approval` transport.
+ */
+function buildApprovalCardBody(
+  toolName: string,
+  rawResultText: string
+): Record<string, unknown> | null {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(rawResultText);
+  } catch {
+    return null;
+  }
+
+  if (toolName === "manage_watchers") {
+    if (
+      parsed.status !== "pending_approval" ||
+      typeof parsed.run_id !== "number"
+    ) {
+      return null;
+    }
+    // Server proposal is `{ args: ManageWatchersArgs }`; SPA renderer needs the
+    // flat watcher fields (action, slug, prompt, schedule, …).
+    const rawProposal = parsed.proposal;
+    const flatProposal =
+      rawProposal &&
+      typeof rawProposal === "object" &&
+      (rawProposal as { args?: unknown }).args &&
+      typeof (rawProposal as { args: unknown }).args === "object"
+        ? (rawProposal as { args: Record<string, unknown> }).args
+        : ((rawProposal as Record<string, unknown> | null) ?? null);
+    return {
+      interactionType: "tool_approval",
+      runId: parsed.run_id,
+      action: typeof parsed.action === "string" ? parsed.action : "change",
+      resourceKind: "watcher",
+      proposal: flatProposal,
+      current: parsed.current ?? null,
+    };
+  }
+
+  if (toolName === "manage_agents") {
+    if (
+      parsed.status !== "pending_approval" ||
+      typeof parsed.run_id !== "number"
+    ) {
+      return null;
+    }
+    return {
+      interactionType: "tool_approval",
+      runId: parsed.run_id,
+      action: typeof parsed.action === "string" ? parsed.action : "change",
+      resourceKind: "agent",
+      proposal: parsed.proposal ?? null,
+      current: parsed.current ?? null,
+    };
+  }
+
+  if (toolName === "manage_entity") {
+    if (
+      parsed.approval_queued !== true ||
+      typeof parsed.approval_run_id !== "number"
+    ) {
+      return null;
+    }
+    return {
+      interactionType: "tool_approval",
+      runId: parsed.approval_run_id,
+      action:
+        typeof parsed.approval_action === "string"
+          ? parsed.approval_action
+          : "change",
+      resourceKind: "entity",
+      proposal: parsed.approval_proposal ?? null,
+      // entity_field_change diff: field_path -> proposed / current. The SPA
+      // routes on `fields` (non-empty) to the entity-field-change card.
+      fields: parsed.approval_fields ?? null,
+      current: parsed.approval_current ?? null,
+      attribution:
+        parsed.approval_attribution === "watcher" ? "watcher" : "agent",
+    };
+  }
+
+  return null;
+}
+
+export async function callMcpTool(
+  gw: GatewayParams,
+  mcpId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  options?: { timeoutMs?: number }
+): Promise<TextResult> {
+  return withErrorHandling(`${mcpId}/${toolName}`, async () => {
+    let response: Response;
+    const wantsJson = TOOLS_REQUESTING_JSON_FORMAT.has(toolName);
+    try {
+      // Retrieval tools (`search_memory`) opt into JSON-encoded results so the
+      // worker → SSE `tool_use` event can carry structured `result_summary`
+      // (event ids + snippet text) to clients like @lobu/promptfoo-provider for
+      // RAG assertions. Other tools keep the formatted-markdown output the
+      // agent has been seeing. External MCP servers ignore the header.
+      response = await createGatewayClient({
+        baseUrl: gw.gatewayUrl,
+        token: gw.workerToken,
+      }).request(`/mcp/${mcpId}/tools/${toolName}`, {
+        method: "POST",
+        headers: wantsJson ? { "x-mcp-format": "json" } : undefined,
+        body: JSON.stringify(args),
+        // Third-party MCP server on the other side — give it a generous
+        // budget but never wait forever.
+        timeoutMs: options?.timeoutMs ?? 120_000,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "TimeoutError") {
+        return textResult(`Error: MCP tool ${mcpId}/${toolName} timed out`);
+      }
+      throw err;
+    }
+
+    // MCP proxy returns JSON on success, but a misbehaving upstream (502
+    // HTML, plain-text 500, empty body) would otherwise crash the tool call
+    // with "Unexpected token < in JSON". Treat parse failure as a transport
+    // error message instead of letting it bubble out as an unhandled throw.
+    let data: {
+      content?: Array<{ type: string; text: string }>;
+      error?: string;
+      isError?: boolean;
+    };
+    try {
+      data = (await response.json()) as {
+        content?: Array<{ type: string; text: string }>;
+        error?: string;
+        isError?: boolean;
+      };
+    } catch (parseErr) {
+      const parseMsg =
+        parseErr instanceof Error ? parseErr.message : String(parseErr);
+      return textResult(
+        `Error: ${toolName} returned a non-JSON response (status ${response.status}): ${parseMsg}`
+      );
+    }
+
+    if (!response.ok || data.isError) {
+      const contentText = joinTextContent(data.content);
+      const errorMsg =
+        data.error || contentText || `${toolName} failed (${response.status})`;
+      return textResult(`Error: ${errorMsg}`);
+    }
+
+    const text = joinTextContent(data.content);
+    return textResult(text || `${toolName} completed.`);
+  });
+}

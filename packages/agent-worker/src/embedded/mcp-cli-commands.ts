@@ -15,14 +15,13 @@
  */
 import type { McpStatus, McpToolDef } from "@lobu/core";
 import { createLogger } from "@lobu/core";
-import type { GatewayParams } from "../shared/tool-implementations";
 import {
   callMcpTool,
   checkMcpLogin,
-  joinTextContent,
   logoutMcp,
   startMcpLogin,
-} from "../shared/tool-implementations";
+} from "@lobu/plugin-mcp";
+import { joinTextContent, type GatewayParams } from "@lobu/plugin-toolkit";
 import { isDirectPackageInstallCommand } from "../runtime/tool-policy";
 
 const logger = createLogger("mcp-cli");
@@ -284,7 +283,7 @@ async function runAuthSubcommand(
   }
 
   if (verb === "check") {
-    const res = await checkMcpLogin(gw, { mcpId });
+    const res = await checkMcpLogin(gw, { mcpId }, () => undefined);
     const text = joinTextContent(res.content);
     const parsed = tryJson(text);
     if (parsed?.authenticated === true) {

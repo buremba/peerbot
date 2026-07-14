@@ -6,7 +6,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { createLogger } from "@lobu/core";
-import { createGatewayClient } from "../shared/gateway-client";
+import { createGatewayClient } from "@lobu/plugin-toolkit";
 
 const logger = createLogger("transcript-snapshot");
 

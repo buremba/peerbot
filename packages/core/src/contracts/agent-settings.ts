@@ -125,11 +125,12 @@ export const SkillsConfigSchema = Type.Object({
 });
 export type SkillsConfig = Static<typeof SkillsConfigSchema>;
 
-const PluginSlotSchema = Type.Union([
+export const PluginSlotSchema = Type.Union([
   Type.Literal("tool"),
   Type.Literal("provider"),
   Type.Literal("memory"),
 ]);
+export type PluginSlot = Static<typeof PluginSlotSchema>;
 
 const PluginConfigSchema = Type.Object({
   source: Type.String(),

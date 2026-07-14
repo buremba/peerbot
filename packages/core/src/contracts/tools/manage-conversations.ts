@@ -70,7 +70,8 @@ export const ManageConversationsSchema = Type.Object({
     Type.Number({
       description:
         "[send, wait=true] Max time to wait for the reply. Default 60000, capped at 170000. " +
-        "On timeout the turn keeps running; read the reply later via `get`.",
+        'On timeout the turn keeps running and status is "timeout"; call `send` again on the ' +
+        "same conversation (any text) with wait=true to await it, or read the transcript out of band.",
       minimum: 1000,
       maximum: 170_000,
     })

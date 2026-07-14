@@ -48,12 +48,23 @@ export function buildConversationsNamespace(
   ctx: ToolContext,
   env: Env,
 ): ConversationsNamespace {
-  const { manage, action } = createActionCaller(manageConversations, env, ctx);
+  const { manage, action } = createActionCaller(
+    manageConversations,
+    env,
+    ctx,
+    "conversations",
+  );
 
   return {
     manage,
     list: (input) => action("list", input),
     get: (input) => action("get", input),
-    send: (input) => action("send", input),
+    // `send` returns a discriminated result whose `status` is part of the
+    // contract — "error" and "timeout" are NON-throwing outcomes the caller
+    // must branch on. Route it through `manage` (the raw handler) rather than
+    // `action`, whose failureMessage() turns status:"error"/"timeout" into a
+    // thrown ClientSdkActionError. A genuine fault (bad input, agent-not-found)
+    // still throws — the handler raises ToolUserError for those.
+    send: (input) => manage({ ...input, action: "send" }),
   };
 }

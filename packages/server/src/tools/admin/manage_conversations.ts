@@ -40,10 +40,7 @@ import {
 import type { Env } from "../../index";
 import { getLobuCoreServices } from "../../lobu/gateway";
 import { ToolUserError } from "../../utils/errors";
-import {
-  requireOrgReadAccess,
-  requireOrgWriteAccess,
-} from "../../utils/organization-access";
+import { isAdminOrOwnerRole } from "../access-control";
 import type { ToolContext } from "../registry";
 import { withValidatedArgs } from "../validate-args";
 import { defineFlatActionTool, flatAction } from "./action-tool";
@@ -88,16 +85,25 @@ async function handleList(
   ctx: ToolContext,
   env: Env,
 ) {
+  // A conversation listing exposes titles (message content). Require an
+  // authenticated caller — an anonymous public read must not enumerate them.
+  if (!ctx.userId) {
+    throw new ToolUserError(
+      "list requires an authenticated caller",
+      401,
+    );
+  }
   await assertAgentInOrg(args.agent_id, ctx, env);
-  // A member scoped to their own user reads only their owned threads; an
-  // admin/owner (or a cross-user caller) sees every conversation. Mirror the
-  // sidebar's scope split.
-  const scope = ctx.userId ? "user" : "all";
+  // Scope from ROLE, not merely "has a userId": an admin/owner sees every
+  // conversation; a plain member sees only their own owned threads. (Deriving
+  // scope from `ctx.userId` alone inverted this — an admin was limited to their
+  // own rows while a null-userId caller saw all.)
+  const scope = isAdminOrOwnerRole(ctx.memberRole) ? "all" : "user";
   const conversations = await listConversations({
     organizationId: ctx.organizationId,
     agentId: args.agent_id,
     scope,
-    userId: ctx.userId ?? "",
+    userId: ctx.userId,
   });
   return {
     action: "list" as const,
@@ -113,6 +119,9 @@ async function handleGet(
   if (!args.conversation_id) {
     throw new ToolUserError("conversation_id is required for get action");
   }
+  if (!ctx.userId) {
+    throw new ToolUserError("get requires an authenticated caller", 401);
+  }
   await assertAgentInOrg(args.agent_id, ctx, env);
   const platform = (args.platform ?? "web").toLowerCase();
   const row = await getConversation({
@@ -121,7 +130,12 @@ async function handleGet(
     platform,
     conversationId: args.conversation_id,
   });
-  if (!row) {
+  // A non-admin may read only their OWN owned (web) conversation. A platform
+  // conversation, or another user's web thread, is not theirs to fetch — 404
+  // (not 403) so the response can't be used to probe which ids exist.
+  const isAdmin = isAdminOrOwnerRole(ctx.memberRole);
+  const ownedByCaller = row?.kind === "owned" && row.userId === ctx.userId;
+  if (!row || (!isAdmin && !ownedByCaller)) {
     throw new ToolUserError(
       `Conversation "${args.conversation_id}" not found for agent "${args.agent_id}"`,
       404,
@@ -174,16 +188,40 @@ async function handleSend(
 
   const userId = ctx.userId;
   // A named thread targets/opens a distinct web conversation (own history + own
-  // pinned sandbox); omitting `thread` uses the caller's default thread. Prefer
-  // an explicit conversation_id (resume an exact conversation) over `thread`.
-  const conversationId =
-    args.conversation_id ??
-    buildApiConversationId({
+  // pinned sandbox); omitting `thread` uses the caller's default thread. When an
+  // explicit conversation_id is given it resumes an exact conversation — but it
+  // must be verified to belong to the caller, else a member could enqueue a turn
+  // into another user's (or a platform) conversation. Without conversation_id the
+  // id is DERIVED from the caller's own userId, so it is inherently theirs.
+  let conversationId: string;
+  if (args.conversation_id) {
+    const target = await getConversation({
+      organizationId: ctx.organizationId,
+      agentId: args.agent_id,
+      platform: "web",
+      conversationId: args.conversation_id,
+    });
+    const isAdmin = isAdminOrOwnerRole(ctx.memberRole);
+    const ownedByCaller =
+      target?.kind === "owned" && target.userId === ctx.userId;
+    if (!target || (!isAdmin && !ownedByCaller)) {
+      // 404 (not 403) so the id space can't be probed. Only OWNED web
+      // conversations are sendable by id; external/platform ones aren't driven
+      // through this SDK path (they route through their own channel).
+      throw new ToolUserError(
+        `Conversation "${args.conversation_id}" not found for agent "${args.agent_id}"`,
+        404,
+      );
+    }
+    conversationId = args.conversation_id;
+  } else {
+    conversationId = buildApiConversationId({
       agentId: args.agent_id,
       userId,
       organizationId: ctx.organizationId,
       threadId: args.thread || undefined,
     });
+  }
   const channelId = `api_${userId}`;
   const messageId = randomUUID();
 
@@ -269,33 +307,15 @@ async function handleSend(
   }
 
   // Timed out (or the script's budget ran out). The turn keeps running; the
-  // caller can read the reply later via `get` / the transcript.
+  // caller awaits it by calling send again on the same conversation, or reads
+  // the transcript out of band. `get` returns only conversation metadata, not
+  // the reply, so it is NOT the way to retrieve a delayed answer.
   return {
     action: "send" as const,
     conversation_id: conversationId,
     message_id: messageId,
     status: "timeout" as const,
   };
-}
-
-export const manageConversations = withValidatedArgs(
-  "manage_conversations",
-  ManageConversationsSchema,
-  manageConversationsImpl,
-);
-
-async function manageConversationsImpl(
-  args: ManageConversationsArgs,
-  env: Env,
-  ctx: ToolContext,
-) {
-  const pgSql = createDbClientFromEnv(env);
-  if (args.action === "send") {
-    await requireOrgWriteAccess(pgSql, ctx);
-  } else {
-    await requireOrgReadAccess(pgSql, ctx);
-  }
-  return runManageConversations(args, env, ctx);
 }
 
 const runManageConversations = defineFlatActionTool<
@@ -306,3 +326,15 @@ const runManageConversations = defineFlatActionTool<
   get: flatAction((args, ctx, env) => handleGet(args, ctx, env)),
   send: flatAction((args, ctx, env) => handleSend(args, ctx, env)),
 });
+
+// Access is enforced per-action by routeAction (inside runManageConversations)
+// against tool-access.ts: send → MEMBER_WRITE_ACTIONS (any member), list/get →
+// PUBLIC_READ_ACTIONS. Do NOT re-gate here with requireOrg{Read,Write}Access —
+// canWriteOrg requires owner/admin, which would contradict the member-tier
+// `send` grant and reject a plain member the policy explicitly allows. Ownership
+// is fenced per-handler (agent-in-org + user-owned conversation).
+export const manageConversations = withValidatedArgs(
+  "manage_conversations",
+  ManageConversationsSchema,
+  runManageConversations,
+);

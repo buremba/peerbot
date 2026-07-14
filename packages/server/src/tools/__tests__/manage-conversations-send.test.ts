@@ -35,24 +35,37 @@ const ctx: ToolContext = {
 	allowCrossOrg: false,
 };
 
+/** A plain member (not owner/admin) — the tier `send` must still allow. */
+const memberCtx: ToolContext = { ...ctx, memberRole: "member" };
+
 const enqueued: Array<Record<string, unknown>> = [];
 
-/**
- * Register the shared mocks. `reply` is what readConversationReply yields; pass a
- * function to vary it across poll iterations (e.g. null then complete).
- */
-function mockDeps(reply: unknown | (() => unknown)) {
+interface MockOpts {
+	/** readConversationReply yields this (or a per-iteration function). */
+	reply?: unknown | (() => unknown);
+	/** getConversation yields this (default: a caller-owned web row). */
+	conversation?: unknown;
+}
+
+/** A caller-owned web conversation — passes the send/get ownership fence. */
+const OWNED_ROW = {
+	platform: "web",
+	conversationId: "conv-x",
+	kind: "owned",
+	userId: "user-1",
+	title: "t",
+	lastActivityAt: new Date(0),
+	createdAt: new Date(0),
+};
+
+function mockDeps(opts: MockOpts = {}) {
 	enqueued.length = 0;
-	// requireOrg*Access + the agent-exists probe both run getDb()`...`; return a
-	// truthy agent row and a no-op for the access checks.
+	// The agent-exists probe runs getDb()/createDbClientFromEnv `...` — return a
+	// truthy agent row so assertAgentInOrg passes.
 	vi.doMock("../../db/client.js", () => {
 		const tag = () => Promise.resolve([{ ok: 1 }]);
 		return { getDb: () => tag, createDbClientFromEnv: () => tag };
 	});
-	vi.doMock("../../utils/organization-access.js", () => ({
-		requireOrgReadAccess: () => Promise.resolve(),
-		requireOrgWriteAccess: () => Promise.resolve(),
-	}));
 	vi.doMock("../../gateway/services/platform-helpers.js", async () => {
 		const actual = await vi.importActual<
 			typeof import("../../gateway/services/platform-helpers.js")
@@ -73,9 +86,16 @@ function mockDeps(reply: unknown | (() => unknown)) {
 			getAgentSettingsStore: () => undefined,
 		}),
 	}));
-	const replyFn = typeof reply === "function" ? (reply as () => unknown) : () => reply;
+	const replyFn =
+		typeof opts.reply === "function"
+			? (opts.reply as () => unknown)
+			: () => opts.reply ?? null;
+	const conversation =
+		"conversation" in opts ? opts.conversation : OWNED_ROW;
 	vi.doMock("../../gateway/services/conversations-store.js", () => ({
 		readConversationReply: () => Promise.resolve(replyFn()),
+		getConversation: () => Promise.resolve(conversation),
+		listConversations: () => Promise.resolve([OWNED_ROW]),
 	}));
 }
 
@@ -87,16 +107,15 @@ async function loadHandler() {
 afterEach(() => {
 	vi.resetModules();
 	vi.doUnmock("../../db/client.js");
-	vi.doUnmock("../../utils/organization-access.js");
 	vi.doUnmock("../../gateway/services/platform-helpers.js");
 	vi.doUnmock("../../lobu/gateway.js");
 	vi.doUnmock("../../gateway/services/conversations-store.js");
 });
 
 describe("manage_conversations send", () => {
-	it("enqueues an api-platform turn and returns the polled reply", async () => {
+	it("lets a plain MEMBER send and returns the polled reply on a derived id", async () => {
 		vi.resetModules();
-		mockDeps({ status: "complete", text: "the answer" });
+		mockDeps({ reply: { status: "complete", text: "the answer" } });
 		const manageConversations = await loadHandler();
 
 		const res = (await manageConversations(
@@ -107,7 +126,8 @@ describe("manage_conversations send", () => {
 				text: "hello",
 			},
 			env,
-			ctx,
+			// a MEMBER, not owner — proves send is member-tier (no admin re-gate).
+			memberCtx,
 		)) as Record<string, unknown>;
 
 		expect(res.status).toBe("complete");
@@ -125,8 +145,10 @@ describe("manage_conversations send", () => {
 
 	it("wait:false returns queued immediately without polling", async () => {
 		vi.resetModules();
-		mockDeps(() => {
-			throw new Error("must not poll when wait:false");
+		mockDeps({
+			reply: () => {
+				throw new Error("must not poll when wait:false");
+			},
 		});
 		const manageConversations = await loadHandler();
 
@@ -141,9 +163,9 @@ describe("manage_conversations send", () => {
 		expect(enqueued).toHaveLength(1);
 	});
 
-	it("surfaces a terminal error reply", async () => {
+	it("returns (does NOT throw) a terminal error reply", async () => {
 		vi.resetModules();
-		mockDeps({ status: "error", error: "provider down" });
+		mockDeps({ reply: { status: "error", error: "provider down" } });
 		const manageConversations = await loadHandler();
 
 		const res = (await manageConversations(
@@ -158,7 +180,7 @@ describe("manage_conversations send", () => {
 
 	it("returns timeout when no reply lands before the deadline", async () => {
 		vi.resetModules();
-		mockDeps(null); // never completes
+		mockDeps({ reply: null }); // never completes
 		const manageConversations = await loadHandler();
 
 		const res = (await manageConversations(
@@ -176,9 +198,57 @@ describe("manage_conversations send", () => {
 		expect(res.message_id).toBeTruthy();
 	});
 
+	it("resumes an explicit conversation_id that the caller owns", async () => {
+		vi.resetModules();
+		mockDeps({
+			reply: { status: "complete", text: "resumed" },
+			conversation: OWNED_ROW,
+		});
+		const manageConversations = await loadHandler();
+
+		const res = (await manageConversations(
+			{
+				action: "send",
+				agent_id: "researcher",
+				conversation_id: "conv-x",
+				text: "hi",
+			},
+			env,
+			memberCtx,
+		)) as Record<string, unknown>;
+
+		expect(res.status).toBe("complete");
+		expect(res.conversation_id).toBe("conv-x");
+		expect(enqueued[0].conversationId).toBe("conv-x");
+	});
+
+	it("refuses a conversation_id that is not the caller's owned web conversation (IDOR)", async () => {
+		vi.resetModules();
+		// The target belongs to a DIFFERENT user.
+		mockDeps({
+			conversation: { ...OWNED_ROW, userId: "someone-else" },
+		});
+		const manageConversations = await loadHandler();
+
+		await expect(
+			manageConversations(
+				{
+					action: "send",
+					agent_id: "researcher",
+					conversation_id: "conv-x",
+					text: "hi",
+				},
+				env,
+				memberCtx,
+			),
+		).rejects.toThrow(/not found/);
+		// Nothing was enqueued into another user's conversation.
+		expect(enqueued).toHaveLength(0);
+	});
+
 	it("rejects empty text", async () => {
 		vi.resetModules();
-		mockDeps(null);
+		mockDeps({ reply: null });
 		const manageConversations = await loadHandler();
 
 		await expect(
@@ -192,14 +262,79 @@ describe("manage_conversations send", () => {
 
 	it("rejects an unauthenticated caller (no user id to bind the conversation)", async () => {
 		vi.resetModules();
-		mockDeps(null);
+		mockDeps({ reply: null });
 		const manageConversations = await loadHandler();
 
 		await expect(
 			manageConversations(
 				{ action: "send", agent_id: "researcher", text: "hi" },
 				env,
-				{ ...ctx, userId: null },
+				{ ...ctx, userId: null, scopes: ["*"] },
+			),
+		).rejects.toThrow(/authenticated caller/);
+	});
+});
+
+describe("manage_conversations list/get fencing", () => {
+	it("list scopes a MEMBER to their own owned threads (scope=user)", async () => {
+		vi.resetModules();
+		mockDeps({});
+		const manageConversations = await loadHandler();
+		const res = (await manageConversations(
+			{ action: "list", agent_id: "researcher" },
+			env,
+			memberCtx,
+		)) as Record<string, unknown>;
+		expect(res.action).toBe("list");
+		expect(Array.isArray(res.conversations)).toBe(true);
+	});
+
+	it("get returns a caller-owned conversation", async () => {
+		vi.resetModules();
+		mockDeps({ conversation: OWNED_ROW });
+		const manageConversations = await loadHandler();
+		const res = (await manageConversations(
+			{ action: "get", agent_id: "researcher", conversation_id: "conv-x" },
+			env,
+			memberCtx,
+		)) as Record<string, unknown>;
+		expect(res.action).toBe("get");
+	});
+
+	it("get refuses another user's web conversation for a member (IDOR → 404)", async () => {
+		vi.resetModules();
+		mockDeps({ conversation: { ...OWNED_ROW, userId: "someone-else" } });
+		const manageConversations = await loadHandler();
+		await expect(
+			manageConversations(
+				{ action: "get", agent_id: "researcher", conversation_id: "conv-x" },
+				env,
+				memberCtx,
+			),
+		).rejects.toThrow(/not found/);
+	});
+
+	it("get lets an ADMIN read another user's conversation", async () => {
+		vi.resetModules();
+		mockDeps({ conversation: { ...OWNED_ROW, userId: "someone-else" } });
+		const manageConversations = await loadHandler();
+		const res = (await manageConversations(
+			{ action: "get", agent_id: "researcher", conversation_id: "conv-x" },
+			env,
+			ctx, // owner
+		)) as Record<string, unknown>;
+		expect(res.action).toBe("get");
+	});
+
+	it("list rejects an unauthenticated caller", async () => {
+		vi.resetModules();
+		mockDeps({});
+		const manageConversations = await loadHandler();
+		await expect(
+			manageConversations(
+				{ action: "list", agent_id: "researcher" },
+				env,
+				{ ...ctx, userId: null, scopes: ["*"] },
 			),
 		).rejects.toThrow(/authenticated caller/);
 	});

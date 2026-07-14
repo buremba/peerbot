@@ -182,7 +182,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'search_sdk',
     description:
-      "Search ClientSDK method and sandbox runtime-helper documentation (including `ctx.sleep`). Results are filtered to what you can call: pass mode='read' for query_sdk-safe methods, or omit mode for your full run_sdk tier (write/admin methods appear only when your role and scopes allow). Does not query workspace data — pair with `query_sdk` or `run_sdk` to execute. For flat SQL with pagination/feeds use `query_sql`; for governed metrics use client.metrics.* via query_sdk.",
+      'Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "watchers"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes. Pass mode="read" to show only query_sdk-safe methods.)',
     inputSchema: SdkSearchSchema,
     outputSchema: SdkSearchResultSchema,
     annotations: { ...READ_ONLY, title: 'Search SDK docs' },
@@ -192,7 +192,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'query_sdk',
     description:
-      'Run read-only TypeScript in a sandboxed isolate over the ClientSDK. Use this to fetch workspace data through typed SDK methods. The script signature is `export default async (ctx, client) => ...`; for polling, use the bounded abort-aware `await ctx.sleep(ms)` (0–30000ms per call). Mutating methods are absent from `client` — attempts surface as undefined methods; use `run_sdk` for writes. Output capped at 1 MB. Use `search_sdk` to find method names or `ctx.sleep`. Example: `export default async (_ctx, client) => client.entities.list({ entity_type: "company" });`',
+      'Read workspace data through typed SDK methods. Query entities, relationships, feeds, operations, metrics, and more. Use this for lookups and searches that do not change data. (For writes: use run_sdk. To discover available methods: use search_sdk. For polling: use await ctx.sleep(ms) in your script.)',
     inputSchema: QuerySchema,
     outputSchema: SdkScriptResultSchema,
     annotations: { ...READ_ONLY, title: 'Query SDK (read-only)' },
@@ -209,7 +209,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'run_sdk',
     description:
-      'Potentially mutating — confirm before running. Runs TypeScript over the full ClientSDK: `export default async (ctx, client) => ...`; for polling, use the bounded abort-aware `await ctx.sleep(ms)` (0–30000ms per call). Use `query_sdk` for reads. `dry_run: true` executes reads but skips write/admin/external SDK calls into `side_effect_preview`; skipped handlers are not executed, so their payloads are not fully validated. Output capped at 1 MB.',
+      'Perform any workspace action: create/update/delete entities, set up connections (e.g. client.connections.connect({ connector_key: "github" })), manage watchers and feeds, run operations, or modify templates. Use this for anything that changes data. (For read-only access: use query_sdk. To discover available methods: use search_sdk. Preview changes without executing: set dry_run=true.)',
     inputSchema: RunSchema,
     outputSchema: SdkScriptResultSchema,
     annotations: { destructiveHint: true, idempotentHint: false, title: 'Run SDK' },

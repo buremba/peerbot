@@ -466,6 +466,32 @@ async function resolveMembershipRole(
   return rows.length > 0 ? ((rows[0].role as string) ?? null) : null;
 }
 
+/**
+ * Populate `memberRole` for an authenticated SCOPED (`/mcp/{slug}`) session.
+ *
+ * `extractAuthContext` derives the org from the URL slug and the user from the
+ * token, but never looks up the caller's membership row — so a scoped session's
+ * `memberRole` is null even for a real owner/admin. The UNSCOPED path already
+ * resolves it via `resolveMembershipRole`; the scoped path historically skipped
+ * that, which made every role-gated action (e.g. `manage_catalog.list_installed`,
+ * which requires admin) wrongly deny legitimate members over `/mcp/{slug}`.
+ *
+ * Anonymous public-workspace browse (no userId) keeps a null role by design —
+ * `resolveMembershipRole` returns null for a null user, so this is a no-op there.
+ */
+async function hydrateScopedMemberRole(
+  env: Env,
+  authCtx: AuthContext
+): Promise<void> {
+  if (!authCtx.scopedToOrg || !authCtx.isAuthenticated) return;
+  if (!authCtx.organizationId || !authCtx.userId) return;
+  authCtx.memberRole = await resolveMembershipRole(
+    env,
+    authCtx.organizationId,
+    authCtx.userId
+  );
+}
+
 async function recoverSessionAuthContext(
   c: Context<{ Bindings: Env }>,
   sessionId: string
@@ -489,6 +515,9 @@ async function recoverSessionAuthContext(
     if (authCtx.organizationId !== persisted.organizationId) {
       return null;
     }
+    // Scoped sessions must resolve the caller's membership role too — otherwise
+    // role-gated actions deny a legitimate owner/admin over `/mcp/{slug}`.
+    await hydrateScopedMemberRole(c.env, authCtx);
   } else {
     authCtx.organizationId = persisted.organizationId;
     authCtx.memberRole = await resolveMembershipRole(
@@ -879,6 +908,10 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
             400
           );
         }
+        // `freshCtx` (scoped) carries a null memberRole — extractAuthContext
+        // never looks up membership — so resolve it before it reaches the
+        // role-gated tools, mirroring the unscoped branch below.
+        await hydrateScopedMemberRole(c.env, freshCtx);
         session.authCtx.memberRole = freshCtx.memberRole;
         session.authCtx.instructions = freshCtx.organizationId
           ? ((await buildWorkspaceInstructions(freshCtx.organizationId)) ?? undefined)
@@ -1016,6 +1049,10 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     if (bindingError) {
       return buildJsonRpcErrorResponse(bindingError, initialize?.id ?? null, 400);
     }
+    // Resolve the caller's membership role for scoped `/mcp/{slug}` sessions
+    // before the session is created/persisted — extractAuthContext leaves it
+    // null, which would deny role-gated actions to a real owner/admin.
+    await hydrateScopedMemberRole(c.env, authCtx);
     await recordMcpClientActivity(c.env, authCtx, req, initialize);
     const { transport, server } = createSessionTransport(
       c.env,

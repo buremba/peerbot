@@ -836,6 +836,56 @@ describe('MCP Authentication', () => {
     });
   });
 
+  describe('Scoped /mcp/{slug} membership-role resolution', () => {
+    // Regression: scoped sessions derived org from the URL slug and user from
+    // the token but never looked up the caller's membership row, so `memberRole`
+    // stayed null even for an owner — role-gated actions (e.g.
+    // catalog.list_installed, which requires admin) wrongly denied real members.
+    it('resolves an OWNER role on a scoped session (admin-gated action allowed)', async () => {
+      const roleOrg = await createTestOrganization({ name: 'Scoped Role Org' });
+      const owner = await createTestUser({});
+      await addUserToOrganization(owner.id, roleOrg.id, 'owner');
+      const { token } = await createTestPAT(owner.id, roleOrg.id, {
+        scope: 'mcp:read mcp:write mcp:admin',
+      });
+
+      // catalog.list_installed requires admin/owner. Pre-fix this threw
+      // "requires an MCP session with admin access" on the scoped endpoint.
+      const result = await mcpToolsCall(
+        'query_sdk',
+        {
+          script:
+            'export default async (_c, client) => { const r = await client.catalog.listInstalled({ kinds: ["connectors"] }); return { ok: true }; }',
+        },
+        { token, orgSlug: roleOrg.slug }
+      );
+      expect(result.success).toBe(true);
+      expect(result.return_value?.ok).toBe(true);
+    });
+
+    it('does NOT over-grant: a plain MEMBER is still denied the admin-gated action on a scoped session', async () => {
+      const roleOrg = await createTestOrganization({ name: 'Scoped Member Org' });
+      const member = await createTestUser({});
+      await addUserToOrganization(member.id, roleOrg.id, 'member');
+      const { token } = await createTestPAT(member.id, roleOrg.id, {
+        scope: 'mcp:read mcp:write mcp:admin',
+      });
+
+      // query_sdk catches the SDK denial and returns success:false (rather than
+      // throwing), so assert on the surfaced error, not a rejection.
+      const result = await mcpToolsCall(
+        'query_sdk',
+        {
+          script:
+            'export default async (_c, client) => { await client.catalog.listInstalled({ kinds: ["connectors"] }); return { ok: true }; }',
+        },
+        { token, orgSlug: roleOrg.slug }
+      );
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/admin or owner access|admin access/i);
+    });
+  });
+
   // The pre-#438 "JSON-RPC -32001 Organization context required" error path
   // no longer exists — anonymous calls now get HTTP 401 with WWW-Authenticate
   // before they ever reach the org-context guard. That contract is covered

@@ -63,9 +63,12 @@ function makeDeps(over?: {
 			args.action === "list_catalog"
 				? (over?.catalog ?? catalogResult)
 				: (over?.installed ?? installedResult)) as never,
-		manageConnections: (async (args: { connector_key?: string }) => ({
-			connections: over?.connectionsByKey?.[args.connector_key ?? ""] ?? [],
-		})) as never,
+		manageConnections: (async (args: { connector_key?: string; status?: string }) => {
+			// Model the real handler: connector_key AND optional status filter.
+			const all = over?.connectionsByKey?.[args.connector_key ?? ""] ?? [];
+			const rows = args.status ? all.filter((c) => c.status === args.status) : all;
+			return { connections: rows };
+		}) as never,
 	};
 }
 
@@ -122,15 +125,18 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 		expect(hits[0]).not.toMatch(/needs attention/);
 	});
 
-	it("finds a connector's active connection via connector_key filter, not a single unfiltered page", async () => {
-		// The review-caught bug: scanning one unfiltered page (limit 200) would
-		// miss an active connection in a large workspace. The tool queries
-		// connections FILTERED by connector_key, so it's found regardless of how
-		// many OTHER connectors' connections exist. The mock returns rows only for
-		// the queried key — proving the tool passes the filter.
-		const deps = makeDeps({ connectionsByKey: { website: [{ status: "active" }] } });
+	it("finds an ACTIVE connection even behind many newer non-active ones (status probe, not one page)", async () => {
+		// The review-caught bug: an older active connection hidden behind 200 newer
+		// revoked rows was reported as 'needs repair'. The tool probes status=active
+		// (filtered) first, so it's found regardless of ordering/volume.
+		const many = [
+			...Array.from({ length: 200 }, () => ({ status: "revoked" })),
+			{ status: "active" }, // older, would be on page 2 of an unfiltered scan
+		];
+		const deps = makeDeps({ connectionsByKey: { website: many } });
 		const hits = await searchLiveConnectors("website", env, ctx, deps);
 		expect(hits[0]).toMatch(/CONNECTED/);
+		expect(hits[0]).not.toMatch(/needs attention/);
 	});
 
 	it("surfaces a global-catalog connector as installable when not installed", async () => {

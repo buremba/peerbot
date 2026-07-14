@@ -121,20 +121,6 @@ function compileSchema(schema: TSchema): TypeCheck<TSchema> {
 }
 
 /**
- * Reject top-level keys the schema does not declare. TypeBox `Type.Object`
- * accepts extra keys by default, so an unknown argument (a typo, or a field
- * that belongs to a DIFFERENT action variant) used to be silently dropped —
- * the call "succeeded" while ignoring the caller's intent. This runs against
- * the MATCHED variant's properties (never the union: clients see the
- * flattened merged schema, so only post-dispatch is the allowed key set
- * well-defined; the `action` discriminator is a declared property of every
- * variant and thus always allowed).
- *
- * Skipped when the schema declares `additionalProperties` as anything other
- * than `false` (e.g. `Type.Record` passthrough) or has no `properties` at
- * all — those schemas accept arbitrary keys by design.
- */
-/**
  * Return the allowed string literals of a subschema when it is a single
  * literal, an enum, or a union of literals — so an "Expected union value"
  * error (which names none) can be rewritten as `Expected one of: "a", "b"`.

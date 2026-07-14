@@ -102,27 +102,34 @@ export async function searchLiveConnectors(
     const installedIds = new Set(installed.map((i) => i.id));
 
     // Only the installed connectors that MATCH the query need a status — resolve
-    // their connections filtered by connector_key. Filtering (not a single
-    // unpaginated page) is size-independent: an active connection in a large
-    // workspace can't fall off page 1 and be misreported as absent/unhealthy.
+    // their connections. Two targeted probes per connector rather than a single
+    // page: first ask "is there an ACTIVE connection?" (status filter, limit 1);
+    // only if none, fetch one connection to report its non-active state. This is
+    // fully size-independent — an older active connection can't be hidden behind
+    // a page of newer revoked ones.
     const matchedInstalled = installed.filter((i) =>
       matchesQueryTokens(q, i.id, i.name, i.detail?.description)
     );
-    const USABLE = new Set(['active']);
+    const listConnections = async (connectorKey: string, status?: string) => {
+      const res = (await manageConnections(
+        { action: 'list', connector_key: connectorKey, ...(status ? { status } : {}), limit: 1 } as never,
+        env,
+        ctx
+      )) as { connections?: unknown };
+      return asArray<{ status: string }>(res.connections);
+    };
     const bestStatusByKey = new Map<string, string>();
     await Promise.all(
       matchedInstalled.map(async (i) => {
-        const res = (await manageConnections(
-          { action: 'list', connector_key: i.id, limit: 200 } as never,
-          env,
-          ctx
-        )) as { connections?: unknown };
-        const rows = asArray<{ status: string }>(res.connections);
-        if (rows.length === 0) return;
-        const best = rows.find((r) => USABLE.has(r.status))?.status ?? rows[0].status;
-        bestStatusByKey.set(i.id, best);
+        if ((await listConnections(i.id, 'active')).length > 0) {
+          bestStatusByKey.set(i.id, 'active');
+          return;
+        }
+        const any = await listConnections(i.id);
+        if (any.length > 0) bestStatusByKey.set(i.id, any[0].status);
       })
     );
+    const USABLE = new Set(['active']);
     const bestStatus = (key: string): string | undefined => bestStatusByKey.get(key);
 
     for (const i of matchedInstalled) {

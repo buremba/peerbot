@@ -290,6 +290,48 @@ export default async (_ctx, client) => {
 		example: "await client.agents.setSystemAgent('builder');",
 	},
 
+	// conversations — an agent's durable threads (history + pinned sandbox realm).
+	// list/get read the materialized `conversations` entity; send drives a turn.
+	"conversations.manage": {
+		summary: "Raw manage_conversations action wrapper. Prefer named methods.",
+		access: "write",
+	},
+	"conversations.list": {
+		summary:
+			"List an agent's conversations, newest-first (own threads for a member; all for admin).",
+		access: "read",
+		example:
+			"const { conversations } = await client.conversations.list({ agent_id: 'researcher' });",
+	},
+	"conversations.get": {
+		summary:
+			"Fetch one conversation by (platform, conversation_id). platform defaults to 'web'.",
+		access: "read",
+		example:
+			"const { conversation } = await client.conversations.get({ agent_id: 'researcher', conversation_id: 'researcher_u1_org1_daily' });",
+	},
+	"conversations.send": {
+		summary:
+			"Send a message to an agent conversation and (by default) await the reply. Runs the turn in the conversation's pinned sandbox realm. Pass wait:false to enqueue and return immediately.",
+		access: "write",
+		cost: "expensive",
+		usageExample: `// Send a message and get the agent's reply back.
+export default async (ctx, client) => {
+  const res = await client.conversations.send({
+    agent_id: 'researcher',
+    thread: 'daily',
+    text: 'Summarize today’s new signups.',
+  });
+  if (res.status === 'complete') return res.reply;
+  if (res.status === 'error') throw new Error(res.error);
+  // status 'timeout' — the turn is still running; read it later:
+  return client.conversations.get({
+    agent_id: 'researcher',
+    conversation_id: res.conversation_id,
+  });
+};`,
+	},
+
 	// schedules
 	"schedules.manage": {
 		summary: "Raw manage_schedules action wrapper. Prefer named methods.",

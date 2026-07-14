@@ -54,6 +54,11 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 		"approve_batch",
 		"reject_batch",
 	]),
+	// A member sends a message to their own agent's conversation. `send` runs the
+	// turn in the conversation's pinned sandbox; the handler binds the
+	// conversation to ctx.userId and fences on agent-in-org. list/get are
+	// read-tier (PUBLIC_READ_ACTIONS).
+	manage_conversations: new Set(["send"]),
 };
 
 const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
@@ -167,6 +172,9 @@ const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	]),
 	manage_classifiers: new Set(["list"]),
 	manage_view_templates: new Set(["get"]),
+	// Reading an agent's conversations (the listing entity) is member/read-tier;
+	// the handler fences on agent-in-org and scopes a member to their own threads.
+	manage_conversations: new Set(["list", "get"]),
 };
 
 function getAction(args: unknown): string | null {

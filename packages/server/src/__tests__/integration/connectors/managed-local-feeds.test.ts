@@ -213,9 +213,22 @@ describe('Stage 5 — local managed connection has feeds', () => {
       },
       TEST_ENV,
       ctx
-    )) as { connection?: { id?: number }; error?: string };
+    )) as {
+      connection?: { id?: number };
+      error?: string;
+      status?: string;
+      setup_family?: string;
+      next_action?: string;
+      resume_call?: { sdk_method?: string };
+    };
 
-    expect(result.error).toBeTruthy();
+    expect(result).toMatchObject({
+      status: 'setup_required',
+      setup_family: 'oauth',
+      next_action: 'select_auth_profile',
+      resume_call: { sdk_method: 'connections.create' },
+    });
+    expect(result.error).toBeUndefined();
     expect(result.connection?.id).toBeUndefined();
   });
 

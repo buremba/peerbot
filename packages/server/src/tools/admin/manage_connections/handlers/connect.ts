@@ -2,51 +2,76 @@
  * Connect action handler: create connection + OAuth flow in one call.
  */
 
-import { getDb, pgBigintArray } from '../../../../db/client';
-import { notifyConnectionPermissionRequest } from '../../../../notifications/triggers';
-import { getPrimaryAuthProfileForKind, getBrowserSessionReadiness } from '../../../../utils/auth-profiles';
+import { randomUUID } from "node:crypto";
+import { getDb, pgBigintArray, type DbClient } from "../../../../db/client";
+import { notifyConnectionPermissionRequest } from "../../../../notifications/triggers";
+import {
+	getPrimaryAuthProfileForKind,
+	getBrowserSessionReadiness,
+} from "../../../../utils/auth-profiles";
 import {
   ConnectionSlugConflictError,
   connectionSlugFormatError,
   insertConnectionWithSlug,
   resolveNewConnectionSlug,
-} from '../../../../utils/connections';
-import { recordLifecycleEvent } from '../../../../utils/insert-event';
-import { recordToolConfigChange } from '../../helpers/config-audit';
-import logger from '../../../../utils/logger';
-import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';
+} from "../../../../utils/connections";
+import { recordLifecycleEvent } from "../../../../utils/insert-event";
+import { recordToolConfigChange } from "../../helpers/config-audit";
+import logger from "../../../../utils/logger";
+import { ensureConnectorInstalled } from "../../../../utils/ensure-connector-installed";
 import {
   buildOAuthConnectConfig,
   ensureEnvBackedOAuthAppProfile,
   getConnectBaseUrl,
+	getInteractiveMethods,
   resolveConnectionAuthSelection,
   resolveConnectionDisplayName,
   resolveConnectionVisibility,
-} from '../../helpers/connection-helpers';
-import { assertEntityIdsInOrg } from '../../helpers/db-helpers';
+} from "../../helpers/connection-helpers";
+import { assertEntityIdsInOrg } from "../../helpers/db-helpers";
 import {
   buildAppInstallationSetupUrl,
   rejectUnboundAppInstallationCreate,
-} from '../../helpers/app-installation-guard';
-import { buildOAuthAppProfileSetupError } from '../../helpers/connector-setup-errors';
-import { type FeedDefinition, splitConfigByFeedScope } from '../../helpers/feed-helpers';
-import { getScopedConnectorDefinition } from '../../../../catalog/connector-definitions';
-import { buildConnectionsUrl } from '../../../../utils/url-builder';
-import { getOrgUrlContext } from '../../../view-urls';
-import { createConnectToken } from '../../../../utils/connect-tokens';
-import { registerConnectorWebhook } from '../../../../connect/webhook-registration';
-import { resolveUsernames } from '../../../../utils/resolve-usernames';
-import type { ToolContext } from '../../../registry';
-import type { ManageConnectionsResult, ConnectionsArgs } from '../schemas';
-import { resolveDeviceBinding, isManagedPublicOrgConnect } from './device-binding';
+} from "../../helpers/app-installation-guard";
+import { buildOAuthAppProfileSetupError } from "../../helpers/connector-setup-errors";
+import {
+	type FeedDefinition,
+	splitConfigByFeedScope,
+} from "../../helpers/feed-helpers";
+import { getScopedConnectorDefinition } from "../../../../catalog/connector-definitions";
+import { buildConnectionsUrl } from "../../../../utils/url-builder";
+import { getOrgUrlContext } from "../../../view-urls";
+import { createConnectToken } from "../../../../utils/connect-tokens";
+import { registerConnectorWebhook } from "../../../../connect/webhook-registration";
+import { resolveUsernames } from "../../../../utils/resolve-usernames";
+import type { ToolContext } from "../../../registry";
+import type { ManageConnectionsResult, ConnectionsArgs } from "../schemas";
+import {
+	resolveDeviceBinding,
+	isManagedPublicOrgConnect,
+} from "./device-binding";
 import { getErrorMessage } from "@lobu/core";
+import {
+	activeConnectionPoll,
+	appendSetupAttemptId,
+	buildConnectionSetupContinuation,
+	buildSafeConnectionResumeCall,
+	installedConnectorPoll,
+	type ConnectionSetupFamily,
+	type ConnectionSetupNextAction,
+} from "../../helpers/connect-setup-continuation";
+import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
 
 export async function handleConnect(
-  args: Extract<ConnectionsArgs, { action: 'connect' }>,
-  ctx: ToolContext
+	args: Extract<ConnectionsArgs, { action: "connect" }>,
+	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId, userId } = ctx;
+	const resumeCall = buildSafeConnectionResumeCall(
+		"connections.connect",
+		args,
+	);
 
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
   const buildSetupUrl = (opts?: { connectorKey?: string; install?: string }) =>
@@ -55,12 +80,15 @@ export async function handleConnect(
           ownerSlug,
           baseUrl,
           opts?.connectorKey,
-          opts?.install ? { install: opts.install } : undefined
+					opts?.install ? { install: opts.install } : undefined,
         )
       : undefined;
 
   // Ensure connector is installed from bundled catalog if needed
-  await ensureConnectorInstalled({ organizationId, connectorKey: args.connector_key });
+	await ensureConnectorInstalled({
+		organizationId,
+		connectorKey: args.connector_key,
+	});
 
   // Verify connector exists
   const connector = await getScopedConnectorDefinition({
@@ -93,10 +121,54 @@ export async function handleConnect(
     setupUrl,
   });
   if (appInstallGuard) {
-    return {
-      ...appInstallGuard,
-      setup_url: await buildAppInstallationSetupUrl(ctx, args.connector_key),
-    };
+		const setupAttemptId =
+			appInstallGuard.provider === "github" && appInstallGuard.install_url
+				? randomUUID()
+				: undefined;
+		// Setup-required continuation: the App install callback creates the active
+		// connection itself, so do NOT instruct a retry of connect. The guard's
+		// ConnectorSetupError already carries the absolute install_url.
+		return buildConnectionSetupContinuation({
+			action: "connect",
+			connectorKey: args.connector_key,
+			setupFamily: "app_installation",
+			nextAction:
+				appInstallGuard.next_action === "install_app"
+					? "install_app"
+					: "open_setup",
+			instructions: appInstallGuard.error,
+			errorCode: appInstallGuard.error_code,
+			installType: appInstallGuard.install_type,
+			...(appInstallGuard.install_shape
+				? { installShape: appInstallGuard.install_shape }
+				: {}),
+			...(appInstallGuard.setup_instructions
+				? { setupInstructions: appInstallGuard.setup_instructions }
+				: {}),
+			...(setupAttemptId
+				? {
+						completionCheck: installedConnectorPoll(
+							args.connector_key,
+							setupAttemptId,
+						),
+						setupAttemptId,
+					}
+				: {}),
+			setupUrl: await buildAppInstallationSetupUrl(ctx, args.connector_key),
+			...(appInstallGuard.install_url
+				? {
+						installUrl: setupAttemptId
+							? appendSetupAttemptId(
+									appInstallGuard.install_url,
+									setupAttemptId,
+								)
+							: appInstallGuard.install_url,
+					}
+				: {}),
+			...(appInstallGuard.provider
+				? { provider: appInstallGuard.provider }
+				: {}),
+		});
   }
 
   const deviceBinding = await resolveDeviceBinding({
@@ -105,7 +177,19 @@ export async function handleConnect(
     connector,
     deviceWorkerId: args.device_worker_id,
   });
-  if ('error' in deviceBinding) return deviceBinding;
+	if ("error" in deviceBinding) {
+		if (connector.required_capability && !args.device_worker_id) {
+			return buildConnectionSetupContinuation({
+				action: "connect",
+				connectorKey: args.connector_key,
+				setupFamily: "device_bound",
+				nextAction: "connect_device",
+				instructions: deviceBinding.error,
+				setupUrl,
+			});
+		}
+		return deviceBinding;
+	}
   if (deviceBinding.deviceWorkerId) {
     const dup = (await sql`
       SELECT id FROM connections
@@ -158,11 +242,11 @@ export async function handleConnect(
     };
     const connectUrl = `${getConnectBaseUrl(ctx)}/connect/${pending.token}/oauth/start`;
     return {
-      action: 'connect',
+			action: "connect",
       connection_id: pending.id,
       slug: pending.slug,
-      status: 'pending_auth',
-      auth_type: 'oauth',
+			status: "pending_auth",
+			auth_type: "oauth",
       connect_url: connectUrl,
       connect_token: pending.token,
       expires_at: new Date(pending.expires_at).toISOString(),
@@ -180,26 +264,34 @@ export async function handleConnect(
   });
 
   const hasNoAuth =
-    !authSelection.oauthMethod && !authSelection.envMethod && !authSelection.browserMethod;
-  const profileDeviceWorkerIdConnect = authSelection.authProfile?.device_worker_id ?? null;
-  let effectiveDeviceWorkerIdConnect = deviceBinding.deviceWorkerId;
-  if (profileDeviceWorkerIdConnect) {
-    if (!effectiveDeviceWorkerIdConnect) {
-      effectiveDeviceWorkerIdConnect = profileDeviceWorkerIdConnect;
-    } else if (effectiveDeviceWorkerIdConnect !== profileDeviceWorkerIdConnect) {
-      return {
-        error: `Auth profile '${authSelection.authProfile!.slug}' lives on a different device than the one selected; pick that device or a different profile.`,
-        setup_url: setupUrl,
-      };
-    }
-  }
-  const isDeviceBoundBrowserSessionConnect =
-    authSelection.authProfile?.profile_kind === 'browser_session' &&
-    !!profileDeviceWorkerIdConnect;
-  // Same guard as create-path: when the profile contributed a device we
-  // didn't already check against, re-run the duplicate-connection check now
-  // so the partial unique index never decides the outcome with a raw error.
-  if (effectiveDeviceWorkerIdConnect && effectiveDeviceWorkerIdConnect !== deviceBinding.deviceWorkerId) {
+		!authSelection.oauthMethod &&
+		!authSelection.envMethod &&
+		!authSelection.browserMethod;
+	const profileDeviceWorkerIdConnect =
+		authSelection.authProfile?.device_worker_id ?? null;
+	let effectiveDeviceWorkerIdConnect = deviceBinding.deviceWorkerId;
+	if (profileDeviceWorkerIdConnect) {
+		if (!effectiveDeviceWorkerIdConnect) {
+			effectiveDeviceWorkerIdConnect = profileDeviceWorkerIdConnect;
+		} else if (
+			effectiveDeviceWorkerIdConnect !== profileDeviceWorkerIdConnect
+		) {
+			return {
+				error: `Auth profile '${authSelection.authProfile!.slug}' lives on a different device than the one selected; pick that device or a different profile.`,
+				setup_url: setupUrl,
+			};
+		}
+	}
+	const isDeviceBoundBrowserSessionConnect =
+		authSelection.authProfile?.profile_kind === "browser_session" &&
+		!!profileDeviceWorkerIdConnect;
+	// Same guard as create-path: when the profile contributed a device we
+	// didn't already check against, re-run the duplicate-connection check now
+	// so the partial unique index never decides the outcome with a raw error.
+	if (
+		effectiveDeviceWorkerIdConnect &&
+		effectiveDeviceWorkerIdConnect !== deviceBinding.deviceWorkerId
+	) {
     const dup = (await sql`
       SELECT id FROM connections
       WHERE organization_id = ${organizationId}
@@ -216,10 +308,14 @@ export async function handleConnect(
     }
   }
   const browserProfileUsable =
-    authSelection.authProfile?.profile_kind === 'browser_session' &&
+		authSelection.authProfile?.profile_kind === "browser_session" &&
     !isDeviceBoundBrowserSessionConnect
-      ? (await getBrowserSessionReadiness(authSelection.authProfile.auth_data, args.connector_key))
-          .usable
+			? (
+					await getBrowserSessionReadiness(
+						authSelection.authProfile.auth_data,
+						args.connector_key,
+					)
+				).usable
       : false;
   // Device-bound browser_session profiles are "ready" by virtue of the
   // cookies being on disk on the device. `getBrowserSessionReadiness` only
@@ -228,37 +324,78 @@ export async function handleConnect(
   // auth profile" even when the Mac app just created one.
   const hasReadySelection =
     !!authSelection.authProfile &&
-    (authSelection.authProfile.profile_kind === 'browser_session'
+		(authSelection.authProfile.profile_kind === "browser_session"
       ? isDeviceBoundBrowserSessionConnect || browserProfileUsable
-      : authSelection.authProfile.status === 'active') &&
-    (authSelection.selectedKind !== 'oauth_account' ||
-      (authSelection.appAuthProfile?.status === 'active' && !!authSelection.appAuthProfile));
+			: authSelection.authProfile.status === "active") &&
+		(authSelection.selectedKind !== "oauth_account" ||
+			(authSelection.appAuthProfile?.status === "active" &&
+				!!authSelection.appAuthProfile));
 
   const needsConnectFlow =
-    authSelection.preferredMethodType === 'oauth' &&
+		authSelection.preferredMethodType === "oauth" &&
     !!authSelection.oauthMethod &&
     !hasReadySelection &&
     !args.auth_profile_slug;
   const needsBrowserAuth =
     !!authSelection.browserMethod &&
     !!authSelection.authProfile &&
-    authSelection.authProfile.profile_kind === 'browser_session' &&
+		authSelection.authProfile.profile_kind === "browser_session" &&
     !isDeviceBoundBrowserSessionConnect &&
     !browserProfileUsable;
-  const connectionStatus = needsConnectFlow || needsBrowserAuth ? 'pending_auth' : 'active';
+	// Interactive-auth connectors (e.g. WhatsApp QR) bypass standard auth-profile
+	// selection: the connection starts pending_auth and an auth run drives the
+	// interactive pairing. Without this, an interactive connector looks like
+	// no-auth (oauth/env/browser methods all absent) and connect would wrongly
+	// create an ACTIVE, unauthenticated connection.
+	const interactiveMethod =
+		getInteractiveMethods(connector.auth_schema)[0] ?? null;
+	const isInteractiveConnect = !!interactiveMethod && !hasReadySelection;
+	const connectionStatus =
+		needsConnectFlow || needsBrowserAuth || isInteractiveConnect
+			? "pending_auth"
+			: "active";
 
-  if (!hasNoAuth && !needsConnectFlow && !needsBrowserAuth && !hasReadySelection) {
+	if (isInteractiveConnect && !userId) {
     return {
-      error: authSelection.browserMethod
-        ? 'Select or create a browser auth profile before creating the connection.'
-        : authSelection.oauthMethod && authSelection.selectedKind !== 'oauth_account'
-          ? 'Select or create an OAuth account profile before creating the connection.'
-          : authSelection.envMethod
-            ? 'Select or create an auth profile before creating the connection.'
-            : 'Selected auth profile is not ready yet.',
+			error: "Interactive pairing requires an authenticated user.",
       setup_url: setupUrl,
     };
   }
+
+	if (
+		!hasNoAuth &&
+		!needsConnectFlow &&
+		!needsBrowserAuth &&
+		!hasReadySelection &&
+		!isInteractiveConnect
+	) {
+		// Setup-required continuation: a known auth method needs a profile/config
+		// the caller hasn't supplied. Non-terminal — the caller fixes it then retries.
+		const family: ConnectionSetupFamily = authSelection.browserMethod
+			? "browser"
+			: authSelection.envMethod
+				? "env_keys"
+				: "oauth";
+		const nextAction: ConnectionSetupNextAction = authSelection.browserMethod
+			? "pair_browser"
+			: "select_auth_profile";
+		return buildConnectionSetupContinuation({
+			action: "connect",
+			connectorKey: args.connector_key,
+			setupFamily: family,
+			nextAction,
+			instructions: authSelection.browserMethod
+				? "Select or create a browser auth profile before connecting."
+				: authSelection.oauthMethod &&
+						authSelection.selectedKind !== "oauth_account"
+					? "Select or create an OAuth account profile before connecting."
+					: authSelection.envMethod
+						? "Select or create an auth profile (or pass env credentials) before connecting."
+						: "Selected auth profile is not ready yet.",
+			setupUrl,
+			resumeCall,
+		});
+	}
 
   // Create the connection
   const connectDisplayName = await resolveConnectionDisplayName({
@@ -266,7 +403,9 @@ export async function handleConnect(
     connectorName: connector.name,
     username: userId
       ? ((
-          (await resolveUsernames([{ created_by: userId }], 'created_by'))[0] as {
+					(
+						await resolveUsernames([{ created_by: userId }], "created_by")
+					)[0] as {
             created_by_username?: string;
           }
         )?.created_by_username ?? null)
@@ -276,7 +415,7 @@ export async function handleConnect(
   const connectVisibility = await resolveConnectionVisibility(
     organizationId,
     userId,
-    authSelection?.authProfile?.profile_kind
+		authSelection?.authProfile?.profile_kind,
   );
   const connectorFeedsSchema = (connector.feeds_schema ?? null) as Record<
     string,
@@ -288,7 +427,7 @@ export async function handleConnect(
   };
   const splitConfig = splitConfigByFeedScope(
     Object.keys(mergedConfig).length > 0 ? mergedConfig : null,
-    connectorFeedsSchema
+		connectorFeedsSchema,
   );
 
   if (splitConfig.feedConfig) {
@@ -327,7 +466,9 @@ export async function handleConnect(
     return { error: getErrorMessage(err), setup_url: setupUrl };
   }
   const connectEntityIdsValue =
-    args.entity_ids && args.entity_ids.length > 0 ? pgBigintArray(args.entity_ids) : null;
+		args.entity_ids && args.entity_ids.length > 0
+			? pgBigintArray(args.entity_ids)
+			: null;
 
   const connectSlugResult = await resolveNewConnectionSlug({
     organizationId,
@@ -335,18 +476,23 @@ export async function handleConnect(
     explicitSlug: args.slug,
     displayName: connectDisplayName,
   });
-  if ('error' in connectSlugResult) return { error: connectSlugResult.error, setup_url: setupUrl };
+	if ("error" in connectSlugResult)
+		return { error: connectSlugResult.error, setup_url: setupUrl };
 
-  // biome-ignore lint/suspicious/noExplicitAny: postgres.js row shape
-  let insertedConn: any[];
-  try {
-    insertedConn = await insertConnectionWithSlug({
+	const insertConnection = (
+		db: DbClient,
+		authProfileId: number | null,
+		useSavepoint: boolean,
+	) =>
+		insertConnectionWithSlug({
       organizationId,
       connectorKey: args.connector_key,
       displayName: connectDisplayName,
       initialSlug: connectSlugResult.slug,
       explicit: !!args.slug?.trim(),
-      doInsert: (slug) => sql`
+			db,
+			doInsert: (slug) => {
+				const insert = () => db`
         INSERT INTO connections (
           organization_id, connector_key, slug, display_name, status,
           auth_profile_id, app_auth_profile_id, config, created_by, visibility, device_worker_id,
@@ -356,19 +502,40 @@ export async function handleConnect(
           ${slug},
           ${connectDisplayName},
           ${connectionStatus},
-          ${authSelection.authProfile?.id ?? null},
+            ${authProfileId ?? authSelection.authProfile?.id ?? null},
           ${authSelection.appAuthProfile?.id ?? null},
-          ${connectionConfigToInsert ? sql.json(connectionConfigToInsert) : null},
+            ${connectionConfigToInsert ? db.json(connectionConfigToInsert) : null},
           ${userId},
           ${connectVisibility},
           ${effectiveDeviceWorkerIdConnect},
           ${connectEntityIdsValue}::bigint[]
         )
         RETURNING *
-      `,
+        `;
+				return useSavepoint ? db.savepoint(insert) : insert();
+			},
     });
+
+	// Profile, connection, and auth run are one durable unit. A failed run
+	// creation rolls back both rows, so another replica can never observe an
+	// orphaned pending connection that has no pairing work queued.
+	let insertedConn: Record<string, unknown>[];
+	let interactiveAuthRunId: number | null;
+	try {
+		const bundle = await createConnectionSetupBundle({
+			db: sql,
+			interactive: isInteractiveConnect,
+			organizationId,
+			connectorKey: args.connector_key,
+			displayName: connectDisplayName,
+			createdByUserId: userId!,
+			insertConnection,
+		});
+		insertedConn = bundle.rows;
+		interactiveAuthRunId = bundle.authRunId;
   } catch (err) {
-    if (err instanceof ConnectionSlugConflictError) return { error: err.message, setup_url: setupUrl };
+		if (err instanceof ConnectionSlugConflictError)
+			return { error: err.message, setup_url: setupUrl };
     throw err;
   }
 
@@ -384,49 +551,76 @@ export async function handleConnect(
       connector_key: args.connector_key,
       status: connectionStatus,
     },
-    'Connection created via connect flow'
+		"Connection created via connect flow",
   );
 
   recordLifecycleEvent({
     organizationId,
-    entityType: 'connection',
-    op: 'created',
+		entityType: "connection",
+		op: "created",
     entityId: connection.id,
     summary: `Connection "${connectDisplayName}" created`,
-    extra: { connector_key: args.connector_key, slug: connection.slug, via: 'connect' },
+		extra: {
+			connector_key: args.connector_key,
+			slug: connection.slug,
+			via: "connect",
+		},
   });
 
   recordToolConfigChange(ctx, {
-    resourceKind: 'connection',
+		resourceKind: "connection",
     resourceId: connection.id,
-    op: 'created',
+		op: "created",
     summary: `Connection '${connectDisplayName}' created`,
     state: insertedConn[0] as Record<string, unknown>,
   });
+
+	// Interactive pairing: the connection is pending_auth with a fresh
+	// interactive profile. Kick off the auth run (the lifecycle that emits QR /
+	// code artifacts) and return a setup_required continuation. The auth run —
+	// not a connect retry — completes the connection.
+	if (isInteractiveConnect) {
+		return buildConnectionSetupContinuation({
+			action: "connect",
+			connectorKey: args.connector_key,
+			setupFamily: "interactive",
+			nextAction: "pair_interactive",
+			instructions:
+				"Connection created as pending_auth. Complete interactive pairing (e.g. scan the QR code) via the auth run, then poll connections.get until status=active.",
+			setupUrl: buildSetupUrl({ connectorKey: args.connector_key }),
+			connectionId: connection.id,
+			slug: connection.slug,
+			completionCheck: activeConnectionPoll(connection.id),
+			authRunId: interactiveAuthRunId!,
+		});
+	}
 
   // If active immediately, return simple result
   if (!needsConnectFlow && !needsBrowserAuth) {
     // Active now with resolvable credentials (env/PAT path) — if the connector
     // declares a webhook block and a feed target is configured, subscribe with
     // the provider once. Best-effort; failures are logged, not fatal.
-    await registerConnectorWebhook({ organizationId, connectionId: connection.id });
+		await registerConnectorWebhook({
+			organizationId,
+			connectionId: connection.id,
+		});
     return {
-      action: 'connect',
+			action: "connect",
       connection_id: connection.id,
       slug: connection.slug,
-      status: 'active',
-      message: 'Connection created and active.',
+			status: "active",
+			message: "Connection created and active.",
       view_url: buildSetupUrl({ connectorKey: args.connector_key }),
     };
   }
 
   if (needsBrowserAuth) {
     return {
-      action: 'connect',
+			action: "connect",
       connection_id: connection.id,
       slug: connection.slug,
-      status: 'pending_auth',
-      auth_type: 'browser',
+			status: "pending_auth",
+			auth_type: "browser",
       auth_profile_slug: authSelection.authProfile?.slug ?? undefined,
       instructions:
         `Complete browser auth for profile '${authSelection.authProfile?.slug}'. ` +
@@ -442,10 +636,20 @@ export async function handleConnect(
 
   if (!authSelection.oauthMethod) {
     await rollbackConnection();
-    return {
-      error: 'Env-key connectors require selecting or creating an auth profile before connecting.',
-      setup_url: setupUrl,
-    };
+		// Reached when a non-oauth method still needs setup (e.g. browser pairing
+		// whose profile wasn't ready). Surface a continuation, not a prose error.
+		return buildConnectionSetupContinuation({
+			action: "connect",
+			connectorKey: args.connector_key,
+			setupFamily: authSelection.browserMethod ? "browser" : "env_keys",
+			nextAction: authSelection.browserMethod
+				? "pair_browser"
+				: "select_auth_profile",
+			instructions:
+				"This connection still needs an auth profile or pairing step before it can run. Complete it, then retry connect.",
+			setupUrl,
+			resumeCall,
+		});
   }
 
   const oauthMethod = authSelection.oauthMethod;
@@ -454,7 +658,7 @@ export async function handleConnect(
     (await getPrimaryAuthProfileForKind({
       organizationId,
       connectorKey: args.connector_key,
-      profileKind: 'oauth_app',
+			profileKind: "oauth_app",
       provider: oauthMethod.provider,
     })) ??
     // Auto-provision an env-backed app profile from deployment env vars
@@ -470,14 +674,34 @@ export async function handleConnect(
       createdBy: userId,
     }));
 
-  if (!appAuthProfile || appAuthProfile.status !== 'active') {
+	if (!appAuthProfile || appAuthProfile.status !== "active") {
     await rollbackConnection();
 
-    return buildOAuthAppProfileSetupError({
+		const setupError = buildOAuthAppProfileSetupError({
       connectorKey: args.connector_key,
       method: oauthMethod,
       setupUrl,
     });
+		// OAuth app credentials are a setup step, not a business error. Surface a
+		// continuation so an agent can read next_action and drive the admin to
+		// configure the OAuth app, then retry connect.
+		return buildConnectionSetupContinuation({
+			action: "connect",
+			connectorKey: args.connector_key,
+			setupFamily: "oauth",
+			nextAction: "configure_oauth_app",
+			instructions: setupError.setup_instructions
+				? `${setupError.error} ${setupError.setup_instructions}`
+				: setupError.error,
+			setupUrl: setupError.setup_url ?? setupUrl,
+			provider: oauthMethod.provider,
+			errorCode: setupError.error_code,
+			installType: setupError.install_type,
+			...(setupError.setup_instructions
+				? { setupInstructions: setupError.setup_instructions }
+				: {}),
+			resumeCall,
+		});
   }
 
   // Link app auth profile to connection; user auth profile will be created
@@ -493,7 +717,7 @@ export async function handleConnect(
     connectionId: connection.id,
     organizationId,
     connectorKey: args.connector_key,
-    authType: 'oauth',
+		authType: "oauth",
     authConfig: {
       ...buildOAuthConnectConfig(oauthMethod),
       // Profile metadata — callback creates the real profile on success
@@ -515,14 +739,16 @@ export async function handleConnect(
     connectionId: connection.id,
     connectorKey: args.connector_key,
     connectUrl,
-  }).catch((err) => logger.error(err, 'Failed to send connection permission notification'));
+	}).catch((err) =>
+		logger.error(err, "Failed to send connection permission notification"),
+	);
 
   return {
-    action: 'connect',
+		action: "connect",
     connection_id: connection.id,
     slug: connection.slug,
-    status: 'pending_auth',
-    auth_type: 'oauth',
+		status: "pending_auth",
+		auth_type: "oauth",
     connect_url: connectUrl,
     connect_token: connectToken.token,
     expires_at: new Date(connectToken.expires_at).toISOString(),

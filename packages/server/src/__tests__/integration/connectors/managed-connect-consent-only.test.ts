@@ -171,10 +171,24 @@ describe('Stage 3 — managed-connect creates a consent-only connection', () => 
       { action: 'connect', connector_key: connectorKey },
       TEST_ENV,
       ctx
-    )) as { connection_id?: number; error?: string };
+    )) as {
+      connection_id?: number;
+      error?: string;
+      status?: string;
+      setup_family?: string;
+      next_action?: string;
+      resume_call?: { sdk_method?: string };
+    };
 
-    // Not treated as managed → the normal OAuth-app requirement applies.
-    expect(result.error).toMatch(/OAuth app profile not configured/i);
+    // Not treated as managed → the normal OAuth-app setup requirement applies.
+    expect(result).toMatchObject({
+      status: 'setup_required',
+      setup_family: 'oauth',
+      next_action: 'configure_oauth_app',
+      resume_call: { sdk_method: 'connections.connect' },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.connection_id).toBeUndefined();
 
     const sql = getTestDb();
     const connRows = (await sql`
@@ -198,9 +212,23 @@ describe('Stage 3 — managed-connect creates a consent-only connection', () => 
       { action: 'connect', connector_key: connectorKey },
       TEST_ENV,
       ctx
-    )) as { connection_id?: number; error?: string };
+    )) as {
+      connection_id?: number;
+      error?: string;
+      status?: string;
+      setup_family?: string;
+      next_action?: string;
+      resume_call?: { sdk_method?: string };
+    };
 
-    expect(result.error).toMatch(/OAuth app profile not configured/i);
+    expect(result).toMatchObject({
+      status: 'setup_required',
+      setup_family: 'oauth',
+      next_action: 'configure_oauth_app',
+      resume_call: { sdk_method: 'connections.connect' },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.connection_id).toBeUndefined();
 
     const sql = getTestDb();
     const connRows = (await sql`

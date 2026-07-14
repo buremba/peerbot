@@ -136,7 +136,7 @@ afterEach(async () => {
 });
 
 describe("manage_connections — app_installation create guard", () => {
-	it("create with NO installation_ref is rejected with install-flow guidance, no row written", async () => {
+	it("create with NO installation_ref returns an actionable install continuation, no row written", async () => {
 		const org = await createTestOrganization({ name: "App Install Guard Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
@@ -155,26 +155,28 @@ describe("manage_connections — app_installation create guard", () => {
 			ctx,
 		);
 
-		expect("error" in res).toBe(true);
+		expect("error" in res).toBe(false);
 		expect(res).toMatchObject({
-			error_code: "connector_setup_required",
+			action: "create",
+			status: "setup_required",
+			setup_family: "app_installation",
 			connector_key: CONNECTOR_KEY,
 			provider: "slack",
-			install_type: "app_installation",
-			install_shape: "oauth-code-exchange",
 			next_action: "install_app",
 			install_url: "https://gateway.test/lobu/slack/install",
 		});
 		const setupUrl = new URL((res as { setup_url: string }).setup_url);
 		expect(setupUrl.pathname).toContain("/connectors");
 		expect(setupUrl.searchParams.get("install")).toBe(CONNECTOR_KEY);
-		expect((res as { error: string }).error).not.toMatch(/github/i);
+		expect(res).not.toHaveProperty("resume_call");
 		// Zero rows created.
 		expect(await connectionCount(org.id)).toBe(0);
 	});
 
 	it("connect with NO installation_ref is also rejected (same guard, connect path)", async () => {
-		const org = await createTestOrganization({ name: "App Install Connect Org" });
+		const org = await createTestOrganization({
+			name: "App Install Connect Org",
+		});
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		await seedAppInstallConnector(org.id);
@@ -190,15 +192,21 @@ describe("manage_connections — app_installation create guard", () => {
 			ctx,
 		);
 
-		expect("error" in res).toBe(true);
+		// connect returns the same non-terminal continuation as create.
+		expect("error" in res).toBe(false);
 		expect(res).toMatchObject({
-			error_code: "connector_setup_required",
-			provider: "slack",
+			action: "connect",
+			status: "setup_required",
+			setup_family: "app_installation",
 			next_action: "install_app",
 			install_url: "https://gateway.test/lobu/slack/install",
 		});
 		const setupUrl = new URL((res as { setup_url: string }).setup_url);
 		expect(setupUrl.searchParams.get("install")).toBe(CONNECTOR_KEY);
+		expect(res).not.toHaveProperty("resume_call");
+		// Generic oauth-code-exchange installs do not expose a callback correlation
+		// id, so returning an "any active Slack connection" poll would be unsafe.
+		expect(res).not.toHaveProperty("completion_check");
 		expect(await connectionCount(org.id)).toBe(0);
 	});
 
@@ -225,12 +233,13 @@ describe("manage_connections — app_installation create guard", () => {
 			ctx,
 		);
 
-		// The guard did not reject it: either it created the row, or it failed for
-		// some OTHER reason — but NOT with the install-flow guidance.
-		if ("error" in res) {
+		// The app-install guard did not intercept it. A later auth-selection
+		// continuation is valid, but it must not send the caller back to install.
 			expect(res).not.toHaveProperty("next_action", "install_app");
-		} else {
+		if ("action" in res && res.action === "create" && "connection" in res) {
 			expect(await connectionCount(org.id)).toBe(1);
+		} else {
+			expect(await connectionCount(org.id)).toBe(0);
 		}
 	});
 });
@@ -248,16 +257,19 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 
 	/** Assert the create/connect WAS rejected by the app-install guard. */
 	function expectGuardRejected(res: unknown): void {
-		expect(res && typeof res === "object" && "error" in res).toBe(true);
+		expect(res && typeof res === "object" && "error" in res).toBe(false);
 		expect(res).toMatchObject({
-			error_code: "connector_setup_required",
+			status: "setup_required",
+			setup_family: "app_installation",
 			provider: "slack",
 			next_action: "install_app",
 		});
 	}
 
 	it("create WITH a RESOLVABLE auth_profile_slug (oauth intent) is ALLOWED past the guard", async () => {
-		const org = await createTestOrganization({ name: "OAuth Profile Create Org" });
+		const org = await createTestOrganization({
+			name: "OAuth Profile Create Org",
+		});
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		await seedAppInstallConnector(org.id);
@@ -285,7 +297,9 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 	});
 
 	it("connect WITH a RESOLVABLE auth_profile_slug (oauth intent) is ALLOWED past the guard", async () => {
-		const org = await createTestOrganization({ name: "OAuth Profile Connect Org" });
+		const org = await createTestOrganization({
+			name: "OAuth Profile Connect Org",
+		});
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		await seedAppInstallConnector(org.id);
@@ -338,7 +352,9 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 	});
 
 	it("connect WITH a NON-EXISTENT auth_profile_slug + no installation_ref is REJECTED (bypass closed)", async () => {
-		const org = await createTestOrganization({ name: "Bogus Slug Connect Org" });
+		const org = await createTestOrganization({
+			name: "Bogus Slug Connect Org",
+		});
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		await seedAppInstallConnector(org.id);
@@ -354,7 +370,16 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 			TEST_ENV,
 			ctx,
 		);
-		expectGuardRejected(res);
+		// connect path now surfaces the bypass-closed outcome as a setup_required
+		// continuation (no `error` field), so it survives run_sdk. The bogus slug
+		// still falls through to app_installation and is rejected/continued.
+		expect(res && typeof res === "object" && "error" in res).toBe(false);
+		expect(res).toMatchObject({
+			action: "connect",
+			status: "setup_required",
+			setup_family: "app_installation",
+			next_action: "install_app",
+		});
 		expect(await connectionCount(org.id)).toBe(0);
 	});
 
@@ -386,7 +411,9 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 		// browser / interactive). An oauth_app carries only the app's
 		// client_id/secret — it does NOT provide the connection's auth, so pointing
 		// auth_profile_slug at one is the wrong kind and must NOT satisfy the guard.
-		const org = await createTestOrganization({ name: "Wrong Kind Account Org" });
+		const org = await createTestOrganization({
+			name: "Wrong Kind Account Org",
+		});
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		await seedAppInstallConnector(org.id);
@@ -474,7 +501,9 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 	});
 
 	it("create WITH a RESOLVABLE app_auth_profile_slug is ALLOWED past the guard", async () => {
-		const org = await createTestOrganization({ name: "App Profile Create Org" });
+		const org = await createTestOrganization({
+			name: "App Profile Create Org",
+		});
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		await seedAppInstallConnector(org.id);

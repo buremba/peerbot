@@ -429,6 +429,7 @@ export async function linkGithubAppInstallation(params: {
 	/** Account/metadata stamped onto the install row (account login, etc.). */
 	metadata?: Record<string, unknown>;
 	createdBy?: string | null;
+	setupAttemptId?: string;
 }): Promise<LinkGithubInstallationResult> {
 	const sql = getDb();
 	const accountLogin =
@@ -486,9 +487,23 @@ export async function linkGithubAppInstallation(params: {
 
 		if (existing.length > 0) {
 			const connectionId = Number(existing[0].id);
+			const setupAttemptIds = Array.isArray(
+				existing[0].config?.setup_attempt_ids,
+			)
+				? existing[0].config.setup_attempt_ids.filter(
+						(value): value is string => typeof value === "string",
+					)
+				: [];
 			const mergedConfig = {
 				...(existing[0].config ?? {}),
 				installation_ref: install.id,
+				...(params.setupAttemptId
+					? {
+							setup_attempt_ids: [
+								...new Set([...setupAttemptIds, params.setupAttemptId]),
+							],
+						}
+					: {}),
 			};
 			await tx`
 				UPDATE connections
@@ -538,7 +553,12 @@ export async function linkGithubAppInstallation(params: {
 					organization_id, connector_key, slug, display_name, status, config, created_by
 				) VALUES (
 					${params.organizationId}, ${GITHUB_CONNECTOR_KEY}, ${slug}, ${displayName},
-					'active', ${tx.json({ installation_ref: install.id })}, ${params.createdBy ?? null}
+					'active', ${tx.json({
+						installation_ref: install.id,
+						...(params.setupAttemptId
+							? { setup_attempt_ids: [params.setupAttemptId] }
+							: {}),
+					})}, ${params.createdBy ?? null}
 				)
 				RETURNING id, slug
 			`,
@@ -1261,6 +1281,14 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		// the install page would dead-end). Recovery needs the App's OAuth client id
 		// to send the user through user-authorization.
 		const explicitRecovery = c.req.query("recovery") === "1";
+		const rawSetupAttemptId = c.req.query("setup_attempt_id");
+		const setupAttemptId =
+			rawSetupAttemptId &&
+			/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+				rawSetupAttemptId,
+			)
+				? rawSetupAttemptId
+				: undefined;
 		const clientId = creds?.clientId;
 		const alreadyHasInstallRow = await orgHasGithubInstallRow(orgId, appId);
 		const useRecovery = (explicitRecovery || alreadyHasInstallRow) && !!clientId;
@@ -1270,6 +1298,7 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			const state = await stateStore.create({
 				organizationId: orgId,
 				recovery: true,
+				...(setupAttemptId ? { setupAttemptId } : {}),
 			});
 			const callbackUrl = githubInstallCallbackUrl(
 				deps.getPublicGatewayUrl?.(),
@@ -1281,7 +1310,10 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			);
 		}
 
-		const state = await stateStore.create({ organizationId: orgId });
+		const state = await stateStore.create({
+			organizationId: orgId,
+			...(setupAttemptId ? { setupAttemptId } : {}),
+		});
 		const installUrl =
 			renderAppInstallUrl(creds?.installUrlTemplate, appSlug, state) ??
 			githubAppInstallUrl(appSlug, state);
@@ -1558,6 +1590,9 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				installationId: String(installationId),
 				store: deps.installationStore,
 				providerAppId: appId,
+				...(consumed.setupAttemptId
+					? { setupAttemptId: consumed.setupAttemptId }
+					: {}),
 				// Record the ownership-verified account (GitHub omits it from the
 				// redirect query) so the install row carries the org login/type/id the
 				// team-graph build and UI rely on, falling back to any query value.

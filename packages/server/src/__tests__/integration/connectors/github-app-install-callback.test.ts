@@ -83,6 +83,7 @@ describe("GitHub App install callback — link installation", () => {
 			store,
 			providerAppId: PROVIDER_APP_ID,
 			metadata: { account_login: "acme-co" },
+			setupAttemptId: "8ad917c5-6176-47e7-9d21-1e927879a5f7",
 		});
 
 		expect(result.createdConnection).toBe(true);
@@ -126,6 +127,9 @@ describe("GitHub App install callback — link installation", () => {
 		expect(rows[0].connector_key).toBe("github");
 		expect(rows[0].status).toBe("active");
 		expect(Number(rows[0].config?.installation_ref)).toBe(result.installId);
+		expect(rows[0].config?.setup_attempt_ids).toContain(
+			"8ad917c5-6176-47e7-9d21-1e927879a5f7",
+		);
 	});
 
 	it("idempotent: a re-install for the same org+installation reuses the install + connection", async () => {
@@ -146,6 +150,7 @@ describe("GitHub App install callback — link installation", () => {
 			store,
 			providerAppId: PROVIDER_APP_ID,
 			metadata: { account_login: "reinstaller" },
+			setupAttemptId: "c14e7ff7-09c3-43c0-a5b1-ee3702d593d2",
 		});
 
 		// Same install row (same-org reinstall refreshes in place), no duplicate connection.
@@ -159,6 +164,12 @@ describe("GitHub App install callback — link installation", () => {
 			WHERE organization_id = ${org.id} AND connector_key = 'github' AND deleted_at IS NULL
 		`) as unknown as Array<{ n: number }>;
 		expect(connCount[0].n).toBe(1);
+		const [reused] = (await sql`
+			SELECT config FROM connections WHERE id = ${second.connectionId}
+		`) as unknown as Array<{ config: Record<string, unknown> }>;
+		expect(reused.config.setup_attempt_ids).toContain(
+			"c14e7ff7-09c3-43c0-a5b1-ee3702d593d2",
+		);
 
 		const installCount = (await sql`
 			SELECT count(*)::int AS n FROM app_installations

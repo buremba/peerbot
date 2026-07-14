@@ -121,9 +121,14 @@ function buildRouter(
 		/** Repos the (mocked) /installation/repositories enumeration returns. */
 		installationRepos?: Array<{ owner: string; name: string }>;
 	} = {},
-): { router: ReturnType<typeof createAppInstallRoutes>; captured: RouterCapture } {
+): {
+	router: ReturnType<typeof createAppInstallRoutes>;
+	captured: RouterCapture;
+} {
 	const exchangeReturns =
-		opts.exchangeReturns === undefined ? "fake-user-token" : opts.exchangeReturns;
+		opts.exchangeReturns === undefined
+			? "fake-user-token"
+			: opts.exchangeReturns;
 	const authedLogin = opts.authedLogin ?? "installer-user";
 
 	// Resolve the installations map: explicit `installations`, else the
@@ -221,7 +226,14 @@ async function installCount(organizationId: string): Promise<number> {
 /** Issue feeds on the org's github connections (the auto-provisioned shape). */
 async function issueFeeds(
 	organizationId: string,
-): Promise<Array<{ id: number; repo_owner: string; repo_name: string; next_run_at: Date | null }>> {
+): Promise<
+	Array<{
+		id: number;
+		repo_owner: string;
+		repo_name: string;
+		next_run_at: Date | null;
+	}>
+> {
 	const sql = getDb();
 	const rows = (await sql`
 		SELECT f.id, f.config ->> 'repo_owner' AS repo_owner,
@@ -298,7 +310,8 @@ beforeEach(async () => {
 	// App private key so the spy/registry path is well-formed (value irrelevant —
 	// the spy provider never signs, and repo enumeration is injected).
 	process.env.GITHUB_APP_PRIVATE_KEY =
-		ORIGINAL_ENV_PK ?? "-----BEGIN PRIVATE KEY-----\\nspy\\n-----END PRIVATE KEY-----";
+		ORIGINAL_ENV_PK ??
+		"-----BEGIN PRIVATE KEY-----\\nspy\\n-----END PRIVATE KEY-----";
 	installSpyMintProvider();
 	await cleanTables();
 });
@@ -372,7 +385,9 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 	});
 
 	it("rejects a callback with a GARBAGE setup_action → 400, zero mutation", async () => {
-		const org = await createTestOrganization({ name: "Org GarbageSetupAction" });
+		const org = await createTestOrganization({
+			name: "Org GarbageSetupAction",
+		});
 		await seedGithubConnector(org.id);
 		const state = await createGithubInstallStateStore().create({
 			organizationId: org.id,
@@ -397,8 +412,12 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		// completing session's org must match the state's org or we reject — else the
 		// victim's installation would land in the attacker's org. (This previously
 		// asserted SUCCESS, codifying the vulnerability; flipped to assert the fix.)
-		const stateOrg = await createTestOrganization({ name: "Attacker Initiator Org" });
-		const ambientOrg = await createTestOrganization({ name: "Victim Session Org" });
+		const stateOrg = await createTestOrganization({
+			name: "Attacker Initiator Org",
+		});
+		const ambientOrg = await createTestOrganization({
+			name: "Victim Session Org",
+		});
 		await seedGithubConnector(stateOrg.id);
 		await seedGithubConnector(ambientOrg.id);
 
@@ -407,7 +426,9 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 
 		// resolveInstallOrgId resolves to the ambient (victim-session) org, NOT the
 		// state's org → mismatch.
-		const { router } = buildRouter(ambientOrg.id, { ownedInstallationIds: [7003] });
+		const { router } = buildRouter(ambientOrg.id, {
+			ownedInstallationIds: [7003],
+		});
 		const res = await router.fetch(
 			new Request(
 				`http://gw.test/github/app/install/callback?installation_id=7003&setup_action=install&state=${state}&code=valid-oauth-code`,
@@ -509,18 +530,24 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		await seedGithubConnector(org.id);
 		const { router } = buildRouter(org.id);
 
+		const setupAttemptId = "d6eed731-cd43-4632-90ac-f066c189a45d";
 		const res = await router.fetch(
-			new Request("http://gw.test/github/app/install"),
+			new Request(
+				`http://gw.test/github/app/install?setup_attempt_id=${setupAttemptId}`,
+			),
 		);
 		expect(res.status).toBe(302);
 		const location = res.headers.get("location") ?? "";
-		expect(location).toContain(`https://github.com/apps/${APP_SLUG}/installations/new`);
+		expect(location).toContain(
+			`https://github.com/apps/${APP_SLUG}/installations/new`,
+		);
 		const minted = new URL(location).searchParams.get("state");
 		expect(minted).toBeTruthy();
 
 		// The minted state resolves to the org server-side (Postgres-backed nonce).
 		const peeked = await createGithubInstallStateStore().peek(minted as string);
 		expect(peeked?.organizationId).toBe(org.id);
+		expect(peeked?.setupAttemptId).toBe(setupAttemptId);
 	});
 });
 
@@ -536,7 +563,9 @@ describe("GitHub App install callback — installation ownership guard", () => {
 		});
 		// /user/installations returns only the attacker's OWN installs (e.g. 555),
 		// NOT the victim id 8888 they're trying to steal.
-		const { router } = buildRouter(attackerOrg.id, { ownedInstallationIds: [555] });
+		const { router } = buildRouter(attackerOrg.id, {
+			ownedInstallationIds: [555],
+		});
 
 		const res = await router.fetch(
 			new Request(
@@ -555,8 +584,11 @@ describe("GitHub App install callback — installation ownership guard", () => {
 		await seedGithubConnector(org.id);
 		const state = await createGithubInstallStateStore().create({
 			organizationId: org.id,
+			setupAttemptId: "6f33f287-957c-4266-a221-6ccbb44369dd",
 		});
-		const { router } = buildRouter(org.id, { ownedInstallationIds: [4242, 999] });
+		const { router } = buildRouter(org.id, {
+			ownedInstallationIds: [4242, 999],
+		});
 
 		const res = await router.fetch(
 			new Request(
@@ -570,11 +602,61 @@ describe("GitHub App install callback — installation ownership guard", () => {
 		// The bound install carries the owned installation id (mint path reads this).
 		const sql = getDb();
 		const rows = (await sql`
-			SELECT external_tenant_id FROM app_installations
-			WHERE organization_id = ${org.id} AND provider_app_id = ${PROVIDER_APP_ID}
+			SELECT ai.external_tenant_id, c.config
+			FROM app_installations ai
+			JOIN connections c
+				ON c.organization_id = ai.organization_id
+				AND c.config ->> 'installation_ref' = ai.id::text
+			WHERE ai.organization_id = ${org.id}
+				AND ai.provider_app_id = ${PROVIDER_APP_ID}
 			LIMIT 1
-		`) as unknown as Array<{ external_tenant_id: string }>;
+		`) as unknown as Array<{
+			external_tenant_id: string;
+			config: Record<string, unknown>;
+		}>;
 		expect(rows[0].external_tenant_id).toBe("4242");
+		expect(rows[0].config.setup_attempt_ids).toContain(
+			"6f33f287-957c-4266-a221-6ccbb44369dd",
+		);
+	});
+
+	it("keeps concurrent setup attempts completable when callbacks arrive in reverse order", async () => {
+		const org = await createTestOrganization({ name: "Concurrent Setup Org" });
+		await seedGithubConnector(org.id);
+		const firstAttempt = "078d631e-dbc2-4caa-887f-76e8d73c5cf5";
+		const secondAttempt = "7f2d0188-95b2-4110-a9f3-f8527f16f76d";
+		const store = createGithubInstallStateStore();
+		const firstState = await store.create({
+			organizationId: org.id,
+			setupAttemptId: firstAttempt,
+		});
+		const secondState = await store.create({
+			organizationId: org.id,
+			setupAttemptId: secondAttempt,
+		});
+		const { router } = buildRouter(org.id, {
+			ownedInstallationIds: [4243],
+		});
+
+		for (const state of [secondState, firstState]) {
+			const res = await router.fetch(
+				new Request(
+					`http://gw.test/github/app/install/callback?installation_id=4243&setup_action=install&state=${state}&code=valid-oauth-code`,
+				),
+			);
+			expect(res.status).toBe(200);
+		}
+
+		const [row] = (await getDb()`
+			SELECT config
+			FROM connections
+			WHERE organization_id = ${org.id}
+				AND connector_key = 'github'
+				AND deleted_at IS NULL
+		`) as unknown as Array<{ config: Record<string, unknown> }>;
+		expect(row.config.setup_attempt_ids).toEqual(
+			expect.arrayContaining([firstAttempt, secondAttempt]),
+		);
 	});
 
 	it("MISSING code → 400, zero mutation (ownership cannot be verified without it)", async () => {
@@ -660,8 +742,7 @@ describe("GitHub App install callback — account-ownership (admin vs member)", 
 			installations: {
 				[opts.installationId]: { login: opts.orgLogin, type: "Organization" },
 			},
-			orgRoles:
-				opts.role === null ? null : { [opts.orgLogin]: opts.role },
+			orgRoles: opts.role === null ? null : { [opts.orgLogin]: opts.role },
 		});
 		const res = await router.fetch(
 			new Request(
@@ -850,7 +931,9 @@ describe("GitHub App install callback — auto-provision feeds", () => {
 	});
 
 	it("is idempotent: re-bind reuses feeds and enqueues no duplicate backfill", async () => {
-		const org = await createTestOrganization({ name: "AutoProvision Reidem Org" });
+		const org = await createTestOrganization({
+			name: "AutoProvision Reidem Org",
+		});
 		await seedGithubConnector(org.id);
 
 		const first = await createGithubInstallStateStore().create({
@@ -892,7 +975,9 @@ describe("GitHub App install callback — auto-provision feeds", () => {
 	});
 
 	it("a successful bind with no accessible repos still succeeds (no feeds, no error)", async () => {
-		const org = await createTestOrganization({ name: "AutoProvision Empty Org" });
+		const org = await createTestOrganization({
+			name: "AutoProvision Empty Org",
+		});
 		await seedGithubConnector(org.id);
 		const state = await createGithubInstallStateStore().create({
 			organizationId: org.id,
@@ -914,7 +999,9 @@ describe("GitHub App install callback — auto-provision feeds", () => {
 	});
 
 	it("CONCURRENCY: two parallel auto-provisions for the same (connection,repo) create exactly ONE feed (DB-enforced)", async () => {
-		const org = await createTestOrganization({ name: "AutoProvision Race Org" });
+		const org = await createTestOrganization({
+			name: "AutoProvision Race Org",
+		});
 		await seedGithubConnector(org.id);
 		// Seed an active install + a connection bound to it — the shape auto-provision
 		// operates on (mirrors what the callback produces).
@@ -926,7 +1013,10 @@ describe("GitHub App install callback — auto-provision feeds", () => {
 			providerAppId: PROVIDER_APP_ID,
 			externalTenantId: "6900",
 			status: "active",
-			metadata: { appIdKey: "GITHUB_APP_ID", privateKeyKey: "GITHUB_APP_PRIVATE_KEY" },
+			metadata: {
+				appIdKey: "GITHUB_APP_ID",
+				privateKeyKey: "GITHUB_APP_PRIVATE_KEY",
+			},
 		});
 		const sql = getDb();
 		const connRows = (await sql`
@@ -965,8 +1055,7 @@ describe("GitHub App install callback — auto-provision feeds", () => {
 		expect(a.feedIds).toEqual([feeds[0].id]);
 		expect(b.feedIds).toEqual([feeds[0].id]);
 		// Only the winner enqueued a backfill (no double-backfill).
-		const totalEnqueued =
-			a.enqueuedRunIds.length + b.enqueuedRunIds.length;
+		const totalEnqueued = a.enqueuedRunIds.length + b.enqueuedRunIds.length;
 		expect(totalEnqueued).toBe(1);
 	});
 });
@@ -1071,7 +1160,9 @@ describe("GitHub App install callback — re-bind recovery (user-auth flow)", ()
 	});
 
 	it("recovery callback with ambiguous installations → 400, zero mutation", async () => {
-		const org = await createTestOrganization({ name: "Recovery Ambiguous Org" });
+		const org = await createTestOrganization({
+			name: "Recovery Ambiguous Org",
+		});
 		await seedGithubConnector(org.id);
 		const state = await createGithubInstallStateStore().create({
 			organizationId: org.id,
@@ -1092,8 +1183,12 @@ describe("GitHub App install callback — re-bind recovery (user-auth flow)", ()
 	});
 
 	it("recovery callback STILL enforces session-org === state-org (anti-fixation)", async () => {
-		const stateOrg = await createTestOrganization({ name: "Recovery Attacker Org" });
-		const ambientOrg = await createTestOrganization({ name: "Recovery Victim Org" });
+		const stateOrg = await createTestOrganization({
+			name: "Recovery Attacker Org",
+		});
+		const ambientOrg = await createTestOrganization({
+			name: "Recovery Victim Org",
+		});
 		await seedGithubConnector(stateOrg.id);
 		await seedGithubConnector(ambientOrg.id);
 		const state = await createGithubInstallStateStore().create({

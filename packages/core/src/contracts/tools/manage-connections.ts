@@ -40,6 +40,90 @@ const ConnectionFacetsSchema = Type.Object({
 });
 
 // ============================================
+// Connect setup-required continuation
+// ============================================
+//
+// `connections.connect` setup-required outcomes (GitHub app install, missing
+// OAuth app config, interactive pairing, device pairing, ...) are NON-TERMINAL,
+// actionable continuations, NOT business errors. They MUST survive `run_sdk` /
+// `query_sdk` as a structured return value (no `error` field) so an agent can
+// read `next_action`, `resume_call`, and `completion_check` and drive setup
+// instead of seeing a prose-only ScriptError. Absolute URLs are required so the
+// continuation is usable outside the gateway origin. The App install callback
+// (github) creates the active connection ITSELF, so its completion check is a
+// read-back poll — NOT a retry of `connect` (retrying would re-trip the guard).
+
+export const ConnectSetupFamily = Type.Union(
+  [
+    Type.Literal("oauth"),
+    Type.Literal("app_installation"),
+    Type.Literal("env_keys"),
+    Type.Literal("browser"),
+    Type.Literal("interactive"),
+    Type.Literal("device_bound"),
+  ],
+  {
+    description:
+      "Which connection setup family this continuation belongs to. Drives the completion check.",
+  }
+);
+
+export const ConnectSetupNextAction = Type.Union(
+  [
+    Type.Literal("install_app"),
+    Type.Literal("configure_oauth_app"),
+    Type.Literal("select_auth_profile"),
+    Type.Literal("pair_interactive"),
+    Type.Literal("pair_browser"),
+    Type.Literal("connect_device"),
+    Type.Literal("open_setup"),
+  ],
+  {
+    description:
+      "Machine-readable next step the caller should drive to make this connection executable.",
+  }
+);
+
+export const ConnectSdkCall = Type.Object({
+  sdk_method: Type.String({
+    description: "Dotted ClientSDK method name, e.g. connections.connect.",
+  }),
+  arguments: Type.Array(Type.Unknown(), {
+    description:
+      "Positional method arguments. This supports both object-taking methods and connections.get(id).",
+  }),
+});
+
+export const ConnectCompletionCheck = Type.Object({
+  call: ConnectSdkCall,
+  success_when: Type.Union(
+    [
+      Type.Object({
+        path: Type.String(),
+        equals: Type.Unknown(),
+      }),
+      Type.Object({
+        path: Type.String(),
+        includes: Type.Unknown(),
+      }),
+    ],
+    {
+      description: "Observable condition that marks setup complete.",
+    }
+  ),
+  poll_interval_ms: Type.Integer({ minimum: 250, maximum: 30000 }),
+  description: Type.String({
+    description: "Human-readable summary of the completion check.",
+  }),
+});
+
+export type ConnectSdkCallType = Static<typeof ConnectSdkCall>;
+
+export type ConnectSetupFamilyType = Static<typeof ConnectSetupFamily>;
+export type ConnectSetupNextActionType = Static<typeof ConnectSetupNextAction>;
+export type ConnectCompletionCheckType = Static<typeof ConnectCompletionCheck>;
+
+// ============================================
 // Schema
 // ============================================
 
@@ -78,6 +162,12 @@ export const ListAction = Type.Object({
   connection_ids: Type.Optional(
     Type.Array(Type.Integer({ minimum: 1 }), {
       description: "Filter to specific connection IDs",
+    })
+  ),
+  setup_attempt_id: Type.Optional(
+    Type.String({
+      description:
+        "Filter to connections correlated with an app-install setup attempt",
     })
   ),
   ...PaginationFields,
@@ -601,6 +691,43 @@ export const ManageConnectionsResultSchema = Type.Union([
     status: Type.Literal("active"),
     message: Type.String(),
     view_url: Type.Optional(Type.String()),
+  }),
+  // Setup-required continuation — a NON-TERMINAL, actionable outcome that MUST
+  // survive run_sdk/query_sdk as a return value (no `error` key). Distinct from
+  // the `pending_auth` OAuth-pending variant: that already created a connection
+  // and is waiting on the user's OAuth grant; this variant could NOT create an
+  // executable connection yet and tells the caller exactly what to do next.
+  Type.Object({
+    action: Type.Union([Type.Literal("connect"), Type.Literal("create")]),
+    status: Type.Literal("setup_required"),
+    connector_key: Type.String(),
+    setup_family: ConnectSetupFamily,
+    next_action: ConnectSetupNextAction,
+    resume_call: Type.Optional(ConnectSdkCall),
+    completion_check: Type.Optional(ConnectCompletionCheck),
+    instructions: Type.String(),
+    error_code: Type.Optional(Type.Literal("connector_setup_required")),
+    install_type: Type.Optional(
+      Type.Union([
+        Type.Literal("app_installation"),
+        Type.Literal("oauth_app_profile"),
+      ])
+    ),
+    install_shape: Type.Optional(
+      Type.Union([
+        Type.Literal("oauth-code-exchange"),
+        Type.Literal("github-app"),
+      ])
+    ),
+    setup_instructions: Type.Optional(Type.String()),
+    setup_url: Type.Optional(Type.String()),
+    install_url: Type.Optional(Type.String()),
+    connect_url: Type.Optional(Type.String()),
+    connection_id: Type.Optional(Type.Integer()),
+    slug: Type.Optional(Type.String()),
+    auth_run_id: Type.Optional(Type.Integer()),
+    setup_attempt_id: Type.Optional(Type.String()),
+    provider: Type.Optional(Type.String()),
   }),
   Type.Object({
     action: Type.Literal("connect"),

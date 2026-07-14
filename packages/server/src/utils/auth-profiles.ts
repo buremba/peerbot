@@ -1,5 +1,5 @@
 import { slugify } from '@lobu/core';
-import { getDb } from '../db/client';
+import { getDb, type DbClient } from '../db/client';
 import { ToolUserError } from './errors';
 import { isUniqueViolation } from './pg-errors';
 
@@ -235,8 +235,8 @@ export async function ensureUniqueAuthProfileSlug(params: {
   organizationId: string;
   slug: string;
   excludeId?: number | null;
-}): Promise<string> {
-  const sql = getDb();
+}, db: DbClient = getDb()): Promise<string> {
+  const sql = db;
   const baseSlug = sanitizeProfileSlug(params.slug);
   let candidate = baseSlug;
   let suffix = 2;
@@ -347,12 +347,12 @@ export async function createAuthProfile(params: {
   browserKind?: BrowserKind | null;
   userDataDir?: string | null;
   cdpUrl?: string | null;
-}): Promise<AuthProfileRow> {
-  const sql = getDb();
+}, db: DbClient = getDb()): Promise<AuthProfileRow> {
+  const sql = db;
   const slug = await ensureUniqueAuthProfileSlug({
     organizationId: params.organizationId,
     slug: normalizeAuthProfileSlug(params.slug, params.displayName),
-  });
+  }, db);
 
   const normalizedProvider = params.provider ? params.provider.toLowerCase() : null;
 

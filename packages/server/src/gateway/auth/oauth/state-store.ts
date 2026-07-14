@@ -195,6 +195,12 @@ interface GithubInstallStateData {
    * full ownership + session-org checks.
    */
   recovery?: boolean;
+  /**
+   * Opaque correlation id minted by the connection setup continuation. It is
+   * carried through GitHub's signed state and stamped on the linked connection
+   * so the initiating agent can distinguish this callback from older installs.
+   */
+  setupAttemptId?: string;
 }
 
 /**

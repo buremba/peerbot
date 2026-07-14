@@ -462,7 +462,7 @@ export default async (_ctx, client) => {
 	"connections.list": {
 		summary: "List configured connections in the current organization.",
 		access: "read",
-		signature: "connections.list(input?: { connector_key?: string; status?: string; limit?: number; offset?: number }): Promise<unknown>",
+		signature: "connections.list(input?: { connector_key?: string; status?: string; setup_attempt_id?: string; limit?: number; offset?: number }): Promise<unknown>",
 	},
 	"catalog.listCatalog": {
 		summary: "List global catalog entries (connectors, skills, watchers).",
@@ -476,12 +476,12 @@ export default async (_ctx, client) => {
 	"connections.get": { summary: "Get a connection by id.", access: "read" },
 	"connections.create": {
 		summary:
-			"Create a connection manually (for connectors that do not require OAuth).",
+			"Create from an existing auth profile. Setup gaps return a structured setup_required continuation with next_action and an optional resume_call/completion_check.",
 		access: "write",
 	},
 	"connections.connect": {
 		summary:
-			"Create a pending connection and temporary OAuth authorization URL. The user must open the returned connect_url and approve access before Lobu can access the external account.",
+			"Recommended connector setup entry point. Handles every auth family; setup gaps return a structured setup_required continuation with resolved URLs and directly callable next steps.",
 		access: "admin",
 	},
 	"connections.update": {

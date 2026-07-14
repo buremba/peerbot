@@ -112,6 +112,19 @@ describe('buildWorkspaceInstructions render fixes', () => {
       connector_key: 'shop.sync',
       createDefaultFeed: false,
     });
+
+    // Capability discovery must not depend on a pre-existing connection.
+    await sql`
+      INSERT INTO connector_definitions (key, name, description, actions_schema, organization_id, status)
+      VALUES (
+        'shop.disconnected',
+        'Disconnected Shop',
+        'Available before setup',
+        ${sql.json({ create_order: {} })},
+        ${org.id},
+        'active'
+      )
+    `;
   });
 
   it('renders entity type descriptions and per-field descriptions from metadata_schema.properties', async () => {
@@ -139,6 +152,13 @@ describe('buildWorkspaceInstructions render fixes', () => {
     const out = await buildWorkspaceInstructions(org.id);
     expect(out).toContain(
       '- shop.sync (Order + inventory sync for the shop): list_orders, refund_order'
+    );
+  });
+
+  it('renders disconnected connector capabilities so agents can discover setup', async () => {
+    const out = await buildWorkspaceInstructions(org.id);
+    expect(out).toContain(
+      '- shop.disconnected (Available before setup): create_order'
     );
   });
 });

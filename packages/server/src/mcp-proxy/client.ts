@@ -11,7 +11,11 @@ import { isReservedIp, stripIpv6Brackets } from '../gateway/proxy/ssrf-guard';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { TtlCache } from '../utils/ttl-cache';
-import { type ResolvedCredentials, resolveCredentials } from './credential-resolver';
+import {
+  type ResolvedCredentials,
+  resolveCredentials,
+  resolveCredentialsByConnectionId,
+} from './credential-resolver';
 import type { DiscoveredTool, JsonRpcResponse, McpProxyConfig } from './types';
 
 const FETCH_TIMEOUT_INIT_MS = 10_000;
@@ -25,12 +29,16 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
 }
 
 /**
- * In-memory session store: "orgId:connectorKey" → MCP session ID
+ * In-memory session store. Execution sessions include connectionId so two
+ * accounts on the same connector never reuse each other's authenticated MCP
+ * session. Discovery sessions use the connector-wide key.
  */
 const sessions = new Map<string, string>();
 
-function sessionKey(orgId: string, connectorKey: string): string {
-  return `${orgId}:${connectorKey}`;
+function sessionKey(orgId: string, connectorKey: string, connectionId?: number): string {
+  return connectionId === undefined
+    ? `${orgId}:${connectorKey}`
+    : `${orgId}:${connectorKey}:connection:${connectionId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,12 +81,13 @@ async function sendRequest(
   orgId: string,
   connectorKey: string,
   body: string,
-  timeoutMs: number = FETCH_TIMEOUT_TOOL_MS
+  timeoutMs: number = FETCH_TIMEOUT_TOOL_MS,
+  connectionId?: number
 ): Promise<JsonRpcResponse> {
   // Re-validate on every outbound fetch — config may have been edited/imported
   // after the creation-time probe, so "validated at write time" is not enough.
   assertSafeUrl(upstreamUrl);
-  const key = sessionKey(orgId, connectorKey);
+  const key = sessionKey(orgId, connectorKey, connectionId);
   const mcpSessionId = sessions.get(key) ?? null;
   const headers = buildHeaders(credentials, mcpSessionId);
 
@@ -110,10 +119,11 @@ async function initializeSession(
   upstreamUrl: string,
   credentials: ResolvedCredentials | null,
   orgId: string,
-  connectorKey: string
+  connectorKey: string,
+  connectionId?: number
 ): Promise<void> {
   // Clear existing session
-  const key = sessionKey(orgId, connectorKey);
+  const key = sessionKey(orgId, connectorKey, connectionId);
   sessions.delete(key);
 
   // Send initialize
@@ -132,7 +142,8 @@ async function initializeSession(
       },
       id: 0,
     }),
-    FETCH_TIMEOUT_INIT_MS
+    FETCH_TIMEOUT_INIT_MS,
+    connectionId
   );
 
   if (initResponse.error) {
@@ -150,7 +161,8 @@ async function initializeSession(
         jsonrpc: '2.0',
         method: 'notifications/initialized',
       }),
-      FETCH_TIMEOUT_INIT_MS
+      FETCH_TIMEOUT_INIT_MS,
+      connectionId
     );
   } catch {
     // Notification delivery is best-effort
@@ -246,9 +258,10 @@ export async function callTool(
   config: McpProxyConfig,
   orgId: string,
   originalToolName: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  connectionId: number
 ): Promise<{ content: unknown[]; isError: boolean }> {
-  const credentials = await resolveCredentials(orgId, connectorKey);
+  const credentials = await resolveCredentialsByConnectionId(connectionId, orgId);
 
   const jsonRpcBody = JSON.stringify({
     jsonrpc: '2.0',
@@ -265,32 +278,47 @@ export async function callTool(
       orgId,
       connectorKey,
       jsonRpcBody,
-      FETCH_TIMEOUT_TOOL_MS
+      FETCH_TIMEOUT_TOOL_MS,
+      connectionId
     );
   } catch (_error) {
     // If there's no session yet, initialize and retry
-    await initializeSession(config.upstream_url, credentials, orgId, connectorKey);
+    await initializeSession(
+      config.upstream_url,
+      credentials,
+      orgId,
+      connectorKey,
+      connectionId
+    );
     response = await sendRequest(
       config.upstream_url,
       credentials,
       orgId,
       connectorKey,
       jsonRpcBody,
-      FETCH_TIMEOUT_TOOL_MS
+      FETCH_TIMEOUT_TOOL_MS,
+      connectionId
     );
   }
 
   // Stale session recovery: "not initialized" → reinitialize + retry once
   if (response.error && /not initialized/i.test(response.error.message || '')) {
     logger.info({ connectorKey, originalToolName }, '[McpProxy] Session expired, reinitializing');
-    await initializeSession(config.upstream_url, credentials, orgId, connectorKey);
+    await initializeSession(
+      config.upstream_url,
+      credentials,
+      orgId,
+      connectorKey,
+      connectionId
+    );
     response = await sendRequest(
       config.upstream_url,
       credentials,
       orgId,
       connectorKey,
       jsonRpcBody,
-      FETCH_TIMEOUT_TOOL_MS
+      FETCH_TIMEOUT_TOOL_MS,
+      connectionId
     );
   }
 

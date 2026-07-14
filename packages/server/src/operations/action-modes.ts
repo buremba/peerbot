@@ -19,9 +19,9 @@ function isActionMode(value: unknown): value is ActionMode {
 /**
  * Pull a sanitized `action_modes` map out of a raw connection.config blob.
  * Anything that isn't a recognized mode is dropped silently — readers must
- * then fall back to {@link defaultModeFromOperation}.
+ * then fall back to {@link defaultActionModeForOperation}.
  */
-function getActionModes(
+export function getActionModes(
   config: Record<string, unknown> | null | undefined
 ): Record<string, ActionMode> {
   if (!config || typeof config !== 'object') return {};
@@ -41,7 +41,7 @@ function getActionModes(
  * - other writes → auto
  * `disabled` requires an explicit user opt-in.
  */
-function defaultModeFromOperation(operation: {
+export function defaultActionModeForOperation(operation: {
   requires_approval: boolean;
   kind?: 'read' | 'write';
   annotations?: { destructiveHint?: boolean };
@@ -62,7 +62,7 @@ export function resolveActionMode(
   config: Record<string, unknown> | null | undefined
 ): ActionMode {
   const modes = getActionModes(config);
-  return modes[operation.operation_key] ?? defaultModeFromOperation(operation);
+  return modes[operation.operation_key] ?? defaultActionModeForOperation(operation);
 }
 
 /**

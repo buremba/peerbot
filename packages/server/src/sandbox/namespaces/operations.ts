@@ -23,7 +23,19 @@ export interface OperationsExecuteInput {
 
 export interface OperationsNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	listAvailable(input?: { entity_id?: number }): Promise<unknown>;
+	listAvailable(input?: {
+		connector_key?: string;
+		connection_id?: number;
+		entity_id?: number;
+		kind?: "read" | "write";
+		backend?: "local_action" | "mcp_tool" | "http_operation";
+		query?: string;
+		include_disconnected?: boolean;
+		include_input_schema?: boolean;
+		include_output_schema?: boolean;
+		limit?: number;
+		offset?: number;
+	}): Promise<unknown>;
 	execute(input: OperationsExecuteInput): Promise<unknown>;
 	listRuns(input?: {
 		connection_id?: number;

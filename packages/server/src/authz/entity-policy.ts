@@ -20,7 +20,7 @@
  * high-volume provenance plumbing, not collaboration edits; gating them would
  * flood approvals. Any new user-facing entity write path MUST call this module.
  */
-import { type DbClient, getDb, pgBigintArray } from "../db/client";
+import { type DbClient, getDb, pgBigintArray, pgTextArray } from "../db/client";
 import {
 	WRITE_ACTION_MANIFEST,
 	type WriteAction,
@@ -670,6 +670,9 @@ async function loadCandidatePolicies(args: {
 	 * blanket row (operation_key IS NULL) and any row scoped to this operation; the
 	 * op-specific row wins via {@link scopeSpecificity}. */
 	operationKey?: string | null;
+	/** Batch form used by operation discovery: load the blanket plus every named
+	 * operation in one header query, then fold each operation in memory. */
+	operationKeys?: string[];
 	/** agent_config: target agents.id being updated/deleted. Loads blanket + that target. */
 	targetAgentId?: string | null;
 	sql?: DbClient;
@@ -679,6 +682,9 @@ async function loadCandidatePolicies(args: {
 	const principalKind = args.principalKind ?? null;
 	const principalId = args.principalId ?? null;
 	const ownerAgentId = args.ownerAgentId ?? null;
+	const operationKeys =
+		args.operationKeys ??
+		(args.operationKey == null ? [] : [args.operationKey]);
 	const rows = await sql<EntityApprovalPolicyRow>`
     SELECT id, organization_id, resource_class, principal_kind, principal_id,
        operation_key, target_agent_id, entity_type_slug, field_path, entity_id,
@@ -699,7 +705,7 @@ async function loadCandidatePolicies(args: {
           AND (principal_id IS NULL OR principal_id = ${ownerAgentId})
         )
       )
-      AND (operation_key IS NULL OR operation_key = ${args.operationKey ?? null})
+		AND (operation_key IS NULL OR operation_key = ANY(${pgTextArray(operationKeys)}::text[]))
       AND (target_agent_id IS NULL OR target_agent_id = ${args.targetAgentId ?? null})
       AND (entity_type_slug IS NULL OR entity_type_slug = ${args.entityTypeSlug ?? null})
       AND (entity_id IS NULL OR entity_id = ${args.entityId ?? null})
@@ -888,6 +894,54 @@ export async function resolveWriteEffect(args: {
 	});
 	return foldEffectForDecision(
 		candidates, args.resourceClass, args.action);
+}
+
+/**
+ * Batch connector-operation effects for discovery. Candidate headers and child
+ * effects are loaded once, then each operation is folded in memory.
+ */
+export async function resolveWriteEffects(args: {
+	organizationId: string;
+	resourceClass: "connector_action";
+	principalKind: EntityPolicyPrincipalKind;
+	principalId?: string | null;
+	ownerAgentId?: string | null;
+	ownerResolved?: boolean;
+	action: WriteAction;
+	operationKeys: string[];
+	sql?: DbClient;
+}): Promise<Map<string | null, EntityMutationMode>> {
+	const keys = [...new Set(args.operationKeys)];
+	const effects = new Map<string | null, EntityMutationMode>();
+	if (args.principalKind === "user" || args.ownerResolved === false) {
+		const effect = args.principalKind === "user" ? "auto" : "deny";
+		effects.set(null, effect);
+		for (const key of keys) effects.set(key, effect);
+		return effects;
+	}
+
+	const candidates = await loadCandidatePolicies({
+		organizationId: args.organizationId,
+		resourceClass: args.resourceClass,
+		principalKind: args.principalKind,
+		principalId: args.principalId ?? null,
+		ownerAgentId: args.ownerAgentId ?? null,
+		operationKeys: keys,
+		sql: args.sql,
+	});
+	const foldFor = (operationKey: string | null) =>
+		foldEffectForDecision(
+			candidates.filter(
+				(candidate) =>
+					candidate.operation_key === null ||
+					candidate.operation_key === operationKey,
+			),
+			args.resourceClass,
+			args.action,
+		);
+	effects.set(null, foldFor(null));
+	for (const key of keys) effects.set(key, foldFor(key));
+	return effects;
 }
 
 /**

@@ -1,0 +1,732 @@
+/**
+ * `operations.listAvailable` — connector-capability discovery contract.
+ *
+ * The list must be a PUBLIC DTO (no backend_config leaked), keep capabilities
+ * discoverable even when no connection exists, and distinguish DECLARED
+ * capabilities from EXECUTABLE targets using per-connection readiness —
+ * including inactive and offline-device cases — WITHOUT leaking private
+ * connection ids for non-usable connections. Each operation carries a
+ * machine-readable next_action, and `query` searches across connector name/key,
+ * operation name/key, description, and schema terms.
+ */
+
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { pgTextArray } from "../../db/client";
+import { manageConnections } from "../../tools/admin/manage_connections";
+import { manageOperations } from "../../tools/admin/manage_operations";
+import type { ToolContext } from "../../tools/registry";
+import { createAuthProfile } from "../../utils/auth-profiles";
+import { initWorkspaceProvider } from "../../workspace";
+import { getTestDb } from "../setup/test-db";
+import {
+	addUserToOrganization,
+	createTestConnection,
+	createTestConnectorDefinition,
+	createTestOrganization,
+	createTestUser,
+} from "../setup/test-fixtures";
+
+async function createOfflineDeviceWorker(
+	userId: string,
+	orgId: string,
+): Promise<string> {
+	const sql = getTestDb();
+	const workerId = `ext-${Math.random().toString(36).slice(2, 10)}`;
+	const lastSeen = new Date(Date.now() - 2 * 60 * 60 * 1000); // 2h ago → offline
+	const [row] = (await sql`
+		INSERT INTO device_workers (
+			user_id, worker_id, platform, capabilities, label, organization_id, last_seen_at
+		) VALUES (
+			${userId}, ${workerId}, 'chrome-extension',
+			${sql.json([])}, 'Test Ext', ${orgId}, ${lastSeen}
+		)
+		RETURNING id
+	`) as unknown as Array<{ id: string }>;
+	return String(row.id);
+}
+
+function ctxFor(organizationId: string, userId: string): ToolContext {
+	return {
+		organizationId,
+		userId,
+		memberRole: "owner",
+		agentId: null,
+		isAuthenticated: true,
+		clientId: null,
+		scopes: ["mcp:read", "mcp:write", "mcp:admin"],
+		tokenType: "oauth",
+		scopedToOrg: true,
+		allowCrossOrg: false,
+		baseUrl: "https://gateway.test/lobu",
+	} as ToolContext;
+}
+
+const KEY_READY = "demo.ops.ready";
+const KEY_DISCONNECTED = "demo.ops.disconnected";
+const KEY_INACTIVE = "demo.ops.inactive";
+const KEY_DEVICE = "demo.ops.device";
+
+const ACTIONS_SCHEMA = {
+	create_issue: {
+		name: "Create issue",
+		description: "Create an issue in the tracker with a title and body.",
+		kind: "write",
+		input_schema: {
+			type: "object",
+			properties: { title: { type: "string" } },
+			required: ["title"],
+		},
+	},
+	list_issues: {
+		name: "List issues",
+		description: "List open issues.",
+		kind: "read",
+	},
+};
+
+async function seedConnector(
+	organizationId: string,
+	key: string,
+	name: string,
+): Promise<void> {
+	await createTestConnectorDefinition({
+		key,
+		name,
+		organization_id: organizationId,
+		auth_schema: { methods: [{ type: "none" }] },
+	});
+	// actions_schema is a column on connector_definitions; update it directly so
+	// the operation is a declared local_action capability.
+	const sql = getTestDb();
+	await sql`UPDATE connector_definitions SET actions_schema = ${sql.json(ACTIONS_SCHEMA)} WHERE key = ${key} AND organization_id = ${organizationId}`;
+}
+
+async function purge(organizationId: string): Promise<void> {
+	const sql = getTestDb();
+	const keys = [KEY_READY, KEY_DISCONNECTED, KEY_INACTIVE, KEY_DEVICE];
+	await sql`DELETE FROM feeds WHERE connection_id IN (SELECT id FROM connections WHERE connector_key = ANY(${pgTextArray(keys)}::text[]) AND organization_id = ${organizationId})`;
+	await sql`DELETE FROM connections WHERE connector_key = ANY(${pgTextArray(keys)}::text[]) AND organization_id = ${organizationId}`;
+	await sql`DELETE FROM connector_definitions WHERE key = ANY(${pgTextArray(keys)}::text[]) AND organization_id = ${organizationId}`;
+}
+
+type AvailOp = Record<string, unknown> & {
+	connector_key: string;
+	operation_key: string;
+	executable: boolean;
+	readiness: string;
+	connection_count: number;
+	execution_targets: Array<{
+		connection_id: number;
+		status: string;
+		executable: boolean;
+		reason: string;
+	}>;
+	next_action: {
+		action: string;
+		sdk_method?: string;
+		arguments?: unknown[];
+		requires_input?: boolean;
+		input_schema?: Record<string, unknown>;
+		manual?: boolean;
+		view_url?: string;
+	};
+};
+
+async function listAll(
+	orgId: string,
+	userId: string,
+	args: Record<string, unknown> = {},
+): Promise<{ operations: AvailOp[]; total: number }> {
+	const res = (await manageOperations(
+		{ action: "list_available", ...args } as never,
+		TEST_ENV(),
+		ctxFor(orgId, userId),
+	)) as { operations: AvailOp[]; total: number };
+	return res;
+}
+
+function TEST_ENV() {
+	return {} as never;
+}
+
+describe("operations.listAvailable — capability discovery DTO", () => {
+	beforeAll(async () => {
+		await initWorkspaceProvider();
+	});
+
+	afterEach(async () => {
+		const sql = getTestDb();
+		const orgs = await sql`SELECT id FROM "organization"`;
+		for (const org of orgs) await purge(org.id as string);
+	});
+
+	it("returns a PUBLIC DTO: no operation leaks backend_config", async () => {
+		const org = await createTestOrganization({ name: "Ops DTO Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedConnector(org.id, KEY_READY, "Ready Connector");
+		await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_READY,
+			status: "active",
+		});
+
+		const { operations } = await listAll(org.id, user.id);
+
+		expect(operations.length).toBeGreaterThan(0);
+		for (const op of operations) {
+			expect(op).not.toHaveProperty("backend_config");
+		}
+	});
+
+	it("keeps disconnected capabilities discoverable with a connect next_action and no connection_id", async () => {
+		const org = await createTestOrganization({ name: "Ops Disc Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedConnector(org.id, KEY_DISCONNECTED, "Disconnected Connector");
+
+		const { operations } = await listAll(org.id, user.id, {
+			connector_key: KEY_DISCONNECTED,
+		});
+
+		expect(operations.length).toBe(2);
+		const create = operations.find((o) => o.operation_key === "create_issue")!;
+		expect(create.executable).toBe(false);
+		expect(create.readiness).toBe("disconnected");
+		expect(create.connection_count).toBe(0);
+		expect(create.execution_targets).toEqual([]);
+		expect(create.next_action.sdk_method).toBe("connections.connect");
+		expect(create.next_action.arguments).toEqual([
+			{ connector_key: KEY_DISCONNECTED },
+		]);
+	});
+
+	it("requires schema-valid input before advertising execute, while parameterless operations remain directly executable", async () => {
+		const org = await createTestOrganization({ name: "Ops Ready Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedConnector(org.id, KEY_READY, "Ready Connector");
+		const conn = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_READY,
+			status: "active",
+		});
+
+		const { operations } = await listAll(org.id, user.id, {
+			connector_key: KEY_READY,
+		});
+
+		const create = operations.find((o) => o.operation_key === "create_issue")!;
+		expect(create.executable).toBe(true);
+		expect(create.readiness).toBe("ready");
+		expect(create.connection_count).toBe(1);
+		expect(create.execution_targets).toMatchObject([
+			{ connection_id: conn.id, status: "ready", executable: true },
+		]);
+		expect(create.next_action).toMatchObject({
+			action: "provide_input",
+			sdk_method: "operations.execute",
+			requires_input: true,
+			input_schema: create.input_schema,
+			arguments: [{ connection_id: conn.id, operation_key: "create_issue" }],
+		});
+		expect(JSON.stringify(create.next_action)).not.toContain('"input":{}');
+
+		const list = operations.find((o) => o.operation_key === "list_issues")!;
+		expect(list.next_action).toEqual({
+			action: "execute",
+			sdk_method: "operations.execute",
+			arguments: [
+				{
+					connection_id: conn.id,
+					operation_key: "list_issues",
+					input: {},
+				},
+			],
+		});
+	});
+
+	it("preserves pending_auth and returns an absolute manual setup continuation instead of a get no-op", async () => {
+		const org = await createTestOrganization({ name: "Ops Inactive Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedConnector(org.id, KEY_INACTIVE, "Inactive Connector");
+		await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_INACTIVE,
+			status: "pending_auth",
+			createDefaultFeed: false,
+		});
+
+		const { operations } = await listAll(org.id, user.id, {
+			connector_key: KEY_INACTIVE,
+		});
+
+		const create = operations.find((o) => o.operation_key === "create_issue")!;
+		expect(create.executable).toBe(false);
+		expect(create.readiness).toBe("pending_auth");
+		expect(create.connection_count).toBe(1);
+		expect(create.execution_targets).toMatchObject([
+			{ status: "pending_auth", executable: false },
+		]);
+		expect(create.next_action).toMatchObject({
+			action: "open_setup",
+			manual: true,
+		});
+		expect(create.next_action.sdk_method).toBeUndefined();
+		expect(new URL(create.next_action.view_url!).origin).toBe(
+			"https://gateway.test",
+		);
+	});
+
+	it("resumes a paused connection through the returned SDK call and becomes ready", async () => {
+		const org = await createTestOrganization({ name: "Ops Paused Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedConnector(org.id, KEY_INACTIVE, "Paused Connector");
+		const conn = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_INACTIVE,
+			status: "paused",
+			createDefaultFeed: false,
+		});
+
+		const before = await listAll(org.id, user.id, {
+			connection_id: conn.id,
+		});
+		const create = before.operations.find(
+			(operation) => operation.operation_key === "create_issue",
+		)!;
+		expect(create).toMatchObject({
+			readiness: "paused",
+			execution_targets: [
+				{ connection_id: conn.id, status: "paused", executable: false },
+			],
+			next_action: {
+				action: "resume_connection",
+				sdk_method: "connections.update",
+				arguments: [{ connection_id: conn.id, status: "active" }],
+			},
+		});
+
+		const [updateInput] = create.next_action.arguments as Array<
+			Record<string, unknown>
+		>;
+		await expect(
+			manageConnections(
+				{ action: "update", ...updateInput } as never,
+				TEST_ENV(),
+				ctxFor(org.id, user.id),
+			),
+		).resolves.toMatchObject({ action: "update" });
+
+		const after = await listAll(org.id, user.id, {
+			connection_id: conn.id,
+		});
+		expect(
+			after.operations.find(
+				(operation) => operation.operation_key === "create_issue",
+			),
+		).toMatchObject({ readiness: "ready", executable: true });
+	});
+
+	it("offers and invokes reauthenticate only for an interactive auth profile", async () => {
+		const org = await createTestOrganization({ name: "Ops Interactive Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedConnector(org.id, KEY_INACTIVE, "Interactive Connector");
+		const profile = await createAuthProfile({
+			organizationId: org.id,
+			connectorKey: KEY_INACTIVE,
+			displayName: "Interactive repair",
+			profileKind: "interactive",
+			status: "pending_auth",
+			createdBy: user.id,
+		});
+		const conn = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_INACTIVE,
+			status: "error",
+			created_by: user.id,
+			createDefaultFeed: false,
+		});
+		await getTestDb()`
+			UPDATE connections SET auth_profile_id = ${profile.id} WHERE id = ${conn.id}
+		`;
+
+		const { operations } = await listAll(org.id, user.id, {
+			connection_id: conn.id,
+		});
+		const create = operations.find(
+			(operation) => operation.operation_key === "create_issue",
+		)!;
+		expect(create.next_action).toMatchObject({
+			action: "reauthenticate",
+			sdk_method: "connections.reauthenticate",
+			arguments: [conn.id],
+		});
+		expect(new URL(create.next_action.view_url!).origin).toBe(
+			"https://gateway.test",
+		);
+
+		const [connectionId] = create.next_action.arguments as [number];
+		const repaired = await manageConnections(
+			{ action: "reauthenticate", connection_id: connectionId },
+			TEST_ENV(),
+			ctxFor(org.id, user.id),
+		);
+		expect(repaired).toMatchObject({
+			action: "reauthenticate",
+			connection_id: conn.id,
+			auth_run_id: expect.any(Number),
+		});
+	});
+
+	it.each([
+		"error",
+		"revoked",
+	])("preserves %s and returns an absolute manual repair continuation", async (status) => {
+		const org = await createTestOrganization({ name: `Ops ${status} Org` });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedConnector(org.id, KEY_INACTIVE, `${status} Connector`);
+		const conn = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_INACTIVE,
+			status,
+			createDefaultFeed: false,
+		});
+
+		const { operations } = await listAll(org.id, user.id, {
+			connection_id: conn.id,
+		});
+		const create = operations.find(
+			(operation) => operation.operation_key === "create_issue",
+		)!;
+		expect(create.readiness).toBe(status);
+		expect(create.execution_targets).toContainEqual(
+			expect.objectContaining({ status }),
+		);
+		expect(create.next_action).toMatchObject({
+			action: "open_setup",
+			manual: true,
+		});
+		expect(create.next_action.sdk_method).toBeUndefined();
+		expect(new URL(create.next_action.view_url!).origin).toBe(
+			"https://gateway.test",
+		);
+	});
+
+	it("device-bound connection whose device is offline: device_offline readiness, not executable", async () => {
+		const org = await createTestOrganization({ name: "Ops Device Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedConnector(org.id, KEY_DEVICE, "Device Connector");
+		const workerId = await createOfflineDeviceWorker(user.id, org.id);
+		const conn = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_DEVICE,
+			status: "active",
+		});
+		// Pin the connection to the offline device (the authoritative column).
+		await getTestDb()`UPDATE connections SET device_worker_id = ${workerId} WHERE id = ${conn.id}`;
+
+		const { operations } = await listAll(org.id, user.id, {
+			connector_key: KEY_DEVICE,
+		});
+
+		const create = operations.find((o) => o.operation_key === "create_issue")!;
+		expect(create.executable).toBe(false);
+		expect(create.readiness).toBe("device_offline");
+		expect(create.execution_targets).toMatchObject([
+			{ connection_id: conn.id, status: "device_offline", executable: false },
+		]);
+		expect(create.next_action).toMatchObject({
+			action: "bring_device_online",
+			manual: true,
+		});
+		expect(create.next_action.sdk_method).toBeUndefined();
+		expect(new URL(create.next_action.view_url!).origin).toBe(
+			"https://gateway.test",
+		);
+		expect(JSON.stringify(create)).not.toContain(workerId);
+	});
+
+	it("query search matches connector name + operation name across disconnected connectors", async () => {
+		const org = await createTestOrganization({ name: "Ops Search Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedConnector(org.id, KEY_DISCONNECTED, "AcmeTracker");
+
+		const { operations } = await listAll(org.id, user.id, {
+			query: "acme create issue",
+		});
+
+		const keys = operations.map((o) => o.operation_key);
+		expect(keys).toContain("create_issue");
+		// Match should be on the AcmeTracker connector, not unrelated ones.
+		expect(operations.every((o) => o.connector_key === KEY_DISCONNECTED)).toBe(
+			true,
+		);
+	});
+
+	it("include_disconnected=false hides capabilities with no ready connection", async () => {
+		const org = await createTestOrganization({ name: "Ops Hide Disc Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedConnector(org.id, KEY_DISCONNECTED, "Hidden Disconnected");
+
+		const { operations } = await listAll(org.id, user.id, {
+			connector_key: KEY_DISCONNECTED,
+			include_disconnected: false,
+		});
+		expect(operations).toHaveLength(0);
+	});
+
+	it("marks an operation disabled when every visible connection disables it", async () => {
+		const org = await createTestOrganization({ name: "Ops Disabled Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedConnector(org.id, KEY_READY, "Disabled Action Connector");
+		const conn = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_READY,
+			status: "active",
+		});
+		const sql = getTestDb();
+		await sql`UPDATE connections SET config = ${sql.json({ action_modes: { create_issue: "disabled", list_issues: "approval" }, preserved: true })} WHERE id = ${conn.id}`;
+
+		const { operations } = await listAll(org.id, user.id, {
+			connector_key: KEY_READY,
+		});
+		const create = operations.find((o) => o.operation_key === "create_issue")!;
+		const list = operations.find((o) => o.operation_key === "list_issues")!;
+
+		expect(create).toMatchObject({
+			executable: false,
+			readiness: "disabled",
+			next_action: {
+				action: "enable_operation",
+				sdk_method: "connections.update",
+				arguments: [
+					{
+						connection_id: conn.id,
+						config: {
+							action_modes: {
+								create_issue: "auto",
+								list_issues: "approval",
+							},
+						},
+					},
+				],
+			},
+		});
+		expect(create.execution_targets).toMatchObject([
+			{ connection_id: conn.id, status: "disabled", executable: false },
+		]);
+		expect(list).toMatchObject({ executable: true, readiness: "ready" });
+
+		const scoped = await listAll(org.id, user.id, { connection_id: conn.id });
+		expect(
+			scoped.operations.find(
+				(operation) => operation.operation_key === "create_issue",
+			),
+		).toMatchObject({
+			executable: false,
+			readiness: "disabled",
+			next_action: {
+				action: "enable_operation",
+				sdk_method: "connections.update",
+			},
+		});
+
+		const [updateInput] = create.next_action.arguments as Array<
+			Record<string, unknown>
+		>;
+		const updated = await manageConnections(
+			{ action: "update", ...updateInput } as never,
+			TEST_ENV(),
+			ctxFor(org.id, user.id),
+		);
+		expect(updated).toMatchObject({ action: "update" });
+
+		const [stored] =
+			await sql`SELECT config FROM connections WHERE id = ${conn.id}`;
+		expect(stored.config).toMatchObject({
+			preserved: true,
+			action_modes: {
+				create_issue: "auto",
+				list_issues: "approval",
+			},
+		});
+		const afterEnable = await listAll(org.id, user.id, {
+			connection_id: conn.id,
+		});
+		expect(
+			afterEnable.operations.find(
+				(operation) => operation.operation_key === "create_issue",
+			),
+		).toMatchObject({ executable: true, readiness: "ready" });
+	});
+
+	it("points remediation at a target whose status matches mixed-target readiness", async () => {
+		const org = await createTestOrganization({ name: "Ops Mixed Targets Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await Promise.all([
+			seedConnector(org.id, KEY_DEVICE, "Mixed Offline Connector"),
+			seedConnector(org.id, KEY_INACTIVE, "Mixed Inactive Connector"),
+			seedConnector(org.id, KEY_READY, "All Disabled Connector"),
+		]);
+		const sql = getTestDb();
+		const disabledConfig = { action_modes: { create_issue: "disabled" } };
+
+		const disabledBeforeOffline = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_DEVICE,
+			status: "active",
+		});
+		await sql`UPDATE connections SET config = ${sql.json(disabledConfig)} WHERE id = ${disabledBeforeOffline.id}`;
+		const offline = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_DEVICE,
+			status: "active",
+		});
+		const workerId = await createOfflineDeviceWorker(user.id, org.id);
+		await sql`UPDATE connections SET device_worker_id = ${workerId} WHERE id = ${offline.id}`;
+
+		const disabledBeforeInactive = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_INACTIVE,
+			status: "active",
+		});
+		await sql`UPDATE connections SET config = ${sql.json(disabledConfig)} WHERE id = ${disabledBeforeInactive.id}`;
+		const inactive = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_INACTIVE,
+			status: "pending_auth",
+			createDefaultFeed: false,
+		});
+
+		const disabled = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_READY,
+			status: "active",
+		});
+		await sql`UPDATE connections SET config = ${sql.json(disabledConfig)} WHERE id = ${disabled.id}`;
+
+		for (const expected of [
+			{ connectorKey: KEY_DEVICE, readiness: "device_offline", id: offline.id },
+			{
+				connectorKey: KEY_INACTIVE,
+				readiness: "pending_auth",
+				id: inactive.id,
+			},
+			{ connectorKey: KEY_READY, readiness: "disabled", id: disabled.id },
+		]) {
+			const { operations } = await listAll(org.id, user.id, {
+				connector_key: expected.connectorKey,
+			});
+			const create = operations.find(
+				(operation) => operation.operation_key === "create_issue",
+			)!;
+			expect(create.readiness).toBe(expected.readiness);
+			expect(create.next_action.arguments).toEqual(
+				expected.readiness === "disabled"
+					? [
+							{
+								connection_id: expected.id,
+								config: { action_modes: { create_issue: "auto" } },
+							},
+						]
+					: undefined,
+			);
+			expect(create.execution_targets).toContainEqual(
+				expect.objectContaining({
+					connection_id: expected.id,
+					status: expected.readiness,
+				}),
+			);
+		}
+	});
+
+	it("cross-org fence: another org's connectors/connections are invisible", async () => {
+		const orgA = await createTestOrganization({ name: "Ops Fence A" });
+		const orgB = await createTestOrganization({ name: "Ops Fence B" });
+		const userA = await createTestUser();
+		await addUserToOrganization(userA.id, orgA.id, "owner");
+		await seedConnector(orgA.id, KEY_READY, "Fence A Connector");
+		await createTestConnection({
+			organization_id: orgA.id,
+			connector_key: KEY_READY,
+			status: "active",
+		});
+		// org B has nothing.
+
+		const { operations } = await listAll(orgB.id, userA.id);
+		expect(operations.every((o) => o.connector_key !== KEY_READY)).toBe(true);
+	});
+
+	it("preserves every visible target and excludes another member's private connection", async () => {
+		const org = await createTestOrganization({
+			name: "Ops Private Targets Org",
+		});
+		const owner = await createTestUser();
+		const other = await createTestUser();
+		await addUserToOrganization(owner.id, org.id, "owner");
+		await addUserToOrganization(other.id, org.id, "member");
+		await seedConnector(org.id, KEY_READY, "Private Targets Connector");
+		const ownPrivate = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_READY,
+			created_by: owner.id,
+			visibility: "private",
+		});
+		const orgVisible = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_READY,
+			created_by: other.id,
+			visibility: "org",
+		});
+		const hiddenPrivate = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_READY,
+			created_by: other.id,
+			visibility: "private",
+		});
+
+		const { operations } = await listAll(org.id, owner.id, {
+			connector_key: KEY_READY,
+		});
+		const create = operations.find((o) => o.operation_key === "create_issue")!;
+		expect(
+			create.execution_targets.map((target) => target.connection_id),
+		).toEqual([ownPrivate.id, orgVisible.id]);
+		expect(create.connection_count).toBe(2);
+		expect(create.execution_targets).toHaveLength(2);
+
+		const hidden = await listAll(org.id, owner.id, {
+			connection_id: hiddenPrivate.id,
+		});
+		expect(hidden.operations).toEqual([]);
+		expect(hidden.total).toBe(0);
+
+		const executed = await manageOperations(
+			{
+				action: "execute",
+				connection_id: hiddenPrivate.id,
+				operation_key: "create_issue",
+				input: { title: "must stay private" },
+			},
+			TEST_ENV(),
+			ctxFor(org.id, owner.id),
+		);
+		expect(executed).toEqual({
+			error: "Connection not found or not visible.",
+		});
+		const runRows = await getTestDb()`
+			SELECT id FROM runs WHERE connection_id = ${hiddenPrivate.id}
+		`;
+		expect(runRows).toHaveLength(0);
+	});
+});

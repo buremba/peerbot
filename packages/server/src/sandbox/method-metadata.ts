@@ -324,11 +324,10 @@ export default async (ctx, client) => {
   });
   if (res.status === 'complete') return res.reply;
   if (res.status === 'error') throw new Error(res.error);
-  // status 'timeout' — the turn is still running; read it later:
-  return client.conversations.get({
-    agent_id: 'researcher',
-    conversation_id: res.conversation_id,
-  });
+  // status 'timeout' — the turn is still running (it is NOT lost). Raise
+  // timeout_ms for a longer wait; the reply is not retrievable through get
+  // (get returns only conversation metadata).
+  return { pending: res.conversation_id };
 };`,
 	},
 

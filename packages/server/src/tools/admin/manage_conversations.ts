@@ -201,13 +201,15 @@ async function handleSend(
       platform: "web",
       conversationId: args.conversation_id,
     });
-    const isAdmin = isAdminOrOwnerRole(ctx.memberRole);
+    // send is caller-attributed: the enqueued payload stamps userId=ctx.userId
+    // and channelId=api_<caller>. So the target MUST be the caller's OWN owned
+    // web conversation — NO admin bypass (unlike `get`, an admin has no reason to
+    // WRITE a self-attributed turn into another user's conversation, which would
+    // contaminate that user's history). A non-owned/foreign id is 404 (not 403)
+    // so the id space can't be probed.
     const ownedByCaller =
       target?.kind === "owned" && target.userId === ctx.userId;
-    if (!target || (!isAdmin && !ownedByCaller)) {
-      // 404 (not 403) so the id space can't be probed. Only OWNED web
-      // conversations are sendable by id; external/platform ones aren't driven
-      // through this SDK path (they route through their own channel).
+    if (!ownedByCaller) {
       throw new ToolUserError(
         `Conversation "${args.conversation_id}" not found for agent "${args.agent_id}"`,
         404,
@@ -255,7 +257,13 @@ async function handleSend(
       platformMetadata: {
         agentId: args.agent_id,
         organizationId: ctx.organizationId,
-        source: "sdk-conversations-send",
+        // MUST be a HEADLESS_SOURCES value (unified-thread-consumer.ts): an SDK
+        // send opens no SSE stream, so a non-headless source makes the terminal
+        // reply requeue-until-fail waiting for an SSE owner that never connects.
+        // `internal` is the headless programmatic-turn source (the same default
+        // agent-threads.ts uses); the reply is read back via the durable runs
+        // rows (readConversationReply), not SSE.
+        source: "internal",
       },
       agentOptions,
     }),
@@ -278,13 +286,13 @@ async function handleSend(
   const deadline = Date.now() + timeoutMs;
   // Poll the durable runs rows for the terminal outcome. Deliberately NOT SSE:
   // the completion row is visible from any replica, so a wait-loop works even
-  // when a different pod drained the deltas. Aborts at the script budget.
-  while (Date.now() < deadline && !ctx.abortSignal?.aborted) {
-    const reply = await readConversationReply({
-      organizationId: ctx.organizationId,
-      conversationId,
-      messageId,
-    });
+  // when a different pod drained the deltas. Aborts at the script budget. Read
+  // FIRST, then sleep only the time left to the deadline — so a reply landing
+  // during the final window is still caught by the post-loop read, and a short
+  // timeout (e.g. 1000ms) doesn't overshoot into a full extra POLL_INTERVAL.
+  const terminal = (
+    reply: Awaited<ReturnType<typeof readConversationReply>>,
+  ) => {
     if (reply?.status === "complete") {
       return {
         action: "send" as const,
@@ -303,13 +311,27 @@ async function handleSend(
         error: reply.error,
       };
     }
-    await sleep(POLL_INTERVAL_MS, ctx.abortSignal);
+    return null;
+  };
+
+  while (!ctx.abortSignal?.aborted) {
+    const done = terminal(
+      await readConversationReply({
+        organizationId: ctx.organizationId,
+        conversationId,
+        messageId,
+      }),
+    );
+    if (done) return done;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(POLL_INTERVAL_MS, remaining), ctx.abortSignal);
   }
 
   // Timed out (or the script's budget ran out). The turn keeps running; the
-  // caller awaits it by calling send again on the same conversation, or reads
-  // the transcript out of band. `get` returns only conversation metadata, not
-  // the reply, so it is NOT the way to retrieve a delayed answer.
+  // caller reads the reply out of band from the transcript. There is no
+  // enqueue-free retrieval on this tool — calling `send` again starts a NEW
+  // turn (fresh message_id), and `get` returns only conversation metadata.
   return {
     action: "send" as const,
     conversation_id: conversationId,

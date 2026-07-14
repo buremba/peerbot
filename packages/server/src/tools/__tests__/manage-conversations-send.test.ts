@@ -222,7 +222,7 @@ describe("manage_conversations send", () => {
 		expect(enqueued[0].conversationId).toBe("conv-x");
 	});
 
-	it("refuses a conversation_id that is not the caller's owned web conversation (IDOR)", async () => {
+	it("refuses a conversation_id that is not the caller's owned web conversation — for a MEMBER (IDOR)", async () => {
 		vi.resetModules();
 		// The target belongs to a DIFFERENT user.
 		mockDeps({
@@ -244,6 +244,52 @@ describe("manage_conversations send", () => {
 		).rejects.toThrow(/not found/);
 		// Nothing was enqueued into another user's conversation.
 		expect(enqueued).toHaveLength(0);
+	});
+
+	it("refuses sending into another user's conversation even for an ADMIN (no bypass)", async () => {
+		vi.resetModules();
+		mockDeps({ conversation: { ...OWNED_ROW, userId: "someone-else" } });
+		const manageConversations = await loadHandler();
+
+		await expect(
+			manageConversations(
+				{
+					action: "send",
+					agent_id: "researcher",
+					conversation_id: "conv-x",
+					text: "hi",
+				},
+				env,
+				ctx, // owner — send is caller-attributed, so no admin cross-user write.
+			),
+		).rejects.toThrow(/not found/);
+		expect(enqueued).toHaveLength(0);
+	});
+
+	it("delivers a reply that lands during the final wait window (short timeout)", async () => {
+		vi.resetModules();
+		// null on the first poll, then complete — with timeout_ms=1000 and a 1000ms
+		// poll interval, the post-loop final read must still catch it.
+		let calls = 0;
+		mockDeps({
+			reply: () =>
+				++calls >= 2 ? { status: "complete", text: "late answer" } : null,
+		});
+		const manageConversations = await loadHandler();
+
+		const res = (await manageConversations(
+			{
+				action: "send",
+				agent_id: "researcher",
+				text: "hi",
+				timeout_ms: 1000,
+			},
+			env,
+			ctx,
+		)) as Record<string, unknown>;
+
+		expect(res.status).toBe("complete");
+		expect(res.reply).toBe("late answer");
 	});
 
 	it("rejects empty text", async () => {

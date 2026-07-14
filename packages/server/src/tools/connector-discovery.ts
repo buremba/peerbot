@@ -80,10 +80,13 @@ export async function searchLiveConnectors(
   if (!q) return [];
   // Connector inventory is workspace-member context, not anonymous public data.
   // `search_sdk` is publicly readable (method docs are org-independent), so an
-  // anonymous session on a public workspace can reach here — but it must NOT be
-  // handed the org's installed/configured connectors. Gate the enrichment on an
-  // authenticated member session; anon simply gets method docs, no connectors.
-  if (!ctx.userId || !ctx.memberRole) return [];
+  // anonymous session on a public workspace can reach here — it must NOT be
+  // handed the org's connectors. Gate on an authenticated user only: the
+  // downstream connections-list handler applies the real per-user visibility
+  // (anon → org-visible only; member → own; admin → all), and `memberRole` is
+  // NOT reliably populated on scoped `/mcp/{slug}` sessions, so gating on it
+  // would wrongly suppress discovery for a legitimate member.
+  if (!ctx.userId) return [];
   const lines: string[] = [];
   try {
     const [inst, cat] = await Promise.all([

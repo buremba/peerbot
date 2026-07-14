@@ -46,23 +46,6 @@ export interface BeforeAgentStartResult {
   prependContext?: string;
 }
 
-export interface ToolCallEvent {
-  toolName: string;
-  toolCallId: string;
-  params: Record<string, unknown>;
-}
-
-export interface BeforeToolCallResult {
-  params?: Record<string, unknown>;
-  block?: boolean;
-  blockReason?: string;
-}
-
-export interface AfterToolCallEvent extends ToolCallEvent {
-  result: unknown;
-  isError: boolean;
-}
-
 export interface AgentEndEvent {
   messages: readonly unknown[];
   error?: string;
@@ -76,17 +59,6 @@ export interface PluginHooks {
     | BeforeAgentStartResult
     | undefined
     | Promise<BeforeAgentStartResult | undefined>;
-  beforeToolCall?(
-    event: ToolCallEvent,
-    context: PluginRuntimeContext
-  ):
-    | BeforeToolCallResult
-    | undefined
-    | Promise<BeforeToolCallResult | undefined>;
-  afterToolCall?(
-    event: AfterToolCallEvent,
-    context: PluginRuntimeContext
-  ): void | Promise<void>;
   agentEnd?(
     event: AgentEndEvent,
     context: PluginRuntimeContext

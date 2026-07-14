@@ -83,6 +83,12 @@ export const SdkScriptResultSchema = Type.Object({
       {
         name: Type.String(),
         message: Type.String(),
+        details: Type.Optional(
+          Type.Unknown({
+            description:
+              "Redacted structured business-error details returned by the SDK action.",
+          }),
+        ),
         stack: Type.Optional(Type.String()),
         line: Type.Optional(Type.Number()),
         column: Type.Optional(Type.Number()),

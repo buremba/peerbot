@@ -8,6 +8,7 @@
  */
 
 import type { ClientSDK } from "./client-sdk";
+import { ClientSdkActionError } from "./namespaces/action-call";
 import { METHOD_METADATA, type MethodAccess } from "./method-metadata";
 import type { ToolAccessLevel } from "../auth/tool-access";
 import { enumerateSDKManifest, type SDKMode } from "./sdk-manifest";
@@ -77,6 +78,7 @@ interface RunScriptResult {
 	error?: {
 		name: string;
 		message: string;
+		details?: unknown;
 		stack?: string;
 		line?: number;
 		column?: number;
@@ -95,22 +97,35 @@ const DEFAULT_LIMITS: Required<RunLimits> = {
 export const MAX_SCRIPT_TIMEOUT_MS = 180_000;
 export const MAX_SLEEP_MS = 30_000;
 const MAX_TRACE_ARGS_BYTES = 8192;
+const MAX_ERROR_DETAILS_BYTES = 16_384;
 const SENSITIVE_TRACE_KEY =
 	/(api[_-]?key|apikey|auth[_-]?data|auth[_-]?values|authorization|cookie|credential|password|private[_-]?key|secret|token)/i;
 
-function redactTraceValue(value: unknown, depth = 0): unknown {
+function redactTraceValue(
+	value: unknown,
+	depth = 0,
+	ancestors = new WeakSet<object>(),
+): unknown {
 	if (depth > 8) return "[truncated]";
-	if (Array.isArray(value))
-		return value.map((item) => redactTraceValue(item, depth + 1));
+	if (typeof value === "bigint") return value.toString();
 	if (!value || typeof value !== "object") return value;
-	return Object.fromEntries(
-		Object.entries(value as Record<string, unknown>).map(([key, child]) => [
-			key,
-			SENSITIVE_TRACE_KEY.test(key)
-				? "[redacted]"
-				: redactTraceValue(child, depth + 1),
-		]),
-	);
+	if (ancestors.has(value)) return "[circular]";
+	ancestors.add(value);
+	try {
+		if (Array.isArray(value)) {
+			return value.map((item) => redactTraceValue(item, depth + 1, ancestors));
+		}
+		return Object.fromEntries(
+			Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+				key,
+				SENSITIVE_TRACE_KEY.test(key)
+					? "[redacted]"
+					: redactTraceValue(child, depth + 1, ancestors),
+			]),
+		);
+	} finally {
+		ancestors.delete(value);
+	}
 }
 
 function traceArgs(args: unknown[]): unknown[] {
@@ -120,6 +135,74 @@ function traceArgs(args: unknown[]): unknown[] {
 		return [{ truncated: true, bytes: Buffer.byteLength(json, "utf8") }];
 	}
 	return JSON.parse(json) as unknown[];
+}
+
+export function safeErrorDetails(value: unknown): unknown {
+	try {
+		const redacted = redactTraceValue(value);
+		const json = JSON.stringify(redacted);
+		if (typeof json !== "string") {
+			return {
+				truncated: true,
+				message: "Structured SDK error details were not JSON-serializable.",
+			};
+		}
+		if (Buffer.byteLength(json, "utf8") <= MAX_ERROR_DETAILS_BYTES) {
+			return redacted;
+		}
+		return {
+			truncated: true,
+			bytes: Buffer.byteLength(json, "utf8"),
+			message: "Structured SDK error details exceeded the transport limit.",
+		};
+	} catch {
+		return {
+			truncated: true,
+			message: "Structured SDK error details could not be serialized safely.",
+		};
+	}
+}
+
+function classifyRuntimeError(error: {
+	name?: string;
+	message?: string;
+	stack?: string;
+	details?: unknown;
+}): NonNullable<RunScriptResult["error"]> {
+	const message = error.message ?? "Script execution failed";
+	if (error.name === "ClientSdkActionError") {
+		return {
+			name: "ClientSdkActionError",
+			message,
+			...(error.stack ? { stack: error.stack } : {}),
+			...(error.details === undefined ? {} : { details: error.details }),
+		};
+	}
+
+	const isTimeout = /script execution timed out|TimeoutError/i.test(message);
+	const isQuota = /QuotaExceeded/.test(message);
+	const isSleepLimit = /SleepLimitExceeded/.test(message);
+	const isInvalidSleep = /InvalidSleepDuration/.test(message);
+	const isOversize = /OutputSizeExceeded/.test(message);
+	const isOom = /memory|allocation|isolate was disposed/i.test(message);
+	const name = isTimeout
+		? "TimeoutError"
+		: isQuota
+			? "QuotaExceeded"
+			: isSleepLimit
+				? "SleepLimitExceeded"
+				: isInvalidSleep
+					? "InvalidSleepDuration"
+					: isOversize
+						? "OutputSizeExceeded"
+						: isOom
+							? "OutOfMemory"
+							: "ScriptError";
+	return {
+		name,
+		message,
+		...(error.stack ? { stack: error.stack } : {}),
+	};
 }
 
 function clampNumber(
@@ -305,7 +388,18 @@ function __dispatchCall(path, orgPath) {
   return async (...args) => {
     const payload = JSON.stringify({ args, orgPath });
     const r = await __sdk_dispatch.apply(undefined, [path, payload], { result: { promise: true, copy: true } });
-    return r === undefined ? undefined : JSON.parse(r);
+    if (r === undefined) return undefined;
+    const envelope = JSON.parse(r);
+    if (!envelope || envelope.__lobu_sdk_dispatch !== 1) {
+      throw new Error('InvalidSDKDispatchEnvelope');
+    }
+    if (!envelope.ok) {
+      const error = new Error(envelope.error?.message || 'ClientSDK call failed');
+      error.name = envelope.error?.name || 'ClientSdkActionError';
+      if (envelope.error?.details !== undefined) error.details = envelope.error.details;
+      throw error;
+    }
+    return envelope.has_value ? envelope.value : undefined;
   };
 }
 
@@ -358,6 +452,7 @@ const exports = module.exports;
 
 const GUEST_RUNNER = `
 (async () => {
+  try {
   const __entry = module.exports.default
     ?? (typeof module.exports === 'function' ? module.exports : null);
   if (typeof __entry !== 'function') {
@@ -365,7 +460,23 @@ const GUEST_RUNNER = `
   }
   const __extra = JSON.parse(__extra_args_json);
   const __result = await __entry(ctx, client, ...__extra);
-  return __result === undefined ? null : JSON.stringify(__result);
+    return JSON.stringify({
+      __lobu_script_result: 1,
+      ok: true,
+      value: __result === undefined ? null : __result,
+    });
+  } catch (error) {
+    return JSON.stringify({
+      __lobu_script_result: 1,
+      ok: false,
+      error: {
+        name: error?.name || 'Error',
+        message: error?.message || String(error),
+        stack: error?.stack,
+        ...(error?.details === undefined ? {} : { details: error.details }),
+      },
+    });
+  }
 })()
 `;
 
@@ -610,12 +721,39 @@ export async function runScript(
 					return namespace[method](...args);
 				})();
 
-				const result = await raceAgainstAbort(
-					dispatchPromise,
-					abortController.signal,
-				);
-				if (result === undefined) return undefined;
-				const json = JSON.stringify(result);
+				let result: unknown;
+				try {
+					result = await raceAgainstAbort(
+						dispatchPromise,
+						abortController.signal,
+					);
+				} catch (error) {
+					if (error instanceof ClientSdkActionError) {
+						const json = JSON.stringify({
+							__lobu_sdk_dispatch: 1,
+							ok: false,
+							error: {
+								name: error.name,
+								message: error.message,
+								details: safeErrorDetails(error.result),
+							},
+						});
+						outputBytes += Buffer.byteLength(json, "utf8");
+						if (outputBytes > limits.outputBytes) {
+							throw new Error(
+								`OutputSizeExceeded: combined output exceeded ${limits.outputBytes} bytes`,
+							);
+						}
+						return json;
+					}
+					throw error;
+				}
+				const json = JSON.stringify({
+					__lobu_sdk_dispatch: 1,
+					ok: true,
+					has_value: result !== undefined,
+					...(result === undefined ? {} : { value: result }),
+				});
 				outputBytes += Buffer.byteLength(json, "utf8");
 				if (outputBytes > limits.outputBytes) {
 					throw new Error(
@@ -671,7 +809,38 @@ export async function runScript(
 				);
 			}
 		}
-		const returnValue = returnJson ? JSON.parse(returnJson) : null;
+		const parsedResult = returnJson ? JSON.parse(returnJson) : null;
+		if (!options.extractExport) {
+			if (
+				!parsedResult ||
+				typeof parsedResult !== "object" ||
+				parsedResult.__lobu_script_result !== 1
+			) {
+				throw new Error("InvalidScriptResultEnvelope");
+			}
+			if (parsedResult.ok !== true) {
+				const scriptError = parsedResult.error as
+					| {
+							name?: string;
+							message?: string;
+							stack?: string;
+							details?: unknown;
+					  }
+					| undefined;
+				return {
+					success: false,
+					logs,
+					error: classifyRuntimeError(scriptError ?? {}),
+					durationMs: Date.now() - started,
+					sdkCalls,
+					sdkCallTrace,
+					sideEffectPreview,
+				};
+			}
+		}
+		const returnValue = options.extractExport
+			? parsedResult
+			: parsedResult.value;
 
 		return {
 			success: true,
@@ -684,31 +853,10 @@ export async function runScript(
 		};
 	} catch (err) {
 		const e = err as Error;
-		const isTimeout = /script execution timed out|TimeoutError/i.test(
-			e.message,
-		);
-		const isQuota = /QuotaExceeded/.test(e.message);
-		const isSleepLimit = /SleepLimitExceeded/.test(e.message);
-		const isInvalidSleep = /InvalidSleepDuration/.test(e.message);
-		const isOversize = /OutputSizeExceeded/.test(e.message);
-		const isOom = /memory|allocation|isolate was disposed/i.test(e.message);
-		const name = isTimeout
-			? "TimeoutError"
-			: isQuota
-				? "QuotaExceeded"
-				: isSleepLimit
-					? "SleepLimitExceeded"
-					: isInvalidSleep
-						? "InvalidSleepDuration"
-						: isOversize
-							? "OutputSizeExceeded"
-							: isOom
-								? "OutOfMemory"
-								: "ScriptError";
 		return {
 			success: false,
 			logs,
-			error: { name, message: e.message, stack: e.stack },
+			error: classifyRuntimeError(e),
 			durationMs: Date.now() - started,
 			sdkCalls,
 			sdkCallTrace,

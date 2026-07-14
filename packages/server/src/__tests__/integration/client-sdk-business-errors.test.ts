@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { ClientSdkActionError } from "../../sandbox/namespaces/action-call";
+import { runScript, safeErrorDetails } from "../../sandbox/run-script";
 import { cleanupTestDatabase } from "../setup/test-db";
 import { TestWorkspace } from "../setup/test-mcp-client";
 
@@ -25,6 +26,62 @@ describe("ClientSDK business failure boundary", () => {
 			action: "connect",
 			httpStatus: 400,
 		});
+	});
+
+	it("preserves structured action details through the run_sdk sandbox boundary", async () => {
+		const result = await runScript({
+			source: `export default async (_ctx, client) => {
+				return client.connections.connect({ connector_key: "missing-client-sdk-connector" });
+			}`,
+			sdk: workspace.owner,
+			sdkMode: "full",
+			maxAccessLevel: "admin",
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.error).toMatchObject({
+			name: "ClientSdkActionError",
+			message: expect.stringMatching(/connector.*not found/i),
+			details: {
+				error: expect.stringMatching(/connector.*not found/i),
+			},
+		});
+		expect(result.error?.message).not.toContain("{\"");
+	});
+
+	it("redacts secrets and bounds structured error details", () => {
+		expect(
+			safeErrorDetails({
+				error: "Provider rejected the request",
+				token: "must-not-cross-the-sandbox",
+				nested: { authorization: "Bearer secret", retryable: true },
+			}),
+		).toEqual({
+			error: "Provider rejected the request",
+			token: "[redacted]",
+			nested: { authorization: "[redacted]", retryable: true },
+		});
+		expect(
+			safeErrorDetails({ payload: "x".repeat(20_000) }),
+		).toMatchObject({ truncated: true });
+	});
+
+	it("does not throw on BigInt or circular structured error details", () => {
+		const circular: Record<string, unknown> = {
+			requestId: 42n,
+			token: "circular-secret",
+		};
+		circular.self = circular;
+
+		const details = safeErrorDetails(circular);
+		expect(details).toEqual({
+			requestId: "42",
+			token: "[redacted]",
+			self: "[circular]",
+		});
+		expect(
+			Buffer.byteLength(JSON.stringify(details), "utf8"),
+		).toBeLessThanOrEqual(16_384);
 	});
 
 	it("throws when classifiers.create returns success false", async () => {

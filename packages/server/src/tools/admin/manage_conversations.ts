@@ -37,6 +37,7 @@ import {
   buildMessagePayload,
   resolveAgentOptions,
 } from "../../gateway/services/platform-helpers";
+import { runOutputGuardrailScan } from "../../gateway/guardrails/output-scan";
 import type { Env } from "../../index";
 import { getLobuCoreServices } from "../../lobu/gateway";
 import { ToolUserError } from "../../utils/errors";
@@ -47,7 +48,14 @@ import { defineFlatActionTool, flatAction } from "./action-tool";
 
 export { ManageConversationsSchema };
 
-const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
+// run_sdk's DEFAULT wall-clock budget is 60000ms and it starts BEFORE this
+// script compiles + dispatches — so a send default equal to it would trip
+// run_sdk's own TimeoutError before send could return a graceful
+// status:"timeout". Default strictly inside that budget (leaving ~15s of
+// headroom for compile/dispatch/return). A caller who wants a longer wait must
+// raise BOTH send's timeout_ms AND run_sdk's timeout_ms (max 180000); the cap
+// here (170000) stays inside run_sdk's max so a maxed send can still return.
+const DEFAULT_WAIT_TIMEOUT_MS = 45_000;
 const MAX_WAIT_TIMEOUT_MS = 170_000;
 const POLL_INTERVAL_MS = 1_000;
 
@@ -290,7 +298,32 @@ async function handleSend(
   // FIRST, then sleep only the time left to the deadline — so a reply landing
   // during the final window is still caught by the post-loop read, and a short
   // timeout (e.g. 1000ms) doesn't overshoot into a full extra POLL_INTERVAL.
-  const terminal = (
+  // readConversationReply reads the RAW worker-written finalText from the runs
+  // row — the UnifiedThreadResponseConsumer's output guardrail only rewrote an
+  // in-memory copy for the SSE/history path, never that persisted row. So this
+  // SDK read must run the SAME output-stage scan itself, or a secret/PII the
+  // agent's output guardrail blocks would leak through conversations.send. Fails
+  // open (returns the text) on infra error, matching the renderer path.
+  const guardrailRegistry = coreServices?.getGuardrailRegistry?.() ?? undefined;
+  const scanReply = async (replyText: string): Promise<string> => {
+    const trip = await runOutputGuardrailScan(
+      guardrailRegistry,
+      agentSettingsStore,
+      replyText,
+      {
+        agentId: args.agent_id,
+        organizationId: ctx.organizationId,
+        userId,
+        conversationId,
+        platform: "api",
+      },
+    );
+    return trip
+      ? `Message blocked by guardrail: ${trip.reason ?? trip.guardrail}`
+      : replyText;
+  };
+
+  const terminal = async (
     reply: Awaited<ReturnType<typeof readConversationReply>>,
   ) => {
     if (reply?.status === "complete") {
@@ -299,7 +332,7 @@ async function handleSend(
         conversation_id: conversationId,
         message_id: messageId,
         status: "complete" as const,
-        reply: reply.text,
+        reply: await scanReply(reply.text),
       };
     }
     if (reply?.status === "error") {
@@ -315,7 +348,7 @@ async function handleSend(
   };
 
   while (!ctx.abortSignal?.aborted) {
-    const done = terminal(
+    const done = await terminal(
       await readConversationReply({
         organizationId: ctx.organizationId,
         conversationId,

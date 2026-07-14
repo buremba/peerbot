@@ -45,6 +45,8 @@ interface MockOpts {
 	reply?: unknown | (() => unknown);
 	/** getConversation yields this (default: a caller-owned web row). */
 	conversation?: unknown;
+	/** When set, runOutputGuardrailScan reports this trip (blocks the reply). */
+	guardrailTrip?: { guardrail: string; reason?: string } | null;
 }
 
 /** A caller-owned web conversation — passes the send/get ownership fence. */
@@ -97,6 +99,10 @@ function mockDeps(opts: MockOpts = {}) {
 		getConversation: () => Promise.resolve(conversation),
 		listConversations: () => Promise.resolve([OWNED_ROW]),
 	}));
+	const trip = opts.guardrailTrip ?? null;
+	vi.doMock("../../gateway/guardrails/output-scan.js", () => ({
+		runOutputGuardrailScan: () => Promise.resolve(trip),
+	}));
 }
 
 async function loadHandler() {
@@ -110,6 +116,7 @@ afterEach(() => {
 	vi.doUnmock("../../gateway/services/platform-helpers.js");
 	vi.doUnmock("../../lobu/gateway.js");
 	vi.doUnmock("../../gateway/services/conversations-store.js");
+	vi.doUnmock("../../gateway/guardrails/output-scan.js");
 });
 
 describe("manage_conversations send", () => {
@@ -176,6 +183,26 @@ describe("manage_conversations send", () => {
 
 		expect(res.status).toBe("error");
 		expect(res.error).toBe("provider down");
+	});
+
+	it("runs the output guardrail on the reply and blocks a tripped one", async () => {
+		vi.resetModules();
+		mockDeps({
+			reply: { status: "complete", text: "the secret is sk-live-123" },
+			guardrailTrip: { guardrail: "secret-scan", reason: "api key" },
+		});
+		const manageConversations = await loadHandler();
+
+		const res = (await manageConversations(
+			{ action: "send", agent_id: "researcher", text: "hi" },
+			env,
+			ctx,
+		)) as Record<string, unknown>;
+
+		expect(res.status).toBe("complete");
+		// The raw finalText must NOT leak; the block notice replaces it.
+		expect(res.reply).not.toContain("sk-live-123");
+		expect(String(res.reply)).toMatch(/blocked by guardrail/i);
 	});
 
 	it("returns timeout when no reply lands before the deadline", async () => {

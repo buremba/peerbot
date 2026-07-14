@@ -69,9 +69,11 @@ export const ManageConversationsSchema = Type.Object({
   timeout_ms: Type.Optional(
     Type.Number({
       description:
-        "[send, wait=true] Max time to wait for the reply. Default 60000, capped at 170000. " +
-        'On timeout the turn keeps running and status is "timeout" (the answer is not lost); ' +
-        "raise timeout_ms for a longer wait. The reply is not retrievable through `get`.",
+        "[send, wait=true] Max time to wait for the reply. Default 45000, capped at 170000 — " +
+        "kept inside run_sdk's own wall-clock budget so a no-reply call returns a graceful " +
+        'status:"timeout" instead of aborting the whole script. For a longer wait, raise BOTH ' +
+        "this and the run_sdk/query_sdk timeout_ms. On timeout the turn keeps running (the answer " +
+        "is not lost); the reply is not retrievable through `get`.",
       minimum: 1000,
       maximum: 170_000,
     })

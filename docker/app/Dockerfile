@@ -26,6 +26,11 @@ COPY patches/ ./patches/
 COPY packages/core/package.json packages/core/
 COPY packages/plugin-api/package.json packages/plugin-api/
 COPY packages/plugin-host/package.json packages/plugin-host/
+COPY packages/plugin-toolkit/package.json packages/plugin-toolkit/
+COPY packages/plugin-memory/package.json packages/plugin-memory/
+COPY packages/plugin-conversations/package.json packages/plugin-conversations/
+COPY packages/plugin-media/package.json packages/plugin-media/
+COPY packages/plugin-mcp/package.json packages/plugin-mcp/
 COPY packages/agent-worker/package.json packages/agent-worker/
 COPY packages/server/package.json packages/server/
 COPY packages/connector-sdk/package.json packages/connector-sdk/
@@ -66,6 +71,11 @@ COPY config/ config/
 COPY packages/core/ packages/core/
 COPY packages/plugin-api/ packages/plugin-api/
 COPY packages/plugin-host/ packages/plugin-host/
+COPY packages/plugin-toolkit/ packages/plugin-toolkit/
+COPY packages/plugin-memory/ packages/plugin-memory/
+COPY packages/plugin-conversations/ packages/plugin-conversations/
+COPY packages/plugin-media/ packages/plugin-media/
+COPY packages/plugin-mcp/ packages/plugin-mcp/
 COPY packages/agent-worker/ packages/agent-worker/
 COPY packages/connector-sdk/ packages/connector-sdk/
 COPY packages/connectors/ packages/connectors/
@@ -81,6 +91,11 @@ COPY packages/owletto packages/owletto
 RUN cd packages/core && bunx tsc \
     && cd ../plugin-api && bunx tsc \
     && cd ../plugin-host && bunx tsc \
+    && cd ../plugin-toolkit && bunx tsc \
+    && cd ../plugin-memory && bunx tsc \
+    && cd ../plugin-conversations && bunx tsc \
+    && cd ../plugin-media && bunx tsc \
+    && cd ../plugin-mcp && bunx tsc \
     && cd ../connector-sdk && bunx tsc \
     && cd ../embeddings && bunx tsc \
     && cd ../connector-worker && bunx tsc \
@@ -147,6 +162,11 @@ COPY --from=builder /app/config ./config
 COPY --from=builder /app/packages/core ./packages/core
 COPY --from=builder /app/packages/plugin-api ./packages/plugin-api
 COPY --from=builder /app/packages/plugin-host ./packages/plugin-host
+COPY --from=builder /app/packages/plugin-toolkit ./packages/plugin-toolkit
+COPY --from=builder /app/packages/plugin-memory ./packages/plugin-memory
+COPY --from=builder /app/packages/plugin-conversations ./packages/plugin-conversations
+COPY --from=builder /app/packages/plugin-media ./packages/plugin-media
+COPY --from=builder /app/packages/plugin-mcp ./packages/plugin-mcp
 COPY --from=builder /app/packages/agent-worker ./packages/agent-worker
 COPY --from=builder /app/packages/connector-sdk ./packages/connector-sdk
 COPY --from=builder /app/packages/connectors ./packages/connectors

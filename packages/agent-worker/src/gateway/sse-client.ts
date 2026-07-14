@@ -17,7 +17,7 @@ import { z } from "zod";
 import type { WorkerConfig, WorkerExecutor } from "../core/types";
 import { invalidateSessionContextCache } from "../runtime/session-context";
 import { LobuAgentWorker } from "../runtime/worker";
-import { createGatewayClient } from "../shared/gateway-client";
+import { createGatewayClient } from "@lobu/plugin-toolkit";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 import { HttpWorkerTransport } from "./gateway-integration";
 import { MessageBatcher } from "./message-batcher";

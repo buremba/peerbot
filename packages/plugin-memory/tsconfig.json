@@ -1,0 +1,6 @@
+{
+  "extends": "../plugin-toolkit/tsconfig.json",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/__tests__/**/*"]
+}

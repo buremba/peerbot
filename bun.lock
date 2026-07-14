@@ -24,13 +24,17 @@
         "@hono/node-server": "^1.19.9",
         "@lobu/core": "workspace:*",
         "@lobu/plugin-api": "workspace:*",
+        "@lobu/plugin-conversations": "workspace:*",
         "@lobu/plugin-host": "workspace:*",
+        "@lobu/plugin-mcp": "workspace:*",
+        "@lobu/plugin-media": "workspace:*",
+        "@lobu/plugin-memory": "workspace:*",
+        "@lobu/plugin-toolkit": "workspace:*",
         "@mariozechner/pi-agent-core": "^0.73.1",
         "@mariozechner/pi-ai": "^0.73.1",
         "@mariozechner/pi-coding-agent": "^0.73.1",
         "@sentry/node": "^10.6.0",
         "@sinclair/typebox": "^0.34.33",
-        "form-data": "^4.0.4",
         "hono": "^4.11.7",
         "just-bash": "^2.12.8",
         "zod": "^3.24.1",
@@ -339,11 +343,83 @@
         "typescript": "^5.8.3",
       },
     },
+    "packages/plugin-conversations": {
+      "name": "@lobu/plugin-conversations",
+      "version": "0.0.0",
+      "dependencies": {
+        "@lobu/plugin-api": "workspace:*",
+        "@lobu/plugin-toolkit": "workspace:*",
+        "@mariozechner/pi-coding-agent": "^0.73.1",
+        "@sinclair/typebox": "^0.34.33",
+      },
+      "devDependencies": {
+        "@types/node": "^20.19.9",
+        "typescript": "^5.8.3",
+      },
+    },
     "packages/plugin-host": {
       "name": "@lobu/plugin-host",
       "version": "14.0.0",
       "dependencies": {
         "@lobu/plugin-api": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "^20.19.9",
+        "typescript": "^5.8.3",
+      },
+    },
+    "packages/plugin-mcp": {
+      "name": "@lobu/plugin-mcp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@lobu/core": "workspace:*",
+        "@lobu/plugin-api": "workspace:*",
+        "@lobu/plugin-toolkit": "workspace:*",
+        "@mariozechner/pi-coding-agent": "^0.73.1",
+        "@sinclair/typebox": "^0.34.33",
+      },
+      "devDependencies": {
+        "@types/node": "^20.19.9",
+        "typescript": "^5.8.3",
+      },
+    },
+    "packages/plugin-media": {
+      "name": "@lobu/plugin-media",
+      "version": "0.0.0",
+      "dependencies": {
+        "@lobu/core": "workspace:*",
+        "@lobu/plugin-api": "workspace:*",
+        "@lobu/plugin-toolkit": "workspace:*",
+        "@mariozechner/pi-coding-agent": "^0.73.1",
+        "@sinclair/typebox": "^0.34.33",
+        "form-data": "^4.0.4",
+      },
+      "devDependencies": {
+        "@types/node": "^20.19.9",
+        "typescript": "^5.8.3",
+      },
+    },
+    "packages/plugin-memory": {
+      "name": "@lobu/plugin-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@lobu/plugin-api": "workspace:*",
+        "@lobu/plugin-toolkit": "workspace:*",
+        "@mariozechner/pi-coding-agent": "^0.73.1",
+      },
+      "devDependencies": {
+        "@types/node": "^20.19.9",
+        "typescript": "^5.8.3",
+      },
+    },
+    "packages/plugin-toolkit": {
+      "name": "@lobu/plugin-toolkit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@lobu/core": "workspace:*",
+        "@mariozechner/pi-agent-core": "^0.73.1",
+        "@mariozechner/pi-coding-agent": "^0.73.1",
+        "@sinclair/typebox": "^0.34.33",
       },
       "devDependencies": {
         "@types/node": "^20.19.9",
@@ -1047,7 +1123,17 @@
 
     "@lobu/plugin-api": ["@lobu/plugin-api@workspace:packages/plugin-api"],
 
+    "@lobu/plugin-conversations": ["@lobu/plugin-conversations@workspace:packages/plugin-conversations"],
+
     "@lobu/plugin-host": ["@lobu/plugin-host@workspace:packages/plugin-host"],
+
+    "@lobu/plugin-mcp": ["@lobu/plugin-mcp@workspace:packages/plugin-mcp"],
+
+    "@lobu/plugin-media": ["@lobu/plugin-media@workspace:packages/plugin-media"],
+
+    "@lobu/plugin-memory": ["@lobu/plugin-memory@workspace:packages/plugin-memory"],
+
+    "@lobu/plugin-toolkit": ["@lobu/plugin-toolkit@workspace:packages/plugin-toolkit"],
 
     "@lobu/promptfoo-provider": ["@lobu/promptfoo-provider@workspace:packages/promptfoo-provider"],
 

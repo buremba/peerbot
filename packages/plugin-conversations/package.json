@@ -1,0 +1,36 @@
+{
+  "name": "@lobu/plugin-conversations",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Lobu conversation and interaction tools plugin",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@lobu/plugin-api": "workspace:*",
+    "@lobu/plugin-toolkit": "workspace:*",
+    "@mariozechner/pi-coding-agent": "^0.73.1",
+    "@sinclair/typebox": "^0.34.33"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.9",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22 <25 || >=26"
+  },
+  "license": "Apache-2.0"
+}

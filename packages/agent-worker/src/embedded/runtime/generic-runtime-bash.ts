@@ -1,6 +1,6 @@
 import { stripEnv } from "@lobu/core";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
-import type { GatewayParams } from "../../shared/tool-implementations";
+import type { GatewayParams } from "@lobu/plugin-toolkit";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../../shared/worker-env-keys";
 import type { WorkerRuntimeProvider } from "./types";
 

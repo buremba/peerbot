@@ -4,18 +4,14 @@ import {
   type AfterToolCallEvent,
   type BeforeAgentStartEvent,
   type LobuPlugin,
-  type PluginHostContext,
   type PluginRuntimeContext,
   type ToolCallEvent,
 } from "@lobu/plugin-api";
 
-export class PluginHost<TTool = never, TProvider = never> {
-  readonly plugins: readonly LobuPlugin<TTool, TProvider>[];
+export class PluginHost<TTool = never> {
+  readonly plugins: readonly LobuPlugin<TTool>[];
 
-  constructor(
-    plugins: readonly LobuPlugin<TTool, TProvider>[],
-    availableCapabilities: ReadonlySet<string>
-  ) {
+  constructor(plugins: readonly LobuPlugin<TTool>[]) {
     const names = new Set<string>();
     for (const plugin of plugins) {
       assertPluginManifest(plugin.manifest);
@@ -23,18 +19,8 @@ export class PluginHost<TTool = never, TProvider = never> {
         throw new Error(`Duplicate Lobu plugin: ${plugin.manifest.name}`);
       }
       names.add(plugin.manifest.name);
-      const missing = (plugin.manifest.capabilities ?? []).filter(
-        (capability) => !availableCapabilities.has(capability)
-      );
-      if (missing.length > 0) {
-        throw new Error(
-          `Plugin ${plugin.manifest.name} requires unavailable capabilities: ${missing.join(", ")}`
-        );
-      }
     }
-    this.plugins = [...plugins].sort((a, b) =>
-      a.manifest.name.localeCompare(b.manifest.name)
-    );
+    this.plugins = [...plugins];
   }
 
   async tools(context: PluginRuntimeContext): Promise<TTool[]> {
@@ -52,22 +38,6 @@ export class PluginHost<TTool = never, TProvider = never> {
       }
     }
     return tools;
-  }
-
-  providers(): TProvider[] {
-    const providers: TProvider[] = [];
-    const names = new Set<string>();
-    for (const plugin of this.plugins) {
-      for (const provider of plugin.providers ?? []) {
-        const name = contributionName(provider);
-        if (name && names.has(name)) {
-          throw new Error(`Duplicate Lobu plugin provider: ${name}`);
-        }
-        if (name) names.add(name);
-        providers.push(provider);
-      }
-    }
-    return providers;
   }
 
   async beforeAgentStart(
@@ -141,58 +111,6 @@ export class PluginHost<TTool = never, TProvider = never> {
           plugin: plugin.manifest.name,
           error: error instanceof Error ? error.message : String(error),
         });
-      }
-    }
-  }
-
-  async start(context: PluginHostContext): Promise<void> {
-    const started: Array<{
-      plugin: LobuPlugin<TTool, TProvider>;
-      service: NonNullable<LobuPlugin<TTool, TProvider>["services"]>[number];
-    }> = [];
-    const serviceIds = new Set<string>();
-    try {
-      for (const plugin of this.plugins) {
-        for (const service of plugin.services ?? []) {
-          if (serviceIds.has(service.id)) {
-            throw new Error(`Duplicate Lobu plugin service: ${service.id}`);
-          }
-          serviceIds.add(service.id);
-          await service.start(context);
-          started.push({ plugin, service });
-        }
-      }
-    } catch (error) {
-      for (const { plugin, service } of started.reverse()) {
-        try {
-          await service.stop(context);
-        } catch (stopError) {
-          context.logger.error("Plugin service rollback failed", {
-            plugin: plugin.manifest.name,
-            service: service.id,
-            error:
-              stopError instanceof Error
-                ? stopError.message
-                : String(stopError),
-          });
-        }
-      }
-      throw error;
-    }
-  }
-
-  async stop(context: PluginHostContext): Promise<void> {
-    for (const plugin of [...this.plugins].reverse()) {
-      for (const service of [...(plugin.services ?? [])].reverse()) {
-        try {
-          await service.stop(context);
-        } catch (error) {
-          context.logger.error("Plugin service stop failed", {
-            plugin: plugin.manifest.name,
-            service: service.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
       }
     }
   }

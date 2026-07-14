@@ -10,7 +10,7 @@ import {
   type WorkerTransport,
   type WorkerTransportConfig,
 } from "@lobu/core";
-import { createGatewayClient } from "../shared/gateway-client";
+import { createGatewayClient } from "@lobu/plugin-toolkit";
 import type { ResponseData } from "./types";
 import { getWorkerTokenManager } from "./worker-token-manager";
 

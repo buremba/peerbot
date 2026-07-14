@@ -37,6 +37,13 @@
       "@lobu/plugin-api/*": ["packages/plugin-api/src/*"],
       "@lobu/plugin-host": ["packages/plugin-host/src/index.ts"],
       "@lobu/plugin-host/*": ["packages/plugin-host/src/*"],
+      "@lobu/plugin-toolkit": ["packages/plugin-toolkit/src/index.ts"],
+      "@lobu/plugin-memory": ["packages/plugin-memory/src/index.ts"],
+      "@lobu/plugin-conversations": [
+        "packages/plugin-conversations/src/index.ts"
+      ],
+      "@lobu/plugin-media": ["packages/plugin-media/src/index.ts"],
+      "@lobu/plugin-mcp": ["packages/plugin-mcp/src/index.ts"],
       "@lobu/connector-sdk": ["packages/connector-sdk/src/index.ts"],
       "@lobu/connector-sdk/*": ["packages/connector-sdk/src/*"],
       "@lobu/client": ["packages/client/src/index.ts"],

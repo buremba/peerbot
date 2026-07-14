@@ -1,0 +1,36 @@
+{
+  "name": "@lobu/plugin-toolkit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared gateway transport and tool primitives for Lobu-owned plugins",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@lobu/core": "workspace:*",
+    "@mariozechner/pi-agent-core": "^0.73.1",
+    "@mariozechner/pi-coding-agent": "^0.73.1",
+    "@sinclair/typebox": "^0.34.33"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.9",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22 <25 || >=26"
+  },
+  "license": "Apache-2.0"
+}

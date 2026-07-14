@@ -25,7 +25,7 @@ import {
 } from "../gateway/worker-token-manager";
 import { generateCustomInstructions } from "../instructions/builder";
 import { ProjectsInstructionProvider } from "../instructions/providers";
-import { fetchAudioProviderSuggestions } from "../shared/audio-provider-suggestions";
+import { fetchAudioProviderSuggestions } from "@lobu/plugin-media";
 import {
   LobuCoreInstructionProvider,
   LobuPromptIntentInstructionProvider,

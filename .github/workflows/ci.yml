@@ -76,6 +76,11 @@ jobs:
           cd packages/core && bun run build && cd ../..
           cd packages/plugin-api && bun run build && cd ../..
           cd packages/plugin-host && bun run build && cd ../..
+          cd packages/plugin-toolkit && bun run build && cd ../..
+          cd packages/plugin-memory && bun run build && cd ../..
+          cd packages/plugin-conversations && bun run build && cd ../..
+          cd packages/plugin-media && bun run build && cd ../..
+          cd packages/plugin-mcp && bun run build && cd ../..
           cd packages/connector-sdk && bun run build && cd ../..
           cd packages/embeddings && bun run build && cd ../..
           cd packages/connector-worker && bun run build && cd ../..
@@ -92,7 +97,7 @@ jobs:
 
       - name: native plugin packages (bun:test)
         run: |
-          bun test packages/plugin-api packages/plugin-host --coverage
+          bun test packages/plugin-api packages/plugin-host packages/plugin-toolkit packages/plugin-memory packages/plugin-conversations packages/plugin-media packages/plugin-mcp --coverage
           mv coverage/lcov.info coverage/plugin-runtime.lcov.info
 
       - name: worker (bun:test, full suite)
@@ -555,7 +560,7 @@ jobs:
         # preconditions (DOM lib) that belong to its own build pipeline.
         run: |
           set -euo pipefail
-          for pkg in server connector-worker connector-sdk plugin-api plugin-host embeddings cli; do
+          for pkg in server connector-worker connector-sdk plugin-api plugin-host plugin-toolkit plugin-memory plugin-conversations plugin-media plugin-mcp embeddings cli; do
             echo "::group::typecheck $pkg"
             (cd "packages/$pkg" && bunx tsc --noEmit)
             echo "::endgroup::"

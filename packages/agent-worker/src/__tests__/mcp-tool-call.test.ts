@@ -18,12 +18,10 @@
  */
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import {
-  askUserQuestion,
-  callMcpTool,
-  uploadUserFile,
-} from "../shared/tool-implementations";
-import type { GatewayParams } from "../shared/tool-implementations";
+import { askUserQuestion } from "@lobu/plugin-conversations";
+import { callMcpTool } from "@lobu/plugin-mcp";
+import { uploadUserFile } from "@lobu/plugin-media";
+import type { GatewayParams } from "@lobu/plugin-toolkit";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

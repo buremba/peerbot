@@ -11,6 +11,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createLogger, getOptionalEnv, type ToolsConfig } from "@lobu/core";
 import type { PluginRuntimeContext } from "@lobu/plugin-api";
+import type { GatewayParams } from "@lobu/plugin-toolkit";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { ImageContent, Model } from "@mariozechner/pi-ai";
 import {
@@ -26,12 +27,7 @@ import { createEmbeddedBashOps } from "../embedded/just-bash-bootstrap";
 import { consumePendingConfigNotifications } from "../gateway/pending-config-notifications";
 import { getApiKeyEnvVarForProvider } from "../shared/provider-auth-hints";
 import { getWorkerTokenManager } from "../gateway/worker-token-manager";
-import type { GatewayParams } from "../shared/tool-implementations";
 import { isRecord } from "../shared/type-guards";
-import {
-  createMcpAuthToolDefinitions,
-  createMcpToolDefinitions,
-} from "./custom-tools";
 import {
   buildDynamicOpenAIModel,
   DEFAULT_PROVIDER_BASE_URL_ENV,
@@ -45,12 +41,15 @@ import {
 import {
   createPluginLogger,
   createRuntimePluginHost,
-  wrapToolsWithNativePluginHooks,
-} from "./native-plugin-runtime";
+  wrapToolsWithPluginHooks,
+} from "./plugin-composition";
 import type { AgentProgressProcessor } from "./processor";
 import { resetSessionForProviderChange } from "./provider-session";
 import { activeToolNames } from "./active-tool-names";
-import { getAgentSessionContext } from "./session-context";
+import {
+  getAgentSessionContext,
+  invalidateSessionContextCache,
+} from "./session-context";
 import {
   buildToolPolicy,
   enforceBashCommandPolicy,
@@ -1075,6 +1074,11 @@ user references earlier discussion or you need prior context.`);
         "ask-user",
         "ask_user posted — ending the turn so the model can't re-post."
       ),
+    includeMcpTools: mcpExposure !== "cli",
+    mcpTools: context.mcpTools,
+    mcpStatus: context.mcpStatus,
+    mcpContext: context.mcpContext,
+    onMcpAuthChanged: invalidateSessionContextCache,
   });
   const pluginRuntimeContext: PluginRuntimeContext = {
     organizationId,
@@ -1092,44 +1096,13 @@ user references earlier discussion or you need prior context.`);
   };
   const customTools = await runtimePluginHost.tools(pluginRuntimeContext);
 
-  // Register first-class MCP tools + auth tools. Skipped entirely in CLI
-  // mode — MCP tools are instead reachable via the per-server just-bash CLI
-  // wired in above, and `<server> auth login|check|logout` supersedes the
-  // `<id>_login` / `<id>_login_check` / `<id>_logout` trio.
   if (mcpExposure === "cli") {
     logger.info(
       "mcpExposure='cli' — skipping first-class MCP tool registration (tools reachable via <server> <tool> in Bash)."
     );
-  } else {
-    const mcpToolDefs = createMcpToolDefinitions(
-      context.mcpTools,
-      gwParams,
-      context.mcpContext
-    );
-    if (mcpToolDefs.length > 0) {
-      customTools.push(...mcpToolDefs);
-      logger.info(
-        `Registered ${mcpToolDefs.length} MCP tool(s): ${mcpToolDefs.map((t) => t.name).join(", ")}`
-      );
-    }
-  }
-
-  if (mcpExposure !== "cli") {
-    const authToolDefs = createMcpAuthToolDefinitions(
-      context.mcpStatus,
-      gwParams,
-      new Set(customTools.map((tool) => tool.name))
-    );
-    if (authToolDefs.length > 0) {
-      customTools.push(...authToolDefs);
-      logger.info(
-        `Registered ${authToolDefs.length} MCP auth tool(s): ${authToolDefs.map((t) => t.name).join(", ")}`
-      );
-    }
   }
 
   const modelRegistry = ModelRegistry.create(authStorage);
-  await runtimePluginHost.start(pluginRuntimeContext);
 
   // Rebuild final instructions after possible login link injection
   const finalInstructionsUpdated = instructionParts
@@ -1206,7 +1179,7 @@ user references earlier discussion or you need prior context.`);
       // Then layer the runaway guard on top so AskUser/MCP/plugin tools are
       // bounded identically.
       customTools: wrapToolsWithTurnGuard(
-        wrapToolsWithNativePluginHooks(
+        wrapToolsWithPluginHooks(
           customTools,
           runtimePluginHost,
           pluginRuntimeContext
@@ -1651,6 +1624,5 @@ user references earlier discussion or you need prior context.`);
       session.dispose();
       session = null;
     }
-    await runtimePluginHost.stop(pluginRuntimeContext);
   }
 }

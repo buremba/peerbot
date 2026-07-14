@@ -12,13 +12,13 @@ import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import {
   createMcpAuthToolDefinitions,
   createMcpToolDefinitions,
-} from "../runtime/custom-tools";
+  callMcpTool,
+} from "@lobu/plugin-mcp";
 import {
   getAgentSessionContext,
   invalidateSessionContextCache,
 } from "../runtime/session-context";
 import { createLobuTools } from "../runtime/tools";
-import { callMcpTool } from "../shared/tool-implementations";
 
 let tempDir: string;
 

@@ -2,14 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { defineLobuPlugin, LOBU_PLUGIN_API_VERSION } from "../index";
 
 describe("defineLobuPlugin", () => {
-  test("accepts a valid native plugin", () => {
+  test("accepts a valid Lobu plugin", () => {
     const plugin = defineLobuPlugin({
       manifest: {
         name: "lobu-runtime",
         version: "1.0.0",
         apiVersion: LOBU_PLUGIN_API_VERSION,
         description: "Lobu-owned runtime contributions",
-        capabilities: ["memory.read"],
       },
     });
 

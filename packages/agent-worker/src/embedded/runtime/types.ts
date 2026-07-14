@@ -1,5 +1,5 @@
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
-import type { GatewayParams } from "../../shared/tool-implementations";
+import type { GatewayParams } from "@lobu/plugin-toolkit";
 
 /**
  * Worker-side runtime provider.

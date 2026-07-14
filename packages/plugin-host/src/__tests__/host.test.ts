@@ -44,39 +44,33 @@ function plugin(
 }
 
 describe("PluginHost", () => {
-  test("orders plugins deterministically and composes prompt context", async () => {
-    const host = new PluginHost(
-      [
-        plugin("zeta", {
-          beforeAgentStart: () => ({ prependContext: "zeta" }),
-        }),
-        plugin("alpha", {
-          beforeAgentStart: () => ({ prependContext: "alpha" }),
-        }),
-      ],
-      new Set()
-    );
+  test("preserves explicit composition order and composes prompt context", async () => {
+    const host = new PluginHost([
+      plugin("zeta", {
+        beforeAgentStart: () => ({ prependContext: "zeta" }),
+      }),
+      plugin("alpha", {
+        beforeAgentStart: () => ({ prependContext: "alpha" }),
+      }),
+    ]);
 
     expect(host.plugins.map((entry) => entry.manifest.name)).toEqual([
-      "alpha",
       "zeta",
+      "alpha",
     ]);
     expect(
       await host.beforeAgentStart({ prompt: "hello", messages: [] }, context)
-    ).toEqual(["alpha", "zeta"]);
+    ).toEqual(["zeta", "alpha"]);
   });
 
   test("fails closed when a pre-tool hook throws", async () => {
-    const host = new PluginHost(
-      [
-        plugin("policy", {
-          beforeToolCall: () => {
-            throw new Error("policy unavailable");
-          },
-        }),
-      ],
-      new Set()
-    );
+    const host = new PluginHost([
+      plugin("policy", {
+        beforeToolCall: () => {
+          throw new Error("policy unavailable");
+        },
+      }),
+    ]);
 
     const result = await host.beforeToolCall(
       { toolName: "bash", toolCallId: "call-1", params: {} },
@@ -85,93 +79,36 @@ describe("PluginHost", () => {
     expect(result.blockReason).toContain("failed closed");
   });
 
-  test("rejects duplicate names and missing capabilities", () => {
-    expect(
-      () => new PluginHost([plugin("same"), plugin("same")], new Set())
-    ).toThrow("Duplicate Lobu plugin");
-
-    const requiring = defineLobuPlugin({
-      manifest: {
-        name: "requiring",
-        version: "1.0.0",
-        apiVersion: LOBU_PLUGIN_API_VERSION,
-        description: "requires memory",
-        capabilities: ["memory.read"],
-      },
-    });
-    expect(() => new PluginHost([requiring], new Set())).toThrow(
-      "requires unavailable capabilities"
+  test("rejects duplicate plugin names", () => {
+    expect(() => new PluginHost([plugin("same"), plugin("same")])).toThrow(
+      "Duplicate Lobu plugin"
     );
   });
 
   test("rejects duplicate named contributions", async () => {
-    const host = new PluginHost<{ name: string }>(
-      [
-        defineLobuPlugin({
-          manifest: {
-            name: "alpha",
-            version: "1.0.0",
-            apiVersion: LOBU_PLUGIN_API_VERSION,
-            description: "alpha plugin",
-          },
-          tools: () => [{ name: "shared" }],
-        }),
-        defineLobuPlugin({
-          manifest: {
-            name: "beta",
-            version: "1.0.0",
-            apiVersion: LOBU_PLUGIN_API_VERSION,
-            description: "beta plugin",
-          },
-          tools: () => [{ name: "shared" }],
-        }),
-      ],
-      new Set()
-    );
+    const host = new PluginHost<{ name: string }>([
+      defineLobuPlugin({
+        manifest: {
+          name: "alpha",
+          version: "1.0.0",
+          apiVersion: LOBU_PLUGIN_API_VERSION,
+          description: "alpha plugin",
+        },
+        tools: () => [{ name: "shared" }],
+      }),
+      defineLobuPlugin({
+        manifest: {
+          name: "beta",
+          version: "1.0.0",
+          apiVersion: LOBU_PLUGIN_API_VERSION,
+          description: "beta plugin",
+        },
+        tools: () => [{ name: "shared" }],
+      }),
+    ]);
 
     await expect(host.tools(context)).rejects.toThrow(
       "Duplicate Lobu plugin tool: shared"
     );
-  });
-
-  test("rolls back started services when a later service fails", async () => {
-    const calls: string[] = [];
-    const host = new PluginHost(
-      [
-        defineLobuPlugin({
-          manifest: {
-            name: "services",
-            version: "1.0.0",
-            apiVersion: LOBU_PLUGIN_API_VERSION,
-            description: "service lifecycle plugin",
-          },
-          services: [
-            {
-              id: "first",
-              start: () => {
-                calls.push("start:first");
-              },
-              stop: () => {
-                calls.push("stop:first");
-              },
-            },
-            {
-              id: "second",
-              start: () => {
-                calls.push("start:second");
-                throw new Error("start failed");
-              },
-              stop: () => {
-                calls.push("stop:second");
-              },
-            },
-          ],
-        }),
-      ],
-      new Set()
-    );
-
-    await expect(host.start(context)).rejects.toThrow("start failed");
-    expect(calls).toEqual(["start:first", "start:second", "stop:first"]);
   });
 });

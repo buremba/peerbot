@@ -3,10 +3,36 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLobuCustomTools } from "../runtime/custom-tools";
-import { maybePostApprovalCard } from "../shared/tool-implementations";
+import { createConversationTools } from "@lobu/plugin-conversations";
+import { maybePostApprovalCard } from "@lobu/plugin-mcp";
+import { createMediaTools } from "@lobu/plugin-media";
 
 const originalFetch = globalThis.fetch;
+
+function createLobuCustomTools(params: {
+  gatewayUrl: string;
+  workerToken: string;
+  channelId: string;
+  conversationId: string;
+  platform?: string;
+  workspaceDir: string;
+  onCustomEvent?: (
+    name: string,
+    data: Record<string, unknown>
+  ) => Promise<void> | void;
+  onAskUserPosted?: () => void;
+}) {
+  return [
+    ...createMediaTools({
+      ...params,
+      onFileUploaded: (data) => params.onCustomEvent?.("file-uploaded", data),
+    }),
+    ...createConversationTools({
+      ...params,
+      onAskUserPosted: params.onAskUserPosted ?? (() => undefined),
+    }),
+  ];
+}
 
 describe("createLobuCustomTools", () => {
   afterEach(() => {

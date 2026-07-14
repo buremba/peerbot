@@ -1,4 +1,4 @@
-import { createGatewayClient } from "./gateway-client";
+import { createGatewayClient } from "@lobu/plugin-toolkit";
 
 interface AudioProviderSuggestions {
   providerIds: string[];

@@ -26,8 +26,8 @@ interface ResolvedSettingsViewer {
 
 /**
  * Definition-level sections are admin-only writes. Non-admins (org members)
- * cannot mutate the agent's identity, soulMd, userMd, skills, tools, plugins,
- * model, network, nix, mcp, providers, guardrails, or pre-approved tools —
+ * cannot mutate the agent's identity, soulMd, userMd, skills, tools, model,
+ * network, nix, mcp, providers, guardrails, or pre-approved tools —
  * those describe the agent itself, not per-user state.
  */
 const DEFINITION_SECTIONS: ReadonlySet<SettingsSectionKey> = new Set([

@@ -125,26 +125,6 @@ export const SkillsConfigSchema = Type.Object({
 });
 export type SkillsConfig = Static<typeof SkillsConfigSchema>;
 
-export const PluginSlotSchema = Type.Union([
-  Type.Literal("tool"),
-  Type.Literal("provider"),
-  Type.Literal("memory"),
-]);
-export type PluginSlot = Static<typeof PluginSlotSchema>;
-
-const PluginConfigSchema = Type.Object({
-  source: Type.String(),
-  slot: PluginSlotSchema,
-  enabled: Type.Optional(Type.Boolean()),
-  config: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-});
-export type PluginConfig = Static<typeof PluginConfigSchema>;
-
-export const PluginsConfigSchema = Type.Object({
-  plugins: Type.Array(PluginConfigSchema),
-});
-export type PluginsConfig = Static<typeof PluginsConfigSchema>;
-
 // ── AgentSettingsStored ─────────────────────────────────────────────────────
 
 /**
@@ -169,7 +149,6 @@ export const AgentSettingsStoredSchema = Type.Object({
   guardrails: Type.Optional(Type.Array(Type.String())),
   guardrailsInline: Type.Optional(Type.Array(AgentInlineGuardrailSchema)),
   environmentId: Type.Optional(Type.String()),
-  pluginsConfig: Type.Optional(PluginsConfigSchema),
   verboseLogging: Type.Optional(Type.Boolean()),
   showToolCalls: Type.Optional(Type.Boolean()),
   preApprovedTools: Type.Optional(Type.Array(Type.String())),

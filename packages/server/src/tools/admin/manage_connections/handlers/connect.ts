@@ -2,7 +2,6 @@
  * Connect action handler: create connection + OAuth flow in one call.
  */
 
-import { randomUUID } from "node:crypto";
 import { getDb, pgBigintArray, type DbClient } from "../../../../db/client";
 import { notifyConnectionPermissionRequest } from "../../../../notifications/triggers";
 import {
@@ -53,10 +52,10 @@ import {
 import { getErrorMessage } from "@lobu/core";
 import {
 	activeConnectionPoll,
-	appendSetupAttemptId,
+	appInstallationSetupContinuation,
 	buildConnectionSetupContinuation,
 	buildSafeConnectionResumeCall,
-	installedConnectorPoll,
+	oauthAppSetupContinuation,
 	type ConnectionSetupFamily,
 	type ConnectionSetupNextAction,
 } from "../../helpers/connect-setup-continuation";
@@ -121,53 +120,14 @@ export async function handleConnect(
     setupUrl,
   });
   if (appInstallGuard) {
-		const setupAttemptId =
-			appInstallGuard.provider === "github" && appInstallGuard.install_url
-				? randomUUID()
-				: undefined;
 		// Setup-required continuation: the App install callback creates the active
 		// connection itself, so do NOT instruct a retry of connect. The guard's
 		// ConnectorSetupError already carries the absolute install_url.
-		return buildConnectionSetupContinuation({
+		return appInstallationSetupContinuation({
 			action: "connect",
 			connectorKey: args.connector_key,
-			setupFamily: "app_installation",
-			nextAction:
-				appInstallGuard.next_action === "install_app"
-					? "install_app"
-					: "open_setup",
-			instructions: appInstallGuard.error,
-			errorCode: appInstallGuard.error_code,
-			installType: appInstallGuard.install_type,
-			...(appInstallGuard.install_shape
-				? { installShape: appInstallGuard.install_shape }
-				: {}),
-			...(appInstallGuard.setup_instructions
-				? { setupInstructions: appInstallGuard.setup_instructions }
-				: {}),
-			...(setupAttemptId
-				? {
-						completionCheck: installedConnectorPoll(
-							args.connector_key,
-							setupAttemptId,
-						),
-						setupAttemptId,
-					}
-				: {}),
+			setup: appInstallGuard,
 			setupUrl: await buildAppInstallationSetupUrl(ctx, args.connector_key),
-			...(appInstallGuard.install_url
-				? {
-						installUrl: setupAttemptId
-							? appendSetupAttemptId(
-									appInstallGuard.install_url,
-									setupAttemptId,
-								)
-							: appInstallGuard.install_url,
-					}
-				: {}),
-			...(appInstallGuard.provider
-				? { provider: appInstallGuard.provider }
-				: {}),
 		});
   }
 
@@ -685,21 +645,11 @@ export async function handleConnect(
 		// OAuth app credentials are a setup step, not a business error. Surface a
 		// continuation so an agent can read next_action and drive the admin to
 		// configure the OAuth app, then retry connect.
-		return buildConnectionSetupContinuation({
+		return oauthAppSetupContinuation({
 			action: "connect",
 			connectorKey: args.connector_key,
-			setupFamily: "oauth",
-			nextAction: "configure_oauth_app",
-			instructions: setupError.setup_instructions
-				? `${setupError.error} ${setupError.setup_instructions}`
-				: setupError.error,
-			setupUrl: setupError.setup_url ?? setupUrl,
-			provider: oauthMethod.provider,
-			errorCode: setupError.error_code,
-			installType: setupError.install_type,
-			...(setupError.setup_instructions
-				? { setupInstructions: setupError.setup_instructions }
-				: {}),
+			setup: setupError,
+			fallbackSetupUrl: setupUrl,
 			resumeCall,
 		});
   }

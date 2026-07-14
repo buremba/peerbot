@@ -6,32 +6,14 @@ import { createAuthProfile } from "../../utils/auth-profiles";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
-	addUserToOrganization,
 	createTestConnection,
 	createTestConnectorDefinition,
-	createTestOrganization,
-	createTestUser,
+	seedOwnerContext,
 } from "../setup/test-fixtures";
 
 const LOCAL = "demo.ops.backend.local";
 const MCP = "demo.ops.backend.mcp";
 const HTTP = "demo.ops.backend.http";
-
-function context(organizationId: string, userId: string): ToolContext {
-	return {
-		organizationId,
-		userId,
-		memberRole: "owner",
-		agentId: null,
-		isAuthenticated: true,
-		clientId: null,
-		scopes: ["mcp:read", "mcp:write", "mcp:admin"],
-		tokenType: "oauth",
-		scopedToOrg: true,
-		allowCrossOrg: false,
-		baseUrl: "https://gateway.test/lobu",
-	} as ToolContext;
-}
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -52,12 +34,17 @@ describe("operations.execute backend lifecycle", () => {
 	beforeAll(async () => {
 		await cleanupTestDatabase();
 		await initWorkspaceProvider();
-		const org = await createTestOrganization({ name: "Operation Backends Org" });
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
+		const {
+			org,
+			user,
+			ctx: ownerCtx,
+		} = await seedOwnerContext({
+			orgName: "Operation Backends Org",
+		});
+		ownerCtx.baseUrl = "https://gateway.test/lobu";
 		orgId = org.id;
 		userId = user.id;
-		ctx = context(orgId, userId);
+		ctx = ownerCtx;
 
 		for (const [key, name] of [
 			[LOCAL, "Local backend"],

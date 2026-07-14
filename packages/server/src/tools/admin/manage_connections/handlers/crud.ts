@@ -94,10 +94,10 @@ import {
 } from "./facets";
 import {
 	activeConnectionPoll,
-	appendSetupAttemptId,
+	appInstallationSetupContinuation,
 	buildConnectionSetupContinuation,
 	buildSafeConnectionResumeCall,
-	installedConnectorPoll,
+	oauthAppSetupContinuation,
 } from "../../helpers/connect-setup-continuation";
 import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
 
@@ -685,48 +685,11 @@ export async function handleCreate(
     setupUrl: await buildViewUrl(ctx, args.connector_key),
   });
   if (appInstallGuard) {
-		const setupAttemptId =
-			appInstallGuard.provider === "github" && appInstallGuard.install_url
-				? randomUUID()
-				: undefined;
-		return buildConnectionSetupContinuation({
+		return appInstallationSetupContinuation({
 			action: "create",
 			connectorKey: args.connector_key,
-			setupFamily: "app_installation",
-			nextAction:
-				appInstallGuard.next_action === "install_app"
-					? "install_app"
-					: "open_setup",
-			instructions: appInstallGuard.error,
-			errorCode: appInstallGuard.error_code,
-			installType: appInstallGuard.install_type,
-			...(appInstallGuard.install_shape
-				? { installShape: appInstallGuard.install_shape }
-				: {}),
-			...(appInstallGuard.setup_instructions
-				? { setupInstructions: appInstallGuard.setup_instructions }
-				: {}),
+			setup: appInstallGuard,
 			setupUrl: await buildAppInstallationSetupUrl(ctx, args.connector_key),
-			...(appInstallGuard.install_url
-				? {
-						installUrl: setupAttemptId
-							? appendSetupAttemptId(
-									appInstallGuard.install_url,
-									setupAttemptId,
-								)
-							: appInstallGuard.install_url,
-					}
-				: {}),
-			provider: appInstallGuard.provider,
-			...(setupAttemptId
-				? {
-						completionCheck: installedConnectorPoll(
-							args.connector_key,
-							setupAttemptId,
-						),
-						setupAttemptId,
-					}
-				: {}),
 		});
 	}
 
@@ -958,21 +921,10 @@ export async function handleCreate(
           method: authSelection.oauthMethod,
           setupUrl: await buildViewUrl(ctx, args.connector_key),
         });
-				return buildConnectionSetupContinuation({
+				return oauthAppSetupContinuation({
 					action: "create",
 					connectorKey: args.connector_key,
-					setupFamily: "oauth",
-					nextAction: "configure_oauth_app",
-					instructions: setupError.setup_instructions
-						? `${setupError.error} ${setupError.setup_instructions}`
-						: setupError.error,
-					setupUrl: setupError.setup_url,
-					provider: authSelection.oauthMethod.provider,
-					errorCode: setupError.error_code,
-					installType: setupError.install_type,
-					...(setupError.setup_instructions
-						? { setupInstructions: setupError.setup_instructions }
-						: {}),
+					setup: setupError,
 					resumeCall: createResumeCall,
 				});
       }

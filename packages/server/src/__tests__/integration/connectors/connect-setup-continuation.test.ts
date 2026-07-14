@@ -19,12 +19,11 @@
  */
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import type { Env } from "../../../index";
-import type { ToolContext } from "../../../tools/registry";
-import { manageConnections } from "../../../tools/admin/manage_connections";
-import { getTestDb } from "../../setup/test-db";
 import { pgTextArray } from "../../../db/client";
+import type { Env } from "../../../index";
+import { manageConnections } from "../../../tools/admin/manage_connections";
 import { initWorkspaceProvider } from "../../../workspace";
+import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
 	createTestAccessToken,
@@ -32,28 +31,11 @@ import {
 	createTestOAuthClient,
 	createTestOrganization,
 	createTestUser,
+	seedOwnerContext,
 } from "../../setup/test-fixtures";
 import { TestMcpClient } from "../../setup/test-mcp-client";
-import { cleanupTestDatabase } from "../../setup/test-db";
 
 const TEST_ENV = {} as Env;
-
-function ctxFor(organizationId: string, userId: string): ToolContext {
-	return {
-		organizationId,
-		userId,
-		memberRole: "owner",
-		agentId: null,
-		isAuthenticated: true,
-		clientId: null,
-		scopes: ["mcp:read", "mcp:write", "mcp:admin"],
-		tokenType: "oauth",
-		scopedToOrg: true,
-		allowCrossOrg: false,
-		// Absolute origin so setup_url/install_url/connect_url are absolute.
-		baseUrl: "https://gateway.test/lobu",
-	} as ToolContext;
-}
 
 const CONNECTORS = {
 	appInstall: "demo.cont.appinstall.cont",
@@ -131,6 +113,13 @@ async function seedConnectors(organizationId: string): Promise<void> {
 	});
 }
 
+async function setupConnectorCase(orgName: string) {
+	const seeded = await seedOwnerContext({ orgName });
+	seeded.ctx.baseUrl = "https://gateway.test/lobu";
+	await seedConnectors(seeded.org.id);
+	return seeded;
+}
+
 function isAbsoluteUrl(value: unknown): boolean {
 	return typeof value === "string" && /^https?:\/\//i.test(value);
 }
@@ -162,11 +151,7 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("app_installation: returns an immediately callable completion poll and no connect retry", async () => {
-		const org = await createTestOrganization({ name: "App Install Cont Org" });
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
-		const ctx = ctxFor(org.id, user.id);
+		const { org, user, ctx } = await setupConnectorCase("App Install Cont Org");
 		const sql = getTestDb();
 		await sql`
 			INSERT INTO connections (
@@ -270,11 +255,7 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("oauth (missing app profile): returns setup_required with configure_oauth_app", async () => {
-		const org = await createTestOrganization({ name: "OAuth Cont Org" });
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
-		const ctx = ctxFor(org.id, user.id);
+		const { ctx } = await setupConnectorCase("OAuth Cont Org");
 
 		const res = (await manageConnections(
 			{
@@ -310,12 +291,7 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("connect resume_call omits secret config values without executable placeholders", async () => {
-		const org = await createTestOrganization({
-			name: "Secret Connect Cont Org",
-		});
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
+		const { ctx } = await setupConnectorCase("Secret Connect Cont Org");
 
 		const res = (await manageConnections(
 			{
@@ -335,7 +311,7 @@ describe("connections.connect — setup_required continuation", () => {
 				},
 			},
 			TEST_ENV,
-			ctxFor(org.id, user.id),
+			ctx,
 		)) as Record<string, unknown>;
 
 		expect(res.resume_call).toEqual({
@@ -359,11 +335,7 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("env_keys (no auth profile): returns setup_required with select_auth_profile", async () => {
-		const org = await createTestOrganization({ name: "Env Cont Org" });
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
-		const ctx = ctxFor(org.id, user.id);
+		const { ctx } = await setupConnectorCase("Env Cont Org");
 
 		const res = (await manageConnections(
 			{ action: "connect", connector_key: CONNECTORS.env },
@@ -383,11 +355,7 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("browser (no profile): returns setup_required pointing at browser pairing", async () => {
-		const org = await createTestOrganization({ name: "Browser Cont Org" });
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
-		const ctx = ctxFor(org.id, user.id);
+		const { ctx } = await setupConnectorCase("Browser Cont Org");
 
 		const res = (await manageConnections(
 			{ action: "connect", connector_key: CONNECTORS.browser },
@@ -406,11 +374,7 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("interactive: creates a pending connection + auth run and returns pair_interactive continuation", async () => {
-		const org = await createTestOrganization({ name: "Interactive Cont Org" });
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
-		const ctx = ctxFor(org.id, user.id);
+		const { ctx } = await setupConnectorCase("Interactive Cont Org");
 
 		const res = (await manageConnections(
 			{ action: "connect", connector_key: CONNECTORS.interactive },
@@ -449,10 +413,7 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("create uses the same structured env setup continuation", async () => {
-		const org = await createTestOrganization({ name: "Create Env Cont Org" });
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
+		const { ctx } = await setupConnectorCase("Create Env Cont Org");
 
 		const res = (await manageConnections(
 			{
@@ -461,7 +422,7 @@ describe("connections.connect — setup_required continuation", () => {
 				display_name: "Env pending setup",
 			},
 			TEST_ENV,
-			ctxFor(org.id, user.id),
+			ctx,
 		)) as Record<string, unknown>;
 
 		expect(res).toMatchObject({
@@ -484,12 +445,7 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("create resume_call omits secret config values without executable placeholders", async () => {
-		const org = await createTestOrganization({
-			name: "Secret Create Cont Org",
-		});
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
+		const { ctx } = await setupConnectorCase("Secret Create Cont Org");
 
 		const res = (await manageConnections(
 			{
@@ -509,7 +465,7 @@ describe("connections.connect — setup_required continuation", () => {
 				},
 			},
 			TEST_ENV,
-			ctxFor(org.id, user.id),
+			ctx,
 		)) as Record<string, unknown>;
 
 		expect(res.resume_call).toEqual({
@@ -533,17 +489,12 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("create interactive atomically creates the profile, connection, and auth run", async () => {
-		const org = await createTestOrganization({
-			name: "Create Interactive Cont Org",
-		});
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
+		const { ctx } = await setupConnectorCase("Create Interactive Cont Org");
 
 		const res = (await manageConnections(
 			{ action: "create", connector_key: CONNECTORS.interactive },
 			TEST_ENV,
-			ctxFor(org.id, user.id),
+			ctx,
 		)) as Record<string, unknown>;
 
 		expect(res).toMatchObject({
@@ -570,14 +521,11 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("assigns an admin-created interactive auth run to the target connection owner", async () => {
-		const org = await createTestOrganization({
-			name: "Delegated Interactive Cont Org",
-		});
-		const admin = await createTestUser();
+		const { org, ctx } = await setupConnectorCase(
+			"Delegated Interactive Cont Org",
+		);
 		const targetOwner = await createTestUser();
-		await addUserToOrganization(admin.id, org.id, "owner");
 		await addUserToOrganization(targetOwner.id, org.id, "member");
-		await seedConnectors(org.id);
 
 		const res = (await manageConnections(
 			{
@@ -586,7 +534,7 @@ describe("connections.connect — setup_required continuation", () => {
 				created_by: targetOwner.id,
 			},
 			TEST_ENV,
-			ctxFor(org.id, admin.id),
+			ctx,
 		)) as Record<string, unknown>;
 
 		const [row] = await getTestDb()`
@@ -602,12 +550,7 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("interactive setup rolls back profile and connection if the auth run cannot be created", async () => {
-		const org = await createTestOrganization({
-			name: "Interactive Rollback Org",
-		});
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
+		const { org, ctx } = await setupConnectorCase("Interactive Rollback Org");
 		await getTestDb()`DELETE FROM connector_versions WHERE connector_key = ${CONNECTORS.interactive}`;
 
 		for (const action of ["connect", "create"] as const) {
@@ -615,7 +558,7 @@ describe("connections.connect — setup_required continuation", () => {
 				manageConnections(
 					{ action, connector_key: CONNECTORS.interactive },
 					TEST_ENV,
-					ctxFor(org.id, user.id),
+					ctx,
 				),
 			).rejects.toThrow(
 				/connector version|active connector definition|compiled code/i,
@@ -630,10 +573,7 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("device-bound connectors return a setup continuation instead of prose-only failure", async () => {
-		const org = await createTestOrganization({ name: "Device Bound Cont Org" });
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
+		const { org, ctx } = await setupConnectorCase("Device Bound Cont Org");
 		await getTestDb()`
 			UPDATE connector_definitions
 			SET required_capability = 'computer_use'
@@ -644,7 +584,7 @@ describe("connections.connect — setup_required continuation", () => {
 			const res = (await manageConnections(
 				{ action, connector_key: CONNECTORS.none },
 				TEST_ENV,
-				ctxFor(org.id, user.id),
+				ctx,
 			)) as Record<string, unknown>;
 			expect(res).toMatchObject({
 				action,
@@ -659,11 +599,7 @@ describe("connections.connect — setup_required continuation", () => {
 	});
 
 	it("none (no-auth): connects active immediately, not a setup_required", async () => {
-		const org = await createTestOrganization({ name: "None Cont Org" });
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedConnectors(org.id);
-		const ctx = ctxFor(org.id, user.id);
+		const { ctx } = await setupConnectorCase("None Cont Org");
 
 		const res = (await manageConnections(
 			{ action: "connect", connector_key: CONNECTORS.none },

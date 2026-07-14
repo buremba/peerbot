@@ -105,6 +105,15 @@ async function manageWatchersImpl(
 ): Promise<ManageWatchersResult> {
   const pgSql = createDbClientFromEnv(env);
 
+  // Field-level `update` validation runs before any access check or write-gate
+  // so the human-immediate and agent-approval paths reject identically (a
+  // version-owned / no-op update can never queue or apply). See
+  // {@link assertWatcherUpdateArgs} for the version-owned / entity_ids / status
+  // rationale.
+  if (args.action === 'update') {
+    assertWatcherUpdateArgs(args);
+  }
+
   // Validate organization access based on action type
   if (args.action === 'create') {
     if (args.entity_id) {
@@ -410,23 +419,6 @@ function buildWatcherProposal(
       );
     }
   }
-  if (args.action === 'update') {
-    if (args.watcher_id == null) {
-      throw new ToolUserError('watcher_id is required for update action');
-    }
-    // Reject a no-op update: with only watcher_id (or only fields handleUpdate
-    // ignores), the apply returns updated_fields:[] but the run would be marked
-    // completed and reported "applied". Require at least one patch field so the
-    // approval reflects a real change.
-    const patchKeys = WATCHER_UPDATE_PATCH_KEYS.filter(
-      (k) => args[k as keyof ManageWatchersArgs] !== undefined,
-    );
-    if (patchKeys.length === 0) {
-      throw new ToolUserError(
-        'update requires at least one field to change (e.g. name, description, prompt, schedule, agent_id).',
-      );
-    }
-  }
   if (args.action === 'delete' && (!args.watcher_ids || args.watcher_ids.length === 0)) {
     throw new ToolUserError('watcher_ids is required for delete action');
   }
@@ -470,18 +462,19 @@ const WATCHER_APPROVAL_ROUTING_KEYS = new Set(['action']);
 const WATCHER_APPROVAL_CLEARED = '(cleared)';
 
 /**
- * Fields `handleUpdate` actually patches (mirrors its `updatedFields.push` list
- * plus the direct name/description/prompt/status/sources/entity_ids columns). An
- * `update` with none of these present is a no-op that would otherwise be reported
- * as "applied" — {@link buildWatcherProposal} rejects that.
+ * Fields `handleUpdate` actually patches — mirrors its `updatedFields.push`
+ * list and the UPDATE SET clause in crud.ts exactly. Version-owned fields
+ * (name/description/prompt/sources), `entity_ids` (create_from_version-only)
+ * are intentionally ABSENT: `handleUpdate` writes
+ * none of them, so an `update` carrying any used to pass validation and return
+ * success with `updated_fields: []` — a silent no-op the caller believed
+ * applied. {@link assertWatcherUpdateArgs} rejects them up front (before the
+ * write-gate), so neither the human-immediate nor the agent-approval path can
+ * queue or apply a version-owned change via `update`.
  */
-const WATCHER_UPDATE_PATCH_KEYS = [
-  'name',
-  'description',
-  'prompt',
-  'status',
-  'sources',
-  'entity_ids',
+const VERSION_OWNED_WATCHER_FIELDS = ['name', 'description', 'prompt', 'sources'] as const;
+
+const WATCHER_PATCHABLE_FIELDS = [
   'model_config',
   'execution_config',
   'schedule',
@@ -495,6 +488,37 @@ const WATCHER_UPDATE_PATCH_KEYS = [
   'notification_priority',
   'min_cooldown_seconds',
 ] as const;
+
+/**
+ * Validate `update` args before any access check or write-gate. Both the
+ * human-immediate and the agent-approval paths flow through `manageWatchersImpl`,
+ * so calling this there makes a version-owned / no-op `update` reject
+ * identically and never reach `handleUpdate` (which would otherwise return a
+ * silent `updated_fields: []`).
+ */
+function assertWatcherUpdateArgs(args: ManageWatchersArgs): void {
+  if (args.watcher_id == null) {
+    throw new ToolUserError('watcher_id is required for update action');
+  }
+  const present = (keys: readonly string[]): string[] =>
+    keys.filter((k) => args[k as keyof ManageWatchersArgs] !== undefined);
+  const versionOwned = present(VERSION_OWNED_WATCHER_FIELDS);
+  if (versionOwned.length > 0) {
+    throw new ToolUserError(
+      `update cannot change version-owned field(s) ${versionOwned.map((f) => `'${f}'`).join(', ')} — use action: 'create_version' to publish a new watcher version (name/description/prompt/sources inherit from the current version when omitted, and the watchers-row name cascades on set_as_current).`,
+    );
+  }
+  if (args.entity_ids !== undefined) {
+    throw new ToolUserError(
+      "update cannot change entity_ids — entity targeting is set at create / create_from_version. To re-target per entity, clone a version with action: 'create_from_version'.",
+    );
+  }
+  if (present(WATCHER_PATCHABLE_FIELDS).length === 0) {
+    throw new ToolUserError(
+      'update requires at least one field to change (e.g. schedule, timezone, agent_id, tags, model_config).',
+    );
+  }
+}
 
 /**
  * Flat watcher mutation fields for the events-tab ActionApprovalCard fallback.

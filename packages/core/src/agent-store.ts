@@ -6,92 +6,34 @@
  *   - Host-provided store (embedded backend, e.g. PostgresAgentStore in Lobu)
  */
 
-import type {
-  AgentInlineGuardrail,
-  AuthProfile,
-  NetworkConfig,
-  NixConfig,
-  SkillsConfig,
-  ToolsConfig,
-} from "./types";
+import type { AgentSettingsStored } from "./contracts/agent-settings";
+import type { AuthProfile } from "./types";
 
 // ── Agent Settings ──────────────────────────────────────────────────────────
 
 /**
  * Agent settings — configurable per agentId.
  *
- * Canonical shape. Every agent store implementation conforms to this
- * interface.
+ * Canonical shape, derived from {@link AgentSettingsStoredSchema} (TypeBox) in
+ * `./contracts/agent-settings.ts` — the single source shared by every surface
+ * (declarative `lobu.config.ts`, CLI apply, admin tools, REST/MCP, Owletto UI,
+ * persistence, worker wire). Drift between surfaces is now a compile error,
+ * not a shipped-three-quarters-complete feature.
+ *
+ * `authProfiles` is the one field NOT in the stored schema: Postgres keeps it
+ * in a separate table and the GET route merges it dynamically
+ * (`agent-routes.ts:1315,1686`), so it's layered on here as a runtime-only
+ * superset field. `updatedAt` is store-owned (set by the DB on every write).
  */
-export interface AgentSettings {
-  /**
-   * Ordered list of explicit model refs `<providerSlug>/<model>`. Index 0 = the
-   * agent's default (default provider + default model). Remaining entries are
-   * the agent's alternates: fallback candidates and the pick-list for
-   * per-channel (Listen) overrides. Every slug must resolve to an org-level
-   * provider (`inference_providers` row) or a built-in module. Empty/absent ⇒
-   * all org providers (org rows AND deployment system-key providers) are
-   * available and the default falls through to the org default model.
-   */
-  models?: string[];
-  /** Network access configuration */
-  networkConfig?: NetworkConfig;
-  /** Nix environment configuration */
-  nixConfig?: NixConfig;
-  /** Workspace identity/instruction files (markdown content) */
-  soulMd?: string;
-  userMd?: string;
-  identityMd?: string;
-  /** Skills configuration loaded from local SKILL.md files. */
-  skillsConfig?: SkillsConfig;
-  /** Tool permission configuration — allowed/denied tools (worker-side visibility). */
-  toolsConfig?: ToolsConfig;
-  /**
-   * Guardrails enabled for this agent, by registered name. The gateway
-   * resolves these against its GuardrailRegistry at each stage (input,
-   * output, pre-tool) and halts the run on the first trip.
-   */
-  guardrails?: string[];
-  /**
-   * Operator-authored custom guardrails (inline LLM judges). Unlike the
-   * `guardrails` name list (which references built-ins registered in the
-   * gateway), each entry here carries its own policy + stage + model and is
-   * materialized into a judge guardrail at resolve time. Enabled entries run
-   * in addition to the named built-ins.
-   */
-  guardrailsInline?: AgentInlineGuardrail[];
-  /**
-   * Selected execution environment. References an `environments.id`, the
-   * literal `'builtin'`, or undefined (default: builtin in-process / the
-   * deployment-wide `LOBU_RUNTIME_PROVIDER`). Resolved to a runtime provider +
-   * vault credential at worker-token mint time.
-   */
-  environmentId?: string;
+export type AgentSettings = AgentSettingsStored & {
   /**
    * Reusable auth profiles persisted by host stores (e.g. Lobu's Postgres
    * store). Lobu's gateway runtime uses UserAuthProfileStore instead, but the
-   * host's settings JSON column still round-trips this list.
+   * host's settings JSON column still round-trips this list. NOT in the stored
+   * schema — separate-store, merged on GET.
    */
   authProfiles?: AuthProfile[];
-  /** Enable verbose logging (show tool calls, reasoning, etc.) */
-  verboseLogging?: boolean;
-  /**
-   * Render the agent's tool invocations (name + args + result) as cards in the
-   * web chat. Off by default — tool internals are noise for most end users, so
-   * this is an opt-in display toggle. Gates both the live `tool_use` stream and
-   * the persisted tool-call blocks rebuilt on reload.
-   */
-  showToolCalls?: boolean;
-  /**
-   * MCP tool patterns the operator has pre-approved. Each entry is a grant
-   * pattern (e.g. "/mcp/gmail/tools/send_email" or "/mcp/linear/tools/*").
-   * Synced to the grant store at deployment time to bypass the approval card
-   * for matching tools. Operator-only — skills cannot set this.
-   */
-  preApprovedTools?: string[];
-  /** Last updated timestamp */
-  updatedAt: number;
-}
+};
 
 // ── Agent Metadata ──────────────────────────────────────────────────────────
 

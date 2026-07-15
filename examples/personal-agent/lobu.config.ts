@@ -226,10 +226,11 @@ const asset = defineEntityType({
   required: ["category"],
   properties: {
     value: { type: "number", description: "Current value or balance" },
-    status: {
-      type: "string",
-      enum: ["active", "sold", "closed"],
-      description: "Current status",
+    is_active: {
+      type: "boolean",
+      description: "Whether you currently own this asset",
+      "x-table-column": true,
+      "x-table-label": "Active",
     },
     category: {
       type: "string",

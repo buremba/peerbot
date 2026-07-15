@@ -196,6 +196,63 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     );
   });
 
+  test("revokes a config-removed domain even when the sync cache is cold", async () => {
+    await manager.syncNetworkConfigGrants(
+      buildPayload({
+        networkConfig: { allowedDomains: ["a.example.com"] },
+      })
+    );
+    expect(await grantStore.hasGrant("agent-1", "a.example.com")).toBe(true);
+
+    // Fresh manager = cold cache (pod restart / other replica). The domain
+    // was removed from config; revocation must not depend on pod-local state.
+    const freshManager = new TestDeploymentManager(TEST_CONFIG);
+    freshManager.setGrantStore(grantStore);
+    freshManager.setPolicyStore(policyStore);
+    await freshManager.syncNetworkConfigGrants(
+      buildPayload({ networkConfig: { allowedDomains: [] } })
+    );
+
+    expect(await grantStore.hasGrant("agent-1", "a.example.com")).toBe(false);
+  });
+
+  test("cold-cache sync does not revoke user-approved MCP tool grants", async () => {
+    // Simulates a Slack "always" tool approval — same store, mcp_tool kind,
+    // no expiry. Config sync must never treat it as config-owned.
+    await grantStore.grant(
+      "agent-1",
+      "/mcp/gmail/tools/send_email",
+      null,
+      undefined,
+      "test-org"
+    );
+
+    const freshManager = new TestDeploymentManager(TEST_CONFIG);
+    freshManager.setGrantStore(grantStore);
+    freshManager.setPolicyStore(policyStore);
+    await freshManager.syncNetworkConfigGrants(
+      buildPayload({ networkConfig: { allowedDomains: ["x.example.com"] } })
+    );
+
+    expect(
+      await grantStore.hasGrant("agent-1", "/mcp/gmail/tools/send_email")
+    ).toBe(true);
+  });
+
+  test("grants nix cache domains while nix is configured, revokes on removal", async () => {
+    await manager.syncNetworkConfigGrants(
+      buildPayload({ nixConfig: { packages: ["python311"] } })
+    );
+    expect(await grantStore.hasGrant("agent-1", "cache.nixos.org")).toBe(true);
+
+    const freshManager = new TestDeploymentManager(TEST_CONFIG);
+    freshManager.setGrantStore(grantStore);
+    freshManager.setPolicyStore(policyStore);
+    await freshManager.syncNetworkConfigGrants(buildPayload({}));
+
+    expect(await grantStore.hasGrant("agent-1", "cache.nixos.org")).toBe(false);
+  });
+
   test("syncs both network and pre-approved tools in one call", async () => {
     await manager.syncNetworkConfigGrants(
       buildPayload({

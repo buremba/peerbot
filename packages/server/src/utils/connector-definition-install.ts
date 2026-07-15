@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
 import type { getDb } from '../db/client';
 import { computeCodeHash } from './compiler-core';
 import {
@@ -34,6 +35,15 @@ export type ConnectorInstallResult = {
 type ConnectorVersionPersistence = {
   compiledCode: string | null;
   compiledCodeHash: string | null;
+  /**
+   * Fingerprint of the compile configuration that produced `compiledCode` —
+   * only set when THIS server's pipeline compiled it. Pre-compiled uploads
+   * (`compiled: true` / detected JS) stay NULL: their provenance is unknown
+   * (an older CLI may have compiled under a different externals list), so
+   * `resolveConnectorCode` normalizes them through the current pipeline on
+   * first resolution instead of trusting them.
+   */
+  compileConfigHash: string | null;
   sourceCode: string | null;
   sourcePath: string | null;
 };
@@ -265,6 +275,10 @@ export async function resolveConnectorInstallSource(params: {
     sourcePath,
     compiledCode,
     compiledCodeHash,
+    // Pre-compiled uploads were NOT produced by this server's pipeline — an
+    // older client may have compiled under a different externals list — so
+    // they carry no fingerprint and get normalized on first resolution.
+    compileConfigHash: alreadyCompiled ? null : COMPILE_CONFIG_HASH,
   };
 }
 
@@ -380,15 +394,19 @@ export async function upsertConnectorDefinitionRecords(params: {
 
   // Persist the version's executable source for BOTH the create and the
   // active-update paths — a definition must never point at a version row that
-  // has no compiled/source record.
+  // has no compiled/source record. Pipeline-compiled artifacts arrive stamped
+  // with the fingerprint of the compile configuration that produced them
+  // (versionRecord.compileConfigHash), so a later change to
+  // EXTERNAL_RUNTIME_DEPS / the compile pipeline invalidates them
+  // (resolveConnectorCode recompiles instead of executing a stale bundle).
   await sql`
     INSERT INTO connector_versions (
       connector_key, version, compiled_code, compiled_code_hash,
-      source_code, source_path
+      compile_config_hash, source_code, source_path
     ) VALUES (
       ${metadata.key}, ${metadata.version}, ${params.versionRecord.compiledCode},
-      ${params.versionRecord.compiledCodeHash}, ${params.versionRecord.sourceCode},
-      ${params.versionRecord.sourcePath}
+      ${params.versionRecord.compiledCodeHash}, ${params.versionRecord.compileConfigHash},
+      ${params.versionRecord.sourceCode}, ${params.versionRecord.sourcePath}
     )
     ON CONFLICT (connector_key, version) DO UPDATE
     SET compiled_code = COALESCE(EXCLUDED.compiled_code, connector_versions.compiled_code),
@@ -396,6 +414,14 @@ export async function upsertConnectorDefinitionRecords(params: {
           EXCLUDED.compiled_code_hash,
           connector_versions.compiled_code_hash
         ),
+        -- The fingerprint rides with the artifact, never independently: when a
+        -- reinstall REPLACES compiled_code, take the incoming fingerprint even
+        -- when it is NULL (a pre-compiled upload replacing a pipeline-compiled
+        -- artifact must not inherit the old row's "current" attestation).
+        compile_config_hash = CASE
+          WHEN EXCLUDED.compiled_code IS NOT NULL THEN EXCLUDED.compile_config_hash
+          ELSE connector_versions.compile_config_hash
+        END,
         source_code = COALESCE(EXCLUDED.source_code, connector_versions.source_code),
         source_path = COALESCE(EXCLUDED.source_path, connector_versions.source_path)
   `;

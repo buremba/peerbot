@@ -229,6 +229,7 @@ async function ensureDeviceConnectorWired(
         versionRecord: {
           compiledCode: null,
           compiledCodeHash: null,
+          compileConfigHash: null,
           sourceCode: null,
           sourcePath,
         },

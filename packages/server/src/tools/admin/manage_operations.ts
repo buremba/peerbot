@@ -57,7 +57,7 @@ import type {
 	OperationDescriptor,
 } from "../../operations/types";
 import { createConnectorOperationRun } from "../../runs/queue-service";
-import { resolveConnectorCode } from "../../utils/ensure-connector-installed";
+import { resolveConnectorCodeForKey } from "../../utils/ensure-connector-installed";
 import { resolveExecutionAuth } from "../../utils/execution-context";
 import { insertEvent } from "../../utils/insert-event";
 import logger from "../../utils/logger";
@@ -222,18 +222,11 @@ async function executeLocalActionInline(
 		runRows[0] as { connector_version: string | null } | undefined
 	)?.connector_version;
 
-	const compiledRows = connectorVersion
-		? await sql`SELECT compiled_code FROM connector_versions WHERE connector_key = ${connection.connector_key} AND version = ${connectorVersion} LIMIT 1`
-		: await sql`SELECT compiled_code FROM connector_versions WHERE connector_key = ${connection.connector_key} ORDER BY created_at DESC LIMIT 1`;
-
 	let compiledCode: string;
 	try {
-		const rawCode =
-			(compiledRows[0] as { compiled_code: string | null } | undefined)
-				?.compiled_code ?? null;
-		compiledCode = await resolveConnectorCode(
+		compiledCode = await resolveConnectorCodeForKey(
 			connection.connector_key,
-			rawCode,
+			connectorVersion ?? null,
 		);
 	} catch (err) {
 		return failRunInline(runId, organizationId, getErrorMessage(err));

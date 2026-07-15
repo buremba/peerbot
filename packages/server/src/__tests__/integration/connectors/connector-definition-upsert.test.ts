@@ -6,6 +6,7 @@
  * source record.
  */
 
+import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createTestOrganization } from '../../setup/test-fixtures';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -29,6 +30,7 @@ function versionRecordFor(version: string) {
   return {
     compiledCode: `// compiled ${version}`,
     compiledCodeHash: `hash-${version}`,
+    compileConfigHash: COMPILE_CONFIG_HASH,
     sourceCode: `// source ${version}`,
     sourcePath: `upsert-probe@${version}.ts`,
   };
@@ -65,8 +67,10 @@ describe('upsertConnectorDefinitionRecords', () => {
     });
     expect(second.updated).toBe(true);
 
-    const versions = await sql<{ version: string; source_code: string | null }[]>`
-      SELECT version, source_code FROM connector_versions
+    const versions = await sql<
+      { version: string; source_code: string | null; compile_config_hash: string | null }[]
+    >`
+      SELECT version, source_code, compile_config_hash FROM connector_versions
       WHERE connector_key = 'upsert-probe'
       ORDER BY version
     `;
@@ -75,6 +79,11 @@ describe('upsertConnectorDefinitionRecords', () => {
     // at a version with no source record.
     expect(byVersion.has('1.0.0')).toBe(true);
     expect(byVersion.get('1.1.0')).toBe('// source 1.1.0');
+    // Every installed artifact carries the compile-config fingerprint —
+    // resolveConnectorCode refuses unstamped/mismatched artifacts as stale.
+    for (const v of versions) {
+      expect(v.compile_config_hash).toBe(COMPILE_CONFIG_HASH);
+    }
 
     // The definition itself reflects the upgrade.
     const def = await sql<{ version: string }[]>`

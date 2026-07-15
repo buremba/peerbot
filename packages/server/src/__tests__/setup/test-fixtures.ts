@@ -5,6 +5,7 @@
  * Each function creates the necessary records and returns the relevant IDs.
  */
 
+import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
 import { serializeSigned } from 'hono/utils/cookie';
 import { hashClientSecret } from '../../auth/oauth/clients';
 import { slugify } from '@lobu/core';
@@ -614,14 +615,18 @@ export async function createTestConnectorDefinition(options: {
     )
   `;
 
-  // Also insert a connector_versions row so trigger_feed / createSyncRun can find compiled code
+  // Also insert a connector_versions row so trigger_feed / createSyncRun can
+  // find compiled code. Stamped with the current compile-config fingerprint,
+  // exactly like the real install paths — an unstamped artifact is treated as
+  // stale by resolveConnectorCode and refused.
   await sql`
     INSERT INTO connector_versions (
-      connector_key, version, compiled_code, created_at
+      connector_key, version, compiled_code, compile_config_hash, created_at
     ) VALUES (
       ${options.key},
       ${version},
       ${'module.exports = { sync: async () => ({ items: [] }) }'},
+      ${COMPILE_CONFIG_HASH},
       NOW()
     )
     ON CONFLICT DO NOTHING

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * Single source of truth for npm packages that connector code may import but
  * which we deliberately do NOT bundle into the compiled connector artifact.
@@ -22,6 +24,30 @@
  * worker image" outages.
  */
 export const EXTERNAL_RUNTIME_DEPS = ['playwright', 'sharp', 'jimp'] as const;
+
+/**
+ * Bump when the compile pipeline changes in a way that makes previously
+ * compiled artifacts unsafe to execute (esbuild banner/target/plugin
+ * semantics). Changes to EXTERNAL_RUNTIME_DEPS are picked up automatically
+ * via the fingerprint below.
+ */
+const COMPILE_PIPELINE_VERSION = 1;
+
+/** Fingerprint of the compile configuration that produced an artifact. */
+export function computeCompileConfigHash(external: readonly string[]): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ pipeline: COMPILE_PIPELINE_VERSION, external }))
+    .digest('hex');
+}
+
+/**
+ * Fingerprint of the CURRENT compile configuration. Stored on
+ * `connector_versions.compile_config_hash` next to every persisted
+ * `compiled_code`; an artifact whose stored fingerprint doesn't match is
+ * stale (e.g. compiled when `pino` was still externalized) and must be
+ * recompiled instead of executed.
+ */
+export const COMPILE_CONFIG_HASH = computeCompileConfigHash(EXTERNAL_RUNTIME_DEPS);
 
 /**
  * Verify that every external runtime dep is resolvable from the current

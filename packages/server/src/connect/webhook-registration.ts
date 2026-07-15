@@ -22,7 +22,7 @@ import { PostgresSecretStore } from '../lobu/stores/postgres-secret-store';
 import { orgContext } from '../lobu/stores/org-context';
 import { persistSecretValue } from '../gateway/secrets/index';
 import { resolveBaseUrl } from '../auth/base-url';
-import { resolveConnectorCode } from '../utils/ensure-connector-installed';
+import { resolveConnectorCodeForKey } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import logger from '../utils/logger';
 import { getErrorMessage } from "@lobu/core";
@@ -88,18 +88,6 @@ async function loadConnection(
   return (rows[0] as ConnectorConnectionRow | undefined) ?? null;
 }
 
-async function resolveCompiledCode(connectorKey: string): Promise<string> {
-  const rows = await getDb()`
-    SELECT compiled_code
-    FROM connector_versions
-    WHERE connector_key = ${connectorKey}
-    ORDER BY created_at DESC
-    LIMIT 1
-  `;
-  const rawCode = (rows[0] as { compiled_code: string | null } | undefined)?.compiled_code ?? null;
-  return resolveConnectorCode(connectorKey, rawCode);
-}
-
 /**
  * Whether this connection should own a live provider webhook. We only register
  * when the connector declares a `webhook` block AND the connection opts into a
@@ -152,7 +140,7 @@ export async function registerConnectorWebhook(params: {
       if (config.webhook_external_id) return;
       if (!connectionWantsWebhook(config)) return;
 
-      const compiledCode = await resolveCompiledCode(connection.connector_key);
+      const compiledCode = await resolveConnectorCodeForKey(connection.connector_key);
 
       const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
         organizationId,
@@ -255,7 +243,7 @@ export async function unregisterConnectorWebhook(params: {
       const externalId = config.webhook_external_id;
       if (!externalId) return;
 
-      const compiledCode = await resolveCompiledCode(connection.connector_key);
+      const compiledCode = await resolveConnectorCodeForKey(connection.connector_key);
       const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
         organizationId,
         connectionId,

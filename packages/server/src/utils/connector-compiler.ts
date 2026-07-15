@@ -104,14 +104,23 @@ async function main() {
 main();
 `;
 
+const CJS_SHIM_BANNER = `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`;
+
 export async function compileConnectorSource(sourceCode: string): Promise<CompileResult> {
-  return compileSource(sourceCode, {
+  // Idempotence: a pre-compiled upload keeps its artifact in source_code, and
+  // normalizing it under the current compile config routes back through here.
+  // Without stripping our own shim first, esbuild's banner would declare
+  // __createRequire a second time and the artifact dies at import.
+  const input = sourceCode.startsWith(CJS_SHIM_BANNER)
+    ? sourceCode.slice(CJS_SHIM_BANNER.length)
+    : sourceCode;
+  return compileSource(input, {
     tmpPrefix: '.connector-compile-',
     label: 'ConnectorCompiler',
     buildOptions: {
       target: 'node20',
       banner: {
-        js: `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`,
+        js: CJS_SHIM_BANNER,
       },
       // Only externalize deps that genuinely can't be bundled (native binaries,
       // runtime install steps). Bundle everything else so connector artifacts

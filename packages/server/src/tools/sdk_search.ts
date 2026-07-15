@@ -261,10 +261,18 @@ async function sdkSearchImpl(
 	const combined = [...connectorHits, ...methodResult.results];
 	const results = combined.slice(0, limit);
 	const dropped = combined.length - results.length;
+	// When the method search found nothing, its note may carry the real answer
+	// (e.g. "agents.* exists but requires admin") — losing it would leave only
+	// the unrelated connector hits.
 	const baseNote =
 		methodResult.results.length > 0
 			? "Top matches are live connectors (with lifecycle); method docs follow."
-			: "Matched live connectors (not SDK methods). Follow the lifecycle shown; query a namespace (e.g. 'feeds') for method signatures.";
+			: [
+					"Matched live connectors (not SDK methods). Follow the lifecycle shown; query a namespace (e.g. 'feeds') for method signatures.",
+					methodResult.notes,
+				]
+					.filter(Boolean)
+					.join(" ");
 	const truncNote =
 		dropped > 0 ? ` ${dropped} more result(s) truncated; raise \`limit\` or refine the query.` : "";
 	return {
@@ -385,11 +393,27 @@ async function sdkMethodSearch(
 		};
 	}
 
+	// A namespace query whose methods are ALL hidden at this mode/tier must say
+	// so by name (e.g. "agents" in mode='read') — otherwise the caller only sees
+	// unrelated substring/connector matches and concludes the namespace does not
+	// exist.
+	let hiddenNamespaceNote: string | undefined;
 	if (lower.indexOf(".") === -1) {
 		const prefix = `${lower}.`;
 		const ns = catalog.filter(([p]) => p.startsWith(prefix));
 		const topLevel = catalog.filter(([p]) => p === lower);
 		const combined = [...topLevel, ...ns];
+		if (combined.length === 0) {
+			const hiddenNs = Object.entries(SDK_DISCOVERY_METADATA).filter(([p]) =>
+				p.toLowerCase().startsWith(prefix),
+			);
+			if (hiddenNs.length > 0) {
+				const accesses = [...new Set(hiddenNs.map(([, m]) => m.access))]
+					.sort()
+					.join(", ");
+				hiddenNamespaceNote = `${lower}.* exists (${hiddenNs.length} method(s), access: ${accesses}) but none are visible${mode === "read" ? " in mode='read'" : ""} at your tier — call via run_sdk${accesses.includes("admin") ? " (admin methods need workspace admin/owner + mcp:admin)" : ""}.`;
+			}
+		}
 		if (combined.length > 0) {
 			return {
 				query,
@@ -458,22 +482,26 @@ async function sdkMethodSearch(
 			match_count: 0,
 			results: [],
 			notes:
+				hiddenNamespaceNote ??
 				existsButHidden ??
 				`No matches at your access tier. Try a namespace (${NAMESPACES.join(", ")}), mode='read' for query_sdk, or a verb (create, list, search).`,
 		};
 	}
 
+	const tailNote =
+		matches.length > limit
+			? `${matches.length - limit} more matches; raise \`limit\` or refine the query.`
+			: mode === "read"
+				? "Showing query_sdk-safe methods only. Pass mode='full' for write/admin methods."
+				: undefined;
 	return {
 		query,
 		match_count: matches.length,
 		results: matches
 			.slice(0, limit)
 			.map(([p, m]) => renderListLine(p, m)),
-		notes:
-			matches.length > limit
-				? `${matches.length - limit} more matches; raise \`limit\` or refine the query.`
-				: mode === "read"
-					? "Showing query_sdk-safe methods only. Pass mode='full' for write/admin methods."
-					: undefined,
+		notes: hiddenNamespaceNote
+			? [hiddenNamespaceNote, tailNote].filter(Boolean).join(" ")
+			: tailNote,
 	};
 }

@@ -70,13 +70,15 @@ describe('saveContent > occurred_at default', () => {
     )) as {
 			id: number;
 			indexing_status: string;
-			exact_read: { method: string; content_id: number };
+			exact_read: { method: string; content_ids: number[] };
 		};
 
 		expect(result.indexing_status).toBe('pending');
+		// The hint must match knowledge.read's actual arg shape: `content_ids`
+		// (array) — a singular `content_id` is rejected as an unknown argument.
 		expect(result.exact_read).toEqual({
 			method: 'client.knowledge.read',
-			content_id: result.id,
+			content_ids: [result.id],
 		});
 
     const sql = getTestDb();

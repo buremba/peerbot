@@ -139,6 +139,19 @@ describe("sdkSearch", () => {
 		expect(result.notes).toContain("mcp:admin");
 	});
 
+	it("names an admin-only namespace in read mode instead of a silent dead end", async () => {
+		// Live failure: search_sdk query='agents' mode='read' returned unrelated
+		// matches with no hint that agents.* exists behind run_sdk — the client
+		// concluded the namespace does not exist.
+		const result = await sdkSearch(
+			{ query: "agents", mode: "read" },
+			stubEnv,
+			readCtx,
+		);
+		expect(result.notes ?? "").toContain("agents.*");
+		expect(result.notes ?? "").toContain("run_sdk");
+	});
+
 	it("shows admin methods to admin-tier callers", async () => {
 		const result = await sdkSearch({ query: "agents.list" }, stubEnv, adminCtx);
 		expect(result.match_count).toBe(1);

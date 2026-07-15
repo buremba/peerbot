@@ -151,14 +151,21 @@ function allowedLiterals(schema: unknown): string[] | null {
   return null;
 }
 
-/** Resolve the subschema at a TypeBox error `path` (e.g. `/list_scope`). */
+/** Resolve the subschema at a TypeBox error `path` (e.g. `/list_scope`, `/kinds/0`). */
 function subschemaAtPath(schema: TSchema, path: string): unknown {
   const segments = path.split('/').filter(Boolean);
   let current: unknown = schema;
   for (const seg of segments) {
     if (!current || typeof current !== 'object') return undefined;
-    const props = (current as { properties?: Record<string, unknown> }).properties;
-    current = props ? props[seg] : undefined;
+    const node = current as { properties?: Record<string, unknown>; items?: unknown };
+    // An array index (e.g. the `0` in `/kinds/0`) resolves to the array's item
+    // schema — so a bad element in Array(Union(literals)) still gets the
+    // humanized `Expected one of: ...` instead of "Expected union value".
+    if (node.items !== undefined && /^\d+$/.test(seg)) {
+      current = node.items;
+      continue;
+    }
+    current = node.properties ? node.properties[seg] : undefined;
   }
   return current;
 }

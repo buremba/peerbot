@@ -23,7 +23,7 @@ import type { DispatchChromeActionRequest } from '@lobu/core/contracts/worker/pr
 import type { Context } from 'hono';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
-import { waitForDeviceActionRun } from '../tools/admin/manage_operations';
+import { waitForDeviceActionRun } from '../tools/admin/device-action-wait';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';

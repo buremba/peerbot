@@ -183,8 +183,14 @@ describe("sdkSearch", () => {
 			writeCtx,
 		);
 
-		expect(result.match_count).toBe(1);
-		expect(result.results[0]).toStartWith("operations.execute —");
+		// Phrase match on the method summary must still surface operations.execute.
+		// When DATABASE_URL is available, live-connector hits may also match the
+		// free-text query and prepend — so don't require match_count === 1.
+		const methodHit = result.results.find((line) =>
+			line.startsWith("operations.execute —"),
+		);
+		expect(methodHit).toBeDefined();
+		expect(methodHit).toContain("Execute a connector action");
 	});
 
 	it("recovers useful methods from natural multi-word queries", async () => {

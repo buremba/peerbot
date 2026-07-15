@@ -1,6 +1,6 @@
 # `lobu apply` — Plan
 
-Status: **planning** · Owner: @buremba · Reviewed against pi second-opinion 2026-04-30
+Status: **shipped** (as of 2026-07-15 — `lobu apply` is live in `@lobu/cli`) · Owner: @buremba · Reviewed against pi second-opinion 2026-04-30
 
 ## Goal
 

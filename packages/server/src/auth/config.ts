@@ -567,7 +567,7 @@ export async function getAuthConfig(
 	// Filter out the synthetic install_operator row (auto-provisioned at
 	// boot in ensureInstallOperator) — it doesn't count as "the install
 	// has a *human*". Real users include anyone signed up via the web UI.
-	// See docs/install-operator-bootstrap.md.
+	// See docs/plans/install-operator-bootstrap.md.
 	let hasUser = false;
 	try {
 		const sql = getDb();

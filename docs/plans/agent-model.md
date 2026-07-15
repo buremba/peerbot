@@ -1,5 +1,7 @@
 # Agent Model — Behaviors, Surfaces, Workflows
 
+> **Status (2026-07-15):** **Partial** — the Behaviors route, list, and constructors are live; the Surfaces/workflow/proactivity pieces remain unbuilt.
+
 Design of record for consolidating the agent config surface. Supersedes the
 separate "Reach", "Watchers", and "Schedules" tabs. Written after review by
 GPT‑5.5 (xhigh) and Grok, and a use‑case gauntlet.

@@ -1,5 +1,7 @@
 # `lobu pull` — Plan
 
+> **Status (2026-07-15):** **Planning** — no `lobu pull` command exists; only apply-side scaffolding is in place.
+
 Status: **planning** · Owner: @buremba · Stacks on `feat/lobu-cli-merge` · Builds on `lobu-apply.md` (v1 already merged)
 
 ## Goal

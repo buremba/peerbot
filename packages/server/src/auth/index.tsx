@@ -232,7 +232,7 @@ export async function createAuth(
 				// at boot) authenticates with ENCRYPTION_KEY and uses a synthetic
 				// install@<hostname> email that doesn't deliver. Refuse password
 				// reset for it so an accidental "forgot password" can't replace
-				// the operator's credential. See docs/install-operator-bootstrap.md.
+				// the operator's credential. See docs/plans/install-operator-bootstrap.md.
 				const sql = getDb();
 				const rows = (await sql`
 					SELECT principal_kind FROM "user"
@@ -558,7 +558,7 @@ export async function createAuth(
 					// and admitting a magic-link would let any caller who can guess
 					// the hostname mint an operator session via the email channel,
 					// bypassing the ENCRYPTION_KEY guard. See
-					// docs/install-operator-bootstrap.md.
+					// docs/plans/install-operator-bootstrap.md.
 					const sql = getDb();
 					const rows = (await sql`
 						SELECT principal_kind FROM "user"
@@ -696,7 +696,7 @@ export async function createAuth(
 							// Exclude the synthetic install_operator row
 							// (auto-provisioned by ensureInstallOperator) so the
 							// first human signup still proceeds. See
-							// docs/install-operator-bootstrap.md.
+							// docs/plans/install-operator-bootstrap.md.
 							const existing =
 								await ctx!.context.internalAdapter.countTotalUsers([
 									{
@@ -806,7 +806,7 @@ export async function createAuth(
 						// principal_kind discriminator exists to prevent. Allow the
 						// `credential` provider so ensureInstallOperator can write the
 						// password-hash row at boot. See
-						// docs/install-operator-bootstrap.md.
+						// docs/plans/install-operator-bootstrap.md.
 						if (account.providerId !== "credential") {
 							const linkedUser =
 								await ctx!.context.internalAdapter.findUserById(account.userId);

@@ -57,7 +57,17 @@ agent-browser --session lobu-verify close
 
 The cookie-forging above and `claude-in-chrome` both drive a *separate* browser that lacks the user's real logged-in sessions — Revolut, for instance, redirects them to `sso.revolut.com/signin`. To run JS or browser actions in the **paired Owletto extension** (the Chrome that holds the user's live sessions, which is what extension-scrape connectors like Revolut/LinkedIn use), go through the connector-operations bridge instead. No deploy required.
 
-`lobu connector run` is the wrong tool here — it only does local Playwright/CDP against a `browser_session` auth profile, so it errors `Missing --auth-profile` for device-worker connectors (Revolut has no auth profile). Use the SDK `operations` namespace via `lobu memory exec` / `run_sdk`:
+`lobu connector run` is the wrong tool here — it only does local Playwright/CDP against a `browser_session` auth profile, so it errors `Missing --auth-profile` for device-worker connectors (Revolut has no auth profile).
+
+For one-off actions, the `lobu call` CLI is the quickest path (usually org `buremba`; connection id from `lobu call manage_connections --org buremba --arg action=list --raw`):
+
+```bash
+lobu call manage_operations --org buremba --arg action=execute \
+  --arg connection_id=<chrome-connection-id> --arg operation_key=navigate \
+  --arg input:='{"url":"https://app.slack.com/...","wait_for_load":true,"open_in_new_tab":true}' --raw
+```
+
+For multi-step scripts, use the SDK `operations` namespace via `lobu memory exec` / `run_sdk`:
 
 ```js
 // chrome connection id: client.connections.list() → connector_key 'chrome'

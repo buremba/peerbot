@@ -216,6 +216,54 @@ describe('device connector manifests', () => {
     expect(versionRows[0]?.source_path).toBe(`device-manifest://macos/${CONNECTOR_KEY}@0.1.0`);
   });
 
+  it('re-syncs connector_definitions when a later poll ships a changed manifest (new action)', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    const actionsV1 = {
+      alpha: { key: 'alpha', name: 'Alpha', inputSchema: { type: 'object' } },
+    };
+    const first = await poll(workerId, [manifest({ actions_schema: actionsV1 })]);
+    expect(first.status).toBe(200);
+
+    const readActions = async () => {
+      const rows = (await sql`
+        SELECT actions_schema FROM connector_definitions
+        WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY}
+        LIMIT 1
+      `) as unknown as Array<{ actions_schema: Record<string, unknown> | null }>;
+      return Object.keys(rows[0]?.actions_schema ?? {}).sort();
+    };
+    expect(await readActions()).toEqual(['alpha']);
+
+    // The extension updates: same key + version, actions_schema gains `beta`
+    // (exactly what happened when console_capture shipped). The wired fast
+    // path must not strand the org catalog on the old action set.
+    const actionsV2 = {
+      ...actionsV1,
+      beta: { key: 'beta', name: 'Beta', inputSchema: { type: 'object' } },
+    };
+    const second = await poll(workerId, [manifest({ actions_schema: actionsV2 })]);
+    expect(second.status).toBe(200);
+    expect(await readActions()).toEqual(['alpha', 'beta']);
+
+    // Stability: an UNCHANGED manifest must take the fast path again (the
+    // definition upsert stamps updated_at, so a moving timestamp here would
+    // mean every poll pays the advisory-lock slow path).
+    const readUpdatedAt = async () => {
+      const rows = (await sql`
+        SELECT updated_at FROM connector_definitions
+        WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY}
+        LIMIT 1
+      `) as unknown as Array<{ updated_at: string }>;
+      return rows[0]?.updated_at;
+    };
+    const afterResync = await readUpdatedAt();
+    const third = await poll(workerId, [manifest({ actions_schema: actionsV2 })]);
+    expect(third.status).toBe(200);
+    expect(await readUpdatedAt()).toEqual(afterResync);
+  });
+
   it('drops a manifest whose key does not belong to the polling platform', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
 

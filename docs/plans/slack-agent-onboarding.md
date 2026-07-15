@@ -1,5 +1,7 @@
 # Slack agent onboarding — "set up an agent for your DM/channel"
 
+> **Status (2026-07-15):** **Superseded** — web-first connected-apps onboarding shipped instead (#1568, #1779); see `connected-apps-installations.md`.
+
 Status: PLAN (not started). Goal: let both technical and non-technical Slack
 users connect an agent to their DM/channel properly, beyond the CLI-only
 `/lobu link <code>` path. Inspired by Anthropic's "Claude Tag" model.

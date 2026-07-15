@@ -1,5 +1,7 @@
 # World Model
 
+> **Status (2026-07-15):** **Partial** — the primitives (entities, relationships, identities, org visibility) exist; this doc remains the descriptive architecture.
+
 How knowledge, identity, and templates are organized across tenants and public
 catalogs.
 

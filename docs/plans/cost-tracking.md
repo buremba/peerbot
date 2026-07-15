@@ -1,5 +1,7 @@
 # PLAN — Cost & Usage Tracking for Agents / Watchers / Users / Orgs
 
+> **Status (2026-07-15):** **Planning** — PR #1410 closed unmerged; no `run_usage` table on main.
+
 Status: **backend built and validated, then PAUSED — PR #1410 closed without merge (2026-06-21).** The capture + pricing + `run_usage` ledger + backfill shipped green and was validated by two independent reviews (no better design found), but it's a backend with no UI consumer yet — we chose to stop rather than keep building ahead of validated need. See §15 for the outcome, what's recoverable on the closed branch, and the lean path to resume.
 Line refs below are **as supplied by research and may have drifted** — the implementer verifies each against `origin/main` before touching it.
 

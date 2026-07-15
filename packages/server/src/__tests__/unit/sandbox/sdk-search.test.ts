@@ -139,6 +139,29 @@ describe("sdkSearch", () => {
 		expect(result.notes).toContain("mcp:admin");
 	});
 
+	it("lists a camelCase namespace from a lowercased query without a false hidden note", async () => {
+		// The hidden-namespace hint must never fire when the namespace's methods
+		// ARE visible — 'entityschema' matches entitySchema.* case-insensitively.
+		const result = await sdkSearch({ query: "entityschema" }, stubEnv, writeCtx);
+		expect(result.match_count).toBeGreaterThan(0);
+		const joined = result.results.join("\n");
+		expect(joined).toContain("entitySchema.listTypes");
+		expect(result.notes ?? "").not.toContain("none are visible");
+	});
+
+	it("names an admin-only namespace in read mode instead of a silent dead end", async () => {
+		// Live failure: search_sdk query='agents' mode='read' returned unrelated
+		// matches with no hint that agents.* exists behind run_sdk — the client
+		// concluded the namespace does not exist.
+		const result = await sdkSearch(
+			{ query: "agents", mode: "read" },
+			stubEnv,
+			readCtx,
+		);
+		expect(result.notes ?? "").toContain("agents.*");
+		expect(result.notes ?? "").toContain("run_sdk");
+	});
+
 	it("shows admin methods to admin-tier callers", async () => {
 		const result = await sdkSearch({ query: "agents.list" }, stubEnv, adminCtx);
 		expect(result.match_count).toBe(1);

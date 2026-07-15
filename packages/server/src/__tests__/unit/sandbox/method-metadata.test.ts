@@ -187,18 +187,75 @@ describe("method-metadata", () => {
 		expect(connectExample).toContain("feeds.create");
 		expect(connectExample).toContain("connection_id");
 		expect(connectExample).toContain("feed_key");
-		// The website 'pages' config must use the REAL connector keys — assert the
-		// executable expression itself passes urls: [...] (or sitemap_url), not
-		// just that the word appears in a comment. A made-up key (config:{} /
-		// {url}) creates a feed that collects zero events.
-		expect(connectExample).toMatch(/config:\s*\{\s*(urls:\s*\[|sitemap_url:)/);
+		// The example must reference a connector that EXISTS in the catalog:
+		// 'website' does not (there is no packages/connectors/src/website.ts), so
+		// an agent copying the doc got "unknown connector". rss is auth-none with
+		// the 'articles' feed whose config requires feed_urls — assert the
+		// executable expression passes the real keys, not just prose mentions.
+		expect(connect.example ?? "").toContain("'rss'");
+		expect(connectExample).toContain("connector_key: 'rss'");
+		expect(connectExample).toContain("feed_key: 'articles'");
+		expect(connectExample).toMatch(/config:\s*\{\s*feed_urls:\s*\[/);
+		expect(connect.summary).not.toContain("website");
+		expect(connectExample).not.toContain("'website'");
 
 		// feeds.create must document the connection_id + feed_key it needs and
 		// point at how to discover the config shape — not leave the agent guessing.
 		const feed = METHOD_METADATA["feeds.create"];
 		expect(feed.summary).toContain("connection_id");
 		expect(feed.summary).toContain("feed_key");
+		expect(feed.summary).not.toContain("website");
 		expect(feed.signature ?? "").toContain("connection_id");
 		expect(feed.example ?? "").toContain("feed_key");
+		expect(feed.example ?? "").toContain("'articles'");
+	});
+
+	it("documents the schedules.create payload contract (discriminated union)", () => {
+		// The live failure: the summary alone ("Create a one-shot or recurring
+		// schedule") gives an MCP client no way to discover the required
+		// description/run_at fields or the payload discriminant, so every first
+		// call 400s. The signature must spell out both payload variants.
+		const create = METHOD_METADATA["schedules.create"];
+		const sig = create.signature ?? "";
+		expect(sig).toContain("description: string");
+		expect(sig).toContain("run_at: string");
+		expect(sig).toContain("cron?: string");
+		expect(sig).toContain("type: 'send_notification'");
+		expect(sig).toContain("title: string");
+		expect(sig).toContain("recipients?");
+		expect(sig).toContain("resource_url?");
+		expect(sig).toContain("type: 'wake_agent'");
+		expect(sig).toContain("agent_id: string");
+		expect(sig).toContain("prompt: string");
+		expect(sig).toContain("thread_id?");
+		expect(create.example ?? "").toContain("payload");
+		expect(create.usageExample ?? "").toContain("send_notification");
+	});
+
+	it("documents that watchers.create sources[] entries require name AND query", () => {
+		// A create call whose sources lack `name` fails validation, but the doc
+		// only described sources[].query — the client had no way to recover.
+		const create = METHOD_METADATA["watchers.create"];
+		expect(create.summary).toMatch(/sources\[\] entry REQUIRES both `name`/);
+		expect(create.summary).toContain("`query`");
+		expect(create.example ?? "").toContain("name: 'content'");
+	});
+
+	it("enumerates the valid catalog.listCatalog kinds", () => {
+		// {kind: 'connector'} and {kinds: ['connector']} both failed live with
+		// errors that never named the valid (plural) values.
+		const list = METHOD_METADATA["catalog.listCatalog"];
+		const sig = list.signature ?? "";
+		expect(sig).toContain("'connectors'");
+		expect(sig).toContain("'skills'");
+		expect(sig).toContain("'watchers'");
+		expect(list.summary).toContain("'connectors'");
+		expect(list.summary).toContain("'watchers'");
+	});
+
+	it("documents knowledge.read's content_ids (array) arg — the shape save_memory's exact_read hint points at", () => {
+		const read = METHOD_METADATA["knowledge.read"];
+		expect(read.summary).toContain("content_ids");
+		expect(read.example ?? "").toContain("content_ids: [");
 	});
 });

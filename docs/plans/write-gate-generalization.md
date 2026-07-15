@@ -1,5 +1,7 @@
 # Write-gate generalization — policy for every governed write
 
+> **Status (2026-07-15):** **Shipped (v1)** — per-principal write policy live (#1827, later simplified in #1891); v1.1 follow-ups tracked separately.
+
 > **Related:** the read-side ACL program → [`authz-acl-permission-program.md`](authz-acl-permission-program.md)
 > (who can *see* what). This doc is the **write** side (who/what may *change* what).
 > Connector authz backbone → [`connector-authz-model.md`](connector-authz-model.md).

@@ -144,6 +144,212 @@ describe('watcher CRUD', () => {
     await owner.watchers.delete({ watcher_ids: ids });
   });
 
+  it('concurrent group-locked writes on DISTINCT groups do not exhaust the pool (holder starvation)', async () => {
+    // withWatcherGroupLock holders keep a main-pool connection for the whole
+    // handler run. With N >= DB_POOL_MAX concurrent writes on DISTINCT groups
+    // (nothing serializes them), the holders camp every slot and their own
+    // handlers can't get a connection for reads/transactions — a permanent
+    // pool-wide wedge. Regression guard for the dedicated lock pool: N
+    // concurrent create_from_version calls, each from its OWN source watcher
+    // (own group), must all complete.
+    const sql = getTestDb();
+
+    const N = 6; // > the CI pool of DB_POOL_MAX=5
+    const versionIds: number[] = [];
+    const baseIds: string[] = [];
+    for (let i = 0; i < N; i++) {
+      const base = (await owner.watchers.create({
+        entity_id: entityId,
+        slug: `cfv-group-race-base-${i}`,
+        name: `CFV Group Race Base ${i}`,
+        prompt: 'Track things.',
+        agent_id: agentId,
+        sources: [{ name: 'content', query: 'SELECT id FROM events' }],
+      })) as { watcher_id: string };
+      baseIds.push(base.watcher_id);
+      const [row] = await sql<{ current_version_id: number }[]>`
+        SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+      `;
+      versionIds.push(Number(row?.current_version_id));
+    }
+
+    const targets: number[] = [];
+    for (let i = 0; i < N; i++) {
+      const e = (await owner.entities.create({
+        type: 'company',
+        name: `CFV Group Race Target ${i}`,
+      })) as { entity: { id: number } };
+      targets.push(e.entity.id);
+    }
+
+    // N truly-parallel group-locked writes: distinct groups, so the group lock
+    // serializes nothing and all N handlers run concurrently.
+    const results = await Promise.all(
+      versionIds.map((vid, i) =>
+        owner.watchers.createFromVersion({ version_id: vid, entity_ids: [targets[i]] })
+      )
+    );
+    const createdIds = results.flatMap((r) =>
+      (r as { created: Array<{ watcher_id: string }> }).created.map((c) => c.watcher_id)
+    );
+    expect(createdIds.length).toBe(N);
+    expect(new Set(createdIds).size).toBe(N); // all unique — the cross-group id race
+    await owner.watchers.delete({ watcher_ids: [...baseIds, ...createdIds] });
+  });
+
+  it('concurrent create_from_version fan-outs allocate unique ids (no PK collision)', async () => {
+    // create_from_version allocated ids on the pooled autocommit connection —
+    // the same anti-pattern the create handler had. Fire many concurrent
+    // assignments to DISTINCT entities: each produces a distinct slug, so the
+    // only way to fail is the watchers PK colliding on a shared MAX(id)+1.
+    const sql = getTestDb();
+
+    const base = (await owner.watchers.create({
+      entity_id: entityId,
+      slug: 'cfv-race-base',
+      name: 'CFV Race Base',
+      prompt: 'Track things.',
+      agent_id: agentId,
+      sources: [{ name: 'content', query: 'SELECT id FROM events' }],
+    })) as { watcher_id: string };
+    const [row] = await sql<{ current_version_id: number }[]>`
+      SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+    `;
+    const versionId = Number(row?.current_version_id);
+
+    // Distinct target entities → distinct derived slugs, so no slug race.
+    const N = 6;
+    const targets: number[] = [];
+    for (let i = 0; i < N; i++) {
+      const e = (await owner.entities.create({
+        type: 'company',
+        name: `CFV Target ${i}`,
+      })) as { entity: { id: number } };
+      targets.push(e.entity.id);
+    }
+
+    const results = await Promise.all(
+      targets.map((eid) =>
+        owner.watchers.createFromVersion({ version_id: versionId, entity_ids: [eid] })
+      )
+    );
+    const createdIds = results.flatMap((r) =>
+      (r as { created: Array<{ watcher_id: string }> }).created.map((c) => c.watcher_id)
+    );
+    expect(createdIds.length).toBe(N);
+    expect(new Set(createdIds).size).toBe(N); // all unique — no PK collision
+    await owner.watchers.delete({ watcher_ids: [base.watcher_id, ...createdIds] });
+  });
+
+  it('concurrent create_from_version to the SAME entity: one wins, losers get a coded 409 (not raw 23505)', async () => {
+    // A repeated assignment to the same entity produces the SAME derived slug.
+    // The insert isn't pre-checked and isn't locked, so concurrent fan-outs race
+    // idx_watchers_org_slug. The loser must surface a coded 409, not a raw 23505,
+    // and no partial fan-out may leak (single-entity here, but the transaction is
+    // what guarantees all-or-nothing for multi-entity calls).
+    const sql = getTestDb();
+
+    const base = (await owner.watchers.create({
+      entity_id: entityId,
+      slug: 'cfv-slug-race-base',
+      name: 'CFV Slug Race Base',
+      prompt: 'Track things.',
+      agent_id: agentId,
+      sources: [{ name: 'content', query: 'SELECT id FROM events' }],
+    })) as { watcher_id: string };
+    const [row] = await sql<{ current_version_id: number }[]>`
+      SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+    `;
+    const versionId = Number(row?.current_version_id);
+
+    const target = (await owner.entities.create({
+      type: 'company',
+      name: 'CFV Slug Race Target',
+    })) as { entity: { id: number } };
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 6 }, () =>
+        owner.watchers.createFromVersion({
+          version_id: versionId,
+          entity_ids: [target.entity.id],
+        })
+      )
+    );
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter(
+      (r): r is PromiseRejectedResult => r.status === 'rejected'
+    );
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(5);
+    for (const r of rejected) {
+      const e = r.reason as Error & { httpStatus?: number };
+      expect(e.message).not.toMatch(/23505|duplicate key value/);
+      expect(e.httpStatus).toBe(409);
+    }
+    const winnerIds = (
+      fulfilled[0] as PromiseFulfilledResult<{ created: Array<{ watcher_id: string }> }>
+    ).value.created.map((c) => c.watcher_id);
+    await owner.watchers.delete({ watcher_ids: [base.watcher_id, ...winnerIds] });
+  });
+
+  it('multi-entity create_from_version is all-or-nothing: a mid-fan-out collision rolls back the earlier target too', async () => {
+    // The fan-out runs in one transaction. If a LATER target's derived slug
+    // already exists, the whole call must roll back — the EARLIER target in the
+    // same call must not leak a half-created watcher. This is the atomicity the
+    // transaction wrapper exists for; without it the earlier insert would commit.
+    const sql = getTestDb();
+
+    const base = (await owner.watchers.create({
+      entity_id: entityId,
+      slug: 'cfv-rollback-base',
+      name: 'CFV Rollback Base',
+      prompt: 'Track things.',
+      agent_id: agentId,
+      sources: [{ name: 'content', query: 'SELECT id FROM events' }],
+    })) as { watcher_id: string };
+    const [row] = await sql<{ current_version_id: number }[]>`
+      SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+    `;
+    const versionId = Number(row?.current_version_id);
+
+    const freshTarget = (await owner.entities.create({
+      type: 'company',
+      name: 'CFV Rollback Fresh',
+    })) as { entity: { id: number } };
+    const collidingTarget = (await owner.entities.create({
+      type: 'company',
+      name: 'CFV Rollback Colliding',
+    })) as { entity: { id: number } };
+
+    // Seed the colliding target so a SECOND assignment to it clashes on the
+    // derived slug. This assignment succeeds on its own.
+    const seed = (await owner.watchers.createFromVersion({
+      version_id: versionId,
+      entity_ids: [collidingTarget.entity.id],
+    })) as { created: Array<{ watcher_id: string }> };
+    expect(seed.created.length).toBe(1);
+
+    // Now fan out to [fresh, colliding]. The colliding insert hits the seeded
+    // slug → 23505 → coded 409, and the whole tx rolls back.
+    await expect(
+      owner.watchers.createFromVersion({
+        version_id: versionId,
+        entity_ids: [freshTarget.entity.id, collidingTarget.entity.id],
+      })
+    ).rejects.toMatchObject({ httpStatus: 409 });
+
+    // The earlier (fresh) target must have NO watcher — the rollback took it.
+    const leaked = await sql<{ id: number }[]>`
+      SELECT id FROM watchers
+      WHERE organization_id = ${ownerOrgId} AND ${freshTarget.entity.id} = ANY(entity_ids)
+    `;
+    expect(leaked.length).toBe(0);
+
+    await owner.watchers.delete({
+      watcher_ids: [base.watcher_id, ...seed.created.map((c) => c.watcher_id)],
+    });
+  });
+
   it('creates an org-scoped watcher without an inline extraction schema', async () => {
     const created = (await owner.watchers.create({
       slug: 'org-scoped-summary-watcher',

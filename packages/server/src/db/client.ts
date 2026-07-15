@@ -266,6 +266,62 @@ export async function closeDbSingleton(): Promise<void> {
   }
   dbSingleton = null;
   rawDbSingleton = null;
+  if (lockDbSingleton) {
+    await lockDbSingleton.end();
+    lockDbSingleton = null;
+  }
+}
+
+// =========================================================
+// Dedicated advisory-lock pool
+// =========================================================
+
+let lockDbSingleton: Sql | null = null;
+
+/**
+ * Tiny connection pool reserved for SESSION-level advisory locks
+ * (`sql.reserve()` + `pg_advisory_lock` held across a critical section).
+ *
+ * Holding a session lock requires camping on a physical connection for the
+ * whole critical section. Doing that on the MAIN pool starves it: with
+ * N >= DB_POOL_MAX concurrent holders (or blocked waiters), lock connections
+ * consume every slot and the critical sections' own queries/transactions —
+ * which run on the main pool — can never be served. That is a permanent,
+ * pool-wide deadlock (session advisory waits never time out).
+ *
+ * A separate pool breaks the cycle structurally: lock holders camp HERE while
+ * their work runs on the main pool, so the dependency is one-directional and
+ * deadlock-free for any pool size >= 1. Excess lock requests queue FIFO on
+ * this pool and progress as holders finish. `lock_timeout` bounds any
+ * advisory-lock wait so a stuck holder surfaces as a clean 55P03 error
+ * instead of an unbounded stall.
+ *
+ * Keep `max` small: these connections exist only to pin lock ownership, and
+ * every slot counts against the Postgres connection budget (see the
+ * DB_POOL_MAX note in ci.yml).
+ */
+export function getLockDb(): Sql {
+  if (!lockDbSingleton) {
+    const url = process.env.DATABASE_URL;
+    if (!url) {
+      throw new Error('DATABASE_URL is required');
+    }
+    lockDbSingleton = postgres(url, {
+      max: 3,
+      // Match the main pool: keep connections; PG owns eviction.
+      idle_timeout: 0,
+      max_lifetime: 60 * 30,
+      connection: {
+        application_name: 'server-locks',
+        // Startup GUC (milliseconds): bounds every lock wait on these
+        // sessions, advisory locks included. 55P03 (lock_not_available)
+        // on expiry.
+        lock_timeout: 30000,
+      },
+    });
+    logger.info('[DB] PostgreSQL advisory-lock pool created');
+  }
+  return lockDbSingleton;
 }
 
 /**

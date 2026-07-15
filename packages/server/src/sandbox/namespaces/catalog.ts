@@ -5,7 +5,7 @@ import { createActionCaller } from "./action-call";
 
 export interface CatalogNamespace {
 	listCatalog(input?: {
-		kinds?: Array<"connectors" | "skills">;
+		kinds?: Array<"connectors" | "skills" | "watchers">;
 	}): Promise<unknown>;
 	listInstalled(input?: {
 		kinds?: string[];

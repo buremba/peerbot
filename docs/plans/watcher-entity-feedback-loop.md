@@ -1,5 +1,7 @@
 # Watcher ↔ Entity sync + human–AI feedback loop
 
+> **Status (2026-07-15):** **Shipped** — `entity_field_controls` migration + `mergeEntityFields` feedback path live.
+
 ## Goal
 Watchers sync extracted values **into entities** (the entity is the source of truth), and a
 human can correct an entity field; the watcher then **respects** that correction and the

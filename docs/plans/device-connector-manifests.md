@@ -1,5 +1,7 @@
 # Device-owned connector manifests at poll time
 
+> **Status (2026-07-15):** **Shipped** — `device_connector_manifests` migration + per-device manifest snapshots (`deviceManifestHash`).
+
 **Author:** design-doc-writer (draft)  
 **Date:** 2026-07-02  
 **Status:** Draft (revised per review)  

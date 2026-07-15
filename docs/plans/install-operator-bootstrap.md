@@ -1,5 +1,7 @@
 # Install-operator bootstrap
 
+> **Status (2026-07-15):** **Shipped** — `ensureInstallOperator` (`packages/server/src/auth/install-operator.ts`) + the `principal_kind` migration are live.
+
 ## Problem
 
 A fresh `lobu run` boots with an empty `user` table. The CLI (and the macOS

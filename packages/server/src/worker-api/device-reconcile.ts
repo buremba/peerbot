@@ -23,7 +23,7 @@ import { upsertConnectorDefinitionRecords } from '../utils/connector-definition-
 import { ensureUniqueConnectionSlug } from '../utils/connections';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
-import { getDeviceManifestSourcesForUser, type DeviceConnectorSource } from './device-manifests';
+import { getDeviceManifestSourcesForUser, sortJson, type DeviceConnectorSource } from './device-manifests';
 
 /** A device worker counts toward "serves capability X" only if seen this recently. */
 const DEVICE_WORKER_FRESH_INTERVAL = '7 days';
@@ -88,6 +88,16 @@ async function ensureDeviceConnectorWired(
       SELECT
         c.id AS connection_id,
         cv.connector_key AS version_key,
+        cd.name AS def_name,
+        cd.description AS def_description,
+        cd.version AS def_version,
+        cd.auth_schema AS def_auth_schema,
+        cd.feeds_schema AS def_feeds_schema,
+        cd.actions_schema AS def_actions_schema,
+        cd.options_schema AS def_options_schema,
+        cd.favicon_domain AS def_favicon_domain,
+        cd.required_capability AS def_required_capability,
+        cd.runtime AS def_runtime,
         -- jsonb_agg, not array_agg: postgres.js (fetch_types:false) returns a
         -- text[] result column as the literal string "{a,b}", which would make
         -- the fast-path feed check below silently always miss. jsonb arrays are
@@ -111,20 +121,58 @@ async function ensureDeviceConnectorWired(
       WHERE cd.organization_id = ${organizationId}
         AND cd.key = ${connectorKey}
         AND cd.status = 'active'
-      GROUP BY c.id, cv.connector_key
+      GROUP BY c.id, cv.connector_key, cd.id
       LIMIT 1
     `) as unknown as Array<{
       connection_id: number | null;
       version_key: string | null;
+      def_name: string | null;
+      def_description: string | null;
+      def_version: string | null;
+      def_auth_schema: unknown;
+      def_feeds_schema: unknown;
+      def_actions_schema: unknown;
+      def_options_schema: unknown;
+      def_favicon_domain: string | null;
+      def_required_capability: string | null;
+      def_runtime: unknown;
       active_feed_keys: string[] | null;
     }>;
     if (existingReady[0]?.connection_id) {
       await reconcilePin(sql, existingReady[0].connection_id);
     }
+    // Device-manifest connectors carry their full metadata in-hand (`source`),
+    // so a changed manifest MUST break the fast path or the org catalog is
+    // stranded on the old definition forever: the extension re-sends its
+    // manifest on every poll, but nothing else ever re-runs the definition
+    // upsert once everything is wired (this exact staleness shipped
+    // console_capture to device_workers while list_available kept serving the
+    // old 12-action chrome catalog). Compare every field the definition upsert
+    // writes, in the manifest hash's canonical form. Bundled connectors
+    // (`source` undefined) are excluded on purpose — their metadata requires a
+    // compile we can't afford per poll; deploys refresh them via other paths.
+    const definitionMatchesSource = (row: (typeof existingReady)[0]): boolean => {
+      if (!source) return true;
+      const m = source.metadata;
+      const canon = (v: unknown) => JSON.stringify(sortJson(v ?? null));
+      return (
+        row.def_name === m.name &&
+        (row.def_description ?? null) === (m.description ?? null) &&
+        row.def_version === m.version &&
+        (row.def_favicon_domain ?? null) === (m.faviconDomain ?? null) &&
+        (row.def_required_capability ?? null) === (m.requiredCapability ?? null) &&
+        canon(row.def_auth_schema) === canon(m.authSchema) &&
+        canon(row.def_feeds_schema) === canon(m.feeds) &&
+        canon(row.def_actions_schema) === canon(m.actions) &&
+        canon(row.def_options_schema) === canon(m.optionsSchema) &&
+        canon(row.def_runtime) === canon(m.runtime)
+      );
+    };
     const activeFeedKeys = new Set(existingReady[0]?.active_feed_keys ?? []);
     if (
       existingReady[0]?.connection_id &&
       existingReady[0]?.version_key &&
+      definitionMatchesSource(existingReady[0]) &&
       // userManaged-only connectors (e.g. local.directory, browser/*) report
       // declaredFeedKeys=[]. Once the connection + definition are installed,
       // every subsequent poll has nothing to verify — fast-path out.

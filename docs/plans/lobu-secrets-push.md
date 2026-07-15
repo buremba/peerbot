@@ -1,5 +1,7 @@
 # `lobu secrets push` — Plan
 
+> **Status (2026-07-15):** **Planning** — no `secrets push` command or `/secrets/manage` route; only the reusable `WritableSecretStore` pre-exists.
+
 Status: **planning** · Owner: @buremba · v3 follow-up to `lobu apply` (see `docs/plans/lobu-apply.md` §"Locked decisions" #7)
 
 ## Goal

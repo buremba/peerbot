@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
+import { type Static, Type } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import {
   type AgentConfigStore,
   createLogger,
@@ -9,10 +10,14 @@ import {
   normalizeDomainPatterns,
   verifyWorkerToken,
 } from "@lobu/core";
-import type { Context } from "hono";
+import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { bindRequestAbortToStream } from "../../../events/sse-abort-bridge.js";
-import { z } from "zod";
+import {
+  defineRoute,
+  getValidated,
+  type RouteSpec,
+} from "../shared/define-route.js";
 import { DEFAULT_AGENT_ID } from "../../../auth/default-provisioning.js";
 import { getDb } from "../../../db/client.js";
 import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
@@ -53,115 +58,121 @@ const MAX_CONNECTIONS_PER_AGENT = 5;
 const MAX_TOTAL_CONNECTIONS = 1000;
 
 // =============================================================================
-// Zod Schemas
+// TypeBox Schemas
 // =============================================================================
 
-const NetworkConfigSchema = z.object({
-  allowedDomains: z.array(z.string()).optional(),
-  deniedDomains: z.array(z.string()).optional(),
+const NetworkConfigSchema = Type.Object({
+  allowedDomains: Type.Optional(Type.Array(Type.String())),
+  deniedDomains: Type.Optional(Type.Array(Type.String())),
 });
 
-const NixConfigSchema = z.object({
-  flakeUrl: z.string().optional(),
-  packages: z.array(z.string()).optional(),
+const NixConfigSchema = Type.Object({
+  flakeUrl: Type.Optional(Type.String()),
+  packages: Type.Optional(Type.Array(Type.String())),
 });
 
-const WatcherRunIntentSchema = z.object({
-  kind: z.literal("watcher_run"),
-  runId: z.number().int().positive(),
-  watcherId: z.number().int().positive(),
+const WatcherRunIntentSchema = Type.Object({
+  kind: Type.Literal("watcher_run"),
+  runId: Type.Integer({ minimum: 1 }),
+  watcherId: Type.Integer({ minimum: 1 }),
 });
 
-const CreateAgentRequestSchema = z.object({
-  provider: z.literal("claude").default("claude").optional(),
-  model: z.string().optional(),
-  agentId: z.string().min(1).optional(),
-  userId: z.string().min(1).optional(),
-  thread: z.string().optional(),
-  forceNew: z.boolean().optional(),
-  dryRun: z.boolean().optional(),
-  intent: WatcherRunIntentSchema.optional(),
-  networkConfig: NetworkConfigSchema.optional(),
-  nix: NixConfigSchema.optional(),
+const CreateAgentRequestSchema = Type.Object({
+  provider: Type.Optional(Type.Literal("claude", { default: "claude" })),
+  model: Type.Optional(Type.String()),
+  agentId: Type.Optional(Type.String({ minLength: 1 })),
+  userId: Type.Optional(Type.String({ minLength: 1 })),
+  thread: Type.Optional(Type.String()),
+  forceNew: Type.Optional(Type.Boolean()),
+  dryRun: Type.Optional(Type.Boolean()),
+  intent: Type.Optional(WatcherRunIntentSchema),
+  networkConfig: Type.Optional(NetworkConfigSchema),
+  nix: Type.Optional(NixConfigSchema),
 });
 
-const CreateAgentResponseSchema = z.object({
-  success: z.boolean(),
-  agentId: z.string(),
-  token: z.string(),
-  expiresAt: z.number(),
-  sseUrl: z.string(),
-  messagesUrl: z.string(),
+const CreateAgentResponseSchema = Type.Object({
+  success: Type.Boolean(),
+  agentId: Type.String(),
+  token: Type.String(),
+  expiresAt: Type.Number(),
+  sseUrl: Type.String(),
+  messagesUrl: Type.String(),
 });
 
-const SlackRoutingInfoSchema = z.object({
-  channel: z.string().describe("Slack channel ID"),
-  thread: z.string().optional().describe("Thread timestamp for replies"),
-  team: z.string().optional().describe("Slack team ID"),
+const SlackRoutingInfoSchema = Type.Object({
+  channel: Type.String({ description: "Slack channel ID" }),
+  thread: Type.Optional(
+    Type.String({ description: "Thread timestamp for replies" }),
+  ),
+  team: Type.Optional(Type.String({ description: "Slack team ID" })),
 });
 
-const SendMessageRequestSchema = z
-  .object({
-    content: z.string().optional().describe("Message content"),
-    message: z
-      .string()
-      .optional()
-      .describe("Message content (alias for content)"),
-    messageId: z.string().optional(),
-    model: z
-      .string()
-      .optional()
-      .describe(
-        "Optional per-message model override (a `provider/model` ref or \"auto\"). " +
-          "Wins over the agent/org default. Used by behavior dispatch (e.g. watcher runs)."
-      ),
-    platform: z
-      .string()
-      .optional()
-      .describe("Target platform (api, slack, telegram)"),
-    slack: SlackRoutingInfoSchema.optional().describe(
-      "Slack-specific routing info (required when platform=slack)"
+// `.passthrough()` → additionalProperties: true (senders attach extra routing
+// fields the handler forwards untouched).
+const SendMessageRequestSchema = Type.Object(
+  {
+    content: Type.Optional(Type.String({ description: "Message content" })),
+    message: Type.Optional(
+      Type.String({ description: "Message content (alias for content)" }),
     ),
-  })
-  .passthrough();
+    messageId: Type.Optional(Type.String()),
+    model: Type.Optional(
+      Type.String({
+        description:
+          'Optional per-message model override (a `provider/model` ref or "auto"). ' +
+          "Wins over the agent/org default. Used by behavior dispatch (e.g. watcher runs).",
+      }),
+    ),
+    platform: Type.Optional(
+      Type.String({ description: "Target platform (api, slack, telegram)" }),
+    ),
+    slack: Type.Optional(
+      Type.Composite([SlackRoutingInfoSchema], {
+        description:
+          "Slack-specific routing info (required when platform=slack)",
+      }),
+    ),
+  },
+  { additionalProperties: true },
+);
 
-const SendMessageResponseSchema = z.object({
-  success: z.boolean(),
-  messageId: z.string(),
-  agentId: z.string().optional(),
-  jobId: z.string().optional(),
-  eventsUrl: z.string().optional(),
-  queued: z.boolean(),
-  traceparent: z.string().optional(),
+const SendMessageResponseSchema = Type.Object({
+  success: Type.Boolean(),
+  messageId: Type.String(),
+  agentId: Type.Optional(Type.String()),
+  jobId: Type.Optional(Type.String()),
+  eventsUrl: Type.Optional(Type.String()),
+  queued: Type.Boolean(),
+  traceparent: Type.Optional(Type.String()),
 });
 
-const AgentStatusResponseSchema = z.object({
-  success: z.boolean(),
-  agent: z.object({
-    agentId: z.string(),
-    userId: z.string(),
-    status: z.string(),
-    createdAt: z.number(),
-    lastActivity: z.number(),
-    hasActiveConnection: z.boolean(),
+const AgentStatusResponseSchema = Type.Object({
+  success: Type.Boolean(),
+  agent: Type.Object({
+    agentId: Type.String(),
+    userId: Type.String(),
+    status: Type.String(),
+    createdAt: Type.Number(),
+    lastActivity: Type.Number(),
+    hasActiveConnection: Type.Boolean(),
   }),
 });
 
-const ErrorResponseSchema = z.object({
-  success: z.boolean(),
-  error: z.string(),
-  details: z.string().optional(),
+const ErrorResponseSchema = Type.Object({
+  success: Type.Boolean(),
+  error: Type.String(),
+  details: Type.Optional(Type.String()),
 });
 
-const SuccessResponseSchema = z.object({
-  success: z.boolean(),
-  message: z.string().optional(),
-  agentId: z.string().optional(),
+const SuccessResponseSchema = Type.Object({
+  success: Type.Boolean(),
+  message: Type.Optional(Type.String()),
+  agentId: Type.Optional(Type.String()),
 });
 
 // Path parameters
-const AgentIdParamSchema = z.object({
-  agentId: z.string(),
+const AgentIdParamSchema = Type.Object({
+  agentId: Type.String(),
 });
 
 // =============================================================================
@@ -224,92 +235,80 @@ function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
 // OpenAPI Route Definitions
 // =============================================================================
 
-const createAgentRoute = createRoute({
+const createAgentRoute: RouteSpec = {
   method: "post",
   path: "/api/v1/agents",
   tags: ["Agents"],
   summary: "Create a new agent",
-  security: [{ bearerAuth: [] }],
+  bearerAuth: true,
   description:
     "Creates a new agent session and returns authentication credentials",
-  request: {
-    body: {
-      content: { "application/json": { schema: CreateAgentRequestSchema } },
-    },
-  },
+  request: { body: CreateAgentRequestSchema },
   responses: {
-    201: {
-      description: "Agent created",
-      content: { "application/json": { schema: CreateAgentResponseSchema } },
-    },
+    201: { description: "Agent created", schema: CreateAgentResponseSchema },
     ...errorResponses(ErrorResponseSchema, {
       400: "Invalid request",
       401: "Unauthorized",
     }),
   },
-});
+};
 
-const getAgentRoute = createRoute({
+const getAgentRoute: RouteSpec = {
   method: "get",
   path: "/api/v1/agents/{agentId}",
   tags: ["Agents"],
   summary: "Get agent status",
-  security: [{ bearerAuth: [] }],
+  bearerAuth: true,
   request: { params: AgentIdParamSchema },
   responses: {
-    200: {
-      description: "Agent status",
-      content: { "application/json": { schema: AgentStatusResponseSchema } },
-    },
+    200: { description: "Agent status", schema: AgentStatusResponseSchema },
     ...errorResponses(ErrorResponseSchema, {
       401: "Unauthorized",
       404: "Not found",
     }),
   },
-});
+};
 
-const deleteAgentRoute = createRoute({
+const deleteAgentRoute: RouteSpec = {
   method: "delete",
   path: "/api/v1/agents/{agentId}",
   tags: ["Agents"],
   // Deletes the SESSION only (the path param is a sessionKey); the agent row
   // itself persists — it's owned by the org or the user's personal org.
   summary: "Delete an agent session",
-  security: [{ bearerAuth: [] }],
+  bearerAuth: true,
   request: { params: AgentIdParamSchema },
   responses: {
-    200: {
-      description: "Agent session deleted",
-      content: { "application/json": { schema: SuccessResponseSchema } },
-    },
+    200: { description: "Agent session deleted", schema: SuccessResponseSchema },
     ...errorResponses(ErrorResponseSchema, {
       401: "Unauthorized",
       404: "Not found",
     }),
   },
-});
+};
 
-const getAgentEventsRoute = createRoute({
+const getAgentEventsRoute: RouteSpec = {
   method: "get",
   path: "/api/v1/agents/{agentId}/events",
   tags: ["Messages"],
   summary: "Subscribe to agent events (SSE)",
   description: "Server-Sent Events stream for real-time agent updates",
-  security: [{ bearerAuth: [] }],
+  bearerAuth: true,
   request: { params: AgentIdParamSchema },
   responses: {
     200: {
       description: "SSE stream",
-      content: { "text/event-stream": { schema: z.string() } },
+      schema: Type.String(),
+      mediaType: "text/event-stream",
     },
     ...errorResponses(ErrorResponseSchema, {
       401: "Unauthorized",
       429: "Too many connections",
     }),
   },
-});
+};
 
-const sendMessageRoute = createRoute({
+const sendMessageRoute: RouteSpec = {
   method: "post",
   path: "/api/v1/agents/{agentId}/messages",
   tags: ["Messages"],
@@ -317,20 +316,16 @@ const sendMessageRoute = createRoute({
   description:
     "Send a message to an agent. Supports JSON body or multipart form data for file uploads. " +
     "When platform is specified, the message is routed through the platform adapter.",
-  security: [{ bearerAuth: [] }],
+  bearerAuth: true,
   request: {
     params: AgentIdParamSchema,
-    body: {
-      content: {
-        "application/json": { schema: SendMessageRequestSchema },
-      },
-    },
+    body: SendMessageRequestSchema,
   },
+  // The handler accepts multipart form-data OR JSON and branches on
+  // Content-Type, so it parses+validates the body itself (see the flag doc).
+  skipBodyValidation: true,
   responses: {
-    200: {
-      description: "Message queued",
-      content: { "application/json": { schema: SendMessageResponseSchema } },
-    },
+    200: { description: "Message queued", schema: SendMessageResponseSchema },
     ...errorResponses(ErrorResponseSchema, {
       400: "Invalid request",
       401: "Unauthorized",
@@ -338,7 +333,7 @@ const sendMessageRoute = createRoute({
       404: "Agent not found",
     }),
   },
-});
+};
 
 // =============================================================================
 // System-agent resolution + gating
@@ -400,7 +395,7 @@ interface AgentApiConfig {
   ) => Promise<{ success: boolean; error?: string }>;
 }
 
-export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
+export function createAgentApi(config: AgentApiConfig): Hono {
   const {
     queueProducer,
     externalAuthClient,
@@ -414,7 +409,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   const sseManager = config.sseManager;
   const pubUrl = config.publicGatewayUrl;
   const artifactStore = config.artifactStore;
-  const app = new OpenAPIHono();
+  const app = new Hono();
 
   // Unified auth middleware for all agent API routes
   app.use(
@@ -741,8 +736,8 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   // =============================================================================
 
   // POST /api/v1/agents - Create agent
-  app.openapi(createAgentRoute, async (c): Promise<any> => {
-    const body = c.req.valid("json");
+  defineRoute(app, createAgentRoute, async (c): Promise<Response> => {
+    const body = getValidated<Static<typeof CreateAgentRequestSchema>>(c).json;
     const {
       provider = "claude",
       model,
@@ -1016,8 +1011,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   });
 
   // GET /api/v1/agents/:agentId - Get status
-  app.openapi(getAgentRoute, async (c): Promise<any> => {
-    const { agentId: sessionKey } = c.req.valid("param");
+  defineRoute(app, getAgentRoute, async (c): Promise<Response> => {
+    const { agentId: sessionKey } =
+      getValidated<never, Static<typeof AgentIdParamSchema>>(c).param;
 
     const session = await sessMgr.getSession(sessionKey);
     if (!session) {
@@ -1047,8 +1043,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   });
 
   // DELETE /api/v1/agents/:agentId
-  app.openapi(deleteAgentRoute, async (c): Promise<any> => {
-    const { agentId: sessionKey } = c.req.valid("param");
+  defineRoute(app, deleteAgentRoute, async (c): Promise<Response> => {
+    const { agentId: sessionKey } =
+      getValidated<never, Static<typeof AgentIdParamSchema>>(c).param;
 
     // Resolve the real agentId BEFORE any mutation so ownership can be
     // checked against the actual agent (the path param is a sessionKey).
@@ -1080,8 +1077,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   });
 
   // GET /api/v1/agents/:agentId/events - SSE stream
-  app.openapi(getAgentEventsRoute, async (c): Promise<any> => {
-    const { agentId: sessionKey } = c.req.valid("param");
+  defineRoute(app, getAgentEventsRoute, async (c): Promise<Response> => {
+    const { agentId: sessionKey } =
+      getValidated<never, Static<typeof AgentIdParamSchema>>(c).param;
 
     const session = await sessMgr.getSession(sessionKey);
     if (!session) {
@@ -1207,8 +1205,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   // Supports two paths:
   //   1. Direct API (no platform field): requires pre-created session, enqueues directly
   //   2. Platform-routed (platform field present): delegates to platform adapter
-  app.openapi(sendMessageRoute, async (c): Promise<any> => {
-    const { agentId } = c.req.valid("param");
+  defineRoute(app, sendMessageRoute, async (c): Promise<Response> => {
+    const { agentId } =
+      getValidated<never, Static<typeof AgentIdParamSchema>>(c).param;
 
     // Gate ownership BEFORE parsing body / uploading files. The path param is
     // usually a sessionKey (conversationId); resolve to the real agentId when
@@ -1315,7 +1314,33 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         if (fileResults.length > 0) files = fileResults;
       }
     } else {
-      body = c.req.valid("json");
+      // `skipBodyValidation` is set on the route (multipart branch above), so
+      // validate the JSON body here against the same schema. `passthrough`
+      // (additionalProperties) keeps extra routing fields the handler forwards.
+      let rawBody: unknown;
+      try {
+        // Missing/empty body → {} (parity with the defineRoute middleware and
+        // the previous zod-openapi validator); non-empty must parse.
+        const text = await c.req.text();
+        rawBody = text.trim() === "" ? {} : JSON.parse(text);
+      } catch {
+        return c.json({ success: false, error: "Invalid JSON body" }, 400);
+      }
+      // Strict Check — JSON carries real types, so no Value.Convert here:
+      // coercion would silently accept e.g. `{content: 123}` as "123".
+      if (!Value.Check(SendMessageRequestSchema, rawBody)) {
+        const first = Value.Errors(SendMessageRequestSchema, rawBody).First();
+        return c.json(
+          {
+            success: false,
+            error: first
+              ? `${first.path || "(root)"} ${first.message}`.trim()
+              : "Invalid request body",
+          },
+          400,
+        );
+      }
+      body = rawBody as Record<string, any>;
     }
 
     const rawMessageContent = body.content || body.message;

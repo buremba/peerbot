@@ -572,7 +572,7 @@ export default async (_ctx, client) => {
 	},
 	"connections.connect": {
 		summary:
-			"Recommended connector setup entry point. Handles every auth family; the result's `status` tells you what to do next. status 'active' (auth-none, e.g. website) or 'pending_auth' (OAuth waiting on the user) BOTH carry a `connection_id`. status 'setup_required' means NO connection exists yet — follow `next_action` / `resume_call` / `completion_check` until you get an active connection, don't call feeds.create with a missing id. Once you have a connection_id you must create a feed on it to collect data — connect() alone syncs nothing.",
+			"Recommended connector setup entry point. Handles every auth family; the result's `status` tells you what to do next. status 'active' (auth-none, e.g. website) or 'pending_auth' (OAuth waiting on the user) BOTH carry a `connection_id`. status 'setup_required' is a continuation — `connection_id` is OPTIONAL there (may be absent); follow `next_action` / `resume_call` / `completion_check` and only call feeds.create once the result actually carries a connection_id. Once you have a connection_id you must create a feed on it to collect data — connect() alone syncs nothing.",
 		access: "admin",
 		example:
 			"const c = await client.connections.connect({ connector_key: 'website' }); // c.connection_id",

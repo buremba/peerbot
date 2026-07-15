@@ -174,10 +174,14 @@ describe("method-metadata", () => {
 		const connect = METHOD_METADATA["connections.connect"];
 		expect(connect.summary).toContain("connection_id");
 		expect(connect.summary).toMatch(/create a feed|feeds\.create/);
-		// connect() does NOT always return a connection_id: the setup_required
-		// outcome has none, so the summary must warn against calling feeds.create
-		// with a missing id rather than promising an id unconditionally.
+		// connect() does NOT always return a usable connection_id: for the
+		// setup_required continuation the field is OPTIONAL. The summary must
+		// describe it as outcome-dependent (not promise an id unconditionally,
+		// and not claim setup_required NEVER has one), so an agent waits for a
+		// real id before calling feeds.create.
 		expect(connect.summary).toContain("setup_required");
+		expect(connect.summary).toMatch(/optional/i);
+		expect(connect.summary).not.toMatch(/NO connection exists/i);
 		const connectExample = connect.usageExample ?? "";
 		expect(connectExample).toContain("connections.connect");
 		expect(connectExample).toContain("feeds.create");

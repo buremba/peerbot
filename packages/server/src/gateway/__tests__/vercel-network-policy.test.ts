@@ -48,4 +48,14 @@ describe("vercel networkPolicyFromDomains — deny subtraction", () => {
       "deny-all"
     );
   });
+
+  test("deny matching is case-insensitive", () => {
+    // DNS is case-insensitive; a mixed-case deny must still subtract.
+    expect(
+      networkPolicyFromDomains(["*.example.com"], ["SENSITIVE.EXAMPLE.COM"])
+    ).toBe("deny-all");
+    expect(
+      networkPolicyFromDomains(["API.Example.com", "ok.com"], ["api.example.com"])
+    ).toEqual({ allow: ["ok.com"] });
+  });
 });

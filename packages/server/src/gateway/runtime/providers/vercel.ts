@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { normalizeDomainPattern } from "@lobu/core";
 import { type NetworkPolicy, Sandbox } from "@vercel/sandbox";
 import { remoteCwd } from "../workspace.js";
 import type {
@@ -139,8 +140,12 @@ function normalizeAllowedDomain(domain: string): string | null {
   if (!trimmed) return null;
   if (trimmed === "*") return "*";
   if (!/^[A-Za-z0-9.*_-]+(?::\d+)?$/.test(trimmed)) return null;
-  if (trimmed.startsWith(".")) return `*${trimmed}`;
-  return trimmed;
+  // Canonicalize (lowercase + punycode, "*.x" collapses to ".x") so
+  // allow/deny overlap checks compare the one form DNS actually resolves —
+  // a mixed-case deny must still subtract its allow entry.
+  const canonical = normalizeDomainPattern(trimmed);
+  if (canonical.startsWith(".")) return `*${canonical}`;
+  return canonical;
 }
 
 /**

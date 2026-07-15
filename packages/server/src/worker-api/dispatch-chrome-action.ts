@@ -26,11 +26,15 @@ import type { Env } from '../index';
 import { waitForDeviceActionRun } from '../tools/admin/manage_operations';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
+import { isUniqueViolation } from '../utils/pg-errors';
 import { createConnectorOperationRun } from '../runs/queue-service';
 
 // Online window for chrome extension device workers, in minutes. Matches
 // the /api/me/devices "online" flag.
 const DEVICE_ONLINE_WINDOW_MINUTES = 20;
+
+/** Live unique index: one chrome connection per (org, device_worker) pin. */
+const CHROME_DEVICE_PIN_UNIQUE = 'idx_connections_org_connector_device_live';
 
 export interface ChromeActionDispatchResult {
   status: 'completed' | 'failed' | 'timeout';
@@ -55,17 +59,27 @@ export type ResolveOnlineChromeOptions = {
   failIfPreferredOffline?: boolean;
 };
 
+type ChromeConnRow = {
+  connection_id: number;
+  current_pin: string | null;
+  /** Online debugger-capable worker id for current_pin, else null. */
+  pin_online_worker_id: string | null;
+};
+
 /**
  * Resolve an online Owletto Chrome extension to run a chrome action against.
  *
  * Resolution order:
- *   1. preferredDeviceWorkerId if online + chrome-extension + debugger
- *   2. The org chrome connection's current pin if still online (sticky —
- *      multi-Chrome orgs must not jump to last_seen DESC)
- *   3. Freshest online debugger-capable extension (heal NULL / stale pin)
+ *   1. preferredDeviceWorkerId if online + chrome-extension + debugger:
+ *      - return the chrome connection already pinned to it (no UPDATE)
+ *      - else rebind a safe candidate (NULL / offline pin; or the sole chrome
+ *        row for single-connection affinity rebind)
+ *   2. No preference: sticky online pin on any chrome row (deterministic by id)
+ *   3. Freshest unowned online worker + safe rebind candidate (heal NULL/stale)
  *
- * When we select a worker, the org `chrome` connection is repinned to it so
- * the poll claim path can route the action run.
+ * Never steals a device pin already held by another live chrome connection —
+ * that hits idx_connections_org_connector_device_live and used to 500 the
+ * dispatcher (multi-Chrome orgs: Mac mini + MacBook).
  */
 export async function resolveOnlineChromeConnection(
   organizationId: string,
@@ -76,13 +90,11 @@ export async function resolveOnlineChromeConnection(
   const failIfPreferredOffline =
     opts.failIfPreferredOffline ?? preferredId != null;
 
-  const rows = (await sql`
+  const chromeRows = (await sql`
     SELECT
       con.id AS connection_id,
       con.device_worker_id AS current_pin,
-      pinned.id AS pinned_online_worker_id,
-      preferred.id AS preferred_online_worker_id,
-      fresh.id AS fresh_online_worker_id
+      pinned.id AS pin_online_worker_id
     FROM connections con
     LEFT JOIN device_workers pinned
       ON pinned.id = con.device_worker_id
@@ -90,81 +102,213 @@ export async function resolveOnlineChromeConnection(
      AND pinned.platform = 'chrome-extension'
      AND pinned.capabilities::jsonb @> '["browser.debugger"]'::jsonb
      AND pinned.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
-    LEFT JOIN device_workers preferred
-      ON ${preferredId}::uuid IS NOT NULL
-     AND preferred.id = ${preferredId}::uuid
-     AND preferred.organization_id = con.organization_id
-     AND preferred.platform = 'chrome-extension'
-     AND preferred.capabilities::jsonb @> '["browser.debugger"]'::jsonb
-     AND preferred.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
-    LEFT JOIN LATERAL (
-      SELECT dw.id
-      FROM device_workers dw
-      WHERE dw.organization_id = con.organization_id
-        AND dw.platform = 'chrome-extension'
-        AND dw.capabilities::jsonb @> '["browser.debugger"]'::jsonb
-        AND dw.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
-      ORDER BY dw.last_seen_at DESC
-      LIMIT 1
-    ) fresh ON TRUE
     WHERE con.organization_id = ${organizationId}
       AND con.connector_key = 'chrome'
       AND con.status = 'active'
       AND con.deleted_at IS NULL
-    LIMIT 1
-  `) as Array<{
-    connection_id: number;
-    current_pin: string | null;
-    pinned_online_worker_id: string | null;
-    preferred_online_worker_id: string | null;
-    fresh_online_worker_id: string | null;
-  }>;
+    ORDER BY con.id ASC
+  `) as ChromeConnRow[];
 
-  if (rows.length === 0) return null;
-  const {
-    connection_id,
-    current_pin,
-    pinned_online_worker_id,
-    preferred_online_worker_id,
-    fresh_online_worker_id,
-  } = rows[0];
+  if (chromeRows.length === 0) return null;
 
-  // Explicit browser affinity (data connection pin → chrome-extension) wins.
-  if (preferredId) {
-    if (preferred_online_worker_id) {
-      if (current_pin !== preferred_online_worker_id) {
-        await sql`
-          UPDATE connections
-          SET device_worker_id = ${preferred_online_worker_id}::uuid, updated_at = now()
-          WHERE id = ${connection_id}
-            AND deleted_at IS NULL
-        `;
-      }
-      return {
-        connectionId: connection_id,
-        deviceWorkerId: preferred_online_worker_id,
-      };
+  const onlineWorkers = (await sql`
+    SELECT dw.id
+    FROM device_workers dw
+    WHERE dw.organization_id = ${organizationId}
+      AND dw.platform = 'chrome-extension'
+      AND dw.capabilities::jsonb @> '["browser.debugger"]'::jsonb
+      AND dw.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
+    ORDER BY dw.last_seen_at DESC
+  `) as Array<{ id: string }>;
+
+  const onlineWorkerIds = new Set(onlineWorkers.map((w) => w.id));
+
+  const logSelection = (
+    reason: string,
+    connectionId: number,
+    deviceWorkerId: string,
+    repaired: boolean
+  ) => {
+    logger.info(
+      {
+        organization_id: organizationId,
+        preferred_device_worker_id: preferredId,
+        chrome_connection_id: connectionId,
+        device_worker_id: deviceWorkerId,
+        selection_reason: reason,
+        repaired,
+        chrome_connection_count: chromeRows.length,
+      },
+      '[dispatchChromeAction] chrome connection resolved'
+    );
+  };
+
+  // Prefer existing owner of a target worker (no UPDATE). Concurrent-safe:
+  // re-read on unique violation after a guarded rebind.
+  const findOwnerOf = async (
+    deviceWorkerId: string
+  ): Promise<number | null> => {
+    const local = chromeRows.find((r) => r.current_pin === deviceWorkerId);
+    if (local) return local.connection_id;
+    const rows = (await sql`
+      SELECT id
+      FROM connections
+      WHERE organization_id = ${organizationId}
+        AND connector_key = 'chrome'
+        AND device_worker_id = ${deviceWorkerId}::uuid
+        AND deleted_at IS NULL
+      LIMIT 1
+    `) as Array<{ id: number }>;
+    return rows[0]?.id ?? null;
+  };
+
+  /**
+   * Rebind `connectionId` onto `deviceWorkerId` only when the target is still
+   * unowned. On race/unique violation, return the winner's connection.
+   */
+  const rebindChromeToWorker = async (
+    connectionId: number,
+    deviceWorkerId: string,
+    reason: string
+  ): Promise<{ connectionId: number; deviceWorkerId: string } | null> => {
+    const existingOwner = await findOwnerOf(deviceWorkerId);
+    if (existingOwner != null) {
+      logSelection(`${reason}:existing_owner`, existingOwner, deviceWorkerId, false);
+      return { connectionId: existingOwner, deviceWorkerId };
     }
+
+    try {
+      const updated = (await sql`
+        UPDATE connections
+        SET device_worker_id = ${deviceWorkerId}::uuid, updated_at = now()
+        WHERE id = ${connectionId}
+          AND deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM connections other
+            WHERE other.organization_id = ${organizationId}
+              AND other.connector_key = 'chrome'
+              AND other.device_worker_id = ${deviceWorkerId}::uuid
+              AND other.deleted_at IS NULL
+              AND other.id <> ${connectionId}
+          )
+        RETURNING id
+      `) as Array<{ id: number }>;
+
+      if (updated.length > 0) {
+        logSelection(reason, connectionId, deviceWorkerId, true);
+        return { connectionId, deviceWorkerId };
+      }
+
+      // Lost the race or candidate vanished — return whoever owns the target.
+      const winner = await findOwnerOf(deviceWorkerId);
+      if (winner != null) {
+        logSelection(`${reason}:race_winner`, winner, deviceWorkerId, false);
+        return { connectionId: winner, deviceWorkerId };
+      }
+      return null;
+    } catch (err) {
+      if (isUniqueViolation(err, CHROME_DEVICE_PIN_UNIQUE)) {
+        const winner = await findOwnerOf(deviceWorkerId);
+        if (winner != null) {
+          logSelection(`${reason}:unique_recovery`, winner, deviceWorkerId, false);
+          return { connectionId: winner, deviceWorkerId };
+        }
+        return null;
+      }
+      throw err;
+    }
+  };
+
+  /**
+   * Pick a chrome row safe to rebind onto an unowned target worker.
+   * Never steals a pin held by a *different* live chrome connection on that
+   * target (caller checks ownership first). Source candidates:
+   *   1. NULL pin
+   *   2. Offline / ineligible pin
+   *   3. Sole chrome connection (single-connection browser-affinity rebind)
+   */
+  const pickRebindCandidate = (): ChromeConnRow | null => {
+    const nullPinned = chromeRows.find((r) => r.current_pin == null);
+    if (nullPinned) return nullPinned;
+    const offlinePinned = chromeRows.find((r) => r.pin_online_worker_id == null);
+    if (offlinePinned) return offlinePinned;
+    if (chromeRows.length === 1) return chromeRows[0];
+    return null;
+  };
+
+  // --- Preferred browser affinity ---
+  if (preferredId) {
+    if (onlineWorkerIds.has(preferredId)) {
+      const ownerId = await findOwnerOf(preferredId);
+      if (ownerId != null) {
+        logSelection('preferred_existing_owner', ownerId, preferredId, false);
+        return { connectionId: ownerId, deviceWorkerId: preferredId };
+      }
+
+      const candidate = pickRebindCandidate();
+      if (!candidate) {
+        // Multi-chrome: every chrome row is sticky on another online browser
+        // and preferred has no chrome lane. Do not steal.
+        logger.info(
+          {
+            organization_id: organizationId,
+            preferred_device_worker_id: preferredId,
+            chrome_connection_count: chromeRows.length,
+            selection_reason: 'preferred_unowned_no_rebind_candidate',
+          },
+          '[dispatchChromeAction] chrome connection unresolved'
+        );
+        return null;
+      }
+
+      return rebindChromeToWorker(
+        candidate.connection_id,
+        preferredId,
+        'preferred_rebind'
+      );
+    }
+
     if (failIfPreferredOffline) {
-      // Caller surfaces a clear error — do not silently scrape another profile.
       return null;
     }
+    // Preferred offline and fallback allowed — continue to sticky / heal.
   }
 
-  // Sticky org chrome pin, else freshest online debugger extension.
-  const online_worker_id = pinned_online_worker_id ?? fresh_online_worker_id;
-  if (!online_worker_id) return null;
-
-  if (current_pin !== online_worker_id) {
-    await sql`
-      UPDATE connections
-      SET device_worker_id = ${online_worker_id}::uuid, updated_at = now()
-      WHERE id = ${connection_id}
-        AND deleted_at IS NULL
-    `;
+  // --- Sticky: any chrome already online (multi-Chrome: do not jump to last_seen) ---
+  const sticky = chromeRows.find((r) => r.pin_online_worker_id != null);
+  if (sticky?.pin_online_worker_id) {
+    logSelection(
+      'sticky_online_pin',
+      sticky.connection_id,
+      sticky.pin_online_worker_id,
+      false
+    );
+    return {
+      connectionId: sticky.connection_id,
+      deviceWorkerId: sticky.pin_online_worker_id,
+    };
   }
 
-  return { connectionId: connection_id, deviceWorkerId: online_worker_id };
+  // --- Heal: freshest online worker not owned by a live chrome row ---
+  const ownedPins = new Set(
+    chromeRows.map((r) => r.current_pin).filter((p): p is string => p != null)
+  );
+  const unownedOnline = onlineWorkers.find((w) => !ownedPins.has(w.id));
+  if (!unownedOnline) {
+    return null;
+  }
+
+  const candidate = pickRebindCandidate();
+  if (!candidate) {
+    return null;
+  }
+
+  return rebindChromeToWorker(
+    candidate.connection_id,
+    unownedOnline.id,
+    'heal_unowned_online'
+  );
 }
 
 /**

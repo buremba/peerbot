@@ -43,7 +43,8 @@ export interface KnowledgeSaveInput {
 }
 
 export interface KnowledgeReadInput {
-  content_id?: number;
+  /** Fetch specific content events by id (read_knowledge takes an array). */
+  content_ids?: number[];
   watcher_id?: number;
   since?: string;
   until?: string;

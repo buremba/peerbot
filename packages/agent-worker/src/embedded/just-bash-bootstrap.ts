@@ -16,6 +16,7 @@ import { stripEnv } from "@lobu/core";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 import type { GatewayParams } from "@lobu/plugin-toolkit";
+import { buildEgressFetch } from "./egress-fetch";
 import {
   type SandboxStrategy,
   probeSandboxStrategy,
@@ -431,7 +432,9 @@ export async function createEmbeddedBashOps(
     return runtimeProvider.createBashOps({ gw: options.gw });
   }
 
-  const { Bash, ReadWriteFs } = await import("just-bash");
+  const { Bash, ReadWriteFs, NetworkAccessDeniedError } = await import(
+    "just-bash"
+  );
 
   const rawWorkspaceDir =
     options.workspaceDir || process.env.WORKSPACE_DIR || "/workspace";
@@ -448,12 +451,10 @@ export async function createEmbeddedBashOps(
   }
   const bashFs = new ReadWriteFs({ root: workspaceDir });
 
-  // Parse allowed domains from env var (set by gateway).
-  // Defense-in-depth: the gateway is trusted, but a malformed env (non-array,
-  // non-string entries, embedded "/" or whitespace) would either crash
-  // `.flatMap(...)` or, worse, expand an "allow https://${domain}/" prefix
-  // into something attacker-shaped (`evil.com/ ` or `attacker.com/path`).
-  // Validate the parsed shape and the per-domain syntax explicitly.
+  // Parse allowed domains from env var (set by gateway). Entries gate whether
+  // network commands are registered at all — URL policy is enforced by the
+  // gateway egress proxy, not here. Still validate shape and per-domain
+  // syntax so a malformed env can't silently opt an agent into the network.
   const DOMAIN_PATTERN = /^[A-Za-z0-9.*_-]+(?::\d+)?$/;
   let allowedDomains: string[] = [];
   if (process.env.JUST_BASH_ALLOWED_DOMAINS) {
@@ -485,22 +486,16 @@ export async function createEmbeddedBashOps(
     }
   }
 
-  const network =
+  // A non-empty allow-list opts the agent into network commands; URL policy
+  // itself is NOT enforced here. Built-in curl/wget route through the gateway
+  // egress proxy (see egress-fetch.ts), where the per-agent grants synced
+  // from this same allow-list — plus the global denylist, SSRF guard, and
+  // egress judge — are enforced for the JS shim exactly as they are for
+  // spawned binaries. just-bash's own NetworkConfig fetch would bypass all
+  // of that (it never consults HTTP_PROXY), so it is deliberately unused.
+  const egressFetch =
     allowedDomains.length > 0
-      ? {
-          allowedUrlPrefixes: allowedDomains.flatMap((domain: string) => [
-            `https://${domain}/`,
-            `http://${domain}/`,
-          ]),
-          allowedMethods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] as (
-            | "GET"
-            | "HEAD"
-            | "POST"
-            | "PUT"
-            | "PATCH"
-            | "DELETE"
-          )[],
-        }
+      ? buildEgressFetch(NetworkAccessDeniedError)
       : undefined;
 
   // Build MCP CLI commands first so that explicit MCP registrations win over
@@ -575,7 +570,7 @@ export async function createEmbeddedBashOps(
     cwd: "/",
     env: stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS),
     executionLimits: EMBEDDED_BASH_LIMITS,
-    ...(network && { network }),
+    ...(egressFetch && { fetch: egressFetch }),
     ...(customCommands.length > 0 && { customCommands }),
   });
 

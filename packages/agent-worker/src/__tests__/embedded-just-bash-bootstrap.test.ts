@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { resetSandboxProbeForTests } from "../embedded/exec-sandbox";
@@ -15,6 +17,9 @@ const originalEnv = {
   LOBU_ALLOW_UNSANDBOXED_EXEC: process.env.LOBU_ALLOW_UNSANDBOXED_EXEC,
   LOBU_WORKSPACE_BACKEND: process.env.LOBU_WORKSPACE_BACKEND,
   LOBU_RUNTIME_PROVIDER: process.env.LOBU_RUNTIME_PROVIDER,
+  JUST_BASH_ALLOWED_DOMAINS: process.env.JUST_BASH_ALLOWED_DOMAINS,
+  HTTP_PROXY: process.env.HTTP_PROXY,
+  HTTPS_PROXY: process.env.HTTPS_PROXY,
 };
 
 function restoreEnv(name: keyof typeof originalEnv): void {
@@ -35,6 +40,9 @@ afterEach(() => {
   restoreEnv("LOBU_ALLOW_UNSANDBOXED_EXEC");
   restoreEnv("LOBU_WORKSPACE_BACKEND");
   restoreEnv("LOBU_RUNTIME_PROVIDER");
+  restoreEnv("JUST_BASH_ALLOWED_DOMAINS");
+  restoreEnv("HTTP_PROXY");
+  restoreEnv("HTTPS_PROXY");
   resetSandboxProbeForTests();
 });
 
@@ -65,6 +73,226 @@ describe("createEmbeddedBashOps", () => {
 
     expect(result.exitCode).not.toBe(0);
     expect(chunks.join("")).not.toContain("root:");
+  });
+
+  // Built-in curl/wget are transport-only clients of the gateway egress
+  // proxy: URL policy lives in the proxy (grants/denylist/SSRF/judge), not in
+  // the worker. These tests are fully hermetic — the "gateway proxy" is a
+  // local recording HTTP proxy that answers absolute-URI requests itself, so
+  // no DNS and no live network is ever needed (`wandr-egress.test` never
+  // resolves; only the proxy sees it).
+  describe("built-in curl egress via the gateway proxy", () => {
+    async function curlViaProxy(
+      handler: (req: http.IncomingMessage, res: http.ServerResponse) => void,
+      command: string
+    ): Promise<{ output: string; proxied: string[]; auths: string[] }> {
+      const proxied: string[] = [];
+      const auths: string[] = [];
+      const proxy = http.createServer((req, res) => {
+        proxied.push(`${req.method} ${req.url}`);
+        auths.push(req.headers["proxy-authorization"] ?? "NONE");
+        handler(req, res);
+      });
+      await new Promise<void>((resolve) =>
+        proxy.listen(0, "127.0.0.1", resolve)
+      );
+      const address = proxy.address();
+      if (typeof address !== "object" || !address) {
+        throw new Error("proxy did not bind");
+      }
+      try {
+        // Credentialed, like the real gateway proxy URL
+        // (http://<deployment>:<token>@host) — auth must survive the transport.
+        process.env.HTTP_PROXY = `http://dep:tok@127.0.0.1:${address.port}`;
+        process.env.HTTPS_PROXY = process.env.HTTP_PROXY;
+        process.env.JUST_BASH_ALLOWED_DOMAINS = JSON.stringify(["*"]);
+        const workspace = fs.realpathSync(
+          fs.mkdtempSync(path.join(os.tmpdir(), "lobu-egress-"))
+        );
+        tempDirs.push(workspace);
+        const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+        const chunks: string[] = [];
+        await ops.exec(command, "/", {
+          onData: (chunk) => chunks.push(chunk.toString()),
+          timeout: 8,
+        });
+        return { output: chunks.join(""), proxied, auths };
+      } finally {
+        proxy.close();
+      }
+    }
+
+    test("routes requests through the proxy with credentials and returns the body", async () => {
+      const { output, proxied, auths } = await curlViaProxy(
+        (_req, res) => res.end("proxy-delivered-body"),
+        "curl -sS http://wandr-egress.test/hello"
+      );
+      expect(output).toContain("proxy-delivered-body");
+      // Absolute-URI request line proves the proxy (not DNS) served it, and
+      // that method + full path are visible to gateway policy.
+      // Bun includes the default port in the URI; Node does not.
+      expect(proxied).toHaveLength(1);
+      expect(proxied[0]).toMatch(
+        /^GET http:\/\/wandr-egress\.test(:80)?\/hello$/
+      );
+      // Basic base64("dep:tok") — the gateway proxy requires auth.
+      expect(auths).toEqual(["Basic ZGVwOnRvaw=="]);
+    });
+
+    test("follows redirects with every hop transiting the proxy, auth intact", async () => {
+      const { output, proxied, auths } = await curlViaProxy((req, res) => {
+        if (req.url?.endsWith("/redirect-me")) {
+          res.writeHead(302, { location: "http://wandr-egress.test/final" });
+          res.end();
+          return;
+        }
+        res.end("final-hop-body");
+      }, "curl -sSL http://wandr-egress.test/redirect-me");
+      expect(output).toContain("final-hop-body");
+      expect(proxied).toHaveLength(2);
+      expect(proxied[0]).toMatch(
+        /^GET http:\/\/wandr-egress\.test(:80)?\/redirect-me$/
+      );
+      expect(proxied[1]).toMatch(
+        /^GET http:\/\/wandr-egress\.test(:80)?\/final$/
+      );
+      expect(auths).toEqual(["Basic ZGVwOnRvaw==", "Basic ZGVwOnRvaw=="]);
+    });
+
+    test("a proxy denial is surfaced to the agent (single policy point)", async () => {
+      const { output, proxied } = await curlViaProxy((_req, res) => {
+        res.writeHead(403);
+        res.end("denied-by-gateway-proxy");
+      }, "curl -sS http://blocked.example/");
+      expect(proxied).toHaveLength(1);
+      expect(proxied[0]).toMatch(/^GET http:\/\/blocked\.example(:80)?\/$/);
+      expect(output).toContain("denied-by-gateway-proxy");
+    });
+
+    test("an oversized chunked response is cut off at the size cap", async () => {
+      // 33MB chunked (no content-length) — must be aborted while streaming,
+      // not buffered whole and then rejected.
+      const chunk = Buffer.alloc(1024 * 1024, "x");
+      const { output } = await curlViaProxy((_req, res) => {
+        res.writeHead(200, { "content-type": "application/octet-stream" });
+        for (let i = 0; i < 33; i++) res.write(chunk);
+        res.end();
+      }, "curl -sS http://wandr-egress.test/huge");
+      expect(output).toContain("Response too large");
+    }, 20_000);
+
+    test("fails closed when no gateway proxy is configured", async () => {
+      process.env.JUST_BASH_ALLOWED_DOMAINS = JSON.stringify(["*"]);
+      delete process.env.HTTP_PROXY;
+      delete process.env.HTTPS_PROXY;
+      const workspace = fs.realpathSync(
+        fs.mkdtempSync(path.join(os.tmpdir(), "lobu-egress-"))
+      );
+      tempDirs.push(workspace);
+      const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+      const chunks: string[] = [];
+      await ops.exec("curl -sS http://wandr-egress.test/", "/", {
+        onData: (chunk) => chunks.push(chunk.toString()),
+        timeout: 8,
+      });
+      expect(chunks.join("")).toContain("egress proxy not configured");
+    });
+
+    // The Node transport branch (undici + ProxyAgent, proxyTunnel:false)
+    // only executes under Node, so exercise it in a spawned `node` child
+    // against the built dist. Skipped when dist isn't built (CI unit job
+    // runs from src); the branch is CI-covered indirectly via sdk-e2e and
+    // verified here on any dev machine with a build.
+    const distBootstrap = path.resolve(
+      __dirname,
+      "../../dist/embedded/just-bash-bootstrap.js"
+    );
+    test.skipIf(!fs.existsSync(distBootstrap))(
+      "node transport: absolute-form method/path + auth via the proxy",
+      async () => {
+        const script = `
+          const http = require("node:http");
+          const fs = require("node:fs");
+          const seen = [];
+          const proxy = http.createServer((req, res) => {
+            seen.push(req.method + " " + req.url + " " + (req.headers["proxy-authorization"] || "NONE"));
+            res.end("node-proxy-body");
+          });
+          proxy.listen(0, "127.0.0.1", async () => {
+            process.env.HTTP_PROXY = "http://dep:tok@127.0.0.1:" + proxy.address().port;
+            process.env.HTTPS_PROXY = process.env.HTTP_PROXY;
+            process.env.JUST_BASH_ALLOWED_DOMAINS = JSON.stringify(["*"]);
+            const { createEmbeddedBashOps } = await import(${JSON.stringify(distBootstrap)});
+            const ws = fs.mkdtempSync("/tmp/node-transport-");
+            const ops = await createEmbeddedBashOps({ workspaceDir: ws });
+            let out = "";
+            const r = await ops.exec("curl -sS -X DELETE http://wandr-egress.test/thing", ws, {
+              onData: (b) => { out += b.toString(); },
+              timeout: 15,
+            });
+            console.log(JSON.stringify({ exit: r.exitCode, out, seen }));
+            proxy.close();
+            fs.rmSync(ws, { recursive: true, force: true });
+            process.exit(0);
+          });
+        `;
+        const stdout = await new Promise<string>((resolve, reject) => {
+          execFile("node", ["-e", script], { timeout: 30_000 }, (err, out) =>
+            err ? reject(err) : resolve(out)
+          );
+        });
+        const lastLine = stdout.trim().split("\n").at(-1) ?? "";
+        const result = JSON.parse(lastLine) as {
+          exit: number;
+          out: string;
+          seen: string[];
+        };
+        expect(result.exit).toBe(0);
+        expect(result.out).toContain("node-proxy-body");
+        expect(result.seen).toEqual([
+          "DELETE http://wandr-egress.test/thing Basic ZGVwOnRvaw==",
+        ]);
+      },
+      40_000
+    );
+
+    test("a dying worker's stale events do not poison its replacement", async () => {
+      const { getEgressWorkerForTests } = await import(
+        "../embedded/egress-fetch"
+      );
+      const { output: first } = await curlViaProxy(async (_req, res) => {
+        res.end("lifecycle-body");
+      }, "curl -sS http://wandr-egress.test/first");
+      expect(first).toContain("lifecycle-body");
+      const workerA = getEgressWorkerForTests();
+      expect(workerA).not.toBeNull();
+      // 'error' is typically followed by 'exit'; between the two a
+      // replacement worker may already own new pending requests. The stale
+      // worker's second event must not reject those.
+      workerA?.emit("error", new Error("synthetic failure"));
+      const secondRun = curlViaProxy(async (_req, res) => {
+        res.end("replacement-body");
+      }, "curl -sS http://wandr-egress.test/second");
+      await workerA?.terminate(); // fires the stale 'exit'
+      const { output: second } = await secondRun;
+      expect(second).toContain("replacement-body");
+      expect(getEgressWorkerForTests()).not.toBe(workerA);
+    });
+
+    test("no network config leaves curl unregistered", async () => {
+      delete process.env.JUST_BASH_ALLOWED_DOMAINS;
+      const workspace = fs.realpathSync(
+        fs.mkdtempSync(path.join(os.tmpdir(), "lobu-egress-"))
+      );
+      tempDirs.push(workspace);
+      const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+      const chunks: string[] = [];
+      await ops.exec("curl -sS http://wandr-egress.test/", "/", {
+        onData: (chunk) => chunks.push(chunk.toString()),
+        timeout: 8,
+      });
+      expect(chunks.join("")).toContain("command not found");
+    });
   });
 
   // The pin is load-bearing and the SOLE selector: on a warm deployment reused

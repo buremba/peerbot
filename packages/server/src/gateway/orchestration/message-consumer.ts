@@ -351,6 +351,15 @@ export class MessageConsumer {
         );
       }
 
+      if (!data.agentId) {
+        throw new OrchestratorError(
+          ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+          "agentId is required for message routing",
+          { jobId, messageId: data.messageId },
+          false
+        );
+      }
+
       // CRITICAL: For consistent worker naming, conversationId must be the root conversation ID
       // (e.g., Slack thread root ts), not individual message timestamps.
       const effectiveConversationId = data.conversationId;

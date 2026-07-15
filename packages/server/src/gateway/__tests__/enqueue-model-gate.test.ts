@@ -34,6 +34,14 @@ const WARM_DEPLOYMENT_NAME = generateDeploymentName({
   agentId: "agent-1",
   organizationId: "org-1",
 });
+const SECOND_AGENT_DEPLOYMENT_NAME = generateDeploymentName({
+  userId: "user-1",
+  platform: "slack",
+  channelId: "chan-1",
+  conversationId: "conv-1",
+  agentId: "agent-2",
+  organizationId: "org-1",
+});
 
 process.env.ENCRYPTION_KEY ||=
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -88,6 +96,7 @@ function makeWarmDeploymentManager(
   return {
     listDeployments: mock(async () => [
       { deploymentName: WARM_DEPLOYMENT_NAME, status: "running" },
+      { deploymentName: SECOND_AGENT_DEPLOYMENT_NAME, status: "running" },
     ]),
     scaleDeployment: mock(async () => {}),
     updateDeploymentActivity: mock(async () => {}),
@@ -311,6 +320,52 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
       "organizationId is required for message routing"
     );
     expect(sends).toHaveLength(0);
+  });
+
+  test("a payload with no agentId is rejected before enqueue", async () => {
+    const { queue, sends } = makeCapturingQueue();
+    const consumer = new MessageConsumer(
+      makeConfig(),
+      makeWarmDeploymentManager(["openai/gpt-5"]),
+      queue,
+      recordValidInput
+    );
+
+    const payload = makePayload("openai/gpt-4o");
+    delete (payload as { agentId?: string }).agentId;
+    const dispatch = (
+      consumer as unknown as { handleMessage: (job: unknown) => Promise<void> }
+    ).handleMessage({ id: "1", data: payload });
+
+    await expect(dispatch).rejects.toThrow(
+      "agentId is required for message routing"
+    );
+    expect(sends).toHaveLength(0);
+  });
+
+  test("the same channel thread routes different agents to different worker queues", async () => {
+    const { queue, sends } = makeCapturingQueue();
+    const consumer = new MessageConsumer(
+      makeConfig(),
+      makeWarmDeploymentManager(null),
+      queue,
+      recordValidInput
+    );
+    const handleMessage = (
+      consumer as unknown as { handleMessage: (job: unknown) => Promise<void> }
+    ).handleMessage.bind(consumer);
+
+    await handleMessage({ id: "1", data: makePayload(undefined) });
+    await handleMessage({
+      id: "2",
+      data: { ...makePayload(undefined), messageId: "msg-2", agentId: "agent-2" },
+    });
+
+    expect(sends.map(({ name }) => name)).toEqual([
+      `thread_message_${WARM_DEPLOYMENT_NAME}`,
+      `thread_message_${SECOND_AGENT_DEPLOYMENT_NAME}`,
+    ]);
+    expect(sends[0]?.name).not.toBe(sends[1]?.name);
   });
 
   test("#4 ROUTABILITY: replacement picks the first non-sentinel ROUTABLE ref, not just non-sentinel", async () => {

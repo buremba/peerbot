@@ -64,8 +64,11 @@ if [ -z "${DATABASE_URL:-}" ]; then
   node "$HARNESS/fix-embedded-pg-icu.mjs" || fail "could not prepare embedded-postgres ICU symlinks"
 fi
 
-# 1) Mock OpenAI-compatible provider.
-MOCK_PORT="$MOCK_PORT" MOCK_REPLY="$MOCK_REPLY" node "$HARNESS/mock-openai.mjs" > "$MOCK_LOG" 2>&1 &
+# 1) Mock OpenAI-compatible provider. MOCK_REQLOG captures every
+#    /chat/completions request body (JSONL) so gates can assert on what
+#    actually reached the model (step 5d.4's `!!` context-exclusion proof).
+MOCK_REQLOG="$RUN_DIR/model-requests.jsonl"
+MOCK_PORT="$MOCK_PORT" MOCK_REPLY="$MOCK_REPLY" MOCK_REQLOG="$MOCK_REQLOG" node "$HARNESS/mock-openai.mjs" > "$MOCK_LOG" 2>&1 &
 MOCK_PID=$!
 disown "$MOCK_PID" 2>/dev/null || true  # silence job-control "Killed" on cleanup
 for _ in $(seq 1 20); do
@@ -483,6 +486,63 @@ done
 UPSTREAM_BLK_AFTER=$(grep -c "Forwarding to upstream: POST http://127.0.0.1:$MOCK_PORT" "$RUN_LOG" 2>/dev/null || echo 0)
 [ "$UPSTREAM_BLK_AFTER" -eq "$UPSTREAM_BLK_BEFORE" ] || fail "!-bash blocked hit the model provider; a blocked \`!\` must still skip the LLM"
 echo "✓ !-bash: a preflight-blocked \`!\` on a fresh conversation completes cleanly (no checkpoint failure) and skips the LLM"
+
+# 5d.4) `!!` context exclusion. The excludeFromContext flag must keep the `!!`
+#       command AND its output out of every LATER model request, while the
+#       plain-`!` record from 5d DOES flow into context. The exclusion itself
+#       is implemented inside pi when it assembles the next turn's context, so
+#       this is the ONLY lobu-side proof the flag works end-to-end — no unit
+#       test can see it. Asserts against $MOCK_REQLOG (every /chat/completions
+#       body, JSONL). Reuses the bang-e2e thread, which already holds
+#       `!echo $BANG_MARKER` plus an assistant turn.
+EXCL_MARKER="excl_kept_out_$$_$RANDOM"
+UPSTREAM_EXCL_BEFORE=$(grep -c "Forwarding to upstream: POST http://127.0.0.1:$MOCK_PORT" "$RUN_LOG" 2>/dev/null || echo 0)
+curl -fsS -X POST "$GW/lobu/api/v1/agents/$BANG_CONV/messages" \
+  -H "authorization: Bearer $DEVTOKEN" -H 'content-type: application/json' \
+  -d "{\"content\":\"!!echo $EXCL_MARKER\"}" > "$RUN_DIR/bang-excl-send.json" \
+  || { cat "$RUN_DIR/bang-excl-send.json" >&2; fail "!!-bash: POST failed"; }
+[ "$(jget queued < "$RUN_DIR/bang-excl-send.json")" = "true" ] || { cat "$RUN_DIR/bang-excl-send.json" >&2; fail "!!-bash message was not queued"; }
+# The `!!` record must still be VISIBLE in the durable transcript — it is
+# excluded from model context only, never from the user.
+EXCL_OK=""
+for _ in $(seq 1 30); do
+  curl -fsS "$GW/lobu/api/v1/agents/echo/history/threads/bang-e2e/messages?limit=100" \
+    -H "authorization: Bearer $DEVTOKEN" > "$BANG_HIST" 2>/dev/null || { sleep 1; continue; }
+  if node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch{process.exit(1)}const m=(j.messages||[]).find(x=>x.type==="bashExecution"&&JSON.stringify(x.content||"").includes(process.argv[1]));process.exit(m?0:1)})' "$EXCL_MARKER" < "$BANG_HIST"; then
+    EXCL_OK=1; break
+  fi
+  sleep 1
+done
+[ -n "$EXCL_OK" ] || { tail -c 400 "$BANG_HIST" >&2; fail "!!-bash: no visible bashExecution entry carrying '$EXCL_MARKER' (\`!!\` must hide from the model, not the transcript)"; }
+UPSTREAM_EXCL_AFTER=$(grep -c "Forwarding to upstream: POST http://127.0.0.1:$MOCK_PORT" "$RUN_LOG" 2>/dev/null || echo 0)
+[ "$UPSTREAM_EXCL_AFTER" -eq "$UPSTREAM_EXCL_BEFORE" ] || fail "!!-bash hit the model provider; a \`!!\` turn must skip the LLM"
+# Scope the request-body asserts to model requests made AFTER the `!!` turn.
+EXCL_REQS_BEFORE=$(awk 'END { print NR }' "$MOCK_REQLOG" 2>/dev/null || echo 0)
+curl -fsS -X POST "$GW/lobu/api/v1/agents/$BANG_CONV/messages" \
+  -H "authorization: Bearer $DEVTOKEN" -H 'content-type: application/json' \
+  -d '{"content":"after the double bang"}' > "$RUN_DIR/bang-excl-followup.json" \
+  || { cat "$RUN_DIR/bang-excl-followup.json" >&2; fail "!!-bash follow-up: POST failed"; }
+EXCL_REQS_AFTER="$EXCL_REQS_BEFORE"
+for _ in $(seq 1 30); do
+  EXCL_REQS_AFTER=$(awk 'END { print NR }' "$MOCK_REQLOG" 2>/dev/null || echo 0)
+  [ "$EXCL_REQS_AFTER" -gt "$EXCL_REQS_BEFORE" ] && break
+  sleep 1
+done
+[ "$EXCL_REQS_AFTER" -gt "$EXCL_REQS_BEFORE" ] || fail "!!-bash follow-up turn never produced a model request (nothing to assert exclusion against)"
+# Negative: the excluded marker must not reach the model in ANY later request.
+if awk -v start="$((EXCL_REQS_BEFORE + 1))" -v marker="$EXCL_MARKER" \
+  'NR >= start && index($0, marker) { found=1 } END { exit !found }' \
+  "$MOCK_REQLOG"; then
+  fail "!!-bash: excluded marker '$EXCL_MARKER' leaked into a later model request (excludeFromContext broken)"
+fi
+# Positive control: the PLAIN-`!` marker from 5d must be IN that same request —
+# unexcluded bashExecution records do flow into model context. Without this the
+# negative assert would pass vacuously if bash records never reached context.
+awk -v start="$((EXCL_REQS_BEFORE + 1))" -v marker="$BANG_MARKER" \
+  'NR >= start && index($0, marker) { found=1 } END { exit !found }' \
+  "$MOCK_REQLOG" \
+  || fail "!!-bash positive control: plain-\`!\` marker '$BANG_MARKER' missing from the later model request — bash records aren't reaching context, absence assert is vacuous"
+echo "✓ !!-bash: record visible in transcript, absent from later model context (plain-! record present — control non-vacuous)"
 
 # 6) Connector sync — prove the COMPILED connector actually RUNS and emits events.
 #    Find the feed manage_feeds created from the `pulse` connection, trigger an

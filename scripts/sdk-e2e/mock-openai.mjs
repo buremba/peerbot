@@ -1,6 +1,12 @@
+import { appendFileSync } from "node:fs";
 import { createServer } from "node:http";
+
 const PORT = Number(process.env.MOCK_PORT || 11434);
 const REPLY = process.env.MOCK_REPLY || "PONG";
+// MOCK_REQLOG=<path> appends each /chat/completions request body as one JSONL
+// line, so a gate can assert on what actually reached the model (e.g. that a
+// `!!cmd` marker is ABSENT from later context). Opt-in: unset → no capture.
+const REQLOG = process.env.MOCK_REQLOG || "";
 // MOCK_MODE=quota-429 makes /chat/completions answer with z.ai's exact
 // production 429 body so the error-taxonomy e2e can drive a real provider
 // quota failure through the whole worker→gateway→renderer chain. `/models`
@@ -26,6 +32,12 @@ const server = createServer((req, res) => {
       return;
     }
     if (url.includes("/chat/completions")) {
+      if (REQLOG) {
+        // One line per request, verbatim body. `body` is already a complete
+        // string here (the `end` handler), and appendFileSync keeps lines
+        // whole under concurrent requests.
+        appendFileSync(REQLOG, `${JSON.stringify({ url, body })}\n`);
+      }
       if (MODE === "quota-429") {
         // z.ai's real 429 carries the reset time in the BODY text (not a
         // Retry-After header). The error e2e parses that out of the raw string

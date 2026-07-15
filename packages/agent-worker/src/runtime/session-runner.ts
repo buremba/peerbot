@@ -555,7 +555,7 @@ function readBangBashCommand(
  * re-flush rewrites the whole branch exactly once. A normal session (has an
  * assistant) is left untouched: pi appends incrementally and never re-flushes.
  */
-async function normalizeHydratedSessionFile(
+export async function normalizeHydratedSessionFile(
   sessionManager: SessionManager,
   sessionFile: string
 ): Promise<void> {
@@ -585,7 +585,7 @@ async function normalizeHydratedSessionFile(
  * verbatim (stable ids/parentIds — the session is linear here), so re-running the
  * same turn yields byte-identical output and the snapshot upsert is idempotent.
  */
-async function persistBangBashSession(
+export async function persistBangBashSession(
   sessionManager: SessionManager,
   sessionFile: string
 ): Promise<void> {

@@ -555,6 +555,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         conn.config AS connection_config,
         conn.device_worker_id AS connection_device_worker_id,
         cv.compiled_code,
+        cv.compile_config_hash,
         cd.runtime AS connector_runtime,
         cd.required_capability AS connector_required_capability,
         ap.auth_data AS auth_profile_auth_data,
@@ -632,6 +633,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connection_config: Record<string, unknown> | null;
     connection_device_worker_id: string | null;
     compiled_code: string | null;
+    compile_config_hash: string | null;
     connector_runtime: { nix?: { packages?: string[] } | null } | null;
     connector_required_capability: string | null;
     run_created_at: string | Date | null;
@@ -794,7 +796,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     authorizedCapabilities.includes(row.connector_required_capability);
   if (row.connector_key && !workerWillResolveLocally && !deviceWillExecuteBridgeOnlyConnector) {
     try {
-      compiledCode = await resolveConnectorCode(row.connector_key, row.compiled_code);
+      compiledCode = await resolveConnectorCode(row.connector_key, {
+        version: row.connector_version,
+        compiled_code: row.compiled_code,
+        compile_config_hash: row.compile_config_hash,
+      });
     } catch (err) {
       const message = errorMessage(err);
       await sql`

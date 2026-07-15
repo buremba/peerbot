@@ -13,7 +13,7 @@ import type { AuthzScope } from '../authz/scope';
 import { getDb } from '../db/client';
 import { isCloudMode } from '../utils/cloud-mode';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
-import { resolveConnectorCode } from '../utils/ensure-connector-installed';
+import { resolveConnectorCodeForKey } from '../utils/ensure-connector-installed';
 import { resolveExecutionAuth } from '../utils/execution-context';
 
 interface ConnectorQueryParams {
@@ -68,14 +68,7 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
   // existing raw-DB connection must not run pushdown under LOBU_CLOUD_MODE either.
   assertConnectorAllowedInCloud(conn.connector_key);
 
-  const compiledRows = await sql`
-    SELECT compiled_code FROM connector_versions
-    WHERE connector_key = ${conn.connector_key}
-    ORDER BY created_at DESC LIMIT 1
-  `;
-  const rawCode =
-    (compiledRows[0] as { compiled_code: string | null } | undefined)?.compiled_code ?? null;
-  const compiledCode = await resolveConnectorCode(conn.connector_key, rawCode);
+  const compiledCode = await resolveConnectorCodeForKey(conn.connector_key);
 
   const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
     organizationId: p.scope.organizationId,
@@ -211,14 +204,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   // Execution-time cloud gate, identical to the slug pushdown above.
   assertConnectorAllowedInCloud(feed.connector_key);
 
-  const compiledRows = await sql`
-    SELECT compiled_code FROM connector_versions
-    WHERE connector_key = ${feed.connector_key}
-    ORDER BY created_at DESC LIMIT 1
-  `;
-  const rawCode =
-    (compiledRows[0] as { compiled_code: string | null } | undefined)?.compiled_code ?? null;
-  const compiledCode = await resolveConnectorCode(feed.connector_key, rawCode);
+  const compiledCode = await resolveConnectorCodeForKey(feed.connector_key);
 
   const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
     organizationId: p.scope.organizationId,

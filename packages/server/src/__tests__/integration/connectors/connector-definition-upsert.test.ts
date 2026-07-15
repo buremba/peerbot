@@ -6,6 +6,7 @@
  * source record.
  */
 
+import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createTestOrganization } from '../../setup/test-fixtures';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -29,6 +30,7 @@ function versionRecordFor(version: string) {
   return {
     compiledCode: `// compiled ${version}`,
     compiledCodeHash: `hash-${version}`,
+    compileConfigHash: COMPILE_CONFIG_HASH,
     sourceCode: `// source ${version}`,
     sourcePath: `upsert-probe@${version}.ts`,
   };

@@ -155,6 +155,7 @@ export async function installConnectorDefinitionFromSource(params: {
 		versionRecord: {
 			compiledCode: resolved.compiledCode,
 			compiledCodeHash: resolved.compiledCodeHash,
+			compileConfigHash: resolved.compileConfigHash,
 			sourceCode: resolved.sourceCode,
 			sourcePath: resolved.sourcePath,
 		},
@@ -249,6 +250,7 @@ export async function installConnectorFromMcpUrl(params: {
 		versionRecord: {
 			compiledCode: null,
 			compiledCodeHash: null,
+			compileConfigHash: null,
 			sourceCode: null,
 			sourcePath: null,
 		},
@@ -259,7 +261,7 @@ export async function installConnectorFromMcpUrl(params: {
 		await sql`
       UPDATE connector_versions
       SET compiled_code = NULL, compiled_code_hash = NULL,
-          source_code = NULL, source_path = NULL
+          compile_config_hash = NULL, source_code = NULL, source_path = NULL
       WHERE connector_key = ${connectorKey} AND version = ${metadata.version}
     `;
 	}

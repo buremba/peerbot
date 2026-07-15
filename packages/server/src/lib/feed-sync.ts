@@ -23,7 +23,9 @@ export interface FeedRecord {
   config: Record<string, unknown>;
   connection_config: Record<string, unknown>;
   checkpoint: Record<string, unknown> | null;
+  connector_version: string | null;
   compiled_code: string | null;
+  compile_config_hash: string | null;
   auth_profile_id: number | null;
   app_auth_profile_id: number | null;
 }
@@ -48,7 +50,9 @@ export async function fetchFeeds(filter?: FeedFilter): Promise<FeedRecord[]> {
       COALESCE(f.config, '{}'::jsonb) AS config,
       COALESCE(c.config, '{}'::jsonb) AS connection_config,
       f.checkpoint,
+      cv.version AS connector_version,
       cv.compiled_code,
+      cv.compile_config_hash,
       c.auth_profile_id,
       c.app_auth_profile_id
     FROM feeds f
@@ -106,7 +110,11 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
   // independently in worker-api.ts pollWorkerJob. No-op when not in cloud mode.
   assertConnectorAllowedInCloud(feed.connector_key);
 
-  const compiledCode = await resolveConnectorCode(feed.connector_key, feed.compiled_code);
+  const compiledCode = await resolveConnectorCode(feed.connector_key, {
+    version: feed.connector_version,
+    compiled_code: feed.compiled_code,
+    compile_config_hash: feed.compile_config_hash,
+  });
 
   const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
     organizationId: feed.organization_id,

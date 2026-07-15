@@ -121,7 +121,7 @@ export default async (_ctx, client) => {
 	},
 	"entities.link": {
 		summary:
-			"Create a relationship between two entities. Needs the two entity IDs AND a relationship TYPE that already exists — if the relationship type is new, call `entitySchema.addRule` (or createRelType) first; list existing ones with `entitySchema.listRelTypes()`.",
+			"Create a relationship between two entities. Needs the two entity IDs AND a relationship TYPE that already exists — if the relationship type is new, call `entitySchema.createRelType` first; list existing ones with `entitySchema.listRelTypes()`. (`entitySchema.addRule` does NOT create a type; it restricts the allowed source/target entity-type pairs on a type that already exists.)",
 		access: "write",
 		example:
 			"await client.entities.link({ from_entity_id: 42, to_entity_id: 43, relationship_type_slug: 'customer_of' });",

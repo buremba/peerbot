@@ -128,4 +128,22 @@ describe("method-metadata", () => {
 			expect(METHOD_METADATA[path]?.example, path).toMatch(/\(\{/);
 		}
 	});
+
+	it("teaches the two-hop create-type-first pattern with the right constructors", () => {
+		// entities.create must point at entitySchema.createType (the type must
+		// exist first) — the multi-step precondition agents otherwise miss.
+		const create = METHOD_METADATA["entities.create"];
+		expect(create.summary).toContain("entitySchema.createType");
+		expect(create.usageExample ?? "").toContain("entitySchema.createType");
+
+		// entities.link must name entitySchema.createRelType as the relationship-
+		// type constructor. addRule does NOT create a type (it only restricts the
+		// allowed source/target pairs), so it must never be presented as the
+		// constructor — that was a factual error the guidance is meant to prevent.
+		const link = METHOD_METADATA["entities.link"];
+		expect(link.summary).toContain("entitySchema.createRelType");
+		expect(link.summary).not.toMatch(
+			/call `?entitySchema\.addRule`? first|addRule.*\(or createRelType\)/
+		);
+	});
 });

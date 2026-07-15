@@ -712,10 +712,27 @@ async function handleListAvailable(
 ): Promise<ManageOperationsResult> {
 	const targetRows = await loadVisibleOperationTargets(args, ctx);
 
-	// An explicit connection filter is also an authorization lookup. Returning
-	// an empty list for a hidden/private connection avoids leaking its connector
-	// key through the operation catalog.
+	// An explicit connection filter is also an authorization lookup. Fail with
+	// execute's exact not-found error instead of a silent empty list: `[]` is
+	// indistinguishable from "this connection declares no operations", and the
+	// shared message keeps a hidden/private connection's connector key out of
+	// the catalog without revealing whether the id exists at all. The
+	// existence/visibility check is independent of the secondary filters: a
+	// VISIBLE connection excluded by connector_key/entity_id is a normal empty
+	// compound-filter match, while a hidden/missing id errors either way — so
+	// the same visibility-compiled query is re-run with the secondary filters
+	// stripped, only on this already-empty branch.
 	if (args.connection_id !== undefined && targetRows.length === 0) {
+		const bareRows =
+			args.connector_key === undefined && args.entity_id === undefined
+				? targetRows
+				: await loadVisibleOperationTargets(
+						{ ...args, connector_key: undefined, entity_id: undefined },
+						ctx,
+					);
+		if (bareRows.length === 0) {
+			return { error: "Connection not found or not visible." };
+		}
 		return {
 			action: "list_available",
 			operations: [],

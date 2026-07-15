@@ -652,7 +652,7 @@ export default async (_ctx, client) => {
 	},
 	"operations.listAvailable": {
 		summary:
-			"Search declared connector capabilities, including disconnected connectors. Returns readiness plus every visible execution target; backend configuration is never exposed.",
+			"Search declared connector capabilities, including disconnected connectors. Pass connection_id to list the operations declared by that connection's connector with that connection's per-target readiness (errors if the connection is not visible); connector_key/query/kind filter the wider catalog. Returns readiness plus every visible execution target; backend configuration is never exposed.",
 		access: "read",
 	},
 	"operations.execute": {

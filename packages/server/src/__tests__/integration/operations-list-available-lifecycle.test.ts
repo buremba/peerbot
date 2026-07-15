@@ -732,11 +732,33 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 		expect(create.connection_count).toBe(2);
 		expect(create.execution_targets).toHaveLength(2);
 
-		const hidden = await listAll(org.id, owner.id, {
-			connection_id: hiddenPrivate.id,
+		// A hidden connection must fail LOUDLY with execute's exact error — a
+		// silent `{operations: [], total: 0}` is indistinguishable from "this
+		// connection declares no operations", so the caller debugs the filter
+		// instead of its access. Same message as execute, so no extra existence
+		// information leaks through the catalog.
+		const hidden = await manageOperations(
+			{ action: "list_available", connection_id: hiddenPrivate.id } as never,
+			TEST_ENV(),
+			ctxFor(org.id, owner.id),
+		);
+		expect(hidden).toEqual({
+			error: "Connection not found or not visible.",
 		});
-		expect(hidden.operations).toEqual([]);
-		expect(hidden.total).toBe(0);
+		// The visibility check is independent of secondary filters: a hidden id
+		// errors even when connector_key/entity_id are also supplied.
+		const hiddenCompound = await manageOperations(
+			{
+				action: "list_available",
+				connection_id: hiddenPrivate.id,
+				connector_key: KEY_READY,
+			} as never,
+			TEST_ENV(),
+			ctxFor(org.id, owner.id),
+		);
+		expect(hiddenCompound).toEqual({
+			error: "Connection not found or not visible.",
+		});
 
 		const executed = await manageOperations(
 			{
@@ -755,5 +777,71 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 			SELECT id FROM runs WHERE connection_id = ${hiddenPrivate.id}
 		`;
 		expect(runRows).toHaveLength(0);
+	});
+
+	it("connection_id filter returns exactly that connection's ops; a nonexistent id errors like execute", async () => {
+		const { org, user } = await setupOwner("Ops ConnId Filter Org");
+		await seedConnector(org.id, KEY_READY, "ConnId Filter Connector");
+		const target = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_READY,
+			status: "active",
+		});
+		const sibling = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_READY,
+			status: "paused",
+			createDefaultFeed: false,
+		});
+
+		const { operations, total } = await listAll(org.id, user.id, {
+			connection_id: target.id,
+		});
+		expect(total).toBe(2);
+		expect(operations.map((op) => op.operation_key).sort()).toEqual([
+			"create_issue",
+			"list_issues",
+		]);
+		// Only the requested connection appears as an execution target — the
+		// sibling paused connection of the same connector is filtered out, and
+		// readiness reflects the requested target alone.
+		for (const op of operations) {
+			expect(op.execution_targets).toMatchObject([
+				{ connection_id: target.id, status: "ready", executable: true },
+			]);
+			expect(op.readiness).toBe("ready");
+		}
+		expect(sibling.status).toBe("paused");
+
+		const missing = await manageOperations(
+			{ action: "list_available", connection_id: 999_999_999 } as never,
+			TEST_ENV(),
+			ctxFor(org.id, user.id),
+		);
+		expect(missing).toEqual({
+			error: "Connection not found or not visible.",
+		});
+
+		// A COMPOUND filter that excludes a visible connection is a normal empty
+		// match, not an authorization failure — only a bare connection_id asserts
+		// existence/visibility.
+		const mismatch = await listAll(org.id, user.id, {
+			connection_id: target.id,
+			connector_key: KEY_DISCONNECTED,
+		});
+		expect(mismatch).toMatchObject({ operations: [], total: 0 });
+	});
+
+	it("rejects unknown arguments with the shared validator error, like sibling methods", async () => {
+		const { org, user } = await setupOwner("Ops Unknown Arg Org");
+		await expect(
+			manageOperations(
+				{ action: "list_available", connectionid: 1 } as never,
+				TEST_ENV(),
+				ctxFor(org.id, user.id),
+			),
+		).rejects.toThrow(
+			/unknown argument\(s\): connectionid — valid arguments.*connection_id/,
+		);
 	});
 });

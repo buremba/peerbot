@@ -9,8 +9,8 @@ import type {
   FeedDefinition,
 } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
-import Ajv from "ajv";
-import addFormats from "ajv-formats";
+import { createAjv } from "@lobu/core/ajv";
+import type Ajv from "ajv";
 import type {
   ConnectorSource,
   InferenceCapabilityBlock,
@@ -541,8 +541,11 @@ export function resolveConnectorSchemas(
 let sharedAjv: Ajv | null = null;
 function getAjv(): Ajv {
   if (!sharedAjv) {
-    sharedAjv = new Ajv({ allErrors: true, strict: false });
-    addFormats(sharedAjv);
+    // `allErrors: true` here (unlike the server's fail-fast singleton): this
+    // validates the operator's OWN local `lobu apply` config, not untrusted
+    // remote input, so the CWE-400 error-amplification concern doesn't apply
+    // and reporting every mismatch at once is the friendlier apply UX.
+    sharedAjv = createAjv({ allErrors: true, strict: false });
   }
   return sharedAjv;
 }

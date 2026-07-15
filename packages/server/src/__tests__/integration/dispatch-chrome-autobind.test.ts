@@ -204,4 +204,169 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     expect(await preferredBrowserWorkerForConnection(li.id, sql)).toBe(ext);
     expect(await preferredBrowserWorkerForConnection(null, sql)).toBeNull();
   });
+
+  // --- Multi-chrome (prod topology: Mac mini + MacBook) ---
+
+  it('preferred worker already owned: returns that chrome row without rebinding another', async () => {
+    // Prod incident shape: chrome@mini + chrome@macbook, preferred = mini.
+    // Old code picked LIMIT 1 (often macbook) and UPDATE-stole mini's pin → 23505.
+    const mini = await seedExtWorker(userId, orgId, { online: true });
+    await sql`
+      UPDATE device_workers
+      SET last_seen_at = now() - interval '1 minute'
+      WHERE id = ${mini}::uuid
+    `;
+    const macbook = await seedExtWorker(userId, orgId, { online: true });
+    const chromeMini = await seedChromeConn(orgId, userId, mini);
+    const chromeMacbook = await seedChromeConn(orgId, userId, macbook);
+
+    const res = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: mini,
+    });
+
+    expect(res).toEqual({ connectionId: chromeMini, deviceWorkerId: mini });
+    // Neither pin moved.
+    expect(await pinOf(chromeMini)).toBe(mini);
+    expect(await pinOf(chromeMacbook)).toBe(macbook);
+  });
+
+  it('preferred owned while another chrome row is NULL: still returns owner, no steal', async () => {
+    const preferred = await seedExtWorker(userId, orgId, { online: true });
+    await seedExtWorker(userId, orgId, { online: true }); // noise
+    const owner = await seedChromeConn(orgId, userId, preferred);
+    const free = await seedChromeConn(orgId, userId, null);
+
+    const res = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: preferred,
+    });
+
+    expect(res).toEqual({ connectionId: owner, deviceWorkerId: preferred });
+    expect(await pinOf(owner)).toBe(preferred);
+    expect(await pinOf(free)).toBeNull();
+  });
+
+  it('preferred unowned: rebinds a NULL-pinned chrome row, not a sticky online sibling', async () => {
+    const preferred = await seedExtWorker(userId, orgId, { online: true });
+    const sticky = await seedExtWorker(userId, orgId, { online: true });
+    await sql`
+      UPDATE device_workers
+      SET last_seen_at = now() - interval '2 minutes'
+      WHERE id = ${preferred}::uuid
+    `;
+    const stickyConn = await seedChromeConn(orgId, userId, sticky);
+    const freeConn = await seedChromeConn(orgId, userId, null);
+
+    const res = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: preferred,
+    });
+
+    expect(res).toEqual({ connectionId: freeConn, deviceWorkerId: preferred });
+    expect(await pinOf(freeConn)).toBe(preferred);
+    expect(await pinOf(stickyConn)).toBe(sticky);
+  });
+
+  it('preferred unowned and every chrome row sticky online elsewhere: fails closed', async () => {
+    // Preferred extension has no chrome lane; two other browsers already have
+    // live chrome connections — do not steal either pin.
+    const preferred = await seedExtWorker(userId, orgId, { online: true });
+    const a = await seedExtWorker(userId, orgId, { online: true });
+    const b = await seedExtWorker(userId, orgId, { online: true });
+    const connA = await seedChromeConn(orgId, userId, a);
+    const connB = await seedChromeConn(orgId, userId, b);
+
+    const res = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: preferred,
+    });
+
+    expect(res).toBeNull();
+    expect(await pinOf(connA)).toBe(a);
+    expect(await pinOf(connB)).toBe(b);
+  });
+
+  it('no preference with two sticky online chrome rows: keeps first sticky pin', async () => {
+    const older = await seedExtWorker(userId, orgId, { online: true });
+    await sql`
+      UPDATE device_workers
+      SET last_seen_at = now() - interval '3 minutes'
+      WHERE id = ${older}::uuid
+    `;
+    const fresher = await seedExtWorker(userId, orgId, { online: true });
+    const connOlder = await seedChromeConn(orgId, userId, older);
+    const connFresher = await seedChromeConn(orgId, userId, fresher);
+
+    const res = await resolveOnlineChromeConnection(orgId, sql);
+
+    // Deterministic by connection id ASC — older connection wins, not last_seen.
+    expect(res?.connectionId).toBe(connOlder);
+    expect(res?.deviceWorkerId).toBe(older);
+    expect(await pinOf(connOlder)).toBe(older);
+    expect(await pinOf(connFresher)).toBe(fresher);
+  });
+
+  it('heals offline pin onto unowned online worker when a sibling is sticky elsewhere', async () => {
+    const sticky = await seedExtWorker(userId, orgId, { online: true });
+    const stale = await seedExtWorker(userId, orgId, { online: false });
+    const fresh = await seedExtWorker(userId, orgId, { online: true });
+    await sql`
+      UPDATE device_workers
+      SET last_seen_at = now() - interval '1 minute'
+      WHERE id = ${sticky}::uuid
+    `;
+    // Prefer sticky for no-preference path; this test exercises preferred=fresh.
+    const stickyConn = await seedChromeConn(orgId, userId, sticky);
+    const staleConn = await seedChromeConn(orgId, userId, stale);
+
+    const res = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: fresh,
+    });
+
+    expect(res).toEqual({ connectionId: staleConn, deviceWorkerId: fresh });
+    expect(await pinOf(staleConn)).toBe(fresh);
+    expect(await pinOf(stickyConn)).toBe(sticky);
+  });
+
+  it('ignores a paused chrome row that still holds the preferred pin (fail closed)', async () => {
+    // Unique index includes paused rows, so preferred's slot is still occupied.
+    // Active-only owner lookup must not return the paused row, and rebind must
+    // not steal the unique slot — fail closed until the paused pin is cleared.
+    const preferred = await seedExtWorker(userId, orgId, { online: true });
+    const paused = await seedChromeConn(orgId, userId, preferred);
+    await sql`
+      UPDATE connections SET status = 'paused', updated_at = now() WHERE id = ${paused}
+    `;
+    const free = await seedChromeConn(orgId, userId, null);
+
+    const res = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: preferred,
+    });
+
+    expect(res).toBeNull();
+    expect(await pinOf(paused)).toBe(preferred);
+    expect(await pinOf(free)).toBeNull();
+  });
+
+  it('sole chrome row: second preferred affinity rebind moves the pin (single-connection rule)', async () => {
+    // With only one chrome connection, preferred affinity may rebind that row
+    // away from its current online pin (same as the fresher→preferred case).
+    // Multi-chrome orgs must not do this — covered by other tests.
+    const workerA = await seedExtWorker(userId, orgId, { online: true });
+    await sql`
+      UPDATE device_workers
+      SET last_seen_at = now() - interval '2 minutes'
+      WHERE id = ${workerA}::uuid
+    `;
+    const workerB = await seedExtWorker(userId, orgId, { online: true });
+    const free = await seedChromeConn(orgId, userId, null);
+
+    const first = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: workerA,
+    });
+    const second = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: workerB,
+    });
+
+    expect(first).toEqual({ connectionId: free, deviceWorkerId: workerA });
+    expect(second).toEqual({ connectionId: free, deviceWorkerId: workerB });
+    expect(await pinOf(free)).toBe(workerB);
+  });
 });

@@ -482,6 +482,44 @@ export function getAllTools(options?: ListedToolOptions) {
   );
 }
 
+export interface RawDispatchTool {
+  name: string;
+  description: string;
+  /** Original TypeBox input schema — discriminated union preserved (NOT flattened). */
+  inputSchema: any;
+  /** Original TypeBox output schema when the tool declares one. */
+  outputSchema?: any;
+  annotations?: ToolAnnotations;
+  /** True for admin/first-party dispatch tools hidden from MCP `tools/list`. */
+  internal: boolean;
+}
+
+/**
+ * Every dispatch tool with its RAW TypeBox input/output schemas, unflattened.
+ *
+ * `getAllTools`/`getMcpTools` return the MCP-listing projection: discriminated
+ * unions are collapsed by `flattenUnionSchema` (Claude/ChatGPT reject top-level
+ * `anyOf`) and per-action required fields are demoted to prose. The typed REST
+ * client has no such constraint — hey-api turns an `anyOf` of action variants
+ * into a precise discriminated-union type — so the strict OpenAPI document is
+ * built from these raw definitions to keep full per-action fidelity. One
+ * TypeBox source, two projections: flattened for MCP, faithful for the client.
+ */
+export function getRawDispatchTools(): RawDispatchTool[] {
+  return ALL_DISPATCH_TOOLS.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    // Prefer the narrower public schema (same choice as the MCP listing): it
+    // drops server-internal fields a client must never send (e.g. search_memory's
+    // pre-computed `query_embedding` and auth-bound `agent_id`). Unflattened,
+    // unlike the MCP projection.
+    inputSchema: tool.publicInputSchema ?? tool.inputSchema,
+    ...(tool.outputSchema && { outputSchema: tool.outputSchema }),
+    ...(tool.annotations && { annotations: tool.annotations }),
+    internal: INTERNAL_TOOL_NAMES.has(tool.name),
+  }));
+}
+
 function getListedTools(
   source: ToolDefinition[],
   options?: ListedToolOptions,

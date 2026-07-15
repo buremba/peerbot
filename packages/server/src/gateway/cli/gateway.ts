@@ -24,6 +24,7 @@ import { createImageRoutes } from "../routes/internal/images.js";
 import { createInteractionRoutes } from "../routes/internal/interactions.js";
 import { createRuntimeRoutes } from "../routes/internal/runtime.js";
 import { registerAutoOpenApiRoutes } from "../routes/openapi-auto.js";
+import { generateStrictToolPaths } from "../../utils/openapi-generator.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
@@ -797,8 +798,8 @@ export function createGatewayApp(
 
   registerAutoOpenApiRoutes(app);
 
-  app.doc("/api/docs/openapi.json", {
-    openapi: "3.0.0",
+  const openApiDocConfig = {
+    openapi: "3.1.0",
     info: {
       title: "Lobu API",
       version: "1.0.0",
@@ -876,6 +877,23 @@ curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \\
     servers: [
       { url: "http://localhost:8787", description: "Local development" },
     ],
+  };
+
+  // One merged OpenAPI document: the gateway's Zod routes (agent-session
+  // orchestration) PLUS the full dispatch-tool surface
+  // (`POST /api/{orgSlug}/{tool}` — entities, watchers, feeds, metrics, …),
+  // generated from the same TypeBox schemas the server validates against. The
+  // first-party `@lobu/client` is generated from THIS single document, so the
+  // CLI and UI get a typed client for BOTH surfaces instead of only agent
+  // sessions. `getOpenAPI31Document` renders the Zod routes in the same JSON
+  // Schema 2020-12 dialect the TypeBox tool schemas already use.
+  app.get("/api/docs/openapi.json", (c) => {
+    const base = app.getOpenAPI31Document(openApiDocConfig);
+    const toolPaths = generateStrictToolPaths();
+    return c.json({
+      ...base,
+      paths: { ...toolPaths, ...(base.paths ?? {}) },
+    });
   });
 
   app.get(

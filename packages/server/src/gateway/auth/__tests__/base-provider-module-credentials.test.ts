@@ -1,12 +1,4 @@
-import {
-  afterAll,
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  mock,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { encrypt } from "@lobu/core";
 
 const TEST_ENCRYPTION_KEY = Buffer.from(
@@ -206,17 +198,5 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     ];
     const mod = makeModule(false);
     expect(await mod.hasCredentials("agent-1")).toBe(false);
-  });
-
-  // `mock.module("../../../db/client.js", ...)` above replaces the module for
-  // the rest of this bun:test process — Bun has no per-file module isolation,
-  // and CI runs every file in this __tests__ dir in one process (ci.yml).
-  // Without this reset, the last test's non-empty `inferenceProviderRows`
-  // leaks into every later file's `getDb()` calls in the same process; e.g.
-  // api-auth-middleware.test.ts's revoked-token-store lookup would see those
-  // stale rows as `SELECT jti FROM revoked_tokens ...` results and treat a
-  // fresh token's jti as revoked, turning a 200 into a 401.
-  afterAll(() => {
-    inferenceProviderRows = [];
   });
 });

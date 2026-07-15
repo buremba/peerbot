@@ -320,6 +320,29 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     ).toBe(false);
   });
 
+  test("two-replica X→Y→X: a warm stale cache must not skip reconciliation", async () => {
+    const replicaA = manager;
+    const replicaB = new TestDeploymentManager(TEST_CONFIG);
+    replicaB.setGrantStore(grantStore);
+    replicaB.setPolicyStore(policyStore);
+
+    const configX = { networkConfig: { allowedDomains: ["x.example.com"] } };
+    const configY = { networkConfig: { allowedDomains: ["y.example.com"] } };
+
+    // Replica A syncs X (warm cache = X), replica B syncs Y (DB = Y).
+    await replicaA.syncNetworkConfigGrants(buildPayload(configX));
+    await replicaB.syncNetworkConfigGrants(buildPayload(configY));
+    expect(await grantStore.hasGrant("agent-1", "y.example.com")).toBe(true);
+    expect(await grantStore.hasGrant("agent-1", "x.example.com")).toBe(false);
+
+    // Config reverts to X and the message lands on replica A, whose cache
+    // already says X. Skipping on the pod-local cache would leave Y's rows
+    // active and X's rows missing.
+    await replicaA.syncNetworkConfigGrants(buildPayload(configX));
+    expect(await grantStore.hasGrant("agent-1", "y.example.com")).toBe(false);
+    expect(await grantStore.hasGrant("agent-1", "x.example.com")).toBe(true);
+  });
+
   test("syncs both network and pre-approved tools in one call", async () => {
     await manager.syncNetworkConfigGrants(
       buildPayload({
@@ -461,10 +484,10 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     ).toBe(false);
   });
 
-  test("invalidateGrantSyncCache forces the next call to re-sync", async () => {
-    // An operator changes `networkConfig.allowedDomains` for an agent (via
-    // `lobu apply` or the web UI) — the next message should re-grant even
-    // if the cached hash says the set is unchanged.
+  test("domain sync writes only on drift, and repairs drift without invalidation", async () => {
+    // Domains reconcile against Postgres on every sync: identical repeat
+    // syncs cost zero writes, and out-of-band drift (a revoked row) is
+    // repaired on the next message with no cache invalidation involved.
     const grantSpy = spyOn(grantStore, "grant");
 
     const payload = buildPayload({
@@ -475,15 +498,15 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     const firstCallCount = grantSpy.mock.calls.length;
     expect(firstCallCount).toBe(1);
 
-    // Identical second call → cache hit → no new writes.
+    // Identical second call → rows already match → no new writes.
     await manager.syncNetworkConfigGrants(payload);
     expect(grantSpy.mock.calls.length).toBe(firstCallCount);
 
-    // Invalidate and re-sync: the manager should re-grant even though
-    // nothing in the payload changed.
-    manager.invalidateGrantSyncCache("agent-1");
+    // Simulate drift (row removed out of band): the next sync re-grants.
+    await grantStore.revoke("agent-1", "api.example.com", "test-org");
     await manager.syncNetworkConfigGrants(payload);
     expect(grantSpy.mock.calls.length).toBe(firstCallCount + 1);
+    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(true);
   });
 
   test("revokes all grants when the config is cleared entirely", async () => {

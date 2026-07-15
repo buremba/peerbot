@@ -11,7 +11,6 @@ import {
 	extractTraceId,
 	generateWorkerToken,
 	getErrorMessage,
-	inferGrantKind,
 	type MessagePayload,
 	normalizeDomainPattern,
 	OrchestratorError,
@@ -830,16 +829,14 @@ export class DeploymentManager {
   protected grantStore?: GrantStore;
   protected policyStore?: PolicyStore;
   /**
-   * Per-(org, agent) cache of the last-synced grant patterns (pattern →
-   * denied flag). Used to (a) skip redundant `grantStore.grant()` writes
-   * when the set is unchanged and (b) compute the revoke-diff so patterns
-   * dropped from `networkConfig.allowedDomains` / `deniedDomains` /
-   * `preApprovedTools` are removed from the grant store instead of
-   * lingering forever. Keyed by `org|agent` — agent ids are only unique
-   * within an organization, and grants are org-scoped rows, so an
-   * agent-id-only key would let org A's sync suppress org B's writes.
+   * Per-(org, agent) cache of the last-synced `preApprovedTools` patterns,
+   * used to diff tool grants/revokes (domains reconcile against Postgres
+   * instead — see syncNetworkConfigGrants). Keyed by `org|agent` — agent
+   * ids are only unique within an organization, and grants are org-scoped
+   * rows, so an agent-id-only key would let org A's sync suppress org B's
+   * writes.
    */
-  private grantSyncCache = new Map<string, Map<string, boolean>>();
+  private grantSyncCache = new Map<string, Set<string>>();
   /**
    * In-flight `ensureDeployment` promises keyed by deploymentName. Coalesces
    * concurrent calls within a single gateway process so the orchestrator-
@@ -1132,18 +1129,18 @@ export class DeploymentManager {
    * which is read by the shared HTTP proxy rather than by the worker
    * process.
    *
-   * Grant writes diff against the last-synced per-(org, agent) cache entry
-   * (deniedDomains become deny grants; a flipped allow/deny flag is
-   * re-written in place via the grant upsert).
+   * Domains reconcile against Postgres UNCONDITIONALLY — the pod-local
+   * cache is never trusted for them. Non-expiring domain rows are written
+   * only by this sync (allow, deny, nix), so the active rows ARE the
+   * previous state: rows outside the current config are revoked, expected
+   * domains whose row is missing or has a flipped allow/deny flag are
+   * (re-)granted. A cache-based skip is multi-replica-unsafe here (an
+   * X→Y→X config sequence across two replicas leaves Y's rows active on
+   * the replica whose warm cache still says X).
    *
-   * Domain revocation reconciles against Postgres, NOT the pod-local cache:
-   * non-expiring domain rows are written only by this sync (allow, deny,
-   * nix), so any active domain row outside the current config is a leftover
-   * and is revoked — even when the cache is cold (pod restart, LRU
-   * eviction, another replica wrote the row). MCP tool revocation stays
-   * cache-based: user "always" tool approvals share the store and are
-   * indistinguishable from operator `preApprovedTools`, so a durable
-   * reconcile would wrongly revoke them.
+   * MCP tool patterns stay cache-diffed: user "always" tool approvals share
+   * the store and are indistinguishable from operator `preApprovedTools`,
+   * so a durable reconcile would wrongly revoke them.
    */
   async syncNetworkConfigGrants(messageData: MessagePayload): Promise<void> {
     const agentId = messageData.agentId;
@@ -1153,85 +1150,69 @@ export class DeploymentManager {
 
     if (!this.grantStore) return;
 
-    // pattern → denied flag. Domains are keyed in NORMALIZED form so alias
-    // spellings ("*.example.com" vs ".example.com") collapse to the single
-    // grant row they share — otherwise a flag change under one alias never
-    // rewrites the row the other alias already holds. Denies are added last
-    // so a domain listed on both sides collapses to deny (matching the
-    // proxy's deny precedence).
-    const nextPatterns = new Map<string, boolean>();
+    const orgId = messageData.organizationId;
+
+    // ── Domains: PG-reconciled ──────────────────────────────────────────
+    // pattern → denied flag, keyed in NORMALIZED form so alias spellings
+    // ("*.example.com" vs ".example.com") collapse to the single grant row
+    // they share. Denies are added last so a domain listed on both sides
+    // collapses to deny (matching the proxy's deny precedence).
+    const expectedDomains = new Map<string, boolean>();
     for (const domain of messageData.networkConfig?.allowedDomains ?? []) {
-      nextPatterns.set(normalizeDomainPattern(domain), false);
-    }
-    for (const pattern of messageData.preApprovedTools ?? []) {
-      nextPatterns.set(pattern, false);
+      expectedDomains.set(normalizeDomainPattern(domain), false);
     }
     if (
       messageData.nixConfig?.packages?.length ||
       messageData.nixConfig?.flakeUrl
     ) {
       for (const domain of NIX_CACHE_DOMAINS) {
-        nextPatterns.set(domain, false);
+        expectedDomains.set(domain, false);
       }
     }
     for (const domain of messageData.networkConfig?.deniedDomains ?? []) {
-      nextPatterns.set(normalizeDomainPattern(domain), true);
+      expectedDomains.set(normalizeDomainPattern(domain), true);
     }
 
-    const orgId = messageData.organizationId;
-    const cacheKey = `${orgId ?? ""}|${agentId}`;
-    const previous = this.grantSyncCache.get(cacheKey);
-
-    // Unchanged set → skip the round-trip entirely. A warm cache entry
-    // implies Postgres was reconciled when it was written.
-    if (
-      previous &&
-      nextPatterns.size === previous.size &&
-      [...nextPatterns].every(([p, denied]) => previous.get(p) === denied)
-    ) {
-      return;
-    }
-
-    // Reconcile domain rows against Postgres (see docstring). Domain keys in
-    // `nextPatterns` are already normalized — the form grant() stores.
-    const expectedDomains = new Set<string>();
-    for (const pattern of nextPatterns.keys()) {
-      if (inferGrantKind(pattern) === "domain") {
-        expectedDomains.add(pattern);
-      }
-    }
-    const activeGrants = await this.grantStore.listGrants(agentId, orgId);
-    for (const row of activeGrants) {
+    const activeDomains = new Map<string, boolean>();
+    for (const row of await this.grantStore.listGrants(agentId, orgId)) {
       if (row.kind !== "domain" || row.expiresAt !== null) continue;
-      if (expectedDomains.has(row.pattern)) continue;
+      activeDomains.set(row.pattern, row.denied === true);
+    }
+
+    for (const [pattern, denied] of activeDomains) {
+      if (expectedDomains.has(pattern)) continue;
       // Deploy-time infra ALLOW grants (npm registries for CLI backends) are
       // not derivable from the payload — exempt them. A denied row is never
       // exempt: a config-removed deny must be reconciled away or it becomes
       // unremovable (the deploy-time grant skips denied domains).
-      if (!row.denied && NPM_REGISTRY_DOMAINS.includes(row.pattern)) continue;
-      await this.grantStore.revoke(agentId, row.pattern, orgId);
+      if (!denied && NPM_REGISTRY_DOMAINS.includes(pattern)) continue;
+      await this.grantStore.revoke(agentId, pattern, orgId);
     }
-
-    // Cache-based revocation for MCP tool patterns dropped from config.
-    for (const pattern of previous?.keys() ?? []) {
-      if (inferGrantKind(pattern) !== "mcp_tool") continue;
-      if (!nextPatterns.has(pattern)) {
-        await this.grantStore.revoke(agentId, pattern, orgId);
+    for (const [pattern, denied] of expectedDomains) {
+      if (activeDomains.get(pattern) !== denied) {
+        await this.grantStore.grant(agentId, pattern, null, denied, orgId);
       }
     }
 
-    // Grant new patterns and re-write patterns whose allow/deny flag
-    // flipped (the grant upsert updates `denied` in place). Repeating
-    // unchanged grants is idempotent, but skipping them saves writes.
-    for (const [pattern, denied] of nextPatterns) {
-      if (previous?.get(pattern) !== denied) {
-        await this.grantStore.grant(agentId, pattern, null, denied, orgId);
+    // ── MCP tool patterns: cache-diffed ─────────────────────────────────
+    const nextTools = new Set(messageData.preApprovedTools ?? []);
+    const cacheKey = `${orgId ?? ""}|${agentId}`;
+    const previousTools = this.grantSyncCache.get(cacheKey);
+
+    for (const pattern of previousTools ?? []) {
+      if (!nextTools.has(pattern)) {
+        await this.grantStore.revoke(agentId, pattern, orgId);
+      }
+    }
+    for (const pattern of nextTools) {
+      if (!previousTools?.has(pattern)) {
+        await this.grantStore.grant(agentId, pattern, null, undefined, orgId);
       }
     }
 
     // LRU touch: delete + re-insert so the agent becomes the newest key.
     this.grantSyncCache.delete(cacheKey);
-    this.grantSyncCache.set(cacheKey, nextPatterns);
+    this.grantSyncCache.set(cacheKey, nextTools);
 
     // Evict the oldest entry if we've exceeded the cap.
     if (this.grantSyncCache.size > GRANT_SYNC_CACHE_MAX) {

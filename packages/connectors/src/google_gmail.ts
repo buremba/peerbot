@@ -159,7 +159,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                 replied: {
                   type: 'boolean',
                   description:
-                    'True when the thread was started by the counterparty and the mailbox owner sent a message in it (a SENT-labeled message) — the interaction signal that gates contact promotion.',
+                    'True when the thread contains both a counterparty message and a mailbox-authored SENT-labeled message — the interaction signal that gates contact promotion.',
                 },
               },
             },
@@ -170,8 +170,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                 // a sender — overwhelmingly brands, newsletters, and no-reply
                 // system addresses, all of which carry a from_name — so receipt
                 // alone must not mint a contact. `replied` (computed in sync from
-                // per-message SENT labels) marks a genuine bidirectional exchange:
-                // the counterparty wrote first AND the mailbox owner answered.
+                // per-message SENT labels) marks a genuine bidirectional exchange.
                 // Only those senders materialize a `person`; everything else still
                 // links to an existing contact on identity match. A thread replied
                 // to after its first sync re-syncs (the reply is a new message
@@ -372,8 +371,12 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
           if (!thread.messages || thread.messages.length === 0) continue;
 
           const firstMessage = thread.messages[0];
+          const isSent = (m: GmailMessage) => (m.labelIds ?? []).includes('SENT');
+          const counterpartyMessage = thread.messages.find((message) => !isSent(message));
           const subject = this.getHeader(firstMessage, 'Subject') || '(no subject)';
-          const from = this.getHeader(firstMessage, 'From') || 'Unknown';
+          const from = counterpartyMessage
+            ? this.getHeader(counterpartyMessage, 'From') || 'Unknown'
+            : 'Unknown';
           const { name: fromName, email: fromEmail } = this.parseFromHeader(from);
           const dateHeader = this.getHeader(firstMessage, 'Date');
           const occurredAt = dateHeader
@@ -382,15 +385,11 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
 
           if (Number.isNaN(occurredAt.getTime())) continue;
 
-          // Interaction signal for promote-on-signal (see the attribution rule's
-          // createWhen): the thread was STARTED by the counterparty (first
-          // message is not ours) and the mailbox owner sent at least one message
-          // in it. A SENT label marks a message the account owner authored, so
-          // this needs no knowledge of the owner's own address. Owner-started
-          // threads are deliberately NOT `replied` — their from_email is the
-          // owner's own address, which must never be promoted as a contact.
-          const isSent = (m: GmailMessage) => (m.labelIds ?? []).includes('SENT');
-          const replied = !isSent(firstMessage) && thread.messages.some(isSent);
+          // A bidirectional exchange has at least one mailbox-authored message
+          // and one counterparty-authored message, regardless of who started it.
+          // Attribute the event to the first counterparty message so an
+          // owner-started thread never promotes the mailbox owner's own address.
+          const replied = counterpartyMessage !== undefined && thread.messages.some(isSent);
 
           const event: EventEnvelope = {
             origin_id: thread.id,

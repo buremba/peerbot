@@ -28,10 +28,11 @@ interface FakeThread {
  * lookups from the given fixtures. Header values come from the per-message
  * `from`/`date` fields; snippets are constant.
  */
-function fakeHttp(threads: FakeThread[]) {
+function fakeHttp(threads: FakeThread[], onRequest?: () => void) {
   const byId = new Map(threads.map((t) => [t.id, t]));
   return {
     raw: async (url: string) => {
+      onRequest?.();
       const u = new URL(url);
       const threadMatch = u.pathname.match(/\/threads\/([^/]+)$/);
       const body = threadMatch
@@ -81,6 +82,24 @@ async function syncThreads(threads: FakeThread[]) {
   return result.events as Array<{ origin_id: string; metadata: Record<string, unknown> }>;
 }
 
+test('the checkpoint precedes sync requests so messages arriving during sync remain eligible', async () => {
+  const connector = new GmailConnector();
+  let firstRequestAt = Number.POSITIVE_INFINITY;
+  connector.createClient = () =>
+    fakeHttp([], () => {
+      firstRequestAt = Math.min(firstRequestAt, Date.now());
+    });
+
+  const result = await connector.sync({
+    config: {},
+    credentials: { accessToken: 'tok' },
+    checkpoint: {},
+  });
+
+  expect(firstRequestAt).toBeFinite();
+  expect(new Date(result.checkpoint.last_sync_at).getTime()).toBeLessThanOrEqual(firstRequestAt);
+});
+
 describe('Gmail replied signal (promote-on-interaction)', () => {
   test('an inbound-only thread is NOT replied — a bulk sender/brand never clears the bar', async () => {
     const events = await syncThreads([
@@ -112,7 +131,7 @@ describe('Gmail replied signal (promote-on-interaction)', () => {
     expect(events[0].metadata.from_email).toBe('alice@example.com');
   });
 
-  test('an owner-started thread is NOT replied — from_email is the owner, never promote self', async () => {
+  test('an owner-started thread with a counterparty reply is bidirectional and attributes the counterparty', async () => {
     const events = await syncThreads([
       {
         id: 't-self',
@@ -123,7 +142,8 @@ describe('Gmail replied signal (promote-on-interaction)', () => {
       },
     ]);
     expect(events).toHaveLength(1);
-    expect(events[0].metadata.replied).toBe(false);
+    expect(events[0].metadata.replied).toBe(true);
+    expect(events[0].metadata.from_email).toBe('bob@example.com');
   });
 });
 

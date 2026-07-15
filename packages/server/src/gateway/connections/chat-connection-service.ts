@@ -1,3 +1,4 @@
+import { Value } from "@sinclair/typebox/value";
 import { getDb } from "../../db/client.js";
 import { getChatInstanceManager } from "../../lobu/gateway.js";
 import {
@@ -110,25 +111,36 @@ function validateRequiredCredentials(
 	}
 }
 
-function parseConfig(
+export function parseConfig(
 	platform: string,
 	rawConfig: Record<string, unknown>,
 ): PlatformAdapterConfig {
 	requireChatPlatform(platform);
-	const parsed = PlatformAdapterConfigSchema.safeParse({
-		...rawConfig,
-		platform,
-	});
-	if (!parsed.success) {
-		throw new Error(
-			parsed.error.issues.map((issue) => issue.message).join("; "),
+	const candidate = { ...rawConfig, platform };
+	// Validate against the union member matching `platform` (requireChatPlatform
+	// guarantees one exists) so failures surface FIELD-level messages (e.g. the
+	// Telegram token pattern) instead of a generic union mismatch. STRICT Check,
+	// no Value.Convert: the `lobu apply` string-boolean spellings are accepted
+	// by the SCHEMA (boolOrString includes the "true"/"false" literals, exactly
+	// like the previous Zod union), while coercion would silently accept
+	// wrong-typed credentials (numeric botToken → "123"). Clean strips unknown
+	// keys so they don't get persisted (Zod's `safeParse` parity).
+	const memberSchema =
+		PlatformAdapterConfigSchema.anyOf.find(
+			(s) => s.properties.platform.const === platform,
+		) ?? PlatformAdapterConfigSchema;
+	if (!Value.Check(memberSchema, candidate)) {
+		const messages = [...Value.Errors(memberSchema, candidate)].map(
+			(issue) => `${issue.path || "(root)"} ${issue.message}`.trim(),
 		);
+		throw new Error(messages.join("; ") || "invalid platform config");
 	}
-	validateRequiredCredentials(platform, parsed.data);
-	// The Zod discriminated union and the hand-written `PlatformAdapterConfig`
-	// union are member-for-member equivalent; TS treats the inferred schema type
-	// as distinct only because of declaration order / optional-field variance.
-	return parsed.data as PlatformAdapterConfig;
+	const coerced = Value.Clean(memberSchema, candidate);
+	validateRequiredCredentials(platform, coerced as Record<string, unknown>);
+	// The TypeBox union and the hand-written `PlatformAdapterConfig` union are
+	// member-for-member equivalent; TS treats the schema-inferred type as distinct
+	// only because of declaration order / optional-field variance.
+	return coerced as PlatformAdapterConfig;
 }
 
 async function validateProviderIdentity(

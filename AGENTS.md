@@ -15,6 +15,7 @@
 - Bug fixes require red→fix→green evidence. If you cannot reproduce, bail and report the dead end.
 - Run `make pre-pr` (fast no-DB CI gates: typecheck + knip + lint) AND `make review` (LLM verdict) before PR/merge. `make review` does NOT run typecheck/knip/tests — it is not proof CI will pass. If you touch server/runtime code, also run the relevant `bun test`/`make test-integration` suite.
 - After committing a fix, verify it landed with `git show HEAD:<file>` (or `git diff --stat origin/main...HEAD`). A fix left in the working tree but never committed will not reach CI — confirm HEAD, not just the working tree.
+- **Stage by explicit path; never commit the whole tree of a worktree that hosted other work.** A commit is a snapshot — stale file copies silently revert already-merged PRs. After commit/rebase, `git diff --name-only origin/main...HEAD` must equal the task's intended file list; extra files = stop. Verify a "reverts merged work" review finding by diff direction against `origin/main`, never dismiss it as merge-base noise.
 
 ## Agent workflow
 - Do only what was asked. Delete ephemeral files you create. Do not create `*.md` unless asked.

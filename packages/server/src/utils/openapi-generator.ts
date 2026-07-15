@@ -5,6 +5,7 @@
  */
 
 import { getMcpTools, getRawDispatchTools } from '../tools/registry';
+import { deepCopyStrict } from './schema-copy';
 
 /**
  * Recursively deep copies schema properties while filtering out hidden ones
@@ -273,40 +274,6 @@ export function generateOpenAPISpec(serverUrl: string) {
 // real `outputSchema` as the 200 response. TypeBox serializes to JSON Schema
 // 2020-12, which IS the OpenAPI 3.1 schema dialect, so the schemas drop in with
 // no conversion. One TypeBox source, two projections — no hand-maintained spec.
-
-/**
- * Recursively deep-copies a schema while dropping any property marked
- * `x-hidden` at every object level (server-internal fields — pre-computed
- * embeddings, auth-bound filters — that must never reach a client), and
- * pruning them from each `required` array so the copy stays self-consistent.
- */
-function deepCopyStrict(schema: any): any {
-  if (schema === null || schema === undefined || typeof schema !== 'object') {
-    return schema;
-  }
-  if (Array.isArray(schema)) {
-    return schema.map(deepCopyStrict);
-  }
-  const copied: Record<string, any> = {};
-  for (const [key, value] of Object.entries(schema)) {
-    if (key === '$id' || key === 'static') continue;
-    if (key === 'properties' && value && typeof value === 'object') {
-      const props: Record<string, any> = {};
-      for (const [propKey, propVal] of Object.entries<any>(value)) {
-        if (propVal?.['x-hidden']) continue;
-        props[propKey] = deepCopyStrict(propVal);
-      }
-      copied[key] = props;
-      continue;
-    }
-    copied[key] = deepCopyStrict(value);
-  }
-  // Prune now-hidden keys out of `required` so we never require a dropped field.
-  if (Array.isArray(copied.required) && copied.properties) {
-    copied.required = copied.required.filter((k: string) => k in copied.properties);
-  }
-  return copied;
-}
 
 const ERROR_RESPONSE = {
   content: {

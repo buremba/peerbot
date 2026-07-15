@@ -1,239 +1,278 @@
 /**
- * Per-platform connection config Zod schemas (with OpenAPI annotations and
- * the `platform` literal discriminator for the API layer).
+ * Per-platform connection config schemas (TypeBox) with the `platform` literal
+ * discriminator for the API layer.
  *
- * Field definitions mirror @lobu/core platform schemas; the gateway adds
- * `.openapi()` metadata. Single registry for every route module that needs
- * to validate or document a platform connection config.
+ * Field definitions mirror @lobu/core platform schemas; this adds OpenAPI
+ * `description` metadata. Single registry for every route module that needs to
+ * validate or document a platform connection config.
  */
 
-import { z } from "@hono/zod-openapi";
+import { Type } from "@sinclair/typebox";
 
 // Telegram bot tokens have the shape `<numeric-id>:<35-char-base62-ish>`.
 // Reject anything else early so a typo'd token doesn't get persisted and
 // then crash the adapter at runtime with a confusing 401 from Telegram.
-const TELEGRAM_BOT_TOKEN_RE = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/;
+// Empty string is allowed (falls back to the TELEGRAM_BOT_TOKEN env var), so the
+// pattern is `^$ | <token>` — the TypeBox equivalent of the previous Zod
+// `.refine(v => v === "" || RE.test(v))`.
+const TELEGRAM_BOT_TOKEN_PATTERN = "^$|^\\d{6,12}:[A-Za-z0-9_-]{30,}$";
 
-const TelegramConfigSchema = z.object({
-  platform: z.literal("telegram"),
-  botToken: z
-    .string()
-    .refine((value) => value === "" || TELEGRAM_BOT_TOKEN_RE.test(value), {
-      message:
-        "Telegram bot token must look like '<digits>:<35+ char alphanumeric>' (the format BotFather returns)",
-    })
-    .optional()
-    .openapi({
-      description:
-        "Telegram bot token from BotFather. Falls back to TELEGRAM_BOT_TOKEN env var.",
-    }),
-  mode: z.enum(["auto", "webhook", "polling"]).optional().openapi({
-    description: "Runtime mode: auto (default), webhook, or polling.",
-  }),
-  secretToken: z.string().optional().openapi({
-    description:
-      "Webhook secret token for x-telegram-bot-api-secret-token verification.",
-  }),
-  userName: z
-    .string()
-    .optional()
-    .openapi({ description: "Override bot username." }),
-  apiBaseUrl: z
-    .string()
-    .optional()
-    .openapi({ description: "Custom Telegram API base URL." }),
+const TelegramConfigSchema = Type.Object({
+	platform: Type.Literal("telegram"),
+	botToken: Type.Optional(
+		Type.String({
+			pattern: TELEGRAM_BOT_TOKEN_PATTERN,
+			description:
+				"Telegram bot token from BotFather (format '<digits>:<35+ char alphanumeric>'). Falls back to TELEGRAM_BOT_TOKEN env var.",
+		}),
+	),
+	mode: Type.Optional(
+		Type.Union(
+			[Type.Literal("auto"), Type.Literal("webhook"), Type.Literal("polling")],
+			{ description: "Runtime mode: auto (default), webhook, or polling." },
+		),
+	),
+	secretToken: Type.Optional(
+		Type.String({
+			description:
+				"Webhook secret token for x-telegram-bot-api-secret-token verification.",
+		}),
+	),
+	userName: Type.Optional(
+		Type.String({ description: "Override bot username." }),
+	),
+	apiBaseUrl: Type.Optional(
+		Type.String({ description: "Custom Telegram API base URL." }),
+	),
 });
 
-const SlackConfigSchema = z.object({
-  platform: z.literal("slack"),
-  botToken: z.string().optional().openapi({
-    description: "Bot token (xoxb-...). Required for single-workspace mode.",
-  }),
-  botUserId: z.string().optional().openapi({
-    description: "Bot user ID (fetched automatically if omitted).",
-  }),
-  signingSecret: z
-    .string()
-    .optional()
-    .openapi({ description: "Signing secret for webhook verification." }),
-  clientId: z.string().optional().openapi({
-    description: "Slack app client ID (required for OAuth / multi-workspace).",
-  }),
-  clientSecret: z.string().optional().openapi({
-    description:
-      "Slack app client secret (required for OAuth / multi-workspace).",
-  }),
-  encryptionKey: z.string().optional().openapi({
-    description:
-      "Base64-encoded 32-byte AES-256-GCM key for encrypting stored bot tokens.",
-  }),
-  installationKeyPrefix: z.string().optional().openapi({
-    description:
-      "State key prefix for workspace installations (default: slack:installation).",
-  }),
-  userName: z
-    .string()
-    .optional()
-    .openapi({ description: "Override bot username." }),
+const SlackConfigSchema = Type.Object({
+	platform: Type.Literal("slack"),
+	botToken: Type.Optional(
+		Type.String({
+			description: "Bot token (xoxb-...). Required for single-workspace mode.",
+		}),
+	),
+	botUserId: Type.Optional(
+		Type.String({
+			description: "Bot user ID (fetched automatically if omitted).",
+		}),
+	),
+	signingSecret: Type.Optional(
+		Type.String({ description: "Signing secret for webhook verification." }),
+	),
+	clientId: Type.Optional(
+		Type.String({
+			description: "Slack app client ID (required for OAuth / multi-workspace).",
+		}),
+	),
+	clientSecret: Type.Optional(
+		Type.String({
+			description:
+				"Slack app client secret (required for OAuth / multi-workspace).",
+		}),
+	),
+	encryptionKey: Type.Optional(
+		Type.String({
+			description:
+				"Base64-encoded 32-byte AES-256-GCM key for encrypting stored bot tokens.",
+		}),
+	),
+	installationKeyPrefix: Type.Optional(
+		Type.String({
+			description:
+				"State key prefix for workspace installations (default: slack:installation).",
+		}),
+	),
+	userName: Type.Optional(
+		Type.String({ description: "Override bot username." }),
+	),
 });
 
-const DiscordConfigSchema = z.object({
-  platform: z.literal("discord"),
-  botToken: z
-    .string()
-    .optional()
-    .openapi({ description: "Discord bot token." }),
-  applicationId: z
-    .string()
-    .optional()
-    .openapi({ description: "Discord application ID." }),
-  publicKey: z.string().optional().openapi({
-    description: "Application public key for webhook signature verification.",
-  }),
-  mentionRoleIds: z.array(z.string()).optional().openapi({
-    description:
-      "Role IDs that trigger mention handlers (in addition to direct mentions).",
-  }),
-  userName: z
-    .string()
-    .optional()
-    .openapi({ description: "Override bot username." }),
+const DiscordConfigSchema = Type.Object({
+	platform: Type.Literal("discord"),
+	botToken: Type.Optional(Type.String({ description: "Discord bot token." })),
+	applicationId: Type.Optional(
+		Type.String({ description: "Discord application ID." }),
+	),
+	publicKey: Type.Optional(
+		Type.String({
+			description:
+				"Application public key for webhook signature verification.",
+		}),
+	),
+	mentionRoleIds: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				"Role IDs that trigger mention handlers (in addition to direct mentions).",
+		}),
+	),
+	userName: Type.Optional(
+		Type.String({ description: "Override bot username." }),
+	),
 });
 
-const WhatsAppConfigSchema = z.object({
-  platform: z.literal("whatsapp"),
-  accessToken: z.string().optional().openapi({
-    description: "System User access token for WhatsApp Cloud API.",
-  }),
-  phoneNumberId: z
-    .string()
-    .optional()
-    .openapi({ description: "WhatsApp Business phone number ID." }),
-  appSecret: z.string().optional().openapi({
-    description:
-      "Meta App Secret for webhook HMAC-SHA256 signature verification.",
-  }),
-  verifyToken: z
-    .string()
-    .optional()
-    .openapi({ description: "Verify token for webhook challenge-response." }),
-  apiVersion: z
-    .string()
-    .optional()
-    .openapi({ description: "Meta Graph API version (default: v21.0)." }),
-  userName: z.string().optional().openapi({ description: "Bot display name." }),
+const WhatsAppConfigSchema = Type.Object({
+	platform: Type.Literal("whatsapp"),
+	accessToken: Type.Optional(
+		Type.String({
+			description: "System User access token for WhatsApp Cloud API.",
+		}),
+	),
+	phoneNumberId: Type.Optional(
+		Type.String({ description: "WhatsApp Business phone number ID." }),
+	),
+	appSecret: Type.Optional(
+		Type.String({
+			description:
+				"Meta App Secret for webhook HMAC-SHA256 signature verification.",
+		}),
+	),
+	verifyToken: Type.Optional(
+		Type.String({
+			description: "Verify token for webhook challenge-response.",
+		}),
+	),
+	apiVersion: Type.Optional(
+		Type.String({ description: "Meta Graph API version (default: v21.0)." }),
+	),
+	userName: Type.Optional(Type.String({ description: "Bot display name." })),
 });
 
-const TeamsConfigSchema = z.object({
-  platform: z.literal("teams"),
-  appId: z.string().optional().openapi({ description: "Microsoft App ID." }),
-  appPassword: z
-    .string()
-    .optional()
-    .openapi({ description: "Microsoft App Password." }),
-  appTenantId: z
-    .string()
-    .optional()
-    .openapi({ description: "Microsoft App Tenant ID." }),
-  appType: z
-    .enum(["MultiTenant", "SingleTenant"])
-    .optional()
-    .openapi({ description: "Microsoft App Type." }),
-  userName: z
-    .string()
-    .optional()
-    .openapi({ description: "Override bot username." }),
+const TeamsConfigSchema = Type.Object({
+	platform: Type.Literal("teams"),
+	appId: Type.Optional(Type.String({ description: "Microsoft App ID." })),
+	appPassword: Type.Optional(
+		Type.String({ description: "Microsoft App Password." }),
+	),
+	appTenantId: Type.Optional(
+		Type.String({ description: "Microsoft App Tenant ID." }),
+	),
+	appType: Type.Optional(
+		Type.Union([Type.Literal("MultiTenant"), Type.Literal("SingleTenant")], {
+			description: "Microsoft App Type.",
+		}),
+	),
+	userName: Type.Optional(
+		Type.String({ description: "Override bot username." }),
+	),
 });
 
-const GoogleChatConfigSchema = z.object({
-  platform: z.literal("gchat"),
-  credentials: z.string().optional().openapi({
-    description:
-      "Service account credentials JSON string. Defaults to GOOGLE_CHAT_CREDENTIALS env var.",
-  }),
-  useApplicationDefaultCredentials: z.boolean().optional().openapi({
-    description:
-      "Use Application Default Credentials (ADC) instead of service account JSON.",
-  }),
-  endpointUrl: z.string().optional().openapi({
-    description:
-      "HTTP endpoint URL for button click actions. Required for HTTP endpoint apps.",
-  }),
-  googleChatProjectNumber: z.string().optional().openapi({
-    description:
-      "Google Cloud project number for verifying webhook JWTs. Defaults to GOOGLE_CHAT_PROJECT_NUMBER env var.",
-  }),
-  impersonateUser: z.string().optional().openapi({
-    description:
-      "User email for domain-wide delegation. Defaults to GOOGLE_CHAT_IMPERSONATE_USER env var.",
-  }),
-  pubsubAudience: z.string().optional().openapi({
-    description:
-      "Expected audience for Pub/Sub push JWT verification. Defaults to GOOGLE_CHAT_PUBSUB_AUDIENCE env var.",
-  }),
-  userName: z
-    .string()
-    .optional()
-    .openapi({ description: "Override bot username." }),
+const GoogleChatConfigSchema = Type.Object({
+	platform: Type.Literal("gchat"),
+	credentials: Type.Optional(
+		Type.String({
+			description:
+				"Service account credentials JSON string. Defaults to GOOGLE_CHAT_CREDENTIALS env var.",
+		}),
+	),
+	useApplicationDefaultCredentials: Type.Optional(
+		Type.Boolean({
+			description:
+				"Use Application Default Credentials (ADC) instead of service account JSON.",
+		}),
+	),
+	endpointUrl: Type.Optional(
+		Type.String({
+			description:
+				"HTTP endpoint URL for button click actions. Required for HTTP endpoint apps.",
+		}),
+	),
+	googleChatProjectNumber: Type.Optional(
+		Type.String({
+			description:
+				"Google Cloud project number for verifying webhook JWTs. Defaults to GOOGLE_CHAT_PROJECT_NUMBER env var.",
+		}),
+	),
+	impersonateUser: Type.Optional(
+		Type.String({
+			description:
+				"User email for domain-wide delegation. Defaults to GOOGLE_CHAT_IMPERSONATE_USER env var.",
+		}),
+	),
+	pubsubAudience: Type.Optional(
+		Type.String({
+			description:
+				"Expected audience for Pub/Sub push JWT verification. Defaults to GOOGLE_CHAT_PUBSUB_AUDIENCE env var.",
+		}),
+	),
+	userName: Type.Optional(
+		Type.String({ description: "Override bot username." }),
+	),
 });
 
-export const WebhookConfigSchema = z.object({
-  platform: z.literal("webhook"),
-  token: z.string().optional().openapi({
-    description:
-      "Bearer token authenticating inbound deliveries. Auto-generated when omitted; stored as a secret:// ref.",
-  }),
-  // Declarative configs (`lobu apply`) carry string values only, so the
-  // boolean also accepts its string spelling.
-  allowQueryAuth: z
-    .union([z.boolean(), z.enum(["true", "false"])])
-    .optional()
-    .openapi({
-      description:
-        "Allow `?token=` auth for senders that cannot set headers (e.g. Sentry's legacy WebHooks plugin). Default false.",
-    }),
-  dedupeHeader: z.string().optional().openapi({
-    description:
-      "Request header whose value is the idempotency key (e.g. x-github-delivery). Defaults to sha256 of the raw body.",
-  }),
-  semanticType: z.string().optional().openapi({
-    description: "semantic_type stamped on ingested events. Default: content.",
-  }),
-  titlePath: z.string().optional().openapi({
-    description:
-      'JSON pointer into the payload extracted as the event title (e.g. "/event/title").',
-  }),
-  searchable: z
-    .union([z.boolean(), z.enum(["true", "false"])])
-    .optional()
-    .openapi({
-      description:
-        "Index ingested payloads into semantic memory (search_memory). Default false: store-only, reachable by watcher SQL.",
-    }),
+// Declarative configs (`lobu apply`) carry string values only, so booleans also
+// accept their string spelling — the TypeBox equivalent of `z.union([boolean,
+// enum(["true","false"])])`.
+const boolOrString = (description: string) =>
+	Type.Union([Type.Boolean(), Type.Literal("true"), Type.Literal("false")], {
+		description,
+	});
+
+export const WebhookConfigSchema = Type.Object({
+	platform: Type.Literal("webhook"),
+	token: Type.Optional(
+		Type.String({
+			description:
+				"Bearer token authenticating inbound deliveries. Auto-generated when omitted; stored as a secret:// ref.",
+		}),
+	),
+	allowQueryAuth: Type.Optional(
+		boolOrString(
+			"Allow `?token=` auth for senders that cannot set headers (e.g. Sentry's legacy WebHooks plugin). Default false.",
+		),
+	),
+	dedupeHeader: Type.Optional(
+		Type.String({
+			description:
+				"Request header whose value is the idempotency key (e.g. x-github-delivery). Defaults to sha256 of the raw body.",
+		}),
+	),
+	semanticType: Type.Optional(
+		Type.String({
+			description:
+				"semantic_type stamped on ingested events. Default: content.",
+		}),
+	),
+	titlePath: Type.Optional(
+		Type.String({
+			description:
+				'JSON pointer into the payload extracted as the event title (e.g. "/event/title").',
+		}),
+	),
+	searchable: Type.Optional(
+		boolOrString(
+			"Index ingested payloads into semantic memory (search_memory). Default false: store-only, reachable by watcher SQL.",
+		),
+	),
 });
 
-/** The HTTP Agent API surface (lobu-ai/lobu#1179). Adapterless: the row is
+/**
+ * The HTTP Agent API surface (lobu-ai/lobu#1179). Adapterless: the row is
  * persisted so the scaffolded `{ type: "rest", config: {} }` declaration
  * reconciles under `lobu apply`, but no chat instance is ever created and no
- * credentials exist. */
-export const RestConfigSchema = z.object({
-  platform: z.literal("rest"),
+ * credentials exist.
+ */
+export const RestConfigSchema = Type.Object({
+	platform: Type.Literal("rest"),
 });
 
-export const PlatformAdapterConfigSchema = z.discriminatedUnion("platform", [
-  TelegramConfigSchema,
-  SlackConfigSchema,
-  DiscordConfigSchema,
-  WhatsAppConfigSchema,
-  TeamsConfigSchema,
-  GoogleChatConfigSchema,
-  WebhookConfigSchema,
-  RestConfigSchema,
+export const PlatformAdapterConfigSchema = Type.Union([
+	TelegramConfigSchema,
+	SlackConfigSchema,
+	DiscordConfigSchema,
+	WhatsAppConfigSchema,
+	TeamsConfigSchema,
+	GoogleChatConfigSchema,
+	WebhookConfigSchema,
+	RestConfigSchema,
 ]);
 
-/** Derived from the discriminated union — no separate list to maintain. */
-const SUPPORTED_PLATFORMS = PlatformAdapterConfigSchema.options.map(
-  (s) => s.shape.platform.value
+/** Derived from the union members — no separate list to maintain. */
+const SUPPORTED_PLATFORMS = PlatformAdapterConfigSchema.anyOf.map(
+	(s) => s.properties.platform.const as string,
 ) as [string, ...string[]];
 
-export const SupportedPlatformSchema = z.enum(SUPPORTED_PLATFORMS);
+export const SupportedPlatformSchema = Type.Union(
+	SUPPORTED_PLATFORMS.map((p) => Type.Literal(p)),
+);

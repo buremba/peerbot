@@ -148,6 +148,8 @@ export function buildRunJobToken(args: {
   organizationId: string;
   platform: string;
   platformMetadata: Record<string, unknown>;
+  /** Trusted authorization origin from the payload (see core MessageOrigin). */
+  origin?: unknown;
   runId: number;
   /**
    * Per-turn binding for token refresh: the turn-timeout marker is armed with
@@ -451,6 +453,8 @@ export class MessageConsumer {
         organizationId: data.organizationId,
         platform: data.platform,
         platformMetadata: data.platformMetadata,
+        // Trusted origin from the payload; signed into the token fail-closed.
+        origin: data.origin,
         runId: data.runId,
         // Per-turn binding for token refresh: the turn-timeout marker is armed
         // below with this SAME messageId, so the refresh gate can require a live

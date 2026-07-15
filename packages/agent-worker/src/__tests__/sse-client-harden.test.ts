@@ -654,6 +654,36 @@ describe("live steering classification", () => {
     ).toBe(false);
   });
 
+  test("trusted origin wins over source: interactive_human is steerable", () => {
+    // A signed interactive_human origin is steerable even if some stale source
+    // string is also present — origin is the authoritative signal.
+    expect(
+      isSteerableHumanMessage({
+        ...payload,
+        origin: "interactive_human",
+        platformMetadata: { source: "internal" },
+      })
+    ).toBe(true);
+  });
+
+  test("trusted non-human origin is never steerable", () => {
+    for (const origin of ["headless", "agent"] as const) {
+      expect(isSteerableHumanMessage({ ...payload, origin })).toBe(false);
+    }
+  });
+
+  test("origin absent falls back to the legacy source denylist", () => {
+    // Rollout safety: an in-flight payload minted before `origin` existed still
+    // classifies via source. (origin undefined → source check runs.)
+    expect(
+      isSteerableHumanMessage({
+        ...payload,
+        platformMetadata: { source: "watcher-run" },
+      })
+    ).toBe(false);
+    expect(isSteerableHumanMessage({ ...payload })).toBe(true);
+  });
+
   test("recognizes only explicit cancellation controls", () => {
     expect(
       isExplicitCancelMessage({ ...payload, messageText: " /CANCEL " })

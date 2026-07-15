@@ -306,6 +306,9 @@ export class ApiPlatform implements PlatformAdapter {
       organizationId,
       botId: "lobu-api",
       platform: "api",
+      // API-directed programmatic send (the platform sendMessage adapter), not
+      // a human typing — headless.
+      origin: "headless",
       messageText: message,
       platformMetadata,
       agentOptions: {

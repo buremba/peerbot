@@ -29,6 +29,52 @@ import type {
 export type JobType = "message" | "exec";
 
 /**
+ * Trusted authorization origin of a turn, derived at each gateway ingress from
+ * what that ingress ACTUALLY knows — never inferred from the free-form
+ * `platformMetadata.source` string (which is optional, unstructured, and shared
+ * across unrelated subsystems). This is the authoritative signal for deciding
+ * whether a turn may do things only a real person should authorize (e.g. run a
+ * `!`-shell command in the sandbox).
+ *
+ *  - `interactive_human` — a real inbound message a human typed/sent in a live
+ *    chat (a platform DM/mention, or the web panel composer). ONLY this may
+ *    authorize human-gated actions.
+ *  - `headless` — a programmatic turn with no human at a socket: a scheduled
+ *    wake, a `conversations.send` SDK call, an internal thread. Legitimate, but
+ *    not a human gesture.
+ *  - `agent` — an agent/tool/watcher-authored turn (autonomous). Most
+ *    restrictive; also the FAIL-CLOSED default when the origin is absent or
+ *    unrecognized, so a missing claim can never be read as a human.
+ *
+ * Carried as a first-class {@link MessagePayload.origin} field AND signed into
+ * the worker token (`WorkerTokenData.origin`), so the worker authorizes on the
+ * verified claim rather than a body field it could be tricked about.
+ */
+export type MessageOrigin = "interactive_human" | "headless" | "agent";
+
+/**
+ * Read a {@link MessageOrigin} fail-closed. Any value that is not one of the
+ * three known origins — including `undefined`, a legacy payload/token minted
+ * before this field existed, or a non-string — resolves to `"agent"` (the
+ * most-restrictive origin). A missing origin must NEVER be treated as a human.
+ */
+export function resolveMessageOrigin(value: unknown): MessageOrigin {
+  return value === "interactive_human" || value === "headless"
+    ? value
+    : "agent";
+}
+
+/** True only for a verified interactive-human origin (fail-closed). */
+export function isInteractiveHumanOrigin(value: unknown): boolean {
+  return resolveMessageOrigin(value) === "interactive_human";
+}
+
+/** True for any non-interactive (headless or agent/automation) origin. */
+export function isAutomationOrigin(value: unknown): boolean {
+  return resolveMessageOrigin(value) !== "interactive_human";
+}
+
+/**
  * Universal message payload for every gateway → worker hop.
  * Used by: platform inbound → runs queue → MessageConsumer → worker.
  */
@@ -60,6 +106,16 @@ export interface MessagePayload {
   botId: string;
   /** Platform name (`slack`, `telegram`, ...). */
   platform: string;
+
+  /**
+   * Trusted authorization origin of this turn (see {@link MessageOrigin}),
+   * stamped by the ingress that built this payload from what it actually knows
+   * — NOT copied from `platformMetadata.source`. `buildWorkerTokenClaims` signs
+   * it into the worker token so the worker authorizes on the verified claim.
+   * Absent on legacy payloads → read fail-closed via {@link resolveMessageOrigin}
+   * (defaults to `agent`, never `interactive_human`).
+   */
+  origin?: MessageOrigin;
 
   // ── Message content (used by worker) ───────────────────────────────
   messageText: string;

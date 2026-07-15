@@ -51,6 +51,10 @@ const SHARED_REQUIRED: Array<keyof WorkerTokenData> = [
   // Headless run origin — interaction cards stamped headless skip the
   // SSE-owner gate; absent → owner-gated card dead-letters on a headless run.
   "source",
+  // Trusted authorization origin (interactive_human | headless | agent). The
+  // worker authorizes human-gated actions (e.g. `!`-shell) on this SIGNED claim.
+  // Always present — both mints resolve it fail-closed, so it is never absent.
+  "origin",
 ];
 
 describe("worker-token mint parity (real mint, not generateWorkerToken)", () => {
@@ -82,6 +86,9 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
     expect(decoded?.runId).toBe(42);
     expect(decoded?.connectionId).toBe(CONN);
     expect(decoded?.source).toBe("watcher-run");
+    // FAIL-CLOSED: baseArgs carries no `origin`, so the mint signs `agent`
+    // (never interactive_human). A missing origin can never authorize a human.
+    expect(decoded?.origin).toBe("agent");
 
     // The route does exactly this with the decoded context — must not throw.
     expect(() =>
@@ -123,6 +130,29 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
         `claim "${claim}" present on WORKER_TOKEN but missing on runJobToken — divergence`
       ).toBe(inDeployment);
     }
+  });
+
+  test("origin: an explicit interactive_human is signed intact; absent fails closed on BOTH mints", () => {
+    // Explicit human origin round-trips through both mints.
+    const humanArgs = { ...baseArgs, origin: "interactive_human" as const };
+    expect(
+      verifyWorkerToken(buildRunJobToken({ ...humanArgs, runId: 9 }) as string)
+        ?.origin
+    ).toBe("interactive_human");
+    expect(
+      verifyWorkerToken(buildDeploymentWorkerToken(humanArgs))?.origin
+    ).toBe("interactive_human");
+
+    // A garbage/unknown origin can NEVER be verified as a human — both mints
+    // resolve it fail-closed to `agent`.
+    const spoofed = { ...baseArgs, origin: "human" };
+    expect(
+      verifyWorkerToken(buildRunJobToken({ ...spoofed, runId: 9 }) as string)
+        ?.origin
+    ).toBe("agent");
+    expect(
+      verifyWorkerToken(buildDeploymentWorkerToken(spoofed))?.origin
+    ).toBe("agent");
   });
 
   test("the shipped bug reproduces: a chat token WITHOUT connectionId is rejected", () => {

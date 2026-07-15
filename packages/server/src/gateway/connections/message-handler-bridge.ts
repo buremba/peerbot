@@ -4,7 +4,12 @@
  * settings links, allowlist, audio transcription, etc.
  */
 
-import { createLogger, createRootSpan, generateTraceId } from "@lobu/core";
+import {
+  createLogger,
+  createRootSpan,
+  generateTraceId,
+  type MessageOrigin,
+} from "@lobu/core";
 import {
   previewUnlinkedNotice,
   workspaceUnlinkedNotice,
@@ -924,6 +929,12 @@ export class MessageHandlerBridge {
     await this.enqueueUserTurn({
       agentId,
       organizationId: routingOrgId,
+      // A real inbound message from a non-self sender is interactive_human (the
+      // only origin that may authorize `!`-shell); a bot self-post (`isMe`) is
+      // `agent`. Derived from the sender the ingress actually knows, never from
+      // the free-form platformMetadata.source.
+      origin:
+        message.author?.isMe === true ? "agent" : "interactive_human",
       userId,
       channelId,
       conversationId,
@@ -960,6 +971,14 @@ export class MessageHandlerBridge {
     /** Org the turn runs under. For preview connections this is the bound
      * agent's org (cross-org), not necessarily the connection's org. */
     organizationId: string | undefined;
+    /**
+     * Trusted authorization origin of this turn (see core `MessageOrigin`).
+     * Both callers of this method are genuine human actions — a typed inbound
+     * message from a non-self sender, and a card button-click — so both pass
+     * `interactive_human`. Bot self-posts are filtered by the Chat SDK's `isMe`
+     * before `handleMessage`, so they never reach here.
+     */
+    origin: MessageOrigin;
     userId: string;
     channelId: string;
     conversationId: string;
@@ -1131,6 +1150,8 @@ export class MessageHandlerBridge {
         teamId: payloadTeamId,
         agentId,
         organizationId,
+        // Trusted origin declared by the caller (both are human actions).
+        origin: args.origin,
         messageId,
         messageText,
         channelId,
@@ -1262,6 +1283,8 @@ export class MessageHandlerBridge {
     await this.enqueueUserTurn({
       agentId,
       organizationId: routingOrgId,
+      // A card button-click is a deliberate human action → interactive_human.
+      origin: "interactive_human",
       userId,
       channelId,
       conversationId,

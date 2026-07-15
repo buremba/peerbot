@@ -12,6 +12,8 @@
  * is set in ONE place for both mints. Mint-specific claims (runId+messageId for
  * the per-run token, traceId for the deployment token) stay with each caller.
  */
+import { type MessageOrigin, resolveMessageOrigin } from "@lobu/core";
+
 export interface WorkerTokenClaimsArgs {
   channelId: string;
   teamId?: string;
@@ -19,6 +21,15 @@ export interface WorkerTokenClaimsArgs {
   organizationId?: string;
   platform?: string;
   platformMetadata?: Record<string, unknown>;
+  /**
+   * Trusted authorization origin of this turn, stamped on the MessagePayload by
+   * the ingress that built it (see core `MessageOrigin`). Signed into the token
+   * fail-closed via `resolveMessageOrigin` — a payload minted before this field
+   * existed, or any unrecognized value, becomes `agent` (never a human). This
+   * is the authoritative signal the worker authorizes human-gated actions on,
+   * NOT the free-form `platformMetadata.source`.
+   */
+  origin?: unknown;
   /**
    * Selected runtime provider for this conversation, resolved from the agent's
    * Environment by the caller (which has the agent settings + environments
@@ -58,6 +69,7 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
   platform?: string;
   connectionId?: string;
   source?: string;
+  origin: MessageOrigin;
   runtimeProviderId?: string;
   environmentId?: string;
   allowedDomains?: string[];
@@ -79,6 +91,9 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
       typeof args.platformMetadata?.source === "string"
         ? args.platformMetadata.source
         : undefined,
+    // Fail-closed: an unrecognized/absent origin signs as `agent`, so a legacy
+    // payload or a spoofed value can never be verified as `interactive_human`.
+    origin: resolveMessageOrigin(args.origin),
     runtimeProviderId,
     environmentId: runtimeProviderId ? args.environmentId : undefined,
     // Non-empty only; an empty list is equivalent to absent (deny-all) and

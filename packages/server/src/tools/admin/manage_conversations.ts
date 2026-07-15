@@ -259,6 +259,9 @@ async function handleSend(
       teamId: "api",
       agentId: args.agent_id,
       organizationId: ctx.organizationId,
+      // A programmatic SDK send is headless — no human at a socket. It must NOT
+      // be able to authorize human-gated actions (e.g. `!`-shell) downstream.
+      origin: "headless",
       messageId,
       messageText: text,
       channelId,

@@ -8,6 +8,7 @@ import {
   createLogger,
   extractTraceId,
   flushTracing,
+  isInteractiveHumanOrigin,
   type MessagePayload,
   type QueuedMessage,
   SpanStatusCode,
@@ -100,6 +101,12 @@ const JobEventSchema = z.object({
       // the gateway from the immutable sandbox pin). Selects the worker's bash
       // backend so a warm deployment routes on the pin. Absent → local just-bash.
       runtimeProviderId: z.string().optional(),
+      // Trusted authorization origin of this turn. Also a SIGNED token claim —
+      // the worker authorizes human-gated actions on the token, not this body
+      // field. Parsed here so the steer/batch routing (isSteerableHumanMessage)
+      // sees it. A value outside the enum, or absent, is dropped → the consumer
+      // reads it fail-closed to `agent` (never interactive_human).
+      origin: z.enum(["interactive_human", "headless", "agent"]).optional(),
     })
     .passthrough(),
   processedIds: z.array(z.string()).optional(),
@@ -1102,6 +1109,10 @@ export class GatewayClient {
   }
 }
 
+// Legacy fallback ONLY: the free-form `platformMetadata.source` values that
+// mean "not an interactive human". Retained so an in-flight payload minted
+// before the trusted `origin` field existed still classifies correctly during
+// the expand/contract rollout. New payloads carry `origin` — prefer it.
 const AUTOMATION_SOURCES = new Set([
   "watcher-run",
   "scheduled-job",
@@ -1116,9 +1127,18 @@ export function isSteerableHumanMessage(payload: MessagePayload): boolean {
   // session would treat the control command as ordinary text and preserve the
   // history the user explicitly asked to reset.
   if (payload.platformMetadata?.sessionReset === true) return false;
-  const source = payload.platformMetadata?.source;
-  if (typeof source === "string" && AUTOMATION_SOURCES.has(source)) {
-    return false;
+  // Trusted origin wins when present: only an interactive-human turn is
+  // steerable. `resolveMessageOrigin` reads fail-closed, so a legacy payload
+  // (origin absent) resolves to `agent` — but to preserve the exact legacy
+  // behavior during rollout, fall through to the source denylist ONLY when the
+  // origin field is genuinely absent, not when it resolved to a non-human.
+  if (payload.origin !== undefined) {
+    if (!isInteractiveHumanOrigin(payload.origin)) return false;
+  } else {
+    const source = payload.platformMetadata?.source;
+    if (typeof source === "string" && AUTOMATION_SOURCES.has(source)) {
+      return false;
+    }
   }
   const files = payload.platformMetadata?.files;
   return !Array.isArray(files) || files.length === 0;

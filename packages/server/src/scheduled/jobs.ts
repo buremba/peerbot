@@ -451,6 +451,8 @@ export async function runWakeAgentTask(
         teamId: delivery.teamId ?? undefined,
         agentId: p.agent_id,
         organizationId: orgId,
+        // A scheduled wake is headless — no human is authorizing this turn.
+        origin: "headless",
         messageId: `wake_${p.__scheduled_job_id ?? p.agent_id}_${Date.now()}`,
         messageText: p.prompt,
         channelId: delivery.channelId,

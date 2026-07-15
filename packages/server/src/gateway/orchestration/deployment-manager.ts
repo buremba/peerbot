@@ -637,6 +637,8 @@ export function buildDeploymentWorkerToken(args: {
   organizationId?: string;
   platform?: string;
   platformMetadata?: Record<string, unknown>;
+  /** Trusted authorization origin from the payload (see core MessageOrigin). */
+  origin?: unknown;
   traceId?: string;
   /** Resolved runtime provider + environment, so the deployment-lifetime token
    *  also carries the claim the runtime route reads (parity with the per-run mint). */
@@ -1531,6 +1533,9 @@ export class DeploymentManager {
       agentId,
       organizationId: validated.organizationId,
       platformMetadata,
+      // Trusted origin from the payload; signed fail-closed. Parity with the
+      // per-run mint so the fallback deployment token carries the same claim.
+      origin: messageData?.origin,
       traceId,
       runtimeProviderId: runtimeSelection.runtimeProviderId,
       environmentId: runtimeSelection.environmentId,

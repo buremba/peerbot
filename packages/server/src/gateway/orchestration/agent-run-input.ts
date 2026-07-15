@@ -85,6 +85,10 @@ export function attachFreshRunJobToken(
         connectionId: token.connectionId,
         platform: token.platform,
         source: token.source,
+        // Carry the trusted origin through a token refresh — else a re-minted
+        // token would drop the claim and the worker would fail-close to `agent`,
+        // silently disabling human-gated actions mid-conversation.
+        origin: token.origin,
         sessionKey: token.sessionKey,
         traceId: token.traceId,
         runId: token.runId,

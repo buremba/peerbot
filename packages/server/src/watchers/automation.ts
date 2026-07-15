@@ -976,6 +976,8 @@ async function preflightWatcherMemoryTools(params: {
 			agentId: params.agentId,
 			organizationId: params.organizationId,
 			platform: "api",
+			// A watcher run is autonomous — never a human origin.
+			origin: "agent",
 			sessionKey: `watcher_${params.runId}`,
 		},
 	);

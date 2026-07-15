@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createLogger } from "../logger";
 import { decrypt, encrypt } from "../utils/encryption";
+import type { MessageOrigin } from "./wire";
 
 const logger = createLogger("worker-auth");
 
@@ -36,6 +37,16 @@ export interface WorkerTokenData {
    * interactive (browser-driven) runs.
    */
   source?: string;
+  /**
+   * Trusted authorization origin of this turn (`interactive_human | headless |
+   * agent`; see core `MessageOrigin`). Derived by the ingress from what it
+   * actually knows and SIGNED here, so the worker authorizes human-gated
+   * actions (e.g. `!`-shell) on the verified claim rather than the free-form,
+   * spoofable `source`. Absent on a legacy token → the worker reads it
+   * fail-closed to `agent` (never `interactive_human`). See `MessageOrigin` in
+   * `worker/wire.ts`.
+   */
+  origin?: MessageOrigin;
   sessionKey?: string;
   traceId?: string;
   /** Unique token ID — enables targeted revocation. */
@@ -109,6 +120,8 @@ export function generateWorkerToken(
     platform?: string;
     /** Headless run origin — see WorkerTokenData.source. */
     source?: string;
+    /** Trusted authorization origin — see WorkerTokenData.origin. */
+    origin?: MessageOrigin;
     sessionKey?: string;
     traceId?: string;
     /**
@@ -153,6 +166,7 @@ export function generateWorkerToken(
     timestamp: Date.now(),
     platform: options.platform,
     source: options.source,
+    origin: options.origin,
     sessionKey: options.sessionKey,
     traceId: options.traceId,
     jti: randomUUID(),

@@ -2458,6 +2458,8 @@ export class ChatInstanceManager {
       organizationId,
       botId: `${name}-platform`,
       platform: name,
+      // Programmatic chat-instance relay — no human at a socket.
+      origin: "headless",
       messageText: message,
       platformMetadata: {
         connectionId: connection.id,

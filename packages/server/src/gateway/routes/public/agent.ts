@@ -1523,6 +1523,12 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         organizationId: messageOrganizationId,
         botId: "lobu-api",
         platform: "api",
+        // A watcher-intent run is autonomous (agent); every other message on this
+        // authenticated interactive route (the web panel composer / `lobu chat`)
+        // is an interactive human. Derived from the session intent, not the
+        // free-form source string.
+        origin:
+          session.intent?.kind === "watcher_run" ? "agent" : "interactive_human",
         messageText: messageTextForTranscript,
         ...(applyEphemeralContext
           ? { ephemeralContext: rawEphemeralContext.slice(0, 2048) }

@@ -5,6 +5,7 @@
 
 import {
   createLogger,
+  type MessageOrigin,
   type MessagePayload,
 } from "@lobu/core";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
@@ -131,6 +132,14 @@ export function buildMessagePayload(params: {
   channelId: string;
   platformMetadata: Record<string, any>;
   agentOptions: Record<string, any>;
+  /**
+   * Trusted authorization origin of this turn (see core `MessageOrigin`).
+   * REQUIRED so every ingress makes a deliberate choice — a real inbound human
+   * message is `interactive_human`; a scheduled wake / programmatic dispatch is
+   * `headless`; an agent/watcher-authored turn is `agent`. Signed into the
+   * worker token downstream; the worker authorizes human-gated actions on it.
+   */
+  origin: MessageOrigin;
 }): MessagePayload {
   const {
     networkConfig,
@@ -148,6 +157,7 @@ export function buildMessagePayload(params: {
     teamId: params.teamId,
     agentId: params.agentId,
     organizationId: params.organizationId,
+    origin: params.origin,
     messageId: params.messageId,
     messageText: params.messageText,
     channelId: params.channelId,

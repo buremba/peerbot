@@ -175,6 +175,8 @@ export async function enqueueAgentMessage(
     organizationId: session.organizationId,
     botId: "lobu-api",
     platform: "api",
+    // Internal programmatic thread dispatch — no human at a socket.
+    origin: "headless",
     messageText,
     platformMetadata: {
       agentId: realAgentId,

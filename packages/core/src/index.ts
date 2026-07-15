@@ -147,4 +147,14 @@ export type {
   WorkerTransportConfig,
 } from "./worker/transport";
 // Gateway ↔ worker wire contract (MessagePayload, JobType, QueuedMessage).
-export type { JobType, MessagePayload, QueuedMessage } from "./worker/wire";
+export type {
+  JobType,
+  MessageOrigin,
+  MessagePayload,
+  QueuedMessage,
+} from "./worker/wire";
+export {
+  isAutomationOrigin,
+  isInteractiveHumanOrigin,
+  resolveMessageOrigin,
+} from "./worker/wire";

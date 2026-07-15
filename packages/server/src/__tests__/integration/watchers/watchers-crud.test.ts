@@ -144,6 +144,59 @@ describe('watcher CRUD', () => {
     await owner.watchers.delete({ watcher_ids: ids });
   });
 
+  it('concurrent group-locked writes on DISTINCT groups do not exhaust the pool (holder starvation)', async () => {
+    // withWatcherGroupLock holders keep a main-pool connection for the whole
+    // handler run. With N >= DB_POOL_MAX concurrent writes on DISTINCT groups
+    // (nothing serializes them), the holders camp every slot and their own
+    // handlers can't get a connection for reads/transactions — a permanent
+    // pool-wide wedge. Regression guard for the dedicated lock pool: N
+    // concurrent create_from_version calls, each from its OWN source watcher
+    // (own group), must all complete.
+    const sql = getTestDb();
+
+    const N = 6; // > the CI pool of DB_POOL_MAX=5
+    const versionIds: number[] = [];
+    const baseIds: string[] = [];
+    for (let i = 0; i < N; i++) {
+      const base = (await owner.watchers.create({
+        entity_id: entityId,
+        slug: `cfv-group-race-base-${i}`,
+        name: `CFV Group Race Base ${i}`,
+        prompt: 'Track things.',
+        agent_id: agentId,
+        sources: [{ name: 'content', query: 'SELECT id FROM events' }],
+      })) as { watcher_id: string };
+      baseIds.push(base.watcher_id);
+      const [row] = await sql<{ current_version_id: number }[]>`
+        SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+      `;
+      versionIds.push(Number(row?.current_version_id));
+    }
+
+    const targets: number[] = [];
+    for (let i = 0; i < N; i++) {
+      const e = (await owner.entities.create({
+        type: 'company',
+        name: `CFV Group Race Target ${i}`,
+      })) as { entity: { id: number } };
+      targets.push(e.entity.id);
+    }
+
+    // N truly-parallel group-locked writes: distinct groups, so the group lock
+    // serializes nothing and all N handlers run concurrently.
+    const results = await Promise.all(
+      versionIds.map((vid, i) =>
+        owner.watchers.createFromVersion({ version_id: vid, entity_ids: [targets[i]] })
+      )
+    );
+    const createdIds = results.flatMap((r) =>
+      (r as { created: Array<{ watcher_id: string }> }).created.map((c) => c.watcher_id)
+    );
+    expect(createdIds.length).toBe(N);
+    expect(new Set(createdIds).size).toBe(N); // all unique — the cross-group id race
+    await owner.watchers.delete({ watcher_ids: [...baseIds, ...createdIds] });
+  });
+
   it('concurrent create_from_version fan-outs allocate unique ids (no PK collision)', async () => {
     // create_from_version allocated ids on the pooled autocommit connection —
     // the same anti-pattern the create handler had. Fire many concurrent

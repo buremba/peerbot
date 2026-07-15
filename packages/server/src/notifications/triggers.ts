@@ -24,7 +24,7 @@ type FieldChangeApprovalDetails = {
 
 type EntityChangeApprovalDetails = {
 	kind: "entity_change";
-	operation: "create" | "delete";
+	operation: "create" | "delete" | "merge";
 	actorLabel?: string | null;
 	entityId?: number | null;
 	entityType?: string | null;
@@ -136,7 +136,9 @@ export function formatActionApprovalTitle(
 			: "entity";
 		return details.operation === "delete"
 			? `Review deleting ${entityLabel}`
-			: `Review creating ${entityLabel}`;
+			: details.operation === "merge"
+				? `Review merging ${entityLabel}`
+				: `Review creating ${entityLabel}`;
 	}
 	return `Action "${actionKey}" needs approval`;
 }
@@ -194,7 +196,9 @@ function buildApprovalRenderModel(
 		action:
 			details.operation === "delete"
 				? "Delete this entity"
-				: "Create this entity",
+				: details.operation === "merge"
+					? "Merge these entities"
+					: "Create this entity",
 		proposal: Object.entries(details.proposal ?? {}).map(([field, value]) => ({
 			label: formatLabel(field),
 			value: truncateNotificationLine(displayNotificationValue(value)),
@@ -230,7 +234,12 @@ function renderApprovalBody(
 		lines.push(`**${who}** wants to update ${entityLink}:`);
 		for (const d of model.diffs) lines.push(`- ${d.label}: ${d.diff}`);
 	} else {
-		const verb = model.action === "Delete this entity" ? "delete" : "create";
+		const verb =
+			model.action === "Delete this entity"
+				? "delete"
+				: model.action === "Merge these entities"
+					? "merge"
+					: "create";
 		lines.push(`**${who}** wants to ${verb} ${entityLink}.`);
 		if (model.proposal.length > 0) {
 			for (const p of model.proposal) lines.push(`- ${p.label}: ${p.value}`);

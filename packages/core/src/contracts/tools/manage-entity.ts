@@ -452,15 +452,33 @@ export const ManageEntityResultSchema = Type.Union([
       has_more: Type.Boolean(),
     }),
   }),
-  Type.Object({
-    action: Type.Literal("merge"),
-    success: Type.Boolean(),
-    message: Type.String(),
-    winner_entity_id: Type.Integer(),
-    loser_entity_id: Type.Integer(),
-    moved_identities: Type.Integer(),
-    repointed_edges: Type.Integer(),
-  }),
+  Type.Union([
+    Type.Object({
+      action: Type.Literal("merge"),
+      success: Type.Boolean(),
+      message: Type.String(),
+      winner_entity_id: Type.Integer(),
+      loser_entity_id: Type.Integer(),
+      moved_identities: Type.Integer(),
+      repointed_edges: Type.Integer(),
+    }),
+    Type.Object({
+      action: Type.Literal("merge"),
+      approval_queued: Type.Literal(true),
+      approval_url: Type.Optional(Type.String()),
+      approval_run_id: Type.Integer(),
+      approval_action: Type.Literal("merge"),
+      approval_proposal: Type.Object({
+        entity_id: Type.Integer(),
+        winner_entity_id: Type.Integer(),
+      }),
+      approval_attribution: Type.Union([
+        Type.Literal("agent"),
+        Type.Literal("watcher"),
+      ]),
+      next_steps: Type.Array(Type.String()),
+    }),
+  ]),
   Type.Object({
     action: Type.Literal("unmerge"),
     success: Type.Boolean(),

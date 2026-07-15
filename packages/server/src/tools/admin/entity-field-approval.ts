@@ -30,6 +30,7 @@ import {
 	deleteEntity,
 	type EntityData,
 } from "../../utils/entity-management";
+import { applyMerge } from "../../utils/entity-merge";
 import { insertEvent } from "../../utils/insert-event";
 import logger from "../../utils/logger";
 import { isUniqueViolation } from "../../utils/pg-errors";
@@ -111,14 +112,29 @@ export interface EntityCreateProposal {
 	reason?: string | null;
 }
 
+export interface EntityMergeProposal {
+	operation: "merge";
+	entity_id: number;
+	winner_entity_id: number;
+	current: {
+		loser: Record<string, unknown>;
+		winner: Record<string, unknown>;
+	};
+	watcher_id?: number | null;
+	window_id?: number | null;
+	attribution?: "watcher" | "agent";
+	reason?: string | null;
+}
+
 export type EntityChangeProposal =
 	| EntityFieldChangeProposal
 	| EntityDeleteProposal
-	| EntityCreateProposal;
+	| EntityCreateProposal
+	| EntityMergeProposal;
 
 function operationOf(
 	proposal: EntityChangeProposal,
-): "create" | "update" | "delete" {
+): "create" | "update" | "delete" | "merge" {
 	return proposal.operation ?? "update";
 }
 
@@ -138,6 +154,10 @@ function asCreateProposal(
 	proposal: EntityChangeProposal,
 ): EntityCreateProposal {
 	return proposal as EntityCreateProposal;
+}
+
+function asMergeProposal(proposal: EntityChangeProposal): EntityMergeProposal {
+	return proposal as EntityMergeProposal;
 }
 
 async function loadWatcherLabel(
@@ -275,6 +295,23 @@ export async function proposeEntityCreate(
 	return proposeEntityChange(ctx, { ...proposal, operation: "create" });
 }
 
+export async function proposeEntityMerge(
+	ctx: ToolContext,
+	proposal: Omit<EntityMergeProposal, "operation" | "current">,
+): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
+	const [loser, winner] = await Promise.all([
+		loadEntitySnapshot(ctx, proposal.entity_id),
+		loadEntitySnapshot(ctx, proposal.winner_entity_id),
+	]);
+	if (!loser) throw new Error(`Entity ${proposal.entity_id} not found`);
+	if (!winner) throw new Error(`Entity ${proposal.winner_entity_id} not found`);
+	return proposeEntityChange(ctx, {
+		...proposal,
+		operation: "merge",
+		current: { loser, winner },
+	});
+}
+
 export async function proposeEntityChange(
 	ctx: ToolContext,
 	proposal: EntityChangeProposal,
@@ -291,6 +328,8 @@ export async function proposeEntityChange(
 		operation === "delete" ? asDeleteProposal(proposal) : null;
 	const createProposal =
 		operation === "create" ? asCreateProposal(proposal) : null;
+	const mergeProposal =
+		operation === "merge" ? asMergeProposal(proposal) : null;
 	const actionKey =
 		operation === "update"
 			? ENTITY_FIELD_CHANGE_ACTION_KEY
@@ -332,6 +371,10 @@ export async function proposeEntityChange(
 	        ${operation !== "create"}
 	        OR r.action_input->'entity_data' = ${sql.json(createProposal?.entity_data ?? {})}::jsonb
 	      )
+	      AND (
+	        ${operation !== "merge"}
+	        OR COALESCE(r.action_input->>'winner_entity_id', '') = ${String(mergeProposal?.winner_entity_id ?? "")}
+	      )
 	    ORDER BY r.id DESC
     LIMIT 1
   `;
@@ -353,12 +396,12 @@ export async function proposeEntityChange(
 	try {
 		const inserted = await sql`
       INSERT INTO runs (
-        organization_id, run_type, action_key, action_input, window_id,
+        organization_id, run_type, action_key, action_input, window_id, watcher_id,
         created_by_user_id, approval_status, status, created_at
       ) VALUES (
         ${ctx.organizationId}, 'internal', ${actionKey},
         ${sql.json(actionInputProposal as unknown as Record<string, unknown>)},
-        ${windowId ?? null},
+        ${windowId ?? null}, ${proposal.watcher_id ?? null},
         null, 'pending', 'pending', current_timestamp
       )
       RETURNING id
@@ -392,7 +435,9 @@ export async function proposeEntityChange(
 		]);
 	const entityType = createProposal
 		? createProposal.entity_data.entity_type
-		: entity?.entity_type;
+		: mergeProposal
+			? String(mergeProposal.current.loser.entity_type ?? "entity")
+			: entity?.entity_type;
 	const entityName = createProposal
 		? createProposal.entity_data.name
 		: entity?.name;
@@ -401,16 +446,23 @@ export async function proposeEntityChange(
 			? formatFieldChangeAction(entityType, fieldKeys)
 			: operation === "delete"
 				? `Delete ${entityType ? formatLabel(entityType).toLowerCase() : "entity"}`
-				: `Create ${formatLabel(entityType ?? "entity").toLowerCase()}`;
+				: operation === "merge"
+					? `Merge duplicate ${formatLabel(entityType ?? "entity").toLowerCase()}`
+					: `Create ${formatLabel(entityType ?? "entity").toLowerCase()}`;
 
 	const event = await insertEvent({
 		entityIds:
 			operation === "create"
 				? []
-				: [
-						(proposal as EntityFieldChangeProposal | EntityDeleteProposal)
-							.entity_id,
-					],
+				: operation === "merge"
+					? [
+							asMergeProposal(proposal).entity_id,
+							asMergeProposal(proposal).winner_entity_id,
+						]
+					: [
+							(proposal as EntityFieldChangeProposal | EntityDeleteProposal)
+								.entity_id,
+						],
 		organizationId: ctx.organizationId,
 		originId: `run_${runId}_pending`,
 		title: `${actionLabel} — pending approval`,
@@ -436,18 +488,27 @@ export async function proposeEntityChange(
 				? (updateProposal.current ?? null)
 				: deleteProposal
 					? deleteProposal.current
-					: null,
+					: mergeProposal
+						? mergeProposal.current
+						: null,
 			proposal: createProposal
 				? createProposal.proposal
-				: deleteProposal
+				: mergeProposal
 					? {
-							entity_id: deleteProposal.entity_id,
-							entity_type:
-								entity?.entity_type ?? deleteProposal.current.entity_type,
-							name: entity?.name ?? deleteProposal.current.name,
-							force_delete_tree: deleteProposal.force_delete_tree ?? false,
+							entity_id: mergeProposal.entity_id,
+							winner_entity_id: mergeProposal.winner_entity_id,
+							name: mergeProposal.current.loser.name,
+							winner_name: mergeProposal.current.winner.name,
 						}
-					: null,
+					: deleteProposal
+						? {
+								entity_id: deleteProposal.entity_id,
+								entity_type:
+									entity?.entity_type ?? deleteProposal.current.entity_type,
+								name: entity?.name ?? deleteProposal.current.name,
+								force_delete_tree: deleteProposal.force_delete_tree ?? false,
+							}
+						: null,
 			watcher_id: proposal.watcher_id ?? null,
 			watcher_name: watcherName,
 			watcher_agent_id: watcherAgentId,
@@ -536,20 +597,30 @@ export async function proposeEntityChange(
 						kind: "entity_change",
 						operation,
 						actorLabel,
-						entityId: deleteProposal ? deleteProposal.entity_id : null,
+						entityId:
+							deleteProposal?.entity_id ?? mergeProposal?.entity_id ?? null,
 						entityType: entityType ?? null,
 						entityName: entityName ?? null,
 						entityUrl,
-						proposal: deleteProposal
+						proposal: mergeProposal
 							? {
-									entity_id: deleteProposal.entity_id,
-									entity_type:
-										entity?.entity_type ?? deleteProposal.current.entity_type,
-									name: entity?.name ?? deleteProposal.current.name,
-									force_delete_tree: deleteProposal.force_delete_tree ?? false,
+									entity_id: mergeProposal.entity_id,
+									winner_entity_id: mergeProposal.winner_entity_id,
+									name: mergeProposal.current.loser.name,
+									winner_name: mergeProposal.current.winner.name,
 								}
-							: (createProposal?.proposal ?? null),
-						current: deleteProposal ? deleteProposal.current : null,
+							: deleteProposal
+								? {
+										entity_id: deleteProposal.entity_id,
+										entity_type:
+											entity?.entity_type ?? deleteProposal.current.entity_type,
+										name: entity?.name ?? deleteProposal.current.name,
+										force_delete_tree:
+											deleteProposal.force_delete_tree ?? false,
+									}
+								: (createProposal?.proposal ?? null),
+						current:
+							deleteProposal?.current ?? mergeProposal?.current ?? null,
 						reason: proposal.reason ?? null,
 					},
 	}).catch((error) =>
@@ -622,7 +693,8 @@ export async function applyEntityFieldChangeProposal(
 			}
 			const live = {
 				$name: rows[0].name ?? null,
-				$parent_id: rows[0].parent_id == null ? null : Number(rows[0].parent_id),
+				$parent_id:
+					rows[0].parent_id == null ? null : Number(rows[0].parent_id),
 				$content: rows[0].content ?? null,
 			} as Record<string, unknown>;
 			const apply: Record<string, unknown> = {};
@@ -633,7 +705,10 @@ export async function applyEntityFieldChangeProposal(
 					Object.hasOwn(proposal.current, key) &&
 					JSON.stringify(live[key] ?? null) !== JSON.stringify(expected ?? null)
 				) {
-					merge.stale[key] = { expected: expected ?? null, live: live[key] ?? null };
+					merge.stale[key] = {
+						expected: expected ?? null,
+						live: live[key] ?? null,
+					};
 					continue;
 				}
 				apply[key] = proposed;
@@ -646,12 +721,10 @@ export async function applyEntityFieldChangeProposal(
           UPDATE entities SET
             name = COALESCE(${nextName}, name),
             parent_id = CASE WHEN ${"$parent_id" in apply} THEN ${
-							("$parent_id" in apply ? apply.$parent_id : null) as
-								| number
-								| null
+							("$parent_id" in apply ? apply.$parent_id : null) as number | null
 						}::bigint ELSE parent_id END,
             content = CASE WHEN ${"$content" in apply} THEN ${
-							("$content" in apply ? (apply.$content as string | null) : null)
+							"$content" in apply ? (apply.$content as string | null) : null
 						} ELSE content END,
             updated_at = current_timestamp
           WHERE id = ${proposal.entity_id} AND deleted_at IS NULL
@@ -695,6 +768,15 @@ export async function applyEntityChangeProposal(
 				},
 			},
 		);
+	}
+	if (operation === "merge") {
+		const mergeProposal = asMergeProposal(proposal);
+		return applyMerge({
+			orgId: ctx.organizationId,
+			loserId: mergeProposal.entity_id,
+			winnerId: mergeProposal.winner_entity_id,
+			mergedBy: ctx.userId ?? "system",
+		});
 	}
 	const deleteProposal = asDeleteProposal(proposal);
 	return deleteEntity(

@@ -22,14 +22,7 @@ import {
 	RejectBatchAction,
 } from "@lobu/core/contracts/tools/manage-operations";
 import type { Static } from "@sinclair/typebox";
-import {
-	getDb,
-	parsePgNumberArray,
-	pgBigintArray,
-	pgTextArray,
-} from "../../db/client";
-import type { Env } from "../../index";
-import { callTool as callProxyTool } from "../../mcp-proxy/client";
+import { compileConnectionRowVisibility } from "../../authz/connection-visibility";
 import {
 	agentExistsInOrg,
 	resolveActingPrincipal,
@@ -38,9 +31,15 @@ import {
 	resolveWritePolicyDecision,
 	watcherIdFromPrincipalId,
 } from "../../authz/entity-policy";
-import { compileConnectionRowVisibility } from "../../authz/connection-visibility";
 import { authzScopeFromToolContext } from "../../authz/scope";
-import { callerIsAdmin } from "./helpers/db-helpers";
+import {
+	getDb,
+	parsePgNumberArray,
+	pgBigintArray,
+	pgTextArray,
+} from "../../db/client";
+import type { Env } from "../../index";
+import { callTool as callProxyTool } from "../../mcp-proxy/client";
 import { notifyActionApprovalNeeded } from "../../notifications/triggers";
 import {
 	defaultActionModeForOperation,
@@ -81,6 +80,7 @@ import {
 	ENTITY_CHANGE_ACTION_KEYS,
 	type EntityChangeProposal,
 } from "./entity-field-approval";
+import { callerIsAdmin } from "./helpers/db-helpers";
 import {
 	applyManageAgentsProposal,
 	MANAGE_AGENTS_ACTION_KEY,
@@ -101,14 +101,14 @@ type InlineExecutionResult =
 	| { status: "failed"; error_message: string };
 
 type ConnectionRow = {
-  id: number;
-  connector_key: string;
-  status: string;
-  auth_profile_id: number | null;
-  app_auth_profile_id: number | null;
-  display_name: string | null;
-  config: Record<string, unknown> | null;
-  name: string;
+	id: number;
+	connector_key: string;
+	status: string;
+	auth_profile_id: number | null;
+	app_auth_profile_id: number | null;
+	display_name: string | null;
+	config: Record<string, unknown> | null;
+	name: string;
 };
 
 type ExecutionTarget = {
@@ -148,21 +148,21 @@ type OperationTargetRow = {
  * separates because operation keys themselves contain dots (`slack.send_message`).
  */
 export function qualifiedOperationKey(
-  connectorKey: string,
-  operationKey: string,
+	connectorKey: string,
+	operationKey: string,
 ): string {
-  return `${connectorKey}::${operationKey}`;
+	return `${connectorKey}::${operationKey}`;
 }
 
 const manageOperationsTool = defineActionTool("manage_operations", {
-  list_available: action(ListAvailableAction, handleListAvailable),
-  execute: action(ExecuteAction, handleExecute),
-  list_runs: action(ListRunsAction, handleListRuns),
-  get_run: action(GetRunAction, handleGetRun),
-  approve: action(ApproveAction, handleApprove),
-  reject: action(RejectAction, handleReject),
-  approve_batch: action(ApproveBatchAction, handleApproveBatch),
-  reject_batch: action(RejectBatchAction, handleRejectBatch),
+	list_available: action(ListAvailableAction, handleListAvailable),
+	execute: action(ExecuteAction, handleExecute),
+	list_runs: action(ListRunsAction, handleListRuns),
+	get_run: action(GetRunAction, handleGetRun),
+	approve: action(ApproveAction, handleApprove),
+	reject: action(RejectAction, handleReject),
+	approve_batch: action(ApproveBatchAction, handleApproveBatch),
+	reject_batch: action(RejectBatchAction, handleRejectBatch),
 });
 
 export { ManageOperationsResultSchema, ManageOperationsSchema };
@@ -324,32 +324,32 @@ async function executeMcpToolInline(
 			status: "failed",
 			error_message: "Invalid MCP operation backend config",
 		};
-  }
+	}
 
 	let result: Awaited<ReturnType<typeof callProxyTool>>;
 	try {
 		result = await callProxyTool(
-    connection.connector_key,
-    {
-      upstream_url: operation.backend_config.upstreamUrl,
+			connection.connector_key,
+			{
+				upstream_url: operation.backend_config.upstreamUrl,
 				tool_prefix: "",
-    },
-    organizationId,
-    operation.backend_config.toolName,
+			},
+			organizationId,
+			operation.backend_config.toolName,
 			actionInput,
 			connection.id,
-  );
+		);
 	} catch (error) {
 		return failRunInline(runId, organizationId, getErrorMessage(error));
 	}
 
-  if (result.isError) {
-    const errorText =
-      (result.content as Array<{ type: string; text?: string }>).find(
+	if (result.isError) {
+		const errorText =
+			(result.content as Array<{ type: string; text?: string }>).find(
 				(item) => item?.type === "text",
 			)?.text ?? "Upstream MCP error";
-    return failRunInline(runId, organizationId, errorText);
-  }
+		return failRunInline(runId, organizationId, errorText);
+	}
 
 	return completeRunInline(runId, organizationId, {
 		content: result.content,
@@ -366,16 +366,16 @@ async function executeOperationInline(
 	abortSignal?: AbortSignal,
 ): Promise<InlineExecutionResult> {
 	if (operation.backend === "local_action") {
-    return executeLocalActionInline(
-      runId,
-      organizationId,
-      connection,
-      operation,
-      actionInput,
-      env,
+		return executeLocalActionInline(
+			runId,
+			organizationId,
+			connection,
+			operation,
+			actionInput,
+			env,
 			abortSignal,
-    );
-  }
+		);
+	}
 	if (operation.backend === "mcp_tool") {
 		return executeMcpToolInline(
 			runId,
@@ -384,7 +384,7 @@ async function executeOperationInline(
 			operation,
 			actionInput,
 		);
-  }
+	}
 	return executeHttpOperation(
 		runId,
 		organizationId,
@@ -395,7 +395,9 @@ async function executeOperationInline(
 	);
 }
 
-function executionTargetFromRow(row: OperationTargetRow): InternalExecutionTarget {
+function executionTargetFromRow(
+	row: OperationTargetRow,
+): InternalExecutionTarget {
 	const base = {
 		connection_id: Number(row.id),
 		slug: row.slug,
@@ -466,7 +468,11 @@ function resolveOperationReadiness(targets: ExecutionTarget[]): {
 		return { readyTarget, executable: true, readiness: "ready" };
 	}
 	if (targets.length === 0) {
-		return { readyTarget: undefined, executable: false, readiness: "disconnected" };
+		return {
+			readyTarget: undefined,
+			executable: false,
+			readiness: "disconnected",
+		};
 	}
 	if (targets.every((target) => target.status === "disabled")) {
 		return { readyTarget: undefined, executable: false, readiness: "disabled" };
@@ -606,7 +612,8 @@ function buildAvailableOperation(args: {
 	viewUrl: string | undefined;
 }): AvailableOperation & Record<string, unknown> {
 	const { operation, internalTargets, includeInputSchema, viewUrl } = args;
-	const { backend_config: _privateBackendConfig, ...publicOperation } = operation;
+	const { backend_config: _privateBackendConfig, ...publicOperation } =
+		operation;
 	const targets = internalTargets.map((target): ExecutionTarget => {
 		const {
 			config,
@@ -743,23 +750,23 @@ async function handleListAvailable(
 
 	const targetsByConnector = groupExecutionTargets(targetRows);
 
-  // A `disabled` connector_action effect turns an operation OFF for this principal
-  // — it shouldn't be listed at all (Disabled HIDES the action, unlike deny/approval
-  // which surface then gate on execute). Two levels now: the BLANKET `execute` rule
-  // (operation_key NULL) can disable the whole connector, and a PER-OPERATION rule
-  // can disable a single op while the rest stay listed.
-  const actor = await resolveActingPrincipal(getDb(), {
-    organizationId: ctx.organizationId,
-    userId: ctx.userId,
-    agentId: ctx.agentId,
-    sessionWatcherId: ctx.actingWatcherId ?? null,
-  });
-  // Fetch the FULL filtered set (offset 0, no caller limit), drop per-op-disabled
-  // ops across the WHOLE set, THEN paginate. Filtering a single page and subtracting
-  // its hidden count from the global total gives an inconsistent `total` across pages
-  // and can return a short page while visible ops remain past the offset (a client
-  // treating "short page = end" would silently truncate the catalog). Pagination must
-  // run on the post-filter list.
+	// A `disabled` connector_action effect turns an operation OFF for this principal
+	// — it shouldn't be listed at all (Disabled HIDES the action, unlike deny/approval
+	// which surface then gate on execute). Two levels now: the BLANKET `execute` rule
+	// (operation_key NULL) can disable the whole connector, and a PER-OPERATION rule
+	// can disable a single op while the rest stay listed.
+	const actor = await resolveActingPrincipal(getDb(), {
+		organizationId: ctx.organizationId,
+		userId: ctx.userId,
+		agentId: ctx.agentId,
+		sessionWatcherId: ctx.actingWatcherId ?? null,
+	});
+	// Fetch the FULL filtered set (offset 0, no caller limit), drop per-op-disabled
+	// ops across the WHOLE set, THEN paginate. Filtering a single page and subtracting
+	// its hidden count from the global total gives an inconsistent `total` across pages
+	// and can return a short page while visible ops remain past the offset (a client
+	// treating "short page = end" would silently truncate the catalog). Pagination must
+	// run on the post-filter list.
 	// For an explicit connection, targetRows already performed the visibility and
 	// authorization lookup. Query the connector catalog by that row's key instead
 	// of applying listOperations' legacy per-connection action-mode filter; the
@@ -769,23 +776,23 @@ async function handleListAvailable(
 		args.connection_id !== undefined
 			? targetRows[0]?.connector_key
 			: args.connector_key;
-  const full = await listOperations({
-    organizationId: ctx.organizationId,
+	const full = await listOperations({
+		organizationId: ctx.organizationId,
 		connectorKey: catalogConnectorKey,
-    entityId: args.entity_id,
-    kind: args.kind,
-    backend: args.backend,
+		entityId: args.entity_id,
+		kind: args.kind,
+		backend: args.backend,
 		// Required-input detection still needs the schema when the caller hides the
 		// descriptor copy from the public response.
 		includeInputSchema: true,
-    includeOutputSchema: args.include_output_schema ?? false,
-    // Fetch the WHOLE filtered set — listOperations defaults to limit 100, which
-    // would silently drop ops past index 100 and make them unreachable at any
-    // caller offset. We must filter per-op-disabled across the full set BEFORE
-    // slicing, so no internal cap here; the caller's limit/offset apply below.
-    limit: Number.MAX_SAFE_INTEGER,
-    offset: 0,
-  });
+		includeOutputSchema: args.include_output_schema ?? false,
+		// Fetch the WHOLE filtered set — listOperations defaults to limit 100, which
+		// would silently drop ops past index 100 and make them unreachable at any
+		// caller offset. We must filter per-op-disabled across the full set BEFORE
+		// slicing, so no internal cap here; the caller's limit/offset apply below.
+		limit: Number.MAX_SAFE_INTEGER,
+		offset: 0,
+	});
 	const qualifiedWriteKeys = full.operations
 		.filter((operation) => operation.kind === "write")
 		.map((operation) =>
@@ -803,20 +810,20 @@ async function handleListAvailable(
 	});
 	const blanketDisabled = policyEffects.get(null) === "disabled";
 
-  // Hide WRITE ops whose per-op (or blanket) policy is disabled. Reads are never
-  // filtered by agent write-policy. Humans always resolve auto for policy.
+	// Hide WRITE ops whose per-op (or blanket) policy is disabled. Reads are never
+	// filtered by agent write-policy. Humans always resolve auto for policy.
 	const visibleFlags = full.operations.map((op) => {
-			if (op.kind === "read") return "auto" as const;
-			if (blanketDisabled) return "disabled" as const;
-			return (
-				policyEffects.get(
-					qualifiedOperationKey(op.connector_key, op.operation_key),
-				) ?? "auto"
-  );
-		});
+		if (op.kind === "read") return "auto" as const;
+		if (blanketDisabled) return "disabled" as const;
+		return (
+			policyEffects.get(
+				qualifiedOperationKey(op.connector_key, op.operation_key),
+			) ?? "auto"
+		);
+	});
 	const policyVisible = full.operations.filter(
 		(_op, i) => visibleFlags[i] !== "disabled",
-  );
+	);
 
 	const queryTokens = (args.query ?? "")
 		.toLocaleLowerCase()
@@ -831,8 +838,7 @@ async function handleListAvailable(
 		.map((operation) =>
 			buildAvailableOperation({
 				operation,
-				internalTargets:
-					targetsByConnector.get(operation.connector_key) ?? [],
+				internalTargets: targetsByConnector.get(operation.connector_key) ?? [],
 				includeInputSchema: args.include_input_schema !== false,
 				viewUrl: connectorViewUrl(operation.connector_key),
 			}),
@@ -844,15 +850,15 @@ async function handleListAvailable(
 			return operationMatchesQuery(operation, queryTokens);
 		});
 
-  const offset = args.offset ?? 0;
+	const offset = args.offset ?? 0;
 	const limit = args.limit ?? 100;
-  return {
+	return {
 		action: "list_available",
 		operations: publicOperations.slice(offset, offset + limit),
 		total: publicOperations.length,
-    limit,
-    offset,
-  };
+		limit,
+		offset,
+	};
 }
 
 // Poll `runs` until status flips to completed/failed/timeout or we hit
@@ -1169,58 +1175,58 @@ async function handleListRuns(
 	args: Static<typeof ListRunsAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
-  const sql = getDb();
-  const limit = args.limit ?? 20;
-  // Keyset pagination short-circuits offset whenever a cursor is supplied.
-  const hasCursor = args.before_id != null && args.before_created_at != null;
-  const offset = hasCursor ? 0 : (args.offset ?? 0);
+	const sql = getDb();
+	const limit = args.limit ?? 20;
+	// Keyset pagination short-circuits offset whenever a cursor is supplied.
+	const hasCursor = args.before_id != null && args.before_created_at != null;
+	const offset = hasCursor ? 0 : (args.offset ?? 0);
 
-  // Shared WHERE fragment so the count and page queries can't drift apart.
-  let where = sql`r.organization_id = ${ctx.organizationId}`;
-  if (args.run_types && args.run_types.length > 0) {
-    // fetch_types:false means JS arrays aren't auto-serialized — use the
-    // PG array-literal helpers (see db/client.ts).
-    where = sql`${where} AND r.run_type = ANY(${pgTextArray(args.run_types)}::text[])`;
-  }
-  // connection scope: scalar connection_id (REST/SDK), an explicit id list, or
-  // every connection pinned to a device.
-  if (args.connection_id != null) {
-    where = sql`${where} AND r.connection_id = ${args.connection_id}`;
-  }
-  if (args.connection_ids && args.connection_ids.length > 0) {
-    where = sql`${where} AND r.connection_id = ANY(${pgBigintArray(args.connection_ids)}::bigint[])`;
-  }
-  if (args.feed_ids && args.feed_ids.length > 0) {
-    where = sql`${where} AND r.feed_id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;
-  }
-  if (args.device_worker_id) {
-    where = sql`${where} AND r.connection_id IN (
+	// Shared WHERE fragment so the count and page queries can't drift apart.
+	let where = sql`r.organization_id = ${ctx.organizationId}`;
+	if (args.run_types && args.run_types.length > 0) {
+		// fetch_types:false means JS arrays aren't auto-serialized — use the
+		// PG array-literal helpers (see db/client.ts).
+		where = sql`${where} AND r.run_type = ANY(${pgTextArray(args.run_types)}::text[])`;
+	}
+	// connection scope: scalar connection_id (REST/SDK), an explicit id list, or
+	// every connection pinned to a device.
+	if (args.connection_id != null) {
+		where = sql`${where} AND r.connection_id = ${args.connection_id}`;
+	}
+	if (args.connection_ids && args.connection_ids.length > 0) {
+		where = sql`${where} AND r.connection_id = ANY(${pgBigintArray(args.connection_ids)}::bigint[])`;
+	}
+	if (args.feed_ids && args.feed_ids.length > 0) {
+		where = sql`${where} AND r.feed_id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;
+	}
+	if (args.device_worker_id) {
+		where = sql`${where} AND r.connection_id IN (
       SELECT id FROM connections
       WHERE device_worker_id = ${args.device_worker_id}
         AND organization_id = ${ctx.organizationId}
         AND deleted_at IS NULL
     )`;
-  }
-  if (args.operation_key) {
-    where = sql`${where} AND r.action_key = ${args.operation_key}`;
-  }
-  if (args.status) {
-    where = sql`${where} AND r.status = ${args.status}`;
-  }
-  if (args.approval_status) {
-    where = sql`${where} AND r.approval_status = ${args.approval_status}`;
-  }
-  if (args.watcher_ids && args.watcher_ids.length > 0) {
-    where = sql`${where} AND r.watcher_id = ANY(${pgBigintArray(args.watcher_ids)}::bigint[])`;
-  }
+	}
+	if (args.operation_key) {
+		where = sql`${where} AND r.action_key = ${args.operation_key}`;
+	}
+	if (args.status) {
+		where = sql`${where} AND r.status = ${args.status}`;
+	}
+	if (args.approval_status) {
+		where = sql`${where} AND r.approval_status = ${args.approval_status}`;
+	}
+	if (args.watcher_ids && args.watcher_ids.length > 0) {
+		where = sql`${where} AND r.watcher_id = ANY(${pgBigintArray(args.watcher_ids)}::bigint[])`;
+	}
 
-  const countQuery = sql`SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`;
+	const countQuery = sql`SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`;
 
-  let pageWhere = where;
-  if (hasCursor) {
-    pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
-  }
-  const query = sql`
+	let pageWhere = where;
+	if (hasCursor) {
+		pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
+	}
+	const query = sql`
     SELECT r.id, r.run_type, r.watcher_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
@@ -1235,24 +1241,24 @@ async function handleListRuns(
     LIMIT ${limit} OFFSET ${offset}
   `;
 
-  const [countResult, rows] = await Promise.all([countQuery, query]);
+	const [countResult, rows] = await Promise.all([countQuery, query]);
 
-  return {
+	return {
 		action: "list_runs",
-    runs: rows,
-    total: Number(countResult[0]?.total ?? 0),
-    limit,
-    offset,
-    has_more: rows.length === limit,
-  };
+		runs: rows,
+		total: Number(countResult[0]?.total ?? 0),
+		limit,
+		offset,
+		has_more: rows.length === limit,
+	};
 }
 
 async function handleGetRun(
 	args: Static<typeof GetRunAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
-  const sql = getDb();
-  const rows = await sql`
+	const sql = getDb();
+	const rows = await sql`
     SELECT r.id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message,
@@ -1275,9 +1281,9 @@ async function handleGetRun(
  * (e.g. a worker completing a device action it was told to run).
  */
 export interface ApprovalReviewer {
-  userId: string;
-  /** Display name resolved at decision time; falls back to userId when unknown. */
-  name: string | null;
+	userId: string;
+	/** Display name resolved at decision time; falls back to userId when unknown. */
+	name: string | null;
 }
 
 export async function supersedeActionEvent(
@@ -1289,8 +1295,8 @@ export async function supersedeActionEvent(
 	extraMetadata: Record<string, unknown> = {},
 	reviewer: ApprovalReviewer | null = null,
 ): Promise<number | undefined> {
-  const sql = getDb();
-  const originalEvent = await sql`
+	const sql = getDb();
+	const originalEvent = await sql`
     SELECT id, entity_ids, connection_id, connector_key, metadata, author_name, interaction_input_schema, interaction_input
     FROM current_event_records
     WHERE run_id = ${runId}
@@ -1378,11 +1384,11 @@ export async function supersedeActionEvent(
 async function resolveReviewer(
 	ctx: ToolContext,
 ): Promise<ApprovalReviewer | null> {
-  if (!ctx.userId) return null;
-  const rows = await getDb()<{ name: string | null }>`
+	if (!ctx.userId) return null;
+	const rows = await getDb()<{ name: string | null }>`
     SELECT name FROM "user" WHERE id = ${ctx.userId} LIMIT 1
   `;
-  return { userId: ctx.userId, name: rows[0]?.name ?? null };
+	return { userId: ctx.userId, name: rows[0]?.name ?? null };
 }
 
 /**
@@ -1723,7 +1729,7 @@ async function claimEntityChangeRun(
             AND action_key = ANY(${actionKeys}::text[])
           RETURNING action_input
         `
-      : await sql`
+			: await sql`
           UPDATE runs
           SET approval_status = 'rejected', status = 'cancelled',
               error_message = ${rejectReason ?? "Rejected by user"}, completed_at = NOW()
@@ -1743,7 +1749,7 @@ async function claimEntityChangeRun(
 
 function entityChangeOperation(
 	proposal: EntityChangeProposal,
-): "create" | "update" | "delete" {
+): "create" | "update" | "delete" | "merge" {
 	return proposal.operation ?? "update";
 }
 
@@ -1761,6 +1767,13 @@ function describeEntityChange(proposal: EntityChangeProposal): string {
 			{ operation: "delete" }
 		>;
 		return deleteProposal.current?.name ?? `entity ${deleteProposal.entity_id}`;
+	}
+	if (operation === "merge") {
+		const mergeProposal = proposal as Extract<
+			EntityChangeProposal,
+			{ operation: "merge" }
+		>;
+		return `${String(mergeProposal.current.loser.name ?? `entity ${mergeProposal.entity_id}`)} into ${String(mergeProposal.current.winner.name ?? `entity ${mergeProposal.winner_entity_id}`)}`;
 	}
 	return (proposal as Extract<EntityChangeProposal, { operation: "create" }>)
 		.entity_data.name;

@@ -50,7 +50,7 @@ test('all feed URLs failing → sync throws with per-URL errors, not a clean emp
 test('partial failure → good feed items returned, failures surfaced in metadata', async () => {
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = typeof input === 'string' ? input : input.toString();
-    if (url.startsWith('https://ok.example.com')) {
+    if (new URL(url).hostname === 'ok.example.com') {
       return new Response(FEED_XML, { status: 200 });
     }
     return new Response('boom', { status: 503, statusText: 'Service Unavailable' });

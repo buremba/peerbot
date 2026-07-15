@@ -133,8 +133,10 @@ export * from "./utils/sanitize";
 export * from "./utils/secret-redaction";
 // Shared Lobu runtime session.jsonl parser (gateway + worker).
 export {
+  type BashExecutionContent,
   entryToMessage,
   type ParsedMessage,
+  type ParsedMessageType,
   parseSessionEntries,
   type SessionEntry,
   titleFromSessionJsonl,

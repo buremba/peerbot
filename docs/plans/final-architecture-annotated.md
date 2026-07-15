@@ -1,5 +1,13 @@
 # Lobu Final Architecture — Annotated for Implementation
 
+> **Status (2026-07-15): ARCHIVED SNAPSHOT.** The annotations were verified against `main` at
+> authoring time (2026-07-14); treat every `file:line` citation and every "does not exist today"
+> claim as historical, not current. Known items that have **shipped since**: WI-0.1
+> watcher-definition approval queue (`queueWatcherWriteForApproval`, #1903); WI-0.3 Slack-decidable
+> config approvals (#1918/#1924/#1926/#1928); §16.2's run-backed configuration link — `run_id`
+> prefill and the guarded pending-proposal endpoints now exist (#1918/#1924). Re-verify against
+> `main` before acting on any remaining item.
+
 > **How to read this document.** This is the original architecture plan with inline review annotations
 > under each affected section. Every annotation is one of:
 >
@@ -43,6 +51,8 @@
 > (`agent_config` create default `approval`). Fix: copy the `queueWriteForApproval` pattern that
 > `manage_agents` already uses (`packages/server/src/tools/admin/manage_agents.ts:585-633`) so a
 > proposed watcher becomes a pending internal run + approval event instead of a 403.
+> **Update (2026-07-15): SHIPPED** — `queueWatcherWriteForApproval` landed in #1903; this item is
+> done, do not re-implement.
 >
 > **WI-0.2 — Slack identity → member mapping on the message-enqueue path (critical/security).**
 > For Slack, the enqueued `userId` is the raw platform author id (`U…`), so the member join never
@@ -561,6 +571,9 @@ Every public action has one `ActionDefinition` (input/output schemas, access tie
 > `packages/server/src/tools/admin/manage_schedules.ts:128`). Build: the `run_id`-reading form route,
 > the guarded proposal-serve endpoint, the run-completing submit, and `sourceRunId` threading through
 > OAuth state.
+> **Update (2026-07-15): largely SHIPPED** — agent/watcher `run_id` prefill and the guarded pending
+> endpoints landed in #1918/#1924; the still-missing piece is the inference/runtime-connection flow
+> (`sourceRunId` through OAuth state).
 
 # 17. Secret entry
 

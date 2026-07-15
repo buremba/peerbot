@@ -41,4 +41,22 @@ describe("parseConfig", () => {
 	test("an unsupported platform is rejected", () => {
 		expect(() => parseConfig("carrier-pigeon", {})).toThrow();
 	});
+
+	test("wrong-typed credentials are rejected, not coerced", () => {
+		// A numeric botToken must NOT be silently stringified to "12345".
+		expect(() =>
+			parseConfig("slack", { botToken: 12345, signingSecret: "s" }),
+		).toThrow(/botToken/);
+	});
+
+	test("scalar mentionRoleIds is rejected (array required)", () => {
+		expect(() =>
+			parseConfig("discord", {
+				botToken: "t",
+				applicationId: "a",
+				publicKey: "p",
+				mentionRoleIds: "role-1",
+			}),
+		).toThrow(/mentionRoleIds/);
+	});
 });

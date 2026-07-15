@@ -179,6 +179,10 @@ describe("method-metadata", () => {
 		expect(connectExample).toContain("feeds.create");
 		expect(connectExample).toContain("connection_id");
 		expect(connectExample).toContain("feed_key");
+		// The website 'pages' config must use the REAL connector keys (urls /
+		// sitemap_url) — a made-up key (config:{} or {url}) creates a feed that
+		// collects zero events, defeating the whole two-hop.
+		expect(connectExample).toMatch(/urls|sitemap_url/);
 
 		// feeds.create must document the connection_id + feed_key it needs and
 		// point at how to discover the config shape — not leave the agent guessing.

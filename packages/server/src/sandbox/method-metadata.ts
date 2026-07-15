@@ -586,11 +586,12 @@ export default async (_ctx, client) => {
   // connect_url / pending_auth for the user to finish first.
   // The feed's config keys come from the connector's feeds_schema — inspect it
   // via client.catalog.listInstalled({ kinds: ['connectors'] }) (each entry's
-  // detail.feeds_schema[feed_key]) if you're unsure what to pass.
+  // detail.feeds_schema[feed_key]) if you're unsure what to pass. For website's
+  // 'pages' feed that's { urls: [...] } (or { sitemap_url }).
   return client.feeds.create({
     connection_id: c.connection_id,
     feed_key: 'pages',
-    config: {},
+    config: { urls: ['https://example.com'] },
   });
 };`,
 	},
@@ -712,7 +713,7 @@ export default async (_ctx, client) => {
 		signature:
 			"feeds.create(input: { connection_id: number; feed_key: string; config?: object; display_name?: string; schedule?: string }): Promise<unknown>",
 		example:
-			"await client.feeds.create({ connection_id: 42, feed_key: 'pages', config: { url: 'https://example.com' } });",
+			"await client.feeds.create({ connection_id: 42, feed_key: 'pages', config: { urls: ['https://example.com'] } });",
 	},
 	"feeds.update": { summary: "Update a feed.", access: "write" },
 	"feeds.delete": {

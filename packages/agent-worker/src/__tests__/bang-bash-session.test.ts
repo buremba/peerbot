@@ -117,21 +117,13 @@ describe("persistBangBashSession", () => {
   });
 
   test("no header yet → writes nothing (blocked-preflight on a virgin manager)", async () => {
-    const sessionManager = SessionManager.create(
-      tempDir,
-      join(tempDir, "sessions-virgin")
-    );
-    const sessionFile = sessionManager.getSessionFile();
-    if (sessionManager.getHeader() === null) {
-      await persistBangBashSession(sessionManager, sessionFile);
-      expect(existsSync(sessionFile)).toBe(false);
-    } else {
-      // pi mints the header at create() in this version — the guard is then
-      // unreachable and persisting a branch-less session must still round-trip.
-      await persistBangBashSession(sessionManager, sessionFile);
-      const reopened = SessionManager.open(sessionFile);
-      expect(reopened.getHeader()?.id).toBe(sessionManager.getHeader()?.id);
-    }
+    const sessionManager = {
+      getHeader: () => null,
+    } as unknown as SessionManager;
+    const sessionFile = join(tempDir, "missing-header.jsonl");
+
+    await persistBangBashSession(sessionManager, sessionFile);
+    expect(existsSync(sessionFile)).toBe(false);
   });
 });
 

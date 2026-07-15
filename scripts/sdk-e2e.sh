@@ -530,13 +530,17 @@ for _ in $(seq 1 30); do
 done
 [ "$EXCL_REQS_AFTER" -gt "$EXCL_REQS_BEFORE" ] || fail "!!-bash follow-up turn never produced a model request (nothing to assert exclusion against)"
 # Negative: the excluded marker must not reach the model in ANY later request.
-if tail -n "+$((EXCL_REQS_BEFORE + 1))" "$MOCK_REQLOG" | grep -q "$EXCL_MARKER"; then
+if awk -v start="$((EXCL_REQS_BEFORE + 1))" -v marker="$EXCL_MARKER" \
+  'NR >= start && index($0, marker) { found=1 } END { exit !found }' \
+  "$MOCK_REQLOG"; then
   fail "!!-bash: excluded marker '$EXCL_MARKER' leaked into a later model request (excludeFromContext broken)"
 fi
 # Positive control: the PLAIN-`!` marker from 5d must be IN that same request —
 # unexcluded bashExecution records do flow into model context. Without this the
 # negative assert would pass vacuously if bash records never reached context.
-tail -n "+$((EXCL_REQS_BEFORE + 1))" "$MOCK_REQLOG" | grep -q "$BANG_MARKER" \
+awk -v start="$((EXCL_REQS_BEFORE + 1))" -v marker="$BANG_MARKER" \
+  'NR >= start && index($0, marker) { found=1 } END { exit !found }' \
+  "$MOCK_REQLOG" \
   || fail "!!-bash positive control: plain-\`!\` marker '$BANG_MARKER' missing from the later model request — bash records aren't reaching context, absence assert is vacuous"
 echo "✓ !!-bash: record visible in transcript, absent from later model context (plain-! record present — control non-vacuous)"
 

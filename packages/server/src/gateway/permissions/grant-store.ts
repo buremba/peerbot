@@ -47,14 +47,17 @@ function buildGrantCandidates(pattern: string, kind: GrantKind): string[] {
     }
   }
 
-  // Domain wildcard: "sub.example.com" is covered by "*.example.com" or
-  // ".example.com".
+  // Domain wildcard: every ancestor suffix covers the host — "a.b.example.com"
+  // is covered by ".b.example.com" AND ".example.com", matching the proxy's
+  // `matchesDomainPattern` which suffix-matches at any depth. Candidates stay
+  // most-specific-first so `hasGrant`'s precedence loop is deterministic. The
+  // literal "*." variant is kept for rows stored before write-normalization
+  // collapsed it to the ".suffix" form.
   if (kind === "domain") {
     const parts = pattern.split(".");
-    if (parts.length > 2) {
-      const tail = parts.slice(1).join(".");
-      candidates.push(normalizeDomainPattern(`.${tail}`));
-      candidates.push(normalizeDomainPattern(`*.${tail}`));
+    for (let i = 1; i < parts.length - 1; i++) {
+      const tail = parts.slice(i).join(".");
+      candidates.push(`.${tail}`, `*.${tail}`);
     }
   }
 

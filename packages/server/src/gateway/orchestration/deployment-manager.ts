@@ -808,13 +808,14 @@ export class DeploymentManager {
   protected grantStore?: GrantStore;
   protected policyStore?: PolicyStore;
   /**
-   * Per-agent cache of the last-synced grant pattern set. Used to
-   * (a) skip redundant `grantStore.grant()` writes when the set is
-   * unchanged and (b) compute the revoke-diff so patterns dropped from
-   * `networkConfig.allowedDomains` / `preApprovedTools` are removed from
-   * the grant store instead of lingering forever.
+   * Per-agent cache of the last-synced grant patterns (pattern → denied
+   * flag). Used to (a) skip redundant `grantStore.grant()` writes when the
+   * set is unchanged and (b) compute the revoke-diff so patterns dropped
+   * from `networkConfig.allowedDomains` / `deniedDomains` /
+   * `preApprovedTools` are removed from the grant store instead of
+   * lingering forever.
    */
-  private grantSyncCache = new Map<string, Set<string>>();
+  private grantSyncCache = new Map<string, Map<string, boolean>>();
   /**
    * In-flight `ensureDeployment` promises keyed by deploymentName. Coalesces
    * concurrent calls within a single gateway process so the orchestrator-
@@ -1111,31 +1112,10 @@ export class DeploymentManager {
     const agentId = messageData.agentId;
     const orgId = messageData.organizationId;
 
-    // Sync networkConfig.allowedDomains to grant store
-    if (
-      this.grantStore &&
-      agentId &&
-      messageData.networkConfig?.allowedDomains?.length
-    ) {
-      for (const domain of messageData.networkConfig.allowedDomains) {
-        await this.grantStore.grant(agentId, domain, null, undefined, orgId);
-      }
-      logger.info(
-        `Synced network config domains as grants for ${deploymentName}: ${messageData.networkConfig.allowedDomains.join(", ")}`
-      );
-    }
-
-    // Sync operator-pre-approved MCP tool patterns to grant store
-    if (this.grantStore && agentId && messageData.preApprovedTools?.length) {
-      for (const pattern of messageData.preApprovedTools) {
-        await this.grantStore.grant(agentId, pattern, null, undefined, orgId);
-      }
-      logger.info(
-        `Synced pre-approved tool patterns as grants for ${deploymentName}: ${messageData.preApprovedTools.join(", ")}`
-      );
-    }
-
-    this.syncEgressPolicy(messageData, deploymentName);
+    // Sync network domains (allow + deny), pre-approved MCP tool patterns,
+    // and the egress judge policy — single-sourced with the per-message
+    // refresh path so create and update can never diverge.
+    await this.syncNetworkConfigGrants(messageData);
 
     // Auto-add Nix cache domains as permanent grants when Nix packages are configured
     if (
@@ -1167,10 +1147,12 @@ export class DeploymentManager {
    *
    * Computes the diff against the last-synced set per agent:
    *   - patterns in the new set but not the previous are `grant()`-ed
+   *     (deniedDomains become deny grants; a flipped allow/deny flag is
+   *     re-written in place via the grant upsert)
    *   - patterns in the previous set but not the new are `revoke()`-d
-   * This means clearing `networkConfig.allowedDomains` or
-   * `preApprovedTools` in lobu.config.ts actually drops access, instead of
-   * leaving stale grants in the store.
+   * This means clearing `networkConfig.allowedDomains` / `deniedDomains` or
+   * `preApprovedTools` in lobu.config.ts actually drops the rule, instead
+   * of leaving stale grants in the store.
    */
   async syncNetworkConfigGrants(messageData: MessagePayload): Promise<void> {
     const agentId = messageData.agentId;
@@ -1180,20 +1162,26 @@ export class DeploymentManager {
 
     if (!this.grantStore) return;
 
-    const nextPatterns = new Set<string>();
+    // pattern → denied flag. Denies are added last so a domain listed on
+    // both sides collapses to deny (matching the proxy's deny precedence).
+    const nextPatterns = new Map<string, boolean>();
     for (const domain of messageData.networkConfig?.allowedDomains ?? []) {
-      nextPatterns.add(domain);
+      nextPatterns.set(domain, false);
     }
     for (const pattern of messageData.preApprovedTools ?? []) {
-      nextPatterns.add(pattern);
+      nextPatterns.set(pattern, false);
+    }
+    for (const domain of messageData.networkConfig?.deniedDomains ?? []) {
+      nextPatterns.set(domain, true);
     }
 
-    const previous = this.grantSyncCache.get(agentId) ?? new Set<string>();
+    const previous =
+      this.grantSyncCache.get(agentId) ?? new Map<string, boolean>();
 
     // Unchanged set → skip the round-trip entirely.
     if (
       nextPatterns.size === previous.size &&
-      [...nextPatterns].every((p) => previous.has(p))
+      [...nextPatterns].every(([p, denied]) => previous.get(p) === denied)
     ) {
       return;
     }
@@ -1202,17 +1190,18 @@ export class DeploymentManager {
 
     // Revoke patterns that were previously granted but are no longer
     // present in the current config.
-    for (const pattern of previous) {
+    for (const pattern of previous.keys()) {
       if (!nextPatterns.has(pattern)) {
         await this.grantStore.revoke(agentId, pattern, orgId);
       }
     }
 
-    // Grant any new patterns. Repeating grants for existing patterns is
-    // idempotent, but skipping them saves writes.
-    for (const pattern of nextPatterns) {
-      if (!previous.has(pattern)) {
-        await this.grantStore.grant(agentId, pattern, null, undefined, orgId);
+    // Grant new patterns and re-write patterns whose allow/deny flag
+    // flipped (the grant upsert updates `denied` in place). Repeating
+    // unchanged grants is idempotent, but skipping them saves writes.
+    for (const [pattern, denied] of nextPatterns) {
+      if (previous.get(pattern) !== denied) {
+        await this.grantStore.grant(agentId, pattern, null, denied, orgId);
       }
     }
 

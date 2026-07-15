@@ -122,6 +122,55 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     ).toBe(true);
   });
 
+  test("syncs networkConfig.deniedDomains as deny grants", async () => {
+    await manager.syncNetworkConfigGrants(
+      buildPayload({
+        networkConfig: {
+          allowedDomains: ["api.example.com"],
+          deniedDomains: ["evil.com", "*.bad.com"],
+        },
+      })
+    );
+
+    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(true);
+    expect(await grantStore.isDenied("agent-1", "evil.com")).toBe(true);
+    expect(await grantStore.isDenied("agent-1", "sub.bad.com")).toBe(true);
+    expect(await grantStore.hasGrant("agent-1", "evil.com")).toBe(false);
+  });
+
+  test("removing a denied domain from config revokes the deny grant", async () => {
+    await manager.syncNetworkConfigGrants(
+      buildPayload({
+        networkConfig: { deniedDomains: ["evil.com"] },
+      })
+    );
+    expect(await grantStore.isDenied("agent-1", "evil.com")).toBe(true);
+
+    await manager.syncNetworkConfigGrants(
+      buildPayload({ networkConfig: { deniedDomains: [] } })
+    );
+    expect(await grantStore.isDenied("agent-1", "evil.com")).toBe(false);
+  });
+
+  test("flipping a domain from denied to allowed updates the grant", async () => {
+    await manager.syncNetworkConfigGrants(
+      buildPayload({
+        networkConfig: { deniedDomains: ["flip.example.com"] },
+      })
+    );
+    expect(await grantStore.isDenied("agent-1", "flip.example.com")).toBe(true);
+
+    await manager.syncNetworkConfigGrants(
+      buildPayload({
+        networkConfig: { allowedDomains: ["flip.example.com"] },
+      })
+    );
+    expect(await grantStore.isDenied("agent-1", "flip.example.com")).toBe(
+      false
+    );
+    expect(await grantStore.hasGrant("agent-1", "flip.example.com")).toBe(true);
+  });
+
   test("syncs both network and pre-approved tools in one call", async () => {
     await manager.syncNetworkConfigGrants(
       buildPayload({

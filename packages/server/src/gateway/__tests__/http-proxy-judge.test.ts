@@ -3,12 +3,14 @@ import * as crypto from "node:crypto";
 import type * as http from "node:http";
 import * as net from "node:net";
 import { generateWorkerToken } from "@lobu/core";
+import type { GrantStore } from "../permissions/grant-store.js";
 import { PolicyStore } from "../permissions/policy-store.js";
 import { EgressJudge } from "../proxy/egress-judge/judge.js";
 import type { JudgeClient, JudgeVerdict } from "../proxy/egress-judge/types.js";
 import {
   __testOnly,
   setProxyEgressJudge,
+  setProxyGrantStore,
   setProxyPolicyStore,
   startHttpProxy,
   stopHttpProxy,
@@ -230,5 +232,30 @@ describe("HTTP Proxy — egress judge integration", () => {
     };
     const res = await rawProxyRequest("http://example.com/probe", auth());
     expect(res.statusCode).toBe(403);
+  });
+
+  test("an explicit deny grant blocks before the judge is consulted", async () => {
+    // A per-agent deny grant is authoritative: even a judged domain with an
+    // allow-everything judge must never be reached.
+    const denyAllGrants = {
+      isDenied: async () => true,
+      hasGrant: async () => false,
+    } as unknown as GrantStore;
+    setProxyGrantStore(denyAllGrants);
+    try {
+      fakeClient.calls = 0;
+      fakeClient.impl = async () => ({
+        verdict: "allow",
+        reason: "judge-would-allow",
+      });
+      const res = await rawProxyRequest(
+        "http://example.com/deny-grant-path",
+        auth()
+      );
+      expect(res.statusCode).toBe(403);
+      expect(fakeClient.calls).toBe(0);
+    } finally {
+      setProxyGrantStore(null as unknown as GrantStore);
+    }
   });
 });

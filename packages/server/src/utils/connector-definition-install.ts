@@ -277,6 +277,14 @@ export async function upsertConnectorDefinitionRecords(params: {
   const { sql } = params;
   const { metadata } = params;
 
+  const authSchemaJson = metadata.authSchema ? sql.json(metadata.authSchema) : null;
+  const feedsSchemaJson = metadata.feeds ? sql.json(metadata.feeds) : null;
+  const actionsSchemaJson = metadata.actions ? sql.json(metadata.actions) : null;
+  const optionsSchemaJson = metadata.optionsSchema ? sql.json(metadata.optionsSchema) : null;
+  const mcpConfigJson = metadata.mcpConfig ? sql.json(metadata.mcpConfig) : null;
+  const openapiConfigJson = metadata.openapiConfig ? sql.json(metadata.openapiConfig) : null;
+  const runtimeJson = metadata.runtime ? sql.json(metadata.runtime) : null;
+
   const existing = await sql`
     SELECT id, status, login_enabled
     FROM connector_definitions
@@ -294,13 +302,7 @@ export async function upsertConnectorDefinitionRecords(params: {
     | undefined;
   const preservedLoginEnabled = existingRow?.login_enabled ?? false;
 
-  const authSchemaJson = metadata.authSchema ? sql.json(metadata.authSchema) : null;
-  const feedsSchemaJson = metadata.feeds ? sql.json(metadata.feeds) : null;
-  const actionsSchemaJson = metadata.actions ? sql.json(metadata.actions) : null;
-  const optionsSchemaJson = metadata.optionsSchema ? sql.json(metadata.optionsSchema) : null;
-  const mcpConfigJson = metadata.mcpConfig ? sql.json(metadata.mcpConfig) : null;
-  const openapiConfigJson = metadata.openapiConfig ? sql.json(metadata.openapiConfig) : null;
-  const runtimeJson = metadata.runtime ? sql.json(metadata.runtime) : null;
+  let wasActive = existingRow?.status === 'active';
 
   if (existingRow?.status === 'active') {
     await sql`
@@ -321,8 +323,15 @@ export async function upsertConnectorDefinitionRecords(params: {
           updated_at = NOW()
       WHERE id = ${existingRow.id}
     `;
+    // Fall through to the shared connector_versions upsert below.
   } else {
-    await sql`
+    // No active row seen — but the SELECT is not a lock, so a concurrent
+    // installer may INSERT the active row between our SELECT and INSERT. ON
+    // CONFLICT DO NOTHING makes the loser a no-op (returns no row) WITHOUT
+    // aborting an enclosing transaction — critical because a caller
+    // (device-reconcile) passes a `tx`, where a raw 23505 would poison the whole
+    // transaction (25P02).
+    const inserted = await sql`
       INSERT INTO connector_definitions (
         organization_id, key, name, description, version,
         auth_schema, feeds_schema, actions_schema, options_schema,
@@ -336,9 +345,42 @@ export async function upsertConnectorDefinitionRecords(params: {
         ${metadata.faviconDomain ?? null}, ${metadata.requiredCapability ?? null},
         ${runtimeJson}, 'active', ${preservedLoginEnabled}
       )
+      ON CONFLICT (organization_id, key)
+        WHERE organization_id IS NOT NULL AND status = 'active'
+        DO NOTHING
+      RETURNING id
     `;
+
+    if (inserted.length === 0) {
+      // The race loser: the winner already created the active row. Update it so
+      // both callers converge on this install's metadata (last-write-wins,
+      // matching the sequential UPDATE branch above).
+      wasActive = true;
+      await sql`
+        UPDATE connector_definitions
+        SET name = ${metadata.name},
+            description = ${metadata.description ?? null},
+            version = ${metadata.version},
+            auth_schema = ${authSchemaJson},
+            feeds_schema = ${feedsSchemaJson},
+            actions_schema = ${actionsSchemaJson},
+            options_schema = ${optionsSchemaJson},
+            mcp_config = ${mcpConfigJson},
+            openapi_config = ${openapiConfigJson},
+            favicon_domain = ${metadata.faviconDomain ?? null},
+            required_capability = ${metadata.requiredCapability ?? null},
+            runtime = ${runtimeJson},
+            updated_at = NOW()
+        WHERE key = ${metadata.key}
+          AND organization_id = ${params.organizationId}
+          AND status = 'active'
+      `;
+    }
   }
 
+  // Persist the version's executable source for BOTH the create and the
+  // active-update paths — a definition must never point at a version row that
+  // has no compiled/source record.
   await sql`
     INSERT INTO connector_versions (
       connector_key, version, compiled_code, compiled_code_hash,
@@ -358,5 +400,5 @@ export async function upsertConnectorDefinitionRecords(params: {
         source_path = COALESCE(EXCLUDED.source_path, connector_versions.source_path)
   `;
 
-  return { updated: existingRow?.status === 'active' };
+  return { updated: wasActive };
 }

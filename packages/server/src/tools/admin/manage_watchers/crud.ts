@@ -6,6 +6,7 @@
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
+import { isUniqueViolation } from '../../../utils/pg-errors';
 import { nextRunAt, validateSchedule, validateTimezone } from '../../../utils/cron';
 import {
   recordChangeEvent,
@@ -189,11 +190,19 @@ export async function handleCreate(
     );
   }
 
-  const watcherId = await getNextNumericId(sql, 'watchers');
-  const versionId = await getNextNumericId(sql, 'watcher_versions');
   const createdBy = ctx.userId ?? 'system';
 
-  await sql.begin(async (tx) => {
+  // Allocated inside the transaction below: getNextNumericId relies on
+  // pg_advisory_xact_lock, which only serializes when a real transaction is
+  // open. Called on the pooled autocommit connection it releases immediately,
+  // so concurrent creates would both compute MAX(id)+1 and collide on the PK.
+  let watcherId!: number;
+  let versionId!: number;
+
+  try {
+    await sql.begin(async (tx) => {
+    watcherId = await getNextNumericId(tx, 'watchers');
+    versionId = await getNextNumericId(tx, 'watcher_versions');
     const entityIdsArray = entityId ? [entityId] : [];
 
     const nextRunAtVal = args.schedule
@@ -264,6 +273,18 @@ export async function handleCreate(
       await enableClassifiersOnEntity(tx, entityId, slugs);
     }
   });
+  } catch (err) {
+    // The slug precheck above is not a lock: two concurrent replicas can both
+    // pass it and race idx_watchers_org_slug. Translate that 23505 to the SAME
+    // coded 409 the precheck emits so callers see one stable duplicate signal.
+    if (isUniqueViolation(err, 'idx_watchers_org_slug')) {
+      throw new ToolUserError(
+        `Watcher with slug '${args.slug}' already exists in this organization`,
+        409
+      );
+    }
+    throw err;
+  }
 
   // Build view URL
   const baseUrl = getPublicWebUrl(ctx.requestUrl, ctx.baseUrl);

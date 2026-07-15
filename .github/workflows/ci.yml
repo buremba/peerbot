@@ -44,7 +44,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap coreutils
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Only flip the AppArmor userns restriction when the kernel exposes
+          # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
+          # don't restrict unprivileged user namespaces and lack this sysctl key.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
           bwrap --version
           ls -la /usr/bin/true /bin/true 2>&1 || true
           # Probe with multiple bind mounts. /bin and /usr/bin are sometimes the
@@ -200,7 +205,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap coreutils
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Only flip the AppArmor userns restriction when the kernel exposes
+          # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
+          # don't restrict unprivileged user namespaces and lack this sysctl key.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
           bwrap --version
 
       # NOTE: `lobu run`'s embedded Postgres (PG18) is NEEDED-linked against
@@ -260,7 +270,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap coreutils
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Only flip the AppArmor userns restriction when the kernel exposes
+          # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
+          # don't restrict unprivileged user namespaces and lack this sysctl key.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
           bwrap --version
 
       # Embedded Postgres (PG18) ICU shim — see the sdk-e2e job note above;

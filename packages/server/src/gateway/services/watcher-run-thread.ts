@@ -23,6 +23,16 @@ export async function readWatcherRunThreads(args: {
 		completedAt: string;
 		messages: ReturnType<typeof paginateSessionMessages>["messages"];
 	}>;
+	interactions: Array<{
+		type: "tool-approval";
+		runId: number;
+		action: string | null;
+		proposal: Record<string, unknown> | null;
+		current: Record<string, unknown> | null;
+		fields: Record<string, unknown> | null;
+		attribution: string | null;
+		resourceKind: string | null;
+	}>;
 }> {
 	const { agentId, watcherId, organizationId, limit } = args;
 	// `{agentId}_watcher_{watcherId}` — the org-less prefix the worker wrote.
@@ -65,5 +75,69 @@ export async function readWatcherRunThreads(args: {
 		};
 	});
 
-	return { runs };
+	// Approval cards are durable events rather than transcript JSONL parts. A
+	// pending approval may also belong to a run that has no completed snapshot,
+	// so fetch it independently and let the client append it to the conversation.
+	const approvalRows = await sql<{
+		run_id: number;
+		action: string | null;
+		proposal: Record<string, unknown> | null;
+		current: Record<string, unknown> | null;
+		fields: Record<string, unknown> | null;
+		attribution: string | null;
+		resource_kind: string | null;
+		tool: string | null;
+	}>`
+		SELECT e.run_id,
+		       e.metadata->>'action' AS action,
+		       e.metadata->'proposal' AS proposal,
+		       e.metadata->'current' AS current,
+		       e.metadata->'fields' AS fields,
+		       e.metadata->>'attribution' AS attribution,
+		       e.metadata->>'resourceKind' AS resource_kind,
+		       e.metadata->>'tool' AS tool
+		FROM current_event_records e
+		JOIN runs r ON r.id = e.run_id
+		JOIN watchers w
+		  ON w.id = r.watcher_id
+		 AND w.organization_id = r.organization_id
+		WHERE e.organization_id = ${organizationId}
+		  AND w.agent_id = ${agentId}
+		  AND r.watcher_id = ${watcherId}
+		  AND e.interaction_type = 'approval'
+		  AND e.interaction_status = 'pending'
+		ORDER BY e.run_id
+	`;
+	const interactions = approvalRows.map((row) => {
+		const resourceKind =
+			row.resource_kind ??
+			(row.tool === "manage_watchers"
+				? "watcher"
+				: row.tool === "manage_agents"
+					? "agent"
+					: row.tool === "entity_field_change" || row.tool === "entity_change"
+						? "entity"
+						: null);
+		const rawProposal = row.proposal ?? null;
+		const proposal =
+			resourceKind === "watcher" &&
+			rawProposal &&
+			typeof rawProposal === "object" &&
+			(rawProposal as { args?: unknown }).args &&
+			typeof (rawProposal as { args: unknown }).args === "object"
+				? (rawProposal as { args: Record<string, unknown> }).args
+				: rawProposal;
+		return {
+			type: "tool-approval" as const,
+			runId: Number(row.run_id),
+			action: row.action,
+			proposal,
+			current: row.current ?? null,
+			fields: row.fields ?? null,
+			attribution: row.attribution ?? null,
+			resourceKind,
+		};
+	});
+
+	return { runs, interactions };
 }

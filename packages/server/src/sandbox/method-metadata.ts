@@ -86,11 +86,28 @@ export default async (_ctx, client) => {
 	},
 	"entities.create": {
 		summary:
-			"Create an entity with metadata validated against the entity type schema.",
+			"Create an entity of a given type. The entity TYPE must exist first — if the type is new to this workspace, call `entitySchema.createType` before this (otherwise it throws EntityTypeNotFound). Check `entitySchema.listTypes()` for existing types.",
 		access: "write",
 		throws: ["EntityTypeNotFound", "ValidationError"],
 		example:
 			"await client.entities.create({ type: 'company', name: 'Acme', metadata: {} });",
+		usageExample: `// Two-hop: ensure the entity type exists, THEN create the entity.
+// A first-of-its-kind type must be created before any entity of it.
+export default async (_ctx, client) => {
+  const { entity_types } = await client.entitySchema.listTypes();
+  if (!entity_types.some((t) => t.slug === 'company')) {
+    await client.entitySchema.createType({
+      slug: 'company',
+      name: 'Company',
+      metadata_schema: { type: 'object', properties: { team_size: { type: 'number' } } },
+    });
+  }
+  return client.entities.create({
+    type: 'company',
+    name: 'Acme',
+    metadata: { team_size: 50 },
+  });
+};`,
 	},
 	"entities.update": {
 		summary: "Update an existing entity.",
@@ -103,10 +120,22 @@ export default async (_ctx, client) => {
 			"await client.entities.delete({ entity_id: 42, force_delete_tree: true });",
 	},
 	"entities.link": {
-		summary: "Create a relationship between two entities.",
+		summary:
+			"Create a relationship between two entities. Needs the two entity IDs AND a relationship TYPE that already exists — if the relationship type is new, call `entitySchema.addRule` (or createRelType) first; list existing ones with `entitySchema.listRelTypes()`.",
 		access: "write",
 		example:
 			"await client.entities.link({ from_entity_id: 42, to_entity_id: 43, relationship_type_slug: 'customer_of' });",
+		usageExample: `// Link two entities by id. Resolve the ids first (entities.list / .get),
+// and make sure the relationship_type_slug exists (entitySchema.listRelTypes).
+export default async (_ctx, client) => {
+  const { entities: companies } = await client.entities.list({ entity_type: 'company', search: 'Acme' });
+  const { entities: people } = await client.entities.list({ entity_type: 'person', search: 'Jane' });
+  return client.entities.link({
+    from_entity_id: people[0].id,
+    to_entity_id: companies[0].id,
+    relationship_type_slug: 'works_at',
+  });
+};`,
 	},
 	"entities.unlink": {
 		summary: "Soft-delete an entity relationship.",

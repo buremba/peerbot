@@ -21,7 +21,7 @@ jobs:
   # waiting behind DB setup. Worker tests run under bun (full suite, not the
   # cherry-picked subset that used to live here).
   unit:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -44,7 +44,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap coreutils
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Only flip the AppArmor userns restriction when the kernel exposes
+          # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
+          # don't restrict unprivileged user namespaces and lack this sysctl key.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
           bwrap --version
           ls -la /usr/bin/true /bin/true 2>&1 || true
           # Probe with multiple bind mounts. /bin and /usr/bin are sometimes the
@@ -172,7 +177,7 @@ jobs:
   # mock OpenAI-compatible provider (no provider key needed). A failure here
   # fails CI → the PR goes red. See scripts/sdk-e2e.sh.
   sdk-e2e:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -200,7 +205,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap coreutils
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Only flip the AppArmor userns restriction when the kernel exposes
+          # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
+          # don't restrict unprivileged user namespaces and lack this sysctl key.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
           bwrap --version
 
       # NOTE: `lobu run`'s embedded Postgres (PG18) is NEEDED-linked against
@@ -232,7 +242,7 @@ jobs:
   # HOME and walks the whole command surface, asserting each runs or fails
   # gracefully. A failure here fails CI → the PR goes red. See scripts/cli-smoke.sh.
   cli-smoke:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -260,7 +270,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap coreutils
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Only flip the AppArmor userns restriction when the kernel exposes
+          # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
+          # don't restrict unprivileged user namespaces and lack this sysctl key.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
           bwrap --version
 
       # Embedded Postgres (PG18) ICU shim — see the sdk-e2e job note above;
@@ -275,7 +290,7 @@ jobs:
   # Frontend tests run under jsdom via vitest. owletto is a submodule;
   # forks without the deploy key get a stub package and skip these.
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -314,7 +329,7 @@ jobs:
   # APIs in places, and (2) the sandbox runtime requires isolated-vm which
   # is a V8 native addon that bun cannot load.
   integration:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 25
     services:
       postgres:
@@ -477,7 +492,7 @@ jobs:
           fail_ci_if_error: false
 
   format-lint:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -534,7 +549,7 @@ jobs:
           bash scripts/lib/__tests__/herdr-lifecycle.test.sh
 
   typecheck:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -603,7 +618,7 @@ jobs:
     # `dbmate up` rejects (missing -- migrate:up directive, constraint
     # violations against legacy data, etc.). Runs every migration in
     # order against an empty Postgres on every PR.
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     services:
       postgres:
@@ -755,7 +770,7 @@ jobs:
   # never matches. Use git diff against the PR base instead. On push events
   # (main) there's no PR object, so default to running the smoke job.
   mac-build-smoke-filter:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       run: ${{ steps.filter.outputs.run }}
     steps:
@@ -797,7 +812,7 @@ jobs:
   mac-build-smoke:
     needs: mac-build-smoke-filter
     if: needs.mac-build-smoke-filter.outputs.run == 'true'
-    runs-on: macos-15
+    runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -837,7 +852,7 @@ jobs:
   # list, so we diff against the PR base. On push (main) there's no PR object,
   # so default to running.
   connector-parity-smoke-filter:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       run: ${{ steps.filter.outputs.run }}
     steps:
@@ -875,7 +890,7 @@ jobs:
   connector-parity-smoke:
     needs: connector-parity-smoke-filter
     if: needs.connector-parity-smoke-filter.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -888,15 +903,15 @@ jobs:
         with:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       # Build the worker image for amd64 only (no QEMU/arm64 — this is a smoke
       # gate, not a release) and load it into the local daemon instead of
       # pushing. Reuse the GHA buildx cache shared with build-images.yml so this
       # leg doesn't pay a cold worker build.
       - name: Build worker image (amd64, load, no push)
-        uses: docker/build-push-action@v7
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           platforms: linux/amd64
@@ -904,8 +919,6 @@ jobs:
           load: true
           push: false
           tags: lobu-worker:parity-smoke
-          cache-from: type=gha,scope=worker
-          cache-to: type=gha,mode=max,scope=worker
 
       # The real prod runtime contract: run the built image's self-check with NO
       # network, so a green result can't depend on reaching anything external.

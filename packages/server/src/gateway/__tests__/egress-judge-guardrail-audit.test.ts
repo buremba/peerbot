@@ -9,20 +9,36 @@
  * `insertEvent` seam so no Postgres is required.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test";
+import * as insertEventModule from "../../utils/insert-event";
 
 // Capture `insertEvent` calls instead of hitting Postgres. `recordGuardrailTrip`
-// (the audit path) is the only consumer reached here; the other exports are
-// stubbed so any transitive importer in the proxy graph still resolves.
+// (the audit path) is the only consumer reached here.
+//
+// Use `spyOn` (restored in afterAll) rather than `mock.module`: this suite shares
+// a process with every other gateway suite, and bun's `mock.module` is
+// process-global and CANNOT be un-done by `mock.restore()`. A whole-module stub
+// here previously leaked a no-op `insertEvent` (which returns undefined) into
+// co-running suites like agent-history-routes and interaction-bridge-owner-approval
+// that rely on the REAL insertEvent to persist and RETURN interaction rows —
+// surfacing as order-dependent CI failures once the runner changed the test-file
+// execution order. Spying only this one function keeps the rest of the module real.
 const insertEventCalls: Array<Record<string, unknown>> = [];
-mock.module("../../utils/insert-event", () => ({
-  insertEvent: async (params: Record<string, unknown>) => {
-    insertEventCalls.push(params);
-  },
-  recordChangeEvent: () => {},
-  recordLifecycleEvent: () => {},
-  eventDedupLockKey: () => 0,
-}));
+const insertEventSpy = spyOn(
+  insertEventModule,
+  "insertEvent",
+).mockImplementation((async (params: Record<string, unknown>) => {
+  insertEventCalls.push(params);
+  return undefined;
+}) as unknown as typeof insertEventModule.insertEvent);
 
 import { flushPendingGuardrailAudits } from "../guardrails/audit.js";
 import type {
@@ -77,6 +93,13 @@ describe("egress judge deny → guardrail-trip audit", () => {
     else process.env.WORKER_ALLOWED_DOMAINS = prevAllowed;
     if (prevDisallowed === undefined) delete process.env.WORKER_DISALLOWED_DOMAINS;
     else process.env.WORKER_DISALLOWED_DOMAINS = prevDisallowed;
+  });
+
+  afterAll(() => {
+    // Hand the REAL insertEvent back to every other gateway suite sharing this
+    // Bun process, so its return value (the inserted row) is available to the
+    // approval/history suites regardless of file execution order.
+    insertEventSpy.mockRestore();
   });
 
   test("a judged-domain DENY records a guardrail-trip with stage egress", async () => {

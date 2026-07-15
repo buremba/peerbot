@@ -36,6 +36,7 @@ import { ensureMemberEntityType } from '../../utils/member-entity-type';
 import { RESERVED_ENTITY_TYPES } from '../../utils/reserved';
 import { resolveUsernames } from '../../utils/resolve-usernames';
 import { ToolUserError } from '../../utils/errors';
+import { isUniqueViolation } from '../../utils/pg-errors';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { defineFlatActionTool, flatAction } from './action-tool';
@@ -468,7 +469,9 @@ async function etHandleCreate(
   const eventKinds = args.event_kinds ? sql.json(args.event_kinds) : null;
   const metricsConfig = args.metrics_config ? sql.json(args.metrics_config) : null;
 
-  const inserted = await sql`
+  let inserted: unknown[];
+  try {
+    inserted = await sql`
     INSERT INTO entity_types (
       slug, name, description, icon, color,
       metadata_schema, event_kinds,
@@ -493,6 +496,20 @@ async function etHandleCreate(
     )
     RETURNING ${sql.unsafe(ENTITY_TYPE_COLUMNS)}
   `;
+  } catch (err) {
+    // The precheck above is not a lock: two concurrent replicas can both pass
+    // it, and the loser hits the partial unique index. Translate that specific
+    // 23505 to the SAME coded 409 the precheck emits, so `lobu apply`'s
+    // probe-create-then-update path (and the documented ensure-then-write
+    // flow) see one stable duplicate signal instead of a raw Postgres error.
+    if (isUniqueViolation(err, 'idx_entity_types_org_slug')) {
+      throw new ToolUserError(
+        `[entity_type_exists] Entity type with slug '${slug}' already exists`,
+        409
+      );
+    }
+    throw err;
+  }
 
   if (inserted.length === 0) throw new Error('Failed to create entity type');
 
@@ -1000,7 +1017,9 @@ async function rtHandleCreate(
 
   const identityMetadata = buildRelationshipIdentityMetadata(args.auto_create_when, null);
 
-  const inserted = await sql`
+  let inserted: unknown[];
+  try {
+    inserted = await sql`
     INSERT INTO entity_relationship_types (
       slug, name, description, organization_id, created_by,
       metadata_schema, metadata, is_symmetric, inverse_type_id, status,
@@ -1021,6 +1040,19 @@ async function rtHandleCreate(
     )
     RETURNING id
   `;
+  } catch (err) {
+    // Same check-then-insert race as createType: the precheck is not a lock,
+    // so a concurrent replica can win and the loser hits the partial unique
+    // index. Translate that specific 23505 to the SAME coded 409 the precheck
+    // emits so callers see one stable duplicate signal.
+    if (isUniqueViolation(err, 'idx_entity_rel_types_org_slug')) {
+      throw new ToolUserError(
+        `[relationship_type_exists] Relationship type with slug "${args.slug}" already exists`,
+        409
+      );
+    }
+    throw err;
+  }
   const typeId = Number((inserted[0] as { id: unknown }).id);
 
   // Only write the reciprocal back-link when the caller owns the inverse type.

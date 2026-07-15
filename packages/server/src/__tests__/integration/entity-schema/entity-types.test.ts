@@ -105,6 +105,33 @@ describe('entity schema CRUD', () => {
       await owner.entity_schema.deleteType({ slug: 'dup-asset' });
     });
 
+    it('concurrent creates of the same slug: one wins, every loser gets the coded 409 (not raw 23505)', async () => {
+      // The precheck SELECT is not a lock, so concurrent replicas can all pass
+      // it and race the partial unique index. Fire many at once: exactly one
+      // INSERT commits, and every loser must surface the SAME coded 409 the
+      // sequential path emits — otherwise `lobu apply` sees a raw Postgres
+      // 23505 and its probe-create-then-update path aborts. Pre-fix, the losers
+      // rejected with a raw unique-violation.
+      const results = await Promise.allSettled(
+        Array.from({ length: 6 }, () =>
+          owner.entity_schema.createType({ slug: 'race-asset', name: 'Race' })
+        )
+      );
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter(
+        (r): r is PromiseRejectedResult => r.status === 'rejected'
+      );
+      expect(fulfilled.length).toBe(1);
+      expect(rejected.length).toBe(5);
+      for (const r of rejected) {
+        const e = r.reason as Error & { httpStatus?: number };
+        expect(e.message).toMatch(/\[entity_type_exists\].*already exists/);
+        expect(e.message).not.toMatch(/23505|duplicate key value/);
+        expect(e.httpStatus).toBe(409);
+      }
+      await owner.entity_schema.deleteType({ slug: 'race-asset' });
+    });
+
     it('surfaces a 422 schema-validation error with the real message (issue #1177)', async () => {
       // A non-boolean x-table-column trips [invalid_schema]; before the fix
       // this surfaced through `lobu apply` as a misleading "Entity type 'task'
@@ -339,6 +366,29 @@ describe('entity schema CRUD', () => {
       expect(err?.message).toMatch(/\[relationship_type_exists\].*already exists/);
       expect(err?.httpStatus).toBe(409);
       await owner.entity_schema.deleteRelType({ slug: 'dup-rel' });
+    });
+
+    it('concurrent creates of the same slug: one wins, every loser gets the coded 409 (not raw 23505)', async () => {
+      // Same check-then-insert race as entity_type: prove the loser of the
+      // partial-unique-index race surfaces the coded 409, not a raw 23505.
+      const results = await Promise.allSettled(
+        Array.from({ length: 6 }, () =>
+          owner.entity_schema.createRelType({ slug: 'race-rel', name: 'Race' })
+        )
+      );
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter(
+        (r): r is PromiseRejectedResult => r.status === 'rejected'
+      );
+      expect(fulfilled.length).toBe(1);
+      expect(rejected.length).toBe(5);
+      for (const r of rejected) {
+        const e = r.reason as Error & { httpStatus?: number };
+        expect(e.message).toMatch(/\[relationship_type_exists\].*already exists/);
+        expect(e.message).not.toMatch(/23505|duplicate key value/);
+        expect(e.httpStatus).toBe(409);
+      }
+      await owner.entity_schema.deleteRelType({ slug: 'race-rel' });
     });
   });
 

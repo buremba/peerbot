@@ -6,6 +6,7 @@
  */
 
 import { authorizeCapabilities } from '@lobu/core';
+import type { PollRequest } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
 import { getDb, pgTextArray } from '../db/client';
 import type { KeyingConfig } from '../types/watchers';
@@ -72,14 +73,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   let connectorManifestsProvided = false;
   let connectorManifestsRaw: unknown;
   try {
-    const body = await c.req.json<{
-      worker_id: string;
-      capabilities?: Record<string, boolean>;
-      platform?: string;
-      app_version?: string;
-      label?: string;
-      connector_manifests?: unknown;
-    }>();
+    const body = await c.req.json<PollRequest>();
     worker_id = body.worker_id;
     capabilities = body.capabilities ?? {};
     platform = body.platform ?? null;

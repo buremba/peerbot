@@ -52,207 +52,45 @@ export interface ExecutorClient {
 // Types
 // ============================================
 
+/**
+ * The worker⇄gateway wire payloads are the SINGLE SOURCE in
+ * `@lobu/core/contracts/worker/protocol` (TypeBox). Re-exported here so this
+ * module's public surface is unchanged for importers, while the server annotates
+ * its request-body reads with the same shapes from that file.
+ */
+export type {
+  CompleteActionRequest,
+  CompleteAuthRequest,
+  CompleteEmbeddingsRequest,
+  CompleteRequest,
+  ContentItem,
+  DispatchChromeActionRequest,
+  DispatchChromeActionResponse,
+  EmbedEvent,
+  EmitAuthArtifactRequest,
+  OAuthCredentials,
+  PollAuthSignalRequest,
+  PollAuthSignalResponse,
+  PollResponse,
+  StreamBatch,
+} from "@lobu/core/contracts/worker/protocol";
+import type {
+  CompleteActionRequest,
+  CompleteAuthRequest,
+  CompleteEmbeddingsRequest,
+  CompleteRequest,
+  DispatchChromeActionRequest,
+  DispatchChromeActionResponse,
+  EmbedEvent,
+  EmitAuthArtifactRequest,
+  PollAuthSignalRequest,
+  PollAuthSignalResponse,
+  PollResponse,
+  StreamBatch,
+} from "@lobu/core/contracts/worker/protocol";
+
 /** Capability strings the worker advertises, keyed by name (e.g. `browser.debugger`). */
 export type WorkerCapabilities = Record<string, boolean>;
-
-export interface OAuthCredentials {
-  accessToken: string;
-  provider: string;
-  refreshToken?: string | null;
-  expiresAt?: string | null;
-  scope?: string | null;
-}
-
-export interface PollResponse {
-  next_poll_seconds?: number;
-  /** Run ID (replaces execution_id) */
-  run_id?: number;
-  /** Run type: 'sync', 'action', 'watcher', 'embed_backfill', or 'auth' */
-  run_type?: 'sync' | 'action' | 'watcher' | 'embed_backfill' | 'auth';
-  /** Auth profile ID (for auth runs) */
-  auth_profile_id?: number;
-  /** Previous credentials on the auth profile (for re-auth flows) */
-  previous_credentials?: Record<string, unknown> | null;
-  /** Connector key, e.g. 'google.gmail' */
-  connector_key?: string;
-  /** Feed key for sync runs, e.g. 'threads' */
-  feed_key?: string;
-  /** Feed config */
-  config?: Record<string, unknown>;
-  /**
-   * DB egress boundary the GATEWAY authoritatively decided from its own cloud
-   * mode: `'block-private'` (reject internal/metadata hosts, pin the resolved
-   * IP, force TLS) on Lobu Cloud, else `'allow-private'`. The worker installs
-   * this as `job.env.LOBU_DB_EGRESS_POLICY`, taking the STRICTER of gateway vs.
-   * its own env-derived default — a fleet worker missing `LOBU_CLOUD_MODE` can
-   * never downgrade a gateway that said block-private. Absent on legacy gateway
-   * responses; the worker then falls back to its own env-derived default.
-   */
-  db_egress_policy?: 'block-private' | 'allow-private';
-  /** Feed checkpoint */
-  checkpoint?: Record<string, unknown>;
-  /** Entity IDs from feed */
-  entity_ids?: number[];
-  /** OAuth credentials */
-  credentials?: OAuthCredentials | null;
-  /** Stored env_keys credentials from DB */
-  connection_credentials?: Record<string, unknown>;
-  /** Connection ID */
-  connection_id?: number;
-  /** Feed ID (for sync runs) */
-  feed_id?: number;
-  /**
-   * Compiled connector code, shipped inline. Used for device workers and
-   * DB-only user-uploaded connectors that don't have the connector source
-   * on disk. Fleet workers receive a bare `connector_key` only (no
-   * inline code) and resolve + compile the source from their own
-   * filesystem to keep poll responses small — see worker-api.ts handler
-   * comment + lobu#772 review for why we send the key and not an absolute
-   * path (gateway and worker images have different paths to the same
-   * sources).
-   */
-  compiled_code?: string;
-  /**
-   * Native (nixpkgs) packages the connector declared in `runtime.nix.packages`.
-   * The executor wraps the child in `nix-shell -p <packages>` so the tools are
-   * on PATH. Absent/empty = plain subprocess (the common case).
-   */
-  nix_packages?: string[];
-  /** Connection session state (browser cookies, etc.) */
-  session_state?: Record<string, unknown>;
-  /** Connector version */
-  connector_version?: string;
-  /** Action key (for action runs) */
-  action_key?: string;
-  /** Action input (for action runs) */
-  action_input?: Record<string, unknown>;
-  /** Entity info (for watcher runs) */
-  entity?: { id: number; name: string; entity_type: string; metadata: Record<string, unknown> };
-}
-
-export interface ContentItem {
-  id: string;
-  title?: string;
-  payload_text: string;
-  author_name?: string;
-  occurred_at: string;
-  source_url?: string;
-  score?: number;
-  metadata?: Record<string, unknown>;
-  origin_parent_id?: string;
-  embedding?: number[];
-  /** Model/version stamp that produced `embedding`; persisted so vector spaces never mix. */
-  embedding_model?: string;
-  origin_type?: string;
-  semantic_type?: string;
-}
-
-export interface StreamBatch {
-  type: 'batch';
-  run_id: number;
-  worker_id: string;
-  items: ContentItem[];
-  checkpoint?: Record<string, unknown>;
-}
-
-export interface CompleteRequest {
-  run_id: number;
-  worker_id: string;
-  status: 'success' | 'failed';
-  items_collected?: number;
-  error_message?: string;
-  checkpoint?: Record<string, unknown>;
-  auth_update?: Record<string, unknown>;
-  /** Tail of subprocess stdout+stderr (already redacted in the worker). */
-  output_tail?: string;
-  /** Subprocess exit code, if the child terminated without an IPC result. */
-  exit_code?: number | null;
-  /** Subprocess exit signal, if any. */
-  exit_signal?: string | null;
-  /** Categorized exit reason: ok | error_message | timeout | oom | crash. */
-  exit_reason?: 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
-}
-
-export interface CompleteActionRequest {
-  run_id: number;
-  worker_id: string;
-  status: 'success' | 'failed';
-  action_output?: Record<string, unknown>;
-  error_message?: string;
-}
-
-export interface EmbedEvent {
-  id: number;
-  content: string;
-  title: string | null;
-}
-
-export interface CompleteEmbeddingsRequest {
-  run_id: number;
-  worker_id: string;
-  // One entry per (event, chunk). Expand phase: always chunk_index=0, one per
-  // event; the contract release starts emitting multiple (the tail chunks).
-  embeddings: Array<{
-    event_id: number;
-    chunk_index: number;
-    embedding: number[];
-    embedding_model?: string;
-  }>;
-  error_message?: string;
-}
-
-export interface EmitAuthArtifactRequest {
-  run_id: number;
-  worker_id: string;
-  artifact: Record<string, unknown>;
-}
-
-export interface PollAuthSignalRequest {
-  run_id: number;
-  worker_id: string;
-  signal_name: string;
-}
-
-export interface PollAuthSignalResponse {
-  signal?: Record<string, unknown>;
-}
-
-/**
- * Request the gateway dispatch a chrome connector action on behalf of the
- * currently-running sync. The gateway resolves a paired chrome connection
- * in the same org and posts the result back via /api/workers/complete-action,
- * the same path used by the chrome extension for its own action runs.
- */
-export interface DispatchChromeActionRequest {
-  /** run_id of the *parent* sync run (used to scope the dispatch to that org). */
-  parent_run_id: number;
-  worker_id: string;
-  action_key: string;
-  action_input: Record<string, unknown>;
-}
-
-interface DispatchChromeActionResponse {
-  status: 'completed' | 'failed' | 'timeout';
-  output?: Record<string, unknown>;
-  error_message?: string;
-}
-
-export interface CompleteAuthRequest {
-  run_id: number;
-  worker_id: string;
-  status: 'success' | 'failed';
-  credentials?: Record<string, unknown>;
-  metadata?: Record<string, unknown>;
-  error_message?: string;
-  /** Tail of subprocess stdout+stderr (already redacted in the worker). */
-  output_tail?: string;
-  /** Subprocess exit code, if the child terminated without an IPC result. */
-  exit_code?: number | null;
-  /** Subprocess exit signal, if any. */
-  exit_signal?: string | null;
-  /** Categorized exit reason: ok | error_message | timeout | oom | crash. */
-  exit_reason?: 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
-}
 
 /**
  * Worker API Client

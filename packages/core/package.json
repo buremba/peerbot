@@ -64,6 +64,12 @@
       "import": "./dist/contracts/agent-settings.js",
       "require": "./dist/contracts/agent-settings.js"
     },
+    "./contracts/worker/protocol": {
+      "types": "./dist/contracts/worker/protocol.d.ts",
+      "bun": "./src/contracts/worker/protocol.ts",
+      "import": "./dist/contracts/worker/protocol.js",
+      "require": "./dist/contracts/worker/protocol.js"
+    },
     "./contracts/tools/manage-agents": {
       "types": "./dist/contracts/tools/manage-agents.d.ts",
       "bun": "./src/contracts/tools/manage-agents.ts",

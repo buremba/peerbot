@@ -7,6 +7,16 @@
  * poll-auth-signal.
  */
 
+import type {
+	CompleteActionRequest,
+	CompleteAuthRequest,
+	CompleteEmbeddingsRequest,
+	CompleteRequest,
+	EmitAuthArtifactRequest,
+	HeartbeatRequest,
+	PollAuthSignalRequest,
+	StreamBatch,
+} from "@lobu/core/contracts/worker/protocol";
 import type { Context } from "hono";
 import {
 	maybeCloseRepairThread,
@@ -123,11 +133,8 @@ async function reactivateProfileCascade(
  */
 export async function heartbeat(c: Context<{ Bindings: Env }>) {
 	try {
-		const { run_id, worker_id, progress } = await c.req.json<{
-			run_id: number;
-			worker_id: string;
-			progress?: { items_collected_so_far?: number };
-		}>();
+		const { run_id, worker_id, progress } =
+			await c.req.json<HeartbeatRequest>();
 
 		const denied = await authorizeRunForWorker(c, run_id, worker_id);
 		if (denied) return denied;
@@ -154,36 +161,7 @@ export async function heartbeat(c: Context<{ Bindings: Env }>) {
  */
 export async function streamContent(c: Context<{ Bindings: Env }>) {
 	try {
-		const batch = await c.req.json<{
-			type: "batch";
-			run_id: number;
-			worker_id?: string;
-			items: Array<{
-				id: string;
-				title?: string;
-				payload_type?:
-					| "text"
-					| "markdown"
-					| "json_template"
-					| "media"
-					| "empty";
-				payload_text: string;
-				payload_data?: Record<string, unknown>;
-				payload_template?: Record<string, unknown> | null;
-				attachments?: unknown[];
-				author_name?: string;
-				occurred_at: string;
-				source_url?: string;
-				score?: number;
-				metadata?: Record<string, unknown>;
-				origin_parent_id?: string;
-				origin_type?: string;
-				embedding?: number[];
-				embedding_model?: string;
-				semantic_type?: string;
-			}>;
-			checkpoint?: Record<string, unknown>;
-		}>();
+		const batch = await c.req.json<StreamBatch>();
 
 		// Connector-supplied checkpoints (LinkedIn takeout cursors, browser
 		// scrapes) can carry stray NUL (0x00), which Postgres rejects when written
@@ -391,21 +369,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
  */
 export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 	try {
-		const req = await c.req.json<{
-			run_id: number;
-			worker_id: string;
-			status: "success" | "failed";
-			items_collected?: number;
-			error_message?: string;
-			checkpoint?: Record<string, unknown>;
-			auth_update?: Record<string, unknown>;
-			// Diagnostic fields from the subprocess executor (failed-run path only).
-			// The worker redacts output_tail before sending; backend stores as-is.
-			output_tail?: string;
-			exit_code?: number | null;
-			exit_signal?: string | null;
-			exit_reason?: "ok" | "error_message" | "timeout" | "oom" | "crash";
-		}>();
+		const req = await c.req.json<CompleteRequest>();
 
 		// Strip NUL (0x00) from connector-supplied jsonb payloads before they hit
 		// Postgres (see streamContent). The final checkpoint and refreshed browser
@@ -1058,17 +1022,7 @@ export async function fetchEventsForEmbedding(c: Context<{ Bindings: Env }>) {
  */
 export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
 	try {
-		const req = await c.req.json<{
-			run_id: number;
-			worker_id: string;
-			embeddings: Array<{
-				event_id: number;
-				chunk_index: number;
-				embedding: number[];
-				embedding_model?: string;
-			}>;
-			error_message?: string;
-		}>();
+		const req = await c.req.json<CompleteEmbeddingsRequest>();
 
 		// Ownership gate — a worker can only finalize runs it claimed. Mirrors the
 		// other /complete handlers; without it a leaked worker token could mark
@@ -1185,11 +1139,7 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
  */
 export async function emitAuthArtifact(c: Context<{ Bindings: Env }>) {
 	try {
-		const { run_id, artifact } = await c.req.json<{
-			run_id: number;
-			worker_id: string;
-			artifact: Record<string, unknown>;
-		}>();
+		const { run_id, artifact } = await c.req.json<EmitAuthArtifactRequest>();
 
 		const sql = getDb();
 
@@ -1214,11 +1164,7 @@ export async function emitAuthArtifact(c: Context<{ Bindings: Env }>) {
  */
 export async function pollAuthSignal(c: Context<{ Bindings: Env }>) {
 	try {
-		const { run_id, signal_name } = await c.req.json<{
-			run_id: number;
-			worker_id: string;
-			signal_name: string;
-		}>();
+		const { run_id, signal_name } = await c.req.json<PollAuthSignalRequest>();
 
 		const sql = getDb();
 
@@ -1251,20 +1197,7 @@ export async function pollAuthSignal(c: Context<{ Bindings: Env }>) {
  */
 export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
 	try {
-		const req = await c.req.json<{
-			run_id: number;
-			worker_id: string;
-			status: "success" | "failed";
-			credentials?: Record<string, unknown>;
-			metadata?: Record<string, unknown>;
-			error_message?: string;
-			// Diagnostic fields from the subprocess executor (failed-run path only).
-			// The worker redacts output_tail before sending; backend stores as-is.
-			output_tail?: string;
-			exit_code?: number | null;
-			exit_signal?: string | null;
-			exit_reason?: "ok" | "error_message" | "timeout" | "oom" | "crash";
-		}>();
+		const req = await c.req.json<CompleteAuthRequest>();
 
 		// Ownership gate — a worker can only finalize runs it claimed. Mirrors the
 		// other /complete handlers. Without it a leaked worker token could finalize
@@ -1355,13 +1288,7 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
  */
 export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 	try {
-		const req = await c.req.json<{
-			run_id: number;
-			worker_id: string;
-			status: "success" | "failed";
-			action_output?: Record<string, unknown>;
-			error_message?: string;
-		}>();
+		const req = await c.req.json<CompleteActionRequest>();
 
 		// Same ownership check as the other /complete endpoints — a worker
 		// can only finalize runs it claimed. Without this, a leaked worker

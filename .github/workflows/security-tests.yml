@@ -163,7 +163,7 @@ jobs:
 
       # vitest in this repo runs under Node (isolated-vm etc.) — pin Node 22
       # so any native addon prebuild matches.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 

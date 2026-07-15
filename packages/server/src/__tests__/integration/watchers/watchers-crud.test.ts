@@ -90,6 +90,38 @@ describe('watcher CRUD', () => {
     expect(list.watchers?.some((w) => w.watcher_id === watcherId)).toBe(false);
   });
 
+  it('concurrent creates of the same slug: one wins, every loser gets the coded 409 (not raw 23505)', async () => {
+    // The slug precheck SELECT is not a lock, so concurrent replicas can all
+    // pass it and race idx_watchers_org_slug. Fire many at once: exactly one
+    // wins, and every loser must surface the SAME coded 409 the sequential
+    // precheck emits — not a raw Postgres "duplicate key value" 23505.
+    const results = await Promise.allSettled(
+      Array.from({ length: 6 }, () =>
+        owner.watchers.create({
+          slug: 'race-watcher',
+          name: 'Race Watcher',
+          prompt: 'Track races.',
+          agent_id: agentId,
+        })
+      )
+    );
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter(
+      (r): r is PromiseRejectedResult => r.status === 'rejected'
+    );
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(5);
+    for (const r of rejected) {
+      const e = r.reason as Error & { httpStatus?: number };
+      expect(e.message).toMatch(/Watcher with slug .*already exists/);
+      expect(e.message).not.toMatch(/23505|duplicate key value/);
+      expect(e.httpStatus).toBe(409);
+    }
+    const winner = (fulfilled[0] as PromiseFulfilledResult<{ watcher_id: string }>)
+      .value;
+    await owner.watchers.delete({ watcher_ids: [winner.watcher_id] });
+  });
+
   it('creates an org-scoped watcher without an inline extraction schema', async () => {
     const created = (await owner.watchers.create({
       slug: 'org-scoped-summary-watcher',

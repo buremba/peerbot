@@ -349,75 +349,86 @@ export async function createAuthProfile(params: {
   cdpUrl?: string | null;
 }, db: DbClient = getDb()): Promise<AuthProfileRow> {
   const sql = db;
-  const slug = await ensureUniqueAuthProfileSlug({
-    organizationId: params.organizationId,
-    slug: normalizeAuthProfileSlug(params.slug, params.displayName),
-  }, db);
-
   const normalizedProvider = params.provider ? params.provider.toLowerCase() : null;
 
-  let rows: unknown[];
-  try {
-    rows = await sql`
-      INSERT INTO auth_profiles (
-        organization_id,
-        slug,
-        display_name,
-        connector_key,
-        profile_kind,
-        status,
-        auth_data,
-        account_id,
-        provider,
-        created_by,
-        device_worker_id,
-        browser_kind,
-        user_data_dir,
-        cdp_url
-      ) VALUES (
-        ${params.organizationId},
-        ${slug},
-        ${params.displayName},
-        ${params.connectorKey ?? null},
-        ${params.profileKind},
-        ${params.status ?? 'active'},
-        ${sql.json(normalizeAuthData(params.profileKind, params.authData ?? {}))},
-        ${params.accountId ?? null},
-        ${normalizedProvider},
-        ${params.createdBy ?? null},
-        ${params.deviceWorkerId ?? null},
-        ${params.browserKind ?? null},
-        ${params.userDataDir ?? null},
-        ${params.cdpUrl ?? null}
-      )
-      RETURNING ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
-    `;
-  } catch (err) {
-    // Partial unique index `auth_profiles_pending_oauth_account_unique`
-    // enforces one pending oauth_account row per (org, connector_key,
-    // provider, created_by). Translate a raw 23505 into a structured error
-    // carrying the existing row so callers can recover (idempotent reuse)
-    // or surface a clean message instead of leaking the constraint name.
-    if (isUniqueViolation(err, 'auth_profiles_pending_oauth_account_unique')) {
-      if (
-        params.profileKind === 'oauth_account' &&
-        params.connectorKey !== null &&
-        normalizedProvider !== null
-      ) {
-        const existing = await findPendingAuthProfile({
-          organizationId: params.organizationId,
-          connectorKey: params.connectorKey,
-          profileKind: 'oauth_account',
-          provider: normalizedProvider,
-          createdBy: params.createdBy ?? null,
-        });
-        if (existing) throw new PendingAuthConflictError(existing);
-      }
-    }
-    throw err;
-  }
+  // ensureUniqueAuthProfileSlug is a non-locking SELECT loop: two concurrent
+  // creates can resolve the SAME free slug and race auth_profiles_org_slug_unique.
+  // Re-resolve + retry a bounded number of times on that specific 23505 so the
+  // loser lands on the next suffix instead of leaking a raw constraint error.
+  for (let attempt = 0; ; attempt++) {
+    const slug = await ensureUniqueAuthProfileSlug({
+      organizationId: params.organizationId,
+      slug: normalizeAuthProfileSlug(params.slug, params.displayName),
+    }, db);
 
-  return rows[0] as AuthProfileRow;
+    let rows: unknown[];
+    try {
+      rows = await sql`
+        INSERT INTO auth_profiles (
+          organization_id,
+          slug,
+          display_name,
+          connector_key,
+          profile_kind,
+          status,
+          auth_data,
+          account_id,
+          provider,
+          created_by,
+          device_worker_id,
+          browser_kind,
+          user_data_dir,
+          cdp_url
+        ) VALUES (
+          ${params.organizationId},
+          ${slug},
+          ${params.displayName},
+          ${params.connectorKey ?? null},
+          ${params.profileKind},
+          ${params.status ?? 'active'},
+          ${sql.json(normalizeAuthData(params.profileKind, params.authData ?? {}))},
+          ${params.accountId ?? null},
+          ${normalizedProvider},
+          ${params.createdBy ?? null},
+          ${params.deviceWorkerId ?? null},
+          ${params.browserKind ?? null},
+          ${params.userDataDir ?? null},
+          ${params.cdpUrl ?? null}
+        )
+        RETURNING ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
+      `;
+    } catch (err) {
+      // A concurrent create grabbed the same slug first — re-resolve and retry
+      // (bounded), since the SELECT-loop is not a lock.
+      if (isUniqueViolation(err, 'auth_profiles_org_slug_unique') && attempt < 4) {
+        continue;
+      }
+      // Partial unique index `auth_profiles_pending_oauth_account_unique`
+      // enforces one pending oauth_account row per (org, connector_key,
+      // provider, created_by). Translate a raw 23505 into a structured error
+      // carrying the existing row so callers can recover (idempotent reuse)
+      // or surface a clean message instead of leaking the constraint name.
+      if (isUniqueViolation(err, 'auth_profiles_pending_oauth_account_unique')) {
+        if (
+          params.profileKind === 'oauth_account' &&
+          params.connectorKey !== null &&
+          normalizedProvider !== null
+        ) {
+          const existing = await findPendingAuthProfile({
+            organizationId: params.organizationId,
+            connectorKey: params.connectorKey,
+            profileKind: 'oauth_account',
+            provider: normalizedProvider,
+            createdBy: params.createdBy ?? null,
+          });
+          if (existing) throw new PendingAuthConflictError(existing);
+        }
+      }
+      throw err;
+    }
+
+    return rows[0] as AuthProfileRow;
+  }
 }
 
 /**

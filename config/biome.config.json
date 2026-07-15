@@ -16,6 +16,7 @@
       "!**/.claude/worktrees/**",
       "!**/.cli-smoke-run/**",
       "!**/.sdk-e2e-run/**",
+      "!**/evals/**/last-run.json",
       "!**/.managed-e2e-run/**",
       "!**/dist/**",
       "!**/src/errors.js",

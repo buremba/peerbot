@@ -165,7 +165,30 @@ async function runCell(
   const stateRes = await task.check(org, seeded);
   const replyRes = replyCheck(task.id, reply, seeded);
   const replyPass = replyRes ? replyRes.pass : null;
-  const pass = stateRes.pass && (replyPass === null || replyPass === true);
+
+  // Tier-aware scoring. Under `default` (member `mcp:read mcp:write`) scope, an
+  // `admin`-tier task's WRITE is legitimately blocked — completing it is
+  // impossible by design, so counting a non-completion as a discovery failure
+  // would be wrong. Instead score it a PASS when the agent DISCOVERED the right
+  // operation and correctly ran into the admin gate (state not mutated + an
+  // admin-access denial surfaced), and note it as "correctly-blocked".
+  const tier = task.tier ?? "member-write";
+  const blockedByScope =
+    scope === "default" &&
+    tier === "admin" &&
+    !stateRes.pass &&
+    discovered &&
+    /admin (access|or owner)|requires .*admin|not a function|not available/i.test(
+      `${failNote} ${reply}`
+    );
+  const pass = blockedByScope
+    ? true
+    : stateRes.pass && (replyPass === null || replyPass === true);
+  if (blockedByScope) {
+    failNote = failNote
+      ? `${failNote} [correctly blocked: admin-tier under default scope]`
+      : "correctly blocked: admin-tier under default scope";
+  }
 
   return {
     taskId: task.id,

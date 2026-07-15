@@ -243,3 +243,41 @@ default scope throughout (member-owned connections are `MEMBER_WRITE`).
 - Caveats: this measures Gemini 2.5 Flash specifically, 2 trials/task; the
   reply-text checks are deliberately strict (they under-credit correct-but-
   paraphrased answers). Re-run per model before drawing surface conclusions.
+
+## Update — 4-trial variance battery + tier-aware default scope
+
+A third battery at **4 trials** (owner scope, with the #1958 two-hop metadata
+guidance applied) scored **63% (28/44), 70% discovered (31/44)** — squarely
+inside the earlier 59–68% band, tightening the estimate. Per-task highlights vs
+the 2-trial run:
+
+| task | 4-trial pass | 4-trial disc | note |
+|---|---|---|---|
+| connect-slack | 4/4 | — | rock solid |
+| save-and-recall-memory | 4/4 | — | rock solid |
+| query-entities | 4/4 | 3/4 | solid |
+| entity-relationship | **4/4** | 4/4 | up from 1/2 — #1958 link guidance landed |
+| run-operation | 3/4 | 4/4 | solid |
+| create-entity | 2/4 | 3/4 | up from 0/2 but still the shakiest two-hop |
+| create-watcher | 2/4 | 4/4 | discovers reliably; completion variable |
+| org-discovery | 2/4 | 4/4 | reply-echo strictness |
+| schedule-a-job | 2/4 | 2/4 | discovery itself is variable here |
+| sql-discovery | 1/4 | 3/4 | strict table-name reply echo |
+| connect-website | 0/4 | 4/4 | discovers the connector every time; never lands connect+feed — the remaining genuine multi-step gap |
+
+`entity-relationship` moving to 4/4 is the clearest signal that spelling out the
+multi-step precondition in `search_sdk` (PR #1958) closes the gap it was built to
+close. `connect-website` (connect → then create the feed) is the analogous
+two-hop still open.
+
+### Tier-aware default-scope scoring
+
+Each task now carries a `tier` (`read` | `member-write` | `admin`). Under
+`--scope default` (a normal `mcp:read mcp:write` member token — what
+`lobu token create` mints), an `admin`-tier task's write is legitimately blocked,
+so the runner scores it a **pass when the agent discovered the operation and hit
+the admin gate** ("correctly blocked") rather than counting it as a discovery
+failure. This makes a `--scope default` battery an honest measure of the *member*
+experience — connector/watcher/schedule tasks are admin-gated and expected to
+stop at the gate, while read + member-write tasks (query, create-entity,
+save-memory, link) must complete. Run it with `./run.sh --scope default`.

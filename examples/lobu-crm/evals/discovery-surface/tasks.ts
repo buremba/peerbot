@@ -26,9 +26,22 @@ export interface TaskResult {
   detail: string;
 }
 
+/**
+ * The access tier the task's WRITE requires. Under `--scope default` (a normal
+ * `mcp:read mcp:write` member token — what `lobu token create` mints), an
+ * `admin` task's action is legitimately blocked, so completing it is impossible
+ * by design; the runner scores those as "correctly blocked" rather than a
+ * discovery failure. Read/member-write tasks are expected to complete on either
+ * scope. This keeps a default-scope battery an honest measure of the MEMBER
+ * experience instead of counting admin-gated actions as surface failures.
+ */
+export type TaskTier = "read" | "member-write" | "admin";
+
 export interface EvalTask {
   id: string;
   title: string;
+  /** Access tier the task's write requires (default: "member-write"). */
+  tier?: TaskTier;
   /** Seed identical starting state. Returns any ids the prompt/check needs. */
   seed: (org: ScenarioOrg) => Promise<Record<string, unknown>>;
   /** The bare natural-language intent handed to the model. */
@@ -51,6 +64,7 @@ export const TASKS: EvalTask[] = [
   //     ("website") surfaces it — a fair discovery test, not a name-mismatch one.
   {
     id: "connect-website",
+    tier: "admin",
     title: "Set up collection of a website's pages",
     seed: async (org) => {
       await installConnector(org, {
@@ -93,6 +107,7 @@ export const TASKS: EvalTask[] = [
   //     connection row exists (it lands pending_auth, since Slack needs install).
   {
     id: "connect-slack",
+    tier: "admin",
     title: "Connect the Slack workspace",
     seed: async (org) => {
       await installConnector(org, {
@@ -123,6 +138,7 @@ export const TASKS: EvalTask[] = [
   //     operation + an active connection; success = a completed action run.
   {
     id: "run-operation",
+    tier: "admin",
     title: "Run the 'ping' operation on the help-desk connection",
     seed: async (org) => {
       const sql = db();
@@ -175,6 +191,7 @@ export const TASKS: EvalTask[] = [
   //     discover it has to create the entity type first (EntityTypeNotFound).
   {
     id: "create-entity",
+    tier: "member-write",
     title: "Add a company Acme with 50 employees",
     seed: async () => ({}),
     prompt: () =>
@@ -216,6 +233,7 @@ export const TASKS: EvalTask[] = [
   // 5 — read: count + name the seeded companies (reply-scored).
   {
     id: "query-entities",
+    tier: "read",
     title: "How many companies + their names",
     seed: async (org) => {
       await seedEntityType(org, "company", "Company", {
@@ -247,6 +265,7 @@ export const TASKS: EvalTask[] = [
   // 6 — create a watcher over a feed.
   {
     id: "create-watcher",
+    tier: "admin",
     title: "Watch a feed and notify on a condition",
     seed: async (org) => {
       await installConnector(org, {
@@ -274,6 +293,7 @@ export const TASKS: EvalTask[] = [
   // 7 — save then recall a fact (write to memory + reply recalls it).
   {
     id: "save-and-recall-memory",
+    tier: "member-write",
     title: "Remember + recall the target market",
     seed: async () => ({}),
     prompt: () =>
@@ -298,6 +318,7 @@ export const TASKS: EvalTask[] = [
   // 8 — SQL discovery: what tables can I query + how to find collected pages.
   {
     id: "sql-discovery",
+    tier: "read",
     title: "What tables can I query; how to find collected pages",
     seed: async () => ({}),
     prompt: () =>
@@ -313,6 +334,7 @@ export const TASKS: EvalTask[] = [
   // 9 — org discovery: which workspace + installed connectors.
   {
     id: "org-discovery",
+    tier: "read",
     title: "Which workspace am I in; what connectors are installed",
     seed: async (org) => {
       // Give the org a clean, distinctive name so the reply check ("did it name
@@ -343,6 +365,7 @@ export const TASKS: EvalTask[] = [
   // 10 — schedule a recurring job (admin).
   {
     id: "schedule-a-job",
+    tier: "admin",
     title: "Schedule a weekly Monday 9am job",
     seed: async () => ({}),
     prompt: () =>
@@ -369,6 +392,7 @@ export const TASKS: EvalTask[] = [
   // 11 — entity relationship: link a contact to a company as employer.
   {
     id: "entity-relationship",
+    tier: "member-write",
     title: "Link contact Jane to Acme as employer",
     seed: async (org) => {
       await seedEntityType(org, "company", "Company");

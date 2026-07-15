@@ -156,21 +156,29 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                 snippet: { type: 'string' },
                 from_email: { type: 'string' },
                 from_name: { type: 'string' },
+                replied: {
+                  type: 'boolean',
+                  description:
+                    'True when the thread contains both a counterparty message and a mailbox-authored SENT-labeled message — the interaction signal that gates contact promotion.',
+                },
               },
             },
             attributions: [
               {
                 role: 'authored_by',
-                // Don't mint a contact per inbound sender. Every from-address is a
-                // sender — overwhelmingly brands, newsletters, and no-reply system
-                // addresses, all of which carry a from_name, so no per-event signal
-                // separates a real contact from a brand. The identifier still lands
-                // in entity_identities and links to an existing contact on match;
-                // promoting a real email contact is interaction-driven (a reply /
-                // contacts-source bridge), handled outside ingest.
-                autoCreate: false,
+                // Promote on interaction, never on receipt. Every from-address is
+                // a sender — overwhelmingly brands, newsletters, and no-reply
+                // system addresses, all of which carry a from_name — so receipt
+                // alone must not mint a contact. `replied` (computed in sync from
+                // per-message SENT labels) marks a genuine bidirectional exchange.
+                // Only those senders materialize a `person`; everything else still
+                // links to an existing contact on identity match. A thread replied
+                // to after its first sync re-syncs (the reply is a new message
+                // inside the `after:` window), so promotion follows the reply.
+                autoCreate: true,
                 target: {
                   entityType: 'person',
+                  createWhen: { path: 'metadata.replied', equals: true },
                   titlePath: 'metadata.from_name',
                   identities: [{ namespace: 'email', eventPath: 'metadata.from_email' }],
                 },
@@ -291,6 +299,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
   // -------------------------------------------------------------------------
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
+    const syncStartedAt = new Date();
     const token = ctx.credentials?.accessToken;
     if (!token) {
       throw new Error('Gmail requires Google OAuth credentials.');
@@ -362,8 +371,12 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
           if (!thread.messages || thread.messages.length === 0) continue;
 
           const firstMessage = thread.messages[0];
+          const isSent = (m: GmailMessage) => (m.labelIds ?? []).includes('SENT');
+          const counterpartyMessage = thread.messages.find((message) => !isSent(message));
           const subject = this.getHeader(firstMessage, 'Subject') || '(no subject)';
-          const from = this.getHeader(firstMessage, 'From') || 'Unknown';
+          const from = counterpartyMessage
+            ? this.getHeader(counterpartyMessage, 'From') || 'Unknown'
+            : 'Unknown';
           const { name: fromName, email: fromEmail } = this.parseFromHeader(from);
           const dateHeader = this.getHeader(firstMessage, 'Date');
           const occurredAt = dateHeader
@@ -371,6 +384,12 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
             : new Date(parseInt(firstMessage.internalDate, 10));
 
           if (Number.isNaN(occurredAt.getTime())) continue;
+
+          // A bidirectional exchange has at least one mailbox-authored message
+          // and one counterparty-authored message, regardless of who started it.
+          // Attribute the event to the first counterparty message so an
+          // owner-started thread never promotes the mailbox owner's own address.
+          const replied = counterpartyMessage !== undefined && thread.messages.some(isSent);
 
           const event: EventEnvelope = {
             origin_id: thread.id,
@@ -384,6 +403,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
               message_count: thread.messages.length,
               label_ids: firstMessage.labelIds ?? [],
               snippet: firstMessage.snippet,
+              replied,
               ...(fromEmail ? { from_email: fromEmail } : {}),
               ...(fromName ? { from_name: fromName } : {}),
             },
@@ -405,7 +425,8 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
 
     const newCheckpoint: GmailCheckpoint = {
-      last_sync_at: new Date().toISOString(),
+      // Keep events that arrive while this sync is running inside the next window.
+      last_sync_at: syncStartedAt.toISOString(),
     };
 
     return {

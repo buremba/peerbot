@@ -1,4 +1,5 @@
 import type { EntityIdentitySpec, EntityLinkPredicate, EntityTraitSpec, EventAttributionRule } from '@lobu/connector-sdk';
+import GmailConnector from '@lobu/connectors/google_gmail';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import {
@@ -766,5 +767,118 @@ describe('applyEventAttributions', () => {
       WHERE organization_id = ${org.id} AND namespace = 'phone' AND identifier = '14155551111'
     `;
     expect(rows[0].count).toBe('0');
+  });
+});
+
+/**
+ * End-to-end promote-on-interaction (#1626) against the REAL Gmail connector
+ * rule — not a hand-built test rule — so a regression in the connector's
+ * declared gate (e.g. flipping autoCreate back on ungated) fails here, at the
+ * pipeline level where the raw-sender person flood would actually re-appear.
+ */
+describe('gmail promote-on-interaction (real connector rule)', () => {
+  const GMAIL_KEY = 'google.gmail';
+  const GMAIL_FEED = 'threads';
+
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+    clearEntityLinkRulesCache();
+  });
+
+  async function setupGmailOrg() {
+    const { org, user } = await setupOrg('gmail promote org');
+    const sql = getTestDb();
+    // The gmail rule targets `person`; fresh test orgs only have `$member`.
+    await sql`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${org.id}, 'person', 'Person', current_timestamp, current_timestamp)
+    `;
+    await createTestConnectorDefinition({
+      key: GMAIL_KEY,
+      name: 'Gmail',
+      organization_id: org.id,
+      feeds_schema: new GmailConnector().definition.feeds as Record<string, unknown>,
+    });
+    clearEntityLinkRulesCache();
+    return { org, user, sql };
+  }
+
+  const thread = (metadata: Record<string, unknown>) => ({
+    origin_type: 'thread',
+    metadata,
+  });
+
+  async function personRows(sql: ReturnType<typeof getTestDb>, orgId: string) {
+    return sql<{ name: string; metadata: { aliases?: string[] } }[]>`
+      SELECT e.name, e.metadata FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${orgId} AND et.slug = 'person' AND e.deleted_at IS NULL
+      ORDER BY e.name
+    `;
+  }
+
+  it('promotes only replied-to counterparties: no raw-sender rows, bidirectional contact minted with metric aliases', async () => {
+    const { org, sql } = await setupGmailOrg();
+
+    await applyEventAttributions({
+      connectorKey: GMAIL_KEY,
+      feedKey: GMAIL_FEED,
+      orgId: org.id,
+      items: [
+        // Inbound-only brand blast — has a from_name, still must NOT mint.
+        thread({ from_email: 'promo@brand.example', from_name: 'Brand', replied: false }),
+        // Genuine bidirectional exchange — promotes.
+        thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: true }),
+      ],
+    });
+
+    const people = await personRows(sql, org.id);
+    expect(people.map((p) => p.name)).toEqual(['Alice']);
+    // The promoted contact keeps participating in metrics: its email identifier
+    // is seeded into metadata.aliases (the metric compiler's resolution surface).
+    expect(people[0].metadata.aliases).toEqual(['alice@example.com']);
+
+    // The brand's identifier is not claimed by any entity.
+    const brandIdent = await sql<{ count: string }[]>`
+      SELECT COUNT(*)::text AS count FROM entity_identities
+      WHERE organization_id = ${org.id} AND namespace = 'email' AND identifier = 'promo@brand.example'
+    `;
+    expect(brandIdent[0].count).toBe('0');
+  });
+
+  it('promotion is idempotent: re-syncing the same replied thread never duplicates the contact', async () => {
+    const { org, sql } = await setupGmailOrg();
+    const items = [thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: true })];
+
+    await applyEventAttributions({ connectorKey: GMAIL_KEY, feedKey: GMAIL_FEED, orgId: org.id, items });
+    await applyEventAttributions({ connectorKey: GMAIL_KEY, feedKey: GMAIL_FEED, orgId: org.id, items });
+
+    const people = await personRows(sql, org.id);
+    expect(people.map((p) => p.name)).toEqual(['Alice']);
+  });
+
+  it('an inbound-only thread from an already-promoted contact still links to it (match is never gated)', async () => {
+    const { org, sql } = await setupGmailOrg();
+
+    // Promote Alice via a replied thread, then receive an inbound-only one.
+    await applyEventAttributions({
+      connectorKey: GMAIL_KEY,
+      feedKey: GMAIL_FEED,
+      orgId: org.id,
+      items: [thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: true })],
+    });
+    const later = thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: false });
+    await applyEventAttributions({
+      connectorKey: GMAIL_KEY,
+      feedKey: GMAIL_FEED,
+      orgId: org.id,
+      items: [later],
+    });
+
+    // Still exactly one person, and the inbound event was stamped with the
+    // matched identity slot (the read-time JOIN key).
+    const people = await personRows(sql, org.id);
+    expect(people.map((p) => p.name)).toEqual(['Alice']);
+    expect((later.metadata as Record<string, unknown>).email).toBe('alice@example.com');
   });
 });

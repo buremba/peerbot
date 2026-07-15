@@ -17,6 +17,7 @@ import {
 } from "../../gateway/services/agent-thread-list";
 import { buildApiConversationId } from "../../gateway/services/api-conversation-id";
 import { readWatcherRunThreads } from "../../gateway/services/watcher-run-thread";
+import { insertEvent } from "../../utils/insert-event";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestAgent,
@@ -157,6 +158,30 @@ describe("listAgentThreads scope=all", () => {
 			"watcher run output",
 			"2026-06-28T00:30:00Z",
 		);
+		const [approvalRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, approval_status, action_key, created_at)
+			VALUES
+			  ('internal', 'pending', ${org}, ${WATCHER_ID}, 'pending', 'entity_field_change', now())
+			RETURNING id`;
+		await insertEvent({
+			entityIds: [],
+			organizationId: org,
+			originId: `watcher-approval-${approvalRun.id}`,
+			title: "Approve watcher change",
+			content: "A watcher proposed changing a contact.",
+			semanticType: "operation",
+			runId: approvalRun.id,
+			interactionType: "approval",
+			interactionStatus: "pending",
+			metadata: {
+				action: "update",
+				tool: "entity_field_change",
+				resourceKind: "entity",
+				fields: { email: "new@example.com" },
+				attribution: "watcher",
+			},
+		});
 	});
 
 	afterAll(async () => {
@@ -239,5 +264,14 @@ describe("listAgentThreads scope=all", () => {
 		expect(JSON.stringify(data.runs[0]?.messages)).toContain(
 			"watcher run output",
 		);
+		expect(data.interactions).toEqual([
+			expect.objectContaining({
+				type: "tool-approval",
+				action: "update",
+				fields: { email: "new@example.com" },
+				attribution: "watcher",
+				resourceKind: "entity",
+			}),
+		]);
 	});
 });

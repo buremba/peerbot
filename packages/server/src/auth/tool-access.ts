@@ -62,6 +62,12 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 };
 
 const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
+	// manage_catalog is READ-ONLY (both actions list — no writes exist). An empty
+	// admin set gives it an explicit policy entry so its actions fall through to
+	// READ tier; without it, `requiresOwnerAdmin`'s no-policy fallback classified
+	// list_catalog/list_installed as admin, so a default `mcp:read`+`mcp:write`
+	// token (what `lobu token create` mints) couldn't discover connectors at all.
+	manage_catalog: new Set([]),
 	manage_entity: new Set(["delete", "merge", "unmerge"]),
 	manage_entity_schema: new Set([
 		"create",

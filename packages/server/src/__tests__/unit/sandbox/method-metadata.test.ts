@@ -145,5 +145,12 @@ describe("method-metadata", () => {
 		expect(link.summary).not.toMatch(
 			/call `?entitySchema\.addRule`? first|addRule.*\(or createRelType\)/
 		);
+		// The copy-paste usage example must embody the full two-hop flow (ensure
+		// the rel-type, then link) — not just mention it — so a pasted example
+		// can't reproduce the missing-type stall it's meant to prevent.
+		const linkExample = link.usageExample ?? "";
+		expect(linkExample).toContain("listRelTypes");
+		expect(linkExample).toContain("createRelType");
+		expect(linkExample).toContain("entities.link");
 	});
 });

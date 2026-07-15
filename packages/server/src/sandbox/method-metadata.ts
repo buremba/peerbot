@@ -125,9 +125,15 @@ export default async (_ctx, client) => {
 		access: "write",
 		example:
 			"await client.entities.link({ from_entity_id: 42, to_entity_id: 43, relationship_type_slug: 'customer_of' });",
-		usageExample: `// Link two entities by id. Resolve the ids first (entities.list / .get),
-// and make sure the relationship_type_slug exists (entitySchema.listRelTypes).
+		usageExample: `// Two-hop: the relationship TYPE must exist before linking. Ensure it
+// (entitySchema.listRelTypes → createRelType), then resolve the two entity
+// ids (entities.list / .get) and link. createRelType is idempotent-safe here
+// because we only create when it is absent.
 export default async (_ctx, client) => {
+  const { relationship_types } = await client.entitySchema.listRelTypes();
+  if (!relationship_types.some((t) => t.slug === 'works_at')) {
+    await client.entitySchema.createRelType({ slug: 'works_at', name: 'Works at' });
+  }
   const { entities: companies } = await client.entities.list({ entity_type: 'company', search: 'Acme' });
   const { entities: people } = await client.entities.list({ entity_type: 'person', search: 'Jane' });
   return client.entities.link({

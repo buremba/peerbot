@@ -122,6 +122,28 @@ describe('watcher CRUD', () => {
     await owner.watchers.delete({ watcher_ids: [winner.watcher_id] });
   });
 
+  it('concurrent creates of DISTINCT slugs all succeed with unique ids (no PK collision)', async () => {
+    // Directly covers the moved id allocation: getNextNumericId now runs inside
+    // the transaction so its advisory xact lock serializes. Pre-fix, concurrent
+    // creates computed the same MAX(id)+1 on the pooled autocommit connection
+    // and collided on the watcher PK even with different slugs.
+    const N = 6;
+    const results = await Promise.all(
+      Array.from({ length: N }, (_v, i) =>
+        owner.watchers.create({
+          slug: `distinct-race-${i}`,
+          name: `Distinct Race ${i}`,
+          prompt: 'Track things.',
+          agent_id: agentId,
+        })
+      )
+    );
+    const ids = results.map((r) => (r as { watcher_id: string }).watcher_id);
+    expect(ids.length).toBe(N);
+    expect(new Set(ids).size).toBe(N); // all unique — no PK collision
+    await owner.watchers.delete({ watcher_ids: ids });
+  });
+
   it('creates an org-scoped watcher without an inline extraction schema', async () => {
     const created = (await owner.watchers.create({
       slug: 'org-scoped-summary-watcher',

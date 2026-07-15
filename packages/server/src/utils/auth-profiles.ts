@@ -398,10 +398,17 @@ export async function createAuthProfile(params: {
         RETURNING ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
       `;
     } catch (err) {
-      // A concurrent create grabbed the same slug first — re-resolve and retry
-      // (bounded), since the SELECT-loop is not a lock.
-      if (isUniqueViolation(err, 'auth_profiles_org_slug_unique') && attempt < 4) {
-        continue;
+      // A concurrent create grabbed the same slug first — re-resolve and retry,
+      // since the SELECT-loop is not a lock. Each retry re-scans for the next
+      // free suffix, so N attempts cover N concurrent creators of the same base.
+      if (isUniqueViolation(err, 'auth_profiles_org_slug_unique')) {
+        if (attempt < 8) continue;
+        // Exhausted under extreme contention — surface a clean, retryable error
+        // rather than leaking the raw constraint 23505.
+        throw new ToolUserError(
+          'Could not allocate a unique auth profile slug under concurrent load; retry.',
+          409
+        );
       }
       // Partial unique index `auth_profiles_pending_oauth_account_unique`
       // enforces one pending oauth_account row per (org, connector_key,

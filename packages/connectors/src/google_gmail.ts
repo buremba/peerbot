@@ -300,6 +300,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
   // -------------------------------------------------------------------------
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
+    const syncStartedAt = new Date();
     const token = ctx.credentials?.accessToken;
     if (!token) {
       throw new Error('Gmail requires Google OAuth credentials.');
@@ -425,7 +426,8 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
 
     const newCheckpoint: GmailCheckpoint = {
-      last_sync_at: new Date().toISOString(),
+      // Keep events that arrive while this sync is running inside the next window.
+      last_sync_at: syncStartedAt.toISOString(),
     };
 
     return {

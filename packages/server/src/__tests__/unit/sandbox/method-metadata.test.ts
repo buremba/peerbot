@@ -174,15 +174,20 @@ describe("method-metadata", () => {
 		const connect = METHOD_METADATA["connections.connect"];
 		expect(connect.summary).toContain("connection_id");
 		expect(connect.summary).toMatch(/create a feed|feeds\.create/);
+		// connect() does NOT always return a connection_id: the setup_required
+		// outcome has none, so the summary must warn against calling feeds.create
+		// with a missing id rather than promising an id unconditionally.
+		expect(connect.summary).toContain("setup_required");
 		const connectExample = connect.usageExample ?? "";
 		expect(connectExample).toContain("connections.connect");
 		expect(connectExample).toContain("feeds.create");
 		expect(connectExample).toContain("connection_id");
 		expect(connectExample).toContain("feed_key");
-		// The website 'pages' config must use the REAL connector keys (urls /
-		// sitemap_url) — a made-up key (config:{} or {url}) creates a feed that
-		// collects zero events, defeating the whole two-hop.
-		expect(connectExample).toMatch(/urls|sitemap_url/);
+		// The website 'pages' config must use the REAL connector keys — assert the
+		// executable expression itself passes urls: [...] (or sitemap_url), not
+		// just that the word appears in a comment. A made-up key (config:{} /
+		// {url}) creates a feed that collects zero events.
+		expect(connectExample).toMatch(/config:\s*\{\s*(urls:\s*\[|sitemap_url:)/);
 
 		// feeds.create must document the connection_id + feed_key it needs and
 		// point at how to discover the config shape — not leave the agent guessing.

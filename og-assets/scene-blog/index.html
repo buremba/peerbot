@@ -19,7 +19,7 @@
     --muted: #8a857b;       /* muted warm */
     --red: #f5333a;         /* accent */
     --code-bg: #141414;     /* terminal/code surface */
-    --code-text: #f9f4e6;   /* warm code text */
+   
     --code-dim: #8a857b;    /* code comment */
   }
 
@@ -39,23 +39,12 @@
   .brand .mark { width:37px; height:31px; display:block; }
   .brand .word { font-weight:600; font-size:28px; letter-spacing:-0.02em; color:var(--text); }
 
-  .crumb { position:absolute; top:60px; right:80px; font-family:"JetBrains Mono", ui-monospace, monospace;
-    font-size:13px; font-weight:500; letter-spacing:0.02em; color:var(--muted); }
-  .crumb b { color:var(--text); font-weight:600; }
-
   /* ── headline column ── */
-  .kicker { position:absolute; top:152px; left:80px; font-family:"JetBrains Mono", ui-monospace, monospace;
-    font-size:14px; font-weight:500; letter-spacing:0.16em; text-transform:uppercase; color:var(--red); }
   h1 { position:absolute; top:188px; left:80px; width:560px; text-align:left;
-    font-size:62px; font-weight:600; letter-spacing:-0.035em; line-height:1.02; color:var(--text); }
+    font-size:68px; font-weight:600; letter-spacing:-0.035em; line-height:1.02; color:var(--text); }
   h1 .red { color:var(--red); }
-  .sub { position:absolute; top:430px; left:80px; width:480px; text-align:left;
+  .sub { position:absolute; top:452px; left:80px; width:480px; text-align:left;
     font-size:20px; font-weight:500; line-height:1.45; color:var(--muted); }
-  .byline { position:absolute; bottom:58px; left:80px; font-family:"JetBrains Mono", ui-monospace, monospace;
-    font-size:13px; font-weight:500; letter-spacing:0.02em; color:var(--muted); }
-  .byline b { color:var(--text); font-weight:600; }
-  .byline .pill { display:inline-block; margin-left:8px; padding:3px 9px; border:1px solid rgba(245,51,58,0.40);
-    border-radius:999px; font-size:11.5px; letter-spacing:0.08em; text-transform:uppercase; color:var(--red); }
 
   /* ── RIGHT: terminal panel framing the orbit ── */
   .panel { position:absolute; right:72px; top:96px; width:496px; height:438px; background:var(--code-bg);
@@ -84,7 +73,6 @@
   .nl { margin-top:11px; }
   .nl .e { font-family:"JetBrains Mono", ui-monospace, monospace; font-size:10.5px; font-weight:500;
     letter-spacing:0.15em; color:var(--red); }
-  .nl .d { font-size:13.5px; font-weight:600; letter-spacing:-0.01em; margin-top:2px; color:var(--code-text); }
 </style></head>
 <body>
 <div id="stage">
@@ -95,13 +83,10 @@
     <img class="mark" src="./assets/lobu-mark.svg" alt="" />
     <span class="word">lobu</span>
   </div>
-  <div class="crumb"><b>lobu.ai</b>/blog</div>
 
   <!-- headline -->
-  <div class="kicker">Essay</div>
   <h1>The agent loop<br/>is the new <span class="red">SaaS</span>.</h1>
   <div class="sub">The business logic SaaS sold you is now an agent loop that watches your data and acts.</div>
-  <div class="byline"><b>lobu.ai/blog</b><span class="pill">open source</span></div>
 
   <!-- RIGHT: terminal panel with orbit -->
   <div class="panel">
@@ -127,7 +112,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="#f5333a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
           <span class="glow" id="g1"></span>
         </div>
-        <div class="nl"><div class="e">WATCH</div><div class="d">every source</div></div>
+        <div class="nl"><div class="e">WATCH</div></div>
       </div>
       <!-- UNDERSTAND lower-right (350,309) -->
       <div class="node" style="left:350px; top:309px;">
@@ -135,7 +120,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="#f5333a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
           <span class="glow" id="g2"></span>
         </div>
-        <div class="nl"><div class="e">UNDERSTAND</div><div class="d">shared memory</div></div>
+        <div class="nl"><div class="e">UNDERSTAND</div></div>
       </div>
       <!-- ACT lower-left (146,309) -->
       <div class="node" style="left:146px; top:309px;">
@@ -143,7 +128,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="#f5333a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 20 5v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V5Z"/><path d="M9 12l2 2 4-4"/></svg>
           <span class="glow" id="g3"></span>
         </div>
-        <div class="nl"><div class="e">ACT</div><div class="d">on your goals</div></div>
+        <div class="nl"><div class="e">ACT</div></div>
       </div>
     </div>
   </div>

@@ -156,21 +156,30 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                 snippet: { type: 'string' },
                 from_email: { type: 'string' },
                 from_name: { type: 'string' },
+                replied: {
+                  type: 'boolean',
+                  description:
+                    'True when the thread was started by the counterparty and the mailbox owner sent a message in it (a SENT-labeled message) — the interaction signal that gates contact promotion.',
+                },
               },
             },
             attributions: [
               {
                 role: 'authored_by',
-                // Don't mint a contact per inbound sender. Every from-address is a
-                // sender — overwhelmingly brands, newsletters, and no-reply system
-                // addresses, all of which carry a from_name, so no per-event signal
-                // separates a real contact from a brand. The identifier still lands
-                // in entity_identities and links to an existing contact on match;
-                // promoting a real email contact is interaction-driven (a reply /
-                // contacts-source bridge), handled outside ingest.
-                autoCreate: false,
+                // Promote on interaction, never on receipt. Every from-address is
+                // a sender — overwhelmingly brands, newsletters, and no-reply
+                // system addresses, all of which carry a from_name — so receipt
+                // alone must not mint a contact. `replied` (computed in sync from
+                // per-message SENT labels) marks a genuine bidirectional exchange:
+                // the counterparty wrote first AND the mailbox owner answered.
+                // Only those senders materialize a `person`; everything else still
+                // links to an existing contact on identity match. A thread replied
+                // to after its first sync re-syncs (the reply is a new message
+                // inside the `after:` window), so promotion follows the reply.
+                autoCreate: true,
                 target: {
                   entityType: 'person',
+                  createWhen: { path: 'metadata.replied', equals: true },
                   titlePath: 'metadata.from_name',
                   identities: [{ namespace: 'email', eventPath: 'metadata.from_email' }],
                 },
@@ -372,6 +381,16 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
 
           if (Number.isNaN(occurredAt.getTime())) continue;
 
+          // Interaction signal for promote-on-signal (see the attribution rule's
+          // createWhen): the thread was STARTED by the counterparty (first
+          // message is not ours) and the mailbox owner sent at least one message
+          // in it. A SENT label marks a message the account owner authored, so
+          // this needs no knowledge of the owner's own address. Owner-started
+          // threads are deliberately NOT `replied` — their from_email is the
+          // owner's own address, which must never be promoted as a contact.
+          const isSent = (m: GmailMessage) => (m.labelIds ?? []).includes('SENT');
+          const replied = !isSent(firstMessage) && thread.messages.some(isSent);
+
           const event: EventEnvelope = {
             origin_id: thread.id,
             title: subject,
@@ -384,6 +403,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
               message_count: thread.messages.length,
               label_ids: firstMessage.labelIds ?? [],
               snippet: firstMessage.snippet,
+              replied,
               ...(fromEmail ? { from_email: fromEmail } : {}),
               ...(fromName ? { from_name: fromName } : {}),
             },

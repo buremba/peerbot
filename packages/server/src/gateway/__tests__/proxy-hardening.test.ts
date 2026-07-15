@@ -300,8 +300,14 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
   let proxyServer: http.Server;
   let proxyPort: number;
   const deploymentName = "pattern-test-worker";
+  let savedEncryptionKey: string | undefined;
+  let savedAllowedDomains: string | undefined;
+  let savedDisallowedDomains: string | undefined;
 
   beforeEach(() => {
+    savedEncryptionKey = process.env.ENCRYPTION_KEY;
+    savedAllowedDomains = process.env.WORKER_ALLOWED_DOMAINS;
+    savedDisallowedDomains = process.env.WORKER_DISALLOWED_DOMAINS;
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
     __testOnly.reset();
     setProxyRevokedTokenStore(NOOP_REVOKED_STORE);
@@ -314,9 +320,15 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
   afterEach(async () => {
     __testOnly.setDnsLookup(null);
     await stopHttpProxy(proxyServer);
-    delete process.env.ENCRYPTION_KEY;
-    delete process.env.WORKER_ALLOWED_DOMAINS;
-    delete process.env.WORKER_DISALLOWED_DOMAINS;
+    if (savedEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
+    else process.env.ENCRYPTION_KEY = savedEncryptionKey;
+    if (savedAllowedDomains === undefined) delete process.env.WORKER_ALLOWED_DOMAINS;
+    else process.env.WORKER_ALLOWED_DOMAINS = savedAllowedDomains;
+    if (savedDisallowedDomains === undefined) {
+      delete process.env.WORKER_DISALLOWED_DOMAINS;
+    } else {
+      process.env.WORKER_DISALLOWED_DOMAINS = savedDisallowedDomains;
+    }
     __testOnly.reset();
   });
 
@@ -523,7 +535,12 @@ describe("CRLF injection prevention in judge-provided reason", () => {
     }
   }
 
+  let savedEncryptionKeyCrlf: string | undefined;
+  let savedAllowedDomainsCrlf: string | undefined;
+
   beforeEach(async () => {
+    savedEncryptionKeyCrlf = process.env.ENCRYPTION_KEY;
+    savedAllowedDomainsCrlf = process.env.WORKER_ALLOWED_DOMAINS;
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
     process.env.WORKER_ALLOWED_DOMAINS = "";
     __testOnly.reset();
@@ -548,8 +565,13 @@ describe("CRLF injection prevention in judge-provided reason", () => {
 
   afterEach(async () => {
     await stopHttpProxy(proxyServer);
-    delete process.env.ENCRYPTION_KEY;
-    delete process.env.WORKER_ALLOWED_DOMAINS;
+    if (savedEncryptionKeyCrlf === undefined) delete process.env.ENCRYPTION_KEY;
+    else process.env.ENCRYPTION_KEY = savedEncryptionKeyCrlf;
+    if (savedAllowedDomainsCrlf === undefined) {
+      delete process.env.WORKER_ALLOWED_DOMAINS;
+    } else {
+      process.env.WORKER_ALLOWED_DOMAINS = savedAllowedDomainsCrlf;
+    }
     __testOnly.reset();
   });
 

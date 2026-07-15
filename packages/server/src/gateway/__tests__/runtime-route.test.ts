@@ -70,7 +70,15 @@ mock.module("@vercel/sandbox", () => ({
 // Env-bound credential resolution reads the vault. Mock it to a MISS (null) so
 // the "environment pinned but deleted" case is deterministic and DB-free: the
 // scoped key is gone, so an env-bound resolution must fail closed.
+// Spread the real module: mock.module is process-global and cannot be undone by
+// mock.restore(); a whole-module stub that drops createInferenceProvider /
+// listInferenceProviders / encrypt-backed vault readers breaks co-running
+// gateway suites (worker-session-context-model-fallback, secret-proxy, etc.).
+const realProviderSecrets = await import(
+  "../../lobu/stores/provider-secrets.js"
+);
 mock.module("../../lobu/stores/provider-secrets.js", () => ({
+  ...realProviderSecrets,
   readEnvironmentSecret: async () => null,
 }));
 

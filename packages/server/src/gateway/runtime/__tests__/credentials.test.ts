@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 
 // Mock the vault read so resolveRuntimeCredentials can be unit-tested without a DB.
+// Spread the real module: mock.module is process-global and cannot be undone by
+// mock.restore(); a whole-module stub that drops the other exports breaks
+// co-running gateway suites.
 const readEnvironmentSecretMock = mock(
   async (_envId: string, _field: string, _orgId: string): Promise<string | null> =>
     null
 );
+const realProviderSecrets = await import(
+  "../../../lobu/stores/provider-secrets.js"
+);
 mock.module("../../../lobu/stores/provider-secrets.js", () => ({
+  ...realProviderSecrets,
   readEnvironmentSecret: readEnvironmentSecretMock,
 }));
 

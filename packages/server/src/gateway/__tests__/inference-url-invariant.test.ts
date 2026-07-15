@@ -14,7 +14,14 @@ let configResult: {
   custom: boolean;
 } | null = null;
 
+// Spread the real module: mock.module is process-global and cannot be undone by
+// mock.restore(). A whole-module stub that drops the other exports breaks
+// co-running gateway suites that create/list inference providers.
+const realProviderSecrets = await import(
+  "../../lobu/stores/provider-secrets.js"
+);
 mock.module("../../lobu/stores/provider-secrets.js", () => ({
+  ...realProviderSecrets,
   resolveInferenceProviderConfig: async () => configResult,
 }));
 

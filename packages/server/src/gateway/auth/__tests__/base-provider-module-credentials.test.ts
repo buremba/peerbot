@@ -1,5 +1,17 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { encrypt } from "@lobu/core";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
+import { __resetEncryptionKeyCacheForTests, encrypt } from "@lobu/core";
+import * as orgContext from "../../../lobu/stores/org-context.js";
+import * as dbClient from "../../../db/client.js";
 
 const TEST_ENCRYPTION_KEY = Buffer.from(
   "12345678901234567890123456789012"
@@ -15,28 +27,11 @@ let inferenceProviderRows: Array<{
   ciphertext: string | null;
 }> = [];
 
-// Mock the org-context AsyncLocalStorage lookup so we can simulate a worker
-// request that does (or doesn't) carry an org.
-mock.module("../../../lobu/stores/org-context.js", () => ({
-  tryGetOrgId: () => mockOrgId,
-  resolveOrgId: (explicit?: string | null) => explicit ?? mockOrgId,
-  getOrgId: () => {
-    if (!mockOrgId) throw new Error("no org");
-    return mockOrgId;
-  },
-}));
-
-// Mock the db client. Both provider-key reads use the postgres tagged
-// template (`sql\`SELECT ...\``); a tagged-template call invokes the function
-// with (strings, ...values), so returning the rows array satisfies it.
-mock.module("../../../db/client.js", () => ({
-  PROD_PG_VALUE_OPTIONS: {},
-  closeDbSingleton: async () => undefined,
-  getDb: () => (_strings: TemplateStringsArray) =>
-    Promise.resolve(inferenceProviderRows),
-}));
-
-// Import AFTER mocks so the module graph picks them up.
+// Import the module under test AFTER we install spies in beforeAll so its
+// static imports of getDb/tryGetOrgId still resolve to the real module objects
+// that we spy on (live ESM bindings). Prefer spyOn over mock.module: the
+// latter is process-global and cannot be undone, and a whole-module getDb
+// stub breaks co-running auth suites (revoked-token checks, api-auth).
 const { ApiKeyProviderModule } = await import("../api-key-provider-module.js");
 
 function makeModule(hasProfile: boolean) {
@@ -58,9 +53,34 @@ function makeModule(hasProfile: boolean) {
 describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
   const previousEncryptionKey = process.env.ENCRYPTION_KEY;
   const previousZKey = process.env.Z_AI_API_KEY;
+  const realGetDb = dbClient.getDb;
+
+  beforeAll(() => {
+    spyOn(orgContext, "tryGetOrgId").mockImplementation(() => mockOrgId);
+    spyOn(orgContext, "resolveOrgId").mockImplementation(
+      (explicit?: string | null) => explicit ?? mockOrgId
+    );
+    spyOn(orgContext, "getOrgId").mockImplementation(() => {
+      if (!mockOrgId) throw new Error("no org");
+      return mockOrgId;
+    });
+    // Both provider-key reads use the postgres tagged template
+    // (`sql\`SELECT ...\``); a tagged-template call invokes the function with
+    // (strings, ...values), so returning the rows array satisfies it.
+    spyOn(dbClient, "getDb").mockImplementation(
+      (() =>
+        (_strings: TemplateStringsArray) =>
+          Promise.resolve(inferenceProviderRows)) as typeof realGetDb
+    );
+  });
+
+  afterAll(() => {
+    mock.restore();
+  });
 
   beforeEach(() => {
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+    __resetEncryptionKeyCacheForTests();
     // Ensure no system key influences the result — we test the org-shared path.
     delete process.env.Z_AI_API_KEY;
     mockOrgId = null;
@@ -72,6 +92,7 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     else process.env.ENCRYPTION_KEY = previousEncryptionKey;
     if (previousZKey === undefined) delete process.env.Z_AI_API_KEY;
     else process.env.Z_AI_API_KEY = previousZKey;
+    __resetEncryptionKeyCacheForTests();
   });
 
   test("returns true when a per-user auth profile exists", async () => {

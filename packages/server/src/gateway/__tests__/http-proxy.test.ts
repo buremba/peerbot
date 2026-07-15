@@ -27,8 +27,14 @@ const TEST_ENCRYPTION_KEY = crypto.randomBytes(32).toString("base64");
 // Single proxy server shared across all test suites
 let proxyPort: number;
 let proxyServer: http.Server;
+let savedEncryptionKey: string | undefined;
+let savedAllowedDomains: string | undefined;
 
 beforeAll(async () => {
+  // Restore previous env on teardown — mock.module/afterAll that `delete`s
+  // ENCRYPTION_KEY permanently breaks co-running suites that mint worker tokens.
+  savedEncryptionKey = process.env.ENCRYPTION_KEY;
+  savedAllowedDomains = process.env.WORKER_ALLOWED_DOMAINS;
   process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
   // Unrestricted for the auth + unrestricted-mode tests. `startHttpProxy`
   // snapshots this env into the server's immutable config, so every request in
@@ -42,8 +48,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await stopHttpProxy(proxyServer);
-  delete process.env.ENCRYPTION_KEY;
-  delete process.env.WORKER_ALLOWED_DOMAINS;
+  if (savedEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
+  else process.env.ENCRYPTION_KEY = savedEncryptionKey;
+  if (savedAllowedDomains === undefined) delete process.env.WORKER_ALLOWED_DOMAINS;
+  else process.env.WORKER_ALLOWED_DOMAINS = savedAllowedDomains;
 });
 
 function makeBasicAuth(username: string, password: string): string {

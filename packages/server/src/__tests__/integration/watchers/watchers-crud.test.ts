@@ -239,6 +239,64 @@ describe('watcher CRUD', () => {
     await owner.watchers.delete({ watcher_ids: [base.watcher_id, ...winnerIds] });
   });
 
+  it('multi-entity create_from_version is all-or-nothing: a mid-fan-out collision rolls back the earlier target too', async () => {
+    // The fan-out runs in one transaction. If a LATER target's derived slug
+    // already exists, the whole call must roll back — the EARLIER target in the
+    // same call must not leak a half-created watcher. This is the atomicity the
+    // transaction wrapper exists for; without it the earlier insert would commit.
+    const sql = getTestDb();
+
+    const base = (await owner.watchers.create({
+      entity_id: entityId,
+      slug: 'cfv-rollback-base',
+      name: 'CFV Rollback Base',
+      prompt: 'Track things.',
+      agent_id: agentId,
+      sources: [{ name: 'content', query: 'SELECT id FROM events' }],
+    })) as { watcher_id: string };
+    const [row] = await sql<{ current_version_id: number }[]>`
+      SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+    `;
+    const versionId = Number(row?.current_version_id);
+
+    const freshTarget = (await owner.entities.create({
+      type: 'company',
+      name: 'CFV Rollback Fresh',
+    })) as { entity: { id: number } };
+    const collidingTarget = (await owner.entities.create({
+      type: 'company',
+      name: 'CFV Rollback Colliding',
+    })) as { entity: { id: number } };
+
+    // Seed the colliding target so a SECOND assignment to it clashes on the
+    // derived slug. This assignment succeeds on its own.
+    const seed = (await owner.watchers.createFromVersion({
+      version_id: versionId,
+      entity_ids: [collidingTarget.entity.id],
+    })) as { created: Array<{ watcher_id: string }> };
+    expect(seed.created.length).toBe(1);
+
+    // Now fan out to [fresh, colliding]. The colliding insert hits the seeded
+    // slug → 23505 → coded 409, and the whole tx rolls back.
+    await expect(
+      owner.watchers.createFromVersion({
+        version_id: versionId,
+        entity_ids: [freshTarget.entity.id, collidingTarget.entity.id],
+      })
+    ).rejects.toMatchObject({ httpStatus: 409 });
+
+    // The earlier (fresh) target must have NO watcher — the rollback took it.
+    const leaked = await sql<{ id: number }[]>`
+      SELECT id FROM watchers
+      WHERE organization_id = ${ownerOrgId} AND ${freshTarget.entity.id} = ANY(entity_ids)
+    `;
+    expect(leaked.length).toBe(0);
+
+    await owner.watchers.delete({
+      watcher_ids: [base.watcher_id, ...seed.created.map((c) => c.watcher_id)],
+    });
+  });
+
   it('creates an org-scoped watcher without an inline extraction schema', async () => {
     const created = (await owner.watchers.create({
       slug: 'org-scoped-summary-watcher',

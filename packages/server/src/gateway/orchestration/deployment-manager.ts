@@ -808,12 +808,14 @@ export class DeploymentManager {
   protected grantStore?: GrantStore;
   protected policyStore?: PolicyStore;
   /**
-   * Per-agent cache of the last-synced grant patterns (pattern → denied
-   * flag). Used to (a) skip redundant `grantStore.grant()` writes when the
-   * set is unchanged and (b) compute the revoke-diff so patterns dropped
-   * from `networkConfig.allowedDomains` / `deniedDomains` /
+   * Per-(org, agent) cache of the last-synced grant patterns (pattern →
+   * denied flag). Used to (a) skip redundant `grantStore.grant()` writes
+   * when the set is unchanged and (b) compute the revoke-diff so patterns
+   * dropped from `networkConfig.allowedDomains` / `deniedDomains` /
    * `preApprovedTools` are removed from the grant store instead of
-   * lingering forever.
+   * lingering forever. Keyed by `org|agent` — agent ids are only unique
+   * within an organization, and grants are org-scoped rows, so an
+   * agent-id-only key would let org A's sync suppress org B's writes.
    */
   private grantSyncCache = new Map<string, Map<string, boolean>>();
   /**
@@ -1175,8 +1177,10 @@ export class DeploymentManager {
       nextPatterns.set(domain, true);
     }
 
+    const orgId = messageData.organizationId;
+    const cacheKey = `${orgId ?? ""}|${agentId}`;
     const previous =
-      this.grantSyncCache.get(agentId) ?? new Map<string, boolean>();
+      this.grantSyncCache.get(cacheKey) ?? new Map<string, boolean>();
 
     // Unchanged set → skip the round-trip entirely.
     if (
@@ -1185,8 +1189,6 @@ export class DeploymentManager {
     ) {
       return;
     }
-
-    const orgId = messageData.organizationId;
 
     // Revoke patterns that were previously granted but are no longer
     // present in the current config.
@@ -1206,8 +1208,8 @@ export class DeploymentManager {
     }
 
     // LRU touch: delete + re-insert so the agent becomes the newest key.
-    this.grantSyncCache.delete(agentId);
-    this.grantSyncCache.set(agentId, nextPatterns);
+    this.grantSyncCache.delete(cacheKey);
+    this.grantSyncCache.set(cacheKey, nextPatterns);
 
     // Evict the oldest entry if we've exceeded the cap.
     if (this.grantSyncCache.size > GRANT_SYNC_CACHE_MAX) {
@@ -1224,7 +1226,13 @@ export class DeploymentManager {
    * reload) so the next message re-syncs grants.
    */
   invalidateGrantSyncCache(agentId: string): void {
-    this.grantSyncCache.delete(agentId);
+    // Keys are `org|agent`; drop the agent's entry across every org.
+    const suffix = `|${agentId}`;
+    for (const key of this.grantSyncCache.keys()) {
+      if (key.endsWith(suffix)) {
+        this.grantSyncCache.delete(key);
+      }
+    }
   }
 
   /** Clear the entire grant sync cache. Call on whole-config reload. */

@@ -171,6 +171,31 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     expect(await grantStore.hasGrant("agent-1", "flip.example.com")).toBe(true);
   });
 
+  test("same agent id in two orgs syncs independently (org-scoped cache)", async () => {
+    await seedAgentRow("agent-1", { organizationId: "org-b" });
+
+    await manager.syncNetworkConfigGrants(
+      buildPayload({
+        networkConfig: { deniedDomains: ["evil.com"] },
+      })
+    );
+    // Identical payload for the SAME agent id under a different org must not
+    // be swallowed by the sync cache — grants rows are org-scoped.
+    await manager.syncNetworkConfigGrants(
+      buildPayload({
+        organizationId: "org-b",
+        networkConfig: { deniedDomains: ["evil.com"] },
+      })
+    );
+
+    expect(await grantStore.isDenied("agent-1", "evil.com", "test-org")).toBe(
+      true
+    );
+    expect(await grantStore.isDenied("agent-1", "evil.com", "org-b")).toBe(
+      true
+    );
+  });
+
   test("syncs both network and pre-approved tools in one call", async () => {
     await manager.syncNetworkConfigGrants(
       buildPayload({

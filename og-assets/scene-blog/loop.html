@@ -82,19 +82,7 @@
   <!-- circular loop: ring + 4 nodes at top / right / bottom / left -->
   <div id="loop">
     <svg id="ringSvg" viewBox="-210 -210 420 420">
-      <defs>
-        <marker id="ah" markerWidth="9" markerHeight="9" refX="5" refY="4.5" orient="auto">
-          <path d="M0,0 L9,4.5 L0,9 Z" fill="#f5333a"/>
-        </marker>
-      </defs>
-      <!-- clockwise arrowheads sitting on the ring between nodes (NE, SE, SW, NW) -->
-      <g fill="#f5333a">
-        <!-- arrow pairs showing clockwise direction along the circle -->
-      </g>
       <circle id="loopPath" cx="0" cy="0" r="138" />
-      <!-- four directional chevrons on the DIAGONAL arcs between nodes (NE/SE/SW/NW).
-           Base chevron points along +x at radius 150; rotating by the diagonal angle
-           (45,135,225,315) places each between two nodes so it's not hidden by a disc. -->
       <!-- clockwise-flow arrowheads on the diagonal arcs (NE/SE/SW/NW).
            Base arrowhead apex points +x (0°); rotate to the clockwise tangent
            at each diagonal = position_angle + 90°. -->

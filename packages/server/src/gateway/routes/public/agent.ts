@@ -296,8 +296,11 @@ const getAgentEventsRoute: RouteSpec = {
   bearerAuth: true,
   request: { params: AgentIdParamSchema },
   responses: {
-    // A `text/event-stream` — no JSON body schema (description-only entry).
-    200: { description: "SSE stream" },
+    200: {
+      description: "SSE stream",
+      schema: Type.String(),
+      mediaType: "text/event-stream",
+    },
     ...errorResponses(ErrorResponseSchema, {
       401: "Unauthorized",
       429: "Too many connections",

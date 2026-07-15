@@ -24,7 +24,10 @@ import { createImageRoutes } from "../routes/internal/images.js";
 import { createInteractionRoutes } from "../routes/internal/interactions.js";
 import { createRuntimeRoutes } from "../routes/internal/runtime.js";
 import { registerAutoOpenApiRoutes } from "../routes/openapi-auto.js";
-import { buildRoutePaths } from "../routes/shared/define-route.js";
+import {
+  buildRoutePaths,
+  mergeOpenApiPaths,
+} from "../routes/shared/define-route.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
@@ -900,11 +903,13 @@ curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \\
     const base = app.getOpenAPI31Document(openApiDocConfig);
     const toolPaths = generateStrictToolPaths();
     // `defineRoute` routes (agent-session + config) carry richer TypeBox
-    // request/response schemas than openapi-auto's generic stubs; they win.
+    // request/response schemas than openapi-auto's generic stubs; they win —
+    // but only per METHOD: a whole-path spread would drop sibling operations
+    // (openapi-auto's GET /api/v1/agents, PATCH /api/v1/agents/{agentId}).
     const routePaths = buildRoutePaths();
     return c.json({
       ...base,
-      paths: { ...toolPaths, ...(base.paths ?? {}), ...routePaths },
+      paths: mergeOpenApiPaths(toolPaths, base.paths ?? {}, routePaths),
     });
   });
 

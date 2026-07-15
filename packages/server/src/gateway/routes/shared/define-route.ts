@@ -29,10 +29,12 @@ import { deepCopyStrict } from "../../../utils/schema-copy.js";
 
 type Method = "get" | "post" | "put" | "patch" | "delete";
 
-/** A single response entry: the JSON body schema + a description. */
+/** A single response entry: the body schema + a description. */
 export interface ResponseSpec {
 	description: string;
 	schema?: TSchema;
+	/** Body media type; defaults to `application/json` (SSE: `text/event-stream`). */
+	mediaType?: string;
 }
 
 export interface RouteSpec<
@@ -274,7 +276,9 @@ export function buildRoutePaths(): Record<string, unknown> {
 				? {
 						description: res.description,
 						content: {
-							"application/json": { schema: deepCopyStrict(res.schema) },
+							[res.mediaType ?? "application/json"]: {
+								schema: deepCopyStrict(res.schema),
+							},
 						},
 					}
 				: { description: res.description };
@@ -285,4 +289,25 @@ export function buildRoutePaths(): Record<string, unknown> {
 		pathItem[spec.method] = op;
 	}
 	return paths;
+}
+
+/**
+ * Merge OpenAPI `paths` groups method-wise: later groups win per operation,
+ * but sibling methods on the same path survive. A whole-path spread would
+ * drop e.g. openapi-auto's `GET /api/v1/agents` when the defineRoute registry
+ * documents only POST there.
+ */
+export function mergeOpenApiPaths(
+	...groups: Record<string, unknown>[]
+): Record<string, unknown> {
+	const merged: Record<string, Record<string, unknown>> = {};
+	for (const group of groups) {
+		for (const [path, ops] of Object.entries(group)) {
+			merged[path] = {
+				...merged[path],
+				...(ops as Record<string, unknown>),
+			};
+		}
+	}
+	return merged;
 }

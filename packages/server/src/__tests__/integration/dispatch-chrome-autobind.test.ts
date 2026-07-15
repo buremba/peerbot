@@ -303,6 +303,37 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     expect(await pinOf(connFresher)).toBe(fresher);
   });
 
+  it('concurrent resolutions for different workers do not clobber the same candidate pin (CAS)', async () => {
+    // Two callers race to rebind the SINGLE NULL-pinned chrome row, each
+    // preferring a different online worker. Without a compare-and-swap on the
+    // candidate's own pin, both UPDATEs pass their target-ownership check and
+    // the second silently overwrites the first, handing that caller a stale
+    // (connection, worker) pair that points at a pin it never actually won.
+    const workerA = await seedExtWorker(userId, orgId, { online: true });
+    const workerB = await seedExtWorker(userId, orgId, { online: true });
+    const connId = await seedChromeConn(orgId, userId, null);
+
+    const [resA, resB] = await Promise.all([
+      resolveOnlineChromeConnection(orgId, sql, { preferredDeviceWorkerId: workerA }),
+      resolveOnlineChromeConnection(orgId, sql, { preferredDeviceWorkerId: workerB }),
+    ]);
+
+    const finalPin = await pinOf(connId);
+    // Exactly one worker won the single chrome row.
+    expect(finalPin === workerA || finalPin === workerB).toBe(true);
+
+    // Every non-null result that landed on this row must agree with the row's
+    // actual final pin — no caller may return a pin it lost.
+    for (const res of [resA, resB]) {
+      if (res?.connectionId === connId) {
+        expect(res.deviceWorkerId).toBe(finalPin);
+      }
+    }
+    // The loser fails closed (there is no second chrome row to give it).
+    const winners = [resA, resB].filter((r) => r?.deviceWorkerId === finalPin);
+    expect(winners).toHaveLength(1);
+  });
+
   it('heals offline pin onto unowned online worker when a sibling is sticky elsewhere', async () => {
     const sticky = await seedExtWorker(userId, orgId, { online: true });
     const stale = await seedExtWorker(userId, orgId, { online: false });

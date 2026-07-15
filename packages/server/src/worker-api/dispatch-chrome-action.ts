@@ -155,6 +155,7 @@ export async function resolveOnlineChromeConnection(
       FROM connections
       WHERE organization_id = ${organizationId}
         AND connector_key = 'chrome'
+        AND status = 'active'
         AND device_worker_id = ${deviceWorkerId}::uuid
         AND deleted_at IS NULL
       LIMIT 1
@@ -164,10 +165,16 @@ export async function resolveOnlineChromeConnection(
 
   /**
    * Rebind `connectionId` onto `deviceWorkerId` only when the target is still
-   * unowned. On race/unique violation, return the winner's connection.
+   * unowned AND the candidate still holds the pin we selected it on
+   * (`expectedCurrentPin`). The compare-and-swap stops two concurrent
+   * resolutions targeting different workers from both picking the same
+   * NULL/stale candidate and silently clobbering each other's pin — the loser's
+   * UPDATE affects zero rows and falls through to the winner-handling path.
+   * On race/unique violation, return the winner's connection.
    */
   const rebindChromeToWorker = async (
     connectionId: number,
+    expectedCurrentPin: string | null,
     deviceWorkerId: string,
     reason: string
   ): Promise<{ connectionId: number; deviceWorkerId: string } | null> => {
@@ -182,7 +189,11 @@ export async function resolveOnlineChromeConnection(
         UPDATE connections
         SET device_worker_id = ${deviceWorkerId}::uuid, updated_at = now()
         WHERE id = ${connectionId}
+          AND organization_id = ${organizationId}
+          AND connector_key = 'chrome'
+          AND status = 'active'
           AND deleted_at IS NULL
+          AND device_worker_id IS NOT DISTINCT FROM ${expectedCurrentPin}::uuid
           AND NOT EXISTS (
             SELECT 1
             FROM connections other
@@ -264,6 +275,7 @@ export async function resolveOnlineChromeConnection(
 
       return rebindChromeToWorker(
         candidate.connection_id,
+        candidate.current_pin,
         preferredId,
         'preferred_rebind'
       );
@@ -306,6 +318,7 @@ export async function resolveOnlineChromeConnection(
 
   return rebindChromeToWorker(
     candidate.connection_id,
+    candidate.current_pin,
     unownedOnline.id,
     'heal_unowned_online'
   );

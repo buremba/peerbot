@@ -1,3 +1,4 @@
+import { Value } from "@sinclair/typebox/value";
 import { getDb } from "../../db/client.js";
 import { getChatInstanceManager } from "../../lobu/gateway.js";
 import {
@@ -115,20 +116,23 @@ function parseConfig(
 	rawConfig: Record<string, unknown>,
 ): PlatformAdapterConfig {
 	requireChatPlatform(platform);
-	const parsed = PlatformAdapterConfigSchema.safeParse({
-		...rawConfig,
-		platform,
-	});
-	if (!parsed.success) {
-		throw new Error(
-			parsed.error.issues.map((issue) => issue.message).join("; "),
-		);
+	const candidate = { ...rawConfig, platform };
+	// TypeBox discriminated-union check: Convert coerces the `lobu apply` string
+	// booleans, then Check validates the matching `platform` member. Clean strips
+	// unknown keys so they don't get persisted (Zod's `safeParse` did implicitly).
+	const converted = Value.Convert(PlatformAdapterConfigSchema, candidate);
+	if (!Value.Check(PlatformAdapterConfigSchema, converted)) {
+		const messages = [
+			...Value.Errors(PlatformAdapterConfigSchema, converted),
+		].map((issue) => `${issue.path || "(root)"} ${issue.message}`.trim());
+		throw new Error(messages.join("; ") || "invalid platform config");
 	}
-	validateRequiredCredentials(platform, parsed.data);
-	// The Zod discriminated union and the hand-written `PlatformAdapterConfig`
-	// union are member-for-member equivalent; TS treats the inferred schema type
-	// as distinct only because of declaration order / optional-field variance.
-	return parsed.data as PlatformAdapterConfig;
+	const coerced = Value.Clean(PlatformAdapterConfigSchema, converted);
+	validateRequiredCredentials(platform, coerced as Record<string, unknown>);
+	// The TypeBox union and the hand-written `PlatformAdapterConfig` union are
+	// member-for-member equivalent; TS treats the schema-inferred type as distinct
+	// only because of declaration order / optional-field variance.
+	return coerced as PlatformAdapterConfig;
 }
 
 async function validateProviderIdentity(

@@ -24,6 +24,7 @@ import { createImageRoutes } from "../routes/internal/images.js";
 import { createInteractionRoutes } from "../routes/internal/interactions.js";
 import { createRuntimeRoutes } from "../routes/internal/runtime.js";
 import { registerAutoOpenApiRoutes } from "../routes/openapi-auto.js";
+import { buildRoutePaths } from "../routes/shared/define-route.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
@@ -878,14 +879,14 @@ curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \\
     ],
   };
 
-  // One merged OpenAPI document: the gateway's Zod routes (agent-session
-  // orchestration) PLUS the full dispatch-tool surface
+  // One merged OpenAPI document: the defineRoute registry (agent-session
+  // orchestration, TypeBox), the openapi-auto walk of the remaining gateway
+  // routes (`getOpenAPI31Document`), PLUS the full dispatch-tool surface
   // (`POST /api/{orgSlug}/{tool}` — entities, watchers, feeds, metrics, …),
-  // generated from the same TypeBox schemas the server validates against. The
-  // first-party `@lobu/client` is generated from THIS single document, so the
-  // CLI and UI get a typed client for BOTH surfaces instead of only agent
-  // sessions. `getOpenAPI31Document` renders the Zod routes in the same JSON
-  // Schema 2020-12 dialect the TypeBox tool schemas already use.
+  // all sourced from the same TypeBox schemas the server validates against.
+  // The first-party `@lobu/client` is generated from THIS single document, so
+  // the CLI and UI get a typed client for BOTH surfaces instead of only agent
+  // sessions.
   app.get("/api/docs/openapi.json", async (c) => {
     // Dynamic import (rationale): a static `gateway → openapi-generator →
     // registry` edge closes a circular-init cycle with the tool registry's admin
@@ -898,9 +899,12 @@ curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \\
     );
     const base = app.getOpenAPI31Document(openApiDocConfig);
     const toolPaths = generateStrictToolPaths();
+    // `defineRoute` routes (agent-session + config) carry richer TypeBox
+    // request/response schemas than openapi-auto's generic stubs; they win.
+    const routePaths = buildRoutePaths();
     return c.json({
       ...base,
-      paths: { ...toolPaths, ...(base.paths ?? {}) },
+      paths: { ...toolPaths, ...(base.paths ?? {}), ...routePaths },
     });
   });
 

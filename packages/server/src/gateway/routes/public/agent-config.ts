@@ -4,9 +4,10 @@
  * Configuration endpoints mounted under /api/v1/agents/{agentId}/config
  */
 
-import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { Type } from "@sinclair/typebox";
 import type { AgentConfigStore, ModelOption, SkillConfig } from "@lobu/core";
-import type { Context } from "hono";
+import { type Context, Hono } from "hono";
+import { defineRoute, type RouteSpec } from "../shared/define-route.js";
 import {
 	buildProviderCatalog,
 	type ProviderCatalogService,
@@ -39,7 +40,7 @@ import {
 import { verifySettingsSessionOrToken } from "./settings-auth.js";
 
 const TAG = "Configuration";
-const TokenQuery = z.object({ token: z.string().optional() });
+const TokenQuery = Type.Object({ token: Type.Optional(Type.String()) });
 const REDACTED_VALUE = "__LOBU_REDACTED__";
 
 const SENSITIVE_KEY_PATTERN =
@@ -47,26 +48,25 @@ const SENSITIVE_KEY_PATTERN =
 
 // --- Route Definitions ---
 
-const getConfigRoute = createRoute({
+const getConfigRoute: RouteSpec = {
 	method: "get",
-	path: "/",
+	// This router is mounted at `/api/v1/agents/:agentId/config` (gateway.ts),
+	// so it registers `/` on the sub-app but documents the full mounted URL.
+	path: "/api/v1/agents/{agentId}/config",
+	honoPath: "/",
 	tags: [TAG],
 	summary: "Get agent configuration",
-	request: { query: TokenQuery },
+	request: {
+		params: Type.Object({ agentId: Type.String() }),
+		query: TokenQuery,
+	},
 	responses: {
-		200: {
-			description: "Configuration",
-			content: {
-				"application/json": {
-					schema: z.any(),
-				},
-			},
-		},
+		200: { description: "Configuration", schema: Type.Any() },
 		...errorResponses(ErrorResponseSchema, {
 			401: "Unauthorized",
 		}),
 	},
-});
+};
 
 interface ProviderCredentialStore {
 	hasCredentials(
@@ -295,10 +295,8 @@ async function buildResolvedConfigResponse(
 	};
 }
 
-export function createAgentConfigRoutes(
-	config: AgentConfigRoutesConfig,
-): OpenAPIHono {
-	const app = new OpenAPIHono();
+export function createAgentConfigRoutes(config: AgentConfigRoutesConfig): Hono {
+	const app = new Hono();
 
 	const baseVerifyToken = createTokenVerifier({
 		userAgentsStore: config.userAgentsStore,
@@ -356,7 +354,7 @@ export function createAgentConfigRoutes(
 		return { agentId, payload };
 	};
 
-	app.openapi(getConfigRoute, async (c): Promise<any> => {
+	defineRoute(app, getConfigRoute, async (c): Promise<Response> => {
 		const auth = await requireConfigAuth(c);
 		if (auth instanceof Response) return auth;
 		const { agentId, payload } = auth;

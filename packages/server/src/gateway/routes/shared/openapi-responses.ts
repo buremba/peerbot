@@ -1,13 +1,14 @@
 /**
- * Shared OpenAPI response building blocks.
+ * Shared response building blocks for `defineRoute`.
  *
- * Collapses the stamped-out
- *   `4xx: { description, content: { "application/json": { schema } } }`
- * blocks that every `createRoute` definition repeats. The shape and the
- * canonical `{ error }` schema were previously redeclared per route file.
+ * Collapses the repeated `{ description, schema }` error blocks and the
+ * canonical `{ error }` schema that every route otherwise redeclares. The blocks
+ * match `defineRoute`'s `ResponseSpec` shape (`{ description, schema? }`), which
+ * the doc builder projects into OpenAPI `content` entries.
  */
 
-import { z } from "@hono/zod-openapi";
+import { type TSchema, Type } from "@sinclair/typebox";
+import type { ResponseSpec } from "./define-route.js";
 
 /**
  * Canonical flat error response: `{ error: string }`.
@@ -16,15 +17,7 @@ import { z } from "@hono/zod-openapi";
  * most CRUD routes. Routes with a richer error envelope (e.g. agent.ts's
  * `{ success, error, details? }`) pass their own schema to `errorResponses`.
  */
-export const ErrorResponseSchema = z.object({ error: z.string() });
-
-/**
- * A single OpenAPI JSON response block for `schema`.
- */
-type JsonResponseBlock<Schema> = {
-  description: string;
-  content: { "application/json": { schema: Schema } };
-};
+export const ErrorResponseSchema = Type.Object({ error: Type.String() });
 
 /**
  * Build a set of error-response blocks keyed by HTTP status code.
@@ -36,26 +29,18 @@ type JsonResponseBlock<Schema> = {
  *   }
  *
  * `schema` is the error body schema; pass a custom schema for routes with a
- * richer envelope.
- *
- * The return type preserves the exact set of status-code keys (via the
- * `Codes` generic) so the spread into `createRoute({ responses })` keeps
- * per-code precision and `app.openapi(route, handler)` still infers a precise
- * handler return type — a plain `Record<number, …>` would widen it.
+ * richer envelope. The `Codes` generic preserves the exact status-code key set.
  */
-export function errorResponses<Schema, Codes extends number>(
-  schema: Schema,
-  descriptions: Record<Codes, string>
-): { [Code in Codes]: JsonResponseBlock<Schema> } {
-  const out = {} as { [Code in Codes]: JsonResponseBlock<Schema> };
-  for (const [code, description] of Object.entries(descriptions) as [
-    `${Codes}`,
-    string,
-  ][]) {
-    out[Number(code) as Codes] = {
-      description,
-      content: { "application/json": { schema } },
-    };
-  }
-  return out;
+export function errorResponses<Codes extends number>(
+	schema: TSchema,
+	descriptions: Record<Codes, string>,
+): { [Code in Codes]: ResponseSpec } {
+	const out = {} as { [Code in Codes]: ResponseSpec };
+	for (const [code, description] of Object.entries(descriptions) as [
+		`${Codes}`,
+		string,
+	][]) {
+		out[Number(code) as Codes] = { description, schema };
+	}
+	return out;
 }

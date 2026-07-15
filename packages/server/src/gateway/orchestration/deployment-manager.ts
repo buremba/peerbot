@@ -696,6 +696,13 @@ const NIX_CACHE_DOMAINS = [
   "releases.nixos.org",
 ];
 
+/**
+ * npm registry hosts auto-granted at deploy time when CLI-backend providers
+ * are configured (see `generateEnvironmentVariables`). Not derivable from
+ * the message payload, so the domain reconcile must never revoke them.
+ */
+const NPM_REGISTRY_DOMAINS = ["registry.npmjs.org", "registry.npmmirror.com"];
+
 interface DeploymentIdentity {
   conversationId: string;
   channelId?: string;
@@ -1144,11 +1151,15 @@ export class DeploymentManager {
 
     if (!this.grantStore) return;
 
-    // pattern → denied flag. Denies are added last so a domain listed on
-    // both sides collapses to deny (matching the proxy's deny precedence).
+    // pattern → denied flag. Domains are keyed in NORMALIZED form so alias
+    // spellings ("*.example.com" vs ".example.com") collapse to the single
+    // grant row they share — otherwise a flag change under one alias never
+    // rewrites the row the other alias already holds. Denies are added last
+    // so a domain listed on both sides collapses to deny (matching the
+    // proxy's deny precedence).
     const nextPatterns = new Map<string, boolean>();
     for (const domain of messageData.networkConfig?.allowedDomains ?? []) {
-      nextPatterns.set(domain, false);
+      nextPatterns.set(normalizeDomainPattern(domain), false);
     }
     for (const pattern of messageData.preApprovedTools ?? []) {
       nextPatterns.set(pattern, false);
@@ -1162,7 +1173,7 @@ export class DeploymentManager {
       }
     }
     for (const domain of messageData.networkConfig?.deniedDomains ?? []) {
-      nextPatterns.set(domain, true);
+      nextPatterns.set(normalizeDomainPattern(domain), true);
     }
 
     const orgId = messageData.organizationId;
@@ -1179,12 +1190,14 @@ export class DeploymentManager {
       return;
     }
 
-    // Reconcile domain rows against Postgres (see docstring). Patterns are
-    // compared in normalized form — that is how grant() stores them.
-    const expectedDomains = new Set<string>();
+    // Reconcile domain rows against Postgres (see docstring). Domain keys in
+    // `nextPatterns` are already normalized — the form grant() stores.
+    // Deploy-time infra grants (npm registries for CLI backends) are not
+    // derivable from the payload and are exempt from revocation.
+    const expectedDomains = new Set<string>(NPM_REGISTRY_DOMAINS);
     for (const pattern of nextPatterns.keys()) {
       if (inferGrantKind(pattern) === "domain") {
-        expectedDomains.add(normalizeDomainPattern(pattern));
+        expectedDomains.add(pattern);
       }
     }
     const activeGrants = await this.grantStore.listGrants(agentId, orgId);
@@ -1730,13 +1743,12 @@ export class DeploymentManager {
       p.getCliBackendConfig?.()
     );
     if (hasCliBackendProviders && this.grantStore && agentId) {
-      const NPM_DOMAINS = ["registry.npmjs.org", "registry.npmmirror.com"];
       const orgId = validated.organizationId;
-      for (const domain of NPM_DOMAINS) {
+      for (const domain of NPM_REGISTRY_DOMAINS) {
         await this.grantStore.grant(agentId, domain, null, undefined, orgId);
       }
       logger.info(
-        `Added npm registry domains as grants for ${deploymentName}: ${NPM_DOMAINS.join(", ")}`
+        `Added npm registry domains as grants for ${deploymentName}: ${NPM_REGISTRY_DOMAINS.join(", ")}`
       );
     }
 

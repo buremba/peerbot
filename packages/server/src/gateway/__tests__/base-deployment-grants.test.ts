@@ -253,6 +253,50 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     expect(await grantStore.hasGrant("agent-1", "cache.nixos.org")).toBe(false);
   });
 
+  test("removing a deny listed under an alias spelling re-allows the domain", async () => {
+    // "*.example.com" and ".example.com" normalize to the same grant row.
+    await manager.syncNetworkConfigGrants(
+      buildPayload({
+        networkConfig: {
+          allowedDomains: ["*.example.com"],
+          deniedDomains: [".example.com"],
+        },
+      })
+    );
+    expect(await grantStore.isDenied("agent-1", "api.example.com")).toBe(true);
+
+    await manager.syncNetworkConfigGrants(
+      buildPayload({
+        networkConfig: { allowedDomains: ["*.example.com"] },
+      })
+    );
+    expect(await grantStore.isDenied("agent-1", "api.example.com")).toBe(false);
+    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(true);
+  });
+
+  test("reconcile preserves infra-granted npm registry domains", async () => {
+    // Simulates the CLI-backend deploy-time auto-grant, which is not
+    // derivable from the message payload and must survive reconciliation.
+    await grantStore.grant(
+      "agent-1",
+      "registry.npmjs.org",
+      null,
+      undefined,
+      "test-org"
+    );
+
+    const freshManager = new TestDeploymentManager(TEST_CONFIG);
+    freshManager.setGrantStore(grantStore);
+    freshManager.setPolicyStore(policyStore);
+    await freshManager.syncNetworkConfigGrants(
+      buildPayload({ networkConfig: { allowedDomains: ["x.example.com"] } })
+    );
+
+    expect(await grantStore.hasGrant("agent-1", "registry.npmjs.org")).toBe(
+      true
+    );
+  });
+
   test("syncs both network and pre-approved tools in one call", async () => {
     await manager.syncNetworkConfigGrants(
       buildPayload({

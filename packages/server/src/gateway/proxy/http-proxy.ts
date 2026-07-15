@@ -137,9 +137,11 @@ interface AccessDecision {
  * Unified domain access check: global config → grant store → LLM judge.
  *
  * 1. If denied by global blocklist → block
- * 2. If allowed by global allowlist → check grantStore.isDenied() → allow/block
- * 3. If not in global list → check grantStore.hasGrant() → allow/block
- * 4. If still not decided and the agent has a judged-domain rule for the
+ * 2. If denied by a per-agent deny grant → block (authoritative: overrides
+ *    the global allowlist, allow grants, and the judge)
+ * 3. If allowed by global allowlist → allow
+ * 4. If not in global list → check grantStore.hasGrant() → allow
+ * 5. If still not decided and the agent has a judged-domain rule for the
  *    host → invoke the LLM judge → allow/block based on verdict
  */
 async function checkDomainAccess(
@@ -168,6 +170,25 @@ async function checkDomainAccess(
     return { allowed: false, source: "global" };
   }
 
+  // A per-agent deny grant is authoritative: it overrides the global
+  // allowlist, per-agent allow grants, AND the egress judge — a judge
+  // "allow" must never resurrect an explicitly denied domain.
+  // Pass `organizationId` explicitly — `GrantStore` falls back to the ALS
+  // org context when omitted, but the raw Node HTTP proxy never sets ALS
+  // and the WHERE clause would drop its `organization_id` predicate,
+  // leaking grants/denies across tenants that share an agent id.
+  if (proxyGrantStore && agentId) {
+    const denied = await proxyGrantStore.isDenied(
+      agentId,
+      hostname,
+      organizationId
+    );
+    if (denied) {
+      logger.debug(`Domain ${hostname} denied via grant (agent: ${agentId})`);
+      return { allowed: false, source: "grant" };
+    }
+  }
+
   // Check if globally allowed (unrestricted or in allowlist)
   const globallyAllowed = isHostnameAllowed(
     hostname,
@@ -176,22 +197,6 @@ async function checkDomainAccess(
   );
 
   if (globallyAllowed) {
-    // Even if globally allowed, a per-agent deny grant can override.
-    // Pass `organizationId` explicitly — `GrantStore` falls back to the ALS
-    // org context when omitted, but the raw Node HTTP proxy never sets ALS
-    // and the WHERE clause would drop its `organization_id` predicate,
-    // leaking grants/denies across tenants that share an agent id.
-    if (proxyGrantStore && agentId) {
-      const denied = await proxyGrantStore.isDenied(
-        agentId,
-        hostname,
-        organizationId
-      );
-      if (denied) {
-        logger.debug(`Domain ${hostname} denied via grant (agent: ${agentId})`);
-        return { allowed: false, source: "grant" };
-      }
-    }
     return { allowed: true, source: "global" };
   }
 

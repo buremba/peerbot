@@ -136,6 +136,23 @@ describe("GrantStore (PG-backed)", () => {
       });
     });
 
+    test("domain wildcard matches deeper subdomains (any depth)", async () => {
+      await withOrg(async () => {
+        await store.grant("agent-1", "*.example.com", null);
+        expect(await store.hasGrant("agent-1", "api.v2.example.com")).toBe(
+          true
+        );
+      });
+    });
+
+    test("domain wildcard deny blocks deeper subdomains (any depth)", async () => {
+      await withOrg(async () => {
+        await store.grant("agent-1", "*.evil.com", null, true);
+        expect(await store.hasGrant("agent-1", "api.v2.evil.com")).toBe(false);
+        expect(await store.isDenied("agent-1", "api.v2.evil.com")).toBe(true);
+      });
+    });
+
     test("domain wildcard does not match two-part domains", async () => {
       await withOrg(async () => {
         await store.grant("agent-1", "*.example.com", null);

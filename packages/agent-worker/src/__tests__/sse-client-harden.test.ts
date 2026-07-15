@@ -632,6 +632,20 @@ describe("live steering classification", () => {
     ).toBe(false);
   });
 
+  test("keeps a `!`-bash command as a standalone turn (never steered)", () => {
+    // Steering `!cmd` into an active turn would feed the raw text to the model
+    // instead of running the shell; it must queue as its own turn.
+    expect(
+      isSteerableHumanMessage({
+        ...payload,
+        messageText: "!ls /workspace",
+        platformMetadata: {
+          bangBash: { command: "ls /workspace", excludeFromContext: false },
+        },
+      })
+    ).toBe(false);
+  });
+
   test("keeps automation and attachments as follow-up turns", () => {
     for (const source of [
       "watcher-run",

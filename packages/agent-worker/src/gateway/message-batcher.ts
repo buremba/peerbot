@@ -53,6 +53,39 @@ export class MessageBatcher {
     return true;
   }
 
+  /**
+   * Queue a control message (e.g. `!`-bash) whose ID was already reserved, and
+   * flush it as its own batch WITHOUT waiting out the batch window — but only
+   * when no turn is in flight. This preserves the batcher's serialization
+   * guarantee (never two concurrent `onBatchReady` runs): when a turn is already
+   * processing, the message is merely queued and picked up by the next batch,
+   * exactly like {@link addClaimedMessage}. It differs only in that, when idle,
+   * it processes immediately instead of opening a 2000ms window. The caller is
+   * responsible for keeping such a message batch-isolated (never merged into a
+   * combined "Message N:" prompt) inside `onBatchReady`.
+   */
+  async addPriorityMessage(message: QueuedMessage): Promise<void> {
+    this.messageQueue.push(message);
+
+    // A turn is in flight: queue only. processBatch()'s tail picks it up when
+    // the active turn finishes, so we never start a second concurrent turn.
+    if (this.isProcessing) {
+      logger.info(
+        `Priority message queued (${this.messageQueue.length} pending, processing in progress)`
+      );
+      return;
+    }
+
+    // Idle: flush now, skipping the batch window. Clear any pending timer first
+    // so a window that was about to fire doesn't double-process the queue.
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
+    this.hasProcessedInitialBatch = true;
+    await this.processBatch();
+  }
+
   /** Queue a message whose ID was already reserved by claimMessageId(). */
   async addClaimedMessage(message: QueuedMessage): Promise<void> {
     this.messageQueue.push(message);

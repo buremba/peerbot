@@ -4,7 +4,12 @@
  * settings links, allowlist, audio transcription, etc.
  */
 
-import { createLogger, createRootSpan, generateTraceId } from "@lobu/core";
+import {
+  createLogger,
+  createRootSpan,
+  generateTraceId,
+  parseBangBashCommand,
+} from "@lobu/core";
 import {
   previewUnlinkedNotice,
   workspaceUnlinkedNotice,
@@ -747,13 +752,24 @@ export class MessageHandlerBridge {
         .trim();
     }
 
-    // Intercept /new and /clear before slash dispatch
+    // Intercept a `!`-bash message before slash dispatch. `!cmd` runs `cmd` as
+    // shell in the conversation's pinned sandbox (LLM skipped); `!!cmd` runs it
+    // but excludes command+output from later model context (pi's
+    // excludeFromContext). This is NOT a new authority: it runs the exact same
+    // command in the exact same sandbox the agent's own bash tool already can —
+    // see the worker intercept, which routes through the D1-hardened bash path.
+    // A bare `!` / `!!` with no command falls through as ordinary text.
+    const bangBash = parseBangBashCommand(messageText);
+
+    // Intercept /new and /clear before slash dispatch. A `!`-bash message is a
+    // control action, not model input: it skips /new, /clear, and slash dispatch
+    // entirely and enqueues as its own worker turn.
     let sessionReset = false;
     const trimmedLower = messageText.trim().toLowerCase();
-    if (trimmedLower === "/new") {
+    if (!bangBash && trimmedLower === "/new") {
       messageText = "Starting new session.";
       sessionReset = true;
-    } else if (trimmedLower === "/clear") {
+    } else if (!bangBash && trimmedLower === "/clear") {
       await this.conversationState()?.clearHistory(
         this.connection.id,
         channelId,
@@ -772,6 +788,7 @@ export class MessageHandlerBridge {
     // enqueue and the previewMode menu so a pasted code binds.
     if (
       !sessionReset &&
+      !bangBash &&
       this.commandDispatcher &&
       this.connection.settings?.previewMode === true
     ) {
@@ -797,7 +814,7 @@ export class MessageHandlerBridge {
     }
 
     // Slash command dispatch — intercept before queueing to worker
-    if (!sessionReset && this.commandDispatcher) {
+    if (!sessionReset && !bangBash && this.commandDispatcher) {
       const handled = await this.commandDispatcher.tryHandleSlashText(
         messageText,
         {
@@ -940,6 +957,7 @@ export class MessageHandlerBridge {
       extraMetadata: {
         ...(ingestedFiles.length > 0 && { files: ingestedFiles }),
         ...(sessionReset && { sessionReset: true }),
+        ...(bangBash && { bangBash }),
       },
       spanName: "message_received",
       logMessage: "Message enqueued via Chat SDK bridge",

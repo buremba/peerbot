@@ -709,23 +709,27 @@ interface DeploymentIdentity {
   channelId?: string;
   platform?: string;
   userId?: string;
+  agentId: string;
+  organizationId: string;
 }
 
 /**
  * Build a canonical conversation identity key for runtime routing.
- * Preferred format: platform:channelId:conversationId
+ * Preferred format: organizationId:agentId:platform:channelId:conversationId
  */
 export function buildCanonicalConversationKey(
   identity: DeploymentIdentity
 ): string {
-  const { conversationId, channelId, platform } = identity;
+  const { organizationId, agentId, conversationId, channelId, platform } =
+    identity;
+  const scope = `${organizationId}:${agentId}`;
   if (platform && channelId) {
-    return `${platform}:${channelId}:${conversationId}`;
+    return `${scope}:${platform}:${channelId}:${conversationId}`;
   }
   if (channelId) {
-    return `${channelId}:${conversationId}`;
+    return `${scope}:${channelId}:${conversationId}`;
   }
-  return conversationId;
+  return `${scope}:${conversationId}`;
 }
 
 /**
@@ -962,11 +966,21 @@ export class DeploymentManager {
     messageData?: MessagePayload,
     existingDeployments?: DeploymentInfo[]
   ): Promise<void> {
+    const agentId = messageData?.agentId;
+    const organizationId = messageData?.organizationId;
+    if (!agentId || !organizationId) {
+      throw new OrchestratorError(
+        ErrorCode.DEPLOYMENT_CREATE_FAILED,
+        "Missing agentId or organizationId in message payload"
+      );
+    }
     const deploymentIdentity: DeploymentIdentity = {
       userId,
       conversationId,
       channelId: messageData?.channelId,
       platform: messageData?.platform,
+      agentId,
+      organizationId,
     };
     const deploymentName = generateDeploymentName(deploymentIdentity);
     const canonicalConversationKey =

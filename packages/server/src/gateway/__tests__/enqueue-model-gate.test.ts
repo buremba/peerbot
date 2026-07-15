@@ -31,6 +31,8 @@ const WARM_DEPLOYMENT_NAME = generateDeploymentName({
   platform: "slack",
   channelId: "chan-1",
   conversationId: "conv-1",
+  agentId: "agent-1",
+  organizationId: "org-1",
 });
 
 process.env.ENCRYPTION_KEY ||=

@@ -383,11 +383,15 @@ export class MessageConsumer {
       }
 
       const canonicalConversationKey = buildCanonicalConversationKey({
+        organizationId: data.organizationId,
+        agentId: data.agentId,
         platform: data.platform,
         channelId: data.channelId,
         conversationId: effectiveConversationId,
       });
       const deploymentName = generateDeploymentName({
+        organizationId: data.organizationId,
+        agentId: data.agentId,
         userId: data.userId,
         platform: data.platform,
         channelId: data.channelId,

@@ -11,7 +11,11 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { stripEnv } from "@lobu/core";
-import { isDirectPackageInstallCommand } from "./tool-policy";
+import {
+  type BashCommandPolicy,
+  enforceBashCommandPolicy,
+  isDirectPackageInstallCommand,
+} from "./tool-policy";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 
 type RequiredParamGroup = {
@@ -130,7 +134,7 @@ function buildEditSchema() {
 
 export function createLobuTools(
   cwd: string,
-  options?: { bashOperations?: BashOperations }
+  options?: { bashOperations?: BashOperations; bashPolicy?: BashCommandPolicy }
 ): AgentTool<any>[] {
   const read = wrapToolWithNormalization({
     tool: createReadTool(cwd),
@@ -162,7 +166,10 @@ export function createLobuTools(
       env: stripEnv(params.env, SENSITIVE_WORKER_ENV_KEYS) as NodeJS.ProcessEnv,
     }),
   };
-  const bash = wrapBashWithProxyHint(createBashTool(cwd, bashToolOpts));
+  const bash = wrapBashWithProxyHint(
+    createBashTool(cwd, bashToolOpts),
+    options?.bashPolicy
+  );
 
   return [
     read,
@@ -229,11 +236,25 @@ function isDirectGatewayApiAccessCommand(command: string): boolean {
 }
 
 /**
- * Wrap bash tool to detect proxy CONNECT 403 errors and append a hint.
- * curl doesn't display the proxy response body for CONNECT failures,
- * so the model never sees "Domain not allowed" — only exit code 56.
+ * The single hardened bash entry point. Wraps the raw bash tool with EVERY
+ * command-inspection guard, so any caller that holds this tool object gets the
+ * full policy by construction. Today the agent's tool loop routes through here;
+ * the forthcoming `!`-bash intercept (PR-D4) is meant to reuse this same object
+ * rather than call `BashOperations.exec()` raw. The guards, in order applied to
+ * the extracted command:
+ *   - prefix allow/deny policy (`enforceBashCommandPolicy`)
+ *   - direct-gateway-API-access block
+ *   - direct-package-install block
+ * and, on failure, a proxy-403 hint (curl hides the proxy CONNECT body, so the
+ * model would otherwise see only exit code 56, not "Domain not allowed").
+ *
+ * Credential-stripping (`spawnHook`/`stripEnv`) lives inside `createBashTool`;
+ * bash *removal* when policy disallows it is a tool-list filter in the caller.
  */
-function wrapBashWithProxyHint(tool: AgentTool<any>): AgentTool<any> {
+function wrapBashWithProxyHint(
+  tool: AgentTool<any>,
+  bashPolicy?: BashCommandPolicy
+): AgentTool<any> {
   const PROXY_403_PATTERN = /Received HTTP code 403 from proxy after CONNECT/i;
 
   return {
@@ -243,6 +264,9 @@ function wrapBashWithProxyHint(tool: AgentTool<any>): AgentTool<any> {
         params && typeof params === "object" && "command" in params
           ? String((params as { command?: unknown }).command ?? "")
           : "";
+      if (bashPolicy) {
+        enforceBashCommandPolicy(command, bashPolicy);
+      }
       if (isDirectGatewayApiAccessCommand(command)) {
         throw new Error(
           "DIRECT GATEWAY API ACCESS BLOCKED. Use the registered MCP/auth tools instead of calling gateway /mcp or /internal endpoints from Bash."

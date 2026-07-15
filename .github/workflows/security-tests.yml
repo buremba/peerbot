@@ -36,7 +36,7 @@ on:
 jobs:
   static-guards:
     name: Static security guards
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@v7
@@ -49,7 +49,7 @@ jobs:
 
   bun-security-tests:
     name: Security tests (bun:test)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     services:
       postgres:
@@ -131,7 +131,7 @@ jobs:
 
   vitest-security-tests:
     name: Security tests (vitest)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     services:
       postgres:

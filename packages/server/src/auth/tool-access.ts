@@ -12,7 +12,7 @@
 
 export type ToolAccessLevel = "read" | "write" | "admin";
 
-const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
+export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	save_memory: null,
 	// `run_sdk` reaches admin handlers inside the script; per-call gates fire
 	// on each SDK method, so the entry-point check is just write-tier.
@@ -29,13 +29,12 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	manage_connections: new Set(["create", "update", "reauthenticate"]),
 	// Members create / reconnect their own oauth_account profile. The handler
 	// gates `profile_kind` against role so env / oauth_app / browser_session
-	// stay admin-only.
-	manage_auth_profiles: new Set([
-		"create_auth_profile",
-		"update_auth_profile",
-		"test_auth_profile",
-		"get_auth_profile",
-	]),
+	// stay admin-only. `get_auth_profile` / `test_auth_profile` are NOT here —
+	// they are owner-admin (see OWNER_ADMIN_ACTIONS). `requiresOwnerAdmin` runs
+	// first so listing them here too was dead (admin still won), but the
+	// duplicate falsely read as "member-write" to any surface that inspects
+	// this map directly.
+	manage_auth_profiles: new Set(["create_auth_profile", "update_auth_profile"]),
 	// `complete_window` is how watcher AGENTS report results — server-side
 	// agent workers and device CLI runs (the Owletto Mac dispatcher wires the
 	// gateway MCP into the spawned CLI; device tokens carry mcp:write, not
@@ -56,7 +55,7 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	]),
 };
 
-const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
+export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 	manage_entity: new Set(["delete", "merge", "unmerge"]),
 	manage_entity_schema: new Set([
 		"create",
@@ -137,7 +136,7 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 	manage_view_templates: new Set(["set", "rollback", "remove_tab", "clear"]),
 };
 
-const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
+export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	resolve_path: null,
 	search_memory: null,
 	// SDK method discovery — safe to expose; surfaces no data.

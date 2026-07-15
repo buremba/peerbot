@@ -276,8 +276,10 @@ export default async (_ctx, client) => {
 };`,
 	},
 	"knowledge.read": {
-		summary: "Read a knowledge event by id, or watcher-window context.",
+		summary:
+			"Read knowledge events by id (`content_ids`, an array — there is no singular `content_id` arg), or watcher-window context.",
 		access: "read",
+		example: "await client.knowledge.read({ content_ids: [2321593] });",
 	},
 	"knowledge.delete": {
 		summary:
@@ -389,13 +391,25 @@ export default async (ctx, client) => {
 	},
 	"schedules.create": {
 		summary:
-			"Create a one-shot or recurring schedule (send_notification or wake_agent). Requires admin.",
+			"Create a one-shot or recurring schedule (send_notification or wake_agent). Requires admin. REQUIRES description, run_at (ISO timestamp of the first/only firing), and payload — the payload's `type` discriminant selects the handler and its required fields.",
 		access: "admin",
+		signature:
+			"schedules.create(input: { description: string; run_at: string /* ISO */; cron?: string; timezone?: string /* IANA, for cron */; until_at?: string; idempotency_key?: string; payload: { type: 'send_notification'; title: string; body?: string; recipients?: 'admins' | 'all' | string[]; resource_url?: string } | { type: 'wake_agent'; agent_id: string; prompt: string; thread_id?: string; reason?: string; model?: string } }): Promise<unknown>",
 		example: `await client.schedules.create({
   description: 'Follow up in 1h',
   run_at: '2026-07-05T12:00:00Z',
   payload: { type: 'wake_agent', agent_id: 'builder', prompt: 'Check inbox' },
 });`,
+		usageExample: `// One-shot notification (recurring: add cron + optional timezone/until_at).
+export default async (_ctx, client) => {
+  return client.schedules.create({
+    description: 'Standup reminder',
+    run_at: '2026-07-16T09:00:00Z',
+    cron: '0 9 * * MON-FRI',
+    timezone: 'Europe/London',
+    payload: { type: 'send_notification', title: 'Standup in 15m', recipients: 'all' },
+  });
+};`,
 	},
 	"schedules.update": {
 		summary: "Patch a schedule (next run, cron, wake_agent prompt). Requires admin.",
@@ -455,7 +469,7 @@ export default async (ctx, client) => {
 	},
 	"watchers.create": {
 		summary:
-			"Create a watcher. REQUIRES slug, prompt, and agent_id (the executing agent — a watcher without one is a zombie row). The output contract is not authored here: set keying_config.entity_type so extraction derives from that entity type's metadata_schema, or omit it for a free-form summary watcher. Each sources[].query must be a read-only SELECT/WITH projecting an `id` column (it runs against org-scoped virtual tables, NOT a URL). entity_id is optional (omit for an org-scoped watcher).",
+			"Create a watcher. REQUIRES slug, prompt, and agent_id (the executing agent — a watcher without one is a zombie row). The output contract is not authored here: set keying_config.entity_type so extraction derives from that entity type's metadata_schema, or omit it for a free-form summary watcher. Each sources[] entry REQUIRES both `name` (the {{placeholder}} the prompt template binds it to) and `query` — a read-only SELECT/WITH projecting an `id` column (it runs against org-scoped virtual tables, NOT a URL); optional `context: true` marks the source as context-only. entity_id is optional (omit for an org-scoped watcher).",
 		access: "admin",
 		throws: ["EntityNotFound"],
 		example:
@@ -551,9 +565,11 @@ export default async (_ctx, client) => {
 		signature: "connections.list(input?: { connector_key?: string; status?: string; setup_attempt_id?: string; limit?: number; offset?: number }): Promise<unknown>",
 	},
 	"catalog.listCatalog": {
-		summary: "List global catalog entries (connectors, skills, watchers).",
+		summary:
+			"List global catalog entries. `kinds` values are plural: 'connectors', 'skills', 'watchers' (defaults to all).",
 		access: "read",
-		signature: "catalog.listCatalog(input?: { kinds?: Array<'connectors' | 'skills'> }): Promise<unknown> // not paginated",
+		signature: "catalog.listCatalog(input?: { kinds?: Array<'connectors' | 'skills' | 'watchers'> }): Promise<unknown> // not paginated",
+		example: "await client.catalog.listCatalog({ kinds: ['connectors'] });",
 	},
 	"catalog.listInstalled": {
 		summary: "List installed org or agent resources.",
@@ -572,26 +588,26 @@ export default async (_ctx, client) => {
 	},
 	"connections.connect": {
 		summary:
-			"Recommended connector setup entry point. Handles every auth family; the result's `status` tells you what to do next. status 'active' (auth-none, e.g. website) or 'pending_auth' (OAuth waiting on the user) BOTH carry a `connection_id`. status 'setup_required' is a continuation — `connection_id` is OPTIONAL there (may be absent); follow `next_action` / `resume_call` / `completion_check` and only call feeds.create once the result actually carries a connection_id. Once you have a connection_id you must create a feed on it to collect data — connect() alone syncs nothing.",
+			"Recommended connector setup entry point. Handles every auth family; the result's `status` tells you what to do next. status 'active' (auth-none, e.g. rss or hackernews) or 'pending_auth' (OAuth waiting on the user) BOTH carry a `connection_id`. status 'setup_required' is a continuation — `connection_id` is OPTIONAL there (may be absent); follow `next_action` / `resume_call` / `completion_check` and only call feeds.create once the result actually carries a connection_id. Once you have a connection_id you must create a feed on it to collect data — connect() alone syncs nothing.",
 		access: "admin",
 		example:
-			"const c = await client.connections.connect({ connector_key: 'website' }); // c.connection_id",
+			"const c = await client.connections.connect({ connector_key: 'rss' }); // c.connection_id",
 		usageExample: `// Two-hop: connect() creates the connection; feeds.create() starts the
 // collection. connect() ALONE does not sync anything — you must create a feed
 // on the returned connection_id with a connector-declared feed_key
-// (search_sdk '<connector>' lists the feed keys, e.g. website → 'pages').
+// (search_sdk '<connector>' lists the feed keys, e.g. rss → 'articles').
 export default async (_ctx, client) => {
-  const c = await client.connections.connect({ connector_key: 'website' });
+  const c = await client.connections.connect({ connector_key: 'rss' });
   // Auth-none connectors are active immediately; auth-gated ones return a
   // connect_url / pending_auth for the user to finish first.
   // The feed's config keys come from the connector's feeds_schema — inspect it
   // via client.catalog.listInstalled({ kinds: ['connectors'] }) (each entry's
-  // detail.feeds_schema[feed_key]) if you're unsure what to pass. For website's
-  // 'pages' feed that's { urls: [...] } (or { sitemap_url }).
+  // detail.feeds_schema[feed_key]) if you're unsure what to pass. For rss's
+  // 'articles' feed that's { feed_urls: [...] }.
   return client.feeds.create({
     connection_id: c.connection_id,
-    feed_key: 'pages',
-    config: { urls: ['https://example.com'] },
+    feed_key: 'articles',
+    config: { feed_urls: ['https://example.com/feed.xml'] },
   });
 };`,
 	},
@@ -652,7 +668,7 @@ export default async (_ctx, client) => {
 	},
 	"operations.listAvailable": {
 		summary:
-			"Search declared connector capabilities, including disconnected connectors. Returns readiness plus every visible execution target; backend configuration is never exposed.",
+			"Search declared connector capabilities, including disconnected connectors. Pass connection_id to list the operations declared by that connection's connector with that connection's per-target readiness (errors if the connection is not visible); connector_key/query/kind filter the wider catalog. Returns readiness plus every visible execution target; backend configuration is never exposed.",
 		access: "read",
 	},
 	"operations.execute": {
@@ -708,12 +724,12 @@ export default async (_ctx, client) => {
 	},
 	"feeds.create": {
 		summary:
-			"Create a data-sync feed for a connection — this is what actually starts collecting data. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. website → 'pages'). Pass connector-specific settings (like the target url) in `config`.",
+			"Create a data-sync feed for a connection — this is what actually starts collecting data. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. rss → 'articles'). Pass connector-specific settings (like the feed urls) in `config`.",
 		access: "write",
 		signature:
 			"feeds.create(input: { connection_id: number; feed_key: string; config?: object; display_name?: string; schedule?: string }): Promise<unknown>",
 		example:
-			"await client.feeds.create({ connection_id: 42, feed_key: 'pages', config: { urls: ['https://example.com'] } });",
+			"await client.feeds.create({ connection_id: 42, feed_key: 'articles', config: { feed_urls: ['https://example.com/feed.xml'] } });",
 	},
 	"feeds.update": { summary: "Update a feed.", access: "write" },
 	"feeds.delete": {

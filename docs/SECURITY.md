@@ -1,6 +1,6 @@
 # Security
 
-Lobu runs as a single Node process — gateway, embedded workers, embeddings, and the Lobu memory backend in-process; Postgres is the only user-provided external. There is no Docker or Kubernetes deployment manager. This page documents what's isolated, what's policy, and what isn't a security boundary at all.
+This page covers the self-hosted deployment (`lobu run` or the [Docker image](DOCKER.md)): a single Node process — gateway, embedded workers, embeddings, and the Lobu memory backend in-process; Postgres is the only user-provided external. Lobu does not orchestrate per-worker containers — workers are subprocesses of that one process. (Lobu Cloud runs the same image with multiple replicas on Kubernetes; the multi-replica correctness rules live in `packages/server/AGENTS.md` and are out of scope here.) This page documents what's isolated, what's policy, and what isn't a security boundary at all.
 
 ## Threat model
 

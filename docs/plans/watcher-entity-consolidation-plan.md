@@ -1,5 +1,7 @@
 # Watcher / Entity Consolidation — Implementation Plan
 
+> **Status (2026-07-15):** **Partial** — the binary human-owned `field_controls` merge, condensation removal, and promotion update-on-match landed; B1/B2 source ranking remains unbuilt.
+
 ## Thesis
 The system reduces to a small primitive set. Most of the debated surface is **duplicate
 implementations of two patterns**:

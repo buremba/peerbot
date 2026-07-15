@@ -14,7 +14,9 @@
 - Default to static `import`. New dynamic imports require measured cost justification here or in the package AGENTS plus a rationale comment at the call site. Tests may dynamically import after mocks.
 - Bug fixes require red→fix→green evidence. If you cannot reproduce, bail and report the dead end.
 - Run `make pre-pr` (fast no-DB CI gates: typecheck + knip + lint) AND `make review` (LLM verdict) before PR/merge. `make review` does NOT run typecheck/knip/tests — it is not proof CI will pass. If you touch server/runtime code, also run the relevant `bun test`/`make test-integration` suite.
+- **Run `make review-fix` on the settled diff BEFORE the first `make review`.** It runs the reviewer with write access to fix review-grade findings (bugs, slop, stale claims) without posting a status; verify its diff, commit, then post one review. Never iterate `make review` as a find-fix loop — each posted round costs a review + CI cycle. If a posted review still fails, fix the finding AND its whole class before re-running.
 - After committing a fix, verify it landed with `git show HEAD:<file>` (or `git diff --stat origin/main...HEAD`). A fix left in the working tree but never committed will not reach CI — confirm HEAD, not just the working tree.
+- **Stage by explicit path; never commit the whole tree of a worktree that hosted other work.** A commit is a snapshot — stale file copies silently revert already-merged PRs. After commit/rebase, `git diff --name-only origin/main...HEAD` must equal the task's intended file list; extra files = stop. Verify a "reverts merged work" review finding by diff direction against `origin/main`, never dismiss it as merge-base noise.
 
 ## Agent workflow
 - Do only what was asked. Delete ephemeral files you create. Do not create `*.md` unless asked.
@@ -23,5 +25,10 @@
 - Never `git stash`; use WIP commits and squash later.
 - Subagents that may switch/commit/push/destroy must run in a worktree; read-only research may share the parent.
 - Slack link pasted (`slack.com/archives/…?thread_ts=`) → run `scripts/slack-thread-viewer.js "<link>"` first.
-- To drive the user's paired Owletto Chrome extension/browser, use Lobu Cloud `manage_operations` on the active `chrome` connection (usually org `buremba`, connection id from `lobu call manage_connections --org buremba --arg action=list --raw`). Useful operations include `navigate`, `get_accessibility_tree`, `type_ref`, `click_ref`, `evaluate`, and `screenshot`; do **not** assume CDP/browser-auth is required. Example: `lobu call manage_operations --org buremba --arg action=execute --arg connection_id:=<chrome-connection-id> --arg operation_key=navigate --arg input:='{"url":"https://app.slack.com/...","wait_for_load":true,"open_in_new_tab":true}' --raw`.
-- Unsure in planning → ask before making conflicting or irreversible choices.
+- To drive the user's paired Owletto Chrome extension/browser, use `manage_operations` on the active `chrome` connection — recipe in `docs/BROWSER_TESTING.md` ("Driving the paired Owletto extension"). Do **not** assume CDP/browser-auth is required.
+- Unsure in planning → ask before making conflicting or irreversible choices. Mid-execution, block on a question only for irreversible/destructive actions or decisions that are genuinely the user's; for reversible choices with a clear recommended option, take it and flag the choice in your summary.
+
+## Session efficiency
+- Never poll in the foreground (`sleep`/`until`/`while` wait loops, repeated `tail`). Run long waits (dev-server boot, CI, deploys) in the background and act on the completion notification.
+- Prefer DOM reads (`get_page_text`, `read_page`, `javascript_tool`) over screenshots; screenshot only when visual layout itself is under test. Screenshots are the #1 context-bloat source.
+- Read a file before editing it, and re-read it after any external change; blind edits fail and cost a retry round-trip.

@@ -153,7 +153,7 @@ interface SaveContentResult {
   view_url?: string;
 	/** Semantic search is asynchronous; exact reads by id are available immediately. */
 	indexing_status: 'pending';
-	exact_read: { method: 'client.knowledge.read'; content_id: number };
+	exact_read: { method: 'client.knowledge.read'; content_ids: [number] };
 }
 
 // ============================================
@@ -470,9 +470,12 @@ async function saveContentImpl(
     semantic_type: semanticType,
     created_at: String(row.created_at),
 		indexing_status: 'pending',
+		// `knowledge.read` takes `content_ids` (array) — a singular `content_id`
+		// is rejected as an unknown argument, so the self-documenting hint must
+		// use the exact shape the reader accepts.
 		exact_read: {
 			method: 'client.knowledge.read',
-			content_id: Number(row.id),
+			content_ids: [Number(row.id)],
 		},
   };
   if (args.supersedes_event_id) {

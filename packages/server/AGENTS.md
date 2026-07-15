@@ -43,7 +43,7 @@ Read root `AGENTS.md` first. This package owns the gateway, auth, connections, f
 - Prereqs: Bun, supported Node per package engines, and Postgres+pgvector via `DATABASE_URL`. `./scripts/setup-dev.sh` provisions local Postgres where needed.
 - `make dev` uses shared brew Postgres with one DB per branch. `LOBU_EMBEDDED=1 make dev` / `make dev-embedded` uses embedded per-worktree Postgres.
 - Parallel worktrees use `.env.local` for non-default `PORT`/`WORKER_PROXY_PORT`; do not `git switch` while a dev server runs.
-- Relevant validation: `make build-packages`, `bun run typecheck`, server tests as needed, and `make review` unless explicitly waived.
+- Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`) plus the relevant server `bun test` / `make test-integration` suites.
 
 ## Slackbot MCP integration
 - Slackbot is an MCP client. A Slack app exposes tools/resources only with `mcp:connect` bot scope plus an `mcp_servers` manifest block; after scope changes, reinstall the app.

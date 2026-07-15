@@ -1,5 +1,7 @@
 # Connector authorization & data attribution model
 
+> **Status (2026-07-15):** **Open RFC** — no implementation; attribution work so far is per-connector, not this org-backbone model.
+
 Status: design / RFC. Builds on `authz-acl-permission-program.md` (the access-graph
 engine + fail-closed resource-visibility gate, already live for Slack + GitHub) and
 `feeds-and-connections-model.md`.

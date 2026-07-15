@@ -1,5 +1,7 @@
 # Authorization / ACL — finalized architecture
 
+> **Status (2026-07-15):** **Partial** — the Slack and GitHub resource ACL gates are live (`authz_source_acl_state`, `AuthzScope`); derived-artifact provenance, deny ACLs, identity breadth, and the remaining source compilers are pending.
+
 > **Related design docs:** connector authorization & data attribution model →
 > [`connector-authz-model.md`](connector-authz-model.md) (org backbone + ACL gate +
 > per-user overlay, decisions D1–D5). The **closed** enterprise IdP layer (SAML/SCIM/

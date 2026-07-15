@@ -180,6 +180,36 @@ describe("validateToolArgs error humanization", () => {
     expect(msg).toMatch(/agents/);
   });
 
+  it("enumerates allowed literals for a bad ELEMENT of an array-of-literals field", () => {
+    // catalog.listCatalog({ kinds: ['connector'] }) live-failed with the bare
+    // "Expected union value": the error path is `/kinds/0`, and subschemaAtPath
+    // only walked `properties` — an array index must resolve to the array's
+    // item schema so the allowed values get named.
+    const schema = Type.Object({
+      kinds: Type.Optional(
+        Type.Array(
+          Type.Union([
+            Type.Literal("connectors"),
+            Type.Literal("skills"),
+            Type.Literal("watchers"),
+          ])
+        )
+      ),
+    });
+    let caught: unknown;
+    try {
+      validateToolArgs("t", schema, { kinds: ["connector"] });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolUserError);
+    const msg = (caught as ToolUserError).message;
+    expect(msg).not.toMatch(/Expected union value/);
+    expect(msg).toMatch(/connectors/);
+    expect(msg).toMatch(/skills/);
+    expect(msg).toMatch(/watchers/);
+  });
+
   it("reports a missing required field AND an unknown field together (not just the first)", () => {
     // { id: 1 } for a schema wanting { feed_id } used to report only the missing
     // feed_id, never that `id` is unknown — so the agent fixes one problem at a

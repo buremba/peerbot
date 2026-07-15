@@ -1,4 +1,6 @@
 import { getDb, pgBigintArray } from '../../../db/client';
+import { formatAjvError, getAjv } from '../../../utils/ajv-singleton';
+import { exceedsValidationLimits } from '../../../utils/metadata-limits';
 
 export interface FeedDefinition {
   key?: string;
@@ -6,7 +8,47 @@ export interface FeedDefinition {
   displayNameTemplate?: string;
   configSchema?: {
     properties?: Record<string, unknown>;
+    [keyword: string]: unknown;
   } | null;
+}
+
+/**
+ * Validate a feed `config` against the connector's declared feed configSchema
+ * (JSON Schema, `connector_definitions.feeds_schema[feed_key].configSchema`).
+ * Returns a human-readable error naming the offending field, or null when
+ * valid. A connector/feed with no declared configSchema accepts any config —
+ * the schema itself decides strictness (additionalProperties etc.).
+ *
+ * Without this check a mis-shaped config (e.g. `url` instead of rss's required
+ * `feed_urls`) is persisted "successfully" and only fails at sync time, giving
+ * an MCP caller zero upfront signal.
+ */
+export function validateFeedConfig(
+  feedsSchema: Record<string, FeedDefinition> | null,
+  feedKey: string,
+  config: Record<string, unknown>
+): string | null {
+  // Direct key lookup plus the `key` field fallback — deliberately NOT the
+  // single-entry fallback getFeedDefinition uses for display names: guessing a
+  // schema for an undeclared feed_key would reject legacy feeds cosmetically
+  // matched to the wrong definition.
+  const definition =
+    feedsSchema?.[feedKey] ??
+    Object.values(feedsSchema ?? {}).find((d) => d?.key === feedKey) ??
+    null;
+  const configSchema = definition?.configSchema;
+  if (!configSchema || Object.keys(configSchema).length === 0) return null;
+
+  // Bound untrusted input before handing it to AJV (same posture as
+  // validateEntityMetadata in schema-validation.ts).
+  if (exceedsValidationLimits(config)) {
+    return `Invalid config for feed '${feedKey}': config exceeds size/nesting limits`;
+  }
+
+  const validate = getAjv().compile(configSchema);
+  if (validate(config)) return null;
+  const detail = (validate.errors ?? []).map(formatAjvError).join('; ') || 'validation failed';
+  return `Invalid config for feed '${feedKey}': ${detail}`;
 }
 
 function getFeedDefinition(

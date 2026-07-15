@@ -1,5 +1,7 @@
 # Virtual feed flag — Slice 2
 
+> **Status (2026-07-15):** **Shipped** — `feeds_virtual_flag` migration + live virtual-feed reads in search/manage_feeds.
+
 Status: implemented (this PR). Conflict-safe slice of the larger "Conversation feeds
 / FeedReader registry" program. This slice ships the **capability layer + migration**
 that lets a feed be *read live* instead of synced; the FeedReader registry + feed

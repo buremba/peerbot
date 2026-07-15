@@ -11,4 +11,4 @@ Read root `AGENTS.md` first. This package owns built-in Lobu connectors.
 - Keep connector behavior data-driven; avoid hardcoding account/workspace-specific values.
 
 ## Validation
-- For connector changes, run targeted tests plus relevant build/typecheck, then `make review` before PR/merge.
+- Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`) plus targeted connector tests.

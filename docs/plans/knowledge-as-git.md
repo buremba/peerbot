@@ -1,5 +1,7 @@
 # Knowledge-as-Git: Architecture Brief
 
+> **Status (2026-07-15):** **Investigation** — BUILD verdict reached; FS projection not implemented.
+
 *Turning the Lobu org knowledge graph into a branchable, cloneable filesystem that agents and humans both read and write.*
 
 Status: design synthesis (decisions locked where noted; spikes in flight). Audience: Lobu eng + founders.

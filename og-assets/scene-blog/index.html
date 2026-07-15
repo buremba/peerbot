@@ -15,11 +15,8 @@
 
   :root {
     --bg: #0f0e0c;          /* deepest warm dark */
-    --surface: #141414;     /* terminal/code surface */
     --text: #f9f4e6;        /* warm light text */
     --muted: #8a857b;       /* muted warm */
-    --border: rgba(249,244,230,0.10); /* hairline */
-    --surface-dim: #1a1916; /* dim surface */
     --red: #f5333a;         /* accent */
     --code-bg: #141414;     /* terminal/code surface */
     --code-text: #f9f4e6;   /* warm code text */
@@ -29,7 +26,6 @@
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:1200px; height:630px; overflow:hidden; background:var(--bg); }
   body { font-family:"Inter", ui-sans-serif, system-ui, sans-serif; color:var(--text); -webkit-font-smoothing:antialiased; }
-  .mono { font-family:"JetBrains Mono", ui-monospace, monospace; }
   #stage { position:absolute; inset:0; }
 
   /* red glow pooling behind the panel (dark-theme depth) */
@@ -68,13 +64,15 @@
   .panel .titlebar .dot { width:11px; height:11px; border-radius:999px; background:rgba(249,244,230,0.18); }
   .panel .titlebar .file { margin-left:10px; font-family:"JetBrains Mono", ui-monospace, monospace; font-size:12px;
     color:var(--code-dim); letter-spacing:0.02em; }
-  .panel canvas, .panel .ringwrap { position:absolute; left:0; top:0; width:100%; height:100%; }
+  .panel .ringwrap { position:absolute; left:0; top:0; width:100%; height:100%; }
 
   /* orbit drawn as SVG on the dark panel */
   #ringPath { fill:none; stroke:rgba(245,51,58,0.55); stroke-width:1.8; stroke-dasharray:6 8; }
   #pellet { fill:var(--red); filter:drop-shadow(0 0 6px rgba(245,51,58,0.9)); }
 
-  .node { position:absolute; transform:translate(-50%,-50%); width:96px; text-align:center; }
+  /* node anchor = the DISC centre (fixed 64px-high box; the label overflows below),
+     so left/top can be set to exact ring coordinates. */
+  .node { position:absolute; transform:translate(-50%,-50%); width:96px; height:64px; text-align:center; }
   .disc { width:64px; height:64px; border-radius:999px; margin:0 auto; position:relative;
     background:rgba(249,244,230,0.04); border:1px solid rgba(249,244,230,0.14);
     display:flex; align-items:center; justify-content:center; }
@@ -112,34 +110,35 @@
       <span class="file">agent-loop.ts</span>
     </div>
     <div class="ringwrap">
-      <svg id="ring" viewBox="0 0 496 398" preserveAspectRatio="xMidYMid meet" style="position:absolute;inset:0;width:100%;height:100%;">
-        <!-- ring centred on panel body centre (~248, 230). radius ~118 -->
-        <path id="ringPath" d="M248 112 A118 118 0 1 1 247.99 112" />
+      <svg id="ring" viewBox="0 0 496 438" preserveAspectRatio="xMidYMid meet" style="position:absolute;inset:0;width:100%;height:100%;">
+        <!-- viewBox matches the panel box 1:1, so SVG coords == CSS px inside .ringwrap.
+             ring centred on the panel body centre (248, 250), radius 118 -->
+        <path id="ringPath" d="M248 132 A118 118 0 1 1 247.99 132" />
         <!-- pellet rides the ring; animated via GSAP rotation of #orbit group -->
-        <g id="orbit" transform="translate(248 230)">
+        <g id="orbit" transform="translate(248 250)">
           <circle id="pellet" cx="118" cy="0" r="6.5" />
         </g>
       </svg>
 
-      <!-- nodes positioned on the ring -->
-      <!-- WATCH top (248,112) -->
-      <div class="node" style="left:calc(50% + 0px); top:calc(58px + 54px);">
+      <!-- nodes: disc centres sit ON the ring, 120° apart (top, lower-right, lower-left) -->
+      <!-- WATCH top (248,132) -->
+      <div class="node" style="left:248px; top:132px;">
         <div class="disc"><span class="num">1</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="#f5333a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
           <span class="glow" id="g1"></span>
         </div>
         <div class="nl"><div class="e">WATCH</div><div class="d">every source</div></div>
       </div>
-      <!-- UNDERSTAND lower-right (~351, 296) -->
-      <div class="node" style="right:calc(50% - 188px); top:calc(58px + 238px);">
+      <!-- UNDERSTAND lower-right (350,309) -->
+      <div class="node" style="left:350px; top:309px;">
         <div class="disc"><span class="num">2</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="#f5333a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
           <span class="glow" id="g2"></span>
         </div>
         <div class="nl"><div class="e">UNDERSTAND</div><div class="d">shared memory</div></div>
       </div>
-      <!-- ACT lower-left (~145, 296) -->
-      <div class="node" style="left:calc(50% - 188px); top:calc(58px + 238px);">
+      <!-- ACT lower-left (146,309) -->
+      <div class="node" style="left:146px; top:309px;">
         <div class="disc"><span class="num">3</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="#f5333a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 20 5v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V5Z"/><path d="M9 12l2 2 4-4"/></svg>
           <span class="glow" id="g3"></span>
@@ -154,7 +153,7 @@
   window.__timelines = window.__timelines || {};
   const tl = gsap.timeline({ paused: true });
   // orbit the pellet around the ring centre (translate already centres #orbit at 248,230)
-  tl.to("#orbit", { duration: 5, ease: "none", rotation: 360, transformOrigin: "0 0", svgOrigin: "248 230" }, 0);
+  tl.to("#orbit", { duration: 5, ease: "none", rotation: 360, transformOrigin: "0 0", svgOrigin: "248 250" }, 0);
   function pulse(sel, at) {
     tl.to(sel, { opacity: 0.85, duration: 0.5, yoyo: true, repeat: 1, ease: "sine.inOut" }, at - 0.5);
   }

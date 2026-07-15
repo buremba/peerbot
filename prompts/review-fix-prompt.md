@@ -21,8 +21,9 @@ git diff --name-only "$BASE_BRANCH...HEAD"
 git diff --check "$BASE_BRANCH...HEAD"
 ```
 
-Include uncommitted changes in your picture (`git status --short`,
-`git diff`): you are fixing the tree the next commit will snapshot.
+Include uncommitted changes in your picture — both unstaged and staged
+(`git status --short`, `git diff`, `git diff --cached`): you are fixing the
+tree the next commit will snapshot.
 
 ## 2. Hunt with the reviewer's bar
 

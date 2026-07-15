@@ -22,7 +22,7 @@ help:
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 	@echo "  make e2e-browser [RESTART=1]               - Launch/reuse the stable 'owletto' Chrome harness (extension from this worktree) for Chrome e2e"
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
-	@echo "  make review [BASE=<branch>]                - Run local review (typecheck+unit+integration + cross-harness reviewer); posts pi-review status and PR comment"
+	@echo "  make review [BASE=<branch>]                - Run the cross-harness LLM reviewer against the local diff (deterministic suites run in CI); posts pi-review status and PR comment"
 	@echo "  make review-fix [BASE=<branch>]            - Pre-review fixer: reviewer CLI with write access fixes review-grade findings in the tree; posts nothing"
 	@echo "  make owletto-mac [INSTALL=1] [OPEN=1]      - Build Owletto.app with the Developer ID identity (TCC grants match the notarized release); INSTALL=1 replaces /Applications/Owletto.app, OPEN=1 launches it"
 	@echo "  make owletto-mac-e2e [SKIP_BUILD=1]        - Build/install the signed Owletto.app then probe prod computer_use (permissions + list_windows) via the paired device connection"

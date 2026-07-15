@@ -12,6 +12,7 @@ BASE_BRANCH="${BASE:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --base)
+      [ $# -ge 2 ] || { echo "usage: scripts/review-fix.sh [--base <branch>]" >&2; exit 2; }
       BASE_BRANCH="$2"
       shift 2
       ;;
@@ -55,10 +56,14 @@ set -e
 
 echo
 echo "========== fixer summary =========="
-cat "$LAST_MSG_FILE" 2>/dev/null || echo "(no summary emitted)"
+if [ -s "$LAST_MSG_FILE" ]; then
+  cat "$LAST_MSG_FILE"
+else
+  echo "(no summary emitted)"
+fi
 echo "==================================="
 echo
-echo ">> working-tree changes made by the fixer (verify before committing):"
+echo ">> working-tree changes made by the fixer (staged + unstaged; verify before committing):"
 git status --short
-git diff --stat
+git diff --stat HEAD
 exit "$FIXER_EXIT"

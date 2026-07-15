@@ -32,12 +32,11 @@ import {
   type ManageWatchersProposal,
   type ManageWatchersResult,
 } from '@lobu/core/contracts/tools/manage-watchers';
-import type { ReservedSql } from 'postgres';
 import {
   resolveActingPrincipal,
   resolveWritePolicyDecision,
 } from '../../authz/entity-policy';
-import { createDbClientFromEnv, getDb } from '../../db/client';
+import { createDbClientFromEnv, getDb, getLockDb } from '../../db/client';
 import type { Env } from '../../index';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { insertEvent } from '../../utils/insert-event';
@@ -228,12 +227,6 @@ async function resolveTargetWatcherGroupId(
   return null;
 }
 
-/** How long a group-locked action polls for the lock before failing with a
- * coded 409. Contended holders finish in seconds (a fan-out or version bump);
- * a bounded wait turns pathological contention into a clean retryable error
- * instead of an unbounded stall. */
-const WATCHER_GROUP_LOCK_WAIT_MS = 30_000;
-
 /**
  * Run `fn` (guard + mutation) while holding a SESSION-level Postgres advisory
  * lock on the action's target watcher_group_id. A session lock (vs. the
@@ -244,13 +237,15 @@ const WATCHER_GROUP_LOCK_WAIT_MS = 30_000;
  * the session identity is stable (any pool connection could otherwise serve the
  * unlock and PG would error `you don't own a lock of type ExclusiveLock`).
  *
- * The lock is acquired with a `pg_try_advisory_lock` POLL, not a blocking
- * `pg_advisory_lock`, and the reserved connection is RELEASED between attempts.
- * A blocking wait camps on a pool slot: with N ≥ DB_POOL_MAX concurrent calls
- * on one group, the waiters consume every slot and the lock winner can never
- * get a connection for its own reads/transaction — a permanent pool-wide
- * deadlock (session advisory waits never time out). Polling holds zero slots
- * while waiting, so the winner always has pool capacity to finish and release.
+ * The reserved connection comes from the DEDICATED lock pool (getLockDb), not
+ * the main pool. Lock holders camp on a connection for the whole critical
+ * section while `fn` runs its reads/transactions on the MAIN pool; if holders
+ * camped on the main pool, N >= DB_POOL_MAX concurrent group-locked writes
+ * (same group or distinct groups alike) would consume every slot and starve
+ * their own handlers — a permanent pool-wide deadlock. With a separate pool
+ * the dependency is one-directional and deadlock-free; excess lock requests
+ * queue FIFO and progress as holders finish. The lock pool's `lock_timeout`
+ * bounds the advisory-lock wait itself (55P03 → coded 409 below).
  *
  * Only the mutating write-gate actions with a resolvable target group are locked;
  * read-only actions and `create` (no pre-existing group) run `fn` directly.
@@ -264,34 +259,29 @@ async function withWatcherGroupLock<T>(
   const groupId = await resolveTargetWatcherGroupId(args, ctx);
   if (groupId == null) return fn();
 
-  const sql = getDb();
-  const deadline = Date.now() + WATCHER_GROUP_LOCK_WAIT_MS;
-  for (;;) {
-    const reserved = (await (
-      sql as unknown as { reserve: () => Promise<ReservedSql> }
-    ).reserve()) as ReservedSql;
+  const reserved = await getLockDb().reserve();
+  try {
     try {
-      const [row] = (await reserved`
-        SELECT pg_try_advisory_lock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId}) AS locked
-      `) as unknown as [{ locked: boolean }];
-      if (row.locked) {
-        try {
-          return await fn();
-        } finally {
-          await reserved`SELECT pg_advisory_unlock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
-        }
+      await reserved`SELECT pg_advisory_lock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
+    } catch (err) {
+      // lock_timeout expiry (55P03): another holder kept the group busy past
+      // the bound. We do NOT hold the lock here — surface a clean retryable
+      // conflict instead of an unbounded stall.
+      if ((err as { code?: string }).code === '55P03') {
+        throw new ToolUserError(
+          'Another change to this watcher group is in progress; retry shortly.',
+          409,
+        );
       }
+      throw err;
+    }
+    try {
+      return await fn();
     } finally {
-      reserved.release();
+      await reserved`SELECT pg_advisory_unlock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
     }
-    if (Date.now() >= deadline) {
-      throw new ToolUserError(
-        'Another change to this watcher group is in progress; retry shortly.',
-        409,
-      );
-    }
-    // Sleep WITHOUT holding a pool slot; jitter de-synchronizes contenders.
-    await new Promise((resolve) => setTimeout(resolve, 25 + Math.floor(Math.random() * 50)));
+  } finally {
+    reserved.release();
   }
 }
 

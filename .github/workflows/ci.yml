@@ -338,7 +338,8 @@ jobs:
       # pgvector image (max_connections=100) starts rejecting with
       # "sorry, too many clients already" deep into the run.
       # Capping the app pool to 5 keeps the worst-case socket count at
-      # 5 (app) + 5 (test) + 1 (LISTEN) = 11, well below the CI budget.
+      # 5 (app) + 5 (test) + 3 (advisory-lock pool, db/client.ts getLockDb)
+      # + 1 (LISTEN) = 14, well below the CI budget.
       DB_POOL_MAX: '5'
     steps:
       - uses: actions/checkout@v7

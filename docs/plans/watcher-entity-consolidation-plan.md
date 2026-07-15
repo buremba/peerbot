@@ -1,5 +1,7 @@
 # Watcher / Entity Consolidation — Implementation Plan
 
+> **Status (2026-07-15):** **Partial** — `entity_field_controls` + source-ranked merge live; the cited condensation/promotion cleanup not fully landed.
+
 ## Thesis
 The system reduces to a small primitive set. Most of the debated surface is **duplicate
 implementations of two patterns**:

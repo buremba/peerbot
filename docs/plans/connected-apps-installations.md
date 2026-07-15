@@ -1,5 +1,7 @@
 # Connected apps — generic installations surface
 
+> **Status (2026-07-15):** **Shipped** — `app_installations` + chat delivery specialization live in the public app-install routes.
+
 Status: PLAN. Supersedes the Slack-specific framing in
 `slack-agent-onboarding.md`. Core insight (user): `app_installations` is
 **provider-agnostic**; "load the user's installations and let them act on one"

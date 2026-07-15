@@ -1,5 +1,7 @@
 # MCP multi-org + `execute`/`search`: addendum to the search-execute design doc
 
+> **Status (2026-07-15):** **Shipped** — isolated-vm SDK `execute` + `switch_organization` live with cross-org gate tests.
+
 Extends `docs/mcp-search-execute-design-doc.md` (lobu proper, status "Planned, not yet implemented") with two scopes the original didn't fully land: (1) cross-org addressing inside `execute`, and (2) the full frontend + UX surface the new tools imply. Language decision: **TypeScript over a typed `ClientSDK` in `isolated-vm`** — reviewed by a second and third opinion (codex, pi), both concurred. Bash-as-primary was evaluated and rejected because reactions are the real workload and shell quoting degrades stored user code.
 
 Target repo for implementation: `packages/server` + `packages/owletto` in the `lobu` monorepo. The lobu repo is deprecated.

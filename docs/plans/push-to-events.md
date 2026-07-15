@@ -1,5 +1,7 @@
 # Spec: `git push` → append-only `events`
 
+> **Status (2026-07-15):** **Planning** — spike output only; no server-side git-receive push→events path.
+
 *How a push to Lobu's synthetic git remote becomes staged, supersession-linked `events` rows. Code-grounded; every translation rule maps to a concrete `insertEvent(...)` call.* (Spike output, 2026-06-22; confidence 78/100.)
 
 ## 0. Ground truth from the code

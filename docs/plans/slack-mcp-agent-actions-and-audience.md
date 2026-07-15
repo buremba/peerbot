@@ -1,5 +1,7 @@
 # Agent actions via platform MCP + per-agent capability scope + audience/recall UI
 
+> **Status (2026-07-15):** **Shipped** — channels→connections consolidation (#1714) + audience gate live.
+
 Status: DESIGN. Verified against code on branch `feat/authz-audience-ui` (base `0c4cec56c`) and against live Slack docs/endpoints, 2026-06-28.
 
 This doc replaces the original "build an Audience UI on the Channels/Reach tab" framing with the

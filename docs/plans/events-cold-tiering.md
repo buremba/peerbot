@@ -1,5 +1,7 @@
 # Events cold-tiering — architecture & spike findings
 
+> **Status (2026-07-15):** **Decided, not built** — cold→DuckLake direction locked; no implementation started.
+
 **Status:** Decision locked, implementation not yet started. 2026-05-28.
 
 ## Decision

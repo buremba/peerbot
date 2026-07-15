@@ -447,12 +447,8 @@ export function buildScopedQuery(
 
   // For the `connections` table itself: the row is visible when org-shared or
   // owned by the requesting user (mirrors manage_connections CRUD).
-  const connectionRowVisibility = (alias: string): string => {
-    const vis = compileConnectionRowVisibility(scope, idx + 1, alias);
-    params.push(...vis.params);
-    idx += vis.params.length;
-    return ` ${vis.sql}`;
-  };
+  const connectionRowVisibility = (alias: string): string =>
+    ` ${compileConnectionRowVisibility(scope, alias)}`;
 
   // {{entityId}} substitution — only allocates a param when the query uses it
   let processedQuery = userQuery;
@@ -669,15 +665,12 @@ export function buildScopedQuery(
       let cmCte =
         `"${safeName}" AS (SELECT ${sel(table, 'cm')} FROM public.channel_messages cm ` +
         `WHERE cm.organization_id = ${orgP}`;
-      idx++;
-      params.push(scope.principal);
-      const cmPrincipal = `$${idx}::text`;
       // security-allowed: see block comment above the for-loop
       cmCte +=
         ` AND EXISTS (SELECT 1 FROM public.connections cc ` +
         `WHERE cc.organization_id = ${orgP} AND cc.deleted_at IS NULL ` +
         `AND cc.slug IN (cm.connection_id, 'agentconn-' || cm.connection_id) ` +
-        `AND (cc.visibility = 'org' OR cc.created_by = ${cmPrincipal}))`;
+        `${compileConnectionRowVisibility(scope, 'cc')})`;
       if (context.windowStart && context.windowEnd) {
         idx++;
         params.push(context.windowStart);

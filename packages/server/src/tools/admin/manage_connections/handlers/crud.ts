@@ -49,7 +49,8 @@ import {
 } from "../../../../utils/insert-event";
 import logger from "../../../../utils/logger";
 import { syncOAuthConnectionsForAuthProfile } from "../../../../utils/oauth-connection-state";
-import { getWorkspaceRole } from "../../../../utils/organization-access";
+import { compileConnectionRowVisibility } from "../../../../authz/connection-visibility";
+import { authzScopeFromToolContext } from "../../../../authz/scope";
 import { resolveUsernames } from "../../../../utils/resolve-usernames";
 import {
 	ACTIVE_RUN_STATUSES,
@@ -198,13 +199,8 @@ export async function handleListConnectorGroups(
     )}`;
   }
 
-  if (!ctx.userId) {
-    query = sql`${query} AND c.visibility = 'org'`;
-  } else {
-    const userRole = await getWorkspaceRole(sql, organizationId, ctx.userId);
-		if (userRole !== "owner" && userRole !== "admin") {
-      query = sql`${query} AND (c.visibility = 'org' OR c.created_by = ${ctx.userId})`;
-    }
+  if (!(await resolveCallerIsAdmin(sql, ctx))) {
+    query = sql`${query} ${sql.unsafe(compileConnectionRowVisibility(authzScopeFromToolContext(ctx), "c"))}`;
   }
 
   query = sql`${query} GROUP BY c.connector_key ORDER BY MAX(cd.name), c.connector_key`;
@@ -349,15 +345,10 @@ export async function handleList(
 		])}::jsonb`;
   }
 
-  // Visibility: anonymous readers see org-visible connections only; non-admin
-  // users see org connections plus their own private connections.
-  if (!ctx.userId) {
-    query = sql`${query} AND c.visibility = 'org'`;
-  } else {
-    const userRole = await getWorkspaceRole(sql, organizationId, ctx.userId);
-		if (userRole !== "owner" && userRole !== "admin") {
-      query = sql`${query} AND (c.visibility = 'org' OR c.created_by = ${ctx.userId})`;
-    }
+  // Visibility: owners/admins manage every connection; everyone else gets the
+  // shared connection-visibility predicate (anonymous → org-only).
+  if (!(await resolveCallerIsAdmin(sql, ctx))) {
+    query = sql`${query} ${sql.unsafe(compileConnectionRowVisibility(authzScopeFromToolContext(ctx), "c"))}`;
   }
 
   query = sql`${query} ORDER BY c.created_at DESC LIMIT ${limit} OFFSET ${offset}`;
@@ -473,13 +464,8 @@ export async function handleGet(
       AND c.deleted_at IS NULL
   `;
 
-  if (!ctx.userId) {
-    query = sql`${query} AND c.visibility = 'org'`;
-  } else {
-    const userRole = await getWorkspaceRole(sql, organizationId, ctx.userId);
-		if (userRole !== "owner" && userRole !== "admin") {
-      query = sql`${query} AND (c.visibility = 'org' OR c.created_by = ${ctx.userId})`;
-    }
+  if (!(await resolveCallerIsAdmin(sql, ctx))) {
+    query = sql`${query} ${sql.unsafe(compileConnectionRowVisibility(authzScopeFromToolContext(ctx), "c"))}`;
   }
 
   const rows = await query;

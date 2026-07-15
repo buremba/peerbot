@@ -40,6 +40,7 @@ import {
 } from "../../authz/entity-policy";
 import { compileConnectionRowVisibility } from "../../authz/connection-visibility";
 import { authzScopeFromToolContext } from "../../authz/scope";
+import { callerIsAdmin } from "./helpers/db-helpers";
 import { notifyActionApprovalNeeded } from "../../notifications/triggers";
 import {
 	defaultActionModeForOperation,
@@ -657,8 +658,10 @@ async function loadVisibleOperationTargets(
 	ctx: ToolContext,
 ): Promise<OperationTargetRow[]> {
 	const visibility = compileConnectionRowVisibility(
-		authzScopeFromToolContext(ctx),
-		2,
+		{
+			...authzScopeFromToolContext(ctx),
+			principalIsAdmin: await callerIsAdmin(getDb(), ctx),
+		},
 		"c",
 	);
 	return (await getDb().unsafe(
@@ -686,19 +689,18 @@ async function loadVisibleOperationTargets(
 		 ) latest ON TRUE
 		 WHERE c.organization_id = $1
 		   AND c.deleted_at IS NULL
-		   ${visibility.sql}
-		   AND ($3::bigint IS NULL OR c.id = $3)
-		   AND ($4::text IS NULL OR c.connector_key = $4)
-		   AND ($5::bigint IS NULL OR EXISTS (
+		   ${visibility}
+		   AND ($2::bigint IS NULL OR c.id = $2)
+		   AND ($3::text IS NULL OR c.connector_key = $3)
+		   AND ($4::bigint IS NULL OR EXISTS (
 		     SELECT 1 FROM feeds f
 		     WHERE f.connection_id = c.id
 		       AND f.deleted_at IS NULL
-		       AND $5 = ANY(f.entity_ids)
+		       AND $4 = ANY(f.entity_ids)
 		   ))
 		 ORDER BY c.connector_key, c.id`,
 		[
 			ctx.organizationId,
-			...visibility.params,
 			args.connection_id ?? null,
 			args.connector_key ?? null,
 			args.entity_id ?? null,
@@ -992,17 +994,22 @@ async function handleExecute(
 	env: Env,
 ): Promise<ManageOperationsResult> {
 	const sql = getDb();
-	const scope = authzScopeFromToolContext(ctx);
-	const visibility = compileConnectionRowVisibility(scope, 3, "c");
+	const visibility = compileConnectionRowVisibility(
+		{
+			...authzScopeFromToolContext(ctx),
+			principalIsAdmin: await callerIsAdmin(sql, ctx),
+		},
+		"c",
+	);
 	const visibleRows = await sql.unsafe(
 		`SELECT 1
 		 FROM connections c
 		 WHERE c.organization_id = $1
 		   AND c.id = $2
 		   AND c.deleted_at IS NULL
-		   ${visibility.sql}
+		   ${visibility}
 		 LIMIT 1`,
-		[ctx.organizationId, args.connection_id, ...visibility.params],
+		[ctx.organizationId, args.connection_id],
 	);
 	if (visibleRows.length === 0) {
 		return {

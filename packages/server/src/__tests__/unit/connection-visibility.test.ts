@@ -29,18 +29,31 @@ describe('connection-visibility compiler (M1 one-compiler)', () => {
   });
 
   it('row form gates the connections row itself by principal', () => {
-    const { sql, params } = compileConnectionRowVisibility(scope, 3, 'cn');
-    expect(sql).toContain("cn.visibility = 'org'");
-    expect(sql).toContain('cn.created_by');
-    expect(sql).toContain('$3::text');
-    expect(params).toEqual(['user_a']);
+    expect(compileConnectionRowVisibility(scope, 'cn')).toBe(
+      "AND (cn.visibility = 'org' OR cn.created_by = 'user_a')"
+    );
   });
 
-  it('a null principal (headless) still binds null — fail-closed to org-only', () => {
+  it('row form escapes the principal literal', () => {
+    expect(
+      compileConnectionRowVisibility({ organizationId: 'org_test', principal: "us'er" }, 'cn')
+    ).toBe("AND (cn.visibility = 'org' OR cn.created_by = 'us''er')");
+  });
+
+  it('row form: admin-tier additionally sees legacy-unowned rows, never other creators', () => {
+    expect(compileConnectionRowVisibility({ ...scope, principalIsAdmin: true }, 'cn')).toBe(
+      "AND (cn.visibility = 'org' OR cn.created_by = 'user_a' OR cn.created_by IS NULL)"
+    );
+    // Non-admin members never see created_by IS NULL rows.
+    expect(compileConnectionRowVisibility(scope, 'cn')).not.toContain('IS NULL');
+  });
+
+  it('a null principal (headless) is fail-closed to org-only', () => {
     const fk = compileConnectionFkVisibility(headlessScope('org_test'), 1, 'ev');
     expect(fk.params).toEqual(['org_test', null]);
-    const row = compileConnectionRowVisibility(headlessScope('org_test'), 1, 'cn');
-    expect(row.params).toEqual([null]);
+    expect(compileConnectionRowVisibility(headlessScope('org_test'), 'cn')).toBe(
+      "AND (cn.visibility = 'org')"
+    );
   });
 
   it('authzScopeFromToolContext maps ctx.userId → principal', () => {

@@ -572,8 +572,27 @@ export default async (_ctx, client) => {
 	},
 	"connections.connect": {
 		summary:
-			"Recommended connector setup entry point. Handles every auth family; setup gaps return a structured setup_required continuation with resolved URLs and directly callable next steps.",
+			"Recommended connector setup entry point. Handles every auth family; returns the new `connection_id`. For an auth-none connector (e.g. website) it lands active immediately; auth-gated connectors return a structured setup_required / pending_auth continuation with a connect_url for the user. To actually collect data you must then create a feed on that connection_id — connect() alone syncs nothing.",
 		access: "admin",
+		example:
+			"const c = await client.connections.connect({ connector_key: 'website' }); // c.connection_id",
+		usageExample: `// Two-hop: connect() creates the connection; feeds.create() starts the
+// collection. connect() ALONE does not sync anything — you must create a feed
+// on the returned connection_id with a connector-declared feed_key
+// (search_sdk '<connector>' lists the feed keys, e.g. website → 'pages').
+export default async (_ctx, client) => {
+  const c = await client.connections.connect({ connector_key: 'website' });
+  // Auth-none connectors are active immediately; auth-gated ones return a
+  // connect_url / pending_auth for the user to finish first.
+  // The feed's config keys come from the connector's feeds_schema — inspect it
+  // via client.catalog.listInstalled({ kinds: ['connectors'] }) (each entry's
+  // detail.feeds_schema[feed_key]) if you're unsure what to pass.
+  return client.feeds.create({
+    connection_id: c.connection_id,
+    feed_key: 'pages',
+    config: {},
+  });
+};`,
 	},
 	"connections.update": {
 		summary: "Update connection config or auth profile.",
@@ -687,8 +706,13 @@ export default async (_ctx, client) => {
 		example: "const feeds = await client.feeds.readMany({ feed_ids: [42, 43], limit: 25 });",
 	},
 	"feeds.create": {
-		summary: "Create a data-sync feed for a connection.",
+		summary:
+			"Create a data-sync feed for a connection — this is what actually starts collecting data. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. website → 'pages'). Pass connector-specific settings (like the target url) in `config`.",
 		access: "write",
+		signature:
+			"feeds.create(input: { connection_id: number; feed_key: string; config?: object; display_name?: string; schedule?: string }): Promise<unknown>",
+		example:
+			"await client.feeds.create({ connection_id: 42, feed_key: 'pages', config: { url: 'https://example.com' } });",
 	},
 	"feeds.update": { summary: "Update a feed.", access: "write" },
 	"feeds.delete": {

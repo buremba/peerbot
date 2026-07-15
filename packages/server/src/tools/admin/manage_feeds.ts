@@ -548,25 +548,6 @@ async function handleUpdateFeed(
   const sql = getDb();
   const { organizationId } = ctx;
 
-  const existing = await sql`
-    SELECT f.id, f.schedule, f.timezone, f.feed_key, f.kind, f.config, c.auth_profile_id, cd.feeds_schema
-    FROM feeds f
-    JOIN connections c ON c.id = f.connection_id
-    LEFT JOIN LATERAL (
-      SELECT feeds_schema
-      FROM connector_definitions
-      WHERE key = c.connector_key
-        AND status = 'active'
-        AND organization_id = ${organizationId}
-      ORDER BY updated_at DESC
-      LIMIT 1
-    ) cd ON TRUE
-    WHERE f.id = ${args.feed_id} AND f.organization_id = ${organizationId}
-  `;
-  if (existing.length === 0) {
-    return { error: 'Feed not found' };
-  }
-
   // Reject cross-org entity_ids on update too (skip when clearing to []).
   if (args.entity_ids !== undefined && args.entity_ids.length > 0) {
     try {
@@ -594,18 +575,8 @@ async function handleUpdateFeed(
       return { error: tzError };
     }
   }
-  // Recompute next_run_at when the cadence OR its zone changes; the effective
-  // pair mixes the incoming args with the stored row for whichever side was
-  // omitted, so a timezone-only update re-anchors the pending sync.
   const hasTimezoneArg = args.timezone !== undefined;
   const touchesCadence = args.schedule !== undefined || hasTimezoneArg;
-  const currentFeed = existing[0] as { schedule: string | null; timezone: string | null };
-  const effectiveSchedule = args.schedule ?? currentFeed.schedule;
-  const effectiveTimezone = hasTimezoneArg ? (args.timezone ?? null) : currentFeed.timezone;
-  const nextRunAtVal =
-    touchesCadence && effectiveSchedule
-      ? nextRunAt(effectiveSchedule, new Date(), effectiveTimezone)
-      : null;
 
   // `repair_agent_id` is tri-state: undefined = leave alone, null = clear, string = set.
   // Use Object.hasOwn so an explicit null overwrites instead of being skipped.
@@ -615,55 +586,88 @@ async function handleUpdateFeed(
   // Declarative `lobu apply` passes `replace_config: true` so removed manifest
   // keys disappear remotely; default (merge) is preserved for the web UI.
   const replaceFeedConfig = args.replace_config === true && args.config !== undefined;
+  const hasConfigArg = args.config !== undefined;
 
-  // Validate the EFFECTIVE config (mirroring the UPDATE's merge/replace write
-  // semantics below) against the connector's declared feed configSchema, so a
-  // patch cannot push the stored config into a shape that only fails at sync
-  // time. Only collected feeds sync — virtual/streaming configs are not the
-  // sync-config contract.
-  const feedRow = existing[0] as Record<string, unknown>;
-  if (args.config !== undefined && feedRow.kind === 'collected') {
-    const effectiveConfig = replaceFeedConfig
-      ? args.config
-      : { ...parseJsonObject(feedRow.config), ...args.config };
-    const configError = validateFeedConfig(
-      feedRow.feeds_schema as Record<string, FeedDefinition> | null,
-      String(feedRow.feed_key),
-      effectiveConfig
-    );
-    if (configError) return { error: configError };
-    if (!replaceFeedConfig) {
-      // The AJV singleton runs with coerceTypes and mutated the merged COPY in
-      // place; copy the coerced values for the caller's keys back into the
-      // patch so what is persisted below is what was validated (replace mode
-      // validated args.config itself, so its coercions already landed).
-      for (const key of Object.keys(args.config)) {
-        args.config[key] = effectiveConfig[key];
-      }
+  // Row-locked read→validate→write: the stored config is read, the EFFECTIVE
+  // config (merge or replace) computed and validated against the connector's
+  // declared feed configSchema, and exactly that validated object persisted —
+  // all under one FOR UPDATE lock, so a concurrent update cannot interleave an
+  // unvalidated merge between the read and the write, and AJV coercions land
+  // in what is stored. Without the schema check a patch could push the stored
+  // config into a shape that only fails at sync time.
+  const txResult = await sql.begin(async (tx) => {
+    const existing = await tx`
+      SELECT f.id, f.schedule, f.timezone, f.feed_key, f.kind, f.config, c.auth_profile_id, cd.feeds_schema
+      FROM feeds f
+      JOIN connections c ON c.id = f.connection_id
+      LEFT JOIN LATERAL (
+        SELECT feeds_schema
+        FROM connector_definitions
+        WHERE key = c.connector_key
+          AND status = 'active'
+          AND organization_id = ${organizationId}
+        ORDER BY updated_at DESC
+        LIMIT 1
+      ) cd ON TRUE
+      WHERE f.id = ${args.feed_id} AND f.organization_id = ${organizationId}
+      FOR UPDATE OF f
+    `;
+    if (existing.length === 0) {
+      return { error: 'Feed not found' } as const;
     }
+    const feedRow = existing[0] as Record<string, unknown>;
+
+    const effectiveConfig = hasConfigArg
+      ? replaceFeedConfig
+        ? (args.config as Record<string, unknown>)
+        : { ...parseJsonObject(feedRow.config), ...args.config }
+      : null;
+    // Only collected feeds sync — virtual/streaming configs are not the
+    // sync-config contract.
+    if (effectiveConfig && feedRow.kind === 'collected') {
+      const configError = validateFeedConfig(
+        feedRow.feeds_schema as Record<string, FeedDefinition> | null,
+        String(feedRow.feed_key),
+        effectiveConfig
+      );
+      if (configError) return { error: configError } as const;
+    }
+
+    // Recompute next_run_at when the cadence OR its zone changes; the effective
+    // pair mixes the incoming args with the stored row for whichever side was
+    // omitted, so a timezone-only update re-anchors the pending sync.
+    const effectiveSchedule = args.schedule ?? (feedRow.schedule as string | null);
+    const effectiveTimezone = hasTimezoneArg
+      ? (args.timezone ?? null)
+      : (feedRow.timezone as string | null);
+    const nextRunAtVal =
+      touchesCadence && effectiveSchedule
+        ? nextRunAt(effectiveSchedule, new Date(), effectiveTimezone)
+        : null;
+
+    const updated = await tx`
+      UPDATE feeds
+      SET display_name = COALESCE(${args.display_name ?? null}::text, display_name),
+          status = COALESCE(${args.status ?? null}::text, status),
+          entity_ids = COALESCE(${entityIdsValue}::bigint[], entity_ids),
+          config = CASE WHEN ${hasConfigArg} THEN ${tx.json(effectiveConfig ?? {})}::jsonb ELSE config END,
+          schedule = COALESCE(${args.schedule ?? null}::text, schedule),
+          timezone = CASE WHEN ${hasTimezoneArg} THEN ${args.timezone ?? null} ELSE timezone END,
+          next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
+          repair_agent_id = CASE WHEN ${hasRepairAgentArg} THEN ${repairAgentValue}::text ELSE repair_agent_id END,
+          updated_at = NOW()
+      WHERE id = ${args.feed_id} AND organization_id = ${organizationId}
+      RETURNING *
+    `;
+    return {
+      updated,
+      authProfileId: Number(feedRow.auth_profile_id) || null,
+    };
+  });
+  if ('error' in txResult && txResult.error !== undefined) {
+    return { error: txResult.error };
   }
-
-  const updated = await sql`
-    UPDATE feeds
-    SET display_name = COALESCE(${args.display_name ?? null}::text, display_name),
-        status = COALESCE(${args.status ?? null}::text, status),
-        entity_ids = COALESCE(${entityIdsValue}::bigint[], entity_ids),
-        config = ${
-          replaceFeedConfig
-            ? sql`${sql.json(args.config ?? {})}::jsonb`
-            : sql`CASE WHEN ${args.config ? sql.json(args.config) : null}::jsonb IS NOT NULL THEN COALESCE(config, '{}'::jsonb) || ${args.config ? sql.json(args.config) : null}::jsonb ELSE config END`
-        },
-        schedule = COALESCE(${args.schedule ?? null}::text, schedule),
-        timezone = CASE WHEN ${hasTimezoneArg} THEN ${args.timezone ?? null} ELSE timezone END,
-        next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
-        repair_agent_id = CASE WHEN ${hasRepairAgentArg} THEN ${repairAgentValue}::text ELSE repair_agent_id END,
-        updated_at = NOW()
-    WHERE id = ${args.feed_id} AND organization_id = ${organizationId}
-    RETURNING *
-  `;
-
-  const authProfileId =
-    Number((existing[0] as { auth_profile_id: unknown }).auth_profile_id) || null;
+  const { updated, authProfileId } = txResult;
   if (authProfileId) {
     const authProfile = await getAuthProfileById(organizationId, authProfileId);
     if (authProfile?.profile_kind === 'oauth_account') {

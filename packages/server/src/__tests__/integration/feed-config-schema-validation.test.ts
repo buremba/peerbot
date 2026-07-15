@@ -235,6 +235,34 @@ describe("manage_feeds config validation against connector configSchema", () => 
 		expect(row?.config?.max_items_per_feed).toBe(50);
 	});
 
+	it("normalizes a coercible LEGACY stored key on merge-update (persisted == validated)", async () => {
+		// A pre-fix row can hold a coercible legacy value (string "75"). A merge
+		// update of a DIFFERENT key validates the whole merged object; the fix
+		// persists exactly that validated object, so the legacy key is normalized.
+		const sql = getTestDb();
+		const [legacy] = await sql<{ id: number }[]>`
+      INSERT INTO feeds (organization_id, connection_id, feed_key, display_name, status, kind, config, created_at, updated_at)
+      VALUES (${orgId}, ${rssConnectionId}, 'articles', 'legacy-config', 'active', 'collected',
+              ${sql.json({ feed_urls: ["https://example.com/legacy.xml"], max_items_per_feed: "75" })}, NOW(), NOW())
+      RETURNING id
+    `;
+		const feedId = Number(legacy?.id);
+
+		const result = (await owner.feeds.update({
+			feed_id: feedId,
+			config: { feed_urls: ["https://example.com/updated.xml"] },
+		})) as { error?: string };
+		expect(result.error).toBeUndefined();
+
+		const [row] = await sql<{ config: Record<string, unknown> | null }[]>`
+      SELECT config FROM feeds WHERE id = ${feedId}
+    `;
+		expect(row?.config).toEqual({
+			feed_urls: ["https://example.com/updated.xml"],
+			max_items_per_feed: 75,
+		});
+	});
+
 	it("still rejects an unknown feed_key (no regression)", async () => {
 		const error = await owner.feeds
 			.create({

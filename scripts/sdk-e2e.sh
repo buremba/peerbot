@@ -344,6 +344,23 @@ grep -qF "$MOCK_REPLY" "$CLIENT_OUT" \
   || { cat "$CLIENT_OUT" >&2; fail "@lobu/client stream did not return the agent reply '$MOCK_REPLY'"; }
 echo "✓ @lobu/client created a session, sent a message, and streamed the agent reply ($MOCK_REPLY)"
 
+# 5c) conversations.send (run_sdk) — prove the DURABLE reply-poll path end-to-end:
+#     client.conversations.send enqueues a platform:api turn (source=internal,
+#     headless), the worker runs it against the mock LLM, writes the terminal
+#     thread_response `runs` row, and readConversationReply reads finalText back —
+#     WITHOUT SSE. This is the ONLY live coverage of that path (unit tests mock
+#     the poll + queue). Assert status="complete" and reply === the mock reply.
+CSEND="$RUN_DIR/conversations-send.json"
+api run_sdk "$(node -e 'process.stdout.write(JSON.stringify({script:`export default async (ctx, client) => { const r = await client.conversations.send({ agent_id: "echo", text: "ping", timeout_ms: 90000 }); return { status: r.status, reply: r.reply, error: r.error }; }`, timeout_ms: 120000}))')" > "$CSEND" \
+  || { cat "$CSEND" >&2; fail "run_sdk conversations.send call failed at the tool layer"; }
+CSEND_STATUS="$(jget return_value.status < "$CSEND")"
+CSEND_REPLY="$(jget return_value.reply < "$CSEND")"
+[ "$CSEND_STATUS" = "complete" ] \
+  || { cat "$CSEND" >&2; fail "conversations.send did not complete (status='$CSEND_STATUS', reply='$CSEND_REPLY') — the reply-poll path (enqueue→worker→runs row→readConversationReply) did not close"; }
+[ "$CSEND_REPLY" = "$MOCK_REPLY" ] \
+  || { cat "$CSEND" >&2; fail "conversations.send returned reply='$CSEND_REPLY', expected '$MOCK_REPLY' (worker turn / finalText read mismatch)"; }
+echo "✓ conversations.send round-tripped the agent reply via the durable runs poll ($MOCK_REPLY)"
+
 # 6) Connector sync — prove the COMPILED connector actually RUNS and emits events.
 #    Find the feed manage_feeds created from the `pulse` connection, trigger an
 #    immediate sync, wait for the run to complete, then assert ≥1 event landed.

@@ -188,4 +188,46 @@ describe("manage_entity merge action", () => {
 		expect(Number(after.merged_into)).toBe(winner.id);
 		expect(after.deleted_at).not.toBeNull();
 	});
+
+	it("does not apply an approved watcher merge when the loser was deleted after proposal", async () => {
+		const org = await createTestOrganization({ name: "Stale Merge Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+      INSERT INTO watchers
+        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+         status, notification_channel, notification_priority, min_cooldown_seconds,
+         created_at, updated_at)
+      VALUES
+        (6002, ${org.id}, 'personal-agent', ${user.id}, 6002, 'Stale duplicate merge',
+         'active', 'canvas', 'normal', 0, now(), now())
+    `;
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+				actingWatcherId: 6002,
+			} as ToolContext,
+		)) as unknown as { approval_run_id: number };
+
+		await sql`UPDATE entities SET deleted_at = now() WHERE id = ${loser.id}`;
+		const approved = await manageOperations(
+			{ action: "approve", run_id: queued.approval_run_id },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+
+		expect("approved" in approved && approved.approved).toBe(false);
+		const [after] = await sql`
+      SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+    `;
+		expect(after.merged_into).toBeNull();
+		expect(after.deleted_at).not.toBeNull();
+	});
 });

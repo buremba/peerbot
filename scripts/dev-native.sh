@@ -69,6 +69,13 @@ if [ ! -d packages/core/dist ] || [ ! -d packages/connector-sdk/dist ] || [ ! -d
   make build-packages
 fi
 
+# Interactive cards run in a self-contained MCP App iframe rather than Vite's
+# SPA graph. Build that payload before boot so approvals/questions never render
+# the server's 404 response on a fresh worktree. The build is intentionally
+# repeated: Vite HMR cannot update this separately-built iframe bundle.
+echo "📦 Building Owletto interaction app…"
+( cd packages/owletto && bun run build:mcp-apps )
+
 # --- Env -------------------------------------------------------------------
 
 # Preserve explicit environment overrides from the caller while still loading

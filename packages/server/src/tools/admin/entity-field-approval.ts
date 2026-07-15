@@ -472,7 +472,9 @@ export async function proposeEntityChange(
 				? `${actorNoun} proposed updating ${fieldList} on this entity.`
 				: operation === "delete"
 					? `${actorNoun} proposed deleting this entity.`
-					: `${actorNoun} proposed creating this entity.`),
+					: operation === "merge"
+						? `${actorNoun} proposed merging these entities.`
+						: `${actorNoun} proposed creating this entity.`),
 		semanticType: "operation",
 		runId,
 		interactionType: "approval",

@@ -602,10 +602,11 @@ function redactMemberEmail(
 
 /**
  * Fold a duplicate entity (`entity_id`, the loser) into the one it really is
- * (`winner_entity_id`). Admin/owner only — a merge is destructive and hard to
- * spot after the fact. The heavy lifting (move identities/aliases/edges,
- * tombstone + forward the loser, flatten chains) is in `applyMerge`; this
- * handler is the org-scoped gate + validation.
+ * (`winner_entity_id`). Humans must be admin/owner; agents and watchers queue a
+ * human approval because a merge is destructive and hard to spot after the
+ * fact. The heavy lifting (move identities/aliases/edges, tombstone + forward
+ * the loser, flatten chains) is in `applyMerge`; this handler is the org-scoped
+ * gate + validation.
  */
 async function handleMerge(
 	args: ManageEntityArgs,

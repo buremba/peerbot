@@ -82,6 +82,9 @@ export async function applyMerge(
     if (loser.merged_into !== null) {
       throw new Error(`applyMerge: loser ${loserId} already merged into ${loser.merged_into}`);
     }
+    if (loser.deleted_at !== null) {
+      throw new Error(`applyMerge: loser ${loserId} is deleted`);
+    }
     if (winner.merged_into !== null) {
       throw new Error(`applyMerge: winner ${winnerId} is itself merged into ${winner.merged_into}`);
     }

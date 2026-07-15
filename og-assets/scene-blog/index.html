@@ -3,7 +3,7 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=1200, height=630">
 <!--
   Blog OG card — "The Agent Loop Is the New SaaS"
-  New Lobu brand: paper background (#fcfcfb), red accent (#f5333a),
+  Lobu dark OG theme: warm-dark background (#0f0e0c), red accent (#f5333a),
   Inter + JetBrains Mono, pixel lobster mark.
   Same WATCH→UNDERSTAND→ACT orbit motif, re-skinned for the redesign.
 -->
@@ -101,7 +101,7 @@
         <path id="ringPath" d="M248 132 A118 118 0 1 1 247.99 132" />
         <!-- pellet rides the ring; animated via GSAP rotation of #orbit group -->
         <g id="orbit" transform="translate(248 250)">
-          <circle id="pellet" cx="118" cy="0" r="6.5" />
+          <circle id="pellet" cx="0" cy="-118" r="6.5" />
         </g>
       </svg>
 
@@ -137,7 +137,7 @@
 <script>
   window.__timelines = window.__timelines || {};
   const tl = gsap.timeline({ paused: true });
-  // orbit the pellet around the ring centre (translate already centres #orbit at 248,230)
+  // orbit the pellet around the ring centre (translate already centres #orbit at 248,250)
   tl.to("#orbit", { duration: 5, ease: "none", rotation: 360, transformOrigin: "0 0", svgOrigin: "248 250" }, 0);
   function pulse(sel, at) {
     tl.to(sel, { opacity: 0.85, duration: 0.5, yoyo: true, repeat: 1, ease: "sine.inOut" }, at - 0.5);

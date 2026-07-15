@@ -135,6 +135,15 @@ describe("method-metadata", () => {
 		const create = METHOD_METADATA["entities.create"];
 		expect(create.summary).toContain("entitySchema.createType");
 		expect(create.usageExample ?? "").toContain("entitySchema.createType");
+		// The documented error contract must be REAL: run_sdk surfaces the
+		// unknown-type ToolUserError as a ValidationError. `EntityTypeNotFound`
+		// is not a public error — recovery keyed to it could never fire.
+		expect(create.throws ?? []).toContain("ValidationError");
+		expect(create.throws ?? []).not.toContain("EntityTypeNotFound");
+		expect(create.summary).not.toContain("EntityTypeNotFound");
+		// The ensure step tolerates only the coded duplicate 409 (multi-replica
+		// race), so a concurrent caller doesn't abort the advertised flow.
+		expect(create.usageExample ?? "").toContain("entity_type_exists");
 
 		// entities.link must name entitySchema.createRelType as the relationship-
 		// type constructor. addRule does NOT create a type (it only restricts the
@@ -152,5 +161,8 @@ describe("method-metadata", () => {
 		expect(linkExample).toContain("listRelTypes");
 		expect(linkExample).toContain("createRelType");
 		expect(linkExample).toContain("entities.link");
+		// Same multi-replica race safety as entities.create: tolerate only the
+		// coded relationship_type_exists 409, don't swallow every error.
+		expect(linkExample).toContain("relationship_type_exists");
 	});
 });

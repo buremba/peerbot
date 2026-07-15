@@ -86,9 +86,9 @@ export default async (_ctx, client) => {
 	},
 	"entities.create": {
 		summary:
-			"Create an entity of a given type. The entity TYPE must exist first — if the type is new to this workspace, call `entitySchema.createType` before this (otherwise it throws EntityTypeNotFound). Check `entitySchema.listTypes()` for existing types.",
+			"Create an entity of a given type. The entity TYPE must exist first — if the type is new to this workspace, call `entitySchema.createType` before this (an unknown type fails with \"Unknown entity type '<slug>'\", surfaced as a ValidationError). Check `entitySchema.listTypes()` for existing types.",
 		access: "write",
-		throws: ["EntityTypeNotFound", "ValidationError"],
+		throws: ["ValidationError"],
 		example:
 			"await client.entities.create({ type: 'company', name: 'Acme', metadata: {} });",
 		usageExample: `// Two-hop: ensure the entity type exists, THEN create the entity.
@@ -96,11 +96,16 @@ export default async (_ctx, client) => {
 export default async (_ctx, client) => {
   const { entity_types } = await client.entitySchema.listTypes();
   if (!entity_types.some((t) => t.slug === 'company')) {
-    await client.entitySchema.createType({
-      slug: 'company',
-      name: 'Company',
-      metadata_schema: { type: 'object', properties: { team_size: { type: 'number' } } },
-    });
+    try {
+      await client.entitySchema.createType({
+        slug: 'company',
+        name: 'Company',
+        metadata_schema: { type: 'object', properties: { team_size: { type: 'number' } } },
+      });
+    } catch (e) {
+      // A concurrent caller may have created it first — the coded 409 is safe.
+      if (!/entity_type_exists/.test(String(e && e.message))) throw e;
+    }
   }
   return client.entities.create({
     type: 'company',
@@ -127,12 +132,17 @@ export default async (_ctx, client) => {
 			"await client.entities.link({ from_entity_id: 42, to_entity_id: 43, relationship_type_slug: 'customer_of' });",
 		usageExample: `// Two-hop: the relationship TYPE must exist before linking. Ensure it
 // (entitySchema.listRelTypes → createRelType), then resolve the two entity
-// ids (entities.list / .get) and link. createRelType is idempotent-safe here
-// because we only create when it is absent.
+// ids (entities.list / .get) and link. If a concurrent caller already created
+// the type, createRelType returns a coded 409 ([relationship_type_exists]) —
+// safe to ignore, the type is present either way.
 export default async (_ctx, client) => {
   const { relationship_types } = await client.entitySchema.listRelTypes();
   if (!relationship_types.some((t) => t.slug === 'works_at')) {
-    await client.entitySchema.createRelType({ slug: 'works_at', name: 'Works at' });
+    try {
+      await client.entitySchema.createRelType({ slug: 'works_at', name: 'Works at' });
+    } catch (e) {
+      if (!/relationship_type_exists/.test(String(e && e.message))) throw e;
+    }
   }
   const { entities: companies } = await client.entities.list({ entity_type: 'company', search: 'Acme' });
   const { entities: people } = await client.entities.list({ entity_type: 'person', search: 'Jane' });

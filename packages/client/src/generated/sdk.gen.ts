@@ -82,6 +82,9 @@ import type {
   ManageConnectionsData,
   ManageConnectionsErrors,
   ManageConnectionsResponses,
+  ManageConversationsData,
+  ManageConversationsErrors,
+  ManageConversationsResponses,
   ManageEntityData,
   ManageEntityErrors,
   ManageEntityResponses,
@@ -402,6 +405,31 @@ export const manageAgents = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: "/api/{orgSlug}/manage_agents",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List/get an agent's conversations and send a turn (awaits the reply)
+ *
+ * List/get an agent's conversations and send a turn (awaits the reply). SDK alternative: client.conversations.
+ */
+export const manageConversations = <ThrowOnError extends boolean = false>(
+  options: Options<ManageConversationsData, ThrowOnError>,
+): RequestResult<
+  ManageConversationsResponses,
+  ManageConversationsErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    ManageConversationsResponses,
+    ManageConversationsErrors,
+    ThrowOnError
+  >({
+    url: "/api/{orgSlug}/manage_conversations",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -766,6 +794,69 @@ export const resolvePath = <ThrowOnError extends boolean = false>(
   });
 
 /**
+ * GET /api/bedrock/health
+ */
+export const getApiBedrockHealth = <ThrowOnError extends boolean = false>(
+  options?: Options<GetApiBedrockHealthData, ThrowOnError>,
+): RequestResult<GetApiBedrockHealthResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetApiBedrockHealthResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/bedrock/health", ...options });
+
+/**
+ * GET /api/bedrock/openai/a/{agentId}/v1/models
+ */
+export const getApiBedrockOpenaiAByAgentIdV1Models = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<GetApiBedrockOpenaiAByAgentIdV1ModelsData, ThrowOnError>,
+): RequestResult<
+  GetApiBedrockOpenaiAByAgentIdV1ModelsResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetApiBedrockOpenaiAByAgentIdV1ModelsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/bedrock/openai/a/{agentId}/v1/models", ...options });
+
+/**
+ * POST /api/bedrock/openai/a/{agentId}/v1/chat/completions
+ */
+export const postApiBedrockOpenaiAByAgentIdV1ChatCompletions = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsData,
+    ThrowOnError
+  >,
+): RequestResult<
+  PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/bedrock/openai/a/{agentId}/v1/chat/completions", ...options });
+
+/**
+ * GET /api/v1/files/{artifactId}
+ */
+export const getApiV1FilesByArtifactId = <ThrowOnError extends boolean = false>(
+  options: Options<GetApiV1FilesByArtifactIdData, ThrowOnError>,
+): RequestResult<GetApiV1FilesByArtifactIdResponses, unknown, ThrowOnError> =>
+  (options.client ?? client).get<
+    GetApiV1FilesByArtifactIdResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/files/{artifactId}", ...options });
+
+/**
  * List user agents
  */
 export const getApiV1Agents = <ThrowOnError extends boolean = false>(
@@ -894,87 +985,6 @@ export const postApiV1AgentsByAgentIdMessages = <
       ...options.headers,
     },
   });
-
-/**
- * Get agent configuration
- */
-export const getApiV1AgentsByAgentIdConfig = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<GetApiV1AgentsByAgentIdConfigData, ThrowOnError>,
-): RequestResult<
-  GetApiV1AgentsByAgentIdConfigResponses,
-  GetApiV1AgentsByAgentIdConfigErrors,
-  ThrowOnError
-> =>
-  (options?.client ?? client).get<
-    GetApiV1AgentsByAgentIdConfigResponses,
-    GetApiV1AgentsByAgentIdConfigErrors,
-    ThrowOnError
-  >({ url: "/api/v1/agents/{agentId}/config", ...options });
-
-/**
- * GET /api/bedrock/health
- */
-export const getApiBedrockHealth = <ThrowOnError extends boolean = false>(
-  options?: Options<GetApiBedrockHealthData, ThrowOnError>,
-): RequestResult<GetApiBedrockHealthResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).get<
-    GetApiBedrockHealthResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/bedrock/health", ...options });
-
-/**
- * GET /api/bedrock/openai/a/{agentId}/v1/models
- */
-export const getApiBedrockOpenaiAByAgentIdV1Models = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<GetApiBedrockOpenaiAByAgentIdV1ModelsData, ThrowOnError>,
-): RequestResult<
-  GetApiBedrockOpenaiAByAgentIdV1ModelsResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetApiBedrockOpenaiAByAgentIdV1ModelsResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/bedrock/openai/a/{agentId}/v1/models", ...options });
-
-/**
- * POST /api/bedrock/openai/a/{agentId}/v1/chat/completions
- */
-export const postApiBedrockOpenaiAByAgentIdV1ChatCompletions = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsData,
-    ThrowOnError
-  >,
-): RequestResult<
-  PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/bedrock/openai/a/{agentId}/v1/chat/completions", ...options });
-
-/**
- * GET /api/v1/files/{artifactId}
- */
-export const getApiV1FilesByArtifactId = <ThrowOnError extends boolean = false>(
-  options: Options<GetApiV1FilesByArtifactIdData, ThrowOnError>,
-): RequestResult<GetApiV1FilesByArtifactIdResponses, unknown, ThrowOnError> =>
-  (options.client ?? client).get<
-    GetApiV1FilesByArtifactIdResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/v1/files/{artifactId}", ...options });
 
 /**
  * POST /api/v1/agents/approve
@@ -1166,6 +1176,24 @@ export const getApiV1AgentsByAgentIdHistorySessionStats = <
     unknown,
     ThrowOnError
   >({ url: "/api/v1/agents/{agentId}/history/session/stats", ...options });
+
+/**
+ * Get agent configuration
+ */
+export const getApiV1AgentsByAgentIdConfig = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<GetApiV1AgentsByAgentIdConfigData, ThrowOnError>,
+): RequestResult<
+  GetApiV1AgentsByAgentIdConfigResponses,
+  GetApiV1AgentsByAgentIdConfigErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetApiV1AgentsByAgentIdConfigResponses,
+    GetApiV1AgentsByAgentIdConfigErrors,
+    ThrowOnError
+  >({ url: "/api/v1/agents/{agentId}/config", ...options });
 
 /**
  * List domain grants

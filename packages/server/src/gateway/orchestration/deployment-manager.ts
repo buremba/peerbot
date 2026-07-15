@@ -646,6 +646,8 @@ export function buildDeploymentWorkerToken(args: {
   environmentId?: string;
   /** Resolved egress allowlist for a remote runtime sandbox (signed claim). */
   allowedDomains?: string[];
+  /** Resolved egress denylist for a remote runtime sandbox (signed claim). */
+  deniedDomains?: string[];
 }): string {
   return generateWorkerToken(
     args.userId,
@@ -1192,9 +1194,7 @@ export class DeploymentManager {
 
     // Reconcile domain rows against Postgres (see docstring). Domain keys in
     // `nextPatterns` are already normalized — the form grant() stores.
-    // Deploy-time infra grants (npm registries for CLI backends) are not
-    // derivable from the payload and are exempt from revocation.
-    const expectedDomains = new Set<string>(NPM_REGISTRY_DOMAINS);
+    const expectedDomains = new Set<string>();
     for (const pattern of nextPatterns.keys()) {
       if (inferGrantKind(pattern) === "domain") {
         expectedDomains.add(pattern);
@@ -1203,9 +1203,13 @@ export class DeploymentManager {
     const activeGrants = await this.grantStore.listGrants(agentId, orgId);
     for (const row of activeGrants) {
       if (row.kind !== "domain" || row.expiresAt !== null) continue;
-      if (!expectedDomains.has(row.pattern)) {
-        await this.grantStore.revoke(agentId, row.pattern, orgId);
-      }
+      if (expectedDomains.has(row.pattern)) continue;
+      // Deploy-time infra ALLOW grants (npm registries for CLI backends) are
+      // not derivable from the payload — exempt them. A denied row is never
+      // exempt: a config-removed deny must be reconciled away or it becomes
+      // unremovable (the deploy-time grant skips denied domains).
+      if (!row.denied && NPM_REGISTRY_DOMAINS.includes(row.pattern)) continue;
+      await this.grantStore.revoke(agentId, row.pattern, orgId);
     }
 
     // Cache-based revocation for MCP tool patterns dropped from config.
@@ -1552,6 +1556,7 @@ export class DeploymentManager {
       // Same allowlist synced to the grant store / JUST_BASH_ALLOWED_DOMAINS — so
       // the runtime route reads it off the signed token, not the worker's body.
       allowedDomains: messageData?.networkConfig?.allowedDomains,
+      deniedDomains: messageData?.networkConfig?.deniedDomains,
     });
 
     const dispatcherHost = this.getDispatcherHost();
@@ -1745,6 +1750,10 @@ export class DeploymentManager {
     if (hasCliBackendProviders && this.grantStore && agentId) {
       const orgId = validated.organizationId;
       for (const domain of NPM_REGISTRY_DOMAINS) {
+        // An explicit deny (config deniedDomains) wins over the infra
+        // convenience grant — the upsert would otherwise flip the row to
+        // allowed and the warm sync cache would never restore the deny.
+        if (await this.grantStore.isDenied(agentId, domain, orgId)) continue;
         await this.grantStore.grant(agentId, domain, null, undefined, orgId);
       }
       logger.info(

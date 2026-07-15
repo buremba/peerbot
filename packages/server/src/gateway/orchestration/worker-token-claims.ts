@@ -34,6 +34,11 @@ export interface WorkerTokenClaimsArgs {
    * trusting a worker-supplied body — see WorkerTokenData.allowedDomains.
    */
   allowedDomains?: string[];
+  /**
+   * The agent's resolved egress denylist (`networkConfig.deniedDomains`),
+   * signed for the same reason — see WorkerTokenData.deniedDomains.
+   */
+  deniedDomains?: string[];
 }
 
 /**
@@ -61,6 +66,7 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
   runtimeProviderId?: string;
   environmentId?: string;
   allowedDomains?: string[];
+  deniedDomains?: string[];
 } {
   // Provider comes solely from the conversation's pinned Environment; there is
   // no deployment-wide env-var fallback. Undefined → local just-bash.
@@ -85,5 +91,7 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
     // keeps the token payload minimal.
     allowedDomains:
       args.allowedDomains && args.allowedDomains.length > 0 ? args.allowedDomains : undefined,
+    deniedDomains:
+      args.deniedDomains && args.deniedDomains.length > 0 ? args.deniedDomains : undefined,
   };
 }

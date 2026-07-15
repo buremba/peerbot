@@ -94,6 +94,13 @@ export interface WorkerTokenData {
    * egress policy. Absent/empty → the sandbox is `deny-all` (fail closed).
    */
   allowedDomains?: string[];
+  /**
+   * Egress denylist (the agent's `networkConfig.deniedDomains`) for a remote
+   * runtime sandbox — signed for the same reason as {@link allowedDomains}.
+   * Providers that cannot express exclusions must fail closed: drop any allow
+   * entry the denylist covers rather than granting it.
+   */
+  deniedDomains?: string[];
 }
 
 export function generateWorkerToken(
@@ -135,6 +142,8 @@ export function generateWorkerToken(
     environmentId?: string;
     /** Resolved egress allowlist for a remote runtime sandbox. See WorkerTokenData.allowedDomains. */
     allowedDomains?: string[];
+    /** Resolved egress denylist for a remote runtime sandbox. See WorkerTokenData.deniedDomains. */
+    deniedDomains?: string[];
   }
 ): string {
   if (!options.channelId) {
@@ -162,6 +171,7 @@ export function generateWorkerToken(
     runtimeProviderId: options.runtimeProviderId,
     environmentId: options.environmentId,
     allowedDomains: options.allowedDomains,
+    deniedDomains: options.deniedDomains,
   };
 
   return encrypt(JSON.stringify(payload));

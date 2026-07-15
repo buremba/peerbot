@@ -297,6 +297,29 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     );
   });
 
+  test("a config-denied npm registry row survives reconcile as a deny", async () => {
+    // Deny the npm registry in config; the reconcile must keep the deny row
+    // (it is config-expected), and the infra exemption must not resurrect it.
+    await manager.syncNetworkConfigGrants(
+      buildPayload({
+        networkConfig: { deniedDomains: ["registry.npmjs.org"] },
+      })
+    );
+    expect(
+      await grantStore.isDenied("agent-1", "registry.npmjs.org", "test-org")
+    ).toBe(true);
+
+    // Removing the deny from config drops the row even though the domain is
+    // in the infra exempt set — a denied row is never exempt.
+    const freshManager = new TestDeploymentManager(TEST_CONFIG);
+    freshManager.setGrantStore(grantStore);
+    freshManager.setPolicyStore(policyStore);
+    await freshManager.syncNetworkConfigGrants(buildPayload({}));
+    expect(
+      await grantStore.isDenied("agent-1", "registry.npmjs.org", "test-org")
+    ).toBe(false);
+  });
+
   test("syncs both network and pre-approved tools in one call", async () => {
     await manager.syncNetworkConfigGrants(
       buildPayload({

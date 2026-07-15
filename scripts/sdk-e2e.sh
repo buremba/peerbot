@@ -361,6 +361,129 @@ CSEND_REPLY="$(jget return_value.reply < "$CSEND")"
   || { cat "$CSEND" >&2; fail "conversations.send returned reply='$CSEND_REPLY', expected '$MOCK_REPLY' (worker turn / finalText read mismatch)"; }
 echo "✓ conversations.send round-tripped the agent reply via the durable runs poll ($MOCK_REPLY)"
 
+# 5d) `!`-bash: a message starting with `!` runs shell in the conversation's
+#     pinned sandbox, records a `bashExecution` transcript entry, and returns the
+#     output as the reply — the LLM is SKIPPED. Sent over the Direct API (the
+#     primary `!` surface: a ChatGPT-UI-style client driving the sandbox without
+#     the LLM). Crucially the `!` is the FIRST message in a FRESH conversation —
+#     the real launch use case, and the case that surfaced the persistence bug:
+#     pi defers its session-file flush until an assistant message exists, so an
+#     assistant-less `!` turn left the checkpoint reading an empty file and the
+#     record was lost. The worker now force-flushes an assistant-less `!` turn.
+#     A `!` turn finishes in ~20ms (no model roundtrip), beating any SSE
+#     subscription, so the durable transcript — the same projection the web reads
+#     on reload, exercising the core `entryToMessage` bashExecution branch — is
+#     the only race-free assert. We assert:
+#       (a) the shell RAN — a `bashExecution` message whose output carries a
+#           unique marker only `echo` can produce;
+#       (b) the model was SKIPPED — no new upstream provider call for the turn;
+#       (c) a normal LLM turn AFTER the `!` still checkpoints (no snapshot
+#           monotonic-prefix 409 from the force-flush) and both records coexist.
+BANG_MARKER="bang_ran_$$_$RANDOM"
+UPSTREAM_BEFORE=$(grep -c "Forwarding to upstream: POST http://127.0.0.1:$MOCK_PORT" "$RUN_LOG" 2>/dev/null || echo 0)
+# Create a DEVTOKEN session for agent `echo` on a NAMED thread, then message
+# its conversationId — the messages route is addressed by the session's
+# conversationId, not the bare agent id. The named thread makes the read side
+# deterministic: /history/threads/bang-e2e/messages rebuilds the identical
+# conversation id from (agent, DEVTOKEN user, org, thread).
+BANG_SESS="$RUN_DIR/bang-session.json"
+curl -fsS -X POST "$GW/lobu/api/v1/agents" \
+  -H "authorization: Bearer $DEVTOKEN" -H 'content-type: application/json' \
+  -d '{"agentId":"echo","thread":"bang-e2e"}' > "$BANG_SESS" \
+  || { cat "$BANG_SESS" >&2; fail "!-bash: POST /api/v1/agents (create session) failed"; }
+BANG_CONV="$(jget agentId < "$BANG_SESS")"
+[ -n "$BANG_CONV" ] || { cat "$BANG_SESS" >&2; fail "!-bash: session create returned no conversationId"; }
+BANG_SEND="$RUN_DIR/bang-send.json"
+curl -fsS -X POST "$GW/lobu/api/v1/agents/$BANG_CONV/messages" \
+  -H "authorization: Bearer $DEVTOKEN" -H 'content-type: application/json' \
+  -d "{\"content\":\"!echo $BANG_MARKER\"}" > "$BANG_SEND" \
+  || { cat "$BANG_SEND" >&2; fail "!-bash: POST /agents/$BANG_CONV/messages failed"; }
+[ "$(jget queued < "$BANG_SEND")" = "true" ] || { cat "$BANG_SEND" >&2; fail "!-bash message was not queued"; }
+# Poll the THREAD-addressed history endpoint (the same one the web uses to
+# render a chat thread on reload — it rebuilds the conversation id from
+# (agent, DEVTOKEN user, org, thread) and reads the durable snapshot, so it
+# also exercises the core `entryToMessage` bashExecution projection). NOT
+# `/history/session/messages` — that one is proxy-or-fallback: while any live
+# agent worker is still connected it proxies to THAT worker's own session
+# (whatever conversation it holds), so the assert would flake on which earlier
+# worker was still alive.
+BANG_HIST="$RUN_DIR/bang-history.json"
+BANG_OK=""
+for _ in $(seq 1 30); do
+  curl -fsS "$GW/lobu/api/v1/agents/echo/history/threads/bang-e2e/messages?limit=100" \
+    -H "authorization: Bearer $DEVTOKEN" > "$BANG_HIST" 2>/dev/null || { sleep 1; continue; }
+  if node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch{process.exit(1)}const m=(j.messages||[]).find(x=>x.type==="bashExecution"&&JSON.stringify(x.content||"").includes(process.argv[1]));process.exit(m?0:1)})' "$BANG_MARKER" < "$BANG_HIST"; then
+    BANG_OK=1; break
+  fi
+  sleep 1
+done
+[ -n "$BANG_OK" ] || { tail -c 400 "$BANG_HIST" >&2; fail "!-bash: no bashExecution transcript entry carrying marker '$BANG_MARKER' (shell did not run, or D3 projection dropped it)"; }
+# The LLM must have been SKIPPED: no new upstream provider call for the `!` turn.
+UPSTREAM_AFTER=$(grep -c "Forwarding to upstream: POST http://127.0.0.1:$MOCK_PORT" "$RUN_LOG" 2>/dev/null || echo 0)
+[ "$UPSTREAM_AFTER" -eq "$UPSTREAM_BEFORE" ] || fail "!-bash hit the model provider ($UPSTREAM_BEFORE → $UPSTREAM_AFTER upstream calls); the LLM must be skipped"
+echo "✓ !-bash ran shell in the sandbox, recorded a bashExecution transcript entry, and skipped the LLM (marker: $BANG_MARKER)"
+
+# 5d.2) A NORMAL LLM turn in the SAME conversation, right after the assistant-less
+#       `!` force-flushed the session file. This guards the cross-turn regression:
+#       the force-flush must not desync the transcript so the next turn's
+#       checkpoint hits the snapshot monotonic-prefix guard (a 409 would surface
+#       as a durable agent-error and the assistant reply would never land).
+curl -fsS -X POST "$GW/lobu/api/v1/agents/$BANG_CONV/messages" \
+  -H "authorization: Bearer $DEVTOKEN" -H 'content-type: application/json' \
+  -d '{"content":"after the bang"}' > "$RUN_DIR/bang-followup-send.json" \
+  || { cat "$RUN_DIR/bang-followup-send.json" >&2; fail "!-bash follow-up: POST failed"; }
+BANG_FOLLOW=""
+for _ in $(seq 1 30); do
+  curl -fsS "$GW/lobu/api/v1/agents/echo/history/threads/bang-e2e/messages?limit=100" \
+    -H "authorization: Bearer $DEVTOKEN" > "$BANG_HIST" 2>/dev/null || { sleep 1; continue; }
+  # Assert the follow-up turn checkpointed cleanly: EXACTLY ONE bashExecution
+  # carrying the marker (a second copy would mean the force-flush desynced the
+  # SessionManager and the assistant turn re-appended the whole branch) AND a
+  # fresh assistant reply, both in the same durable thread.
+  if node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch{process.exit(1)}const ms=j.messages||[];const bangs=ms.filter(x=>x.type==="bashExecution"&&JSON.stringify(x.content||"").includes(process.argv[1]));const asst=ms.some(x=>x.role==="assistant");process.exit(bangs.length===1&&asst?0:1)})' "$BANG_MARKER" < "$BANG_HIST"; then
+    BANG_FOLLOW=1; break
+  fi
+  sleep 1
+done
+[ -n "$BANG_FOLLOW" ] || { tail -c 400 "$BANG_HIST" >&2; fail "!-bash follow-up: normal turn after the force-flushed \`!\` did not land (snapshot prefix 409?) or the bashExecution record was dropped"; }
+echo "✓ !-bash: a normal LLM turn after the force-flushed \`!\` checkpointed cleanly; both records coexist in the durable thread"
+
+# 5d.3) A preflight-BLOCKED `!` as the FIRST message of a FRESH conversation.
+#       enforceBashPreflight throws (package-install guard) → no pi bashExecution
+#       record is written, so this is the exact case where an assistant-less
+#       session would leave the checkpoint reading an empty file and REJECT the
+#       run. Assert the run reaches terminal completion (the durable runs row is
+#       `complete`, not a checkpoint-failure), proving the force-flush covers the
+#       blocked branch too — the friendly "blocked" reply still reaches the user.
+BLOCK_CONV="$RUN_DIR/bang-block-session.json"
+curl -fsS -X POST "$GW/lobu/api/v1/agents" \
+  -H "authorization: Bearer $DEVTOKEN" -H 'content-type: application/json' \
+  -d '{"agentId":"echo","thread":"bang-block"}' > "$BLOCK_CONV" \
+  || { cat "$BLOCK_CONV" >&2; fail "!-bash blocked: create session failed"; }
+BLOCK_ID="$(jget agentId < "$BLOCK_CONV")"
+UPSTREAM_BLK_BEFORE=$(grep -c "Forwarding to upstream: POST http://127.0.0.1:$MOCK_PORT" "$RUN_LOG" 2>/dev/null || echo 0)
+curl -fsS -X POST "$GW/lobu/api/v1/agents/$BLOCK_ID/messages" \
+  -H "authorization: Bearer $DEVTOKEN" -H 'content-type: application/json' \
+  -d '{"content":"!npm install left-pad"}' > "$RUN_DIR/bang-block-send.json" \
+  || { cat "$RUN_DIR/bang-block-send.json" >&2; fail "!-bash blocked: POST failed"; }
+# The run must not be rejected by a transcript-checkpoint failure. That failure
+# writes a durable agent-error interaction; assert none appears for this thread.
+BLOCK_OK=""
+for _ in $(seq 1 30); do
+  curl -fsS "$GW/lobu/api/v1/agents/echo/history/threads/bang-block/messages?limit=100" \
+    -H "authorization: Bearer $DEVTOKEN" > "$RUN_DIR/bang-block-hist.json" 2>/dev/null || { sleep 1; continue; }
+  if node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch{process.exit(1)}const err=(j.interactions||[]).some(x=>x.type==="agent-error");process.exit(err?1:0)})' < "$RUN_DIR/bang-block-hist.json"; then
+    # No agent-error yet — give the run a beat to settle, then confirm it stays clean.
+    if grep -q "Transcript checkpoint failed" "$RUN_LOG"; then BLOCK_OK=""; else BLOCK_OK=1; fi
+    [ -n "$BLOCK_OK" ] && break
+  fi
+  sleep 1
+done
+[ -n "$BLOCK_OK" ] || { grep "Transcript checkpoint failed" "$RUN_LOG" | tail -2 >&2; fail "!-bash blocked: a preflight-blocked \`!\` on a fresh conversation failed the transcript checkpoint (assistant-less session not persisted)"; }
+UPSTREAM_BLK_AFTER=$(grep -c "Forwarding to upstream: POST http://127.0.0.1:$MOCK_PORT" "$RUN_LOG" 2>/dev/null || echo 0)
+[ "$UPSTREAM_BLK_AFTER" -eq "$UPSTREAM_BLK_BEFORE" ] || fail "!-bash blocked hit the model provider; a blocked \`!\` must still skip the LLM"
+echo "✓ !-bash: a preflight-blocked \`!\` on a fresh conversation completes cleanly (no checkpoint failure) and skips the LLM"
+
 # 6) Connector sync — prove the COMPILED connector actually RUNS and emits events.
 #    Find the feed manage_feeds created from the `pulse` connection, trigger an
 #    immediate sync, wait for the run to complete, then assert ≥1 event landed.

@@ -570,6 +570,25 @@ export class GatewayClient {
       }
     }
 
+    // A `!`-bash command is a control action: skip the 2000ms batch window so an
+    // interactive shell command isn't delayed. It still goes THROUGH the batcher
+    // (via addPriorityMessage) so it stays on the single serialization boundary —
+    // if a turn is already in flight it queues behind it rather than starting a
+    // concurrent worker (which would race `currentWorker`/`currentWorkerUserId`).
+    // processBatchedMessages keeps it batch-isolated (never merged into a
+    // combined "Message N:" prompt).
+    if (data.platformMetadata?.bangBash) {
+      await this.messageBatcher.addPriorityMessage({
+        payload: data,
+        timestamp: Date.now(),
+      });
+      logger.info(
+        { traceId, messageId: data.messageId, conversationId },
+        "`!`-bash message queued as a priority (batch window skipped, serialization preserved)"
+      );
+      return;
+    }
+
     // Default: message job
     const queuedMessage: QueuedMessage = {
       payload: data,
@@ -777,6 +796,19 @@ export class GatewayClient {
     // into one prompt under the first message's token; preserve arrival order
     // and execute each subject with its own token instead.
     if (new Set(messages.map((message) => message.payload.userId)).size > 1) {
+      for (const message of messages) {
+        await this.processSingleMessage(message, [message.payload.messageId]);
+      }
+      return;
+    }
+
+    // A `!`-bash message must never be batch-merged: the "Message N:" join would
+    // bury the command in a combined prompt (and it carries its own bangBash
+    // control flag the worker reads). If any message in this batch is a `!`-bash
+    // action, run each individually in arrival order.
+    if (
+      messages.some((message) => message.payload.platformMetadata?.bangBash)
+    ) {
       for (const message of messages) {
         await this.processSingleMessage(message, [message.payload.messageId]);
       }
@@ -1116,6 +1148,10 @@ export function isSteerableHumanMessage(payload: MessagePayload): boolean {
   // session would treat the control command as ordinary text and preserve the
   // history the user explicitly asked to reset.
   if (payload.platformMetadata?.sessionReset === true) return false;
+  // A `!`-bash message is a control action, not model input: steering it into an
+  // active turn would feed the raw `!cmd` text to the model instead of running
+  // it. Queue it as its own turn (the worker intercept runs the shell).
+  if (payload.platformMetadata?.bangBash) return false;
   const source = payload.platformMetadata?.source;
   if (typeof source === "string" && AUTOMATION_SOURCES.has(source)) {
     return false;

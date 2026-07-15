@@ -1,6 +1,6 @@
 # Entity-bound metrics over the event stream
 
-> **Status (2026-07-15):** **Shipped** — the `metric_series` admin tool is registered and live in the server tool registry.
+> **Status (2026-07-15):** **Shipped (v1)** — the metric compiler plus `list_metrics`/`query_metric` are live; deferred resolvers remain follow-ups.
 
 Status: draft v7 (adds the **consumption half** — routing/discovery, segments, governance, temporal
 read semantics, coverage telemetry, and an eval gate — after reviewing Snowflake Cortex Analyst

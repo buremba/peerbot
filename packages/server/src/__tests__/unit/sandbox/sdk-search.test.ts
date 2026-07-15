@@ -40,14 +40,14 @@ describe("sdkSearch", () => {
 
 	it("returns independent drill-downs for whitespace-separated method paths", async () => {
 		const result = await sdkSearch(
-			{ query: "entities.get entities.delete entities.link" },
+			{ query: "entities.get entities.create entities.link" },
 			stubEnv,
 			writeCtx,
 		);
 
 		expect(result.match_count).toBe(3);
 		expect(result.results).toHaveLength(3);
-		for (const path of ["entities.get", "entities.delete", "entities.link"]) {
+		for (const path of ["entities.get", "entities.create", "entities.link"]) {
 			const rendered = result.results.find((entry) => entry.startsWith(path));
 			expect(rendered).toContain("access:");
 			expect(rendered).toContain("example:");
@@ -146,8 +146,10 @@ describe("sdkSearch", () => {
 	});
 
 	it("substring-matches across paths and summaries", async () => {
-		const result = await sdkSearch({ query: "extraction" }, stubEnv, writeCtx);
 		// "extraction" appears in watchers.create's summary (entity-type derive).
+		// watchers.create is admin-tier (matches manage_watchers.create being
+		// owner-admin), so only an admin-tier caller discovers it.
+		const result = await sdkSearch({ query: "extraction" }, stubEnv, adminCtx);
 		expect(result.match_count).toBeGreaterThan(0);
 	});
 

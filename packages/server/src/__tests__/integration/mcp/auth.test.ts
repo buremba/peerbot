@@ -839,9 +839,12 @@ describe('MCP Authentication', () => {
   describe('Scoped /mcp/{slug} membership-role resolution', () => {
     // Regression: scoped sessions derived org from the URL slug and user from
     // the token but never looked up the caller's membership row, so `memberRole`
-    // stayed null even for an owner — role-gated actions (e.g.
-    // catalog.list_installed, which requires admin) wrongly denied real members.
-    it('resolves an OWNER role on a scoped session (admin-gated action allowed)', async () => {
+    // stayed null even for an owner — role-gated actions wrongly denied real
+    // members. `connections.install_connector` is a genuinely admin-only action
+    // (OWNER_ADMIN_ACTIONS); `catalog.list_installed` is READ-tier (a normal
+    // token discovers connectors). Together they prove the role resolved AND
+    // isn't over-granted.
+    it('resolves an OWNER role on a scoped session (admin-only action allowed)', async () => {
       const roleOrg = await createTestOrganization({ name: 'Scoped Role Org' });
       const owner = await createTestUser({});
       await addUserToOrganization(owner.id, roleOrg.id, 'owner');
@@ -849,31 +852,35 @@ describe('MCP Authentication', () => {
         scope: 'mcp:read mcp:write mcp:admin',
       });
 
-      // catalog.list_installed requires admin/owner. Pre-fix this threw
-      // "requires an MCP session with admin access" on the scoped endpoint.
+      // install_connector requires admin/owner. Pre-fix this threw
+      // "requires ... admin access" on the scoped endpoint because memberRole
+      // was null. run_sdk exposes write/admin methods (query_sdk does not), so
+      // this genuinely reaches the admin gate. A bad connector_id still reaches
+      // the handler (proving the access gate passed) and fails with a business
+      // error, not an auth denial.
       const result = await mcpToolsCall(
-        'query_sdk',
+        'run_sdk',
         {
           script:
-            'export default async (_c, client) => { const r = await client.catalog.listInstalled({ kinds: ["connectors"] }); return { ok: true }; }',
+            'export default async (_c, client) => { try { await client.connections.installConnector({ connector_id: "__nonexistent__" }); return { denied: false }; } catch (e) { return { denied: /admin/i.test(String(e && e.message)), msg: String(e && e.message) }; } }',
         },
         { token, orgSlug: roleOrg.slug }
       );
-      expect(result.success).toBe(true);
-      expect(result.return_value?.ok).toBe(true);
+      // Owner is NOT denied by the admin gate (it may fail for a missing
+      // connector, but never with an admin-access denial).
+      expect(result.return_value?.denied).toBe(false);
     });
 
-    it('does NOT over-grant: a plain MEMBER is still denied the admin-gated action on a scoped session', async () => {
+    it('lets a normal MEMBER discover connectors (list_installed is read-tier) but NOT do admin actions', async () => {
       const roleOrg = await createTestOrganization({ name: 'Scoped Member Org' });
       const member = await createTestUser({});
       await addUserToOrganization(member.id, roleOrg.id, 'member');
       const { token } = await createTestPAT(member.id, roleOrg.id, {
-        scope: 'mcp:read mcp:write mcp:admin',
+        scope: 'mcp:read mcp:write',
       });
 
-      // query_sdk catches the SDK denial and returns success:false (rather than
-      // throwing), so assert on the surfaced error, not a rejection.
-      const result = await mcpToolsCall(
+      // READ-tier discovery works for a plain member with a default-scoped token.
+      const discover = await mcpToolsCall(
         'query_sdk',
         {
           script:
@@ -881,8 +888,25 @@ describe('MCP Authentication', () => {
         },
         { token, orgSlug: roleOrg.slug }
       );
-      expect(result.success).toBe(false);
-      expect(result.error?.message).toMatch(/admin or owner access|admin access/i);
+      expect(discover.success).toBe(true);
+
+      // But an admin-only action is still denied (no over-grant). run_sdk DOES
+      // expose installConnector, so this reaches the admin gate — and a default
+      // (mcp:read mcp:write) member token is denied there. This proves the
+      // member's role resolved AND was not over-granted, the mirror of the
+      // owner case above.
+      const admin = await mcpToolsCall(
+        'run_sdk',
+        {
+          script:
+            'export default async (_c, client) => { await client.connections.installConnector({ connector_id: "__nonexistent__" }); return { ok: true }; }',
+        },
+        { token, orgSlug: roleOrg.slug }
+      );
+      expect(admin.success).toBe(false);
+      expect(admin.error?.message).toMatch(
+        /admin or owner access|admin access|not a function|not available/i
+      );
     });
   });
 

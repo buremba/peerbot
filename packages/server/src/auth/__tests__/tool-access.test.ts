@@ -149,6 +149,19 @@ describe('requiresOwnerAdmin', () => {
     expect(requiresOwnerAdmin('manage_view_templates', { action: 'rollback' }, false)).toBe(true);
     expect(requiresOwnerAdmin('manage_view_templates', { action: 'get' }, false)).toBe(false);
   });
+
+  it('treats manage_catalog list actions as READ-tier so a default mcp:read token can discover connectors', () => {
+    // Both actions are read-only (no writes exist). Previously manage_catalog had
+    // no policy entry, so the no-policy fallback classified them admin — a default
+    // `lobu token create` token (mcp:read mcp:write) then couldn't discover
+    // connectors at all.
+    expect(requiresOwnerAdmin('manage_catalog', { action: 'list_installed' }, false)).toBe(false);
+    expect(requiresOwnerAdmin('manage_catalog', { action: 'list_catalog' }, false)).toBe(false);
+    expect(getRequiredAccessLevel('manage_catalog', { action: 'list_installed' }, false)).toBe(
+      'read'
+    );
+    expect(getRequiredAccessLevel('manage_catalog', { action: 'list_catalog' }, false)).toBe('read');
+  });
 });
 
 describe('member write access', () => {

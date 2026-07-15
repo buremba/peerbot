@@ -632,6 +632,15 @@ async function handleUpdateFeed(
       effectiveConfig
     );
     if (configError) return { error: configError };
+    if (!replaceFeedConfig) {
+      // The AJV singleton runs with coerceTypes and mutated the merged COPY in
+      // place; copy the coerced values for the caller's keys back into the
+      // patch so what is persisted below is what was validated (replace mode
+      // validated args.config itself, so its coercions already landed).
+      for (const key of Object.keys(args.config)) {
+        args.config[key] = effectiveConfig[key];
+      }
+    }
   }
 
   const updated = await sql`

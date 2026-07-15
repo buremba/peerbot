@@ -211,6 +211,30 @@ describe("manage_feeds config validation against connector configSchema", () => 
 		});
 	});
 
+	it("persists AJV type coercions applied during merge-update validation", async () => {
+		const created = (await owner.feeds.create({
+			connection_id: rssConnectionId,
+			feed_key: "articles",
+			display_name: "coerce-target",
+			config: { feed_urls: ["https://example.com/d.xml"] },
+		})) as { feed?: { id: number } };
+		const feedId = Number(created.feed?.id);
+
+		// coerceTypes turns "50" into 50 during validation; the STORED patch must
+		// be the coerced value, not the original string.
+		const result = (await owner.feeds.update({
+			feed_id: feedId,
+			config: { max_items_per_feed: "50" as unknown as number },
+		})) as { error?: string };
+		expect(result.error).toBeUndefined();
+
+		const sql = getTestDb();
+		const [row] = await sql<{ config: Record<string, unknown> | null }[]>`
+      SELECT config FROM feeds WHERE id = ${feedId}
+    `;
+		expect(row?.config?.max_items_per_feed).toBe(50);
+	});
+
 	it("still rejects an unknown feed_key (no regression)", async () => {
 		const error = await owner.feeds
 			.create({

@@ -128,4 +128,41 @@ describe("method-metadata", () => {
 			expect(METHOD_METADATA[path]?.example, path).toMatch(/\(\{/);
 		}
 	});
+
+	it("teaches the two-hop create-type-first pattern with the right constructors", () => {
+		// entities.create must point at entitySchema.createType (the type must
+		// exist first) — the multi-step precondition agents otherwise miss.
+		const create = METHOD_METADATA["entities.create"];
+		expect(create.summary).toContain("entitySchema.createType");
+		expect(create.usageExample ?? "").toContain("entitySchema.createType");
+		// The documented error contract must be REAL: run_sdk surfaces the
+		// unknown-type ToolUserError as a ValidationError. `EntityTypeNotFound`
+		// is not a public error — recovery keyed to it could never fire.
+		expect(create.throws ?? []).toContain("ValidationError");
+		expect(create.throws ?? []).not.toContain("EntityTypeNotFound");
+		expect(create.summary).not.toContain("EntityTypeNotFound");
+		// The ensure step tolerates only the coded duplicate 409 (multi-replica
+		// race), so a concurrent caller doesn't abort the advertised flow.
+		expect(create.usageExample ?? "").toContain("entity_type_exists");
+
+		// entities.link must name entitySchema.createRelType as the relationship-
+		// type constructor. addRule does NOT create a type (it only restricts the
+		// allowed source/target pairs), so it must never be presented as the
+		// constructor — that was a factual error the guidance is meant to prevent.
+		const link = METHOD_METADATA["entities.link"];
+		expect(link.summary).toContain("entitySchema.createRelType");
+		expect(link.summary).not.toMatch(
+			/call `?entitySchema\.addRule`? first|addRule.*\(or createRelType\)/
+		);
+		// The copy-paste usage example must embody the full two-hop flow (ensure
+		// the rel-type, then link) — not just mention it — so a pasted example
+		// can't reproduce the missing-type stall it's meant to prevent.
+		const linkExample = link.usageExample ?? "";
+		expect(linkExample).toContain("listRelTypes");
+		expect(linkExample).toContain("createRelType");
+		expect(linkExample).toContain("entities.link");
+		// Same multi-replica race safety as entities.create: tolerate only the
+		// coded relationship_type_exists 409, don't swallow every error.
+		expect(linkExample).toContain("relationship_type_exists");
+	});
 });

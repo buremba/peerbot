@@ -111,7 +111,7 @@ function validateRequiredCredentials(
 	}
 }
 
-function parseConfig(
+export function parseConfig(
 	platform: string,
 	rawConfig: Record<string, unknown>,
 ): PlatformAdapterConfig {

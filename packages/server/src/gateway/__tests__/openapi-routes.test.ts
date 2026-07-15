@@ -7,7 +7,8 @@
  * openapi-auto's GET on the same path (the whole-path-spread bug the review
  * caught). Also pins the SSE endpoint's `text/event-stream` declaration.
  */
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { generateWorkerToken } from "@lobu/core";
 import { Hono } from "hono";
 import {
 	buildRoutePaths,
@@ -156,5 +157,58 @@ describe("buildRoutePaths", () => {
 		defineRoute(new Hono(), spec, () => new Response(null));
 		const paths = buildRoutePaths();
 		expect(paths["/api/v1/things/{thingId}/stream"]).toBeDefined();
+	});
+});
+
+describe("POST /api/v1/agents/:id/messages — strict JSON on the REAL route", () => {
+	// The send-message route sets `skipBodyValidation` (multipart OR JSON) and
+	// validates the JSON branch by hand — the synthetic defineRoute tests above
+	// do not exercise that path, so drive the real handler. A worker token whose
+	// agentId matches the path passes the ownership gate without a DB.
+	const TEST_KEY =
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	let savedKey: string | undefined;
+	beforeEach(() => {
+		savedKey = process.env.ENCRYPTION_KEY;
+		process.env.ENCRYPTION_KEY = TEST_KEY;
+	});
+	afterEach(() => {
+		if (savedKey === undefined) delete process.env.ENCRYPTION_KEY;
+		else process.env.ENCRYPTION_KEY = savedKey;
+	});
+
+	const send = async (body: unknown): Promise<Response> => {
+		const app = createAgentApi({
+			queueProducer: {} as never,
+			sessionManager: { async getSession() { return null; } } as never,
+			sseManager: {} as never,
+			publicGatewayUrl: "http://localhost:8787",
+			artifactStore: {} as never,
+		} as never);
+		const token = generateWorkerToken("agent-x", "conv-1", "dep-1", {
+			channelId: "chan-1",
+			agentId: "agent-x",
+			organizationId: "org-1",
+		});
+		return app.request("/api/v1/agents/agent-x/messages", {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${token}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify(body),
+		});
+	};
+
+	test("numeric content is rejected with a field-level 400", async () => {
+		const res = await send({ content: 123 });
+		expect(res.status).toBe(400);
+		const data = (await res.json()) as { error: string };
+		expect(data.error).toMatch(/content/);
+	});
+
+	test("valid content gets PAST body validation", async () => {
+		const res = await send({ content: "hello" });
+		expect(res.status).not.toBe(400);
 	});
 });

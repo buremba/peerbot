@@ -54,7 +54,11 @@ import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 import { getDefaultSchedule } from './helpers/connection-helpers';
 import { assertEntityIdsInOrg } from './helpers/db-helpers';
-import { resolveFeedDisplayName } from './helpers/feed-helpers';
+import {
+  resolveFeedDisplayName,
+  validateFeedConfig,
+  type FeedDefinition,
+} from './helpers/feed-helpers';
 
 
 // ============================================
@@ -447,6 +451,16 @@ async function handleCreateFeed(
   // schedule. config.query is an optional scope fence; agents can compose further
   // filters at read time (query_sql feed_query) or pass recall terms.
   const isVirtual = args.virtual === true;
+
+  // Validate config against the connector's declared feed configSchema up
+  // front so a mis-shaped config fails HERE, not at sync time. Virtual feeds
+  // are exempt: never synced, their config (query scope fence) is not the
+  // sync-config contract.
+  if (!isVirtual) {
+    const configError = validateFeedConfig(feedsSchema, args.feed_key, args.config ?? {});
+    if (configError) return { error: configError };
+  }
+
   // Only validate the sync schedule for non-virtual feeds — a virtual feed
   // persists schedule = NULL, so a (possibly defaulted) schedule string must not
   // gate its creation.
@@ -535,9 +549,18 @@ async function handleUpdateFeed(
   const { organizationId } = ctx;
 
   const existing = await sql`
-    SELECT f.id, f.schedule, f.timezone, c.auth_profile_id
+    SELECT f.id, f.schedule, f.timezone, f.feed_key, f.kind, f.config, c.auth_profile_id, cd.feeds_schema
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
+    LEFT JOIN LATERAL (
+      SELECT feeds_schema
+      FROM connector_definitions
+      WHERE key = c.connector_key
+        AND status = 'active'
+        AND organization_id = ${organizationId}
+      ORDER BY updated_at DESC
+      LIMIT 1
+    ) cd ON TRUE
     WHERE f.id = ${args.feed_id} AND f.organization_id = ${organizationId}
   `;
   if (existing.length === 0) {
@@ -592,6 +615,24 @@ async function handleUpdateFeed(
   // Declarative `lobu apply` passes `replace_config: true` so removed manifest
   // keys disappear remotely; default (merge) is preserved for the web UI.
   const replaceFeedConfig = args.replace_config === true && args.config !== undefined;
+
+  // Validate the EFFECTIVE config (mirroring the UPDATE's merge/replace write
+  // semantics below) against the connector's declared feed configSchema, so a
+  // patch cannot push the stored config into a shape that only fails at sync
+  // time. Only collected feeds sync — virtual/streaming configs are not the
+  // sync-config contract.
+  const feedRow = existing[0] as Record<string, unknown>;
+  if (args.config !== undefined && feedRow.kind === 'collected') {
+    const effectiveConfig = replaceFeedConfig
+      ? args.config
+      : { ...parseJsonObject(feedRow.config), ...args.config };
+    const configError = validateFeedConfig(
+      feedRow.feeds_schema as Record<string, FeedDefinition> | null,
+      String(feedRow.feed_key),
+      effectiveConfig
+    );
+    if (configError) return { error: configError };
+  }
 
   const updated = await sql`
     UPDATE feeds

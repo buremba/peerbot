@@ -399,9 +399,12 @@ async function sdkMethodSearch(
 	// exist.
 	let hiddenNamespaceNote: string | undefined;
 	if (lower.indexOf(".") === -1) {
+		// Case-insensitive like METADATA_BY_LOWER_PATH: the query is lowercased,
+		// but namespaces preserve SDK casing (entitySchema, authProfiles) — a
+		// case-sensitive prefix match would misreport those as hidden.
 		const prefix = `${lower}.`;
-		const ns = catalog.filter(([p]) => p.startsWith(prefix));
-		const topLevel = catalog.filter(([p]) => p === lower);
+		const ns = catalog.filter(([p]) => p.toLowerCase().startsWith(prefix));
+		const topLevel = catalog.filter(([p]) => p.toLowerCase() === lower);
 		const combined = [...topLevel, ...ns];
 		if (combined.length === 0) {
 			const hiddenNs = Object.entries(SDK_DISCOVERY_METADATA).filter(([p]) =>

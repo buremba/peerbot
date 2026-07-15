@@ -116,6 +116,7 @@ describe('connector definition install', () => {
       versionRecord: {
         compiledCode: 'module.exports = {}',
         compiledCodeHash: 'hash-1',
+        compileConfigHash: null,
         sourceCode: 'export default {}',
         sourcePath: 'connectors/test.install.ts',
       },
@@ -179,6 +180,7 @@ describe('connector definition install', () => {
       versionRecord: {
         compiledCode: 'module.exports = {}',
         compiledCodeHash: 'hash-2',
+        compileConfigHash: null,
         sourceCode: 'export default {}',
         sourcePath: 'connectors/test.reinstall.ts',
       },

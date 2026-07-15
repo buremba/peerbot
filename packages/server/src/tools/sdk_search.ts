@@ -32,7 +32,7 @@ import { searchLiveConnectors } from "./connector-discovery";
  * delete. setSystemAgent is treated as update. manage is raw — hide when every
  * agent_config action is denied at the blanket.
  */
-const AGENTS_SDK_ACTION: Record<string, WriteAction | "any"> = {
+export const AGENTS_SDK_ACTION: Record<string, WriteAction | "any"> = {
 	"agents.list": "read",
 	"agents.get": "read",
 	"agents.create": "create",

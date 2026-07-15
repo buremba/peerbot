@@ -144,6 +144,101 @@ describe('watcher CRUD', () => {
     await owner.watchers.delete({ watcher_ids: ids });
   });
 
+  it('concurrent create_from_version fan-outs allocate unique ids (no PK collision)', async () => {
+    // create_from_version allocated ids on the pooled autocommit connection —
+    // the same anti-pattern the create handler had. Fire many concurrent
+    // assignments to DISTINCT entities: each produces a distinct slug, so the
+    // only way to fail is the watchers PK colliding on a shared MAX(id)+1.
+    const sql = getTestDb();
+
+    const base = (await owner.watchers.create({
+      entity_id: entityId,
+      slug: 'cfv-race-base',
+      name: 'CFV Race Base',
+      prompt: 'Track things.',
+      agent_id: agentId,
+      sources: [{ name: 'content', query: 'SELECT id FROM events' }],
+    })) as { watcher_id: string };
+    const [row] = await sql<{ current_version_id: number }[]>`
+      SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+    `;
+    const versionId = Number(row?.current_version_id);
+
+    // Distinct target entities → distinct derived slugs, so no slug race.
+    const N = 6;
+    const targets: number[] = [];
+    for (let i = 0; i < N; i++) {
+      const e = (await owner.entities.create({
+        type: 'company',
+        name: `CFV Target ${i}`,
+      })) as { entity: { id: number } };
+      targets.push(e.entity.id);
+    }
+
+    const results = await Promise.all(
+      targets.map((eid) =>
+        owner.watchers.createFromVersion({ version_id: versionId, entity_ids: [eid] })
+      )
+    );
+    const createdIds = results.flatMap((r) =>
+      (r as { created: Array<{ watcher_id: string }> }).created.map((c) => c.watcher_id)
+    );
+    expect(createdIds.length).toBe(N);
+    expect(new Set(createdIds).size).toBe(N); // all unique — no PK collision
+    await owner.watchers.delete({ watcher_ids: [base.watcher_id, ...createdIds] });
+  });
+
+  it('concurrent create_from_version to the SAME entity: one wins, losers get a coded 409 (not raw 23505)', async () => {
+    // A repeated assignment to the same entity produces the SAME derived slug.
+    // The insert isn't pre-checked and isn't locked, so concurrent fan-outs race
+    // idx_watchers_org_slug. The loser must surface a coded 409, not a raw 23505,
+    // and no partial fan-out may leak (single-entity here, but the transaction is
+    // what guarantees all-or-nothing for multi-entity calls).
+    const sql = getTestDb();
+
+    const base = (await owner.watchers.create({
+      entity_id: entityId,
+      slug: 'cfv-slug-race-base',
+      name: 'CFV Slug Race Base',
+      prompt: 'Track things.',
+      agent_id: agentId,
+      sources: [{ name: 'content', query: 'SELECT id FROM events' }],
+    })) as { watcher_id: string };
+    const [row] = await sql<{ current_version_id: number }[]>`
+      SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+    `;
+    const versionId = Number(row?.current_version_id);
+
+    const target = (await owner.entities.create({
+      type: 'company',
+      name: 'CFV Slug Race Target',
+    })) as { entity: { id: number } };
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 6 }, () =>
+        owner.watchers.createFromVersion({
+          version_id: versionId,
+          entity_ids: [target.entity.id],
+        })
+      )
+    );
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter(
+      (r): r is PromiseRejectedResult => r.status === 'rejected'
+    );
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(5);
+    for (const r of rejected) {
+      const e = r.reason as Error & { httpStatus?: number };
+      expect(e.message).not.toMatch(/23505|duplicate key value/);
+      expect(e.httpStatus).toBe(409);
+    }
+    const winnerIds = (
+      fulfilled[0] as PromiseFulfilledResult<{ created: Array<{ watcher_id: string }> }>
+    ).value.created.map((c) => c.watcher_id);
+    await owner.watchers.delete({ watcher_ids: [base.watcher_id, ...winnerIds] });
+  });
+
   it('creates an org-scoped watcher without an inline extraction schema', async () => {
     const created = (await owner.watchers.create({
       slug: 'org-scoped-summary-watcher',

@@ -97,3 +97,4 @@ packages/*/~/
 .cli-smoke-run/
 .mac-cli-auth-e2e/
 examples/lobu-crm/evals/tool-surface/last-run.json
+examples/lobu-crm/evals/discovery-surface/last-run.json

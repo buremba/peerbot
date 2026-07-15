@@ -808,9 +808,11 @@ export class WorkerGateway {
         // after the token rotates mid-turn.
         runtimeProviderId: tokenData.runtimeProviderId,
         environmentId: tokenData.environmentId,
-        // Preserve the egress allowlist too — otherwise a refreshed token would
-        // fall to deny-all and break the sandbox's network mid-turn.
+        // Preserve the egress allow/deny lists too — otherwise a refreshed
+        // token would fall to deny-all (allow) or, worse, drop its exclusions
+        // (deny) and re-open denied hosts mid-turn.
         allowedDomains: tokenData.allowedDomains,
+        deniedDomains: tokenData.deniedDomains,
       }
     );
 

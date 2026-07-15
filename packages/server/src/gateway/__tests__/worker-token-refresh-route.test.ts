@@ -116,6 +116,8 @@ function mintToken(opts: { runId?: number; messageId?: string }): string {
     source: "watcher-run",
     runId: opts.runId,
     messageId: opts.messageId,
+    allowedDomains: ["api.example.com"],
+    deniedDomains: ["evil.example.com"],
   });
 }
 
@@ -154,6 +156,11 @@ describe("POST /worker/token/refresh", () => {
     expect(data!.source).toBe("watcher-run");
     expect(data!.deploymentName).toBe(DEPLOYMENT);
     expect(data!.organizationId).toBe("org-1");
+    // Egress claims must BOTH survive refresh — dropping allowedDomains
+    // breaks the sandbox network (deny-all), dropping deniedDomains
+    // silently re-opens denied hosts on remote runtimes.
+    expect(data!.allowedDomains).toEqual(["api.example.com"]);
+    expect(data!.deniedDomains).toEqual(["evil.example.com"]);
   });
 
   test("REVOCATION: denied (403) once this turn has no live marker", async () => {

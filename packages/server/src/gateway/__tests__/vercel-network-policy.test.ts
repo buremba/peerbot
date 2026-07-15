@@ -49,6 +49,12 @@ describe("vercel networkPolicyFromDomains — deny subtraction", () => {
     );
   });
 
+  test("port-qualified allow does not dodge a deny on the bare host", () => {
+    expect(
+      networkPolicyFromDomains(["evil.example.com:443", "ok.com"], ["evil.example.com"])
+    ).toEqual({ allow: ["ok.com"] });
+  });
+
   test("deny matching is case-insensitive", () => {
     // DNS is case-insensitive; a mixed-case deny must still subtract.
     expect(

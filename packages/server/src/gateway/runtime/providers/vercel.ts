@@ -155,7 +155,11 @@ function normalizeAllowedDomain(domain: string): string | null {
  * covers a deny — must be dropped rather than granted (fail closed).
  */
 function overlapsDeny(entry: string, denied: string[]): boolean {
-  const bare = (p: string) => (p.startsWith("*.") ? p.slice(2) : p);
+  // Compare bare hostnames: strip the wildcard prefix AND any :port
+  // qualifier, so "evil.example.com:443" cannot dodge a deny on
+  // "evil.example.com".
+  const bare = (p: string) =>
+    (p.startsWith("*.") ? p.slice(2) : p).replace(/:\d+$/, "");
   const isWild = (p: string) => p.startsWith("*.");
   const covers = (pattern: string, host: string) =>
     isWild(pattern)

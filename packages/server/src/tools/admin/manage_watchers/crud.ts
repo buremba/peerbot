@@ -610,6 +610,9 @@ export async function handleCreateFromVersion(
   if (!args.entity_ids || args.entity_ids.length === 0) {
     throw new Error('entity_ids is required for create_from_version');
   }
+  // Bind the narrowed value: the transaction closure below re-widens
+  // `args.entity_ids` back to `number[] | undefined`, losing this guard.
+  const entityIds = args.entity_ids;
 
   // Fetch the source version + the source watcher's reaction script AND its
   // derived input schema. Reaction script + its `reaction_input_schema` contract
@@ -645,7 +648,7 @@ export async function handleCreateFromVersion(
   // Reject cross-org entity_ids before cloning: a watcher attached to another
   // org's entity links its synced/extracted content to a non-existent in-org
   // entity (silent data-correctness bug). Names are fetched org-scoped below.
-  await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
+  await assertEntityIdsInOrg(sql, organizationId, entityIds);
 
   // Fetch entity names for name pattern substitution (org-scoped)
   const entityRows = await sql`
@@ -653,87 +656,136 @@ export async function handleCreateFromVersion(
     FROM entities e
     JOIN entity_types et ON et.id = e.entity_type_id
     WHERE e.organization_id = ${organizationId}
-      AND e.id = ANY(${`{${args.entity_ids.join(',')}}`}::bigint[])
+      AND e.id = ANY(${`{${entityIds.join(',')}}`}::bigint[])
   `;
   const entityMap = new Map(entityRows.map((e: any) => [Number(e.id), e]));
 
   const createdBy = ctx.userId ?? 'system';
   const created: Array<{ watcher_id: string; entity_id: number; name: string }> = [];
+  // Audit/lifecycle payloads are collected inside the transaction and emitted
+  // only after it commits — a rollback must not leak "created" events for
+  // watchers that never landed (events is append-only; we can't take them back).
+  const auditPayloads: Array<{
+    entityId: number;
+    watcherId: number;
+    watcherName: string;
+    watcherSlug: string;
+    sources: unknown;
+    sharedVersionId: number;
+    groupId: number;
+  }> = [];
 
-  for (const entityId of args.entity_ids) {
-    const entity = entityMap.get(entityId);
-    if (!entity) throw new Error(`Entity ${entityId} not found`);
+  // The whole fan-out runs in ONE transaction. Two reasons:
+  //  1. getNextNumericId relies on pg_advisory_xact_lock, which only serializes
+  //     when a real transaction is open. On the pooled autocommit connection the
+  //     lock releases immediately, so concurrent assignments would both compute
+  //     MAX(id)+1 and collide on the watchers PK.
+  //  2. Atomicity: a mid-loop failure (e.g. a slug clash on the 3rd entity)
+  //     would otherwise leave a partial fan-out — some assignments created,
+  //     some not. All-or-nothing is the correct contract here.
+  try {
+    await sql.begin(async (tx) => {
+      for (const entityId of entityIds) {
+        const entity = entityMap.get(entityId);
+        if (!entity) throw new Error(`Entity ${entityId} not found`);
 
-    const namePattern = args.name_pattern ?? `${version.name}: {{entity_name}}`;
-    const watcherName = namePattern.replace(/\{\{entity_name\}\}/g, entity.name as string);
-    const watcherSlug = `${version.name}-${entity.slug}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+        const namePattern = args.name_pattern ?? `${version.name}: {{entity_name}}`;
+        const watcherName = namePattern.replace(/\{\{entity_name\}\}/g, entity.name as string);
+        const watcherSlug = `${version.name}-${entity.slug}`
+          .toLowerCase()
+          .replace(/[^a-z0-9-]/g, '-');
 
-    const watcherId = await getNextNumericId(sql, 'watchers');
-    const sources = version.version_sources ?? version.sources ?? [];
-    // The new assignment shares the source's existing watcher_versions row
-    // rather than getting its own duplicate copy. version_id (the arg) is
-    // the row in watcher_versions we're cloning from; that becomes the
-    // assignment's current_version_id directly. The version row itself is
-    // owned by the group root (watcher_group_id), so all assignments in
-    // the group point at the same chain.
-    const sharedVersionId = Number(args.version_id);
-    const groupId = (version.watcher_group_id ?? version.watcher_id) as number;
+        const watcherId = await getNextNumericId(tx, 'watchers');
+        const sources = version.version_sources ?? version.sources ?? [];
+        // The new assignment shares the source's existing watcher_versions row
+        // rather than getting its own duplicate copy. version_id (the arg) is
+        // the row in watcher_versions we're cloning from; that becomes the
+        // assignment's current_version_id directly. The version row itself is
+        // owned by the group root (watcher_group_id), so all assignments in
+        // the group point at the same chain.
+        const sharedVersionId = Number(args.version_id);
+        const groupId = (version.watcher_group_id ?? version.watcher_id) as number;
 
-    await sql`
-      INSERT INTO watchers (
-        id, name, slug, organization_id, entity_ids,
-        schedule, next_run_at, agent_id, scheduler_client_id, model_config, execution_config, sources, version,
-        current_version_id, tags, status, created_by, created_at, updated_at,
-        watcher_group_id, source_watcher_id,
-        reaction_script, reaction_script_compiled, reaction_input_schema
-      ) VALUES (
-        ${watcherId}, ${watcherName}, ${watcherSlug}, ${organizationId},
-        ${`{${entityId}}`}::bigint[],
-        ${version.schedule ?? null}, ${version.schedule ? nextRunAt(version.schedule as string) : null},
-        ${version.agent_id ?? null}, ${version.scheduler_client_id ?? null},
-        ${toJsonParam(sql, version.model_config)}, ${toJsonParam(sql, version.execution_config)}, ${toJsonParam(sql, sources)},
-        ${(version.version as number) ?? 1}, ${sharedVersionId}, ${toTextArrayParam((version.tags as string[]) || [])}::text[],
-        'active', ${createdBy}, NOW(), NOW(),
-        ${groupId}, ${version.watcher_id},
-        ${(version.reaction_script as string | null) ?? null},
-        ${(version.reaction_script_compiled as string | null) ?? null},
-        ${toJsonParam(sql, version.reaction_input_schema)}
-      )
-    `;
+        await tx`
+          INSERT INTO watchers (
+            id, name, slug, organization_id, entity_ids,
+            schedule, next_run_at, agent_id, scheduler_client_id, model_config, execution_config, sources, version,
+            current_version_id, tags, status, created_by, created_at, updated_at,
+            watcher_group_id, source_watcher_id,
+            reaction_script, reaction_script_compiled, reaction_input_schema
+          ) VALUES (
+            ${watcherId}, ${watcherName}, ${watcherSlug}, ${organizationId},
+            ${`{${entityId}}`}::bigint[],
+            ${version.schedule ?? null}, ${version.schedule ? nextRunAt(version.schedule as string) : null},
+            ${version.agent_id ?? null}, ${version.scheduler_client_id ?? null},
+            ${toJsonParam(tx, version.model_config)}, ${toJsonParam(tx, version.execution_config)}, ${toJsonParam(tx, sources)},
+            ${(version.version as number) ?? 1}, ${sharedVersionId}, ${toTextArrayParam((version.tags as string[]) || [])}::text[],
+            'active', ${createdBy}, NOW(), NOW(),
+            ${groupId}, ${version.watcher_id},
+            ${(version.reaction_script as string | null) ?? null},
+            ${(version.reaction_script_compiled as string | null) ?? null},
+            ${toJsonParam(tx, version.reaction_input_schema)}
+          )
+        `;
 
-    created.push({ watcher_id: String(watcherId), entity_id: entityId, name: watcherName });
+        created.push({ watcher_id: String(watcherId), entity_id: entityId, name: watcherName });
+        auditPayloads.push({
+          entityId,
+          watcherId,
+          watcherName,
+          watcherSlug,
+          sources,
+          sharedVersionId,
+          groupId,
+        });
+      }
+    });
+  } catch (err) {
+    // The derived slug is not pre-checked and is not locked: two concurrent
+    // assignments (or a re-run) can produce the same slug and race
+    // idx_watchers_org_slug. Surface a coded 409 instead of leaking a raw 23505.
+    if (isUniqueViolation(err, 'idx_watchers_org_slug')) {
+      throw new ToolUserError(
+        `A watcher assignment with a colliding slug already exists in this organization`,
+        409
+      );
+    }
+    throw err;
+  }
 
+  // Post-commit: emit lifecycle + audit events now that the rows are durable.
+  for (const p of auditPayloads) {
     recordLifecycleEvent({
       organizationId,
       entityType: 'watcher',
       op: 'created',
-      entityId: watcherId,
-      summary: `Watcher "${watcherName}" created`,
-      extra: { slug: watcherSlug, via: 'create_from_version' },
+      entityId: p.watcherId,
+      summary: `Watcher "${p.watcherName}" created`,
+      extra: { slug: p.watcherSlug, via: 'create_from_version' },
     });
 
     recordToolConfigChange(ctx, {
       organizationId,
       resourceKind: 'watcher',
-      resourceId: watcherId,
+      resourceId: p.watcherId,
       op: 'created',
-      summary: `Watcher '${watcherName}' created from version ${args.version_id}`,
+      summary: `Watcher '${p.watcherName}' created from version ${args.version_id}`,
       // Composed from the cloned insert values (row not refetched); the
       // version-bound fields come from the shared source version row.
       state: {
-        id: watcherId,
-        name: watcherName,
-        slug: watcherSlug,
+        id: p.watcherId,
+        name: p.watcherName,
+        slug: p.watcherSlug,
         status: 'active',
-        entity_ids: [entityId],
+        entity_ids: [p.entityId],
         schedule: version.schedule ?? null,
         agent_id: version.agent_id ?? null,
         scheduler_client_id: version.scheduler_client_id ?? null,
         version: (version.version as number) ?? 1,
-        current_version_id: sharedVersionId,
-        watcher_group_id: groupId,
+        current_version_id: p.sharedVersionId,
+        watcher_group_id: p.groupId,
         source_watcher_id: version.watcher_id,
-        sources,
+        sources: p.sources,
         prompt: version.prompt ?? null,
         keying_config: version.keying_config ?? null,
         classifiers: version.classifiers ?? null,

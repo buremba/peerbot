@@ -228,6 +228,12 @@ async function resolveTargetWatcherGroupId(
   return null;
 }
 
+/** How long a group-locked action polls for the lock before failing with a
+ * coded 409. Contended holders finish in seconds (a fan-out or version bump);
+ * a bounded wait turns pathological contention into a clean retryable error
+ * instead of an unbounded stall. */
+const WATCHER_GROUP_LOCK_WAIT_MS = 30_000;
+
 /**
  * Run `fn` (guard + mutation) while holding a SESSION-level Postgres advisory
  * lock on the action's target watcher_group_id. A session lock (vs. the
@@ -237,6 +243,14 @@ async function resolveTargetWatcherGroupId(
  * before the mutation runs. We acquire + release on ONE reserved connection so
  * the session identity is stable (any pool connection could otherwise serve the
  * unlock and PG would error `you don't own a lock of type ExclusiveLock`).
+ *
+ * The lock is acquired with a `pg_try_advisory_lock` POLL, not a blocking
+ * `pg_advisory_lock`, and the reserved connection is RELEASED between attempts.
+ * A blocking wait camps on a pool slot: with N ≥ DB_POOL_MAX concurrent calls
+ * on one group, the waiters consume every slot and the lock winner can never
+ * get a connection for its own reads/transaction — a permanent pool-wide
+ * deadlock (session advisory waits never time out). Polling holds zero slots
+ * while waiting, so the winner always has pool capacity to finish and release.
  *
  * Only the mutating write-gate actions with a resolvable target group are locked;
  * read-only actions and `create` (no pre-existing group) run `fn` directly.
@@ -251,18 +265,33 @@ async function withWatcherGroupLock<T>(
   if (groupId == null) return fn();
 
   const sql = getDb();
-  const reserved = (await (
-    sql as unknown as { reserve: () => Promise<ReservedSql> }
-  ).reserve()) as ReservedSql;
-  try {
-    await reserved`SELECT pg_advisory_lock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
+  const deadline = Date.now() + WATCHER_GROUP_LOCK_WAIT_MS;
+  for (;;) {
+    const reserved = (await (
+      sql as unknown as { reserve: () => Promise<ReservedSql> }
+    ).reserve()) as ReservedSql;
     try {
-      return await fn();
+      const [row] = (await reserved`
+        SELECT pg_try_advisory_lock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId}) AS locked
+      `) as unknown as [{ locked: boolean }];
+      if (row.locked) {
+        try {
+          return await fn();
+        } finally {
+          await reserved`SELECT pg_advisory_unlock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
+        }
+      }
     } finally {
-      await reserved`SELECT pg_advisory_unlock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
+      reserved.release();
     }
-  } finally {
-    reserved.release();
+    if (Date.now() >= deadline) {
+      throw new ToolUserError(
+        'Another change to this watcher group is in progress; retry shortly.',
+        409,
+      );
+    }
+    // Sleep WITHOUT holding a pool slot; jitter de-synchronizes contenders.
+    await new Promise((resolve) => setTimeout(resolve, 25 + Math.floor(Math.random() * 50)));
   }
 }
 

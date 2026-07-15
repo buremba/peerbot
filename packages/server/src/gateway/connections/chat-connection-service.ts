@@ -117,17 +117,23 @@ function parseConfig(
 ): PlatformAdapterConfig {
 	requireChatPlatform(platform);
 	const candidate = { ...rawConfig, platform };
-	// TypeBox discriminated-union check: Convert coerces the `lobu apply` string
-	// booleans, then Check validates the matching `platform` member. Clean strips
-	// unknown keys so they don't get persisted (Zod's `safeParse` did implicitly).
-	const converted = Value.Convert(PlatformAdapterConfigSchema, candidate);
-	if (!Value.Check(PlatformAdapterConfigSchema, converted)) {
-		const messages = [
-			...Value.Errors(PlatformAdapterConfigSchema, converted),
-		].map((issue) => `${issue.path || "(root)"} ${issue.message}`.trim());
+	// Validate against the union member matching `platform` (requireChatPlatform
+	// guarantees one exists) so failures surface FIELD-level messages (e.g. the
+	// Telegram token pattern) instead of a generic union mismatch. Convert
+	// coerces the `lobu apply` string booleans; Clean strips unknown keys so
+	// they don't get persisted (Zod's `safeParse` did both implicitly).
+	const memberSchema =
+		PlatformAdapterConfigSchema.anyOf.find(
+			(s) => s.properties.platform.const === platform,
+		) ?? PlatformAdapterConfigSchema;
+	const converted = Value.Convert(memberSchema, candidate);
+	if (!Value.Check(memberSchema, converted)) {
+		const messages = [...Value.Errors(memberSchema, converted)].map(
+			(issue) => `${issue.path || "(root)"} ${issue.message}`.trim(),
+		);
 		throw new Error(messages.join("; ") || "invalid platform config");
 	}
-	const coerced = Value.Clean(PlatformAdapterConfigSchema, converted);
+	const coerced = Value.Clean(memberSchema, converted);
 	validateRequiredCredentials(platform, coerced as Record<string, unknown>);
 	// The TypeBox union and the hand-written `PlatformAdapterConfig` union are
 	// member-for-member equivalent; TS treats the schema-inferred type as distinct

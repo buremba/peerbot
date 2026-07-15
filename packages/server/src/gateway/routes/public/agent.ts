@@ -1323,9 +1323,10 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       } catch {
         return c.json({ success: false, error: "Invalid JSON body" }, 400);
       }
-      const coerced = Value.Convert(SendMessageRequestSchema, rawBody);
-      if (!Value.Check(SendMessageRequestSchema, coerced)) {
-        const first = Value.Errors(SendMessageRequestSchema, coerced).First();
+      // Strict Check — JSON carries real types, so no Value.Convert here:
+      // coercion would silently accept e.g. `{content: 123}` as "123".
+      if (!Value.Check(SendMessageRequestSchema, rawBody)) {
+        const first = Value.Errors(SendMessageRequestSchema, rawBody).First();
         return c.json(
           {
             success: false,
@@ -1336,7 +1337,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
           400,
         );
       }
-      body = coerced as Record<string, any>;
+      body = rawBody as Record<string, any>;
     }
 
     const rawMessageContent = body.content || body.message;

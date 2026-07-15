@@ -10,9 +10,10 @@
  * ONE schema source with no hand-copied wire types.
  *
  * It does two things:
- *   (a) registers a plain Hono handler behind a validation middleware that runs
- *       the same TypeBox coercion+check the tool dispatch uses, stashing the
- *       validated `json` / `param` / `query` on the context for the handler; and
+ *   (a) registers a plain Hono handler behind a TypeBox validation middleware —
+ *       strict Check on JSON bodies, Convert-then-Check on string-sourced
+ *       path/query params — stashing the validated `json` / `param` / `query`
+ *       on the context for the handler; and
  *   (b) records the route's `{method, path, request, responses}` in a registry
  *       the doc builder concatenates with `generateStrictToolPaths()`.
  *
@@ -102,14 +103,22 @@ export function getValidated<
 }
 
 /**
- * Coerce + validate `value` against `schema`, throwing a 400 ToolUserError with
- * the first error path on mismatch. Mirrors `validateToolArgs`' Convert→Check
- * pipeline so route bodies and tool args validate identically.
+ * Validate `value` against `schema`, throwing a 400 ToolUserError with the
+ * first error path on mismatch. Validation is location-aware: path/query
+ * inputs arrive as strings, so they get `Value.Convert` coercion first; JSON
+ * bodies carry real types and are checked STRICTLY — coercing them would
+ * silently accept schema-invalid values (`{content: 123}` must stay a 400,
+ * matching the previous Zod validator).
  */
-function coerceAndCheck(schema: TSchema, value: unknown, where: string): unknown {
-	const coerced = Value.Convert(schema, value);
-	if (Value.Check(schema, coerced)) return Value.Clean(schema, coerced);
-	const first = Value.Errors(schema, coerced).First();
+function checkAndClean(
+	schema: TSchema,
+	value: unknown,
+	where: string,
+	{ convert }: { convert: boolean },
+): unknown {
+	const candidate = convert ? Value.Convert(schema, value) : value;
+	if (Value.Check(schema, candidate)) return Value.Clean(schema, candidate);
+	const first = Value.Errors(schema, candidate).First();
 	const detail = first
 		? `${first.path || "(root)"} ${first.message}`.trim()
 		: "does not match the expected shape";
@@ -153,7 +162,10 @@ export function defineRoute<
 				return c.json({ error: "Invalid or missing JSON body" }, 400);
 			}
 			try {
-				json = coerceAndCheck(bodySchema, raw, "request body");
+				// Strict: JSON already carries real types — no coercion.
+				json = checkAndClean(bodySchema, raw, "request body", {
+					convert: false,
+				});
 			} catch (err) {
 				return c.json(
 					{ error: err instanceof Error ? err.message : String(err) },
@@ -165,7 +177,9 @@ export function defineRoute<
 		let param: unknown;
 		if (paramSchema) {
 			try {
-				param = coerceAndCheck(paramSchema, c.req.param(), "path parameters");
+				param = checkAndClean(paramSchema, c.req.param(), "path parameters", {
+					convert: true,
+				});
 			} catch (err) {
 				return c.json(
 					{ error: err instanceof Error ? err.message : String(err) },
@@ -177,10 +191,11 @@ export function defineRoute<
 		let query: unknown;
 		if (querySchema) {
 			try {
-				query = coerceAndCheck(
+				query = checkAndClean(
 					querySchema,
 					c.req.query() as Record<string, string>,
 					"query parameters",
+					{ convert: true },
 				);
 			} catch (err) {
 				return c.json(

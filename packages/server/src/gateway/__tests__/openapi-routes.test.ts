@@ -12,6 +12,7 @@ import { Hono } from "hono";
 import {
 	buildRoutePaths,
 	defineRoute,
+	getValidated,
 	mergeOpenApiPaths,
 	type RouteSpec,
 } from "../routes/shared/define-route.js";
@@ -83,6 +84,61 @@ describe("buildRoutePaths", () => {
 		expect(Object.keys(sse.responses["200"].content ?? {})).toEqual([
 			"text/event-stream",
 		]);
+	});
+
+	test("JSON bodies validate STRICTLY — scalar coercion is rejected", async () => {
+		const app = new Hono();
+		defineRoute(
+			app,
+			{
+				method: "post",
+				path: "/strict",
+				request: {
+					body: Type.Object({ content: Type.String() }),
+				},
+				responses: { 200: { description: "ok" } },
+			},
+			(c) => c.json({ ok: true }),
+		);
+		// {content: 123} must be a 400, not silently coerced to "123".
+		const bad = await app.request("/strict", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ content: 123 }),
+		});
+		expect(bad.status).toBe(400);
+		const good = await app.request("/strict", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ content: "hi" }),
+		});
+		expect(good.status).toBe(200);
+	});
+
+	test("path/query params coerce from their string form", async () => {
+		const app = new Hono();
+		let seen: unknown;
+		defineRoute(
+			app,
+			{
+				method: "get",
+				path: "/things/{thingId}",
+				request: {
+					params: Type.Object({ thingId: Type.String() }),
+					query: Type.Object({ limit: Type.Integer({ minimum: 1 }) }),
+				},
+				responses: { 200: { description: "ok" } },
+			},
+			(c) => {
+				seen = getValidated(c).query;
+				return c.json({ ok: true });
+			},
+		);
+		const res = await app.request("/things/t1?limit=5");
+		expect(res.status).toBe(200);
+		expect(seen).toEqual({ limit: 5 });
+		const bad = await app.request("/things/t1?limit=zero");
+		expect(bad.status).toBe(400);
 	});
 
 	test("custom mediaType and {param} doc form are preserved", () => {

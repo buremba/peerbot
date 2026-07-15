@@ -19,6 +19,7 @@
  * can land on any replica and finalize the run row.
  */
 
+import type { DispatchChromeActionRequest } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
@@ -26,13 +27,6 @@ import { waitForDeviceActionRun } from '../tools/admin/manage_operations';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { createConnectorOperationRun } from '../runs/queue-service';
-
-interface DispatchChromeActionBody {
-  parent_run_id: number;
-  worker_id: string;
-  action_key: string;
-  action_input: Record<string, unknown>;
-}
 
 // Online window for chrome extension device workers, in minutes. Matches
 // the /api/me/devices "online" flag.
@@ -297,9 +291,9 @@ export async function dispatchChromeActionToExtension(params: {
 }
 
 export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
-  let body: DispatchChromeActionBody;
+  let body: DispatchChromeActionRequest;
   try {
-    body = await c.req.json<DispatchChromeActionBody>();
+    body = await c.req.json<DispatchChromeActionRequest>();
   } catch {
     return c.json({ error: 'Invalid JSON body' }, 400);
   }

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { normalizeDomainPattern } from "@lobu/core";
 import { type NetworkPolicy, Sandbox } from "@vercel/sandbox";
 import { remoteCwd } from "../workspace.js";
 import type {
@@ -139,19 +140,60 @@ function normalizeAllowedDomain(domain: string): string | null {
   if (!trimmed) return null;
   if (trimmed === "*") return "*";
   if (!/^[A-Za-z0-9.*_-]+(?::\d+)?$/.test(trimmed)) return null;
-  if (trimmed.startsWith(".")) return `*${trimmed}`;
-  return trimmed;
+  // Canonicalize (lowercase + punycode, "*.x" collapses to ".x") so
+  // allow/deny overlap checks compare the one form DNS actually resolves —
+  // a mixed-case deny must still subtract its allow entry.
+  const canonical = normalizeDomainPattern(trimmed);
+  if (canonical.startsWith(".")) return `*${canonical}`;
+  return canonical;
 }
 
-function networkPolicyFromDomains(value: unknown): NetworkPolicy {
+/**
+ * True when `entry` (a normalized allow pattern, possibly `*.suffix`) overlaps
+ * `denied` (same forms) in either direction. The sandbox network policy can
+ * only express an allow list, so any allow entry a deny covers — or that
+ * covers a deny — must be dropped rather than granted (fail closed).
+ */
+function overlapsDeny(entry: string, denied: string[]): boolean {
+  // Compare bare hostnames: strip the wildcard prefix AND any :port
+  // qualifier, so "evil.example.com:443" cannot dodge a deny on
+  // "evil.example.com".
+  const bare = (p: string) =>
+    (p.startsWith("*.") ? p.slice(2) : p).replace(/:\d+$/, "");
+  const isWild = (p: string) => p.startsWith("*.");
+  const covers = (pattern: string, host: string) =>
+    isWild(pattern)
+      ? host === bare(pattern) || host.endsWith(`.${bare(pattern)}`)
+      : host === pattern;
+  return denied.some(
+    (deny) =>
+      covers(deny, bare(entry)) ||
+      covers(entry, bare(deny)) ||
+      bare(deny) === bare(entry)
+  );
+}
+
+function networkPolicyFromDomains(
+  value: unknown,
+  deniedValue?: unknown
+): NetworkPolicy {
   if (!Array.isArray(value)) return "deny-all";
-  const domains = value
-    .filter((entry): entry is string => typeof entry === "string")
-    .map(normalizeAllowedDomain)
-    .filter((entry): entry is string => !!entry);
-  if (domains.includes("*")) return "allow-all";
-  return domains.length > 0
-    ? { allow: Array.from(new Set(domains)) }
+  const normalize = (input: unknown) =>
+    (Array.isArray(input) ? input : [])
+      .filter((entry): entry is string => typeof entry === "string")
+      .map(normalizeAllowedDomain)
+      .filter((entry): entry is string => !!entry);
+  const domains = normalize(value);
+  const denied = normalize(deniedValue);
+  if (domains.includes("*") && denied.length === 0) return "allow-all";
+  // The provider policy has no deny primitive, so denies are enforced by
+  // subtraction: drop "*" (an unbounded allow can't honor exclusions) and
+  // any allow entry that overlaps a denied pattern.
+  const allowed = domains.filter(
+    (entry) => entry !== "*" && !overlapsDeny(entry, denied)
+  );
+  return allowed.length > 0
+    ? { allow: Array.from(new Set(allowed)) }
     : "deny-all";
 }
 
@@ -209,6 +251,8 @@ async function getSandbox(params: {
  * deterministic per (org, agent, conversation) so messages resume the same
  * filesystem; the filesystem is the persistent source of truth (no file sync).
  */
+export const __testOnly = { networkPolicyFromDomains };
+
 export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
   id: "vercel",
   credentialFields: [
@@ -245,7 +289,10 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
       agentId: ctx.agentId,
       conversationId: ctx.conversationId,
     });
-    const networkPolicy = networkPolicyFromDomains(ctx.allowedDomains);
+    const networkPolicy = networkPolicyFromDomains(
+      ctx.allowedDomains,
+      ctx.deniedDomains
+    );
     const sandbox = await getSandbox({
       name: sandboxName,
       networkPolicy,

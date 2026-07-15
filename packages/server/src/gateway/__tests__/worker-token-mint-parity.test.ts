@@ -125,6 +125,27 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
     }
   });
 
+  test("PARITY: both mints carry the egress allow AND deny claims", () => {
+    const egressArgs = {
+      ...baseArgs,
+      allowedDomains: ["api.example.com"],
+      deniedDomains: ["evil.example.com"],
+    };
+    const runJob = verifyWorkerToken(
+      buildRunJobToken({ ...egressArgs, runId: 7 }) as string
+    );
+    const deployment = verifyWorkerToken(
+      buildDeploymentWorkerToken(egressArgs)
+    );
+
+    for (const decoded of [runJob, deployment]) {
+      expect(decoded?.allowedDomains).toEqual(["api.example.com"]);
+      // Dropping deniedDomains on either mint silently re-opens denied hosts
+      // on remote runtimes (the sandbox policy subtracts them).
+      expect(decoded?.deniedDomains).toEqual(["evil.example.com"]);
+    }
+  });
+
   test("the shipped bug reproduces: a chat token WITHOUT connectionId is rejected", () => {
     // Mint via the real path but with no connectionId in platformMetadata —
     // this is the state MessageConsumer produced before #1274.

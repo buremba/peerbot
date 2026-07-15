@@ -246,6 +246,75 @@ describe("MessageBatcher — error resilience", () => {
   });
 });
 
+describe("MessageBatcher — addPriorityMessage (`!`-bash)", () => {
+  test("idle: processes immediately, skipping the batch window", async () => {
+    const processed: string[][] = [];
+    const batcher = new MessageBatcher({
+      batchWindowMs: 5000, // long window — must be skipped
+      onBatchReady: async (msgs) => {
+        processed.push(msgs.map((m) => m.payload.messageId));
+      },
+    });
+
+    // Consume the initial-batch fast path with an ordinary message first, so the
+    // priority path is exercised on a NON-first message (the case the old direct
+    // bypass existed for).
+    await batcher.addMessage(makeMsg("warm", "hello", 1));
+    processed.length = 0;
+
+    batcher.claimMessageId("bang-1");
+    await batcher.addPriorityMessage(makeMsg("bang-1", "!echo hi", 2));
+
+    // Delivered synchronously within the await — no 5000ms wait.
+    expect(processed).toEqual([["bang-1"]]);
+    expect(batcher.getPendingCount()).toBe(0);
+  });
+
+  test("busy: queues behind the active turn — never a concurrent onBatchReady", async () => {
+    // The regression guard for the concurrency bug: a `!` arriving mid-turn must
+    // NOT start a second processing run (which raced currentWorker teardown in
+    // the SSE client). It must queue and run only after the active turn drains.
+    const order: string[] = [];
+    let concurrency = 0;
+    let maxConcurrency = 0;
+    let releaseFirst: (() => void) | null = null;
+
+    const batcher = new MessageBatcher({
+      batchWindowMs: 50,
+      onBatchReady: async (msgs) => {
+        concurrency += 1;
+        maxConcurrency = Math.max(maxConcurrency, concurrency);
+        for (const m of msgs) order.push(m.payload.messageId);
+        if (order.length === 1) {
+          // Hold the first turn open while the `!` arrives.
+          await new Promise<void>((r) => {
+            releaseFirst = r;
+          });
+        }
+        concurrency -= 1;
+      },
+    });
+
+    // Start an ordinary turn and let onBatchReady begin (and block).
+    const first = batcher.addMessage(makeMsg("turn-1", "do work", 1));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(batcher.isCurrentlyProcessing()).toBe(true);
+
+    // `!` arrives mid-turn: must queue, not run concurrently.
+    batcher.claimMessageId("bang-1");
+    await batcher.addPriorityMessage(makeMsg("bang-1", "!echo hi", 2));
+    expect(batcher.getPendingCount()).toBe(1); // queued, not processing
+
+    // Release the first turn; the queued `!` runs in the follow-up batch.
+    releaseFirst?.();
+    await first;
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(maxConcurrency).toBe(1); // never two onBatchReady runs at once
+    expect(order).toEqual(["turn-1", "bang-1"]); // arrival order preserved
+  });
+});
+
 describe("MessageBatcher — durable replay deduplication", () => {
   test("processes a message id only once when Postgres replay races SSE delivery", async () => {
     const batches: QueuedMessage[][] = [];

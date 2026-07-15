@@ -14,7 +14,11 @@ import {
   expect,
   test,
 } from "bun:test";
-import { AgentErrorCode, generateWorkerToken } from "@lobu/core";
+import {
+  AgentErrorCode,
+  generateWorkerToken,
+  verifyWorkerToken,
+} from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import { RunsQueue } from "../infrastructure/queue/runs-queue.js";
 import {
@@ -28,6 +32,7 @@ import {
   type TurnRouting,
 } from "../orchestration/turn-liveness.js";
 import {
+  attachFreshRunJobToken,
   listPendingAgentRunInputs,
   recordAgentRunInput,
 } from "../orchestration/agent-run-input.js";
@@ -161,6 +166,8 @@ async function durableInput(
         platform: "api",
         runId,
         messageId,
+        allowedDomains: ["api.example.com"],
+        deniedDomains: ["evil.example.com"],
       },
     ),
   };
@@ -199,6 +206,15 @@ describe("turn-liveness", () => {
       stores_token: false,
       stores_timestamp: false,
     });
+
+    // Replay re-mints from the persisted claims — BOTH egress lists must
+    // survive the durable round trip, or a replayed run executes with the
+    // allowlist but without its deny subtraction.
+    const [pending] = await listPendingAgentRunInputs("dep-durable");
+    const replayed = attachFreshRunJobToken(pending!);
+    const replayedToken = verifyWorkerToken(replayed.runJobToken!);
+    expect(replayedToken!.allowedDomains).toEqual(["api.example.com"]);
+    expect(replayedToken!.deniedDomains).toEqual(["evil.example.com"]);
 
     await commitTerminalReply(
       "dep-durable",

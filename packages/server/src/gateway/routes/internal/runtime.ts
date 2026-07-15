@@ -97,9 +97,10 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
         cwd: body.cwd,
         env: commandEnv(body.env),
         timeoutMs,
-        // Authoritative egress allowlist from the SIGNED token, never the body —
-        // a compromised worker cannot widen its own sandbox network policy.
+        // Authoritative egress allow/deny lists from the SIGNED token, never
+        // the body — a compromised worker cannot widen its own sandbox policy.
         allowedDomains: worker.allowedDomains,
+        deniedDomains: worker.deniedDomains,
       });
 
       return c.json({

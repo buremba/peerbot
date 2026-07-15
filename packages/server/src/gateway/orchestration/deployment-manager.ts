@@ -12,6 +12,7 @@ import {
 	generateWorkerToken,
 	getErrorMessage,
 	type MessagePayload,
+	normalizeDomainPattern,
 	OrchestratorError,
 	retryWithBackoff,
 } from "@lobu/core";
@@ -644,6 +645,8 @@ export function buildDeploymentWorkerToken(args: {
   environmentId?: string;
   /** Resolved egress allowlist for a remote runtime sandbox (signed claim). */
   allowedDomains?: string[];
+  /** Resolved egress denylist for a remote runtime sandbox (signed claim). */
+  deniedDomains?: string[];
 }): string {
   return generateWorkerToken(
     args.userId,
@@ -682,6 +685,24 @@ const SECRET_PLACEHOLDER_TTL_SECONDS = (() => {
  * memory growth for long-running gateways that see a large agent churn.
  */
 const GRANT_SYNC_CACHE_MAX = 1000;
+
+/**
+ * Nix binary-cache hosts auto-allowed while an agent has a Nix environment
+ * configured. Config-derived like `networkConfig` domains: granted by the
+ * sync while `nixConfig` is present, reconciled away when it is removed.
+ */
+const NIX_CACHE_DOMAINS = [
+  "cache.nixos.org",
+  "channels.nixos.org",
+  "releases.nixos.org",
+];
+
+/**
+ * npm registry hosts auto-granted at deploy time when CLI-backend providers
+ * are configured (see `generateEnvironmentVariables`). Not derivable from
+ * the message payload, so the domain reconcile must never revoke them.
+ */
+const NPM_REGISTRY_DOMAINS = ["registry.npmjs.org", "registry.npmmirror.com"];
 
 interface DeploymentIdentity {
   conversationId: string;
@@ -808,11 +829,12 @@ export class DeploymentManager {
   protected grantStore?: GrantStore;
   protected policyStore?: PolicyStore;
   /**
-   * Per-agent cache of the last-synced grant pattern set. Used to
-   * (a) skip redundant `grantStore.grant()` writes when the set is
-   * unchanged and (b) compute the revoke-diff so patterns dropped from
-   * `networkConfig.allowedDomains` / `preApprovedTools` are removed from
-   * the grant store instead of lingering forever.
+   * Per-(org, agent) cache of the last-synced `preApprovedTools` patterns,
+   * used to diff tool grants/revokes (domains reconcile against Postgres
+   * instead — see syncNetworkConfigGrants). Keyed by `org|agent` — agent
+   * ids are only unique within an organization, and grants are org-scoped
+   * rows, so an agent-id-only key would let org A's sync suppress org B's
+   * writes.
    */
   private grantSyncCache = new Map<string, Set<string>>();
   /**
@@ -1100,77 +1122,25 @@ export class DeploymentManager {
   }
 
   /**
-   * Auto-add Nix cache domains as grants, sync per-agent grants (network +
-   * pre-approved MCP tools) and egress judge policy, and persist MCP configs
-   * for the deployment.
-   */
-  private async storeDeploymentConfigs(
-    deploymentName: string,
-    messageData: MessagePayload
-  ): Promise<void> {
-    const agentId = messageData.agentId;
-    const orgId = messageData.organizationId;
-
-    // Sync networkConfig.allowedDomains to grant store
-    if (
-      this.grantStore &&
-      agentId &&
-      messageData.networkConfig?.allowedDomains?.length
-    ) {
-      for (const domain of messageData.networkConfig.allowedDomains) {
-        await this.grantStore.grant(agentId, domain, null, undefined, orgId);
-      }
-      logger.info(
-        `Synced network config domains as grants for ${deploymentName}: ${messageData.networkConfig.allowedDomains.join(", ")}`
-      );
-    }
-
-    // Sync operator-pre-approved MCP tool patterns to grant store
-    if (this.grantStore && agentId && messageData.preApprovedTools?.length) {
-      for (const pattern of messageData.preApprovedTools) {
-        await this.grantStore.grant(agentId, pattern, null, undefined, orgId);
-      }
-      logger.info(
-        `Synced pre-approved tool patterns as grants for ${deploymentName}: ${messageData.preApprovedTools.join(", ")}`
-      );
-    }
-
-    this.syncEgressPolicy(messageData, deploymentName);
-
-    // Auto-add Nix cache domains as permanent grants when Nix packages are configured
-    if (
-      this.grantStore &&
-      agentId &&
-      (messageData.nixConfig?.packages?.length ||
-        messageData.nixConfig?.flakeUrl)
-    ) {
-      const NIX_DOMAINS = [
-        "cache.nixos.org",
-        "channels.nixos.org",
-        "releases.nixos.org",
-      ];
-      for (const domain of NIX_DOMAINS) {
-        await this.grantStore.grant(agentId, domain, null, undefined, orgId);
-      }
-      logger.info(
-        `Added Nix cache domains as grants for ${deploymentName}: ${NIX_DOMAINS.join(", ")}`
-      );
-    }
-  }
-
-  /**
-   * Sync per-agent grants (network domains + pre-approved MCP tool patterns)
-   * to the grant store for a running worker. Called on every message so
-   * config changes pick up without redeploying. Also refreshes the in-memory
-   * egress judge policy store, which is read by the shared HTTP proxy rather
-   * than by the worker process.
+   * Sync per-agent grants (network domains + Nix cache domains +
+   * pre-approved MCP tool patterns) to the grant store. Called on worker
+   * create AND on every message so config changes pick up without
+   * redeploying. Also refreshes the in-memory egress judge policy store,
+   * which is read by the shared HTTP proxy rather than by the worker
+   * process.
    *
-   * Computes the diff against the last-synced set per agent:
-   *   - patterns in the new set but not the previous are `grant()`-ed
-   *   - patterns in the previous set but not the new are `revoke()`-d
-   * This means clearing `networkConfig.allowedDomains` or
-   * `preApprovedTools` in lobu.config.ts actually drops access, instead of
-   * leaving stale grants in the store.
+   * Domains reconcile against Postgres UNCONDITIONALLY — the pod-local
+   * cache is never trusted for them. Non-expiring domain rows are written
+   * only by this sync (allow, deny, nix), so the active rows ARE the
+   * previous state: rows outside the current config are revoked, expected
+   * domains whose row is missing or has a flipped allow/deny flag are
+   * (re-)granted. A cache-based skip is multi-replica-unsafe here (an
+   * X→Y→X config sequence across two replicas leaves Y's rows active on
+   * the replica whose warm cache still says X).
+   *
+   * MCP tool patterns stay cache-diffed: user "always" tool approvals share
+   * the store and are indistinguishable from operator `preApprovedTools`,
+   * so a durable reconcile would wrongly revoke them.
    */
   async syncNetworkConfigGrants(messageData: MessagePayload): Promise<void> {
     const agentId = messageData.agentId;
@@ -1180,45 +1150,69 @@ export class DeploymentManager {
 
     if (!this.grantStore) return;
 
-    const nextPatterns = new Set<string>();
-    for (const domain of messageData.networkConfig?.allowedDomains ?? []) {
-      nextPatterns.add(domain);
-    }
-    for (const pattern of messageData.preApprovedTools ?? []) {
-      nextPatterns.add(pattern);
-    }
-
-    const previous = this.grantSyncCache.get(agentId) ?? new Set<string>();
-
-    // Unchanged set → skip the round-trip entirely.
-    if (
-      nextPatterns.size === previous.size &&
-      [...nextPatterns].every((p) => previous.has(p))
-    ) {
-      return;
-    }
-
     const orgId = messageData.organizationId;
 
-    // Revoke patterns that were previously granted but are no longer
-    // present in the current config.
-    for (const pattern of previous) {
-      if (!nextPatterns.has(pattern)) {
-        await this.grantStore.revoke(agentId, pattern, orgId);
+    // ── Domains: PG-reconciled ──────────────────────────────────────────
+    // pattern → denied flag, keyed in NORMALIZED form so alias spellings
+    // ("*.example.com" vs ".example.com") collapse to the single grant row
+    // they share. Denies are added last so a domain listed on both sides
+    // collapses to deny (matching the proxy's deny precedence).
+    const expectedDomains = new Map<string, boolean>();
+    for (const domain of messageData.networkConfig?.allowedDomains ?? []) {
+      expectedDomains.set(normalizeDomainPattern(domain), false);
+    }
+    if (
+      messageData.nixConfig?.packages?.length ||
+      messageData.nixConfig?.flakeUrl
+    ) {
+      for (const domain of NIX_CACHE_DOMAINS) {
+        expectedDomains.set(domain, false);
+      }
+    }
+    for (const domain of messageData.networkConfig?.deniedDomains ?? []) {
+      expectedDomains.set(normalizeDomainPattern(domain), true);
+    }
+
+    const activeDomains = new Map<string, boolean>();
+    for (const row of await this.grantStore.listGrants(agentId, orgId)) {
+      if (row.kind !== "domain" || row.expiresAt !== null) continue;
+      activeDomains.set(row.pattern, row.denied === true);
+    }
+
+    for (const [pattern, denied] of activeDomains) {
+      if (expectedDomains.has(pattern)) continue;
+      // Deploy-time infra ALLOW grants (npm registries for CLI backends) are
+      // not derivable from the payload — exempt them. A denied row is never
+      // exempt: a config-removed deny must be reconciled away or it becomes
+      // unremovable (the deploy-time grant skips denied domains).
+      if (!denied && NPM_REGISTRY_DOMAINS.includes(pattern)) continue;
+      await this.grantStore.revoke(agentId, pattern, orgId);
+    }
+    for (const [pattern, denied] of expectedDomains) {
+      if (activeDomains.get(pattern) !== denied) {
+        await this.grantStore.grant(agentId, pattern, null, denied, orgId);
       }
     }
 
-    // Grant any new patterns. Repeating grants for existing patterns is
-    // idempotent, but skipping them saves writes.
-    for (const pattern of nextPatterns) {
-      if (!previous.has(pattern)) {
+    // ── MCP tool patterns: cache-diffed ─────────────────────────────────
+    const nextTools = new Set(messageData.preApprovedTools ?? []);
+    const cacheKey = `${orgId ?? ""}|${agentId}`;
+    const previousTools = this.grantSyncCache.get(cacheKey);
+
+    for (const pattern of previousTools ?? []) {
+      if (!nextTools.has(pattern)) {
+        await this.grantStore.revoke(agentId, pattern, orgId);
+      }
+    }
+    for (const pattern of nextTools) {
+      if (!previousTools?.has(pattern)) {
         await this.grantStore.grant(agentId, pattern, null, undefined, orgId);
       }
     }
 
     // LRU touch: delete + re-insert so the agent becomes the newest key.
-    this.grantSyncCache.delete(agentId);
-    this.grantSyncCache.set(agentId, nextPatterns);
+    this.grantSyncCache.delete(cacheKey);
+    this.grantSyncCache.set(cacheKey, nextTools);
 
     // Evict the oldest entry if we've exceeded the cap.
     if (this.grantSyncCache.size > GRANT_SYNC_CACHE_MAX) {
@@ -1235,7 +1229,13 @@ export class DeploymentManager {
    * reload) so the next message re-syncs grants.
    */
   invalidateGrantSyncCache(agentId: string): void {
-    this.grantSyncCache.delete(agentId);
+    // Keys are `org|agent`; drop the agent's entry across every org.
+    const suffix = `|${agentId}`;
+    for (const key of this.grantSyncCache.keys()) {
+      if (key.endsWith(suffix)) {
+        this.grantSyncCache.delete(key);
+      }
+    }
   }
 
   /** Clear the entire grant sync cache. Call on whole-config reload. */
@@ -1537,10 +1537,14 @@ export class DeploymentManager {
       // Same allowlist synced to the grant store / JUST_BASH_ALLOWED_DOMAINS — so
       // the runtime route reads it off the signed token, not the worker's body.
       allowedDomains: messageData?.networkConfig?.allowedDomains,
+      deniedDomains: messageData?.networkConfig?.deniedDomains,
     });
 
     const dispatcherHost = this.getDispatcherHost();
-    await this.storeDeploymentConfigs(deploymentName, validated);
+    // Sync network domains (allow + deny + nix caches), pre-approved MCP
+    // tool patterns, and the egress judge policy — single-sourced with the
+    // per-message refresh path so create and update can never diverge.
+    await this.syncNetworkConfigGrants(validated);
 
     const proxyUrl = this.buildProxyUrl(
       deploymentName,
@@ -1725,13 +1729,16 @@ export class DeploymentManager {
       p.getCliBackendConfig?.()
     );
     if (hasCliBackendProviders && this.grantStore && agentId) {
-      const NPM_DOMAINS = ["registry.npmjs.org", "registry.npmmirror.com"];
       const orgId = validated.organizationId;
-      for (const domain of NPM_DOMAINS) {
+      for (const domain of NPM_REGISTRY_DOMAINS) {
+        // An explicit deny (config deniedDomains) wins over the infra
+        // convenience grant — the upsert would otherwise flip the row to
+        // allowed and the warm sync cache would never restore the deny.
+        if (await this.grantStore.isDenied(agentId, domain, orgId)) continue;
         await this.grantStore.grant(agentId, domain, null, undefined, orgId);
       }
       logger.info(
-        `Added npm registry domains as grants for ${deploymentName}: ${NPM_DOMAINS.join(", ")}`
+        `Added npm registry domains as grants for ${deploymentName}: ${NPM_REGISTRY_DOMAINS.join(", ")}`
       );
     }
 

@@ -20,6 +20,7 @@ import {
   type CreateAgentSessionResult,
   createAgentSession,
   ModelRegistry,
+  type SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
 import type { ProgressUpdate, SessionExecutionResult } from "../core/types";
@@ -51,7 +52,8 @@ import {
 } from "./session-context";
 import { buildToolPolicy, isToolAllowedByPolicy } from "./tool-policy";
 import { buildToolUseEventPayload } from "./tool-use-events";
-import { createLobuTools } from "./tools";
+import { checkSandboxLeak } from "./sandbox-leak";
+import { createLobuTools, enforceBashPreflight } from "./tools";
 import { clearSnapshots, hydrateFromSnapshot } from "./transcript-snapshot";
 import { TurnController, wrapToolsWithTurnGuard } from "./turn-controller";
 
@@ -516,6 +518,85 @@ interface RunAISessionParams {
   }) => Promise<void>;
 }
 
+/**
+ * Defensively read a `!`-bash control action off the untyped `platformMetadata`
+ * bag (the gateway sets `bangBash = { command, excludeFromContext }` at ingress
+ * — see core `parseBangBashCommand`). Returns null unless a non-empty string
+ * command and a boolean flag are present, so a malformed value can never trigger
+ * an execution.
+ */
+function readBangBashCommand(
+  platformMetadata: unknown
+): { command: string; excludeFromContext: boolean } | null {
+  if (!platformMetadata || typeof platformMetadata !== "object") return null;
+  const bang = (platformMetadata as Record<string, unknown>).bangBash;
+  if (!bang || typeof bang !== "object") return null;
+  const command = (bang as Record<string, unknown>).command;
+  if (typeof command !== "string" || command.trim() === "") return null;
+  return {
+    command,
+    excludeFromContext:
+      (bang as Record<string, unknown>).excludeFromContext === true,
+  };
+}
+
+/**
+ * Reconcile a just-hydrated session file with how pi's SessionManager will
+ * persist the NEXT turn — needed only for an ASSISTANT-LESS transcript, which in
+ * practice means a history whose only turns were `!`-bash (each records a
+ * `bashExecution`, never an assistant). pi's `_persist` treats an assistant-less
+ * session as an unflushed draft: on the next turn's first assistant message it
+ * re-appends the ENTIRE in-memory branch (including the `session` header) to the
+ * file — but the file is NOT empty, it holds the hydrated bytes, so the branch
+ * lands twice, producing a second `session` header mid-file that corrupts the
+ * transcript (the history parser then drops everything). pi's re-append assumes
+ * the file is empty in that state; make it so. We've already loaded the entries
+ * into memory via `open()`, so truncating the file loses nothing — the pending
+ * re-flush rewrites the whole branch exactly once. A normal session (has an
+ * assistant) is left untouched: pi appends incrementally and never re-flushes.
+ */
+async function normalizeHydratedSessionFile(
+  sessionManager: SessionManager,
+  sessionFile: string
+): Promise<void> {
+  const hasAssistant = sessionManager
+    .getBranch()
+    .some(
+      (entry) => entry.type === "message" && entry.message.role === "assistant"
+    );
+  if (hasAssistant) return;
+  try {
+    await fs.truncate(sessionFile, 0);
+  } catch {
+    // No file yet (fresh conversation) — nothing to reconcile.
+  }
+}
+
+/**
+ * Write the pinned session's current branch to disk so an assistant-less `!`-bash
+ * turn survives the worker's mandatory transcript checkpoint (pi defers its own
+ * flush until an assistant message exists — see the `!` intercept).
+ *
+ * Deliberately NOT `AgentSession.exportToJsonl()`: that regenerates the `session`
+ * header with a fresh `new Date()` timestamp on every call, so a retry of the
+ * SAME run would emit bytes that are not a prefix-extension of the first
+ * snapshot and the gateway's monotonic-prefix guard would 409, wedging the run.
+ * We reuse the EXISTING header (stable id + timestamp) and the branch entries
+ * verbatim (stable ids/parentIds — the session is linear here), so re-running the
+ * same turn yields byte-identical output and the snapshot upsert is idempotent.
+ */
+async function persistBangBashSession(
+  sessionManager: SessionManager,
+  sessionFile: string
+): Promise<void> {
+  const header = sessionManager.getHeader();
+  if (!header) return;
+  const lines = [header, ...sessionManager.getBranch()].map((entry) =>
+    JSON.stringify(entry)
+  );
+  await fs.writeFile(sessionFile, `${lines.join("\n")}\n`, "utf-8");
+}
+
 // ---------------------------------------------------------------------------
 // Main function
 // ---------------------------------------------------------------------------
@@ -875,6 +956,12 @@ export async function runAISession(
       workspaceDir
     );
   }
+  // Reconcile an assistant-less hydrated transcript (a `!`-bash-only history) so
+  // this turn's first assistant message doesn't make pi re-append the whole
+  // branch onto the already-hydrated file and double the session header. No-op
+  // for a normal session (has an assistant). Must run on the FINAL manager,
+  // after any provider-change reopen above.
+  await normalizeHydratedSessionFile(sessionManager, sessionFile);
   const settingsManager = SettingsManager.inMemory();
 
   const toolsPolicy = buildToolPolicy({
@@ -950,9 +1037,9 @@ export async function runAISession(
     });
   // The bash tool returned here carries the FULL hardened policy by construction
   // (prefix allow/deny + gateway-access + package-install blocks, plus
-  // credential-strip), so the forthcoming `!`-bash intercept (PR-D4) can reuse
-  // this same object rather than a second raw path. The filter then removes bash
-  // entirely when the agent policy disallows it (strict / disallowedTools).
+  // credential-strip), and the `!`-bash intercept reuses the same guards (via
+  // enforceBashPreflight) rather than a second raw path. The filter then removes
+  // bash entirely when the agent policy disallows it (strict / disallowedTools).
   const tools = createLobuTools(workspaceDir, {
     bashOperations: embeddedBashOps,
     bashPolicy: toolsPolicy.bashPolicy,
@@ -1488,6 +1575,102 @@ user references earlier discussion or you need prior context.`);
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (deltaTimer) clearTimeout(deltaTimer);
 
+      return buildResult();
+    }
+
+    // `!`-bash: run the command as shell in this conversation's pinned sandbox
+    // and return the output as the reply — the LLM is skipped entirely. The
+    // command runs through the SAME hardened path the agent's own bash tool uses
+    // (enforceBashPreflight → the pinned embeddedBashOps), so it inherits the
+    // prefix policy, gateway-access block, package-install block, and
+    // credential-strip; it crosses no boundary the agent couldn't already. pi's
+    // `executeBash` records a `bashExecution` transcript entry synchronously and
+    // honors `excludeFromContext` (the `!!` form).
+    const bangBash = readBangBashCommand(platformMetadata);
+    if (bangBash && session) {
+      const bashSession = session;
+      // Bash was removed from the tool list by policy (strict / disallowedTools)
+      // → `!` is disabled, exactly as the agent's own bash would be.
+      const bashEnabled = tools.some((tool) => tool.name === "bash");
+      let replyText: string;
+      if (!bashEnabled) {
+        replyText = "Bash is disabled for this agent.";
+      } else {
+        try {
+          enforceBashPreflight(bangBash.command, toolsPolicy.bashPolicy);
+          // Make the running command cancellable: an explicit `/cancel` (or the
+          // steer/cancel path) aborts the in-flight bash, and `executeBash`
+          // returns with `cancelled: true`. Cleared in `finally` so a stale
+          // callback can't abort the next turn's bash.
+          onCancelReady(() => bashSession.abortBash());
+          let result: Awaited<ReturnType<typeof bashSession.executeBash>>;
+          try {
+            result = await bashSession.executeBash(
+              bangBash.command,
+              undefined,
+              {
+                operations: embeddedBashOps,
+                excludeFromContext: bangBash.excludeFromContext,
+              }
+            );
+          } finally {
+            onCancelReady(null);
+          }
+          // Cancelled FIRST: on cancel `exitCode` may be undefined, so a
+          // "exit N" branch would misreport. `result.output` is the full
+          // buffered output (no streaming of raw shell output).
+          if (result.cancelled) {
+            replyText = `\`${bangBash.command}\` cancelled.\n\n\`\`\`\n${result.output}\n\`\`\``;
+          } else {
+            const exit = result.exitCode ?? 0;
+            const status = exit === 0 ? "" : ` (exit ${exit})`;
+            replyText = `\`\`\`\n${result.output}\n\`\`\`${status}`;
+          }
+        } catch (err) {
+          // A preflight/backend rejection is the reply — never an agent turn.
+          replyText = `\`${bangBash.command}\` blocked: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+
+      // Persist the session before the worker's mandatory transcript checkpoint.
+      // pi's SessionManager defers its on-disk flush until an ASSISTANT message
+      // exists (it treats an assistant-less session as an incomplete draft). A
+      // `!` turn never produces an assistant message, so without this the session
+      // file stays empty and `checkpointSuccessfulRun` fails ("Transcript
+      // checkpoint failed"), REJECTING the run — the record is lost and, on a
+      // fresh conversation, the whole `!` turn 500s. `persistBangBashSession`
+      // writes the full branch under the EXISTING (stable) header — the exact
+      // format `SessionManager.open()` expects on the next hydrate, and
+      // byte-idempotent across a same-run retry. This covers ALL `!` outcomes:
+      // executed (pi recorded a `bashExecution`), bash-disabled, and
+      // preflight/backend-blocked (no pi record, but the header alone is a valid
+      // non-empty checkpoint). Guard on the absence of an assistant message: with
+      // one, pi already flushed incrementally and rewriting would diverge from
+      // the bytes a later turn extends, tripping the snapshot's monotonic-prefix
+      // guard. (The complementary "a later normal turn re-appends this
+      // assistant-less branch and doubles the header" hazard is handled once, at
+      // the hydrate/open boundary — see `normalizeHydratedSessionFile`.)
+      const hasAssistant = bashSession.messages.some(
+        (message) => message.role === "assistant"
+      );
+      if (!hasAssistant) {
+        await persistBangBashSession(bashSession.sessionManager, sessionFile);
+      }
+
+      // Same file-link neutralization the agent's own replies get, applied to
+      // the COMPLETE output before the single emit (no raw pre-redaction bytes
+      // ever leave the worker for a `!` turn).
+      const redacted = checkSandboxLeak(replyText, false).redactedText;
+      await onProgress({
+        type: "output",
+        data: redacted,
+        timestamp: Date.now(),
+      });
+
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (deltaTimer) clearTimeout(deltaTimer);
+
+      // No `emitAgentEnd`: this was not an agent turn (the model never ran).
       return buildResult();
     }
 

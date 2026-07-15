@@ -236,17 +236,48 @@ function isDirectGatewayApiAccessCommand(command: string): boolean {
 }
 
 /**
- * The single hardened bash entry point. Wraps the raw bash tool with EVERY
- * command-inspection guard, so any caller that holds this tool object gets the
- * full policy by construction. Today the agent's tool loop routes through here;
- * the forthcoming `!`-bash intercept (PR-D4) is meant to reuse this same object
- * rather than call `BashOperations.exec()` raw. The guards, in order applied to
- * the extracted command:
+ * The command-inspection gauntlet the hardened bash tool applies before it runs
+ * anything. Extracted so BOTH the agent's tool wrapper (below) and the `!`-bash
+ * intercept (which calls pi's `session.executeBash` for its transcript recording
+ * and so bypasses the tool wrapper) enforce the SAME guards from one source of
+ * truth. Throws on any violation; returns void when the command is allowed.
+ * Order:
  *   - prefix allow/deny policy (`enforceBashCommandPolicy`)
  *   - direct-gateway-API-access block
  *   - direct-package-install block
- * and, on failure, a proxy-403 hint (curl hides the proxy CONNECT body, so the
- * model would otherwise see only exit code 56, not "Domain not allowed").
+ *
+ * NOT included here: credential-stripping (`spawnHook`/`stripEnv`, inside
+ * `createBashTool`) and bash *removal* when policy disallows it (a tool-list
+ * filter in the caller). The `!` intercept covers those separately: it selects
+ * the same hardened `BashOperations` and only runs when bash survived the
+ * removal filter.
+ */
+export function enforceBashPreflight(
+  command: string,
+  bashPolicy?: BashCommandPolicy
+): void {
+  if (bashPolicy) {
+    enforceBashCommandPolicy(command, bashPolicy);
+  }
+  if (isDirectGatewayApiAccessCommand(command)) {
+    throw new Error(
+      "DIRECT GATEWAY API ACCESS BLOCKED. Use the registered MCP/auth tools instead of calling gateway /mcp or /internal endpoints from Bash."
+    );
+  }
+  if (isDirectPackageInstallCommand(command)) {
+    throw new Error(
+      "DIRECT PACKAGE INSTALL BLOCKED. Install system packages with nixPackages in lobu.config.ts or agent settings instead of using package managers inside the worker."
+    );
+  }
+}
+
+/**
+ * The single hardened bash entry point. Wraps the raw bash tool so any caller
+ * that holds this tool object gets the full policy by construction — the agent's
+ * tool loop routes through here. It runs {@link enforceBashPreflight} on the
+ * extracted command, then, on failure, appends a proxy-403 hint (curl hides the
+ * proxy CONNECT body, so the model would otherwise see only exit code 56, not
+ * "Domain not allowed").
  *
  * Credential-stripping (`spawnHook`/`stripEnv`) lives inside `createBashTool`;
  * bash *removal* when policy disallows it is a tool-list filter in the caller.
@@ -264,19 +295,7 @@ function wrapBashWithProxyHint(
         params && typeof params === "object" && "command" in params
           ? String((params as { command?: unknown }).command ?? "")
           : "";
-      if (bashPolicy) {
-        enforceBashCommandPolicy(command, bashPolicy);
-      }
-      if (isDirectGatewayApiAccessCommand(command)) {
-        throw new Error(
-          "DIRECT GATEWAY API ACCESS BLOCKED. Use the registered MCP/auth tools instead of calling gateway /mcp or /internal endpoints from Bash."
-        );
-      }
-      if (isDirectPackageInstallCommand(command)) {
-        throw new Error(
-          "DIRECT PACKAGE INSTALL BLOCKED. Install system packages with nixPackages in lobu.config.ts or agent settings instead of using package managers inside the worker."
-        );
-      }
+      enforceBashPreflight(command, bashPolicy);
       try {
         return await tool.execute(toolCallId, params, signal, onUpdate);
       } catch (err: any) {

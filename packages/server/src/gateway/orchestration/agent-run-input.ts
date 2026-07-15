@@ -36,6 +36,7 @@ function durableClaims(token: WorkerTokenData): DurableRunTokenClaims {
     runtimeProviderId: token.runtimeProviderId,
     environmentId: token.environmentId,
     allowedDomains: token.allowedDomains,
+    deniedDomains: token.deniedDomains,
   };
 }
 
@@ -93,6 +94,7 @@ export function attachFreshRunJobToken(
         runtimeProviderId: token.runtimeProviderId,
         environmentId: token.environmentId,
         allowedDomains: token.allowedDomains,
+        deniedDomains: token.deniedDomains,
       },
     ),
   };

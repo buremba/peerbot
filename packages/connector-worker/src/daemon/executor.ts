@@ -309,6 +309,7 @@ async function executeSyncRun(
       items_collected: itemsCollectedSoFar,
       checkpoint: lastCheckpoint ?? undefined,
       auth_update: result.auth_update ?? undefined,
+      error_message: partialFetchFailureMessage(result.metadata),
     });
 
     console.error(`[executor] Sync run ${run_id} completed: ${itemsCollectedSoFar} items`);
@@ -332,6 +333,26 @@ async function executeSyncRun(
 
     return { itemsCollected: itemsCollectedSoFar, error: errorMessage };
   }
+}
+
+/**
+ * Connectors report per-source failures on an otherwise-successful sync via
+ * `SyncResult.metadata.fetch_errors` ({ url, error }[]). Surface them on the
+ * run record through the existing `error_message` field — the gateway
+ * persists it even for successful runs — so a partial sync is
+ * distinguishable from a clean one.
+ */
+function partialFetchFailureMessage(
+  metadata: Record<string, unknown> | undefined
+): string | undefined {
+  const errors = metadata?.fetch_errors;
+  if (!Array.isArray(errors) || errors.length === 0) return undefined;
+  const shown = errors.slice(0, 10).map((entry) => {
+    const e = entry as { url?: unknown; error?: unknown };
+    return `${String(e.url ?? 'unknown source')}: ${String(e.error ?? 'unknown error')}`;
+  });
+  const more = errors.length > shown.length ? `; +${errors.length - shown.length} more` : '';
+  return `Partial sync — ${errors.length} source(s) failed: ${shown.join('; ')}${more}`;
 }
 
 /**

@@ -53,6 +53,8 @@ export interface RuntimeExecContext {
   timeoutMs?: number;
   /** Raw allowed-domains list from the worker; the provider derives its policy. */
   allowedDomains: unknown;
+  /** Raw denied-domains list (signed claim); providers subtract it from the allow policy. */
+  deniedDomains: unknown;
 }
 
 export interface RuntimeExecResult {

@@ -353,8 +353,10 @@ export async function createAuthProfile(params: {
 
   // ensureUniqueAuthProfileSlug is a non-locking SELECT loop: two concurrent
   // creates can resolve the SAME free slug and race auth_profiles_org_slug_unique.
-  // Re-resolve + retry a bounded number of times on that specific 23505 so the
-  // loser lands on the next suffix instead of leaking a raw constraint error.
+  // ON CONFLICT (organization_id, slug) DO NOTHING makes the slug-race loser a
+  // no-op (returns no row) WITHOUT aborting an enclosing transaction — a caller
+  // (interactive-connection-setup) passes a `tx`, where a raw 23505 would poison
+  // it (25P02). On a no-op we re-resolve to the next free suffix and retry.
   for (let attempt = 0; ; attempt++) {
     const slug = await ensureUniqueAuthProfileSlug({
       organizationId: params.organizationId,
@@ -395,21 +397,10 @@ export async function createAuthProfile(params: {
           ${params.userDataDir ?? null},
           ${params.cdpUrl ?? null}
         )
+        ON CONFLICT (organization_id, slug) DO NOTHING
         RETURNING ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
       `;
     } catch (err) {
-      // A concurrent create grabbed the same slug first — re-resolve and retry,
-      // since the SELECT-loop is not a lock. Each retry re-scans for the next
-      // free suffix, so N attempts cover N concurrent creators of the same base.
-      if (isUniqueViolation(err, 'auth_profiles_org_slug_unique')) {
-        if (attempt < 8) continue;
-        // Exhausted under extreme contention — surface a clean, retryable error
-        // rather than leaking the raw constraint 23505.
-        throw new ToolUserError(
-          'Could not allocate a unique auth profile slug under concurrent load; retry.',
-          409
-        );
-      }
       // Partial unique index `auth_profiles_pending_oauth_account_unique`
       // enforces one pending oauth_account row per (org, connector_key,
       // provider, created_by). Translate a raw 23505 into a structured error
@@ -432,6 +423,17 @@ export async function createAuthProfile(params: {
         }
       }
       throw err;
+    }
+
+    if (rows.length === 0) {
+      // Slug-race loser (ON CONFLICT DO NOTHING). Re-resolve to the next free
+      // suffix and retry; each retry re-scans, so N attempts cover N concurrent
+      // creators of the same base slug.
+      if (attempt < 8) continue;
+      throw new ToolUserError(
+        'Could not allocate a unique auth profile slug under concurrent load; retry.',
+        409
+      );
     }
 
     return rows[0] as AuthProfileRow;

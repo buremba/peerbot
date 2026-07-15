@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
+import type { RawDispatchTool } from "../../../tools/registry";
 import { getRawDispatchTools } from "../../../tools/registry";
 import { generateStrictToolPaths } from "../../../utils/openapi-generator";
 
@@ -9,8 +10,17 @@ import { generateStrictToolPaths } from "../../../utils/openapi-generator";
  * server-internal input fields never reach the client.
  */
 describe("generateStrictToolPaths", () => {
-	const paths = generateStrictToolPaths();
-	const tools = getRawDispatchTools();
+	// Compute in `beforeAll`, NOT at describe-body evaluation: walking the tool
+	// registry at module-load time races the registry's own circular-import
+	// initialization (ALL_DISPATCH_TOOLS is still in its TDZ), which throws and
+	// poisons the shared module for other suites. Production only ever calls these
+	// at request time, well after modules settle.
+	let paths: Record<string, any>;
+	let tools: RawDispatchTool[];
+	beforeAll(() => {
+		paths = generateStrictToolPaths();
+		tools = getRawDispatchTools();
+	});
 
 	it("emits one POST /api/{orgSlug}/<tool> path per dispatch tool", () => {
 		const emitted = Object.keys(paths).sort();

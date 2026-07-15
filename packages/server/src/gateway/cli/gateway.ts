@@ -24,7 +24,6 @@ import { createImageRoutes } from "../routes/internal/images.js";
 import { createInteractionRoutes } from "../routes/internal/interactions.js";
 import { createRuntimeRoutes } from "../routes/internal/runtime.js";
 import { registerAutoOpenApiRoutes } from "../routes/openapi-auto.js";
-import { generateStrictToolPaths } from "../../utils/openapi-generator.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
@@ -887,7 +886,16 @@ curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \\
   // CLI and UI get a typed client for BOTH surfaces instead of only agent
   // sessions. `getOpenAPI31Document` renders the Zod routes in the same JSON
   // Schema 2020-12 dialect the TypeBox tool schemas already use.
-  app.get("/api/docs/openapi.json", (c) => {
+  app.get("/api/docs/openapi.json", async (c) => {
+    // Dynamic import (rationale): a static `gateway → openapi-generator →
+    // registry` edge closes a circular-init cycle with the tool registry's admin
+    // deps, throwing a TDZ error during module load under some import orders.
+    // This docs endpoint is cold and low-traffic, and by request time every
+    // module is already loaded, so `import()` resolves from cache with no
+    // measurable cost — while keeping the cycle out of the static graph.
+    const { generateStrictToolPaths } = await import(
+      "../../utils/openapi-generator.js"
+    );
     const base = app.getOpenAPI31Document(openApiDocConfig);
     const toolPaths = generateStrictToolPaths();
     return c.json({

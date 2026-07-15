@@ -212,3 +212,54 @@ describe("POST /api/v1/agents/:id/messages — strict JSON on the REAL route", (
 		expect(res.status).not.toBe(400);
 	});
 });
+
+describe("optional request bodies", () => {
+	test("a bodyless POST to an all-optional-body route validates as {}", async () => {
+		const app = new Hono();
+		let seen: unknown;
+		defineRoute(
+			app,
+			{
+				method: "post",
+				path: "/optional-body",
+				request: { body: Type.Object({ note: Type.Optional(Type.String()) }) },
+				responses: { 200: { description: "ok" } },
+			},
+			(c) => {
+				seen = getValidated(c).json;
+				return c.json({ ok: true });
+			},
+		);
+		const res = await app.request("/optional-body", { method: "POST" });
+		expect(res.status).toBe(200);
+		expect(seen).toEqual({});
+	});
+
+	test("a bodyless POST to a required-body route fails field-level", async () => {
+		const app = new Hono();
+		defineRoute(
+			app,
+			{
+				method: "post",
+				path: "/required-body",
+				request: { body: Type.Object({ name: Type.String() }) },
+				responses: { 200: { description: "ok" } },
+			},
+			(c) => c.json({ ok: true }),
+		);
+		const res = await app.request("/required-body", { method: "POST" });
+		expect(res.status).toBe(400);
+	});
+
+	test("doc `requestBody.required` mirrors the schema", () => {
+		// Registered by the tests above (registry is module-global).
+		const paths = buildRoutePaths() as Record<
+			string,
+			Record<string, { requestBody?: { required: boolean } }>
+		>;
+		expect(paths["/optional-body"].post.requestBody?.required).toBe(false);
+		expect(paths["/required-body"].post.requestBody?.required).toBe(true);
+		// The real create-agent route is all-optional → optional body.
+		expect(paths["/api/v1/agents"].post.requestBody?.required).toBe(false);
+	});
+});

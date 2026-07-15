@@ -157,9 +157,13 @@ export function defineRoute<
 		if (bodySchema) {
 			let raw: unknown;
 			try {
-				raw = await c.req.json();
+				// A missing/empty body validates as {} (the previous zod-openapi
+				// validator's behavior — bodies are optional unless the schema has
+				// required fields, which {} then fails with a field-level 400).
+				const text = await c.req.text();
+				raw = text.trim() === "" ? {} : JSON.parse(text);
 			} catch {
-				return c.json({ error: "Invalid or missing JSON body" }, 400);
+				return c.json({ error: "Invalid JSON body" }, 400);
 			}
 			try {
 				// Strict: JSON already carries real types — no coercion.
@@ -277,8 +281,14 @@ export function buildRoutePaths(): Record<string, unknown> {
 		if (parameters.length > 0) op.parameters = parameters;
 
 		if (spec.request?.body) {
+			// `required` mirrors the schema: only a body with required fields is a
+			// required body (an all-optional schema accepts a bodyless request,
+			// which the middleware validates as {}).
+			const bodyRequired =
+				Array.isArray(spec.request.body.required) &&
+				spec.request.body.required.length > 0;
 			op.requestBody = {
-				required: true,
+				required: bodyRequired,
 				content: {
 					"application/json": { schema: deepCopyStrict(spec.request.body) },
 				},

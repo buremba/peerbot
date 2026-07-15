@@ -1319,7 +1319,10 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       // (additionalProperties) keeps extra routing fields the handler forwards.
       let rawBody: unknown;
       try {
-        rawBody = await c.req.json();
+        // Missing/empty body → {} (parity with the defineRoute middleware and
+        // the previous zod-openapi validator); non-empty must parse.
+        const text = await c.req.text();
+        rawBody = text.trim() === "" ? {} : JSON.parse(text);
       } catch {
         return c.json({ success: false, error: "Invalid JSON body" }, 400);
       }

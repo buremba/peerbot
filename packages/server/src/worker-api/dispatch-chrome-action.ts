@@ -36,6 +36,42 @@ const DEVICE_ONLINE_WINDOW_MINUTES = 20;
 /** Live unique index: one chrome connection per (org, device_worker) pin. */
 const CHROME_DEVICE_PIN_UNIQUE = 'idx_connections_org_connector_device_live';
 
+/**
+ * In-process rebind mutex on globalThis so duplicate module evaluations
+ * (bun test / vitest path variants) still share one lock map.
+ * DB locks cover multi-replica; this covers same-process concurrent callers.
+ */
+const rebindLocks: Map<string, Array<() => void>> = (() => {
+  const g = globalThis as typeof globalThis & {
+    __lobuChromeRebindLocks?: Map<string, Array<() => void>>;
+  };
+  if (!g.__lobuChromeRebindLocks) {
+    g.__lobuChromeRebindLocks = new Map();
+  }
+  return g.__lobuChromeRebindLocks;
+})();
+
+async function withChromeRebindLock<T>(
+  organizationId: string,
+  connectionId: number,
+  fn: () => Promise<T>
+): Promise<T> {
+  const key = `${organizationId}:${Number(connectionId)}`;
+  while (rebindLocks.has(key)) {
+    await new Promise<void>((resolve) => {
+      rebindLocks.get(key)!.push(resolve);
+    });
+  }
+  rebindLocks.set(key, []);
+  try {
+    return await fn();
+  } finally {
+    const waiters = rebindLocks.get(key) ?? [];
+    rebindLocks.delete(key);
+    for (const wake of waiters) wake();
+  }
+}
+
 export interface ChromeActionDispatchResult {
   status: 'completed' | 'failed' | 'timeout';
   output?: Record<string, unknown>;
@@ -143,40 +179,38 @@ export async function resolveOnlineChromeConnection(
     );
   };
 
-  // Prefer existing owner of a target worker (no UPDATE). Concurrent-safe:
-  // re-read on unique violation after a guarded rebind.
+  // Active owner of a target worker (no UPDATE). Always re-read from DB so a
+  // paused/deleted row cannot win over the active-only chromeRows snapshot.
   const findOwnerOf = async (
     deviceWorkerId: string
   ): Promise<number | null> => {
-    const local = chromeRows.find((r) => r.current_pin === deviceWorkerId);
-    if (local) return local.connection_id;
     const rows = (await sql`
       SELECT id
       FROM connections
       WHERE organization_id = ${organizationId}
         AND connector_key = 'chrome'
-        AND status = 'active'
         AND device_worker_id = ${deviceWorkerId}::uuid
         AND deleted_at IS NULL
+        AND status = 'active'
       LIMIT 1
     `) as Array<{ id: number }>;
     return rows[0]?.id ?? null;
   };
 
   /**
-   * Rebind `connectionId` onto `deviceWorkerId` only when the target is still
-   * unowned AND the candidate still holds the pin we selected it on
-   * (`expectedCurrentPin`). The compare-and-swap stops two concurrent
-   * resolutions targeting different workers from both picking the same
-   * NULL/stale candidate and silently clobbering each other's pin — the loser's
-   * UPDATE affects zero rows and falls through to the winner-handling path.
-   * On race/unique violation, return the winner's connection.
+   * Rebind `connectionId` onto `deviceWorkerId` only when, under a row lock:
+   *   - the source pin still matches `expectedSourcePin` (CAS)
+   *   - the connection is still active
+   *   - the target worker is still free of any live (non-deleted) chrome pin
+   *     — the unique index includes paused rows, so those also block
+   * Serializes concurrent rebinds of the same sole/NULL candidate so two
+   * replicas cannot each return the connection paired with a different worker.
    */
   const rebindChromeToWorker = async (
     connectionId: number,
-    expectedCurrentPin: string | null,
     deviceWorkerId: string,
-    reason: string
+    reason: string,
+    expectedSourcePin: string | null
   ): Promise<{ connectionId: number; deviceWorkerId: string } | null> => {
     const existingOwner = await findOwnerOf(deviceWorkerId);
     if (existingOwner != null) {
@@ -184,38 +218,155 @@ export async function resolveOnlineChromeConnection(
       return { connectionId: existingOwner, deviceWorkerId };
     }
 
-    try {
-      const updated = (await sql`
-        UPDATE connections
-        SET device_worker_id = ${deviceWorkerId}::uuid, updated_at = now()
-        WHERE id = ${connectionId}
-          AND organization_id = ${organizationId}
-          AND connector_key = 'chrome'
-          AND status = 'active'
-          AND deleted_at IS NULL
-          AND device_worker_id IS NOT DISTINCT FROM ${expectedCurrentPin}::uuid
-          AND NOT EXISTS (
-            SELECT 1
-            FROM connections other
-            WHERE other.organization_id = ${organizationId}
-              AND other.connector_key = 'chrome'
-              AND other.device_worker_id = ${deviceWorkerId}::uuid
-              AND other.deleted_at IS NULL
-              AND other.id <> ${connectionId}
-          )
-        RETURNING id
-      `) as Array<{ id: number }>;
+    const connIdNum = Number(connectionId);
+    return withChromeRebindLock(organizationId, connIdNum, async () => {
+    // Re-check owner after acquiring the in-process lock (another concurrent
+    // caller in this process may have rebound the target already).
+    const ownerAfterLock = await findOwnerOf(deviceWorkerId);
+    if (ownerAfterLock != null) {
+      logSelection(
+        `${reason}:existing_owner`,
+        ownerAfterLock,
+        deviceWorkerId,
+        false
+      );
+      return { connectionId: ownerAfterLock, deviceWorkerId };
+    }
 
-      if (updated.length > 0) {
-        logSelection(reason, connectionId, deviceWorkerId, true);
-        return { connectionId, deviceWorkerId };
+    // Must run on ONE reserved connection: FOR UPDATE only serializes when
+    // every statement shares a backend. sql.begin() holds a pool connection.
+    try {
+      const result = await sql.begin(async (tx) => {
+        await tx`
+          SELECT pg_advisory_xact_lock(
+            hashtext(${`chrome-rebind:${organizationId}`}),
+            ${connIdNum}::int
+          )
+        `;
+
+        const locked = (await tx`
+          SELECT id, device_worker_id, status
+          FROM connections
+          WHERE id = ${connIdNum}
+            AND deleted_at IS NULL
+          FOR UPDATE
+        `) as Array<{
+          id: number;
+          device_worker_id: string | null;
+          status: string;
+        }>;
+
+        if (locked.length === 0) {
+          return { kind: 'miss' as const };
+        }
+        const row = locked[0];
+        if (row.status !== 'active') {
+          return { kind: 'miss' as const };
+        }
+
+        const currentPin =
+          row.device_worker_id == null ? null : String(row.device_worker_id);
+        const expected =
+          expectedSourcePin == null ? null : String(expectedSourcePin);
+        if (currentPin !== expected) {
+          return { kind: 'cas_miss' as const };
+        }
+
+        const holders = (await tx`
+          SELECT id, status
+          FROM connections
+          WHERE organization_id = ${organizationId}
+            AND connector_key = 'chrome'
+            AND device_worker_id = ${deviceWorkerId}::uuid
+            AND deleted_at IS NULL
+            AND id <> ${connIdNum}
+          LIMIT 1
+        `) as Array<{ id: number; status: string }>;
+
+        if (holders.length > 0) {
+          if (holders[0].status === 'active') {
+            return {
+              kind: 'owner' as const,
+              connectionId: Number(holders[0].id),
+              deviceWorkerId,
+            };
+          }
+          return { kind: 'blocked_inactive_holder' as const };
+        }
+
+        const updated = (await tx`
+          UPDATE connections
+          SET device_worker_id = ${deviceWorkerId}::uuid, updated_at = now()
+          WHERE id = ${connIdNum}
+            AND deleted_at IS NULL
+            AND status = 'active'
+            AND device_worker_id IS NOT DISTINCT FROM ${expectedSourcePin}::uuid
+          RETURNING id, device_worker_id
+        `) as Array<{ id: number; device_worker_id: string }>;
+
+        if (
+          updated.length > 0 &&
+          String(updated[0].device_worker_id) === deviceWorkerId
+        ) {
+          return {
+            kind: 'rebound' as const,
+            connectionId: connIdNum,
+            deviceWorkerId,
+          };
+        }
+        return { kind: 'miss' as const };
+      });
+
+      if (result.kind === 'rebound') {
+        // Post-commit verify: even with FOR UPDATE, last-writer-wins can leave
+        // a concurrent caller holding a stale {connectionId, deviceWorkerId}
+        // pair. Only succeed if the committed pin still matches our target.
+        const verify = (await sql`
+          SELECT device_worker_id
+          FROM connections
+          WHERE id = ${connectionId}
+            AND deleted_at IS NULL
+            AND status = 'active'
+          LIMIT 1
+        `) as Array<{ device_worker_id: string | null }>;
+        const committed =
+          verify[0]?.device_worker_id == null
+            ? null
+            : String(verify[0].device_worker_id);
+        if (committed === deviceWorkerId) {
+          logSelection(reason, connectionId, deviceWorkerId, true);
+          return { connectionId, deviceWorkerId };
+        }
+        logSelection(
+          `${reason}:post_commit_mismatch`,
+          connectionId,
+          deviceWorkerId,
+          false
+        );
+        // Fall through: maybe our target is now owned by an active row.
+      } else if (result.kind === 'owner') {
+        logSelection(
+          `${reason}:existing_owner`,
+          result.connectionId,
+          result.deviceWorkerId,
+          false
+        );
+        return {
+          connectionId: result.connectionId,
+          deviceWorkerId: result.deviceWorkerId,
+        };
       }
 
-      // Lost the race or candidate vanished — return whoever owns the target.
+      // CAS miss / blocked inactive holder / post-commit mismatch — claim only
+      // if an active owner of *our* target now exists. Never pair this
+      // connection with a worker it no longer points at.
       const winner = await findOwnerOf(deviceWorkerId);
       if (winner != null) {
         logSelection(`${reason}:race_winner`, winner, deviceWorkerId, false);
         return { connectionId: winner, deviceWorkerId };
+      }
+      if (result.kind !== 'rebound') {
+        logSelection(`${reason}:${result.kind}`, connectionId, deviceWorkerId, false);
       }
       return null;
     } catch (err) {
@@ -229,6 +380,7 @@ export async function resolveOnlineChromeConnection(
       }
       throw err;
     }
+    });
   };
 
   /**
@@ -275,9 +427,9 @@ export async function resolveOnlineChromeConnection(
 
       return rebindChromeToWorker(
         candidate.connection_id,
-        candidate.current_pin,
         preferredId,
-        'preferred_rebind'
+        'preferred_rebind',
+        candidate.current_pin
       );
     }
 
@@ -288,26 +440,48 @@ export async function resolveOnlineChromeConnection(
   }
 
   // --- Sticky: any chrome already online (multi-Chrome: do not jump to last_seen) ---
+  // Re-check active status so a concurrently paused row cannot be selected.
   const sticky = chromeRows.find((r) => r.pin_online_worker_id != null);
   if (sticky?.pin_online_worker_id) {
-    logSelection(
-      'sticky_online_pin',
-      sticky.connection_id,
-      sticky.pin_online_worker_id,
-      false
-    );
-    return {
-      connectionId: sticky.connection_id,
-      deviceWorkerId: sticky.pin_online_worker_id,
-    };
+    const stillActiveOwner = await findOwnerOf(sticky.pin_online_worker_id);
+    if (stillActiveOwner != null) {
+      logSelection(
+        'sticky_online_pin',
+        stillActiveOwner,
+        sticky.pin_online_worker_id,
+        false
+      );
+      return {
+        connectionId: stillActiveOwner,
+        deviceWorkerId: sticky.pin_online_worker_id,
+      };
+    }
+    // Snapshot was stale (paused/deleted mid-flight) — fall through to heal.
   }
 
-  // --- Heal: freshest online worker not owned by a live chrome row ---
-  const ownedPins = new Set(
-    chromeRows.map((r) => r.current_pin).filter((p): p is string => p != null)
-  );
-  const unownedOnline = onlineWorkers.find((w) => !ownedPins.has(w.id));
-  if (!unownedOnline) {
+  // --- Heal: freshest online worker not owned by an *active* chrome row ---
+  // Live NOT EXISTS (not the start-of-call snapshot) so a concurrently
+  // paused owner does not block healing onto that worker.
+  const unownedOnline = (await sql`
+    SELECT dw.id
+    FROM device_workers dw
+    WHERE dw.organization_id = ${organizationId}
+      AND dw.platform = 'chrome-extension'
+      AND dw.capabilities::jsonb @> '["browser.debugger"]'::jsonb
+      AND dw.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
+      AND NOT EXISTS (
+        SELECT 1
+        FROM connections con
+        WHERE con.organization_id = ${organizationId}
+          AND con.connector_key = 'chrome'
+          AND con.device_worker_id = dw.id
+          AND con.deleted_at IS NULL
+          AND con.status = 'active'
+      )
+    ORDER BY dw.last_seen_at DESC
+    LIMIT 1
+  `) as Array<{ id: string }>;
+  if (unownedOnline.length === 0) {
     return null;
   }
 
@@ -318,9 +492,9 @@ export async function resolveOnlineChromeConnection(
 
   return rebindChromeToWorker(
     candidate.connection_id,
-    candidate.current_pin,
-    unownedOnline.id,
-    'heal_unowned_online'
+    unownedOnline[0].id,
+    'heal_unowned_online',
+    candidate.current_pin
   );
 }
 

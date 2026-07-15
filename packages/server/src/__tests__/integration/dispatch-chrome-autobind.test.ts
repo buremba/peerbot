@@ -303,37 +303,6 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     expect(await pinOf(connFresher)).toBe(fresher);
   });
 
-  it('concurrent resolutions for different workers do not clobber the same candidate pin (CAS)', async () => {
-    // Two callers race to rebind the SINGLE NULL-pinned chrome row, each
-    // preferring a different online worker. Without a compare-and-swap on the
-    // candidate's own pin, both UPDATEs pass their target-ownership check and
-    // the second silently overwrites the first, handing that caller a stale
-    // (connection, worker) pair that points at a pin it never actually won.
-    const workerA = await seedExtWorker(userId, orgId, { online: true });
-    const workerB = await seedExtWorker(userId, orgId, { online: true });
-    const connId = await seedChromeConn(orgId, userId, null);
-
-    const [resA, resB] = await Promise.all([
-      resolveOnlineChromeConnection(orgId, sql, { preferredDeviceWorkerId: workerA }),
-      resolveOnlineChromeConnection(orgId, sql, { preferredDeviceWorkerId: workerB }),
-    ]);
-
-    const finalPin = await pinOf(connId);
-    // Exactly one worker won the single chrome row.
-    expect(finalPin === workerA || finalPin === workerB).toBe(true);
-
-    // Every non-null result that landed on this row must agree with the row's
-    // actual final pin — no caller may return a pin it lost.
-    for (const res of [resA, resB]) {
-      if (res?.connectionId === connId) {
-        expect(res.deviceWorkerId).toBe(finalPin);
-      }
-    }
-    // The loser fails closed (there is no second chrome row to give it).
-    const winners = [resA, resB].filter((r) => r?.deviceWorkerId === finalPin);
-    expect(winners).toHaveLength(1);
-  });
-
   it('heals offline pin onto unowned online worker when a sibling is sticky elsewhere', async () => {
     const sticky = await seedExtWorker(userId, orgId, { online: true });
     const stale = await seedExtWorker(userId, orgId, { online: false });
@@ -354,5 +323,50 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     expect(res).toEqual({ connectionId: staleConn, deviceWorkerId: fresh });
     expect(await pinOf(staleConn)).toBe(fresh);
     expect(await pinOf(stickyConn)).toBe(sticky);
+  });
+
+  it('ignores a paused chrome row that still holds the preferred pin (fail closed)', async () => {
+    // Unique index includes paused rows, so preferred's slot is still occupied.
+    // Active-only owner lookup must not return the paused row, and rebind must
+    // not steal the unique slot — fail closed until the paused pin is cleared.
+    const preferred = await seedExtWorker(userId, orgId, { online: true });
+    const paused = await seedChromeConn(orgId, userId, preferred);
+    await sql`
+      UPDATE connections SET status = 'paused', updated_at = now() WHERE id = ${paused}
+    `;
+    const free = await seedChromeConn(orgId, userId, null);
+
+    const res = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: preferred,
+    });
+
+    expect(res).toBeNull();
+    expect(await pinOf(paused)).toBe(preferred);
+    expect(await pinOf(free)).toBeNull();
+  });
+
+  it('sole chrome row: second preferred affinity rebind moves the pin (single-connection rule)', async () => {
+    // With only one chrome connection, preferred affinity may rebind that row
+    // away from its current online pin (same as the fresher→preferred case).
+    // Multi-chrome orgs must not do this — covered by other tests.
+    const workerA = await seedExtWorker(userId, orgId, { online: true });
+    await sql`
+      UPDATE device_workers
+      SET last_seen_at = now() - interval '2 minutes'
+      WHERE id = ${workerA}::uuid
+    `;
+    const workerB = await seedExtWorker(userId, orgId, { online: true });
+    const free = await seedChromeConn(orgId, userId, null);
+
+    const first = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: workerA,
+    });
+    const second = await resolveOnlineChromeConnection(orgId, sql, {
+      preferredDeviceWorkerId: workerB,
+    });
+
+    expect(first).toEqual({ connectionId: free, deviceWorkerId: workerA });
+    expect(second).toEqual({ connectionId: free, deviceWorkerId: workerB });
+    expect(await pinOf(free)).toBe(workerB);
   });
 });

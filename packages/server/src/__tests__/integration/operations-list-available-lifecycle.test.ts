@@ -779,6 +779,87 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 		expect(runRows).toHaveLength(0);
 	});
 
+	it("legacy-unowned private connection (created_by IS NULL): list and operations agree per role", async () => {
+		const { org, user: owner } = await setupOwner("Ops Legacy Unowned Org");
+		const member = await createTestUser();
+		await addUserToOrganization(member.id, org.id, "member");
+		await seedConnector(org.id, KEY_READY, "Legacy Unowned Connector");
+		// A row predating the created_by column: private with NO creator.
+		const unowned = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_READY,
+			visibility: "private",
+		});
+
+		// connections.list (management surface) shows it to the owner…
+		const ownerList = (await manageConnections(
+			{ action: "list", connector_key: KEY_READY } as never,
+			TEST_ENV(),
+			ctxFor(org.id, owner.id),
+		)) as { connections?: Array<{ id: number }> };
+		expect((ownerList.connections ?? []).map((c) => Number(c.id))).toContain(
+			unowned.id,
+		);
+
+		// …so operations must AGREE: the owner gets an executable target, not a
+		// "disconnected" connector whose next_action says to connect a duplicate.
+		const { operations } = await listAll(org.id, owner.id, {
+			connector_key: KEY_READY,
+		});
+		const create = getOperation(operations, "create_issue");
+		expect(create.readiness).toBe("ready");
+		expect(create.connection_count).toBe(1);
+		expect(
+			create.execution_targets.map((target) => target.connection_id),
+		).toEqual([unowned.id]);
+
+		// Execute clears the visibility fence for the owner (any downstream error
+		// would be about running the demo connector, never the fence).
+		const ownerExec = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: unowned.id,
+				operation_key: "create_issue",
+				input: { title: "legacy row stays usable" },
+			},
+			TEST_ENV(),
+			ctxFor(org.id, owner.id),
+		).catch((err) => ({ error: String(err) }))) as { error?: string };
+		expect(ownerExec.error).not.toBe("Connection not found or not visible.");
+
+		// Fail-closed: a plain member sees the unowned row NOWHERE — list and
+		// operations agree for them too.
+		const memberList = (await manageConnections(
+			{ action: "list", connector_key: KEY_READY } as never,
+			TEST_ENV(),
+			ctxFor(org.id, member.id),
+		)) as { connections?: Array<{ id: number }> };
+		expect(
+			(memberList.connections ?? []).map((c) => Number(c.id)),
+		).not.toContain(unowned.id);
+
+		const memberAvail = await listAll(org.id, member.id, {
+			connector_key: KEY_READY,
+		});
+		const memberCreate = getOperation(memberAvail.operations, "create_issue");
+		expect(memberCreate.readiness).toBe("disconnected");
+		expect(memberCreate.connection_count).toBe(0);
+
+		const memberExec = await manageOperations(
+			{
+				action: "execute",
+				connection_id: unowned.id,
+				operation_key: "create_issue",
+				input: { title: "must stay hidden" },
+			},
+			TEST_ENV(),
+			ctxFor(org.id, member.id),
+		);
+		expect(memberExec).toEqual({
+			error: "Connection not found or not visible.",
+		});
+	});
+
 	it("connection_id filter returns exactly that connection's ops; a nonexistent id errors like execute", async () => {
 		const { org, user } = await setupOwner("Ops ConnId Filter Org");
 		await seedConnector(org.id, KEY_READY, "ConnId Filter Connector");

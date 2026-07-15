@@ -43,7 +43,7 @@ import { readChannelTranscript } from '../../gateway/connections/channel-transcr
 import type { Env } from '../../index';
 import { getAuthProfileById } from '../../utils/auth-profiles';
 import { nextRunAt, validateSchedule, validateTimezone } from '../../utils/cron';
-import { getWorkspaceRole } from '../../utils/organization-access';
+import { compileConnectionRowVisibility } from '../../authz/connection-visibility';
 import { recordChangeEvent } from '../../utils/insert-event';
 import { recordToolConfigChange } from './helpers/config-audit';
 import logger from '../../utils/logger';
@@ -53,7 +53,7 @@ import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../utils/run-statuses'
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 import { getDefaultSchedule } from './helpers/connection-helpers';
-import { assertEntityIdsInOrg } from './helpers/db-helpers';
+import { assertEntityIdsInOrg, callerIsAdmin } from './helpers/db-helpers';
 import {
   resolveFeedDisplayName,
   validateFeedConfig,
@@ -204,18 +204,12 @@ async function handleReadFeed(
   const { organizationId, userId } = ctx;
   // Connection-visibility gate (mirrors manage_connections crud handleList/Get):
   // read_feed is in PUBLIC_READ_ACTIONS, so a feed's config/transcript is content
-  // an anonymous caller could otherwise pull by guessing a feed_id. Anonymous
-  // sees org-visible connections only; a non-admin member sees org + their own
-  // private connections; owners/admins see all.
-  let visibilityFilter = sql``;
-  if (!userId) {
-    visibilityFilter = sql`AND c.visibility = 'org'`;
-  } else {
-    const role = await getWorkspaceRole(sql, organizationId, userId);
-    if (role !== 'owner' && role !== 'admin') {
-      visibilityFilter = sql`AND (c.visibility = 'org' OR c.created_by = ${userId})`;
-    }
-  }
+  // an anonymous caller could otherwise pull by guessing a feed_id. Owners/admins
+  // see all; everyone else gets the shared connection-visibility predicate
+  // (anonymous → org-only).
+  const visibilityFilter = (await callerIsAdmin(sql, ctx))
+    ? sql``
+    : sql`${sql.unsafe(compileConnectionRowVisibility(authzScopeFromToolContext(ctx), 'c'))}`;
 
   const rows = (await sql`
     SELECT f.*,

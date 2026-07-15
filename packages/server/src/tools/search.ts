@@ -640,10 +640,10 @@ const virtualSource: RecallSource = {
     if (!ctx.query) return {};
 
     // Candidate opt-in feeds, gated by the same connection visibility every read
-    // seam uses. Params: $1 organizationId, $2 principal (compiler). Ordered by
-    // id and capped so an org with many feeds gets a bounded, logged fan-out.
+    // seam uses. Ordered by id and capped so an org with many feeds gets a
+    // bounded, logged fan-out.
     const sql = getDb();
-    const vis = compileConnectionRowVisibility(gate, 2, 'c');
+    const vis = compileConnectionRowVisibility(gate, 'c');
     const feedRows = (await sql.unsafe(
       `SELECT f.id, f.feed_key
        FROM feeds f
@@ -655,10 +655,10 @@ const virtualSource: RecallSource = {
          AND (f.config->>'recall') = 'true'
          AND c.deleted_at IS NULL
          AND c.status = 'active'
-         ${vis.sql}
+         ${vis}
        ORDER BY f.id
        LIMIT ${MAX_VIRTUAL_RECALL_FEEDS + 1}`,
-      [gate.organizationId, ...vis.params],
+      [gate.organizationId],
     )) as unknown as Array<{ id: number; feed_key: string }>;
 
     if (feedRows.length === 0) return {};

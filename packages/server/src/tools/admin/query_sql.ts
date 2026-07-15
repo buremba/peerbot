@@ -189,8 +189,7 @@ async function resolveVirtualFeedId(ref: string, scope: AuthzScope): Promise<num
   const feedKey = trimmed.slice(slash + 1);
 
   const sql = getDb();
-  // $1 org, $2 slug, $3 feed_key → visibility principal is $4.
-  const vis = compileConnectionRowVisibility(scope, 4, 'c');
+  const vis = compileConnectionRowVisibility(scope, 'c');
   const rows = (await sql.unsafe(
     `SELECT f.id
      FROM feeds f
@@ -200,9 +199,9 @@ async function resolveVirtualFeedId(ref: string, scope: AuthzScope): Promise<num
        AND f.feed_key = $3
        AND f.deleted_at IS NULL
        AND c.deleted_at IS NULL
-       ${vis.sql}
+       ${vis}
      LIMIT 1`,
-    [scope.organizationId, connectionSlug, feedKey, ...vis.params],
+    [scope.organizationId, connectionSlug, feedKey],
   )) as unknown as Array<{ id: number }>;
   if (rows.length === 0) {
     throw new Error(`virtual feed '${ref}' not found or not accessible`);
@@ -237,7 +236,7 @@ async function virtualFeedCoverageForEventsQuery(
 
   try {
     const sql = getDb();
-    const vis = compileConnectionRowVisibility(scope, 2, 'c');
+    const vis = compileConnectionRowVisibility(scope, 'c');
     const rows = (await sql.unsafe(
       `SELECT
          f.id AS feed_id,
@@ -253,10 +252,10 @@ async function virtualFeedCoverageForEventsQuery(
          AND f.status = 'active'
          AND c.status = 'active'
          AND (f.kind = 'virtual' OR f.virtual IS TRUE)
-         ${vis.sql}
+         ${vis}
        ORDER BY f.id ASC
        LIMIT ${MAX_SUGGESTED_VIRTUAL_FEEDS + 1}`,
-      [scope.organizationId, ...vis.params],
+      [scope.organizationId],
     )) as unknown as Array<{
       feed_id: number;
       feed_key: string;

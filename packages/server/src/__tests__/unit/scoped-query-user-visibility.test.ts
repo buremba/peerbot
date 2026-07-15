@@ -47,14 +47,16 @@ describe('buildScopedQuery events CTE — per-user connection visibility (S0)', 
   });
 
   it('gates the connections row itself (private-connection metadata)', () => {
-    const { sql, params } = buildScopedQuery(
+    const { sql } = buildScopedQuery(
       'SELECT display_name FROM connections',
       ['connections'],
       { organizationId: 'org_test', userId: 'user_a' }
     );
+    // The row predicate embeds the requesting user as an escaped literal (see
+    // compileConnectionRowVisibility), so private connections created by OTHER
+    // users are still excluded.
     expect(sql).toContain("cn.visibility = 'org'");
-    expect(sql).toContain('cn.created_by');
-    expect(params).toContain('user_a');
+    expect(sql).toContain("cn.created_by = 'user_a'");
   });
 
   it('gates feeds via their owning connection (connection_id NOT NULL)', () => {

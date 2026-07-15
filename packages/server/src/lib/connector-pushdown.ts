@@ -25,7 +25,8 @@ interface ConnectorQueryParams {
   /** Read-only SQL to push down (a derived entity's backing_sql, or a feed query). */
   query: string;
   /** Owner/admin callers see every connection; members only org-visible or their
-   * own. Not part of the gate — AuthzScope has no admin dimension. */
+   * own. A full management-tier bypass — deliberately broader than
+   * `scope.principalIsAdmin`, which only adds legacy-unowned rows. */
   isAdmin: boolean;
   feedKey?: string;
   config?: Record<string, unknown>;
@@ -43,7 +44,11 @@ interface ConnectorQueryResult {
 export async function runConnectorQuery(p: ConnectorQueryParams): Promise<ConnectorQueryResult> {
   const sql = getDb();
   // Resolve org-scoped + active, enforcing the same visibility as manage_connections:
-  // a member only reaches org-visible connections or ones they created.
+  // owner/admin callers reach every connection; everyone else gets the shared
+  // connection-visibility predicate.
+  const visibility = p.isAdmin
+    ? sql``
+    : sql`${sql.unsafe(compileConnectionRowVisibility(p.scope, 'connections'))}`;
   const connRows = await sql`
     SELECT id, connector_key, auth_profile_id, app_auth_profile_id
     FROM connections
@@ -51,7 +56,7 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
       AND slug = ${p.connectionSlug}
       AND deleted_at IS NULL
       AND status = 'active'
-      AND (${p.isAdmin} OR visibility = 'org' OR created_by = ${p.scope.principal})
+      ${visibility}
     LIMIT 1
   `;
   if (connRows.length === 0) {
@@ -162,8 +167,8 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   const sql = getDb();
 
   // Resolve the feed + connection, fenced by the SAME visibility compiler the
-  // SQL seam uses. Params: $1 feedId, $2 principal (compiler), $3 organizationId.
-  const vis = compileConnectionRowVisibility(p.scope, 2, 'c');
+  // SQL seam uses.
+  const vis = compileConnectionRowVisibility(p.scope, 'c');
   const feedRows = (await sql.unsafe(
     `SELECT f.id, f.feed_key, f.config, f.virtual,
             c.id AS connection_id, c.connector_key,
@@ -171,14 +176,14 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
      FROM feeds f
      JOIN connections c ON c.id = f.connection_id
      WHERE f.id = $1
-       AND f.organization_id = $3
+       AND f.organization_id = $2
        AND f.deleted_at IS NULL
        AND f.status = 'active'
        AND c.deleted_at IS NULL
        AND c.status = 'active'
-       ${vis.sql}
+       ${vis}
      LIMIT 1`,
-    [p.feedId, ...vis.params, p.scope.organizationId],
+    [p.feedId, p.scope.organizationId],
   )) as unknown as Array<{
     id: number;
     feed_key: string;

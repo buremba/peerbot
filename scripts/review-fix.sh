@@ -30,6 +30,11 @@ if [ -z "$BASE_BRANCH" ]; then
   fi
 fi
 
+git rev-parse --verify --quiet "$BASE_BRANCH^{commit}" >/dev/null \
+  || { echo ">> invalid base ref '$BASE_BRANCH'" >&2; exit 2; }
+git merge-base "$BASE_BRANCH" HEAD >/dev/null 2>&1 \
+  || { echo ">> no merge base between '$BASE_BRANCH' and HEAD" >&2; exit 2; }
+
 PROMPT_FILE="prompts/review-fix-prompt.md"
 [ -f "$PROMPT_FILE" ] || { echo ">> missing $PROMPT_FILE" >&2; exit 1; }
 

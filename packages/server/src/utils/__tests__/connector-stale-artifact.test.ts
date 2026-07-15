@@ -103,6 +103,28 @@ describe('resolveConnectorCode compile-config staleness', () => {
     expect(queries).toHaveLength(0);
   });
 
+  test('normalizing a PRE-COMPILED upload is idempotent — no duplicate __createRequire shim (sdk-e2e regression)', async () => {
+    // A `compiled: true` upload (lobu apply, device reconcile) stores the
+    // artifact itself in source_code with a NULL fingerprint, so first
+    // resolution recompiles THAT artifact. The compile must strip its own CJS
+    // shim banner before re-adding it — the double declaration is exactly the
+    // "Identifier '__createRequire' has already been declared" sdk-e2e failure.
+    const { compileConnectorSource } = await import('../connector-compiler');
+    const precompiled = await compileConnectorSource(STORED_SOURCE);
+    storedSourceCode = precompiled.compiledCode;
+
+    const { resolveConnectorCode } = await import('../ensure-connector-installed');
+    const code = await resolveConnectorCode('zz.staleprobe', {
+      version: '1.0.0',
+      compiled_code: precompiled.compiledCode,
+      compile_config_hash: null,
+    });
+
+    const shimDeclarations = code.match(/createRequire as __createRequire/g) ?? [];
+    expect(shimDeclarations).toHaveLength(1);
+    expect(code).toContain('RECOMPILED_FROM_SOURCE_MARKER');
+  });
+
   test('stale artifact with no stored source and no bundled file fails loudly instead of executing', async () => {
     const { resolveConnectorCode } = await import('../ensure-connector-installed');
     storedSourceCode = null;

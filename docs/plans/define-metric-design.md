@@ -1,5 +1,7 @@
 # Entity-bound metrics over the event stream
 
+> **Status (2026-07-15):** **Shipped** — the `metric_series` admin tool is registered and live in the server tool registry.
+
 Status: draft v7 (adds the **consumption half** — routing/discovery, segments, governance, temporal
 read semantics, coverage telemetry, and an eval gate — after reviewing Snowflake Cortex Analyst
 routing mode + Anthropic's "semantic layer is the required first step". v6 folded measures/dimensions

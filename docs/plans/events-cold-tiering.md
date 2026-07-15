@@ -1,6 +1,6 @@
 # Events cold-tiering — architecture & spike findings
 
-> **Status (2026-07-15):** **Decided, not built** — cold→DuckLake direction locked; no implementation started.
+> **Status (2026-07-15):** **Decided, not built** — hot rows stay on the PG heap; cold `events` go to Apache Iceberg via pg_lake with an Iceberg REST catalog. DuckLake was evaluated and rejected. No implementation started.
 
 **Status:** Decision locked, implementation not yet started. 2026-05-28.
 

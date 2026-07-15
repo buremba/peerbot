@@ -554,7 +554,13 @@ describe("maxDeployments concurrency limit", () => {
         mgr.createWorkerDeployment(
           "user-3",
           "c3",
-          makePayload({ agentId: "agentc", platform: "slack", conversationId: "c3", channelId: "ch3" })
+          makePayload({
+            agentId: "agentc",
+            organizationId: "testorg",
+            platform: "slack",
+            conversationId: "c3",
+            channelId: "ch3",
+          })
         )
       ).rejects.toThrow();
     } finally {
@@ -899,6 +905,8 @@ describe("generateDeploymentName / buildCanonicalConversationKey", () => {
       conversationId: "c1",
       channelId: "ch1",
       platform: "slack",
+      agentId: "a1",
+      organizationId: "org1",
     };
     const name1 = generateDeploymentName(identity);
     const name2 = generateDeploymentName(identity);
@@ -906,16 +914,54 @@ describe("generateDeploymentName / buildCanonicalConversationKey", () => {
   });
 
   test("different conversationIds produce different deployment names", () => {
-    const base = { userId: "u1", channelId: "ch1", platform: "slack" };
+    const base = {
+      userId: "u1",
+      channelId: "ch1",
+      platform: "slack",
+      agentId: "a1",
+      organizationId: "org1",
+    };
     const n1 = generateDeploymentName({ ...base, conversationId: "c1" });
     const n2 = generateDeploymentName({ ...base, conversationId: "c2" });
     expect(n1).not.toBe(n2);
   });
 
   test("different platforms produce different deployment names", () => {
-    const base = { userId: "u1", channelId: "ch1", conversationId: "c1" };
+    const base = {
+      userId: "u1",
+      channelId: "ch1",
+      conversationId: "c1",
+      agentId: "a1",
+      organizationId: "org1",
+    };
     const n1 = generateDeploymentName({ ...base, platform: "slack" });
     const n2 = generateDeploymentName({ ...base, platform: "telegram" });
+    expect(n1).not.toBe(n2);
+  });
+
+  test("different agentIds in the same channel/thread produce different deployment names", () => {
+    const base = {
+      userId: "u1",
+      channelId: "ch1",
+      conversationId: "c1",
+      platform: "slack",
+      organizationId: "org1",
+    };
+    const n1 = generateDeploymentName({ ...base, agentId: "agent-a" });
+    const n2 = generateDeploymentName({ ...base, agentId: "agent-b" });
+    expect(n1).not.toBe(n2);
+  });
+
+  test("different organizationIds produce different deployment names", () => {
+    const base = {
+      userId: "u1",
+      channelId: "ch1",
+      conversationId: "c1",
+      platform: "slack",
+      agentId: "agent-a",
+    };
+    const n1 = generateDeploymentName({ ...base, organizationId: "org1" });
+    const n2 = generateDeploymentName({ ...base, organizationId: "org2" });
     expect(n1).not.toBe(n2);
   });
 
@@ -925,6 +971,8 @@ describe("generateDeploymentName / buildCanonicalConversationKey", () => {
       conversationId: "c1",
       channelId: "ch1",
       platform: "slack",
+      agentId: "a1",
+      organizationId: "org1",
     });
     expect(/^[a-z0-9-]+$/.test(name)).toBe(true);
   });
@@ -934,21 +982,29 @@ describe("generateDeploymentName / buildCanonicalConversationKey", () => {
       conversationId: "conv",
       channelId: "ch",
       platform: "slack",
+      agentId: "a1",
+      organizationId: "org1",
     });
-    expect(key).toBe("slack:ch:conv");
+    expect(key).toBe("org1:a1:slack:ch:conv");
   });
 
   test("buildCanonicalConversationKey without platform falls back to channelId", () => {
     const key = buildCanonicalConversationKey({
       conversationId: "conv",
       channelId: "ch",
+      agentId: "a1",
+      organizationId: "org1",
     });
-    expect(key).toBe("ch:conv");
+    expect(key).toBe("org1:a1:ch:conv");
   });
 
   test("buildCanonicalConversationKey without channelId falls back to conversationId", () => {
-    const key = buildCanonicalConversationKey({ conversationId: "conv" });
-    expect(key).toBe("conv");
+    const key = buildCanonicalConversationKey({
+      conversationId: "conv",
+      agentId: "a1",
+      organizationId: "org1",
+    });
+    expect(key).toBe("org1:a1:conv");
   });
 });
 

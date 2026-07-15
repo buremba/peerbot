@@ -165,4 +165,40 @@ describe("method-metadata", () => {
 		// coded relationship_type_exists 409, don't swallow every error.
 		expect(linkExample).toContain("relationship_type_exists");
 	});
+
+	it("teaches the connect→feed two-hop so setup actually collects data", () => {
+		// connections.connect alone syncs nothing — the agent must then create a
+		// feed on the returned connection_id. This is the connect-website eval gap:
+		// agents discover the connector but stall before the feed. Both entries
+		// must name the sibling call and thread connection_id.
+		const connect = METHOD_METADATA["connections.connect"];
+		expect(connect.summary).toContain("connection_id");
+		expect(connect.summary).toMatch(/create a feed|feeds\.create/);
+		// connect() does NOT always return a usable connection_id: for the
+		// setup_required continuation the field is OPTIONAL. The summary must
+		// describe it as outcome-dependent (not promise an id unconditionally,
+		// and not claim setup_required NEVER has one), so an agent waits for a
+		// real id before calling feeds.create.
+		expect(connect.summary).toContain("setup_required");
+		expect(connect.summary).toMatch(/optional/i);
+		expect(connect.summary).not.toMatch(/NO connection exists/i);
+		const connectExample = connect.usageExample ?? "";
+		expect(connectExample).toContain("connections.connect");
+		expect(connectExample).toContain("feeds.create");
+		expect(connectExample).toContain("connection_id");
+		expect(connectExample).toContain("feed_key");
+		// The website 'pages' config must use the REAL connector keys — assert the
+		// executable expression itself passes urls: [...] (or sitemap_url), not
+		// just that the word appears in a comment. A made-up key (config:{} /
+		// {url}) creates a feed that collects zero events.
+		expect(connectExample).toMatch(/config:\s*\{\s*(urls:\s*\[|sitemap_url:)/);
+
+		// feeds.create must document the connection_id + feed_key it needs and
+		// point at how to discover the config shape — not leave the agent guessing.
+		const feed = METHOD_METADATA["feeds.create"];
+		expect(feed.summary).toContain("connection_id");
+		expect(feed.summary).toContain("feed_key");
+		expect(feed.signature ?? "").toContain("connection_id");
+		expect(feed.example ?? "").toContain("feed_key");
+	});
 });

@@ -251,7 +251,9 @@ function isNoneAuthSchema(value: Record<string, unknown>): boolean {
   return Array.isArray(methods) && methods.every((m) => isRecord(m) && m.type === 'none');
 }
 
-function sortJson(value: unknown): unknown {
+// Exported for callers needing the same canonical form the manifest hash uses
+// (device-reconcile compares stored vs incoming definition metadata with it).
+export function sortJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortJson);
   if (!isRecord(value)) return value;
   return Object.fromEntries(

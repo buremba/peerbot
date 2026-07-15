@@ -6,8 +6,8 @@
 -- mismatch/NULL as stale and recompiles from source instead of executing a
 -- bundle that may bare-import packages the runtime image no longer ships
 -- (e.g. pino-era artifacts).
-ALTER TABLE connector_versions ADD COLUMN compile_config_hash text;
+ALTER TABLE connector_versions ADD COLUMN IF NOT EXISTS compile_config_hash text;
 
 -- migrate:down
 
-ALTER TABLE connector_versions DROP COLUMN compile_config_hash;
+ALTER TABLE connector_versions DROP COLUMN IF EXISTS compile_config_hash;

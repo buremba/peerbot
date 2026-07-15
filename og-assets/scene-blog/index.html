@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=1200, height=630">
+<!--
+  Blog OG card — "The Agent Loop Is the New SaaS"
+  New Lobu brand: paper background (#fcfcfb), red accent (#f5333a),
+  Inter + JetBrains Mono + Pixelify Sans, pixel lobster mark.
+  Same WATCH→UNDERSTAND→ACT orbit motif, re-skinned for the redesign.
+-->
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<style>
+  @font-face { font-family:"Inter"; font-weight:600; font-display:block; src:url("./assets/fonts/Inter-600.woff2") format("woff2"); }
+  @font-face { font-family:"Inter"; font-weight:500; font-display:block; src:url("./assets/fonts/Inter-500.woff2") format("woff2"); }
+  @font-face { font-family:"JetBrains Mono"; font-weight:500; font-display:block; src:url("./assets/fonts/JBM-500.woff2") format("woff2"); }
+  @font-face { font-family:"Pixelify Sans"; font-weight:700; font-display:block; src:url("./assets/fonts/Pixelify-700.woff2") format("woff2"); }
+
+  :root {
+    --bg: #0f0e0c;          /* deepest warm dark */
+    --surface: #141414;     /* terminal/code surface */
+    --text: #f9f4e6;        /* warm light text */
+    --muted: #8a857b;       /* muted warm */
+    --border: rgba(249,244,230,0.10); /* hairline */
+    --surface-dim: #1a1916; /* dim surface */
+    --red: #f5333a;         /* accent */
+    --code-bg: #141414;     /* terminal/code surface */
+    --code-text: #f9f4e6;   /* warm code text */
+    --code-dim: #8a857b;    /* code comment */
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1200px; height:630px; overflow:hidden; background:var(--bg); }
+  body { font-family:"Inter", ui-sans-serif, system-ui, sans-serif; color:var(--text); -webkit-font-smoothing:antialiased; }
+  .mono { font-family:"JetBrains Mono", ui-monospace, monospace; }
+  .pixel { font-family:"Pixelify Sans", ui-sans-serif, system-ui, sans-serif; }
+  #stage { position:absolute; inset:0; }
+
+  /* red glow pooling behind the panel (dark-theme depth) */
+  .grain { position:absolute; inset:0;
+    background:
+      radial-gradient(60% 80% at 78% 50%, rgba(245,51,58,0.10), transparent 60%),
+      radial-gradient(80% 100% at 100% 100%, rgba(245,51,58,0.05), transparent 55%); }
+
+  /* ── brand row ── */
+  .brand { position:absolute; top:58px; left:80px; display:inline-flex; align-items:center; gap:11px; }
+  .brand .mark { width:37px; height:31px; display:block; }
+  .brand .word { font-weight:600; font-size:28px; letter-spacing:-0.02em; color:var(--text); }
+
+  .crumb { position:absolute; top:60px; right:80px; font-family:"JetBrains Mono", ui-monospace, monospace;
+    font-size:13px; font-weight:500; letter-spacing:0.02em; color:var(--muted); }
+  .crumb b { color:var(--text); font-weight:600; }
+
+  /* ── headline column ── */
+  .kicker { position:absolute; top:152px; left:80px; font-family:"JetBrains Mono", ui-monospace, monospace;
+    font-size:14px; font-weight:500; letter-spacing:0.16em; text-transform:uppercase; color:var(--red); }
+  h1 { position:absolute; top:188px; left:80px; width:560px; text-align:left;
+    font-size:62px; font-weight:600; letter-spacing:-0.035em; line-height:1.02; color:var(--text); }
+  h1 .red { color:var(--red); }
+  .sub { position:absolute; top:430px; left:80px; width:480px; text-align:left;
+    font-size:20px; font-weight:500; line-height:1.45; color:var(--muted); }
+  .byline { position:absolute; bottom:58px; left:80px; font-family:"JetBrains Mono", ui-monospace, monospace;
+    font-size:13px; font-weight:500; letter-spacing:0.02em; color:var(--muted); }
+  .byline b { color:var(--text); font-weight:600; }
+  .byline .pill { display:inline-block; margin-left:8px; padding:3px 9px; border:1px solid rgba(245,51,58,0.40);
+    border-radius:999px; font-size:11.5px; letter-spacing:0.08em; text-transform:uppercase; color:var(--red); }
+
+  /* ── RIGHT: terminal panel framing the orbit ── */
+  .panel { position:absolute; right:72px; top:96px; width:496px; height:438px; background:var(--code-bg);
+    border:1px solid rgba(249,244,230,0.08); border-radius:18px; box-shadow:0 24px 60px -20px rgba(0,0,0,0.5); overflow:hidden; }
+  .panel .titlebar { display:flex; align-items:center; gap:8px; padding:15px 18px; border-bottom:1px solid rgba(249,244,230,0.08); }
+  .panel .titlebar .dot { width:11px; height:11px; border-radius:999px; background:rgba(249,244,230,0.18); }
+  .panel .titlebar .file { margin-left:10px; font-family:"JetBrains Mono", ui-monospace, monospace; font-size:12px;
+    color:var(--code-dim); letter-spacing:0.02em; }
+  .panel canvas, .panel .ringwrap { position:absolute; left:0; top:0; width:100%; height:100%; }
+
+  /* orbit drawn as SVG on the dark panel */
+  #ringPath { fill:none; stroke:rgba(245,51,58,0.55); stroke-width:1.8; stroke-dasharray:6 8; }
+  #pellet { fill:var(--red); filter:drop-shadow(0 0 6px rgba(245,51,58,0.9)); }
+
+  .node { position:absolute; transform:translate(-50%,-50%); width:96px; text-align:center; }
+  .disc { width:64px; height:64px; border-radius:999px; margin:0 auto; position:relative;
+    background:rgba(249,244,230,0.04); border:1px solid rgba(249,244,230,0.14);
+    display:flex; align-items:center; justify-content:center; }
+  .disc svg { width:30px; height:30px; }
+  .glow { position:absolute; inset:-9px; border-radius:999px; opacity:0; pointer-events:none;
+    background:radial-gradient(closest-side, rgba(245,51,58,0.7), transparent 72%); }
+  .num { position:absolute; top:8px; left:50%; transform:translateX(-50%); z-index:2;
+    font-family:"JetBrains Mono", ui-monospace, monospace; font-size:11px; font-weight:500; color:var(--red); }
+  .nl { margin-top:11px; }
+  .nl .e { font-family:"JetBrains Mono", ui-monospace, monospace; font-size:10.5px; font-weight:500;
+    letter-spacing:0.15em; color:var(--red); }
+  .nl .d { font-size:13.5px; font-weight:600; letter-spacing:-0.01em; margin-top:2px; color:var(--code-text); }
+</style></head>
+<body>
+<div id="stage">
+  <div class="grain"></div>
+
+  <!-- brand -->
+  <div class="brand">
+    <img class="mark" src="./assets/lobu-mark.svg" alt="" />
+    <span class="word">lobu</span>
+  </div>
+  <div class="crumb"><b>lobu.ai</b>/blog</div>
+
+  <!-- headline -->
+  <div class="kicker">Essay</div>
+  <h1>The agent loop<br/>is the new <span class="red">SaaS</span>.</h1>
+  <div class="sub">The business logic SaaS sold you is now an agent loop that watches your data and acts.</div>
+  <div class="byline"><b>lobu.ai/blog</b><span class="pill">open source</span></div>
+
+  <!-- RIGHT: terminal panel with orbit -->
+  <div class="panel">
+    <div class="titlebar">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      <span class="file">agent-loop.ts</span>
+    </div>
+    <div class="ringwrap">
+      <svg id="ring" viewBox="0 0 496 398" preserveAspectRatio="xMidYMid meet" style="position:absolute;inset:0;width:100%;height:100%;">
+        <!-- ring centred on panel body centre (~248, 230). radius ~118 -->
+        <path id="ringPath" d="M248 112 A118 118 0 1 1 247.99 112" />
+        <!-- pellet rides the ring; animated via GSAP rotation of #orbit group -->
+        <g id="orbit" transform="translate(248 230)">
+          <circle id="pellet" cx="118" cy="0" r="6.5" />
+        </g>
+      </svg>
+
+      <!-- nodes positioned on the ring -->
+      <!-- WATCH top (248,112) -->
+      <div class="node" style="left:calc(50% + 0px); top:calc(58px + 54px);">
+        <div class="disc"><span class="num">1</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="#f5333a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span class="glow" id="g1"></span>
+        </div>
+        <div class="nl"><div class="e">WATCH</div><div class="d">every source</div></div>
+      </div>
+      <!-- UNDERSTAND lower-right (~351, 296) -->
+      <div class="node" style="right:calc(50% - 188px); top:calc(58px + 238px);">
+        <div class="disc"><span class="num">2</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="#f5333a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
+          <span class="glow" id="g2"></span>
+        </div>
+        <div class="nl"><div class="e">UNDERSTAND</div><div class="d">shared memory</div></div>
+      </div>
+      <!-- ACT lower-left (~145, 296) -->
+      <div class="node" style="left:calc(50% - 188px); top:calc(58px + 238px);">
+        <div class="disc"><span class="num">3</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="#f5333a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 20 5v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V5Z"/><path d="M9 12l2 2 4-4"/></svg>
+          <span class="glow" id="g3"></span>
+        </div>
+        <div class="nl"><div class="e">ACT</div><div class="d">on your goals</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  window.__timelines = window.__timelines || {};
+  const tl = gsap.timeline({ paused: true });
+  // orbit the pellet around the ring centre (translate already centres #orbit at 248,230)
+  tl.to("#orbit", { duration: 5, ease: "none", rotation: 360, transformOrigin: "0 0", svgOrigin: "248 230" }, 0);
+  function pulse(sel, at) {
+    tl.to(sel, { opacity: 0.85, duration: 0.5, yoyo: true, repeat: 1, ease: "sine.inOut" }, at - 0.5);
+  }
+  pulse("#g1", 0.0);
+  pulse("#g2", 1.667);
+  pulse("#g3", 3.333);
+  tl.fromTo("#ringPath", { strokeDashoffset: 0 }, { strokeDashoffset: -56, duration: 5, ease: "none" }, 0);
+  window.__timelines["main"] = tl;
+</script>
+</body></html>

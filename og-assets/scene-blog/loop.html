@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=1200, height=680">
+<!--
+  In-post "operating loop" diagram — a literal circle.
+  4 stages around a clockwise ring: EVENTS STREAM IN → APPEND-ONLY LOG
+  → WATCHER FIRES / AGENT ACTS → ACTION EMITS A NEW EVENT (loop closes).
+  Dark Lobu OG theme: warm-dark bg (#0f0e0c), red accent (#f5333a).
+-->
+<style>
+  @font-face { font-family:"Inter"; font-weight:600; font-display:block; src:url("./assets/fonts/Inter-600.woff2") format("woff2"); }
+  @font-face { font-family:"Inter"; font-weight:500; font-display:block; src:url("./assets/fonts/Inter-500.woff2") format("woff2"); }
+  @font-face { font-family:"JetBrains Mono"; font-weight:500; font-display:block; src:url("./assets/fonts/JBM-500.woff2") format("woff2"); }
+  @font-face { font-family:"JetBrains Mono"; font-weight:600; font-display:block; src:url("./assets/fonts/JBM-600.woff2") format("woff2"); }
+
+  :root {
+    --bg:#0f0e0c; --surface:#141414; --text:#f9f4e6; --muted:#8a857b;
+    --border:rgba(249,244,230,0.10); --surface-dim:#1a1916; --red:#f5333a;
+    --code-bg:#141414; --code-text:#f9f4e6; --code-dim:#8a857b;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1200px; height:680px; overflow:hidden; background:var(--bg); }
+  body { font-family:"Inter", ui-sans-serif, system-ui, sans-serif; color:var(--text); -webkit-font-smoothing:antialiased; }
+  #stage { position:absolute; inset:0; }
+  .grain { position:absolute; inset:0;
+    background:radial-gradient(70% 80% at 50% 56%, rgba(245,51,58,0.09), transparent 60%); }
+
+  /* header */
+  .brand { position:absolute; top:46px; left:64px; display:inline-flex; align-items:center; gap:10px; }
+  .brand .mark { width:30px; height:25px; }
+  .brand .word { font-weight:600; font-size:22px; letter-spacing:-0.02em; color:var(--text); }
+  .crumb { position:absolute; top:50px; right:64px; font-family:"JetBrains Mono", ui-monospace, monospace;
+    font-size:12.5px; font-weight:500; color:var(--muted); }
+  .crumb b { color:var(--text); font-weight:600; }
+
+  .kicker { position:absolute; top:106px; left:64px; font-family:"JetBrains Mono", ui-monospace, monospace;
+    font-size:13px; font-weight:500; letter-spacing:0.16em; text-transform:uppercase; color:var(--red); }
+  h1 { position:absolute; top:136px; left:64px; width:1072px; text-align:left;
+    font-size:36px; font-weight:600; letter-spacing:-0.025em; line-height:1.08; color:var(--text); }
+  h1 .red { color:var(--red); }
+
+  /* ── the loop ──: ring centred at (600, 412), radius 150 */
+  #loop { position:absolute; left:600px; top:412px; width:0; height:0; }
+  #ringSvg { position:absolute; left:-210px; top:-210px; width:420px; height:420px; pointer-events:none; overflow:visible; }
+  #loopPath { fill:none; stroke:var(--red); stroke-width:1.9; stroke-dasharray:6 9; opacity:0.85; }
+
+  .node { position:absolute; transform:translate(-50%,-50%); width:132px; text-align:center; }
+  .disc { width:96px; height:96px; border-radius:999px; margin:0 auto; position:relative;
+    background:var(--surface); border:1px solid rgba(249,244,230,0.12);
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 18px 44px -22px rgba(0,0,0,0.8); }
+  .disc svg { width:38px; height:38px; color:var(--red); }
+  .num { position:absolute; top:-7px; left:50%; transform:translateX(-50%); z-index:2;
+    width:24px; height:24px; border-radius:999px; background:var(--red); color:#fff;
+    font-family:"JetBrains Mono", ui-monospace, monospace; font-size:13px; font-weight:600;
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 4px 10px -3px rgba(245,51,58,0.5); }
+  .lab { margin-top:14px; }
+  .lab .e { font-family:"JetBrains Mono", ui-monospace, monospace; font-size:11px; font-weight:600;
+    letter-spacing:0.13em; color:var(--red); }
+  .lab .d { font-size:15.5px; font-weight:600; letter-spacing:-0.01em; margin-top:3px; color:var(--text); }
+
+  .legend { position:absolute; bottom:30px; left:0; right:0; text-align:center;
+    font-family:"JetBrains Mono", ui-monospace, monospace; font-size:12.5px; font-weight:500; color:var(--muted); }
+  .legend b { color:var(--text); font-weight:600; }
+  .legend .dot { display:inline-block; width:9px; height:9px; border-radius:999px; background:var(--red); margin-right:8px; vertical-align:1px; }
+  .legend .sep { color:var(--border); margin:0 10px; }
+</style></head>
+<body>
+<div id="stage">
+  <div class="grain"></div>
+
+  <div class="brand">
+    <img class="mark" src="./assets/lobu-mark.svg" alt="" />
+    <span class="word">lobu</span>
+  </div>
+  <div class="crumb"><b>lobu.ai</b>/blog</div>
+
+  <div class="kicker">The operating loop</div>
+  <h1>The SaaS business model is now <span class="red">a loop you own</span>.</h1>
+
+  <!-- circular loop: ring + 4 nodes at top / right / bottom / left -->
+  <div id="loop">
+    <svg id="ringSvg" viewBox="-210 -210 420 420">
+      <defs>
+        <marker id="ah" markerWidth="9" markerHeight="9" refX="5" refY="4.5" orient="auto">
+          <path d="M0,0 L9,4.5 L0,9 Z" fill="#f5333a"/>
+        </marker>
+      </defs>
+      <!-- clockwise arrowheads sitting on the ring between nodes (NE, SE, SW, NW) -->
+      <g fill="#f5333a">
+        <!-- arrow pairs showing clockwise direction along the circle -->
+      </g>
+      <circle id="loopPath" cx="0" cy="0" r="150" />
+      <!-- four directional chevrons on the DIAGONAL arcs between nodes (NE/SE/SW/NW).
+           Base chevron points along +x at radius 150; rotating by the diagonal angle
+           (45,135,225,315) places each between two nodes so it's not hidden by a disc. -->
+      <!-- clockwise-flow arrowheads on the diagonal arcs (NE/SE/SW/NW).
+           Base arrowhead apex points +x (0°); rotate to the clockwise tangent
+           at each diagonal = position_angle + 90°. -->
+      <g fill="#f5333a" stroke="none">
+        <path d="M0 0 l-13 -8 v16 Z" transform="translate(106 -106) rotate(45)"/>
+        <path d="M0 0 l-13 -8 v16 Z" transform="translate(106 106) rotate(135)"/>
+        <path d="M0 0 l-13 -8 v16 Z" transform="translate(-106 106) rotate(225)"/>
+        <path d="M0 0 l-13 -8 v16 Z" transform="translate(-106 -106) rotate(315)"/>
+      </g>
+    </svg>
+
+    <!-- 1. EVENTS STREAM IN (top, 0,-150) -->
+    <div class="node" style="left:0; top:-150px;">
+      <div class="disc"><span class="num">1</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h18M3 12h18M3 16h12"/></svg>
+      </div>
+      <div class="lab"><div class="e">EVENTS STREAM IN</div><div class="d">From every source</div></div>
+    </div>
+
+    <!-- 2. APPEND-ONLY LOG (right, 150,0) -->
+    <div class="node" style="left:150px; top:0;">
+      <div class="disc"><span class="num">2</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
+      </div>
+      <div class="lab"><div class="e">APPEND-ONLY LOG</div><div class="d">Shared memory</div></div>
+    </div>
+
+    <!-- 3. WATCHER FIRES, AGENT ACTS (bottom, 0,150) -->
+    <div class="node" style="left:0; top:150px;">
+      <div class="disc"><span class="num">3</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 20 5v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V5Z"/><path d="M9 12l2 2 4-4"/></svg>
+      </div>
+      <div class="lab"><div class="e">WATCHER FIRES</div><div class="d">Agent acts on goals</div></div>
+    </div>
+
+    <!-- 4. ACTION EMITS A NEW EVENT (left, -150,0) -->
+    <div class="node" style="left:-150px; top:0;">
+      <div class="disc"><span class="num">4</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>
+      </div>
+      <div class="lab"><div class="e">ACTION → NEW EVENT</div><div class="d">The loop closes</div></div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span class="dot"></span><b>append-only events</b> are the agent's memory<span class="sep">·</span>the loop is the product
+  </div>
+</div>
+</body></html>

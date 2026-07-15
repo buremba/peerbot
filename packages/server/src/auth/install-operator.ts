@@ -6,7 +6,7 @@
  * browser) can sign in via better-auth without a chicken-and-egg /sign-up
  * step. The operator's password is the install's `ENCRYPTION_KEY` —
  * already in `.env` for at-rest encryption, now doing double duty as the
- * install secret. See `docs/install-operator-bootstrap.md` for the full
+ * install secret. See `docs/plans/install-operator-bootstrap.md` for the full
  * design.
  *
  * Idempotent. Safe to call on every boot.

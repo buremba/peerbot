@@ -14,7 +14,7 @@ model (Q: collapse the axes? → "keep them orthogonal").
 **Related docs (authoritative for the kinds/lenses below):**
 [`docs/database-connectors.md`](../database-connectors.md) — the PostgreSQL
 connector, live-read `query()`, connection-backed entities, and the `virtual`
-feed-flag roadmap. [`docs/define-metric-design.md`](../define-metric-design.md) —
+feed-flag roadmap. [`docs/plans/define-metric-design.md`](define-metric-design.md) —
 the entity-bound metric lens. This doc is the *cross-cutting* model that ties the
 feed kinds and read lenses together; those two are the per-area sources of truth.
 

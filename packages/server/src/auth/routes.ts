@@ -635,7 +635,7 @@ credentialRoutes.post('/local-init', async (c) => {
   // principal_kind keeps 'install_operator' last so a human comes first
   // when both exist; on a fresh install before signup, only the operator
   // row exists and it gets minted credentials. See
-  // docs/install-operator-bootstrap.md.
+  // docs/plans/install-operator-bootstrap.md.
   const userRows = (await sql`
     SELECT id, email, name, principal_kind
       FROM "user"

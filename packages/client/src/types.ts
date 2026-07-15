@@ -1,3 +1,8 @@
+import type {
+  PostApiV1AgentsData,
+  PostApiV1AgentsResponses,
+} from "./generated/types.gen.js";
+
 export type TokenProvider = string | (() => string | Promise<string>);
 
 export type LobuFetch = typeof fetch;
@@ -13,41 +18,18 @@ export interface LobuClientOptions {
   headers?: LobuHeaders;
 }
 
-export interface CreateSessionRequest {
-  agentId?: string;
-  userId?: string;
-  thread?: string;
-  provider?: string;
-  model?: string;
-  forceNew?: boolean;
-  dryRun?: boolean;
-  /**
-   * Server-trusted: the worker's egress allowlist/blocklist. Mint sessions
-   * **server-side** — do not let an untrusted browser pick its own network
-   * policy.
-   */
-  networkConfig?: {
-    allowedDomains?: string[];
-    deniedDomains?: string[];
-  };
-  /**
-   * Server-trusted: nix packages provisioned into the worker runtime. Mint
-   * sessions **server-side** — do not let an untrusted browser pick packages.
-   */
-  nix?: {
-    flakeUrl?: string;
-    packages?: string[];
-  };
-}
+/**
+ * Body for `POST /api/v1/agents`. Sourced from the generated OpenAPI types so it
+ * stays in lockstep with the server's route schema — do NOT re-declare it here
+ * (the previous hand-written twin had already drifted, missing `intent`).
+ *
+ * `networkConfig` and `nix` are server-trusted: mint sessions **server-side** —
+ * never let an untrusted browser pick its own egress policy or runtime packages.
+ */
+export type CreateSessionRequest = NonNullable<PostApiV1AgentsData["body"]>;
 
-export interface CreateSessionResponse {
-  success: boolean;
-  agentId: string;
-  token: string;
-  expiresAt: number;
-  sseUrl: string;
-  messagesUrl: string;
-}
+/** `201` response of `POST /api/v1/agents`, from the generated OpenAPI types. */
+export type CreateSessionResponse = PostApiV1AgentsResponses[201];
 
 export interface SendMessageOptions {
   messageId?: string;

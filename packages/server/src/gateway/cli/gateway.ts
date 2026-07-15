@@ -797,8 +797,8 @@ export function createGatewayApp(
 
   registerAutoOpenApiRoutes(app);
 
-  app.doc("/api/docs/openapi.json", {
-    openapi: "3.0.0",
+  const openApiDocConfig = {
+    openapi: "3.1.0",
     info: {
       title: "Lobu API",
       version: "1.0.0",
@@ -876,6 +876,32 @@ curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \\
     servers: [
       { url: "http://localhost:8787", description: "Local development" },
     ],
+  };
+
+  // One merged OpenAPI document: the gateway's Zod routes (agent-session
+  // orchestration) PLUS the full dispatch-tool surface
+  // (`POST /api/{orgSlug}/{tool}` — entities, watchers, feeds, metrics, …),
+  // generated from the same TypeBox schemas the server validates against. The
+  // first-party `@lobu/client` is generated from THIS single document, so the
+  // CLI and UI get a typed client for BOTH surfaces instead of only agent
+  // sessions. `getOpenAPI31Document` renders the Zod routes in the same JSON
+  // Schema 2020-12 dialect the TypeBox tool schemas already use.
+  app.get("/api/docs/openapi.json", async (c) => {
+    // Dynamic import (rationale): a static `gateway → openapi-generator →
+    // registry` edge closes a circular-init cycle with the tool registry's admin
+    // deps, throwing a TDZ error during module load under some import orders.
+    // This docs endpoint is cold and low-traffic, and by request time every
+    // module is already loaded, so `import()` resolves from cache with no
+    // measurable cost — while keeping the cycle out of the static graph.
+    const { generateStrictToolPaths } = await import(
+      "../../utils/openapi-generator.js"
+    );
+    const base = app.getOpenAPI31Document(openApiDocConfig);
+    const toolPaths = generateStrictToolPaths();
+    return c.json({
+      ...base,
+      paths: { ...toolPaths, ...(base.paths ?? {}) },
+    });
   });
 
   app.get(

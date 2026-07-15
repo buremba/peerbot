@@ -85,8 +85,10 @@ const config: KnipConfig = {
         // Test suites run in CI (vitest + bun:test).
         "src/**/*.test.ts",
         "src/**/__tests__/**/*.ts",
-        // esbuild bundler invoked as `node scripts/build-server-bundle.mjs`.
+        // esbuild bundler invoked as `node scripts/build-server-bundle.mjs`,
+        // plus standalone `bun scripts/*.ts` helpers (offline OpenAPI emit).
         "scripts/**/*.mjs",
+        "scripts/**/*.ts",
       ],
       ignoreDependencies: [
         // Activated by `vitest --coverage`.

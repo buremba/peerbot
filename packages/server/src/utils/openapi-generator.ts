@@ -4,7 +4,7 @@
  * Dynamically generates OpenAPI specification from tool registry TypeBox schemas
  */
 
-import { getMcpTools } from '../tools/registry';
+import { getMcpTools, getRawDispatchTools } from '../tools/registry';
 
 /**
  * Recursively deep copies schema properties while filtering out hidden ones
@@ -259,4 +259,108 @@ export function generateOpenAPISpec(serverUrl: string) {
     ],
     paths,
   };
+}
+
+// ============================================
+// Strict projection (typed first-party client)
+// ============================================
+//
+// The ChatGPT projection above is deliberately lossy: it flattens discriminated
+// unions, forces `additionalProperties: true`, and drops output schemas — all to
+// satisfy ChatGPT's OpenAPI validator. The generated first-party `@lobu/client`
+// has no such constraints, so it is generated from THIS projection, which keeps
+// each tool's TypeBox schema verbatim (discriminated unions intact) and emits the
+// real `outputSchema` as the 200 response. TypeBox serializes to JSON Schema
+// 2020-12, which IS the OpenAPI 3.1 schema dialect, so the schemas drop in with
+// no conversion. One TypeBox source, two projections — no hand-maintained spec.
+
+/**
+ * Recursively deep-copies a schema while dropping any property marked
+ * `x-hidden` at every object level (server-internal fields — pre-computed
+ * embeddings, auth-bound filters — that must never reach a client), and
+ * pruning them from each `required` array so the copy stays self-consistent.
+ */
+function deepCopyStrict(schema: any): any {
+  if (schema === null || schema === undefined || typeof schema !== 'object') {
+    return schema;
+  }
+  if (Array.isArray(schema)) {
+    return schema.map(deepCopyStrict);
+  }
+  const copied: Record<string, any> = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === '$id' || key === 'static') continue;
+    if (key === 'properties' && value && typeof value === 'object') {
+      const props: Record<string, any> = {};
+      for (const [propKey, propVal] of Object.entries<any>(value)) {
+        if (propVal?.['x-hidden']) continue;
+        props[propKey] = deepCopyStrict(propVal);
+      }
+      copied[key] = props;
+      continue;
+    }
+    copied[key] = deepCopyStrict(value);
+  }
+  // Prune now-hidden keys out of `required` so we never require a dropped field.
+  if (Array.isArray(copied.required) && copied.properties) {
+    copied.required = copied.required.filter((k: string) => k in copied.properties);
+  }
+  return copied;
+}
+
+const ERROR_RESPONSE = {
+  content: {
+    'application/json': {
+      schema: { type: 'object', properties: { error: { type: 'string' } } },
+    },
+  },
+} as const;
+
+/**
+ * OpenAPI `paths` for the whole dispatch-tool surface (`POST /api/{orgSlug}/{tool}`),
+ * with faithful TypeBox input/output schemas. Merged into the gateway document so the
+ * generated client covers domain data (entities, watchers, feeds, metrics, …) — not
+ * only agent-session orchestration.
+ */
+export function generateStrictToolPaths(): Record<string, any> {
+  const paths: Record<string, any> = {};
+
+  for (const tool of getRawDispatchTools()) {
+    const path = `/api/{orgSlug}/${tool.name}`;
+    const responseSchema = tool.outputSchema
+      ? deepCopyStrict(tool.outputSchema)
+      : { type: 'object', additionalProperties: true };
+
+    paths[path] = {
+      post: {
+        summary: tool.description.split('.')[0],
+        description: truncateDescription(tool.description, 300),
+        operationId: tool.name,
+        ...(tool.internal && { 'x-internal': true }),
+        parameters: [
+          {
+            name: 'orgSlug',
+            in: 'path',
+            required: true,
+            description: 'Organization slug (workspace identifier)',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: deepCopyStrict(tool.inputSchema) } },
+        },
+        responses: {
+          '200': {
+            description: 'Successful response',
+            content: { 'application/json': { schema: responseSchema } },
+          },
+          '400': { description: 'Bad request - invalid parameters', ...ERROR_RESPONSE },
+          '404': { description: 'Tool not found', ...ERROR_RESPONSE },
+        },
+      },
+    };
+  }
+
+  return paths;
 }

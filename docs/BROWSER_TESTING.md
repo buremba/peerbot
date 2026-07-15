@@ -63,7 +63,7 @@ For one-off actions, the `lobu call` CLI is the quickest path (usually org `bure
 
 ```bash
 lobu call manage_operations --org buremba --arg action=execute \
-  --arg connection_id:=<chrome-connection-id> --arg operation_key=navigate \
+  --arg connection_id=<chrome-connection-id> --arg operation_key=navigate \
   --arg input:='{"url":"https://app.slack.com/...","wait_for_load":true,"open_in_new_tab":true}' --raw
 ```
 

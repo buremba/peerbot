@@ -49,11 +49,7 @@ import {
   getAgentSessionContext,
   invalidateSessionContextCache,
 } from "./session-context";
-import {
-  buildToolPolicy,
-  enforceBashCommandPolicy,
-  isToolAllowedByPolicy,
-} from "./tool-policy";
+import { buildToolPolicy, isToolAllowedByPolicy } from "./tool-policy";
 import { buildToolUseEventPayload } from "./tool-use-events";
 import { createLobuTools } from "./tools";
 import { clearSnapshots, hydrateFromSnapshot } from "./transcript-snapshot";
@@ -952,31 +948,15 @@ export async function runAISession(
       // Per-turn pinned provider from the sandbox pin; selects the bash backend.
       runtimeProviderId,
     });
-  let tools = createLobuTools(workspaceDir, {
+  // The bash tool returned here carries the FULL hardened policy by construction
+  // (prefix allow/deny + gateway-access + package-install blocks, plus
+  // credential-strip), so the forthcoming `!`-bash intercept (PR-D4) can reuse
+  // this same object rather than a second raw path. The filter then removes bash
+  // entirely when the agent policy disallows it (strict / disallowedTools).
+  const tools = createLobuTools(workspaceDir, {
     bashOperations: embeddedBashOps,
+    bashPolicy: toolsPolicy.bashPolicy,
   }).filter((tool) => isToolAllowedByPolicy(tool.name, toolsPolicy));
-
-  if (
-    toolsPolicy.bashPolicy.allowPrefixes.length > 0 ||
-    toolsPolicy.bashPolicy.denyPrefixes.length > 0
-  ) {
-    tools = tools.map((tool) => {
-      if (tool.name !== "bash") {
-        return tool;
-      }
-      return {
-        ...tool,
-        execute: async (toolCallId, params, signal, onUpdate) => {
-          const command =
-            params && typeof params === "object" && "command" in params
-              ? String((params as { command?: unknown }).command ?? "")
-              : "";
-          enforceBashCommandPolicy(command, toolsPolicy.bashPolicy);
-          return tool.execute(toolCallId, params as any, signal, onUpdate);
-        },
-      };
-    });
-  }
 
   // Credential injection — resolve API key from the in-memory credential store,
   // falling back to process.env only for values that were present at startup.

@@ -262,6 +262,112 @@ describe("bash tool proxy hint", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Bash command prefix policy — now enforced INSIDE the bash tool object, so any
+// direct caller that holds the tool gets it by construction (and the forthcoming
+// `!`-bash intercept in PR-D4 can reuse the same object). Previously this was a
+// conditional re-wrap applied in session-runner AFTER createLobuTools returned;
+// the tool object itself did not carry it. This asserts the consolidation.
+// ---------------------------------------------------------------------------
+
+describe("bash tool prefix policy (carried by the tool object)", () => {
+  const passthroughOps: BashOperations = {
+    exec: async (_command, _cwd, { onData }) => {
+      onData(Buffer.from("ran\n"));
+      return { exitCode: 0 };
+    },
+  };
+
+  test("denyPrefixes rejects a matching command before exec", async () => {
+    const tools = createLobuTools(tempDir, {
+      bashOperations: passthroughOps,
+      bashPolicy: { allowAll: false, allowPrefixes: [], denyPrefixes: ["rm "] },
+    });
+    const bashTool = tools.find((t) => t.name === "bash")!;
+
+    await expect(
+      bashTool.execute(
+        "call-deny",
+        { command: "rm -rf /workspace/data" },
+        undefined,
+        undefined
+      )
+    ).rejects.toThrow("Bash command denied by policy");
+  });
+
+  test("allowlist rejects a command outside the allowed prefixes", async () => {
+    const tools = createLobuTools(tempDir, {
+      bashOperations: passthroughOps,
+      bashPolicy: {
+        allowAll: false,
+        allowPrefixes: ["ls ", "echo "],
+        denyPrefixes: [],
+      },
+    });
+    const bashTool = tools.find((t) => t.name === "bash")!;
+
+    await expect(
+      bashTool.execute(
+        "call-notallowed",
+        { command: "cat /etc/passwd" },
+        undefined,
+        undefined
+      )
+    ).rejects.toThrow("Bash command not allowed by policy");
+  });
+
+  test("allowed command passes the policy and reaches exec", async () => {
+    const seen: string[] = [];
+    const tools = createLobuTools(tempDir, {
+      bashOperations: {
+        exec: async (command, _cwd, { onData }) => {
+          seen.push(command);
+          onData(Buffer.from("ok\n"));
+          return { exitCode: 0 };
+        },
+      },
+      bashPolicy: {
+        allowAll: false,
+        allowPrefixes: ["echo "],
+        denyPrefixes: [],
+      },
+    });
+    const bashTool = tools.find((t) => t.name === "bash")!;
+
+    await bashTool.execute(
+      "call-allow",
+      { command: "echo hi" },
+      undefined,
+      undefined
+    );
+    expect(seen.some((c) => c.includes("echo hi"))).toBe(true);
+  });
+
+  test("no bashPolicy → no prefix enforcement (unchanged default)", async () => {
+    const seen: string[] = [];
+    const tools = createLobuTools(tempDir, {
+      bashOperations: {
+        exec: async (command, _cwd, { onData }) => {
+          seen.push(command);
+          onData(Buffer.from("ok\n"));
+          return { exitCode: 0 };
+        },
+      },
+    });
+    const bashTool = tools.find((t) => t.name === "bash")!;
+
+    // Without a policy, an otherwise-denyable command runs (matches the prior
+    // behavior when session-runner only re-wrapped for a non-empty policy).
+    await bashTool.execute(
+      "call-nopolicy",
+      { command: "rm -rf /workspace/data" },
+      undefined,
+      undefined
+    );
+    expect(seen.some((c) => c.includes("rm -rf"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // callMcpTool
 // ---------------------------------------------------------------------------
 

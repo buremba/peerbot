@@ -2,7 +2,8 @@
  * Product Hunt Connector (V1 runtime)
  *
  * Searches Product Hunt posts and comments via the GraphQL API.
- * Supports both authenticated (Developer Token) and unauthenticated modes.
+ * Requires a Developer Token (PRODUCTHUNT_TOKEN) — the v2 API rejects
+ * unauthenticated requests, and the sync fails loudly when it does.
  */
 
 import {
@@ -269,12 +270,12 @@ export default class ProductHuntConnector extends ConnectorRuntime {
           });
         } catch (error) {
           if (error instanceof HttpStatusError && error.status === 401) {
+            // PH v2 API requires auth. Fail the run instead of returning an
+            // empty success — that's indistinguishable from no matching posts.
             if (!token) {
-              // PH v2 API requires auth; return empty results when no token configured
-              console.warn(
+              throw new Error(
                 'Product Hunt API requires a Developer Token. Configure PRODUCTHUNT_TOKEN for results.'
               );
-              return { items: [], nextCursor: null };
             }
             throw new Error('Product Hunt authentication failed. Check your Developer Token.');
           }

@@ -123,6 +123,20 @@ export function connectorSdkMock() {
       json: notUsed('http.json'),
       request: notUsed('http.request'),
       raw: notUsed('http.raw'),
+      // Faithful minimal `post`: JSON body via global fetch, HttpStatusError on
+      // non-2xx — mirrors connector-sdk/src/http-client.ts semantics so tests
+      // can drive a connector's sync error paths by stubbing globalThis.fetch.
+      post: async (url: string, body?: unknown) => {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+          throw new HttpStatusError({ status: response.status, body: await response.text() });
+        }
+        return response.json();
+      },
     }),
     // Faithful copy of connector-sdk checkpoint/timestamp-watermark.ts — must
     // honor the checkpoint arg; a passthrough stub leaks via Bun's global mock

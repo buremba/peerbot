@@ -118,15 +118,27 @@ export default class RSSConnector extends ConnectorRuntime {
     const seenIds = new Set<string>(checkpoint.last_item_ids ?? []);
 
     const allItems: RSSFeedItem[] = [];
+    const fetchErrors: Array<{ url: string; error: string }> = [];
 
     for (const feedUrl of feedUrls) {
       try {
         const items = await this.fetchAndParseFeed(feedUrl, maxItemsPerFeed);
         allItems.push(...items);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(`Failed to fetch feed ${feedUrl}: ${message}`);
+        fetchErrors.push({
+          url: feedUrl,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
+    }
+
+    // A run where every configured feed failed must fail — a "completed" run
+    // with 0 items is indistinguishable from a genuinely empty feed.
+    if (fetchErrors.length === feedUrls.length) {
+      throw new Error(
+        `All ${feedUrls.length} feed URL(s) failed to fetch: ` +
+          fetchErrors.map((e) => `${e.url} (${e.error})`).join('; ')
+      );
     }
 
     // Sort by occurred_at descending
@@ -173,7 +185,13 @@ export default class RSSConnector extends ConnectorRuntime {
       checkpoint: newCheckpoint as unknown as Record<string, unknown>,
       metadata: {
         items_found: events.length,
-        feeds_fetched: feedUrls.length,
+        feeds_fetched: feedUrls.length - fetchErrors.length,
+        // Partial failures ride the run record via metadata.fetch_errors (the
+        // connector-worker surfaces them on the run's error_message).
+        ...(fetchErrors.length > 0 && {
+          feeds_failed: fetchErrors.length,
+          fetch_errors: fetchErrors,
+        }),
       },
     };
   }

@@ -1,5 +1,7 @@
 # Rendering + Config-as-Events + Branching — Implementation Plan
 
+> **Status (2026-07-15):** **Largely unbuilt** — foundation B1's `entity_field_state` projection was later dropped as unused (migration 20260623050000), and the first-class `event_types` registry was never built.
+
 ## Thesis (what we landed on)
 - **Types own schema + template.** Two first-class type registries — `entity_types` and a new
   first-class `event_types` (lifted out of `entity_types.event_kinds`). Watchers own neither.

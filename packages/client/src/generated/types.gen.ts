@@ -332,7 +332,7 @@ export type SaveMemoryResponse = SaveMemoryResponses[keyof SaveMemoryResponses];
 export type SearchSdkData = {
   body: {
     /**
-     * SDK method or runtime-helper discovery query. Use a namespace (e.g. 'watchers'), one or more dotted paths separated by whitespace (e.g. 'watchers.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: agents, authProfiles, catalog, classifiers, connections, ctx, entities, entitySchema, feeds, knowledge, metrics, notifications, operations, organizations, schedules, viewTemplates, watchers.
+     * SDK method or runtime-helper discovery query. Use a namespace (e.g. 'watchers'), one or more dotted paths separated by whitespace (e.g. 'watchers.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: agents, authProfiles, catalog, classifiers, connections, conversations, ctx, entities, entitySchema, feeds, knowledge, metrics, notifications, operations, organizations, schedules, viewTemplates, watchers.
      */
     query: string;
     /**
@@ -2693,6 +2693,85 @@ export type ManageAgentsResponses = {
 
 export type ManageAgentsResponse =
   ManageAgentsResponses[keyof ManageAgentsResponses];
+
+export type ManageConversationsData = {
+  body: {
+    /**
+     * Action to perform
+     */
+    action: "list" | "get" | "send";
+    /**
+     * Target agent id (lowercase slug, e.g. "researcher"). Required for every action.
+     */
+    agent_id: string;
+    /**
+     * [get] Conversation platform ("web" for app-owned conversations, or a channel platform like "slack"). Defaults to "web".
+     */
+    platform?: string;
+    /**
+     * [get] The stored conversation id. For [send], omit to target the caller's default web thread, or pass a `thread` to open/resume a named web thread.
+     */
+    conversation_id?: string;
+    /**
+     * [send] Optional web thread name. Distinct threads keep separate history + separate pinned sandbox. Omit for the default thread.
+     */
+    thread?: string;
+    /**
+     * [send] Message text to deliver to the agent.
+     */
+    text?: string;
+    /**
+     * [send] Optional per-message model override as a `provider/model` ref. Wins over the agent/org default.
+     */
+    model?: string;
+    /**
+     * [send] When true (default), block until the agent's turn completes and return its reply. When false, enqueue and return immediately with the message id.
+     */
+    wait?: boolean;
+    /**
+     * [send, wait=true] Max time to wait for the reply. Default 45000, capped at 170000 — kept inside run_sdk's own wall-clock budget so a no-reply call returns a graceful status:"timeout" instead of aborting the whole script. For a longer wait, raise BOTH this and the run_sdk/query_sdk timeout_ms. On timeout the turn keeps running (the answer is not lost); the reply is not retrievable through `get`.
+     */
+    timeout_ms?: number;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_conversations";
+};
+
+export type ManageConversationsErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageConversationsError =
+  ManageConversationsErrors[keyof ManageConversationsErrors];
+
+export type ManageConversationsResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type ManageConversationsResponse =
+  ManageConversationsResponses[keyof ManageConversationsResponses];
 
 export type ManageFeedsData = {
   body:
@@ -5391,6 +5470,68 @@ export type ResolvePathResponses = {
 export type ResolvePathResponse =
   ResolvePathResponses[keyof ResolvePathResponses];
 
+export type GetApiBedrockHealthData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/bedrock/health";
+};
+
+export type GetApiBedrockHealthResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiBedrockOpenaiAByAgentIdV1ModelsData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: never;
+  url: "/api/bedrock/openai/a/{agentId}/v1/models";
+};
+
+export type GetApiBedrockOpenaiAByAgentIdV1ModelsResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: never;
+  url: "/api/bedrock/openai/a/{agentId}/v1/chat/completions";
+};
+
+export type PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1FilesByArtifactIdData = {
+  body?: never;
+  path: {
+    artifactId: string;
+  };
+  query?: never;
+  url: "/api/v1/files/{artifactId}";
+};
+
+export type GetApiV1FilesByArtifactIdResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
 export type GetApiV1AgentsData = {
   body?: never;
   path?: never;
@@ -5726,96 +5867,6 @@ export type PostApiV1AgentsByAgentIdMessagesResponses = {
 export type PostApiV1AgentsByAgentIdMessagesResponse =
   PostApiV1AgentsByAgentIdMessagesResponses[keyof PostApiV1AgentsByAgentIdMessagesResponses];
 
-export type GetApiV1AgentsByAgentIdConfigData = {
-  body?: never;
-  path?: never;
-  query?: {
-    token?: string;
-  };
-  url: "/api/v1/agents/{agentId}/config";
-};
-
-export type GetApiV1AgentsByAgentIdConfigErrors = {
-  /**
-   * Unauthorized
-   */
-  401: {
-    error: string;
-  };
-};
-
-export type GetApiV1AgentsByAgentIdConfigError =
-  GetApiV1AgentsByAgentIdConfigErrors[keyof GetApiV1AgentsByAgentIdConfigErrors];
-
-export type GetApiV1AgentsByAgentIdConfigResponses = {
-  /**
-   * Configuration
-   */
-  200: unknown;
-};
-
-export type GetApiBedrockHealthData = {
-  body?: never;
-  path?: never;
-  query?: never;
-  url: "/api/bedrock/health";
-};
-
-export type GetApiBedrockHealthResponses = {
-  /**
-   * OK
-   */
-  200: unknown;
-};
-
-export type GetApiBedrockOpenaiAByAgentIdV1ModelsData = {
-  body?: never;
-  path: {
-    agentId: string;
-  };
-  query?: never;
-  url: "/api/bedrock/openai/a/{agentId}/v1/models";
-};
-
-export type GetApiBedrockOpenaiAByAgentIdV1ModelsResponses = {
-  /**
-   * OK
-   */
-  200: unknown;
-};
-
-export type PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsData = {
-  body?: never;
-  path: {
-    agentId: string;
-  };
-  query?: never;
-  url: "/api/bedrock/openai/a/{agentId}/v1/chat/completions";
-};
-
-export type PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses = {
-  /**
-   * OK
-   */
-  200: unknown;
-};
-
-export type GetApiV1FilesByArtifactIdData = {
-  body?: never;
-  path: {
-    artifactId: string;
-  };
-  query?: never;
-  url: "/api/v1/files/{artifactId}";
-};
-
-export type GetApiV1FilesByArtifactIdResponses = {
-  /**
-   * OK
-   */
-  200: unknown;
-};
-
 export type PostApiV1AgentsApproveData = {
   body?: never;
   path?: never;
@@ -5973,6 +6024,36 @@ export type GetApiV1AgentsByAgentIdHistorySessionStatsData = {
 export type GetApiV1AgentsByAgentIdHistorySessionStatsResponses = {
   /**
    * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1AgentsByAgentIdConfigData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: {
+    token?: string;
+  };
+  url: "/api/v1/agents/{agentId}/config";
+};
+
+export type GetApiV1AgentsByAgentIdConfigErrors = {
+  /**
+   * Unauthorized
+   */
+  401: {
+    error: string;
+  };
+};
+
+export type GetApiV1AgentsByAgentIdConfigError =
+  GetApiV1AgentsByAgentIdConfigErrors[keyof GetApiV1AgentsByAgentIdConfigErrors];
+
+export type GetApiV1AgentsByAgentIdConfigResponses = {
+  /**
+   * Configuration
    */
   200: unknown;
 };

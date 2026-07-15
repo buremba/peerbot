@@ -1,15 +1,13 @@
-import Ajv, { type ValidateFunction } from 'ajv';
-import addFormats from 'ajv-formats';
+import type { ValidateFunction } from 'ajv';
+import { createAjv, formatAjvError } from '@lobu/core/ajv';
 import type { OperationDescriptor } from './types';
 import { getErrorMessage } from '@lobu/core';
-import { formatAjvError } from '../utils/ajv-singleton';
 
-const operationInputAjv = new Ajv({
+const operationInputAjv = createAjv({
   allErrors: false,
   strict: false,
   coerceTypes: false,
 });
-addFormats(operationInputAjv);
 
 // `input_schema` objects are parsed fresh from the DB on each request (no
 // `$id`), so AJV can't dedupe them and `compile()` would add a new validator

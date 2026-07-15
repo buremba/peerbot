@@ -4,6 +4,5393 @@ export type ClientOptions = {
   baseUrl: "http://localhost:8787" | (string & {});
 };
 
+export type SearchMemoryData = {
+  body: {
+    /**
+     * Search query (entity name). Required unless entity_id is provided.
+     */
+    query?: string;
+    /**
+     * Entity type filter. If not provided, searches all entities.
+     */
+    entity_type?: string;
+    /**
+     * Entity ID for direct lookup. Can be used instead of query for exact fetch.
+     */
+    entity_id?: number;
+    /**
+     * Filter by parent entity ID.
+     */
+    parent_id?: number;
+    /**
+     * Market/region code (ISO 3166-1 alpha-2)
+     */
+    market?: string;
+    /**
+     * Filter by category metadata field
+     */
+    category?: string;
+    /**
+     * Enable fuzzy name matching
+     */
+    fuzzy?: boolean;
+    /**
+     * Minimum similarity threshold for fuzzy matching (0.0-1.0)
+     */
+    min_similarity?: number;
+    /**
+     * Include connection details in response (max 20, active first)
+     */
+    include_connections?: boolean;
+    /**
+     * Include semantic content search results alongside entity matches (default: true). Uses the query for vector similarity search across all content in the organization.
+     */
+    include_content?: boolean;
+    /**
+     * Max content results when include_content is enabled (default: 5, max: 50)
+     */
+    content_limit?: number;
+    /**
+     * Filter entities by metadata key-value pairs (e.g. {"category": "preference"})
+     */
+    metadata_filter?: {
+      [key: string]: unknown | string;
+    };
+    /**
+     * Max results (default: 5, max: 100)
+     */
+    limit?: number;
+    /**
+     * Also search public-catalog orgs (visibility=public) — canonical world entities like HMRC, banks, currencies. Defaults to true so agents can discover entities to reference cross-org.
+     */
+    include_public_catalogs?: boolean;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/search_memory";
+};
+
+export type SearchMemoryErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type SearchMemoryError = SearchMemoryErrors[keyof SearchMemoryErrors];
+
+export type SearchMemoryResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    entity_type: string | null;
+    entity: {
+      id: number;
+      type: string;
+      name: string;
+      slug: string;
+      metadata: {
+        [key: string]: unknown;
+      };
+      parent_id: number | null;
+      parent_name: string | null;
+      parent_slug: string | null;
+      parent_entity_type: string | null;
+      organization_slug: string | null;
+      stats: {
+        content_count: number;
+        connection_count: number;
+        active_connection_count: number;
+        children_count: number;
+        watcher_count: number;
+      };
+      match_score: number;
+      match_reason: string;
+    } | null;
+    matches: Array<{
+      id: number;
+      type: string;
+      name: string;
+      slug: string;
+      metadata: {
+        [key: string]: unknown;
+      };
+      parent_id: number | null;
+      parent_name: string | null;
+      parent_slug: string | null;
+      parent_entity_type: string | null;
+      organization_slug: string | null;
+      stats: {
+        content_count: number;
+        connection_count: number;
+        active_connection_count: number;
+        children_count: number;
+        watcher_count: number;
+      };
+      match_score: number;
+      match_reason: string;
+    }>;
+    connections?: Array<{
+      connection_id: number;
+      connector_key: string;
+      display_name: string | null;
+      status: string;
+      config: {
+        [key: string]: unknown;
+      };
+      entity_names?: string | null;
+      created_at: string;
+      updated_at: string | null;
+      content_count: number;
+    }>;
+    children?: Array<{
+      id: number;
+      name: string;
+      type: string;
+      market: string | null;
+      content_count: number;
+    }>;
+    content?: Array<{
+      id: number;
+      title: string | null;
+      text_content: string;
+      author_name: string | null;
+      source_url: string | null;
+      platform: string;
+      occurred_at: string | null;
+      similarity?: number;
+      entity_ids: Array<number>;
+    }>;
+    conversation_messages?: Array<{
+      platform: string;
+      channel_id: string;
+      thread_id: string | null;
+      author_name: string | null;
+      author_entity_id: number | null;
+      text: string;
+      occurred_at: string | null;
+    }>;
+    virtual_feeds?: Array<{
+      feed_id: number;
+      feed_key: string;
+      columns: Array<{
+        name: string;
+        type: string;
+      }>;
+      rows: Array<{
+        [key: string]: unknown;
+      }>;
+    }>;
+    discovery_status?: "not_found" | "complete" | "discovering";
+    suggestion?: string;
+    view_url?: string;
+    existing_entities?: Array<{
+      entity_type: string;
+      entities: Array<{
+        id: number;
+        name: string;
+      }>;
+    }>;
+    metadata: {
+      total_matches: number;
+      page_size: number;
+    };
+  };
+};
+
+export type SearchMemoryResponse =
+  SearchMemoryResponses[keyof SearchMemoryResponses];
+
+export type SaveMemoryData = {
+  body: {
+    /**
+     * Entity IDs to associate content with. Omit for org-scoped content.
+     */
+    entity_ids?: Array<number>;
+    /**
+     * The text content to save. Required for text/markdown payload types.
+     */
+    content?: string;
+    /**
+     * Short title or summary
+     */
+    title?: string;
+    /**
+     * Author name or identifier
+     */
+    author?: string;
+    /**
+     * Semantic type (e.g. note, summary, decision, identity, observation). Preferred.
+     */
+    semantic_type?: string;
+    /**
+     * Content format. 'text' (default): plain text. 'markdown': rendered as rich text. 'json_template': rendered via payload_template + payload_data. 'media': media-focused display. 'empty': metadata only.
+     */
+    payload_type?: "text" | "markdown" | "json_template" | "media" | "empty";
+    /**
+     * Structured data object. Used as template data for json_template, or structured metadata for media.
+     */
+    payload_data?: {
+      [key: string]: unknown;
+    };
+    /**
+     * JSON template for rendering. Required when payload_type is json_template. Must have a { root: ... } structure.
+     */
+    payload_template?: {
+      [key: string]: unknown;
+    };
+    /**
+     * Array of attachment objects (e.g. files, images).
+     */
+    attachments?: Array<{
+      [key: string]: unknown;
+    }>;
+    /**
+     * URL of the original source for this content.
+     */
+    source_url?: string;
+    /**
+     * When the event actually happened (ISO 8601). Defaults to now if omitted.
+     */
+    occurred_at?: string;
+    /**
+     * Structured metadata — validated against the entity type schema or semantic_type schema
+     */
+    metadata: {
+      [key: string]: unknown;
+    };
+    /**
+     * ID of an existing event this content replaces (e.g. updated preference, corrected fact). The old event is marked as superseded and excluded from future searches.
+     */
+    supersedes_event_id?: number;
+    /**
+     * Attribution source when save is triggered by a watcher reaction
+     */
+    watcher_source?: {
+      /**
+       * Watcher that triggered this save
+       */
+      watcher_id: number;
+      /**
+       * Window that triggered this save
+       */
+      window_id: number;
+    };
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/save_memory";
+};
+
+export type SaveMemoryErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type SaveMemoryError = SaveMemoryErrors[keyof SaveMemoryErrors];
+
+export type SaveMemoryResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type SaveMemoryResponse = SaveMemoryResponses[keyof SaveMemoryResponses];
+
+export type SearchSdkData = {
+  body: {
+    /**
+     * SDK method or runtime-helper discovery query. Use a namespace (e.g. 'watchers'), one or more dotted paths separated by whitespace (e.g. 'watchers.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: agents, authProfiles, catalog, classifiers, connections, ctx, entities, entitySchema, feeds, knowledge, metrics, notifications, operations, organizations, schedules, viewTemplates, watchers.
+     */
+    query: string;
+    /**
+     * Filter results to match query_sdk ('read') or run_sdk ('full', default).
+     */
+    mode?: "read" | "full";
+    /**
+     * Max matches to return. Default 20, max 100.
+     */
+    limit?: number;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/search_sdk";
+};
+
+export type SearchSdkErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type SearchSdkError = SearchSdkErrors[keyof SearchSdkErrors];
+
+export type SearchSdkResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    /**
+     * The query that was searched.
+     */
+    query: string;
+    /**
+     * Number of matches returned.
+     */
+    match_count: number;
+    /**
+     * Rendered method-documentation strings, one per match.
+     */
+    results: Array<string>;
+    /**
+     * Free-text hints (e.g. ambiguity, suggestions) when relevant.
+     */
+    notes?: string;
+  };
+};
+
+export type SearchSdkResponse = SearchSdkResponses[keyof SearchSdkResponses];
+
+export type QuerySdkData = {
+  body: {
+    /**
+     * TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value` in the result. Use `search_sdk` to discover SDK methods and `ctx.sleep`.
+     */
+    script: string;
+    /**
+     * Wall-clock budget. Default 60000 (max 180000 — device-bound operations may wait ~155s).
+     */
+    timeout_ms?: number;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/query_sdk";
+};
+
+export type QuerySdkErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type QuerySdkError = QuerySdkErrors[keyof QuerySdkErrors];
+
+export type QuerySdkResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    /**
+     * Whether the script ran to completion.
+     */
+    success: boolean;
+    /**
+     * The script's default-export return value.
+     */
+    return_value?: unknown;
+    /**
+     * console.log/warn/error output captured from the script.
+     */
+    logs: Array<{
+      level: "log" | "warn" | "error";
+      message: string;
+      data?: {
+        [key: string]: unknown;
+      };
+      ts: number;
+    }>;
+    /**
+     * Present when success=false: the thrown error, with script position.
+     */
+    error?: {
+      name: string;
+      message: string;
+      /**
+       * Redacted structured business-error details returned by the SDK action.
+       */
+      details?: unknown;
+      stack?: string;
+      line?: number;
+      column?: number;
+    };
+    duration_ms: number;
+    /**
+     * Number of SDK calls the script made.
+     */
+    sdk_calls: number;
+    /**
+     * Every SDK call the script made, in order.
+     */
+    sdk_call_trace: Array<{
+      /**
+       * Dotted SDK method path (e.g. entities.list).
+       */
+      path: string;
+      /**
+       * Org slugs traversed via client.org(...) before the call, if any.
+       */
+      orgPath: Array<string>;
+      /**
+       * Access class of the method.
+       */
+      access: "read" | "write" | "external" | "admin" | "unknown";
+      /**
+       * Call arguments (redacted + truncated).
+       */
+      args: Array<unknown>;
+      /**
+       * true when dry_run skipped this write/external call.
+       */
+      skipped: boolean;
+    }>;
+    /**
+     * Write/admin/external calls that were skipped because dry_run=true. This is a method-level side-effect preview, not proof that the skipped handler would accept the payload.
+     */
+    side_effect_preview: Array<{
+      /**
+       * Dotted SDK method path (e.g. entities.list).
+       */
+      path: string;
+      /**
+       * Org slugs traversed via client.org(...) before the call, if any.
+       */
+      orgPath: Array<string>;
+      /**
+       * Access class of the method.
+       */
+      access: "read" | "write" | "external" | "admin" | "unknown";
+      /**
+       * Call arguments (redacted + truncated).
+       */
+      args: Array<unknown>;
+      /**
+       * true when dry_run skipped this write/external call.
+       */
+      skipped: boolean;
+    }>;
+    dry_run: boolean;
+  };
+};
+
+export type QuerySdkResponse = QuerySdkResponses[keyof QuerySdkResponses];
+
+export type QuerySqlData = {
+  body: {
+    /**
+     * Base SELECT query. Required unless `feed` is set. Table references are auto-scoped to your organization. `SELECT FROM events` reads persisted/synced content only; virtual feeds are live-only and are not included. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.
+     */
+    sql?: string;
+    /**
+     * Optional connection slug. When set, `sql` runs LIVE (read-only) against that connection’s external database via its connector (pushdown), and the internal org-scoping is skipped. When unset, the query runs over your org’s internal tables.
+     */
+    connection?: string;
+    /**
+     * Optional virtual-feed reference (numeric feed id, or "connection_slug/feed_key"). When set, the feed’s STORED config.query runs LIVE against its source (no `sql` needed — it is ignored). `search_term` is forwarded to the connector search() pushdown (each connector interprets it — e.g. Gmail query syntax AND-composed with config.query). Mutually exclusive with `connection`.
+     */
+    feed?: string;
+    /**
+     * Optional. Only honored on the unscoped `/mcp` endpoint with OAuth auth. Rejected for PAT auth, browser-session auth, and scoped `/mcp/{slug}` connections — re-connect to the target workspace instead.
+     */
+    org_slug?: string;
+    /**
+     * Column name to sort by. Omit to return rows unordered (e.g. a view whose columns you don't know upfront).
+     */
+    sort_by?: string;
+    /**
+     * Sort direction. Default: asc.
+     */
+    sort_order?: "asc" | "desc";
+    /**
+     * Rows per page (1–500). Default: 50.
+     */
+    limit?: number;
+    /**
+     * Row offset for pagination. Default: 0.
+     */
+    offset?: number;
+    /**
+     * Internal SQL: ILIKE search value. Virtual feeds: forwarded to connector search() — interpretation is connector-specific (Gmail: search syntax merged with config.query).
+     */
+    search_term?: string;
+    /**
+     * Columns to search across (required when search_term is set).
+     */
+    search_columns?: Array<string>;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/query_sql";
+};
+
+export type QuerySqlErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type QuerySqlError = QuerySqlErrors[keyof QuerySqlErrors];
+
+export type QuerySqlResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type QuerySqlResponse = QuerySqlResponses[keyof QuerySqlResponses];
+
+export type RunSdkData = {
+  body: {
+    /**
+     * TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value` in the result. Use `search_sdk` to discover SDK methods and `ctx.sleep`.
+     */
+    script: string;
+    /**
+     * Wall-clock budget. Default 60000 (max 180000 — device-bound operations may wait ~155s).
+     */
+    timeout_ms?: number;
+    /**
+     * Preview mode. Read SDK calls still execute, but write/admin/external SDK calls are skipped and returned in side_effect_preview. Dry-run validates the SDK method path and access tier, but it does not execute the skipped handler or fully validate that handler's payload shape.
+     */
+    dry_run?: boolean;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/run_sdk";
+};
+
+export type RunSdkErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type RunSdkError = RunSdkErrors[keyof RunSdkErrors];
+
+export type RunSdkResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    /**
+     * Whether the script ran to completion.
+     */
+    success: boolean;
+    /**
+     * The script's default-export return value.
+     */
+    return_value?: unknown;
+    /**
+     * console.log/warn/error output captured from the script.
+     */
+    logs: Array<{
+      level: "log" | "warn" | "error";
+      message: string;
+      data?: {
+        [key: string]: unknown;
+      };
+      ts: number;
+    }>;
+    /**
+     * Present when success=false: the thrown error, with script position.
+     */
+    error?: {
+      name: string;
+      message: string;
+      /**
+       * Redacted structured business-error details returned by the SDK action.
+       */
+      details?: unknown;
+      stack?: string;
+      line?: number;
+      column?: number;
+    };
+    duration_ms: number;
+    /**
+     * Number of SDK calls the script made.
+     */
+    sdk_calls: number;
+    /**
+     * Every SDK call the script made, in order.
+     */
+    sdk_call_trace: Array<{
+      /**
+       * Dotted SDK method path (e.g. entities.list).
+       */
+      path: string;
+      /**
+       * Org slugs traversed via client.org(...) before the call, if any.
+       */
+      orgPath: Array<string>;
+      /**
+       * Access class of the method.
+       */
+      access: "read" | "write" | "external" | "admin" | "unknown";
+      /**
+       * Call arguments (redacted + truncated).
+       */
+      args: Array<unknown>;
+      /**
+       * true when dry_run skipped this write/external call.
+       */
+      skipped: boolean;
+    }>;
+    /**
+     * Write/admin/external calls that were skipped because dry_run=true. This is a method-level side-effect preview, not proof that the skipped handler would accept the payload.
+     */
+    side_effect_preview: Array<{
+      /**
+       * Dotted SDK method path (e.g. entities.list).
+       */
+      path: string;
+      /**
+       * Org slugs traversed via client.org(...) before the call, if any.
+       */
+      orgPath: Array<string>;
+      /**
+       * Access class of the method.
+       */
+      access: "read" | "write" | "external" | "admin" | "unknown";
+      /**
+       * Call arguments (redacted + truncated).
+       */
+      args: Array<unknown>;
+      /**
+       * true when dry_run skipped this write/external call.
+       */
+      skipped: boolean;
+    }>;
+    dry_run: boolean;
+  };
+};
+
+export type RunSdkResponse = RunSdkResponses[keyof RunSdkResponses];
+
+export type ManageEntityData = {
+  body: {
+    /**
+     * Action to perform
+     */
+    action:
+      | "create"
+      | "update"
+      | "list"
+      | "get"
+      | "delete"
+      | "link"
+      | "unlink"
+      | "update_link"
+      | "list_links"
+      | "merge"
+      | "unmerge";
+    /**
+     * [merge] The surviving entity that absorbs `entity_id` (the duplicate).
+     */
+    winner_entity_id?: number;
+    /**
+     * Entity type as defined in your workspace
+     */
+    entity_type?: string;
+    /**
+     * [get/update/delete/list_links] Entity ID to operate on
+     */
+    entity_id?: number;
+    /**
+     * [create/update] Entity name
+     */
+    name?: string;
+    /**
+     * [create/update] Free-text content body. Used by memory entities and any entity that carries rich text.
+     */
+    content?: string;
+    /**
+     * [create/update] URL-friendly slug (auto-generated from name if not provided)
+     */
+    slug?: string;
+    /**
+     * [create/update] Parent entity ID (for hierarchical entities)
+     */
+    parent_id?: number;
+    /**
+     * [create/update] Enabled classifier slugs
+     */
+    enabled_classifiers?: Array<string>;
+    /**
+     * [create/update] Primary domain (e.g., spotify.com)
+     */
+    domain?: string;
+    /**
+     * [create/update/list] Industry category
+     */
+    category?: string;
+    /**
+     * [create/update] Platform type (b2b, b2c, b2b2c)
+     */
+    platform_type?: string;
+    /**
+     * [create/update/list] Primary market (ISO 3166-1 alpha-2)
+     */
+    main_market?: string;
+    /**
+     * [create/update/list] Market/region (ISO 3166-1 alpha-2)
+     */
+    market?: string;
+    /**
+     * [create/update] Entity URL
+     */
+    link?: string;
+    /**
+     * [create/update/link/update_link] Custom metadata object. For entities: validated against the entity type's JSON schema. For links: relationship metadata. On update, fields a human owns are NOT overwritten — they are queued for the human's approval and reported in the result's `blocked_fields`/`approval_queued`; tell the user you PROPOSED those changes rather than claiming you set them. Unowned fields in the same call apply directly (`applied_fields`).
+     */
+    metadata?: {
+      [key: string]: unknown;
+    };
+    /**
+     * [update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so a watcher (and the UI) can see why the value was set.
+     */
+    field_note?: string;
+    /**
+     * [update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so a watcher can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.
+     */
+    affirm_fields?: Array<string>;
+    /**
+     * [list] Search by name
+     */
+    search?: string;
+    /**
+     * [list/list_links] Page size (default: 100, max: 500)
+     */
+    limit?: number;
+    /**
+     * [list/list_links] Pagination offset (default: 0)
+     */
+    offset?: number;
+    /**
+     * [list] Sort by column (name, created_at, domain, total_content, active_connections, watchers_count, children_count)
+     */
+    sort_by?: string;
+    /**
+     * [list] Sort order (asc or desc)
+     */
+    sort_order?: "asc" | "desc";
+    /**
+     * [delete] Force delete entity and all descendants
+     */
+    force_delete_tree?: boolean;
+    /**
+     * [link] Source entity ID
+     */
+    from_entity_id?: number;
+    /**
+     * [link] Target entity ID
+     */
+    to_entity_id?: number;
+    /**
+     * [link/list_links] Relationship type slug
+     */
+    relationship_type_slug?: string;
+    /**
+     * [link/update_link] Confidence score 0-1. Defaults to 1.0 for ui/api source.
+     */
+    confidence?: number;
+    /**
+     * [link/update_link] Source of the relationship
+     */
+    source?: "ui" | "llm" | "feed" | "api";
+    /**
+     * [update_link/unlink] Relationship ID
+     */
+    relationship_id?: number;
+    /**
+     * [list_links] Direction filter. Default both.
+     */
+    direction?: "outbound" | "inbound" | "both";
+    /**
+     * [list_links] Minimum confidence threshold
+     */
+    confidence_min?: number;
+    /**
+     * [list_links] Include soft-deleted relationships
+     */
+    include_deleted?: boolean;
+    /**
+     * Attribution source when mutation is triggered by a watcher reaction
+     */
+    watcher_source?: {
+      /**
+       * Watcher that triggered this mutation
+       */
+      watcher_id: number;
+      /**
+       * Window that triggered this mutation
+       */
+      window_id: number;
+    };
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_entity";
+};
+
+export type ManageEntityErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageEntityError = ManageEntityErrors[keyof ManageEntityErrors];
+
+export type ManageEntityResponses = {
+  /**
+   * Successful response
+   */
+  200:
+    | {
+        action: "create";
+        entity?: {
+          id: number;
+          entity_type: string;
+          name: string;
+          slug: string;
+          parent_id?: number | null;
+          parent_name?: string | null;
+          parent_slug?: string | null;
+          parent_entity_type?: string | null;
+          metadata?: {
+            [key: string]: unknown;
+          };
+          enabled_classifiers?: Array<string> | null;
+          created_at?: string;
+          total_content?: number | null;
+          active_connections?: number | null;
+          watchers_count?: number | null;
+          children_count?: number | null;
+          space_name?: string | null;
+          view_url?: string;
+        };
+        warnings?: Array<string>;
+        next_steps?: Array<string>;
+        approval_queued?: boolean;
+        approval_url?: string;
+        approval_run_id?: number;
+        approval_action?: "create";
+        approval_proposal?: {
+          [key: string]: unknown;
+        };
+        approval_current?: {
+          [key: string]: unknown;
+        };
+        approval_attribution?: "agent" | "watcher";
+      }
+    | {
+        action: "update";
+        entity: {
+          id: number;
+          entity_type: string;
+          name: string;
+          slug: string;
+          parent_id?: number | null;
+          parent_name?: string | null;
+          parent_slug?: string | null;
+          parent_entity_type?: string | null;
+          metadata?: {
+            [key: string]: unknown;
+          };
+          enabled_classifiers?: Array<string> | null;
+          created_at?: string;
+          total_content?: number | null;
+          active_connections?: number | null;
+          watchers_count?: number | null;
+          children_count?: number | null;
+          space_name?: string | null;
+          view_url?: string;
+        };
+        applied_fields?: Array<string>;
+        blocked_fields?: Array<string>;
+        approval_queued?: boolean;
+        approval_url?: string;
+        approval_run_id?: number;
+        approval_fields?: {
+          [key: string]: unknown;
+        };
+        approval_current?: {
+          [key: string]: unknown;
+        };
+        approval_attribution?: "agent" | "watcher";
+      }
+    | {
+        action: "list";
+        entities: Array<{
+          id: number;
+          entity_type: string;
+          name: string;
+          slug: string;
+          parent_id?: number | null;
+          parent_name?: string | null;
+          parent_slug?: string | null;
+          parent_entity_type?: string | null;
+          metadata?: {
+            [key: string]: unknown;
+          };
+          enabled_classifiers?: Array<string> | null;
+          created_at?: string;
+          total_content?: number | null;
+          active_connections?: number | null;
+          watchers_count?: number | null;
+          children_count?: number | null;
+          space_name?: string | null;
+          view_url?: string;
+        }>;
+        linked_entities?: {
+          [key: string]:
+            | unknown
+            | {
+                [key: string]:
+                  | unknown
+                  | {
+                      slug: string;
+                      entity_type: string;
+                      name: string;
+                    };
+              };
+        };
+        metadata: {
+          page_size: number;
+          has_more: boolean;
+          filtered_by_type?: string;
+          total_count?: number;
+          limit?: number;
+          offset?: number;
+          sort_by?: string;
+          sort_order?: "asc" | "desc";
+        };
+      }
+    | {
+        action: "get";
+        entity: {
+          id: number;
+          entity_type: string;
+          name: string;
+          slug: string;
+          parent_id?: number | null;
+          parent_name?: string | null;
+          parent_slug?: string | null;
+          parent_entity_type?: string | null;
+          metadata?: {
+            [key: string]: unknown;
+          };
+          enabled_classifiers?: Array<string> | null;
+          created_at?: string;
+          total_content?: number | null;
+          active_connections?: number | null;
+          watchers_count?: number | null;
+          children_count?: number | null;
+          space_name?: string | null;
+          view_url?: string;
+        };
+      }
+    | {
+        action: "delete";
+        success: boolean;
+        message: string;
+        deleted_count: number;
+        approval_queued?: boolean;
+        approval_url?: string;
+        approval_run_id?: number;
+        approval_action?: "delete";
+        approval_proposal?: {
+          [key: string]: unknown;
+        };
+        approval_current?: {
+          [key: string]: unknown;
+        };
+        approval_attribution?: "agent" | "watcher";
+      }
+    | {
+        action: "link";
+        relationship: {
+          id: number;
+          organization_id: string;
+          from_entity_id: number;
+          to_entity_id: number;
+          relationship_type_id: number;
+          relationship_type_slug: string;
+          relationship_type_name: string;
+          is_symmetric: boolean;
+          from_entity_name?: string;
+          from_entity_type?: string;
+          to_entity_name?: string;
+          to_entity_type?: string;
+          metadata?: {
+            [key: string]: unknown;
+          } | null;
+          confidence: number;
+          source: string;
+          created_by?: string | null;
+          updated_by?: string | null;
+          created_at: string;
+          updated_at: string;
+          deleted_at?: string | null;
+        };
+      }
+    | {
+        action: "update_link";
+        relationship: {
+          id: number;
+          organization_id: string;
+          from_entity_id: number;
+          to_entity_id: number;
+          relationship_type_id: number;
+          relationship_type_slug: string;
+          relationship_type_name: string;
+          is_symmetric: boolean;
+          from_entity_name?: string;
+          from_entity_type?: string;
+          to_entity_name?: string;
+          to_entity_type?: string;
+          metadata?: {
+            [key: string]: unknown;
+          } | null;
+          confidence: number;
+          source: string;
+          created_by?: string | null;
+          updated_by?: string | null;
+          created_at: string;
+          updated_at: string;
+          deleted_at?: string | null;
+        };
+      }
+    | {
+        action: "unlink";
+        success: boolean;
+        message: string;
+      }
+    | {
+        action: "list_links";
+        relationships: Array<{
+          id: number;
+          organization_id: string;
+          from_entity_id: number;
+          to_entity_id: number;
+          relationship_type_id: number;
+          relationship_type_slug: string;
+          relationship_type_name: string;
+          is_symmetric: boolean;
+          from_entity_name?: string;
+          from_entity_type?: string;
+          to_entity_name?: string;
+          to_entity_type?: string;
+          metadata?: {
+            [key: string]: unknown;
+          } | null;
+          confidence: number;
+          source: string;
+          created_by?: string | null;
+          updated_by?: string | null;
+          created_at: string;
+          updated_at: string;
+          deleted_at?: string | null;
+        }>;
+        counts_by_type: Array<{
+          relationship_type_slug: string;
+          relationship_type_name: string;
+          count: number;
+        }>;
+        metadata: {
+          total: number;
+          limit: number;
+          offset: number;
+          has_more: boolean;
+        };
+      }
+    | {
+        action: "merge";
+        success: boolean;
+        message: string;
+        winner_entity_id: number;
+        loser_entity_id: number;
+        moved_identities: number;
+        repointed_edges: number;
+      }
+    | {
+        action: "unmerge";
+        success: boolean;
+        message: string;
+        winner_entity_id: number;
+        loser_entity_id: number;
+        restored_identities: number;
+      };
+};
+
+export type ManageEntityResponse =
+  ManageEntityResponses[keyof ManageEntityResponses];
+
+export type ManageEntitySchemaData = {
+  body: {
+    /**
+     * Whether to manage entity types or relationship types
+     */
+    schema_type: "entity_type" | "relationship_type";
+    /**
+     * Action to perform
+     */
+    action:
+      | "list"
+      | "get"
+      | "create"
+      | "update"
+      | "delete"
+      | "audit"
+      | "add_rule"
+      | "remove_rule"
+      | "list_rules";
+    /**
+     * [get/create/update/delete/audit/add_rule/remove_rule/list_rules] Type slug
+     */
+    slug?: string;
+    /**
+     * [create/update] Display name
+     */
+    name?: string;
+    /**
+     * [create/update] Description
+     */
+    description?: string;
+    /**
+     * [create/update] JSON Schema for metadata validation
+     */
+    metadata_schema?: {
+      [key: string]: unknown;
+    };
+    /**
+     * [list] accessible (default) includes the current org plus public schemas; organization returns only the bound org.
+     */
+    list_scope?: "accessible" | "organization";
+    /**
+     * [entity_type: create/update] Emoji or icon
+     */
+    icon?: string;
+    /**
+     * [entity_type: create/update] Color for UI display
+     */
+    color?: string;
+    /**
+     * [entity_type: create/update] Event semantic types this type produces, keyed by semantic_type slug. Each entry can have a description, optional metadataSchema (JSON Schema), and optional jsonTemplate (render template). `null` clears all kinds; omit to leave unchanged.
+     */
+    event_kinds?: null | {
+      [key: string]:
+        | unknown
+        | {
+            description?: string;
+            metadataSchema?: {
+              [key: string]: unknown;
+            };
+            jsonTemplate?: {
+              [key: string]: unknown;
+            };
+          };
+    };
+    /**
+     * [entity_type: create/update] Makes the type DERIVED — a read-only SQL view. `{ sql }` runs over your org's internal tables; `{ sql, connection: <slug> }` runs LIVE against that connection's external database (read-only, no copy). `null` clears it (revert to a stored type); omit to leave unchanged. Read a derived type's rows by running its `backing_sql` (returned by `get`) through `query_sql` — and when `get` also returns a `backing_source`, pass it as `query_sql`'s `connection` so the view runs against the external DB instead of your internal tables. `get` also returns `measure_columns` (the view's aggregate columns, classified on read).
+     */
+    backing?: null | {
+      /**
+       * ANSI SELECT defining the view
+       */
+      sql: string;
+      /**
+       * Optional connection slug. When set, the view runs LIVE against that connection’s external database (read-only, no copy) instead of internal tables. Stored verbatim; resolved to the connection at read time.
+       */
+      connection?: string;
+    };
+    /**
+     * [entity_type: create/update] Declared metric contract (eventSets/measures/dimensions/segments — see @lobu/connector-sdk) stored verbatim. The metric compiler lowers it into backing SQL. `null` clears it; omit to leave unchanged.
+     */
+    metrics_config?: null | {
+      [key: string]: unknown;
+    };
+    /**
+     * [relationship_type: create] Whether the relationship is symmetric (A↔B = B↔A). Default false. Create-only: affects relationship canonicalization/dedup for existing rows, so an update carrying is_symmetric is rejected (not silently dropped). To change it, create a new type and migrate.
+     */
+    is_symmetric?: boolean;
+    /**
+     * [relationship_type: create/update] Slug of the inverse relationship type (e.g., "depends_on" ↔ "dependency_of")
+     */
+    inverse_type_slug?: string;
+    /**
+     * [relationship_type: create/update] Status. Default active.
+     */
+    status?: "active" | "archived";
+    /**
+     * [relationship_type: create/update] Identity-engine auto-derivation rules stored on relationship_type.metadata.autoCreateWhen
+     */
+    auto_create_when?: Array<{
+      sourceNamespace: string;
+      targetField: string;
+      assuranceRequired:
+        | "oauth_verified_admin_role"
+        | "oauth_verified"
+        | "cookie_session"
+        | "self_attested";
+      matchStrategy: "unique_only" | "all_matches";
+      notes?: string;
+    }>;
+    /**
+     * [relationship_type: add_rule] Source entity type slug
+     */
+    source_entity_type_slug?: string;
+    /**
+     * [relationship_type: add_rule] Target entity type slug
+     */
+    target_entity_type_slug?: string;
+    /**
+     * [relationship_type: remove_rule] Rule ID to remove
+     */
+    rule_id?: number;
+    /**
+     * [relationship_type: list] Include soft-deleted types
+     */
+    include_deleted?: boolean;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_entity_schema";
+};
+
+export type ManageEntitySchemaErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageEntitySchemaError =
+  ManageEntitySchemaErrors[keyof ManageEntitySchemaErrors];
+
+export type ManageEntitySchemaResponses = {
+  /**
+   * Successful response
+   */
+  200:
+    | {
+        schema_type: "entity_type";
+        action: "list";
+        entity_types: Array<{
+          id: number;
+          slug: string;
+          name: string;
+          description?: string | null;
+          icon?: string | null;
+          color?: string | null;
+          metadata_schema?: {
+            [key: string]: unknown;
+          } | null;
+          event_kinds?: {
+            [key: string]: unknown;
+          } | null;
+          backing_sql?: string | null;
+          backing_source?: string | null;
+          metrics_config?: {
+            [key: string]: unknown;
+          } | null;
+          is_system: boolean;
+          created_by?: string | null;
+          organization_id?: string | null;
+          organization_slug?: string | null;
+          created_at: string | unknown;
+          updated_at: string | unknown;
+          entity_count?: number;
+          current_view_template_version_id?: number | null;
+          measure_columns?: Array<string>;
+          view_templates?: Array<{
+            tab_name: string;
+            tab_order: number;
+            json_template: {
+              [key: string]: unknown;
+            };
+            version: number;
+            version_id: number;
+            template_data: {
+              [key: string]: unknown | Array<unknown>;
+            } | null;
+          }>;
+        }>;
+        list_scope: "accessible" | "organization";
+        organization_id: string;
+      }
+    | {
+        schema_type: "entity_type";
+        action: "get";
+        entity_type: {
+          id: number;
+          slug: string;
+          name: string;
+          description?: string | null;
+          icon?: string | null;
+          color?: string | null;
+          metadata_schema?: {
+            [key: string]: unknown;
+          } | null;
+          event_kinds?: {
+            [key: string]: unknown;
+          } | null;
+          backing_sql?: string | null;
+          backing_source?: string | null;
+          metrics_config?: {
+            [key: string]: unknown;
+          } | null;
+          is_system: boolean;
+          created_by?: string | null;
+          organization_id?: string | null;
+          organization_slug?: string | null;
+          created_at: string | unknown;
+          updated_at: string | unknown;
+          entity_count?: number;
+          current_view_template_version_id?: number | null;
+          measure_columns?: Array<string>;
+          view_templates?: Array<{
+            tab_name: string;
+            tab_order: number;
+            json_template: {
+              [key: string]: unknown;
+            };
+            version: number;
+            version_id: number;
+            template_data: {
+              [key: string]: unknown | Array<unknown>;
+            } | null;
+          }>;
+        } | null;
+      }
+    | {
+        schema_type: "entity_type";
+        action: "create";
+        entity_type: {
+          id: number;
+          slug: string;
+          name: string;
+          description?: string | null;
+          icon?: string | null;
+          color?: string | null;
+          metadata_schema?: {
+            [key: string]: unknown;
+          } | null;
+          event_kinds?: {
+            [key: string]: unknown;
+          } | null;
+          backing_sql?: string | null;
+          backing_source?: string | null;
+          metrics_config?: {
+            [key: string]: unknown;
+          } | null;
+          is_system: boolean;
+          created_by?: string | null;
+          organization_id?: string | null;
+          organization_slug?: string | null;
+          created_at: string | unknown;
+          updated_at: string | unknown;
+          entity_count?: number;
+          current_view_template_version_id?: number | null;
+          measure_columns?: Array<string>;
+          view_templates?: Array<{
+            tab_name: string;
+            tab_order: number;
+            json_template: {
+              [key: string]: unknown;
+            };
+            version: number;
+            version_id: number;
+            template_data: {
+              [key: string]: unknown | Array<unknown>;
+            } | null;
+          }>;
+        };
+      }
+    | {
+        schema_type: "entity_type";
+        action: "update";
+        entity_type: {
+          id: number;
+          slug: string;
+          name: string;
+          description?: string | null;
+          icon?: string | null;
+          color?: string | null;
+          metadata_schema?: {
+            [key: string]: unknown;
+          } | null;
+          event_kinds?: {
+            [key: string]: unknown;
+          } | null;
+          backing_sql?: string | null;
+          backing_source?: string | null;
+          metrics_config?: {
+            [key: string]: unknown;
+          } | null;
+          is_system: boolean;
+          created_by?: string | null;
+          organization_id?: string | null;
+          organization_slug?: string | null;
+          created_at: string | unknown;
+          updated_at: string | unknown;
+          entity_count?: number;
+          current_view_template_version_id?: number | null;
+          measure_columns?: Array<string>;
+          view_templates?: Array<{
+            tab_name: string;
+            tab_order: number;
+            json_template: {
+              [key: string]: unknown;
+            };
+            version: number;
+            version_id: number;
+            template_data: {
+              [key: string]: unknown | Array<unknown>;
+            } | null;
+          }>;
+        };
+      }
+    | {
+        schema_type: "entity_type";
+        action: "delete";
+        success: boolean;
+        message: string;
+      }
+    | {
+        schema_type: "entity_type";
+        action: "audit";
+        audit_entries: Array<{
+          id: number;
+          entity_type_id: number;
+          action: string;
+          actor: string | null;
+          before_payload: {
+            [key: string]: unknown;
+          } | null;
+          after_payload: {
+            [key: string]: unknown;
+          } | null;
+          created_at: string;
+        }>;
+      }
+    | {
+        schema_type: "relationship_type";
+        action: "list";
+        relationship_types: Array<{
+          id: number;
+          slug: string;
+          name: string;
+          description?: string | null;
+          organization_id?: string | null;
+          organization_slug?: string | null;
+          created_by?: string | null;
+          metadata_schema?: {
+            [key: string]: unknown;
+          } | null;
+          metadata?: {
+            [key: string]: unknown;
+          } | null;
+          is_symmetric: boolean;
+          inverse_type_id?: number | null;
+          inverse_type_slug?: string | null;
+          status: string;
+          created_at: string;
+          updated_at: string;
+          deleted_at?: string | null;
+          relationship_count?: number;
+        }>;
+        list_scope: "accessible" | "organization";
+        organization_id: string;
+      }
+    | {
+        schema_type: "relationship_type";
+        action: "get";
+        relationship_type: {
+          id: number;
+          slug: string;
+          name: string;
+          description?: string | null;
+          organization_id?: string | null;
+          organization_slug?: string | null;
+          created_by?: string | null;
+          metadata_schema?: {
+            [key: string]: unknown;
+          } | null;
+          metadata?: {
+            [key: string]: unknown;
+          } | null;
+          is_symmetric: boolean;
+          inverse_type_id?: number | null;
+          inverse_type_slug?: string | null;
+          status: string;
+          created_at: string;
+          updated_at: string;
+          deleted_at?: string | null;
+          relationship_count?: number;
+        } | null;
+      }
+    | {
+        schema_type: "relationship_type";
+        action: "create";
+        relationship_type: {
+          id: number;
+          slug: string;
+          name: string;
+          description?: string | null;
+          organization_id?: string | null;
+          organization_slug?: string | null;
+          created_by?: string | null;
+          metadata_schema?: {
+            [key: string]: unknown;
+          } | null;
+          metadata?: {
+            [key: string]: unknown;
+          } | null;
+          is_symmetric: boolean;
+          inverse_type_id?: number | null;
+          inverse_type_slug?: string | null;
+          status: string;
+          created_at: string;
+          updated_at: string;
+          deleted_at?: string | null;
+          relationship_count?: number;
+        };
+      }
+    | {
+        schema_type: "relationship_type";
+        action: "update";
+        relationship_type: {
+          id: number;
+          slug: string;
+          name: string;
+          description?: string | null;
+          organization_id?: string | null;
+          organization_slug?: string | null;
+          created_by?: string | null;
+          metadata_schema?: {
+            [key: string]: unknown;
+          } | null;
+          metadata?: {
+            [key: string]: unknown;
+          } | null;
+          is_symmetric: boolean;
+          inverse_type_id?: number | null;
+          inverse_type_slug?: string | null;
+          status: string;
+          created_at: string;
+          updated_at: string;
+          deleted_at?: string | null;
+          relationship_count?: number;
+        };
+      }
+    | {
+        schema_type: "relationship_type";
+        action: "delete";
+        success: boolean;
+        message: string;
+      }
+    | {
+        schema_type: "relationship_type";
+        action: "add_rule";
+        rule: {
+          id: number;
+          relationship_type_id: number;
+          source_entity_type_slug: string;
+          target_entity_type_slug: string;
+          created_at: string;
+        };
+      }
+    | {
+        schema_type: "relationship_type";
+        action: "remove_rule";
+        success: boolean;
+        message: string;
+      }
+    | {
+        schema_type: "relationship_type";
+        action: "list_rules";
+        rules: Array<{
+          id: number;
+          relationship_type_id: number;
+          source_entity_type_slug: string;
+          target_entity_type_slug: string;
+          created_at: string;
+        }>;
+      };
+};
+
+export type ManageEntitySchemaResponse =
+  ManageEntitySchemaResponses[keyof ManageEntitySchemaResponses];
+
+export type ManageConnectionsData = {
+  body:
+    | {
+        /**
+         * List connectors grouped with their connection + feed counts.
+         */
+        action: "list_connector_groups";
+        /**
+         * Filter to connectors that have a connection (or feed) linked to this entity.
+         */
+        entity_id?: number;
+      }
+    | {
+        /**
+         * Paginated list of connections with filters.
+         */
+        action: "list";
+        /**
+         * Filter by connector key (e.g. google.gmail)
+         */
+        connector_key?: string;
+        /**
+         * Filter by status: active, paused, error, revoked
+         */
+        status?: string;
+        /**
+         * Filter by linked entity ID
+         */
+        entity_id?: number;
+        /**
+         * Filter by user ID who created the connection
+         */
+        created_by?: string;
+        /**
+         * Filter to specific connection IDs
+         */
+        connection_ids?: Array<number>;
+        /**
+         * Filter to connections correlated with an app-install setup attempt
+         */
+        setup_attempt_id?: string;
+        /**
+         * Page size (default: 100)
+         */
+        limit?: number;
+        /**
+         * Pagination offset (default: 0)
+         */
+        offset?: number;
+      }
+    | {
+        /**
+         * Fetch one connection by id.
+         */
+        action: "get";
+        /**
+         * Connection ID
+         */
+        connection_id: number;
+      }
+    | {
+        /**
+         * Create a connection from a pre-existing auth profile (prefer `connect` to create + auth in one call).
+         */
+        action: "create";
+        /**
+         * Connector key (e.g. google.gmail)
+         */
+        connector_key: string;
+        /**
+         * Human-readable name
+         */
+        display_name?: string;
+        /**
+         * Stable public identifier for the connection. Auto-generated from display_name when omitted.
+         */
+        slug?: string;
+        /**
+         * Reusable auth profile slug for runtime/account auth
+         */
+        auth_profile_slug?: string;
+        /**
+         * Reusable auth profile slug for OAuth app credentials
+         */
+        app_auth_profile_slug?: string;
+        /**
+         * Connection config
+         */
+        config?: {
+          [key: string]: unknown;
+        };
+        /**
+         * Override the connection owner (admin/owner only). Defaults to current user.
+         */
+        created_by?: string;
+        /**
+         * Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the Lobu server (runs serverless). Null/omit runs serverless. Required for connectors that declare a required_capability. The device must belong to you or be granted to this org.
+         */
+        device_worker_id?: string | null;
+        /**
+         * Entity IDs to tag this connection with (links the connection to entities)
+         */
+        entity_ids?: Array<number>;
+      }
+    | {
+        /**
+         * Recommended way to add a connection: creates the connection + auth link in one call. Returns a connect_url for the user; poll `get` until status='active'.
+         */
+        action: "connect";
+        /**
+         * Connector key (e.g. google.gmail)
+         */
+        connector_key: string;
+        /**
+         * Human-readable name for the connection
+         */
+        display_name?: string;
+        /**
+         * Stable public identifier for the connection. Auto-generated from display_name when omitted.
+         */
+        slug?: string;
+        /**
+         * Reusable auth profile slug for runtime/account auth
+         */
+        auth_profile_slug?: string;
+        /**
+         * Reusable auth profile slug for OAuth app credentials
+         */
+        app_auth_profile_slug?: string;
+        /**
+         * Connection config
+         */
+        config?: {
+          [key: string]: unknown;
+        };
+        /**
+         * Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the Lobu server (runs serverless). Null/omit runs serverless. Required for connectors that declare a required_capability. The device must belong to you or be granted to this org.
+         */
+        device_worker_id?: string | null;
+        /**
+         * Entity IDs to tag this connection with (links the connection to entities)
+         */
+        entity_ids?: Array<number>;
+      }
+    | {
+        /**
+         * Patch a connection's settings, status, slug, device binding, or (chat connections) fallback agent.
+         */
+        action: "update";
+        /**
+         * Connection ID
+         */
+        connection_id: number;
+        display_name?: string;
+        /**
+         * Fallback agent for a chat connection (used only when no channel binding matches; agent_channel_bindings remain authoritative). Null clears the fallback.
+         */
+        agent_id?: string | null;
+        /**
+         * New stable slug for the connection (display_name changes never touch the slug)
+         */
+        slug?: string;
+        /**
+         * active, paused, error, revoked
+         */
+        status?: string;
+        auth_profile_slug?: string | null;
+        app_auth_profile_slug?: string | null;
+        config?: {
+          [key: string]: unknown;
+        };
+        /**
+         * Entity IDs to tag this connection with. Pass [] (or null) to clear all links; omit to leave unchanged.
+         */
+        entity_ids?: Array<number>;
+        /**
+         * Reassign which device worker runs this connection. Null moves it back to the Lobu server, runs serverless (only allowed if the connector has no required_capability).
+         */
+        device_worker_id?: string | null;
+        /**
+         * When true and `config` is provided, replace the stored connection config with exactly that object (declarative apply); when false/omitted, merge into the existing config (default).
+         */
+        replace_config?: boolean;
+      }
+    | {
+        /**
+         * Declaratively upsert a chat connection keyed by stable_id (used by `lobu apply`).
+         */
+        action: "apply_chat_connection";
+        /**
+         * Stable declarative connection id used by lobu apply.
+         */
+        stable_id: string;
+        /**
+         * Chat connector key.
+         */
+        connector_key: string;
+        display_name?: string;
+        /**
+         * Declarative fallback agent. Channel bindings remain authoritative when present.
+         */
+        agent_id?: string;
+        config: {
+          [key: string]: unknown;
+        };
+        settings?: {
+          [key: string]: unknown;
+        };
+      }
+    | {
+        /**
+         * Delete a connection.
+         */
+        action: "delete";
+        /**
+         * Connection ID
+         */
+        connection_id: number;
+      }
+    | {
+        /**
+         * Start a fresh OAuth authorization or interactive pairing flow for an existing connection.
+         */
+        action: "reauthenticate";
+        /**
+         * Connection ID whose OAuth-account or interactive auth profile should be reauthenticated.
+         */
+        connection_id: number;
+      }
+    | {
+        /**
+         * Probe a connection's credentials/token validity.
+         */
+        action: "test";
+        /**
+         * Connection ID to test
+         */
+        connection_id: number;
+      }
+    | {
+        /**
+         * Enable a reviewed catalog connector with connector_id, or install from exactly one source_url/source_uri/source_code/mcp_url. Catalog enablement does not authenticate external accounts.
+         */
+        action: "install_connector";
+        /**
+         * For action=install_connector. ID of a reviewed catalog connector, e.g. google.gmail. Mutually exclusive with source_url/source_uri/source_code/mcp_url.
+         */
+        connector_id?: string;
+        /**
+         * For action=install_connector. Mutually exclusive with connector_id/source_uri/source_code/mcp_url — provide exactly one. Direct URL to a connector source file.
+         */
+        source_url?: string;
+        /**
+         * For action=install_connector. Mutually exclusive with connector_id/source_url/source_code/mcp_url — provide exactly one. Local file source URI or path (e.g. the source_uri from a manage_catalog list_catalog entry).
+         */
+        source_uri?: string;
+        /**
+         * For action=install_connector. Mutually exclusive with connector_id/source_url/source_uri/mcp_url — provide exactly one. Inline TypeScript or pre-compiled JavaScript source code.
+         */
+        source_code?: string;
+        /**
+         * Set to true if source_code is already compiled JavaScript (skip compilation)
+         */
+        compiled?: boolean;
+        /**
+         * For action=install_connector. Mutually exclusive with connector_id/source_url/source_uri/source_code — provide exactly one. URL to a remote MCP server (Streamable HTTP). Probes the server directly, no compilation needed.
+         */
+        mcp_url?: string;
+        /**
+         * Reusable auth values for env_keys and OAuth client keys. Stored as auth profiles.
+         */
+        auth_values?: {
+          [key: string]: unknown | string;
+        };
+      }
+    | {
+        /**
+         * Archive an installed connector definition. Blocked while connections reference it.
+         */
+        action: "uninstall_connector";
+        /**
+         * Connector key to uninstall
+         */
+        connector_key: string;
+      }
+    | {
+        /**
+         * Enable/disable an installed connector as a login provider (requires OAuth auth_schema).
+         */
+        action: "toggle_connector_login";
+        /**
+         * Connector key (e.g. github, google.gmail)
+         */
+        connector_key: string;
+        /**
+         * Enable or disable this connector as a login provider
+         */
+        enabled: boolean;
+      }
+    | {
+        /**
+         * Upsert reusable default auth values (env_keys / OAuth client keys) for an installed connector.
+         */
+        action: "update_connector_auth";
+        /**
+         * Connector key (e.g. reddit, google.gmail)
+         */
+        connector_key: string;
+        /**
+         * Auth values to upsert (env_keys and OAuth client keys)
+         */
+        auth_values: {
+          [key: string]: unknown | string;
+        };
+      }
+    | {
+        /**
+         * Set an installed connector's default connection config.
+         */
+        action: "update_connector_default_config";
+        /**
+         * Connector key
+         */
+        connector_key: string;
+        /**
+         * Default connection config (action_modes, etc.)
+         */
+        default_connection_config: {
+          [key: string]: unknown;
+        };
+      }
+    | {
+        /**
+         * Set/clear the default repair agent for feeds of a connector.
+         */
+        action: "update_connector_default_repair_agent";
+        /**
+         * Connector key
+         */
+        connector_key: string;
+        /**
+         * Default repair agent ID for feeds of this connector. Null clears the default.
+         */
+        default_repair_agent_id: string | null;
+      }
+    | {
+        /**
+         * List chat channels bound to an agent.
+         */
+        action: "list_channel_bindings";
+        /**
+         * Agent whose channel bindings to list.
+         */
+        agent_id: string;
+      }
+    | {
+        /**
+         * Bind a chat channel to an agent through a chat connection.
+         */
+        action: "bind_channel";
+        /**
+         * Agent to bind the channel to.
+         */
+        agent_id: string;
+        /**
+         * Chat connection that receives this channel's messages.
+         */
+        connection_id: number;
+        /**
+         * Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').
+         */
+        channel_id: string;
+        /**
+         * Optional per-binding model override — an explicit `<provider>/<model>` ref. Must be one of the agent's allowed models (its `models` list) when that list is non-empty. Wins over the agent/org default for messages on this channel.
+         */
+        model?: string;
+      }
+    | {
+        /**
+         * Remove a channel binding from an agent.
+         */
+        action: "unbind_channel";
+        /**
+         * Agent to unbind the channel from.
+         */
+        agent_id: string;
+        /**
+         * Chat connection owning the binding.
+         */
+        connection_id: number;
+        /**
+         * Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').
+         */
+        channel_id: string;
+      }
+    | {
+        /**
+         * Declaratively reconcile an agent's channel bindings to a desired set.
+         */
+        action: "sync_channel_bindings";
+        /**
+         * Agent whose declarative bindings to reconcile.
+         */
+        agent_id: string;
+        /**
+         * Chat connection numeric id, or the stable declarative id used by lobu apply.
+         */
+        connection_id: number | string;
+        /**
+         * Desired channel bindings, optionally with per-channel about links.
+         */
+        channels: Array<
+          | string
+          | {
+              /**
+               * Desired channel id. Slack also accepts the declarative <teamId>/<channelId> form.
+               */
+              channel_id: string;
+              /**
+               * Business entity ids or slugs this channel is about (config-sourced links).
+               */
+              about?: Array<number | string>;
+            }
+        >;
+      }
+    | {
+        /**
+         * Set manual business-entity links for a chat channel (UI / operator edits).
+         */
+        action: "set_channel_about";
+        /**
+         * Chat connection owning the channel.
+         */
+        connection_id: number;
+        /**
+         * Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').
+         */
+        channel_id: string;
+        /**
+         * Business entity ids this channel is about.
+         */
+        about_entity_ids: Array<number>;
+      }
+    | {
+        /**
+         * Open + bind the caller's Slack DM to an agent.
+         */
+        action: "connect_channel_dm";
+        /**
+         * Agent to wire the caller's DM to.
+         */
+        agent_id: string;
+        /**
+         * Slack connection to open and bind the caller's DM through.
+         */
+        connection_id: number;
+      };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_connections";
+};
+
+export type ManageConnectionsErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageConnectionsError =
+  ManageConnectionsErrors[keyof ManageConnectionsErrors];
+
+export type ManageConnectionsResponses = {
+  /**
+   * Successful response
+   */
+  200:
+    | {
+        error: string;
+        error_code?: "connector_setup_required";
+        connector_key?: string;
+        provider?: string;
+        install_type?: "app_installation" | "oauth_app_profile";
+        next_action?: "install_app" | "configure_oauth_app" | "open_setup";
+        setup_url?: string;
+        install_url?: string;
+        install_shape?: "oauth-code-exchange" | "github-app";
+        setup_instructions?: string;
+      }
+    | {
+        action: "list";
+        connections: Array<{
+          [key: string]: unknown;
+        }>;
+        total: number;
+        limit: number;
+        offset: number;
+        view_url?: string;
+      }
+    | {
+        action: "list_connector_groups";
+        groups: Array<{
+          connector_key: string;
+          connector_name: string | null;
+          favicon_domain: string | null;
+          connection_count: number;
+          facets: {
+            data: boolean;
+            chat: boolean;
+            actions: boolean;
+            audience: boolean;
+          };
+          connections: Array<{
+            id: number;
+            display_name: string | null;
+            feed_count: number;
+          }>;
+        }>;
+      }
+    | {
+        action: "get";
+        connection: {
+          [key: string]: unknown;
+        };
+        view_url?: string;
+      }
+    | {
+        action: "create";
+        connection: {
+          [key: string]: unknown;
+        };
+        connector: {
+          [key: string]: unknown;
+        };
+        view_url?: string;
+        auth_run_id?: number;
+      }
+    | {
+        action: "connect";
+        connection_id: number;
+        slug?: string;
+        status: "active";
+        message: string;
+        view_url?: string;
+      }
+    | {
+        action: "connect" | "create";
+        status: "setup_required";
+        connector_key: string;
+        /**
+         * Which connection setup family this continuation belongs to. Drives the completion check.
+         */
+        setup_family:
+          | "oauth"
+          | "app_installation"
+          | "env_keys"
+          | "browser"
+          | "interactive"
+          | "device_bound";
+        /**
+         * Machine-readable next step the caller should drive to make this connection executable.
+         */
+        next_action:
+          | "install_app"
+          | "configure_oauth_app"
+          | "select_auth_profile"
+          | "pair_interactive"
+          | "pair_browser"
+          | "connect_device"
+          | "open_setup";
+        resume_call?: {
+          /**
+           * Dotted ClientSDK method name, e.g. connections.connect.
+           */
+          sdk_method: string;
+          /**
+           * Positional method arguments. This supports both object-taking methods and connections.get(id).
+           */
+          arguments: Array<unknown>;
+        };
+        completion_check?: {
+          call: {
+            /**
+             * Dotted ClientSDK method name, e.g. connections.connect.
+             */
+            sdk_method: string;
+            /**
+             * Positional method arguments. This supports both object-taking methods and connections.get(id).
+             */
+            arguments: Array<unknown>;
+          };
+          /**
+           * Observable condition that marks setup complete.
+           */
+          success_when:
+            | {
+                path: string;
+                equals: unknown;
+              }
+            | {
+                path: string;
+                includes: unknown;
+              };
+          poll_interval_ms: number;
+          /**
+           * Human-readable summary of the completion check.
+           */
+          description: string;
+        };
+        instructions: string;
+        error_code?: "connector_setup_required";
+        install_type?: "app_installation" | "oauth_app_profile";
+        install_shape?: "oauth-code-exchange" | "github-app";
+        setup_instructions?: string;
+        setup_url?: string;
+        install_url?: string;
+        connect_url?: string;
+        connection_id?: number;
+        slug?: string;
+        auth_run_id?: number;
+        setup_attempt_id?: string;
+        provider?: string;
+      }
+    | {
+        action: "connect";
+        connection_id: number;
+        slug?: string;
+        status: "pending_auth";
+        auth_type: string;
+        instructions: string;
+        connect_url?: string;
+        connect_token?: string;
+        expires_at?: string;
+        auth_profile_slug?: string;
+        view_url?: string;
+      }
+    | {
+        action: "update";
+        connection: {
+          [key: string]: unknown;
+        };
+      }
+    | {
+        action: "apply_chat_connection";
+        connection: {
+          [key: string]: unknown;
+        };
+        created: boolean;
+        changed: boolean;
+      }
+    | {
+        action: "delete";
+        deleted: true;
+        connection_id: number;
+        slug: string;
+      }
+    | {
+        action: "reauthenticate";
+        connection_id: number;
+        auth_run_id: number;
+      }
+    | {
+        action: "reauthenticate";
+        connection_id: number;
+        auth_profile_slug: string;
+        connect_url: string;
+        expires_at: string;
+      }
+    | {
+        action: "test";
+        status: string;
+        message: string;
+        has_token?: boolean;
+        has_refresh?: boolean;
+        expires_at?: string | null;
+      }
+    | {
+        action: "install_connector";
+        installed: true;
+        connector_key: string;
+        name: string;
+        version: string;
+        code_hash: string;
+        updated: boolean;
+      }
+    | {
+        action: "uninstall_connector";
+        uninstalled: true;
+        connector_key: string;
+      }
+    | {
+        action: "toggle_connector_login";
+        success: true;
+        connector_key: string;
+        login_enabled: boolean;
+      }
+    | {
+        action: "update_connector_auth";
+        success: true;
+        connector_key: string;
+        keys_updated: Array<string>;
+      }
+    | {
+        action: "update_connector_default_config";
+        success: true;
+        connector_key: string;
+      }
+    | {
+        action: "update_connector_default_repair_agent";
+        success: true;
+        connector_key: string;
+        default_repair_agent_id: string | null;
+      }
+    | {
+        action: "list_channel_bindings";
+        agent_id: string;
+        bindings: Array<{
+          platform: string;
+          channelId: string;
+          teamId?: string;
+          model?: string;
+          createdAt: number;
+        }>;
+      }
+    | {
+        action: "bind_channel";
+        success: true;
+        agent_id: string;
+        connection_id: number;
+        platform: string;
+        channel_id: string;
+        team_id?: string;
+      }
+    | {
+        action: "unbind_channel";
+        success: true;
+      }
+    | {
+        action: "sync_channel_bindings";
+        success: true;
+        bound: Array<string>;
+        removed: Array<string>;
+        about_linked?: number;
+        about_removed?: number;
+      }
+    | {
+        action: "set_channel_about";
+        success: true;
+        connection_id: number;
+        channel_id: string;
+        about_entity_ids: Array<number>;
+      }
+    | {
+        action: "connect_channel_dm";
+        success: true;
+        platform: "slack";
+        channel_id: string;
+        team_id: string | null;
+      };
+};
+
+export type ManageConnectionsResponse =
+  ManageConnectionsResponses[keyof ManageConnectionsResponses];
+
+export type ManageCatalogData = {
+  body:
+    | {
+        /**
+         * List available (manifest) catalog entries — connectors, skills, watcher templates. Each connector entry's `detail.source_uri` can be passed to `manage_connections` action `install_connector`.
+         */
+        action: "list_catalog";
+        /**
+         * Manifest catalog kinds. Defaults to all.
+         */
+        kinds?: Array<"connectors" | "skills" | "watchers">;
+      }
+    | {
+        /**
+         * List installed kinds for the org (connectors, watchers) and/or agent (skills, providers, guardrails, channels). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.
+         */
+        action: "list_installed";
+        /**
+         * Installed kinds. Org: connectors, watchers. Agent: skills, providers, guardrails, channels.
+         */
+        kinds?: Array<string>;
+        /**
+         * Agent id — required for agent-scoped kinds.
+         */
+        agent_id?: string;
+        /**
+         * Merge global catalog entries for connectors (org) or skills (agent).
+         */
+        include_catalog?: boolean;
+      };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_catalog";
+};
+
+export type ManageCatalogErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageCatalogError = ManageCatalogErrors[keyof ManageCatalogErrors];
+
+export type ManageCatalogResponses = {
+  /**
+   * Successful response
+   */
+  200:
+    | {
+        error: string;
+      }
+    | {
+        action: "list_catalog";
+        catalogs: {
+          [key: string]:
+            | unknown
+            | {
+                kind: string;
+                entries: Array<
+                  | {
+                      id: string;
+                      name: string;
+                      version?: string;
+                      description?: string | null;
+                      detail: {
+                        source_uri?: string;
+                        auth_schema?: unknown;
+                        feeds_schema?: unknown;
+                        actions_schema?: unknown;
+                        options_schema?: unknown;
+                        required_capability?: string | null;
+                        favicon_domain?: string | null;
+                        runtime?: unknown;
+                        login_enabled?: boolean;
+                        installable?: boolean;
+                        installability_reason?: string;
+                        installability_message?: string;
+                        [key: string]: unknown;
+                      };
+                    }
+                  | unknown
+                >;
+              };
+        };
+      }
+    | {
+        action: "list_installed";
+        installed: {
+          [key: string]: unknown;
+        };
+      };
+};
+
+export type ManageCatalogResponse =
+  ManageCatalogResponses[keyof ManageCatalogResponses];
+
+export type ManageAgentsData = {
+  body: {
+    /**
+     * Action to perform
+     */
+    action:
+      | "list"
+      | "get"
+      | "create"
+      | "update"
+      | "delete"
+      | "set_system_agent";
+    /**
+     * [get/create/update/delete/set_system_agent] Agent ID (lowercase slug, e.g. "builder").
+     */
+    agent_id?: string;
+    /**
+     * [create/update] Display name for the agent.
+     */
+    name?: string;
+    /**
+     * [create/update] Agent description.
+     */
+    description?: string;
+    /**
+     * [create/update] Agent identity / system prompt (Markdown).
+     */
+    identity_md?: string;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_agents";
+};
+
+export type ManageAgentsErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageAgentsError = ManageAgentsErrors[keyof ManageAgentsErrors];
+
+export type ManageAgentsResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type ManageAgentsResponse =
+  ManageAgentsResponses[keyof ManageAgentsResponses];
+
+export type ManageFeedsData = {
+  body:
+    | {
+        /**
+         * Paginated list of feeds with filters.
+         */
+        action: "list_feeds";
+        /**
+         * Filter by connection ID
+         */
+        connection_id?: number;
+        /**
+         * Filter to specific feed IDs
+         */
+        feed_ids?: Array<number>;
+        /**
+         * Filter by linked entity ID
+         */
+        entity_id?: number;
+        /**
+         * Filter by status: active, paused, error
+         */
+        status?: string;
+        /**
+         * Page size (default: 100)
+         */
+        limit?: number;
+        /**
+         * Pagination offset (default: 0)
+         */
+        offset?: number;
+      }
+    | {
+        /**
+         * Read one feed (metadata + recent runs, or live transcript for streaming feeds).
+         */
+        action: "read_feed";
+        /**
+         * Feed ID
+         */
+        feed_id: number;
+        /**
+         * Max transcript messages for a streaming feed (default 50)
+         */
+        limit?: number;
+        /**
+         * For a VIRTUAL feed: term pushed to the connector's search() pushdown (e.g. Gmail query syntax AND-composed with the feed's config.query). Ignored for non-virtual feeds.
+         */
+        search_term?: string;
+      }
+    | {
+        /**
+         * Read several feeds in parallel. Each feed returns independently as { ok, result } or { ok:false, error }.
+         */
+        action: "read_feeds";
+        /**
+         * Feed IDs to read in parallel (max 10).
+         */
+        feed_ids: Array<number>;
+        /**
+         * Per-feed row/message limit for live feed kinds (default 50)
+         */
+        limit?: number;
+        /**
+         * For VIRTUAL feeds: term pushed to each connector's search() pushdown (e.g. Gmail query syntax AND-composed with config.query). Applies to every virtual feed in the batch; ignored for non-virtual feeds.
+         */
+        search_term?: string;
+        /**
+         * Per-feed timeout in milliseconds (default 10000, max 30000).
+         */
+        timeout_ms?: number;
+      }
+    | {
+        /**
+         * Create a feed on a connection.
+         */
+        action: "create_feed";
+        /**
+         * Connection ID this feed belongs to
+         */
+        connection_id: number;
+        /**
+         * Feed key from connector definition (e.g. threads)
+         */
+        feed_key: string;
+        /**
+         * Human-readable name for this feed
+         */
+        display_name?: string;
+        /**
+         * Entity IDs to tag events with
+         */
+        entity_ids?: Array<number>;
+        /**
+         * Feed-specific configuration
+         */
+        config?: {
+          [key: string]: unknown;
+        };
+        /**
+         * Cron expression for sync schedule (default: every 6 hours)
+         */
+        schedule?: string;
+        /**
+         * IANA timezone the schedule is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Omit for server time (UTC).
+         */
+        timezone?: string;
+        /**
+         * When true, create a VIRTUAL feed (kind=virtual): read LIVE via the connector query()/search() pushdown at request time, never synced — sync-lifecycle columns stay NULL. Optional config.query sets a default scope; agents narrow via query_sql search_term (connector interprets it).
+         */
+        virtual?: boolean;
+      }
+    | {
+        /**
+         * Patch a feed (status, config, schedule, repair agent).
+         */
+        action: "update_feed";
+        /**
+         * Feed ID
+         */
+        feed_id: number;
+        /**
+         * active, paused, error
+         */
+        status?: string;
+        display_name?: string;
+        entity_ids?: Array<number>;
+        config?: {
+          [key: string]: unknown;
+        };
+        /**
+         * When true and `config` is provided, replace the stored feed config with exactly that object (declarative apply); when false/omitted, merge into the existing config (default).
+         */
+        replace_config?: boolean;
+        /**
+         * Cron expression for sync schedule
+         */
+        schedule?: string;
+        /**
+         * IANA timezone the schedule is evaluated in. Null clears it (server time / UTC).
+         */
+        timezone?: string | null;
+        /**
+         * Per-feed repair agent override. Null clears the override and falls back to the connector default.
+         */
+        repair_agent_id?: string | null;
+      }
+    | {
+        /**
+         * Soft-delete a feed and cancel its active runs.
+         */
+        action: "delete_feed";
+        /**
+         * Feed ID
+         */
+        feed_id: number;
+      }
+    | {
+        /**
+         * Trigger an immediate sync run for a collected feed.
+         */
+        action: "trigger_feed";
+        /**
+         * Feed ID to trigger sync for
+         */
+        feed_id: number;
+      };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_feeds";
+};
+
+export type ManageFeedsErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageFeedsError = ManageFeedsErrors[keyof ManageFeedsErrors];
+
+export type ManageFeedsResponses = {
+  /**
+   * Successful response
+   */
+  200:
+    | {
+        error: string;
+      }
+    | {
+        action: "list_feeds";
+        feeds: Array<{
+          [key: string]: unknown;
+        }>;
+        total: number;
+        limit: number;
+        offset: number;
+      }
+    | {
+        action: "read_feed";
+        kind: string;
+        feed: {
+          [key: string]: unknown;
+        };
+        recent_runs: Array<{
+          [key: string]: unknown;
+        }>;
+      }
+    | {
+        action: "read_feed";
+        kind: "streaming";
+        feed: {
+          [key: string]: unknown;
+        };
+        messages: Array<{
+          timestamp: string;
+          user: string;
+          text: string;
+          isBot: boolean;
+        }>;
+        team_id?: string | null;
+        about_entities?: Array<{
+          id: number;
+          name: string;
+          slug: string | null;
+        }>;
+      }
+    | {
+        action: "read_feed";
+        kind: "virtual";
+        feed: {
+          [key: string]: unknown;
+        };
+        rows: Array<{
+          [key: string]: unknown;
+        }>;
+        columns: Array<{
+          name: string;
+          type: string;
+        }>;
+        total?: number;
+      }
+    | {
+        action: "read_feeds";
+        results: Array<{
+          feed_id: number;
+          ok: boolean;
+          result?: unknown;
+          error?: string;
+        }>;
+        failures: number;
+        timeout_ms: number;
+      }
+    | {
+        action: "create_feed";
+        feed: {
+          [key: string]: unknown;
+        };
+      }
+    | {
+        action: "update_feed";
+        feed: {
+          [key: string]: unknown;
+        };
+      }
+    | {
+        action: "delete_feed";
+        deleted: true;
+        feed_id: number;
+      }
+    | {
+        action: "trigger_feed";
+        triggered: true;
+        run_id: number;
+        feed_id: number;
+      }
+    | {
+        action: "trigger_feed";
+        message: string;
+      };
+};
+
+export type ManageFeedsResponse =
+  ManageFeedsResponses[keyof ManageFeedsResponses];
+
+export type ManageAuthProfilesData = {
+  body:
+    | {
+        /**
+         * List reusable auth profiles with filters.
+         */
+        action: "list_auth_profiles";
+        /**
+         * Filter by connector key
+         */
+        connector_key?: string;
+        /**
+         * Filter by OAuth provider (e.g. "google")
+         */
+        provider?: string;
+        /**
+         * Filter by auth profile kind
+         */
+        profile_kind?:
+          | "env"
+          | "oauth_app"
+          | "oauth_account"
+          | "browser_session";
+      }
+    | {
+        /**
+         * Fetch one auth profile by slug.
+         */
+        action: "get_auth_profile";
+        /**
+         * Auth profile slug
+         */
+        auth_profile_slug: string;
+      }
+    | {
+        /**
+         * Probe an auth profile’s credentials/token/cookies.
+         */
+        action: "test_auth_profile";
+        /**
+         * Auth profile slug
+         */
+        auth_profile_slug: string;
+      }
+    | {
+        /**
+         * Create an auth profile; issues a connect URL for OAuth profiles.
+         */
+        action: "create_auth_profile";
+        /**
+         * Connector key (e.g. x, google.gmail). Required for env/oauth profiles; optional for browser_session (device-scoped resource).
+         */
+        connector_key?: string;
+        profile_kind: "env" | "oauth_app" | "oauth_account" | "browser_session";
+        /**
+         * User-facing auth profile name
+         */
+        display_name: string;
+        /**
+         * Stable public identifier for the auth profile
+         */
+        slug?: string;
+        /**
+         * Schema-driven auth values for env or OAuth app profiles
+         */
+        credentials?: {
+          [key: string]: unknown | string;
+        };
+        /**
+         * Raw auth/session payload for browser-backed profiles
+         */
+        auth_data?: {
+          [key: string]: unknown;
+        };
+        /**
+         * Optional OAuth scopes selected in addition to the connector required scopes.
+         */
+        requested_scopes?: Array<string>;
+      }
+    | {
+        /**
+         * Patch a profile; use reconnect to re-issue a connect token for OAuth.
+         */
+        action: "update_auth_profile";
+        /**
+         * Existing auth profile slug
+         */
+        auth_profile_slug: string;
+        display_name?: string;
+        /**
+         * New auth profile slug
+         */
+        slug?: string;
+        credentials?: {
+          [key: string]: unknown | string;
+        };
+        auth_data?: {
+          [key: string]: unknown;
+        };
+        /**
+         * Optional OAuth scopes selected in addition to the connector required scopes.
+         */
+        requested_scopes?: Array<string>;
+        /**
+         * active, pending_auth, error, revoked
+         */
+        status?: string;
+        /**
+         * Re-issue a connect token for an oauth_account profile. Returns connect_url for re-authorization.
+         */
+        reconnect?: boolean;
+      }
+    | {
+        /**
+         * Delete a profile; fails while active connections reference it unless force=true (force pauses dependents to pending_auth, it does not delete them).
+         */
+        action: "delete_auth_profile";
+        /**
+         * Auth profile slug to delete
+         */
+        auth_profile_slug: string;
+        /**
+         * Force delete even if active connections reference this profile
+         */
+        force?: boolean;
+      }
+    | {
+        /**
+         * Pin/clear the org default OAuth-app profile for a connector.
+         */
+        action: "set_default_auth_profile";
+        /**
+         * Connector key to pin the default for
+         */
+        connector_key: string;
+        /**
+         * OAuth app profile slug to pin as the org default, or null to clear.
+         */
+        auth_profile_slug: string | null;
+      };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_auth_profiles";
+};
+
+export type ManageAuthProfilesErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageAuthProfilesError =
+  ManageAuthProfilesErrors[keyof ManageAuthProfilesErrors];
+
+export type ManageAuthProfilesResponses = {
+  /**
+   * Successful response
+   */
+  200:
+    | {
+        error: string;
+      }
+    | {
+        action: "list_auth_profiles";
+        auth_profiles: Array<{
+          [key: string]: unknown;
+        }>;
+      }
+    | {
+        action: "get_auth_profile";
+        auth_profile: {
+          [key: string]: unknown;
+        };
+      }
+    | {
+        action: "test_auth_profile";
+        status: "ok" | "warning" | "error";
+        message: string;
+        expires_at?: string | null;
+        cookie_count?: number;
+        auth_cookie_name?: string | null;
+        is_expired?: boolean;
+        cdp_url?: string | null;
+        auth_mode?: "cdp" | "cookies" | "empty";
+      }
+    | {
+        action: "create_auth_profile";
+        auth_profile?: {
+          [key: string]: unknown;
+        };
+        pending_slug?: string;
+        connect_url?: string;
+        connect_token?: string;
+      }
+    | {
+        action: "update_auth_profile";
+        auth_profile: {
+          [key: string]: unknown;
+        };
+        connect_url?: string;
+        expires_at?: string;
+      }
+    | {
+        action: "delete_auth_profile";
+        deleted: true;
+        auth_profile_slug: string;
+      }
+    | {
+        action: "set_default_auth_profile";
+        connector_key: string;
+        auth_profile: {
+          [key: string]: unknown;
+        } | null;
+      };
+};
+
+export type ManageAuthProfilesResponse =
+  ManageAuthProfilesResponses[keyof ManageAuthProfilesResponses];
+
+export type ManageOperationsData = {
+  body:
+    | {
+        /**
+         * Discover connector operations (capabilities) across bundled, custom, and device connectors, with per-operation connection readiness. Returns a PUBLIC DTO (no backend_config). Capabilities stay discoverable even with no connection; use the readiness + next_action fields to drive discover → connect/setup → poll → execute.
+         */
+        action: "list_available";
+        /**
+         * Filter by connector key
+         */
+        connector_key?: string;
+        /**
+         * Filter by connection ID
+         */
+        connection_id?: number;
+        /**
+         * Filter by entity ID
+         */
+        entity_id?: number;
+        /**
+         * Filter by operation kind (read/write)
+         */
+        kind?: "read" | "write";
+        /**
+         * Filter by operation backend type
+         */
+        backend?: "local_action" | "mcp_tool" | "http_operation";
+        /**
+         * Data-driven search over connector name/key, operation name/key, description, and input-schema property names/terms. A query like 'github create issue' returns matching capabilities across every installed connector (including ones with no connection yet).
+         */
+        query?: string;
+        /**
+         * Include capabilities whose connector has NO ready connection (default true). Set false to list only executable operations.
+         */
+        include_disconnected?: boolean;
+        /**
+         * Include input schema in response
+         */
+        include_input_schema?: boolean;
+        /**
+         * Include output schema in response
+         */
+        include_output_schema?: boolean;
+        /**
+         * Page size (default: 100)
+         */
+        limit?: number;
+        /**
+         * Pagination offset (default: 0)
+         */
+        offset?: number;
+      }
+    | {
+        /**
+         * Execute an operation; may queue for approval / device / inline.
+         */
+        action: "execute";
+        /**
+         * Connection ID to execute on
+         */
+        connection_id: number;
+        /**
+         * Connector-local operation key
+         */
+        operation_key: string;
+        /**
+         * Operation input
+         */
+        input?: {
+          [key: string]: unknown;
+        };
+        watcher_source?: {
+          watcher_id: number;
+          window_id: number;
+        };
+      }
+    | {
+        /**
+         * Paginated run list with keyset cursor support.
+         */
+        action: "list_runs";
+        /**
+         * Filter by connection ID
+         */
+        connection_id?: number;
+        connection_ids?: Array<number>;
+        feed_ids?: Array<number>;
+        /**
+         * Filter by device worker ID
+         */
+        device_worker_id?: string;
+        /**
+         * Filter by operation key
+         */
+        operation_key?: string;
+        /**
+         * Filter by run status
+         */
+        status?: string;
+        /**
+         * Filter by approval status
+         */
+        approval_status?: string;
+        run_types?: Array<string>;
+        watcher_ids?: Array<number>;
+        /**
+         * Keyset cursor: return runs before this ID
+         */
+        before_id?: number;
+        /**
+         * Keyset cursor: return runs before this timestamp
+         */
+        before_created_at?: string;
+        /**
+         * Page size (default: 100)
+         */
+        limit?: number;
+        /**
+         * Pagination offset (default: 0)
+         */
+        offset?: number;
+      }
+    | {
+        /**
+         * Fetch one action run.
+         */
+        action: "get_run";
+        run_id: number;
+      }
+    | {
+        /**
+         * Approve a pending run (also handles agent + entity_field_change gates).
+         */
+        action: "approve";
+        run_id: number;
+        input?: {
+          [key: string]: unknown;
+        };
+      }
+    | {
+        /**
+         * Reject a pending run.
+         */
+        action: "reject";
+        run_id: number;
+        reason?: string;
+      }
+    | {
+        /**
+         * Approve every pending proposal a watcher run produced, in one go. Groups by the run's window.
+         */
+        action: "approve_batch";
+        window_id: number;
+      }
+    | {
+        /**
+         * Reject every pending proposal a watcher run produced. The reason is fed back to the agent so it can revise its proposals (the conversational revision loop).
+         */
+        action: "reject_batch";
+        window_id: number;
+        reason?: string;
+      };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_operations";
+};
+
+export type ManageOperationsErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageOperationsError =
+  ManageOperationsErrors[keyof ManageOperationsErrors];
+
+export type ManageOperationsResponses = {
+  /**
+   * Successful response
+   */
+  200:
+    | {
+        error: string;
+      }
+    | {
+        action: "list_available";
+        operations: Array<unknown>;
+        total: number;
+        limit: number;
+        offset: number;
+      }
+    | {
+        action: "execute";
+        run_id: number;
+        event_id?: number;
+        approval_url?: string;
+        status: "pending_approval";
+        message: string;
+      }
+    | {
+        action: "execute";
+        run_id: number;
+        status: "completed";
+        output: unknown;
+        metadata?: {
+          [key: string]: unknown;
+        };
+      }
+    | {
+        action: "execute";
+        run_id: number;
+        status: "failed";
+        error_message: string;
+      }
+    | {
+        action: "execute";
+        run_id: number;
+        status: "timeout";
+        error_message: string;
+      }
+    | {
+        action: "list_runs";
+        runs: Array<{
+          [key: string]: unknown;
+        }>;
+        total: number;
+        limit: number;
+        offset: number;
+        has_more: boolean;
+      }
+    | {
+        action: "get_run";
+        run: {
+          [key: string]: unknown;
+        };
+      }
+    | {
+        action: "approve";
+        approved: true;
+        run_id: number;
+        event_id?: number;
+        message: string;
+      }
+    | {
+        action: "reject";
+        rejected: true;
+        run_id: number;
+        event_id?: number;
+      }
+    | {
+        action: "approve_batch";
+        window_id: number;
+        approved_count: number;
+        failed_count: number;
+        run_ids: Array<number>;
+        message: string;
+      }
+    | {
+        action: "reject_batch";
+        window_id: number;
+        rejected_count: number;
+        run_ids: Array<number>;
+        message: string;
+      };
+};
+
+export type ManageOperationsResponse =
+  ManageOperationsResponses[keyof ManageOperationsResponses];
+
+export type NotifyData = {
+  body: {
+    action: "send";
+    /**
+     * Notification title
+     */
+    title: string;
+    /**
+     * Notification body text
+     */
+    body?: string;
+    /**
+     * Who to notify. 'admins' (default): org admins/owners. 'all': all org members. Or an array of specific user IDs.
+     */
+    recipients?: "admins" | "all" | Array<string>;
+    /**
+     * Relative URL to link the notification to (e.g. /acme/entities)
+     */
+    resource_url?: string;
+    /**
+     * Connection ID for targeted delivery (e.g. Telegram bot connection). When set, notification is delivered through this specific bot connection.
+     */
+    connection_id?: string;
+    /**
+     * Arbitrary JSON payload stored in notification body as formatted JSON
+     */
+    data?: {
+      [key: string]: unknown;
+    };
+    /**
+     * A `chat` CardElement (built with the card primitives) for rich bot-connection delivery. When set, the bound channel gets this card instead of the markdown body.
+     */
+    card?: {
+      [key: string]: unknown;
+    };
+    /**
+     * Attribution source when notification is triggered by a watcher reaction
+     */
+    watcher_source?: {
+      /**
+       * Watcher that triggered this notification
+       */
+      watcher_id: number;
+      /**
+       * Window that triggered this notification
+       */
+      window_id: number;
+    };
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/notify";
+};
+
+export type NotifyErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type NotifyError = NotifyErrors[keyof NotifyErrors];
+
+export type NotifyResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type NotifyResponse = NotifyResponses[keyof NotifyResponses];
+
+export type ManageSchedulesData = {
+  body:
+    | {
+        /**
+         * Create a scheduled job (one-shot via run_at, or recurring with cron).
+         */
+        action: "create";
+        description: string;
+        /**
+         * ISO timestamp for the first / only firing (e.g. '2026-05-15T09:00:00Z').
+         */
+        run_at: string;
+        cron?: string;
+        /**
+         * IANA timezone the cron is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Omit for server time (UTC).
+         */
+        timezone?: string;
+        /**
+         * ISO timestamp after which a recurring schedule stops firing and is retired. Must not be before run_at.
+         */
+        until_at?: string;
+        /**
+         * Client-chosen dedup key. Retrying create with the same key returns the existing schedule instead of creating a duplicate.
+         */
+        idempotency_key?: string;
+        payload:
+          | {
+              type: "send_notification";
+              title: string;
+              body?: string;
+              recipients?: "admins" | "all" | Array<string>;
+              resource_url?: string;
+            }
+          | {
+              type: "wake_agent";
+              agent_id: string;
+              prompt: string;
+              thread_id?: string;
+              reason?: string;
+              model?: string;
+            };
+        source_run_id?: number;
+        source_event_id?: number;
+        source_thread_id?: string;
+      }
+    | {
+        /**
+         * List scheduled jobs with optional filters.
+         */
+        action: "list";
+        agent_id?: string;
+        user_id?: string;
+        action_type?: string;
+        include_paused?: boolean;
+      }
+    | {
+        /**
+         * Patch a schedule (next firing, cron, wake_agent prompt).
+         */
+        action: "update";
+        id: string;
+        description?: string;
+        run_at?: string;
+        cron?: string | null;
+        timezone?: string | null;
+        until_at?: string | null;
+        prompt?: string;
+        model?: string;
+      }
+    | {
+        /**
+         * Pause or resume a schedule.
+         */
+        action: "pause";
+        id: string;
+        paused?: boolean;
+      }
+    | {
+        /**
+         * Permanently delete a schedule.
+         */
+        action: "cancel";
+        id: string;
+      };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_schedules";
+};
+
+export type ManageSchedulesErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageSchedulesError =
+  ManageSchedulesErrors[keyof ManageSchedulesErrors];
+
+export type ManageSchedulesResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type ManageSchedulesResponse =
+  ManageSchedulesResponses[keyof ManageSchedulesResponses];
+
+export type ManageWatchersData = {
+  body: {
+    /**
+     * Action to perform
+     */
+    action:
+      | "create"
+      | "update"
+      | "create_version"
+      | "complete_window"
+      | "trigger"
+      | "delete"
+      | "set_reaction_script"
+      | "get_versions"
+      | "get_version_details"
+      | "get_component_reference"
+      | "submit_feedback"
+      | "get_feedback"
+      | "list_promoted"
+      | "create_from_version";
+    /**
+     * [update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Watcher ID (numeric string)
+     */
+    watcher_id?: string;
+    /**
+     * [delete] Array of watcher IDs (numeric strings)
+     */
+    watcher_ids?: Array<string>;
+    /**
+     * [create] Unique watcher identifier
+     */
+    slug?: string;
+    /**
+     * [create/create_version] Display name
+     */
+    name?: string;
+    /**
+     * [create/create_version] Watcher description
+     */
+    description?: string;
+    /**
+     * Entity ID. Optional for create — provide it to attach the watcher to an entity; omit it for an org-scoped/global watcher. Optional for list.
+     */
+    entity_id?: number;
+    /**
+     * [create_from_version] Array of entity IDs to create individual watchers for.
+     */
+    entity_ids?: Array<number>;
+    /**
+     * [create_from_version] Source version ID to use as template for new watchers.
+     */
+    version_id?: number;
+    /**
+     * [create_from_version] Name pattern for created watchers. Use {{entity_name}} for substitution. Default: "{version_name}: {entity_name}".
+     */
+    name_pattern?: string;
+    /**
+     * [create/create_version] LLM prompt template (Handlebars). Variables: {{entities}}, {{content}}, {{sources.name}}, {{data.name}}, {{#each entities}}{{name}}{{/each}}.
+     */
+    prompt?: string;
+    /**
+     * [create/create_version] Array of SQL data sources. Each source is { name, query }. Sources are version-owned — to change them on an existing watcher, publish a new version with action: 'create_version'.
+     */
+    sources?: Array<{
+      /**
+       * Source name (e.g., "content", "volume")
+       */
+      name: string;
+      /**
+       * SQL SELECT query. If it references the events table, time window bounds are auto-applied.
+       */
+      query: string;
+      /**
+       * When true, the source is CONTEXT (like an @entity ref), not event content: its rows reach the agent but are NOT linked into the window's event set, so the `id` it projects may be an entity id rather than an events.id. Use for feeding a filtered entity set (e.g. duplicate-merge candidates) the agent should reason over.
+       */
+      context?: boolean;
+    }>;
+    /**
+     * [create/create_version] Config for stable key generation across windows.
+     */
+    keying_config?: unknown;
+    /**
+     * [create/create_version] Classifier definitions for extraction.
+     */
+    classifiers?: unknown;
+    /**
+     * [create/update/create_version] Cron expression for watcher schedule (e.g. "0 * * * *" for hourly, "0 9 * * *" for daily at 9am). Null clears the schedule (an unscheduled/manual watcher).
+     */
+    schedule?: string | null;
+    /**
+     * [create/update/create_version] IANA timezone the schedule is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Null clears it (server time / UTC).
+     */
+    timezone?: string | null;
+    /**
+     * [create/update] Agent ID that owns/executes this watcher.
+     */
+    agent_id?: string;
+    /**
+     * [create/update/create_version] Optional MCP client ID that should auto-run this watcher. Null clears it.
+     */
+    scheduler_client_id?: string | null;
+    /**
+     * [create/update] Optional device worker UUID to pin this watcher to (when its inputs live on that device). Null clears the pin.
+     */
+    device_worker_id?: string | null;
+    /**
+     * [create/update] Optional agent kind override for this watcher (e.g. "background", "notifier"). Null clears the override.
+     */
+    agent_kind?: string | null;
+    /**
+     * [create/update] Where firings surface: "canvas" (default), "notification" (OS notification), or "both".
+     */
+    notification_channel?: "canvas" | "notification" | "both";
+    /**
+     * [create/update] Priority class used by the dispatcher interrupt budget. Default "normal".
+     */
+    notification_priority?: "low" | "normal" | "high";
+    /**
+     * [create/update] Minimum seconds between two firings of this watcher (0 = no cooldown).
+     */
+    min_cooldown_seconds?: number;
+    /**
+     * [create/update] AI model configuration
+     */
+    model_config?: unknown;
+    execution_config?: null | {
+      /**
+       * Wall-clock cap in seconds for the device-worker CLI run (default 600).
+       */
+      timeout_seconds?: number;
+      /**
+       * Per-run dollar ceiling (claude only: --max-budget-usd). No-op on other CLIs.
+       */
+      max_budget_usd?: number;
+      /**
+       * Model alias/id passed to the CLI (--model).
+       */
+      model?: string;
+      /**
+       * Tool permission mode (claude only: --permission-mode).
+       */
+      permission_mode?:
+        | "acceptEdits"
+        | "auto"
+        | "bypassPermissions"
+        | "default"
+        | "dontAsk"
+        | "plan";
+      /**
+       * Reasoning effort (claude only: --effort).
+       */
+      effort?: "low" | "medium" | "high";
+      /**
+       * How many extra times to re-dispatch a server-side watcher run that finished WITHOUT calling complete_window before failing it. 0 disables; omitted = global default.
+       */
+      finalize_nudges?: number;
+    };
+    /**
+     * [create] Tags for filtering
+     */
+    tags?: Array<string>;
+    /**
+     * [upgrade/get_version_details] Version number
+     */
+    version?: number;
+    /**
+     * [upgrade] Version number to upgrade to
+     */
+    target_version?: number;
+    /**
+     * [create_version] Change notes for the new version
+     */
+    change_notes?: string;
+    /**
+     * [create_version] Set as current version (default: true)
+     */
+    set_as_current?: boolean;
+    /**
+     * [create/create_version] Guidance text for LLM agents on what reactions to take.
+     */
+    reactions_guidance?: string;
+    /**
+     * [complete_window] Required. LLM analysis results. Must match the watcher's extraction contract (derived from its entity type).
+     */
+    extracted_data?: {
+      [key: string]: unknown;
+    };
+    /**
+     * [complete_window] Replace existing window for same period (default: false).
+     */
+    replace_existing?: boolean;
+    /**
+     * [complete_window] JWT from read_knowledge(watcher_id, since, until). Pass this or window_tokens.
+     */
+    window_token?: string;
+    /**
+     * [complete_window] Multiple page JWTs from read_knowledge for the same watcher window. Content IDs are unioned and linked atomically.
+     */
+    window_tokens?: Array<string>;
+    /**
+     * [complete_window] Optional client identifier for execution provenance. Defaults to authenticated MCP client when available.
+     */
+    client_id?: string;
+    /**
+     * [complete_window] Optional model name used to produce the window result.
+     */
+    model?: string;
+    /**
+     * [complete_window] Optional structured execution metadata for provenance (provider, session id, parameters, etc.).
+     */
+    run_metadata?: unknown;
+    /**
+     * [complete_window] Optional watcher run id for run completion/provenance. Workers should pass the Watcher run ID from the dispatch prompt.
+     */
+    watcher_run_id?: number;
+    /**
+     * [complete_window] Pin to a specific watcher_versions.id. Workers receive this from the run dispatch payload (snapshotted from current_version_id at run-creation) and pass it back here so validation uses the same version that produced the extraction. Defaults to the run row's snapshot if available, else the watcher's current_version_id.
+     */
+    template_version_id?: number;
+    /**
+     * [set_reaction_script] TypeScript source for automated reaction. Set to empty string to remove.
+     */
+    reaction_script?: string;
+    /**
+     * [submit_feedback] Required. [get_feedback] Optional filter. Window ID to attach feedback to.
+     */
+    window_id?: number;
+    /**
+     * [submit_feedback] One entry per corrected field. Each row is stored independently so future corrections can supersede earlier ones per field.
+     */
+    corrections?: Array<{
+      /**
+       * Dot/bracket path into extracted_data, e.g. "problems[1].severity" or "problems[2]" for an array item.
+       */
+      field_path: string;
+      /**
+       * Default "set". Use "remove" to drop an array item; "add" to append one.
+       */
+      mutation?: "set" | "remove" | "add";
+      /**
+       * New value for set/add. Omitted for remove. Any JSON type (string/number/object/array).
+       */
+      value?: unknown;
+      /**
+       * Optional per-field explanation.
+       */
+      note?: string;
+    }>;
+    /**
+     * [get_feedback] Max feedback records to return (default: 50).
+     */
+    limit?: number;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_watchers";
+};
+
+export type ManageWatchersErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageWatchersError =
+  ManageWatchersErrors[keyof ManageWatchersErrors];
+
+export type ManageWatchersResponses = {
+  /**
+   * Successful response
+   */
+  200:
+    | {
+        action: "create";
+        watcher_id: string;
+        version: number;
+        status: string;
+        sources?: Array<{
+          name: string;
+          query: string;
+          context?: boolean;
+        }>;
+        view_url?: string;
+      }
+    | {
+        action: "update";
+        watcher_id: string;
+        updated_fields: Array<string>;
+      }
+    | {
+        action: "create_version";
+        watcher_id: string;
+        version_id: string;
+        version: number;
+        previous_version: number;
+      }
+    | {
+        action: "complete_window";
+        watcher_id: string;
+        window_id: number;
+        window_start: string;
+        window_end: string;
+        content_linked: number;
+      }
+    | {
+        action: "trigger";
+        watcher_id: string;
+        run_id: number;
+        status: string;
+      }
+    | {
+        action: "delete";
+        results: Array<{
+          watcher_id: string;
+          success: boolean;
+          message: string;
+          version?: number;
+        }>;
+        summary: {
+          total: number;
+          successful: number;
+          failed: number;
+        };
+      }
+    | {
+        action: "set_reaction_script";
+        watcher_id: string;
+        has_script: boolean;
+        message: string;
+      }
+    | {
+        action: "get_versions";
+        watcher_id: string;
+        versions: Array<unknown>;
+      }
+    | ({
+        action: "get_version_details";
+        watcher_id: string;
+      } & {
+        [key: string]: unknown;
+      })
+    | {
+        action: "get_component_reference";
+        documentation: unknown;
+      }
+    | {
+        action: "submit_feedback";
+        watcher_id: string;
+        window_id: number;
+        feedback_ids: Array<number>;
+      }
+    | {
+        action: "get_feedback";
+        watcher_id: string;
+        feedback: Array<{
+          id: number;
+          window_id: number;
+          field_path: string;
+          mutation: "set" | "remove" | "add";
+          corrected_value: unknown;
+          note: string | null;
+          created_by: string;
+          created_at: string;
+          window_start?: string;
+          window_end?: string;
+        }>;
+      }
+    | {
+        action: "list_promoted";
+        watcher_id: string;
+        entities: Array<{
+          id: number;
+          name: string;
+          entity_type: string;
+          metadata: {
+            [key: string]: unknown;
+          };
+          field_controls: {
+            [key: string]: unknown;
+          };
+          window_id: number | null;
+          stable_key: string | null;
+        }>;
+      }
+    | {
+        action: "create_from_version";
+        created: Array<{
+          watcher_id: string;
+          entity_id: number;
+          name: string;
+        }>;
+      }
+    | {
+        action:
+          | "create"
+          | "update"
+          | "create_version"
+          | "create_from_version"
+          | "set_reaction_script"
+          | "delete";
+        run_id: number;
+        event_id?: number;
+        status: "pending_approval";
+        message: string;
+        proposal: unknown;
+        current: {
+          [key: string]: unknown;
+        } | null;
+      };
+};
+
+export type ManageWatchersResponse =
+  ManageWatchersResponses[keyof ManageWatchersResponses];
+
+export type ListWatchersData = {
+  body: {
+    /**
+     * Optional watcher ID (numeric string) to narrow to one watcher
+     */
+    watcher_id?: string;
+    /**
+     * Optional entity ID to list watchers attached to a specific entity
+     */
+    entity_id?: number;
+    /**
+     * Optional agent ID to list watchers owned by a specific agent
+     */
+    agent_id?: string;
+    /**
+     * Optional status filter. Use "active" or "archived". Omit to include all.
+     */
+    status?: string;
+    /**
+     * Include prompt, schema, and sources in response (default: false)
+     */
+    include_details?: boolean;
+    /**
+     * Filter watchers sharing a watcher_group_id (for legacy group URL resolution)
+     */
+    watcher_group_id?: number;
+    /**
+     * Sort field. Omit for created_at DESC (default, backward compatible).
+     */
+    order_by?: "last_fired_at" | "created_at";
+    /**
+     * Sort direction (default: desc)
+     */
+    order_dir?: "asc" | "desc";
+    /**
+     * Maximum watchers to return (omit for all)
+     */
+    limit?: number;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/list_watchers";
+};
+
+export type ListWatchersErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ListWatchersError = ListWatchersErrors[keyof ListWatchersErrors];
+
+export type ListWatchersResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    watchers: Array<{
+      [key: string]: unknown;
+    }>;
+  };
+};
+
+export type ListWatchersResponse =
+  ListWatchersResponses[keyof ListWatchersResponses];
+
+export type GetWatcherData = {
+  body: {
+    /**
+     * Watcher ID to query
+     */
+    watcher_id: string;
+    /**
+     * Optional entity ID for access validation and URL context
+     */
+    entity_id?: number;
+    /**
+     * Filter windows from this date. Supports: ISO 8601 ("2025-01-01"), named aliases ("yesterday", "last_week"), or relative ("7d", "30d", "1m", "1y")
+     */
+    content_since?: string;
+    /**
+     * Filter windows until this date. Supports: ISO 8601 ("2025-01-31"), named aliases ("today", "yesterday"), or relative ("7d", "30d", "1m", "1y")
+     */
+    content_until?: string;
+    /**
+     * Filter by time granularity (daily / weekly / monthly / quarterly). If not provided, returns windows at all granularities; when a requested granularity has no windows the query falls back to the next-finer level.
+     */
+    granularity?: "daily" | "weekly" | "monthly" | "quarterly";
+    /**
+     * Override template version *number* for viewing results. If not provided, uses the watcher's current pinned version. Useful for viewing results with a different renderer or schema. Prefer `template_version_id` when you need a stable reference (version numbers can change if a chain is reorganized).
+     */
+    template_version?: number;
+    /**
+     * Pin to a specific watcher_versions.id. Workers receive this from runs.approved_input.version_id and pass it back so the agent loop reads the same version it extracted with, even if the group is edited mid-run.
+     */
+    template_version_id?: number;
+    /**
+     * Page number for pagination (default: 1)
+     */
+    page?: number;
+    /**
+     * Results per page (default: 50, max: 500)
+     */
+    page_size?: number;
+    /**
+     * Include per-window classification stats. Use "summary" to enable.
+     */
+    include_classification?: string;
+    /**
+     * Include the full available_versions list. Off by default; the edit sheet sets it true. Saves one query per page open.
+     */
+    include_versions?: boolean;
+    /**
+     * Include pending_analysis.unprocessed_ranges (per-month histogram). Off by default; the summary view sets it true on expand. Saves two events-table aggregates per page open.
+     */
+    include_pending_ranges?: boolean;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/get_watcher";
+};
+
+export type GetWatcherErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type GetWatcherError = GetWatcherErrors[keyof GetWatcherErrors];
+
+export type GetWatcherResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    windows: Array<{
+      window_id: number;
+      watcher_id: string;
+      watcher_name: string;
+      granularity: string;
+      window_start: string;
+      window_end: string;
+      content_analyzed: number;
+      extracted_data: {
+        [key: string]: unknown;
+      };
+      previous_extracted_data?: {
+        [key: string]: unknown;
+      };
+      classification_stats?: {
+        [key: string]:
+          | unknown
+          | {
+              [key: string]: unknown | number;
+            };
+      };
+      model_used: string;
+      client_id?: string;
+      run_metadata?: {
+        [key: string]: unknown;
+      };
+      execution_time_ms: number;
+      created_at: string;
+      version_id?: number;
+      reactions?: Array<{
+        id: number;
+        reaction_type: string;
+        tool_name: string;
+        tool_args?: {
+          [key: string]: unknown;
+        };
+        tool_result?: {
+          [key: string]: unknown;
+        };
+        created_at: string;
+      }>;
+    }>;
+    watcher?: {
+      watcher_id: string;
+      watcher_name: string;
+      slug: string;
+      status: "active" | "archived";
+      schedule?: string | null;
+      next_run_at?: string | null;
+      agent_id?: string | null;
+      device_worker_id?: string | null;
+      scheduler_client_id?: string | null;
+      version: number;
+      sources: Array<{
+        name: string;
+        query: string;
+        context?: boolean;
+      }>;
+      prompt?: string;
+      description?: string;
+      keying_config?: {
+        entity_path: string;
+        key_fields: Array<string>;
+        key_output_field: string;
+        entity_type?: string;
+      } | null;
+      classifiers?: Array<unknown>;
+      reactions_guidance?: string;
+      rendered_prompt?: string;
+      available_versions?: Array<{
+        version: number;
+        name: string;
+        created_at: string;
+        is_current: boolean;
+      }>;
+      reaction_script?: string;
+      watcher_run?: {
+        run_id: number;
+        status:
+          | "pending"
+          | "claimed"
+          | "running"
+          | "completed"
+          | "failed"
+          | "cancelled"
+          | "timeout";
+        error_message?: string | null;
+        created_at?: string | null;
+        completed_at?: string | null;
+      };
+    };
+    pending_analysis?: {
+      unprocessed_count: number;
+      next_window: {
+        start: string;
+        end: string;
+        granularity: string;
+      } | null;
+      next_action: {
+        tool: string;
+        params: {
+          [key: string]: unknown;
+        };
+        description: string;
+      } | null;
+      unprocessed_ranges?: Array<{
+        month: string;
+        window_start: string;
+        window_end: string;
+        total_content: number;
+        processed_content: number;
+        unprocessed_content: number;
+        status: "unprocessed" | "partial" | "complete";
+      }>;
+    };
+    gaps?: Array<{
+      start: string;
+      end: string;
+    }>;
+    pagination: {
+      page: number;
+      page_size: number;
+      total: number;
+    };
+    metadata: {
+      query_type: "specific" | "all_for_entity";
+      date_range: {
+        content_since: string | null;
+        content_until: string | null;
+      };
+      granularity_filter: string | null;
+      granularity_actual: string | null;
+      granularity_fallback_used: boolean;
+    };
+    warnings?: Array<string>;
+    view_url?: string;
+  };
+};
+
+export type GetWatcherResponse = GetWatcherResponses[keyof GetWatcherResponses];
+
+export type ReadKnowledgeData = {
+  body: {
+    /**
+     * Search query text (min 3 characters). If provided, performs semantic/full-text search. If omitted, lists content ordered by date.
+     */
+    query?: string;
+    /**
+     * Entity ID to filter by. Required unless watcher_id is provided.
+     */
+    entity_id?: number;
+    /**
+     * Watcher ID to fetch content for. When provided, uses watcher's sources and computes pending window. Returns window_token for complete_window action.
+     */
+    watcher_id?: number;
+    /**
+     * Pin to a specific watcher_versions.id when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the watcher's current_version_id.
+     */
+    template_version_id?: number;
+    /**
+     * Connection IDs to filter by
+     */
+    connection_ids?: Array<number>;
+    /**
+     * Feed IDs to filter by (events.feed_id)
+     */
+    feed_ids?: Array<number>;
+    /**
+     * Run IDs to filter by (events.run_id — the run that produced the event)
+     */
+    run_ids?: Array<number>;
+    /**
+     * Limit results to memory written by this agent. Filters events where metadata.agent_id matches.
+     */
+    agent_id?: string;
+    /**
+     * Platform types to filter by (reddit, trustpilot, etc.)
+     */
+    platforms?: Array<string>;
+    /**
+     * Watcher window ID to filter by (shows only content analyzed in this window)
+     */
+    window_id?: number;
+    /**
+     * Limit results to events this watcher has analyzed (any window). Distinct from watcher_id, which enters watcher read mode.
+     */
+    analyzed_by_watcher_id?: number;
+    /**
+     * Filter events published since this date. Supports: ISO 8601 ("2025-01-01"), named aliases ("yesterday", "last_week"), or relative ("7d", "30d", "1m", "1y"). When used with watcher_id, also sets window_start in the generated token.
+     */
+    since?: string;
+    /**
+     * Filter events published until this date. Supports: ISO 8601 ("2025-01-31"), named aliases ("today", "yesterday"), or relative ("7d", "30d", "1m", "1y"). When used with watcher_id, also sets window_end in the generated token.
+     */
+    until?: string;
+    /**
+     * Minimum vector similarity threshold for semantic search (0.0-1.0, default: 0.6). Only used when query is provided.
+     */
+    min_similarity?: number;
+    /**
+     * Weight of vector similarity vs text rank in combined_score (0.0-1.0, default: 0.6). Higher values favor semantic match over keyword overlap. Only applies when a query and embeddings are both present.
+     */
+    vector_weight?: number;
+    /**
+     * Filter by classification values, e.g. {"sentiment": ["positive", "neutral"], "bug-severity": ["critical"]}
+     */
+    classification_filters?: {
+      [key: string]: unknown | Array<string>;
+    };
+    /**
+     * Number of results to return (default: 50, max: 2000)
+     */
+    limit?: number;
+    /**
+     * Number of results to skip for pagination (default: 0)
+     */
+    offset?: number;
+    /**
+     * Chronological cursor anchor for older results. Pair with before_id. Only used when sort_by=date and sort_order=desc.
+     */
+    before_occurred_at?: string;
+    /**
+     * Stable tie-breaker for before_occurred_at. Only used when sort_by=date and sort_order=desc.
+     */
+    before_id?: number;
+    /**
+     * Chronological cursor anchor for newer results. Pair with after_id. Only used when sort_by=date and sort_order=desc.
+     */
+    after_occurred_at?: string;
+    /**
+     * Stable tie-breaker for after_occurred_at. Only used when sort_by=date and sort_order=desc.
+     */
+    after_id?: number;
+    /**
+     * Include classification data. Use "summary" to include aggregated classification stats for filter UI.
+     */
+    include_classification?: string;
+    /**
+     * Minimum engagement score (0-100)
+     */
+    engagement_min?: number;
+    /**
+     * Maximum engagement score (0-100)
+     */
+    engagement_max?: number;
+    /**
+     * Sort content by: date (newest first) or score (cross-platform smart ranking). Search queries respect date sorting for chronological feed browsing; score sorting remains relevance-weighted. Default: score
+     */
+    sort_by?: "date" | "score";
+    /**
+     * Sort order: asc (ascending) or desc (descending). Default: desc
+     */
+    sort_order?: "asc" | "desc";
+    /**
+     * When true and listing entity content without a query, include superseded historical events in addition to current records. Useful for explicit historical lookups such as original or previous values.
+     */
+    include_superseded?: boolean;
+    /**
+     * Filter content by classification source: user (manual), embedding (system), or llm (AI-generated)
+     */
+    classification_source?: "user" | "embedding" | "llm";
+    /**
+     * Filter to specific content IDs. Useful for showing content linked to watcher analysis.
+     */
+    content_ids?: Array<number>;
+    /**
+     * Exclude content already analyzed in any window for this watcher. Returns only unprocessed content for client-driven watcher generation.
+     */
+    exclude_watcher_id?: number;
+    /**
+     * Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. Matches the semantic_type set via save_memory.
+     */
+    semantic_type?: string | Array<string>;
+    /**
+     * Org-wide filter: limit to events linked to entities whose type slug is in this list. Ignored when entity_id is set.
+     */
+    entity_types?: Array<string>;
+    /**
+     * Filter by interaction status (e.g. "pending" for pending approvals)
+     */
+    interaction_status?:
+      | "pending"
+      | "approved"
+      | "rejected"
+      | "completed"
+      | "failed";
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/read_knowledge";
+};
+
+export type ReadKnowledgeErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ReadKnowledgeError = ReadKnowledgeErrors[keyof ReadKnowledgeErrors];
+
+export type ReadKnowledgeResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    content: Array<unknown>;
+    total: number;
+    page: {
+      limit: number;
+      offset: number;
+      has_more: boolean;
+      has_older?: boolean;
+      has_newer?: boolean;
+      next_cursor?: {
+        occurred_at: string;
+        id: number;
+      };
+    };
+    classification_stats?: {
+      [key: string]:
+        | unknown
+        | {
+            [key: string]: unknown | number;
+          };
+    };
+    view_url?: string;
+    window_token?: string;
+    window_start?: string;
+    window_end?: string;
+    prompt_rendered?: string;
+    extraction_schema?: {
+      [key: string]: unknown;
+    };
+    sources?: {
+      [key: string]: unknown | Array<unknown>;
+    };
+    classifiers?: Array<unknown>;
+    unprocessed_ranges?: Array<unknown>;
+    reactions_guidance?: string;
+    available_operations?: Array<{
+      connection_id: number;
+      operation_key: string;
+      name: string;
+      kind: "read" | "write";
+      requires_approval: boolean;
+    }>;
+    total_count?: number;
+    total_count_chars?: number;
+    estimated_tokens?: number;
+    token_warning?: string;
+    entity_summary?: Array<{
+      entity_id: number;
+      name: string;
+      entity_type: string;
+      result_count: number;
+    }>;
+    hints?: Array<string>;
+  };
+};
+
+export type ReadKnowledgeResponse =
+  ReadKnowledgeResponses[keyof ReadKnowledgeResponses];
+
+export type ManageClassifiersData = {
+  body: {
+    /**
+     * Action to perform
+     */
+    action: "create" | "list" | "generate_embeddings" | "delete" | "classify";
+    /**
+     * [create/list] Entity ID to scope classifiers (global if omitted)
+     */
+    entity_id?: number;
+    /**
+     * [create] Watcher ID as returned by the watcher APIs (numeric string; required)
+     */
+    watcher_id?: string;
+    /**
+     * [generate_embeddings/delete] Classifier ID
+     */
+    classifier_id?: number;
+    /**
+     * [create] Unique identifier (e.g., "sentiment", "quality")
+     */
+    slug?: string;
+    /**
+     * [create] Display name
+     */
+    name?: string;
+    /**
+     * [create] Classifier description
+     */
+    description?: string;
+    /**
+     * [create] Key in content classifications (e.g., "sentiment")
+     */
+    attribute_key?: string;
+    /**
+     * [create] Map of attribute values to descriptions, examples, and optional embeddings.
+     */
+    attribute_values?: {
+      [key: string]:
+        | unknown
+        | {
+            description: string;
+            examples: Array<string>;
+            embedding?: Array<number> | null;
+          };
+    };
+    /**
+     * [create] Minimum similarity threshold (default: 0.7)
+     */
+    min_similarity?: number;
+    /**
+     * [create] Fallback value if no match (default: null)
+     */
+    fallback_value?: unknown;
+    /**
+     * [create] Creator identifier
+     */
+    created_by?: string;
+    /**
+     * [list] Filter by status (active or deprecated)
+     */
+    status?: string;
+    /**
+     * [generate_embeddings] Force regenerate existing embeddings (default: false)
+     */
+    force_regenerate?: boolean;
+    /**
+     * [classify] Content ID to update (single mode)
+     */
+    content_id?: number;
+    /**
+     * [classify] Array of classifications to update (batch mode)
+     */
+    classifications?: Array<{
+      /**
+       * Content ID
+       */
+      content_id: number;
+      /**
+       * Classification value, or null to unset
+       */
+      value: string | null;
+      /**
+       * Reasoning/justification for this classification
+       */
+      reasoning?: string;
+    }>;
+    /**
+     * [classify] Classifier slug (e.g., "sentiment", "bug-severity")
+     */
+    classifier_slug?: string;
+    /**
+     * [classify] Classification value for single update, or null to unset
+     */
+    value?: string | null;
+    /**
+     * [classify] Classification source: "llm" (AI-generated) or "user" (manual). Defaults to "user".
+     */
+    source?: "llm" | "user";
+    /**
+     * [classify] Reasoning/justification for the classification(s)
+     */
+    reasoning?: string;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_classifiers";
+};
+
+export type ManageClassifiersErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageClassifiersError =
+  ManageClassifiersErrors[keyof ManageClassifiersErrors];
+
+export type ManageClassifiersResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    success: boolean;
+    action: string;
+    message?: string;
+    data?: unknown;
+  };
+};
+
+export type ManageClassifiersResponse =
+  ManageClassifiersResponses[keyof ManageClassifiersResponses];
+
+export type ManageViewTemplatesData = {
+  body: {
+    /**
+     * Action to perform
+     */
+    action: "set" | "get" | "rollback" | "remove_tab" | "clear";
+    /**
+     * Type of resource: entity_type or entity
+     */
+    resource_type: "entity_type" | "entity";
+    /**
+     * Resource identifier: entity type slug (string) or entity id (number)
+     */
+    resource_id: string | number;
+    /**
+     * [set] The JSON template content. May include a data_sources key: { "data_sources": { "name": { "query": "SELECT ... FROM entities" } }, ...template }. Queries run against org-scoped virtual tables. Use {{entityId}} for current entity context.
+     */
+    json_template?: {
+      [key: string]: unknown;
+    };
+    /**
+     * Tab name. Omit for the default/overview tab.
+     */
+    tab_name?: string;
+    /**
+     * [set] Sort order for tabs (default 0)
+     */
+    tab_order?: number;
+    /**
+     * [set] Notes describing the change
+     */
+    change_notes?: string;
+    /**
+     * [rollback] Version number to rollback to
+     */
+    version?: number;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/manage_view_templates";
+};
+
+export type ManageViewTemplatesErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ManageViewTemplatesError =
+  ManageViewTemplatesErrors[keyof ManageViewTemplatesErrors];
+
+export type ManageViewTemplatesResponses = {
+  /**
+   * Successful response
+   */
+  200:
+    | {
+        action: "set";
+        version: {
+          id: number;
+          version: number;
+          tab_name: string | null;
+          tab_order: number;
+          json_template: {
+            [key: string]: unknown;
+          };
+          change_notes: string | null;
+          created_by: string;
+          created_by_username: string | null;
+          created_at: string;
+        };
+        message: string;
+      }
+    | {
+        action: "get";
+        default_tab: {
+          current: {
+            id: number;
+            version: number;
+            tab_name: string | null;
+            tab_order: number;
+            json_template: {
+              [key: string]: unknown;
+            };
+            change_notes: string | null;
+            created_by: string;
+            created_by_username: string | null;
+            created_at: string;
+          } | null;
+          history: Array<{
+            id: number;
+            version: number;
+            tab_name: string | null;
+            tab_order: number;
+            json_template: {
+              [key: string]: unknown;
+            };
+            change_notes: string | null;
+            created_by: string;
+            created_by_username: string | null;
+            created_at: string;
+          }>;
+        };
+        tabs: Array<{
+          tab_name: string;
+          tab_order: number;
+          current_version: number;
+          current_version_id: number;
+          json_template: {
+            [key: string]: unknown;
+          };
+        }>;
+      }
+    | {
+        action: "rollback";
+        version: {
+          id: number;
+          version: number;
+          tab_name: string | null;
+          tab_order: number;
+          json_template: {
+            [key: string]: unknown;
+          };
+          change_notes: string | null;
+          created_by: string;
+          created_by_username: string | null;
+          created_at: string;
+        };
+        message: string;
+      }
+    | {
+        action: "remove_tab";
+        success: boolean;
+        message: string;
+      }
+    | {
+        action: "clear";
+        success: boolean;
+        message: string;
+      };
+};
+
+export type ManageViewTemplatesResponse =
+  ManageViewTemplatesResponses[keyof ManageViewTemplatesResponses];
+
+export type ListOrganizationsData = {
+  body: {
+    /**
+     * Filter organizations by name (case-insensitive substring match)
+     */
+    search?: string;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/list_organizations";
+};
+
+export type ListOrganizationsErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ListOrganizationsError =
+  ListOrganizationsErrors[keyof ListOrganizationsErrors];
+
+export type ListOrganizationsResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type ListOrganizationsResponse =
+  ListOrganizationsResponses[keyof ListOrganizationsResponses];
+
+export type ListMetricsData = {
+  body: {
+    /**
+     * Filter to one entity type slug (e.g. "company").
+     */
+    entity_type?: string;
+    /**
+     * Keyword filter (case-insensitive) over measure/dimension/segment names + descriptions.
+     */
+    q?: string;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/list_metrics";
+};
+
+export type ListMetricsErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ListMetricsError = ListMetricsErrors[keyof ListMetricsErrors];
+
+export type ListMetricsResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type ListMetricsResponse =
+  ListMetricsResponses[keyof ListMetricsResponses];
+
+export type QueryMetricData = {
+  body: {
+    /**
+     * Entity type slug that declares the metric (e.g. "company"). See list_metrics.
+     */
+    entity_type: string;
+    /**
+     * Declared measure name on that entity type (e.g. "spend").
+     */
+    measure: string;
+    /**
+     * Dimension names to group by (e.g. ["currency","month"]). Omit for a grand total per entity.
+     */
+    by?: Array<string>;
+    /**
+     * An extra declared segment (named population filter) to AND in.
+     */
+    segment?: string;
+    /**
+     * Restrict to a single entity (entities.id); omit for all entities of the type.
+     */
+    entity_id?: number;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/query_metric";
+};
+
+export type QueryMetricErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type QueryMetricError = QueryMetricErrors[keyof QueryMetricErrors];
+
+export type QueryMetricResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type QueryMetricResponse =
+  QueryMetricResponses[keyof QueryMetricResponses];
+
+export type MetricSeriesData = {
+  body: {
+    /**
+     * A single SELECT (or WITH … SELECT) returning a bucket column plus one or more numeric stat columns. Table references are auto-scoped to the caller's organization; `$1` is the organization id (injected — do not pass it).
+     */
+    sql: string;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/metric_series";
+};
+
+export type MetricSeriesErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type MetricSeriesError = MetricSeriesErrors[keyof MetricSeriesErrors];
+
+export type MetricSeriesResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    [key: string]: unknown;
+  };
+};
+
+export type MetricSeriesResponse =
+  MetricSeriesResponses[keyof MetricSeriesResponses];
+
+export type ResolvePathData = {
+  body: {
+    /**
+     * URL path like /acme/company/spotify (query string optional)
+     */
+    path: string;
+    /**
+     * When true, includes shared bootstrap data for sidebar and overview pages in the response
+     */
+    include_bootstrap?: boolean;
+  };
+  path: {
+    /**
+     * Organization slug (workspace identifier)
+     */
+    orgSlug: string;
+  };
+  query?: never;
+  url: "/api/{orgSlug}/resolve_path";
+};
+
+export type ResolvePathErrors = {
+  /**
+   * Bad request - invalid parameters
+   */
+  400: {
+    error?: string;
+  };
+  /**
+   * Tool not found
+   */
+  404: {
+    error?: string;
+  };
+};
+
+export type ResolvePathError = ResolvePathErrors[keyof ResolvePathErrors];
+
+export type ResolvePathResponses = {
+  /**
+   * Successful response
+   */
+  200: {
+    workspace: {
+      slug: string;
+      type: "user" | "organization";
+      id: string;
+      name: string | null;
+    };
+    segments: Array<{
+      entity_type: string;
+      slug: string;
+    }>;
+    path: Array<{
+      id: number;
+      entity_type: string;
+      slug: string;
+      name: string;
+    }>;
+    entity:
+      | ({
+          id: number;
+          entity_type: string;
+          slug: string;
+          name: string;
+        } & {
+          parent_id: number | null;
+          metadata: {
+            [key: string]: unknown;
+          };
+          field_controls: {
+            [key: string]:
+              | unknown
+              | {
+                  note?: string | null;
+                  set_by?: string | null;
+                  set_at?: string;
+                };
+          };
+          json_template: {
+            [key: string]: unknown;
+          } | null;
+          json_template_version: number | null;
+          template_data: {
+            [key: string]: unknown | Array<unknown>;
+          } | null;
+          tabs: Array<{
+            tab_name: string;
+            tab_order: number;
+            json_template: {
+              [key: string]: unknown;
+            };
+            version: number;
+            version_id: number;
+            template_data: {
+              [key: string]: unknown | Array<unknown>;
+            } | null;
+          }>;
+          created_at: string;
+          total_content: number;
+          active_connections: number;
+          watchers_count: number;
+          is_derived?: boolean;
+          measure_columns?: Array<string>;
+        })
+      | null;
+    children: Array<{
+      id: number;
+      entity_type: string;
+      slug: string;
+      name: string;
+      market: string | null;
+      content_count: number;
+    }>;
+    siblings: Array<{
+      id: number;
+      entity_type: string;
+      slug: string;
+      name: string;
+      content_count: number;
+    }>;
+    bootstrap: {
+      entity_types: Array<{
+        id: number;
+        slug: string;
+        name: string;
+        description: string | null;
+        icon: string | null;
+        color: string | null;
+        entity_count: number;
+      }>;
+      summary: {
+        total_content: number;
+        active_connections: number;
+        watchers_count: number;
+        agents_count: number;
+        devices_count: number;
+      };
+      recent_content: Array<{
+        id: number;
+        entity_ids: Array<number>;
+        platform: string;
+        entity_name: string | null;
+        title: string | null;
+        text_content: string;
+        source_url: string | null;
+        author_name: string | null;
+        created_at: string;
+        occurred_at: string | null;
+      }>;
+      recent_feeds: Array<{
+        id: number;
+        connection_id: number;
+        connector_key: string;
+        display_name: string | null;
+        status: string;
+        entity_ids: Array<number>;
+        connector_name: string | null;
+        connection_name: string | null;
+        event_count: number;
+        created_at: string;
+        updated_at: string;
+      }>;
+      recent_watchers: Array<{
+        watcher_id: string;
+        name: string;
+        status: string;
+        schedule: string;
+        entity_id: number | null;
+        entity_type: string | null;
+        entity_name: string | null;
+        entity_slug: string | null;
+        parent_slug: string | null;
+        parent_entity_type: string | null;
+        organization_slug: string;
+        windows_count: number;
+        created_at: string;
+        updated_at: string;
+      }>;
+      connector_definitions: Array<{
+        key: string;
+        name: string;
+        description: string | null;
+        icon: string | null;
+        favicon_domain: string | null;
+      }>;
+    } | null;
+  };
+};
+
+export type ResolvePathResponse =
+  ResolvePathResponses[keyof ResolvePathResponses];
+
 export type GetApiV1AgentsData = {
   body?: never;
   path?: never;
@@ -20,7 +5407,7 @@ export type GetApiV1AgentsResponses = {
 
 export type PostApiV1AgentsData = {
   body?: {
-    provider?: string;
+    provider?: "claude";
     model?: string;
     agentId?: string;
     userId?: string;
@@ -118,7 +5505,7 @@ export type DeleteApiV1AgentsByAgentIdError =
 
 export type DeleteApiV1AgentsByAgentIdResponses = {
   /**
-   * Agent deleted
+   * Agent session deleted
    */
   200: {
     success: boolean;
@@ -250,6 +5637,10 @@ export type PostApiV1AgentsByAgentIdMessagesData = {
     message?: string;
     messageId?: string;
     /**
+     * Optional per-message model override (a `provider/model` ref or "auto"). Wins over the agent/org default. Used by behavior dispatch (e.g. watcher runs).
+     */
+    model?: string;
+    /**
      * Target platform (api, slack, telegram)
      */
     platform?: string;
@@ -270,24 +5661,7 @@ export type PostApiV1AgentsByAgentIdMessagesData = {
        */
       team?: string;
     };
-    [key: string]:
-      | unknown
-      | string
-      | {
-          /**
-           * Slack channel ID
-           */
-          channel: string;
-          /**
-           * Thread timestamp for replies
-           */
-          thread?: string;
-          /**
-           * Slack team ID
-           */
-          team?: string;
-        }
-      | undefined;
+    [key: string]: unknown;
   };
   path: {
     agentId: string;
@@ -380,534 +5754,6 @@ export type GetApiV1AgentsByAgentIdConfigResponses = {
   200: unknown;
 };
 
-export type PostApiV1AuthByProviderCodeData = {
-  body?: {
-    code: string;
-  };
-  path: {
-    provider: string;
-  };
-  query?: {
-    token?: string;
-  };
-  url: "/api/v1/auth/{provider}/code";
-};
-
-export type PostApiV1AuthByProviderCodeErrors = {
-  /**
-   * Invalid
-   */
-  400: {
-    error: string;
-  };
-  /**
-   * Unauthorized
-   */
-  401: {
-    error: string;
-  };
-};
-
-export type PostApiV1AuthByProviderCodeError =
-  PostApiV1AuthByProviderCodeErrors[keyof PostApiV1AuthByProviderCodeErrors];
-
-export type PostApiV1AuthByProviderCodeResponses = {
-  /**
-   * Exchanged
-   */
-  200: {
-    success: boolean;
-  };
-};
-
-export type PostApiV1AuthByProviderCodeResponse =
-  PostApiV1AuthByProviderCodeResponses[keyof PostApiV1AuthByProviderCodeResponses];
-
-export type GetApiV1ConnectionsData = {
-  body?: never;
-  path?: never;
-  query?: {
-    platform?:
-      | "telegram"
-      | "slack"
-      | "discord"
-      | "whatsapp"
-      | "teams"
-      | "gchat";
-    agentId?: string;
-  };
-  url: "/api/v1/connections";
-};
-
-export type GetApiV1ConnectionsErrors = {
-  /**
-   * Unauthorized
-   */
-  401: {
-    error: string;
-  };
-  /**
-   * Forbidden
-   */
-  403: {
-    error: string;
-  };
-};
-
-export type GetApiV1ConnectionsError =
-  GetApiV1ConnectionsErrors[keyof GetApiV1ConnectionsErrors];
-
-export type GetApiV1ConnectionsResponses = {
-  /**
-   * Connections
-   */
-  200: {
-    connections: Array<{
-      id: string;
-      platform:
-        | "telegram"
-        | "slack"
-        | "discord"
-        | "whatsapp"
-        | "teams"
-        | "gchat";
-      agentId?: string;
-      config:
-        | {
-            platform: "telegram";
-            /**
-             * Telegram bot token from BotFather. Falls back to TELEGRAM_BOT_TOKEN env var.
-             */
-            botToken?: string;
-            /**
-             * Runtime mode: auto (default), webhook, or polling.
-             */
-            mode?: "auto" | "webhook" | "polling";
-            /**
-             * Webhook secret token for x-telegram-bot-api-secret-token verification.
-             */
-            secretToken?: string;
-            /**
-             * Override bot username.
-             */
-            userName?: string;
-            /**
-             * Custom Telegram API base URL.
-             */
-            apiBaseUrl?: string;
-          }
-        | {
-            platform: "slack";
-            /**
-             * Bot token (xoxb-...). Required for single-workspace mode.
-             */
-            botToken?: string;
-            /**
-             * Bot user ID (fetched automatically if omitted).
-             */
-            botUserId?: string;
-            /**
-             * Signing secret for webhook verification.
-             */
-            signingSecret?: string;
-            /**
-             * Slack app client ID (required for OAuth / multi-workspace).
-             */
-            clientId?: string;
-            /**
-             * Slack app client secret (required for OAuth / multi-workspace).
-             */
-            clientSecret?: string;
-            /**
-             * Base64-encoded 32-byte AES-256-GCM key for encrypting stored bot tokens.
-             */
-            encryptionKey?: string;
-            /**
-             * State key prefix for workspace installations (default: slack:installation).
-             */
-            installationKeyPrefix?: string;
-            /**
-             * Override bot username.
-             */
-            userName?: string;
-          }
-        | {
-            platform: "discord";
-            /**
-             * Discord bot token.
-             */
-            botToken?: string;
-            /**
-             * Discord application ID.
-             */
-            applicationId?: string;
-            /**
-             * Application public key for webhook signature verification.
-             */
-            publicKey?: string;
-            /**
-             * Role IDs that trigger mention handlers (in addition to direct mentions).
-             */
-            mentionRoleIds?: Array<string>;
-            /**
-             * Override bot username.
-             */
-            userName?: string;
-          }
-        | {
-            platform: "whatsapp";
-            /**
-             * System User access token for WhatsApp Cloud API.
-             */
-            accessToken?: string;
-            /**
-             * WhatsApp Business phone number ID.
-             */
-            phoneNumberId?: string;
-            /**
-             * Meta App Secret for webhook HMAC-SHA256 signature verification.
-             */
-            appSecret?: string;
-            /**
-             * Verify token for webhook challenge-response.
-             */
-            verifyToken?: string;
-            /**
-             * Meta Graph API version (default: v21.0).
-             */
-            apiVersion?: string;
-            /**
-             * Bot display name.
-             */
-            userName?: string;
-          }
-        | {
-            platform: "teams";
-            /**
-             * Microsoft App ID.
-             */
-            appId?: string;
-            /**
-             * Microsoft App Password.
-             */
-            appPassword?: string;
-            /**
-             * Microsoft App Tenant ID.
-             */
-            appTenantId?: string;
-            /**
-             * Microsoft App Type.
-             */
-            appType?: "MultiTenant" | "SingleTenant";
-            /**
-             * Override bot username.
-             */
-            userName?: string;
-          }
-        | {
-            platform: "gchat";
-            /**
-             * Service account credentials JSON string. Defaults to GOOGLE_CHAT_CREDENTIALS env var.
-             */
-            credentials?: string;
-            /**
-             * Use Application Default Credentials (ADC) instead of service account JSON.
-             */
-            useApplicationDefaultCredentials?: boolean;
-            /**
-             * HTTP endpoint URL for button click actions. Required for HTTP endpoint apps.
-             */
-            endpointUrl?: string;
-            /**
-             * Google Cloud project number for verifying webhook JWTs. Defaults to GOOGLE_CHAT_PROJECT_NUMBER env var.
-             */
-            googleChatProjectNumber?: string;
-            /**
-             * User email for domain-wide delegation. Defaults to GOOGLE_CHAT_IMPERSONATE_USER env var.
-             */
-            impersonateUser?: string;
-            /**
-             * Expected audience for Pub/Sub push JWT verification. Defaults to GOOGLE_CHAT_PUBSUB_AUDIENCE env var.
-             */
-            pubsubAudience?: string;
-            /**
-             * Override bot username.
-             */
-            userName?: string;
-          };
-      settings: {
-        /**
-         * User IDs allowed to interact with this connection. Omit to allow all; empty array blocks all.
-         */
-        allowFrom?: Array<string>;
-        /**
-         * Whether group messages are allowed (default true).
-         */
-        allowGroups?: boolean;
-        /**
-         * Scopes that end users are allowed to customize. Empty = no restrictions.
-         */
-        userConfigScopes?: Array<
-          | "model"
-          | "view-model"
-          | "system-prompt"
-          | "skills"
-          | "permissions"
-          | "packages"
-        >;
-      };
-      metadata: {
-        [key: string]: unknown;
-      };
-      status: "active" | "stopped" | "error";
-      errorMessage?: string;
-      createdAt: number;
-      updatedAt: number;
-    }>;
-  };
-};
-
-export type GetApiV1ConnectionsResponse =
-  GetApiV1ConnectionsResponses[keyof GetApiV1ConnectionsResponses];
-
-export type GetApiV1ConnectionsByIdData = {
-  body?: never;
-  path: {
-    id: string;
-  };
-  query?: never;
-  url: "/api/v1/connections/{id}";
-};
-
-export type GetApiV1ConnectionsByIdErrors = {
-  /**
-   * Unauthorized
-   */
-  401: {
-    error: string;
-  };
-  /**
-   * Forbidden
-   */
-  403: {
-    error: string;
-  };
-  /**
-   * Connection not found
-   */
-  404: {
-    error: string;
-  };
-};
-
-export type GetApiV1ConnectionsByIdError =
-  GetApiV1ConnectionsByIdErrors[keyof GetApiV1ConnectionsByIdErrors];
-
-export type GetApiV1ConnectionsByIdResponses = {
-  /**
-   * Connection
-   */
-  200: {
-    id: string;
-    platform: "telegram" | "slack" | "discord" | "whatsapp" | "teams" | "gchat";
-    agentId?: string;
-    config:
-      | {
-          platform: "telegram";
-          /**
-           * Telegram bot token from BotFather. Falls back to TELEGRAM_BOT_TOKEN env var.
-           */
-          botToken?: string;
-          /**
-           * Runtime mode: auto (default), webhook, or polling.
-           */
-          mode?: "auto" | "webhook" | "polling";
-          /**
-           * Webhook secret token for x-telegram-bot-api-secret-token verification.
-           */
-          secretToken?: string;
-          /**
-           * Override bot username.
-           */
-          userName?: string;
-          /**
-           * Custom Telegram API base URL.
-           */
-          apiBaseUrl?: string;
-        }
-      | {
-          platform: "slack";
-          /**
-           * Bot token (xoxb-...). Required for single-workspace mode.
-           */
-          botToken?: string;
-          /**
-           * Bot user ID (fetched automatically if omitted).
-           */
-          botUserId?: string;
-          /**
-           * Signing secret for webhook verification.
-           */
-          signingSecret?: string;
-          /**
-           * Slack app client ID (required for OAuth / multi-workspace).
-           */
-          clientId?: string;
-          /**
-           * Slack app client secret (required for OAuth / multi-workspace).
-           */
-          clientSecret?: string;
-          /**
-           * Base64-encoded 32-byte AES-256-GCM key for encrypting stored bot tokens.
-           */
-          encryptionKey?: string;
-          /**
-           * State key prefix for workspace installations (default: slack:installation).
-           */
-          installationKeyPrefix?: string;
-          /**
-           * Override bot username.
-           */
-          userName?: string;
-        }
-      | {
-          platform: "discord";
-          /**
-           * Discord bot token.
-           */
-          botToken?: string;
-          /**
-           * Discord application ID.
-           */
-          applicationId?: string;
-          /**
-           * Application public key for webhook signature verification.
-           */
-          publicKey?: string;
-          /**
-           * Role IDs that trigger mention handlers (in addition to direct mentions).
-           */
-          mentionRoleIds?: Array<string>;
-          /**
-           * Override bot username.
-           */
-          userName?: string;
-        }
-      | {
-          platform: "whatsapp";
-          /**
-           * System User access token for WhatsApp Cloud API.
-           */
-          accessToken?: string;
-          /**
-           * WhatsApp Business phone number ID.
-           */
-          phoneNumberId?: string;
-          /**
-           * Meta App Secret for webhook HMAC-SHA256 signature verification.
-           */
-          appSecret?: string;
-          /**
-           * Verify token for webhook challenge-response.
-           */
-          verifyToken?: string;
-          /**
-           * Meta Graph API version (default: v21.0).
-           */
-          apiVersion?: string;
-          /**
-           * Bot display name.
-           */
-          userName?: string;
-        }
-      | {
-          platform: "teams";
-          /**
-           * Microsoft App ID.
-           */
-          appId?: string;
-          /**
-           * Microsoft App Password.
-           */
-          appPassword?: string;
-          /**
-           * Microsoft App Tenant ID.
-           */
-          appTenantId?: string;
-          /**
-           * Microsoft App Type.
-           */
-          appType?: "MultiTenant" | "SingleTenant";
-          /**
-           * Override bot username.
-           */
-          userName?: string;
-        }
-      | {
-          platform: "gchat";
-          /**
-           * Service account credentials JSON string. Defaults to GOOGLE_CHAT_CREDENTIALS env var.
-           */
-          credentials?: string;
-          /**
-           * Use Application Default Credentials (ADC) instead of service account JSON.
-           */
-          useApplicationDefaultCredentials?: boolean;
-          /**
-           * HTTP endpoint URL for button click actions. Required for HTTP endpoint apps.
-           */
-          endpointUrl?: string;
-          /**
-           * Google Cloud project number for verifying webhook JWTs. Defaults to GOOGLE_CHAT_PROJECT_NUMBER env var.
-           */
-          googleChatProjectNumber?: string;
-          /**
-           * User email for domain-wide delegation. Defaults to GOOGLE_CHAT_IMPERSONATE_USER env var.
-           */
-          impersonateUser?: string;
-          /**
-           * Expected audience for Pub/Sub push JWT verification. Defaults to GOOGLE_CHAT_PUBSUB_AUDIENCE env var.
-           */
-          pubsubAudience?: string;
-          /**
-           * Override bot username.
-           */
-          userName?: string;
-        };
-    settings: {
-      /**
-       * User IDs allowed to interact with this connection. Omit to allow all; empty array blocks all.
-       */
-      allowFrom?: Array<string>;
-      /**
-       * Whether group messages are allowed (default true).
-       */
-      allowGroups?: boolean;
-      /**
-       * Scopes that end users are allowed to customize. Empty = no restrictions.
-       */
-      userConfigScopes?: Array<
-        | "model"
-        | "view-model"
-        | "system-prompt"
-        | "skills"
-        | "permissions"
-        | "packages"
-      >;
-    };
-    metadata: {
-      [key: string]: unknown;
-    };
-    status: "active" | "stopped" | "error";
-    errorMessage?: string;
-    createdAt: number;
-    updatedAt: number;
-  };
-};
-
-export type GetApiV1ConnectionsByIdResponse =
-  GetApiV1ConnectionsByIdResponses[keyof GetApiV1ConnectionsByIdResponses];
-
 export type GetApiBedrockHealthData = {
   body?: never;
   path?: never;
@@ -984,6 +5830,22 @@ export type PostApiV1AgentsApproveResponses = {
   200: unknown;
 };
 
+export type GetApiV1AgentsByAgentIdPendingApprovalsData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: never;
+  url: "/api/v1/agents/{agentId}/pending-approvals";
+};
+
+export type GetApiV1AgentsByAgentIdPendingApprovalsResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
 export type GetConnectClaimData = {
   body?: never;
   path?: never;
@@ -992,6 +5854,75 @@ export type GetConnectClaimData = {
 };
 
 export type GetConnectClaimResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1AgentsByAgentIdHistoryThreadsData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: never;
+  url: "/api/v1/agents/{agentId}/history/threads";
+};
+
+export type GetApiV1AgentsByAgentIdHistoryThreadsResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesData = {
+  body?: never;
+  path: {
+    agentId: string;
+    threadId: string;
+  };
+  query?: never;
+  url: "/api/v1/agents/{agentId}/history/threads/{threadId}/messages";
+};
+
+export type GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesData =
+  {
+    body?: never;
+    path: {
+      agentId: string;
+      conversationId: string;
+    };
+    query?: never;
+    url: "/api/v1/agents/{agentId}/history/conversations/{conversationId}/messages";
+  };
+
+export type GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesResponses =
+  {
+    /**
+     * OK
+     */
+    200: unknown;
+  };
+
+export type GetApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThreadData = {
+  body?: never;
+  path: {
+    agentId: string;
+    watcherId: string;
+  };
+  query?: never;
+  url: "/api/v1/agents/{agentId}/history/watchers/{watcherId}/thread";
+};
+
+export type GetApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThreadResponses = {
   /**
    * OK
    */
@@ -1078,38 +6009,6 @@ export type PostApiV1AuthByProviderSaveKeyResponses = {
   200: unknown;
 };
 
-export type PostApiV1AuthByProviderStartData = {
-  body?: never;
-  path: {
-    provider: string;
-  };
-  query?: never;
-  url: "/api/v1/auth/{provider}/start";
-};
-
-export type PostApiV1AuthByProviderStartResponses = {
-  /**
-   * OK
-   */
-  200: unknown;
-};
-
-export type PostApiV1AuthByProviderPollData = {
-  body?: never;
-  path: {
-    provider: string;
-  };
-  query?: never;
-  url: "/api/v1/auth/{provider}/poll";
-};
-
-export type PostApiV1AuthByProviderPollResponses = {
-  /**
-   * OK
-   */
-  200: unknown;
-};
-
 export type PostApiV1AuthByProviderLogoutData = {
   body?: never;
   path: {
@@ -1126,50 +6025,44 @@ export type PostApiV1AuthByProviderLogoutResponses = {
   200: unknown;
 };
 
-export type GetApiV1AgentsByAgentIdChannelsData = {
+export type PostApiV1AppWebhooksByProviderData = {
   body?: never;
   path: {
-    agentId: string;
+    provider: string;
   };
   query?: never;
-  url: "/api/v1/agents/{agentId}/channels";
+  url: "/api/v1/app-webhooks/{provider}";
 };
 
-export type GetApiV1AgentsByAgentIdChannelsResponses = {
+export type PostApiV1AppWebhooksByProviderResponses = {
   /**
    * OK
    */
   200: unknown;
 };
 
-export type PostApiV1AgentsByAgentIdChannelsData = {
+export type GetGithubAppInstallData = {
   body?: never;
-  path: {
-    agentId: string;
-  };
+  path?: never;
   query?: never;
-  url: "/api/v1/agents/{agentId}/channels";
+  url: "/github/app/install";
 };
 
-export type PostApiV1AgentsByAgentIdChannelsResponses = {
+export type GetGithubAppInstallResponses = {
   /**
    * OK
    */
   200: unknown;
 };
 
-export type DeleteApiV1AgentsByAgentIdChannelsByPlatformByChannelIdData = {
+export type GetGithubAppInstallCallbackData = {
   body?: never;
-  path: {
-    agentId: string;
-    platform: string;
-    channelId: string;
-  };
+  path?: never;
   query?: never;
-  url: "/api/v1/agents/{agentId}/channels/{platform}/{channelId}";
+  url: "/github/app/install/callback";
 };
 
-export type DeleteApiV1AgentsByAgentIdChannelsByPlatformByChannelIdResponses = {
+export type GetGithubAppInstallCallbackResponses = {
   /**
    * OK
    */

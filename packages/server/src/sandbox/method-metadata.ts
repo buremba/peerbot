@@ -120,7 +120,7 @@ export default async (_ctx, client) => {
 	},
 	"entities.delete": {
 		summary: "Delete an entity, optionally cascading to descendants.",
-		access: "write",
+		access: "admin",
 		example:
 			"await client.entities.delete({ entity_id: 42, force_delete_tree: true });",
 	},
@@ -241,11 +241,11 @@ export default async (_ctx, client) => {
 	"entitySchema.addRule": {
 		summary:
 			"Add an allowed source/target entity-type rule to a relationship type.",
-		access: "write",
+		access: "admin",
 	},
 	"entitySchema.removeRule": {
 		summary: "Remove a rule from a relationship type.",
-		access: "write",
+		access: "admin",
 	},
 	"entitySchema.listRules": {
 		summary: "List rules attached to a relationship type.",
@@ -456,7 +456,7 @@ export default async (ctx, client) => {
 	"watchers.create": {
 		summary:
 			"Create a watcher. REQUIRES slug, prompt, and agent_id (the executing agent — a watcher without one is a zombie row). The output contract is not authored here: set keying_config.entity_type so extraction derives from that entity type's metadata_schema, or omit it for a free-form summary watcher. Each sources[].query must be a read-only SELECT/WITH projecting an `id` column (it runs against org-scoped virtual tables, NOT a URL). entity_id is optional (omit for an org-scoped watcher).",
-		access: "write",
+		access: "admin",
 		throws: ["EntityNotFound"],
 		example:
 			"await client.watchers.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records from {{content}}.', keying_config: { entity_type: 'price', entity_path: 'prices', key_fields: ['sku'], key_output_field: 'price_key' }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
@@ -482,11 +482,11 @@ export default async (_ctx, client) => {
 	},
 	"watchers.update": {
 		summary: "Update watcher config (schedule, agent, model, sources).",
-		access: "write",
+		access: "admin",
 	},
 	"watchers.createVersion": {
 		summary: "Create a new watcher template version.",
-		access: "write",
+		access: "admin",
 	},
 	"watchers.trigger": {
 		summary:
@@ -499,13 +499,13 @@ export default async (_ctx, client) => {
 	},
 	"watchers.delete": {
 		summary: "Delete one or more watchers.",
-		access: "write",
+		access: "admin",
 		example: "await client.watchers.delete({ watcher_ids: ['42'] });",
 	},
 	"watchers.setReactionScript": {
 		summary:
 			"Attach a raw TS reaction script (fires on window completion). Empty string removes it.",
-		access: "write",
+		access: "admin",
 		throws: ["CompileError"],
 	},
 	"watchers.completeWindow": {
@@ -527,7 +527,7 @@ export default async (_ctx, client) => {
 	},
 	"watchers.submitFeedback": {
 		summary: "Submit field-level corrections for a watcher window.",
-		access: "write",
+		access: "admin",
 	},
 	"watchers.getFeedback": {
 		summary:
@@ -537,7 +537,7 @@ export default async (_ctx, client) => {
 	"watchers.createFromVersion": {
 		summary:
 			"Create watchers for multiple entities from an existing watcher version.",
-		access: "write",
+		access: "admin",
 	},
 
 	// connections
@@ -601,7 +601,7 @@ export default async (_ctx, client) => {
 	},
 	"connections.delete": {
 		summary: "Delete a connection.",
-		access: "write",
+		access: "admin",
 		signature: "connections.delete(connection_id: number): Promise<unknown>",
 		example: "await client.connections.delete(42);",
 	},
@@ -626,23 +626,23 @@ export default async (_ctx, client) => {
 	},
 	"connections.uninstallConnector": {
 		summary: "Uninstall a connector definition.",
-		access: "write",
+		access: "admin",
 	},
 	"connections.toggleConnectorLogin": {
 		summary: "Enable/disable the login-with-connector flow.",
-		access: "write",
+		access: "admin",
 	},
 	"connections.updateConnectorAuth": {
 		summary: "Update org-wide auth config for a connector.",
-		access: "write",
+		access: "admin",
 	},
 	"connections.updateConnectorDefaultConfig": {
 		summary: "Update a connector definition's default connection config.",
-		access: "write",
+		access: "admin",
 	},
 	"connections.updateConnectorDefaultRepairAgent": {
 		summary: "Set or clear the connector's default repair agent.",
-		access: "write",
+		access: "admin",
 	},
 
 	// operations
@@ -739,7 +739,7 @@ export default async (_ctx, client) => {
 	},
 	"authProfiles.get": {
 		summary: "Get an auth profile by slug.",
-		access: "read",
+		access: "admin",
 		signature:
 			"authProfiles.get(auth_profile_slug: string): Promise<unknown>",
 		example:
@@ -787,22 +787,22 @@ export default async (_ctx, client) => {
 	},
 	"classifiers.create": {
 		summary: "Create a classifier template.",
-		access: "write",
+		access: "admin",
 	},
 	"classifiers.generateEmbeddings": {
 		summary: "Generate embeddings for attribute values (cost-heavy).",
-		access: "write",
+		access: "admin",
 		cost: "expensive",
 	},
 	"classifiers.delete": {
 		summary: "Delete a classifier.",
-		access: "write",
+		access: "admin",
 		example: "await client.classifiers.delete({ classifier_id: 42 });",
 	},
 	"classifiers.classify": {
 		summary:
 			"Apply a manual classification to one or many content records (single or batch).",
-		access: "write",
+		access: "admin",
 	},
 
 	// viewTemplates
@@ -820,17 +820,17 @@ export default async (_ctx, client) => {
 	"viewTemplates.set": {
 		summary:
 			"Create or update a view template version. Params: { resource_type: 'entity' | 'entity_type', resource_id, json_template, tab_name?, tab_order?, change_notes? }. json_template is a DSL node tree (nodes: text | data | if | each | component; a `data` node takes an optional `format`: currency|date|url|enum|boolean|number|auto|text) and may nest a `data_sources` key of named read-only SQL queries. The node tree is validated on set — a malformed template is rejected, not stored.",
-		access: "write",
+		access: "admin",
 		example:
 			"await client.viewTemplates.set({ resource_type: 'entity_type', resource_id: 'deal', tab_name: 'Pipeline', json_template: { type: 'div', data_sources: { rows: { query: \"SELECT name, metadata->>'arr' AS arr FROM entities WHERE entity_type = 'deal'\" } }, children: [ { type: 'each', items: 'rows', as: 'r', render: { type: 'card', children: [ { type: 'data', path: 'r.name' }, { type: 'data', path: 'r.arr', format: 'currency' } ] } } ] } });",
 	},
 	"viewTemplates.rollback": {
 		summary: "Roll back to a previous template version.",
-		access: "write",
+		access: "admin",
 	},
 	"viewTemplates.removeTab": {
 		summary: "Remove a named tab from a template.",
-		access: "write",
+		access: "admin",
 	},
 
 	// metrics — governed measures (prefer over client.query / query_sql)

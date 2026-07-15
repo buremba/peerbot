@@ -40,6 +40,12 @@
       "import": "./dist/errors.js",
       "require": "./dist/errors.js"
     },
+    "./ajv": {
+      "types": "./dist/utils/ajv.d.ts",
+      "bun": "./src/utils/ajv.ts",
+      "import": "./dist/utils/ajv.js",
+      "require": "./dist/utils/ajv.js"
+    },
     "./contracts/tools/manage-connections": {
       "types": "./dist/contracts/tools/manage-connections.d.ts",
       "bun": "./src/contracts/tools/manage-connections.ts",
@@ -63,6 +69,12 @@
       "bun": "./src/contracts/agent-settings.ts",
       "import": "./dist/contracts/agent-settings.js",
       "require": "./dist/contracts/agent-settings.js"
+    },
+    "./contracts/worker/protocol": {
+      "types": "./dist/contracts/worker/protocol.d.ts",
+      "bun": "./src/contracts/worker/protocol.ts",
+      "import": "./dist/contracts/worker/protocol.js",
+      "require": "./dist/contracts/worker/protocol.js"
     },
     "./contracts/tools/manage-agents": {
       "types": "./dist/contracts/tools/manage-agents.d.ts",
@@ -133,6 +145,8 @@
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.41",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/sdk-trace-node": "^1.30.0",
     "@opentelemetry/exporter-trace-otlp-grpc": "^0.57.0",

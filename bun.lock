@@ -174,6 +174,7 @@
       },
       "dependencies": {
         "@lobu/connector-sdk": "workspace:*",
+        "@lobu/core": "workspace:*",
         "@lobu/embeddings": "workspace:*",
         "@xenova/transformers": "^2.17.2",
         "esbuild": "^0.28.1",
@@ -211,6 +212,8 @@
         "@opentelemetry/semantic-conventions": "^1.28.0",
         "@sentry/node": "^10.23.0",
         "@sinclair/typebox": "^0.34.41",
+        "ajv": "^8.17.1",
+        "ajv-formats": "^3.0.1",
         "winston": "^3.17.0",
       },
       "devDependencies": {

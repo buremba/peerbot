@@ -202,20 +202,37 @@ describe("DeploymentManager", () => {
       // still spawn — degraded, without those packages — rather than crash the
       // worker with `spawn nix-shell ENOENT`. Force the absent path via the
       // operator flag so the test is deterministic regardless of host nix.
-      const prev = process.env.LOBU_DISABLE_NIX_SHELL;
-      process.env.LOBU_DISABLE_NIX_SHELL = "1";
-      // Clear any prior positive nix probe from co-running suites (CI hosts
-      // often have nix-shell installed; the flag must still win).
       const { __resetCapabilityProbesForTests } = await import(
         "../orchestration/deployment-manager.js"
       );
+      const prev = process.env.LOBU_DISABLE_NIX_SHELL;
+      delete process.env.LOBU_DISABLE_NIX_SHELL;
       __resetCapabilityProbesForTests();
       try {
+        // If the host has nix-shell, this first spawn caches a positive probe.
+        // The regression under test is that LOBU_DISABLE_NIX_SHELL must still
+        // win AFTER that cache is hot (old code returned the cached hit first).
+        const msgWarm = createTestMessagePayload({
+          agentId: "agent-nix-warm",
+          conversationId: "conv-nix-warm",
+          nixConfig: { packages: ["chromium"] },
+        });
+        await manager.ensureDeployment(
+          "worker-nix-warm",
+          "user-1",
+          "user-1",
+          msgWarm
+        );
+
+        process.env.LOBU_DISABLE_NIX_SHELL = "1";
+        // Deliberately do NOT reset the capability probe cache — the kill-
+        // switch must override a sticky positive cache.
         const msg = createTestMessagePayload({
+          agentId: "agent-nix",
+          conversationId: "conv-nix",
           nixConfig: { packages: ["chromium"] },
         });
         await manager.ensureDeployment("worker-nix", "user-1", "user-1", msg);
-        expect(mockChildProcesses).toHaveLength(1);
         const cmd = mockSpawn.mock.calls.at(-1)?.[0];
         // NOT nix-shell — fell back to the direct worker invocation.
         expect(cmd).not.toBe("nix-shell");

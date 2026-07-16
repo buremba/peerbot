@@ -251,20 +251,23 @@ export async function handleCreate(
     `;
 
     // 2. Create watcher_versions row (v1)
+    // Reaction fields (reaction_script/reaction_script_compiled/
+    // reaction_input_schema) intentionally live on the watchers row only, not
+    // on watcher_versions — reactions are group-shared and unversioned (see
+    // handleCreateFromVersion, which copies them off watchers, and
+    // handleSetReactionScript, which writes them group-wide). Don't add them
+    // here: watcher_versions has no such columns.
     await tx`
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
         prompt, version_sources,
         keying_config, classifiers,
-        reactions_guidance, change_notes, created_by, created_at,
-        reaction_script, reaction_script_compiled, reaction_input_schema
+        reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${watcherId}, 1, ${args.name ?? args.slug}, ${args.description ?? null},
         ${args.prompt}, ${toJsonParam(tx, sources)},
         ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
-        ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW(),
-        ${reactionScript}, ${reactionScriptCompiled},
-        ${reactionInputSchema ? tx.json(reactionInputSchema) : null}
+        ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW()
       )
     `;
 

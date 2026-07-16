@@ -26,7 +26,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as crypto from "node:crypto";
 import type * as http from "node:http";
 import * as net from "node:net";
-import { generateWorkerToken } from "@lobu/core";
+import {
+  __resetEncryptionKeyCacheForTests,
+  generateWorkerToken,
+} from "@lobu/core";
 import { PolicyStore } from "../permissions/policy-store.js";
 import { CircuitBreaker } from "../proxy/egress-judge/circuit-breaker.js";
 import { EgressJudge } from "../proxy/egress-judge/judge.js";
@@ -309,6 +312,7 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
     savedAllowedDomains = process.env.WORKER_ALLOWED_DOMAINS;
     savedDisallowedDomains = process.env.WORKER_DISALLOWED_DOMAINS;
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+    __resetEncryptionKeyCacheForTests();
     __testOnly.reset();
     setProxyRevokedTokenStore(NOOP_REVOKED_STORE);
     // DNS mock: all names resolve to a public TEST-NET address (passes IP check).
@@ -322,6 +326,7 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
     await stopHttpProxy(proxyServer);
     if (savedEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
     else process.env.ENCRYPTION_KEY = savedEncryptionKey;
+    __resetEncryptionKeyCacheForTests();
     if (savedAllowedDomains === undefined) delete process.env.WORKER_ALLOWED_DOMAINS;
     else process.env.WORKER_ALLOWED_DOMAINS = savedAllowedDomains;
     if (savedDisallowedDomains === undefined) {
@@ -542,6 +547,7 @@ describe("CRLF injection prevention in judge-provided reason", () => {
     savedEncryptionKeyCrlf = process.env.ENCRYPTION_KEY;
     savedAllowedDomainsCrlf = process.env.WORKER_ALLOWED_DOMAINS;
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+    __resetEncryptionKeyCacheForTests();
     process.env.WORKER_ALLOWED_DOMAINS = "";
     __testOnly.reset();
     setProxyRevokedTokenStore(NOOP_REVOKED_STORE);
@@ -567,6 +573,7 @@ describe("CRLF injection prevention in judge-provided reason", () => {
     await stopHttpProxy(proxyServer);
     if (savedEncryptionKeyCrlf === undefined) delete process.env.ENCRYPTION_KEY;
     else process.env.ENCRYPTION_KEY = savedEncryptionKeyCrlf;
+    __resetEncryptionKeyCacheForTests();
     if (savedAllowedDomainsCrlf === undefined) {
       delete process.env.WORKER_ALLOWED_DOMAINS;
     } else {

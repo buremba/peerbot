@@ -19,9 +19,8 @@ import {
   TestHelpers,
 } from "./setup.js";
 
-// setupTestEnv does not pin ENCRYPTION_KEY. Co-running suites (http-proxy,
-// proxy-hardening) delete it in afterAll without restoring, so this file must
-// set its own key for encrypt()/generateWorkerToken paths.
+// setupTestEnv does not pin ENCRYPTION_KEY, and token helpers cache the decoded
+// key process-wide, so this file owns both the env value and cache lifecycle.
 const TEST_ENCRYPTION_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 

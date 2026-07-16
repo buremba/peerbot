@@ -27,11 +27,8 @@ import { resolveAgentOptions } from "../services/platform-helpers.js";
 import { ProviderCatalogService } from "../auth/provider-catalog.js";
 import { WorkerGateway } from "../gateway/index.js";
 
-// Pin ENCRYPTION_KEY for the whole file: createInferenceProvider encrypts the
-// org key, and ProviderCatalogService decrypts it when deciding whether a
-// custom-upstream provider is routable. A co-running suite that mutates
-// ENCRYPTION_KEY without resetting the process-wide encrypt() cache makes
-// byo2 look "missing/undecryptable" and publishes no defaultModel.
+// createInferenceProvider encrypts the org key and ProviderCatalogService later
+// decrypts it, so each test owns the process-wide env value and cached key.
 const TEST_ENCRYPTION_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 let savedEncryptionKey: string | undefined;

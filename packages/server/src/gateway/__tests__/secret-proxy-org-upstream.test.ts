@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as providerSecrets from "../../lobu/stores/provider-secrets.js";
 import type { SecretStore } from "../secrets/index.js";
 
 /**
@@ -20,20 +21,18 @@ let inferenceConfig: {
   custom: boolean;
 };
 
-// Custom upstream + usable org key ⇒ resolveUrlInvariant returns org-only.
-// Spread the real module so secret-proxy's other imports from it (e.g.
-// readOrgSharedProviderApiKey) still resolve; override only the resolver.
-const realProviderSecrets = await import(
-  "../../lobu/stores/provider-secrets.js"
-);
-mock.module("../../lobu/stores/provider-secrets.js", () => ({
-  ...realProviderSecrets,
-  resolveInferenceProviderConfig: async () => inferenceConfig,
-}));
+const resolveInferenceProviderConfigSpy = spyOn(
+  providerSecrets,
+  "resolveInferenceProviderConfig"
+).mockImplementation(async () => inferenceConfig);
 
 // Import AFTER the mock so secret-proxy's transitive import of the invariant
 // (which imports the store) picks up the stub.
 const { SecretProxy } = await import("../proxy/secret-proxy.js");
+
+afterAll(() => {
+  resolveInferenceProviderConfigSpy.mockRestore();
+});
 
 describe("SecretProxy — org custom-upstream slug routing (URL invariant)", () => {
   beforeEach(() => {

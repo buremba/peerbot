@@ -1,11 +1,9 @@
 import {
   afterAll,
   afterEach,
-  beforeAll,
   beforeEach,
   describe,
   expect,
-  mock,
   spyOn,
   test,
 } from "bun:test";
@@ -27,11 +25,19 @@ let inferenceProviderRows: Array<{
   ciphertext: string | null;
 }> = [];
 
-// Import the module under test AFTER we install spies in beforeAll so its
-// static imports of getDb/tryGetOrgId still resolve to the real module objects
-// that we spy on (live ESM bindings). Prefer spyOn over mock.module: the
-// latter is process-global and cannot be undone, and a whole-module getDb
-// stub breaks co-running auth suites (revoked-token checks, api-auth).
+const resolveOrgIdSpy = spyOn(orgContext, "resolveOrgId").mockImplementation(
+  (explicit?: string | null) => explicit ?? mockOrgId
+);
+// Both provider-key reads use the postgres tagged template
+// (`sql\`SELECT ...\``), so returning the rows array satisfies either read.
+const getDbSpy = spyOn(dbClient, "getDb").mockImplementation(
+  (() =>
+    (_strings: TemplateStringsArray) =>
+      Promise.resolve(inferenceProviderRows)) as typeof dbClient.getDb
+);
+
+// Import after installing restorable spies so this file cannot replace a
+// process-global module for co-running auth suites.
 const { ApiKeyProviderModule } = await import("../api-key-provider-module.js");
 
 function makeModule(hasProfile: boolean) {
@@ -53,29 +59,10 @@ function makeModule(hasProfile: boolean) {
 describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
   const previousEncryptionKey = process.env.ENCRYPTION_KEY;
   const previousZKey = process.env.Z_AI_API_KEY;
-  const realGetDb = dbClient.getDb;
-
-  beforeAll(() => {
-    spyOn(orgContext, "tryGetOrgId").mockImplementation(() => mockOrgId);
-    spyOn(orgContext, "resolveOrgId").mockImplementation(
-      (explicit?: string | null) => explicit ?? mockOrgId
-    );
-    spyOn(orgContext, "getOrgId").mockImplementation(() => {
-      if (!mockOrgId) throw new Error("no org");
-      return mockOrgId;
-    });
-    // Both provider-key reads use the postgres tagged template
-    // (`sql\`SELECT ...\``); a tagged-template call invokes the function with
-    // (strings, ...values), so returning the rows array satisfies it.
-    spyOn(dbClient, "getDb").mockImplementation(
-      (() =>
-        (_strings: TemplateStringsArray) =>
-          Promise.resolve(inferenceProviderRows)) as typeof realGetDb
-    );
-  });
 
   afterAll(() => {
-    mock.restore();
+    resolveOrgIdSpy.mockRestore();
+    getDbSpy.mockRestore();
   });
 
   beforeEach(() => {

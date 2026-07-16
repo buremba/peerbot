@@ -10,7 +10,11 @@ import * as crypto from "node:crypto";
 import type { LookupAddress } from "node:dns";
 import * as http from "node:http";
 import * as net from "node:net";
-import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
+import {
+  __resetEncryptionKeyCacheForTests,
+  generateWorkerToken,
+  verifyWorkerToken,
+} from "@lobu/core";
 import type { RevokedTokenStore } from "../auth/revoked-token-store.js";
 import {
   __testOnly,
@@ -31,11 +35,11 @@ let savedEncryptionKey: string | undefined;
 let savedAllowedDomains: string | undefined;
 
 beforeAll(async () => {
-  // Restore previous env on teardown — mock.module/afterAll that `delete`s
-  // ENCRYPTION_KEY permanently breaks co-running suites that mint worker tokens.
+  // Isolate this file from siblings that also exercise the process-wide key cache.
   savedEncryptionKey = process.env.ENCRYPTION_KEY;
   savedAllowedDomains = process.env.WORKER_ALLOWED_DOMAINS;
   process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+  __resetEncryptionKeyCacheForTests();
   // Unrestricted for the auth + unrestricted-mode tests. `startHttpProxy`
   // snapshots this env into the server's immutable config, so every request in
   // this file sees "*" regardless of what a sibling test file left in the shared
@@ -50,6 +54,7 @@ afterAll(async () => {
   await stopHttpProxy(proxyServer);
   if (savedEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
   else process.env.ENCRYPTION_KEY = savedEncryptionKey;
+  __resetEncryptionKeyCacheForTests();
   if (savedAllowedDomains === undefined) delete process.env.WORKER_ALLOWED_DOMAINS;
   else process.env.WORKER_ALLOWED_DOMAINS = savedAllowedDomains;
 });

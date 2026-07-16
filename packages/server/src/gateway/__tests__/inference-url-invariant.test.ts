@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as providerSecrets from "../../lobu/stores/provider-secrets.js";
 
 // The URL invariant is the security spine: when an org has a custom upstream,
 // ONLY the org row's own key may be sent there — never a per-user profile or a
@@ -14,18 +15,16 @@ let configResult: {
   custom: boolean;
 } | null = null;
 
-// Spread the real module: mock.module is process-global and cannot be undone by
-// mock.restore(). A whole-module stub that drops the other exports breaks
-// co-running gateway suites that create/list inference providers.
-const realProviderSecrets = await import(
-  "../../lobu/stores/provider-secrets.js"
-);
-mock.module("../../lobu/stores/provider-secrets.js", () => ({
-  ...realProviderSecrets,
-  resolveInferenceProviderConfig: async () => configResult,
-}));
+const resolveInferenceProviderConfigSpy = spyOn(
+  providerSecrets,
+  "resolveInferenceProviderConfig"
+).mockImplementation(async () => configResult);
 
 const { resolveUrlInvariant } = await import("../auth/inference-invariant.js");
+
+afterAll(() => {
+  resolveInferenceProviderConfigSpy.mockRestore();
+});
 
 describe("resolveUrlInvariant", () => {
   beforeEach(() => {

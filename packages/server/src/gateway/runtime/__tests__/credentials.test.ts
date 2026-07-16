@@ -3,8 +3,7 @@ import * as providerSecrets from "../../../lobu/stores/provider-secrets.js";
 
 // Mock the vault read so resolveRuntimeCredentials can be unit-tested without a DB.
 const readEnvironmentSecretMock = mock(
-  async (_envId: string, _field: string, _orgId: string): Promise<string | null> =>
-    null
+  async (): Promise<string | null> => null
 );
 const readEnvironmentSecretSpy = spyOn(
   providerSecrets,

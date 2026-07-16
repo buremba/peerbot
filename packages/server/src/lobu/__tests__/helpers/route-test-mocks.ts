@@ -64,8 +64,11 @@ export function installRouteTestMocks(): void {
   if (installed) return;
   installed = true;
 
-  // Resolves to src/auth/middleware — the specifier agent-routes.ts imports
-  // as `../auth/middleware`.
+  // Specifiers resolve relative to THIS helper file
+  // (`src/lobu/__tests__/helpers/`), so ../../../auth/middleware →
+  // src/auth/middleware and ../../gateway → src/lobu/gateway — the modules
+  // agent-routes actually imports. Extra relative forms would resolve to
+  // non-existent paths from here and only add mock noise (review: slop).
   mock.module('../../../auth/middleware', () => ({
     mcpAuth: async (c: any, next: any) => {
       c.set('user', authStash.user);
@@ -74,12 +77,9 @@ export function installRouteTestMocks(): void {
       c.set('mcpAuthInfo', authStash.mcpAuthInfo);
       return next();
     },
-    // requireAuth is referenced elsewhere in the module — provide a
-    // passthrough so importing files that destructure it still get a function.
     requireAuth: async (_c: any, next: any) => next(),
   }));
 
-  // Resolves to src/lobu/gateway — imported by agent-routes.ts as `./gateway`.
   mock.module('../../gateway', () => ({
     getChatInstanceManager: () => chatManagerStash.manager,
     getLobuCoreServices: () => coreServicesStash.services,

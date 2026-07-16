@@ -1,5 +1,15 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { encrypt } from "@lobu/core";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test";
+import { __resetEncryptionKeyCacheForTests, encrypt } from "@lobu/core";
+import * as orgContext from "../../../lobu/stores/org-context.js";
+import * as dbClient from "../../../db/client.js";
 
 const TEST_ENCRYPTION_KEY = Buffer.from(
   "12345678901234567890123456789012"
@@ -15,28 +25,19 @@ let inferenceProviderRows: Array<{
   ciphertext: string | null;
 }> = [];
 
-// Mock the org-context AsyncLocalStorage lookup so we can simulate a worker
-// request that does (or doesn't) carry an org.
-mock.module("../../../lobu/stores/org-context.js", () => ({
-  tryGetOrgId: () => mockOrgId,
-  resolveOrgId: (explicit?: string | null) => explicit ?? mockOrgId,
-  getOrgId: () => {
-    if (!mockOrgId) throw new Error("no org");
-    return mockOrgId;
-  },
-}));
+const resolveOrgIdSpy = spyOn(orgContext, "resolveOrgId").mockImplementation(
+  (explicit?: string | null) => explicit ?? mockOrgId
+);
+// Both provider-key reads use the postgres tagged template
+// (`sql\`SELECT ...\``), so returning the rows array satisfies either read.
+const getDbSpy = spyOn(dbClient, "getDb").mockImplementation(
+  (() =>
+    (_strings: TemplateStringsArray) =>
+      Promise.resolve(inferenceProviderRows)) as typeof dbClient.getDb
+);
 
-// Mock the db client. Both provider-key reads use the postgres tagged
-// template (`sql\`SELECT ...\``); a tagged-template call invokes the function
-// with (strings, ...values), so returning the rows array satisfies it.
-mock.module("../../../db/client.js", () => ({
-  PROD_PG_VALUE_OPTIONS: {},
-  closeDbSingleton: async () => undefined,
-  getDb: () => (_strings: TemplateStringsArray) =>
-    Promise.resolve(inferenceProviderRows),
-}));
-
-// Import AFTER mocks so the module graph picks them up.
+// Import after installing restorable spies so this file cannot replace a
+// process-global module for co-running auth suites.
 const { ApiKeyProviderModule } = await import("../api-key-provider-module.js");
 
 function makeModule(hasProfile: boolean) {
@@ -59,8 +60,14 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
   const previousEncryptionKey = process.env.ENCRYPTION_KEY;
   const previousZKey = process.env.Z_AI_API_KEY;
 
+  afterAll(() => {
+    resolveOrgIdSpy.mockRestore();
+    getDbSpy.mockRestore();
+  });
+
   beforeEach(() => {
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+    __resetEncryptionKeyCacheForTests();
     // Ensure no system key influences the result — we test the org-shared path.
     delete process.env.Z_AI_API_KEY;
     mockOrgId = null;
@@ -72,6 +79,7 @@ describe("BaseProviderModule.hasCredentials org-shared key fallback", () => {
     else process.env.ENCRYPTION_KEY = previousEncryptionKey;
     if (previousZKey === undefined) delete process.env.Z_AI_API_KEY;
     else process.env.Z_AI_API_KEY = previousZKey;
+    __resetEncryptionKeyCacheForTests();
   });
 
   test("returns true when a per-user auth profile exists", async () => {

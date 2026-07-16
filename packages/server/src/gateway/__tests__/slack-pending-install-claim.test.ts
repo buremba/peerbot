@@ -9,6 +9,13 @@
  * called and the posted text carries the connect URL with the team id (no secret
  * token — authority is the Slack workspace-admin check at claim time); (2) with a
  * null installer, no DM is sent — the row is still parked.
+ *
+ * IMPORTANT: never replace an entire module with `mock.module` without spreading
+ * the real exports. This suite shares a process with every other gateway suite,
+ * and bun's `mock.module` is process-global and cannot be undone by
+ * `mock.restore()`. A prior whole-module stub of slack-installations returning
+ * null from getSlackInstallByTeamId broke slack-connection-coordinator tests
+ * that co-run in the same `bun test src/gateway/__tests__` process.
  */
 
 import {
@@ -24,32 +31,17 @@ import {
 } from "bun:test";
 import { __resetPublicOriginCachesForTests } from "../../utils/public-origin.js";
 import * as appInstallCredentials from "../installation/app-install-credentials.js";
+import * as slackInstallations from "../../lobu/stores/slack-installations.js";
+import * as slackWeb from "../connections/slack-web.js";
 
 // --- Stub the pending-install store: capture inputs, never touch Postgres. ---
 const writeCalls: Array<Record<string, unknown>> = [];
-mock.module("../../lobu/stores/slack-installations.js", () => ({
-	writeSlackPendingInstall: mock(async (input: Record<string, unknown>) => {
+const writeSlackPendingInstallMock = mock(
+	async (input: Record<string, unknown>) => {
 		writeCalls.push(input);
 		return { id: "1" };
-	}),
-	// Also imported by the coordinator module (webhook routing); unused here.
-	getSlackInstallByTeamId: mock(async () => null),
-	getSlackInstallByEnterpriseId: mock(async () => null),
-	getSlackEnterpriseInstall: mock(async () => null),
-	resolveSlackPendingByTenant: mock(async () => null),
-	revokeSlackInstallsForUninstall: mock(async () => []),
-	claimSlackWelcomeDm: mock(async () => null),
-}));
-
-// --- Hosted app credentials are configured (so the exchange path runs). ---
-// Use `spyOn` (restored in afterAll) rather than `mock.module`: this suite shares a
-// process with every other gateway suite, and bun's `mock.module` is process-global
-// and CANNOT be un-done by `mock.restore()`. A whole-module stub also drops the
-// module's OTHER exports (e.g. `renderAppInstallUrl`), breaking co-running suites
-// that import them. Spying only these two functions keeps the rest of the module
-// real and lets afterAll restore the originals so nothing leaks — a prior whole-
-// module stub returning a hardcoded `client-id` clobbered slack-routes.test.ts's
-// own `SLACK_CLIENT_ID` ("client-123") in the shared process.
+	},
+);
 
 // --- Stub the Slack Web API surface the coordinator uses. ---
 const exchangeOAuthCode = mock(
@@ -73,9 +65,6 @@ const exchangeOAuthCode = mock(
 );
 const openDm = mock(async () => "D-INSTALLER");
 const postMessage = mock(async () => undefined);
-mock.module("../connections/slack-web.js", () => ({
-	createSlackWebApi: () => ({ exchangeOAuthCode, openDm, postMessage }),
-}));
 
 async function loadCoordinator() {
 	const mod = await import("../connections/slack-connection-coordinator.js");
@@ -91,33 +80,69 @@ function callbackRequest(): Request {
 
 describe("completeSlackPendingInstall — installer claim DM", () => {
 	let savedWebUrl: string | undefined;
+	// Hold spy handles so afterAll restores ONLY these — mock.restore() is
+	// process-global and would wipe spies installed by co-running suites.
+	let primedMethodSpy: ReturnType<typeof spyOn>;
+	let resolveCredsSpy: ReturnType<typeof spyOn>;
+	let writePendingSpy: ReturnType<typeof spyOn>;
+	let createWebApiSpy: ReturnType<typeof spyOn>;
 
 	beforeAll(() => {
 		// Hosted app credentials are "configured" so `completeSlackPendingInstall`'s
 		// exchange path runs (a truthy primed method + non-empty client id/secret).
-		spyOn(appInstallCredentials, "getPrimedBundledMethod").mockReturnValue({
+		// Use spyOn (restored in afterAll) — process-global mock.module cannot be
+		// undone and would clobber co-running suites.
+		primedMethodSpy = spyOn(
+			appInstallCredentials,
+			"getPrimedBundledMethod",
+		).mockReturnValue({
 			clientIdKey: "SLACK_CLIENT_ID",
 			clientSecretKey: "SLACK_CLIENT_SECRET",
 		} as unknown as ReturnType<
 			typeof appInstallCredentials.getPrimedBundledMethod
 		>);
-		spyOn(
+		resolveCredsSpy = spyOn(
 			appInstallCredentials,
 			"resolveAppInstallCredentials",
 		).mockReturnValue({
 			clientId: "client-id",
 			clientSecret: "client-secret",
 		});
+		writePendingSpy = spyOn(
+			slackInstallations,
+			"writeSlackPendingInstall",
+		).mockImplementation(
+			writeSlackPendingInstallMock as typeof slackInstallations.writeSlackPendingInstall,
+		);
+		createWebApiSpy = spyOn(slackWeb, "createSlackWebApi").mockImplementation(
+			() =>
+				({
+					exchangeOAuthCode,
+					openDm,
+					postMessage,
+					conversationMembers: async () => [],
+					conversationInfo: async () => ({
+						name: null,
+						isPrivate: false,
+						contextTeamId: null,
+					}),
+					usersInfo: async () => ({ isAdmin: false, isOwner: false }),
+					revokeToken: async () => true,
+					authTest: async () => ({ teamId: "T-CLAIM" }),
+				}) as unknown as ReturnType<typeof slackWeb.createSlackWebApi>,
+		);
 	});
 
 	afterAll(() => {
-		// Restore the real credential functions so the shared test process hands the
-		// real module (env-driven) to every other gateway suite.
-		mock.restore();
+		primedMethodSpy.mockRestore();
+		resolveCredsSpy.mockRestore();
+		writePendingSpy.mockRestore();
+		createWebApiSpy.mockRestore();
 	});
 
 	beforeEach(() => {
 		writeCalls.length = 0;
+		writeSlackPendingInstallMock.mockClear();
 		exchangeOAuthCode.mockClear();
 		openDm.mockClear();
 		postMessage.mockClear();
@@ -200,7 +225,6 @@ describe("completeSlackPendingInstall — installer claim DM", () => {
 		// No DM without an installer to send it to.
 		expect(openDm).not.toHaveBeenCalled();
 		expect(postMessage).not.toHaveBeenCalled();
-		// The row is still parked (no installer to DM).
 		expect(writeCalls).toHaveLength(1);
 		expect(writeCalls[0]!.installerUserId).toBeNull();
 	});

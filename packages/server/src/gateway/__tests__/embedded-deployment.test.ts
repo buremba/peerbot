@@ -18,6 +18,13 @@ import type { OrchestratorConfig } from "../orchestration/deployment-manager.js"
 // ---------------------------------------------------------------------------
 const mockChildProcesses: EventEmitter[] = [];
 const mockSpawn = mock(() => createMockChildProcess());
+// Capability probes (locateNixShell / locateSystemdRun) use execFileSync.
+// Default: nix-shell is present so we can warm a positive cache; systemd-run
+// is absent so workers spawn unwrapped in these unit tests.
+const mockExecFileSync = mock((cmd: string) => {
+  if (cmd === "nix-shell") return "nix-shell (Nix) 2.0";
+  throw new Error(`ENOENT: ${cmd}`);
+});
 
 function createMockChildProcess() {
   const cp = new EventEmitter() as EventEmitter & {
@@ -45,6 +52,7 @@ function createMockChildProcess() {
 
 mock.module("node:child_process", () => ({
   spawn: mockSpawn,
+  execFileSync: mockExecFileSync,
 }));
 
 // ---------------------------------------------------------------------------
@@ -202,21 +210,45 @@ describe("DeploymentManager", () => {
       // still spawn — degraded, without those packages — rather than crash the
       // worker with `spawn nix-shell ENOENT`. Force the absent path via the
       // operator flag so the test is deterministic regardless of host nix.
+      const { __resetCapabilityProbesForTests } = await import(
+        "../orchestration/deployment-manager.js"
+      );
       const prev = process.env.LOBU_DISABLE_NIX_SHELL;
-      process.env.LOBU_DISABLE_NIX_SHELL = "1";
+      delete process.env.LOBU_DISABLE_NIX_SHELL;
+      __resetCapabilityProbesForTests();
       try {
+        // Warm spawn: mock execFileSync reports nix-shell present, so this
+        // wraps with nix-shell and caches a positive probe.
+        const msgWarm = createTestMessagePayload({
+          agentId: "agent-nix-warm",
+          conversationId: "conv-nix-warm",
+          nixConfig: { packages: ["chromium"] },
+        });
+        await manager.ensureDeployment(
+          "worker-nix-warm",
+          "user-1",
+          "user-1",
+          msgWarm
+        );
+        expect(mockSpawn.mock.calls.at(-1)?.[0]).toBe("nix-shell");
+
+        process.env.LOBU_DISABLE_NIX_SHELL = "1";
+        // Deliberately do NOT reset the capability probe cache — the kill-
+        // switch must override a sticky positive cache.
         const msg = createTestMessagePayload({
+          agentId: "agent-nix",
+          conversationId: "conv-nix",
           nixConfig: { packages: ["chromium"] },
         });
         await manager.ensureDeployment("worker-nix", "user-1", "user-1", msg);
-        expect(mockChildProcesses).toHaveLength(1);
         const cmd = mockSpawn.mock.calls.at(-1)?.[0];
         // NOT nix-shell — fell back to the direct worker invocation.
         expect(cmd).not.toBe("nix-shell");
         expect(cmd).toBe(process.execPath);
       } finally {
-        if (prev === undefined) process.env.LOBU_DISABLE_NIX_SHELL = undefined;
+        if (prev === undefined) delete process.env.LOBU_DISABLE_NIX_SHELL;
         else process.env.LOBU_DISABLE_NIX_SHELL = prev;
+        __resetCapabilityProbesForTests();
       }
     });
 

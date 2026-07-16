@@ -4,7 +4,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { encrypt, verifyWorkerToken } from "@lobu/core";
+import {
+  __resetEncryptionKeyCacheForTests,
+  encrypt,
+  verifyWorkerToken,
+} from "@lobu/core";
 import { WorkerConnectionManager } from "../gateway/connection-manager.js";
 import { WorkerJobRouter } from "../gateway/job-router.js";
 import {
@@ -15,13 +19,22 @@ import {
   TestHelpers,
 } from "./setup.js";
 
+// setupTestEnv does not pin ENCRYPTION_KEY, and token helpers cache the decoded
+// key process-wide, so this file owns both the env value and cache lifecycle.
+const TEST_ENCRYPTION_KEY =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 describe("WorkerJobRouter", () => {
   let queue: MockMessageQueue;
   let connectionManager: WorkerConnectionManager;
   let router: WorkerJobRouter;
+  let savedEncryptionKey: string | undefined;
 
   beforeEach(() => {
     setupTestEnv();
+    savedEncryptionKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+    __resetEncryptionKeyCacheForTests();
     queue = new MockMessageQueue();
     connectionManager = new WorkerConnectionManager();
 
@@ -36,6 +49,9 @@ describe("WorkerJobRouter", () => {
     router.shutdown();
     connectionManager.shutdown();
     cleanupTestEnv();
+    if (savedEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
+    else process.env.ENCRYPTION_KEY = savedEncryptionKey;
+    __resetEncryptionKeyCacheForTests();
   });
 
   describe("Worker Registration", () => {

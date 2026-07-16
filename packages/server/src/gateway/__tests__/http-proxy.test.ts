@@ -10,7 +10,11 @@ import * as crypto from "node:crypto";
 import type { LookupAddress } from "node:dns";
 import * as http from "node:http";
 import * as net from "node:net";
-import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
+import {
+  __resetEncryptionKeyCacheForTests,
+  generateWorkerToken,
+  verifyWorkerToken,
+} from "@lobu/core";
 import type { RevokedTokenStore } from "../auth/revoked-token-store.js";
 import {
   __testOnly,
@@ -27,9 +31,15 @@ const TEST_ENCRYPTION_KEY = crypto.randomBytes(32).toString("base64");
 // Single proxy server shared across all test suites
 let proxyPort: number;
 let proxyServer: http.Server;
+let savedEncryptionKey: string | undefined;
+let savedAllowedDomains: string | undefined;
 
 beforeAll(async () => {
+  // Isolate this file from siblings that also exercise the process-wide key cache.
+  savedEncryptionKey = process.env.ENCRYPTION_KEY;
+  savedAllowedDomains = process.env.WORKER_ALLOWED_DOMAINS;
   process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+  __resetEncryptionKeyCacheForTests();
   // Unrestricted for the auth + unrestricted-mode tests. `startHttpProxy`
   // snapshots this env into the server's immutable config, so every request in
   // this file sees "*" regardless of what a sibling test file left in the shared
@@ -42,8 +52,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await stopHttpProxy(proxyServer);
-  delete process.env.ENCRYPTION_KEY;
-  delete process.env.WORKER_ALLOWED_DOMAINS;
+  if (savedEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
+  else process.env.ENCRYPTION_KEY = savedEncryptionKey;
+  __resetEncryptionKeyCacheForTests();
+  if (savedAllowedDomains === undefined) delete process.env.WORKER_ALLOWED_DOMAINS;
+  else process.env.WORKER_ALLOWED_DOMAINS = savedAllowedDomains;
 });
 
 function makeBasicAuth(username: string, password: string): string {

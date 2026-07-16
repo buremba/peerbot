@@ -219,22 +219,51 @@ async function resetPublicSchema(db: postgres.Sql): Promise<boolean> {
     // not owner/superuser — handled by the fallback below
   }
 
-  try {
-    await db`DROP SCHEMA IF EXISTS public CASCADE`;
-    await db`CREATE SCHEMA public`;
-    return true;
-  } catch (err) {
-    // 42501 = insufficient_privilege ("must be owner of schema public").
-    // Any other error is a real problem and should surface.
-    const code = (err as { code?: string } | null)?.code;
-    if (code !== '42501') throw err;
+  // `DROP SCHEMA public CASCADE` takes `AccessExclusiveLock` on every table.
+  // When an earlier co-run file leaked a background DB poller (task-scheduler,
+  // stale-run reaper, ChatInstanceManager tick), its concurrent FK-checked
+  // INSERT/UPDATE holds a child `RowExclusiveLock` while waiting on a parent
+  // `RowShareLock` the DROP already took → `40P01 deadlock detected`. This is
+  // the exact same cause `truncateAllTables` retries; the conflicting statement
+  // finishes in milliseconds, so a short backoff is deterministic recovery.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await db`DROP SCHEMA IF EXISTS public CASCADE`;
+      await db`CREATE SCHEMA public`;
+      return true;
+    } catch (err) {
+      // 42501 = insufficient_privilege ("must be owner of schema public").
+      // Break to the non-owner fallback below.
+      const code = (err as { code?: string } | null)?.code;
+      if (code === '42501') break;
+      // 40P01 = deadlock vs a leaked poller's DML. Retry after a short backoff.
+      if (code === '40P01' && attempt < TRUNCATE_DEADLOCK_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+        continue;
+      }
+      // Any other error is a real problem and should surface.
+      throw err;
+    }
   }
 
   // Non-owner fallback: ensure the schema exists, then drop everything this
   // role owns inside it. DROP OWNED BY only touches objects owned by the
-  // current role, so it never trips the schema-ownership check.
+  // current role, so it never trips the schema-ownership check. It takes the
+  // same table-level exclusive locks, so retry it on deadlock too.
   await db`CREATE SCHEMA IF NOT EXISTS public`;
-  await db`DROP OWNED BY CURRENT_USER`;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await db`DROP OWNED BY CURRENT_USER`;
+      break;
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === '40P01' && attempt < TRUNCATE_DEADLOCK_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
   return false;
 }
 

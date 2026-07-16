@@ -24,7 +24,7 @@
  * failure does.
  */
 
-import { describe, expect, mock, spyOn, test } from "bun:test";
+import { beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 import {
   ConversationOwnedElsewhereError,
   type MessagePayload,
@@ -35,6 +35,16 @@ import type {
   OrchestratorConfig,
 } from "../orchestration/deployment-manager.js";
 import { MessageConsumer } from "../orchestration/message-consumer.js";
+import { ensureEncryptionKey } from "./helpers/db-setup.js";
+
+// This suite drives `handleMessage`, which mints a run-job token via
+// buildRunJobToken() → encrypt(). That lazily reads ENCRYPTION_KEY, and a
+// co-running gateway file can delete it (and reset the encryption cache) in its
+// teardown. Assert the key ourselves so this file is order-independent — it uses
+// fakes only and never touches Postgres, so it can't rely on the DB harness.
+beforeAll(() => {
+  ensureEncryptionKey();
+});
 
 // A no-op queue so `armTurnTimeout` / `sendToWorkerQueue` don't touch Postgres.
 // `send` returns a non-empty jobId so `sendToWorkerQueue`'s null-check passes.

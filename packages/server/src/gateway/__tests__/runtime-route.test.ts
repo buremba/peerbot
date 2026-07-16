@@ -1,7 +1,20 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { generateWorkerToken } from "@lobu/core";
+import {
+  __resetEncryptionKeyCacheForTests,
+  generateWorkerToken,
+} from "@lobu/core";
+import * as providerSecrets from "../../lobu/stores/provider-secrets.js";
 
 const remoteFiles = new Map<string, Buffer>();
 const mkdirMock = mock(async () => undefined);
@@ -70,9 +83,10 @@ mock.module("@vercel/sandbox", () => ({
 // Env-bound credential resolution reads the vault. Mock it to a MISS (null) so
 // the "environment pinned but deleted" case is deterministic and DB-free: the
 // scoped key is gone, so an env-bound resolution must fail closed.
-mock.module("../../lobu/stores/provider-secrets.js", () => ({
-  readEnvironmentSecret: async () => null,
-}));
+const readEnvironmentSecretSpy = spyOn(
+  providerSecrets,
+  "readEnvironmentSecret"
+).mockResolvedValue(null);
 
 // Importing the route pulls in the gateway runtime registry barrel, which
 // registers the Vercel provider. The @vercel/sandbox mock above is installed
@@ -128,6 +142,7 @@ function setVercelSystemCreds(): void {
 beforeEach(() => {
   process.env.ENCRYPTION_KEY =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  __resetEncryptionKeyCacheForTests();
 });
 
 afterEach(async () => {
@@ -139,6 +154,7 @@ afterEach(async () => {
   restoreEnv("VERCEL_TEAM_ID");
   restoreEnv("VERCEL_TOKEN");
   restoreEnv("VERCEL_OIDC_TOKEN");
+  __resetEncryptionKeyCacheForTests();
   remoteFiles.clear();
   getOrCreateMock.mockClear();
   mkdirMock.mockClear();
@@ -153,7 +169,10 @@ afterEach(async () => {
     recursive: true,
     force: true,
   });
-  mock.restore();
+});
+
+afterAll(() => {
+  readEnvironmentSecretSpy.mockRestore();
 });
 
 describe("createRuntimeRoutes", () => {

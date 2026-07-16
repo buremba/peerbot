@@ -1,5 +1,16 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { generateWorkerToken } from "@lobu/core";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+import {
+  __resetEncryptionKeyCacheForTests,
+  generateWorkerToken,
+} from "@lobu/core";
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,
@@ -15,6 +26,12 @@ import {
 import { resolveAgentOptions } from "../services/platform-helpers.js";
 import { ProviderCatalogService } from "../auth/provider-catalog.js";
 import { WorkerGateway } from "../gateway/index.js";
+
+// createInferenceProvider encrypts the org key and ProviderCatalogService later
+// decrypts it, so each test owns the process-wide env value and cached key.
+const TEST_ENCRYPTION_KEY =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+let savedEncryptionKey: string | undefined;
 
 /**
  * E2E of the two worker model-delivery channels against the REAL DB, proving
@@ -82,6 +99,9 @@ describe("worker model fallback (real DB, both channels)", () => {
   }, 60_000);
 
   beforeEach(async () => {
+    savedEncryptionKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+    __resetEncryptionKeyCacheForTests();
     await resetTestDatabase();
     // Seed a bare model id under slug "openai"; getOrgDefaultModel prefixes it
     // to the routable "openai/gpt-5". (The slug must match the model's intended
@@ -95,6 +115,12 @@ describe("worker model fallback (real DB, both channels)", () => {
     });
     await setInferenceProviderDefault(ORG, "openai");
   }, 60_000);
+
+  afterEach(() => {
+    if (savedEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
+    else process.env.ENCRYPTION_KEY = savedEncryptionKey;
+    __resetEncryptionKeyCacheForTests();
+  });
 
   test("org default is readable via the real DB reader", async () => {
     expect(await getOrgDefaultModel(ORG)).toBe("openai/gpt-5");

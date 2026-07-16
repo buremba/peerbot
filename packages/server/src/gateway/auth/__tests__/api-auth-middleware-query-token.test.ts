@@ -6,7 +6,7 @@
  * headerless mutations or unrelated GET routes.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { encrypt } from "@lobu/core";
+import { __resetEncryptionKeyCacheForTests, encrypt } from "@lobu/core";
 import { Hono } from "hono";
 import { createApiAuthMiddleware } from "../api-auth-middleware.js";
 import { setAuthProvider } from "../../routes/public/settings-auth.js";
@@ -18,11 +18,15 @@ let savedKey: string | undefined;
 beforeEach(() => {
   savedKey = process.env.ENCRYPTION_KEY;
   process.env.ENCRYPTION_KEY = TEST_KEY;
+  // encrypt() memoizes the key; clear so this file reads TEST_KEY even when a
+  // co-running suite left a different key in the process-wide cache.
+  __resetEncryptionKeyCacheForTests();
   setAuthProvider(null); // no injected provider + no cookie → force the ticket path
 });
 afterEach(() => {
   if (savedKey === undefined) delete process.env.ENCRYPTION_KEY;
   else process.env.ENCRYPTION_KEY = savedKey;
+  __resetEncryptionKeyCacheForTests();
   setAuthProvider(null);
 });
 

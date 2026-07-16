@@ -103,6 +103,27 @@ describe("duplicate merge watcher template", () => {
 		]);
 	});
 
+	it("never infers merge evidence from unnamespaced aliases or handles", async () => {
+		const calls = await runDuplicateMergeReaction([
+			{
+				id: 1,
+				metadata: {
+					aliases: ["1234567", "@shared", "shared@example.com"],
+					handle: "shared",
+				},
+			},
+			{
+				id: 2,
+				metadata: {
+					aliases: ["1234567", "@shared", "shared@example.com"],
+					handle: "shared",
+				},
+			},
+		]);
+
+		expect(calls).toEqual([]);
+	});
+
 	it("produces the same proposal regardless of source row order", async () => {
 		const people = [
 			{

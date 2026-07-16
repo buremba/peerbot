@@ -96,7 +96,7 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			// limits are left unapplied for the model to flag for manual review.
 			sources: [{ name: "people", query: "@entity:person" }],
 			prompt:
-				"Review every row in sources.people. Explain exact shared email, phone, or handle groups in analysis_summary. Put ambiguous name-only groups, identity components larger than 26 people, or a source with more than 199 mergeable components in uncertain_groups with why; name similarity alone is not merge evidence. Do not call entity tools or emit backlog tasks. The deterministic reaction independently creates one pending human approval for every exact identity component of at most 26 people. It fails before queuing approvals when more than 199 components need merging, and no merge happens before approval.\n",
+				"Review every row in sources.people. Explain exact shared email or phone groups in analysis_summary. Put name-only, alias-only, or handle-only matches, identity components larger than 26 people, and sources with more than 199 mergeable components in uncertain_groups with why. Aliases and handles lack connector namespaces here, so they are not automatic merge evidence. Do not call entity tools or emit backlog tasks. The deterministic reaction independently creates one pending human approval for every exact email or phone component of at most 26 people. It fails before queuing approvals when more than 199 components need merging, and no merge happens before approval.\n",
 			reaction_script: `export const input = {
 	type: "object",
 	properties: {
@@ -123,10 +123,6 @@ function normalizeIdentity(kind, value) {
 		const digits = trimmed.replace(/[^0-9]/g, "");
 		return digits.length >= 7 && digits.length <= 15 ? digits : null;
 	}
-	if (kind === "handle") {
-		const handle = trimmed.replace(/^@/, "").toLowerCase();
-		return handle && handle.length <= 512 && !/\\s/.test(handle) ? handle : null;
-	}
 	const email = trimmed.toLowerCase();
 	const at = email.indexOf("@");
 	if (email.length > 512 || at <= 0 || at === email.length - 1) return null;
@@ -145,14 +141,6 @@ function entityIdentities(entity) {
 	};
 	for (const value of [...asValues(metadata.email), ...asValues(metadata.emails)]) add("email", value);
 	for (const value of [...asValues(metadata.phone), ...asValues(metadata.phones)]) add("phone", value);
-	for (const value of [...asValues(metadata.handle), ...asValues(metadata.handles)]) add("handle", value);
-	for (const value of asValues(metadata.aliases)) {
-		if (typeof value !== "string") continue;
-		const trimmed = value.trim();
-		if (/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(trimmed)) add("email", trimmed);
-		else if (trimmed.startsWith("@")) add("handle", trimmed);
-		else if (/^[+()0-9 .-]+$/.test(trimmed)) add("phone", trimmed);
-	}
 	return [...identities.values()];
 }
 
@@ -258,7 +246,7 @@ export default async function reaction(ctx, client) {
 	}
 }`,
 			reactions_guidance:
-				"Treat only exact shared email, phone, or handle values as merge evidence. Report every other possible match as uncertain rather than guessing.",
+				"Treat only exact shared email or phone values as merge evidence. Report aliases, handles, names, and every other possible match as uncertain rather than guessing.",
 			tags: ["identity", "deduplication", "world-model"],
 		},
 	},

@@ -367,4 +367,62 @@ describe("listAgentThreads scope=all", () => {
 			}),
 		]);
 	});
+
+	it("keeps pending approvals visible when the watcher run has no transcript", async () => {
+		const sql = getTestDb();
+		const [watcherRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, window_id,
+			   approval_status, run_metadata, created_at, completed_at)
+			VALUES
+			  ('watcher', 'completed', ${org}, ${WATCHER_ID}, 700003,
+			   'auto', ${sql.json({ prompt_rendered: "Run without a transcript" })},
+			   '2026-06-28T05:00:00Z', '2026-06-28T05:01:00Z')
+			RETURNING id
+		`;
+		const [approvalRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, window_id,
+			   approval_status, action_key, action_input, created_at)
+			VALUES
+			  ('internal', 'pending', ${org}, ${WATCHER_ID}, 700003,
+			   'pending', 'entity_change',
+			   ${sql.json({ source_run_id: watcherRun.id, operation: "merge" })},
+			   '2026-06-28T05:01:00Z')
+			RETURNING id
+		`;
+		await insertEvent({
+			entityIds: [],
+			organizationId: org,
+			originId: `watcher-no-transcript-${approvalRun.id}`,
+			title: "Review merge without transcript",
+			content: "A durable approval must remain visible.",
+			semanticType: "operation",
+			runId: approvalRun.id,
+			interactionType: "approval",
+			interactionStatus: "pending",
+			metadata: {
+				action: "merge",
+				tool: "entity_change",
+				resourceKind: "entity",
+			},
+		});
+
+		const data = await readWatcherRunThreads({
+			agentId: AGENT,
+			organizationId: org,
+			watcherId: WATCHER_ID,
+			limit: 20,
+		});
+		const run = data.runs.find((candidate) => candidate.runId === watcherRun.id);
+		expect(run?.task).toBe("Run without a transcript");
+		expect(run?.messages).toEqual([]);
+		expect(run?.pendingActionCount).toBe(1);
+		expect(run?.actions).toEqual([
+			expect.objectContaining({
+				runId: approvalRun.id,
+				status: "pending",
+			}),
+		]);
+	});
 });

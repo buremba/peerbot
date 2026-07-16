@@ -1,16 +1,10 @@
 import { getDb, pgBigintArray } from "../../db/client.js";
-import { buildApiConversationId } from "./api-conversation-id.js";
 import { paginateSessionMessages } from "./session-message-page.js";
 
 /**
- * Read the latest N completed watcher-run transcripts for one watcher, newest
- * first, ready to be stitched into a single read-only thread on the client.
- *
- * Watcher sessions are org-EXEMPT in their conversation id (built as
- * `{agentId}_watcher_{watcherId}_run_{runId}`, no org segment — see
- * `routes/public/agent.ts`), yet the persisted `agent_transcript_snapshot` row
- * still carries the real `organization_id`. So we match rows by org + the
- * org-less id prefix, and key each run off the `_run_<id>` suffix.
+ * Read the latest N durable watcher runs for one watcher, newest first, ready
+ * to be stitched into a single read-only thread on the client. A transcript is
+ * optional derived data: runs without one must still surface their approvals.
  */
 export async function readWatcherRunThreads(args: {
 	agentId: string;
@@ -67,53 +61,54 @@ export async function readWatcherRunThreads(args: {
 	}>;
 }> {
 	const { agentId, watcherId, organizationId, limit } = args;
-	// `{agentId}_watcher_{watcherId}` — the org-less prefix the worker wrote.
-	const prefix = buildApiConversationId({
-		agentId,
-		userId: `watcher_${watcherId}`,
-	});
-
 	const sql = getDb();
 	const rows = await sql<{
-		conversation_id: string;
+		conversation_id: string | null;
 		created_at: Date;
-		snapshot_jsonl: string;
+		snapshot_jsonl: string | null;
 		run_id: number;
 		status: string;
 		window_id: number | null;
 		prompt: string | null;
 	}>`
-		WITH latest_per_run AS (
-			SELECT DISTINCT ON (conversation_id)
-			  conversation_id, created_at, snapshot_jsonl, run_id
-			FROM public.agent_transcript_snapshot
-			WHERE organization_id = ${organizationId}
-			  AND agent_id = ${agentId}
-			  AND conversation_id LIKE ${`${prefix}_run_%`}
-			  AND terminal_status = 'completed'
-			ORDER BY conversation_id, created_at DESC
+		WITH selected_runs AS (
+			SELECT r.*
+			FROM runs r
+			WHERE r.organization_id = ${organizationId}
+			  AND r.watcher_id = ${watcherId}
+			  AND r.run_type = 'watcher'
+			ORDER BY COALESCE(r.completed_at, r.created_at) DESC, r.id DESC
+			LIMIT ${limit}
 		)
-		SELECT snapshot.conversation_id, snapshot.created_at,
+		SELECT snapshot.conversation_id,
+		       COALESCE(snapshot.created_at, r.completed_at, r.created_at) AS created_at,
 		       snapshot.snapshot_jsonl, r.id AS run_id, r.status, r.window_id,
 		       COALESCE(r.run_metadata->>'prompt_rendered', version.prompt) AS prompt
-		FROM latest_per_run snapshot
-		JOIN runs r
-		  ON r.id = snapshot.run_id
-		 AND r.organization_id = ${organizationId}
-		 AND r.watcher_id = ${watcherId}
-		 AND r.run_type = 'watcher'
+		FROM selected_runs r
+		LEFT JOIN LATERAL (
+			SELECT transcript.conversation_id, transcript.created_at,
+			       transcript.snapshot_jsonl
+			FROM public.agent_transcript_snapshot transcript
+			WHERE transcript.organization_id = ${organizationId}
+			  AND transcript.agent_id = ${agentId}
+			  AND transcript.run_id = r.id
+			  AND transcript.terminal_status = 'completed'
+			ORDER BY transcript.created_at DESC
+			LIMIT 1
+		) snapshot ON true
 		LEFT JOIN watcher_versions version
 		  ON version.id = (r.approved_input->>'version_id')::bigint
-		ORDER BY snapshot.created_at DESC
-		LIMIT ${limit}
+		ORDER BY COALESCE(r.completed_at, r.created_at) DESC, r.id DESC
 	`;
 
 	const runs = rows.map((row) => {
 		const runId = Number(row.run_id);
-		const { messages } = paginateSessionMessages(row.snapshot_jsonl, "", 200, {
-			excludeVerbose: true,
-			sessionIdFallback: row.conversation_id,
-		});
+		const messages = row.snapshot_jsonl
+			? paginateSessionMessages(row.snapshot_jsonl, "", 200, {
+					excludeVerbose: true,
+					sessionIdFallback: row.conversation_id ?? `watcher-run-${runId}`,
+				}).messages
+			: [];
 		return {
 			runId,
 			completedAt: row.created_at.toISOString(),
@@ -162,6 +157,10 @@ export async function readWatcherRunThreads(args: {
 			}>,
 		};
 	});
+	const runIds = runs.map((run) => run.runId);
+	const windowIds = rows.flatMap((row) =>
+		row.window_id == null ? [] : [Number(row.window_id)],
+	);
 
 	// Approval cards are durable events rather than transcript JSONL parts. Read
 	// them separately, then attach each to its producing watcher run by durable
@@ -207,6 +206,13 @@ export async function readWatcherRunThreads(args: {
 		  AND w.agent_id = ${agentId}
 		  AND r.watcher_id = ${watcherId}
 		  AND e.interaction_type = 'approval'
+		  AND (
+		    (
+		      r.action_input->>'source_run_id' ~ '^[0-9]+$'
+		      AND (r.action_input->>'source_run_id')::bigint = ANY(${pgBigintArray(runIds)}::bigint[])
+		    )
+		    OR r.window_id = ANY(${pgBigintArray(windowIds)}::bigint[])
+		  )
 		ORDER BY e.run_id
 	`;
 	const actions = approvalRows.map((row) => {
@@ -264,7 +270,6 @@ export async function readWatcherRunThreads(args: {
 		if (action.status === "pending") run.pendingActionCount += 1;
 	}
 
-	const runIds = runs.map((run) => run.runId);
 	if (runIds.length > 0) {
 		const autoRows = await sql<{
 			source_run_id: number;

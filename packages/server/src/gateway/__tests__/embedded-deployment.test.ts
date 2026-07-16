@@ -18,6 +18,13 @@ import type { OrchestratorConfig } from "../orchestration/deployment-manager.js"
 // ---------------------------------------------------------------------------
 const mockChildProcesses: EventEmitter[] = [];
 const mockSpawn = mock(() => createMockChildProcess());
+// Capability probes (locateNixShell / locateSystemdRun) use execFileSync.
+// Default: nix-shell is present so we can warm a positive cache; systemd-run
+// is absent so workers spawn unwrapped in these unit tests.
+const mockExecFileSync = mock((cmd: string) => {
+  if (cmd === "nix-shell") return "nix-shell (Nix) 2.0";
+  throw new Error(`ENOENT: ${cmd}`);
+});
 
 function createMockChildProcess() {
   const cp = new EventEmitter() as EventEmitter & {
@@ -45,6 +52,7 @@ function createMockChildProcess() {
 
 mock.module("node:child_process", () => ({
   spawn: mockSpawn,
+  execFileSync: mockExecFileSync,
 }));
 
 // ---------------------------------------------------------------------------
@@ -209,9 +217,8 @@ describe("DeploymentManager", () => {
       delete process.env.LOBU_DISABLE_NIX_SHELL;
       __resetCapabilityProbesForTests();
       try {
-        // If the host has nix-shell, this first spawn caches a positive probe.
-        // The regression under test is that LOBU_DISABLE_NIX_SHELL must still
-        // win AFTER that cache is hot (old code returned the cached hit first).
+        // Warm spawn: mock execFileSync reports nix-shell present, so this
+        // wraps with nix-shell and caches a positive probe.
         const msgWarm = createTestMessagePayload({
           agentId: "agent-nix-warm",
           conversationId: "conv-nix-warm",
@@ -223,6 +230,7 @@ describe("DeploymentManager", () => {
           "user-1",
           msgWarm
         );
+        expect(mockSpawn.mock.calls.at(-1)?.[0]).toBe("nix-shell");
 
         process.env.LOBU_DISABLE_NIX_SHELL = "1";
         // Deliberately do NOT reset the capability probe cache — the kill-

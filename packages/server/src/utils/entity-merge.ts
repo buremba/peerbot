@@ -120,7 +120,9 @@ async function applyMergeInTransaction(
   }
 
     // Lock both rows in a stable order (lowest id first) to avoid deadlocks when
-    // two merges touch the overlapping pair concurrently.
+    // two merges touch the overlapping pair concurrently. The explicit `ORDER BY
+    // id` pins lock-acquisition order — a bare `IN (...)` leaves it to the
+    // planner, which could lock high-then-low and deadlock a concurrent merge.
     const [a, b] = loserId < winnerId ? [loserId, winnerId] : [winnerId, loserId];
     const locked = (await tx<{
       id: number;
@@ -130,6 +132,7 @@ async function applyMergeInTransaction(
       SELECT id, merged_into, deleted_at
       FROM entities
       WHERE organization_id = ${orgId} AND id IN (${a}, ${b})
+      ORDER BY id
       FOR UPDATE
     `) as Array<{
       id: number;
@@ -307,35 +310,51 @@ export async function applyUnmerge(params: ApplyUnmergeParams, db: DbClient = ge
   const { orgId, loserId, unmergedBy } = params;
 
   return db.begin(async (tx) => {
-    const [loserRow] = (await tx<{
-      id: number;
-      merged_into: number | null;
-      deleted_at: string | null;
-    }>`
-      SELECT id, merged_into, deleted_at
+    // Discover the winner WITHOUT locking first: we can't name the winner until
+    // we read merged_into, but taking the loser's lock here would grab the
+    // loser's row before the winner's — inverting applyMerge's lowest-id-first
+    // order and deadlocking a concurrent merge of the same pair whenever
+    // winnerId < loserId.
+    const [probe] = (await tx<{ merged_into: number | null }>`
+      SELECT merged_into
       FROM entities
       WHERE organization_id = ${orgId} AND id = ${loserId}
-      FOR UPDATE
-    `) as Array<{
+    `) as Array<{ merged_into: number | null }>;
+    if (!probe) {
+      throw new Error(`applyUnmerge: entity ${loserId} not found in org`);
+    }
+    if (probe.merged_into === null) {
+      throw new Error(`applyUnmerge: entity ${loserId} is not merged into anything`);
+    }
+    const winnerId = Number(probe.merged_into);
+
+    // Lock BOTH rows in one statement, ascending id (matches applyMerge), so no
+    // path ever holds these two locks in opposing orders.
+    const [lo, hi] = loserId < winnerId ? [loserId, winnerId] : [winnerId, loserId];
+    const locked = (await tx<{
       id: number;
       merged_into: number | null;
-      deleted_at: string | null;
-    }>;
+    }>`
+      SELECT id, merged_into
+      FROM entities
+      WHERE organization_id = ${orgId} AND id IN (${lo}, ${hi})
+      ORDER BY id
+      FOR UPDATE
+    `) as Array<{ id: number; merged_into: number | null }>;
+
+    // Re-validate under lock: merged_into can move between the unlocked probe and
+    // acquiring the lock (a racing unmerge/merge). Fail closed if it changed so
+    // we never operate on a stale winner we didn't lock.
+    const loserRow = locked.find((row) => Number(row.id) === loserId);
     if (!loserRow) {
       throw new Error(`applyUnmerge: entity ${loserId} not found in org`);
     }
-    if (loserRow.merged_into === null) {
+    if (
+      loserRow.merged_into === null ||
+      Number(loserRow.merged_into) !== winnerId
+    ) {
       throw new Error(`applyUnmerge: entity ${loserId} is not merged into anything`);
     }
-    const winnerId = Number(loserRow.merged_into);
-
-    // Lock the winner too, in stable id order (matches applyMerge's discipline).
-    const [lo, hi] = loserId < winnerId ? [loserId, winnerId] : [winnerId, loserId];
-    await tx`
-      SELECT id FROM entities
-      WHERE organization_id = ${orgId} AND id IN (${lo}, ${hi})
-      FOR UPDATE
-    `;
 
     // 1. Move the loser's contributed identities back off the winner. These are
     //    the live winner-owned rows still marked `merged_from = loser` (applyMerge

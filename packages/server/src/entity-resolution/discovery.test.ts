@@ -91,16 +91,16 @@ describe("entity resolution module", () => {
 			{ winnerId: 1, loserIds: [2] },
 			{ winnerId: 3, loserIds: [4] },
 		]);
-		expect(
-			assessEntityResolution({
-				metadataSchema: { type: "object" },
-				entityTypeSlug: "person",
-				winner: { id: 1, metadata: { email: "same@example.com" } },
-				losers: [
-					{ id: 2, metadata: { email: " SAME@example.com " } },
-				],
-			}).decision,
-		).toBe("review");
+		const assessment = assessEntityResolution({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			winner: { id: 1, metadata: { email: "same@example.com" } },
+			losers: [{ id: 2, metadata: { email: " SAME@example.com " } }],
+		});
+		expect(assessment.decision).toBe("review");
+		expect(assessment.reason).toBe(
+			"Matching email is evidence, but this entity type does not declare it unique enough to merge automatically.",
+		);
 	});
 
 	it("auto-merges a configured unique identity but reviews conflicting strict identities", () => {

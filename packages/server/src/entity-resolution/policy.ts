@@ -226,6 +226,9 @@ export function assessEntityResolution(input: {
 			evidence.map((item) => [`${item.kind}\u0000${item.identifier}`, item]),
 		).values(),
 	];
+	const evidenceKinds = [
+		...new Set(deduplicatedEvidence.map((item) => item.kind)),
+	];
 	const decision =
 		allLosersHaveAutoMatch && !conflictingAutoIdentity
 			? "auto_merge"
@@ -247,6 +250,8 @@ export function assessEntityResolution(input: {
 				? "The entity type declares this normalized identity unique."
 				: conflictingAutoIdentity
 					? "Configured strict identities conflict, so a person must review the merge."
-					: "No configured deterministic identity rule proves this merge.",
+					: deduplicatedEvidence.length > 0
+						? `Matching ${evidenceKinds.join(" and ")} is evidence, but this entity type does not declare it unique enough to merge automatically.`
+						: "No configured deterministic identity rule proves this merge.",
 	};
 }

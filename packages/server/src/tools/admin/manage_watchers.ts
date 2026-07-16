@@ -986,4 +986,3 @@ async function listWatchersImpl(
   }
   return handleList(args, env, ctx);
 }
-

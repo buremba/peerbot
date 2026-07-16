@@ -7,9 +7,12 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { WATCHER_CATALOG_TEMPLATES } from '../../../catalog/watcher-templates';
+import { executeReaction } from '../../../watchers/reaction-executor';
 import {
   addUserToOrganization,
   createTestAgent,
+  createTestEntity,
   createTestOrganization,
   createTestUser,
 } from '../../setup/test-fixtures';
@@ -22,6 +25,7 @@ describe('watcher CRUD', () => {
   let entityId: number;
   let agentId: string;
   let ownerOrgId: string;
+  let ownerUserId: string;
   let otherOrgId: string;
   let otherUserId: string;
 
@@ -31,6 +35,7 @@ describe('watcher CRUD', () => {
     const user = await createTestUser({ email: 'watcher-owner@test.com' });
     await addUserToOrganization(user.id, org.id, 'owner');
     ownerOrgId = org.id;
+    ownerUserId = user.id;
     owner = await TestApiClient.for({
       organizationId: org.id,
       userId: user.id,
@@ -112,6 +117,123 @@ describe('watcher CRUD', () => {
     expect(row?.reaction_input_schema).toMatchObject({
       required: ['merge_proposals'],
     });
+  });
+
+  it('executes an installed merge reaction and queues exactly one pending, unapplied approval with watcher/window attribution', async () => {
+    // The atomic test above proves INSTALLATION (compile + store). This proves the
+    // rest of the contract the PR claims: the installed compiled reaction, run
+    // through executeReaction, submits its proposal via client.entities.manage and
+    // produces exactly ONE pending, unapplied merge approval attributed to the
+    // acting watcher AND window. Uses the shipped duplicate-merge template so the
+    // real reaction the catalog serves is what gets executed.
+    const sql = getTestDb();
+
+    // Two duplicate person entities: the reaction proposes folding loser into winner.
+    const winner = await createTestEntity({
+      name: 'Reaction Merge Winner',
+      entity_type: 'person',
+      organization_id: ownerOrgId,
+      created_by: ownerUserId,
+    });
+    const loser = await createTestEntity({
+      name: 'Reaction Merge Loser',
+      entity_type: 'person',
+      organization_id: ownerOrgId,
+      created_by: ownerUserId,
+    });
+
+    const template = WATCHER_CATALOG_TEMPLATES.find((t) => t.id === 'duplicate-merge');
+    const reactionScript = template?.detail.reaction_script as string;
+    expect(reactionScript).toContain('client.entities.manage');
+
+    // Install the reaction on a real watcher (real agent → its owning-agent
+    // envelope resolves, so the watcher merge queues rather than being denied).
+    const created = (await owner.watchers.create({
+      slug: 'reaction-merge-exec-watcher',
+      name: 'Reaction Merge Exec Watcher',
+      prompt: 'Find and merge duplicate people.',
+      agent_id: agentId,
+      reaction_script: reactionScript,
+    })) as { watcher_id: string };
+    const watcherId = Number(created.watcher_id);
+
+    const [installed] = await sql<{ reaction_script_compiled: string | null }[]>`
+      SELECT reaction_script_compiled FROM watchers WHERE id = ${watcherId}
+    `;
+    expect(installed?.reaction_script_compiled).toBeTruthy();
+
+    // Execute the INSTALLED compiled reaction. executeReaction stamps the acting
+    // watcher + window from context.window, so the queued approval inherits both.
+    const windowId = 987654;
+    const res = await executeReaction({
+      compiledScript: installed?.reaction_script_compiled as string,
+      context: {
+        extracted_data: {
+          merge_proposals: [
+            {
+              winner_entity_id: winner.id,
+              duplicate_entity_ids: [loser.id],
+              merge_evidence: [{ kind: 'email', identifier: 'dup@example.com' }],
+              rationale: 'Same person captured from two sources.',
+            },
+          ],
+          uncertain_groups: [],
+        },
+        entities: [],
+        window: {
+          id: windowId,
+          watcher_id: watcherId,
+          window_start: new Date('2026-01-01').toISOString(),
+          window_end: new Date('2026-01-02').toISOString(),
+          granularity: 'day',
+          content_analyzed: 1,
+        },
+        watcher: {
+          id: watcherId,
+          slug: 'reaction-merge-exec-watcher',
+          name: 'Reaction Merge Exec Watcher',
+          version: 1,
+        },
+        organization_id: ownerOrgId,
+      } as never,
+      env: process.env as Record<string, string | undefined>,
+    });
+    expect(res.error ?? null).toBeNull();
+    expect(res.success).toBe(true);
+
+    // Exactly ONE pending merge approval for this proposal, attributed to the
+    // acting watcher AND window.
+    const pending = await sql<
+      {
+        watcher_id: number | null;
+        window_id: number | null;
+        approval_status: string;
+        status: string;
+      }[]
+    >`
+      SELECT watcher_id, window_id, approval_status, status
+      FROM runs
+      WHERE organization_id = ${ownerOrgId}
+        AND run_type = 'internal'
+        AND action_input->>'operation' = 'merge'
+        AND action_input->>'winner_entity_id' = ${String(winner.id)}
+    `;
+    expect(pending).toHaveLength(1);
+    expect(Number(pending[0].watcher_id)).toBe(watcherId);
+    expect(Number(pending[0].window_id)).toBe(windowId);
+    expect(pending[0].approval_status).toBe('pending');
+    expect(pending[0].status).toBe('pending');
+
+    // Unapplied before approval: the loser stays live and unmerged.
+    const [loserRow] = await sql<
+      { merged_into: number | null; deleted_at: string | null }[]
+    >`
+      SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+    `;
+    expect(loserRow.merged_into).toBeNull();
+    expect(loserRow.deleted_at).toBeNull();
+
+    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('does not create a watcher when its reaction fails compilation', async () => {

@@ -252,8 +252,12 @@ export async function handleCreate(
     `;
 
     // 2. Create watcher_versions row (v1)
-    // Reaction fields are group-shared and unversioned, so they live only on
-    // watchers and are omitted from watcher_versions.
+    // Reaction fields (reaction_script/reaction_script_compiled/
+    // reaction_input_schema) intentionally live on the watchers row only, not
+    // on watcher_versions. Reactions are group-shared and unversioned (see
+    // handleCreateFromVersion, which copies them off watchers, and
+    // handleSetReactionScript, which writes them group-wide). Don't add them
+    // here: watcher_versions has no such columns.
     await tx`
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,

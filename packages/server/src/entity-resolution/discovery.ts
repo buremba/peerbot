@@ -28,6 +28,7 @@ function populatedFieldCount(candidate: ResolutionCandidate): number {
  */
 export function discoverEntityResolutionGroups(input: {
 	metadataSchema: unknown;
+	entityTypeSlug?: string | null;
 	candidates: ResolutionCandidate[];
 	maxGroupSize?: number;
 	maxGroups?: number;
@@ -64,7 +65,9 @@ export function discoverEntityResolutionGroups(input: {
 	const identitiesByCandidate = new Map<number, Set<string>>(
 		[...candidates.keys()].map((id) => [id, new Set()]),
 	);
-	for (const rule of readEntityResolutionRules(input.metadataSchema)) {
+	for (const rule of readEntityResolutionRules(input.metadataSchema, {
+		entityTypeSlug: input.entityTypeSlug,
+	})) {
 		for (const candidate of candidates.values()) {
 			for (const value of normalizedResolutionRuleKeys(candidate, rule)) {
 				const key = `${rule.normalizer}:${rule.fields.join("\u001f")}:${value}`;
@@ -176,9 +179,10 @@ export async function discoverWorkspaceResolutionGroups(
 		entity_type_id: number;
 		metadata: Record<string, unknown>;
 		metadata_schema: Record<string, unknown> | null;
+		entity_type_slug: string;
 	}>`
 		SELECT entity.id, entity.entity_type_id, entity.metadata,
-		       type.metadata_schema
+		       type.metadata_schema, type.slug AS entity_type_slug
 		FROM entities entity
 		JOIN entity_types type ON type.id = entity.entity_type_id
 		WHERE entity.organization_id = ${input.organizationId}
@@ -200,6 +204,7 @@ export async function discoverWorkspaceResolutionGroups(
 	for (const typeRows of byType.values()) {
 		const discovered = discoverEntityResolutionGroups({
 			metadataSchema: typeRows[0]?.metadata_schema,
+			entityTypeSlug: typeRows[0]?.entity_type_slug,
 			candidates: typeRows.map((row) => ({
 				id: Number(row.id),
 				metadata: row.metadata ?? {},

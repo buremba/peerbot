@@ -39,6 +39,10 @@ import {
 	pgBigintArray,
 	pgTextArray,
 } from "../../db/client";
+import {
+	lockResolutionFingerprint,
+	wasResolutionRejected,
+} from "../../entity-resolution/rejection";
 import type { Env } from "../../index";
 import { callTool as callProxyTool } from "../../mcp-proxy/client";
 import { notifyActionApprovalNeeded } from "../../notifications/triggers";
@@ -1756,6 +1760,17 @@ function entityChangeOperation(
 	return proposal.operation ?? "update";
 }
 
+function resolutionFingerprintOf(
+	proposal: EntityChangeProposal,
+): string | null {
+	if (entityChangeOperation(proposal) !== "merge") return null;
+	const fingerprint = (proposal as { resolution_fingerprint?: unknown })
+		.resolution_fingerprint;
+	return typeof fingerprint === "string" && fingerprint.length > 0
+		? fingerprint
+		: null;
+}
+
 function describeEntityChange(proposal: EntityChangeProposal): string {
 	const operation = entityChangeOperation(proposal);
 	if (operation === "update") {
@@ -2003,6 +2018,49 @@ async function tryApproveEntityChangeRun(
 	if (pendingOperation === "merge") {
 		try {
 			return await sql.begin(async (tx) => {
+				const fingerprint = resolutionFingerprintOf(pendingProposal);
+				if (fingerprint) {
+					await lockResolutionFingerprint(tx, {
+						organizationId: ctx.organizationId,
+						fingerprint,
+					});
+					if (
+						await wasResolutionRejected(tx, {
+							organizationId: ctx.organizationId,
+							fingerprint,
+						})
+					) {
+						const cancelled = await tx`
+							UPDATE runs
+							SET approval_status = 'rejected', status = 'cancelled',
+							    error_message = 'The same resolution candidate was already rejected',
+							    completed_at = NOW()
+							WHERE id = ${args.run_id}
+							  AND organization_id = ${ctx.organizationId}
+							  AND approval_status = 'pending'
+							  AND status = 'pending'
+							RETURNING id
+						`;
+						if (cancelled.length === 0) return null;
+						await supersedeActionEvent(
+							args.run_id,
+							ctx.organizationId,
+							"rejected",
+							"entity_merge — rejected",
+							"This unchanged duplicate candidate was already rejected in another watcher run.",
+							{
+								reject_reason:
+									"The same resolution candidate was already rejected",
+							},
+							null,
+							tx,
+						);
+						return {
+							error:
+								"This duplicate candidate was already rejected. Refresh the watcher run.",
+						};
+					}
+				}
 				const claimed = await claimEntityChangeRun(
 					args.run_id,
 					ctx.organizationId,
@@ -2039,38 +2097,66 @@ async function tryRejectEntityChangeRun(
 	args: Static<typeof RejectAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult | null> {
+	const sql = getDb();
+	const actionKeys = pgTextArray([...ENTITY_CHANGE_ACTION_KEYS]);
+	const [pending] = await sql<{ action_input: EntityChangeProposal | null }>`
+		SELECT action_input
+		FROM runs
+		WHERE id = ${args.run_id}
+		  AND organization_id = ${ctx.organizationId}
+		  AND run_type = 'internal'
+		  AND action_key = ANY(${actionKeys}::text[])
+		  AND approval_status = 'pending'
+		  AND status = 'pending'
+		LIMIT 1
+	`;
+	if (!pending?.action_input) return null;
 	const reason = args.reason ?? "Rejected by user";
-	const claimed = await claimEntityChangeRun(
-		args.run_id,
-		ctx.organizationId,
-		"rejected",
-		reason,
-	);
-	if (!claimed) return null;
-	const operation = entityChangeOperation(claimed.proposal);
-	const description = describeEntityChange(claimed.proposal);
 	const reviewer = await resolveReviewer(ctx);
-	const eventId = await supersedeActionEvent(
-		args.run_id,
-		ctx.organizationId,
-		"rejected",
-		operation === "update"
-			? "entity_field_change — rejected"
-			: `entity_${operation} — rejected`,
-		operation === "update"
-			? `Field change rejected: ${description}${args.reason ? ` — ${args.reason}` : ""}`
-			: `Entity ${operation} rejected: ${description}${args.reason ? ` — ${args.reason}` : ""}`,
-		// reject_reason, NOT reason: metadata.reason is the PROPOSER's rationale
-		// and must survive the supersede for the card's "Reasoning" panel.
-		{ reject_reason: reason },
-		reviewer,
-	);
-	return {
-		action: "reject",
-		rejected: true,
-		run_id: args.run_id,
-		event_id: eventId,
+	const reject = async (db: DbClient): Promise<ManageOperationsResult | null> => {
+		const claimed = await claimEntityChangeRun(
+			args.run_id,
+			ctx.organizationId,
+			"rejected",
+			reason,
+			db,
+		);
+		if (!claimed) return null;
+		const operation = entityChangeOperation(claimed.proposal);
+		const description = describeEntityChange(claimed.proposal);
+		const eventId = await supersedeActionEvent(
+			args.run_id,
+			ctx.organizationId,
+			"rejected",
+			operation === "update"
+				? "entity_field_change — rejected"
+				: `entity_${operation} — rejected`,
+			operation === "update"
+				? `Field change rejected: ${description}${args.reason ? ` — ${args.reason}` : ""}`
+				: `Entity ${operation} rejected: ${description}${args.reason ? ` — ${args.reason}` : ""}`,
+			// reject_reason, NOT reason: metadata.reason is the PROPOSER's rationale
+			// and must survive the supersede for the card's "Reasoning" panel.
+			{ reject_reason: reason },
+			reviewer,
+			db,
+		);
+		return {
+			action: "reject",
+			rejected: true,
+			run_id: args.run_id,
+			event_id: eventId,
+		};
 	};
+
+	const fingerprint = resolutionFingerprintOf(pending.action_input);
+	if (!fingerprint) return reject(sql);
+	return sql.begin(async (tx) => {
+		await lockResolutionFingerprint(tx, {
+			organizationId: ctx.organizationId,
+			fingerprint,
+		});
+		return reject(tx);
+	});
 }
 
 async function handleApprove(

@@ -409,6 +409,70 @@ describe("manage_entity merge action", () => {
 		expect(Number(merged.merged_into)).toBe(winner.id);
 	});
 
+	it("discovers review-only person duplicates without a schema extension", async () => {
+		const org = await createTestOrganization({
+			name: "Default Person Resolution Org",
+		});
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+			UPDATE entities
+			SET metadata = ${sql.json({ email: "same@example.com" })}
+			WHERE id = ${winner.id}
+		`;
+		await sql`
+			UPDATE entities
+			SET metadata = ${sql.json({ email: " SAME@example.com " })}
+			WHERE id = ${loser.id}
+		`;
+		await sql`
+			INSERT INTO watchers
+			  (id, organization_id, agent_id, created_by, watcher_group_id, name,
+			   status, notification_channel, notification_priority,
+			   min_cooldown_seconds, created_at, updated_at)
+			VALUES
+			  (6013, ${org.id}, 'personal-agent', ${user.id}, 6013,
+			   'Default person resolution', 'active', 'canvas', 'normal', 0,
+			   now(), now())
+		`;
+
+		const result = await manageEntity(
+			{
+				action: "resolve_duplicates",
+				candidate_entity_ids: [winner.id, loser.id],
+			},
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+				actingWatcherId: 6013,
+			} as ToolContext,
+		);
+
+		expect(result).toMatchObject({
+			action: "resolve_duplicates",
+			groups_found: 1,
+			auto_merged: 0,
+			approvals_queued: 1,
+		});
+		const [pending] = await sql`
+			SELECT approval_status, action_input
+			FROM runs
+			WHERE organization_id = ${org.id}
+			  AND watcher_id = 6013
+			  AND run_type = 'internal'
+		`;
+		expect(pending.approval_status).toBe("pending");
+		expect(pending.action_input).toMatchObject({
+			operation: "merge",
+			winner_entity_id: winner.id,
+			entity_ids: [loser.id],
+		});
+	});
+
 	it("queues one review item per duplicate discovered in the same component", async () => {
 		const org = await createTestOrganization({
 			name: "Individual Duplicate Review Org",
@@ -567,6 +631,80 @@ describe("manage_entity merge action", () => {
 			action: "merge",
 			approval_queued: true,
 		});
+	});
+
+	it("does not apply an identical pending proposal after another run rejects it", async () => {
+		const org = await createTestOrganization({
+			name: "Cross Window Rejection Org",
+		});
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+			UPDATE entities
+			SET metadata = ${sql.json({ email: "same@example.com" })}
+			WHERE id IN (${winner.id}, ${loser.id})
+		`;
+		await sql`
+			INSERT INTO watchers
+			  (id, organization_id, agent_id, created_by, watcher_group_id, name,
+			   status, notification_channel, notification_priority,
+			   min_cooldown_seconds, created_at, updated_at)
+			VALUES
+			  (6014, ${org.id}, 'personal-agent', ${user.id}, 6014,
+			   'Cross-window resolution', 'active', 'canvas', 'normal', 0,
+			   now(), now())
+		`;
+		const watcherCtx = (windowId: number) =>
+			({
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+				actingWatcherId: 6014,
+				actingWindowId: windowId,
+			}) as ToolContext;
+		const first = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			watcherCtx(7101),
+		)) as unknown as { approval_run_id: number };
+		const second = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			watcherCtx(7102),
+		)) as unknown as { approval_run_id: number };
+		expect(second.approval_run_id).not.toBe(first.approval_run_id);
+
+		await manageOperations(
+			{ action: "reject", run_id: first.approval_run_id },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+		const approval = await manageOperations(
+			{ action: "approve", run_id: second.approval_run_id },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+		expect(approval).toMatchObject({
+			error: expect.stringContaining("already rejected"),
+		});
+
+		const [entity] = await sql`
+			SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+		`;
+		expect(entity.merged_into).toBeNull();
+		expect(entity.deleted_at).toBeNull();
+		const decisions = await sql`
+			SELECT id, approval_status, status
+			FROM runs
+			WHERE id IN (${first.approval_run_id}, ${second.approval_run_id})
+			ORDER BY id
+		`;
+		expect(decisions).toEqual([
+			expect.objectContaining({ approval_status: "rejected", status: "cancelled" }),
+			expect.objectContaining({ approval_status: "rejected", status: "cancelled" }),
+		]);
 	});
 
 	it("repairs a legacy pending run that has no approval event", async () => {

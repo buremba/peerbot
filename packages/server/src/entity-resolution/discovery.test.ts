@@ -76,6 +76,33 @@ describe("entity resolution module", () => {
 		expect(result.groups).toEqual([]);
 	});
 
+	it("keeps the built-in person watcher useful with review-only defaults", () => {
+		const result = discoverEntityResolutionGroups({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			candidates: [
+				{ id: 1, metadata: { email: "same@example.com" } },
+				{ id: 2, metadata: { email: " SAME@example.com " } },
+				{ id: 3, metadata: { phone: "+44 123 456 789" } },
+				{ id: 4, metadata: { phone: "44-123-456-789" } },
+			],
+		});
+		expect(result.groups).toEqual([
+			{ winnerId: 1, loserIds: [2] },
+			{ winnerId: 3, loserIds: [4] },
+		]);
+		expect(
+			assessEntityResolution({
+				metadataSchema: { type: "object" },
+				entityTypeSlug: "person",
+				winner: { id: 1, metadata: { email: "same@example.com" } },
+				losers: [
+					{ id: 2, metadata: { email: " SAME@example.com " } },
+				],
+			}).decision,
+		).toBe("review");
+	});
+
 	it("auto-merges a configured unique identity but reviews conflicting strict identities", () => {
 		const base = {
 			metadataSchema: schema,

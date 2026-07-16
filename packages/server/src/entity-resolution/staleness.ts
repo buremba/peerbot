@@ -17,9 +17,10 @@ export async function assertResolutionFingerprintCurrent(
 		entity_type_id: number;
 		metadata: Record<string, unknown>;
 		metadata_schema: Record<string, unknown> | null;
+		entity_type_slug: string;
 	}>`
 		SELECT entity.id, entity.entity_type_id, entity.metadata,
-		       type.metadata_schema
+		       type.metadata_schema, type.slug AS entity_type_slug
 		FROM entities entity
 		JOIN entity_types type ON type.id = entity.entity_type_id
 		WHERE entity.organization_id = ${input.organizationId}
@@ -43,6 +44,7 @@ export async function assertResolutionFingerprintCurrent(
 		throw new Error("Merge evidence is stale because the winner changed");
 	const assessment = assessEntityResolution({
 		metadataSchema: winner.metadata_schema,
+		entityTypeSlug: winner.entity_type_slug,
 		winner: { id: input.winnerId, metadata: winner.metadata ?? {} },
 		losers: input.loserIds.map((loserId) => ({
 			id: loserId,

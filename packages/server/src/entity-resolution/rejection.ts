@@ -1,5 +1,17 @@
 import type { DbClient } from "../db/client";
 
+/** Serialize decisions for one candidate across pods and watcher windows. */
+export async function lockResolutionFingerprint(
+	db: DbClient,
+	input: { organizationId: string; fingerprint: string },
+): Promise<void> {
+	await db`
+		SELECT pg_advisory_xact_lock(
+			hashtextextended(${`${input.organizationId}:${input.fingerprint}`}, 0)
+		)
+	`;
+}
+
 /**
  * A rejected deterministic candidate stays quiet until either its normalized
  * evidence or its entity-type policy changes. Both are encoded in the

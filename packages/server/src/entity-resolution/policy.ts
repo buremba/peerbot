@@ -26,6 +26,13 @@ interface ResolutionRule {
 	onMatch: ResolutionDecision;
 }
 
+const DEFAULT_PERSON_RESOLUTION_RULES: ResolutionRule[] = [
+	{ fields: ["email"], normalizer: "email", onMatch: "review" },
+	{ fields: ["emails"], normalizer: "email", onMatch: "review" },
+	{ fields: ["phone"], normalizer: "phone", onMatch: "review" },
+	{ fields: ["phones"], normalizer: "phone", onMatch: "review" },
+];
+
 function canonicalJson(value: unknown): string {
 	if (Array.isArray(value)) {
 		return `[${value.map(canonicalJson).join(",")}]`;
@@ -94,9 +101,21 @@ function normalizeValues(
 	].sort();
 }
 
-export function readEntityResolutionRules(schema: unknown): ResolutionRule[] {
-	if (!schema || typeof schema !== "object" || Array.isArray(schema)) return [];
+export function readEntityResolutionRules(
+	schema: unknown,
+	options?: { entityTypeSlug?: string | null },
+): ResolutionRule[] {
+	if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+		return options?.entityTypeSlug === "person"
+			? DEFAULT_PERSON_RESOLUTION_RULES
+			: [];
+	}
 	const config = (schema as Record<string, unknown>)["x-lobu-resolution"];
+	if (config === undefined) {
+		return options?.entityTypeSlug === "person"
+			? DEFAULT_PERSON_RESOLUTION_RULES
+			: [];
+	}
 	if (!config || typeof config !== "object" || Array.isArray(config)) return [];
 	const rules = (config as Record<string, unknown>).rules;
 	if (!Array.isArray(rules)) return [];
@@ -161,10 +180,13 @@ export function normalizedResolutionRuleKeys(
  */
 export function assessEntityResolution(input: {
 	metadataSchema: unknown;
+	entityTypeSlug?: string | null;
 	winner: ResolutionEntity;
 	losers: ResolutionEntity[];
 }): EntityResolutionAssessment {
-	const rules = readEntityResolutionRules(input.metadataSchema);
+	const rules = readEntityResolutionRules(input.metadataSchema, {
+		entityTypeSlug: input.entityTypeSlug,
+	});
 	const policyHash = digest(rules);
 	const evidence: ResolutionEvidence[] = [];
 	const normalizedIdentities = [input.winner, ...input.losers]

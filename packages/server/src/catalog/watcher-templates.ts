@@ -95,7 +95,7 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			// normalization, auto/review policy, suppression, and merge limits.
 			sources: [{ name: "people", query: "@entity:person" }],
 			prompt:
-				"Review every row in sources.people. Explain likely duplicate groups in analysis_summary and put name-only, alias-only, handle-only, oversized, or otherwise uncertain groups in uncertain_groups with why. Do not call entity tools or emit backlog tasks. After analysis, the deterministic reaction submits only candidate IDs to the server. The person entity type's x-lobu-resolution policy decides which normalized identities auto-merge and which require human review.\n",
+				"Review every row in sources.people. Explain likely duplicate groups in analysis_summary and put name-only, alias-only, handle-only, oversized, or otherwise uncertain groups in uncertain_groups with why. Do not call entity tools or emit backlog tasks. After analysis, the deterministic reaction submits only candidate IDs to the server. The person entity type's x-lobu-resolution policy decides which normalized identities auto-merge and which require human review. Without that extension, normalized email and phone matches remain review-only and never auto-merge.\n",
 			reaction_script: `export const input = {
 	type: "object",
 	properties: {

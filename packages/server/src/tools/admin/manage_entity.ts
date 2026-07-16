@@ -650,7 +650,8 @@ async function handleMerge(
 	// Every duplicate and the winner must be live and in the caller's org — never
 	// merge across a tenant boundary or into a deleted/foreign entity.
 	const rows = (await sql`
-    SELECT e.id, e.entity_type_id, e.metadata, et.metadata_schema
+    SELECT e.id, e.entity_type_id, e.metadata, et.metadata_schema,
+           et.slug AS entity_type_slug
     FROM entities e
     JOIN entity_types et ON et.id = e.entity_type_id
 	WHERE e.organization_id = ${ctx.organizationId}
@@ -661,6 +662,7 @@ async function handleMerge(
 		entity_type_id: number;
 		metadata: Record<string, unknown>;
 		metadata_schema: Record<string, unknown> | null;
+		entity_type_slug: string;
 	}>;
 	const found = new Set(rows.map((r) => Number(r.id)));
 	for (const loserId of loserIds) {
@@ -695,6 +697,7 @@ async function handleMerge(
 		}
 		resolution = assessEntityResolution({
 			metadataSchema: winner.metadata_schema,
+			entityTypeSlug: winner.entity_type_slug,
 			winner: { id: winnerId, metadata: winner.metadata ?? {} },
 			losers: loserIds.map((loserId) => ({
 				id: loserId,

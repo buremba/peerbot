@@ -95,6 +95,11 @@ export async function resetTestDatabase(): Promise<void> {
   } else {
     await initPromise;
   }
+  // Re-assert ENCRYPTION_KEY on every beforeEach: ensureDbForGatewayTests()
+  // sets it once inside a memoized block, so a later file that deletes the key
+  // (and resets the encryption cache) in its teardown would otherwise leave
+  // every subsequent DB-using file's lazy encrypt()/decrypt() broken.
+  ensureEncryptionKey();
   await cleanupTestDatabase();
 }
 

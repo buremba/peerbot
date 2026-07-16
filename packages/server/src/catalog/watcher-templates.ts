@@ -124,10 +124,12 @@ function normalizeIdentity(kind, value) {
 		return digits.length >= 7 && digits.length <= 15 ? digits : null;
 	}
 	const email = trimmed.toLowerCase();
-	const at = email.indexOf("@");
-	if (email.length > 512 || at <= 0 || at === email.length - 1) return null;
-	if (email.indexOf("@", at + 1) !== -1 || /\\s/.test(email)) return null;
-	return email.slice(at + 1).includes(".") ? email : null;
+	if (email.length > 512) return null;
+	// Require a dot-atom local part and dot-separated domain labels so malformed
+	// values (empty labels, leading/trailing/consecutive dots, multiple "@",
+	// whitespace) cannot be used as deterministic merge evidence.
+	if (!/^[a-z0-9_%+-]+(?:\\.[a-z0-9_%+-]+)*@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(email)) return null;
+	return email;
 }
 
 function entityIdentities(entity) {

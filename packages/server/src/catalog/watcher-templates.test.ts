@@ -103,6 +103,21 @@ describe("duplicate merge watcher template", () => {
 		]);
 	});
 
+	it("rejects structurally malformed emails as merge evidence", async () => {
+		const malformed = [
+			"person@.example.com",
+			"person@example..com",
+			"person@example.com.",
+		];
+		for (const email of malformed) {
+			const calls = await runDuplicateMergeReaction([
+				{ id: 1, metadata: { email } },
+				{ id: 2, metadata: { email } },
+			]);
+			expect(calls).toEqual([]);
+		}
+	});
+
 	it("never infers merge evidence from unnamespaced aliases or handles", async () => {
 		const calls = await runDuplicateMergeReaction([
 			{

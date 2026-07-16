@@ -16,16 +16,24 @@ import {
 } from '../../setup/test-fixtures';
 import { post } from '../../setup/test-helpers';
 import { TestApiClient } from '../../setup/test-mcp-client';
+import { applyMerge } from '../../../utils/entity-merge';
 
 interface Fixture {
   orgSlug: string;
   token: string;
+  memberToken: string;
+  canonicalDealId: number;
+  mergedDealId: number;
 }
 
 async function seedFixture(): Promise<Fixture> {
   const org = await createTestOrganization({ name: 'Resolve Contract Org', slug: 'resolve-contract' });
   const user = await createTestUser({ email: 'resolve-contract@test.example.com' });
+  const member = await createTestUser({
+    email: 'resolve-contract-member@test.example.com',
+  });
   await addUserToOrganization(user.id, org.id, 'owner');
+  await addUserToOrganization(member.id, org.id, 'member');
 
   const api = await TestApiClient.for({
     organizationId: org.id,
@@ -64,21 +72,45 @@ async function seedFixture(): Promise<Fixture> {
     name: 'Acme Product',
     parent_id: brand.entity.id,
   });
-  await api.entities.create({
+  const canonicalDeal = (await api.entities.create({
     type: 'deal',
     name: 'Acme Deal',
     metadata: { stage: 'negotiation', amount: 50000 },
+  })) as { entity: { id: number } };
+  const mergedDeal = (await api.entities.create({
+    type: 'deal',
+    name: 'Acme Deal Import',
+    metadata: { source: 'Google Contacts', owner: 'Burak' },
+  })) as { entity: { id: number } };
+  await applyMerge({
+    orgId: org.id,
+    loserId: mergedDeal.entity.id,
+    winnerId: canonicalDeal.entity.id,
+    mergedBy: user.id,
   });
 
   const oauthClient = await createTestOAuthClient();
   const token = (await createTestAccessToken(user.id, org.id, oauthClient.client_id)).token;
-  return { orgSlug: org.slug, token };
+  const memberToken = (
+    await createTestAccessToken(member.id, org.id, oauthClient.client_id)
+  ).token;
+  return {
+    orgSlug: org.slug,
+    token,
+    memberToken,
+    canonicalDealId: canonicalDeal.entity.id,
+    mergedDealId: mergedDeal.entity.id,
+  };
 }
 
-async function resolvePath(fixture: Fixture, args: Record<string, unknown>) {
+async function resolvePath(
+  fixture: Fixture,
+  args: Record<string, unknown>,
+  token = fixture.token
+) {
   const response = await post(`/api/${fixture.orgSlug}/resolve_path`, {
     body: args,
-    token: fixture.token,
+    token,
   });
   if (response.status >= 400) {
     const body = (await response.json()) as { error?: string };
@@ -127,6 +159,44 @@ describe('resolve_path contract', () => {
       path: `/${fixture.orgSlug}/brand/acme-brand`,
     })) as { entity?: { json_template?: Record<string, unknown> | null } };
     expect(resolved.entity?.json_template ?? null).toBeNull();
+  });
+
+  it('redirects merged URLs and exposes the absorbed record on the canonical entity', async () => {
+    const oldPath = (await resolvePath(fixture, {
+      path: `/${fixture.orgSlug}/deal/acme-deal-import`,
+    })) as { redirect?: { to: string } | null };
+    expect(oldPath.redirect).toEqual({
+      to: `/${fixture.orgSlug}/deal/acme-deal?merged_from=Acme%20Deal%20Import`,
+    });
+
+    const canonical = (await resolvePath(fixture, {
+      path: `/${fixture.orgSlug}/deal/acme-deal`,
+    })) as {
+      entity?: {
+        id: number;
+        merged_records?: Array<{
+          id: number;
+          name: string;
+          metadata: Record<string, unknown>;
+        }>;
+      };
+    };
+    expect(canonical.entity?.id).toBe(fixture.canonicalDealId);
+    expect(canonical.entity?.merged_records).toEqual([
+      expect.objectContaining({
+        id: fixture.mergedDealId,
+        name: 'Acme Deal Import',
+        metadata: { source: 'Google Contacts', owner: 'Burak' },
+        can_unmerge: true,
+      }),
+    ]);
+
+    const memberView = (await resolvePath(
+      fixture,
+      { path: `/${fixture.orgSlug}/deal/acme-deal` },
+      fixture.memberToken
+    )) as { entity?: { merged_records?: unknown[] } };
+    expect(memberView.entity?.merged_records).toBeUndefined();
   });
 
   it('rejects malformed or missing paths instead of silently falling back', async () => {

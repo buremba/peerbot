@@ -94,6 +94,8 @@ export interface ToolContext {
    * even when the script omits an explicit `watcher_source`. Null off-reaction.
    */
   actingWindowId?: number | null;
+  /** Durable watcher run driving this reaction. Used only for provenance. */
+  actingRunId?: number | null;
   /** Verified source conversation for worker-originated tool calls, when any. */
   sourceContext?: ToolSourceContext | null;
   /** `x-lobu-apply-id` when this call belongs to a `lobu apply` run (REST proxy only). */

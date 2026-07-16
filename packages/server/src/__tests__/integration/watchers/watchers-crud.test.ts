@@ -151,6 +151,19 @@ describe('watcher CRUD', () => {
       END
       WHERE id IN (${winner.id}, ${bridge.id}, ${loser.id})
     `;
+    await sql`
+      UPDATE entity_types
+      SET metadata_schema = ${sql.json({
+        type: 'object',
+        'x-lobu-resolution': {
+          rules: [
+            { fields: ['email'], normalizer: 'email', onMatch: 'review' },
+            { fields: ['phone'], normalizer: 'phone', onMatch: 'review' },
+          ],
+        },
+      })}
+      WHERE id = (SELECT entity_type_id FROM entities WHERE id = ${winner.id})
+    `;
 
     const template = WATCHER_CATALOG_TEMPLATES.find((t) => t.id === 'duplicate-merge');
     if (!template) throw new Error('duplicate-merge watcher template is missing');
@@ -233,9 +246,7 @@ describe('watcher CRUD', () => {
         AND action_input->>'operation' = 'merge'
         AND action_input->>'winner_entity_id' = ${String(winner.id)}
     `;
-    expect(pendingInput.entity_ids.map(Number).sort((a, b) => a - b)).toEqual(
-      [bridge.id, loser.id].sort((a, b) => a - b)
-    );
+    expect(pendingInput.entity_ids.map(Number)).toEqual([bridge.id]);
 
     const duplicateRows = await sql<
       { id: number; merged_into: number | null; deleted_at: string | null }[]

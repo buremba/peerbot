@@ -182,7 +182,10 @@ async function getContentImpl(
   try {
     // If watcher_id is provided, use watcher-mode: fetch content for all sources and generate window_token
     if (args.watcher_id) {
-      return await handleWatcherMode(args, env, sql);
+      return await handleWatcherMode(args, env, sql, {
+        organizationId: ctx.organizationId,
+        sourceConversationId: ctx.sourceContext?.conversationId ?? null,
+      });
     }
 
     const entityId = args.entity_id;

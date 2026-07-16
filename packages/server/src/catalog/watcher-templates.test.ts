@@ -17,12 +17,9 @@ const duplicateMergeReaction = String(
 	duplicateMergeTemplate.detail.reaction_script,
 );
 
-async function executeDuplicateMergeReaction(
-	people: Array<{ id: number; metadata: Record<string, unknown> }>,
-): Promise<{
-	calls: Record<string, unknown>[];
-	result: Awaited<ReturnType<typeof runScript>>;
-}> {
+async function executeReaction(
+	people: Array<{ id?: unknown; metadata?: Record<string, unknown> }>,
+) {
 	const calls: Record<string, unknown>[] = [];
 	const sdk = {
 		knowledge: {
@@ -31,7 +28,7 @@ async function executeDuplicateMergeReaction(
 		entities: {
 			manage: async (input: Record<string, unknown>) => {
 				calls.push(input);
-				return { approval_queued: true };
+				return { groups_found: 0 };
 			},
 		},
 	} as unknown as ClientSDK;
@@ -49,175 +46,67 @@ async function executeDuplicateMergeReaction(
 	return { calls, result };
 }
 
-async function runDuplicateMergeReaction(
-	people: Array<{ id: number; metadata: Record<string, unknown> }>,
-): Promise<Record<string, unknown>[]> {
-	const { calls, result } = await executeDuplicateMergeReaction(people);
-	expect(result.error ?? null).toBeNull();
-	expect(result.success).toBe(true);
-	return calls;
-}
-
 describe("duplicate merge watcher template", () => {
-	it("keeps model output explanatory and approval-gated", () => {
+	it("keeps the model explanatory and makes the entity type policy authoritative", () => {
 		const prompt = String(duplicateMergeTemplate.detail.prompt);
-
 		expect(prompt).toContain("analysis_summary");
-		expect(prompt).toContain("pending human approval");
+		expect(prompt).toContain("x-lobu-resolution");
 		expect(prompt).toContain("Do not call entity tools or emit backlog tasks");
 	});
 
-	it("ships a reaction script that compiles in the watcher runtime", async () => {
+	it("ships a small reaction that compiles and declares its extraction contract", async () => {
 		await expect(
 			compileReactionScript(duplicateMergeReaction),
 		).resolves.toBeTruthy();
-	});
-
-	it("declares the model's explanatory extraction contract", async () => {
 		const schema = await extractReactionInputSchema(duplicateMergeReaction);
-
 		expect(schema?.required).toEqual(["analysis_summary", "uncertain_groups"]);
-		expect(schema).toMatchObject({
-			properties: {
-				analysis_summary: { type: "string" },
-				uncertain_groups: { type: "array" },
-			},
-		});
+		expect(duplicateMergeReaction.split("\n").length).toBeLessThan(40);
+		expect(duplicateMergeReaction).not.toContain("normalizeIdentity");
+		expect(duplicateMergeReaction).not.toContain("function union");
 	});
 
-	it("normalizes valid identities without merging malformed metadata", async () => {
-		const calls = await runDuplicateMergeReaction([
-			{ id: 1, metadata: { email: "not-an-email", phone: "call 1234567" } },
-			{ id: 2, metadata: { email: "not-an-email", phone: "call 1234567" } },
+	it("submits only unique candidate IDs to the server-side module", async () => {
+		const { calls, result } = await executeReaction([
 			{ id: 3, metadata: { email: " Person@Example.com " } },
-			{ id: 4, metadata: { emails: ["person@example.com"] } },
+			{ id: 4, metadata: { email: "person@example.com" } },
+			{ id: 3, metadata: {} },
+			{ id: "invalid" },
 		]);
-
+		expect(result.success).toBe(true);
 		expect(calls).toEqual([
 			{
-				action: "merge",
-				winner_entity_id: 3,
-				duplicate_entity_ids: [4],
-				merge_evidence: [{ kind: "email", identifier: "person@example.com" }],
+				action: "resolve_duplicates",
+				candidate_entity_ids: [3, 4],
 			},
 		]);
 	});
 
-	it("rejects structurally malformed emails as merge evidence", async () => {
-		const malformed = [
-			"person@.example.com",
-			"person@example..com",
-			"person@example.com.",
-		];
-		for (const email of malformed) {
-			const calls = await runDuplicateMergeReaction([
-				{ id: 1, metadata: { email } },
-				{ id: 2, metadata: { email } },
-			]);
-			expect(calls).toEqual([]);
-		}
-	});
-
-	it("never infers merge evidence from unnamespaced aliases or handles", async () => {
-		const calls = await runDuplicateMergeReaction([
-			{
-				id: 1,
-				metadata: {
-					aliases: ["1234567", "@shared", "shared@example.com"],
-					handle: "shared",
-				},
-			},
-			{
-				id: 2,
-				metadata: {
-					aliases: ["1234567", "@shared", "shared@example.com"],
-					handle: "shared",
-				},
-			},
+	it("does nothing with fewer than two valid candidates", async () => {
+		const { calls, result } = await executeReaction([
+			{ id: 1 },
+			{ id: "invalid" },
 		]);
-
+		expect(result.success).toBe(true);
 		expect(calls).toEqual([]);
 	});
 
-	it("produces the same proposal regardless of source row order", async () => {
-		const people = [
-			{
-				id: 1,
-				metadata: { email: "cycle@example.com", phone: "111 111 1111" },
-			},
-			{
-				id: 2,
-				metadata: { email: "cycle@example.com", phone: "222 222 2222" },
-			},
-			{ id: 3, metadata: { phones: ["111 111 1111", "222 222 2222"] } },
-		];
-		const forward = await runDuplicateMergeReaction(people);
-		const reverse = await runDuplicateMergeReaction([...people].reverse());
-
-		expect(reverse).toEqual(forward);
-		expect(forward[0].merge_evidence).toEqual([
-			{ kind: "email", identifier: "cycle@example.com" },
-			{ kind: "phone", identifier: "1111111111" },
-		]);
-	});
-
-	it("uses bounded evidence that connects every proposed duplicate", async () => {
-		const redundantEmails = Array.from(
-			{ length: 26 },
-			(_, index) => `shared-${index}@example.com`,
-		);
-		const calls = await runDuplicateMergeReaction([
-			{ id: 1, metadata: { emails: redundantEmails } },
-			{
-				id: 2,
-				metadata: {
-					emails: [...redundantEmails, "zzz-bridge@example.com"],
-				},
-			},
-			{ id: 3, metadata: { email: "zzz-bridge@example.com" } },
-		]);
-
-		expect(calls[0].merge_evidence).toEqual([
-			{ kind: "email", identifier: "shared-0@example.com" },
-			{ kind: "email", identifier: "zzz-bridge@example.com" },
-		]);
-	});
-
-	it("stays within merge entity limits", async () => {
-		const eligible = await runDuplicateMergeReaction(
-			Array.from({ length: 26 }, (_, index) => ({
-				id: index + 1,
-				metadata: { email: "group@example.com" },
-			})),
-		);
-		expect(eligible).toHaveLength(1);
-		expect(eligible[0].duplicate_entity_ids).toHaveLength(25);
-		expect(eligible[0].merge_evidence).toHaveLength(1);
-
-		const oversized = await runDuplicateMergeReaction(
-			Array.from({ length: 27 }, (_, index) => ({
-				id: index + 1,
-				metadata: { email: "oversized@example.com" },
-			})),
-		);
-		expect(oversized).toEqual([]);
-	});
-
-	it("fails before queuing partial approvals when the SDK call budget is too small", async () => {
+	it("uses one mutation call regardless of candidate count", async () => {
 		const people = Array.from({ length: 400 }, (_, index) => ({
 			id: index + 1,
-			metadata: { email: `group-${Math.floor(index / 2)}@example.com` },
 		}));
-		const atLimit = await executeDuplicateMergeReaction(people.slice(0, 398));
-		expect(atLimit.result.success).toBe(true);
-		expect(atLimit.calls).toHaveLength(199);
+		const { calls, result } = await executeReaction(people);
+		expect(result.success).toBe(true);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.candidate_entity_ids).toHaveLength(400);
+	});
 
-		const { calls, result } = await executeDuplicateMergeReaction(people);
-
+	it("fails before mutation when the candidate input exceeds the server limit", async () => {
+		const people = Array.from({ length: 5_001 }, (_, index) => ({
+			id: index + 1,
+		}));
+		const { calls, result } = await executeReaction(people);
 		expect(result.success).toBe(false);
-		expect(result.error?.message).toContain(
-			"More than 199 identity components need merging",
-		);
+		expect(result.error?.message).toContain("More than 5000 entities");
 		expect(calls).toEqual([]);
 	});
 });

@@ -30,6 +30,8 @@ const AGENT = "thread-list-scope-all-agent";
 const SLACK_CONV = "slack:C123:1781641725.28"; // channel C123 — agent is bound to it
 const SLACK_UNBOUND_CONV = "slack:CSECRET:1781641725.99"; // channel the agent is NOT bound to
 const WATCHER_ID = 990001;
+const OTHER_AGENT = "thread-list-other-agent";
+const OTHER_WATCHER_ID = 990002;
 
 function sessionJsonl(text: string): string {
 	return [
@@ -60,6 +62,11 @@ describe("listAgentThreads scope=all", () => {
 		await createTestAgent({
 			organizationId: org,
 			agentId: AGENT,
+			ownerUserId: userId,
+		});
+		await createTestAgent({
+			organizationId: org,
+			agentId: OTHER_AGENT,
 			ownerUserId: userId,
 		});
 		const sql = getTestDb();
@@ -133,11 +140,16 @@ describe("listAgentThreads scope=all", () => {
 		// UNBOUND one must still be fenced out by isConversationVisible at listing
 		// time — proving the ACL gate runs on the entity, not just on the old
 		// snapshot-derived path.
-		await insertSnapshot(SLACK_CONV, "hello from slack", "2026-06-28T02:00:00Z", {
+		await insertSnapshot(
+			SLACK_CONV,
+			"hello from slack",
+			"2026-06-28T02:00:00Z",
+			{
 			platform: "slack",
 			kind: "platform",
 			userId: null,
-		});
+			},
+		);
 		await insertSnapshot(
 			SLACK_UNBOUND_CONV,
 			"secret channel transcript",
@@ -153,16 +165,46 @@ describe("listAgentThreads scope=all", () => {
       INSERT INTO watchers
         (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
       VALUES (${WATCHER_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Test Watcher', 'active', 'notification', 'normal', 0, now(), now())`;
-		await insertSnapshot(
-			`${AGENT}_watcher_${WATCHER_ID}_run_5`,
-			"watcher run output",
-			"2026-06-28T00:30:00Z",
-		);
+		await sql`
+      INSERT INTO watchers
+        (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${OTHER_WATCHER_ID}, ${org}, ${OTHER_AGENT}, ${userId}, 0, 'Other Agent Watcher', 'active', 'notification', 'normal', 0, now(), now())`;
+		await sql`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, approval_status,
+			   run_metadata, created_at, completed_at)
+			VALUES
+			  ('watcher', 'completed', ${org}, ${OTHER_WATCHER_ID}, 'auto',
+			   ${sql.json({ prompt_rendered: "Other agent secret watcher task" })},
+			   '2026-06-28T00:31:00Z', '2026-06-28T00:32:00Z')
+		`;
+		const [watcherRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, window_id,
+			   approval_status, run_metadata, created_at, completed_at)
+			VALUES
+			  ('watcher', 'completed', ${org}, ${WATCHER_ID}, 700001,
+			   'auto', ${sql.json({ prompt_rendered: "Rendered watcher task" })},
+			   '2026-06-28T00:29:00Z', '2026-06-28T00:30:00Z')
+			RETURNING id`;
+		const watcherJsonl = sessionJsonl("watcher run output");
+		const watcherConversationId = `${AGENT}_watcher_${WATCHER_ID}_run_${watcherRun.id}`;
+		await sql`
+			INSERT INTO agent_transcript_snapshot
+			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
+			   byte_size, terminal_status, created_at)
+			VALUES
+			  (${org}, ${AGENT}, ${watcherConversationId},
+			   ${watcherRun.id}, ${watcherJsonl}, ${Buffer.byteLength(watcherJsonl)},
+			   'completed', '2026-06-28T00:30:00Z')
+		`;
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, approval_status, action_key, created_at)
+			  (run_type, status, organization_id, watcher_id, window_id,
+			   approval_status, action_key, created_at)
 			VALUES
-			  ('internal', 'pending', ${org}, ${WATCHER_ID}, 'pending', 'entity_field_change', now())
+			  ('internal', 'pending', ${org}, ${WATCHER_ID}, 700001,
+			   'pending', 'entity_field_change', now())
 			RETURNING id`;
 		await insertEvent({
 			entityIds: [],
@@ -264,7 +306,9 @@ describe("listAgentThreads scope=all", () => {
 		expect(JSON.stringify(data.runs[0]?.messages)).toContain(
 			"watcher run output",
 		);
-		expect(data.interactions).toEqual([
+		expect(data.runs[0]?.task).toBe("Rendered watcher task");
+		expect(data.runs[0]?.pendingActionCount).toBe(1);
+		expect(data.runs[0]?.actions).toEqual([
 			expect.objectContaining({
 				type: "tool-approval",
 				eventId: expect.any(Number),
@@ -272,6 +316,144 @@ describe("listAgentThreads scope=all", () => {
 				fields: { email: "new@example.com" },
 				attribution: "watcher",
 				resourceKind: "entity",
+			}),
+		]);
+		expect(data).not.toHaveProperty("interactions");
+	});
+
+	it("does not read a different agent's watcher in the same organization", async () => {
+		const data = await readWatcherRunThreads({
+			agentId: AGENT,
+			organizationId: org,
+			watcherId: OTHER_WATCHER_ID,
+			limit: 20,
+		});
+
+		expect(data.runs).toEqual([]);
+		expect(JSON.stringify(data)).not.toContain("Other agent secret watcher task");
+	});
+
+	it("keeps terminal approval decisions attached to their watcher run", async () => {
+		const sql = getTestDb();
+		const [watcherRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, window_id,
+			   approval_status, created_at, completed_at)
+			VALUES
+			  ('watcher', 'completed', ${org}, ${WATCHER_ID}, 700002,
+			   'auto', '2026-06-28T04:00:00Z', '2026-06-28T04:01:00Z')
+			RETURNING id
+		`;
+		const jsonl = sessionJsonl("terminal decision run");
+		await sql`
+			INSERT INTO agent_transcript_snapshot
+			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
+			   byte_size, terminal_status, created_at)
+			VALUES
+			  (${org}, ${AGENT}, ${`${AGENT}_watcher_${WATCHER_ID}_run_${watcherRun.id}`},
+			   ${watcherRun.id}, ${jsonl}, ${Buffer.byteLength(jsonl)}, 'completed',
+			   '2026-06-28T04:01:00Z')
+		`;
+		const [approvalRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, window_id,
+			   approval_status, action_key, action_input, created_at, completed_at)
+			VALUES
+			  ('internal', 'cancelled', ${org}, ${WATCHER_ID}, 700002,
+			   'rejected', 'entity_change',
+			   ${sql.json({ source_run_id: watcherRun.id, operation: "merge" })},
+			   '2026-06-28T04:01:00Z', '2026-06-28T04:02:00Z')
+			RETURNING id
+		`;
+		await insertEvent({
+			entityIds: [],
+			organizationId: org,
+			originId: `watcher-rejected-${approvalRun.id}`,
+			title: "Merge kept separate",
+			content: "The reviewer kept these entities separate.",
+			semanticType: "operation",
+			runId: approvalRun.id,
+			interactionType: "approval",
+			interactionStatus: "rejected",
+			metadata: {
+				action: "merge",
+				tool: "entity_change",
+				resourceKind: "entity",
+				reviewed_by_name: "Reviewer",
+			},
+		});
+
+		const data = await readWatcherRunThreads({
+			agentId: AGENT,
+			organizationId: org,
+			watcherId: WATCHER_ID,
+			limit: 20,
+		});
+		const run = data.runs.find((candidate) => candidate.runId === watcherRun.id);
+		expect(run?.pendingActionCount).toBe(0);
+		expect(run?.actions).toEqual([
+			expect.objectContaining({
+				runId: approvalRun.id,
+				status: "rejected",
+				reviewedByName: "Reviewer",
+			}),
+		]);
+	});
+
+	it("keeps pending approvals visible when the watcher run has no transcript", async () => {
+		const sql = getTestDb();
+		const [watcherRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, window_id,
+			   approval_status, run_metadata, created_at, completed_at)
+			VALUES
+			  ('watcher', 'completed', ${org}, ${WATCHER_ID}, 700003,
+			   'auto', ${sql.json({ prompt_rendered: "Run without a transcript" })},
+			   '2026-06-28T05:00:00Z', '2026-06-28T05:01:00Z')
+			RETURNING id
+		`;
+		const [approvalRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, window_id,
+			   approval_status, action_key, action_input, created_at)
+			VALUES
+			  ('internal', 'pending', ${org}, ${WATCHER_ID}, 700003,
+			   'pending', 'entity_change',
+			   ${sql.json({ source_run_id: watcherRun.id, operation: "merge" })},
+			   '2026-06-28T05:01:00Z')
+			RETURNING id
+		`;
+		await insertEvent({
+			entityIds: [],
+			organizationId: org,
+			originId: `watcher-no-transcript-${approvalRun.id}`,
+			title: "Review merge without transcript",
+			content: "A durable approval must remain visible.",
+			semanticType: "operation",
+			runId: approvalRun.id,
+			interactionType: "approval",
+			interactionStatus: "pending",
+			metadata: {
+				action: "merge",
+				tool: "entity_change",
+				resourceKind: "entity",
+			},
+		});
+
+		const data = await readWatcherRunThreads({
+			agentId: AGENT,
+			organizationId: org,
+			watcherId: WATCHER_ID,
+			limit: 20,
+		});
+		const run = data.runs.find((candidate) => candidate.runId === watcherRun.id);
+		expect(run?.task).toBe("Run without a transcript");
+		expect(run?.messages).toEqual([]);
+		expect(run?.pendingActionCount).toBe(1);
+		expect(run?.actions).toEqual([
+			expect.objectContaining({
+				runId: approvalRun.id,
+				status: "pending",
 			}),
 		]);
 	});

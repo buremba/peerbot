@@ -67,8 +67,11 @@ export async function handleCompleteWindow(
     typeof args.model === 'string' && args.model.trim() ? args.model : 'external-client';
   const provenanceMetadata: Record<string, unknown> =
     args.run_metadata && typeof args.run_metadata === 'object' && !Array.isArray(args.run_metadata)
-      ? (args.run_metadata as Record<string, unknown>)
+      ? { ...(args.run_metadata as Record<string, unknown>) }
       : {};
+  // The rendered task is stamped by get_content from the server-side prompt.
+  // A completion payload may add provenance but must not replace that source.
+  delete provenanceMetadata.prompt_rendered;
   const watcherRunIdRaw = args.watcher_run_id ?? provenanceMetadata.watcher_run_id;
   let watcherRunId =
     watcherRunIdRaw !== undefined && watcherRunIdRaw !== null && Number.isFinite(Number(watcherRunIdRaw))
@@ -600,7 +603,7 @@ export async function handleCompleteWindow(
         SET status = 'completed',
             window_id = ${windowId},
             model_used = ${provenanceModel},
-            run_metadata = ${sql.json(provenanceMetadata)},
+            run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)},
             completed_at = current_timestamp,
             error_message = NULL
         WHERE id = ${watcherRunId}
@@ -617,7 +620,7 @@ export async function handleCompleteWindow(
           UPDATE runs
           SET window_id = ${windowId},
               model_used = COALESCE(${provenanceModel}, model_used),
-              run_metadata = COALESCE(${sql.json(provenanceMetadata)}, run_metadata)
+              run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)}
           WHERE id = ${watcherRunId}
             AND watcher_id = ${watcherId}
             AND run_type = 'watcher'
@@ -662,7 +665,7 @@ export async function handleCompleteWindow(
     );
   }
 
-  // Execute reaction script inline (in-process via QuickJS WASM sandbox).
+  // Execute the reaction script inline in the isolated reaction sandbox.
   // Fire on linked content OR on a freshly created window: device-run and
   // other self-sourcing watchers link no server-side content — their signal
   // is the extracted_data itself, and the reaction script decides what to do
@@ -725,6 +728,7 @@ export async function handleCompleteWindow(
         })),
         window: {
           id: result.window_id,
+          run_id: watcherRunId,
           watcher_id: Number(result.watcher_id),
           window_start: result.window_start,
           window_end: result.window_end,

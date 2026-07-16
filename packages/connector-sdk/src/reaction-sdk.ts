@@ -26,6 +26,8 @@ export interface ReactionContext {
   /** The window that was just completed */
   window: {
     id: number;
+    /** Durable watcher run that produced this window, when execution has one. */
+    run_id?: number | null;
     watcher_id: number;
     window_start: string;
     window_end: string;

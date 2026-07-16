@@ -14,6 +14,9 @@
  * - unlink: Soft-delete a relationship
  * - update_link: Update metadata/confidence/source on a relationship
  * - list_links: List relationships for an entity with filters
+ * - merge: Fold confirmed duplicates into one canonical entity
+ * - resolve_duplicates: Apply an entity type's configured resolution policy
+ * - unmerge: Reverse a ledger-backed merge when its after-state is unchanged
  */
 
 import {
@@ -30,6 +33,9 @@ import {
 	evaluateEntityMutation,
 	resolveActingPrincipal,
 } from "../../authz/entity-policy";
+import { discoverWorkspaceResolutionGroups } from "../../entity-resolution/discovery";
+import { assessEntityResolution } from "../../entity-resolution/policy";
+import { wasResolutionRejected } from "../../entity-resolution/rejection";
 import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
 import type { Env } from "../../index";
 import {
@@ -168,6 +174,9 @@ const runManageEntity = defineFlatActionTool<
 	merge: flatAction((args, ctx) => handleMerge(args, ctx), {
 		requires: ["winner_entity_id"],
 	}),
+	resolve_duplicates: flatAction((args, ctx) =>
+		handleResolveDuplicates(args, ctx),
+	),
 	unmerge: flatAction((args, ctx) => handleUnmerge(args, ctx), {
 		requires: ["entity_id"],
 	}),
@@ -602,11 +611,11 @@ function redactMemberEmail(
 
 /**
  * Fold a duplicate entity (`entity_id`, the loser) into the one it really is
- * (`winner_entity_id`). Humans must be admin/owner; agents and watchers queue a
- * human approval because a merge is destructive and hard to spot after the
- * fact. The heavy lifting (move identities/aliases/edges, tombstone + forward
- * each loser, flatten chains) is in `applyMergeGroup`; this handler is the
- * org-scoped gate + validation.
+ * (`winner_entity_id`). Humans must be admin/owner. Agents and watchers may
+ * auto-merge only when the entity type policy proves the match; every other
+ * candidate queues human review. The heavy lifting (merge attributes, move
+ * identities and edges, tombstone + forward each loser, flatten chains) is in
+ * `applyMergeGroup`; this handler is the org-scoped gate + validation.
  */
 async function handleMerge(
 	args: ManageEntityArgs,
@@ -641,11 +650,20 @@ async function handleMerge(
 	// Every duplicate and the winner must be live and in the caller's org — never
 	// merge across a tenant boundary or into a deleted/foreign entity.
 	const rows = (await sql`
-    SELECT id, entity_type_id FROM entities
-    WHERE organization_id = ${ctx.organizationId}
-	      AND id = ANY(${pgBigintArray([...loserIds, winnerId])}::bigint[])
-      AND deleted_at IS NULL
-	`) as Array<{ id: number; entity_type_id: number }>;
+    SELECT e.id, e.entity_type_id, e.metadata, et.metadata_schema,
+           et.slug AS entity_type_slug
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+	WHERE e.organization_id = ${ctx.organizationId}
+	      AND e.id = ANY(${pgBigintArray([...loserIds, winnerId])}::bigint[])
+	      AND e.deleted_at IS NULL
+	`) as Array<{
+		id: number;
+		entity_type_id: number;
+		metadata: Record<string, unknown>;
+		metadata_schema: Record<string, unknown> | null;
+		entity_type_slug: string;
+	}>;
 	const found = new Set(rows.map((r) => Number(r.id)));
 	for (const loserId of loserIds) {
 		if (!found.has(loserId))
@@ -667,18 +685,59 @@ async function handleMerge(
 		);
 	}
 
+	let resolution: ReturnType<typeof assessEntityResolution> | null = null;
 	if (actor.kind !== "user") {
+		const byId = new Map(rows.map((row) => [Number(row.id), row]));
+		const winner = byId.get(winnerId);
+		if (!winner) {
+			throw new ToolUserError(
+				`Entity ${winnerId} not found in this workspace`,
+				404,
+			);
+		}
+		resolution = assessEntityResolution({
+			metadataSchema: winner.metadata_schema,
+			entityTypeSlug: winner.entity_type_slug,
+			winner: { id: winnerId, metadata: winner.metadata ?? {} },
+			losers: loserIds.map((loserId) => ({
+				id: loserId,
+				metadata: byId.get(loserId)?.metadata ?? {},
+			})),
+		});
+	}
+
+	if (actor.kind !== "user" && resolution?.decision === "review") {
 		const attribution = actor.kind === "watcher" ? "watcher" : "agent";
+		if (
+			await wasResolutionRejected(sql, {
+				organizationId: ctx.organizationId,
+				fingerprint: resolution.fingerprint,
+			})
+		) {
+			return {
+				action: "merge",
+				approval_suppressed: true,
+				message:
+					"This unchanged candidate was already rejected. It will be reconsidered when its evidence or policy changes.",
+				resolution: {
+					decision: "review",
+					reason: resolution.reason,
+					evidence: resolution.evidence,
+				},
+			};
+		}
 		const queued = await proposeEntityMerge(ctx, {
 			entity_ids: loserIds,
 			winner_entity_id: winnerId,
-			evidence: args.merge_evidence,
+			evidence: resolution.evidence,
 			watcher_id:
 				ctx.actingWatcherId ?? args.watcher_source?.watcher_id ?? null,
 			window_id: ctx.actingWindowId ?? args.watcher_source?.window_id ?? null,
+			source_run_id: ctx.actingRunId ?? null,
+			policy_hash: resolution.policyHash,
+			resolution_fingerprint: resolution.fingerprint,
 			attribution,
-			reason:
-				"A duplicate merge needs human approval before identities and relationships are folded together.",
+			reason: resolution.reason,
 		});
 		return {
 			action: "merge",
@@ -693,6 +752,11 @@ async function handleMerge(
 			},
 			approval_attribution: attribution,
 			next_steps: ["The merge is waiting for human approval."],
+			resolution: {
+				decision: "review",
+				reason: resolution.reason,
+				evidence: resolution.evidence,
+			},
 		};
 	}
 
@@ -703,6 +767,28 @@ async function handleMerge(
 			loserIds,
 			winnerId,
 			mergedBy: ctx.agentId ?? ctx.userId ?? "system",
+			expectedResolutionFingerprint:
+				actor.kind === "user" ? undefined : resolution?.fingerprint,
+			resolution:
+				actor.kind === "user"
+					? {
+							decision: "human",
+							evidence: args.merge_evidence ?? [],
+						}
+					: {
+							decision: "auto_merge",
+							sourceRunId: ctx.actingRunId ?? null,
+							watcherId:
+								ctx.actingWatcherId ??
+								args.watcher_source?.watcher_id ??
+								null,
+							windowId:
+								ctx.actingWindowId ??
+								args.watcher_source?.window_id ??
+								null,
+							policyHash: resolution?.policyHash ?? null,
+							evidence: resolution?.evidence ?? [],
+						},
 		});
 	} catch (err) {
 		throw new ToolUserError(
@@ -720,15 +806,91 @@ async function handleMerge(
 		loser_entity_ids: loserIds,
 		moved_identities: result.movedIdentities,
 		repointed_edges: result.repointedEdges,
+		resolution: {
+			decision: actor.kind === "user" ? "human" : "auto_merge",
+			reason:
+				actor.kind === "user"
+					? "A workspace administrator confirmed the merge."
+					: (resolution?.reason ?? "A deterministic identity rule matched."),
+			evidence:
+				actor.kind === "user"
+					? (args.merge_evidence ?? [])
+					: (resolution?.evidence ?? []),
+		},
+	};
+}
+
+async function handleResolveDuplicates(
+	args: ManageEntityArgs,
+	ctx: ToolContext,
+): Promise<ManageEntityResult> {
+	const candidateIds = [...new Set(args.candidate_entity_ids ?? [])].sort(
+		(a, b) => a - b,
+	);
+	if (candidateIds.length < 2) {
+		throw new ToolUserError(
+			"candidate_entity_ids must contain at least two entities",
+			400,
+		);
+	}
+	let discovery: Awaited<ReturnType<typeof discoverWorkspaceResolutionGroups>>;
+	try {
+		discovery = await discoverWorkspaceResolutionGroups(getDb(), {
+			organizationId: ctx.organizationId,
+			candidateIds,
+			maxGroups: 199,
+			maxOperations: 199,
+		});
+	} catch (error) {
+		throw new ToolUserError(
+			error instanceof Error ? error.message : String(error),
+			409,
+		);
+	}
+
+	let autoMerged = 0;
+	let approvalsQueued = 0;
+	let approvalsSuppressed = 0;
+	for (const group of discovery.groups) {
+		for (const loserId of group.loserIds) {
+			const result = await handleMerge(
+				{
+					action: "merge",
+					winner_entity_id: group.winnerId,
+					duplicate_entity_ids: [loserId],
+				},
+				ctx,
+			);
+			if ("success" in result && result.success) autoMerged += 1;
+			else if ("approval_queued" in result && result.approval_queued) {
+				approvalsQueued += 1;
+			} else if (
+				"approval_suppressed" in result &&
+				result.approval_suppressed
+			) {
+				approvalsSuppressed += 1;
+			}
+		}
+	}
+
+	return {
+		action: "resolve_duplicates",
+		candidates_scanned: discovery.candidatesScanned,
+		groups_found: discovery.groups.length,
+		auto_merged: autoMerged,
+		approvals_queued: approvalsQueued,
+		approvals_suppressed: approvalsSuppressed,
+		oversized_groups: discovery.oversizedGroupCount,
+		deferred_candidates: discovery.deferredCandidateCount,
 	};
 }
 
 /**
  * Reverse a merge: split a tombstoned loser (`entity_id`) back out of the winner
  * it was folded into. The winner is recovered from the loser's own `merged_into`
- * pointer (not passed in). Admin/owner only, org-fenced. The reconstruction from
- * the `merged_from_entity_id` markers + the one-hop chain guard live in
- * `applyUnmerge`; this handler is the gate + validation.
+ * pointer (not passed in). Admin/owner only, org-fenced. Exact ledger restoration
+ * and the legacy marker fallback live in `applyUnmerge`; this handler is the gate
+ * + validation.
  */
 async function handleUnmerge(
 	args: ManageEntityArgs,

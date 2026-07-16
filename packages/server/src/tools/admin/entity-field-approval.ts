@@ -1,20 +1,15 @@
 /**
- * Durable approval gate for a watcher's proposed change to a HUMAN-OWNED entity
- * field. Mirrors the manage_agents builder gate: a watcher that wants to overwrite
- * a field a human owns does NOT write — it queues a pending `runs` row
- * (run_type='internal', action_key='entity_field_change') + an
- * `interaction_type='approval'` event, and notifies the org's humans (durable
- * notification, no SSE dependency — headless + multi-replica safe). On approve the
- * change is applied via `mergeEntityFields` (the field stays human-owned, now
- * carrying the approved value); on reject nothing changes.
- *
- * This leaf owns only the queue + apply (like manage_agents); the
- * claim/try-approve/try-reject orchestration lives in manage_operations next to
- * `supersedeActionEvent`.
+ * Durable approval gate for entity mutations that need human review. Field
+ * updates preserve human ownership through `mergeEntityFields`; held creates,
+ * deletes, and merges use their normal mutation paths after approval. Every
+ * proposal is a pending internal run plus an approval event, so delivery and
+ * decisions remain durable across replicas. Claim/approve/reject orchestration
+ * lives in manage_operations next to `supersedeActionEvent`.
  */
 
 import { createHash } from "node:crypto";
 import { resolveEntityApprovalPolicy } from "../../authz/entity-policy";
+import { assertResolutionFingerprintCurrent } from "../../entity-resolution/staleness";
 import { type DbClient, getDb, pgBigintArray } from "../../db/client";
 import type { Env } from "../../index";
 import {
@@ -127,6 +122,12 @@ export interface EntityMergeProposal {
 	}>;
 	watcher_id?: number | null;
 	window_id?: number | null;
+	/** Window copied into action_input because runs.window_id is transport grouping. */
+	source_window_id?: number | null;
+	/** Watcher run that discovered this candidate (the approval run is separate). */
+	source_run_id?: number | null;
+	policy_hash?: string | null;
+	resolution_fingerprint?: string | null;
 	attribution?: "watcher" | "agent";
 	reason?: string | null;
 }
@@ -462,7 +463,11 @@ export async function proposeEntityChange(
 	const operation = operationOf(proposal);
 	// window_id groups a run's proposals into one batch card. It rides the column,
 	// not action_input, and is part of the canonical idempotency key below.
-	const { window_id: windowId, ...actionInputProposal } = proposal;
+	const { window_id: windowId, ...proposalWithoutWindow } = proposal;
+	const actionInputProposal =
+		operation === "merge"
+			? { ...proposalWithoutWindow, source_window_id: windowId ?? null }
+			: proposalWithoutWindow;
 	const updateProposal =
 		operation === "update" ? asUpdateProposal(proposal) : null;
 	const deleteProposal =
@@ -977,11 +982,28 @@ export async function applyEntityChangeProposal(
 	}
 	if (operation === "merge") {
 		const mergeProposal = asMergeProposal(proposal);
+		if (mergeProposal.resolution_fingerprint) {
+			await assertResolutionFingerprintCurrent(db, {
+				organizationId: ctx.organizationId,
+				winnerId: mergeProposal.winner_entity_id,
+				loserIds: mergeEntityIds(mergeProposal),
+				expectedFingerprint: mergeProposal.resolution_fingerprint,
+			});
+		}
 		const params = {
 			orgId: ctx.organizationId,
 			loserIds: mergeEntityIds(mergeProposal),
 			winnerId: mergeProposal.winner_entity_id,
 			mergedBy: ctx.userId ?? "system",
+			resolution: {
+				decision: "human" as const,
+				sourceRunId: mergeProposal.source_run_id ?? null,
+				watcherId: mergeProposal.watcher_id ?? null,
+				windowId:
+					mergeProposal.source_window_id ?? mergeProposal.window_id ?? null,
+				policyHash: mergeProposal.policy_hash ?? null,
+				evidence: mergeProposal.evidence ?? [],
+			},
 		};
 		return applyMergeGroupInTransaction(params, db);
 	}

@@ -200,7 +200,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
   it('creates a child entity per keyed row, with origin window provenance in its metadata', async () => {
     const ctx = await setupKeyedWatcher();
-    const { sql, workspace, watcherId, parentEntityId } = ctx;
+    const { sql, workspace, parentEntityId } = ctx;
 
     await createTestEvent({
       entity_id: parentEntityId,
@@ -223,8 +223,8 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       ORDER BY ei.identifier
     `;
     expect(identities.map((r) => String(r.identifier))).toEqual([
-      `${watcherId}::performance::slow-loading`,
-      `${watcherId}::stability::app-crashes`,
+      `${ctx.watcherId}::performance::slow-loading`,
+      `${ctx.watcherId}::stability::app-crashes`,
     ]);
     for (const row of identities) {
       expect(Number(row.parent_id)).toBe(parentEntityId);
@@ -262,7 +262,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     for (const row of childMeta) {
       const md = row.metadata as Record<string, unknown>;
       expect(Number(md.window_id)).toBe(windowId);
-      expect(Number(md.watcher_id)).toBe(watcherId);
+      expect(Number(md.watcher_id)).toBe(ctx.watcherId);
     }
 
     // The run carries a FIRST-CLASS change-set event listing what it applied —
@@ -387,7 +387,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
   it('syncs extracted fields into entities and respects a human-owned field on re-run, queuing an approval', async () => {
     const ctx = await setupKeyedWatcher();
-    const { sql, workspace, watcherId } = ctx;
+    const { sql, workspace } = ctx;
 
     await createTestEvent({
       entity_id: ctx.parentEntityId,
@@ -401,7 +401,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     // Run 1: a non-key `severity` field is synced into the promoted entity's metadata.
     await ctx.api.watchers.completeWindow({
-      watcher_id: String(watcherId),
+      watcher_id: String(ctx.watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
       extracted_data: {
@@ -412,7 +412,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       },
     });
 
-    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const appCrashesId = `${ctx.watcherId}::stability::app-crashes`;
     const [created] = await sql`
       SELECT e.id, e.metadata, e.field_controls
       FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
@@ -440,7 +440,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     // Run 2 (replay) proposes a different severity for the SAME key.
     await ctx.api.watchers.completeWindow({
-      watcher_id: String(watcherId),
+      watcher_id: String(ctx.watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
       extracted_data: {
@@ -472,7 +472,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     // Idempotency: replaying the SAME window again must NOT stack a second
     // pending approval card (complete_window is replay-safe under retries/replicas).
     await ctx.api.watchers.completeWindow({
-      watcher_id: String(watcherId),
+      watcher_id: String(ctx.watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
       extracted_data: {
@@ -842,10 +842,20 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     // Both proposals carry the run's window_id on the COLUMN (batch grouping key).
     expect(pending.every((r) => Number(r.window_id) === windowId)).toBe(true);
 
-    // approve_batch approves every pending proposal for the window in one call.
+    // A UI-pinned batch fails closed if another proposal appeared after review.
+    const pendingIds = pending.map((row) => Number(row.id));
+    const staleBatch = (await executeTool(
+      'manage_operations',
+      { action: 'approve_batch', window_id: windowId, run_ids: [pendingIds[0]] },
+      TEST_ENV,
+      ownerAuthCtx(workspace.org.id, workspace.users.owner.id)
+    )) as { error?: string };
+    expect(staleBatch.error).toContain('Pending proposals changed');
+
+    // approve_batch approves exactly the reviewed pending set in one call.
     const batchRes = (await executeTool(
       'manage_operations',
-      { action: 'approve_batch', window_id: windowId },
+      { action: 'approve_batch', window_id: windowId, run_ids: pendingIds },
       TEST_ENV,
       ownerAuthCtx(workspace.org.id, workspace.users.owner.id)
     )) as { action: string; approved_count?: number; failed_count?: number };

@@ -30,11 +30,12 @@ import {
 	deleteEntity,
 	type EntityData,
 } from "../../utils/entity-management";
-import { applyMerge } from "../../utils/entity-merge";
+import { applyMergeGroup } from "../../utils/entity-merge";
 import { insertEvent } from "../../utils/insert-event";
 import logger from "../../utils/logger";
 import { isUniqueViolation } from "../../utils/pg-errors";
 import {
+	buildConnectionUrl,
 	buildEntityUrl,
 	buildResourcePermalink,
 } from "../../utils/url-builder";
@@ -115,11 +116,18 @@ export interface EntityCreateProposal {
 export interface EntityMergeProposal {
 	operation: "merge";
 	entity_id: number;
+	entity_ids?: number[];
 	winner_entity_id: number;
 	current: {
 		loser: Record<string, unknown>;
+		duplicates?: Record<string, unknown>[];
 		winner: Record<string, unknown>;
 	};
+	evidence?: Array<{
+		kind: string;
+		identifier: string;
+		identity_ids?: number[];
+	}>;
 	watcher_id?: number | null;
 	window_id?: number | null;
 	attribution?: "watcher" | "agent";
@@ -158,6 +166,10 @@ function asCreateProposal(
 
 function asMergeProposal(proposal: EntityChangeProposal): EntityMergeProposal {
 	return proposal as EntityMergeProposal;
+}
+
+function mergeEntityIds(proposal: EntityMergeProposal): number[] {
+	return proposal.entity_ids ?? [proposal.entity_id];
 }
 
 async function loadWatcherLabel(
@@ -204,6 +216,15 @@ async function loadEntitySnapshot(
 	parent_slug: string | null;
 	parent_entity_type: string | null;
 	metadata: Record<string, unknown> | null;
+	identities: Array<{
+		id: number;
+		namespace: string;
+		identifier: string;
+		source_connector: string | null;
+		connection_id: number | null;
+		connection_name: string | null;
+		connector_key: string | null;
+	}>;
 } | null> {
 	const rows = await getDb()<{
 		id: number;
@@ -214,9 +235,29 @@ async function loadEntitySnapshot(
 		parent_slug: string | null;
 		parent_entity_type: string | null;
 		metadata: Record<string, unknown> | null;
+		identities: Array<{
+			id: number;
+			namespace: string;
+			identifier: string;
+			source_connector: string | null;
+			connection_id: number | null;
+			connection_name: string | null;
+			connector_key: string | null;
+		}>;
 	}>`
     SELECT e.id, e.name, et.slug AS entity_type, e.slug, e.parent_id, e.metadata,
-           parent.slug AS parent_slug, pet.slug AS parent_entity_type
+           parent.slug AS parent_slug, pet.slug AS parent_entity_type,
+           COALESCE((
+             SELECT jsonb_agg(jsonb_build_object(
+               'id', ei.id, 'namespace', ei.namespace, 'identifier', ei.identifier,
+               'source_connector', ei.source_connector, 'connection_id', ei.connection_id,
+               'connection_name', c.display_name, 'connector_key', c.connector_key
+             ) ORDER BY ei.id)
+             FROM entity_identities ei
+             LEFT JOIN connections c ON c.id = ei.connection_id
+             WHERE ei.entity_id = e.id AND ei.organization_id = e.organization_id
+               AND ei.deleted_at IS NULL
+           ), '[]'::jsonb) AS identities
     FROM entities e
     JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities parent ON e.parent_id = parent.id
@@ -226,6 +267,50 @@ async function loadEntitySnapshot(
     LIMIT 1
   `;
 	return rows[0] ?? null;
+}
+
+async function addEntityReviewLinks<
+	T extends NonNullable<Awaited<ReturnType<typeof loadEntitySnapshot>>>,
+>(
+	ctx: ToolContext,
+	entity: T,
+): Promise<
+	T & {
+		href?: string;
+		identities: Array<T["identities"][number] & { connection_href?: string }>;
+	}
+> {
+	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
+	const href =
+		ownerSlug && entity.entity_type && entity.slug
+			? buildEntityUrl(
+					{
+						ownerSlug,
+						entityType: entity.entity_type,
+						slug: entity.slug,
+						parentType: entity.parent_entity_type,
+						parentSlug: entity.parent_slug,
+					},
+					baseUrl,
+				)
+			: undefined;
+	return {
+		...entity,
+		...(href ? { href } : {}),
+		identities: entity.identities.map((identity) => ({
+			...identity,
+			...(ownerSlug && identity.connection_id && identity.connector_key
+				? {
+						connection_href: buildConnectionUrl(
+							ownerSlug,
+							identity.connector_key,
+							identity.connection_id,
+							baseUrl,
+						),
+					}
+				: {}),
+		})),
+	};
 }
 
 /**
@@ -297,18 +382,31 @@ export async function proposeEntityCreate(
 
 export async function proposeEntityMerge(
 	ctx: ToolContext,
-	proposal: Omit<EntityMergeProposal, "operation" | "current">,
+	proposal: Omit<EntityMergeProposal, "operation" | "current" | "entity_id"> & {
+		entity_ids: number[];
+	},
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	const [loser, winner] = await Promise.all([
-		loadEntitySnapshot(ctx, proposal.entity_id),
-		loadEntitySnapshot(ctx, proposal.winner_entity_id),
-	]);
-	if (!loser) throw new Error(`Entity ${proposal.entity_id} not found`);
+	const duplicates = await Promise.all(
+		proposal.entity_ids.map((entityId) => loadEntitySnapshot(ctx, entityId)),
+	);
+	const winner = await loadEntitySnapshot(ctx, proposal.winner_entity_id);
+	const missingIndex = duplicates.findIndex((entity) => !entity);
+	if (missingIndex >= 0)
+		throw new Error(`Entity ${proposal.entity_ids[missingIndex]} not found`);
 	if (!winner) throw new Error(`Entity ${proposal.winner_entity_id} not found`);
+	const linkedDuplicates = await Promise.all(
+		(duplicates as Array<NonNullable<(typeof duplicates)[number]>>).map(
+			(entity) => addEntityReviewLinks(ctx, entity),
+		),
+	);
+	const linkedWinner = await addEntityReviewLinks(ctx, winner);
+	const [loser, ...rest] = linkedDuplicates;
+	if (!loser) throw new Error("At least one duplicate entity is required");
 	return proposeEntityChange(ctx, {
 		...proposal,
+		entity_id: loser.id,
 		operation: "merge",
-		current: { loser, winner },
+		current: { loser, duplicates: [loser, ...rest], winner: linkedWinner },
 	});
 }
 
@@ -373,7 +471,10 @@ export async function proposeEntityChange(
 	      )
 	      AND (
 	        ${operation !== "merge"}
-	        OR COALESCE(r.action_input->>'winner_entity_id', '') = ${String(mergeProposal?.winner_entity_id ?? "")}
+	        OR (
+	          COALESCE(r.action_input->>'winner_entity_id', '') = ${String(mergeProposal?.winner_entity_id ?? "")}
+	          AND COALESCE(r.action_input->'entity_ids', jsonb_build_array((r.action_input->>'entity_id')::bigint)) = ${sql.json(mergeProposal ? mergeEntityIds(mergeProposal) : [])}::jsonb
+	        )
 	      )
 	    ORDER BY r.id DESC
     LIMIT 1
@@ -456,7 +557,7 @@ export async function proposeEntityChange(
 				? []
 				: operation === "merge"
 					? [
-							asMergeProposal(proposal).entity_id,
+							...mergeEntityIds(asMergeProposal(proposal)),
 							asMergeProposal(proposal).winner_entity_id,
 						]
 					: [
@@ -498,7 +599,14 @@ export async function proposeEntityChange(
 				: mergeProposal
 					? {
 							entity_id: mergeProposal.entity_id,
+							entity_ids: mergeEntityIds(mergeProposal),
 							winner_entity_id: mergeProposal.winner_entity_id,
+							evidence: mergeProposal.evidence ?? [],
+							names: (
+								mergeProposal.current.duplicates ?? [
+									mergeProposal.current.loser,
+								]
+							).map((entity) => entity.name),
 							name: mergeProposal.current.loser.name,
 							winner_name: mergeProposal.current.winner.name,
 						}
@@ -607,7 +715,14 @@ export async function proposeEntityChange(
 						proposal: mergeProposal
 							? {
 									entity_id: mergeProposal.entity_id,
+									entity_ids: mergeEntityIds(mergeProposal),
 									winner_entity_id: mergeProposal.winner_entity_id,
+									evidence: mergeProposal.evidence ?? [],
+									names: (
+										mergeProposal.current.duplicates ?? [
+											mergeProposal.current.loser,
+										]
+									).map((entity) => entity.name),
 									name: mergeProposal.current.loser.name,
 									winner_name: mergeProposal.current.winner.name,
 								}
@@ -621,8 +736,7 @@ export async function proposeEntityChange(
 											deleteProposal.force_delete_tree ?? false,
 									}
 								: (createProposal?.proposal ?? null),
-						current:
-							deleteProposal?.current ?? mergeProposal?.current ?? null,
+						current: deleteProposal?.current ?? mergeProposal?.current ?? null,
 						reason: proposal.reason ?? null,
 					},
 	}).catch((error) =>
@@ -773,9 +887,9 @@ export async function applyEntityChangeProposal(
 	}
 	if (operation === "merge") {
 		const mergeProposal = asMergeProposal(proposal);
-		return applyMerge({
+		return applyMergeGroup({
 			orgId: ctx.organizationId,
-			loserId: mergeProposal.entity_id,
+			loserIds: mergeEntityIds(mergeProposal),
 			winnerId: mergeProposal.winner_entity_id,
 			mergedBy: ctx.userId ?? "system",
 		});

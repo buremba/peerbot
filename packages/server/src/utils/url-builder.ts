@@ -279,6 +279,19 @@ export function buildConnectionsUrl(
   );
 }
 
+/** Build the exact installed-connection detail route. */
+export function buildConnectionUrl(
+  ownerSlug: string,
+  connectorKey: string,
+  connectionId: number,
+  baseUrl?: string
+): string {
+  return withBaseUrl(
+    normalizeBaseUrl(baseUrl),
+    `/${ownerSlug}/connectors/${connectorKey}/${connectionId}`
+  );
+}
+
 /**
  * A slice of the memory/events log to permalink into. One discriminated union
  * so every caller (approval_url, notification resourceUrl, agent output) picks a

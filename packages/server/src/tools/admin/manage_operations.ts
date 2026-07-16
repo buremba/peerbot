@@ -1773,7 +1773,10 @@ function describeEntityChange(proposal: EntityChangeProposal): string {
 			EntityChangeProposal,
 			{ operation: "merge" }
 		>;
-		return `${String(mergeProposal.current.loser.name ?? `entity ${mergeProposal.entity_id}`)} into ${String(mergeProposal.current.winner.name ?? `entity ${mergeProposal.winner_entity_id}`)}`;
+		const duplicates = mergeProposal.current.duplicates ?? [
+			mergeProposal.current.loser,
+		];
+		return `${duplicates.map((entity) => String(entity.name ?? `entity ${entity.id}`)).join(", ")} into ${String(mergeProposal.current.winner.name ?? `entity ${mergeProposal.winner_entity_id}`)}`;
 	}
 	return (proposal as Extract<EntityChangeProposal, { operation: "create" }>)
 		.entity_data.name;

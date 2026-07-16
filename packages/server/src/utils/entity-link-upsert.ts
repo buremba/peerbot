@@ -24,8 +24,8 @@ import type {
   EventAttributionRule,
 } from '@lobu/connector-sdk';
 import { normalizeIdentifier } from '@lobu/connector-sdk/identity-normalize';
-import { normalizeConnectorIdentityValue } from '../identity/connector-identity-modules';
 import { type DbClient, getDb, pgTextArray } from '../db/client';
+import { normalizeConnectorIdentityValue } from '../identity/connector-identity-modules';
 import logger from './logger';
 import { getValueAtPath } from './object-path';
 import { TtlCache } from './ttl-cache';
@@ -372,6 +372,7 @@ async function createEntityWithIdentities(
   params: {
     orgId: string;
     connectorKey: string;
+    connectionId?: number | null;
     entityType: string;
     title: string;
     identities: ExtractedLink['identities'];
@@ -450,6 +451,7 @@ async function createEntityWithIdentities(
     orgId: params.orgId,
     entityId,
     connectorKey: params.connectorKey,
+    connectionId: params.connectionId,
     identities: persisted,
   });
   // Seed metadata.aliases from the identifiers that actually attached, so the
@@ -474,6 +476,7 @@ async function insertIdentities(
     orgId: string;
     entityId: number;
     connectorKey: string;
+    connectionId?: number | null;
     identities: ExtractedLink['identities'];
   }
 ): Promise<Array<{ namespace: string; identifier: string }>> {
@@ -483,9 +486,10 @@ async function insertIdentities(
   try {
     const attached = await sql<{ namespace: string; identifier: string }>`
       INSERT INTO entity_identities (
-        organization_id, entity_id, namespace, identifier, source_connector
+        organization_id, entity_id, namespace, identifier, source_connector, connection_id
       )
-      SELECT ${params.orgId}, ${params.entityId}, v.ns, v.ident, ${`connector:${params.connectorKey}`}
+      SELECT ${params.orgId}, ${params.entityId}, v.ns, v.ident,
+             ${`connector:${params.connectorKey}`}, ${params.connectionId ?? null}
       FROM unnest(${pgTextArray(namespaces)}::text[], ${pgTextArray(identifiers)}::text[]) AS v(ns, ident)
       ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
       DO NOTHING
@@ -567,6 +571,7 @@ async function applyTraits(
  */
 export async function applyEventAttributions(params: {
   connectorKey: string;
+  connectionId?: number | null;
   feedKey: string | null;
   orgId: string;
   items: BatchItem[];
@@ -582,6 +587,7 @@ export async function applyEventAttributions(params: {
 
   await resolveLinksByKind({
     connectorKey: params.connectorKey,
+    connectionId: params.connectionId,
     orgId: params.orgId,
     items: params.items,
     rulesByKind,
@@ -604,6 +610,7 @@ export async function applyEventAttributions(params: {
 export async function resolveEventAttributionsForItems(
   params: {
     connectorKey: string;
+    connectionId?: number | null;
     orgId: string;
     items: BatchItem[];
     rules: RuleMap;
@@ -616,6 +623,7 @@ export async function resolveEventAttributionsForItems(
   return resolveLinksByKind(
     {
       connectorKey: params.connectorKey,
+      connectionId: params.connectionId,
       orgId: params.orgId,
       items: params.items,
       rulesByKind: params.rules,
@@ -634,6 +642,7 @@ export async function resolveEventAttributionsForItems(
 async function resolveLinksByKind(
   params: {
     connectorKey: string;
+    connectionId?: number | null;
     orgId: string;
     items: BatchItem[];
     rulesByKind: RuleMap;
@@ -758,6 +767,7 @@ async function resolveLinksByKind(
           orgId: params.orgId,
           entityId,
           connectorKey: params.connectorKey,
+          connectionId: params.connectionId,
           identities: link.identities.filter((i) => !i.matchOnly),
         });
         attached = [...fresh];
@@ -789,6 +799,7 @@ async function resolveLinksByKind(
         const created = await createEntityWithIdentities(sql, {
           orgId: params.orgId,
           connectorKey: params.connectorKey,
+          connectionId: params.connectionId,
           entityType: rule.entityType,
           title: link.title,
           identities: link.identities,

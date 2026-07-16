@@ -30,7 +30,7 @@ import {
 	evaluateEntityMutation,
 	resolveActingPrincipal,
 } from "../../authz/entity-policy";
-import { getDb, pgTextArray } from "../../db/client";
+import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
 import type { Env } from "../../index";
 import {
 	batchLoadRelationships,
@@ -42,7 +42,7 @@ import {
 	type RelationshipColumnSpec,
 	updateEntity,
 } from "../../utils/entity-management";
-import { applyMerge, applyUnmerge } from "../../utils/entity-merge";
+import { applyMergeGroup, applyUnmerge } from "../../utils/entity-merge";
 import { ToolUserError } from "../../utils/errors";
 import { recordChangeEvent } from "../../utils/insert-event";
 import { resolveMemberSchemaFieldsFromSchema } from "../../utils/member-entity-type";
@@ -166,7 +166,7 @@ const runManageEntity = defineFlatActionTool<
 	update_link: flatAction(handleUpdateLink),
 	list_links: flatAction(handleListLinks),
 	merge: flatAction((args, ctx) => handleMerge(args, ctx), {
-		requires: ["entity_id", "winner_entity_id"],
+		requires: ["winner_entity_id"],
 	}),
 	unmerge: flatAction((args, ctx) => handleUnmerge(args, ctx), {
 		requires: ["entity_id"],
@@ -616,11 +616,15 @@ async function handleMerge(
 	if (actor.kind === "user" && !isAdminOrOwnerRole(ctx.memberRole)) {
 		throw new ToolUserError("Only an admin or owner may merge entities", 403);
 	}
-	const loserId = args.entity_id;
+	const loserIds = [
+		...new Set(
+			args.duplicate_entity_ids ?? (args.entity_id ? [args.entity_id] : []),
+		),
+	].sort((a, b) => a - b);
 	const winnerId = args.winner_entity_id;
-	if (!loserId)
+	if (loserIds.length === 0)
 		throw new ToolUserError(
-			"entity_id (the duplicate to fold in) is required for merge",
+			"entity_id or duplicate_entity_ids is required for merge",
 			400,
 		);
 	if (!winnerId)
@@ -628,8 +632,8 @@ async function handleMerge(
 			"winner_entity_id (the survivor) is required for merge",
 			400,
 		);
-	if (loserId === winnerId)
-		throw new ToolUserError("entity_id and winner_entity_id must differ", 400);
+	if (loserIds.includes(winnerId))
+		throw new ToolUserError("winner_entity_id cannot also be a duplicate", 400);
 
 	const sql = getDb();
 	// Both entities must be live and in the caller's org — never merge across a
@@ -637,15 +641,17 @@ async function handleMerge(
 	const rows = (await sql`
     SELECT id FROM entities
     WHERE organization_id = ${ctx.organizationId}
-      AND id IN (${loserId}, ${winnerId})
+	      AND id = ANY(${pgBigintArray([...loserIds, winnerId])}::bigint[])
       AND deleted_at IS NULL
   `) as Array<{ id: number }>;
 	const found = new Set(rows.map((r) => Number(r.id)));
-	if (!found.has(loserId))
-		throw new ToolUserError(
-			`Entity ${loserId} not found in this workspace`,
-			404,
-		);
+	for (const loserId of loserIds) {
+		if (!found.has(loserId))
+			throw new ToolUserError(
+				`Entity ${loserId} not found in this workspace`,
+				404,
+			);
+	}
 	if (!found.has(winnerId))
 		throw new ToolUserError(
 			`Entity ${winnerId} not found in this workspace`,
@@ -655,8 +661,9 @@ async function handleMerge(
 	if (actor.kind !== "user") {
 		const attribution = actor.kind === "watcher" ? "watcher" : "agent";
 		const queued = await proposeEntityMerge(ctx, {
-			entity_id: loserId,
+			entity_ids: loserIds,
 			winner_entity_id: winnerId,
+			evidence: args.merge_evidence,
 			watcher_id:
 				ctx.actingWatcherId ?? args.watcher_source?.watcher_id ?? null,
 			window_id: ctx.actingWindowId ?? args.watcher_source?.window_id ?? null,
@@ -671,7 +678,8 @@ async function handleMerge(
 			approval_run_id: queued.runId,
 			approval_action: "merge",
 			approval_proposal: {
-				entity_id: loserId,
+				entity_id: loserIds[0],
+				entity_ids: loserIds,
 				winner_entity_id: winnerId,
 			},
 			approval_attribution: attribution,
@@ -679,11 +687,11 @@ async function handleMerge(
 		};
 	}
 
-	let result: Awaited<ReturnType<typeof applyMerge>>;
+	let result: Awaited<ReturnType<typeof applyMergeGroup>>;
 	try {
-		result = await applyMerge({
+		result = await applyMergeGroup({
 			orgId: ctx.organizationId,
-			loserId,
+			loserIds,
 			winnerId,
 			mergedBy: ctx.agentId ?? ctx.userId ?? "system",
 		});
@@ -697,9 +705,10 @@ async function handleMerge(
 	return {
 		action: "merge",
 		success: true,
-		message: `Merged entity ${loserId} into ${winnerId} (${result.movedIdentities} identities moved, ${result.repointedEdges} edges re-pointed).`,
+		message: `Merged ${loserIds.length} duplicate ${loserIds.length === 1 ? "entity" : "entities"} into ${winnerId} (${result.movedIdentities} identities moved, ${result.repointedEdges} edges re-pointed).`,
 		winner_entity_id: winnerId,
-		loser_entity_id: loserId,
+		loser_entity_id: loserIds[0],
+		loser_entity_ids: loserIds,
 		moved_identities: result.movedIdentities,
 		repointed_edges: result.repointedEdges,
 	};

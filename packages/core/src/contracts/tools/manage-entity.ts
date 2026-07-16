@@ -57,6 +57,29 @@ export const ManageEntitySchema = Type.Object({
     })
   ),
 
+  duplicate_entity_ids: Type.Optional(
+    Type.Array(Type.Number(), {
+      minItems: 1,
+      uniqueItems: true,
+      description:
+        "[merge] All duplicate entities to fold into winner_entity_id. Use this for a duplicate group; entity_id remains supported for a single duplicate.",
+    })
+  ),
+
+  merge_evidence: Type.Optional(
+    Type.Array(
+      Type.Object({
+        kind: Type.String(),
+        identifier: Type.String(),
+        identity_ids: Type.Optional(Type.Array(Type.Number())),
+      }),
+      {
+        description:
+          "[merge] Structured identity evidence the reviewer should verify, such as a shared email or phone.",
+      }
+    )
+  ),
+
   // Entity type (required for create, list)
   entity_type: Type.Optional(
     Type.String({
@@ -459,6 +482,7 @@ export const ManageEntityResultSchema = Type.Union([
       message: Type.String(),
       winner_entity_id: Type.Integer(),
       loser_entity_id: Type.Integer(),
+      loser_entity_ids: Type.Optional(Type.Array(Type.Integer())),
       moved_identities: Type.Integer(),
       repointed_edges: Type.Integer(),
     }),
@@ -470,6 +494,7 @@ export const ManageEntityResultSchema = Type.Union([
       approval_action: Type.Literal("merge"),
       approval_proposal: Type.Object({
         entity_id: Type.Integer(),
+        entity_ids: Type.Optional(Type.Array(Type.Integer())),
         winner_entity_id: Type.Integer(),
       }),
       approval_attribution: Type.Union([

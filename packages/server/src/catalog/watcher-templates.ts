@@ -98,7 +98,59 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			// it can reason about which pairs are truly the same.
 			sources: [{ name: "people", query: "@entity:person" }],
 			prompt:
-				"Some of these person entities may be duplicates — the SAME real-world person captured more than once (e.g. once from a chat handle, once from an email), each holding different identifiers or aliases. Group records that represent one person. Shared aliases or overlapping identity values (email, phone, handle) are strong signals; mere name similarity alone is NOT.\n\nFor each group you are confident represents one person, choose the most complete record as canonical and call manage_entity(action='merge', duplicate_entity_ids=[<every duplicate id>], winner_entity_id=<canonical id>, merge_evidence=[{ kind: <email|phone|handle|alias>, identifier: <matching value> }]). This call creates one pending human approval for the whole group; it does not merge before approval. The duplicate identities, aliases, edges, and events will recall against the survivor after approval; events are never rewritten, and the merge is reversible.\n\nReturn the approval proposals you created and, separately, any uncertain groups you did not propose (with why). Never substitute textual backlog tasks for manage_entity calls.\n",
+				"Some of these person entities may be duplicates — the SAME real-world person captured more than once (e.g. once from a chat handle, once from an email), each holding different identifiers or aliases. Group records that represent one person. Shared aliases or overlapping identity values (email, phone, handle) are strong signals; mere name similarity alone is NOT.\n\nFor each confident group, choose the most complete record as canonical and return one item in merge_proposals with winner_entity_id, duplicate_entity_ids (every other record in that group), merge_evidence (kind and the shared identifier), and rationale. Return uncertain groups separately with why. Never emit textual backlog tasks. The deterministic reaction submits every proposal through manage_entity so each group becomes one pending human approval and no merge happens before approval.\n",
+			reaction_script: `export const input = {
+	type: "object",
+	properties: {
+		merge_proposals: {
+			type: "array",
+			items: {
+				type: "object",
+				properties: {
+					winner_entity_id: { type: "number" },
+					duplicate_entity_ids: { type: "array", items: { type: "number" }, minItems: 1 },
+					merge_evidence: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								kind: { enum: ["email", "phone", "handle", "alias"] },
+								identifier: { type: "string" },
+							},
+							required: ["kind", "identifier"],
+							additionalProperties: false,
+						},
+						minItems: 1,
+					},
+					rationale: { type: "string" },
+				},
+				required: ["winner_entity_id", "duplicate_entity_ids", "merge_evidence", "rationale"],
+				additionalProperties: false,
+			},
+		},
+		uncertain_groups: { type: "array", items: { type: "object" } },
+	},
+	required: ["merge_proposals", "uncertain_groups"],
+	additionalProperties: false,
+};
+
+export default async function reaction(ctx, client) {
+	const proposals = Array.isArray(ctx.extracted_data?.merge_proposals)
+		? ctx.extracted_data.merge_proposals
+		: [];
+	for (const proposal of proposals) {
+		await client.entities.manage({
+			action: "merge",
+			winner_entity_id: proposal.winner_entity_id,
+			duplicate_entity_ids: proposal.duplicate_entity_ids,
+			merge_evidence: proposal.merge_evidence,
+			watcher_source: {
+				watcher_id: ctx.watcher.id,
+				window_id: ctx.window.id,
+			},
+		});
+	}
+}`,
 			reactions_guidance:
 				"Only merge when the evidence is strong (a shared identity value or alias, not just a similar name). When unsure, leave the pair unmerged and report it for human review rather than guessing — a wrong merge is costly to notice.",
 			tags: ["identity", "deduplication", "world-model"],

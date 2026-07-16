@@ -313,10 +313,6 @@ export function getLockDb(): Sql {
       max_lifetime: 60 * 30,
       connection: {
         application_name: 'server-locks',
-        // Startup GUC (milliseconds): bounds every lock wait on these
-        // sessions, advisory locks included. 55P03 (lock_not_available)
-        // on expiry.
-        lock_timeout: 30000,
       },
     });
     logger.info('[DB] PostgreSQL advisory-lock pool created');

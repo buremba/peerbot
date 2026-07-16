@@ -262,6 +262,11 @@ async function withWatcherGroupLock<T>(
   const reserved = await getLockDb().reserve();
   try {
     try {
+      // Set this after checkout instead of sending it as a startup parameter.
+      // PgBouncer-compatible proxies reject arbitrary startup GUCs (production
+      // reports `unsupported startup parameter: lock_timeout`). The setting is
+      // session-local and this reserved connection owns the lock and unlock.
+      await reserved`SELECT set_config('lock_timeout', '30000', false)`;
       await reserved`SELECT pg_advisory_lock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
     } catch (err) {
       // lock_timeout expiry (55P03): another holder kept the group busy past
@@ -986,4 +991,3 @@ async function listWatchersImpl(
   }
   return handleList(args, env, ctx);
 }
-

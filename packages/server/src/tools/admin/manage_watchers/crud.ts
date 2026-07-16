@@ -43,6 +43,10 @@ import {
   extractSourcesFromPromptTokens,
   mergePromptSources,
 } from '../../../watchers/source-refs';
+import {
+  compileReactionScript,
+  extractReactionInputSchema,
+} from '../../../watchers/reaction-executor';
 
 // ============================================
 // handleCreate
@@ -190,6 +194,14 @@ export async function handleCreate(
     );
   }
 
+  const reactionScript = args.reaction_script?.trim() ? args.reaction_script : null;
+  const reactionScriptCompiled = reactionScript
+    ? await compileReactionScript(reactionScript)
+    : null;
+  const reactionInputSchema = reactionScript
+    ? await extractReactionInputSchema(reactionScript)
+    : null;
+
   const createdBy = ctx.userId ?? 'system';
 
   // Allocated inside the transaction below: getNextNumericId relies on
@@ -218,7 +230,8 @@ export async function handleCreate(
         watcher_group_id,
         device_worker_id, agent_kind,
         notification_channel, notification_priority, min_cooldown_seconds,
-        execution_config
+        execution_config,
+        reaction_script, reaction_script_compiled, reaction_input_schema
       ) VALUES (
         ${watcherId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
@@ -232,11 +245,15 @@ export async function handleCreate(
         ${args.notification_channel ?? 'canvas'},
         ${args.notification_priority ?? 'normal'},
         ${args.min_cooldown_seconds ?? 0},
-        ${toJsonParam(tx, args.execution_config)}
+        ${toJsonParam(tx, args.execution_config)},
+        ${reactionScript}, ${reactionScriptCompiled},
+        ${reactionInputSchema ? tx.json(reactionInputSchema) : null}
       )
     `;
 
     // 2. Create watcher_versions row (v1)
+    // Reaction fields are group-shared and unversioned, so they live only on
+    // watchers and are omitted from watcher_versions.
     await tx`
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
@@ -340,6 +357,8 @@ export async function handleCreate(
         keying_config: keyingConfig ?? null,
         classifiers: classifiers ?? null,
         reactions_guidance: args.reactions_guidance ?? null,
+        reaction_script: reactionScript,
+        reaction_input_schema: reactionInputSchema ?? null,
       },
     });
   }

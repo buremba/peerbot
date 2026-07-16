@@ -68,6 +68,7 @@ export interface WatcherCreateInput {
 	keying_config?: Record<string, unknown>;
 	classifiers?: Record<string, unknown>;
 	reactions_guidance?: string;
+	reaction_script?: string;
 	agent_id?: string;
 	scheduler_client_id?: string;
 	model_config?: Record<string, unknown>;

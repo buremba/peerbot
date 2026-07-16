@@ -22,7 +22,6 @@ describe('watcher CRUD', () => {
   let entityId: number;
   let agentId: string;
   let ownerOrgId: string;
-  let ownerUserId: string;
   let otherOrgId: string;
   let otherUserId: string;
 
@@ -32,7 +31,6 @@ describe('watcher CRUD', () => {
     const user = await createTestUser({ email: 'watcher-owner@test.com' });
     await addUserToOrganization(user.id, org.id, 'owner');
     ownerOrgId = org.id;
-    ownerUserId = user.id;
     owner = await TestApiClient.for({
       organizationId: org.id,
       userId: user.id,
@@ -88,6 +86,49 @@ describe('watcher CRUD', () => {
       watchers?: Array<{ watcher_id: string }>;
     };
     expect(list.watchers?.some((w) => w.watcher_id === watcherId)).toBe(false);
+  });
+
+  it('creates a watcher and its reaction contract atomically', async () => {
+    const sql = getTestDb();
+    const reaction = `export const input = { type: "object", properties: { merge_proposals: { type: "array" } }, required: ["merge_proposals"] }; export default async function () {}`;
+    const created = (await owner.watchers.create({
+      slug: 'atomic-reaction-watcher',
+      name: 'Atomic Reaction Watcher',
+      prompt: 'Return merge proposals.',
+      agent_id: agentId,
+      reaction_script: reaction,
+    })) as { watcher_id: string };
+
+    const [row] = await sql<{
+      reaction_script: string | null;
+      reaction_script_compiled: string | null;
+      reaction_input_schema: Record<string, unknown> | null;
+    }[]>`
+      SELECT reaction_script, reaction_script_compiled, reaction_input_schema
+      FROM watchers WHERE id = ${created.watcher_id}
+    `;
+    expect(row?.reaction_script).toBe(reaction);
+    expect(row?.reaction_script_compiled).toContain('merge_proposals');
+    expect(row?.reaction_input_schema).toMatchObject({
+      required: ['merge_proposals'],
+    });
+  });
+
+  it('does not create a watcher when its reaction fails compilation', async () => {
+    await expect(
+      owner.watchers.create({
+        slug: 'invalid-reaction-watcher',
+        name: 'Invalid Reaction Watcher',
+        prompt: 'Return merge proposals.',
+        agent_id: agentId,
+        reaction_script: 'export default async function reaction() {',
+      })
+    ).rejects.toThrow();
+
+    const [row] = await getTestDb()<{ id: number }[]>`
+      SELECT id FROM watchers WHERE slug = 'invalid-reaction-watcher'
+    `;
+    expect(row).toBeUndefined();
   });
 
   it('concurrent creates of the same slug: one wins, every loser gets the coded 409 (not raw 23505)', async () => {

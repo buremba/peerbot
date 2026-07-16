@@ -109,14 +109,6 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
 }
 
 /**
- * Compile a TypeScript reaction script to JavaScript using esbuild.
- *
- * Stays exported because `manage_watchers.set_reaction_script` calls it at
- * save time to surface compile errors back to the agent. Run-time compile
- * also happens inside `runScript` itself; this is a fast-path for
- * pre-validation.
- */
-/**
  * Extract a reaction's exported `input` schema (a TypeBox schema, i.e. plain
  * JSON Schema) by loading the compiled module in the isolate WITHOUT invoking
  * its handler. This is how the watcher's extraction contract is derived from
@@ -149,6 +141,14 @@ export async function extractReactionInputSchema(
     : null;
 }
 
+/**
+ * Compile a TypeScript reaction script to JavaScript using esbuild.
+ *
+ * Stays exported because `manage_watchers` create and set_reaction_script call
+ * it at save time to surface compile errors back to the agent. Run-time compile
+ * also happens inside `runScript` itself; this is a fast-path for
+ * pre-validation.
+ */
 export async function compileReactionScript(source: string): Promise<string> {
   // Match `runScript`'s execute-time esbuild config exactly so save-time and
   // runtime accept the same set of imports. Drift here used to externalize

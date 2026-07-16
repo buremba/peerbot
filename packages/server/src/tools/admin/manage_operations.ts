@@ -22,14 +22,7 @@ import {
 	RejectBatchAction,
 } from "@lobu/core/contracts/tools/manage-operations";
 import type { Static } from "@sinclair/typebox";
-import {
-	getDb,
-	parsePgNumberArray,
-	pgBigintArray,
-	pgTextArray,
-} from "../../db/client";
-import type { Env } from "../../index";
-import { callTool as callProxyTool } from "../../mcp-proxy/client";
+import { compileConnectionRowVisibility } from "../../authz/connection-visibility";
 import {
 	agentExistsInOrg,
 	resolveActingPrincipal,
@@ -38,9 +31,15 @@ import {
 	resolveWritePolicyDecision,
 	watcherIdFromPrincipalId,
 } from "../../authz/entity-policy";
-import { compileConnectionRowVisibility } from "../../authz/connection-visibility";
 import { authzScopeFromToolContext } from "../../authz/scope";
-import { callerIsAdmin } from "./helpers/db-helpers";
+import {
+	getDb,
+	parsePgNumberArray,
+	pgBigintArray,
+	pgTextArray,
+} from "../../db/client";
+import type { Env } from "../../index";
+import { callTool as callProxyTool } from "../../mcp-proxy/client";
 import { notifyActionApprovalNeeded } from "../../notifications/triggers";
 import {
 	defaultActionModeForOperation,
@@ -81,6 +80,7 @@ import {
 	ENTITY_CHANGE_ACTION_KEYS,
 	type EntityChangeProposal,
 } from "./entity-field-approval";
+import { callerIsAdmin } from "./helpers/db-helpers";
 import {
 	applyManageAgentsProposal,
 	MANAGE_AGENTS_ACTION_KEY,
@@ -395,7 +395,9 @@ async function executeOperationInline(
 	);
 }
 
-function executionTargetFromRow(row: OperationTargetRow): InternalExecutionTarget {
+function executionTargetFromRow(
+	row: OperationTargetRow,
+): InternalExecutionTarget {
 	const base = {
 		connection_id: Number(row.id),
 		slug: row.slug,
@@ -466,7 +468,11 @@ function resolveOperationReadiness(targets: ExecutionTarget[]): {
 		return { readyTarget, executable: true, readiness: "ready" };
 	}
 	if (targets.length === 0) {
-		return { readyTarget: undefined, executable: false, readiness: "disconnected" };
+		return {
+			readyTarget: undefined,
+			executable: false,
+			readiness: "disconnected",
+		};
 	}
 	if (targets.every((target) => target.status === "disabled")) {
 		return { readyTarget: undefined, executable: false, readiness: "disabled" };
@@ -606,7 +612,8 @@ function buildAvailableOperation(args: {
 	viewUrl: string | undefined;
 }): AvailableOperation & Record<string, unknown> {
 	const { operation, internalTargets, includeInputSchema, viewUrl } = args;
-	const { backend_config: _privateBackendConfig, ...publicOperation } = operation;
+	const { backend_config: _privateBackendConfig, ...publicOperation } =
+		operation;
 	const targets = internalTargets.map((target): ExecutionTarget => {
 		const {
 			config,
@@ -831,8 +838,7 @@ async function handleListAvailable(
 		.map((operation) =>
 			buildAvailableOperation({
 				operation,
-				internalTargets:
-					targetsByConnector.get(operation.connector_key) ?? [],
+				internalTargets: targetsByConnector.get(operation.connector_key) ?? [],
 				includeInputSchema: args.include_input_schema !== false,
 				viewUrl: connectorViewUrl(operation.connector_key),
 			}),
@@ -1699,9 +1705,9 @@ async function tryRejectBuilderRun(
 }
 
 /**
- * Claim a pending entity_field_change run (a watcher field-change held for
- * approval). Mirrors claimBuilderRun. Returns the held proposal, or null when
- * this run isn't a pending field-change run.
+ * Claim a pending entity-change run held for approval. Mirrors claimBuilderRun.
+ * Returns the held proposal, or null when this run is not a pending entity
+ * change.
  */
 async function claimEntityChangeRun(
 	runId: number,
@@ -1743,7 +1749,7 @@ async function claimEntityChangeRun(
 
 function entityChangeOperation(
 	proposal: EntityChangeProposal,
-): "create" | "update" | "delete" {
+): "create" | "update" | "delete" | "merge" {
 	return proposal.operation ?? "update";
 }
 
@@ -1762,14 +1768,20 @@ function describeEntityChange(proposal: EntityChangeProposal): string {
 		>;
 		return deleteProposal.current?.name ?? `entity ${deleteProposal.entity_id}`;
 	}
+	if (operation === "merge") {
+		const mergeProposal = proposal as Extract<
+			EntityChangeProposal,
+			{ operation: "merge" }
+		>;
+		const duplicates = mergeProposal.current.duplicates ?? [
+			mergeProposal.current.loser,
+		];
+		return `${duplicates.map((entity) => String(entity.name ?? `entity ${entity.id}`)).join(", ")} into ${String(mergeProposal.current.winner.name ?? `entity ${mergeProposal.winner_entity_id}`)}`;
+	}
 	return (proposal as Extract<EntityChangeProposal, { operation: "create" }>)
 		.entity_data.name;
 }
 
-/**
- * Approve + apply a pending entity_field_change run. Returns a result when the run
- * was a pending field-change run; null to fall through to other approval paths.
- */
 /**
  * Non-admin authority: a member may decide a run ONLY when it is a pending
  * entity-change proposal that records them as the field owner
@@ -1797,7 +1809,7 @@ async function isPendingEntityRunOwner(
 }
 
 /**
- * Approving/rejecting a run is a HUMAN decision — it must come from a verified
+ * Approving or rejecting a run is a HUMAN decision — it must come from a verified
  * user session, never from any non-human context. This is the security floor
  * beneath {@link requireApprovalAuthority}'s role check.
  *

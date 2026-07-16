@@ -383,7 +383,12 @@ describe("Slack block_actions → run-approval entity_field_change (Tier B)", ()
       SELECT metadata FROM entities WHERE id = ${fx.entityId}
     `;
     expect(entity.metadata.severity).toBe("high");
-    expect(h.postMessage).toHaveBeenCalled();
+    // The webhook returns 200 before the async onAction handler finishes:
+    // the run is marked completed and the field change applied inside
+    // manageOperations, and only then does the handler post the confirmation
+    // via thread.post -> postMessage. Poll for the post so we don't race the
+    // DB-state waitFor above (matches the unverified-user test below).
+    await waitFor(() => expect(h.postMessage).toHaveBeenCalled());
   });
 
   test("signed Reject button leaves the entity unchanged", async () => {

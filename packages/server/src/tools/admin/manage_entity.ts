@@ -24,13 +24,13 @@ import {
 	type RelationshipCountByType,
 	type RelationshipRow,
 } from "@lobu/core/contracts/tools/manage-entity";
+import { runMutationGate } from "../../authz/entity-mutation-gate";
 import {
 	type ActingPrincipal,
 	evaluateEntityMutation,
 	resolveActingPrincipal,
 } from "../../authz/entity-policy";
-import { runMutationGate } from "../../authz/entity-mutation-gate";
-import { getDb, pgTextArray } from "../../db/client";
+import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
 import type { Env } from "../../index";
 import {
 	batchLoadRelationships,
@@ -42,7 +42,7 @@ import {
 	type RelationshipColumnSpec,
 	updateEntity,
 } from "../../utils/entity-management";
-import { applyMerge, applyUnmerge } from "../../utils/entity-merge";
+import { applyMergeGroup, applyUnmerge } from "../../utils/entity-merge";
 import { ToolUserError } from "../../utils/errors";
 import { recordChangeEvent } from "../../utils/insert-event";
 import { resolveMemberSchemaFieldsFromSchema } from "../../utils/member-entity-type";
@@ -68,6 +68,7 @@ import {
 	toEntityInfo,
 } from "../view-urls";
 import { defineFlatActionTool, flatAction } from "./action-tool";
+import { proposeEntityMerge } from "./entity-field-approval";
 
 export { ManageEntityResultSchema, ManageEntitySchema };
 
@@ -165,7 +166,7 @@ const runManageEntity = defineFlatActionTool<
 	update_link: flatAction(handleUpdateLink),
 	list_links: flatAction(handleListLinks),
 	merge: flatAction((args, ctx) => handleMerge(args, ctx), {
-		requires: ["entity_id", "winner_entity_id"],
+		requires: ["winner_entity_id"],
 	}),
 	unmerge: flatAction((args, ctx) => handleUnmerge(args, ctx), {
 		requires: ["entity_id"],
@@ -186,18 +187,18 @@ async function manageEntityImpl(
   const result = await runManageEntity(args, env, ctx);
 
   // Track watcher reaction for mutating actions
-  if (args.watcher_source && 'action' in result) {
+	if (args.watcher_source && "action" in result) {
     const reactionType =
-      result.action === 'create'
-        ? 'entity_created'
-        : result.action === 'update'
-          ? 'entity_updated'
-          : result.action === 'link'
-            ? 'entity_linked'
+			result.action === "create"
+				? "entity_created"
+				: result.action === "update"
+					? "entity_updated"
+					: result.action === "link"
+						? "entity_linked"
             : null;
     if (reactionType) {
       const entityId =
-        result.action === 'create' && 'entity' in result
+				result.action === "create" && "entity" in result
           ? (result as any).entity.id
           : args.entity_id;
       await trackWatcherReaction({
@@ -205,7 +206,7 @@ async function manageEntityImpl(
         watcherId: args.watcher_source.watcher_id,
         windowId: args.watcher_source.window_id,
         reactionType,
-        toolName: 'manage_entity',
+				toolName: "manage_entity",
         toolArgs: {
           action: args.action,
           entity_type: args.entity_type,
@@ -601,23 +602,29 @@ function redactMemberEmail(
 
 /**
  * Fold a duplicate entity (`entity_id`, the loser) into the one it really is
- * (`winner_entity_id`). Admin/owner only — a merge is destructive and hard to
- * spot after the fact. The heavy lifting (move identities/aliases/edges,
- * tombstone + forward the loser, flatten chains) is in `applyMerge`; this
- * handler is the org-scoped gate + validation.
+ * (`winner_entity_id`). Humans must be admin/owner; agents and watchers queue a
+ * human approval because a merge is destructive and hard to spot after the
+ * fact. The heavy lifting (move identities/aliases/edges, tombstone + forward
+ * each loser, flatten chains) is in `applyMergeGroup`; this handler is the
+ * org-scoped gate + validation.
  */
 async function handleMerge(
 	args: ManageEntityArgs,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
-	if (!isAdminOrOwnerRole(ctx.memberRole)) {
+	const actor = await actingPrincipalFor(args, ctx);
+	if (actor.kind === "user" && !isAdminOrOwnerRole(ctx.memberRole)) {
 		throw new ToolUserError("Only an admin or owner may merge entities", 403);
 	}
-	const loserId = args.entity_id;
+	const loserIds = [
+		...new Set(
+			args.duplicate_entity_ids ?? (args.entity_id ? [args.entity_id] : []),
+		),
+	].sort((a, b) => a - b);
 	const winnerId = args.winner_entity_id;
-	if (!loserId)
+	if (loserIds.length === 0)
 		throw new ToolUserError(
-			"entity_id (the duplicate to fold in) is required for merge",
+			"entity_id or duplicate_entity_ids is required for merge",
 			400,
 		);
 	if (!winnerId)
@@ -625,35 +632,66 @@ async function handleMerge(
 			"winner_entity_id (the survivor) is required for merge",
 			400,
 		);
-	if (loserId === winnerId)
-		throw new ToolUserError("entity_id and winner_entity_id must differ", 400);
+	if (loserIds.includes(winnerId))
+		throw new ToolUserError("winner_entity_id cannot also be a duplicate", 400);
 
 	const sql = getDb();
-	// Both entities must be live and in the caller's org — never merge across a
-	// tenant boundary or into a deleted/foreign entity.
+	// Every duplicate and the winner must be live and in the caller's org — never
+	// merge across a tenant boundary or into a deleted/foreign entity.
 	const rows = (await sql`
     SELECT id FROM entities
     WHERE organization_id = ${ctx.organizationId}
-      AND id IN (${loserId}, ${winnerId})
+	      AND id = ANY(${pgBigintArray([...loserIds, winnerId])}::bigint[])
       AND deleted_at IS NULL
   `) as Array<{ id: number }>;
 	const found = new Set(rows.map((r) => Number(r.id)));
+	for (const loserId of loserIds) {
 	if (!found.has(loserId))
 		throw new ToolUserError(
 			`Entity ${loserId} not found in this workspace`,
 			404,
 		);
+	}
 	if (!found.has(winnerId))
 		throw new ToolUserError(
 			`Entity ${winnerId} not found in this workspace`,
 			404,
 		);
 
-	let result: Awaited<ReturnType<typeof applyMerge>>;
+	if (actor.kind !== "user") {
+		const attribution = actor.kind === "watcher" ? "watcher" : "agent";
+		const queued = await proposeEntityMerge(ctx, {
+			entity_ids: loserIds,
+			winner_entity_id: winnerId,
+			evidence: args.merge_evidence,
+			watcher_id:
+				ctx.actingWatcherId ?? args.watcher_source?.watcher_id ?? null,
+			window_id: ctx.actingWindowId ?? args.watcher_source?.window_id ?? null,
+			attribution,
+			reason:
+				"A duplicate merge needs human approval before identities and relationships are folded together.",
+		});
+		return {
+			action: "merge",
+			approval_queued: true,
+			approval_url: queued.approvalUrl,
+			approval_run_id: queued.runId,
+			approval_action: "merge",
+			approval_proposal: {
+				entity_id: loserIds[0],
+				entity_ids: loserIds,
+				winner_entity_id: winnerId,
+			},
+			approval_attribution: attribution,
+			next_steps: ["The merge is waiting for human approval."],
+		};
+	}
+
+	let result: Awaited<ReturnType<typeof applyMergeGroup>>;
 	try {
-		result = await applyMerge({
+		result = await applyMergeGroup({
 			orgId: ctx.organizationId,
-			loserId,
+			loserIds,
 			winnerId,
 			mergedBy: ctx.agentId ?? ctx.userId ?? "system",
 		});
@@ -667,9 +705,10 @@ async function handleMerge(
 	return {
 		action: "merge",
 		success: true,
-		message: `Merged entity ${loserId} into ${winnerId} (${result.movedIdentities} identities moved, ${result.repointedEdges} edges re-pointed).`,
+		message: `Merged ${loserIds.length} duplicate ${loserIds.length === 1 ? "entity" : "entities"} into ${winnerId} (${result.movedIdentities} identities moved, ${result.repointedEdges} edges re-pointed).`,
 		winner_entity_id: winnerId,
-		loser_entity_id: loserId,
+		loser_entity_id: loserIds[0],
+		loser_entity_ids: loserIds,
 		moved_identities: result.movedIdentities,
 		repointed_edges: result.repointedEdges,
 	};
@@ -996,13 +1035,21 @@ async function resolveLinkedColumns(
                 AND (e.metadata->>${lookupField}) = ANY(${valuesLiteral}::text[])
             `;
       if (rows.length === 0) return;
-      const bucketMap: Record<string, { slug: string; entity_type: string; name: string }> = {};
+				const bucketMap: Record<
+					string,
+					{ slug: string; entity_type: string; name: string }
+				> = {};
       for (const r of rows) {
         if (r.lookup_value == null) continue;
-        bucketMap[r.lookup_value] = { slug: r.slug, entity_type: r.entity_type, name: r.name };
+					bucketMap[r.lookup_value] = {
+						slug: r.slug,
+						entity_type: r.entity_type,
+						name: r.name,
+					};
       }
       out[bucketKey] = bucketMap;
-    })
+			},
+		),
   );
 
   return out;
@@ -1043,12 +1090,13 @@ async function handleGet(
       WHERE slug = ${MEMBER_ENTITY_TYPE_SLUG} AND organization_id = ${ctx.organizationId} AND deleted_at IS NULL
       LIMIT 1
     `;
-    const memberSchema = (rows[0]?.metadata_schema as Record<string, unknown> | null) ?? null;
+		const memberSchema =
+			(rows[0]?.metadata_schema as Record<string, unknown> | null) ?? null;
     metadata = redactMemberEmail(metadata, memberSchema);
   }
 
   return {
-    action: 'get',
+		action: "get",
     entity: {
       id: entity.id,
       entity_type: entity.entity_type,
@@ -1218,7 +1266,9 @@ async function handleLink(
     LIMIT 1
   `;
   if (typeRows.length === 0) {
-    throw new Error(`Relationship type "${args.relationship_type_slug}" not found`);
+		throw new Error(
+			`Relationship type "${args.relationship_type_slug}" not found`,
+		);
   }
   const typeId = Number(typeRows[0].id);
   const isSymmetric = Boolean(typeRows[0].is_symmetric);
@@ -1284,14 +1334,18 @@ async function handleLink(
 
   const created = await sql.unsafe<RelationshipRow>(
     `SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
-    [relationshipId]
+		[relationshipId],
   );
 
-  return { action: 'link', relationship: created[0] };
+	return { action: "link", relationship: created[0] };
 }
 
-async function handleUnlink(args: ManageEntityArgs, ctx: ToolContext): Promise<ManageEntityResult> {
-  if (!args.relationship_id) throw new Error('relationship_id is required for unlink');
+async function handleUnlink(
+	args: ManageEntityArgs,
+	ctx: ToolContext,
+): Promise<ManageEntityResult> {
+	if (!args.relationship_id)
+		throw new Error("relationship_id is required for unlink");
 
   const sql = getDb();
 
@@ -1326,7 +1380,8 @@ async function handleUpdateLink(
 	args: ManageEntityArgs,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
-  if (!args.relationship_id) throw new Error('relationship_id is required for update_link');
+	if (!args.relationship_id)
+		throw new Error("relationship_id is required for update_link");
 
   const sql = getDb();
 
@@ -1365,10 +1420,10 @@ async function handleUpdateLink(
 
   const updated = await sql.unsafe<RelationshipRow>(
     `SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
-    [args.relationship_id]
+		[args.relationship_id],
   );
 
-  return { action: 'update_link', relationship: updated[0] };
+	return { action: "update_link", relationship: updated[0] };
 }
 
 async function handleListLinks(
@@ -1453,7 +1508,7 @@ async function handleListLinks(
      ORDER BY r.created_at DESC
      LIMIT ${limit + 1}
      OFFSET ${offset}`,
-    params
+		params,
   );
 
   const hasMore = rows.length > limit;
@@ -1468,11 +1523,11 @@ async function handleListLinks(
     WHERE ${whereClause}
     GROUP BY rt.slug, rt.name
     ORDER BY count DESC`,
-    params
+		params,
   );
 
   return {
-    action: 'list_links',
+		action: "list_links",
     relationships,
     counts_by_type: countsResult,
     metadata: { total, limit, offset, has_more: hasMore },

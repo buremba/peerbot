@@ -7,8 +7,8 @@ import {
 } from "../../notifications/triggers";
 
 /**
- * Golden-pins the approval card/body rendering for all three shapes
- * (field change, entity create, entity delete) plus the generic fallback —
+ * Golden-pins the approval card/body rendering for all four shapes
+ * (field change, entity create, entity delete, entity merge) plus the generic fallback —
  * captured from the pre-unification renderer, so the shared model+emitters
  * must stay byte-identical to the three historical blocks.
  */
@@ -136,6 +136,34 @@ describe("approval notification rendering", () => {
 				"*Entity:* <https://app.lobu.ai/acme/topic/old-topic|Old Topic>\n" +
 				"\n*Proposed action:* Delete this entity\n" +
 				"*Entity id:* 11\n*Entity type:* topic\n*Name:* Old &lt;Topic&gt;\n*Force delete tree:* false",
+		);
+	});
+
+	test("entity merge: names both entities and renders a merge action", () => {
+		const details: ActionApprovalDetails = {
+			kind: "entity_change",
+			operation: "merge",
+			actorLabel: "A watcher",
+			entityId: 12,
+			entityType: "person",
+			entityName: "Duplicate Person",
+			proposal: {
+				entity_id: 12,
+				winner_entity_id: 10,
+				name: "Duplicate Person",
+				winner_name: "Canonical Person",
+			},
+			reason: "Duplicate entities need approval before merging.",
+		};
+
+		expect(formatActionApprovalTitle("entity_change", details)).toBe(
+			"Review merging person",
+		);
+		expect(formatActionApprovalBody({ details })).toContain(
+			"**A watcher** wants to merge Duplicate Person (#12).",
+		);
+		expect(cardText(buildActionApprovalCard({ details }))).toContain(
+			"*Proposed action:* Merge these entities",
 		);
 	});
 

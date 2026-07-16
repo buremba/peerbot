@@ -4,7 +4,7 @@
  * The world-model keystone: when a bridge event (or a reviewer/watcher) reveals
  * two entities are the same real thing, this fuses them WITHOUT rewriting the
  * append-only `events` table. It runs off the ingest hot path — a user-configured
- * watcher's agent, or an admin, calls it via the `manage_entity_merge` tool; the
+ * watcher's agent, or an admin, calls it via `manage_entity(action='merge')`; the
  * resolver only ever LOGS a "merge candidate", never fuses inline.
  *
  * Two disjoint event populations recall the winner afterward:
@@ -26,7 +26,7 @@
  * independently reversible even so.
  */
 
-import { type DbClient, getDb } from '../db/client';
+import { type DbClient, getDb, pgBigintArray } from '../db/client';
 import logger from './logger';
 
 export interface ApplyMergeParams {
@@ -44,31 +44,101 @@ export interface ApplyMergeResult {
   repointedEdges: number;
 }
 
+export interface ApplyMergeGroupResult {
+  mergedEntityIds: number[];
+  movedIdentities: number;
+  repointedEdges: number;
+}
+
+/**
+ * Apply a whole duplicate group under one outer transaction. Any stale or
+ * invalid member rolls back every preceding member merge.
+ */
+export async function applyMergeGroup(
+  params: {
+    orgId: string;
+    loserIds: number[];
+    winnerId: number;
+    mergedBy: string;
+  },
+  db: DbClient = getDb(),
+): Promise<ApplyMergeGroupResult> {
+  const loserIds = [...new Set(params.loserIds)].sort((a, b) => a - b);
+  if (loserIds.length === 0) throw new Error('applyMergeGroup: no duplicate entities');
+  if (loserIds.includes(params.winnerId)) {
+    throw new Error('applyMergeGroup: canonical entity is also a duplicate');
+  }
+  return db.begin(async (tx) => {
+    // Lock the whole group in one global order before applying any member. Pairwise
+    // locking inside the loop is not sufficient: overlapping groups with different
+    // winners can otherwise each hold one entity while waiting for the other.
+    const entityIds = [...loserIds, params.winnerId].sort((a, b) => a - b);
+    await tx`
+      SELECT id
+      FROM entities
+      WHERE organization_id = ${params.orgId}
+        AND id = ANY(${pgBigintArray(entityIds)}::bigint[])
+      ORDER BY id
+      FOR UPDATE
+    `;
+    let movedIdentities = 0;
+    let repointedEdges = 0;
+    for (const loserId of loserIds) {
+      const result = await applyMergeInTransaction(
+        {
+          orgId: params.orgId,
+          loserId,
+          winnerId: params.winnerId,
+          mergedBy: params.mergedBy,
+        },
+        tx,
+      );
+      movedIdentities += result.movedIdentities;
+      repointedEdges += result.repointedEdges;
+    }
+    return { mergedEntityIds: loserIds, movedIdentities, repointedEdges };
+  });
+}
+
 /**
  * Fuse `loser` into `winner` in one transaction. Idempotent-safe on re-run: a
  * loser already merged into this winner returns a zero result rather than
  * throwing. Throws on a cross-entity-type or already-merged-elsewhere conflict so
  * the caller (tool) surfaces it rather than silently corrupting the graph.
  */
-export async function applyMerge(
+export async function applyMerge(params: ApplyMergeParams, db: DbClient = getDb()): Promise<ApplyMergeResult> {
+  return db.begin((tx) => applyMergeInTransaction(params, tx));
+}
+
+async function applyMergeInTransaction(
   params: ApplyMergeParams,
-  db: DbClient = getDb(),
+  tx: DbClient,
 ): Promise<ApplyMergeResult> {
   const { orgId, loserId, winnerId, mergedBy } = params;
   if (loserId === winnerId) {
     throw new Error('applyMerge: loser and winner are the same entity');
   }
 
-  return db.begin(async (tx) => {
     // Lock both rows in a stable order (lowest id first) to avoid deadlocks when
-    // two merges touch the overlapping pair concurrently.
+    // two merges touch the overlapping pair concurrently. The explicit `ORDER BY
+    // id` pins lock-acquisition order — a bare `IN (...)` leaves it to the
+    // planner, which could lock high-then-low and deadlock a concurrent merge.
     const [a, b] = loserId < winnerId ? [loserId, winnerId] : [winnerId, loserId];
-    const locked = (await tx<{ id: number; merged_into: number | null; deleted_at: string | null }>`
+    const locked = (await tx<{
+      id: number;
+      merged_into: number | null;
+      deleted_at: string | null;
+    }>`
       SELECT id, merged_into, deleted_at
       FROM entities
       WHERE organization_id = ${orgId} AND id IN (${a}, ${b})
+      ORDER BY id
       FOR UPDATE
-    `) as Array<{ id: number; merged_into: number | null; deleted_at: string | null }>;
+    `) as Array<{
+      id: number;
+      merged_into: number | null;
+      deleted_at: string | null;
+    }>;
 
     const loser = locked.find((r) => Number(r.id) === loserId);
     const winner = locked.find((r) => Number(r.id) === winnerId);
@@ -81,6 +151,9 @@ export async function applyMerge(
     }
     if (loser.merged_into !== null) {
       throw new Error(`applyMerge: loser ${loserId} already merged into ${loser.merged_into}`);
+    }
+    if (loser.deleted_at !== null) {
+      throw new Error(`applyMerge: loser ${loserId} is deleted`);
     }
     if (winner.merged_into !== null) {
       throw new Error(`applyMerge: winner ${winnerId} is itself merged into ${winner.merged_into}`);
@@ -202,7 +275,6 @@ export async function applyMerge(
       movedIdentities: moved.length,
       repointedEdges: repointed.length,
     };
-  });
 }
 
 export interface ApplyUnmergeParams {
@@ -234,34 +306,55 @@ export interface ApplyUnmergeResult {
  * folded in are NOT reversed (they carry no per-merge origin) — the tool contract
  * says so; a caller that needs those back re-derives them.
  */
-export async function applyUnmerge(
-  params: ApplyUnmergeParams,
-  db: DbClient = getDb(),
-): Promise<ApplyUnmergeResult> {
+export async function applyUnmerge(params: ApplyUnmergeParams, db: DbClient = getDb()): Promise<ApplyUnmergeResult> {
   const { orgId, loserId, unmergedBy } = params;
 
   return db.begin(async (tx) => {
-    const [loserRow] = (await tx<{ id: number; merged_into: number | null; deleted_at: string | null }>`
-      SELECT id, merged_into, deleted_at
+    // Discover the winner WITHOUT locking first: we can't name the winner until
+    // we read merged_into, but taking the loser's lock here would grab the
+    // loser's row before the winner's — inverting applyMerge's lowest-id-first
+    // order and deadlocking a concurrent merge of the same pair whenever
+    // winnerId < loserId.
+    const [probe] = (await tx<{ merged_into: number | null }>`
+      SELECT merged_into
       FROM entities
       WHERE organization_id = ${orgId} AND id = ${loserId}
+    `) as Array<{ merged_into: number | null }>;
+    if (!probe) {
+      throw new Error(`applyUnmerge: entity ${loserId} not found in org`);
+    }
+    if (probe.merged_into === null) {
+      throw new Error(`applyUnmerge: entity ${loserId} is not merged into anything`);
+    }
+    const winnerId = Number(probe.merged_into);
+
+    // Lock BOTH rows in one statement, ascending id (matches applyMerge), so no
+    // path ever holds these two locks in opposing orders.
+    const [lo, hi] = loserId < winnerId ? [loserId, winnerId] : [winnerId, loserId];
+    const locked = (await tx<{
+      id: number;
+      merged_into: number | null;
+    }>`
+      SELECT id, merged_into
+      FROM entities
+      WHERE organization_id = ${orgId} AND id IN (${lo}, ${hi})
+      ORDER BY id
       FOR UPDATE
-    `) as Array<{ id: number; merged_into: number | null; deleted_at: string | null }>;
+    `) as Array<{ id: number; merged_into: number | null }>;
+
+    // Re-validate under lock: merged_into can move between the unlocked probe and
+    // acquiring the lock (a racing unmerge/merge). Fail closed if it changed so
+    // we never operate on a stale winner we didn't lock.
+    const loserRow = locked.find((row) => Number(row.id) === loserId);
     if (!loserRow) {
       throw new Error(`applyUnmerge: entity ${loserId} not found in org`);
     }
-    if (loserRow.merged_into === null) {
+    if (
+      loserRow.merged_into === null ||
+      Number(loserRow.merged_into) !== winnerId
+    ) {
       throw new Error(`applyUnmerge: entity ${loserId} is not merged into anything`);
     }
-    const winnerId = Number(loserRow.merged_into);
-
-    // Lock the winner too, in stable id order (matches applyMerge's discipline).
-    const [lo, hi] = loserId < winnerId ? [loserId, winnerId] : [winnerId, loserId];
-    await tx`
-      SELECT id FROM entities
-      WHERE organization_id = ${orgId} AND id IN (${lo}, ${hi})
-      FOR UPDATE
-    `;
 
     // 1. Move the loser's contributed identities back off the winner. These are
     //    the live winner-owned rows still marked `merged_from = loser` (applyMerge

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import {
   addUserToOrganization,
+  createTestConnection,
   createTestConnectorDefinition,
   createTestOrganization,
   createTestUser,
@@ -285,9 +286,17 @@ describe('applyEventAttributions', () => {
         { namespace: 'wa_jid', eventPath: 'metadata.jid' },
       ],
     });
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'whatsapp',
+      display_name: 'WhatsApp',
+      created_by: user.id,
+      createDefaultFeed: false,
+    });
 
     await applyEventAttributions({
       connectorKey: 'whatsapp',
+      connectionId: connection.id,
       feedKey: FEED_KEY,
       orgId: org.id,
       items: [
@@ -305,12 +314,16 @@ describe('applyEventAttributions', () => {
     `;
     expect(entityCount[0].count).toBe('1');
 
-    const idents = await sql<{ namespace: string }[]>`
-      SELECT namespace FROM entity_identities
+    const idents = await sql<{ namespace: string; connection_id: number | string | null }[]>`
+      SELECT namespace, connection_id FROM entity_identities
       WHERE organization_id = ${org.id} AND entity_id = ${Number(entityId)}
       ORDER BY namespace
     `;
     expect(idents.map((r) => r.namespace)).toEqual(['phone', 'wa_jid']);
+    expect(idents.map((r) => Number(r.connection_id))).toEqual([
+      connection.id,
+      connection.id,
+    ]);
   });
 
   it('skips linking when one event resolves to multiple distinct entities', async () => {

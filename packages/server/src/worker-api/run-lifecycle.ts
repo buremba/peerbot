@@ -221,6 +221,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		// batch — cheap compared to the per-event inserts that follow.
 		await applyEventAttributions({
 			connectorKey: run.connector_key,
+			connectionId: run.connection_id,
 			feedKey: run.feed_key,
 			orgId: run.organization_id,
 			items: batch.items,

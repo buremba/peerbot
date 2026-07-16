@@ -267,6 +267,7 @@ describe("listAgentThreads scope=all", () => {
 		expect(data.interactions).toEqual([
 			expect.objectContaining({
 				type: "tool-approval",
+				eventId: expect.any(Number),
 				action: "update",
 				fields: { email: "new@example.com" },
 				attribution: "watcher",

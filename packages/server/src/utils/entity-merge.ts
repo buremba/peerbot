@@ -26,7 +26,7 @@
  * independently reversible even so.
  */
 
-import { type DbClient, getDb } from '../db/client';
+import { type DbClient, getDb, pgBigintArray } from '../db/client';
 import logger from './logger';
 
 export interface ApplyMergeParams {
@@ -69,6 +69,18 @@ export async function applyMergeGroup(
     throw new Error('applyMergeGroup: canonical entity is also a duplicate');
   }
   return db.begin(async (tx) => {
+    // Lock the whole group in one global order before applying any member. Pairwise
+    // locking inside the loop is not sufficient: overlapping groups with different
+    // winners can otherwise each hold one entity while waiting for the other.
+    const entityIds = [...loserIds, params.winnerId].sort((a, b) => a - b);
+    await tx`
+      SELECT id
+      FROM entities
+      WHERE organization_id = ${params.orgId}
+        AND id = ANY(${pgBigintArray(entityIds)}::bigint[])
+      ORDER BY id
+      FOR UPDATE
+    `;
     let movedIdentities = 0;
     let repointedEdges = 0;
     for (const loserId of loserIds) {

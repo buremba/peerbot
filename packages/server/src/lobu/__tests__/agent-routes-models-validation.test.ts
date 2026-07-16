@@ -1,8 +1,11 @@
+/**
+ * Unit coverage for `validateModelsUpdate` / `LEGACY_MODEL_FIELDS`.
+ *
+ * Dynamic-import agent-routes AFTER route-test mocks so a static top-level
+ * import cannot bind the real `mcpAuth` (and its getWorkspaceProvider call)
+ * before mocks are installed — see agent-routes-guardrail-validation.test.ts.
+ */
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import {
-  LEGACY_MODEL_FIELDS,
-  validateModelsUpdate,
-} from "../agent-routes.js";
 import { orgContext } from "../stores/org-context.js";
 import { createInferenceProvider } from "../stores/provider-secrets.js";
 import {
@@ -10,6 +13,12 @@ import {
   resetTestDatabase,
   seedAgentRow,
 } from "../../gateway/__tests__/helpers/db-setup.js";
+import { installRouteTestMocks } from "./helpers/route-test-mocks";
+
+installRouteTestMocks();
+const { LEGACY_MODEL_FIELDS, validateModelsUpdate } = await import(
+  "../agent-routes.js"
+);
 
 const ORG = "test-org-models-validation";
 const AGENT = "models-agent";
@@ -25,7 +34,12 @@ const stubC = {
 
 async function validate(models: unknown) {
   return orgContext.run({ organizationId: ORG }, () =>
-    validateModelsUpdate({ models, organizationId: ORG, agentId: AGENT, c: stubC })
+    validateModelsUpdate({
+      models,
+      organizationId: ORG,
+      agentId: AGENT,
+      c: stubC,
+    })
   );
 }
 

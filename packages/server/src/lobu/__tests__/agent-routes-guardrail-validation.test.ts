@@ -4,109 +4,118 @@
  * An entry with an invalid `stage` (or missing name/policy) would otherwise be
  * persisted verbatim and then crash the aggregator mid-message when it indexes
  * `seen[stage]`. The PATCH `/:agentId/config` route rejects such payloads (400).
+ *
+ * Dynamic-import agent-routes AFTER route-test mocks: a static top-level import
+ * of agent-routes binds the real `mcpAuth` (which calls getWorkspaceProvider)
+ * permanently for this process — and when bun evaluates test files, that can
+ * land before another file's installRouteTestMocks(), so later route tests get
+ * 500 WorkspaceProvider-not-initialized instead of the mocked auth path.
  */
 
-import { describe, expect, test } from 'bun:test';
-import { validateGuardrailsInline } from '../agent-routes.js';
+import { describe, expect, test } from "bun:test";
+import { installRouteTestMocks } from "./helpers/route-test-mocks";
 
-describe('validateGuardrailsInline', () => {
-  test('returns null for an absent payload', () => {
+installRouteTestMocks();
+const { validateGuardrailsInline } = await import("../agent-routes.js");
+
+describe("validateGuardrailsInline", () => {
+  test("returns null for an absent payload", () => {
     expect(validateGuardrailsInline(undefined)).toBeNull();
   });
 
-  test('returns null for an empty array', () => {
+  test("returns null for an empty array", () => {
     expect(validateGuardrailsInline([])).toBeNull();
   });
 
-  test('accepts a fully-valid inline guardrail', () => {
+  test("accepts a fully-valid inline guardrail", () => {
     expect(
       validateGuardrailsInline([
         {
-          name: 'tone-check',
+          name: "tone-check",
           enabled: true,
-          stage: 'output',
-          policy: 'no profanity',
-          model: 'anthropic/claude-haiku-4-5',
-          tools: ['bash'],
+          stage: "output",
+          policy: "no profanity",
+          model: "anthropic/claude-haiku-4-5",
+          tools: ["bash"],
         },
       ])
     ).toBeNull();
   });
 
-  test('rejects a non-array payload', () => {
+  test("rejects a non-array payload", () => {
     expect(validateGuardrailsInline({})).toMatch(/must be an array/);
   });
 
-  test('rejects an invalid stage — the crash vector', () => {
+  test("rejects an invalid stage — the crash vector", () => {
     const err = validateGuardrailsInline([
-      { name: 'bad', enabled: true, stage: 'outupt', policy: 'x' },
+      { name: "bad", enabled: true, stage: "outupt", policy: "x" },
     ]);
     expect(err).toMatch(/stage must be one of/);
   });
 
-  test('rejects a missing/blank name', () => {
+  test("rejects a missing/blank name", () => {
     expect(
       validateGuardrailsInline([
-        { name: '   ', enabled: true, stage: 'input', policy: 'x' },
+        { name: "   ", enabled: true, stage: "input", policy: "x" },
       ])
     ).toMatch(/name must be a non-empty string/);
   });
 
-  test('rejects a non-boolean enabled', () => {
+  test("rejects a non-boolean enabled", () => {
     expect(
       validateGuardrailsInline([
-        { name: 'g', enabled: 'yes', stage: 'input', policy: 'x' },
+        { name: "g", enabled: "yes", stage: "input", policy: "x" },
       ])
     ).toMatch(/enabled must be a boolean/);
   });
 
-  test('rejects a blank policy', () => {
+  test("rejects a blank policy", () => {
     expect(
       validateGuardrailsInline([
-        { name: 'g', enabled: true, stage: 'input', policy: '' },
+        { name: "g", enabled: true, stage: "input", policy: "" },
       ])
     ).toMatch(/policy must be a non-empty string/);
   });
 
-  test('rejects a non-string model', () => {
+  test("rejects a non-string model", () => {
     expect(
       validateGuardrailsInline([
-        { name: 'g', enabled: true, stage: 'input', policy: 'x', model: 42 },
+        { name: "g", enabled: true, stage: "input", policy: "x", model: 42 },
       ])
     ).toMatch(/model must be a string/);
   });
 
-  test('rejects tools that are not a string array', () => {
+  test("rejects tools that are not a string array", () => {
     expect(
       validateGuardrailsInline([
-        { name: 'g', enabled: true, stage: 'input', policy: 'x', tools: [1] },
+        { name: "g", enabled: true, stage: "input", policy: "x", tools: [1] },
       ])
     ).toMatch(/tools must be an array of strings/);
   });
 
-  test('accepts an egress guardrail with a domains selector (round-trip)', () => {
+  test("accepts an egress guardrail with a domains selector (round-trip)", () => {
     expect(
       validateGuardrailsInline([
         {
-          name: 'egress-github',
+          name: "egress-github",
           enabled: true,
-          stage: 'egress',
-          policy: 'only allow github reads',
-          model: 'anthropic/claude-haiku-4-5',
-          domains: ['.github.com', 'api.github.com'],
+          stage: "egress",
+          policy: "only allow github reads",
+          model: "anthropic/claude-haiku-4-5",
+          domains: [".github.com", "api.github.com"],
         },
       ])
     ).toBeNull();
   });
 
-  test('rejects domains that are not a string array', () => {
+  test("rejects domains that are not a string array", () => {
     expect(
       validateGuardrailsInline([
         {
-          name: 'g',
+          name: "g",
           enabled: true,
-          stage: 'egress',
-          policy: 'x',
+          stage: "egress",
+          policy: "x",
           domains: [1],
         },
       ])

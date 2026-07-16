@@ -91,16 +91,16 @@ describe("entity resolution module", () => {
 			{ winnerId: 1, loserIds: [2] },
 			{ winnerId: 3, loserIds: [4] },
 		]);
-		expect(
-			assessEntityResolution({
-				metadataSchema: { type: "object" },
-				entityTypeSlug: "person",
-				winner: { id: 1, metadata: { email: "same@example.com" } },
-				losers: [
-					{ id: 2, metadata: { email: " SAME@example.com " } },
-				],
-			}).decision,
-		).toBe("review");
+		const assessment = assessEntityResolution({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			winner: { id: 1, metadata: { email: "same@example.com" } },
+			losers: [{ id: 2, metadata: { email: " SAME@example.com " } }],
+		});
+		expect(assessment.decision).toBe("review");
+		expect(assessment.reason).toBe(
+			"Matching email is evidence, but the proposal does not satisfy this entity type's automatic merge policy.",
+		);
 	});
 
 	it("auto-merges a configured unique identity but reviews conflicting strict identities", () => {
@@ -165,6 +165,24 @@ describe("entity resolution module", () => {
 			],
 		});
 		expect(changedConflict.fingerprint).not.toBe(conflict.fingerprint);
+	});
+
+	it("explains mixed-policy groups without denying configured automatic rules", () => {
+		const mixedMatch = assessEntityResolution({
+			metadataSchema: schema,
+			winner: {
+				id: 1,
+				metadata: { email: "same@example.com", phone: "1111111" },
+			},
+			losers: [
+				{ id: 2, metadata: { email: "same@example.com" } },
+				{ id: 3, metadata: { phone: "1111111" } },
+			],
+		});
+		expect(mixedMatch.decision).toBe("review");
+		expect(mixedMatch.reason).toBe(
+			"Matching email and phone is evidence, but the proposal does not satisfy this entity type's automatic merge policy.",
+		);
 	});
 
 	it("rejects malformed email and phone values as deterministic identities", () => {

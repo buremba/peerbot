@@ -145,9 +145,9 @@ describe("listAgentThreads scope=all", () => {
 			"hello from slack",
 			"2026-06-28T02:00:00Z",
 			{
-			platform: "slack",
-			kind: "platform",
-			userId: null,
+				platform: "slack",
+				kind: "platform",
+				userId: null,
 			},
 		);
 		await insertSnapshot(
@@ -330,7 +330,9 @@ describe("listAgentThreads scope=all", () => {
 		});
 
 		expect(data.runs).toEqual([]);
-		expect(JSON.stringify(data)).not.toContain("Other agent secret watcher task");
+		expect(JSON.stringify(data)).not.toContain(
+			"Other agent secret watcher task",
+		);
 	});
 
 	it("keeps terminal approval decisions attached to their watcher run", async () => {
@@ -379,6 +381,8 @@ describe("listAgentThreads scope=all", () => {
 				action: "merge",
 				tool: "entity_change",
 				resourceKind: "entity",
+				reason:
+					"The matching email is evidence, but policy still requires review.",
 				reviewed_by_name: "Reviewer",
 			},
 		});
@@ -389,12 +393,16 @@ describe("listAgentThreads scope=all", () => {
 			watcherId: WATCHER_ID,
 			limit: 20,
 		});
-		const run = data.runs.find((candidate) => candidate.runId === watcherRun.id);
+		const run = data.runs.find(
+			(candidate) => candidate.runId === watcherRun.id,
+		);
 		expect(run?.pendingActionCount).toBe(0);
 		expect(run?.actions).toEqual([
 			expect.objectContaining({
 				runId: approvalRun.id,
 				status: "rejected",
+				reason:
+					"The matching email is evidence, but policy still requires review.",
 				reviewedByName: "Reviewer",
 			}),
 		]);
@@ -446,7 +454,9 @@ describe("listAgentThreads scope=all", () => {
 			watcherId: WATCHER_ID,
 			limit: 20,
 		});
-		const run = data.runs.find((candidate) => candidate.runId === watcherRun.id);
+		const run = data.runs.find(
+			(candidate) => candidate.runId === watcherRun.id,
+		);
 		expect(run?.task).toBe("Run without a transcript");
 		expect(run?.messages).toEqual([]);
 		expect(run?.pendingActionCount).toBe(1);

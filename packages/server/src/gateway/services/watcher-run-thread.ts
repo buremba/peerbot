@@ -21,19 +21,20 @@ export async function readWatcherRunThreads(args: {
 		autoAppliedCount: number;
 		messages: ReturnType<typeof paginateSessionMessages>["messages"];
 		actions: Array<{
-		type: "tool-approval";
-		eventId: number;
-		runId: number;
-		action: string | null;
-		proposal: Record<string, unknown> | null;
-		current: Record<string, unknown> | null;
-		fields: Record<string, unknown> | null;
+			type: "tool-approval";
+			eventId: number;
+			runId: number;
+			action: string | null;
+			proposal: Record<string, unknown> | null;
+			current: Record<string, unknown> | null;
+			fields: Record<string, unknown> | null;
 			attribution: string | null;
 			resourceKind: string | null;
+			reason: string | null;
 			status: string;
 			reviewedByName: string | null;
 			windowId: number | null;
-	}>;
+		}>;
 		automaticActions: Array<{
 			type: "entity-merge-result";
 			operationId: number;
@@ -131,6 +132,7 @@ export async function readWatcherRunThreads(args: {
 				fields: Record<string, unknown> | null;
 				attribution: string | null;
 				resourceKind: string | null;
+				reason: string | null;
 				status: string;
 				reviewedByName: string | null;
 				windowId: number | null;
@@ -178,6 +180,7 @@ export async function readWatcherRunThreads(args: {
 		fields: Record<string, unknown> | null;
 		attribution: string | null;
 		resource_kind: string | null;
+		reason: string | null;
 		tool: string | null;
 		window_id: number | null;
 		source_run_id: number | null;
@@ -192,6 +195,7 @@ export async function readWatcherRunThreads(args: {
 		       e.metadata->'fields' AS fields,
 		       e.metadata->>'attribution' AS attribution,
 		       e.metadata->>'resourceKind' AS resource_kind,
+		       e.metadata->>'reason' AS reason,
 		       e.metadata->>'tool' AS tool,
 		       e.interaction_status,
 		       e.metadata->>'reviewed_by_name' AS reviewed_by_name,
@@ -250,6 +254,7 @@ export async function readWatcherRunThreads(args: {
 			fields: row.fields ?? null,
 			attribution: row.attribution ?? null,
 			resourceKind,
+			reason: row.reason ?? null,
 			status: row.interaction_status,
 			reviewedByName: row.reviewed_by_name,
 		};
@@ -266,9 +271,7 @@ export async function readWatcherRunThreads(args: {
 	for (const { parentRunId, ...action } of actions) {
 		const run =
 			(parentRunId == null ? undefined : runById.get(parentRunId)) ??
-			(action.windowId == null
-				? undefined
-				: runByWindow.get(action.windowId));
+			(action.windowId == null ? undefined : runByWindow.get(action.windowId));
 		if (!run) continue;
 		run.actions.push(action);
 		if (action.status === "pending") run.pendingActionCount += 1;

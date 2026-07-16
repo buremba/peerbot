@@ -30,6 +30,8 @@ const AGENT = "thread-list-scope-all-agent";
 const SLACK_CONV = "slack:C123:1781641725.28"; // channel C123 — agent is bound to it
 const SLACK_UNBOUND_CONV = "slack:CSECRET:1781641725.99"; // channel the agent is NOT bound to
 const WATCHER_ID = 990001;
+const OTHER_AGENT = "thread-list-other-agent";
+const OTHER_WATCHER_ID = 990002;
 
 function sessionJsonl(text: string): string {
 	return [
@@ -60,6 +62,11 @@ describe("listAgentThreads scope=all", () => {
 		await createTestAgent({
 			organizationId: org,
 			agentId: AGENT,
+			ownerUserId: userId,
+		});
+		await createTestAgent({
+			organizationId: org,
+			agentId: OTHER_AGENT,
 			ownerUserId: userId,
 		});
 		const sql = getTestDb();
@@ -158,6 +165,19 @@ describe("listAgentThreads scope=all", () => {
       INSERT INTO watchers
         (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
       VALUES (${WATCHER_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Test Watcher', 'active', 'notification', 'normal', 0, now(), now())`;
+		await sql`
+      INSERT INTO watchers
+        (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${OTHER_WATCHER_ID}, ${org}, ${OTHER_AGENT}, ${userId}, 0, 'Other Agent Watcher', 'active', 'notification', 'normal', 0, now(), now())`;
+		await sql`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, approval_status,
+			   run_metadata, created_at, completed_at)
+			VALUES
+			  ('watcher', 'completed', ${org}, ${OTHER_WATCHER_ID}, 'auto',
+			   ${sql.json({ prompt_rendered: "Other agent secret watcher task" })},
+			   '2026-06-28T00:31:00Z', '2026-06-28T00:32:00Z')
+		`;
 		const [watcherRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
 			  (run_type, status, organization_id, watcher_id, window_id,
@@ -299,6 +319,18 @@ describe("listAgentThreads scope=all", () => {
 			}),
 		]);
 		expect(data).not.toHaveProperty("interactions");
+	});
+
+	it("does not read a different agent's watcher in the same organization", async () => {
+		const data = await readWatcherRunThreads({
+			agentId: AGENT,
+			organizationId: org,
+			watcherId: OTHER_WATCHER_ID,
+			limit: 20,
+		});
+
+		expect(data.runs).toEqual([]);
+		expect(JSON.stringify(data)).not.toContain("Other agent secret watcher task");
 	});
 
 	it("keeps terminal approval decisions attached to their watcher run", async () => {

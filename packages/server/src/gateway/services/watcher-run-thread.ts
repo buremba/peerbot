@@ -74,8 +74,12 @@ export async function readWatcherRunThreads(args: {
 		WITH selected_runs AS (
 			SELECT r.*
 			FROM runs r
+			JOIN watchers w
+			  ON w.id = r.watcher_id
+			 AND w.organization_id = r.organization_id
 			WHERE r.organization_id = ${organizationId}
 			  AND r.watcher_id = ${watcherId}
+			  AND w.agent_id = ${agentId}
 			  AND r.run_type = 'watcher'
 			ORDER BY COALESCE(r.completed_at, r.created_at) DESC, r.id DESC
 			LIMIT ${limit}

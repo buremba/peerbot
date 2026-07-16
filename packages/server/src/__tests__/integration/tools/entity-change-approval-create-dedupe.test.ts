@@ -71,4 +71,35 @@ describe("entity create approval dedupe", () => {
 		expect(inFlightReplay.runId).toBe(first.runId);
 		expect(second.runId).not.toBe(first.runId);
 	});
+
+	it("serializes concurrent replicas to one run and approval event", async () => {
+		const name = "Call Concurrent";
+		const proposals = await Promise.all(
+			Array.from({ length: 8 }, () =>
+				proposeEntityCreate(ctx, createProposal(name)),
+			),
+		);
+		const runIds = new Set(proposals.map((proposal) => proposal.runId));
+		expect(runIds.size).toBe(1);
+
+		const runId = proposals[0]?.runId;
+		expect(runId).toBeDefined();
+		const sql = getTestDb();
+		const activeRuns = await sql`
+			SELECT id
+			FROM runs
+			WHERE organization_id = ${ctx.organizationId}
+			  AND action_input->'entity_data'->>'name' = ${name}
+			  AND status IN ('pending', 'claimed', 'running')
+		`;
+		expect(activeRuns).toHaveLength(1);
+
+		const currentEvents = await sql`
+			SELECT id
+			FROM current_event_records
+			WHERE run_id = ${runId}
+			  AND interaction_type = 'approval'
+		`;
+		expect(currentEvents).toHaveLength(1);
+	});
 });

@@ -73,8 +73,8 @@ import { proposeEntityMerge } from "./entity-field-approval";
 export { ManageEntityResultSchema, ManageEntitySchema };
 
 function toIsoStringOrNow(value: Date | string | null | undefined): string {
-	if (!value) return new Date().toISOString();
-	return new Date(value).toISOString();
+  if (!value) return new Date().toISOString();
+  return new Date(value).toISOString();
 }
 
 function capitalize(value: string): string {
@@ -184,42 +184,42 @@ async function manageEntityImpl(
 	env: Env,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
-	const result = await runManageEntity(args, env, ctx);
+  const result = await runManageEntity(args, env, ctx);
 
-	// Track watcher reaction for mutating actions
+  // Track watcher reaction for mutating actions
 	if (args.watcher_source && "action" in result) {
-		const reactionType =
+    const reactionType =
 			result.action === "create"
 				? "entity_created"
 				: result.action === "update"
 					? "entity_updated"
 					: result.action === "link"
 						? "entity_linked"
-						: null;
-		if (reactionType) {
-			const entityId =
+            : null;
+    if (reactionType) {
+      const entityId =
 				result.action === "create" && "entity" in result
-					? (result as any).entity.id
-					: args.entity_id;
-			await trackWatcherReaction({
-				organizationId: ctx.organizationId,
-				watcherId: args.watcher_source.watcher_id,
-				windowId: args.watcher_source.window_id,
-				reactionType,
+          ? (result as any).entity.id
+          : args.entity_id;
+      await trackWatcherReaction({
+        organizationId: ctx.organizationId,
+        watcherId: args.watcher_source.watcher_id,
+        windowId: args.watcher_source.window_id,
+        reactionType,
 				toolName: "manage_entity",
-				toolArgs: {
-					action: args.action,
-					entity_type: args.entity_type,
-					name: args.name,
-					entity_id: args.entity_id,
-				},
-				toolResult: result as Record<string, unknown>,
-				entityId,
-			});
-		}
-	}
+        toolArgs: {
+          action: args.action,
+          entity_type: args.entity_type,
+          name: args.name,
+          entity_id: args.entity_id,
+        },
+        toolResult: result as Record<string, unknown>,
+        entityId,
+      });
+    }
+  }
 
-	return result;
+  return result;
 }
 
 // ============================================
@@ -389,10 +389,10 @@ async function handleUpdate(
 	env: Env,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
-	const sql = getDb();
+  const sql = getDb();
 
-	// Fetch before state for change tracking and validation
-	const beforeRows = await sql`
+  // Fetch before state for change tracking and validation
+  const beforeRows = await sql`
     SELECT e.name, e.slug, e.parent_id, e.metadata, et.slug AS entity_type
     FROM entities e
     JOIN entity_types et ON et.id = e.entity_type_id
@@ -583,21 +583,21 @@ async function handleUpdate(
 //    email address.
 //  - Only admin/owner see the email field.
 function canSeeMemberList(ctx: ToolContext): boolean {
-	return !!ctx.memberRole;
+  return !!ctx.memberRole;
 }
 
 function canSeeMemberEmail(ctx: ToolContext): boolean {
-	return isAdminOrOwnerRole(ctx.memberRole);
+  return isAdminOrOwnerRole(ctx.memberRole);
 }
 
 function redactMemberEmail(
 	metadata: Record<string, unknown>,
 	schema: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
-	const { emailField } = resolveMemberSchemaFieldsFromSchema(schema);
-	if (!(emailField in metadata)) return metadata;
-	const { [emailField]: _removed, ...rest } = metadata;
-	return rest;
+  const { emailField } = resolveMemberSchemaFieldsFromSchema(schema);
+  if (!(emailField in metadata)) return metadata;
+  const { [emailField]: _removed, ...rest } = metadata;
+  return rest;
 }
 
 /**
@@ -646,11 +646,11 @@ async function handleMerge(
   `) as Array<{ id: number }>;
 	const found = new Set(rows.map((r) => Number(r.id)));
 	for (const loserId of loserIds) {
-		if (!found.has(loserId))
-			throw new ToolUserError(
-				`Entity ${loserId} not found in this workspace`,
-				404,
-			);
+	if (!found.has(loserId))
+		throw new ToolUserError(
+			`Entity ${loserId} not found in this workspace`,
+			404,
+		);
 	}
 	if (!found.has(winnerId))
 		throw new ToolUserError(
@@ -1034,25 +1034,25 @@ async function resolveLinkedColumns(
                 AND et.slug = ${entityType}
                 AND (e.metadata->>${lookupField}) = ANY(${valuesLiteral}::text[])
             `;
-				if (rows.length === 0) return;
+      if (rows.length === 0) return;
 				const bucketMap: Record<
 					string,
 					{ slug: string; entity_type: string; name: string }
 				> = {};
-				for (const r of rows) {
-					if (r.lookup_value == null) continue;
+      for (const r of rows) {
+        if (r.lookup_value == null) continue;
 					bucketMap[r.lookup_value] = {
 						slug: r.slug,
 						entity_type: r.entity_type,
 						name: r.name,
 					};
-				}
-				out[bucketKey] = bucketMap;
+      }
+      out[bucketKey] = bucketMap;
 			},
 		),
-	);
+  );
 
-	return out;
+  return out;
 }
 
 async function handleGet(
@@ -1092,25 +1092,25 @@ async function handleGet(
     `;
 		const memberSchema =
 			(rows[0]?.metadata_schema as Record<string, unknown> | null) ?? null;
-		metadata = redactMemberEmail(metadata, memberSchema);
-	}
+    metadata = redactMemberEmail(metadata, memberSchema);
+  }
 
-	return {
+  return {
 		action: "get",
-		entity: {
-			id: entity.id,
-			entity_type: entity.entity_type,
-			name: entity.name,
-			slug: entity.slug,
-			parent_id: entity.parent_id,
-			parent_name: entity.parent_name,
-			parent_slug: entity.parent_slug ?? null,
-			metadata,
-			enabled_classifiers: entity.enabled_classifiers,
-			created_at: toIsoStringOrNow(entity.created_at),
-			view_url: viewUrl,
-		},
-	};
+    entity: {
+      id: entity.id,
+      entity_type: entity.entity_type,
+      name: entity.name,
+      slug: entity.slug,
+      parent_id: entity.parent_id,
+      parent_name: entity.parent_name,
+      parent_slug: entity.parent_slug ?? null,
+      metadata,
+      enabled_classifiers: entity.enabled_classifiers,
+      created_at: toIsoStringOrNow(entity.created_at),
+      view_url: viewUrl,
+    },
+  };
 }
 
 async function handleDelete(
@@ -1265,27 +1265,27 @@ async function handleLink(
     ORDER BY (rt.organization_id = ${ctx.organizationId}) DESC, rt.id ASC
     LIMIT 1
   `;
-	if (typeRows.length === 0) {
+  if (typeRows.length === 0) {
 		throw new Error(
 			`Relationship type "${args.relationship_type_slug}" not found`,
 		);
-	}
-	const typeId = Number(typeRows[0].id);
-	const isSymmetric = Boolean(typeRows[0].is_symmetric);
+  }
+  const typeId = Number(typeRows[0].id);
+  const isSymmetric = Boolean(typeRows[0].is_symmetric);
 
-	await validateTypeRule(typeId, args.from_entity_id, args.to_entity_id, sql);
+  await validateTypeRule(typeId, args.from_entity_id, args.to_entity_id, sql);
 
-	let fromId = args.from_entity_id;
-	let toId = args.to_entity_id;
-	if (isSymmetric) {
-		// For symmetric same-org pairs we canonicalize by id so dedup catches
-		// a → b and b → a as the same edge. For cross-org pairs (target in a
-		// public catalog), keep the caller's-org entity as `from` even if its
-		// id is higher, so the stored source matches the semantic source. The
-		// canonical form would otherwise leave rows where `from_entity_id`
-		// points at a public catalog row under a tenant `organization_id` —
-		// tenant-owned but cosmetically inverted.
-		const orgRows = await sql<{ id: number; organization_id: string }>`
+  let fromId = args.from_entity_id;
+  let toId = args.to_entity_id;
+  if (isSymmetric) {
+    // For symmetric same-org pairs we canonicalize by id so dedup catches
+    // a → b and b → a as the same edge. For cross-org pairs (target in a
+    // public catalog), keep the caller's-org entity as `from` even if its
+    // id is higher, so the stored source matches the semantic source. The
+    // canonical form would otherwise leave rows where `from_entity_id`
+    // points at a public catalog row under a tenant `organization_id` —
+    // tenant-owned but cosmetically inverted.
+    const orgRows = await sql<{ id: number; organization_id: string }>`
       SELECT id, organization_id FROM entities WHERE id IN (${fromId}, ${toId})
     `;
 		const orgOf = (id: number) =>
@@ -1330,12 +1330,12 @@ async function handleLink(
     )
     RETURNING id
   `;
-	const relationshipId = Number((inserted[0] as { id: unknown }).id);
+  const relationshipId = Number((inserted[0] as { id: unknown }).id);
 
-	const created = await sql.unsafe<RelationshipRow>(
-		`SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
+  const created = await sql.unsafe<RelationshipRow>(
+    `SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
 		[relationshipId],
-	);
+  );
 
 	return { action: "link", relationship: created[0] };
 }
@@ -1347,9 +1347,9 @@ async function handleUnlink(
 	if (!args.relationship_id)
 		throw new Error("relationship_id is required for unlink");
 
-	const sql = getDb();
+  const sql = getDb();
 
-	const existing = await sql`
+  const existing = await sql`
     SELECT id, organization_id FROM entity_relationships
     WHERE id = ${args.relationship_id} AND deleted_at IS NULL
     LIMIT 1
@@ -1383,9 +1383,9 @@ async function handleUpdateLink(
 	if (!args.relationship_id)
 		throw new Error("relationship_id is required for update_link");
 
-	const sql = getDb();
+  const sql = getDb();
 
-	const existing = await sql`
+  const existing = await sql`
     SELECT id, organization_id FROM entity_relationships
     WHERE id = ${args.relationship_id} AND deleted_at IS NULL
     LIMIT 1
@@ -1418,10 +1418,10 @@ async function handleUpdateLink(
     WHERE id = ${args.relationship_id}
   `;
 
-	const updated = await sql.unsafe<RelationshipRow>(
-		`SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
+  const updated = await sql.unsafe<RelationshipRow>(
+    `SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
 		[args.relationship_id],
-	);
+  );
 
 	return { action: "update_link", relationship: updated[0] };
 }
@@ -1509,13 +1509,13 @@ async function handleListLinks(
      LIMIT ${limit + 1}
      OFFSET ${offset}`,
 		params,
-	);
+  );
 
-	const hasMore = rows.length > limit;
-	const relationships = hasMore ? rows.slice(0, limit) : rows;
+  const hasMore = rows.length > limit;
+  const relationships = hasMore ? rows.slice(0, limit) : rows;
 
-	const countsResult = await sql.unsafe<RelationshipCountByType>(
-		`SELECT
+  const countsResult = await sql.unsafe<RelationshipCountByType>(
+    `SELECT
       rt.slug as relationship_type_slug,
       rt.name as relationship_type_name,
       COUNT(*)::int as count
@@ -1524,12 +1524,12 @@ async function handleListLinks(
     GROUP BY rt.slug, rt.name
     ORDER BY count DESC`,
 		params,
-	);
+  );
 
-	return {
+  return {
 		action: "list_links",
-		relationships,
-		counts_by_type: countsResult,
-		metadata: { total, limit, offset, has_more: hasMore },
-	};
+    relationships,
+    counts_by_type: countsResult,
+    metadata: { total, limit, offset, has_more: hasMore },
+  };
 }

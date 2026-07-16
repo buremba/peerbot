@@ -93,12 +93,12 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			schedule: "0 3 * * *",
 			// A cross-entity watcher: its source surfaces look-alike PEOPLE (shared
 			// alias / overlapping identity value) rather than events. The reader
-			// picks the pair; the agent decides confidence and calls the merge tool.
+			// groups candidates; the agent decides confidence and proposes each group.
 			// `@entity:person` gives the agent the candidate set + their aliases so
 			// it can reason about which pairs are truly the same.
 			sources: [{ name: "people", query: "@entity:person" }],
 			prompt:
-				"Some of these person entities may be duplicates — the SAME real-world person captured twice (e.g. once from a chat handle, once from an email), each holding different identifiers or aliases. Compare them: shared aliases, matching names, overlapping identity values (email, phone, handle) are strong signals; a mere name similarity alone is NOT.\n\nFor each pair you are confident is the same person, merge the duplicate into the more complete record with manage_entity(action='merge', entity_id=<duplicate>, winner_entity_id=<keep>). The duplicate's identities, aliases, edges, and events will recall against the survivor; events are never rewritten, and the merge is reversible.\n\nReturn the merges you performed and, separately, any uncertain pairs you did NOT merge (with why) so a human can review them.\n",
+				"Some of these person entities may be duplicates — the SAME real-world person captured more than once (e.g. once from a chat handle, once from an email), each holding different identifiers or aliases. Group records that represent one person. Shared aliases or overlapping identity values (email, phone, handle) are strong signals; mere name similarity alone is NOT.\n\nFor each group you are confident represents one person, choose the most complete record as canonical and call manage_entity(action='merge', duplicate_entity_ids=[<every duplicate id>], winner_entity_id=<canonical id>, merge_evidence=[{ kind: <email|phone|handle|alias>, identifier: <matching value> }]). This call creates one pending human approval for the whole group; it does not merge before approval. The duplicate identities, aliases, edges, and events will recall against the survivor after approval; events are never rewritten, and the merge is reversible.\n\nReturn the approval proposals you created and, separately, any uncertain groups you did not propose (with why). Never substitute textual backlog tasks for manage_entity calls.\n",
 			reactions_guidance:
 				"Only merge when the evidence is strong (a shared identity value or alias, not just a similar name). When unsure, leave the pair unmerged and report it for human review rather than guessing — a wrong merge is costly to notice.",
 			tags: ["identity", "deduplication", "world-model"],

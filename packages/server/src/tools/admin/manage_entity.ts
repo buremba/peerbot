@@ -605,8 +605,8 @@ function redactMemberEmail(
  * (`winner_entity_id`). Humans must be admin/owner; agents and watchers queue a
  * human approval because a merge is destructive and hard to spot after the
  * fact. The heavy lifting (move identities/aliases/edges, tombstone + forward
- * the loser, flatten chains) is in `applyMerge`; this handler is the org-scoped
- * gate + validation.
+ * each loser, flatten chains) is in `applyMergeGroup`; this handler is the
+ * org-scoped gate + validation.
  */
 async function handleMerge(
 	args: ManageEntityArgs,
@@ -636,8 +636,8 @@ async function handleMerge(
 		throw new ToolUserError("winner_entity_id cannot also be a duplicate", 400);
 
 	const sql = getDb();
-	// Both entities must be live and in the caller's org — never merge across a
-	// tenant boundary or into a deleted/foreign entity.
+	// Every duplicate and the winner must be live and in the caller's org — never
+	// merge across a tenant boundary or into a deleted/foreign entity.
 	const rows = (await sql`
     SELECT id FROM entities
     WHERE organization_id = ${ctx.organizationId}

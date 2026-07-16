@@ -467,8 +467,9 @@ async function createEntityWithIdentities(
 
 /**
  * Insert identities for `entityId`, RETURNING the `(namespace, identifier)` rows
- * that actually attached. A row skipped by ON CONFLICT (identifier already owned
- * by another entity) is NOT returned, so the caller won't mis-claim it.
+ * attached to that entity. Re-observing a legacy row fills missing connection
+ * provenance; a row owned by another entity is not returned, so the caller will
+ * not mis-claim it.
  */
 async function insertIdentities(
   sql: DbClient,
@@ -492,7 +493,10 @@ async function insertIdentities(
              ${`connector:${params.connectorKey}`}, ${params.connectionId ?? null}
       FROM unnest(${pgTextArray(namespaces)}::text[], ${pgTextArray(identifiers)}::text[]) AS v(ns, ident)
       ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
-      DO NOTHING
+      DO UPDATE SET connection_id = EXCLUDED.connection_id
+      WHERE entity_identities.entity_id = EXCLUDED.entity_id
+        AND entity_identities.connection_id IS NULL
+        AND EXCLUDED.connection_id IS NOT NULL
       RETURNING namespace, identifier
     `;
     return attached.map((r) => ({ namespace: r.namespace, identifier: r.identifier }));

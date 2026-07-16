@@ -80,29 +80,41 @@ function callbackRequest(): Request {
 
 describe("completeSlackPendingInstall — installer claim DM", () => {
 	let savedWebUrl: string | undefined;
+	// Hold spy handles so afterAll restores ONLY these — mock.restore() is
+	// process-global and would wipe spies installed by co-running suites.
+	let primedMethodSpy: ReturnType<typeof spyOn>;
+	let resolveCredsSpy: ReturnType<typeof spyOn>;
+	let writePendingSpy: ReturnType<typeof spyOn>;
+	let createWebApiSpy: ReturnType<typeof spyOn>;
 
 	beforeAll(() => {
 		// Hosted app credentials are "configured" so `completeSlackPendingInstall`'s
 		// exchange path runs (a truthy primed method + non-empty client id/secret).
 		// Use spyOn (restored in afterAll) — process-global mock.module cannot be
 		// undone and would clobber co-running suites.
-		spyOn(appInstallCredentials, "getPrimedBundledMethod").mockReturnValue({
+		primedMethodSpy = spyOn(
+			appInstallCredentials,
+			"getPrimedBundledMethod",
+		).mockReturnValue({
 			clientIdKey: "SLACK_CLIENT_ID",
 			clientSecretKey: "SLACK_CLIENT_SECRET",
 		} as unknown as ReturnType<
 			typeof appInstallCredentials.getPrimedBundledMethod
 		>);
-		spyOn(
+		resolveCredsSpy = spyOn(
 			appInstallCredentials,
 			"resolveAppInstallCredentials",
 		).mockReturnValue({
 			clientId: "client-id",
 			clientSecret: "client-secret",
 		});
-		spyOn(slackInstallations, "writeSlackPendingInstall").mockImplementation(
+		writePendingSpy = spyOn(
+			slackInstallations,
+			"writeSlackPendingInstall",
+		).mockImplementation(
 			writeSlackPendingInstallMock as typeof slackInstallations.writeSlackPendingInstall,
 		);
-		spyOn(slackWeb, "createSlackWebApi").mockImplementation(
+		createWebApiSpy = spyOn(slackWeb, "createSlackWebApi").mockImplementation(
 			() =>
 				({
 					exchangeOAuthCode,
@@ -122,9 +134,10 @@ describe("completeSlackPendingInstall — installer claim DM", () => {
 	});
 
 	afterAll(() => {
-		// Restore spies so the shared test process hands real modules to every
-		// other gateway suite.
-		mock.restore();
+		primedMethodSpy.mockRestore();
+		resolveCredsSpy.mockRestore();
+		writePendingSpy.mockRestore();
+		createWebApiSpy.mockRestore();
 	});
 
 	beforeEach(() => {

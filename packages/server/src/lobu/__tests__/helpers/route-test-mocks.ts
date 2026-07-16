@@ -64,40 +64,23 @@ export function installRouteTestMocks(): void {
   if (installed) return;
   installed = true;
 
-  const mcpAuthMock = async (c: any, next: any) => {
-    c.set('user', authStash.user);
-    c.set('organizationId', authStash.organizationId);
-    c.set('authSource', authStash.authSource);
-    c.set('mcpAuthInfo', authStash.mcpAuthInfo);
-    return next();
-  };
-  const requireAuthMock = async (_c: any, next: any) => next();
-  // Register under every relative form importers in this package use.
-  // bun's mock.module matches the resolved module; multiple specs are cheap
-  // insurance so a static `import '../agent-routes'` that lands before this
-  // helper (evaluation race across files) is less likely to bind the real
-  // mcpAuth — and so agent-routes' own `../auth/middleware` specifier is hit.
-  for (const spec of [
-    '../../../auth/middleware',
-    '../../auth/middleware',
-    '../auth/middleware',
-  ]) {
-    mock.module(spec, () => ({
-      mcpAuth: mcpAuthMock,
-      requireAuth: requireAuthMock,
-    }));
-  }
-
-  // Resolves to src/lobu/gateway — imported by agent-routes.ts as `./gateway`.
-  mock.module('../../gateway', () => ({
-    getChatInstanceManager: () => chatManagerStash.manager,
-    getLobuCoreServices: () => coreServicesStash.services,
-    initLobuGateway: async () => null,
-    stopLobuGateway: async () => {},
-    isLobuGatewayRunning: () => false,
-    ensureEmbeddedGatewaySecrets: () => {},
+  // Specifiers resolve relative to THIS helper file
+  // (`src/lobu/__tests__/helpers/`), so ../../../auth/middleware →
+  // src/auth/middleware and ../../gateway → src/lobu/gateway — the modules
+  // agent-routes actually imports. Extra relative forms would resolve to
+  // non-existent paths from here and only add mock noise (review: slop).
+  mock.module('../../../auth/middleware', () => ({
+    mcpAuth: async (c: any, next: any) => {
+      c.set('user', authStash.user);
+      c.set('organizationId', authStash.organizationId);
+      c.set('authSource', authStash.authSource);
+      c.set('mcpAuthInfo', authStash.mcpAuthInfo);
+      return next();
+    },
+    requireAuth: async (_c: any, next: any) => next(),
   }));
-  mock.module('../gateway', () => ({
+
+  mock.module('../../gateway', () => ({
     getChatInstanceManager: () => chatManagerStash.manager,
     getLobuCoreServices: () => coreServicesStash.services,
     initLobuGateway: async () => null,

@@ -169,11 +169,13 @@ function locateSystemdRun(): string | null {
  */
 let cachedNixShell: string | null | undefined;
 function locateNixShell(): string | null {
-  if (cachedNixShell !== undefined) return cachedNixShell;
+  // Operator kill-switch always wins, even if an earlier probe cached a hit
+  // (tests set LOBU_DISABLE_NIX_SHELL=1 mid-process; a sticky "nix-shell"
+  // cache would ignore the flag and wrap workers that should run plain).
   if (process.env.LOBU_DISABLE_NIX_SHELL === "1") {
-    cachedNixShell = null;
-    return cachedNixShell;
+    return null;
   }
+  if (cachedNixShell !== undefined) return cachedNixShell;
   try {
     execFileSync("nix-shell", ["--version"], {
       stdio: "ignore",

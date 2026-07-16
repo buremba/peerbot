@@ -204,6 +204,12 @@ describe("DeploymentManager", () => {
       // operator flag so the test is deterministic regardless of host nix.
       const prev = process.env.LOBU_DISABLE_NIX_SHELL;
       process.env.LOBU_DISABLE_NIX_SHELL = "1";
+      // Clear any prior positive nix probe from co-running suites (CI hosts
+      // often have nix-shell installed; the flag must still win).
+      const { __resetCapabilityProbesForTests } = await import(
+        "../orchestration/deployment-manager.js"
+      );
+      __resetCapabilityProbesForTests();
       try {
         const msg = createTestMessagePayload({
           nixConfig: { packages: ["chromium"] },
@@ -215,8 +221,9 @@ describe("DeploymentManager", () => {
         expect(cmd).not.toBe("nix-shell");
         expect(cmd).toBe(process.execPath);
       } finally {
-        if (prev === undefined) process.env.LOBU_DISABLE_NIX_SHELL = undefined;
+        if (prev === undefined) delete process.env.LOBU_DISABLE_NIX_SHELL;
         else process.env.LOBU_DISABLE_NIX_SHELL = prev;
+        __resetCapabilityProbesForTests();
       }
     });
 

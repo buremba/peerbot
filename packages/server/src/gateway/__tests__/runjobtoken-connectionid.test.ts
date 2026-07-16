@@ -1,6 +1,26 @@
-import { describe, expect, test } from "bun:test";
-import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  __resetEncryptionKeyCacheForTests,
+  generateWorkerToken,
+  verifyWorkerToken,
+} from "@lobu/core";
 import { assertRoutableInteraction } from "../interactions.js";
+
+const TEST_ENCRYPTION_KEY =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+let previousEncryptionKey: string | undefined;
+beforeEach(() => {
+  previousEncryptionKey = process.env.ENCRYPTION_KEY;
+  process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+  __resetEncryptionKeyCacheForTests();
+});
+
+afterEach(() => {
+  if (previousEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
+  else process.env.ENCRYPTION_KEY = previousEncryptionKey;
+  __resetEncryptionKeyCacheForTests();
+});
 
 /**
  * Regression for the prod incident where every chat-platform `ask_user`

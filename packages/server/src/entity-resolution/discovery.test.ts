@@ -99,7 +99,7 @@ describe("entity resolution module", () => {
 		});
 		expect(assessment.decision).toBe("review");
 		expect(assessment.reason).toBe(
-			"Matching email is evidence, but this entity type does not declare it unique enough to merge automatically.",
+			"Matching email is evidence, but the proposal does not satisfy this entity type's automatic merge policy.",
 		);
 	});
 
@@ -165,6 +165,24 @@ describe("entity resolution module", () => {
 			],
 		});
 		expect(changedConflict.fingerprint).not.toBe(conflict.fingerprint);
+	});
+
+	it("explains mixed-policy groups without denying configured automatic rules", () => {
+		const mixedMatch = assessEntityResolution({
+			metadataSchema: schema,
+			winner: {
+				id: 1,
+				metadata: { email: "same@example.com", phone: "1111111" },
+			},
+			losers: [
+				{ id: 2, metadata: { email: "same@example.com" } },
+				{ id: 3, metadata: { phone: "1111111" } },
+			],
+		});
+		expect(mixedMatch.decision).toBe("review");
+		expect(mixedMatch.reason).toBe(
+			"Matching email and phone is evidence, but the proposal does not satisfy this entity type's automatic merge policy.",
+		);
 	});
 
 	it("rejects malformed email and phone values as deterministic identities", () => {

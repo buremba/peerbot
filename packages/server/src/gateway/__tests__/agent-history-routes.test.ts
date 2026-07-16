@@ -9,8 +9,8 @@ import {
 import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
-import { insertEvent } from "../../utils/insert-event.js";
 import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
+import { insertEvent } from "../../utils/insert-event.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
@@ -217,6 +217,7 @@ describe("agent history routes", () => {
 		});
 		const fields = { "metadata.tier": "enterprise" };
 		const current = { "metadata.tier": "free" };
+		const reason = "The CRM tier differs from the human-owned value.";
 		await orgContext.run({ organizationId: ORG_ID }, () =>
 			insertEvent({
 				entityIds: [],
@@ -237,6 +238,7 @@ describe("agent history routes", () => {
 					fields,
 					current,
 					attribution: "agent",
+					reason,
 					status: "pending_approval",
 					run_id: runId,
 				},
@@ -258,6 +260,7 @@ describe("agent history routes", () => {
 				fields: Record<string, unknown> | null;
 				current: Record<string, unknown> | null;
 				attribution: string | null;
+				reason: string | null;
 			}>;
 		};
 		expect(body.interactions).toHaveLength(1);
@@ -268,6 +271,7 @@ describe("agent history routes", () => {
 		expect(card?.fields).toMatchObject({ "metadata.tier": "enterprise" });
 		expect(card?.current).toMatchObject({ "metadata.tier": "free" });
 		expect(card?.attribution).toBe("agent");
+		expect(card?.reason).toBe(reason);
 	});
 
 	test("replays only the latest terminal agent error and clears it after success", async () => {

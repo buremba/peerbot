@@ -251,7 +251,7 @@ export function assessEntityResolution(input: {
 				: conflictingAutoIdentity
 					? "Configured strict identities conflict, so a person must review the merge."
 					: deduplicatedEvidence.length > 0
-						? `Matching ${evidenceKinds.join(" and ")} is evidence, but this entity type does not declare it unique enough to merge automatically.`
+						? `Matching ${evidenceKinds.join(" and ")} is evidence, but the proposal does not satisfy this entity type's automatic merge policy.`
 						: "No configured deterministic identity rule proves this merge.",
 	};
 }

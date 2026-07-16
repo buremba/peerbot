@@ -18,10 +18,9 @@ import {
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
-import { buildApiConversationId } from "../../services/api-conversation-id.js";
-import type { ArtifactStore } from "../../files/artifact-store.js";
 import { resolveOrgId } from "../../../lobu/stores/org-context.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
+import type { ArtifactStore } from "../../files/artifact-store.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
 import {
 	isConversationVisible,
@@ -30,6 +29,7 @@ import {
 	readThreadMessages,
 	resolveChannelVisibility,
 } from "../../services/agent-thread-list.js";
+import { buildApiConversationId } from "../../services/api-conversation-id.js";
 import { readWatcherRunThreads } from "../../services/watcher-run-thread.js";
 import {
 	createOwnershipResolver,
@@ -74,6 +74,7 @@ type ToolApprovalHistoryInteraction = {
 	attribution: string | null;
 	/** Discriminator: "agent" | "watcher" | "entity". */
 	resourceKind: string | null;
+	reason: string | null;
 };
 
 type AgentErrorHistoryInteraction = {
@@ -178,7 +179,8 @@ async function readLatestAgentErrorInteraction(
 // load — keeping links live across reloads without ever persisting a token.
 // Matches the path only when NOT already followed by a query string (so an
 // already-signed link is left untouched).
-const TOKENLESS_FILE_REF = /\/api\/v1\/files\/([A-Za-z0-9._~-]+)(?![A-Za-z0-9._~?-])/g;
+const TOKENLESS_FILE_REF =
+	/\/api\/v1\/files\/([A-Za-z0-9._~-]+)(?![A-Za-z0-9._~?-])/g;
 
 /**
  * Recursively rewrite tokenless `/api/v1/files/:id` references in a user
@@ -528,6 +530,7 @@ export function createAgentHistoryRoutes(deps: {
 				fields: Record<string, unknown> | null;
 				attribution: string | null;
 				resource_kind: string | null;
+				reason: string | null;
 				tool: string | null;
 			}>`
 				SELECT id AS event_id,
@@ -541,6 +544,7 @@ export function createAgentHistoryRoutes(deps: {
 				       metadata->'fields' AS fields,
 				       metadata->>'attribution' AS attribution,
 				       metadata->>'resourceKind' AS resource_kind,
+				       metadata->>'reason' AS reason,
 				       metadata->>'tool' AS tool
 				FROM current_event_records
 				WHERE organization_id = ${scope.organizationId}
@@ -567,7 +571,7 @@ export function createAgentHistoryRoutes(deps: {
 					typeof rawProposal === "object" &&
 					(rawProposal as { args?: unknown }).args &&
 					typeof (rawProposal as { args: unknown }).args === "object"
-						? ((rawProposal as { args: Record<string, unknown> }).args)
+						? (rawProposal as { args: Record<string, unknown> }).args
 						: rawProposal;
 				return {
 					type: "tool-approval" as const,
@@ -579,6 +583,7 @@ export function createAgentHistoryRoutes(deps: {
 					fields: r.fields ?? null,
 					attribution: r.attribution ?? null,
 					resourceKind,
+					reason: r.reason ?? null,
 				};
 			});
 			const errorInteraction = await readLatestAgentErrorInteraction(
@@ -597,7 +602,9 @@ export function createAgentHistoryRoutes(deps: {
 		if (!scope) return errorResponse(c, "Unauthorized", 401);
 		if (!scope.organizationId) return c.json({ messages: [] });
 
-		const conversationId = decodeURIComponent(c.req.param("conversationId") || "");
+		const conversationId = decodeURIComponent(
+			c.req.param("conversationId") || "",
+		);
 		// Platform conversation ids are `{platform}:{...}` — alnum/._:- only.
 		if (!conversationId || !/^[a-zA-Z0-9._:-]+$/.test(conversationId)) {
 			return errorResponse(c, "Invalid conversation id", 400);

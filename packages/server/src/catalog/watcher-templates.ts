@@ -107,8 +107,8 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			items: {
 				type: "object",
 				properties: {
-					winner_entity_id: { type: "number" },
-					duplicate_entity_ids: { type: "array", items: { type: "number" }, minItems: 1 },
+					winner_entity_id: { type: "integer" },
+					duplicate_entity_ids: { type: "array", items: { type: "integer" }, minItems: 1 },
 					merge_evidence: {
 						type: "array",
 						items: {

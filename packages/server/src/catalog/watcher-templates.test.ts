@@ -41,6 +41,17 @@ describe("duplicate merge watcher template", () => {
 		);
 
 		expect(schema?.required).toEqual(["merge_proposals", "uncertain_groups"]);
-		expect(schema?.properties).toHaveProperty("merge_proposals");
+		expect(schema).toMatchObject({
+			properties: {
+				merge_proposals: {
+					items: {
+						properties: {
+							winner_entity_id: { type: "integer" },
+							duplicate_entity_ids: { items: { type: "integer" } },
+						},
+					},
+				},
+			},
+		});
 	});
 });

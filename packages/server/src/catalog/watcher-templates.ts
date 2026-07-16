@@ -7,13 +7,12 @@ import type { CatalogEntry } from "./types";
  * "From catalog" picker can prefill the form directly — the same prefill shape
  * the "Clone existing" path uses.
  *
- * Templates stay entity-agnostic (no `sources` SQL, no entity binding): the
- * user picks the entity and schedule in the form. Output structure is governed
- * by the bound entity type (render + schema derive from it — see lobu#1533), so
- * templates express the desired output shape in the prompt rather than via an
- * inline extraction schema. Override or replace these by pointing
- * `LOBU_CATALOG_URIS` at your own `watchers.json` manifest (env wins outright —
- * there is no merge with these defaults).
+ * Most templates are entity-agnostic, so the user picks the entity and schedule
+ * in the form. Specialized templates may include portable `@` sources and a
+ * reaction script; an exported reaction input schema then governs extraction.
+ * Override or replace these by pointing `LOBU_CATALOG_URIS` at your own
+ * `watchers.json` manifest (env wins outright — there is no merge with these
+ * defaults).
  */
 export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 	{
@@ -85,67 +84,171 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 	{
 		id: "duplicate-merge",
 		name: "Duplicate entity merge",
-		version: "1.0.0",
+		version: "2.0.0",
 		description:
-			"Find entities that are the same real-world thing and fold the duplicate into the original.",
+			"Find entities that are the same real-world thing and fold duplicates into one canonical record.",
 		detail: {
 			slug: "duplicate-merge",
 			schedule: "0 3 * * *",
-			// A cross-entity watcher: its source surfaces look-alike PEOPLE (shared
-			// alias / overlapping identity value) rather than events. The reader
-			// groups candidates; the agent decides confidence and proposes each group.
-			// `@entity:person` gives the agent the candidate set + their aliases so
-			// it can reason about which pairs are truly the same.
+			// A cross-entity watcher: its source surfaces people rather than events.
+			// The model explains ambiguous cases; the reaction deterministically groups
+			// exact shared identity values. Groups beyond the merge API or reaction SDK
+			// limits are left unapplied for the model to flag for manual review.
 			sources: [{ name: "people", query: "@entity:person" }],
 			prompt:
-				"Some of these person entities may be duplicates — the SAME real-world person captured more than once (e.g. once from a chat handle, once from an email), each holding different identifiers or aliases. Group records that represent one person. Shared aliases or overlapping identity values (email, phone, handle) are strong signals; mere name similarity alone is NOT.\n\nFor each confident group, choose the most complete record as canonical and return one item in merge_proposals with winner_entity_id, duplicate_entity_ids (every other record in that group), merge_evidence (kind and the shared identifier), and rationale. Return uncertain groups separately with why. Never emit textual backlog tasks. The deterministic reaction submits every proposal through manage_entity so each group becomes one pending human approval and no merge happens before approval.\n",
+				"Review every row in sources.people. Explain exact shared email or phone groups in analysis_summary. Put name-only, alias-only, or handle-only matches, identity components larger than 26 people, and sources with more than 199 mergeable components in uncertain_groups with why. Aliases and handles lack connector namespaces here, so they are not automatic merge evidence. Do not call entity tools or emit backlog tasks. The deterministic reaction independently creates one pending human approval for every exact email or phone component of at most 26 people. It fails before queuing approvals when more than 199 components need merging, and no merge happens before approval.\n",
 			reaction_script: `export const input = {
 	type: "object",
 	properties: {
-		merge_proposals: {
-			type: "array",
-			items: {
-				type: "object",
-				properties: {
-					winner_entity_id: { type: "integer" },
-					duplicate_entity_ids: { type: "array", items: { type: "integer" }, minItems: 1 },
-					merge_evidence: {
-						type: "array",
-						items: {
-							type: "object",
-							properties: {
-								kind: { enum: ["email", "phone", "handle", "alias"] },
-								identifier: { type: "string" },
-							},
-							required: ["kind", "identifier"],
-							additionalProperties: false,
-						},
-						minItems: 1,
-					},
-					rationale: { type: "string" },
-				},
-				required: ["winner_entity_id", "duplicate_entity_ids", "merge_evidence", "rationale"],
-				additionalProperties: false,
-			},
-		},
+		analysis_summary: { type: "string" },
 		uncertain_groups: { type: "array", items: { type: "object" } },
 	},
-	required: ["merge_proposals", "uncertain_groups"],
+	required: ["analysis_summary", "uncertain_groups"],
 	additionalProperties: false,
 };
 
+const MAX_MERGE_COMPONENTS = 199;
+
+function asValues(value) {
+	if (value == null) return [];
+	return Array.isArray(value) ? value : [value];
+}
+
+function normalizeIdentity(kind, value) {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+	if (kind === "phone") {
+		if (!/^[+()0-9 .-]+$/.test(trimmed)) return null;
+		const digits = trimmed.replace(/[^0-9]/g, "");
+		return digits.length >= 7 && digits.length <= 15 ? digits : null;
+	}
+	const email = trimmed.toLowerCase();
+	if (email.length > 512) return null;
+	// Require a dot-atom local part and dot-separated domain labels so malformed
+	// values (empty labels, leading/trailing/consecutive dots, multiple "@",
+	// whitespace) cannot be used as deterministic merge evidence.
+	if (!/^[a-z0-9_%+-]+(?:\\.[a-z0-9_%+-]+)*@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(email)) return null;
+	return email;
+}
+
+function entityIdentities(entity) {
+	const metadata = entity && typeof entity.metadata === "object" && entity.metadata
+		? entity.metadata
+		: {};
+	const identities = new Map();
+	const add = (kind, value) => {
+		const identifier = normalizeIdentity(kind, value);
+		if (identifier) identities.set(kind + ":" + identifier, { kind, identifier });
+	};
+	for (const value of [...asValues(metadata.email), ...asValues(metadata.emails)]) add("email", value);
+	for (const value of [...asValues(metadata.phone), ...asValues(metadata.phones)]) add("phone", value);
+	return [...identities.values()];
+}
+
+function populatedFieldCount(entity) {
+	const metadata = entity && typeof entity.metadata === "object" && entity.metadata
+		? entity.metadata
+		: {};
+	return Object.values(metadata).filter((value) => {
+		if (value == null || value === "") return false;
+		return !Array.isArray(value) || value.length > 0;
+	}).length;
+}
+
 export default async function reaction(ctx, client) {
-	for (const proposal of ctx.extracted_data.merge_proposals) {
+	const since = String(ctx.window.window_start).slice(0, 10);
+	const until = new Date(new Date(ctx.window.window_end).getTime() - 1).toISOString().slice(0, 10);
+	const knowledge = await client.knowledge.read({ watcher_id: ctx.window.watcher_id, since, until });
+	const candidates = Array.isArray(knowledge?.sources?.people) ? knowledge.sources.people : [];
+	const entities = new Map();
+	const parent = new Map();
+	const ownersByIdentity = new Map();
+	const find = (id) => {
+		let root = parent.get(id);
+		while (root !== parent.get(root)) root = parent.get(root);
+		let current = id;
+		while (parent.get(current) !== root) {
+			const next = parent.get(current);
+			parent.set(current, root);
+			current = next;
+		}
+		return root;
+	};
+	const union = (left, right) => {
+		const leftRoot = find(left);
+		const rightRoot = find(right);
+		if (leftRoot === rightRoot) return false;
+		parent.set(Math.max(leftRoot, rightRoot), Math.min(leftRoot, rightRoot));
+		return true;
+	};
+
+	for (const candidate of candidates) {
+		const id = Number(candidate?.id);
+		if (!Number.isInteger(id)) continue;
+		entities.set(id, candidate);
+		parent.set(id, id);
+	}
+	for (const [id, entity] of entities) {
+		for (const identity of entityIdentities(entity)) {
+			const key = identity.kind + ":" + identity.identifier;
+			const owners = ownersByIdentity.get(key) ?? new Set();
+			owners.add(id);
+			ownersByIdentity.set(key, owners);
+		}
+	}
+	const evidenceIdentityKeys = [];
+	for (const key of [...ownersByIdentity.keys()].sort()) {
+		const owners = [...ownersByIdentity.get(key)].sort((left, right) => left - right);
+		if (owners.length < 2) continue;
+		// A spanning set proves the component while staying within the API's
+		// 25-item evidence limit for a 26-entity merge.
+		let connectsEntities = false;
+		for (let index = 1; index < owners.length; index += 1) {
+			if (union(owners[0], owners[index])) connectsEntities = true;
+		}
+		if (connectsEntities) evidenceIdentityKeys.push(key);
+	}
+
+	const components = new Map();
+	for (const [id, entity] of entities) {
+		const root = find(id);
+		const component = components.get(root) ?? [];
+		component.push(entity);
+		components.set(root, component);
+	}
+	const orderedComponents = [...components.values()]
+		.filter((component) => component.length > 1 && component.length <= 26)
+		.sort((left, right) => Math.min(...left.map((row) => Number(row.id))) - Math.min(...right.map((row) => Number(row.id))));
+	// knowledge.read consumes one of the sandbox's 200 SDK calls. Check before
+	// writes so exceeding the remaining budget cannot leave partial approvals.
+	if (orderedComponents.length > MAX_MERGE_COMPONENTS) {
+		throw new Error("More than 199 identity components need merging; no approvals were queued");
+	}
+
+	for (const component of orderedComponents) {
+		const componentRoot = find(Number(component[0].id));
+		const evidence = [];
+		for (const key of evidenceIdentityKeys) {
+			const owner = ownersByIdentity.get(key).values().next().value;
+			if (find(owner) !== componentRoot) continue;
+			const separator = key.indexOf(":");
+			evidence.push({ kind: key.slice(0, separator), identifier: key.slice(separator + 1) });
+		}
+		const ranked = [...component].sort((left, right) => {
+			const completeness = populatedFieldCount(right) - populatedFieldCount(left);
+			return completeness || Number(left.id) - Number(right.id);
+		});
 		await client.entities.manage({
 			action: "merge",
-			winner_entity_id: proposal.winner_entity_id,
-			duplicate_entity_ids: proposal.duplicate_entity_ids,
-			merge_evidence: proposal.merge_evidence,
+			winner_entity_id: Number(ranked[0].id),
+			duplicate_entity_ids: ranked.slice(1).map((entity) => Number(entity.id)),
+			merge_evidence: evidence,
 		});
 	}
 }`,
 			reactions_guidance:
-				"Only merge when the evidence is strong (a shared identity value or alias, not just a similar name). When unsure, leave the pair unmerged and report it for human review rather than guessing — a wrong merge is costly to notice.",
+				"Treat only exact shared email or phone values as merge evidence. Report aliases, handles, names, and every other possible match as uncertain rather than guessing.",
 			tags: ["identity", "deduplication", "world-model"],
 		},
 	},

@@ -120,17 +120,18 @@ describe('watcher CRUD', () => {
   });
 
   it('executes an installed merge reaction and queues exactly one pending, unapplied approval with watcher/window attribution', async () => {
-    // The atomic test above proves INSTALLATION (compile + store). This proves the
-    // rest of the contract the PR claims: the installed compiled reaction, run
-    // through executeReaction, submits its proposal via client.entities.manage and
-    // produces exactly ONE pending, unapplied merge approval attributed to the
-    // acting watcher AND window. Uses the shipped duplicate-merge template so the
-    // real reaction the catalog serves is what gets executed.
     const sql = getTestDb();
 
-    // Two duplicate person entities: the reaction proposes folding loser into winner.
+    // Three people form one exact-identity component (winner ↔ bridge by email,
+    // bridge ↔ loser by phone), proving grouping does not depend on model output.
     const winner = await createTestEntity({
       name: 'Reaction Merge Winner',
+      entity_type: 'person',
+      organization_id: ownerOrgId,
+      created_by: ownerUserId,
+    });
+    const bridge = await createTestEntity({
+      name: 'Reaction Merge Bridge',
       entity_type: 'person',
       organization_id: ownerOrgId,
       created_by: ownerUserId,
@@ -141,18 +142,26 @@ describe('watcher CRUD', () => {
       organization_id: ownerOrgId,
       created_by: ownerUserId,
     });
+    await sql`
+      UPDATE entities
+      SET metadata = CASE id
+        WHEN ${winner.id} THEN ${sql.json({ email: 'shared@test.example', phone: '+44 7700 900001', handle: 'winner' })}
+        WHEN ${bridge.id} THEN ${sql.json({ email: 'shared@test.example', phone: '+44 7700 900002' })}
+        WHEN ${loser.id} THEN ${sql.json({ phone: '+44 7700 900002' })}
+      END
+      WHERE id IN (${winner.id}, ${bridge.id}, ${loser.id})
+    `;
 
     const template = WATCHER_CATALOG_TEMPLATES.find((t) => t.id === 'duplicate-merge');
-    const reactionScript = template?.detail.reaction_script as string;
-    expect(reactionScript).toContain('client.entities.manage');
+    if (!template) throw new Error('duplicate-merge watcher template is missing');
+    const reactionScript = String(template.detail.reaction_script);
 
-    // Install the reaction on a real watcher (real agent → its owning-agent
-    // envelope resolves, so the watcher merge queues rather than being denied).
     const created = (await owner.watchers.create({
       slug: 'reaction-merge-exec-watcher',
       name: 'Reaction Merge Exec Watcher',
       prompt: 'Find and merge duplicate people.',
       agent_id: agentId,
+      sources: template.detail.sources,
       reaction_script: reactionScript,
     })) as { watcher_id: string };
     const watcherId = Number(created.watcher_id);
@@ -162,21 +171,12 @@ describe('watcher CRUD', () => {
     `;
     expect(installed?.reaction_script_compiled).toBeTruthy();
 
-    // Execute the INSTALLED compiled reaction. executeReaction stamps the acting
-    // watcher + window from context.window, so the queued approval inherits both.
     const windowId = 987654;
     const res = await executeReaction({
       compiledScript: installed?.reaction_script_compiled as string,
       context: {
         extracted_data: {
-          merge_proposals: [
-            {
-              winner_entity_id: winner.id,
-              duplicate_entity_ids: [loser.id],
-              merge_evidence: [{ kind: 'email', identifier: 'dup@example.com' }],
-              rationale: 'Same person captured from two sources.',
-            },
-          ],
+          analysis_summary: 'The source contains one exact-identity component.',
           uncertain_groups: [],
         },
         entities: [],
@@ -196,13 +196,14 @@ describe('watcher CRUD', () => {
         },
         organization_id: ownerOrgId,
       } as never,
-      env: process.env as Record<string, string | undefined>,
+      env: {
+        ...process.env,
+        JWT_SECRET: 'test-jwt-secret-for-testing-only',
+      } as Record<string, string | undefined>,
     });
     expect(res.error ?? null).toBeNull();
     expect(res.success).toBe(true);
 
-    // Exactly ONE pending merge approval for this proposal, attributed to the
-    // acting watcher AND window.
     const pending = await sql<
       {
         watcher_id: number | null;
@@ -224,14 +225,31 @@ describe('watcher CRUD', () => {
     expect(pending[0].approval_status).toBe('pending');
     expect(pending[0].status).toBe('pending');
 
-    // Unapplied before approval: the loser stays live and unmerged.
-    const [loserRow] = await sql<
-      { merged_into: number | null; deleted_at: string | null }[]
-    >`
-      SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+    const [pendingInput] = await sql<{ entity_ids: number[] }[]>`
+      SELECT action_input->'entity_ids' AS entity_ids
+      FROM runs
+      WHERE organization_id = ${ownerOrgId}
+        AND run_type = 'internal'
+        AND action_input->>'operation' = 'merge'
+        AND action_input->>'winner_entity_id' = ${String(winner.id)}
     `;
-    expect(loserRow.merged_into).toBeNull();
-    expect(loserRow.deleted_at).toBeNull();
+    expect(pendingInput.entity_ids.map(Number).sort((a, b) => a - b)).toEqual(
+      [bridge.id, loser.id].sort((a, b) => a - b)
+    );
+
+    const duplicateRows = await sql<
+      { id: number; merged_into: number | null; deleted_at: string | null }[]
+    >`
+      SELECT id, merged_into, deleted_at
+      FROM entities
+      WHERE id IN (${bridge.id}, ${loser.id})
+      ORDER BY id
+    `;
+    expect(duplicateRows.map((row) => Number(row.id))).toEqual(
+      [bridge.id, loser.id].sort((a, b) => a - b)
+    );
+    expect(duplicateRows.every((row) => row.merged_into === null)).toBe(true);
+    expect(duplicateRows.every((row) => row.deleted_at === null)).toBe(true);
 
     await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
   });

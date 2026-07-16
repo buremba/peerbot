@@ -1705,9 +1705,9 @@ async function tryRejectBuilderRun(
 }
 
 /**
- * Claim a pending entity_field_change run (a watcher field-change held for
- * approval). Mirrors claimBuilderRun. Returns the held proposal, or null when
- * this run isn't a pending field-change run.
+ * Claim a pending entity-change run held for approval. Mirrors claimBuilderRun.
+ * Returns the held proposal, or null when this run is not a pending entity
+ * change.
  */
 async function claimEntityChangeRun(
 	runId: number,
@@ -1783,10 +1783,6 @@ function describeEntityChange(proposal: EntityChangeProposal): string {
 }
 
 /**
- * Approve + apply a pending entity_field_change run. Returns a result when the run
- * was a pending field-change run; null to fall through to other approval paths.
- */
-/**
  * Non-admin authority: a member may decide a run ONLY when it is a pending
  * entity-change proposal that records them as the field owner
  * (action_input.owner_user_id, resolved at propose time from field_controls).
@@ -1813,7 +1809,7 @@ async function isPendingEntityRunOwner(
 }
 
 /**
- * Approving/rejecting a run is a HUMAN decision — it must come from a verified
+ * Approving or rejecting a run is a HUMAN decision — it must come from a verified
  * user session, never from any non-human context. This is the security floor
  * beneath {@link requireApprovalAuthority}'s role check.
  *

@@ -4,7 +4,7 @@
  * The world-model keystone: when a bridge event (or a reviewer/watcher) reveals
  * two entities are the same real thing, this fuses them WITHOUT rewriting the
  * append-only `events` table. It runs off the ingest hot path — a user-configured
- * watcher's agent, or an admin, calls it via the `manage_entity_merge` tool; the
+ * watcher's agent, or an admin, calls it via `manage_entity(action='merge')`; the
  * resolver only ever LOGS a "merge candidate", never fuses inline.
  *
  * Two disjoint event populations recall the winner afterward:
@@ -50,8 +50,10 @@ export interface ApplyMergeGroupResult {
   repointedEdges: number;
 }
 
-/** Apply a whole duplicate group under one outer transaction. Any stale or
- * invalid member rolls back every preceding member merge. */
+/**
+ * Apply a whole duplicate group under one outer transaction. Any stale or
+ * invalid member rolls back every preceding member merge.
+ */
 export async function applyMergeGroup(
   params: {
     orgId: string;

@@ -265,9 +265,10 @@ describe("listAgentThreads scope=all", () => {
 			"watcher run output",
 		);
 		expect(data.interactions).toEqual([
-			expect.objectContaining({
-				type: "tool-approval",
-				action: "update",
+				expect.objectContaining({
+					type: "tool-approval",
+					eventId: expect.any(Number),
+					action: "update",
 				fields: { email: "new@example.com" },
 				attribution: "watcher",
 				resourceKind: "entity",

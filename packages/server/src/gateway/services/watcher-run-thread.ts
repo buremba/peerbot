@@ -25,6 +25,7 @@ export async function readWatcherRunThreads(args: {
 	}>;
 	interactions: Array<{
 		type: "tool-approval";
+		eventId: number;
 		runId: number;
 		action: string | null;
 		proposal: Record<string, unknown> | null;
@@ -80,6 +81,7 @@ export async function readWatcherRunThreads(args: {
 	// pending approval may also belong to a run that has no completed snapshot,
 	// so fetch it independently and let the client append it to the conversation.
 	const approvalRows = await sql<{
+		event_id: number;
 		run_id: number;
 		action: string | null;
 		proposal: Record<string, unknown> | null;
@@ -89,7 +91,8 @@ export async function readWatcherRunThreads(args: {
 		resource_kind: string | null;
 		tool: string | null;
 	}>`
-		SELECT e.run_id,
+		SELECT e.id AS event_id,
+		       e.run_id,
 		       e.metadata->>'action' AS action,
 		       e.metadata->'proposal' AS proposal,
 		       e.metadata->'current' AS current,
@@ -130,6 +133,7 @@ export async function readWatcherRunThreads(args: {
 				: rawProposal;
 		return {
 			type: "tool-approval" as const,
+			eventId: Number(row.event_id),
 			runId: Number(row.run_id),
 			action: row.action,
 			proposal,

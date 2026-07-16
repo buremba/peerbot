@@ -13,8 +13,9 @@
  * `supersedeActionEvent`.
  */
 
+import { createHash } from "node:crypto";
 import { resolveEntityApprovalPolicy } from "../../authz/entity-policy";
-import { getDb } from "../../db/client";
+import { type DbClient, getDb, pgBigintArray } from "../../db/client";
 import type { Env } from "../../index";
 import {
 	formatFieldChangeAction,
@@ -30,10 +31,9 @@ import {
 	deleteEntity,
 	type EntityData,
 } from "../../utils/entity-management";
-import { applyMergeGroup } from "../../utils/entity-merge";
-import { insertEvent } from "../../utils/insert-event";
+import { applyMergeGroupInTransaction } from "../../utils/entity-merge";
+import { insertEvent, stableJson } from "../../utils/insert-event";
 import logger from "../../utils/logger";
-import { isUniqueViolation } from "../../utils/pg-errors";
 import {
 	buildConnectionUrl,
 	buildEntityUrl,
@@ -61,8 +61,7 @@ export interface EntityFieldChangeProposal {
 	watcher_id?: number | null;
 	/**
 	 * The watcher-run window that produced this proposal, if any. Stamped onto the
-	 * `runs.window_id` COLUMN (never into action_input, so the md5(action_input)
-	 * dedupe identity is unaffected) so a run that produced N proposals groups them
+	 * `runs.window_id` COLUMN so a run that produced N proposals groups them
 	 * into ONE batch approval card. Stripped from action_input before the insert.
 	 */
 	window_id?: number | null;
@@ -76,9 +75,7 @@ export interface EntityFieldChangeProposal {
 	 * without an admin role. Absent for mixed/no owners — admin-only behavior.
 	 * Lives in action_input (not run_metadata) because the approve path and the
 	 * Slack bridge already load action_input for the proposal; the dedupe SELECT
-	 * compares specific fields (operation/entity_id/fields), so replays still
-	 * collapse, and the md5(action_input) race index stays stable because the
-	 * owner is recomputed deterministically from live field_controls.
+	 * compares the canonical change identity, so replays still collapse.
 	 */
 	owner_user_id?: string | null;
 }
@@ -149,29 +146,85 @@ function operationOf(
 function asUpdateProposal(
 	proposal: EntityChangeProposal,
 ): EntityFieldChangeProposal {
-	return proposal as EntityFieldChangeProposal;
+	if (proposal.operation === undefined || proposal.operation === "update") {
+		return proposal;
+	}
+	throw new Error(`Expected update proposal, got ${proposal.operation}`);
 }
 
 function asDeleteProposal(
 	proposal: EntityChangeProposal,
 ): EntityDeleteProposal {
-	return proposal as EntityDeleteProposal;
+	if (proposal.operation === "delete") return proposal;
+	throw new Error(
+		`Expected delete proposal, got ${proposal.operation ?? "update"}`,
+	);
 }
 
 function asCreateProposal(
 	proposal: EntityChangeProposal,
 ): EntityCreateProposal {
-	return proposal as EntityCreateProposal;
+	if (proposal.operation === "create") return proposal;
+	throw new Error(
+		`Expected create proposal, got ${proposal.operation ?? "update"}`,
+	);
 }
 
 function asMergeProposal(proposal: EntityChangeProposal): EntityMergeProposal {
-	return proposal as EntityMergeProposal;
+	if (proposal.operation === "merge") return proposal;
+	throw new Error(
+		`Expected merge proposal, got ${proposal.operation ?? "update"}`,
+	);
+}
+
+function changedEntityId(proposal: EntityChangeProposal): number {
+	if (proposal.operation === "create") {
+		throw new Error("Create proposals do not have an existing entity id");
+	}
+	return proposal.entity_id;
 }
 
 function mergeEntityIds(proposal: EntityMergeProposal): number[] {
 	return proposal.entity_ids ?? [proposal.entity_id];
 }
 
+function entityChangeIdempotencyKey(
+	organizationId: string,
+	windowId: number | null,
+	proposal: EntityChangeProposal,
+): string {
+	const operation = operationOf(proposal);
+	let change: Record<string, unknown>;
+	switch (operation) {
+		case "update":
+			change = {
+				entityId: asUpdateProposal(proposal).entity_id,
+				fields: asUpdateProposal(proposal).fields,
+			};
+			break;
+		case "delete":
+			change = {
+				entityId: asDeleteProposal(proposal).entity_id,
+				force: asDeleteProposal(proposal).force_delete_tree ?? false,
+			};
+			break;
+		case "create":
+			change = { entityData: asCreateProposal(proposal).entity_data };
+			break;
+		case "merge": {
+			const merge = asMergeProposal(proposal);
+			change = {
+				winnerId: merge.winner_entity_id,
+				loserIds: [...new Set(mergeEntityIds(merge))].sort((a, b) => a - b),
+			};
+			break;
+		}
+	}
+	const digest = createHash("sha256")
+		.update(stableJson({ organizationId, windowId, operation, change }))
+		.digest("hex");
+	return `entity-change:${digest}`;
+}
 async function loadWatcherLabel(
 	ctx: ToolContext,
 	watcherId: number | null | undefined,
@@ -204,10 +257,7 @@ async function loadWatcherLabel(
 	};
 }
 
-async function loadEntitySnapshot(
-	ctx: ToolContext,
-	entityId: number,
-): Promise<{
+interface EntitySnapshot {
 	id: number;
 	name: string | null;
 	entity_type: string | null;
@@ -215,7 +265,6 @@ async function loadEntitySnapshot(
 	parent_id: number | null;
 	parent_slug: string | null;
 	parent_entity_type: string | null;
-	metadata: Record<string, unknown> | null;
 	identities: Array<{
 		id: number;
 		namespace: string;
@@ -225,27 +274,15 @@ async function loadEntitySnapshot(
 		connection_name: string | null;
 		connector_key: string | null;
 	}>;
-} | null> {
-	const rows = await getDb()<{
-		id: number;
-		name: string | null;
-		entity_type: string | null;
-		slug: string | null;
-		parent_id: number | null;
-		parent_slug: string | null;
-		parent_entity_type: string | null;
-		metadata: Record<string, unknown> | null;
-		identities: Array<{
-			id: number;
-			namespace: string;
-			identifier: string;
-			source_connector: string | null;
-			connection_id: number | null;
-			connection_name: string | null;
-			connector_key: string | null;
-		}>;
-	}>`
-    SELECT e.id, e.name, et.slug AS entity_type, e.slug, e.parent_id, e.metadata,
+}
+
+async function loadEntitySnapshots(
+	ctx: ToolContext,
+	entityIds: number[],
+): Promise<EntitySnapshot[]> {
+	if (entityIds.length === 0) return [];
+	return getDb()<EntitySnapshot>`
+    SELECT e.id, e.name, et.slug AS entity_type, e.slug, e.parent_id,
            parent.slug AS parent_slug, pet.slug AS parent_entity_type,
            COALESCE((
              SELECT jsonb_agg(jsonb_build_object(
@@ -262,25 +299,24 @@ async function loadEntitySnapshot(
     JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities parent ON e.parent_id = parent.id
     LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
-    WHERE e.id = ${entityId}
+    WHERE e.id = ANY(${pgBigintArray(entityIds)}::bigint[])
       AND e.organization_id = ${ctx.organizationId}
-    LIMIT 1
   `;
+}
+
+async function loadEntitySnapshot(
+	ctx: ToolContext,
+	entityId: number,
+): Promise<EntitySnapshot | null> {
+	const rows = await loadEntitySnapshots(ctx, [entityId]);
 	return rows[0] ?? null;
 }
 
-async function addEntityReviewLinks<
-	T extends NonNullable<Awaited<ReturnType<typeof loadEntitySnapshot>>>,
->(
-	ctx: ToolContext,
-	entity: T,
-): Promise<
-	T & {
-		href?: string;
-		identities: Array<T["identities"][number] & { connection_href?: string }>;
-	}
-> {
-	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
+function toEntityReviewSnapshot(
+	urlContext: Awaited<ReturnType<typeof getOrgUrlContext>>,
+	entity: EntitySnapshot,
+) {
+	const { ownerSlug, baseUrl } = urlContext;
 	const href =
 		ownerSlug && entity.entity_type && entity.slug
 			? buildEntityUrl(
@@ -295,7 +331,13 @@ async function addEntityReviewLinks<
 				)
 			: undefined;
 	return {
-		...entity,
+		id: entity.id,
+		name: entity.name,
+		entity_type: entity.entity_type,
+		slug: entity.slug,
+		parent_id: entity.parent_id,
+		parent_slug: entity.parent_slug,
+		parent_entity_type: entity.parent_entity_type,
 		...(href ? { href } : {}),
 		identities: entity.identities.map((identity) => ({
 			...identity,
@@ -386,20 +428,22 @@ export async function proposeEntityMerge(
 		entity_ids: number[];
 	},
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	const duplicates = await Promise.all(
-		proposal.entity_ids.map((entityId) => loadEntitySnapshot(ctx, entityId)),
+	const ids = [...new Set([...proposal.entity_ids, proposal.winner_entity_id])];
+	const snapshots = await loadEntitySnapshots(ctx, ids);
+	const byId = new Map(snapshots.map((entity) => [Number(entity.id), entity]));
+	const requireSnapshot = (entityId: number) => {
+		const snapshot = byId.get(entityId);
+		if (!snapshot) throw new Error(`Entity ${entityId} not found`);
+		return snapshot;
+	};
+	const urlContext = await getOrgUrlContext(ctx);
+	const linkedDuplicates = proposal.entity_ids.map((entityId) =>
+		toEntityReviewSnapshot(urlContext, requireSnapshot(entityId)),
 	);
-	const winner = await loadEntitySnapshot(ctx, proposal.winner_entity_id);
-	const missingIndex = duplicates.findIndex((entity) => !entity);
-	if (missingIndex >= 0)
-		throw new Error(`Entity ${proposal.entity_ids[missingIndex]} not found`);
-	if (!winner) throw new Error(`Entity ${proposal.winner_entity_id} not found`);
-	const linkedDuplicates = await Promise.all(
-		(duplicates as Array<NonNullable<(typeof duplicates)[number]>>).map(
-			(entity) => addEntityReviewLinks(ctx, entity),
-		),
+	const linkedWinner = toEntityReviewSnapshot(
+		urlContext,
+		requireSnapshot(proposal.winner_entity_id),
 	);
-	const linkedWinner = await addEntityReviewLinks(ctx, winner);
 	const [loser, ...rest] = linkedDuplicates;
 	if (!loser) throw new Error("At least one duplicate entity is required");
 	return proposeEntityChange(ctx, {
@@ -416,9 +460,8 @@ export async function proposeEntityChange(
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
 	const sql = getDb();
 	const operation = operationOf(proposal);
-	// window_id groups a run's proposals into one batch card — it rides the
-	// runs.window_id COLUMN, never action_input, so the md5(action_input) dedupe
-	// identity is byte-identical whether or not a window produced the proposal.
+	// window_id groups a run's proposals into one batch card. It rides the column,
+	// not action_input, and is part of the canonical idempotency key below.
 	const { window_id: windowId, ...actionInputProposal } = proposal;
 	const updateProposal =
 		operation === "update" ? asUpdateProposal(proposal) : null;
@@ -432,92 +475,77 @@ export async function proposeEntityChange(
 		operation === "update"
 			? ENTITY_FIELD_CHANGE_ACTION_KEY
 			: ENTITY_CHANGE_ACTION_KEY;
+	const idempotencyKey = entityChangeIdempotencyKey(
+		ctx.organizationId,
+		windowId ?? null,
+		proposal,
+	);
 
 	// Idempotency: complete_window is replay-safe (retries + concurrent replicas),
-	// so the same blocked change can be proposed more than once. Collapse to a
-	// single pending approval — if an equivalent pending run already exists for
-	// this org+entity+proposal, reuse it instead of stacking duplicate cards.
+	// so the same blocked change can be proposed more than once. Collapse to one
+	// active run — whether still pending or already applying — instead of stacking
+	// duplicate cards or colliding with the global active-run idempotency index.
 	// (Deletes match on force_delete_tree too: force and non-force are different
 	// asks and must not affirm each other.)
-	const findExisting = () => sql<{ id: number; event_id: number | null }>`
-    SELECT r.id,
-           (SELECT e.id FROM events e
+	type ExistingChangeRun = {
+		id: number;
+		approval_status: string;
+		status: string;
+		pending_event_id: number | null;
+		current_event_id: number | null;
+	};
+	const findExisting = (db: DbClient) => db<ExistingChangeRun>`
+    SELECT r.id, r.approval_status, r.status,
+           (SELECT e.id FROM current_event_records e
               WHERE e.run_id = r.id
                 AND e.interaction_status = 'pending'
-              ORDER BY e.id DESC LIMIT 1) AS event_id
+              ORDER BY e.id DESC LIMIT 1) AS pending_event_id,
+           (SELECT e.id FROM current_event_records e
+              WHERE e.run_id = r.id
+                AND e.interaction_type = 'approval'
+              ORDER BY e.id DESC LIMIT 1) AS current_event_id
     FROM runs r
     WHERE r.organization_id = ${ctx.organizationId}
       AND r.run_type = 'internal'
       AND r.action_key = ${actionKey}
-      AND r.approval_status = 'pending'
-      AND r.status = 'pending'
-      -- Same proposal from a DIFFERENT window is a distinct ask (each window gets
-      -- its own batch card); only a byte-identical replay of the SAME window
-      -- collapses. Matches the runs_entity_change_pending_dedupe unique index.
-      AND r.window_id IS NOT DISTINCT FROM ${windowId ?? null}
-      AND COALESCE(r.action_input->>'operation', 'update') = ${operation}
-      AND COALESCE(r.action_input->>'entity_id', '') = ${"entity_id" in proposal ? String(proposal.entity_id) : ""}
-	      AND (
-	        ${operation !== "update"}
-	        OR r.action_input->'fields' = ${sql.json(updateProposal?.fields ?? {})}::jsonb
-	      )
-	      AND (
-	        ${operation !== "delete"}
-	        OR COALESCE((r.action_input->>'force_delete_tree')::boolean, false) = ${deleteProposal?.force_delete_tree ?? false}
-	      )
-	      AND (
-	        ${operation !== "create"}
-	        OR r.action_input->'entity_data' = ${sql.json(createProposal?.entity_data ?? {})}::jsonb
-	      )
-	      AND (
-	        ${operation !== "merge"}
-	        OR (
-	          COALESCE(r.action_input->>'winner_entity_id', '') = ${String(mergeProposal?.winner_entity_id ?? "")}
-	          AND COALESCE(r.action_input->'entity_ids', jsonb_build_array((r.action_input->>'entity_id')::bigint)) = ${sql.json(mergeProposal ? mergeEntityIds(mergeProposal) : [])}::jsonb
-	        )
-	      )
-	    ORDER BY r.id DESC
+      AND (
+        (
+          r.idempotency_key = ${idempotencyKey}
+          AND r.status IN ('pending', 'claimed', 'running')
+        )
+        OR (
+          r.idempotency_key IS NULL
+          AND r.approval_status = 'pending'
+          AND r.status = 'pending'
+          -- Same proposal from a different window is a distinct ask. This
+          -- semantic fallback repairs pending rows created before canonical keys.
+          AND r.window_id IS NOT DISTINCT FROM ${windowId ?? null}
+          AND COALESCE(r.action_input->>'operation', 'update') = ${operation}
+          AND COALESCE(r.action_input->>'entity_id', '') = ${"entity_id" in proposal ? String(proposal.entity_id) : ""}
+          AND (
+            ${operation !== "update"}
+            OR r.action_input->'fields' = ${sql.json(updateProposal?.fields ?? {})}::jsonb
+          )
+          AND (
+            ${operation !== "delete"}
+            OR COALESCE((r.action_input->>'force_delete_tree')::boolean, false) = ${deleteProposal?.force_delete_tree ?? false}
+          )
+          AND (
+            ${operation !== "create"}
+            OR r.action_input->'entity_data' = ${sql.json(createProposal?.entity_data ?? {})}::jsonb
+          )
+          AND (
+            ${operation !== "merge"}
+            OR (
+              COALESCE(r.action_input->>'winner_entity_id', '') = ${String(mergeProposal?.winner_entity_id ?? "")}
+              AND COALESCE(r.action_input->'entity_ids', jsonb_build_array((r.action_input->>'entity_id')::bigint)) = ${sql.json(mergeProposal ? mergeEntityIds(mergeProposal) : [])}::jsonb
+            )
+          )
+        )
+      )
+    ORDER BY (r.idempotency_key = ${idempotencyKey}) DESC, r.id DESC
     LIMIT 1
   `;
-	const dedupeHit = async (row: { id: number; event_id: number | null }) => {
-		const runId = Number(row.id);
-		const eventId = row.event_id != null ? Number(row.event_id) : 0;
-		const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
-		const approvalUrl = buildResourcePermalink(
-			ownerSlug,
-			{ kind: "run", runId },
-			baseUrl,
-		);
-		return { runId, eventId, approvalUrl };
-	};
-	const existing = await findExisting();
-	if (existing.length > 0) return dedupeHit(existing[0]);
-
-	let runId: number;
-	try {
-		const inserted = await sql`
-      INSERT INTO runs (
-        organization_id, run_type, action_key, action_input, window_id, watcher_id,
-        created_by_user_id, approval_status, status, created_at
-      ) VALUES (
-        ${ctx.organizationId}, 'internal', ${actionKey},
-        ${sql.json(actionInputProposal as unknown as Record<string, unknown>)},
-        ${windowId ?? null}, ${proposal.watcher_id ?? null},
-        null, 'pending', 'pending', current_timestamp
-      )
-      RETURNING id
-    `;
-		runId = Number((inserted[0] as { id: unknown }).id);
-	} catch (err) {
-		// Two replicas raced the SELECT above with a byte-identical proposal — the
-		// partial unique index (runs_entity_change_pending_dedupe) made one lose.
-		// Resolve to the winner's pending run instead of stacking a duplicate card.
-		if (isUniqueViolation(err, "runs_entity_change_pending_dedupe_v2")) {
-			const winner = await findExisting();
-			if (winner.length > 0) return dedupeHit(winner[0]);
-		}
-		throw err;
-	}
 
 	const fieldKeys = updateProposal ? Object.keys(updateProposal.fields) : [];
 	const fieldList = fieldKeys.join(", ");
@@ -528,11 +556,7 @@ export async function proposeEntityChange(
 			loadWatcherLabel(ctx, proposal.watcher_id, attribution),
 			operation === "create"
 				? Promise.resolve(null)
-				: loadEntitySnapshot(
-						ctx,
-						(proposal as EntityFieldChangeProposal | EntityDeleteProposal)
-							.entity_id,
-					),
+				: loadEntitySnapshot(ctx, changedEntityId(proposal)),
 		]);
 	const entityType = createProposal
 		? createProposal.entity_data.entity_type
@@ -551,96 +575,160 @@ export async function proposeEntityChange(
 					? `Merge duplicate ${formatLabel(entityType ?? "entity").toLowerCase()}`
 					: `Create ${formatLabel(entityType ?? "entity").toLowerCase()}`;
 
-	const event = await insertEvent({
-		entityIds:
-			operation === "create"
-				? []
-				: operation === "merge"
-					? [
-							...mergeEntityIds(asMergeProposal(proposal)),
-							asMergeProposal(proposal).winner_entity_id,
-						]
-					: [
-							(proposal as EntityFieldChangeProposal | EntityDeleteProposal)
-								.entity_id,
-						],
-		organizationId: ctx.organizationId,
-		originId: `run_${runId}_pending`,
-		title: `${actionLabel} — pending approval`,
-		content:
-			proposal.reason ??
-			(operation === "update"
-				? `${actorNoun} proposed updating ${fieldList} on this entity.`
-				: operation === "delete"
-					? `${actorNoun} proposed deleting this entity.`
-					: operation === "merge"
-						? `${actorNoun} proposed merging these entities.`
-						: `${actorNoun} proposed creating this entity.`),
-		semanticType: "operation",
-		runId,
-		interactionType: "approval",
-		interactionStatus: "pending",
-		interactionInput: proposal as unknown as Record<string, unknown>,
-		metadata: {
-			tool: actionKey,
-			action_key: actionKey,
-			action: operation === "update" ? "change" : operation,
-			entity_id: "entity_id" in proposal ? proposal.entity_id : null,
-			fields: updateProposal ? updateProposal.fields : null,
-			current: updateProposal
-				? (updateProposal.current ?? null)
-				: deleteProposal
-					? deleteProposal.current
-					: mergeProposal
-						? mergeProposal.current
-						: null,
-			proposal: createProposal
-				? createProposal.proposal
-				: mergeProposal
-					? {
-							entity_id: mergeProposal.entity_id,
-							entity_ids: mergeEntityIds(mergeProposal),
-							winner_entity_id: mergeProposal.winner_entity_id,
-							evidence: mergeProposal.evidence ?? [],
-							names: (
-								mergeProposal.current.duplicates ?? [
-									mergeProposal.current.loser,
+	const insertApprovalEvent = (runId: number, db: DbClient) =>
+		insertEvent(
+			{
+				entityIds:
+					operation === "create"
+						? []
+						: operation === "merge"
+							? [
+									...mergeEntityIds(asMergeProposal(proposal)),
+									asMergeProposal(proposal).winner_entity_id,
 								]
-							).map((entity) => entity.name),
-							name: mergeProposal.current.loser.name,
-							winner_name: mergeProposal.current.winner.name,
-						}
-					: deleteProposal
-						? {
-								entity_id: deleteProposal.entity_id,
-								entity_type:
-									entity?.entity_type ?? deleteProposal.current.entity_type,
-								name: entity?.name ?? deleteProposal.current.name,
-								force_delete_tree: deleteProposal.force_delete_tree ?? false,
-							}
-						: null,
-			watcher_id: proposal.watcher_id ?? null,
-			watcher_name: watcherName,
-			watcher_agent_id: watcherAgentId,
-			// The run window this proposal belongs to, if any. Stamped so the UI can
-			// tell this proposal is part of a BATCH (the change-set card owns the
-			// Approve/Reject decision) and suppress this card's own duplicate buttons.
-			window_id: windowId ?? null,
-			entity_name: entityName ?? null,
-			entity_type: entityType ?? null,
-			entity_slug: createProposal ? null : (entity?.slug ?? null),
-			parent_slug: createProposal ? null : (entity?.parent_slug ?? null),
-			parent_entity_type: createProposal
-				? null
-				: (entity?.parent_entity_type ?? null),
-			attribution,
-			reason: proposal.reason ?? null,
-			status: "pending_approval",
-			run_id: runId,
-		},
-		authorName: attribution,
+							: [changedEntityId(proposal)],
+				organizationId: ctx.organizationId,
+				originId: `run_${runId}_pending`,
+				title: `${actionLabel} — pending approval`,
+				content:
+					proposal.reason ??
+					(operation === "update"
+						? `${actorNoun} proposed updating ${fieldList} on this entity.`
+						: operation === "delete"
+							? `${actorNoun} proposed deleting this entity.`
+							: operation === "merge"
+								? `${actorNoun} proposed merging these entities.`
+								: `${actorNoun} proposed creating this entity.`),
+				semanticType: "operation",
+				runId,
+				interactionType: "approval",
+				interactionStatus: "pending",
+				interactionInput: proposal as unknown as Record<string, unknown>,
+				metadata: {
+					tool: actionKey,
+					action_key: actionKey,
+					action: operation === "update" ? "change" : operation,
+					entity_id: "entity_id" in proposal ? proposal.entity_id : null,
+					fields: updateProposal ? updateProposal.fields : null,
+					current: updateProposal
+						? (updateProposal.current ?? null)
+						: deleteProposal
+							? deleteProposal.current
+							: mergeProposal
+								? mergeProposal.current
+								: null,
+					proposal: createProposal
+						? createProposal.proposal
+						: mergeProposal
+							? {
+									entity_id: mergeProposal.entity_id,
+									entity_ids: mergeEntityIds(mergeProposal),
+									winner_entity_id: mergeProposal.winner_entity_id,
+									evidence: mergeProposal.evidence ?? [],
+									names: (
+										mergeProposal.current.duplicates ?? [
+											mergeProposal.current.loser,
+										]
+									).map((entity) => entity.name),
+									name: mergeProposal.current.loser.name,
+									winner_name: mergeProposal.current.winner.name,
+								}
+							: deleteProposal
+								? {
+										entity_id: deleteProposal.entity_id,
+										entity_type:
+											entity?.entity_type ?? deleteProposal.current.entity_type,
+										name: entity?.name ?? deleteProposal.current.name,
+										force_delete_tree:
+											deleteProposal.force_delete_tree ?? false,
+									}
+								: null,
+					watcher_id: proposal.watcher_id ?? null,
+					watcher_name: watcherName,
+					watcher_agent_id: watcherAgentId,
+					// The run window this proposal belongs to, if any. Stamped so the UI can
+					// tell this proposal is part of a BATCH (the change-set card owns the
+					// Approve/Reject decision) and suppress this card's own duplicate buttons.
+					window_id: windowId ?? null,
+					entity_name: entityName ?? null,
+					entity_type: entityType ?? null,
+					entity_slug: createProposal ? null : (entity?.slug ?? null),
+					parent_slug: createProposal ? null : (entity?.parent_slug ?? null),
+					parent_entity_type: createProposal
+						? null
+						: (entity?.parent_entity_type ?? null),
+					attribution,
+					reason: proposal.reason ?? null,
+					status: "pending_approval",
+					run_id: runId,
+				},
+				authorName: attribution,
+			},
+			{ sql: db },
+		);
+	const reuseExisting = async (row: ExistingChangeRun, db: DbClient) => {
+		await db`
+			UPDATE runs
+			SET idempotency_key = ${idempotencyKey}
+			WHERE id = ${row.id} AND idempotency_key IS NULL
+		`;
+		const isPending =
+			row.approval_status === "pending" && row.status === "pending";
+		const eventId = isPending ? row.pending_event_id : row.current_event_id;
+		if (eventId != null) {
+			return {
+				runId: Number(row.id),
+				eventId: Number(eventId),
+				reused: true,
+			};
+		}
+		if (!isPending) {
+			throw new Error(
+				`Active entity change run ${row.id} has no approval event`,
+			);
+		}
+		const event = await insertApprovalEvent(Number(row.id), db);
+		return {
+			runId: Number(row.id),
+			eventId: Number(event.id),
+			reused: false,
+		};
+	};
+
+	const persisted = await sql.begin(async (tx) => {
+		await tx`SELECT pg_advisory_xact_lock(hashtextextended(${idempotencyKey}, 0))`;
+		const existing = await findExisting(tx);
+		if (existing.length > 0) {
+			return reuseExisting(existing[0], tx);
+		}
+
+		const inserted = await tx<{ id: number }>`
+			INSERT INTO runs (
+				organization_id, run_type, action_key, action_input, window_id,
+				watcher_id, created_by_user_id, approval_status, status,
+				idempotency_key, created_at
+			) VALUES (
+				${ctx.organizationId}, 'internal', ${actionKey},
+				${tx.json(actionInputProposal as unknown as Record<string, unknown>)},
+				${windowId ?? null}, ${proposal.watcher_id ?? null}, null,
+				'pending', 'pending', ${idempotencyKey}, current_timestamp
+			)
+			ON CONFLICT DO NOTHING
+			RETURNING id
+		`;
+		if (inserted.length === 0) {
+			const winner = await findExisting(tx);
+			if (winner.length === 0) {
+				throw new Error("Entity change idempotency conflict has no active run");
+			}
+			return reuseExisting(winner[0], tx);
+		}
+
+		const runId = Number(inserted[0].id);
+		const event = await insertApprovalEvent(runId, tx);
+		return { runId, eventId: Number(event.id), reused: false };
 	});
-	const eventId = Number(event.id);
+	const { runId, eventId } = persisted;
 
 	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
 	// Run-scoped: the pending event is superseded on approve→complete; a run link
@@ -651,6 +739,7 @@ export async function proposeEntityChange(
 		{ kind: "run", runId },
 		baseUrl,
 	);
+	if (persisted.reused) return { runId, eventId, approvalUrl };
 	const entityUrl =
 		ownerSlug && entity?.entity_type && entity.slug
 			? buildEntityUrl(
@@ -855,6 +944,7 @@ export async function applyEntityChangeProposal(
 	proposal: EntityChangeProposal,
 	ctx: ToolContext,
 	env: Env,
+	db: DbClient,
 ): Promise<unknown> {
 	const operation = operationOf(proposal);
 	if (operation === "update") {
@@ -887,12 +977,13 @@ export async function applyEntityChangeProposal(
 	}
 	if (operation === "merge") {
 		const mergeProposal = asMergeProposal(proposal);
-		return applyMergeGroup({
+		const params = {
 			orgId: ctx.organizationId,
 			loserIds: mergeEntityIds(mergeProposal),
 			winnerId: mergeProposal.winner_entity_id,
 			mergedBy: ctx.userId ?? "system",
-		});
+		};
+		return applyMergeGroupInTransaction(params, db);
 	}
 	const deleteProposal = asDeleteProposal(proposal);
 	return deleteEntity(

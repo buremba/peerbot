@@ -6,7 +6,7 @@
  */
 
 import { retryWithBackoff } from '@lobu/core';
-import { getDb } from '../db/client';
+import { type DbClient, getDb } from '../db/client';
 import { type ConfigResourceKind, redactConfigState } from './config-redaction';
 import {
   lookupGeoEnrichment,
@@ -119,7 +119,7 @@ function normalizedTimestamp(value?: Date | string | null): string | null {
 }
 
 async function findCurrentEventByOrigin(
-  sql: ReturnType<typeof getDb>,
+  sql: DbClient,
   params: InsertEventParams
 ): Promise<
   | {
@@ -204,7 +204,7 @@ async function upsertEmbedding(
   eventId: number,
   embedding: number[] | null | undefined,
   embeddingModel: string | null | undefined,
-  sql: ReturnType<typeof getDb> = getDb()
+  sql: DbClient = getDb()
 ): Promise<void> {
   if (!embedding || embedding.length === 0) return;
   // An unstamped vector is unusable — search scopes vector comparison to the
@@ -248,7 +248,7 @@ function isEventsClientIdForeignKeyViolation(error: unknown): boolean {
  */
 export async function insertEvent(
   params: InsertEventParams,
-  options?: { onConflictUpdate?: boolean; sql?: ReturnType<typeof getDb> }
+  options?: { onConflictUpdate?: boolean; sql?: DbClient }
 ): Promise<InsertedEvent> {
   const sql = options?.sql ?? getDb();
 
@@ -271,7 +271,7 @@ export async function insertEvent(
   // run either directly on the singleton pool or inside the dedup transaction
   // below (which holds an advisory lock for the duration).
   const runInsert = async (
-    activeSql: ReturnType<typeof getDb>
+    activeSql: DbClient
   ): Promise<InsertedEvent> => {
     let supersedesEventId = params.supersedesEventId ?? null;
 
@@ -318,7 +318,7 @@ export async function insertEvent(
   };
 
   const insertRow = async (
-    sql: ReturnType<typeof getDb>,
+    sql: DbClient,
     supersedesEventId: number | null
   ): Promise<InsertedEvent> => {
     const insertWithClientId = (clientId: string | null) => sql`
@@ -454,7 +454,7 @@ export async function insertEvent(
       await tx`
         SELECT pg_advisory_xact_lock(${EVENT_DEDUP_LOCK_NAMESPACE}, ${lockKey})
       `;
-      return runInsert(tx as unknown as ReturnType<typeof getDb>);
+      return runInsert(tx);
     }) as Promise<InsertedEvent>;
   }
 
@@ -467,7 +467,7 @@ export async function insertEvent(
   // both present, and that case is already inside the advisory-lock tx above.)
   if (params.supersedesEventId != null && !options?.sql) {
     return sql.begin(async (tx) =>
-      runInsert(tx as unknown as ReturnType<typeof getDb>)
+      runInsert(tx)
     ) as Promise<InsertedEvent>;
   }
 

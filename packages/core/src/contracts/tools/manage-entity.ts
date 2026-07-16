@@ -60,6 +60,7 @@ export const ManageEntitySchema = Type.Object({
   duplicate_entity_ids: Type.Optional(
     Type.Array(Type.Number(), {
       minItems: 1,
+      maxItems: 25,
       uniqueItems: true,
       description:
         "[merge] All duplicate entities to fold into winner_entity_id. Use this for a duplicate group; entity_id remains supported for a single duplicate.",
@@ -69,11 +70,14 @@ export const ManageEntitySchema = Type.Object({
   merge_evidence: Type.Optional(
     Type.Array(
       Type.Object({
-        kind: Type.String(),
-        identifier: Type.String(),
-        identity_ids: Type.Optional(Type.Array(Type.Number())),
+        kind: Type.String({ maxLength: 64 }),
+        identifier: Type.String({ maxLength: 512 }),
+        identity_ids: Type.Optional(
+          Type.Array(Type.Number(), { maxItems: 50 })
+        ),
       }),
       {
+        maxItems: 25,
         description:
           "[merge] Structured identity evidence the reviewer should verify, such as a shared email or phone.",
       }

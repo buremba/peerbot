@@ -65,6 +65,7 @@ const logger = createLogger("agent-history-routes");
 
 type ToolApprovalHistoryInteraction = {
 	type: "tool-approval";
+	eventId: number;
 	runId: number;
 	action: string | null;
 	proposal: Record<string, unknown> | null;
@@ -519,6 +520,7 @@ export function createAgentHistoryRoutes(deps: {
 				threadId,
 			});
 			const rows = await getDb()<{
+				event_id: number;
 				run_id: number;
 				action: string | null;
 				proposal: Record<string, unknown> | null;
@@ -528,7 +530,8 @@ export function createAgentHistoryRoutes(deps: {
 				resource_kind: string | null;
 				tool: string | null;
 			}>`
-				SELECT run_id,
+				SELECT id AS event_id,
+				       run_id,
 				       metadata->>'action' AS action,
 				       metadata->'proposal' AS proposal,
 				       metadata->'current' AS current,
@@ -568,6 +571,7 @@ export function createAgentHistoryRoutes(deps: {
 						: rawProposal;
 				return {
 					type: "tool-approval" as const,
+					eventId: Number(r.event_id),
 					runId: Number(r.run_id),
 					action: r.action,
 					proposal,

@@ -634,29 +634,38 @@ async function handleMerge(
 		);
 	if (loserIds.includes(winnerId))
 		throw new ToolUserError("winner_entity_id cannot also be a duplicate", 400);
+	if (loserIds.length > 25)
+		throw new ToolUserError("A merge can include at most 25 duplicates", 400);
 
 	const sql = getDb();
 	// Every duplicate and the winner must be live and in the caller's org — never
 	// merge across a tenant boundary or into a deleted/foreign entity.
 	const rows = (await sql`
-    SELECT id FROM entities
+    SELECT id, entity_type_id FROM entities
     WHERE organization_id = ${ctx.organizationId}
 	      AND id = ANY(${pgBigintArray([...loserIds, winnerId])}::bigint[])
       AND deleted_at IS NULL
-  `) as Array<{ id: number }>;
+	`) as Array<{ id: number; entity_type_id: number }>;
 	const found = new Set(rows.map((r) => Number(r.id)));
 	for (const loserId of loserIds) {
-	if (!found.has(loserId))
-		throw new ToolUserError(
-			`Entity ${loserId} not found in this workspace`,
-			404,
-		);
+		if (!found.has(loserId))
+			throw new ToolUserError(
+				`Entity ${loserId} not found in this workspace`,
+				404,
+			);
 	}
 	if (!found.has(winnerId))
 		throw new ToolUserError(
 			`Entity ${winnerId} not found in this workspace`,
 			404,
 		);
+	const entityTypeIds = new Set(rows.map((row) => Number(row.entity_type_id)));
+	if (entityTypeIds.size !== 1) {
+		throw new ToolUserError(
+			"Duplicate and canonical entities must have the same entity type",
+			400,
+		);
+	}
 
 	if (actor.kind !== "user") {
 		const attribution = actor.kind === "watcher" ? "watcher" : "agent";

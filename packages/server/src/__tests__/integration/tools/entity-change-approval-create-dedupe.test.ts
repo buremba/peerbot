@@ -1,5 +1,5 @@
 /**
- * Regression: pending create approvals must only collapse true replays.
+ * Regression: active create approvals must only collapse true replays.
  *
  * Create proposals have no entity_id, so the approval dedupe query must compare
  * the proposed entity payload. Otherwise every distinct pending create in an org
@@ -13,7 +13,7 @@ import {
 } from "../../../tools/admin/entity-field-approval";
 import type { ToolContext } from "../../../tools/registry";
 import { initWorkspaceProvider } from "../../../workspace";
-import { cleanupTestDatabase } from "../../setup/test-db";
+import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { createTestOrganization } from "../../setup/test-fixtures";
 
 function createProposal(name: string): Omit<EntityCreateProposal, "operation"> {
@@ -52,12 +52,23 @@ describe("entity create approval dedupe", () => {
 		} as ToolContext;
 	});
 
-	it("queues separate runs for distinct pending creates and reuses exact replays", async () => {
+	it("separates distinct creates and reuses pending or in-flight replays", async () => {
 		const first = await proposeEntityCreate(ctx, createProposal("Call Alice"));
 		const replay = await proposeEntityCreate(ctx, createProposal("Call Alice"));
+		const sql = getTestDb();
+		await sql`
+			UPDATE runs
+			SET approval_status = 'approved', status = 'running'
+			WHERE id = ${first.runId}
+		`;
+		const inFlightReplay = await proposeEntityCreate(
+			ctx,
+			createProposal("Call Alice"),
+		);
 		const second = await proposeEntityCreate(ctx, createProposal("Call Bob"));
 
 		expect(replay.runId).toBe(first.runId);
+		expect(inFlightReplay.runId).toBe(first.runId);
 		expect(second.runId).not.toBe(first.runId);
 	});
 });

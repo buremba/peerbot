@@ -138,7 +138,7 @@ describe("agent history routes", () => {
 			name: "Weekly Digest",
 		};
 		const current = { id: "weekly-digest", name: "Old Name" };
-		await orgContext.run({ organizationId: ORG_ID }, () =>
+		const approvalEvent = await orgContext.run({ organizationId: ORG_ID }, () =>
 			insertEvent({
 				entityIds: [],
 				organizationId: ORG_ID,
@@ -172,6 +172,7 @@ describe("agent history routes", () => {
 		const body = (await res.json()) as {
 			interactions?: Array<{
 				type: string;
+				eventId: number;
 				runId: number;
 				action: string | null;
 				proposal: Record<string, unknown> | null;
@@ -181,6 +182,7 @@ describe("agent history routes", () => {
 		expect(body.interactions).toHaveLength(1);
 		const card = body.interactions?.[0];
 		expect(card?.type).toBe("tool-approval");
+		expect(card?.eventId).toBe(Number(approvalEvent.id));
 		expect(card?.runId).toBe(runId);
 		expect(card?.action).toBe("update");
 		expect(card?.proposal).toMatchObject({ agent_id: "weekly-digest" });

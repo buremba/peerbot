@@ -33,6 +33,7 @@ import {
 } from "../../authz/entity-policy";
 import { authzScopeFromToolContext } from "../../authz/scope";
 import {
+	type DbClient,
 	getDb,
 	parsePgNumberArray,
 	pgBigintArray,
@@ -1294,8 +1295,9 @@ export async function supersedeActionEvent(
 	content: string,
 	extraMetadata: Record<string, unknown> = {},
 	reviewer: ApprovalReviewer | null = null,
+	db: DbClient = getDb(),
 ): Promise<number | undefined> {
-  const sql = getDb();
+  const sql = db;
   const originalEvent = await sql`
     SELECT id, entity_ids, connection_id, connector_key, metadata, author_name, interaction_input_schema, interaction_input
     FROM current_event_records
@@ -1371,7 +1373,7 @@ export async function supersedeActionEvent(
 			...extraMetadata,
 		},
 		authorName: orig.author_name ?? null,
-	});
+	}, { sql });
 
 	return Number(nextEvent.id);
 }
@@ -1714,8 +1716,9 @@ async function claimEntityChangeRun(
 	organizationId: string,
 	decision: "approved" | "rejected",
 	rejectReason?: string,
+	db: DbClient = getDb(),
 ): Promise<{ proposal: EntityChangeProposal } | null> {
-	const sql = getDb();
+	const sql = db;
 	const actionKeys = pgTextArray([...ENTITY_CHANGE_ACTION_KEYS]);
 	const rows =
 		decision === "approved"
@@ -1865,33 +1868,46 @@ async function tryApproveEntityChangeRun(
 	ctx: ToolContext,
 	env: Env,
 ): Promise<ManageOperationsResult | null> {
-	const claimed = await claimEntityChangeRun(
-		args.run_id,
-		ctx.organizationId,
-		"approved",
-	);
-	if (!claimed) return null;
-	const { proposal } = claimed;
-	const operation = entityChangeOperation(proposal);
-	const description = describeEntityChange(proposal);
+	const sql = getDb();
+	const actionKeys = pgTextArray([...ENTITY_CHANGE_ACTION_KEYS]);
+	const [pending] = await sql<{ action_input: EntityChangeProposal | null }>`
+		SELECT action_input
+		FROM runs
+		WHERE id = ${args.run_id}
+		  AND organization_id = ${ctx.organizationId}
+		  AND run_type = 'internal'
+		  AND action_key = ANY(${actionKeys}::text[])
+		  AND approval_status = 'pending'
+		  AND status = 'pending'
+		LIMIT 1
+	`;
+	if (!pending?.action_input) return null;
+	const pendingProposal = pending.action_input;
+	const pendingOperation = entityChangeOperation(pendingProposal);
 	const reviewer = await resolveReviewer(ctx);
 
-	await supersedeActionEvent(
-		args.run_id,
-		ctx.organizationId,
-		"confirmed",
-		operation === "update"
-			? "entity_field_change — applying"
-			: `entity_${operation} — applying`,
-		operation === "update"
-			? `Field change confirmed: ${description}`
-			: `Entity ${operation} confirmed: ${description}`,
-		{},
-		reviewer,
-	);
+	const completeApproval = async (
+		db: DbClient,
+		proposal: EntityChangeProposal,
+	): Promise<ManageOperationsResult> => {
+		const operation = entityChangeOperation(proposal);
+		const description = describeEntityChange(proposal);
+		await supersedeActionEvent(
+			args.run_id,
+			ctx.organizationId,
+			"confirmed",
+			operation === "update"
+				? "entity_field_change — applying"
+				: `entity_${operation} — applying`,
+			operation === "update"
+				? `Field change confirmed: ${description}`
+				: `Entity ${operation} confirmed: ${description}`,
+			{},
+			reviewer,
+			db,
+		);
 
-	try {
-		const result = await applyEntityChangeProposal(proposal, ctx, env);
+		const result = await applyEntityChangeProposal(proposal, ctx, env, db);
 		const staleFields =
 			operation === "update" &&
 			result &&
@@ -1909,9 +1925,9 @@ async function tryApproveEntityChangeRun(
 			Object.keys((result as { applied: Record<string, unknown> }).applied)
 				.length === 0 &&
 			staleFields.length > 0;
-		await getDb()`
+		await db`
       UPDATE runs SET status = 'completed', completed_at = NOW(),
-        action_output = ${getDb().json(result as unknown as Record<string, unknown>)}
+        action_output = ${db.json(result as unknown as Record<string, unknown>)}
       WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
     `;
 		const summary = allStale
@@ -1931,6 +1947,7 @@ async function tryApproveEntityChangeRun(
 			summary,
 			{ output: result as unknown as Record<string, unknown> },
 			reviewer,
+			db,
 		);
 		return {
 			action: "approve",
@@ -1943,30 +1960,74 @@ async function tryApproveEntityChangeRun(
 					? `Field change approved and applied: ${description}.`
 					: `Entity ${operation} approved and applied: ${description}.`,
 		};
-	} catch (error) {
+	};
+
+	const applyFailure = async (
+		error: unknown,
+	): Promise<ManageOperationsResult> => {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		// Apply failures here are often transient/situational (entity gained
 		// children before a non-force delete, schema changed, etc.). Put the run
 		// BACK to pending instead of burning the proposal on one errant click —
 		// the reviewer can retry after fixing the blocker, or reject it.
-		await getDb()`
+		const reset = await sql`
       UPDATE runs SET approval_status = 'pending', status = 'pending', error_message = ${errorMessage}
       WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+		AND (
+		  (approval_status = 'approved' AND status = 'running')
+		  OR (approval_status = 'pending' AND status = 'pending')
+		)
+		RETURNING id
     `;
+		if (reset.length === 0) {
+			return {
+				error: `Failed to apply entity ${pendingOperation}: ${errorMessage}. The approval changed concurrently; refresh before retrying.`,
+			};
+		}
 		await supersedeActionEvent(
 			args.run_id,
 			ctx.organizationId,
 			"apply_failed",
-			operation === "update"
+			pendingOperation === "update"
 				? "entity_field_change — apply failed, still pending"
-				: `entity_${operation} — apply failed, still pending`,
+				: `entity_${pendingOperation} — apply failed, still pending`,
 			`Applying the approved change failed: ${errorMessage}. The approval is pending again — fix the blocker and approve once more, or reject it.`,
 			{ error_message: errorMessage },
 			reviewer,
 		);
 		return {
-			error: `Failed to apply entity ${operation}: ${errorMessage}. The approval is back to pending — approve again after fixing the blocker, or reject it.`,
+			error: `Failed to apply entity ${pendingOperation}: ${errorMessage}. The approval is back to pending — approve again after fixing the blocker, or reject it.`,
 		};
+	};
+
+	if (pendingOperation === "merge") {
+		try {
+			return await sql.begin(async (tx) => {
+				const claimed = await claimEntityChangeRun(
+					args.run_id,
+					ctx.organizationId,
+					"approved",
+					undefined,
+					tx,
+				);
+				if (!claimed) return null;
+				return completeApproval(tx, claimed.proposal);
+			});
+		} catch (error) {
+			return applyFailure(error);
+		}
+	}
+
+	const claimed = await claimEntityChangeRun(
+		args.run_id,
+		ctx.organizationId,
+		"approved",
+	);
+	if (!claimed) return null;
+	try {
+		return await completeApproval(sql, claimed.proposal);
+	} catch (error) {
+		return applyFailure(error);
 	}
 }
 

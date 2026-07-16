@@ -808,7 +808,7 @@ export async function runWatcherAutomationTick(
 	};
 }
 
-function buildDispatchMessage(params: {
+export function buildDispatchMessage(params: {
 	watcherId: number;
 	runId: number;
 	agentId: string;
@@ -840,7 +840,7 @@ function buildDispatchMessage(params: {
 		"",
 		"Required steps:",
 		`1. Call query_sdk with a script that runs client.knowledge.read({ watcher_id: ${params.watcherId}, since: "${readKnowledgeSince}", until: "${readKnowledgeUntil}"${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }).`,
-		"2. Analyze the returned content using prompt_rendered and extraction_schema.",
+		"2. Analyze the returned payload using prompt_rendered and extraction_schema.",
 		`3. Call run_sdk with a script that runs client.watchers.completeWindow({ window_token, extracted_data, watcher_run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }) using the window_token from step 1.`,
 		"4. Include this run_metadata object in complete_window exactly, and add any extra provider/job fields you know:",
 		JSON.stringify(
@@ -855,7 +855,8 @@ function buildDispatchMessage(params: {
 			2,
 		),
 		"",
-		"If there is no content, do not fabricate results.",
+		"Analyze every source result in the knowledge-read payload's `sources` field, even when its `content` array is empty.",
+		"Treat the watcher as having no data only when `content` and every array in `sources` are empty. In that case, do not fabricate results.",
 	].join("\n");
 }
 

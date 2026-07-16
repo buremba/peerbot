@@ -100,6 +100,36 @@ describe("manage_entity merge action", () => {
 		).rejects.toThrow(/admin or owner/i);
 	});
 
+	it("rejects a cross-type merge before queuing approval", async () => {
+		const org = await createTestOrganization({ name: "Cross Type Tool Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const person = await createTestEntity({
+			name: "Person",
+			entity_type: "person",
+			organization_id: org.id,
+			created_by: user.id,
+		});
+		const company = await createTestEntity({
+			name: "Company",
+			entity_type: "company",
+			organization_id: org.id,
+			created_by: user.id,
+		});
+
+		await expect(
+			manageEntity(
+				{
+					action: "merge",
+					entity_id: person.id,
+					winner_entity_id: company.id,
+				},
+				env,
+				ctx(org.id, user.id, "owner"),
+			),
+		).rejects.toThrow(/same entity type/i);
+	});
+
 	it("rejects a winner from another org (org fence, 404)", async () => {
 		const orgA = await createTestOrganization({ name: "Org A" });
 		const orgB = await createTestOrganization({ name: "Org B" });
@@ -188,6 +218,64 @@ describe("manage_entity merge action", () => {
 			await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}`;
 		expect(Number(after.merged_into)).toBe(winner.id);
 		expect(after.deleted_at).not.toBeNull();
+		const [completedRun] = await sql`
+			SELECT status, approval_status FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		expect(completedRun).toMatchObject({
+			status: "completed",
+			approval_status: "approved",
+		});
+		const [completedEvent] = await sql`
+			SELECT interaction_status FROM current_event_records
+			WHERE run_id = ${queued.approval_run_id}
+		`;
+		expect(completedEvent.interaction_status).toBe("completed");
+	});
+
+	it("repairs a legacy pending run that has no approval event", async () => {
+		const org = await createTestOrganization({ name: "Orphan Approval Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		const [orphan] = await sql<{ id: number }[]>`
+			INSERT INTO runs (
+				organization_id, run_type, action_key, action_input,
+				approval_status, status
+			) VALUES (
+				${org.id}, 'internal', 'entity_change',
+				${sql.json({
+					operation: "merge",
+					entity_id: loser.id,
+					entity_ids: [loser.id],
+					winner_entity_id: winner.id,
+					current: { loser: {}, duplicates: [{}], winner: {} },
+				})},
+				'pending', 'pending'
+			)
+			RETURNING id
+		`;
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+			} as ToolContext,
+		)) as unknown as { approval_run_id: number };
+
+		expect(queued.approval_run_id).toBe(Number(orphan.id));
+		const [repaired] = await sql`
+			SELECT idempotency_key,
+			       (SELECT count(*)::int FROM current_event_records e
+			        WHERE e.run_id = runs.id AND e.interaction_status = 'pending') AS event_count
+			FROM runs
+			WHERE id = ${orphan.id}
+		`;
+		expect(repaired.idempotency_key).toMatch(/^entity-change:/);
+		expect(Number(repaired.event_count)).toBe(1);
 	});
 
 	it("queues one atomic watcher approval for a duplicate group", async () => {
@@ -244,13 +332,14 @@ describe("manage_entity merge action", () => {
 		)) as unknown as { approval_run_id: number };
 
 		const [pending] = await sql`
-      SELECT action_input FROM runs WHERE id = ${queued.approval_run_id}
-    `;
+			SELECT action_input, idempotency_key FROM runs WHERE id = ${queued.approval_run_id}
+		`;
 		expect(pending.action_input).toMatchObject({
 			operation: "merge",
 			entity_ids: [loser.id, secondLoser.id],
 			winner_entity_id: winner.id,
 		});
+		expect(pending.idempotency_key).toMatch(/^entity-change:/);
 		const [approvalEvent] = await sql`
       SELECT metadata FROM current_event_records
       WHERE run_id = ${queued.approval_run_id} AND interaction_status = 'pending'
@@ -263,6 +352,7 @@ describe("manage_entity merge action", () => {
 			}>;
 		};
 		expect(current.duplicates[0]?.href).toContain("/person/");
+		expect(current.duplicates[0]).not.toHaveProperty("metadata");
 		expect(current.duplicates[0]?.identities[0]).toMatchObject({
 			identifier: "duplicate@example.com",
 			connection_id: connection.id,
@@ -340,6 +430,21 @@ describe("manage_entity merge action", () => {
     `;
 		expect(first.merged_into).toBeNull();
 		expect(first.deleted_at).toBeNull();
+		const [run] = await sql`
+			SELECT approval_status, status
+			FROM runs
+			WHERE id = ${queued.approval_run_id}
+		`;
+		expect(run).toMatchObject({
+			approval_status: "pending",
+			status: "pending",
+		});
+		const [approvalEvent] = await sql`
+			SELECT interaction_status
+			FROM current_event_records
+			WHERE run_id = ${queued.approval_run_id}
+		`;
+		expect(approvalEvent.interaction_status).toBe("pending");
 	});
 
 	it("does not apply an approved watcher merge when the loser was deleted after proposal", async () => {

@@ -27,6 +27,7 @@ import { insertEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
+  createTestConnection,
   createTestConnectorDefinition,
   createTestOrganization,
   createTestUser,
@@ -355,6 +356,14 @@ describe('github member-identity attribution', () => {
 
   it('webhook: resolveGithubWebhookActor resolves the actor to a person and returns entity ids + the github_login metadata slot', async () => {
     const org = await seedOrg('GitHub Webhook Org');
+    const connectionUser = await createTestUser();
+    await addUserToOrganization(connectionUser.id, org.id, 'admin');
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'github',
+      created_by: connectionUser.id,
+      createDefaultFeed: false,
+    });
     // The rule is loaded from the connector definition (not mirrored), so the
     // webhook path needs the github def seeded just like the poll path.
     await seedGithubConnector(org.id);
@@ -362,6 +371,7 @@ describe('github member-identity attribution', () => {
 
     const resolution = await resolveGithubWebhookActor({
       organizationId: org.id,
+      connectionId: connection.id,
       githubEvent: 'issue_comment',
       payload: {
         action: 'created',
@@ -384,6 +394,20 @@ describe('github member-identity attribution', () => {
       'github_login:hubot',
       'github_user_id:42',
     ]);
+    const identitySources = await getTestDb()<
+      { connection_id: number | null }[]
+    >`
+      SELECT connection_id
+      FROM entity_identities
+      WHERE entity_id = ${people[0].id}
+        AND deleted_at IS NULL
+    `;
+    expect(identitySources).toHaveLength(2);
+    expect(
+      identitySources.every(
+        (row) => Number(row.connection_id) === connection.id,
+      ),
+    ).toBe(true);
     // The `last_authored_at` trait populates on the webhook path too (occurred_at
     // is on the top-level item, where the rule's trait path reads it).
     expect(people[0].metadata.last_authored_at).toBeTruthy();

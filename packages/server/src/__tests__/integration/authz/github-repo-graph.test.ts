@@ -39,6 +39,7 @@ function buildGithubRepoGraph(params: {
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
+  createTestConnection,
   createTestEntity,
   createTestOrganization,
   createTestUser,
@@ -133,6 +134,43 @@ describe('github repo graph', () => {
     expect(stateRows).toHaveLength(1);
     expect(stateRows[0].acl_support).toBe('full');
     expect(stateRows[0].freshness_state).toBe('fresh');
+  });
+
+  it('scopes identity provenance lookup to the graph connector', async () => {
+    const { org, user } = await seedOrg('GitHub Provenance Org');
+    const decoy = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'slack',
+      created_by: user.id,
+      createDefaultFeed: false,
+    });
+    const github = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'github',
+      created_by: user.id,
+      createDefaultFeed: false,
+    });
+    const sql = getTestDb();
+    await sql`
+      UPDATE connections
+      SET slug = ${`agentconn-${github.id}`}
+      WHERE id = ${decoy.id}
+    `;
+
+    await buildGithubRepoGraph({
+      organizationId: org.id,
+      connectionId: String(github.id),
+      repos: [{ fullName: 'lobu-ai/lobu', collaborators: [{ login: 'alice', id: 101 }] }],
+    });
+
+    const identities = await sql<{ connection_id: number | null }[]>`
+      SELECT connection_id
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND source_connector = 'connector:github'
+    `;
+    expect(identities.length).toBeGreaterThan(0);
+    expect(identities.every((row) => Number(row.connection_id) === github.id)).toBe(true);
   });
 
   it('collapses a collaborator onto an existing entity carrying github_user_id (no second person)', async () => {

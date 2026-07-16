@@ -702,6 +702,7 @@ async function storeGithubWebhookEvent(params: {
 	// backstop re-resolves on its next run), but we log it so it isn't invisible.
 	const resolution = await resolveGithubWebhookActor({
 		organizationId: install.organizationId,
+		connectionId: target.connectionId,
 		githubEvent: event,
 		payload,
 		sql,

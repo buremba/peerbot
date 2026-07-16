@@ -50,54 +50,63 @@ export interface ApplyMergeGroupResult {
   repointedEdges: number;
 }
 
+export interface ApplyMergeGroupParams {
+  orgId: string;
+  loserIds: number[];
+  winnerId: number;
+  mergedBy: string;
+}
+
 /**
  * Apply a whole duplicate group under one outer transaction. Any stale or
  * invalid member rolls back every preceding member merge.
  */
 export async function applyMergeGroup(
-  params: {
-    orgId: string;
-    loserIds: number[];
-    winnerId: number;
-    mergedBy: string;
-  },
+  params: ApplyMergeGroupParams,
   db: DbClient = getDb(),
+): Promise<ApplyMergeGroupResult> {
+  return db.begin((tx) => applyMergeGroupInTransaction(params, tx));
+}
+
+export async function applyMergeGroupInTransaction(
+  params: ApplyMergeGroupParams,
+  tx: DbClient,
 ): Promise<ApplyMergeGroupResult> {
   const loserIds = [...new Set(params.loserIds)].sort((a, b) => a - b);
   if (loserIds.length === 0) throw new Error('applyMergeGroup: no duplicate entities');
   if (loserIds.includes(params.winnerId)) {
     throw new Error('applyMergeGroup: canonical entity is also a duplicate');
   }
-  return db.begin(async (tx) => {
-    // Lock the whole group in one global order before applying any member. Pairwise
-    // locking inside the loop is not sufficient: overlapping groups with different
-    // winners can otherwise each hold one entity while waiting for the other.
-    const entityIds = [...loserIds, params.winnerId].sort((a, b) => a - b);
-    await tx`
-      SELECT id
-      FROM entities
-      WHERE organization_id = ${params.orgId}
-        AND id = ANY(${pgBigintArray(entityIds)}::bigint[])
-      ORDER BY id
-      FOR UPDATE
-    `;
-    let movedIdentities = 0;
-    let repointedEdges = 0;
-    for (const loserId of loserIds) {
-      const result = await applyMergeInTransaction(
-        {
-          orgId: params.orgId,
-          loserId,
-          winnerId: params.winnerId,
-          mergedBy: params.mergedBy,
-        },
-        tx,
-      );
-      movedIdentities += result.movedIdentities;
-      repointedEdges += result.repointedEdges;
-    }
-    return { mergedEntityIds: loserIds, movedIdentities, repointedEdges };
-  });
+
+  // Lock the whole group in one global order before applying any member. Pairwise
+  // locking inside the loop is not sufficient: overlapping groups with different
+  // winners can otherwise each hold one entity while waiting for the other.
+  const entityIds = [...loserIds, params.winnerId].sort((a, b) => a - b);
+  await tx`
+    SELECT id
+    FROM entities
+    WHERE organization_id = ${params.orgId}
+      AND id = ANY(${pgBigintArray(entityIds)}::bigint[])
+    ORDER BY id
+    FOR UPDATE
+  `;
+
+  let movedIdentities = 0;
+  let repointedEdges = 0;
+  for (const loserId of loserIds) {
+    const result = await applyMergeInTransaction(
+      {
+        orgId: params.orgId,
+        loserId,
+        winnerId: params.winnerId,
+        mergedBy: params.mergedBy,
+      },
+      tx,
+    );
+    movedIdentities += result.movedIdentities;
+    repointedEdges += result.repointedEdges;
+  }
+  return { mergedEntityIds: loserIds, movedIdentities, repointedEdges };
 }
 
 /**
@@ -106,7 +115,10 @@ export async function applyMergeGroup(
  * throwing. Throws on a cross-entity-type or already-merged-elsewhere conflict so
  * the caller (tool) surfaces it rather than silently corrupting the graph.
  */
-export async function applyMerge(params: ApplyMergeParams, db: DbClient = getDb()): Promise<ApplyMergeResult> {
+export async function applyMerge(
+  params: ApplyMergeParams,
+  db: DbClient = getDb(),
+): Promise<ApplyMergeResult> {
   return db.begin((tx) => applyMergeInTransaction(params, tx));
 }
 
@@ -119,162 +131,171 @@ async function applyMergeInTransaction(
     throw new Error('applyMerge: loser and winner are the same entity');
   }
 
-    // Lock both rows in a stable order (lowest id first) to avoid deadlocks when
-    // two merges touch the overlapping pair concurrently. The explicit `ORDER BY
-    // id` pins lock-acquisition order — a bare `IN (...)` leaves it to the
-    // planner, which could lock high-then-low and deadlock a concurrent merge.
-    const [a, b] = loserId < winnerId ? [loserId, winnerId] : [winnerId, loserId];
-    const locked = (await tx<{
-      id: number;
-      merged_into: number | null;
-      deleted_at: string | null;
-    }>`
-      SELECT id, merged_into, deleted_at
-      FROM entities
-      WHERE organization_id = ${orgId} AND id IN (${a}, ${b})
-      ORDER BY id
-      FOR UPDATE
-    `) as Array<{
-      id: number;
-      merged_into: number | null;
-      deleted_at: string | null;
-    }>;
+  // Lock both rows in a stable order (lowest id first) to avoid deadlocks when
+  // two merges touch the overlapping pair concurrently.
+  const [a, b] = loserId < winnerId ? [loserId, winnerId] : [winnerId, loserId];
+  const locked = await tx<{
+    id: number;
+    entity_type_id: number;
+    merged_into: number | null;
+    deleted_at: string | null;
+  }>`
+    SELECT id, entity_type_id, merged_into, deleted_at
+    FROM entities
+    WHERE organization_id = ${orgId} AND id IN (${a}, ${b})
+    ORDER BY id
+    FOR UPDATE
+  `;
 
-    const loser = locked.find((r) => Number(r.id) === loserId);
-    const winner = locked.find((r) => Number(r.id) === winnerId);
-    if (!loser || !winner) {
-      throw new Error(`applyMerge: entity not found in org (loser=${loserId} winner=${winnerId})`);
-    }
-    // Already fused this exact way — no-op (safe re-run).
-    if (Number(loser.merged_into) === winnerId) {
-      return { movedIdentities: 0, repointedEdges: 0 };
-    }
-    if (loser.merged_into !== null) {
-      throw new Error(`applyMerge: loser ${loserId} already merged into ${loser.merged_into}`);
-    }
-    if (loser.deleted_at !== null) {
-      throw new Error(`applyMerge: loser ${loserId} is deleted`);
-    }
-    if (winner.merged_into !== null) {
-      throw new Error(`applyMerge: winner ${winnerId} is itself merged into ${winner.merged_into}`);
-    }
-    if (winner.deleted_at !== null) {
-      throw new Error(`applyMerge: winner ${winnerId} is deleted`);
-    }
+  const loser = locked.find((row) => Number(row.id) === loserId);
+  const winner = locked.find((row) => Number(row.id) === winnerId);
+  if (!loser || !winner) {
+    throw new Error(`applyMerge: entity not found in org (loser=${loserId} winner=${winnerId})`);
+  }
+  if (Number(loser.merged_into) === winnerId) {
+    return { movedIdentities: 0, repointedEdges: 0 };
+  }
+  if (loser.merged_into !== null) {
+    throw new Error(`applyMerge: loser ${loserId} already merged into ${loser.merged_into}`);
+  }
+  if (loser.deleted_at !== null) {
+    throw new Error(`applyMerge: loser ${loserId} is deleted`);
+  }
+  if (winner.merged_into !== null) {
+    throw new Error(`applyMerge: winner ${winnerId} is itself merged into ${winner.merged_into}`);
+  }
+  if (winner.deleted_at !== null) {
+    throw new Error(`applyMerge: winner ${winnerId} is deleted`);
+  }
+  if (Number(loser.entity_type_id) !== Number(winner.entity_type_id)) {
+    throw new Error('applyMerge: cannot merge entities of different entity types');
+  }
 
-    // 1. Move the loser's LIVE identities to the winner. A live loser↔live winner
-    //    collision on the SAME (org, namespace, identifier) is impossible — the
-    //    global unique index `idx_entity_identities_live_unique` forbids two live
-    //    rows for one value org-wide — so the move can never hit the index. Stamp
-    //    origin with COALESCE so an identity that already carries a marker (moved
-    //    here by an EARLIER merge, e.g. L→W then W→V) keeps its INNERMOST origin —
-    //    that's what makes `unmerge(L)` restore L's own identities post-flatten.
-    const moved = (await tx<{ id: number }>`
-      UPDATE entity_identities
-      SET entity_id = ${winnerId},
-          merged_from_entity_id = COALESCE(merged_from_entity_id, ${loserId}),
-          updated_at = current_timestamp
-      WHERE organization_id = ${orgId}
-        AND entity_id = ${loserId}
-        AND deleted_at IS NULL
-      RETURNING id
-    `) as Array<{ id: number }>;
+  // 1. Move the loser's LIVE identities to the winner. A live loser↔live winner
+  //    collision on the SAME (org, namespace, identifier) is impossible — the
+  //    global unique index `idx_entity_identities_live_unique` forbids two live
+  //    rows for one value org-wide — so the move can never hit the index. Stamp
+  //    origin with COALESCE so an identity that already carries a marker (moved
+  //    here by an EARLIER merge, e.g. L→W then W→V) keeps its INNERMOST origin —
+  //    that's what makes `unmerge(L)` restore L's own identities post-flatten.
+  const moved = (await tx<{ id: number }>`
+    UPDATE entity_identities
+    SET entity_id = ${winnerId},
+        merged_from_entity_id = COALESCE(merged_from_entity_id, ${loserId}),
+        updated_at = current_timestamp
+    WHERE organization_id = ${orgId}
+      AND entity_id = ${loserId}
+      AND deleted_at IS NULL
+    RETURNING id
+  `) as Array<{ id: number }>;
 
-    // 2. Union the loser's metadata.aliases into the winner's, so the metric
-    //    compiler (which resolves against metadata->'aliases') attributes the
-    //    loser's contact values to the winner.
-    await tx`
-      UPDATE entities w
-      SET metadata = jsonb_set(
-            COALESCE(w.metadata, '{}'::jsonb),
-            '{aliases}',
-            (
-              SELECT to_jsonb(array_agg(DISTINCT a))
-              FROM (
-                SELECT jsonb_array_elements_text(COALESCE(w.metadata->'aliases', '[]'::jsonb)) AS a
-                UNION
-                SELECT jsonb_array_elements_text(COALESCE(l.metadata->'aliases', '[]'::jsonb)) AS a
-                FROM entities l
-                WHERE l.id = ${loserId} AND l.organization_id = ${orgId}
-              ) u
-              WHERE a IS NOT NULL
-            )
-          ),
-          updated_at = current_timestamp
-      FROM entities l
-      WHERE w.id = ${winnerId} AND w.organization_id = ${orgId}
-        AND l.id = ${loserId}
-        AND COALESCE(l.metadata->'aliases', '[]'::jsonb) <> '[]'::jsonb
-    `;
-
-    // 3. Re-point relationship edges loser→winner, then drop self-loops and any
-    //    duplicate edge the winner already had (same type + other endpoint).
-    const repointed = (await tx<{ id: number }>`
-      UPDATE entity_relationships
-      SET from_entity_id = CASE WHEN from_entity_id = ${loserId} THEN ${winnerId} ELSE from_entity_id END,
-          to_entity_id   = CASE WHEN to_entity_id   = ${loserId} THEN ${winnerId} ELSE to_entity_id   END,
-          updated_at = current_timestamp
-      WHERE organization_id = ${orgId}
-        AND deleted_at IS NULL
-        AND (from_entity_id = ${loserId} OR to_entity_id = ${loserId})
-      RETURNING id
-    `) as Array<{ id: number }>;
-    // Tombstone self-loops and duplicate edges created by the re-point.
-    await tx`
-      UPDATE entity_relationships r
-      SET deleted_at = current_timestamp, updated_at = current_timestamp
-      WHERE r.organization_id = ${orgId}
-        AND r.deleted_at IS NULL
-        AND (
-          r.from_entity_id = r.to_entity_id
-          OR EXISTS (
-            SELECT 1 FROM entity_relationships o
-            WHERE o.organization_id = ${orgId}
-              AND o.deleted_at IS NULL
-              AND o.id < r.id
-              AND o.relationship_type_id = r.relationship_type_id
-              AND o.from_entity_id = r.from_entity_id
-              AND o.to_entity_id = r.to_entity_id
+  // 2. Union the loser's metadata.aliases into the winner's, so the metric
+  //    compiler (which resolves against metadata->'aliases') attributes the
+  //    loser's contact values to the winner.
+  await tx`
+    UPDATE entities w
+    SET metadata = jsonb_set(
+          COALESCE(w.metadata, '{}'::jsonb),
+          '{aliases}',
+          (
+            SELECT to_jsonb(array_agg(DISTINCT a))
+            FROM (
+              SELECT jsonb_array_elements_text(COALESCE(w.metadata->'aliases', '[]'::jsonb)) AS a
+              UNION
+              SELECT jsonb_array_elements_text(COALESCE(l.metadata->'aliases', '[]'::jsonb)) AS a
+              FROM entities l
+              WHERE l.id = ${loserId} AND l.organization_id = ${orgId}
+            ) u
+            WHERE a IS NOT NULL
           )
+        ),
+        updated_at = current_timestamp
+    FROM entities l
+    WHERE w.id = ${winnerId} AND w.organization_id = ${orgId}
+      AND l.id = ${loserId}
+      AND COALESCE(l.metadata->'aliases', '[]'::jsonb) <> '[]'::jsonb
+  `;
+
+  // 3. Tombstone loser edges that would become self-loops or collide with an
+  //    existing winner edge. This must happen before repointing: the live-edge
+  //    unique index rejects the collision during UPDATE, before a later cleanup
+  //    statement could run.
+  await tx`
+    UPDATE entity_relationships r
+    SET deleted_at = current_timestamp, updated_at = current_timestamp
+    WHERE r.organization_id = ${orgId}
+      AND r.deleted_at IS NULL
+      AND (r.from_entity_id = ${loserId} OR r.to_entity_id = ${loserId})
+      AND (
+        (CASE WHEN r.from_entity_id = ${loserId} THEN ${winnerId} ELSE r.from_entity_id END) =
+        (CASE WHEN r.to_entity_id = ${loserId} THEN ${winnerId} ELSE r.to_entity_id END)
+        OR EXISTS (
+          SELECT 1
+          FROM entity_relationships o
+          WHERE o.organization_id = ${orgId}
+            AND o.deleted_at IS NULL
+            AND o.id <> r.id
+            AND o.relationship_type_id = r.relationship_type_id
+            AND o.from_entity_id = CASE
+              WHEN r.from_entity_id = ${loserId} THEN ${winnerId}
+              ELSE r.from_entity_id
+            END
+            AND o.to_entity_id = CASE
+              WHEN r.to_entity_id = ${loserId} THEN ${winnerId}
+              ELSE r.to_entity_id
+            END
         )
-    `;
+      )
+  `;
 
-    // 4. Flatten: anything that already pointed at the loser now points at the
-    //    winner, so every redirect stays exactly one hop (no chain walk at read).
-    //    The read redirect (`entity_ids && ARRAY(… merged_into = X …)`) is a
-    //    one-time indexed lookup even when X is an outer column, which a recursive
-    //    chain walk would NOT be on list/count/order call sites. The identities'
-    //    COALESCE'd `merged_from` markers (step 1) preserve reversibility that
-    //    the flattened `merged_into` pointer alone would lose.
-    await tx`
-      UPDATE entities
-      SET merged_into = ${winnerId}, updated_at = current_timestamp
-      WHERE organization_id = ${orgId} AND merged_into = ${loserId}
-    `;
+  // Repoint only the non-colliding live edges that remain.
+  const repointed = (await tx<{ id: number }>`
+    UPDATE entity_relationships
+    SET from_entity_id = CASE WHEN from_entity_id = ${loserId} THEN ${winnerId} ELSE from_entity_id END,
+        to_entity_id   = CASE WHEN to_entity_id   = ${loserId} THEN ${winnerId} ELSE to_entity_id   END,
+        updated_at = current_timestamp
+    WHERE organization_id = ${orgId}
+      AND deleted_at IS NULL
+      AND (from_entity_id = ${loserId} OR to_entity_id = ${loserId})
+    RETURNING id
+  `) as Array<{ id: number }>;
 
-    // 5. Tombstone the loser and point it at the winner.
-    await tx`
-      UPDATE entities
-      SET merged_into = ${winnerId}, deleted_at = current_timestamp, updated_at = current_timestamp
-      WHERE organization_id = ${orgId} AND id = ${loserId}
-    `;
+  // 4. Flatten: anything that already pointed at the loser now points at the
+  //    winner, so every redirect stays exactly one hop (no chain walk at read).
+  //    The read redirect (`entity_ids && ARRAY(… merged_into = X …)`) is a
+  //    one-time indexed lookup even when X is an outer column, which a recursive
+  //    chain walk would NOT be on list/count/order call sites. The identities'
+  //    COALESCE'd `merged_from` markers (step 1) preserve reversibility that
+  //    the flattened `merged_into` pointer alone would lose.
+  await tx`
+    UPDATE entities
+    SET merged_into = ${winnerId}, updated_at = current_timestamp
+    WHERE organization_id = ${orgId} AND merged_into = ${loserId}
+  `;
 
-    logger.info(
-      {
-        orgId,
-        loserId,
-        winnerId,
-        mergedBy,
-        movedIdentities: moved.length,
-        repointedEdges: repointed.length,
-      },
-      'entity merge applied',
-    );
+  // 5. Tombstone the loser and point it at the winner.
+  await tx`
+    UPDATE entities
+    SET merged_into = ${winnerId}, deleted_at = current_timestamp, updated_at = current_timestamp
+    WHERE organization_id = ${orgId} AND id = ${loserId}
+  `;
 
-    return {
+  logger.info(
+    {
+      orgId,
+      loserId,
+      winnerId,
+      mergedBy,
       movedIdentities: moved.length,
       repointedEdges: repointed.length,
-    };
+    },
+    'entity merge applied',
+  );
+
+  return {
+    movedIdentities: moved.length,
+    repointedEdges: repointed.length,
+  };
 }
 
 export interface ApplyUnmergeParams {

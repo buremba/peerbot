@@ -98,6 +98,7 @@ export interface GithubActorResolution {
  */
 export async function resolveGithubWebhookActor(params: {
 	organizationId: string;
+	connectionId?: number | null;
 	githubEvent: string | null;
 	payload: unknown;
 	/** Optional transaction handle so the graph writes are atomic with the caller's insert. */
@@ -144,6 +145,7 @@ export async function resolveGithubWebhookActor(params: {
 	const resolved = await resolveEventAttributionsForItems(
 		{
 			connectorKey: "github",
+			connectionId: params.connectionId,
 			orgId: params.organizationId,
 			items: [item],
 			rules: { [kind]: [rule] },

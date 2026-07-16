@@ -39,6 +39,7 @@ import type {
   AccessResourceType,
 } from '@lobu/connector-sdk';
 import { getDb, pgBigintArray, pgTextArray } from '../db/client.js';
+import { runtimeConnectionIdToSlug } from '../lobu/stores/connections-projection.js';
 import { resolveEventAttributionsForItems } from '../utils/entity-link-upsert.js';
 
 const logger = createLogger('access-graph');
@@ -145,6 +146,7 @@ async function markAclEnforced(orgId: string, connectionId: string): Promise<voi
 async function resolveMembers(
   orgId: string,
   connectorKey: string,
+  connectionId: number | null,
   members: AccessMember[],
   memberIdentities: AccessIdentitySpec[],
 ): Promise<Map<string, number>> {
@@ -204,6 +206,7 @@ async function resolveMembers(
   });
   const resolved = await resolveEventAttributionsForItems({
     connectorKey,
+    connectionId,
     orgId,
     items,
     rules: {
@@ -259,6 +262,25 @@ export async function buildAccessGraph(params: {
   await ensureResourceEntityType(organizationId, resourceType);
   await ensurePersonEntityType(organizationId);
 
+  // ACL state uses a runtime connection id, while identity provenance references
+  // the stored numeric row. Resolve by slug (chat connections) or id text (data
+  // connectors) without assuming the runtime id itself is numeric.
+  const [storedConnection] = await getDb()<{ id: number }>`
+    SELECT id
+    FROM connections
+    WHERE organization_id = ${organizationId}
+      AND connector_key = ${connectorKey}
+      AND deleted_at IS NULL
+      AND (
+        slug = ${runtimeConnectionIdToSlug(connectionId)}
+        OR id::text = ${connectionId}
+      )
+    LIMIT 1
+  `;
+  const identityConnectionId = storedConnection
+    ? Number(storedConnection.id)
+    : null;
+
   // 1) Resolve every resource to its entity, keyed on the source identity namespace.
   const resourceItems = resources.map((r) => ({
     origin_type: 'access_resource',
@@ -266,6 +288,7 @@ export async function buildAccessGraph(params: {
   }));
   const resolvedResources = await resolveEventAttributionsForItems({
     connectorKey,
+    connectionId: identityConnectionId,
     orgId: organizationId,
     items: resourceItems,
     rules: {
@@ -302,6 +325,7 @@ export async function buildAccessGraph(params: {
   const memberEntityByKey = await resolveMembers(
     organizationId,
     connectorKey,
+    identityConnectionId,
     [...distinctMembers.values()],
     memberIdentities,
   );

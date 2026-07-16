@@ -43,6 +43,7 @@ function buildSlackChannelGraph(params: {
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
+  createTestConnection,
   createTestEntity,
   createTestOrganization,
   createTestUser,
@@ -127,7 +128,14 @@ describe('slack channel graph', () => {
   });
 
   it('builds channel entities + member_of edges and marks the connection enforced', async () => {
-    const { org } = await seedOrg('Slack Graph Org');
+    const { org, user } = await seedOrg('Slack Graph Org');
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'slack',
+      slug: 'agentconn-conn-acme',
+      created_by: user.id,
+      createDefaultFeed: false,
+    });
 
     const result = await buildSlackChannelGraph({
       organizationId: org.id,
@@ -168,6 +176,15 @@ describe('slack channel graph', () => {
     expect(stateRows).toHaveLength(1);
     expect(stateRows[0].acl_support).toBe('full');
     expect(stateRows[0].freshness_state).toBe('fresh');
+
+    const identitySources = await sql<{ connection_id: number | null }[]>`
+      SELECT connection_id
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND source_connector = 'connector:slack'
+    `;
+    expect(identitySources.length).toBeGreaterThan(0);
+    expect(identitySources.every((row) => Number(row.connection_id) === connection.id)).toBe(true);
   });
 
   it('collapses a member onto an already-signed-in $member (no second person)', async () => {

@@ -215,6 +215,125 @@ describe('entity merge', () => {
     ).rejects.toThrow(/already merged/);
   });
 
+  it('rejects merging entities of different types', async () => {
+    const org = await createTestOrganization({ name: 'Type Guard Org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const person = await createTestEntity({
+      name: 'Alice',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const company = await createTestEntity({
+      name: 'Acme',
+      entity_type: 'company',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+
+    await expect(
+      applyMerge({
+        orgId: org.id,
+        loserId: person.id,
+        winnerId: company.id,
+        mergedBy: user.id,
+      }),
+    ).rejects.toThrow(/different entity types/i);
+  });
+
+  it('tombstones colliding relationships before repointing loser edges', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization({
+      name: 'Relationship Merge Org',
+    });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const winner = await createTestEntity({
+      name: 'W',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const loser = await createTestEntity({
+      name: 'L',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const team = await createTestEntity({
+      name: 'Team',
+      entity_type: 'team',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const otherTeam = await createTestEntity({
+      name: 'Other team',
+      entity_type: 'team',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const [relationshipType] = await sql<{ id: number }[]>`
+      INSERT INTO entity_relationship_types
+        (organization_id, slug, name, created_by)
+      VALUES (${org.id}, 'member-of', 'Member of', ${user.id})
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO entity_relationships
+        (organization_id, from_entity_id, to_entity_id, relationship_type_id, created_by)
+      VALUES
+        (${org.id}, ${winner.id}, ${team.id}, ${relationshipType.id}, ${user.id}),
+        (${org.id}, ${loser.id}, ${team.id}, ${relationshipType.id}, ${user.id}),
+        (${org.id}, ${team.id}, ${winner.id}, ${relationshipType.id}, ${user.id}),
+        (${org.id}, ${team.id}, ${loser.id}, ${relationshipType.id}, ${user.id}),
+        (${org.id}, ${loser.id}, ${winner.id}, ${relationshipType.id}, ${user.id}),
+        (${org.id}, ${winner.id}, ${loser.id}, ${relationshipType.id}, ${user.id}),
+        (${org.id}, ${loser.id}, ${otherTeam.id}, ${relationshipType.id}, ${user.id})
+    `;
+
+    await expect(
+      applyMerge({
+        orgId: org.id,
+        loserId: loser.id,
+        winnerId: winner.id,
+        mergedBy: user.id,
+      }),
+    ).resolves.toMatchObject({ repointedEdges: 1 });
+
+    const relationships = await sql<
+      {
+        from_entity_id: number;
+        to_entity_id: number;
+        deleted_at: string | null;
+      }[]
+    >`
+      SELECT from_entity_id, to_entity_id, deleted_at
+      FROM entity_relationships
+      WHERE organization_id = ${org.id}
+        AND relationship_type_id = ${relationshipType.id}
+      ORDER BY id
+    `;
+    expect(relationships).toHaveLength(7);
+    const live = relationships.filter((row) => row.deleted_at === null);
+    expect(
+      live.map((row) => [Number(row.from_entity_id), Number(row.to_entity_id)]),
+    ).toEqual([
+      [winner.id, team.id],
+      [team.id, winner.id],
+      [winner.id, otherTeam.id],
+    ]);
+    const tombstoned = relationships.filter((row) => row.deleted_at !== null);
+    expect(tombstoned).toHaveLength(4);
+    expect(
+      tombstoned.every(
+        (row) =>
+          Number(row.from_entity_id) === loser.id ||
+          Number(row.to_entity_id) === loser.id,
+      ),
+    ).toBe(true);
+  });
+
   it('un-merge round-trips a single merge from live markers (identity moves back, loser revived)', async () => {
     const sql = getTestDb();
     const org = await createTestOrganization({ name: 'Unmerge Org' });

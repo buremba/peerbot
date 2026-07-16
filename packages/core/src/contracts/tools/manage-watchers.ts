@@ -377,7 +377,7 @@ export const ManageWatchersSchema = Type.Object({
   reaction_script: Type.Optional(
     Type.String({
       description:
-        "[set_reaction_script] TypeScript source for automated reaction. Set to empty string to remove.",
+        "[create/set_reaction_script] TypeScript source for automated reaction. Create compiles and stores it atomically; set to empty string to remove with set_reaction_script.",
     })
   ),
 

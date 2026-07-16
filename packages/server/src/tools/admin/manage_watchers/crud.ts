@@ -43,6 +43,10 @@ import {
   extractSourcesFromPromptTokens,
   mergePromptSources,
 } from '../../../watchers/source-refs';
+import {
+  compileReactionScript,
+  extractReactionInputSchema,
+} from '../../../watchers/reaction-executor';
 
 // ============================================
 // handleCreate
@@ -84,6 +88,13 @@ export async function handleCreate(
   // Parse JSON inputs
   const keyingConfig = parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config');
   const classifiers = parseJsonInput<unknown[]>(args.classifiers, 'classifiers');
+  const reactionScript = args.reaction_script?.trim() || null;
+  const reactionScriptCompiled = reactionScript
+    ? await compileReactionScript(reactionScript)
+    : null;
+  const reactionInputSchema = reactionScript
+    ? await extractReactionInputSchema(reactionScript)
+    : null;
 
   // Build sources array. Sources are authored two ways and merged here:
   //   1. `@`-mention tokens in the prompt (the owletto composer's primary path)
@@ -218,7 +229,8 @@ export async function handleCreate(
         watcher_group_id,
         device_worker_id, agent_kind,
         notification_channel, notification_priority, min_cooldown_seconds,
-        execution_config
+        execution_config,
+        reaction_script, reaction_script_compiled, reaction_input_schema
       ) VALUES (
         ${watcherId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
@@ -232,7 +244,9 @@ export async function handleCreate(
         ${args.notification_channel ?? 'canvas'},
         ${args.notification_priority ?? 'normal'},
         ${args.min_cooldown_seconds ?? 0},
-        ${toJsonParam(tx, args.execution_config)}
+        ${toJsonParam(tx, args.execution_config)},
+        ${reactionScript}, ${reactionScriptCompiled},
+        ${reactionInputSchema ? tx.json(reactionInputSchema) : null}
       )
     `;
 
@@ -242,12 +256,15 @@ export async function handleCreate(
         id, watcher_id, version, name, description,
         prompt, version_sources,
         keying_config, classifiers,
-        reactions_guidance, change_notes, created_by, created_at
+        reactions_guidance, change_notes, created_by, created_at,
+        reaction_script, reaction_script_compiled, reaction_input_schema
       ) VALUES (
         ${versionId}, ${watcherId}, 1, ${args.name ?? args.slug}, ${args.description ?? null},
         ${args.prompt}, ${toJsonParam(tx, sources)},
         ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
-        ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW()
+        ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW(),
+        ${reactionScript}, ${reactionScriptCompiled},
+        ${reactionInputSchema ? tx.json(reactionInputSchema) : null}
       )
     `;
 

@@ -90,6 +90,32 @@ describe('watcher CRUD', () => {
     expect(list.watchers?.some((w) => w.watcher_id === watcherId)).toBe(false);
   });
 
+  it('creates a watcher and its reaction contract atomically', async () => {
+    const sql = getTestDb();
+    const reaction = `export const input = { type: "object", properties: { merge_proposals: { type: "array" } }, required: ["merge_proposals"] }; export default async function () {}`;
+    const created = (await owner.watchers.create({
+      slug: 'atomic-reaction-watcher',
+      name: 'Atomic Reaction Watcher',
+      prompt: 'Return merge proposals.',
+      agent_id: agentId,
+      reaction_script: reaction,
+    })) as { watcher_id: string };
+
+    const [row] = await sql<{
+      reaction_script: string | null;
+      reaction_script_compiled: string | null;
+      reaction_input_schema: Record<string, unknown> | null;
+    }[]>`
+      SELECT reaction_script, reaction_script_compiled, reaction_input_schema
+      FROM watchers WHERE id = ${created.watcher_id}
+    `;
+    expect(row?.reaction_script).toBe(reaction);
+    expect(row?.reaction_script_compiled).toContain('merge_proposals');
+    expect(row?.reaction_input_schema).toMatchObject({
+      required: ['merge_proposals'],
+    });
+  });
+
   it('concurrent creates of the same slug: one wins, every loser gets the coded 409 (not raw 23505)', async () => {
     // The slug precheck SELECT is not a lock, so concurrent replicas can all
     // pass it and race idx_watchers_org_slug. Fire many at once: exactly one

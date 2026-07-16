@@ -250,7 +250,11 @@ async function queryContentData(
 export async function handleWatcherMode(
   args: GetContentArgs,
   env: Env,
-  sql: DbClient
+  sql: DbClient,
+  context: {
+    organizationId: string;
+    sourceConversationId: string | null;
+  }
 ): Promise<GetContentResult> {
   const { generateWindowToken } = await import('../../utils/jwt');
 
@@ -279,6 +283,7 @@ export async function handleWatcherMode(
       ON cv.id = COALESCE(${pinnedVersionId}::bigint, i.current_version_id)
      AND cv.watcher_id = i.watcher_group_id
     WHERE i.id = ${watcherId}
+      AND i.organization_id = ${context.organizationId}
     LIMIT 1
   `;
 
@@ -500,6 +505,25 @@ export async function handleWatcherMode(
     if (pastFeedback) {
       enrichedPrompt += `\n\n${pastFeedback}`;
     }
+  }
+
+  const runMarker = `_watcher_${watcherId}_run_`;
+  const markerIndex = context.sourceConversationId?.lastIndexOf(runMarker) ?? -1;
+  const runIdText =
+    markerIndex >= 0
+      ? context.sourceConversationId?.slice(markerIndex + runMarker.length)
+      : null;
+  const runId = runIdText && /^[1-9][0-9]*$/.test(runIdText) ? Number(runIdText) : null;
+  if (enrichedPrompt && runId !== null && Number.isSafeInteger(runId)) {
+    await sql`
+      UPDATE runs
+      SET run_metadata = COALESCE(run_metadata, '{}'::jsonb)
+        || jsonb_build_object('prompt_rendered', ${enrichedPrompt}::text)
+      WHERE id = ${runId}
+        AND organization_id = ${context.organizationId}
+        AND watcher_id = ${watcherId}
+        AND run_type = 'watcher'
+    `;
   }
 
   return {

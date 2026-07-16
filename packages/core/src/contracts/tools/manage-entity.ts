@@ -41,9 +41,13 @@ export const ManageEntitySchema = Type.Object({
         description:
           "Fold a duplicate entity (entity_id) into the one it really is (winner_entity_id). The loser is tombstoned + forwarded; its identities, aliases, edges, and events recall against the winner. Events are never rewritten. Use when two entities are confirmed the same real-world thing.",
       }),
+      Type.Literal("resolve_duplicates", {
+        description:
+          "Discover duplicate components among candidate_entity_ids using the entity type's x-lobu-resolution policy, then auto-merge deterministic matches or queue review.",
+      }),
       Type.Literal("unmerge", {
         description:
-          "Reverse a merge: split a previously-merged loser (entity_id) back out of the winner it was folded into. Restores the loser's own identities and un-tombstones it. Use to correct a wrong merge. Works at any chain depth (each loser is independently reversible). Aliases and relationship edges absorbed by the merge are NOT un-done.",
+          "Reverse a merge from its durable ledger: restore the loser's identities, canonical attributes, and relationships, then un-tombstone it. Fails closed if later edits made exact reversal unsafe.",
       }),
     ],
     { description: "Action to perform" }
@@ -67,6 +71,16 @@ export const ManageEntitySchema = Type.Object({
     })
   ),
 
+  candidate_entity_ids: Type.Optional(
+    Type.Array(Type.Integer({ minimum: 1 }), {
+      minItems: 2,
+      maxItems: 5000,
+      uniqueItems: true,
+      description:
+        "[resolve_duplicates] Candidate entity IDs. The server re-reads their values and applies the entity type's resolution policy.",
+    })
+  ),
+
   merge_evidence: Type.Optional(
     Type.Array(
       Type.Object({
@@ -79,7 +93,7 @@ export const ManageEntitySchema = Type.Object({
       {
         maxItems: 25,
         description:
-          "[merge] Structured identity evidence the reviewer should verify, such as a shared email or phone.",
+          "[merge] Optional structured evidence for human-initiated merge provenance. Agent and watcher evidence is always recomputed from the entity type's resolution policy.",
       }
     )
   ),
@@ -91,10 +105,11 @@ export const ManageEntitySchema = Type.Object({
     })
   ),
 
-  // Entity ID (for get, update, delete, list_links)
+  // Entity ID (for get, update, delete, list_links, merge, and unmerge)
   entity_id: Type.Optional(
     Type.Number({
-      description: "[get/update/delete/list_links] Entity ID to operate on",
+      description:
+        "[get/update/delete/list_links/merge/unmerge] Entity ID to operate on",
     })
   ),
 
@@ -489,6 +504,18 @@ export const ManageEntityResultSchema = Type.Union([
       loser_entity_ids: Type.Optional(Type.Array(Type.Integer())),
       moved_identities: Type.Integer(),
       repointed_edges: Type.Integer(),
+      resolution: Type.Optional(
+        Type.Object({
+          decision: Type.Union([
+            Type.Literal("auto_merge"),
+            Type.Literal("human"),
+          ]),
+          reason: Type.String(),
+          evidence: Type.Array(
+            Type.Object({ kind: Type.String(), identifier: Type.String() })
+          ),
+        })
+      ),
     }),
     Type.Object({
       action: Type.Literal("merge"),
@@ -506,15 +533,49 @@ export const ManageEntityResultSchema = Type.Union([
         Type.Literal("watcher"),
       ]),
       next_steps: Type.Array(Type.String()),
+      resolution: Type.Optional(
+        Type.Object({
+          decision: Type.Literal("review"),
+          reason: Type.String(),
+          evidence: Type.Array(
+            Type.Object({ kind: Type.String(), identifier: Type.String() })
+          ),
+        })
+      ),
+    }),
+    Type.Object({
+      action: Type.Literal("merge"),
+      approval_suppressed: Type.Literal(true),
+      message: Type.String(),
+      resolution: Type.Object({
+        decision: Type.Literal("review"),
+        reason: Type.String(),
+        evidence: Type.Array(
+          Type.Object({ kind: Type.String(), identifier: Type.String() })
+        ),
+      }),
     }),
   ]),
+  Type.Object({
+    action: Type.Literal("resolve_duplicates"),
+    candidates_scanned: Type.Integer(),
+    groups_found: Type.Integer(),
+    auto_merged: Type.Integer(),
+    approvals_queued: Type.Integer(),
+    approvals_suppressed: Type.Integer(),
+    oversized_groups: Type.Integer(),
+    deferred_candidates: Type.Integer({
+      description:
+        "Candidates connected only through another record; reconsidered after direct merges apply.",
+    }),
+  }),
   Type.Object({
     action: Type.Literal("unmerge"),
     success: Type.Boolean(),
     message: Type.String(),
     winner_entity_id: Type.Integer(),
     loser_entity_id: Type.Integer(),
-    /** Identities moved back loser←winner (their merged_from marker cleared). */
+    /** Identities restored to the loser with their prior provenance markers. */
     restored_identities: Type.Integer(),
   }),
 ]);

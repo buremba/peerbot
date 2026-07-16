@@ -67,6 +67,7 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
     // The window too, so a deferred approval batches per window and dedups across
     // windows even when the script omits `watcher_source` (see ToolContext).
     actingWindowId: context.window.id,
+    actingRunId: context.window.run_id ?? null,
     sourceContext: { source: 'watcher-run' as const },
   };
 

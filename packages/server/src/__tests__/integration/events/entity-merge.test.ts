@@ -8,11 +8,12 @@
  *   2. raw `events.entity_ids`-stamped events (save_content / feed-pinned) — the
  *      event row is NEVER rewritten; the redirect gathers {winner ∪ losers} so
  *      recall of the winner still finds the loser's stamped events.
- * Plus: reversibility marker, alias union, edge re-point, flatten (1-hop).
+ * Plus: durable exact-undo ledger, attribute merge, edge re-point, flatten (1-hop).
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { applyMerge, applyUnmerge } from '../../../utils/entity-merge';
+import { assessEntityResolution } from '../../../entity-resolution/policy';
+import { applyMerge, applyMergeGroup, applyUnmerge } from '../../../utils/entity-merge';
 import {
   buildEntityLinkUnion,
   fetchEntityIdentityScopes,
@@ -48,6 +49,70 @@ async function recallEventIds(entityId: number): Promise<number[]> {
 describe('entity merge', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
+  });
+
+  it('rejects an automatic merge when its deterministic identity changed before the lock', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Stale Resolution Org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const winner = await createTestEntity({
+      name: 'Alice',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const loser = await createTestEntity({
+      name: 'Alice Import',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const metadataSchema = {
+      'x-lobu-resolution': {
+        rules: [{ fields: ['email'], normalizer: 'email', onMatch: 'auto_merge' }],
+      },
+    };
+    await sql`
+      UPDATE entity_types
+      SET metadata_schema = ${sql.json(metadataSchema)}
+      WHERE id = (SELECT entity_type_id FROM entities WHERE id = ${winner.id})
+    `;
+    await sql`
+      UPDATE entities SET metadata = ${sql.json({ email: 'same@example.com' })}
+      WHERE id IN (${winner.id}, ${loser.id})
+    `;
+    const assessment = assessEntityResolution({
+      metadataSchema,
+      winner: { id: winner.id, metadata: { email: 'same@example.com' } },
+      losers: [{ id: loser.id, metadata: { email: 'same@example.com' } }],
+    });
+    await sql`
+      UPDATE entities SET metadata = ${sql.json({ email: 'changed@example.com' })}
+      WHERE id = ${loser.id}
+    `;
+
+    await expect(
+      applyMergeGroup(
+        {
+          orgId: org.id,
+          loserIds: [loser.id],
+          winnerId: winner.id,
+          mergedBy: user.id,
+          expectedResolutionFingerprint: assessment.fingerprint,
+          resolution: {
+            decision: 'auto_merge',
+            policyHash: assessment.policyHash,
+            evidence: assessment.evidence,
+          },
+        },
+        sql
+      )
+    ).rejects.toThrow('changed');
+    const [unchanged] = await sql`
+      SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+    `;
+    expect(unchanged).toMatchObject({ merged_into: null, deleted_at: null });
   });
 
   it('winner recalls the loser BOTH via identity-graph AND raw entity_ids after merge', async () => {
@@ -334,7 +399,7 @@ describe('entity merge', () => {
     ).toBe(true);
   });
 
-  it('un-merge round-trips a single merge from live markers (identity moves back, loser revived)', async () => {
+  it('un-merge round-trips a single merge from its durable ledger', async () => {
     const sql = getTestDb();
     const org = await createTestOrganization({ name: 'Unmerge Org' });
     const user = await createTestUser();
@@ -375,6 +440,148 @@ describe('entity merge', () => {
     `) as Array<{ merged_into: number | null; deleted_at: string | null }>;
     expect(lRow.merged_into).toBeNull();
     expect(lRow.deleted_at).toBeNull();
+  });
+
+  it('merges complementary attributes and exactly restores metadata plus relationships on undo', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Exact Undo Org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const winner = await createTestEntity({
+      name: 'Alice Smith',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const loser = await createTestEntity({
+      name: 'A. Smith',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const team = await createTestEntity({
+      name: 'Platform',
+      entity_type: 'team',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    await sql`
+      UPDATE entities
+      SET metadata = ${sql.json({
+        aliases: ['Alice'],
+        emails: ['alice@example.com'],
+        title: 'Engineer',
+      })}
+      WHERE id = ${winner.id}
+    `;
+    await sql`
+      UPDATE entities
+      SET metadata = ${sql.json({
+        aliases: ['A Smith'],
+        emails: ['alice@work.example'],
+        title: 'Manager',
+        city: 'London',
+      })}
+      WHERE id = ${loser.id}
+    `;
+    const [relationshipType] = await sql<{ id: number }[]>`
+      INSERT INTO entity_relationship_types
+        (organization_id, slug, name, created_by)
+      VALUES (${org.id}, 'member-of-exact-undo', 'Member of', ${user.id})
+      RETURNING id
+    `;
+    const [relationship] = await sql<{ id: number }[]>`
+      INSERT INTO entity_relationships
+        (organization_id, from_entity_id, to_entity_id, relationship_type_id, created_by)
+      VALUES (${org.id}, ${loser.id}, ${team.id}, ${relationshipType.id}, ${user.id})
+      RETURNING id
+    `;
+    const [winnerBefore] = await sql`
+      SELECT metadata, field_controls FROM entities WHERE id = ${winner.id}
+    `;
+
+    await applyMerge({
+      orgId: org.id,
+      loserId: loser.id,
+      winnerId: winner.id,
+      mergedBy: user.id,
+    });
+
+    const [mergedWinner] = await sql`
+      SELECT metadata FROM entities WHERE id = ${winner.id}
+    `;
+    expect(mergedWinner.metadata).toMatchObject({
+      aliases: expect.arrayContaining(['Alice', 'A Smith', 'A. Smith']),
+      emails: expect.arrayContaining(['alice@example.com', 'alice@work.example']),
+      title: 'Engineer',
+      city: 'London',
+    });
+
+    await applyUnmerge({
+      orgId: org.id,
+      loserId: loser.id,
+      unmergedBy: user.id,
+    });
+
+    const [winnerAfter] = await sql`
+      SELECT metadata, field_controls FROM entities WHERE id = ${winner.id}
+    `;
+    expect(winnerAfter.metadata).toEqual(winnerBefore.metadata);
+    expect(winnerAfter.field_controls).toEqual(winnerBefore.field_controls);
+    const [restoredRelationship] = await sql`
+      SELECT from_entity_id, to_entity_id, deleted_at
+      FROM entity_relationships WHERE id = ${relationship.id}
+    `;
+    expect(restoredRelationship).toMatchObject({
+      from_entity_id: loser.id,
+      to_entity_id: team.id,
+      deleted_at: null,
+    });
+  });
+
+  it('fails closed when canonical metadata changed after the merge', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Unsafe Undo Org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const winner = await createTestEntity({
+      name: 'Winner',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const loser = await createTestEntity({
+      name: 'Loser',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+
+    await applyMerge({
+      orgId: org.id,
+      loserId: loser.id,
+      winnerId: winner.id,
+      mergedBy: user.id,
+    });
+    await sql`
+      UPDATE entities
+      SET metadata = metadata || ${sql.json({ title: 'Edited after merge' })}
+      WHERE id = ${winner.id}
+    `;
+
+    await expect(
+      applyUnmerge({ orgId: org.id, loserId: loser.id, unmergedBy: user.id })
+    ).rejects.toThrow(/canonical attributes changed/i);
+    const [stillMerged] = await sql`
+      SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+    `;
+    expect(Number(stillMerged.merged_into)).toBe(winner.id);
+    expect(stillMerged.deleted_at).not.toBeNull();
+    const [operation] = await sql`
+      SELECT status FROM entity_merge_operations
+      WHERE organization_id = ${org.id} AND loser_entity_id = ${loser.id}
+    `;
+    expect(operation.status).toBe('active');
   });
 
   it('leaves a superseded (soft-deleted) loser identity untouched through merge + un-merge', async () => {
@@ -418,11 +625,7 @@ describe('entity merge', () => {
     expect(w.deleted_at).toBeNull();
   });
 
-  it('un-merges the innermost loser of a flattened chain, restoring ITS identity (COALESCE marker)', async () => {
-    // L→W then W→V flattens L straight to V, but COALESCE kept L's moved identity
-    // marked `merged_from = L` (not overwritten to W on the second merge). So
-    // un-merging L must restore L's OWN identity back to a revived L, while W→V
-    // stays intact — each loser is independently reversible even after flatten.
+  it('fails closed on an inner chain merge, then reverses the chain outside-in', async () => {
     const sql = getTestDb();
     const org = await createTestOrganization({ name: 'Chain Undo Org' });
     const user = await createTestUser();
@@ -448,15 +651,34 @@ describe('entity merge', () => {
     expect(Number(onV.entity_id)).toBe(v.id);
     expect(Number(onV.merged_from_entity_id)).toBe(l.id);
 
-    // L points at the flattened terminal winner V; un-merging it restores L.
+    // L points at V, but its operation ledger names W. Undoing the inner merge
+    // first would skip state changed on W, so it must fail closed.
     const [lForward] = (await sql`SELECT merged_into FROM entities WHERE id = ${l.id}`) as Array<{ merged_into: number | null }>;
     expect(Number(lForward.merged_into)).toBe(v.id);
+    await expect(
+      applyUnmerge({ orgId: org.id, loserId: l.id, unmergedBy: user.id })
+    ).rejects.toThrow(/undo that merge first/i);
 
-    const undo = await applyUnmerge({ orgId: org.id, loserId: l.id, unmergedBy: user.id });
-    expect(undo.winnerId).toBe(v.id);
-    expect(undo.restoredIdentities).toBe(1);
+    const outerUndo = await applyUnmerge({
+      orgId: org.id,
+      loserId: w.id,
+      unmergedBy: user.id,
+    });
+    expect(outerUndo.winnerId).toBe(v.id);
+    const [restoredForward] = (await sql`
+      SELECT merged_into FROM entities WHERE id = ${l.id}
+    `) as Array<{ merged_into: number | null }>;
+    expect(Number(restoredForward.merged_into)).toBe(w.id);
 
-    // L's identity is back on a revived, un-tombstoned L; W→V is untouched.
+    const innerUndo = await applyUnmerge({
+      orgId: org.id,
+      loserId: l.id,
+      unmergedBy: user.id,
+    });
+    expect(innerUndo.winnerId).toBe(w.id);
+    expect(innerUndo.restoredIdentities).toBe(1);
+
+    // Both operations are now reversed and L owns its identity again.
     const [back] = (await sql`
       SELECT entity_id, merged_from_entity_id FROM entity_identities
       WHERE organization_id = ${org.id} AND namespace = 'phone' AND identifier = '15557777'
@@ -464,8 +686,8 @@ describe('entity merge', () => {
     expect(Number(back.entity_id)).toBe(l.id);
     expect(back.merged_from_entity_id).toBeNull();
     const [wRow] = (await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${w.id}`) as Array<{ merged_into: number | null; deleted_at: string | null }>;
-    expect(Number(wRow.merged_into)).toBe(v.id);
-    expect(wRow.deleted_at).not.toBeNull();
+    expect(wRow.merged_into).toBeNull();
+    expect(wRow.deleted_at).toBeNull();
   });
 
   it('rejects un-merging an entity that was never merged', async () => {

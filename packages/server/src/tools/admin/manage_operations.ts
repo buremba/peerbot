@@ -2395,6 +2395,18 @@ async function pendingRunIdsForWindow(
 	return rows.map((r) => Number(r.id));
 }
 
+function batchRunSetChanged(
+	pendingRunIds: number[],
+	reviewedRunIds: number[] | undefined,
+): boolean {
+	if (!reviewedRunIds) return false;
+	const reviewed = [...new Set(reviewedRunIds)].sort((a, b) => a - b);
+	return (
+		pendingRunIds.length !== reviewed.length ||
+		pendingRunIds.some((runId, index) => runId !== reviewed[index])
+	);
+}
+
 /**
  * Approve every pending proposal a watcher run produced, in one action. Reuses
  * the single-run approve path per proposal so each still applies through its own
@@ -2411,6 +2423,12 @@ async function handleApproveBatch(
 		args.window_id,
 		ctx.organizationId,
 	);
+	if (batchRunSetChanged(runIds, args.run_ids)) {
+		return {
+			error:
+				"Pending proposals changed after this run was loaded. Refresh before approving the batch.",
+		};
+	}
 	if (runIds.length === 0) {
 		return {
 			action: "approve_batch",
@@ -2491,6 +2509,12 @@ async function handleRejectBatch(
 		args.window_id,
 		ctx.organizationId,
 	);
+	if (batchRunSetChanged(runIds, args.run_ids)) {
+		return {
+			error:
+				"Pending proposals changed after this run was loaded. Refresh before rejecting the batch.",
+		};
+	}
 	const reason = args.reason ?? "Rejected by user";
 	let rejected = 0;
 	for (const runId of runIds) {

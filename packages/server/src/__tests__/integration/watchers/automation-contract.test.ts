@@ -20,6 +20,7 @@ import { createWatcherRun } from "../../../runs/queue-service";
 import { nextRunAt } from "../../../utils/cron";
 import { generateWindowToken } from "../../../utils/jwt";
 import { computePendingWindow } from "../../../utils/window-utils";
+import { handleWatcherMode } from "../../../tools/get_content/watcher-mode";
 import {
 	advanceWatcherSchedule,
 	dispatchPendingWatcherRuns,
@@ -231,28 +232,45 @@ describe("watcher automation contract", () => {
       WHERE id = ${queued.runId}
     `;
 
-		const content = (await api.knowledge.read({ watcher_id: watcherId })) as {
+		const content = (await handleWatcherMode(
+			{ watcher_id: watcherId },
+			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
+			dbClient,
+			{
+				organizationId: workspace.org.id,
+				sourceConversationId: `${agent.agentId}_watcher_${watcherId}_run_${queued.runId}`,
+			},
+		)) as {
 			window_token: string;
 			window_start: string;
 			window_end: string;
 		};
 		expect(content.window_start).toBe(windowStart.toISOString());
 		expect(content.window_end).toBe(windowEnd.toISOString());
+		const [promptStampedRun] =
+			await sql`SELECT run_metadata FROM runs WHERE id = ${queued.runId}`;
+		expect(
+			String(
+				(promptStampedRun.run_metadata as Record<string, unknown>)
+					.prompt_rendered,
+			),
+		).toContain("Summarize content for Automation Entity.");
 
 		const completion = (await api.watchers.completeWindow({
 			watcher_id: String(watcherId),
 			window_token: content.window_token,
 			extracted_data: { summary: "Automated watcher summary" },
-			run_metadata: {
-				executor: "lobu-agent",
-				agent_id: agent.agentId,
-				watcher_run_id: queued.runId,
-				dispatch_source: "scheduled",
-			},
+				run_metadata: {
+					executor: "lobu-agent",
+					agent_id: agent.agentId,
+					watcher_run_id: queued.runId,
+					dispatch_source: "scheduled",
+					prompt_rendered: "forged by completion payload",
+				},
 		})) as { action: string; window_id: number };
 
 		const [run] = await sql`
-      SELECT status, window_id
+      SELECT status, window_id, run_metadata
       FROM runs
       WHERE id = ${queued.runId}
     `;
@@ -260,6 +278,12 @@ describe("watcher automation contract", () => {
 		expect(completion.action).toBe("complete_window");
 		expect(String(run.status)).toBe("completed");
 		expect(Number(run.window_id)).toBe(completion.window_id);
+		expect(
+			String((run.run_metadata as Record<string, unknown>).prompt_rendered),
+		).toContain("Summarize content for Automation Entity.");
+		expect((run.run_metadata as Record<string, unknown>).executor).toBe(
+			"lobu-agent",
+		);
 	});
 
 	it("skips watcher runs pinned to a device worker (#802)", async () => {

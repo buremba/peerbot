@@ -200,7 +200,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
   it('creates a child entity per keyed row, with origin window provenance in its metadata', async () => {
     const ctx = await setupKeyedWatcher();
-    const { sql, workspace, watcherId, parentEntityId } = ctx;
+    const { sql, workspace, parentEntityId } = ctx;
 
     await createTestEvent({
       entity_id: parentEntityId,
@@ -387,7 +387,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
   it('syncs extracted fields into entities and respects a human-owned field on re-run, queuing an approval', async () => {
     const ctx = await setupKeyedWatcher();
-    const { sql, workspace, watcherId } = ctx;
+    const { sql, workspace } = ctx;
 
     await createTestEvent({
       entity_id: ctx.parentEntityId,
@@ -842,10 +842,20 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     // Both proposals carry the run's window_id on the COLUMN (batch grouping key).
     expect(pending.every((r) => Number(r.window_id) === windowId)).toBe(true);
 
-    // approve_batch approves every pending proposal for the window in one call.
+    // A UI-pinned batch fails closed if another proposal appeared after review.
+    const pendingIds = pending.map((row) => Number(row.id));
+    const staleBatch = (await executeTool(
+      'manage_operations',
+      { action: 'approve_batch', window_id: windowId, run_ids: [pendingIds[0]] },
+      TEST_ENV,
+      ownerAuthCtx(workspace.org.id, workspace.users.owner.id)
+    )) as { error?: string };
+    expect(staleBatch.error).toContain('Pending proposals changed');
+
+    // approve_batch approves exactly the reviewed pending set in one call.
     const batchRes = (await executeTool(
       'manage_operations',
-      { action: 'approve_batch', window_id: windowId },
+      { action: 'approve_batch', window_id: windowId, run_ids: pendingIds },
       TEST_ENV,
       ownerAuthCtx(workspace.org.id, workspace.users.owner.id)
     )) as { action: string; approved_count?: number; failed_count?: number };

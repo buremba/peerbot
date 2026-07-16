@@ -159,6 +159,15 @@ export const ApproveBatchAction = Type.Object({
       "Approve every pending proposal a watcher run produced, in one go. Groups by the run's window.",
   }),
   window_id: Type.Number(),
+  run_ids: Type.Optional(
+    Type.Array(Type.Integer({ minimum: 1 }), {
+      minItems: 1,
+      maxItems: 5000,
+      uniqueItems: true,
+      description:
+        "Exact proposal run IDs shown to the reviewer. The batch fails closed if the pending set changed.",
+    })
+  ),
 });
 
 export const RejectBatchAction = Type.Object({
@@ -167,6 +176,15 @@ export const RejectBatchAction = Type.Object({
       "Reject every pending proposal a watcher run produced. The reason is fed back to the agent so it can revise its proposals (the conversational revision loop).",
   }),
   window_id: Type.Number(),
+  run_ids: Type.Optional(
+    Type.Array(Type.Integer({ minimum: 1 }), {
+      minItems: 1,
+      maxItems: 5000,
+      uniqueItems: true,
+      description:
+        "Exact proposal run IDs shown to the reviewer. The batch fails closed if the pending set changed.",
+    })
+  ),
   reason: Type.Optional(Type.String()),
 });
 

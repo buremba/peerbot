@@ -84,19 +84,18 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 	{
 		id: "duplicate-merge",
 		name: "Duplicate entity merge",
-		version: "2.0.0",
+		version: "3.0.0",
 		description:
 			"Find entities that are the same real-world thing and fold duplicates into one canonical record.",
 		detail: {
 			slug: "duplicate-merge",
 			schedule: "0 3 * * *",
 			// A cross-entity watcher: its source surfaces people rather than events.
-			// The model explains ambiguous cases; the reaction deterministically groups
-			// exact shared identity values. Groups beyond the merge API or reaction SDK
-			// limits are left unapplied for the model to flag for manual review.
+			// The model explains findings; the entity-resolution module owns grouping,
+			// normalization, auto/review policy, suppression, and merge limits.
 			sources: [{ name: "people", query: "@entity:person" }],
 			prompt:
-				"Review every row in sources.people. Explain exact shared email or phone groups in analysis_summary. Put name-only, alias-only, or handle-only matches, identity components larger than 26 people, and sources with more than 199 mergeable components in uncertain_groups with why. Aliases and handles lack connector namespaces here, so they are not automatic merge evidence. Do not call entity tools or emit backlog tasks. The deterministic reaction independently creates one pending human approval for every exact email or phone component of at most 26 people. It fails before queuing approvals when more than 199 components need merging, and no merge happens before approval.\n",
+				"Review every row in sources.people. Explain likely duplicate groups in analysis_summary and put name-only, alias-only, handle-only, oversized, or otherwise uncertain groups in uncertain_groups with why. Do not call entity tools or emit backlog tasks. After analysis, the deterministic reaction submits only candidate IDs to the server. The person entity type's x-lobu-resolution policy decides which normalized identities auto-merge and which require human review.\n",
 			reaction_script: `export const input = {
 	type: "object",
 	properties: {
@@ -107,148 +106,26 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 	additionalProperties: false,
 };
 
-const MAX_MERGE_COMPONENTS = 199;
-
-function asValues(value) {
-	if (value == null) return [];
-	return Array.isArray(value) ? value : [value];
-}
-
-function normalizeIdentity(kind, value) {
-	if (typeof value !== "string") return null;
-	const trimmed = value.trim();
-	if (!trimmed) return null;
-	if (kind === "phone") {
-		if (!/^[+()0-9 .-]+$/.test(trimmed)) return null;
-		const digits = trimmed.replace(/[^0-9]/g, "");
-		return digits.length >= 7 && digits.length <= 15 ? digits : null;
-	}
-	const email = trimmed.toLowerCase();
-	if (email.length > 512) return null;
-	// Require a dot-atom local part and dot-separated domain labels so malformed
-	// values (empty labels, leading/trailing/consecutive dots, multiple "@",
-	// whitespace) cannot be used as deterministic merge evidence.
-	if (!/^[a-z0-9_%+-]+(?:\\.[a-z0-9_%+-]+)*@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(email)) return null;
-	return email;
-}
-
-function entityIdentities(entity) {
-	const metadata = entity && typeof entity.metadata === "object" && entity.metadata
-		? entity.metadata
-		: {};
-	const identities = new Map();
-	const add = (kind, value) => {
-		const identifier = normalizeIdentity(kind, value);
-		if (identifier) identities.set(kind + ":" + identifier, { kind, identifier });
-	};
-	for (const value of [...asValues(metadata.email), ...asValues(metadata.emails)]) add("email", value);
-	for (const value of [...asValues(metadata.phone), ...asValues(metadata.phones)]) add("phone", value);
-	return [...identities.values()];
-}
-
-function populatedFieldCount(entity) {
-	const metadata = entity && typeof entity.metadata === "object" && entity.metadata
-		? entity.metadata
-		: {};
-	return Object.values(metadata).filter((value) => {
-		if (value == null || value === "") return false;
-		return !Array.isArray(value) || value.length > 0;
-	}).length;
-}
-
 export default async function reaction(ctx, client) {
+	const MAX_CANDIDATES = 5000;
 	const since = String(ctx.window.window_start).slice(0, 10);
 	const until = new Date(new Date(ctx.window.window_end).getTime() - 1).toISOString().slice(0, 10);
 	const knowledge = await client.knowledge.read({ watcher_id: ctx.window.watcher_id, since, until });
 	const candidates = Array.isArray(knowledge?.sources?.people) ? knowledge.sources.people : [];
-	const entities = new Map();
-	const parent = new Map();
-	const ownersByIdentity = new Map();
-	const find = (id) => {
-		let root = parent.get(id);
-		while (root !== parent.get(root)) root = parent.get(root);
-		let current = id;
-		while (parent.get(current) !== root) {
-			const next = parent.get(current);
-			parent.set(current, root);
-			current = next;
-		}
-		return root;
-	};
-	const union = (left, right) => {
-		const leftRoot = find(left);
-		const rightRoot = find(right);
-		if (leftRoot === rightRoot) return false;
-		parent.set(Math.max(leftRoot, rightRoot), Math.min(leftRoot, rightRoot));
-		return true;
-	};
-
-	for (const candidate of candidates) {
-		const id = Number(candidate?.id);
-		if (!Number.isInteger(id)) continue;
-		entities.set(id, candidate);
-		parent.set(id, id);
+	const candidateIds = [...new Set(candidates
+		.map((candidate) => candidate?.id)
+		.filter((id) => Number.isSafeInteger(id) && id > 0))];
+	if (candidateIds.length < 2) return;
+	if (candidateIds.length > MAX_CANDIDATES) {
+		throw new Error("More than 5000 entities need duplicate discovery; no changes were queued");
 	}
-	for (const [id, entity] of entities) {
-		for (const identity of entityIdentities(entity)) {
-			const key = identity.kind + ":" + identity.identifier;
-			const owners = ownersByIdentity.get(key) ?? new Set();
-			owners.add(id);
-			ownersByIdentity.set(key, owners);
-		}
-	}
-	const evidenceIdentityKeys = [];
-	for (const key of [...ownersByIdentity.keys()].sort()) {
-		const owners = [...ownersByIdentity.get(key)].sort((left, right) => left - right);
-		if (owners.length < 2) continue;
-		// A spanning set proves the component while staying within the API's
-		// 25-item evidence limit for a 26-entity merge.
-		let connectsEntities = false;
-		for (let index = 1; index < owners.length; index += 1) {
-			if (union(owners[0], owners[index])) connectsEntities = true;
-		}
-		if (connectsEntities) evidenceIdentityKeys.push(key);
-	}
-
-	const components = new Map();
-	for (const [id, entity] of entities) {
-		const root = find(id);
-		const component = components.get(root) ?? [];
-		component.push(entity);
-		components.set(root, component);
-	}
-	const orderedComponents = [...components.values()]
-		.filter((component) => component.length > 1 && component.length <= 26)
-		.sort((left, right) => Math.min(...left.map((row) => Number(row.id))) - Math.min(...right.map((row) => Number(row.id))));
-	// knowledge.read consumes one of the sandbox's 200 SDK calls. Check before
-	// writes so exceeding the remaining budget cannot leave partial approvals.
-	if (orderedComponents.length > MAX_MERGE_COMPONENTS) {
-		throw new Error("More than 199 identity components need merging; no approvals were queued");
-	}
-
-	for (const component of orderedComponents) {
-		const componentRoot = find(Number(component[0].id));
-		const evidence = [];
-		for (const key of evidenceIdentityKeys) {
-			const owner = ownersByIdentity.get(key).values().next().value;
-			if (find(owner) !== componentRoot) continue;
-			const separator = key.indexOf(":");
-			evidence.push({ kind: key.slice(0, separator), identifier: key.slice(separator + 1) });
-		}
-		const ranked = [...component].sort((left, right) => {
-			const completeness = populatedFieldCount(right) - populatedFieldCount(left);
-			return completeness || Number(left.id) - Number(right.id);
-		});
-		await client.entities.manage({
-			action: "merge",
-			winner_entity_id: Number(ranked[0].id),
-			duplicate_entity_ids: ranked.slice(1).map((entity) => Number(entity.id)),
-			merge_evidence: evidence,
-		});
-	}
+	await client.entities.manage({
+		action: "resolve_duplicates",
+		candidate_entity_ids: candidateIds,
+	});
 }`,
 			reactions_guidance:
-				"Treat only exact shared email or phone values as merge evidence. Report aliases, handles, names, and every other possible match as uncertain rather than guessing.",
+				"Explain uncertainty; never decide identity from names, aliases, or handles. The server-side entity type policy is the only merge authority.",
 			tags: ["identity", "deduplication", "world-model"],
 		},
 	},

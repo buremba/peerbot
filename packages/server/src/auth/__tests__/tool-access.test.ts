@@ -31,10 +31,13 @@ describe('requiresOwnerAdmin', () => {
     expect(requiresOwnerAdmin('query_sql', {}, true)).toBe(false);
   });
 
-  it('should require admin for destructive manage_entity actions only', () => {
+  it('should require admin for destructive and bulk manage_entity actions', () => {
     expect(requiresOwnerAdmin('manage_entity', { action: 'create' }, false)).toBe(false);
     expect(requiresOwnerAdmin('manage_entity', { action: 'update' }, false)).toBe(false);
     expect(requiresOwnerAdmin('manage_entity', { action: 'delete' }, false)).toBe(true);
+    expect(requiresOwnerAdmin('manage_entity', { action: 'merge' }, false)).toBe(true);
+    expect(requiresOwnerAdmin('manage_entity', { action: 'resolve_duplicates' }, false)).toBe(true);
+    expect(requiresOwnerAdmin('manage_entity', { action: 'unmerge' }, false)).toBe(true);
   });
 
   it('should not require admin for read-only manage_entity actions', () => {
@@ -179,9 +182,12 @@ describe('member write access', () => {
     expect(getRequiredAccessLevel('manage_entity', { action: 'create' }, false)).toBe('write');
   });
 
-  it('should keep entity deletion as admin-only', () => {
+  it('should keep destructive and bulk entity actions as admin-only', () => {
     expect(requiresMemberWrite('manage_entity', { action: 'delete' }, false)).toBe(false);
     expect(getRequiredAccessLevel('manage_entity', { action: 'delete' }, false)).toBe('admin');
+    expect(
+      getRequiredAccessLevel('manage_entity', { action: 'resolve_duplicates' }, false)
+    ).toBe('admin');
   });
 });
 
@@ -695,7 +701,7 @@ search_sdk: read+public ?=read+public
 query_sdk: read ?=read
 query_sql: read ?=read
 run_sdk: write ?=write
-manage_entity: create=write update=write list=read+public get=read+public delete=admin link=write unlink=write update_link=write list_links=read+public merge=admin unmerge=admin ?=read
+manage_entity: create=write update=write list=read+public get=read+public delete=admin link=write unlink=write update_link=write list_links=read+public merge=admin resolve_duplicates=admin unmerge=admin ?=read
 manage_entity_schema: list=read+public get=read+public create=admin update=admin delete=admin audit=read+public add_rule=admin remove_rule=admin list_rules=read+public ?=read
 manage_connections: list_connector_groups=read+public list=read+public get=read+public create=write connect=admin update=write apply_chat_connection=admin delete=admin reauthenticate=write test=admin install_connector=admin uninstall_connector=admin toggle_connector_login=admin update_connector_auth=admin update_connector_default_config=admin update_connector_default_repair_agent=admin list_channel_bindings=read+public bind_channel=admin unbind_channel=admin sync_channel_bindings=admin set_channel_about=admin connect_channel_dm=admin ?=read
 manage_catalog: list_catalog=read+public list_installed=read+public ?=read

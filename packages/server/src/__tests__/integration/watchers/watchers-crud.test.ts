@@ -236,6 +236,23 @@ describe('watcher CRUD', () => {
     await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
   });
 
+  it('does not create a watcher when its reaction fails compilation', async () => {
+    await expect(
+      owner.watchers.create({
+        slug: 'invalid-reaction-watcher',
+        name: 'Invalid Reaction Watcher',
+        prompt: 'Return merge proposals.',
+        agent_id: agentId,
+        reaction_script: 'export default async function reaction() {',
+      })
+    ).rejects.toThrow();
+
+    const [row] = await getTestDb()<{ id: number }[]>`
+      SELECT id FROM watchers WHERE slug = 'invalid-reaction-watcher'
+    `;
+    expect(row).toBeUndefined();
+  });
+
   it('concurrent creates of the same slug: one wins, every loser gets the coded 409 (not raw 23505)', async () => {
     // The slug precheck SELECT is not a lock, so concurrent replicas can all
     // pass it and race idx_watchers_org_slug. Fire many at once: exactly one

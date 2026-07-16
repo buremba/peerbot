@@ -4018,7 +4018,7 @@ export type ManageWatchersData = {
      */
     template_version_id?: number;
     /**
-     * [set_reaction_script] TypeScript source for automated reaction. Set to empty string to remove.
+     * [create/set_reaction_script] TypeScript source for an automated reaction. On create, it is compiled before the watcher and its reaction fields are stored in one transaction. Pass an empty string to set_reaction_script to remove an existing script.
      */
     reaction_script?: string;
     /**

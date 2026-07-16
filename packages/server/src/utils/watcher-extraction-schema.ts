@@ -90,9 +90,9 @@ export function wrapMetadataSchemaAtPath(
  *  1. Entity-typed (`keying_config.entity_type`) → the type's `metadata_schema`
  *     wrapped as an array at `entity_path`.
  *  2. Reaction watcher → the reaction's exported `input` schema, cached on
- *     `watchers.reaction_input_schema` at set_reaction_script time. This is how
- *     "the reaction owns the schema" reaches the worker: the device extracts
- *     against exactly what the reaction will `Value.Parse`.
+ *     `watchers.reaction_input_schema` when the watcher is created or its script
+ *     is set. This is how "the reaction owns the schema" reaches the worker:
+ *     the device extracts against exactly what the reaction will `Value.Parse`.
  *  3. Otherwise null — the worker runs the free-form `{ summary }` fallback.
  *
  * Both the worker payload and complete_window validation resolve through here,

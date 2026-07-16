@@ -88,13 +88,6 @@ export async function handleCreate(
   // Parse JSON inputs
   const keyingConfig = parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config');
   const classifiers = parseJsonInput<unknown[]>(args.classifiers, 'classifiers');
-  const reactionScript = args.reaction_script?.trim() || null;
-  const reactionScriptCompiled = reactionScript
-    ? await compileReactionScript(reactionScript)
-    : null;
-  const reactionInputSchema = reactionScript
-    ? await extractReactionInputSchema(reactionScript)
-    : null;
 
   // Build sources array. Sources are authored two ways and merged here:
   //   1. `@`-mention tokens in the prompt (the owletto composer's primary path)
@@ -201,6 +194,14 @@ export async function handleCreate(
     );
   }
 
+  const reactionScript = args.reaction_script?.trim() ? args.reaction_script : null;
+  const reactionScriptCompiled = reactionScript
+    ? await compileReactionScript(reactionScript)
+    : null;
+  const reactionInputSchema = reactionScript
+    ? await extractReactionInputSchema(reactionScript)
+    : null;
+
   const createdBy = ctx.userId ?? 'system';
 
   // Allocated inside the transaction below: getNextNumericId relies on
@@ -253,7 +254,7 @@ export async function handleCreate(
     // 2. Create watcher_versions row (v1)
     // Reaction fields (reaction_script/reaction_script_compiled/
     // reaction_input_schema) intentionally live on the watchers row only, not
-    // on watcher_versions — reactions are group-shared and unversioned (see
+    // on watcher_versions. Reactions are group-shared and unversioned (see
     // handleCreateFromVersion, which copies them off watchers, and
     // handleSetReactionScript, which writes them group-wide). Don't add them
     // here: watcher_versions has no such columns.
@@ -360,6 +361,8 @@ export async function handleCreate(
         keying_config: keyingConfig ?? null,
         classifiers: classifiers ?? null,
         reactions_guidance: args.reactions_guidance ?? null,
+        reaction_script: reactionScript,
+        reaction_input_schema: reactionInputSchema ?? null,
       },
     });
   }

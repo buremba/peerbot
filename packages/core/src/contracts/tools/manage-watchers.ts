@@ -373,11 +373,11 @@ export const ManageWatchersSchema = Type.Object({
     })
   ),
 
-  // Fields for action="set_reaction_script"
+  // Fields for action="create" / "set_reaction_script"
   reaction_script: Type.Optional(
     Type.String({
       description:
-        "[create/set_reaction_script] TypeScript source for automated reaction. Create compiles and stores it atomically; set to empty string to remove with set_reaction_script.",
+        "[create/set_reaction_script] TypeScript source for an automated reaction. On create, it is compiled before the watcher and its reaction fields are stored in one transaction. Pass an empty string to set_reaction_script to remove an existing script.",
     })
   ),
 

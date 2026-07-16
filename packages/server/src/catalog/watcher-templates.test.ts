@@ -20,7 +20,6 @@ describe("duplicate merge watcher template", () => {
 		expect(prompt).not.toContain("call manage_entity");
 		expect(reaction).toContain("client.entities.manage");
 		expect(reaction).toContain('action: "merge"');
-		expect(reaction).toContain("watcher_source");
 	});
 
 	it("ships a reaction script that compiles in the watcher runtime", async () => {

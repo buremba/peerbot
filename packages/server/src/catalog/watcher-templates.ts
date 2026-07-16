@@ -135,19 +135,12 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 };
 
 export default async function reaction(ctx, client) {
-	const proposals = Array.isArray(ctx.extracted_data?.merge_proposals)
-		? ctx.extracted_data.merge_proposals
-		: [];
-	for (const proposal of proposals) {
+	for (const proposal of ctx.extracted_data.merge_proposals) {
 		await client.entities.manage({
 			action: "merge",
 			winner_entity_id: proposal.winner_entity_id,
 			duplicate_entity_ids: proposal.duplicate_entity_ids,
 			merge_evidence: proposal.merge_evidence,
-			watcher_source: {
-				watcher_id: ctx.watcher.id,
-				window_id: ctx.window.id,
-			},
 		});
 	}
 }`,

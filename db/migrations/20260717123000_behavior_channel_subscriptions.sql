@@ -8,14 +8,19 @@
 -- fill it. This absorbs the old supervised PR1-data-reconcile.sql into the
 -- automatic migration before the source table disappears.
 WITH real_team AS (
-  SELECT DISTINCT ON (cm.connection_id, cm.channel_id)
+  SELECT DISTINCT ON (cm.organization_id, cm.connection_id, cm.channel_id)
+    cm.organization_id,
     cm.connection_id,
     cm.channel_id,
     cm.team_id
   FROM channel_messages cm
   WHERE cm.platform LIKE 'slack%'
     AND cm.team_id ~ '^T'
-  ORDER BY cm.connection_id, cm.channel_id, cm.occurred_at DESC
+  ORDER BY
+    cm.organization_id,
+    cm.connection_id,
+    cm.channel_id,
+    cm.occurred_at DESC
 )
 UPDATE agent_channel_bindings b
 SET team_id = real_team.team_id
@@ -25,6 +30,7 @@ WHERE b.platform LIKE 'slack%'
   AND b.team_id !~ '^T'
   AND c.id = b.connection_id
   AND c.connector_key = b.platform
+  AND real_team.organization_id = b.organization_id
   AND (
     c.slug = real_team.connection_id
     OR c.slug = 'agentconn-' || real_team.connection_id
@@ -309,6 +315,7 @@ INSERT INTO agent_channel_bindings (
   created_at
 )
 SELECT
+  DISTINCT ON (organization_id, connection_id, channel_id)
   organization_id,
   agent_id,
   platform,
@@ -317,6 +324,12 @@ SELECT
   connection_id,
   model,
   created_at
-FROM behavior_channel_subscriptions;
+FROM behavior_channel_subscriptions
+ORDER BY
+  organization_id,
+  connection_id,
+  channel_id,
+  updated_at DESC,
+  behavior_id DESC;
 
 DROP VIEW behavior_channel_subscriptions;

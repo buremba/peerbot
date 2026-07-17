@@ -1,13 +1,15 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "../../../db/client";
 import { loadMigrationUpSection } from "../../../db/migration-loader";
 import { initWorkspaceProvider } from "../../../workspace";
+import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
 import { cleanupTestDatabase } from "../../setup/test-db";
 import {
 	createTestAgent,
 	createTestConnection,
+	createTestOrganization,
 	seedOwnerContext,
 } from "../../setup/test-fixtures";
 
@@ -25,6 +27,13 @@ function resolveMigrationsDir(): string {
 	throw new Error("Could not locate db/migrations from the test directory");
 }
 
+function loadMigrationDownSection(): string {
+	const source = readFileSync(join(resolveMigrationsDir(), MIGRATION), "utf8");
+	const [, down] = source.split(/^-- migrate:down\s*$/m);
+	if (!down?.trim()) throw new Error(`${MIGRATION} has no down section`);
+	return down;
+}
+
 class Rollback extends Error {}
 
 describe("Behavior channel-subscription migration", () => {
@@ -33,8 +42,15 @@ describe("Behavior channel-subscription migration", () => {
 		await cleanupTestDatabase();
 	});
 
+	afterAll(async () => {
+		await cleanupTestDatabase();
+	});
+
 	it("backfills a legacy binding into one canonical Behavior and drops the state table", async () => {
 		const { org, user } = await seedOwnerContext();
+		const foreignOrg = await createTestOrganization({
+			name: "Foreign migration transcript",
+		});
 		const agent = await createTestAgent({
 			organizationId: org.id,
 			ownerUserId: user.id,
@@ -46,10 +62,7 @@ describe("Behavior channel-subscription migration", () => {
 			created_by: user.id,
 			slug: "slackinst-migration",
 		});
-		const upSection = loadMigrationUpSection(
-			resolveMigrationsDir(),
-			MIGRATION,
-		);
+		const upSection = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
 		const sql = getDb();
 		let captured:
 			| {
@@ -69,9 +82,15 @@ describe("Behavior channel-subscription migration", () => {
 					INSERT INTO channel_messages (
 						organization_id, connection_id, platform, channel_id,
 						platform_message_id, team_id, is_bot, text, occurred_at
-					) VALUES (
+					) VALUES
+					(
 						${org.id}, 'slackinst-migration', 'slack', 'C-MIGRATION',
-						'migration-message', 'T-MIGRATION', false, 'hello', NOW()
+						'migration-message', 'T-MIGRATION', false, 'hello',
+						NOW() - INTERVAL '1 minute'
+					),
+					(
+						${foreignOrg.id}, 'slackinst-migration', 'slack', 'C-MIGRATION',
+						'foreign-message', 'T-FOREIGN', false, 'foreign', NOW()
 					)
 				`;
 				await tx.unsafe(`
@@ -160,5 +179,50 @@ describe("Behavior channel-subscription migration", () => {
 			channelId: "slack:C-MIGRATION",
 			connectionId: connection.id,
 		});
+	});
+
+	it("collapses duplicate channel Behaviors when restoring the unique legacy table", async () => {
+		const { org, user } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+			agentId: "rollback-agent",
+		});
+		const connection = await createTestConnection({
+			organization_id: org.id,
+			connector_key: "slack",
+			created_by: user.id,
+			slug: "slackinst-rollback",
+		});
+		for (let index = 0; index < 2; index++) {
+			await createTestBehaviorSubscription({
+				organizationId: org.id,
+				agentId: agent.agentId,
+				connectionId: connection.id,
+				channelId: "slack:C-ROLLBACK",
+				configuredBy: user.id,
+			});
+		}
+
+		const sql = getDb();
+		let restoredCount = 0;
+		try {
+			await sql.begin(async (tx: typeof sql) => {
+				await tx.unsafe(loadMigrationDownSection());
+				const [row] = await tx<{ count: number }>`
+					SELECT count(*)::integer AS count
+					FROM agent_channel_bindings
+					WHERE organization_id = ${org.id}
+					  AND connection_id = ${connection.id}
+					  AND channel_id = 'slack:C-ROLLBACK'
+				`;
+				restoredCount = row.count;
+				throw new Rollback();
+			});
+		} catch (error) {
+			if (!(error instanceof Rollback)) throw error;
+		}
+
+		expect(restoredCount).toBe(1);
 	});
 });

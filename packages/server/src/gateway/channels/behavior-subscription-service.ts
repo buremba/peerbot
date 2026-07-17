@@ -1,5 +1,5 @@
-import type { BehaviorEventTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
 import { createLogger } from "@lobu/core";
+import type { BehaviorEventTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
 import { type DbClient, getDb, tsTime } from "../../db/client.js";
 import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection.js";
 import { requireOrgId } from "../../lobu/stores/org-context.js";
@@ -27,16 +27,16 @@ interface ChatBehaviorSubscription {
 	createdAt: number;
 }
 
-function rowToSubscription(row: Record<string, unknown>): ChatBehaviorSubscription {
+function rowToSubscription(
+	row: Record<string, unknown>,
+): ChatBehaviorSubscription {
 	return {
 		platform: String(row.platform),
 		channelId: String(row.channel_id),
 		agentId: String(row.agent_id),
 		teamId: typeof row.team_id === "string" ? row.team_id : undefined,
 		organizationId:
-			typeof row.organization_id === "string"
-				? row.organization_id
-				: undefined,
+			typeof row.organization_id === "string" ? row.organization_id : undefined,
 		connectionId:
 			row.connection_id != null ? String(row.connection_id) : undefined,
 		model:
@@ -88,27 +88,30 @@ async function resolveCreatedBy(
 	configuredBy?: string,
 ): Promise<string> {
 	const rows = await sql<{ id: string }>`
-		SELECT u.id
-		FROM "user" u
-		WHERE u.id = ${configuredBy ?? null}
-		  AND EXISTS (
-			SELECT 1 FROM member m
+		SELECT candidate.id
+		FROM (
+			SELECT u.id, 0 AS priority
+			FROM "user" u
+			WHERE u.id = ${configuredBy ?? null}
+			  AND EXISTS (
+				SELECT 1 FROM member m
+				WHERE m."organizationId" = ${organizationId}
+				  AND m."userId" = u.id
+			  )
+			UNION ALL
+			SELECT u.id, 1 AS priority
+			FROM agents a
+			JOIN "user" u ON u.id = a.owner_user_id
+			WHERE a.organization_id = ${organizationId}
+			  AND a.id = ${agentId}
+			  AND a.owner_user_id IS NOT NULL
+			UNION ALL
+			SELECT u.id, 2 AS priority
+			FROM member m
+			JOIN "user" u ON u.id = m."userId"
 			WHERE m."organizationId" = ${organizationId}
-			  AND m."userId" = u.id
-		  )
-		UNION ALL
-		SELECT u.id
-		FROM agents a
-		JOIN "user" u ON u.id = a.owner_user_id
-		WHERE a.organization_id = ${organizationId}
-		  AND a.id = ${agentId}
-		  AND a.owner_user_id IS NOT NULL
-		UNION ALL
-		SELECT u.id
-		FROM member m
-		JOIN "user" u ON u.id = m."userId"
-		WHERE m."organizationId" = ${organizationId}
-		ORDER BY id
+		) candidate
+		ORDER BY candidate.priority, candidate.id
 		LIMIT 1
 	`;
 	const userId = rows[0]?.id;
@@ -191,44 +194,51 @@ export class BehaviorSubscriptionService {
 		if (!realTeamId.trim()) return;
 		const sql = getDb();
 		const slug = runtimeConnectionIdToSlug(connectionId);
-		const rows = await sql<{
-			id: number;
-			triggers: BehaviorEventTrigger[];
-			platform: string;
-		}>`
-			SELECT DISTINCT w.id, w.triggers, c.connector_key AS platform
-			FROM watchers w
-			JOIN behavior_channel_subscriptions s ON s.behavior_id = w.id
-			JOIN connections c ON c.id = s.connection_id
+		const native = nativeChannelId("slack", channelId);
+		await sql`
+			UPDATE watchers w
+			SET triggers = (
+				SELECT jsonb_agg(
+					CASE
+						WHEN trigger->>'kind' = 'event'
+						 AND trigger->>'connector_key' = c.connector_key
+						 AND c.id = CASE
+							WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+								THEN (trigger->>'connection_id')::bigint
+							ELSE NULL
+						 END
+						 AND trigger->'match'->>'channel_id' = ${native}
+						 AND COALESCE(trigger->'match'->>'team_id', '') = ''
+							THEN jsonb_set(
+								trigger,
+								'{match,team_id}',
+								to_jsonb(${realTeamId}::text),
+								true
+							)
+						ELSE trigger
+					END
+					ORDER BY ordinal
+				)
+				FROM jsonb_array_elements(w.triggers)
+					WITH ORDINALITY AS item(trigger, ordinal)
+			),
+			updated_at = current_timestamp
+			FROM connections c
 			WHERE w.organization_id = ${organizationId}
 			  AND w.status = 'active'
 			  AND w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[]
 			  AND c.slug = ${slug}
-			  AND split_part(s.channel_id, ':', 2) = ${nativeChannelId("slack", channelId)}
-			  AND (s.team_id IS NULL OR s.team_id = '')
+			  AND c.connector_key = 'slack'
+			  AND c.deleted_at IS NULL
+			  AND EXISTS (
+				SELECT 1
+				FROM behavior_channel_subscriptions s
+				WHERE s.behavior_id = w.id
+				  AND s.connection_id = c.id
+				  AND split_part(s.channel_id, ':', 2) = ${native}
+				  AND (s.team_id IS NULL OR s.team_id = '')
+			  )
 		`;
-		for (const row of rows) {
-			const triggers = row.triggers.map((trigger) => {
-				if (
-					trigger.kind !== "event" ||
-					trigger.connector_key !== row.platform ||
-					trigger.connection_id == null ||
-					trigger.match?.channel_id !==
-						nativeChannelId(row.platform, channelId)
-				) {
-					return trigger;
-				}
-				return {
-					...trigger,
-					match: { ...trigger.match, team_id: realTeamId },
-				};
-			});
-			await sql`
-				UPDATE watchers
-				SET triggers = ${sql.json(triggers)}, updated_at = current_timestamp
-				WHERE id = ${row.id}
-			`;
-		}
 	}
 
 	async createChatBehavior(
@@ -320,8 +330,10 @@ export class BehaviorSubscriptionService {
 					nextval('watchers_id_seq')::integer AS watcher_id,
 					nextval('watcher_template_versions_id_seq')::integer AS version_id
 			`;
-			const watcherId = ids[0]!.watcher_id;
-			const versionId = ids[0]!.version_id;
+			const allocated = ids[0];
+			if (!allocated) throw new Error("Failed to allocate Behavior IDs.");
+			const watcherId = allocated.watcher_id;
+			const versionId = allocated.version_id;
 			await tx`
 				INSERT INTO watchers (
 					id, name, slug, description, organization_id, entity_ids,
@@ -390,8 +402,16 @@ export class BehaviorSubscriptionService {
 		`;
 		if (rows.length === 0) return false;
 
-		const canonicalChannelId = `${rows[0]!.platform}:${nativeChannelIdFromAny(channelId)}`;
-		if (!(await hasChannelSubscription(sql, String(connectionId), canonicalChannelId))) {
+		const archived = rows[0];
+		if (!archived) return false;
+		const canonicalChannelId = `${archived.platform}:${nativeChannelIdFromAny(channelId)}`;
+		if (
+			!(await hasChannelSubscription(
+				sql,
+				String(connectionId),
+				canonicalChannelId,
+			))
+		) {
 			await softDeleteStreamingChannelFeed({
 				connectionId: String(connectionId),
 				channelKey: canonicalChannelId,
@@ -443,7 +463,9 @@ export class BehaviorSubscriptionService {
 			RETURNING s.connection_id::text AS connection_id, s.channel_id
 		`;
 		for (const row of rows) {
-			if (!(await hasChannelSubscription(sql, row.connection_id, row.channel_id))) {
+			if (
+				!(await hasChannelSubscription(sql, row.connection_id, row.channel_id))
+			) {
 				await softDeleteStreamingChannelFeed({
 					connectionId: row.connection_id,
 					channelKey: row.channel_id,

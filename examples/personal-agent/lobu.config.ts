@@ -4,6 +4,8 @@ import {
   defineConfig,
   defineConnection,
   defineEntityType,
+  defineRelationshipType,
+  defineWatcher,
 } from "@lobu/cli/config";
 import type GoogleTakeoutConnector from "./google-takeout.connector.ts";
 import type InstagramTakeoutConnector from "./instagram-takeout.connector.ts";
@@ -19,7 +21,7 @@ const personalAgent = defineAgent({
   dir: ".",
   name: "personal-agent",
   description:
-    "A personal agent that tracks finances, people, companies, subscriptions, trips, and topics across the user's own data.",
+    "A personal agent that tracks finances, people, companies, tasks, subscriptions, and trips across the user's own data.",
   // No cloud provider key: runs on the local/Mac-app device worker and inherits
   // the org's default provider. No ANTHROPIC_API_KEY needed.
   //
@@ -42,22 +44,100 @@ const personalAgent = defineAgent({
 const person = defineEntityType({
   key: "person",
   name: "Person",
-  description: "Team member, contact, or stakeholder",
+  description:
+    "A real-world person linked across connectors via identities (x_user_id, x_handle, wa_jid, phone, email, linkedin_slug, …). Metadata holds connector traits and optional human notes — not a CRM form.",
   metadata: { icon: "user", color: "#8B5CF6" },
+  // Trait names must match connector EventAttributionRule.traits keys.
+  // Identity join keys live on entity identities/aliases, not as required props.
   properties: {
-    role: { type: "string" },
-    type: {
+    // X (packages/connectors x.ts + twitter takeout)
+    x_handle: {
       type: "string",
-      enum: ["employee", "client_contact", "partner", "external"],
+      description:
+        "X/Twitter @handle without @. Mutable secondary identity; primary join is x_user_id.",
+      "x-table-label": "X",
+      "x-table-column": true,
     },
-    email: { type: "string" },
-    company: { type: "string" },
-    session_prefix: { type: "string" },
+    x_display_name: {
+      type: "string",
+      description: "Display name from X profile/posts.",
+    },
+    last_x_interaction_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        "Most recent X post/like/bookmark/reply involving this person.",
+      "x-table-label": "Last X",
+      "x-table-column": true,
+    },
+    last_x_dm_at: {
+      type: "string",
+      format: "date-time",
+      description: "Most recent X DM with this person.",
+    },
+    // WhatsApp
+    push_name: {
+      type: "string",
+      description: "WhatsApp push name.",
+      "x-table-label": "WA name",
+      "x-table-column": true,
+    },
+    last_seen_at: {
+      type: "string",
+      format: "date-time",
+      description: "Most recent WhatsApp message time for this contact.",
+    },
+    // LinkedIn
+    linkedin_url: {
+      type: "string",
+      description:
+        "LinkedIn profile URL (display trait; identity is linkedin_slug).",
+    },
+    position: {
+      type: "string",
+      description: "LinkedIn headline/position.",
+    },
+    company: {
+      type: "string",
+      description: "Company / employer (LinkedIn connection + manual).",
+      "x-table-label": "Company",
+      "x-table-column": true,
+    },
+    last_linkedin_message_at: {
+      type: "string",
+      format: "date-time",
+      description: "Most recent LinkedIn message with this person.",
+    },
+    // Instagram takeout
+    ig_username: {
+      type: "string",
+      description: "Instagram username.",
+    },
+    instagram_profile_url: {
+      type: "string",
+      description: "Instagram profile URL.",
+    },
+    // Gmail (match-only; traits accrete when identity already exists)
+    from_name: {
+      type: "string",
+      description: "Name as seen on inbound email.",
+    },
+    last_email_at: {
+      type: "string",
+      format: "date-time",
+      description: "Most recent email from/to this address.",
+    },
+    // Optional human-curated (email is also an identity namespace)
+    email: {
+      type: "string",
+      description: "Email address (also an identity namespace).",
+    },
     first_name: { type: "string" },
     last_name: { type: "string" },
-    linkedin_url: { type: "string" },
-    twitter_handle: { type: "string" },
-    instagram_handle: { type: "string" },
+    role: {
+      type: "string",
+      description: "Freeform role or relationship note (not a CRM enum).",
+    },
   },
   // WhatsApp + X identity metrics. Declared here so `apply` preserves them
   // rather than pruning — persons alias connector identities (wa_jid, x_handle).
@@ -116,10 +196,21 @@ const person = defineEntityType({
 const company = defineEntityType({
   key: "company",
   name: "Company",
-  description: "Portfolio company or deal pipeline company",
+  description:
+    "An organization the user cares about — own company, employer, customer, partner, or portfolio company. Link people via works_at.",
   metadata: { icon: "building", color: "#2563eb" },
   properties: {
-    mrr: { type: "number", description: "Monthly recurring revenue in USD" },
+    // Core identity / positioning
+    domain: { type: "string", description: "Primary web domain" },
+    one_liner: { type: "string", description: "One-line description" },
+    location: { type: "string" },
+    market: { type: "string", description: "Primary market vertical" },
+    main_market: { type: "string" },
+    platform_type: { type: "string" },
+    linkedin_url: { type: "string", format: "uri" },
+    founding_year: { type: "integer", maximum: 2030, minimum: 1900 },
+    team_size: { type: "integer", minimum: 0 },
+    // Optional growth / funding fields (portfolio / competitive tracking)
     stage: {
       type: "string",
       enum: [
@@ -131,22 +222,17 @@ const company = defineEntityType({
         "growth",
         "public",
       ],
-      description: "Current funding stage",
+      description: "Current funding stage when relevant",
     },
-    market: { type: "string", description: "Primary market vertical" },
-    thesis: { type: "string", description: "Investment thesis notes" },
+    mrr: { type: "number", description: "Monthly recurring revenue in USD" },
     revenue: { type: "number", description: "Annual revenue in USD" },
-    location: { type: "string" },
-    one_liner: { type: "string", description: "One-line pitch" },
-    team_size: { type: "integer", minimum: 0 },
     valuation: { type: "number", description: "Last known valuation in USD" },
     growth_rate: { type: "number", description: "YoY growth rate as decimal" },
-    linkedin_url: { type: "string", format: "uri" },
-    founding_year: { type: "integer", maximum: 2030, minimum: 1900 },
     funding_raised: {
       type: "number",
       description: "Total funding raised in USD",
     },
+    thesis: { type: "string", description: "Investment or relationship notes" },
     traction_score: {
       type: "number",
       maximum: 100,
@@ -164,6 +250,88 @@ const company = defineEntityType({
         app_store_growth: { type: "number" },
         review_sentiment: { type: "number" },
       },
+    },
+  },
+});
+
+// System chat-surface unit (Slack etc.). Declared so prune does not attempt to
+// delete the org's channel type while conversation ACL still depends on it.
+const channel = defineEntityType({
+  key: "channel",
+  name: "Channel",
+  description:
+    "A chat channel (Slack channel, etc.) — the unit of conversation access control",
+});
+
+// Collaborative actions for Burak + personal-agent (hourly-task-collaborator
+// keys + merges on `action`). Schema is owned here — the watcher does not
+// declare its own extraction schema.
+const task = defineEntityType({
+  key: "task",
+  name: "Task",
+  description:
+    "An actionable item collaboratively managed by Burak and his personal agent.",
+  metadata: { icon: "check-square", color: "#10B981" },
+  required: ["action", "status"],
+  properties: {
+    action: {
+      type: "string",
+      minLength: 1,
+      description: "Concrete action to perform",
+      "x-table-label": "Action",
+      "x-table-column": true,
+    },
+    status: {
+      type: "string",
+      enum: ["backlog", "active", "done", "dismissed"],
+      description: "Collaborative task state",
+      "x-table-label": "Status",
+      "x-table-column": true,
+    },
+    owner: {
+      type: "string",
+      description: "Person or agent responsible",
+      "x-table-label": "Owner",
+      "x-table-column": true,
+    },
+    priority: {
+      type: "string",
+      enum: ["high", "medium", "low"],
+      description: "Execution priority",
+      "x-table-label": "Priority",
+      "x-table-column": true,
+    },
+    due_date: {
+      type: "string",
+      format: "date-time",
+      description: "Due time when known",
+      "x-table-label": "Due",
+      "x-table-column": true,
+    },
+    source: {
+      type: "string",
+      description: "Where this task came from",
+    },
+    rationale: {
+      type: "string",
+      description: "Why this task is worth doing",
+    },
+    source_event_id: {
+      type: "string",
+      description: "Originating Lobu event id when applicable",
+    },
+    // Written by the entity-typed watcher keying pipeline
+    stable_key: {
+      type: "string",
+      description: "Stable dedupe key from the task watcher",
+    },
+    watcher_id: {
+      type: "string",
+      description: "Watcher that last wrote this task",
+    },
+    window_id: {
+      type: "string",
+      description: "Watcher window that produced this task",
     },
   },
 });
@@ -445,17 +613,6 @@ const subscription = defineEntityType({
   },
 });
 
-const topic = defineEntityType({
-  key: "topic",
-  name: "Topic",
-  description:
-    "Generic topic or category for organizing content and connections",
-  metadata: { icon: "📚", color: "#8B5CF6" },
-  properties: {
-    description: { type: "string" },
-  },
-});
-
 // Trips are stored from explicit travel evidence such as passport stamps.
 // Related transaction/photo windows are attached through event sets below.
 const trip = defineEntityType({
@@ -727,7 +884,81 @@ const midasConnection = defineConnection({
   feeds: [{ feed: "assets", config: {} }],
 });
 
+// ── Relationships (only those the personal agent uses) ──────────
+// Tax-graph relationship types (account_contains, for_tax_year, …) belong in
+// examples/personal-finance — not here. With prune:true they are removed from
+// buremba if present.
+
+const worksAt = defineRelationshipType({
+  key: "works_at",
+  name: "Works At",
+  description: "Person employed by / associated with a company",
+  rules: [{ source: person, target: company }],
+});
+
+const memberOf = defineRelationshipType({
+  key: "member_of",
+  name: "Member of",
+  description: "A person is a member of an organization or channel",
+});
+
+const mentions = defineRelationshipType({
+  key: "mentions",
+  name: "Mentions",
+  description: "Auto-discovered content reference",
+});
+
+// ── Watchers (must be declared under prune or apply deletes them) ─
+
+const hourlyTaskCollaborator = defineWatcher({
+  agent: personalAgent,
+  slug: "hourly-task-collaborator",
+  name: "Hourly Task Collaborator",
+  schedule: "0 * * * *",
+  notification: { channel: "both", priority: "normal" },
+  minCooldownSeconds: 300,
+  keyingConfig: {
+    entityType: "task",
+    entityPath: "tasks",
+    keyFields: ["action"],
+    keyOutputField: "task_key",
+  },
+  sources: {
+    recent_signals:
+      "SELECT id, occurred_at, title, payload_text, semantic_type, connector_key, metadata FROM events WHERE semantic_type IN ('message','thread','reminder','calendar_event','note') ORDER BY occurred_at DESC LIMIT 200",
+    task_list:
+      "SELECT NULL::bigint AS id, t.name, t.metadata, t.updated_at FROM entities t WHERE t.entity_type = 'task' AND t.deleted_at IS NULL AND (COALESCE(t.metadata->>'status', 'backlog') NOT IN ('done', 'dismissed') OR t.updated_at > now() - interval '14 days') ORDER BY t.updated_at DESC LIMIT 100",
+  },
+  prompt:
+    'Review the current hourly window and the collaborative task list in {{content}}. The task_list source includes recently closed tasks (metadata status done or dismissed) for reference so you know what is already finished. Return a JSON object with a tasks array matching the provided task schema. Extract only concrete actions Burak or his personal agent should take; ignore advertisements, newsletters, automated notices, passive information, and vague ideas. Use concise imperative wording in action so equivalent requests deduplicate across runs. Preserve existing tasks instead of restating them. Never re-emit, reopen, or recreate any task whose status is done or dismissed in the task list, even if the originating message still appears in recent signals. Set status to backlog unless there is clear evidence work has started. Assign owner "Burak" unless the action can be safely completed by the personal agent. Use ISO-8601 due_date only when a real deadline is present. Include source_event_id and source when available, and a short rationale. Produce at most 12 tasks, ordered by priority.',
+});
+
+const duplicateEntityResolution = defineWatcher({
+  agent: personalAgent,
+  slug: "duplicate-entity-resolution-real-v3-final",
+  name: "Duplicate entity resolution — real contacts",
+  tags: ["identity", "deduplication", "world-model"],
+  notification: { channel: "canvas", priority: "normal" },
+  sources: {
+    // context-only: duplicate candidates for analysis (not window body)
+    people: {
+      context: true,
+      query:
+        "SELECT * FROM (SELECT id AS id, name AS name, name_key AS name_key, match_reason AS match_reason, metadata AS metadata, created_at AS created_at, updated_at AS updated_at\nFROM (\n  SELECT id, name, metadata, created_at, updated_at,\n    regexp_replace(lower(trim(name)),'[^a-z0-9]','','g') AS name_key,\n    nullif(lower(trim(metadata->>'email')),'') AS em,\n    nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'') AS ph,\n    COUNT(*) OVER (PARTITION BY regexp_replace(lower(trim(name)),'[^a-z0-9]','','g')) AS name_grp,\n    COUNT(*) OVER (PARTITION BY nullif(lower(trim(metadata->>'email')),'')) AS email_grp,\n    COUNT(*) OVER (PARTITION BY nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'')) AS phone_grp,\n    CASE\n      WHEN nullif(lower(trim(metadata->>'email')),'') IS NOT NULL\n           AND COUNT(*) OVER (PARTITION BY nullif(lower(trim(metadata->>'email')),'')) > 1 THEN 'email:' || lower(trim(metadata->>'email'))\n      WHEN length(nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'')) >= 7\n           AND COUNT(*) OVER (PARTITION BY nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'')) > 1 THEN 'phone:' || regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g')\n      ELSE 'name:' || regexp_replace(lower(trim(name)),'[^a-z0-9]','','g')\n    END AS match_reason\n  FROM entities\n  WHERE entity_type='person' AND deleted_at IS NULL AND merged_into IS NULL\n    AND trim(coalesce(name,'')) <> ''\n) s\nWHERE (s.name_grp > 1 AND s.name_key <> '')\n   OR (s.em IS NOT NULL AND s.email_grp > 1)\n   OR (s.ph IS NOT NULL AND length(s.ph) >= 7 AND s.phone_grp > 1)\nORDER BY s.match_reason, s.id\nLIMIT 200) real_candidates WHERE COALESCE(metadata->>'email','') NOT LIKE '%@example.test'",
+    },
+  },
+  reactionsGuidance:
+    "Explain uncertainty; never decide identity from names, aliases, or handles. The server-side entity type policy is the only merge authority.",
+  prompt:
+    "Review every row in sources.people. Explain likely duplicate groups in analysis_summary and put name-only, alias-only, handle-only, oversized, or otherwise uncertain groups in uncertain_groups with why. Do not call entity tools or emit backlog tasks. After analysis, the deterministic reaction submits only candidate IDs to the server. The person entity type's x-lobu-resolution policy decides which normalized identities auto-merge and which require human review. Without that extension, normalized email and phone matches remain review-only and never auto-merge.\n",
+});
+
 export default defineConfig({
+  // Source of truth for buremba definitions. Deletes org-owned entity /
+  // relationship types and watchers absent from this config (including
+  // UI-created ones). Data rows, connections, auth profiles, and agents are
+  // never pruned. Tax-graph types belong in examples/personal-finance only.
+  prune: true,
   connectors: [
     connectorFromFile<typeof MidasConnector>("./midas.connector.ts"),
     connectorFromFile<typeof RevolutTransactionsConnector>(
@@ -751,9 +982,21 @@ export default defineConfig({
   org: "buremba",
   orgName: "Buremba Org",
   orgDescription:
-    "Personal agent tracking finances, people, companies, subscriptions, trips, and topics.",
+    "Personal agent tracking finances, people, companies, tasks, subscriptions, and trips.",
   agents: [personalAgent],
-  entities: [person, company, asset, subscription, topic, trip, goal, learning],
+  entities: [
+    person,
+    company,
+    task,
+    channel,
+    asset,
+    subscription,
+    trip,
+    goal,
+    learning,
+  ],
+  relationships: [worksAt, memberOf, mentions],
+  watchers: [hourlyTaskCollaborator, duplicateEntityResolution],
   connections: [
     midasConnection,
     revolutConnection,

@@ -272,6 +272,9 @@ async function withWatcherGroupLock<T>(
 
   const reserved = await getLockDb().reserve();
   try {
+    // Session GUC (not a startup parameter — poolers reject lock_timeout on
+    // connect). Bounds advisory-lock wait: 55P03 → coded 409 below.
+    await reserved`SELECT set_config('lock_timeout', '30s', false)`;
     try {
       await reserved`SELECT pg_advisory_lock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
     } catch (err) {

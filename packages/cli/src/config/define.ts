@@ -396,8 +396,12 @@ export interface Behavior {
     keyOutputField?: string;
     [k: string]: unknown;
   };
-  /** Named SQL data sources (`name` -> query). */
-  sources?: Record<string, string>;
+  /**
+   * Named SQL data sources. Value is either a query string or
+   * `{ query, context? }` — `context: true` marks a context-only source
+   * (bound into the prompt template but not the watcher window body).
+   */
+  sources?: Record<string, string | { query: string; context?: boolean }>;
   notification?: BehaviorNotification;
   minCooldownSeconds?: number;
   tags?: string[];

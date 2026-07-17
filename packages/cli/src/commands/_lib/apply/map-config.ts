@@ -584,7 +584,14 @@ function normalizeKeyingConfig(
 function mapBehavior(behavior: Behavior): DesiredWatcher {
   const watcher = behavior;
   const sources = watcher.sources
-    ? Object.entries(watcher.sources).map(([name, query]) => ({ name, query }))
+    ? Object.entries(watcher.sources).map(([name, value]) => {
+        if (typeof value === "string") return { name, query: value };
+        return {
+          name,
+          query: value.query,
+          ...(value.context ? { context: true as const } : {}),
+        };
+      })
     : undefined;
   let hasSchedule = false;
   const triggers = watcher.triggers?.map((trigger) => {

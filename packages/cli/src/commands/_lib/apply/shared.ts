@@ -29,6 +29,8 @@ export interface RelationshipRule {
 export interface BehaviorSource {
   name: string;
   query: string;
+  /** When true, source is context-only (prompt template), not window body. */
+  context?: boolean;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

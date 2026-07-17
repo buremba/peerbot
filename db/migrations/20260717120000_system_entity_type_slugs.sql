@@ -19,6 +19,9 @@ SET
   name = 'Resource',
   description = 'ACL-gated access unit (Slack channel, GitHub repository, …). Graph anchor only — empty metadata schema.',
   icon = COALESCE(NULLIF(et.icon, ''), 'shield'),
+  -- Anchor has no property bag / event_kinds (matches ensureResourceEntityType).
+  metadata_schema = NULL,
+  event_kinds = NULL,
   updated_at = current_timestamp
 WHERE et.deleted_at IS NULL
   AND et.slug IN ('channel', 'repo', '$channel', '$repo')

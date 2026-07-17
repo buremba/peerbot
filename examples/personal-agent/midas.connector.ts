@@ -41,9 +41,9 @@ export default class MidasConnector extends ConnectorRuntime {
                 shares: { type: "number" },
                 price: { type: "number" },
                 value: { type: "number" },
-                currency: { type: "string" }
-              }
-            }
+                currency: { type: "string" },
+              },
+            },
           },
           balance_raw: {
             description: "Midas Total Balance",
@@ -52,12 +52,12 @@ export default class MidasConnector extends ConnectorRuntime {
               properties: {
                 balance: { type: "number" },
                 currency: { type: "string" },
-                total_try: { type: "number" }
-              }
-            }
-          }
-        }
-      }
+                total_try: { type: "number" },
+              },
+            },
+          },
+        },
+      },
     },
     optionsSchema: { type: "object", properties: {} },
   };
@@ -65,7 +65,9 @@ export default class MidasConnector extends ConnectorRuntime {
   async sync(ctx: SyncContext): Promise<SyncResult> {
     const dispatcher = ctx.channel as unknown as ChromeActionDispatcher;
     if (!dispatcher || typeof dispatcher.dispatch !== "function") {
-      throw new Error("MidasConnector requires a ChromeActionDispatcher (Owletto extension)");
+      throw new Error(
+        "MidasConnector requires a ChromeActionDispatcher (Owletto extension)"
+      );
     }
 
     if (ctx.feedKey !== "assets") {
@@ -77,11 +79,11 @@ export default class MidasConnector extends ConnectorRuntime {
       persistent: true,
       window_focused: false,
       wait_for_load: false,
-      allowed_origins: ["getmidas.com", "*.getmidas.com"]
+      allowed_origins: ["getmidas.com", "*.getmidas.com"],
     });
-    
+
     // Wait a bit to ensure it loads
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise((r) => setTimeout(r, 5000));
 
     const setup = await dispatcher.dispatch<{ value?: any }>("evaluate", {
       tab_id: nav.tab_id,
@@ -166,11 +168,13 @@ export default class MidasConnector extends ConnectorRuntime {
 
         return { total_usd: parseCurrency(totalUsd), total_try: parseCurrency(totalTry), holdings };
       })()`,
-      allowed_origins: ["getmidas.com", "*.getmidas.com"]
+      allowed_origins: ["getmidas.com", "*.getmidas.com"],
     });
 
     if (!setup.value || !setup.value.holdings) {
-      throw new Error("Failed to parse Midas dashboard. Make sure you are logged in.");
+      throw new Error(
+        "Failed to parse Midas dashboard. Make sure you are logged in."
+      );
     }
 
     const data = setup.value;
@@ -182,7 +186,7 @@ export default class MidasConnector extends ConnectorRuntime {
         title: "Midas Holding: " + h.symbol,
         occurred_at: new Date().toISOString(),
         semantic_type: "financial_asset",
-        metadata: h
+        metadata: h,
       });
     }
 
@@ -191,13 +195,20 @@ export default class MidasConnector extends ConnectorRuntime {
       title: "Midas Balance",
       occurred_at: new Date().toISOString(),
       semantic_type: "balance_raw",
-      metadata: { balance: data.total_usd, currency: "USD", total_try: data.total_try }
+      metadata: {
+        balance: data.total_usd,
+        currency: "USD",
+        total_try: data.total_try,
+      },
     });
 
     return {
       events,
-      checkpoint: { last_run: new Date().toISOString() } as unknown as Record<string, unknown>,
-      metadata: { items_found: events.length }
+      checkpoint: { last_run: new Date().toISOString() } as unknown as Record<
+        string,
+        unknown
+      >,
+      metadata: { items_found: events.length },
     };
   }
 

@@ -610,7 +610,7 @@ const revolutConnection = defineConnection({
   name: "Revolut",
   feeds: [
     { feed: "transactions", config: { max_scrolls: 20 } },
-    { feed: "balances", config: {} }
+    { feed: "balances", config: {} },
   ],
 });
 
@@ -724,9 +724,7 @@ const midasConnection = defineConnection({
   slug: "midas",
   connector: "midas",
   name: "Midas",
-  feeds: [
-    { feed: "assets", config: {} }
-  ],
+  feeds: [{ feed: "assets", config: {} }],
 });
 
 export default defineConfig({

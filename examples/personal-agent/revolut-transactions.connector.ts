@@ -812,11 +812,11 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
               properties: {
                 balance: { type: "number" },
                 currency: { type: "string" },
-                description: { type: "string" }
-              }
-            }
-          }
-        }
+                description: { type: "string" },
+              },
+            },
+          },
+        },
       },
     },
     optionsSchema: configSchema,
@@ -830,19 +830,22 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
       persistent: true,
       window_focused: false,
       wait_for_load: false,
-      allowed_origins: ["revolut.com", "*.revolut.com"]
+      allowed_origins: ["revolut.com", "*.revolut.com"],
     });
     const tabId = nav.tab_id;
 
     // Check auth like we do for transactions
-    const setup = await dispatcher.dispatch<{ value?: { authed?: boolean } }>("evaluate", {
-      tab_id: tabId,
-      expression: `(async () => {
+    const setup = await dispatcher.dispatch<{ value?: { authed?: boolean } }>(
+      "evaluate",
+      {
+        tab_id: tabId,
+        expression: `(async () => {
         if (location.host.indexOf("sso.") >= 0 || location.pathname.indexOf("signin") >= 0) return { authed: false };
         return { authed: true };
       })()`,
-      allowed_origins: ["revolut.com", "*.revolut.com"]
-    });
+        allowed_origins: ["revolut.com", "*.revolut.com"],
+      }
+    );
 
     if (!setup.value?.authed) {
       await notifyRevolutAuthWall(dispatcher, "https://app.revolut.com/home");
@@ -858,20 +861,20 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
           await new Promise(r => setTimeout(r, 1000));
         }
       })()`,
-      allowed_origins: ["revolut.com", "*.revolut.com"]
+      allowed_origins: ["revolut.com", "*.revolut.com"],
     });
 
     const homeText = await dispatcher.dispatch<{ value: string }>("evaluate", {
       tab_id: tabId,
       expression: "document.body.innerText",
-      allowed_origins: ["revolut.com", "*.revolut.com"]
+      allowed_origins: ["revolut.com", "*.revolut.com"],
     });
 
     await dispatcher.dispatch("navigate", {
       tab_id: tabId,
       url: "https://app.revolut.com/invest",
       wait_for_load: false,
-      allowed_origins: ["revolut.com", "*.revolut.com"]
+      allowed_origins: ["revolut.com", "*.revolut.com"],
     });
 
     await dispatcher.dispatch("evaluate", {
@@ -882,14 +885,17 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
           await new Promise(r => setTimeout(r, 1000));
         }
       })()`,
-      allowed_origins: ["revolut.com", "*.revolut.com"]
+      allowed_origins: ["revolut.com", "*.revolut.com"],
     });
 
-    const investText = await dispatcher.dispatch<{ value: string }>("evaluate", {
-      tab_id: tabId,
-      expression: "document.body.innerText",
-      allowed_origins: ["revolut.com", "*.revolut.com"]
-    });
+    const investText = await dispatcher.dispatch<{ value: string }>(
+      "evaluate",
+      {
+        tab_id: tabId,
+        expression: "document.body.innerText",
+        allowed_origins: ["revolut.com", "*.revolut.com"],
+      }
+    );
 
     return {
       events: [
@@ -897,12 +903,16 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
           origin_id: "revolut-balances-" + Date.now(),
           occurred_at: new Date(),
           semantic_type: "balance_raw",
-          payload_text: "HOME:\\n" + (homeText.value || "") + "\\n\\nINVEST:\\n" + (investText.value || ""),
-          metadata: {}
-        }
+          payload_text:
+            "HOME:\\n" +
+            (homeText.value || "") +
+            "\\n\\nINVEST:\\n" +
+            (investText.value || ""),
+          metadata: {},
+        },
       ],
       checkpoint: {},
-      metadata: { backend: "extension-dom" }
+      metadata: { backend: "extension-dom" },
     };
   }
 

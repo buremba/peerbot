@@ -7,14 +7,29 @@
  *
  * Adding Linear/Jira/Drive = a connector that exports an `AclSourceDef` +
  * appending it here. No new gate code, no new engine code.
+ *
+ * All sources share entity type `$resource` ({@link ACL_RESOURCE_TYPE_SLUG}).
  */
 
-import type { AclSourceDef, ChannelReadIdentity } from '@lobu/connector-sdk';
+import {
+  ACL_RESOURCE_TYPE_SLUG,
+  type AclSourceDef,
+  type ChannelReadIdentity,
+} from '@lobu/connector-sdk';
 import { githubAclSource } from '@lobu/connectors/github-identity';
 import { slackAclSource, slackChannelReadIdentity } from '@lobu/connectors/slack-identity';
 
 /** Every registered ACL source (contributed by its connector package). */
 export const ACL_SOURCES: AclSourceDef[] = [slackAclSource, githubAclSource];
+
+// Hard invariant: one ACL entity type for every source (identity namespace differs).
+for (const source of ACL_SOURCES) {
+  if (source.resourceType.slug !== ACL_RESOURCE_TYPE_SLUG) {
+    throw new Error(
+      `ACL source '${source.key}' must use resource type '${ACL_RESOURCE_TYPE_SLUG}', got '${source.resourceType.slug}'`,
+    );
+  }
+}
 
 const ACL_SOURCE_BY_KEY = new Map<string, AclSourceDef>(ACL_SOURCES.map((s) => [s.key, s]));
 
@@ -27,15 +42,12 @@ export function aclSourceFor(key: string): AclSourceDef | null {
   return ACL_SOURCE_BY_KEY.get(key) ?? null;
 }
 
-/** Resource entity-type slugs that the read gate treats as access-controlled.
- * Validated to simple identifiers so they can be inlined as SQL literals. */
-export const RESOURCE_TYPE_SLUGS: string[] = ACL_SOURCES.map((s) => {
-  const slug = s.resourceType.slug;
-  if (!/^[a-z][a-z0-9_]*$/.test(slug)) {
-    throw new Error(`Invalid ACL resource type slug (must be a simple identifier): ${slug}`);
-  }
-  return slug;
-});
+/**
+ * Resource entity-type slugs the read gate treats as access-controlled.
+ * Always `$resource` only — kept as an array so the SQL `IN (...)` compiler
+ * stays generic if a second system type is ever needed.
+ */
+export const RESOURCE_TYPE_SLUGS: readonly string[] = [ACL_RESOURCE_TYPE_SLUG];
 
 /**
  * Chat platforms whose per-channel read gate is enforced, keyed by `platform`.

@@ -278,7 +278,7 @@ describe('github repo visibility gate (e2e via search_memory content)', () => {
     // connector emits → server resolves: metadata.github_repo_full_name resolves
     // to the SAME repo entity the graph built (one entity, no forked duplicate).
     const githubRepoLinkRule = {
-      entityType: 'repo',
+      entityType: '$resource',
       autoCreate: true,
       titlePath: 'metadata.github_repo_full_name',
       identities: [

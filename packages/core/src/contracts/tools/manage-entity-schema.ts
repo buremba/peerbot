@@ -251,6 +251,11 @@ export const EntityTypeRowSchema = Type.Object({
   metrics_config: Type.Optional(
     Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()])
   ),
+  /**
+   * Platform-owned type when true (slug starts with `$`: $member, $resource).
+   * Derived from slug — not a DB column, not created_by. true → hidden from
+   * rail, never pruned. Users cannot create `$…` types.
+   */
   is_system: Type.Boolean(),
   created_by: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   organization_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),

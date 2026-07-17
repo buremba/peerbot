@@ -59,7 +59,7 @@ describe("streaming feed as a watcher @feed source", () => {
       DELETE FROM entities
       WHERE organization_id = ${orgId}
         AND (metadata->>'source' = 'watcher_promotion' OR entity_type_id IN (
-          SELECT id FROM entity_types WHERE organization_id = ${orgId} AND slug IN ('channel', '$member')
+          SELECT id FROM entity_types WHERE organization_id = ${orgId} AND slug IN ('$resource', '$member')
         ))
     `;
   });

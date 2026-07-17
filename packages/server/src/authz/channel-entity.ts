@@ -13,15 +13,16 @@
  * looked up in the channel-read-identity registry; this file names no connector.
  */
 
+import { ACL_RESOURCE_TYPE_SLUG } from '@lobu/connector-sdk';
 import { type DbClient, getDb } from '../db/client.js';
 import { stripPlatformPrefix } from '../gateway/channels/bound-channels.js';
 import { channelReadIdentityFor } from './sources.js';
 
 /**
- * Resolve the `channel` resource-entity id for a (platform, team, channel) in an
- * org, or null when the platform has no enforced channel gate or the channel has
- * no graphed entity (never synced). Returns null rather than throwing — a missing
- * entity must NOT block the save; the memory is saved without the channel stamp
+ * Resolve the `$resource` entity id for a (platform, team, channel) in an org,
+ * or null when the platform has no enforced channel gate or the channel has no
+ * graphed entity (never synced). Returns null rather than throwing — a missing
+ * entity must NOT block the save; the memory is saved without the resource stamp
  * (falls back to the caller's existing org/$member scoping).
  */
 export async function resolveChannelEntityId(
@@ -35,7 +36,7 @@ export async function resolveChannelEntityId(
   const identity = channelReadIdentityFor(platform);
   if (!identity) return null;
   // The worker-token / sourceContext channelId arrives platform-PREFIXED
-  // (`slack:C0ENG`) — the Chat SDK's canonical form — while the graphed channel
+  // (`slack:C0ENG`) — the Chat SDK's canonical form — while the graphed resource
   // identity is the BARE team-scoped id (`T…:C…`). Strip the prefix so the key
   // matches; without this the lookup always misses and the stamp silently never
   // fires (channel memory would leak org-wide).
@@ -52,7 +53,7 @@ export async function resolveChannelEntityId(
     JOIN entity_types et
       ON et.id = e.entity_type_id
      AND et.organization_id = e.organization_id
-     AND et.slug = 'channel'
+     AND et.slug = ${ACL_RESOURCE_TYPE_SLUG}
     WHERE ei.organization_id = ${organizationId}
       AND ei.namespace = ${identity.channelNamespace}
       AND ei.identifier = ${key}

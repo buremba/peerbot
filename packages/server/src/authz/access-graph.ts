@@ -79,7 +79,8 @@ async function resolveOrgCreator(orgId: string): Promise<string | null> {
   return rows.length > 0 ? rows[0].userId : null;
 }
 
-/** Find-or-create the org-scoped resource entity type (reuse, no migration). */
+/** Find-or-create the org-scoped `$resource` entity type (reuse, no migration).
+ * All ACL sources share this one type; identity namespace distinguishes them. */
 export async function ensureResourceEntityType(orgId: string, type: AccessResourceType): Promise<void> {
   const sql = getDb();
   await sql`

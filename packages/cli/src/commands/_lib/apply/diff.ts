@@ -1,4 +1,4 @@
-import type { AgentSettings } from "@lobu/core";
+import { isSystemEntityType, type AgentSettings } from "@lobu/core";
 import type {
   InferenceCapabilityBlock,
   InferenceModality,
@@ -995,12 +995,7 @@ export function computeDiff(
     orgId === undefined ||
     definitionOrgId === undefined ||
     definitionOrgId === orgId;
-  // `$`-prefixed definitions (e.g. the per-org `$member` entity type) are
-  // SYSTEM-managed — the server provisions them and rejects `$` slugs in
-  // create, so they can never appear in a user's config. They must NEVER be
-  // pruned (deleting `$member` corrupts the org; and because the delete is
-  // refused while member rows exist, an un-exempted prune HALTS every apply).
-  // They only ever surface as ignorable drift, in both prune and non-prune.
+  // Platform-owned entity types must NEVER be pruned (`$` slug prefix).
   const isSystemSlug = (slug: string): boolean => slug.startsWith("$");
 
   if (only !== "memory") {
@@ -1095,10 +1090,10 @@ export function computeDiff(
       if (!desiredEntitySlugs.has(remoteEntity.slug)) {
         // Code-managed: delete. The server refuses an entity-type delete while
         // instances exist (the data is exempt), surfacing a clear error.
-        // System (`$`) types are never user-declared → never pruned.
+        // `$…` system types are never pruned.
         rows.push({
           kind: "entity-type",
-          verb: prune && !isSystemSlug(remoteEntity.slug) ? "delete" : "drift",
+          verb: prune && !isSystemEntityType(remoteEntity) ? "delete" : "drift",
           id: remoteEntity.slug,
           remote: remoteEntity,
         });

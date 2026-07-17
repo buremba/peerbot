@@ -50,7 +50,7 @@ describe('slackChannelKey', () => {
 describe('slackAclSource', () => {
   it('declares the channel resource keyed on slack_channel_id with slack_user_id members', () => {
     expect(slackAclSource.key).toBe('slack');
-    expect(slackAclSource.resourceType.slug).toBe('channel');
+    expect(slackAclSource.resourceType.slug).toBe('$resource');
     expect(slackAclSource.resourceType.namespace).toBe(SLACK_IDENTITY.CHANNEL_ID);
     expect(slackAclSource.memberIdentities).toEqual([
       { namespace: SLACK_IDENTITY.USER_ID, primary: true },

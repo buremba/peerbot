@@ -123,7 +123,7 @@ describe('github repo graph', () => {
     // 3 edges: (alice,lobu), (bob,lobu), (bob,secret).
     expect(result.createdEdges).toBe(3);
 
-    expect(await entitiesOfType(org.id, 'repo')).toHaveLength(2);
+    expect(await entitiesOfType(org.id, '$resource')).toHaveLength(2);
     expect(await entitiesOfType(org.id, 'person')).toHaveLength(2); // alice + bob
 
     const sql = getTestDb();

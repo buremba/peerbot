@@ -6,10 +6,11 @@
  * entity-link ingestion all import from here — not from connector-sdk.
  */
 
-import type {
-  AccessMember,
-  AccessResource,
-  AclSourceDef,
+import {
+  ACL_RESOURCE_TYPE_DEFAULTS,
+  type AccessMember,
+  type AccessResource,
+  type AclSourceDef,
 } from '@lobu/connector-sdk';
 import type { ConnectorIdentityModule } from './connector-identity-module.js';
 
@@ -125,10 +126,8 @@ export interface GithubRepoInput {
 export const githubAclSource: AclSourceDef = {
   key: 'github',
   resourceType: {
-    slug: 'repo',
-    name: 'Repository',
-    description: 'A code repository — the unit of repo access control',
-    icon: 'git-branch',
+    // One shared ACL type for every source; namespace keys GitHub repos.
+    ...ACL_RESOURCE_TYPE_DEFAULTS,
     namespace: GITHUB_IDENTITY.REPO_FULL_NAME,
   },
   memberIdentities: [

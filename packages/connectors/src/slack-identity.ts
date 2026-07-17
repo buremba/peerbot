@@ -8,10 +8,11 @@
  * code never names Slack.
  */
 
-import type {
-  AccessResource,
-  AclSourceDef,
-  ChannelReadIdentity,
+import {
+  ACL_RESOURCE_TYPE_DEFAULTS,
+  type AccessResource,
+  type AclSourceDef,
+  type ChannelReadIdentity,
 } from '@lobu/connector-sdk';
 import type { ConnectorIdentityModule } from './connector-identity-module.js';
 
@@ -139,11 +140,8 @@ export interface SlackChannelInput {
 export const slackAclSource: AclSourceDef = {
   key: 'slack',
   resourceType: {
-    slug: 'channel',
-    name: 'Channel',
-    description:
-      'A chat channel (Slack channel, etc.) — the unit of conversation access control',
-    icon: 'hash',
+    // One shared ACL type for every source; namespace keys Slack channels.
+    ...ACL_RESOURCE_TYPE_DEFAULTS,
     namespace: SLACK_IDENTITY.CHANNEL_ID,
   },
   memberIdentities: [{ namespace: SLACK_IDENTITY.USER_ID, primary: true }],

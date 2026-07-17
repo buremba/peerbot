@@ -291,17 +291,16 @@ const GITHUB_PERSON_ATTRIBUTION: EventAttributionRule = {
   },
 };
 
-// Link each repo-scoped event to the `repo` entity it belongs to, so the authz
-// resource gate (authz/resource-visibility) can restrict recall to repos the
-// requester is `member_of`. Keyed on `github_repo_full_name` to match the repo
-// entities `buildGithubRepoGraph` materializes from collaborators — both sides
-// resolve to ONE repo entity. The full name is stamped on every event in
-// `sync()` (see stampRepoAttribution).
+// Link each repo-scoped event to the shared `$resource` entity it belongs to,
+// so the authz resource gate can restrict recall to repos the requester is
+// `member_of`. Keyed on `github_repo_full_name` to match entities
+// `buildGithubRepoGraph` materializes — both sides resolve to ONE entity.
+// The full name is stamped on every event in `sync()` (see stampRepoAttribution).
 const GITHUB_REPO_ATTRIBUTION: EventAttributionRule = {
   role: 'belongs_to',
   autoCreate: true,
   target: {
-    entityType: 'repo',
+    entityType: '$resource',
     titlePath: 'metadata.github_repo_full_name',
     identities: [
     {

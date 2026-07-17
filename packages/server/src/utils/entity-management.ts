@@ -34,7 +34,7 @@ import { computeFieldMerge, type FieldControl } from "./entity-field-merge";
 import { type EntityHookContext, getEntityHooks } from "./entity-hooks";
 import { ToolUserError } from "./errors";
 import { requireWriteAccess } from "./organization-access";
-import { RESERVED_ENTITY_TYPES } from "./reserved";
+import { RESERVED_ENTITY_TYPE_SLUGS } from "./reserved";
 
 interface EntityCreateOptions {
 	skipHooks?: boolean;
@@ -269,10 +269,15 @@ export async function createEntity(
 		throw new Error("Entity type is required");
 	}
 
-	// Check for reserved entity types
-	if (RESERVED_ENTITY_TYPES.includes(data.entity_type.toLowerCase())) {
+	// Illegal type *names* that are not knowledge types (routes / product words).
+	// System types ($member, $resource) are valid entity instance types.
+	if (
+		(RESERVED_ENTITY_TYPE_SLUGS as readonly string[]).includes(
+			data.entity_type.toLowerCase(),
+		)
+	) {
 		throw new Error(
-			`Cannot create entity with reserved type '${data.entity_type}'. Reserved types: ${RESERVED_ENTITY_TYPES.join(", ")}`,
+			`Cannot create entity with reserved type '${data.entity_type}'. Reserved: ${RESERVED_ENTITY_TYPE_SLUGS.join(", ")}`,
 		);
 	}
 

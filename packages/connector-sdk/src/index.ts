@@ -152,6 +152,10 @@ export type {
   AclSourceDef,
   ChannelReadIdentity,
 } from './acl-source.js';
+export {
+  ACL_RESOURCE_TYPE_DEFAULTS,
+  ACL_RESOURCE_TYPE_SLUG,
+} from './acl-source.js';
 import {
   EVENT_RECALL_IDENTITY_NAMESPACES,
   getIdentityNamespaceDefinition,

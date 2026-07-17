@@ -14,7 +14,7 @@
  *     `freshness_state='fresh'`, synced within the freshness window) is visible
  *     ONLY when the requester is `member_of` one of the RESOURCE entities the
  *     event is linked to (`events.entity_ids`), where "resource" = an entity whose
- *     type is a registered ACL resource (`RESOURCE_TYPE_SLUGS`: repo, channel, …).
+ *     type is the shared ACL resource type (`$resource` via `RESOURCE_TYPE_SLUGS`).
  *     This is deliberately scoped to resource types so the coarse person→`company`
  *     (org) `member_of` edge never satisfies it — org membership must NOT grant
  *     repo-level read;
@@ -37,9 +37,9 @@ import { aclStateExistsSelectSql, enforcedConnectionsSelectSql } from './acl-sta
 import type { AuthzScope } from './scope.js';
 import { RESOURCE_TYPE_SLUGS } from './sources.js';
 
-/** Resource type slugs as a safe SQL `IN (...)` list. Slugs are validated to
- * simple identifiers in `./sources`, so inlining as literals is injection-safe
- * (and avoids binding a text[] param, which the fetch_types:false driver rejects). */
+/** Resource type slugs as a safe SQL `IN (...)` list. Registry enforces
+ * `$resource` only; inlining as literals is injection-safe (and avoids binding
+ * a text[] param, which the fetch_types:false driver rejects). */
 const RESOURCE_TYPE_IN_LIST = RESOURCE_TYPE_SLUGS.map((s) => `'${s}'`).join(', ');
 
 /**

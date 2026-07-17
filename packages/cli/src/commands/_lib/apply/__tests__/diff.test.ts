@@ -1401,16 +1401,17 @@ describe("apply diff — prune", () => {
     expect(deletedIds.some((id) => id.includes("other"))).toBe(false);
   });
 
-  test("prune never deletes system ($-prefixed) definitions (e.g. $member)", () => {
-    // Regression: $member is a per-org SYSTEM entity type the server provisions;
-    // it can't be declared in config, so prune would mark it deleted and then
-    // HALT every apply (the delete is refused while member rows exist). System
-    // definitions must stay ignorable drift, never delete.
+  test("prune never deletes $ system entity types; domain still prune", () => {
+    // Sole signal is $ slug prefix.
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
       entityTypes: [
         { slug: "lead", properties: {}, organization_id: "org_self" },
         { slug: "$member", organization_id: "org_self" },
+        { slug: "$resource", organization_id: "org_self" },
+        { slug: "goal", organization_id: "org_self" },
+        // bare channel/repo are not system (legacy names; pruneable)
+        { slug: "channel", organization_id: "org_self" },
       ],
       relationshipTypes: [{ slug: "$system-rel", organization_id: "org_self" }],
       watchers: [{ slug: "$system-watcher" }],
@@ -1422,12 +1423,12 @@ describe("apply diff — prune", () => {
     const verbOf = (kind: string, id: string) =>
       plan.rows.find((r) => r.kind === kind && r.id === id)?.verb;
     expect(verbOf("entity-type", "$member")).toBe("drift");
+    expect(verbOf("entity-type", "$resource")).toBe("drift");
+    expect(verbOf("entity-type", "goal")).toBe("delete");
+    expect(verbOf("entity-type", "channel")).toBe("delete");
+    // $ on rel/watcher still uses slug heuristic
     expect(verbOf("relationship-type", "$system-rel")).toBe("drift");
     expect(verbOf("watcher", "$system-watcher")).toBe("drift");
-    // No system definition is ever in the delete set.
-    expect(
-      plan.rows.some((r) => r.verb === "delete" && r.id.startsWith("$"))
-    ).toBe(false);
   });
 
   test("matching prefers the org's own type over a foreign public type with the same slug", () => {

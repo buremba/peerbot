@@ -103,7 +103,7 @@ describe("channel streaming feeds", () => {
       DELETE FROM entities
       WHERE organization_id = ${orgId}
         AND entity_type_id IN (
-          SELECT id FROM entity_types WHERE organization_id = ${orgId} AND slug IN ('channel', '$member')
+          SELECT id FROM entity_types WHERE organization_id = ${orgId} AND slug IN ('$resource', '$member')
         )
     `;
   });

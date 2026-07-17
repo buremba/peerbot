@@ -162,7 +162,7 @@ describe('slack channel graph', () => {
     // 3 edges: (alice,eng), (bob,eng), (bob,secret).
     expect(result.createdEdges).toBe(3);
 
-    const channels = await entitiesOfType(org.id, 'channel');
+    const channels = await entitiesOfType(org.id, '$resource');
     expect(channels).toHaveLength(2);
     const people = await entitiesOfType(org.id, 'person');
     expect(people).toHaveLength(2); // alice + bob (neither signed in here)
@@ -237,7 +237,7 @@ describe('slack channel graph', () => {
       ],
     });
     expect(second.createdEdges).toBe(1); // only bob is new
-    expect(await entitiesOfType(org.id, 'channel')).toHaveLength(1);
+    expect(await entitiesOfType(org.id, '$resource')).toHaveLength(1);
     expect(await memberOfEdges(org.id)).toHaveLength(2);
   });
 
@@ -280,8 +280,8 @@ describe('slack channel graph', () => {
         ],
       });
     }
-    const chA = await entitiesOfType(a.org.id, 'channel');
-    const chB = await entitiesOfType(b.org.id, 'channel');
+    const chA = await entitiesOfType(a.org.id, '$resource');
+    const chB = await entitiesOfType(b.org.id, '$resource');
     expect(chA).toHaveLength(1);
     expect(chB).toHaveLength(1);
     expect(chA[0].id).not.toBe(chB[0].id);

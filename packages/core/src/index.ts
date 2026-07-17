@@ -88,6 +88,8 @@ export {
   type SdkCompatProtocol,
 } from "./sdk-compat";
 export * from "./secret-refs";
+// Reserved path / entity-type slug lists + kind helpers (single source)
+export * from "./reserved";
 // Observability
 export { getSentry, initSentry } from "./sentry";
 export { extractTraceId, generateTraceId } from "./trace";

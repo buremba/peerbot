@@ -262,7 +262,8 @@ export async function ensureMemberEntityType(organizationId: string): Promise<vo
         current_timestamp,
         current_timestamp
       )
-      ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL DO NOTHING
+      ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
+      DO NOTHING
     `;
     // Prime this pod's cache with the seeded registry. A prior read may have
     // cached a `null` (no $member yet); overwrite it so the next validation in
@@ -277,6 +278,7 @@ export async function ensureMemberEntityType(organizationId: string): Promise<vo
   }
 
   const existing = existingRows[0];
+
   const mergedMetadataSchema = mergeMemberMetadataSchema(
     (existing.metadata_schema as Record<string, unknown> | null | undefined) ?? null
   );

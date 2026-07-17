@@ -79,7 +79,8 @@ async function resolveOrgCreator(orgId: string): Promise<string | null> {
   return rows.length > 0 ? rows[0].userId : null;
 }
 
-/** Find-or-create the org-scoped resource entity type (reuse, no migration). */
+/** Find-or-create the org-scoped `$resource` entity type (reuse, no migration).
+ * All ACL sources share this one type; identity namespace distinguishes them. */
 export async function ensureResourceEntityType(orgId: string, type: AccessResourceType): Promise<void> {
   const sql = getDb();
   await sql`
@@ -115,7 +116,7 @@ async function ensureMemberOfType(orgId: string): Promise<number> {
 		INSERT INTO entity_relationship_types
 			(slug, name, description, organization_id, is_symmetric, created_by, created_at, updated_at)
 		VALUES
-			(${MEMBER_OF_TYPE_SLUG}, 'Member of', 'A person is a member of an organization or channel', ${orgId},
+			(${MEMBER_OF_TYPE_SLUG}, 'Member of', 'A member belongs to an ACL resource (channel, repo, …)', ${orgId},
 			 false, NULL, current_timestamp, current_timestamp)
 		ON CONFLICT (organization_id, slug) WHERE status = 'active'
 		DO UPDATE SET updated_at = EXCLUDED.updated_at

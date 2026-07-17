@@ -24,7 +24,7 @@ import { stripMemberEmailsFromRows } from '../utils/member-redaction';
 import { derivedRowName, derivedRowSlug } from '../utils/entity-management';
 import { buildDefaultEntityTemplate } from '../utils/default-entity-template';
 import { measureColumns as inferMeasureColumns } from '../utils/infer-measures';
-import { RESERVED_PATHS } from '../utils/reserved';
+import { RESERVED_PATHS_SET } from '../utils/reserved';
 import { getWorkspaceProvider } from '../workspace';
 import { querySqlImpl } from './admin/query_sql';
 import { isAdminOrOwnerRole } from './access-control';
@@ -376,7 +376,7 @@ async function _resolvePath(
   const isUserSpace = ownerRaw.startsWith('@');
   const ownerSlug = isUserSpace ? ownerRaw.slice(1) : ownerRaw;
 
-  if (RESERVED_PATHS.includes(ownerSlug)) {
+  if (RESERVED_PATHS_SET.has(ownerSlug)) {
     throw new ToolUserError(`Owner '${ownerSlug}' is reserved`, 400);
   }
 

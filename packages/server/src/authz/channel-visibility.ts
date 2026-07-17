@@ -171,7 +171,7 @@ const CHANNEL_KEY_NAMESPACES: string[] = [
 
 /**
  * The team-scoped channel keys the member can read, via `member_of` edges to
- * `channel` entities carrying any registered chat-channel identity (Slack:
+ * `$resource` entities carrying any registered chat-channel identity (Slack:
  * `slack_channel_id` = `T…:C…`). Unions across every registered chat platform's
  * channel namespace so a member spanning platforms sees all their channels.
  */

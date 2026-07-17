@@ -10,7 +10,7 @@ import {
 } from './utils/entity-management';
 import { escapeHtml } from './utils/html';
 import { getConfiguredPublicOrigin } from './utils/public-origin';
-import { RESERVED_PATHS } from './utils/reserved';
+import { RESERVED_PATHS_SET } from './utils/reserved';
 
 interface PublicOrganization {
   id: string;
@@ -923,7 +923,7 @@ export async function buildPublicPageModel(
 
   const ownerSlug = segments[0]!;
   if (ownerSlug.startsWith('@')) return null;
-  if (RESERVED_PATHS.includes(ownerSlug)) return null;
+  if (RESERVED_PATHS_SET.has(ownerSlug)) return null;
   if (segments[1] && PUBLIC_APP_ROUTE_PREFIXES.has(segments[1])) return null;
 
   const organization = await getPublicOrganizationBySlug(ownerSlug);

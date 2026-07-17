@@ -10,9 +10,27 @@
  * departure reconcile) driven entirely by these DTOs. Core code never names a
  * specific connector — it iterates `AclSourceDef`s the connectors contribute.
  *
+ * All ACL resources share ONE entity type: {@link ACL_RESOURCE_TYPE_SLUG}
+ * (`$resource`). Sources are distinguished by identity namespace, not type slug.
+ *
  * These are pure data types (no server/db dependency) so they live in the SDK
  * and can be imported by both a connector package and the server engine.
  */
+
+/**
+ * Sole platform entity-type slug for ACL-gated units (Slack channels, GitHub
+ * repos, …). `$` prefix → system (hide rail, never prune, user-create blocked).
+ */
+export const ACL_RESOURCE_TYPE_SLUG = '$resource' as const;
+
+/** Shared name/icon for {@link ACL_RESOURCE_TYPE_SLUG} (all sources use this). */
+export const ACL_RESOURCE_TYPE_DEFAULTS = {
+  slug: ACL_RESOURCE_TYPE_SLUG,
+  name: 'Resource',
+  description:
+    'ACL-gated access unit (Slack channel, GitHub repository, …). Graph anchor only — empty metadata schema.',
+  icon: 'shield',
+} as const;
 
 /**
  * A claim that identifies a member, e.g. `{namespace:'slack_user_id', primary:true}`.
@@ -46,8 +64,11 @@ export interface AccessResource {
 
 /** The resource entity type to find-or-create and key resources under. */
 export interface AccessResourceType {
-  /** Entity-type slug, e.g. `channel` / `repo`. */
-  slug: string;
+  /**
+   * Must be {@link ACL_RESOURCE_TYPE_SLUG} (`$resource`). One type for every
+   * ACL source; identity `namespace` distinguishes channel vs repo vs …
+   */
+  slug: typeof ACL_RESOURCE_TYPE_SLUG | string;
   name: string;
   description: string;
   icon: string;
@@ -81,7 +102,7 @@ export interface AclSourceDef {
  *
  * A binding stores a bare channel id (`C…`) + a tenant/team id; the gate must
  * reconstruct the exact team-scoped key the ACL sync wrote (`T…:C…`) to match
- * the graphed `channel` entity. `channelKeySql` is the SAME construction as a
+ * the graphed `$resource` entity. `channelKeySql` is the SAME construction as a
  * SQL expression, for the message-visibility compiler that keys inside a query.
  */
 export interface ChannelReadIdentity {

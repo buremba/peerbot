@@ -46,7 +46,7 @@ describe('saveContent > channel entity stamp', () => {
     // exactly as slack-channel-graph materializes it.
     const channel = await createTestEntity({
       name: 'eng',
-      entity_type: 'channel',
+      entity_type: '$resource',
       organization_id: org.id,
     });
     channelEntityId = channel.id;

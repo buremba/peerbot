@@ -33,7 +33,10 @@ import type { Env } from '../../index';
 import logger from '../../utils/logger';
 import { compileRulesMetadata, ruleHashFor } from '../../identity/rules';
 import { ensureMemberEntityType } from '../../utils/member-entity-type';
-import { RESERVED_ENTITY_TYPES } from '../../utils/reserved';
+import {
+  isReservedEntityTypeSlug,
+  RESERVED_ENTITY_TYPE_SLUGS,
+} from '../../utils/reserved';
 import { resolveUsernames } from '../../utils/resolve-usernames';
 import { ToolUserError } from '../../utils/errors';
 import { isUniqueViolation } from '../../utils/pg-errors';
@@ -113,9 +116,11 @@ const ENTITY_TYPE_COLUMNS_WITH_ORG = `et.id, et.slug, et.name, et.description, e
   o.slug AS organization_slug`;
 
 function mapRowToEntityType(row: Record<string, unknown>): EntityTypeRow {
+  const slug = typeof row.slug === 'string' ? row.slug : '';
   return {
     ...(row as unknown as EntityTypeRow),
-    is_system: row.created_by === null || row.created_by === undefined,
+    // Sole platform signal: $ prefix ($member, $resource). Not created_by.
+    is_system: slug.startsWith('$'),
     entity_count: Number(row.entity_count) || 0,
   };
 }
@@ -431,18 +436,16 @@ async function etHandleCreate(
   if (!args.name) throw new ToolUserError('name is required for create action', 400);
   if (!ctx.userId) throw new ToolUserError('Authentication required to create entity types', 401);
 
-  if (args.slug.startsWith('$')) {
-    throw new ToolUserError("Entity type slugs starting with '$' are reserved for system types", 422);
-  }
-
-  const slug = args.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-
-  if (RESERVED_ENTITY_TYPES.includes(slug)) {
+  // Preserve `$` for the reserved-slug check (isReservedEntityTypeSlug); domain
+  // creates still get a normalized slug for storage when not reserved.
+  if (isReservedEntityTypeSlug(args.slug)) {
     throw new ToolUserError(
-      `Cannot create entity type with reserved slug '${slug}'. Reserved: ${RESERVED_ENTITY_TYPES.join(', ')}`,
+      `Cannot create entity type with reserved slug '${args.slug}'. Reserved names: $…, ${RESERVED_ENTITY_TYPE_SLUGS.join(', ')}`,
       422
     );
   }
+
+  const slug = args.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 
   const sql = getDb();
 

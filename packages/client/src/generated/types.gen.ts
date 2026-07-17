@@ -1410,6 +1410,9 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
+          /**
+           * Platform system type when true (slug starts with `$`). Derived from slug.
+           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1456,6 +1459,9 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
+          /**
+           * Platform system type when true (slug starts with `$`). Derived from slug.
+           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1500,6 +1506,9 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
+          /**
+           * Platform system type when true (slug starts with `$`). Derived from slug.
+           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1544,6 +1553,9 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
+          /**
+           * Platform system type when true (slug starts with `$`). Derived from slug.
+           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;

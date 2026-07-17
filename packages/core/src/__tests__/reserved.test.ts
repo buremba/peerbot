@@ -15,7 +15,9 @@ describe("isSystemEntityType", () => {
     expect(isSystemEntityType({})).toBe(false);
     // is_system field is ignored (legacy API noise)
     expect(isSystemEntityType({ slug: "goal", is_system: true })).toBe(false);
-    expect(isSystemEntityType({ slug: "$member", is_system: false })).toBe(true);
+    expect(isSystemEntityType({ slug: "$member", is_system: false })).toBe(
+      true
+    );
   });
 });
 

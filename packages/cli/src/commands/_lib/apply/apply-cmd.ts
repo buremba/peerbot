@@ -17,6 +17,7 @@ import {
 import {
   type DesiredConnectorDefinition,
   type DesiredState,
+  type DesiredWatcher,
   loadDesiredStateFromConfig,
   normalizeConnectionConfigScope,
   resolveConnectorSchemas,
@@ -68,6 +69,32 @@ interface PendingAuthEntry {
   slug: string;
   kind: string;
   connectUrl?: string;
+}
+
+/** Resolve declarative connection slugs to the integer API contract. */
+export function resolveBehaviorConnectionRefs(
+  watchers: DesiredWatcher[],
+  connectionIdBySlug: ReadonlyMap<string, number>,
+  requireResolved: boolean
+): void {
+  for (const watcher of watchers) {
+    if (!watcher.triggers) continue;
+    watcher.triggers = watcher.triggers.map((trigger) => {
+      if (trigger.kind !== "event" || !trigger.connectionSlug) return trigger;
+      const connectionId = connectionIdBySlug.get(trigger.connectionSlug);
+      if (connectionId === undefined) {
+        if (requireResolved) {
+          throw new ApiError(
+            `behavior "${watcher.slug}" references connection "${trigger.connectionSlug}" which has no remote ID — connection create may have failed`
+          );
+        }
+        return trigger;
+      }
+      const resolved = { ...trigger, connection_id: connectionId };
+      delete resolved.connectionSlug;
+      return resolved;
+    });
+  }
 }
 
 /** Deletes beyond this in one pruning apply trigger a second confirm. */
@@ -750,28 +777,6 @@ export async function executePlan(
     }
   }
 
-  // 3b) Declarative channel bindings — reconcile after the platform upserts
-  // above so the connection rows exist. Runs for every agent/platform that
-  // declares `channels` (the server reconcile is idempotent), independent of
-  // whether the platform's config changed in this plan.
-  for (const agent of ctx.state.agents) {
-    for (const platform of agent.platforms) {
-      if (!platform.channels || platform.channels.length === 0) continue;
-      const res = await ctx.client.syncPlatformChannels(
-        agent.metadata.agentId,
-        platform.stableId,
-        platform.channels
-      );
-      const detail =
-        res.removed.length > 0
-          ? `(${res.bound.length} bound, ${res.removed.length} unbound)`
-          : `(${res.bound.length} bound)`;
-      printText(
-        `  ${chalk.cyan("↻")} ${chalk.bold("channels")} ${agent.metadata.agentId}/${platform.stableId} ${chalk.dim(detail)}`
-      );
-    }
-  }
-
   // 4) Entity types
   for (const row of rowsByKind("entity-type")) {
     if (row.kind !== "entity-type") continue;
@@ -803,124 +808,142 @@ export async function executePlan(
     printText(renderProgress(row.verb, "relationship-type", row.id));
   }
 
-  // 6) Watchers — create (full payload + reaction script) or update (scalar
-  //    row fields via `update`, version-bound fields via `create_version`,
-  //    reaction script via `set_reaction_script`). Drift detection lives in
-  //    `diffWatcher`; this loop just routes to the right admin action.
-  const remoteWatcherBySlug = new Map(
-    ctx.remote.watchers.map((w) => [w.slug, w])
-  );
-  for (const row of rowsByKind("watcher")) {
-    if (row.kind !== "watcher") continue;
-    if (!row.desired) continue;
-    const w = row.desired;
-    let watcherId: string | undefined;
-    if (row.verb === "create") {
-      const created = await ctx.client.createWatcher({
-        slug: w.slug,
-        agentId: w.agent,
-        name: w.name,
-        description: w.description,
-        prompt: w.prompt,
-        schedule: w.schedule,
-        sources: w.sources,
-        reactions_guidance: w.reactionsGuidance,
-        device_worker_id: w.deviceWorkerId,
-        scheduler_client_id: w.schedulerClientId,
-        notification_channel: w.notificationChannel,
-        notification_priority: w.notificationPriority,
-        min_cooldown_seconds: w.minCooldownSeconds,
-        tags: w.tags,
-        agent_kind: w.agentKind,
-        keying_config: w.keyingConfig,
-        classifiers: w.classifiers,
-      });
-      watcherId = created.watcher_id;
-    } else if (row.verb === "update") {
-      const remote = remoteWatcherBySlug.get(w.slug);
-      watcherId = remote?.watcher_id;
-      if (!watcherId) {
-        throw new ApiError(
-          `update watcher "${w.slug}" failed: remote row is missing watcher_id (refetch may be stale)`
+  // Behaviors are applied after connections so declarative connection slugs
+  // can resolve to the integer ids required by the API.
+  const applyBehaviors = async (
+    connectionIdBySlug: ReadonlyMap<string, number>
+  ): Promise<void> => {
+    if (rowsByKind("watcher").length === 0) return;
+    resolveBehaviorConnectionRefs(ctx.state.watchers, connectionIdBySlug, true);
+
+    // 6) Behaviors — create (full payload + reaction script) or update (scalar
+    //    row fields via `update`, version-bound fields via `create_version`,
+    //    reaction script via `set_reaction_script`). Drift detection lives in
+    //    `diffWatcher`; this loop just routes to the right admin action.
+    const remoteWatcherBySlug = new Map(
+      ctx.remote.watchers.map((w) => [w.slug, w])
+    );
+    for (const row of rowsByKind("watcher")) {
+      if (row.kind !== "watcher") continue;
+      if (!row.desired) continue;
+      const w = row.desired;
+      let watcherId: string | undefined;
+      if (row.verb === "create") {
+        const created = await ctx.client.createWatcher({
+          slug: w.slug,
+          agentId: w.agent,
+          name: w.name,
+          description: w.description,
+          prompt: w.prompt,
+          schedule: w.schedule,
+          triggers: w.triggers,
+          sources: w.sources,
+          reactions_guidance: w.reactionsGuidance,
+          device_worker_id: w.deviceWorkerId,
+          scheduler_client_id: w.schedulerClientId,
+          notification_channel: w.notificationChannel,
+          notification_priority: w.notificationPriority,
+          min_cooldown_seconds: w.minCooldownSeconds,
+          tags: w.tags,
+          agent_kind: w.agentKind,
+          keying_config: w.keyingConfig,
+          classifiers: w.classifiers,
+        });
+        watcherId = created.watcher_id;
+      } else if (row.verb === "update") {
+        const remote = remoteWatcherBySlug.get(w.slug);
+        watcherId = remote?.watcher_id;
+        if (!watcherId) {
+          throw new ApiError(
+            `update watcher "${w.slug}" failed: remote row is missing watcher_id (refetch may be stale)`
+          );
+        }
+        const versionBound = new Set(row.versionBoundFields ?? []);
+        const changed = new Set(row.changedFields ?? []);
+        const scalarChanges = [...changed].filter(
+          (f) => !versionBound.has(f) && f !== "reaction_script"
+        );
+        // a) Scalar fields → manage_behaviors update
+        if (scalarChanges.length > 0) {
+          await ctx.client.updateWatcher({
+            watcher_id: watcherId,
+            ...(scalarChanges.includes("schedule")
+              ? { schedule: w.schedule ?? null }
+              : {}),
+            ...(scalarChanges.includes("triggers")
+              ? { triggers: w.triggers ?? [] }
+              : {}),
+            ...(scalarChanges.includes("agent_id")
+              ? { agent_id: w.agent }
+              : {}),
+            ...(scalarChanges.includes("device_worker_id")
+              ? { device_worker_id: w.deviceWorkerId ?? null }
+              : {}),
+            ...(scalarChanges.includes("scheduler_client_id")
+              ? { scheduler_client_id: w.schedulerClientId ?? null }
+              : {}),
+            ...(scalarChanges.includes("notification_channel") &&
+            w.notificationChannel
+              ? { notification_channel: w.notificationChannel }
+              : {}),
+            ...(scalarChanges.includes("notification_priority") &&
+            w.notificationPriority
+              ? { notification_priority: w.notificationPriority }
+              : {}),
+            ...(scalarChanges.includes("min_cooldown_seconds") &&
+            w.minCooldownSeconds !== undefined
+              ? { min_cooldown_seconds: w.minCooldownSeconds }
+              : {}),
+            ...(scalarChanges.includes("tags") && w.tags
+              ? { tags: w.tags }
+              : {}),
+            ...(scalarChanges.includes("agent_kind")
+              ? { agent_kind: w.agentKind ?? null }
+              : {}),
+          });
+        }
+        // b) Version-bound fields → manage_behaviors create_version (server
+        //    inherits unset fields from the previous version row, but we always
+        //    send the desired-side values for the changed keys).
+        if (row.versionBoundFields && row.versionBoundFields.length > 0) {
+          await ctx.client.createWatcherVersion({
+            watcher_id: watcherId,
+            ...(versionBound.has("prompt") ? { prompt: w.prompt } : {}),
+            ...(versionBound.has("sources") && w.sources !== undefined
+              ? { sources: w.sources }
+              : {}),
+            ...(versionBound.has("reactions_guidance") &&
+            w.reactionsGuidance !== undefined
+              ? { reactions_guidance: w.reactionsGuidance }
+              : {}),
+            ...(versionBound.has("keying_config") &&
+            w.keyingConfig !== undefined
+              ? { keying_config: w.keyingConfig }
+              : {}),
+            ...(versionBound.has("classifiers") && w.classifiers !== undefined
+              ? { classifiers: w.classifiers }
+              : {}),
+          });
+        }
+      }
+      // c) Reaction script — push when declared (idempotent server-side, no
+      //    drift signal available because it's not returned by list_watchers).
+      if (w.reactionScript && watcherId) {
+        await ctx.client.setReactionScript(
+          watcherId,
+          w.reactionScript.sourceCode
         );
       }
-      const versionBound = new Set(row.versionBoundFields ?? []);
-      const changed = new Set(row.changedFields ?? []);
-      const scalarChanges = [...changed].filter(
-        (f) => !versionBound.has(f) && f !== "reaction_script"
-      );
-      // a) Scalar fields → manage_watchers update
-      if (scalarChanges.length > 0) {
-        await ctx.client.updateWatcher({
-          watcher_id: watcherId,
-          ...(scalarChanges.includes("schedule")
-            ? { schedule: w.schedule ?? null }
-            : {}),
-          ...(scalarChanges.includes("agent_id") ? { agent_id: w.agent } : {}),
-          ...(scalarChanges.includes("device_worker_id")
-            ? { device_worker_id: w.deviceWorkerId ?? null }
-            : {}),
-          ...(scalarChanges.includes("scheduler_client_id")
-            ? { scheduler_client_id: w.schedulerClientId ?? null }
-            : {}),
-          ...(scalarChanges.includes("notification_channel") &&
-          w.notificationChannel
-            ? { notification_channel: w.notificationChannel }
-            : {}),
-          ...(scalarChanges.includes("notification_priority") &&
-          w.notificationPriority
-            ? { notification_priority: w.notificationPriority }
-            : {}),
-          ...(scalarChanges.includes("min_cooldown_seconds") &&
-          w.minCooldownSeconds !== undefined
-            ? { min_cooldown_seconds: w.minCooldownSeconds }
-            : {}),
-          ...(scalarChanges.includes("tags") && w.tags ? { tags: w.tags } : {}),
-          ...(scalarChanges.includes("agent_kind")
-            ? { agent_kind: w.agentKind ?? null }
-            : {}),
-        });
-      }
-      // b) Version-bound fields → manage_watchers create_version (server
-      //    inherits unset fields from the previous version row, but we always
-      //    send the desired-side values for the changed keys).
-      if (row.versionBoundFields && row.versionBoundFields.length > 0) {
-        await ctx.client.createWatcherVersion({
-          watcher_id: watcherId,
-          ...(versionBound.has("prompt") ? { prompt: w.prompt } : {}),
-          ...(versionBound.has("sources") && w.sources !== undefined
-            ? { sources: w.sources }
-            : {}),
-          ...(versionBound.has("reactions_guidance") &&
-          w.reactionsGuidance !== undefined
-            ? { reactions_guidance: w.reactionsGuidance }
-            : {}),
-          ...(versionBound.has("keying_config") && w.keyingConfig !== undefined
-            ? { keying_config: w.keyingConfig }
-            : {}),
-          ...(versionBound.has("classifiers") && w.classifiers !== undefined
-            ? { classifiers: w.classifiers }
-            : {}),
-        });
-      }
-    }
-    // c) Reaction script — push when declared (idempotent server-side, no
-    //    drift signal available because it's not returned by list_watchers).
-    if (w.reactionScript && watcherId) {
-      await ctx.client.setReactionScript(
-        watcherId,
-        w.reactionScript.sourceCode
+      printText(
+        renderProgress(
+          row.verb,
+          "watcher",
+          row.id,
+          row.changedFields ? `(${row.changedFields.join(", ")})` : undefined
+        )
       );
     }
-    printText(
-      renderProgress(
-        row.verb,
-        "watcher",
-        row.id,
-        row.changedFields ? `(${row.changedFields.join(", ")})` : undefined
-      )
-    );
-  }
+  };
 
   // Auth profiles (create / update; interactive kinds → punch-list)
   for (const row of rowsByKind("auth-profile")) {
@@ -998,6 +1021,8 @@ export async function executePlan(
     }
     printText(renderProgress(row.verb, "connection", row.id));
   }
+
+  await applyBehaviors(connectionIdBySlug);
 
   // 10) Feeds (per connection — covers feeds whose connection itself was a noop)
   for (const row of rowsByKind("feed")) {
@@ -1348,6 +1373,13 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // "update" when it is. Connector defs are NOT installed here; that happens in
   // `executePlan`, AFTER plan confirmation.
   const remote = await fetchRemoteSnapshot(client, state, opts.only, prune);
+  resolveBehaviorConnectionRefs(
+    state.watchers,
+    new Map(
+      remote.connections.map((connection) => [connection.slug, connection.id])
+    ),
+    false
+  );
 
   // Validate connection/auth-profile config against the catalog we have now,
   // but SKIP schema validation for connector keys declared locally — those

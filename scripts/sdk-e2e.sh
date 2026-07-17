@@ -88,7 +88,7 @@ PROJ="$RUN_DIR/proj"; mkdir -p "$PROJ"
 ( cd "$PROJ" && $LOBU init . -y --here --provider gemini >/dev/null 2>&1 )
 rm -rf "$PROJ/package.json" "$PROJ/node_modules" "$PROJ/bun.lock"
 cat > "$PROJ/lobu.config.ts" <<'TS'
-import { connectorFromFile, defineAgent, defineConfig, defineConnection, defineEntityType, defineRelationshipType, defineWatcher, reactionFromFile, secret } from "@lobu/cli/config";
+import { connectorFromFile, defineAgent, defineBehavior, defineConfig, defineConnection, defineEntityType, defineRelationshipType, reactionFromFile, secret } from "@lobu/cli/config";
 import type PulseConnector from "./connectors/pulse.connector.ts";
 import type digestReaction from "./reactions/digest.reaction.ts";
 
@@ -132,7 +132,7 @@ const pulseConn = defineConnection({
 // window. The gate drives read_knowledge → complete_window deterministically
 // (the agentic LLM turn never produces the complete_window tool-call against a
 // fixed-reply mock) and asserts the reaction's side effect.
-const digest = defineWatcher({
+const digest = defineBehavior({
   slug: "digest", agent, name: "Digest", prompt: "summarize",
   // No inline extraction schema — the reaction OWNS the contract via its exported
   // `input`, which set_reaction_script extracts and surfaces to the worker.
@@ -145,7 +145,7 @@ const digest = defineWatcher({
 
 // prune:true so the gate exercises the destructive path on every run (this is
 // what catches the system-type $member halt class of bug).
-export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connectors: [connectorFromFile<typeof PulseConnector>("./connectors/pulse.connector.ts")], connections: [pulseConn], watchers: [digest] });
+export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connectors: [connectorFromFile<typeof PulseConnector>("./connectors/pulse.connector.ts")], connections: [pulseConn], behaviors: [digest] });
 TS
 
 # Local connector: deterministic, zero-dep, no network. `sync()` returns one
@@ -615,7 +615,7 @@ echo "✓ apply set entity-type view template (company default v$VT_V1)"
 # token (the regression this guards — a missing `lobu-internal` client fails
 # every watcher run), and that a watcher worker session actually started.
 TW="$RUN_DIR/trigger-watcher.json"
-api manage_watchers "{\"action\":\"trigger\",\"watcher_id\":\"$WATCHER_ID\"}" > "$TW" 2>/dev/null \
+api manage_behaviors "{\"action\":\"trigger\",\"watcher_id\":\"$WATCHER_ID\"}" > "$TW" 2>/dev/null \
   || { cat "$TW" >&2; fail "watcher trigger failed"; }
 TRIG_RUN_ID="$(jget run_id < "$TW" 2>/dev/null || echo)"
 [ -n "$TRIG_RUN_ID" ] || { cat "$TW" >&2; fail "watcher trigger did not dispatch a run (no run_id)"; }
@@ -641,7 +641,7 @@ WINDOW_TOKEN="$(jget window_token < "$RK")"
 [ -n "$WINDOW_TOKEN" ] || { cat "$RK" >&2; fail "read_knowledge returned no window_token (no content in window — connector events missing?)"; }
 
 CW="$RUN_DIR/complete-window.json"
-api manage_watchers "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",watcher_id:w,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$WATCHER_ID")" > "$CW" 2>/dev/null \
+api manage_behaviors "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",watcher_id:w,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$WATCHER_ID")" > "$CW" 2>/dev/null \
   || { cat "$CW" >&2; fail "complete_window failed"; }
 grep -q '"action":"complete_window"\|"action": "complete_window"' "$CW" || { cat "$CW" >&2; fail "complete_window did not return the expected action"; }
 

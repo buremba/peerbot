@@ -101,7 +101,7 @@ export async function validateDeliveryAuthorization(params: {
   const bindingRows = delivery.teamId
     ? await sql`
         SELECT agent_id
-        FROM agent_channel_bindings
+        FROM behavior_channel_subscriptions
         WHERE organization_id = ${organizationId}
           AND platform = ${delivery.platform}
           AND channel_id = ${delivery.channelId}
@@ -110,7 +110,7 @@ export async function validateDeliveryAuthorization(params: {
       `
     : await sql`
         SELECT agent_id
-        FROM agent_channel_bindings
+        FROM behavior_channel_subscriptions
         WHERE organization_id = ${organizationId}
           AND platform = ${delivery.platform}
           AND channel_id = ${delivery.channelId}

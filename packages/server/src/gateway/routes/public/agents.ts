@@ -17,7 +17,6 @@ import type {
 } from "../../auth/settings/agent-settings-store.js";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
-import type { ChannelBindingService } from "../../channels/binding-service.js";
 import { orgContext } from "../../../lobu/stores/org-context.js";
 import { resolveSettingsLookupUserId } from "../shared/agent-ownership.js";
 import {
@@ -38,7 +37,6 @@ interface AgentRoutesConfig {
   userAgentsStore: UserAgentsStore;
   agentMetadataStore: AgentMetadataStore;
   agentSettingsStore: AgentSettingsStore;
-  channelBindingService: ChannelBindingService;
 }
 
 /**
@@ -192,24 +190,19 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
       const agents = [];
       for (const { agentId, organizationId } of instances) {
-        // Read metadata + bindings scoped to the resolved org. getMetadata reads
+        // Read metadata scoped to the resolved org. getMetadata reads
         // the ambient ALS org, so pin it to THIS org so it selects the right
         // row instead of an arbitrary tenant's via the global lookup.
         const metadata = await orgContext.run({ organizationId }, () =>
           config.agentMetadataStore.getMetadata(agentId)
         );
         if (!metadata) continue;
-        const bindings = await config.channelBindingService.listBindings(
-          agentId,
-          organizationId
-        );
         agents.push({
           agentId,
           name: metadata.name,
           description: metadata.description,
           createdAt: metadata.createdAt,
           lastUsedAt: metadata.lastUsedAt,
-          channelCount: bindings.length,
         });
       }
 

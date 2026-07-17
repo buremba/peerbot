@@ -19,6 +19,7 @@ import { buildApiConversationId } from "../../gateway/services/api-conversation-
 import { readWatcherRunThreads } from "../../gateway/services/watcher-run-thread";
 import { insertEvent } from "../../utils/insert-event";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
+import { createTestBehaviorSubscription } from "../setup/behavior-subscriptions";
 import {
 	createTestAgent,
 	createTestOrganization,
@@ -129,11 +130,14 @@ describe("listAgentThreads scope=all", () => {
 			platform: "slack",
 			status: "active",
 		});
-		await sql`
-      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
-      SELECT ${org}, ${AGENT}, 'slack', 'slack:C123', 'T1', id
-      FROM connections
-      WHERE organization_id = ${org} AND slug = ${`agentconn-${connId}`} AND deleted_at IS NULL`;
+		await createTestBehaviorSubscription({
+			organizationId: org,
+			agentId: AGENT,
+			connectionSlug: `agentconn-${connId}`,
+			platform: "slack",
+			channelId: "slack:C123",
+			teamId: "T1",
+		});
 
 		// A bound Slack conversation (newest) + an UNBOUND one. Both get a
 		// conversations row (the gateway dual-writes every platform turn); the

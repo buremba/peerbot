@@ -587,13 +587,9 @@ export function createGatewayApp(
       );
     }
 
-    // Channel management is no longer a bespoke HTTP island — it lives on the
-    // connections surface as manage_connections actions (list_channel_bindings,
-    // bind_channel, unbind_channel, sync_channel_bindings, connect_channel_dm).
-    // ChannelBindingService stays: agent routes + recall + streaming-feed
-    // materialization still depend on it.
-    const channelBindingService = coreServices.getChannelBindingService();
-
+    // Agent routes still use the Behavior-backed channel projection for recall
+    // and streaming-feed materialization. Subscription configuration itself is
+    // owned by manage_behaviors.
     {
       const userAgentsStore = coreServices.getUserAgentsStore();
       const agentMetadataStore = coreServices.getAgentMetadataStore();
@@ -601,7 +597,6 @@ export function createGatewayApp(
         userAgentsStore,
         agentMetadataStore,
         agentSettingsStore,
-        channelBindingService,
       });
       app.route("/api/v1/agents", agentManagementRouter);
       logger.debug("Agent management routes enabled at :8080/api/v1/agents/*");

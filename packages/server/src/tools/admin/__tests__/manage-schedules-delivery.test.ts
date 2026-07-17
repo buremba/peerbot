@@ -9,6 +9,7 @@ import { runtimeConnectionIdToSlug } from "../../../lobu/stores/connections-proj
 import { registerScheduledJobsTicker } from "../../../scheduled/scheduled-jobs-service";
 import type { ToolContext } from "../../registry";
 import { manageSchedules } from "../manage_schedules";
+import { createTestBehaviorSubscription } from "../../../__tests__/setup/behavior-subscriptions";
 
 const ORG = "org-scheduled-delivery";
 const AGENT = "agent-scheduled-delivery";
@@ -58,6 +59,10 @@ describe("manage_schedules wake_agent chat delivery", () => {
   beforeEach(async () => {
     await resetTestDatabase();
     await seedAgentRow(AGENT, { organizationId: ORG, ownerUserId: USER });
+		await getDb()`
+			INSERT INTO "user" (id, email, name, username, "emailVerified", "createdAt", "updatedAt")
+			VALUES (${USER}, 'scheduled@example.test', 'Scheduled User', 'scheduled-user', true, NOW(), NOW())
+		`;
   }, 60_000);
 
   test("rejects caller-supplied delivery payload without persisting", async () => {
@@ -224,7 +229,7 @@ describe("manage_schedules wake_agent chat delivery", () => {
     });
   });
 
-  test("requires agentless managed connections to have a matching channel binding", async () => {
+  test("requires agentless managed connections to have a matching message Behavior", async () => {
     await seedChatConnection({
       id: "slackinst-real",
       agentId: null,
@@ -250,12 +255,15 @@ describe("manage_schedules wake_agent chat delivery", () => {
     );
     expect(missingBinding.error).toMatch(/channel is not bound/);
 
-    await getDb()`
-      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
-      SELECT ${ORG}, ${AGENT}, 'slack', 'C-real', 'T-real', id
-      FROM connections
-      WHERE organization_id = ${ORG} AND slug = ${runtimeConnectionIdToSlug("slackinst-real")}
-    `;
+		await createTestBehaviorSubscription({
+			organizationId: ORG,
+			agentId: AGENT,
+			connectionSlug: runtimeConnectionIdToSlug("slackinst-real"),
+			platform: "slack",
+			channelId: "C-real",
+			teamId: "T-real",
+			configuredBy: USER,
+		});
 
     const withBinding = await manageSchedules(
       {

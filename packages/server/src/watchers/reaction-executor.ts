@@ -145,7 +145,7 @@ export async function extractReactionInputSchema(
 /**
  * Compile a TypeScript reaction script to JavaScript using esbuild.
  *
- * Stays exported because `manage_watchers` create and set_reaction_script call
+ * Stays exported because `manage_behaviors` create and set_reaction_script call
  * it at save time to surface compile errors back to the agent. Run-time compile
  * also happens inside `runScript` itself; this is a fast-path for
  * pre-validation.

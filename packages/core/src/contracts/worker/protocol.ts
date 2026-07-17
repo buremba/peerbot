@@ -26,6 +26,36 @@
 
 import { type Static, Type } from "@sinclair/typebox";
 
+// Wire mirror of connector-sdk's ConnectorBehaviorSignalDraftSchema. Core is
+// deliberately dependency-free from connector-sdk; both the worker and gateway
+// compile against this schema at the HTTP boundary.
+const ConnectorBehaviorSignalDraftSchema = Type.Object(
+  {
+    event_type: Type.String({ minLength: 1, maxLength: 100 }),
+    updated_event_type: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 100 })
+    ),
+    resource_type: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+    resource_ref: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+    label: Type.String({ minLength: 1, maxLength: 300 }),
+    input_text: Type.String({ maxLength: 32_000 }),
+    url: Type.Optional(Type.String({ maxLength: 2_000 })),
+    occurred_at: Type.Optional(Type.String({ maxLength: 64 })),
+    attributes: Type.Optional(
+      Type.Record(
+        Type.String({ maxLength: 100 }),
+        Type.Union([
+          Type.String({ maxLength: 1_000 }),
+          Type.Number(),
+          Type.Boolean(),
+          Type.Null(),
+        ])
+      )
+    ),
+  },
+  { additionalProperties: false }
+);
+
 /** Run kinds the poller can hand back. */
 export const RunTypeSchema = Type.Union([
   Type.Literal("sync"),
@@ -154,6 +184,9 @@ export const ContentItemSchema = Type.Object({
   embedding_model: Type.Optional(Type.String()),
   origin_type: Type.Optional(Type.String()),
   semantic_type: Type.Optional(Type.String()),
+  behavior_signals: Type.Optional(
+    Type.Array(ConnectorBehaviorSignalDraftSchema, { maxItems: 16 })
+  ),
 });
 
 /**

@@ -549,7 +549,7 @@ function diffRelationshipType(
 
 /**
  * Watcher drift fields split into two routing categories:
- *   - **scalar** lives on the `watchers` row → `manage_watchers update`.
+ *   - **scalar** lives on the `watchers` row → `manage_behaviors update`.
  *   - **version-bound** lives on the `watcher_versions` row → must go through
  *     `create_version` + `upgrade` (server-side bumps `current_version_id`).
  * The diff returns both lists; apply-cmd routes accordingly.
@@ -576,6 +576,12 @@ function diffWatcher(
   const scalar: string[] = [];
   if ((desired.schedule ?? null) !== (remote.schedule ?? null)) {
     scalar.push("schedule");
+  }
+  if (
+    desired.triggers !== undefined &&
+    !deepEqual(desired.triggers, remote.triggers ?? [])
+  ) {
+    scalar.push("triggers");
   }
   if (desired.agent !== (remote.agent_id ?? "")) {
     scalar.push("agent_id");

@@ -40,6 +40,15 @@ let ORG_ID = "";
 // (FK → "user"), so the claim's `createdBy` must be an actual user.
 let USER_ID = "";
 
+async function clearChatBehaviors(): Promise<void> {
+  await getDb()`
+    UPDATE watchers
+    SET status = 'archived', updated_at = current_timestamp
+    WHERE status = 'active'
+      AND tags @> ARRAY['system:chat-link']::text[]
+  `;
+}
+
 // The `link` command computes platform/surface/canonical-channel from the
 // command context before calling `consumePreviewClaim`; mirror that here so the
 // direct-call tests exercise the same shape a real Slack `/lobu link` produces.
@@ -93,7 +102,7 @@ async function createClaim(
   return res.body.code as string;
 }
 
-describe("Slack Preview claims + channel bindings", () => {
+describe("Slack Preview claims + channel Behaviors", () => {
   beforeAll(async () => {
     await cleanupTestDatabase();
     const org = await createTestOrganization({
@@ -131,7 +140,7 @@ describe("Slack Preview claims + channel bindings", () => {
 
   beforeEach(async () => {
     const sql = getDb();
-    await sql`DELETE FROM agent_channel_bindings`;
+    await clearChatBehaviors();
     await sql`DELETE FROM chat_user_identities`;
     await sql`DELETE FROM oauth_states WHERE scope = 'slack-preview-claim'`;
   });
@@ -195,7 +204,7 @@ describe("Slack Preview claims + channel bindings", () => {
 
     const sql = getDb();
     const rows = await sql`
-      SELECT channel_id, team_id FROM agent_channel_bindings WHERE platform = 'telegram'
+      SELECT channel_id, team_id FROM behavior_channel_subscriptions WHERE platform = 'telegram'
     `;
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ channel_id: "12345", team_id: null });
@@ -219,7 +228,7 @@ describe("Slack Preview claims + channel bindings", () => {
     const sql = getDb();
     const rows = await sql`
       SELECT agent_id, platform, channel_id, team_id
-      FROM agent_channel_bindings WHERE platform = 'slack'
+      FROM behavior_channel_subscriptions WHERE platform = 'slack'
     `;
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -250,7 +259,7 @@ describe("Slack Preview claims + channel bindings", () => {
 
     const sql = getDb();
     const rows = await sql`
-      SELECT agent_id FROM agent_channel_bindings
+      SELECT agent_id FROM behavior_channel_subscriptions
       WHERE platform = 'slack' AND channel_id = 'slack:Csame' AND team_id = ${TEAM_ID}
     `;
     expect(rows).toHaveLength(1);
@@ -273,7 +282,7 @@ describe("Slack Preview claims + channel bindings", () => {
       await consumeSlack({ code, teamId: TEAM_ID, channelId: "D1" })
     ).toEqual({ status: "not_found" });
     const bindings =
-      await sql`SELECT 1 FROM agent_channel_bindings WHERE platform = 'slack'`;
+      await sql`SELECT 1 FROM behavior_channel_subscriptions WHERE platform = 'slack'`;
     expect(bindings).toHaveLength(0);
   });
 
@@ -297,7 +306,7 @@ describe("Slack Preview claims + channel bindings", () => {
     ).toMatchObject({ status: "bound", agentId: AGENT_ID });
     const sql = getDb();
     const rows = await sql`
-      SELECT channel_id FROM agent_channel_bindings
+      SELECT channel_id FROM behavior_channel_subscriptions
       WHERE platform = 'slack' AND team_id = ${TEAM_ID}
     `;
     expect((rows[0] as { channel_id: string }).channel_id).toBe("slack:D999");
@@ -331,7 +340,7 @@ describe("Slack Preview claims + channel bindings", () => {
 
     const sql = getDb();
     const rows = await sql`
-      SELECT agent_id FROM agent_channel_bindings
+      SELECT agent_id FROM behavior_channel_subscriptions
       WHERE platform = 'slack' AND channel_id = 'slack:D777' AND team_id = ${TEAM_ID}
     `;
     expect((rows[0] as { agent_id: string }).agent_id).toBe(AGENT_ID);
@@ -399,7 +408,7 @@ describe("Public preview — /lobu try a demo agent", () => {
   });
 
   beforeEach(async () => {
-    await getDb()`DELETE FROM agent_channel_bindings`;
+    await clearChatBehaviors();
   });
 
   test("listPreviewAgents returns the org's agents, excluding the connection's owning agent", async () => {
@@ -425,7 +434,7 @@ describe("Public preview — /lobu try a demo agent", () => {
     expect(res).toEqual({ status: "bound", agentId: DEMO_A });
 
     const rows = await getDb()`
-      SELECT agent_id, channel_id, team_id FROM agent_channel_bindings WHERE platform = 'slack'
+      SELECT agent_id, channel_id, team_id FROM behavior_channel_subscriptions WHERE platform = 'slack'
     `;
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ agent_id: DEMO_A, channel_id: "slack:D100", team_id: TEAM_ID });
@@ -442,7 +451,7 @@ describe("Public preview — /lobu try a demo agent", () => {
     });
     expect(res).toMatchObject({ status: "bound", agentId: DEMO_B });
     const rows = await getDb()`
-      SELECT agent_id FROM agent_channel_bindings WHERE channel_id = 'slack:Dswap' AND team_id = ${TEAM_ID}
+      SELECT agent_id FROM behavior_channel_subscriptions WHERE channel_id = 'slack:Dswap' AND team_id = ${TEAM_ID}
     `;
     expect(rows).toHaveLength(1);
     expect((rows[0] as { agent_id: string }).agent_id).toBe(DEMO_B);
@@ -461,7 +470,7 @@ describe("Public preview — /lobu try a demo agent", () => {
         teamId: TEAM_ID, channelId: canonicalSlackChannelId("D200"),
       })
     ).toEqual({ status: "not_available" });
-    expect(await getDb()`SELECT 1 FROM agent_channel_bindings`).toHaveLength(0);
+    expect(await getDb()`SELECT 1 FROM behavior_channel_subscriptions`).toHaveLength(0);
   });
 
   test("reports no_connection for an unknown connection id", async () => {
@@ -493,7 +502,7 @@ describe("Public preview — /lobu try a demo agent", () => {
     expect(handled).toBe(true);
     expect(replies.join("\n")).toContain(`\`${DEMO_A}\``);
     const rows = await getDb()`
-      SELECT agent_id FROM agent_channel_bindings WHERE channel_id = 'slack:D777' AND team_id = ${TEAM_ID}
+      SELECT agent_id FROM behavior_channel_subscriptions WHERE channel_id = 'slack:D777' AND team_id = ${TEAM_ID}
     `;
     expect((rows[0] as { agent_id: string }).agent_id).toBe(DEMO_A);
 
@@ -570,7 +579,7 @@ describe("chat-user identity + codeless re-link by agent id", () => {
 
   beforeEach(async () => {
     const sql = getDb();
-    await sql`DELETE FROM agent_channel_bindings`;
+    await clearChatBehaviors();
     await sql`DELETE FROM chat_user_identities`;
     await sql`DELETE FROM oauth_states WHERE scope = 'slack-preview-claim'`;
   });
@@ -622,7 +631,7 @@ describe("chat-user identity + codeless re-link by agent id", () => {
       })
     ).toEqual({ status: "bound" });
     const rows = await getDb()`
-      SELECT agent_id FROM agent_channel_bindings WHERE channel_id = 'slack:D901' AND team_id = ${ID_TEAM}
+      SELECT agent_id FROM behavior_channel_subscriptions WHERE channel_id = 'slack:D901' AND team_id = ${ID_TEAM}
     `;
     expect((rows[0] as { agent_id: string }).agent_id).toBe("second-agent");
 
@@ -662,7 +671,7 @@ describe("chat-user identity + codeless re-link by agent id", () => {
     });
     expect(replies.join("\n")).toContain("`second-agent`");
     const rows = await getDb()`
-      SELECT agent_id FROM agent_channel_bindings WHERE channel_id = 'slack:D903' AND team_id = ${ID_TEAM}
+      SELECT agent_id FROM behavior_channel_subscriptions WHERE channel_id = 'slack:D903' AND team_id = ${ID_TEAM}
     `;
     expect((rows[0] as { agent_id: string }).agent_id).toBe("second-agent");
 

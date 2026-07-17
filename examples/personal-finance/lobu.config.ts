@@ -3,7 +3,7 @@ import {
   defineConfig,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   secret,
 } from "@lobu/cli/config";
 
@@ -1113,11 +1113,11 @@ const transfer_pair = defineRelationshipType({
     "Two transactions are the two legs of an internal transfer between accounts the same subject controls (e.g. Jane's current → Jane's savings). Salary or distributions crossing subject boundaries (Ltd current → Jane personal) are NOT internal transfers and must not be linked here. Symmetric. When this link exists, neither side counts as taxable income or as an allowable expense.",
 });
 
-const gmail_txWatcher = defineWatcher({
+const gmail_txWatcher = defineBehavior({
   agent: personal_finance,
   slug: "gmail-tx",
   name: "Gmail financial-event extractor",
-  schedule: "*/30 * * * *",
+  triggers: [{ kind: "schedule", cron: "*/30 * * * *" }],
   notification: { priority: "low" },
   minCooldownSeconds: 300,
   tags: ["personal-finance", "gmail", "ingestion"],
@@ -1200,5 +1200,5 @@ export default defineConfig({
     spouse_of,
     transfer_pair,
   ],
-  watchers: [gmail_txWatcher, net_worth_watcher],
+  behaviors: [gmail_txWatcher, net_worth_watcher],
 });

@@ -9,6 +9,10 @@
 // contract — see that file for why connector-sdk, not core). Imported for local
 // use (ReflectResult) and re-exported below for connector authors.
 import type { EntityTypeContribution, ReflectedMeasure } from './metrics.js';
+import type {
+  ConnectorBehaviorEvent,
+  ConnectorBehaviorSignalDraft,
+} from './behavior-triggers.js';
 
 // =============================================================================
 // Connector Definition
@@ -40,6 +44,8 @@ export interface ConnectorDefinition {
   feeds?: Record<string, FeedDefinition>;
   /** Available action definitions (keyed by action_key) */
   actions?: Record<string, ActionDefinition>;
+  /** Connector-normalized events that can activate Behaviors. */
+  behaviorEvents?: ConnectorBehaviorEvent[];
   /**
    * Declarative inbound-webhook config. Presence means this connector receives
    * real-time provider deliveries at `POST /api/v1/webhooks/:connectionId`,
@@ -720,6 +726,8 @@ export interface EventEnvelope {
   metadata?: Record<string, unknown>;
   /** Pre-computed embedding vector */
   embedding?: number[];
+  /** Connector-normalized Behavior activations derived from this event. */
+  behavior_signals?: ConnectorBehaviorSignalDraft[];
 }
 
 // =============================================================================

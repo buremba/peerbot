@@ -12,8 +12,8 @@
  * That overlap is a deadlock cycle: TRUNCATE takes `AccessExclusiveLock` on the
  * tables in list order, while a concurrent FK-bearing INSERT takes
  * `RowExclusiveLock` on the child then needs `RowShareLock` on the referenced
- * parent (e.g. `agent_connections → organization`, and since #1604
- * `agent_channel_bindings → connections`). Opposite lock-acquire orders → when
+ * parent (for example a connection child row → organization). Opposite
+ * lock-acquire orders → when
  * Postgres aborts OUR `db.begin(…)` TRUNCATE as the victim, the `40P01`
  * propagated out of `cleanupTestDatabase()` and failed whichever test's
  * `beforeEach` ran it (surfaced after #1607 narrowed the catch to rethrow

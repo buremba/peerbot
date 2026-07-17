@@ -4,7 +4,7 @@ import {
   defineConfig,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   secret,
 } from "@lobu/cli/config";
 import type DocuSignEnvelopesConnector from "./docusign-envelopes.connector.ts";
@@ -169,11 +169,11 @@ const createsRisk = defineRelationshipType({
   description: "Keep legal risk linked to the clause or term that caused it.",
 });
 
-const contractReviewTracker = defineWatcher({
+const contractReviewTracker = defineBehavior({
   agent: legalReview,
   slug: "contract-review-tracker",
   name: "Contract review tracker",
-  schedule: "0 8 * * 1-5",
+  triggers: [{ kind: "schedule", cron: "0 8 * * 1-5" }],
   notification: { priority: "high" },
   tags: ["legal", "contract", "daily"],
   minCooldownSeconds: 1800,
@@ -196,5 +196,5 @@ export default defineConfig({
   agents: [legalReview],
   entities: [clause, contract, counterparty, risk],
   relationships: [belongsToCounterparty, containsClause, createsRisk],
-  watchers: [contractReviewTracker],
+  behaviors: [contractReviewTracker],
 });

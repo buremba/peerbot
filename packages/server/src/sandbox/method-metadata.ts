@@ -445,7 +445,7 @@ export default async (ctx, client) => {
 	// watchers
 	"watchers.manage": {
 		summary:
-			"Raw manage_watchers action wrapper. Prefer named methods such as watchers.trigger or watchers.createVersion.",
+			"Raw manage_behaviors action wrapper. Prefer named methods such as watchers.trigger or watchers.createVersion.",
 		access: "external",
 		example:
 			"await client.watchers.manage({ action: 'trigger', watcher_id: '42' });",

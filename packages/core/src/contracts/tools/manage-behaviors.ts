@@ -1,5 +1,100 @@
 import { type Static, Type } from "@sinclair/typebox";
 
+const BehaviorTriggerMatchValueSchema = Type.Union([
+  Type.String(),
+  Type.Number(),
+  Type.Boolean(),
+  Type.Null(),
+]);
+
+/**
+ * Connector event activation for a Behavior. Triggers and context sources are
+ * deliberately separate: a trigger decides when to run, while a source only
+ * decides which durable data is available to that run.
+ */
+export const BehaviorEventTriggerSchema = Type.Object(
+  {
+    kind: Type.Literal("event"),
+    connector_key: Type.String({ minLength: 1, maxLength: 100 }),
+    connection_id: Type.Optional(Type.Integer({ minimum: 1 })),
+    event_types: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), {
+      minItems: 1,
+      maxItems: 32,
+      uniqueItems: true,
+    }),
+    match: Type.Optional(
+      Type.Record(Type.String(), BehaviorTriggerMatchValueSchema, {
+        description:
+          "Connector-normalized exact-match fields such as resource_ref or channel_id.",
+      })
+    ),
+    execution: Type.Optional(
+      Type.Union([Type.Literal("turn"), Type.Literal("window")], {
+        description:
+          '"turn" renders the incoming event as the agent input (chat/listen); "window" runs the existing watcher analysis flow.',
+        default: "turn",
+      })
+    ),
+    active_run: Type.Optional(
+      Type.Union(
+        [
+          Type.Literal("queue"),
+          Type.Literal("coalesce"),
+          Type.Literal("steer"),
+        ],
+        {
+          description:
+            "What to do when this Behavior is busy: queue every event, combine waiting events, or steer the current trusted chat turn.",
+          default: "queue",
+        }
+      )
+    ),
+    output: Type.Optional(
+      Type.Union([Type.Literal("silent"), Type.Literal("reply_to_source")], {
+        description:
+          "Keep the result in Lobu or send it back through the source connector when supported.",
+        default: "silent",
+      })
+    ),
+    skip_if_unchanged: Type.Optional(
+      Type.Boolean({
+        description:
+          "For window execution, do not enqueue an agent run when connector polling produced no durable source change.",
+        default: true,
+      })
+    ),
+  },
+  { additionalProperties: false }
+);
+export type BehaviorEventTrigger = Static<typeof BehaviorEventTriggerSchema>;
+
+export const BehaviorScheduleTriggerSchema = Type.Object(
+  {
+    kind: Type.Literal("schedule"),
+    cron: Type.String({ minLength: 1, maxLength: 120 }),
+    timezone: Type.Optional(
+      Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()])
+    ),
+    execution: Type.Optional(Type.Literal("window", { default: "window" })),
+    active_run: Type.Optional(
+      Type.Union([Type.Literal("queue"), Type.Literal("coalesce")], {
+        default: "coalesce",
+      })
+    ),
+    skip_if_unchanged: Type.Optional(Type.Boolean({ default: true })),
+  },
+  { additionalProperties: false }
+);
+export type BehaviorScheduleTrigger = Static<
+  typeof BehaviorScheduleTriggerSchema
+>;
+
+export const BehaviorTriggerSchema = Type.Union([
+  BehaviorEventTriggerSchema,
+  BehaviorScheduleTriggerSchema,
+]);
+export type BehaviorTrigger = Static<typeof BehaviorTriggerSchema>;
+
 export const WatcherSourceSchema = Type.Object({
   name: Type.String(),
   query: Type.String(),
@@ -95,7 +190,7 @@ export const SourceSchema = Type.Object({
 });
 
 // Flattened schema for MCP compatibility (MCP doesn't support top-level unions)
-export const ManageWatchersSchema = Type.Object({
+export const ManageBehaviorsSchema = Type.Object({
   action: Type.Union(
     [
       Type.Literal("create", {
@@ -215,6 +310,14 @@ export const ManageWatchersSchema = Type.Object({
     Type.Union([Type.String(), Type.Null()], {
       description:
         '[create/update/create_version] Cron expression for watcher schedule (e.g. "0 * * * *" for hourly, "0 9 * * *" for daily at 9am). Null clears the schedule (an unscheduled/manual watcher).',
+    })
+  ),
+  triggers: Type.Optional(
+    Type.Array(BehaviorTriggerSchema, {
+      minItems: 0,
+      maxItems: 16,
+      description:
+        "[create/update/create_version] Canonical Behavior activations. Schedule is retained as a compatibility input but is derived from the schedule trigger when triggers are provided.",
     })
   ),
   timezone: Type.Optional(
@@ -432,11 +535,11 @@ export const ManageWatchersSchema = Type.Object({
 // Type Definitions
 // ============================================
 
-export type ManageWatchersArgs = Static<typeof ManageWatchersSchema>;
+export type ManageBehaviorsArgs = Static<typeof ManageBehaviorsSchema>;
 
 /**
- * The watcher columns a `manage_watchers` UPDATE persists — a type-only `Pick`
- * of {@link ManageWatchersArgs} so the field TYPES are reused from the single
+ * The watcher columns a `manage_behaviors` UPDATE persists — a type-only `Pick`
+ * of {@link ManageBehaviorsArgs} so the field TYPES are reused from the single
  * source (no re-typing); the STORED shape is these fields after the
  * write-normalization {@link normalizeWatcherUpdatePatch} applies.
  *
@@ -446,10 +549,11 @@ export type ManageWatchersArgs = Static<typeof ManageWatchersSchema>;
  * DERIVED column, not a proposable field.
  */
 export type WatcherUpdatePatch = Pick<
-  ManageWatchersArgs,
+  ManageBehaviorsArgs,
   | "model_config"
   | "execution_config"
   | "schedule"
+  | "triggers"
   | "timezone"
   | "agent_id"
   | "scheduler_client_id"
@@ -482,13 +586,13 @@ export function normalizeWatcherTags(values: unknown): string[] {
 }
 
 /**
- * The SINGLE SOURCE OF TRUTH for a `manage_watchers` UPDATE's write-normalization
+ * The SINGLE SOURCE OF TRUTH for a `manage_behaviors` UPDATE's write-normalization
  * — the exact value each applied field STORES. Shared by the apply handler
  * (feeds the UPDATE SET clause) and the config-approval review's `proposedAfter`
  * (the pending-proposal endpoint), so "displayed == applied" can't drift: the
  * review shows precisely what this same function tells the handler to write.
  *
- * A `manage_watchers` update is a PATCH — only keys PRESENT in `args` are
+ * A `manage_behaviors` update is a PATCH — only keys PRESENT in `args` are
  * returned (absent keys keep their current values). Coercions mirror the stored
  * shape EXACTLY, incl. the ones that used to live only in the SQL params:
  *   - model_config ?? {}
@@ -501,7 +605,7 @@ export function normalizeWatcherTags(values: unknown): string[] {
  *     the write applies) — NOT coerced to undefined, which would hide the clear.
  */
 export function normalizeWatcherUpdatePatch(
-  args: ManageWatchersArgs
+  args: ManageBehaviorsArgs
 ): WatcherUpdatePatch {
   const patch: WatcherUpdatePatch = {};
   if (args.model_config !== undefined)
@@ -511,6 +615,7 @@ export function normalizeWatcherUpdatePatch(
   if (args.execution_config !== undefined)
     patch.execution_config = args.execution_config ?? null;
   if (args.schedule !== undefined) patch.schedule = args.schedule || null;
+  if (args.triggers !== undefined) patch.triggers = args.triggers;
   if (args.timezone !== undefined) patch.timezone = args.timezone ?? null;
   if (args.agent_id !== undefined) patch.agent_id = args.agent_id ?? null;
   if (args.scheduler_client_id !== undefined)
@@ -529,7 +634,7 @@ export function normalizeWatcherUpdatePatch(
 }
 
 /**
- * Result of `manage_watchers` — a discriminated union keyed on `action`.
+ * Result of `manage_behaviors` — a discriminated union keyed on `action`.
  * TypeBox-first: the TS type is `Static<>`-derived, and the same schema is the
  * tool's `outputSchema`. Well-structured variants are precise; the genuinely
  * dynamic variants (`get_version_details` carries an open index signature,
@@ -537,14 +642,14 @@ export function normalizeWatcherUpdatePatch(
  * embeds a large doc tree) use permissive object shapes so the schema is
  * honest rather than a brittle mirror of shapes that are intentionally open.
  */
-export const ManageWatchersDeleteResultSchema = Type.Object({
+export const ManageBehaviorsDeleteResultSchema = Type.Object({
   watcher_id: Type.String(),
   success: Type.Boolean(),
   message: Type.String(),
   version: Type.Optional(Type.Integer()),
 });
 
-export const ManageWatchersFeedbackItemSchema = Type.Object({
+export const ManageBehaviorsFeedbackItemSchema = Type.Object({
   id: Type.Integer(),
   window_id: Type.Integer(),
   field_path: Type.String(),
@@ -561,7 +666,7 @@ export const ManageWatchersFeedbackItemSchema = Type.Object({
   window_end: Type.Optional(Type.String()),
 });
 
-export const ManageWatchersPromotedEntitySchema = Type.Object({
+export const ManageBehaviorsPromotedEntitySchema = Type.Object({
   id: Type.Integer(),
   name: Type.String(),
   entity_type: Type.String(),
@@ -571,7 +676,7 @@ export const ManageWatchersPromotedEntitySchema = Type.Object({
   stable_key: Type.Union([Type.String(), Type.Null()]),
 });
 
-export const ManageWatchersResultSchema = Type.Union([
+export const ManageBehaviorsResultSchema = Type.Union([
   Type.Object({
     action: Type.Literal("create"),
     watcher_id: Type.String(),
@@ -608,7 +713,7 @@ export const ManageWatchersResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("delete"),
-    results: Type.Array(ManageWatchersDeleteResultSchema),
+    results: Type.Array(ManageBehaviorsDeleteResultSchema),
     summary: Type.Object({
       total: Type.Integer(),
       successful: Type.Integer(),
@@ -654,12 +759,12 @@ export const ManageWatchersResultSchema = Type.Union([
   Type.Object({
     action: Type.Literal("get_feedback"),
     watcher_id: Type.String(),
-    feedback: Type.Array(ManageWatchersFeedbackItemSchema),
+    feedback: Type.Array(ManageBehaviorsFeedbackItemSchema),
   }),
   Type.Object({
     action: Type.Literal("list_promoted"),
     watcher_id: Type.String(),
-    entities: Type.Array(ManageWatchersPromotedEntitySchema),
+    entities: Type.Array(ManageBehaviorsPromotedEntitySchema),
   }),
   Type.Object({
     action: Type.Literal("create_from_version"),
@@ -695,11 +800,11 @@ export const ManageWatchersResultSchema = Type.Union([
   }),
 ]);
 
-export type ManageWatchersResult = Static<typeof ManageWatchersResultSchema>;
+export type ManageBehaviorsResult = Static<typeof ManageBehaviorsResultSchema>;
 
 /**
  * Proposed watcher-definition mutation held in `runs.action_input` for a
- * builder-gate run. Captures the original manage_watchers args so approve can
+ * builder-gate run. Captures the original manage_behaviors args so approve can
  * re-run the same write handler.
  *
  * Also persists the acting principal resolved at queue time so apply can
@@ -711,8 +816,8 @@ export type ManageWatchersResult = Static<typeof ManageWatchersResultSchema>;
  * update `base`); a straight re-run is the launch path — a stale approval may
  * clobber a newer edit (ownership re-check still rejects foreign owners).
  */
-export interface ManageWatchersProposal {
-  args: ManageWatchersArgs;
+export interface ManageBehaviorsProposal {
+  args: ManageBehaviorsArgs;
   /** Resolved `actor.ownerAgentId ?? actor.id` at queue time; null for humans. */
   actingAgentId: string | null;
   /** Session `actingWatcherId` at queue time, if any. */

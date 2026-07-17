@@ -167,7 +167,7 @@ describe("applyCommand --dry-run", () => {
       fetchImpl: fetchStub,
     });
 
-    // The snapshot phase uses POST for manage_entity_schema (list), manage_watchers,
+    // The snapshot phase uses POST for manage_entity_schema (list), manage_behaviors,
     // manage_connections (list) — these are read-only POSTs. The key invariant is:
     // no agent-create (POST /agents), no agent-patch (PATCH /agents/*), no platform
     // upsert (PUT .../platforms/by-stable-id/...), no settings patch, no watcher
@@ -181,7 +181,7 @@ describe("applyCommand --dry-run", () => {
       if (c.method === "POST") {
         // List-action POSTs are OK (snapshot)
         if (c.url.includes("manage_entity_schema")) return false;
-        if (c.url.includes("manage_watchers")) return false;
+        if (c.url.includes("manage_behaviors")) return false;
         if (c.url.includes("manage_connections")) return false;
         if (c.url.includes("manage_feeds")) return false;
         if (c.url.includes("manage_auth_profiles")) return false;

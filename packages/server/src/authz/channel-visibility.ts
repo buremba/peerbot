@@ -32,10 +32,10 @@ import { CHANNEL_READ_IDENTITIES, channelReadIdentityFor } from './sources.js';
 /** A bound channel the gate decides on. Mirrors the fields `resolveBoundChannelRows`
  * returns (`id` is the connection id). */
 export interface GatedChannelRow {
-  /** Connection id that owns the channel binding. */
+  /** Connection id that owns the channel subscription. */
   id: string;
   platform: string;
-  /** As stored on the binding — may be platform-prefixed (`slack:C…`) or bare. */
+  /** As projected from the Behavior — may be platform-prefixed (`slack:C…`) or bare. */
   channel_id: string;
   /** Workspace/tenant id (Slack `T…`); required to form the team-scoped key. */
   team_id: string | null;

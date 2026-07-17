@@ -192,6 +192,20 @@ export { nixPackageAttrRef } from './nix-package.js';
 export { withHttpRetry } from './retry.js';
 // Scoring
 export { calculateEngagementScore } from './scoring.js';
+export {
+  ConnectorBehaviorEventSchema,
+  ConnectorBehaviorSignalDraftSchema,
+  SubscriptionCandidateSchema,
+} from './behavior-triggers.js';
+export type {
+  BehaviorEventTrigger,
+  BehaviorScheduleTrigger,
+  BehaviorTrigger,
+  ConnectorBehaviorEvent,
+  ConnectorBehaviorSignalDraft,
+  ConnectorTriggerSignal,
+  SubscriptionCandidate,
+} from './behavior-triggers.js';
 export type { WatcherTimeGranularity } from './watcher-time.js';
 export {
   addWatcherPeriod,

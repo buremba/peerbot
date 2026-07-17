@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { cleanupTestDatabase, getTestDb } from "../../__tests__/setup/test-db";
+import { createTestBehaviorSubscription } from "../../__tests__/setup/behavior-subscriptions";
 import {
 	createTestAgent,
 	createTestOrganization,
@@ -97,13 +98,14 @@ describe("listConnectionFeeds", () => {
 		});
 
 		// Bind the streaming channel to the agent so `target_agent_id` populates.
-		const sql = getTestDb();
-		await sql`
-			INSERT INTO agent_channel_bindings
-				(agent_id, platform, channel_id, team_id, organization_id, connection_id, created_at)
-			VALUES
-				(${agentId}, 'slack', 'slack:C123', 'T1', ${orgId}, ${connectionId}, NOW())
-		`;
+		await createTestBehaviorSubscription({
+			organizationId: orgId,
+			agentId,
+			connectionId,
+			platform: "slack",
+			channelId: "slack:C123",
+			teamId: "T1",
+		});
 	});
 
 	afterAll(async () => {

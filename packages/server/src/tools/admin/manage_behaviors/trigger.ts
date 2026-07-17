@@ -1,53 +1,62 @@
 /**
- * Trigger and reaction script action handlers for manage_watchers:
+ * Trigger and reaction script action handlers for manage_behaviors:
  *   trigger, set_reaction_script
  */
 
-import { getDb } from '../../../db/client';
-import type { Env } from '../../../index';
-import { isLobuGatewayRunning } from '../../../lobu/gateway';
-import { recordToolConfigChange } from '../helpers/config-audit';
-import logger from '../../../utils/logger';
-import { getWatcherRunInfo, queueAndDispatchWatcherRun } from '../../../watchers/automation';
+import { getDb } from "../../../db/client";
+import type { Env } from "../../../index";
+import { isLobuGatewayRunning } from "../../../lobu/gateway";
+import logger from "../../../utils/logger";
+import {
+  getWatcherRunInfo,
+  queueAndDispatchWatcherRun,
+} from "../../../watchers/automation";
 import {
   compileReactionScript,
   extractReactionInputSchema,
-} from '../../../watchers/reaction-executor';
-import { requireExists } from '../helpers/db-helpers';
-import type { ToolContext } from '../../registry';
-import type { ManageWatchersArgs } from '../manage_watchers';
+} from "../../../watchers/reaction-executor";
+import type { ToolContext } from "../../registry";
+import { recordToolConfigChange } from "../helpers/config-audit";
+import { requireExists } from "../helpers/db-helpers";
+import type { ManageBehaviorsArgs } from "../manage_behaviors";
 
 // ============================================
 // handleTrigger
 // ============================================
 
 export async function handleTrigger(
-  args: ManageWatchersArgs,
-  env: Env
-): Promise<{ action: 'trigger'; watcher_id: string; run_id: number; status: string }> {
+  args: ManageBehaviorsArgs,
+  _env: Env,
+): Promise<{
+  action: "trigger";
+  watcher_id: string;
+  run_id: number;
+  status: string;
+}> {
   const sql = getDb();
 
   if (!args.watcher_id) {
-    throw new Error('watcher_id is required for trigger action');
+    throw new Error("watcher_id is required for trigger action");
   }
 
   if (!isLobuGatewayRunning()) {
-    throw new Error('Embedded Lobu is not available.');
+    throw new Error("Embedded Lobu is not available.");
   }
   const dispatchResult = await queueAndDispatchWatcherRun(
     Number(args.watcher_id),
-    'manual',
-    env,
-    sql
+    "manual",
+    sql,
   );
 
   if (dispatchResult.dispatch.failed > 0) {
     const failedRun = await getWatcherRunInfo(dispatchResult.runId, sql);
-    throw new Error(failedRun?.error_message || 'Failed to dispatch watcher run.');
+    throw new Error(
+      failedRun?.error_message || "Failed to dispatch watcher run.",
+    );
   }
 
   return {
-    action: 'trigger',
+    action: "trigger",
     watcher_id: args.watcher_id,
     run_id: dispatchResult.runId,
     status: dispatchResult.status,
@@ -59,11 +68,11 @@ export async function handleTrigger(
 // ============================================
 
 export async function handleSetReactionScript(
-  args: ManageWatchersArgs,
+  args: ManageBehaviorsArgs,
   _env: Env,
-  ctx: ToolContext
+  ctx: ToolContext,
 ): Promise<{
-  action: 'set_reaction_script';
+  action: "set_reaction_script";
   watcher_id: string;
   has_script: boolean;
   message: string;
@@ -71,10 +80,10 @@ export async function handleSetReactionScript(
   const sql = getDb();
 
   if (!args.watcher_id) {
-    throw new Error('watcher_id is required for set_reaction_script');
+    throw new Error("watcher_id is required for set_reaction_script");
   }
 
-  await requireExists(sql, 'watchers', args.watcher_id, 'Watcher');
+  await requireExists(sql, "watchers", args.watcher_id, "Watcher");
 
   // Reaction script is a group-shared field — every assignment in the
   // group runs the same reactions on its windows. Resolve the group once
@@ -86,7 +95,7 @@ export async function handleSetReactionScript(
 
   const script = args.reaction_script;
 
-  if (!script || script.trim() === '') {
+  if (!script || script.trim() === "") {
     await sql`
       UPDATE watchers
       SET reaction_script = NULL, reaction_script_compiled = NULL,
@@ -94,9 +103,9 @@ export async function handleSetReactionScript(
       WHERE watcher_group_id = ${groupId}
     `;
     recordToolConfigChange(ctx, {
-      resourceKind: 'watcher',
+      resourceKind: "watcher",
       resourceId: args.watcher_id,
-      op: 'updated',
+      op: "updated",
       summary: `Watcher ${args.watcher_id} reaction script removed`,
       state: {
         id: args.watcher_id,
@@ -104,13 +113,13 @@ export async function handleSetReactionScript(
         reaction_script: null,
         reaction_input_schema: null,
       },
-      changedFields: ['reaction_script'],
+      changedFields: ["reaction_script"],
     });
     return {
-      action: 'set_reaction_script',
+      action: "set_reaction_script",
       watcher_id: String(args.watcher_id),
       has_script: false,
-      message: 'Reaction script removed.',
+      message: "Reaction script removed.",
     };
   }
 
@@ -127,12 +136,14 @@ export async function handleSetReactionScript(
     WHERE watcher_group_id = ${groupId}
   `;
 
-  logger.info(`[manage_watchers] Set reaction script for watcher ${args.watcher_id}`);
+  logger.info(
+    `[manage_behaviors] Set reaction script for watcher ${args.watcher_id}`,
+  );
 
   recordToolConfigChange(ctx, {
-    resourceKind: 'watcher',
+    resourceKind: "watcher",
     resourceId: args.watcher_id,
-    op: 'updated',
+    op: "updated",
     summary: `Watcher ${args.watcher_id} reaction script updated`,
     // Snapshot of the fields just written (row not refetched); compiled code
     // is intentionally omitted to keep the state small.
@@ -142,14 +153,14 @@ export async function handleSetReactionScript(
       reaction_script: script,
       reaction_input_schema: reactionInputSchema ?? null,
     },
-    changedFields: ['reaction_script'],
+    changedFields: ["reaction_script"],
   });
 
   return {
-    action: 'set_reaction_script',
+    action: "set_reaction_script",
     watcher_id: String(args.watcher_id),
     has_script: true,
     message:
-      'Reaction script compiled and saved. It will auto-execute on future complete_window calls.',
+      "Reaction script compiled and saved. It will auto-execute on future complete_window calls.",
   };
 }

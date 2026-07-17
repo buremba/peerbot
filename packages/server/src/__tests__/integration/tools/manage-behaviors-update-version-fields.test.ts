@@ -1,5 +1,5 @@
 /**
- * manage_watchers `update` — version-owned fields must not be silently dropped.
+ * manage_behaviors `update` — version-owned fields must not be silently dropped.
  *
  * Bug (red→fix→green): `WATCHER_UPDATE_PATCH_KEYS` advertised `name`,
  * `description`, `prompt`, `sources`, and `entity_ids` as valid
@@ -7,12 +7,12 @@
  * them — `name`/`description`/`prompt`/`sources` are version-owned (live in
  * `watcher_versions`; the watchers-row `name` is cascaded by version
  * activation), `entity_ids` is `create_from_version`-only. (`status` was also
- * listed but isn't on `ManageWatchersArgs` — it's a `list` filter; the entry
+ * listed but isn't on `ManageBehaviorsArgs` — it's a `list` filter; the entry
  * was dead.) So an `update` carrying any of them passed validation and
  * returned success with `updated_fields: []` — a silent no-op the caller
  * believed applied.
  *
- * Contract intent (packages/core/src/contracts/tools/manage-watchers.ts):
+ * Contract intent (packages/core/src/contracts/tools/manage-behaviors.ts):
  *   name/description/prompt → "[create/create_version]"
  *   sources                 → "[create/create_version]" (update was a doc lie)
  *   entity_ids              → "[create_from_version]"
@@ -43,7 +43,7 @@ const TEST_ENV: Env = {
 	RATE_LIMIT_ENABLED: "false",
 };
 
-describe("manage_watchers update — version-owned fields are not silently dropped", () => {
+describe("manage_behaviors update — version-owned fields are not silently dropped", () => {
 	let orgId: string;
 	let ownerId: string;
 	let ownerCtx: AuthContext;
@@ -89,7 +89,7 @@ describe("manage_watchers update — version-owned fields are not silently dropp
 		agentId = agent.agentId;
 
 		const created = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create",
 				slug: "wu-target",
@@ -112,7 +112,7 @@ describe("manage_watchers update — version-owned fields are not silently dropp
 	it("rejects `update` with name only (version-owned) — points to create_version", async () => {
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{ action: "update", watcher_id: watcherId, name: "Renamed" },
 				TEST_ENV,
 				ownerCtx,
@@ -125,7 +125,7 @@ describe("manage_watchers update — version-owned fields are not silently dropp
 	it("rejects `update` with description only — points to create_version", async () => {
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{ action: "update", watcher_id: watcherId, description: "New desc" },
 				TEST_ENV,
 				ownerCtx,
@@ -136,7 +136,7 @@ describe("manage_watchers update — version-owned fields are not silently dropp
 	it("rejects `update` with prompt only — points to create_version", async () => {
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{ action: "update", watcher_id: watcherId, prompt: "New prompt" },
 				TEST_ENV,
 				ownerCtx,
@@ -147,7 +147,7 @@ describe("manage_watchers update — version-owned fields are not silently dropp
 	it("rejects `update` with sources only — points to create_version", async () => {
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{
 					action: "update",
 					watcher_id: watcherId,
@@ -165,7 +165,7 @@ describe("manage_watchers update — version-owned fields are not silently dropp
 		// create_version.
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{
 					action: "update",
 					watcher_id: watcherId,
@@ -182,7 +182,7 @@ describe("manage_watchers update — version-owned fields are not silently dropp
 	it("still applies a legitimate update field (schedule) without name", async () => {
 		// Control: the reject path must not break real updates.
 		const res = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{ action: "update", watcher_id: watcherId, schedule: "0 9 * * *" },
 			TEST_ENV,
 			ownerCtx,
@@ -193,7 +193,7 @@ describe("manage_watchers update — version-owned fields are not silently dropp
 	it("create_version with a new name cascades to the watchers row", async () => {
 		// Positive path: the documented way to rename a watcher.
 		await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create_version",
 				watcher_id: watcherId,

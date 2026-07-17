@@ -1,5 +1,5 @@
 /**
- * Escalation guard on manage_watchers (codex review 9, P1).
+ * Escalation guard on manage_behaviors (codex review 9, P1).
  *
  * A watcher's `agent_id` IS its policy principal — every write the watcher performs
  * folds that agent's envelope. So a NON-HUMAN caller must not be able to set/change
@@ -49,7 +49,7 @@ async function createWatcherAs(
 	slug: string,
 ) {
 	return executeTool(
-		"manage_watchers",
+		"manage_behaviors",
 		{
 			action: "create",
 			slug,
@@ -62,7 +62,7 @@ async function createWatcherAs(
 	);
 }
 
-describe("manage_watchers owner-escalation guard", () => {
+describe("manage_behaviors owner-escalation guard", () => {
 	let workspace: TestWorkspace;
 	let agentA: string;
 	let agentB: string;
@@ -125,7 +125,7 @@ describe("manage_watchers owner-escalation guard", () => {
 		// owner. The guard resolves the effective (inherited) owner and blocks it.
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{
 					action: "create_from_version",
 					version_id: String(ver.id),
@@ -148,7 +148,7 @@ describe("manage_watchers owner-escalation guard", () => {
 		// preserved effective owner (B) isn't A.
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{
 					action: "update",
 					watcher_id: bWatcher.watcher_id,
@@ -182,7 +182,7 @@ describe("manage_watchers owner-escalation guard", () => {
 		// IGNORES it and clones B's owner, so the guard must resolve the SOURCE owner.
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{
 					action: "create_from_version",
 					version_id: String(ver.id),
@@ -223,7 +223,7 @@ describe("manage_watchers owner-escalation guard", () => {
     `;
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{
 					action: "set_reaction_script",
 					watcher_id: wA.watcher_id,

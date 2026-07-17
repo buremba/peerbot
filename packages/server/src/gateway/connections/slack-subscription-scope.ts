@@ -1,10 +1,10 @@
 /**
- * Slack's binding-scope resolver — the ONE place that knows a Slack binding's
+ * Slack's subscription-scope resolver — the ONE place that knows a Slack subscription's
  * `team_id` must be the concrete WORKSPACE (`T…`), never a Grid ENTERPRISE id
  * (`E…`).
  *
- * The generic binding-write path calls `resolveBindingTeam` (see
- * `channels/binding-scope-resolver`); this module registers the Slack rule so no
+ * The generic binding-write path calls `resolveSubscriptionTeam` (see
+ * `channels/subscription-scope-resolver`); this module registers the Slack rule so no
  * connector-specific logic leaks into that path or into the read-side gate/ACL.
  *
  * Resolution order:
@@ -25,9 +25,9 @@
 import { createLogger } from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import type {
-  BindingScopeModule,
-  BindingScopeResolveParams,
-} from "../channels/binding-scope-resolver.js";
+  SubscriptionScopeModule,
+  SubscriptionScopeResolveParams,
+} from "../channels/subscription-scope-resolver.js";
 import { stripPlatformPrefix } from "../channels/bound-channels.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import {
@@ -38,7 +38,7 @@ import {
 import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js";
 import { createSlackWebApi, type SlackWebApi } from "./slack-web.js";
 
-const logger = createLogger("slack-binding-scope");
+const logger = createLogger("slack-subscription-scope");
 
 /**
  * A Slack workspace id is `T…`; a Grid enterprise id is `E…`. This is the one
@@ -70,14 +70,14 @@ async function loadBotTokenRef(
 }
 
 /** Injectable seam so tests drive the resolver with a stub Slack API + store. */
-export interface SlackBindingScopeDeps {
+export interface SlackSubscriptionScopeDeps {
   slackWeb: Pick<SlackWebApi, "conversationInfo">;
   secretStore: SecretStore;
 }
 
-export async function resolveSlackBindingTeam(
-  deps: SlackBindingScopeDeps,
-  params: BindingScopeResolveParams,
+export async function resolveSlackSubscriptionTeam(
+  deps: SlackSubscriptionScopeDeps,
+  params: SubscriptionScopeResolveParams,
 ): Promise<string | null> {
   const { connection, channelId, workspaceHint } = params;
   const stored = connection.externalTenantId;
@@ -100,7 +100,7 @@ export async function resolveSlackBindingTeam(
   if (!tokenRef) {
     logger.info(
       { connectionId: connection.connectionId, channelId },
-      "Slack binding-scope: no bot token to resolve channel workspace — leaving team NULL to heal from inbound",
+      "Slack subscription-scope: no bot token to resolve channel workspace — leaving team NULL to heal from inbound",
     );
     return null;
   }
@@ -128,7 +128,7 @@ export async function resolveSlackBindingTeam(
         channelId,
         error: String(error),
       },
-      "Slack binding-scope: conversations.info failed — leaving team NULL to heal from inbound",
+      "Slack subscription-scope: conversations.info failed — leaving team NULL to heal from inbound",
     );
   }
   return null;
@@ -141,12 +141,12 @@ function slackSecretStore(): SecretStore {
   return new SecretStoreRegistry(pg, { secret: pg });
 }
 
-/** The Slack binding-scope module — wired with the real Slack Web API + the
+/** The Slack subscription-scope module — wired with the real Slack Web API + the
  *  process secret store. Enumerated by the generic resolver's module list. */
-export const slackBindingScopeModule: BindingScopeModule = {
+export const slackSubscriptionScopeModule: SubscriptionScopeModule = {
   key: "slack",
   resolve: (params) =>
-    resolveSlackBindingTeam(
+    resolveSlackSubscriptionTeam(
       { slackWeb: createSlackWebApi(), secretStore: slackSecretStore() },
       params,
     ),

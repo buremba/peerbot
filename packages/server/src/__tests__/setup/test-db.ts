@@ -417,8 +417,8 @@ const TRUNCATE_DEADLOCK_RETRIES = 8;
  *     time, in the order they appear in the list (≈ pg_class order).
  *   - A concurrent `INSERT` into a child table grabs `RowExclusiveLock` on the
  *     child, then needs a `RowShareLock` on each FK-referenced PARENT to
- *     validate the foreign key (`agent_connections → organization/agents`,
- *     and since #1604 `agent_channel_bindings → connections`).
+ *     validate foreign keys (for example
+ *     `agent_connections → organization/agents`).
  *   - If TRUNCATE has already locked the parent and the INSERT already holds the
  *     child, each waits on a lock the other holds → `40P01 deadlock detected`.
  *     Postgres aborts one victim; when the victim is OUR `db.begin(…)` TRUNCATE

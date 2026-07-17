@@ -1,0 +1,272 @@
+import type {
+	BehaviorEventTrigger,
+	BehaviorScheduleTrigger,
+	BehaviorTrigger,
+} from "@lobu/core/contracts/tools/manage-behaviors";
+import type { DbClient } from "../db/client";
+import { listCatalogEntries } from "../catalog/load";
+import { validateSchedule, validateTimezone } from "../utils/cron";
+import { ToolUserError } from "../utils/errors";
+
+export interface BehaviorTriggerProjection {
+	triggers: BehaviorTrigger[];
+	schedule: string | null;
+	timezone: string | null;
+}
+
+interface BehaviorEventDefinition {
+	key: string;
+	capabilities?: {
+		steering?: boolean;
+		replyToSource?: boolean;
+	};
+}
+
+interface ConnectorBehaviorEventCatalog {
+	name: string;
+	events: BehaviorEventDefinition[];
+}
+
+function parseBehaviorEventDefinitions(value: unknown): BehaviorEventDefinition[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter(
+		(item): item is BehaviorEventDefinition =>
+			typeof item === "object" &&
+			item !== null &&
+			typeof (item as { key?: unknown }).key === "string",
+	);
+}
+
+async function getConnectorBehaviorEventCatalog(
+	sql: DbClient,
+	organizationId: string,
+	connectorKey: string,
+): Promise<ConnectorBehaviorEventCatalog> {
+	const rows = await sql`
+		SELECT name, behavior_events
+		FROM connector_definitions
+		WHERE organization_id = ${organizationId}
+		  AND key = ${connectorKey}
+		  AND status = 'active'
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`;
+	const row = rows[0] as
+		| { name: string; behavior_events: unknown }
+		| undefined;
+	if (Array.isArray(row?.behavior_events)) {
+		return {
+			name: row.name,
+			events: parseBehaviorEventDefinitions(row.behavior_events),
+		};
+	}
+
+	// Existing bundled installations predate the persisted event-catalog
+	// column. The immutable bundled catalog is a safe rolling-migration fallback;
+	// new and custom installs persist their own metadata above.
+	const catalog = (await listCatalogEntries(["connectors"])).connectors.find(
+		(entry) => entry.id === connectorKey,
+	);
+	return {
+		name: row?.name ?? catalog?.name ?? connectorKey,
+		events: parseBehaviorEventDefinitions(catalog?.detail.behavior_events),
+	};
+}
+
+function normalizedEventTrigger(
+	trigger: BehaviorEventTrigger,
+): BehaviorEventTrigger {
+	return {
+		...trigger,
+		event_types: Array.from(new Set(trigger.event_types)),
+		match:
+			trigger.match && Object.keys(trigger.match).length > 0
+				? trigger.match
+				: undefined,
+		execution: trigger.execution ?? "turn",
+		active_run: trigger.active_run ?? "queue",
+		output: trigger.output ?? "silent",
+		skip_if_unchanged: trigger.skip_if_unchanged ?? true,
+	};
+}
+
+function normalizedScheduleTrigger(
+	trigger: BehaviorScheduleTrigger,
+): BehaviorScheduleTrigger {
+	const scheduleError = validateSchedule(trigger.cron);
+	if (scheduleError) throw new ToolUserError(scheduleError);
+	if (trigger.timezone) {
+		const timezoneError = validateTimezone(trigger.timezone);
+		if (timezoneError) throw new ToolUserError(timezoneError);
+	}
+	return {
+		kind: "schedule",
+		cron: trigger.cron.trim(),
+		timezone: trigger.timezone ?? null,
+		execution: "window",
+		active_run: trigger.active_run ?? "coalesce",
+		skip_if_unchanged: trigger.skip_if_unchanged ?? true,
+	};
+}
+
+export function normalizeBehaviorTriggers(
+	triggers: BehaviorTrigger[],
+): BehaviorTrigger[] {
+	let scheduleCount = 0;
+	return triggers.map((trigger) => {
+		if (trigger.kind === "schedule") {
+			scheduleCount++;
+			if (scheduleCount > 1) {
+				throw new ToolUserError(
+					"A Behavior can have at most one schedule trigger.",
+				);
+			}
+			return normalizedScheduleTrigger(trigger);
+		}
+		return normalizedEventTrigger(trigger);
+	});
+}
+
+/**
+ * Resolve the canonical trigger array and the indexed schedule projection for a
+ * create/update. Legacy schedule/timezone callers are folded into the trigger
+ * array; callers that send triggers make that array authoritative.
+ */
+export function resolveBehaviorTriggerWrite(args: {
+	triggers?: BehaviorTrigger[];
+	schedule?: string | null;
+	timezone?: string | null;
+	currentTriggers?: BehaviorTrigger[];
+	currentSchedule?: string | null;
+	currentTimezone?: string | null;
+}): BehaviorTriggerProjection {
+	const current = normalizeBehaviorTriggers(args.currentTriggers ?? []);
+	let triggers =
+		args.triggers !== undefined
+			? normalizeBehaviorTriggers(args.triggers)
+			: [...current];
+
+	const suppliedSchedule =
+		args.schedule !== undefined ? args.schedule || null : undefined;
+	const suppliedTimezone =
+		args.timezone !== undefined ? args.timezone ?? null : undefined;
+
+	if (args.triggers === undefined && (suppliedSchedule !== undefined || suppliedTimezone !== undefined)) {
+		const existingSchedule = triggers.find(
+			(trigger): trigger is BehaviorScheduleTrigger =>
+				trigger.kind === "schedule",
+		);
+		const cron =
+			suppliedSchedule !== undefined
+				? suppliedSchedule
+				: existingSchedule?.cron ?? args.currentSchedule ?? null;
+		const timezone =
+			suppliedTimezone !== undefined
+				? suppliedTimezone
+				: existingSchedule?.timezone ?? args.currentTimezone ?? null;
+		triggers = triggers.filter((trigger) => trigger.kind !== "schedule");
+		if (cron) {
+			triggers.push(
+				normalizedScheduleTrigger({
+					kind: "schedule",
+					cron,
+					timezone,
+					execution: "window",
+					active_run: existingSchedule?.active_run ?? "coalesce",
+					skip_if_unchanged:
+						existingSchedule?.skip_if_unchanged ?? true,
+				}),
+			);
+		}
+	}
+
+	const scheduleTrigger = triggers.find(
+		(trigger): trigger is BehaviorScheduleTrigger => trigger.kind === "schedule",
+	);
+	if (
+		args.triggers !== undefined &&
+		suppliedSchedule !== undefined &&
+		suppliedSchedule !== (scheduleTrigger?.cron ?? null)
+	) {
+		throw new ToolUserError(
+			"schedule and triggers disagree; send only triggers or use the same cron value.",
+		);
+	}
+
+	return {
+		triggers,
+		schedule: scheduleTrigger?.cron ?? null,
+		timezone: scheduleTrigger?.timezone ?? null,
+	};
+}
+
+/** Validate connection-scoped triggers against the owning organization. */
+export async function assertBehaviorTriggerConnections(
+	sql: DbClient,
+	organizationId: string,
+	triggers: BehaviorTrigger[],
+): Promise<void> {
+	const eventTriggers = triggers.filter(
+		(trigger): trigger is BehaviorEventTrigger => trigger.kind === "event",
+	);
+	const catalogs = new Map<string, ConnectorBehaviorEventCatalog>();
+	for (const trigger of eventTriggers) {
+		if (trigger.connection_id) {
+			const rows = await sql`
+				SELECT connector_key
+				FROM connections
+				WHERE id = ${trigger.connection_id}
+				  AND organization_id = ${organizationId}
+				  AND deleted_at IS NULL
+				LIMIT 1
+			`;
+			if (rows.length === 0) {
+				throw new ToolUserError(
+					`Connection ${trigger.connection_id} was not found in this organization.`,
+				);
+			}
+			if (String(rows[0]?.connector_key) !== trigger.connector_key) {
+				throw new ToolUserError(
+					`Connection ${trigger.connection_id} is not a ${trigger.connector_key} connection.`,
+				);
+			}
+		}
+
+		let catalog = catalogs.get(trigger.connector_key);
+		if (!catalog) {
+			catalog = await getConnectorBehaviorEventCatalog(
+				sql,
+				organizationId,
+				trigger.connector_key,
+			);
+			catalogs.set(trigger.connector_key, catalog);
+		}
+		if (catalog.events.length === 0) {
+			throw new ToolUserError(
+				`${catalog.name} does not declare any Behavior events.`,
+			);
+		}
+		const eventsByKey = new Map(catalog.events.map((event) => [event.key, event]));
+		for (const eventType of trigger.event_types) {
+			const event = eventsByKey.get(eventType);
+			if (!event) {
+				throw new ToolUserError(
+					`${catalog.name} does not support Behavior event '${eventType}'.`,
+				);
+			}
+			if (trigger.active_run === "steer" && !event.capabilities?.steering) {
+				throw new ToolUserError(
+					`${catalog.name} event '${eventType}' does not support steering.`,
+				);
+			}
+			if (
+				trigger.output === "reply_to_source" &&
+				!event.capabilities?.replyToSource
+			) {
+				throw new ToolUserError(
+					`${catalog.name} event '${eventType}' does not support replying to the source.`,
+				);
+			}
+		}
+	}
+}

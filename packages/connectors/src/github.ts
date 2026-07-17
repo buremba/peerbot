@@ -18,11 +18,17 @@ import {
   type EventAttributionRule,
   type EventEnvelope,
   paginateByOffset,
+  SubscriptionCandidateSchema,
   type SyncContext,
   type SyncResult,
   type WebhookRegistration,
   type WebhookRegistrationContext,
 } from '@lobu/connector-sdk';
+import {
+  GITHUB_BEHAVIOR_EVENTS,
+  githubBehaviorSignalDrafts,
+  githubPullRequestSubscribable,
+} from './github-behavior-events.js';
 import {
   GITHUB_IDENTITY,
   githubKeyForOriginId,
@@ -319,6 +325,7 @@ export default class GitHubConnector extends ConnectorRuntime {
     name: 'GitHub',
     description: 'Collects GitHub issues/discussions and executes repo actions.',
     version: '1.2.0',
+    behaviorEvents: GITHUB_BEHAVIOR_EVENTS,
     faviconDomain: 'github.com',
     webhook: {
       signatureHeader: 'x-hub-signature-256',
@@ -784,6 +791,25 @@ export default class GitHubConnector extends ConnectorRuntime {
             repo_name: { type: 'string' },
           },
         },
+        outputSchema: {
+          type: 'object',
+          required: [
+            'pull_request_id',
+            'pull_number',
+            'url',
+            'state',
+            'draft',
+            'subscribable',
+          ],
+          properties: {
+            pull_request_id: { type: 'integer' },
+            pull_number: { type: 'integer' },
+            url: { type: 'string' },
+            state: { type: 'string' },
+            draft: { type: 'boolean' },
+            subscribable: SubscriptionCandidateSchema,
+          },
+        },
       },
       merge_pull_request: {
         key: 'merge_pull_request',
@@ -1054,6 +1080,8 @@ export default class GitHubConnector extends ConnectorRuntime {
         ...(event.metadata ?? {}),
         github_repo_full_name: fullName,
       };
+      const behaviorSignals = githubBehaviorSignalDrafts(event);
+      if (behaviorSignals.length > 0) event.behavior_signals = behaviorSignals;
     }
   }
 
@@ -1281,6 +1309,8 @@ export default class GitHubConnector extends ConnectorRuntime {
           metadata: {
             updated_at: comment.updated_at,
             reactions: comment.reactions ?? {},
+            repository: `${repo.owner}/${repo.repo}`,
+            pull_number: prNumber ? Number(prNumber) : undefined,
             ...this.buildAuthorMetadata(comment.user),
           },
         };
@@ -1921,6 +1951,10 @@ export default class GitHubConnector extends ConnectorRuntime {
         url: pr.html_url,
         state: pr.state,
         draft: pr.draft ?? false,
+        subscribable: githubPullRequestSubscribable(
+          `${repo.owner}/${repo.repo}`,
+          pr.number
+        ),
       },
     };
   }

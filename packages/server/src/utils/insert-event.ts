@@ -92,13 +92,15 @@ interface InsertEventParams {
   clientId?: string | null;
 }
 
-interface InsertedEvent {
+export interface InsertedEvent {
   id: number;
   entity_ids: number[] | null;
   origin_id: string;
   title: string | null;
   semantic_type: string;
   created_at: string;
+  /** Whether this call landed a new immutable row or reused identical state. */
+  change: 'inserted' | 'superseded' | 'unchanged';
 }
 
 /** Key-order-independent JSON serialization for semantic equality checks. */
@@ -248,7 +250,12 @@ function isEventsClientIdForeignKeyViolation(error: unknown): boolean {
  */
 export async function insertEvent(
   params: InsertEventParams,
-  options?: { onConflictUpdate?: boolean; sql?: DbClient }
+  options?: {
+    onConflictUpdate?: boolean;
+    sql?: DbClient;
+    /** Transactional hook for durable derived work such as Behavior runs. */
+    afterPersist?: (event: InsertedEvent, sql: DbClient) => Promise<void>;
+  }
 ): Promise<InsertedEvent> {
   const sql = options?.sql ?? getDb();
 
@@ -298,7 +305,9 @@ export async function insertEvent(
               params.embeddingModel,
               activeSql
             );
-            return existingRow;
+            const unchanged = { ...existingRow, change: 'unchanged' as const };
+            await options?.afterPersist?.(unchanged, activeSql);
+            return unchanged;
           }
           // Race: the existing row was deleted/tombstoned between the
           // findCurrentEventByOrigin lookup above and the SELECT here. Fall
@@ -434,7 +443,12 @@ export async function insertEvent(
     }
 
     await upsertEmbedding(inserted.id, params.embedding, params.embeddingModel, sql);
-    return inserted;
+    const persisted: InsertedEvent = {
+      ...inserted,
+      change: supersedesEventId === null ? 'inserted' : 'superseded',
+    };
+    await options?.afterPersist?.(persisted, sql);
+    return persisted;
   };
 
   // The dedup path (onConflictUpdate) is a non-atomic read-then-insert: it

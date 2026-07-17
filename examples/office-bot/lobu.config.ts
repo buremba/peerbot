@@ -4,7 +4,7 @@ import {
   defineConfig,
   defineConnection,
   defineEntityType,
-  defineWatcher,
+  defineBehavior,
   reactionFromFile,
   secret,
   skillFromFile,
@@ -126,11 +126,11 @@ const deliverooConn = defineConnection({
   },
 });
 
-const lunchOpen = defineWatcher({
+const lunchOpen = defineBehavior({
   agent: foodOrdering,
   slug: "lunch-open",
   name: "Open the lunch run",
-  schedule: "0 11 * * 1-5",
+  triggers: [{ kind: "schedule", cron: "0 11 * * 1-5" }],
   notification: { priority: "high", channel: "both" },
   tags: ["lunch", "daily"],
   minCooldownSeconds: 600,
@@ -140,11 +140,11 @@ const lunchOpen = defineWatcher({
   // above) — the one source of truth, editable + correctable like any entity.
 });
 
-const lunchFinalize = defineWatcher({
+const lunchFinalize = defineBehavior({
   agent: foodOrdering,
   slug: "lunch-finalize",
   name: "Collect orders and hand off",
-  schedule: "35 11 * * 1-5",
+  triggers: [{ kind: "schedule", cron: "35 11 * * 1-5" }],
   notification: { priority: "high" },
   tags: ["lunch", "daily"],
   minCooldownSeconds: 600,
@@ -171,5 +171,5 @@ export default defineConfig({
   agents: [foodOrdering],
   entities: [lunchRun],
   connections: [deliverooConn],
-  watchers: [lunchOpen, lunchFinalize],
+  behaviors: [lunchOpen, lunchFinalize],
 });

@@ -4,7 +4,7 @@ import {
   defineConfig,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   reactionFromFile,
   secret,
 } from "@lobu/cli/config";
@@ -167,11 +167,11 @@ const summarizedIn = defineRelationshipType({
     "Let agents trace reporting outputs back to the supporting data.",
 });
 
-const reconciliationMonitor = defineWatcher({
+const reconciliationMonitor = defineBehavior({
   agent: finance,
   slug: "reconciliation-monitor",
   name: "Reconciliation monitor",
-  schedule: "0 6 * * 1-5",
+  triggers: [{ kind: "schedule", cron: "0 6 * * 1-5" }],
   notification: { priority: "high", channel: "both" },
   tags: ["finance", "reconciliation", "daily"],
   minCooldownSeconds: 3600,
@@ -195,5 +195,5 @@ export default defineConfig({
   agents: [finance],
   entities: [account, report, transaction, variance],
   relationships: [createsVariance, reconcilesTo, summarizedIn],
-  watchers: [reconciliationMonitor],
+  behaviors: [reconciliationMonitor],
 });

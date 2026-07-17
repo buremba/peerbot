@@ -9,11 +9,18 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import {
+  BehaviorTriggerSchema,
+  type BehaviorTrigger,
   WatcherSourceSchema,
   type WatcherSource,
-} from '@lobu/core/contracts/tools/manage-watchers';
+} from '@lobu/core/contracts/tools/manage-behaviors';
 
-export { WatcherSourceSchema, type WatcherSource };
+export {
+  BehaviorTriggerSchema,
+  type BehaviorTrigger,
+  WatcherSourceSchema,
+  type WatcherSource,
+};
 
 // ============================================
 // Watcher Version
@@ -126,6 +133,7 @@ export const WatcherMetadataSchema = Type.Object({
   slug: Type.String(),
   status: Type.Union([Type.Literal('active'), Type.Literal('archived')]),
   schedule: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  triggers: Type.Optional(Type.Array(BehaviorTriggerSchema)),
   next_run_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   agent_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   /**

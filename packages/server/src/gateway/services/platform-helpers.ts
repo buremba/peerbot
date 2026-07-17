@@ -10,7 +10,7 @@ import {
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { composeEffectiveModelRef } from "../auth/settings/model-selection.js";
 import { getOrgDefaultModel } from "../../lobu/stores/provider-secrets.js";
-import type { ChannelBindingService } from "../channels/binding-service.js";
+import type { BehaviorSubscriptionService } from "../channels/behavior-subscription-service.js";
 
 const logger = createLogger("platform-helpers");
 
@@ -128,6 +128,7 @@ export function buildMessagePayload(params: {
   connectionId?: string;
   messageId: string;
   messageText: string;
+  ephemeralContext?: string;
   channelId: string;
   platformMetadata: Record<string, any>;
   agentOptions: Record<string, any>;
@@ -150,6 +151,7 @@ export function buildMessagePayload(params: {
     organizationId: params.organizationId,
     messageId: params.messageId,
     messageText: params.messageText,
+    ephemeralContext: params.ephemeralContext,
     channelId: params.channelId,
     platformMetadata: params.platformMetadata,
     agentOptions: remainingOptions,
@@ -162,11 +164,11 @@ export function buildMessagePayload(params: {
 
 /**
  * Resolve agent ID for an inbound platform event:
- *   1. existing `agent_channel_bindings` row wins;
+ *   1. an existing channel-subscribed Behavior wins;
  *   2. otherwise fall back to the connection's owning `agentId`.
  *
  * Returns `null` when neither resolves — the caller should drop the message.
- * Pure resolution: never writes a binding.
+ * Pure resolution: never writes a Behavior.
  *
  * `crossOrg` is for hosted preview connections only: the bot lives in one org
  * but `/lobu link <code>` binds agents from OTHER orgs, so the lookup must be
@@ -180,11 +182,11 @@ export async function resolveAgentId(params: {
   agentId?: string;
   organizationId?: string;
 	connectionId?: string;
-  channelBindingService?: ChannelBindingService;
+  behaviorSubscriptionService?: BehaviorSubscriptionService;
   crossOrg?: boolean;
 }): Promise<{
   agentId: string;
-  source: "binding" | "connection";
+  source: "subscription" | "connection";
   organizationId?: string;
   /** Per-binding model override (Listen behavior), when routed via a binding. */
   model?: string;
@@ -195,39 +197,39 @@ export async function resolveAgentId(params: {
     agentId,
     organizationId,
 		connectionId,
-    channelBindingService,
+    behaviorSubscriptionService,
     crossOrg,
   } = params;
 
-  if (channelBindingService) {
-    // Bindings are org-scoped (a channel_id can be bound independently by
+  if (behaviorSubscriptionService) {
+    // Subscriptions are org-scoped (a channel can be handled independently by
     // multiple tenants), so the read MUST be scoped to the inbound
 		// connection's org. Preview connections are the deliberate exception: they
 		// fan out across orgs, but still resolve through that concrete connection.
-		const binding =
+		const subscription =
 			connectionId && organizationId
-				? await channelBindingService.getBindingForConnection(
+				? await behaviorSubscriptionService.resolveForConnection(
 						connectionId,
           channelId,
 						organizationId,
 						crossOrg === true,
 					)
 				: null;
-    if (binding) {
+    if (subscription) {
       logger.info(
         {
-          agentId: binding.agentId,
+          agentId: subscription.agentId,
           platform,
           channelId,
-          bindingOrg: binding.organizationId,
+          subscriptionOrg: subscription.organizationId,
         },
-				"Routing via existing channel binding",
+				"Routing via message Behavior",
       );
       return {
-        agentId: binding.agentId,
-        source: "binding",
-        organizationId: binding.organizationId,
-        model: binding.model,
+        agentId: subscription.agentId,
+        source: "subscription",
+        organizationId: subscription.organizationId,
+        model: subscription.model,
       };
     }
   }

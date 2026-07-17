@@ -1,31 +1,31 @@
 /**
  * ClientSDK `watchers` namespace. Thin, action-complete wrapper over
- * `manageWatchers` + `listWatchers` + `getWatcher`.
+ * `manageBehaviors` + `listWatchers` + `getWatcher`.
  *
- * Keep this surface in sync with `ManageWatchersSchema`: every
- * `manage_watchers.action` should either have a named SDK method below or be
+ * Keep this surface in sync with `ManageBehaviorsSchema`: every
+ * `manage_behaviors.action` should either have a named SDK method below or be
  * reachable via `watchers.manage({ action, ... })`.
  */
 
 import type { Env } from "../../index";
 import {
 	listWatchers,
-	type ManageWatchersArgs,
-	manageWatchers,
-} from "../../tools/admin/manage_watchers";
+	type ManageBehaviorsArgs,
+	manageBehaviors,
+} from "../../tools/admin/manage_behaviors";
 import { getWatcher } from "../../tools/get_watchers";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
 type WatcherId = string;
 type Source = { name: string; query: string };
-type WatcherActionInput = Omit<ManageWatchersArgs, "action" | "watcher_id"> & {
+type WatcherActionInput = Omit<ManageBehaviorsArgs, "action" | "watcher_id"> & {
 	watcher_id?: WatcherId;
 };
 
 /**
  * Per-watcher device-worker CLI execution settings (mirrors the
- * `watchers.execution_config` jsonb and the manage_watchers TypeBox schema).
+ * `watchers.execution_config` jsonb and the manage_behaviors TypeBox schema).
  * Every field is optional; omitted fields fall back to dispatcher/CLI defaults.
  */
 interface WatcherExecutionConfig {
@@ -136,8 +136,8 @@ export interface WatcherCreateFromVersionInput {
 }
 
 export interface WatchersNamespace {
-	/** Raw escape hatch for any manage_watchers action. Prefer named methods. */
-	manage(input: ManageWatchersArgs): Promise<unknown>;
+	/** Raw escape hatch for any manage_behaviors action. Prefer named methods. */
+	manage(input: ManageBehaviorsArgs): Promise<unknown>;
 	list(filter?: WatcherListFilter): Promise<unknown>;
 	get(input: { watcher_id: WatcherId }): Promise<unknown>;
 	create(input: WatcherCreateInput): Promise<unknown>;
@@ -175,7 +175,7 @@ export function buildWatchersNamespace(
 	ctx: ToolContext,
 	env: Env,
 ): WatchersNamespace {
-	const { manage, action } = createActionCaller(manageWatchers, env, ctx, "watchers");
+	const { manage, action } = createActionCaller(manageBehaviors, env, ctx, "watchers");
 
 	return {
 		manage: (input) => manage(input as Record<string, unknown>),

@@ -1,8 +1,8 @@
 /**
  * `workspaceUnlinkedNotice` — the reply a tenant's own OAuth-installed Slack bot
  * sends in a channel that isn't bound to an agent yet. It must be actionable:
- * list the org's agents, deep-link each to its Behaviors page (where a channel
- * is added as a Listen source), and give the CLI `/lobu link` path. It must
+ * list the org's agents, deep-link each to a prefilled Behavior event trigger,
+ * and give the CLI `/lobu link` compatibility path. It must
  * degrade gracefully when the public origin isn't configured or the org has no
  * agents, and never turn into a dead drop.
  */
@@ -61,22 +61,23 @@ describe("workspaceUnlinkedNotice", () => {
 			channelId: "slack:C0ABC123",
 			teamId: "T0TEAM",
 			channelName: "general",
+			connectionId: "42",
 		});
 		expect(notice).not.toBeNull();
 		const text = notice as string;
 
 		// getConfiguredPublicOrigin() returns the URL *origin* (scheme+host), so the
 		// /lobu gateway mount is dropped — the SPA lives at the bare origin. The link
-		// targets the Listen "new" step with the channel prefilled for confirm-bind.
+		// targets the Behavior editor with its connection event prefilled.
 		// `slack:C…`, `T0TEAM`, and the `#general` label are URL-encoded. Each agent
 		// is a Slack mrkdwn inline link `<url|Name>` so it renders clickable (the
 		// notice goes out via chat.postMessage text, which Slack reads as mrkdwn;
 		// unfurl_links is off so a bare URL would render as flat text).
 		expect(text).toContain(
-			"<https://app.lobu.ai/acme/agents/planner/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM&label=%23general|Planner>",
+			"<https://app.lobu.ai/acme/agents/planner/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM&connection=42&label=%23general|Planner>",
 		);
 		expect(text).toContain(
-			"<https://app.lobu.ai/acme/agents/builder/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM&label=%23general|Builder>",
+			"<https://app.lobu.ai/acme/agents/builder/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM&connection=42&label=%23general|Builder>",
 		);
 		expect(text).toContain("Planner");
 		expect(text).toContain("Builder");

@@ -1514,7 +1514,7 @@ export class ChatInstanceManager {
 
       const commandDispatcher = new CommandDispatcher({
         registry: this.services.getCommandRegistry(),
-        channelBindingService: this.services.getChannelBindingService(),
+        behaviorSubscriptionService: this.services.getBehaviorSubscriptionService(),
       });
       const messageBridge = registerMessageHandlers(
         chat,

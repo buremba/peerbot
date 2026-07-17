@@ -14,6 +14,7 @@ import logger from "../utils/logger";
 import { getConfiguredPublicOrigin } from "../utils/public-origin";
 import { requireOrgUser } from "../utils/require-org-user";
 import { MANAGED_CHAT_PLATFORMS_SET } from "./managed-platforms";
+import { BehaviorSubscriptionService } from "../gateway/channels/behavior-subscription-service";
 
 // Slack Preview lets people trying Lobu locally talk to their agent through the
 // hosted "Lobu Developer" Slack workspace before they have their own bot token.
@@ -22,7 +23,7 @@ import { MANAGED_CHAT_PLATFORMS_SET } from "./managed-platforms";
 //   * The hosted "Lobu Developer" workspace is just an ordinary Slack
 //     `connections` row (no env var, no relay service).
 //   * `/lobu link <code>` in that workspace consumes the claim and writes a normal
-//     `agent_channel_bindings` row (platform `slack`) — so inbound messages
+//     message-created Behavior trigger — so inbound messages
 //     route through the exact same Chat SDK adapter path every other platform
 //     connection uses.
 
@@ -114,7 +115,7 @@ function previewLinkCommand(platform: string, code: string): string {
 }
 
 /**
- * `agent_channel_bindings.channel_id` stores Slack channels in the canonical
+ * Chat Behavior projections expose Slack channels in the canonical
  * `slack:<id>` form that the message-handler bridge looks up via `getBinding`
  * (`thread.channelId`). The `/lobu link` slash command hands us the bare Slack
  * channel id (`D…` / `C…`), so prefix it; a value that already carries a
@@ -245,8 +246,8 @@ type ConsumeClaimResult =
 	| { status: "connection_mismatch" }
 	| { status: "surface_not_allowed"; surfaceType: SurfaceType };
 
-// `agent_channel_bindings` upsert — last link for this concrete bot connection
-// and channel wins. `tx` is a `sql` or a `sql.begin` handle.
+// Create/update the tagged chat-link Behavior for this concrete connection and
+// channel. `tx` keeps claim consumption + subscription creation atomic.
 async function upsertBinding(
 	tx: ReturnType<typeof getDb>,
 	platform: string,
@@ -255,17 +256,20 @@ async function upsertBinding(
 	agentId: string,
 	organizationId: string,
 	connectionId: number,
+	configuredBy?: string | null,
 ): Promise<void> {
-	await tx`
-		INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id, created_at)
-		VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, ${teamId ?? null}, ${connectionId}, now())
-      ON CONFLICT (organization_id, connection_id, channel_id)
-        WHERE connection_id IS NOT NULL
-		DO UPDATE SET agent_id = EXCLUDED.agent_id,
-			platform = EXCLUDED.platform,
-			team_id = EXCLUDED.team_id,
-          created_at = EXCLUDED.created_at
-    `;
+	await new BehaviorSubscriptionService().createChatBehavior(
+		agentId,
+		platform,
+		channelId,
+		teamId,
+		{
+			organizationId,
+			connectionId,
+			configuredBy: configuredBy ?? undefined,
+			sql: tx,
+		},
+	);
 }
 
 /**
@@ -364,6 +368,7 @@ export async function consumePreviewClaim(args: {
 			claim.agentId,
 			claim.organizationId,
 			bindingConnectionId,
+			claim.createdBy,
 		);
 
 		// The code was minted by an authenticated `lobu run` and is ASSUMED to be
@@ -650,7 +655,12 @@ function escapeMrkdwnLabel(text: string): string {
 export async function workspaceUnlinkedNotice(
 	platform: string,
 	organizationId: string,
-	channel?: { channelId: string; teamId?: string; channelName?: string },
+	channel?: {
+		channelId: string;
+		teamId?: string;
+		channelName?: string;
+		connectionId?: string;
+	},
 ): Promise<string | null> {
 	if (platform !== "slack") return null;
 
@@ -673,11 +683,10 @@ export async function workspaceUnlinkedNotice(
 
 	const origin = getConfiguredPublicOrigin()?.replace(/\/+$/, "");
 	// Deep-link each agent to its Behaviors "new" step with THIS channel prefilled,
-	// so the user lands on a one-click confirm-bind (no hunting in the picker,
-	// which only lists channels that already have a streaming feed). `channelId` is
-	// the canonical `slack:C…` form the binding is stored under, passed verbatim so
-	// the confirm binds the exact key the router resolves. Falls back to the plain
-	// Behaviors page when we have no channel context.
+	// so the canonical event trigger is selected without a separate subscription
+	// workflow. `channelId` remains canonical `slack:C…`; the editor converts it to
+	// the provider-native filter value. Falls back to the plain Behaviors page when
+	// no channel context is available.
 	const canLink = Boolean(origin && orgSlug);
 	const behaviorsUrl = (agentId: string): string => {
 		const base = `${origin}/${orgSlug}/agents/${agentId}/behaviors`;
@@ -687,8 +696,10 @@ export async function workspaceUnlinkedNotice(
 			platform: "slack",
 		});
 		if (channel.teamId) params.set("team", channel.teamId);
-		// Friendly channel name → the confirm card's label (falls back to the id in
-		// the UI when absent). Prefixed with `#` so it reads as a channel.
+		if (channel.connectionId)
+			params.set("connection", channel.connectionId);
+		// Friendly channel name → the editor subtitle. Prefixed with `#` so it reads
+		// as a channel.
 		if (channel.channelName) params.set("label", `#${channel.channelName}`);
 		return `${base}/new?${params.toString()}`;
 	};

@@ -210,7 +210,7 @@ describe("maybePostApprovalCard (builder gate)", () => {
     });
   });
 
-  test("posts a tool_approval card for a manage_watchers pending_approval result", async () => {
+  test("posts a tool_approval card for a manage_behaviors pending_approval result", async () => {
     const posts: Array<{ url: string; body: any }> = [];
     globalThis.fetch = mock(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -245,7 +245,7 @@ describe("maybePostApprovalCard (builder gate)", () => {
 
     const posted = await maybePostApprovalCard(
       gw,
-      "manage_watchers",
+      "manage_behaviors",
       resultText
     );
 

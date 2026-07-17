@@ -1,5 +1,5 @@
 /**
- * complete_window action handler for manage_watchers.
+ * complete_window action handler for manage_behaviors.
  *
  * Validates token, writes window + content links, processes classifications,
  * marks run completed, advances schedule, and runs reaction script.
@@ -29,7 +29,7 @@ import { executeReaction } from '../../../watchers/reaction-executor';
 import { getNextNumericId } from '../helpers/db-helpers';
 import type { KeyingConfig } from '../../../types/watchers';
 import type { ToolContext } from '../../registry';
-import type { ManageWatchersArgs } from '../manage_watchers';
+import type { ManageBehaviorsArgs } from '../manage_behaviors';
 import { normalizeExtractedData, parseJson, requireWatcherAccess } from './shared';
 import { getErrorMessage } from "@lobu/core";
 
@@ -43,7 +43,7 @@ const ajv = new Ajv({ allErrors: true, strict: false, removeAdditional: true });
 // ============================================
 
 export async function handleCompleteWindow(
-  args: ManageWatchersArgs,
+  args: ManageBehaviorsArgs,
   env: Env,
   ctx: ToolContext
 ): Promise<{
@@ -590,6 +590,7 @@ export async function handleCompleteWindow(
     );
 
     let runMarkedCompleted = false;
+    let completedDispatchSource: string | null = null;
     if (watcherRunId && Number.isFinite(watcherRunId)) {
       // Provenance now lives on the RUN row (model_used, run_metadata), not on
       // the retired watcher_windows table. window_id is stamped to the canvas
@@ -610,9 +611,13 @@ export async function handleCompleteWindow(
           AND watcher_id = ${watcherId}
           AND run_type = 'watcher'
           AND status IN ('running', 'claimed')
-        RETURNING id
+        RETURNING id, approved_input->>'dispatch_source' AS dispatch_source
       `;
       runMarkedCompleted = completedRows.length > 0;
+      completedDispatchSource =
+        typeof completedRows[0]?.dispatch_source === 'string'
+          ? completedRows[0].dispatch_source
+          : null;
       if (!runMarkedCompleted) {
         // Idempotent replay against an already-completed run: keep window_id and
         // provenance current without re-transitioning status or side effects.
@@ -631,12 +636,15 @@ export async function handleCompleteWindow(
     // Advance the schedule only when we actually did new work. Idempotent
     // replays (no window created, no run transitioned) must not push
     // next_run_at forward, or each retry would shift the schedule.
-    if (windowCreated || headSuperseded || runMarkedCompleted) {
+    if (
+      (windowCreated || headSuperseded || runMarkedCompleted) &&
+      completedDispatchSource !== 'event'
+    ) {
       await advanceWatcherSchedule(tx, watcherId);
     }
 
     logger.info(
-      `[manage_watchers] Completed window ${windowId} for watcher ${watcherId} ` +
+      `[manage_behaviors] Completed window ${windowId} for watcher ${watcherId} ` +
         `(${window_start} - ${window_end}), linked ${batchContentIds.length} content items`
     );
 
@@ -789,7 +797,7 @@ export async function handleCompleteWindow(
   } catch (err) {
     reactionStatus = 'failed';
     reactionError = getErrorMessage(err);
-    logger.warn({ err }, '[manage_watchers] Failed to execute reaction script');
+    logger.warn({ err }, '[manage_behaviors] Failed to execute reaction script');
   }
 
   return { ...result, reaction_status: reactionStatus, reaction_error: reactionError };

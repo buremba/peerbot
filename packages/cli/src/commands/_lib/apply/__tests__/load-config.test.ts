@@ -368,11 +368,11 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig, defineWatcher, reactionFromFile } from "@lobu/cli/config";`,
+        `import { defineAgent, defineConfig, defineBehavior, reactionFromFile } from "@lobu/cli/config";`,
         `const crm = defineAgent({ id: "crm" });`,
         `export default defineConfig({`,
         `  agents: [crm],`,
-        `  watchers: [defineWatcher({`,
+        `  behaviors: [defineBehavior({`,
         `    agent: crm, slug: "health", prompt: "p",`,
         `    reaction: reactionFromFile("./reactions/health.reaction.ts"),`,
         `  })],`,
@@ -393,9 +393,9 @@ describe("loadDesiredStateFromConfig", () => {
       writeFileSync(
         join(dir, "lobu.config.ts"),
         [
-          `import { defineAgent, defineConfig, defineWatcher, reactionFromFile } from "@lobu/cli/config";`,
+          `import { defineAgent, defineConfig, defineBehavior, reactionFromFile } from "@lobu/cli/config";`,
           `const crm = defineAgent({ id: "crm" });`,
-          `export default defineConfig({ agents: [crm], watchers: [defineWatcher({`,
+          `export default defineConfig({ agents: [crm], behaviors: [defineBehavior({`,
           `  agent: crm, slug: "w", prompt: "p", reaction: reactionFromFile(${JSON.stringify(reaction)}),`,
           `})] });`,
           ``,
@@ -428,9 +428,9 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig, defineWatcher } from "@lobu/cli/config";`,
+        `import { defineAgent, defineConfig, defineBehavior } from "@lobu/cli/config";`,
         `const crm = defineAgent({ id: "crm" });`,
-        `export default defineConfig({ agents: [crm], watchers: [defineWatcher({`,
+        `export default defineConfig({ agents: [crm], behaviors: [defineBehavior({`,
         `  agent: crm, slug: "w", prompt: "p", reaction: "./reactions/x.reaction.ts",`,
         `})] });`,
         ``,
@@ -451,11 +451,11 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig, defineWatcher, reactionFromFile } from "@lobu/cli/config";`,
+        `import { defineAgent, defineConfig, defineBehavior, reactionFromFile } from "@lobu/cli/config";`,
         `const a = defineAgent({ id: "a" });`,
-        `export default defineConfig({ agents: [a], watchers: [`,
-        `  defineWatcher({ agent: a, slug: "first", prompt: "p" }),`,
-        `  defineWatcher({ agent: a, slug: "second", prompt: "p", reaction: reactionFromFile("./reactions/second.reaction.ts") }),`,
+        `export default defineConfig({ agents: [a], behaviors: [`,
+        `  defineBehavior({ agent: a, slug: "first", prompt: "p" }),`,
+        `  defineBehavior({ agent: a, slug: "second", prompt: "p", reaction: reactionFromFile("./reactions/second.reaction.ts") }),`,
         `] });`,
         ``,
       ].join("\n")

@@ -1,0 +1,173 @@
+import type {
+	ConnectorBehaviorEvent,
+	ConnectorBehaviorSignalDraft,
+	EventEnvelope,
+	SubscriptionCandidate,
+} from "@lobu/connector-sdk";
+import { normalizeGithubRepoFullName } from "./github-identity.js";
+
+export const GITHUB_PULL_REQUEST_SUPPORTED_EVENTS = [
+	"pull_request.updated",
+	"comment.created",
+	"comment.updated",
+] as const;
+
+export const GITHUB_PULL_REQUEST_SUGGESTED_EVENTS = [
+	"pull_request.updated",
+] as const;
+
+export const GITHUB_BEHAVIOR_EVENTS: ConnectorBehaviorEvent[] = [
+	{
+		key: "pull_request.created",
+		label: "A pull request is created",
+		description: "Runs for each newly opened pull request in this connection.",
+		resourceType: "pull_request",
+		filterSchema: {
+			type: "object",
+			properties: {
+				repository: {
+					type: "string",
+					title: "Repository",
+					description: "Optional owner/repository filter.",
+				},
+			},
+		},
+		defaults: { execution: "turn", activeRun: "queue", output: "silent" },
+	},
+	...GITHUB_PULL_REQUEST_SUPPORTED_EVENTS.map(
+		(key): ConnectorBehaviorEvent => ({
+			key,
+			label: key
+				.split(".")
+				.map((part) => part.replaceAll("_", " "))
+				.join(" · "),
+			resourceType: "pull_request",
+			defaults: {
+				execution: "turn",
+				activeRun: "queue",
+				output: "silent",
+			},
+		}),
+	),
+	{
+		key: "commits.updated",
+		label: "Repository commits change",
+		description: "Runs for newly collected commits in this connection.",
+		resourceType: "repository",
+		defaults: { execution: "turn", activeRun: "queue", output: "silent" },
+	},
+];
+
+export function githubPullRequestResourceRef(
+	fullName: string,
+	pullNumber: number,
+): string {
+	const normalized =
+		normalizeGithubRepoFullName(fullName) ?? fullName.toLowerCase();
+	return `github:pull_request:${normalized}#${pullNumber}`;
+}
+
+export function githubPullRequestSubscribable(
+	fullName: string,
+	pullNumber: number,
+): SubscriptionCandidate {
+	const normalized =
+		normalizeGithubRepoFullName(fullName) ?? fullName.toLowerCase();
+	return {
+		connector_key: "github",
+		resource_type: "pull_request",
+		resource_ref: githubPullRequestResourceRef(normalized, pullNumber),
+		label: `GitHub PR ${normalized}#${pullNumber}`,
+		suggested_event_keys: [...GITHUB_PULL_REQUEST_SUGGESTED_EVENTS],
+	};
+}
+
+function githubRepository(
+	metadata: Record<string, unknown>,
+): string | undefined {
+	const value = metadata.repository ?? metadata.github_repo_full_name;
+	return typeof value === "string"
+		? (normalizeGithubRepoFullName(value) ?? value.toLowerCase())
+		: undefined;
+}
+
+/**
+ * Interpret a GitHub EventEnvelope inside the connector package. The gateway
+ * later supplies platform-owned routing/idempotency fields after persistence.
+ */
+export function githubBehaviorSignalDrafts(
+	event: EventEnvelope,
+): ConnectorBehaviorSignalDraft[] {
+	const metadata = event.metadata ?? {};
+	const repository = githubRepository(metadata);
+	const occurredAt =
+		event.occurred_at instanceof Date
+			? event.occurred_at.toISOString()
+			: String(event.occurred_at);
+	const base = {
+		label: event.title || `GitHub ${event.origin_type ?? "event"}`,
+		input_text:
+			[event.title, event.payload_text].filter(Boolean).join("\n\n") ||
+			`GitHub ${event.origin_type ?? "event"}: ${event.origin_id}`,
+		url: event.source_url,
+		occurred_at: occurredAt,
+	};
+
+	if (event.origin_type === "commit") {
+		const attributes: Record<string, string | number | boolean | null> = {};
+		if (repository) attributes.repository = repository;
+		if (typeof metadata.sha === "string") attributes.sha = metadata.sha;
+		return [
+			{
+				...base,
+				event_type: "commits.updated",
+				resource_type: "repository",
+				resource_ref: repository
+					? `github:repository:${repository}`
+					: event.origin_id,
+				attributes,
+			},
+		];
+	}
+
+	if (
+		event.origin_type !== "pull_request" &&
+		event.origin_type !== "pr_comment"
+	) {
+		return [];
+	}
+	const numericPullNumber = Number(
+		metadata.pull_number ??
+			metadata.number ??
+			event.origin_parent_id?.match(/_(\d+)$/)?.[1] ??
+			event.origin_id.match(/_(\d+)$/)?.[1],
+	);
+	const pullNumber = Number.isFinite(numericPullNumber)
+		? numericPullNumber
+		: undefined;
+	const resourceRef =
+		repository && pullNumber !== undefined
+			? githubPullRequestResourceRef(repository, pullNumber)
+			: (event.origin_parent_id ?? event.origin_id);
+	const attributes: Record<string, string | number | boolean | null> = {};
+	if (repository) attributes.repository = repository;
+	if (pullNumber !== undefined) attributes.pull_number = pullNumber;
+	if (typeof metadata.state === "string") attributes.state = metadata.state;
+
+	return [
+		{
+			...base,
+			event_type:
+				event.origin_type === "pull_request"
+					? "pull_request.created"
+					: "comment.created",
+			updated_event_type:
+				event.origin_type === "pull_request"
+					? "pull_request.updated"
+					: "comment.updated",
+			resource_type: "pull_request",
+			resource_ref: resourceRef,
+			attributes,
+		},
+	];
+}

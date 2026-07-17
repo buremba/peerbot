@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import type { Env } from '../../../index';
 import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
-import { manageWatchers } from '../../../tools/admin/manage_watchers';
+import { manageBehaviors } from '../../../tools/admin/manage_behaviors';
 import type { ToolContext } from '../../../tools/registry';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
@@ -367,7 +367,7 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
 
     // Edit the watcher AFTER the run is queued: a new current version with a
     // different prompt. The already-queued run must NOT pick this up.
-    const v2 = (await manageWatchers(
+    const v2 = (await manageBehaviors(
       {
         action: 'create_version',
         watcher_id: String(ctx.watcherId),

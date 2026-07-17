@@ -556,14 +556,14 @@ export function createAgentHistoryRoutes(deps: {
 			interactions = rows.map((r) => {
 				const resourceKind =
 					r.resource_kind ??
-					(r.tool === "manage_watchers"
+					(r.tool === "manage_behaviors"
 						? "watcher"
 						: r.tool === "manage_agents"
 							? "agent"
 							: r.tool === "entity_field_change" || r.tool === "entity_change"
 								? "entity"
 								: null);
-				// manage_watchers stores proposal as `{ args }`; SPA expects flat fields.
+				// manage_behaviors stores proposal as `{ args }`; SPA expects flat fields.
 				const rawProposal = r.proposal ?? null;
 				const proposal =
 					resourceKind === "watcher" &&

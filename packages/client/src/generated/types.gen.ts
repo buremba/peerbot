@@ -772,17 +772,34 @@ export type ManageEntityData = {
       | "update_link"
       | "list_links"
       | "merge"
+      | "resolve_duplicates"
       | "unmerge";
     /**
      * [merge] The surviving entity that absorbs `entity_id` (the duplicate).
      */
     winner_entity_id?: number;
     /**
+     * [merge] All duplicate entities to fold into winner_entity_id. Use this for a duplicate group; entity_id remains supported for a single duplicate.
+     */
+    duplicate_entity_ids?: Array<number>;
+    /**
+     * [resolve_duplicates] Candidate entity IDs. The server re-reads their values and applies the entity type's resolution policy.
+     */
+    candidate_entity_ids?: Array<number>;
+    /**
+     * [merge] Optional structured evidence for human-initiated merge provenance. Agent and watcher evidence is always recomputed from the entity type's resolution policy.
+     */
+    merge_evidence?: Array<{
+      kind: string;
+      identifier: string;
+      identity_ids?: Array<number>;
+    }>;
+    /**
      * Entity type as defined in your workspace
      */
     entity_type?: string;
     /**
-     * [get/update/delete/list_links] Entity ID to operate on
+     * [get/update/delete/list_links/merge/unmerge] Entity ID to operate on
      */
     entity_id?: number;
     /**
@@ -1213,8 +1230,65 @@ export type ManageEntityResponses = {
         message: string;
         winner_entity_id: number;
         loser_entity_id: number;
+        loser_entity_ids?: Array<number>;
         moved_identities: number;
         repointed_edges: number;
+        resolution?: {
+          decision: "auto_merge" | "human";
+          reason: string;
+          evidence: Array<{
+            kind: string;
+            identifier: string;
+          }>;
+        };
+      }
+    | {
+        action: "merge";
+        approval_queued: true;
+        approval_url?: string;
+        approval_run_id: number;
+        approval_action: "merge";
+        approval_proposal: {
+          entity_id: number;
+          entity_ids?: Array<number>;
+          winner_entity_id: number;
+        };
+        approval_attribution: "agent" | "watcher";
+        next_steps: Array<string>;
+        resolution?: {
+          decision: "review";
+          reason: string;
+          evidence: Array<{
+            kind: string;
+            identifier: string;
+          }>;
+        };
+      }
+    | {
+        action: "merge";
+        approval_suppressed: true;
+        message: string;
+        resolution: {
+          decision: "review";
+          reason: string;
+          evidence: Array<{
+            kind: string;
+            identifier: string;
+          }>;
+        };
+      }
+    | {
+        action: "resolve_duplicates";
+        candidates_scanned: number;
+        groups_found: number;
+        auto_merged: number;
+        approvals_queued: number;
+        approvals_suppressed: number;
+        oversized_groups: number;
+        /**
+         * Candidates connected only through another record; reconsidered after direct merges apply.
+         */
+        deferred_candidates: number;
       }
     | {
         action: "unmerge";
@@ -1906,7 +1980,7 @@ export type ManageConnectionsData = {
         connection_id: number;
         display_name?: string;
         /**
-         * Fallback agent for a chat connection (used only when no channel binding matches; agent_channel_bindings remain authoritative). Null clears the fallback.
+         * Fallback agent for a chat connection when no Behavior subscription matches. Null clears the fallback.
          */
         agent_id?: string | null;
         /**
@@ -1950,7 +2024,7 @@ export type ManageConnectionsData = {
         connector_key: string;
         display_name?: string;
         /**
-         * Declarative fallback agent. Channel bindings remain authoritative when present.
+         * Declarative fallback agent. Behavior subscriptions remain authoritative when present.
          */
         agent_id?: string;
         config: {
@@ -2098,86 +2172,6 @@ export type ManageConnectionsData = {
       }
     | {
         /**
-         * List chat channels bound to an agent.
-         */
-        action: "list_channel_bindings";
-        /**
-         * Agent whose channel bindings to list.
-         */
-        agent_id: string;
-      }
-    | {
-        /**
-         * Bind a chat channel to an agent through a chat connection.
-         */
-        action: "bind_channel";
-        /**
-         * Agent to bind the channel to.
-         */
-        agent_id: string;
-        /**
-         * Chat connection that receives this channel's messages.
-         */
-        connection_id: number;
-        /**
-         * Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').
-         */
-        channel_id: string;
-        /**
-         * Optional per-binding model override — an explicit `<provider>/<model>` ref. Must be one of the agent's allowed models (its `models` list) when that list is non-empty. Wins over the agent/org default for messages on this channel.
-         */
-        model?: string;
-      }
-    | {
-        /**
-         * Remove a channel binding from an agent.
-         */
-        action: "unbind_channel";
-        /**
-         * Agent to unbind the channel from.
-         */
-        agent_id: string;
-        /**
-         * Chat connection owning the binding.
-         */
-        connection_id: number;
-        /**
-         * Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').
-         */
-        channel_id: string;
-      }
-    | {
-        /**
-         * Declaratively reconcile an agent's channel bindings to a desired set.
-         */
-        action: "sync_channel_bindings";
-        /**
-         * Agent whose declarative bindings to reconcile.
-         */
-        agent_id: string;
-        /**
-         * Chat connection numeric id, or the stable declarative id used by lobu apply.
-         */
-        connection_id: number | string;
-        /**
-         * Desired channel bindings, optionally with per-channel about links.
-         */
-        channels: Array<
-          | string
-          | {
-              /**
-               * Desired channel id. Slack also accepts the declarative <teamId>/<channelId> form.
-               */
-              channel_id: string;
-              /**
-               * Business entity ids or slugs this channel is about (config-sourced links).
-               */
-              about?: Array<number | string>;
-            }
-        >;
-      }
-    | {
-        /**
          * Set manual business-entity links for a chat channel (UI / operator edits).
          */
         action: "set_channel_about";
@@ -2186,27 +2180,13 @@ export type ManageConnectionsData = {
          */
         connection_id: number;
         /**
-         * Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').
+         * Platform channel id (may be platform-prefixed, e.g. 'slack:C…').
          */
         channel_id: string;
         /**
          * Business entity ids this channel is about.
          */
         about_entity_ids: Array<number>;
-      }
-    | {
-        /**
-         * Open + bind the caller's Slack DM to an agent.
-         */
-        action: "connect_channel_dm";
-        /**
-         * Agent to wire the caller's DM to.
-         */
-        agent_id: string;
-        /**
-         * Slack connection to open and bind the caller's DM through.
-         */
-        connection_id: number;
       };
   path: {
     /**
@@ -2478,50 +2458,11 @@ export type ManageConnectionsResponses = {
         default_repair_agent_id: string | null;
       }
     | {
-        action: "list_channel_bindings";
-        agent_id: string;
-        bindings: Array<{
-          platform: string;
-          channelId: string;
-          teamId?: string;
-          model?: string;
-          createdAt: number;
-        }>;
-      }
-    | {
-        action: "bind_channel";
-        success: true;
-        agent_id: string;
-        connection_id: number;
-        platform: string;
-        channel_id: string;
-        team_id?: string;
-      }
-    | {
-        action: "unbind_channel";
-        success: true;
-      }
-    | {
-        action: "sync_channel_bindings";
-        success: true;
-        bound: Array<string>;
-        removed: Array<string>;
-        about_linked?: number;
-        about_removed?: number;
-      }
-    | {
         action: "set_channel_about";
         success: true;
         connection_id: number;
         channel_id: string;
         about_entity_ids: Array<number>;
-      }
-    | {
-        action: "connect_channel_dm";
-        success: true;
-        platform: "slack";
-        channel_id: string;
-        team_id: string | null;
       };
 };
 
@@ -3469,6 +3410,10 @@ export type ManageOperationsData = {
          */
         action: "approve_batch";
         window_id: number;
+        /**
+         * Exact proposal run IDs shown to the reviewer. The batch fails closed if the pending set changed.
+         */
+        run_ids?: Array<number>;
       }
     | {
         /**
@@ -3476,6 +3421,10 @@ export type ManageOperationsData = {
          */
         action: "reject_batch";
         window_id: number;
+        /**
+         * Exact proposal run IDs shown to the reviewer. The batch fails closed if the pending set changed.
+         */
+        run_ids?: Array<number>;
         reason?: string;
       };
   path: {
@@ -3810,7 +3759,7 @@ export type ManageSchedulesResponses = {
 export type ManageSchedulesResponse =
   ManageSchedulesResponses[keyof ManageSchedulesResponses];
 
-export type ManageWatchersData = {
+export type ManageBehaviorsData = {
   body: {
     /**
      * Action to perform
@@ -3899,6 +3848,47 @@ export type ManageWatchersData = {
      * [create/update/create_version] Cron expression for watcher schedule (e.g. "0 * * * *" for hourly, "0 9 * * *" for daily at 9am). Null clears the schedule (an unscheduled/manual watcher).
      */
     schedule?: string | null;
+    /**
+     * [create/update/create_version] Canonical Behavior activations. Schedule is retained as a compatibility input but is derived from the schedule trigger when triggers are provided.
+     */
+    triggers?: Array<
+      | {
+          kind: "event";
+          connector_key: string;
+          connection_id?: number;
+          event_types: Array<string>;
+          /**
+           * Connector-normalized exact-match fields such as resource_ref or channel_id.
+           */
+          match?: {
+            [key: string]: unknown | string | number | boolean | null;
+          };
+          /**
+           * "turn" renders the incoming event as the agent input (chat/listen); "window" runs the existing watcher analysis flow.
+           */
+          execution?: "turn" | "window";
+          /**
+           * What to do when this Behavior is busy: queue every event, combine waiting events, or steer the current trusted chat turn.
+           */
+          active_run?: "queue" | "coalesce" | "steer";
+          /**
+           * Keep the result in Lobu or send it back through the source connector when supported.
+           */
+          output?: "silent" | "reply_to_source";
+          /**
+           * For window execution, do not enqueue an agent run when connector polling produced no durable source change.
+           */
+          skip_if_unchanged?: boolean;
+        }
+      | {
+          kind: "schedule";
+          cron: string;
+          timezone?: string | null;
+          execution?: "window";
+          active_run?: "queue" | "coalesce";
+          skip_if_unchanged?: boolean;
+        }
+    >;
     /**
      * [create/update/create_version] IANA timezone the schedule is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Null clears it (server time / UTC).
      */
@@ -4070,10 +4060,10 @@ export type ManageWatchersData = {
     orgSlug: string;
   };
   query?: never;
-  url: "/api/{orgSlug}/manage_watchers";
+  url: "/api/{orgSlug}/manage_behaviors";
 };
 
-export type ManageWatchersErrors = {
+export type ManageBehaviorsErrors = {
   /**
    * Bad request - invalid parameters
    */
@@ -4088,10 +4078,10 @@ export type ManageWatchersErrors = {
   };
 };
 
-export type ManageWatchersError =
-  ManageWatchersErrors[keyof ManageWatchersErrors];
+export type ManageBehaviorsError =
+  ManageBehaviorsErrors[keyof ManageBehaviorsErrors];
 
-export type ManageWatchersResponses = {
+export type ManageBehaviorsResponses = {
   /**
    * Successful response
    */
@@ -4235,8 +4225,8 @@ export type ManageWatchersResponses = {
       };
 };
 
-export type ManageWatchersResponse =
-  ManageWatchersResponses[keyof ManageWatchersResponses];
+export type ManageBehaviorsResponse =
+  ManageBehaviorsResponses[keyof ManageBehaviorsResponses];
 
 export type ListWatchersData = {
   body: {
@@ -5393,6 +5383,16 @@ export type ResolvePathResponses = {
           watchers_count: number;
           is_derived?: boolean;
           measure_columns?: Array<string>;
+          merged_records?: Array<{
+            id: number;
+            name: string;
+            slug: string;
+            metadata: {
+              [key: string]: unknown;
+            };
+            merged_at: string;
+            can_unmerge: boolean;
+          }>;
         })
       | null;
     children: Array<{
@@ -5475,6 +5475,9 @@ export type ResolvePathResponses = {
         icon: string | null;
         favicon_domain: string | null;
       }>;
+    } | null;
+    redirect: {
+      to: string;
     } | null;
   };
 };

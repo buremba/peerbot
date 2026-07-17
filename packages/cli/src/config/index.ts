@@ -1,4 +1,4 @@
-// Lobu authoring config API — define agents, connectors, watchers, and
+// Lobu authoring config API — define agents, connectors, Behaviors, and
 // connections in TypeScript. `lobu apply` imports a project entrypoint (default
 // export of `defineConfig`) and maps it to the server's desired state.
 //

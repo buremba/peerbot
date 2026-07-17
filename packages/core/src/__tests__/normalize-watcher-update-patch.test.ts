@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
-  type ManageWatchersArgs,
+  type ManageBehaviorsArgs,
   normalizeWatcherUpdatePatch,
-} from "../contracts/tools/manage-watchers";
+} from "../contracts/tools/manage-behaviors";
 
 /**
- * The normalizer is the SINGLE SOURCE OF TRUTH for a manage_watchers UPDATE's
+ * The normalizer is the SINGLE SOURCE OF TRUTH for a manage_behaviors UPDATE's
  * stored write-normalization — the apply handler (handleUpdate SET clause) and
  * the config-approval review's `proposedAfter` both call it, so these coercions
  * are what "displayed == applied" rests on. Mirrors the SET-clause coercions in
- * server tools/admin/manage_watchers/crud.ts handleUpdate.
+ * server tools/admin/manage_behaviors/crud.ts handleUpdate.
  */
-const update = (extra: Partial<ManageWatchersArgs>): ManageWatchersArgs =>
-  ({ action: "update", watcher_id: "1", ...extra }) as ManageWatchersArgs;
+const update = (extra: Partial<ManageBehaviorsArgs>): ManageBehaviorsArgs =>
+  ({ action: "update", watcher_id: "1", ...extra }) as ManageBehaviorsArgs;
 
 describe("normalizeWatcherUpdatePatch", () => {
   it("only emits keys PRESENT in args (a PATCH — absent keys keep current)", () => {

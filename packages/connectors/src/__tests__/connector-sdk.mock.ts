@@ -163,6 +163,10 @@ export function connectorSdkMock() {
     ConnectorRuntime: class {},
     IntegrationConnector: class {},
     calculateEngagementScore: () => 0,
+    SubscriptionCandidateSchema: {
+      type: 'object',
+      properties: {},
+    },
     extensionDomScrape: async (opts: DomScrapeOpts) => {
       const observation = await opts.dispatcher.dispatch('navigate', {
         cs_scrape: true,

@@ -1,5 +1,5 @@
 /**
- * Version management action handlers for manage_watchers:
+ * Version management action handlers for manage_behaviors:
  *   create_version, upgrade, get_versions, get_version_details
  */
 
@@ -13,7 +13,7 @@ import {
   mergePromptSources,
 } from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
-import type { ManageWatchersArgs, ManageWatchersResult } from '../manage_watchers';
+import type { ManageBehaviorsArgs, ManageBehaviorsResult } from '../manage_behaviors';
 import {
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
@@ -21,13 +21,17 @@ import {
   normalizeStoredJsonField,
   toJsonParam,
 } from './shared';
+import {
+  assertBehaviorTriggerConnections,
+  resolveBehaviorTriggerWrite,
+} from '../../../behaviors/triggers';
 
 // ============================================
 // handleCreateVersion
 // ============================================
 
 export async function handleCreateVersion(
-  args: ManageWatchersArgs,
+  args: ManageBehaviorsArgs,
   _env: unknown,
   ctx: ToolContext
 ): Promise<{
@@ -51,7 +55,7 @@ export async function handleCreateVersion(
   // schedule, scheduler_client_id) to that specific row.
   const watcherRows = await sql`
     SELECT i.id, i.version, i.current_version_id, i.watcher_group_id, i.sources, i.organization_id,
-           i.schedule, i.timezone
+           i.schedule, i.timezone, i.triggers
     FROM watchers i WHERE i.id = ${args.watcher_id}
   `;
   if (watcherRows.length === 0) {
@@ -140,6 +144,22 @@ export async function handleCreateVersion(
     }
   }
 
+  const triggerWrite = resolveBehaviorTriggerWrite({
+    triggers: args.triggers,
+    schedule: args.schedule,
+    timezone: args.timezone,
+    currentTriggers: watcherRows[0].triggers ?? [],
+    currentSchedule: (watcherRows[0].schedule as string | null) ?? null,
+    currentTimezone: (watcherRows[0].timezone as string | null) ?? null,
+  });
+  if (versionOrganizationId) {
+    await assertBehaviorTriggerConnections(
+      sql,
+      versionOrganizationId,
+      triggerWrite.triggers,
+    );
+  }
+
   const createdBy = ctx.userId ?? 'system';
   let versionId = 0;
   let lockedNextVersion = nextVersion;
@@ -194,15 +214,17 @@ export async function handleCreateVersion(
     if (setAsCurrent) {
       const shouldUpdateSchedule = args.schedule !== undefined;
       const shouldUpdateTimezone = args.timezone !== undefined;
-      const scheduleValue = shouldUpdateSchedule ? args.schedule || null : null;
-      const timezoneValue = shouldUpdateTimezone ? (args.timezone ?? null) : null;
+      const shouldUpdateTriggers = args.triggers !== undefined;
+      const scheduleValue = triggerWrite.schedule;
+      const timezoneValue = triggerWrite.timezone;
       // Recompute next_run_at when the cadence OR its zone changes, mixing
       // incoming args with the stored row for whichever side was omitted.
-      const touchesCadence = shouldUpdateSchedule || shouldUpdateTimezone;
-      const effectiveSchedule = shouldUpdateSchedule
+      const touchesCadence =
+        shouldUpdateSchedule || shouldUpdateTimezone || shouldUpdateTriggers;
+      const effectiveSchedule = touchesCadence
         ? scheduleValue
         : ((watcherRows[0].schedule as string | null) ?? null);
-      const effectiveTimezone = shouldUpdateTimezone
+      const effectiveTimezone = touchesCadence
         ? timezoneValue
         : ((watcherRows[0].timezone as string | null) ?? null);
       const nextRunAtVal =
@@ -227,8 +249,9 @@ export async function handleCreateVersion(
         SET
           sources = ${tx.json(sources)},
           scheduler_client_id = CASE WHEN ${args.scheduler_client_id !== undefined} THEN ${args.scheduler_client_id ?? null} ELSE scheduler_client_id END,
-          schedule = CASE WHEN ${shouldUpdateSchedule} THEN ${scheduleValue} ELSE schedule END,
-          timezone = CASE WHEN ${shouldUpdateTimezone} THEN ${timezoneValue} ELSE timezone END,
+          schedule = CASE WHEN ${touchesCadence} THEN ${scheduleValue} ELSE schedule END,
+          timezone = CASE WHEN ${touchesCadence} THEN ${timezoneValue} ELSE timezone END,
+          triggers = CASE WHEN ${touchesCadence} THEN ${tx.json(triggerWrite.triggers)} ELSE triggers END,
           next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END
         WHERE id = ${args.watcher_id}
       `;
@@ -258,6 +281,7 @@ export async function handleCreateVersion(
         change_notes: args.change_notes ?? null,
         ...(args.schedule !== undefined ? { schedule: args.schedule ?? null } : {}),
         ...(args.timezone !== undefined ? { timezone: args.timezone ?? null } : {}),
+        ...(args.triggers !== undefined ? { triggers: triggerWrite.triggers } : {}),
       },
       changedFields: [
         'version',
@@ -269,6 +293,7 @@ export async function handleCreateVersion(
         ...(args.reactions_guidance !== undefined ? ['reactions_guidance'] : []),
         ...(args.schedule !== undefined ? ['schedule'] : []),
         ...(args.timezone !== undefined ? ['timezone'] : []),
+        ...(args.triggers !== undefined ? ['triggers'] : []),
       ],
     });
   }
@@ -287,7 +312,7 @@ export async function handleCreateVersion(
 // handleGetVersions
 // ============================================
 
-export async function handleGetVersions(args: ManageWatchersArgs): Promise<{
+export async function handleGetVersions(args: ManageBehaviorsArgs): Promise<{
   action: 'get_versions';
   watcher_id: string;
   versions: any[];
@@ -353,8 +378,8 @@ export async function handleGetVersions(args: ManageWatchersArgs): Promise<{
 // ============================================
 
 export async function handleGetVersionDetails(
-  args: ManageWatchersArgs
-): Promise<ManageWatchersResult> {
+  args: ManageBehaviorsArgs
+): Promise<ManageBehaviorsResult> {
   const sql = getDb();
 
   if (!args.watcher_id) {

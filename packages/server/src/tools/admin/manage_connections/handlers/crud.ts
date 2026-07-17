@@ -1353,7 +1353,7 @@ export async function handleUpdate(
   }
 
 	// Setting/clearing the fallback agent is the same class of authority as a
-	// channel binding (bind_channel is owner/admin-only, OWNER_ADMIN_ACTIONS in
+	// Behavior subscription (manage_behaviors owns the authorization policy),
 	// auth/tool-access.ts): it decides which agent an unbound DM/mention runs.
 	// `update` itself is member-writable, so without this gate a member could
 	// point their own connection's fallback at another member's agent.
@@ -1418,7 +1418,7 @@ export async function handleUpdate(
 	}
 
 	// Non-chat connections have no runtime that reads connections.agent_id
-	// (routing consults it only as a chat fallback after channel bindings
+	// (routing consults it only as a chat fallback after channel Behaviors
 	// miss) — reject rather than silently writing a column nothing reads.
 	if (hasAgentIdArg) {
 		return {

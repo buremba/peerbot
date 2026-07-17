@@ -19,6 +19,12 @@ import type {
 } from "@lobu/core/contracts/worker/protocol";
 import type { Context } from "hono";
 import {
+	activateBehaviorSignal,
+	type BehaviorActivationResult,
+	dispatchBehaviorRunsBestEffort,
+} from "../behaviors/activation";
+import { materializeConnectorBehaviorSignal } from "../behaviors/connector-signal";
+import {
 	maybeCloseRepairThread,
 	maybeOpenOrAppendRepairThread,
 } from "../connectors/repair-agent";
@@ -282,6 +288,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 					continue;
 				}
 
+				const activations: BehaviorActivationResult[] = [];
 				const inserted = await insertEvent(
 					{
 						entityIds: entityIds,
@@ -309,8 +316,33 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						runId: batch.run_id,
 						parentOriginId: item.origin_parent_id,
 					},
-					{ onConflictUpdate: true },
+					{
+						onConflictUpdate: true,
+						afterPersist: async (persisted, tx) => {
+							for (const [draftIndex, draft] of (
+								item.behavior_signals ?? []
+							).entries()) {
+								const signal = materializeConnectorBehaviorSignal({
+									draft,
+									change: persisted.change,
+									connectorKey: run.connector_key,
+									connectionId: run.connection_id,
+									eventId: Number(persisted.id),
+									draftIndex,
+								});
+								if (!signal) continue;
+								activations.push(
+									...(await activateBehaviorSignal({
+										organizationId: run.organization_id,
+										signal,
+										db: tx,
+									})),
+								);
+							}
+						},
+					},
 				);
+				await dispatchBehaviorRunsBestEffort(activations);
 				if (inserted) {
 					totalItems++;
 					if (entityIds.length > 0) {
@@ -829,7 +861,9 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
       SET last_fired_at = NOW(), updated_at = NOW()
       WHERE id = ${watcherId}
     `;
-		await advanceWatcherSchedule(sql, watcherId);
+		if (approved.dispatch_source !== "event") {
+			await advanceWatcherSchedule(sql, watcherId);
+		}
 		return true;
 	};
 

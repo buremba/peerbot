@@ -1,7 +1,7 @@
 /**
  * Watcher CRUD via the post-#348 SDK surface.
  *
- * Replaces the deleted manage_watchers integration tests. Covers create,
+ * Replaces the deleted manage_behaviors integration tests. Covers create,
  * read, update, delete on watchers attached to an entity, plus access-control
  * around the destructive actions.
  */

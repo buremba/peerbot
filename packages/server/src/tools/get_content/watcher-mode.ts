@@ -6,6 +6,7 @@
  * complete_window action.
  */
 
+import { createHash } from 'node:crypto';
 import type { ContentItem } from '@lobu/connector-sdk';
 import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import { type DbClient, parsePgNumberArray } from '../../db/client';
@@ -26,6 +27,7 @@ import {
 import type { GetContentArgs } from './schema';
 import type { ClassifierConfig, GetContentResult } from './types';
 import { parseJson, parseRecordArray } from './types';
+import { stableJson } from '../../utils/insert-event';
 
 // ============================================
 // Content Query (inlined from watcher-content-query)
@@ -37,6 +39,7 @@ interface ContentQueryParams {
   window_end: string;
   organizationId: string;
   entityIds?: number[];
+	throwOnSourceError?: boolean;
   page?: {
     sourceName: string;
     limit: number;
@@ -84,6 +87,7 @@ async function queryContentData(
   const metricSources = normalizedSources.filter(isMetricSource);
 
   const results = await executeDataSources(sqlSources, queryContext, sql, {
+	throwOnError: params.throwOnSourceError,
     wrapQuery: page
       ? (scopedQuery, queryParams, sourceName) => {
           if (sourceName !== page.sourceName || !eventSourceNames.has(sourceName)) return scopedQuery;
@@ -128,6 +132,7 @@ async function queryContentData(
           userId: null,
         });
       } catch (err) {
+		if (params.throwOnSourceError) throw err;
         logger.warn(
           {
             error: err instanceof Error ? err.message : String(err),
@@ -241,6 +246,56 @@ async function queryContentData(
     totalCount,
     totalCountChars,
   };
+}
+
+/**
+ * Cheap-vs-LLM schedule gate: execute the same normalized sources used by
+ * read_knowledge and fingerprint their JSON rows. No model is called. The
+ * pending window stays fixed while skipped, so identical source state hashes
+ * identically until a connector lands a durable change.
+ */
+export async function fingerprintWatcherSources(args: {
+  sql: DbClient;
+  watcherId: number;
+  windowStart: string;
+  windowEnd: string;
+}): Promise<{ fingerprint: string; empty: boolean }> {
+  const rows = await args.sql`
+    SELECT w.organization_id, w.entity_ids, w.sources, v.version_sources
+    FROM watchers w
+    LEFT JOIN watcher_versions v ON v.id = w.current_version_id
+    WHERE w.id = ${args.watcherId}
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) throw new Error(`Behavior ${args.watcherId} not found`);
+  const versionSources = parseJson(row.version_sources) || [];
+  const sources = (
+    versionSources.length > 0 ? versionSources : parseJson(row.sources) || []
+  ) as WatcherSource[];
+  const result = await queryContentData(args.sql, {
+    sources,
+    window_start: args.windowStart,
+    window_end: args.windowEnd,
+    organizationId: String(row.organization_id),
+    entityIds: parsePgNumberArray(row.entity_ids),
+	throwOnSourceError: true,
+  });
+  const sourceState = Object.fromEntries(
+    Object.entries(result.sourcesContent).map(([sourceName, sourceRows]) => [
+      sourceName,
+      [...sourceRows].sort((left, right) =>
+        stableJson(left).localeCompare(stableJson(right))
+      ),
+    ])
+  );
+  const fingerprint = createHash('sha256')
+    .update(stableJson(sourceState))
+    .digest('hex');
+  const empty = Object.values(sourceState).every(
+    (sourceRows) => !Array.isArray(sourceRows) || sourceRows.length === 0
+  );
+  return { fingerprint, empty };
 }
 
 // ============================================

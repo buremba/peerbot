@@ -3,7 +3,7 @@ import {
   type CommandRegistry,
   createLogger,
 } from "@lobu/core";
-import type { ChannelBindingService } from "../channels/binding-service.js";
+import type { BehaviorSubscriptionService } from "../channels/behavior-subscription-service.js";
 import { platformAgentId } from "../spaces/space-resolver.js";
 
 const logger = createLogger("command-dispatcher");
@@ -22,16 +22,16 @@ interface CommandDispatchInput {
 
 interface CommandDispatcherDeps {
   registry: CommandRegistry;
-  channelBindingService: ChannelBindingService;
+  behaviorSubscriptionService: BehaviorSubscriptionService;
 }
 
 export class CommandDispatcher {
   private registry: CommandRegistry;
-  private channelBindingService: ChannelBindingService;
+  private behaviorSubscriptionService: BehaviorSubscriptionService;
 
   constructor(deps: CommandDispatcherDeps) {
     this.registry = deps.registry;
-    this.channelBindingService = deps.channelBindingService;
+    this.behaviorSubscriptionService = deps.behaviorSubscriptionService;
   }
 
   async tryHandleSlashText(
@@ -93,19 +93,18 @@ export class CommandDispatcher {
   }
 
   private async resolveAgentId(input: CommandDispatchInput): Promise<string> {
-    // Check channel binding first (Slack multi-tenant). Scope to the inbound
-    // org — bindings are org-scoped, so an org-less read could match another
-    // tenant's binding for the same channel.
-		const binding =
+    // Check message Behaviors first (Slack multi-tenant). Scope to the inbound
+    // org so an org-less read cannot match another tenant's subscription.
+		const subscription =
 			input.connectionId && input.organizationId
-				? await this.channelBindingService.getBindingForConnection(
+				? await this.behaviorSubscriptionService.resolveForConnection(
 						input.connectionId,
       input.channelId,
 						input.organizationId,
 					)
 				: null;
-    if (binding?.agentId) {
-      return binding.agentId;
+    if (subscription?.agentId) {
+      return subscription.agentId;
     }
 
     return platformAgentId(

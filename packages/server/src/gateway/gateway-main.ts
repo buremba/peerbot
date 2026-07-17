@@ -35,7 +35,7 @@ const logger = createLogger("gateway");
 interface GatewayOptions {
 	/** Agent settings + metadata store. Defaults to InMemoryAgentStore. */
 	configStore?: AgentConfigStore;
-	/** Connections + channel bindings store. Defaults to InMemoryAgentStore. */
+	/** Runtime connection store. Defaults to InMemoryAgentStore. */
 	connectionStore?: AgentConnectionStore;
 	/** Provide bundled providers programmatically (skips file loading). */
 	providerRegistry?: ProviderRegistryEntry[];

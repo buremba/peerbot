@@ -622,6 +622,26 @@ describe("live steering classification", () => {
     expect(isSteerableHumanMessage(payload)).toBe(true);
   });
 
+  test("steers only Behaviors that explicitly opt in", () => {
+    expect(
+      isSteerableHumanMessage({
+        ...payload,
+        platformMetadata: {
+          behaviorId: 7,
+          behaviorActiveRunPolicy: "steer",
+        },
+      })
+    ).toBe(true);
+    for (const behaviorActiveRunPolicy of ["queue", "coalesce"]) {
+      expect(
+        isSteerableHumanMessage({
+          ...payload,
+          platformMetadata: { behaviorId: 7, behaviorActiveRunPolicy },
+        })
+      ).toBe(false);
+    }
+  });
+
   test("keeps a session reset as a standalone turn", () => {
     expect(
       isSteerableHumanMessage({
@@ -821,6 +841,43 @@ describe("live steering classification", () => {
 
     expect(processSingleMessage).toHaveBeenNthCalledWith(1, first, ["first"]);
     expect(processSingleMessage).toHaveBeenNthCalledWith(2, second, ["second"]);
+  });
+
+  test("keeps queue-policy Behavior events as one turn per delivery", async () => {
+    const client = makeClient();
+    const processSingleMessage = mock(async () => undefined);
+    (client as any).processSingleMessage = processSingleMessage;
+    const first = {
+      payload: {
+        ...payload,
+        messageId: "behavior-first",
+        platformMetadata: {
+          behaviorId: 7,
+          behaviorActiveRunPolicy: "queue",
+        },
+      },
+      timestamp: 1,
+    };
+    const second = {
+      payload: {
+        ...payload,
+        messageId: "behavior-second",
+        platformMetadata: {
+          behaviorId: 7,
+          behaviorActiveRunPolicy: "queue",
+        },
+      },
+      timestamp: 2,
+    };
+
+    await (client as any).processBatchedMessages([first, second]);
+
+    expect(processSingleMessage).toHaveBeenNthCalledWith(1, first, [
+      "behavior-first",
+    ]);
+    expect(processSingleMessage).toHaveBeenNthCalledWith(2, second, [
+      "behavior-second",
+    ]);
   });
 
   test("routes explicit cancel to the active worker before steering", async () => {

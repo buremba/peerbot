@@ -61,7 +61,7 @@ export class AgentMetadataStore {
 
   /**
    * Delete agent metadata. The underlying delete cascades to dependent rows
-   * (channel bindings, grants, etc.) via FK constraints.
+   * (Behavior subscriptions, grants, etc.) via FK constraints.
    */
   async deleteAgent(agentId: string): Promise<void> {
     await this.configStore.deleteMetadata(agentId);

@@ -30,7 +30,7 @@ function fenceGroupLockTag(
  * (cloudId) under a single routing + ownership contract.
  *
  * This is an org/tenant INSTALLATION resource, not an agent connection: one
- * installed tenant routes to many agents via channel bindings, so it has no
+ * installed tenant routes to many agents via channel Behaviors, so it has no
  * owning agent. Credentials live in `auth_profiles` (referenced by
  * `authProfileId`), never plaintext here; `metadata` carries provider-specific
  * tenant data (team_name, account login, site url, etc.).

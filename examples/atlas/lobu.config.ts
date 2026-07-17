@@ -2,7 +2,7 @@ import {
   defineAgent,
   defineConfig,
   defineEntityType,
-  defineWatcher,
+  defineBehavior,
   reactionFromFile,
   secret,
 } from "@lobu/cli/config";
@@ -198,11 +198,11 @@ const university = defineEntityType({
   },
 });
 
-const catalogStalenessChecker = defineWatcher({
+const catalogStalenessChecker = defineBehavior({
   agent: atlasCurator,
   slug: "catalog-staleness-checker",
   name: "Catalog staleness checker",
-  schedule: "0 4 * * 1",
+  triggers: [{ kind: "schedule", cron: "0 4 * * 1" }],
   notification: { priority: "low" },
   tags: ["atlas", "reference", "weekly"],
   minCooldownSeconds: 3600,
@@ -219,5 +219,5 @@ export default defineConfig({
   orgDescription: "Public reference catalog — places, taxonomies, institutions",
   agents: [atlasCurator],
   entities: [city, country, industry, region, technology, university],
-  watchers: [catalogStalenessChecker],
+  behaviors: [catalogStalenessChecker],
 });

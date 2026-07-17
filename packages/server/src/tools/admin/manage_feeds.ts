@@ -168,7 +168,7 @@ async function handleListFeeds(
            -- Agent this feed's channel is bound to (streaming feeds only), so the
            -- Behaviors Listen picker can hide channels already owned by another
            -- agent instead of silently reassigning them on bind.
-           (SELECT b.agent_id FROM agent_channel_bindings b
+           (SELECT b.agent_id FROM behavior_channel_subscriptions b
              WHERE b.organization_id = p.organization_id
                AND b.connection_id = p.connection_id
                AND b.channel_id = p.feed_key
@@ -220,7 +220,7 @@ async function handleReadFeed(
            -- team the about-edge writer keyed on. For a Grid org-wide install the
            -- connection tenant is the enterprise E-id, so the about lookup must
            -- NOT fall back to it; the binding holds the real T-id.
-           (SELECT b.team_id FROM agent_channel_bindings b
+           (SELECT b.team_id FROM behavior_channel_subscriptions b
              WHERE b.organization_id = f.organization_id
                AND b.connection_id = f.connection_id
                AND b.channel_id = f.feed_key

@@ -367,7 +367,7 @@ describe("registry outputSchema normalization (MCP spec: must be an object schem
     // The 8 admin tools declare Type.Union result schemas → bare `{ anyOf }`.
     // A spec-strict host rejects an outputSchema without top-level type:object.
     const byName = new Map(getAllTools().map((t) => [t.name, t]));
-    const watchers = byName.get("manage_watchers") as { outputSchema?: any } | undefined;
+    const watchers = byName.get("manage_behaviors") as { outputSchema?: any } | undefined;
     expect(watchers?.outputSchema?.type).toBe("object");
     expect(Array.isArray(watchers?.outputSchema?.anyOf)).toBe(true);
   });

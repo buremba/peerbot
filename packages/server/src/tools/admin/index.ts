@@ -55,10 +55,10 @@ import {
 	ListWatchersSchema,
 	listWatchers,
 	ListWatchersResultSchema,
-	ManageWatchersSchema,
-	manageWatchers,
-	ManageWatchersResultSchema,
-} from "./manage_watchers";
+	ManageBehaviorsSchema,
+	manageBehaviors,
+	ManageBehaviorsResultSchema,
+} from "./manage_behaviors";
 import { NotifySchema, notify } from "./notify";
 
 interface AdminToolEntry {
@@ -109,7 +109,7 @@ const ENTRIES: AdminToolEntry[] = [
 	{
 		name: "manage_connections",
 		description:
-			"Connection and connector lifecycle. Workflow: browse via `manage_catalog`, install with action `install_connector`, then `connect` (creates a connection + auth link in one call; returns a connect_url for the user — poll `get` until status='active'). Also: list/get/update/delete connections, channel binding, connector config. Note: some connectors auto-register from a paired device (Chrome extension / Mac app advertising a capability) and appear in `list` without an explicit install. SDK alternative: client.connections.",
+			"Connection and connector lifecycle. Workflow: browse via `manage_catalog`, install with action `install_connector`, then `connect` (creates a connection + auth link in one call; returns a connect_url for the user — poll `get` until status='active'). Also: list/get/update/delete connections and connector config. Event/message subscriptions are Behaviors managed through `manage_behaviors`. Note: some connectors auto-register from a paired device (Chrome extension / Mac app advertising a capability) and appear in `list` without an explicit install. SDK alternative: client.connections.",
 		schema: ManageConnectionsSchema,
 		resultSchema: ManageConnectionsResultSchema,
 		handler: manageConnections,
@@ -188,12 +188,13 @@ const ENTRIES: AdminToolEntry[] = [
 		annotations: DESTRUCTIVE_WITH_TITLE("Manage schedules"),
 	},
 	{
-		name: "manage_watchers",
-		description: "Watcher management. SDK alternative: client.watchers.",
-		schema: ManageWatchersSchema,
-		resultSchema: ManageWatchersResultSchema,
-		handler: manageWatchers,
-		annotations: DESTRUCTIVE_WITH_TITLE("Manage watchers"),
+		name: "manage_behaviors",
+		description:
+			"Create and manage Behaviors. The current SDK namespace remains client.watchers while the storage engine is migrated.",
+		schema: ManageBehaviorsSchema,
+		resultSchema: ManageBehaviorsResultSchema,
+		handler: manageBehaviors,
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage behaviors"),
 	},
 	{
 		name: "list_watchers",

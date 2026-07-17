@@ -170,7 +170,7 @@ describe("sdkSearch", () => {
 
 	it("substring-matches across paths and summaries", async () => {
 		// "extraction" appears in watchers.create's summary (entity-type derive).
-		// watchers.create is admin-tier (matches manage_watchers.create being
+		// watchers.create is admin-tier (matches manage_behaviors.create being
 		// owner-admin), so only an admin-tier caller discovers it.
 		const result = await sdkSearch({ query: "extraction" }, stubEnv, adminCtx);
 		expect(result.match_count).toBeGreaterThan(0);

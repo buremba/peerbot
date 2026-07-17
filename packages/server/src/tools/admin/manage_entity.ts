@@ -358,7 +358,7 @@ async function handleCreate(
 		// Root entity (no parent)
 		nextSteps.push(
 			`Use manage_connections(action='create') to install a connector, then manage_feeds(action='create_feed', entity_ids=[${entity.id}]) to target this entity.`,
-			`Use manage_watchers(action='create', entity_id=${entity.id}) to schedule watchers.`,
+			`Use manage_behaviors(action='create', entity_id=${entity.id}) to schedule watchers.`,
 		);
 	} else {
 		// Child entity (has parent)

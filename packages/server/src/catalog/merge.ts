@@ -42,7 +42,16 @@ export function mergeConnectorInstalledWithCatalog(
 	}
 
 	for (const entry of catalog) {
-		if (merged.has(entry.id)) continue;
+		const installedItem = merged.get(entry.id);
+		if (installedItem) {
+			if (
+				installedItem.detail.behavior_events === undefined &&
+				entry.detail.behavior_events !== undefined
+			) {
+				installedItem.detail.behavior_events = entry.detail.behavior_events;
+			}
+			continue;
+		}
 		const availableEntry = withConnectorInstallability(entry);
 		const detail = availableEntry.detail;
 		const actionCounts = actionCountsFromSchema(detail.actions_schema);

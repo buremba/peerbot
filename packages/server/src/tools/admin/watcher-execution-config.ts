@@ -1,10 +1,10 @@
-import { WatcherExecutionConfigSchema } from '@lobu/core/contracts/tools/manage-watchers';
+import { WatcherExecutionConfigSchema } from '@lobu/core/contracts/tools/manage-behaviors';
 import { ToolUserError } from '../../utils/errors';
 import { isAdminOrOwnerRole } from '../access-control';
 
 /**
  * Per-watcher device-worker CLI execution settings. The pure TypeBox schema
- * lives in @lobu/core with the manage_watchers contract; this server module
+ * lives in @lobu/core with the manage_behaviors contract; this server module
  * keeps the authorization/runtime helpers colocated with their callers.
  */
 export { WatcherExecutionConfigSchema };
@@ -51,7 +51,7 @@ export interface ExecutionConfigCaller {
 /**
  * Authorize an incoming `execution_config`. `undefined` = unchanged, `null` =
  * clear — both pass. Shape/type/range validation happens at the tool boundary
- * (WatcherExecutionConfigSchema is embedded in ManageWatchersSchema); this
+ * (WatcherExecutionConfigSchema is embedded in ManageBehaviorsSchema); this
  * gate only enforces the role policy, which a schema cannot express.
  */
 export function assertValidExecutionConfig(value: unknown, caller: ExecutionConfigCaller): void {

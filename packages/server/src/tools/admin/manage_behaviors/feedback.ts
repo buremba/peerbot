@@ -1,5 +1,5 @@
 /**
- * Feedback action handlers for manage_watchers:
+ * Feedback action handlers for manage_behaviors:
  *   submit_feedback, get_feedback, list_promoted
  */
 
@@ -11,7 +11,7 @@ import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
 import logger from '../../../utils/logger';
 import type { ToolContext } from '../../registry';
-import type { ManageWatchersArgs, ManageWatchersResult } from '../manage_watchers';
+import type { ManageBehaviorsArgs, ManageBehaviorsResult } from '../manage_behaviors';
 
 type CorrectionInput = {
   field_path: string;
@@ -122,9 +122,9 @@ function applyCorrectionToData(
 // ============================================
 
 export async function handleSubmitFeedback(
-  args: ManageWatchersArgs,
+  args: ManageBehaviorsArgs,
   ctx: ToolContext
-): Promise<ManageWatchersResult> {
+): Promise<ManageBehaviorsResult> {
   if (!args.watcher_id) throw new Error('watcher_id is required');
   if (!args.window_id) throw new Error('window_id is required');
   if (!ctx.userId) {
@@ -308,9 +308,9 @@ export async function handleSubmitFeedback(
 // ============================================
 
 export async function handleGetFeedback(
-  args: ManageWatchersArgs,
+  args: ManageBehaviorsArgs,
   ctx: ToolContext
-): Promise<ManageWatchersResult> {
+): Promise<ManageBehaviorsResult> {
   if (!args.watcher_id) throw new Error('watcher_id is required');
 
   const sql = getDb();
@@ -392,9 +392,9 @@ export async function handleGetFeedback(
  * passing a watcher_id (auth also gates on requireWatcherAccess 'read').
  */
 export async function handleListPromoted(
-  args: ManageWatchersArgs,
+  args: ManageBehaviorsArgs,
   ctx: ToolContext
-): Promise<ManageWatchersResult> {
+): Promise<ManageBehaviorsResult> {
   if (!args.watcher_id) throw new Error('watcher_id is required');
 
   const sql = getDb();

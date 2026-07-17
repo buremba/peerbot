@@ -18,7 +18,7 @@ type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
  * no notion of watchers/complete_window, so a worker-side self-nudge would
  * break that isolation. This constant is the GLOBAL default; a watcher can
  * override it via execution_config.finalize_nudges (see
- * resolveFinalizeNudgeBudget). A declarative defineWatcher surface for it is
+ * resolveFinalizeNudgeBudget). A declarative defineBehavior surface for it is
  * the remaining follow-up (the CLI doesn't expose execution_config yet).
  */
 const MAX_FINALIZE_NUDGES: number = (() => {
@@ -157,6 +157,12 @@ export async function resolveWatcherRunsByMessageIds(
 
 		if (!result.ok) {
 			await markWatcherRunFailed(sql, runId, result.error);
+			resolved++;
+			continue;
+		}
+
+		if (typedRow.approved_input?.trigger_execution === "turn") {
+			await markWatcherRunCompleted(sql, runId, null);
 			resolved++;
 			continue;
 		}

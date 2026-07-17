@@ -229,7 +229,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				note: "writes an in-app notification to org admins (no external delivery)",
 			},
 			// ── watchers ────────────────────────────────────────────────────────────
-			manage_watchers: {
+			manage_behaviors: {
 				// No read-only `list` action — listing is the separate list_watchers
 				// tool. `get_versions` reads the seeded watcher's version history and
 				// also proves the create path (run in beforeAll) landed.
@@ -338,7 +338,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 
 		// Seed one watcher so get_watcher / list_watchers are real round-trips.
 		const watcher = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create",
 				entity_id: entityId,

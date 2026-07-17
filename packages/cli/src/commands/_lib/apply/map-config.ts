@@ -68,7 +68,7 @@ import type {
   Project,
   ProviderConfig,
   RelationshipType,
-  Watcher,
+  Behavior,
 } from "../../../config/index.js";
 import { isSecretRef, UNRESOLVED_MODEL_SUFFIX } from "../../../config/index.js";
 import { ValidationError } from "../../memory/_lib/errors.js";
@@ -427,7 +427,6 @@ function mapAgent(
           resolveCredentialValue(v, required, env),
         ])
       ),
-      ...(p.channels?.length ? { channels: p.channels } : {}),
     }));
   // Distinct platforms must not collapse to the same stable id (e.g. names that
   // slugify equal), or apply would clobber one with the other.
@@ -439,23 +438,6 @@ function mapAgent(
       );
     }
     seenStableIds.add(p.stableId);
-    // Channel bindings are Slack-only and must be "<teamId>/<channelId>".
-    // Validate up front (the TOML loader did) so a bad binding fails the plan
-    // instead of erroring at syncPlatformChannels after platforms are mutated.
-    if (p.channels?.length) {
-      if (p.type !== "slack") {
-        throw new ValidationError(
-          `agent "${agent.id}" platform "${p.type}" declares channels, but channel bindings are only supported on slack`
-        );
-      }
-      for (const channel of p.channels) {
-        if (!/^[^/\s]+\/[^/\s]+$/.test(channel)) {
-          throw new ValidationError(
-            `agent "${agent.id}" slack platform has an invalid channel "${channel}" — expected "<teamId>/<channelId>"`
-          );
-        }
-      }
-    }
   }
 
   const metadata: DesiredAgentMetadata = {
@@ -599,7 +581,8 @@ function normalizeKeyingConfig(
   return out;
 }
 
-function mapWatcher(watcher: Watcher): DesiredWatcher {
+function mapBehavior(behavior: Behavior): DesiredWatcher {
+  const watcher = behavior;
   if (watcher.schedule) {
     const err = cronError(watcher.schedule);
     if (err) {
@@ -611,6 +594,35 @@ function mapWatcher(watcher: Watcher): DesiredWatcher {
   const sources = watcher.sources
     ? Object.entries(watcher.sources).map(([name, query]) => ({ name, query }))
     : undefined;
+  const triggers = watcher.triggers?.map((trigger) => {
+    if (trigger.kind === "schedule") {
+      const err = cronError(trigger.cron);
+      if (err) {
+        throw new ValidationError(
+          `Behavior "${watcher.slug}" has an invalid schedule trigger "${trigger.cron}": ${err}`
+        );
+      }
+      return trigger;
+    }
+    const { connection, ...eventTrigger } = trigger;
+    if (connection !== undefined && trigger.connection_id !== undefined) {
+      throw new ValidationError(
+        `watcher "${watcher.slug}" trigger must use either connection or connection_id, not both`
+      );
+    }
+    if (connection === undefined) return eventTrigger;
+    if (
+      typeof connection !== "string" &&
+      connectorKey(connection.connector) !== trigger.connector_key
+    ) {
+      throw new ValidationError(
+        `watcher "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${connection.slug}" uses ${connectorKey(connection.connector)}`
+      );
+    }
+    const connectionSlug =
+      typeof connection === "string" ? connection : connection.slug;
+    return { ...eventTrigger, connectionSlug };
+  });
   return {
     slug: watcher.slug,
     agent: agentId(watcher.agent),
@@ -621,6 +633,7 @@ function mapWatcher(watcher: Watcher): DesiredWatcher {
     ...(watcher.name ? { name: watcher.name } : {}),
     ...(watcher.description ? { description: watcher.description } : {}),
     ...(watcher.schedule ? { schedule: watcher.schedule } : {}),
+    ...(triggers ? { triggers } : {}),
     ...(sources ? { sources } : {}),
     ...(watcher.notification?.channel
       ? { notificationChannel: watcher.notification.channel }
@@ -762,7 +775,7 @@ export function mapProjectToDesiredState(
   const relationshipTypes = (project.relationships ?? []).map(
     mapRelationshipType
   );
-  const watchers = (project.watchers ?? []).map(mapWatcher);
+  const watchers = (project.behaviors ?? []).map(mapBehavior);
   const authProfiles = only
     ? []
     : (project.authProfiles ?? []).map((profile) =>
@@ -797,6 +810,22 @@ export function mapProjectToDesiredState(
       throw new ValidationError(
         `watcher "${watcher.slug}" names agent "${watcher.agent}", but no agent with that id is declared in lobu.config.ts`
       );
+    }
+    for (const trigger of watcher.triggers ?? []) {
+      if (trigger.kind !== "event" || !trigger.connectionSlug) continue;
+      const connection = connections.find(
+        (candidate) => candidate.slug === trigger.connectionSlug
+      );
+      if (!connection) {
+        throw new ValidationError(
+          `watcher "${watcher.slug}" references connection "${trigger.connectionSlug}", but it is not declared in lobu.config.ts`
+        );
+      }
+      if (connection.connector !== trigger.connector_key) {
+        throw new ValidationError(
+          `watcher "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${trigger.connectionSlug}" uses ${connection.connector}`
+        );
+      }
     }
   }
 

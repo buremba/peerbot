@@ -110,12 +110,6 @@ describe("auth: missing and expired sessions", () => {
       userAgentsStore,
       agentMetadataStore,
       agentSettingsStore,
-      channelBindingService: {
-        async getBinding() { return null; },
-        async createBinding() { return true; },
-        async listBindings() { return []; },
-        async deleteAllBindings() { return 0; },
-      } as any,
     });
 
     const response = await orgContext.run({ organizationId: ORG_A }, () =>
@@ -129,12 +123,6 @@ describe("auth: missing and expired sessions", () => {
       userAgentsStore,
       agentMetadataStore,
       agentSettingsStore,
-      channelBindingService: {
-        async getBinding() { return null; },
-        async createBinding() { return true; },
-        async listBindings() { return []; },
-        async deleteAllBindings() { return 0; },
-      } as any,
     });
 
     const response = await orgContext.run({ organizationId: ORG_A }, () =>
@@ -152,12 +140,6 @@ describe("auth: missing and expired sessions", () => {
       userAgentsStore,
       agentMetadataStore,
       agentSettingsStore,
-      channelBindingService: {
-        async getBinding() { return null; },
-        async createBinding() { return true; },
-        async listBindings() { return []; },
-        async deleteAllBindings() { return 0; },
-      } as any,
     });
 
     const response = await orgContext.run({ organizationId: ORG_A }, () =>
@@ -178,12 +160,6 @@ describe("auth: missing and expired sessions", () => {
       userAgentsStore,
       agentMetadataStore,
       agentSettingsStore,
-      channelBindingService: {
-        async getBinding() { return null; },
-        async createBinding() { return true; },
-        async listBindings() { return []; },
-        async deleteAllBindings() { return 0; },
-      } as any,
     });
 
     // The decodeSettingsPayload in settings-auth.ts checks Date.now() > payload.exp
@@ -265,12 +241,6 @@ describe("cross-org isolation: agents cannot leak across organizations", () => {
       userAgentsStore: userAgentsStoreA,
       agentMetadataStore: agentMetadataStoreB, // org-b's store
       agentSettingsStore: agentSettingsStoreA,
-      channelBindingService: {
-        async getBinding() { return null; },
-        async createBinding() { return true; },
-        async listBindings() { return []; },
-        async deleteAllBindings() { return 0; },
-      } as any,
     });
 
     // Run in org-b context — u-a is not the owner of agent-org-b
@@ -326,12 +296,6 @@ describe("agent CRUD: access control and input validation", () => {
       userAgentsStore,
       agentMetadataStore,
       agentSettingsStore,
-      channelBindingService: {
-        async getBinding() { return null; },
-        async createBinding() { return true; },
-        async listBindings() { return []; },
-        async deleteAllBindings() { return 0; },
-      } as any,
     });
   }
 
@@ -576,12 +540,6 @@ describe("input validation: agentId format and edge cases", () => {
       userAgentsStore,
       agentMetadataStore,
       agentSettingsStore,
-      channelBindingService: {
-        async getBinding() { return null; },
-        async createBinding() { return true; },
-        async listBindings() { return []; },
-        async deleteAllBindings() { return 0; },
-      } as any,
     });
   }
 

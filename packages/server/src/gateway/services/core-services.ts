@@ -49,7 +49,7 @@ import { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
 import { ModelPreferenceStore } from "../auth/settings/model-preference-store.js";
 import { UserAuthProfileStore } from "../auth/settings/user-auth-profile-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
-import { ChannelBindingService } from "../channels/binding-service.js";
+import { BehaviorSubscriptionService } from "../channels/behavior-subscription-service.js";
 import { registerBuiltInCommands } from "../commands/built-in-commands.js";
 import type { AgentConfig, GatewayConfig } from "../config/index.js";
 import { ConversationStateStore } from "../connections/conversation-state-store.js";
@@ -154,7 +154,7 @@ export class CoreServices {
 	// Agent Configuration Services
 	// ============================================================================
 	private agentSettingsStore?: AgentSettingsStore;
-	private channelBindingService?: ChannelBindingService;
+	private behaviorSubscriptionService?: BehaviorSubscriptionService;
 	private transcriptionService?: TranscriptionService;
 	private imageGenerationService?: ImageGenerationService;
 	private bedrockOpenAIService?: BedrockOpenAIService;
@@ -402,7 +402,7 @@ export class CoreServices {
 		// Always Postgres-backed; only exercised on the OAuth/webhook path.
 		this.appInstallationStore = createPostgresAppInstallationStore();
 
-		this.channelBindingService = new ChannelBindingService();
+		this.behaviorSubscriptionService = new BehaviorSubscriptionService();
 		this.userAgentsStore = new UserAgentsStore();
 
 		// Initialize agent sub-stores. The configStore here owns all Postgres I/O
@@ -434,7 +434,7 @@ export class CoreServices {
 		this.agentSettingsStore = new AgentSettingsStore(this.configStore);
 		this.agentMetadataStore = new AgentMetadataStore(this.configStore);
 		logger.debug(
-			"Agent settings, channel binding, user agents & metadata stores initialized",
+			"Agent settings, connections, user agents & metadata stores initialized",
 		);
 
 		// Initialize external OAuth client if configured. The KV here is a tiny
@@ -1081,10 +1081,10 @@ export class CoreServices {
 		return this.agentSettingsStore;
 	}
 
-	getChannelBindingService(): ChannelBindingService {
-		if (!this.channelBindingService)
+	getBehaviorSubscriptionService(): BehaviorSubscriptionService {
+		if (!this.behaviorSubscriptionService)
 			throw new Error("Channel binding service not initialized");
-		return this.channelBindingService;
+		return this.behaviorSubscriptionService;
 	}
 
 	getTranscriptionService(): TranscriptionService | undefined {

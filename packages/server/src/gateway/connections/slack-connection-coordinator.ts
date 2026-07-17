@@ -1,5 +1,6 @@
 import { createLogger } from "@lobu/core";
 import { Chat } from "chat";
+import { parseSlackUserMessageEvent } from "@lobu/connectors/slack-behavior-events";
 import type { AppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import {
   claimSlackWelcomeDm,
@@ -164,7 +165,7 @@ async function resolveOrgNameAndSlug(
  * done (install → workspace claimed → first agent mapped), confirming the bot is
  * live and wired to an agent.
  *
- * Call this AFTER any successful Slack channel binding. The three preconditions
+ * Call this AFTER any successful Slack channel Behavior subscription. The three preconditions
  * are enforced together by {@link claimSlackWelcomeDm}'s single conditional
  * UPDATE:
  *   - installed & workspace-mapped  → there is an ACTIVE `app_installations` row
@@ -234,46 +235,8 @@ export async function maybeSendSlackWorkspaceWelcome(args: {
   }
 }
 
-/**
- * Parse an Events API webhook body into a user-facing message we should reply
- * to when the workspace is unclaimed: an `app_mention`, or a direct message
- * (`message` with channel_type `im`). Returns null for everything else — the
- * bot's own messages, message edits/subtypes, channel chatter, url_verification
- * challenges, or non-JSON (interactivity/slash) payloads.
- */
-export function parseSlackUserMessageEvent(
-  body: string,
-  contentType: string,
-): { channel: string; user: string } | null {
-  // Events API always posts application/json; form bodies are slash/interactivity.
-  if (contentType.includes("application/x-www-form-urlencoded")) return null;
-  let payload: {
-    type?: string;
-    event?: {
-      type?: string;
-      channel?: string;
-      user?: string;
-      bot_id?: string;
-      subtype?: string;
-      channel_type?: string;
-    };
-  };
-  try {
-    payload = JSON.parse(body);
-  } catch {
-    return null;
-  }
-  if (payload.type !== "event_callback") return null;
-  const event = payload.event;
-  if (!event || !event.channel || !event.user || event.bot_id) return null;
-  const isMention = event.type === "app_mention";
-  const isDirectMessage =
-    event.type === "message" &&
-    event.channel_type === "im" &&
-    !event.subtype;
-  if (!isMention && !isDirectMessage) return null;
-  return { channel: event.channel, user: event.user };
-}
+// Compatibility export while callers migrate to connector-normalized signals.
+export { parseSlackUserMessageEvent };
 
 /**
  * True when the Events API body is an `app_uninstalled` / `app_deleted` event —

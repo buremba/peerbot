@@ -1,5 +1,5 @@
 /**
- * manage_watchers — builder-gate approval queue (agent_config write class).
+ * manage_behaviors — builder-gate approval queue (agent_config write class).
  *
  * WRITE definition actions (create/update/delete/create_version/…) route through
  * the same `agent_config` write-gate class as manage_agents:
@@ -54,7 +54,7 @@ async function watcherExists(orgId: string, slug: string): Promise<boolean> {
 	return rows.length > 0;
 }
 
-describe("manage_watchers — builder gate e2e", () => {
+describe("manage_behaviors — builder gate e2e", () => {
 	let orgId: string;
 	let ownerId: string;
 	let ownerCtx: AuthContext;
@@ -90,7 +90,7 @@ describe("manage_watchers — builder gate e2e", () => {
 		await initWorkspaceProvider();
 
 		const org = await createTestOrganization({
-			name: "manage_watchers gate e2e",
+			name: "manage_behaviors gate e2e",
 		});
 		orgId = org.id;
 		const owner = await createTestUser({ email: "mw-owner@test.com" });
@@ -128,7 +128,7 @@ describe("manage_watchers — builder gate e2e", () => {
 
 	it("human owner: create applies immediately with no approval run", async () => {
 		const res = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create",
 				slug: "human-watcher",
@@ -147,7 +147,7 @@ describe("manage_watchers — builder gate e2e", () => {
 		const sql = getTestDb();
 		const runRows = await sql`
 			SELECT 1 FROM runs
-			WHERE organization_id = ${orgId} AND action_key = 'manage_watchers'
+			WHERE organization_id = ${orgId} AND action_key = 'manage_behaviors'
 				AND approval_status = 'pending'
 		`;
 		expect(runRows.length).toBe(0);
@@ -155,7 +155,7 @@ describe("manage_watchers — builder gate e2e", () => {
 
 	it("agent create produces a pending run + approval event and does NOT create the watcher yet", async () => {
 		const res = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create",
 				slug: "agent-proposed-watcher",
@@ -179,7 +179,7 @@ describe("manage_watchers — builder gate e2e", () => {
 		`;
 		expect(runRows.length).toBe(1);
 		expect(runRows[0]?.run_type).toBe("internal");
-		expect(runRows[0]?.action_key).toBe("manage_watchers");
+		expect(runRows[0]?.action_key).toBe("manage_behaviors");
 		expect(runRows[0]?.approval_status).toBe("pending");
 		expect(runRows[0]?.status).toBe("pending");
 		expect(runRows[0]?.created_by_user_id).toBe(ownerId);
@@ -198,7 +198,7 @@ describe("manage_watchers — builder gate e2e", () => {
 
 	it("approve applies the held create: watcher exists, run completed, event superseded", async () => {
 		const created = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create",
 				slug: "approved-watcher",
@@ -241,7 +241,7 @@ describe("manage_watchers — builder gate e2e", () => {
 
 	it("reject cancels the held create: no watcher, run cancelled, event superseded 'rejected'", async () => {
 		const created = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create",
 				slug: "rejected-watcher",
@@ -283,7 +283,7 @@ describe("manage_watchers — builder gate e2e", () => {
 	it("foreign-owner create still 403s and does not queue a pending run", async () => {
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{
 					action: "create",
 					slug: "foreign-owned",
@@ -299,7 +299,7 @@ describe("manage_watchers — builder gate e2e", () => {
 		const sql = getTestDb();
 		const runRows = await sql`
 			SELECT 1 FROM runs
-			WHERE organization_id = ${orgId} AND action_key = 'manage_watchers'
+			WHERE organization_id = ${orgId} AND action_key = 'manage_behaviors'
 				AND approval_status = 'pending'
 				AND action_input::text LIKE '%foreign-owned%'
 		`;
@@ -309,7 +309,7 @@ describe("manage_watchers — builder gate e2e", () => {
 	it("approve of update with invalid timezone marks run failed (not completed)", async () => {
 		// Seed a watcher via the human path so there is a target to update.
 		const created = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create",
 				slug: "tz-fail-watcher",
@@ -327,7 +327,7 @@ describe("manage_watchers — builder gate e2e", () => {
 		// handleUpdate returns `{ error }` (does not throw); the apply boundary
 		// must treat that as failure so we never mark the run completed.
 		const pending = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "update",
 				watcher_id: watcherId,
@@ -368,7 +368,7 @@ describe("manage_watchers — builder gate e2e", () => {
 
 	it("rejects a no-op update (only watcher_id, no patch fields)", async () => {
 		const created = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create",
 				slug: "noop-update-target",
@@ -382,7 +382,7 @@ describe("manage_watchers — builder gate e2e", () => {
 		const watcherId = created.watcher_id!;
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{ action: "update", watcher_id: watcherId },
 				TEST_ENV,
 				agentCtx,
@@ -392,7 +392,7 @@ describe("manage_watchers — builder gate e2e", () => {
 
 	it("rejects set_reaction_script with no reaction_script (would silently clear)", async () => {
 		const created = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create",
 				slug: "reaction-target",
@@ -406,7 +406,7 @@ describe("manage_watchers — builder gate e2e", () => {
 		const watcherId = created.watcher_id!;
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{ action: "set_reaction_script", watcher_id: watcherId },
 				TEST_ENV,
 				agentCtx,
@@ -417,7 +417,7 @@ describe("manage_watchers — builder gate e2e", () => {
 	it("stale cross-owner approval is rejected on apply after the watcher is reassigned", async () => {
 		// Agent A creates a watcher it owns (queue + approve so A is the owner).
 		const created = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create",
 				slug: "a-owned-then-reassigned",
@@ -433,7 +433,7 @@ describe("manage_watchers — builder gate e2e", () => {
 
 		// Agent A queues an update. The proposal captures A as the acting agent.
 		const pending = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "update",
 				watcher_id: watcherId,

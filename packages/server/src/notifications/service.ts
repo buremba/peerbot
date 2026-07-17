@@ -20,7 +20,7 @@ interface CreateNotificationParams {
 	resourceUrl?: string | null;
 	/** When set, deliver only through this specific bot connection */
 	connectionId?: string | null;
-	/** When set, deliver only to this channel binding. */
+	/** When set, deliver only to this Behavior-subscribed channel. */
 	channelId?: string | null;
 	/** Optional workspace/team guard for channel-scoped delivery. */
 	teamId?: string | null;
@@ -50,7 +50,7 @@ interface CreateNotificationParams {
  * Forward a notification to the org's active chat-bot connections so it lands
  * in the bound channel — e.g. a watcher digest posting to #leads.
  *
- * Resolves connections + their channel bindings straight from Postgres and
+ * Resolves connections + their Behavior subscriptions straight from Postgres and
  * posts in-process via the chat manager. Every app pod loads every active
  * connection at boot, so the locally-held instance can post regardless of
  * which pod fired the notification — correct under N>1 replicas, no cross-pod
@@ -65,7 +65,7 @@ interface BotDeliveryTarget {
 	platform: string;
 	/** Platform-prefixed channel id ready for `chat.channel()`, e.g. "slack:C0123ABCD". */
 	channelKey: string;
-	/** Workspace/team id from the binding — keys the owner-DM identity lookup. */
+	/** Workspace/team id from the subscription — keys the owner-DM identity lookup. */
 	teamId: string | null;
 }
 
@@ -74,15 +74,15 @@ interface BotDeliveryTarget {
  *
  * Two branches, UNIONed:
  *
- *   (A) The org's OWN active chat connections JOINed to their channel bindings,
+ *   (A) The org's OWN active chat connections JOINed to their subscriptions,
  *       scoped to (org, agent) — the multi-tenant default. A connection with no
- *       binding has no target; a connection bound to several channels yields one
+ *       subscription has no target; several subscribed channels yield one
  *       target each.
  *
  *   (B) Hosted-preview cross-org delivery. The hosted preview bot is ONE
  *       connection living in its OWN org under a placeholder agent, that fans
  *       out to agents across MANY orgs — a `/lobu link <code>` writes the
- *       binding under the claim's org, never the connection's. So branch (A)'s
+ *       subscription under the claim's org, never the connection's. So branch (A)'s
  *       `(org, agent)` JOIN misses it on BOTH columns and proactive
  *       notifications silently drop. This branch resolves the org's bindings
  *       through the shared preview connection, mirroring the inbound
@@ -94,7 +94,7 @@ interface BotDeliveryTarget {
  * Single-workspace assumption: with exactly one hosted preview connection per
  * platform today, (B) matches on platform alone. When a second hosted workspace
  * appears, persist its Slack team id (e.g. `settings.hostedWorkspaceTeamId`) and
- * add `AND ac.settings->>'hostedWorkspaceTeamId' = b.team_id` so a binding only
+ * add `AND ac.settings->>'hostedWorkspaceTeamId' = b.team_id` so a subscription only
  * resolves the connection actually installed in its workspace (Slack channel ids
  * are workspace-scoped, not global).
  *

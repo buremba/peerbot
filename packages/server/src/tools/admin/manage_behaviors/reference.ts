@@ -1,5 +1,5 @@
 /**
- * get_component_reference action handler for manage_watchers.
+ * get_component_reference action handler for manage_behaviors.
  * Returns static documentation about available watcher components and data types.
  */
 

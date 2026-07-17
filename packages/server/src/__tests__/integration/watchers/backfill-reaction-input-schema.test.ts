@@ -11,7 +11,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
-import { manageWatchers } from '../../../tools/admin/manage_watchers';
+import { manageBehaviors } from '../../../tools/admin/manage_behaviors';
 import type { ToolContext } from '../../../tools/registry';
 import { backfillReactionInputSchema } from '../../../watchers/backfill-reaction-input-schema';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -58,7 +58,7 @@ async function seedReactionWatcher(workspace: TestWorkspace, suffix: string, scr
     agent_id: agent.agentId,
   })) as { watcher_id: string };
   const watcherId = Number(watcher.watcher_id);
-  await manageWatchers(
+  await manageBehaviors(
     { action: 'set_reaction_script', watcher_id: String(watcherId), reaction_script: script } as never,
     {} as Env,
     ownerCtx(workspace)

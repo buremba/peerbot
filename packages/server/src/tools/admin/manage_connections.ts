@@ -25,14 +25,7 @@ import {
 	handleReauthenticate,
 	handleTest,
 } from "./manage_connections/handlers/auth-actions";
-import {
-	handleBindChannel,
-	handleConnectChannelDm,
-	handleListChannelBindings,
-	handleSetChannelAbout,
-	handleSyncChannelBindings,
-	handleUnbindChannel,
-} from "./manage_connections/handlers/channel-bindings";
+import { handleSetChannelAbout } from "./manage_connections/handlers/channel-about";
 import { handleConnect } from "./manage_connections/handlers/connect";
 import {
 	handleInstallConnector,
@@ -53,22 +46,17 @@ import {
 } from "./manage_connections/handlers/crud";
 import {
 	ApplyChatConnectionAction,
-	BindChannelAction,
 	ConnectAction,
-	ConnectChannelDmAction,
 	CreateAction,
 	DeleteAction,
 	GetAction,
 	InstallConnectorAction,
 	ListAction,
-	ListChannelBindingsAction,
 	ListConnectorGroupsAction,
 	ReauthenticateAction,
 	SetChannelAboutAction,
-	SyncChannelBindingsAction,
 	TestAction,
 	ToggleConnectorLoginAction,
-	UnbindChannelAction,
 	UninstallConnectorAction,
 	UpdateAction,
 	UpdateConnectorAuthAction,
@@ -118,18 +106,7 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 		UpdateConnectorDefaultRepairAgentAction,
 		handleUpdateConnectorDefaultRepairAgent,
 	),
-	list_channel_bindings: action(
-		ListChannelBindingsAction,
-		handleListChannelBindings,
-	),
-	bind_channel: action(BindChannelAction, handleBindChannel),
-	unbind_channel: action(UnbindChannelAction, handleUnbindChannel),
-	sync_channel_bindings: action(
-		SyncChannelBindingsAction,
-		handleSyncChannelBindings,
-	),
 	set_channel_about: action(SetChannelAboutAction, handleSetChannelAbout),
-	connect_channel_dm: action(ConnectChannelDmAction, handleConnectChannelDm),
 });
 
 export const ManageConnectionsSchema = manageConnectionsTool.schema;

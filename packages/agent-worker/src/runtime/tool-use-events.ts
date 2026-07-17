@@ -29,6 +29,14 @@ interface ToolUseResultSummary {
   snippets?: Array<{ id: number; text: string }>;
   /** Tools may also include a short error string. */
   error?: string;
+  /** Connector action output that can seed the canonical Behavior editor. */
+  subscribable?: {
+    connector_key: string;
+    resource_type: string;
+    resource_ref: string;
+    label: string;
+    suggested_event_keys?: string[];
+  };
 }
 
 const SEARCH_MEMORY_TOOL_NAMES = new Set([
@@ -73,13 +81,21 @@ export function buildToolUseEventPayload(event: {
     }
   }
 
+  const subscribable = summarizeSubscriptionCandidate(event.result);
+  if (subscribable) {
+    payload.result_summary = {
+      ...payload.result_summary,
+      subscribable,
+    };
+  }
+
   return payload;
 }
 
 function summarizeSearchMemoryResult(
   raw: unknown
 ): ToolUseResultSummary | null {
-  const result = extractSearchMemoryBody(raw);
+  const result = extractStructuredBody(raw);
   if (!result || typeof result !== "object") return null;
 
   const summary: ToolUseResultSummary = {};
@@ -104,13 +120,78 @@ function summarizeSearchMemoryResult(
   return Object.keys(summary).length > 0 ? summary : null;
 }
 
+function summarizeSubscriptionCandidate(
+  raw: unknown
+): ToolUseResultSummary["subscribable"] | null {
+  const body = extractStructuredBody(raw);
+  const candidate = findSubscriptionCandidate(body);
+  if (!candidate) return null;
+
+  const connectorKey = candidate.connector_key;
+  const resourceType = candidate.resource_type;
+  const resourceRef = candidate.resource_ref;
+  const label = candidate.label;
+  if (
+    typeof connectorKey !== "string" ||
+    !connectorKey ||
+    connectorKey.length > 100 ||
+    typeof resourceType !== "string" ||
+    !resourceType ||
+    resourceType.length > 100 ||
+    typeof resourceRef !== "string" ||
+    !resourceRef ||
+    resourceRef.length > 500 ||
+    typeof label !== "string" ||
+    !label ||
+    label.length > 300
+  ) {
+    return null;
+  }
+
+  const rawEvents = candidate.suggested_event_keys;
+  const suggestedEventKeys = Array.isArray(rawEvents)
+    ? rawEvents
+        .filter(
+          (event): event is string =>
+            typeof event === "string" && event.length > 0 && event.length <= 100
+        )
+        .slice(0, 16)
+    : undefined;
+  return {
+    connector_key: connectorKey,
+    resource_type: resourceType,
+    resource_ref: resourceRef,
+    label,
+    ...(suggestedEventKeys && suggestedEventKeys.length > 0
+      ? { suggested_event_keys: [...new Set(suggestedEventKeys)] }
+      : {}),
+  };
+}
+
+function findSubscriptionCandidate(
+  value: unknown,
+  depth = 0
+): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || depth > 3) return null;
+  const record = value as Record<string, unknown>;
+  const direct = record.subscribable;
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+    return direct as Record<string, unknown>;
+  }
+  for (const key of ["output", "data", "result"]) {
+    const found = findSubscriptionCandidate(record[key], depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
 /**
  * MCP tool results from the gateway proxy land here as
  *   { content: [{ type: 'text', text: '<json>' }], isError: false }
  * but in-process tools sometimes pass the raw object straight through. Handle
  * both shapes.
  */
-function extractSearchMemoryBody(raw: unknown): unknown {
+function extractStructuredBody(raw: unknown): unknown {
   if (!raw || typeof raw !== "object") return null;
 
   // MCP CallToolResult shape — text content holds a JSON-stringified payload.

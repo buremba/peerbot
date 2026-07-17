@@ -6,7 +6,7 @@ import {
   defineConnection,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   reactionFromFile,
   secret,
   skillFromFile,
@@ -31,8 +31,8 @@ const crm = defineAgent({
     },
   ],
   // Hosted Lobu Slack bot — no bot token needed. `lobu run` prints a
-  // `/lobu link <code>` you redeem by DMing the bot to bind a DM/channel
-  // (writes agent_channel_bindings).
+  // `/lobu link <code>` you redeem by DMing the bot to create a message
+  // Behavior for that DM/channel.
   platforms: [
     { type: "slack", surfaces: ["dm", "channel"], codeTtlMinutes: 15 },
   ],
@@ -159,11 +159,11 @@ const converted_to = defineRelationshipType({
     "Links a lead to the pilot it became, so the path from first signal to paying pilot stays explicit.",
 });
 
-const funnel_digestWatcher = defineWatcher({
+const funnel_digestWatcher = defineBehavior({
   agent: crm,
   slug: "funnel-digest",
   name: "Weekly funnel digest",
-  schedule: "0 9 * * 1",
+  triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
   notification: { channel: "both", priority: "high" },
   minCooldownSeconds: 3600,
   tags: ["crm", "weekly"],
@@ -174,11 +174,11 @@ const funnel_digestWatcher = defineWatcher({
     'Produce the weekly funnel digest and post it to Slack. Keep it short.\n\n1. The single recommended action for the week, on the first line. Pick the\n   move that does the most to get pilot #1 closer (almost always: follow up\n   with the warmest lead in "conversation", or progress whichever pilot\n   conversation is furthest along).\n2. Funnel snapshot: count of `lead` entities per stage; what moved since the\n   last digest (new leads, stage changes, new/updated `pilot` entities).\n3. Top-of-funnel since last digest: new GitHub stars, X mentions/replies,\n   HN/PH activity.\n4. Stale: any lead in `conversation` with no `lead:interaction` in 7+ days —\n   list them for follow-up.\n5. One gap callout if there is one (e.g. "18 new stars, 0 became leads —\n   is inbound-triage catching the right signal?").\n\nTone: a checklist a busy founder reads in 30 seconds. End on the next action,\nnot the status. Remember: the metric that matters is customer conversations\nthis week — if that number is below 3, say so plainly.\n',
 });
 
-const inbound_triageWatcher = defineWatcher({
+const inbound_triageWatcher = defineBehavior({
   agent: crm,
   slug: "inbound-triage",
   name: "Inbound triage",
-  schedule: "0 8-22/2 * * *",
+  triggers: [{ kind: "schedule", cron: "0 8-22/2 * * *" }],
   notification: { priority: "normal" },
   minCooldownSeconds: 300,
   tags: ["crm", "triage"],
@@ -419,5 +419,5 @@ export default defineConfig({
     x_accountAuth,
     lobu_dbAuth,
   ],
-  watchers: [funnel_digestWatcher, inbound_triageWatcher],
+  behaviors: [funnel_digestWatcher, inbound_triageWatcher],
 });

@@ -17,8 +17,8 @@ An open-source, event-sourced backend for AI agents:
   **entities** and **relationships**.
 - **Agents** react to messages in real time and answer over chat platforms, HTTP,
   and MCP.
-- **Watchers** are scheduled prompts that read the graph and act (a daily digest,
-  inbound triage, etc.).
+- **Behaviors** are reusable prompts activated by connector events, schedules,
+  or an explicit call (a PR review, Slack reply, daily digest, etc.).
 
 `lobu run` boots the whole thing (gateway + worker + memory) as one Node process
 on http://localhost:{{GATEWAY_PORT}}.
@@ -40,7 +40,7 @@ install it — don't work around it.
   user context.
 - `connectors/*.connector.ts` — custom data sources (only when no bundled
   connector fits).
-- `*.reaction.ts` — code a watcher runs after extraction (post to Slack, update
+- `*.reaction.ts` — code a Behavior runs after extraction (post to Slack, update
   an entity).
 - `skills/<name>/SKILL.md` — reusable capability bundles for the agent.
 - `.env` — secrets (`DATABASE_URL`, provider keys, OAuth creds). Never commit real
@@ -50,7 +50,7 @@ install it — don't work around it.
 
 Author everything in `lobu.config.ts` with helpers from `@lobu/cli/config`:
 `defineConfig`, `defineAgent`, `defineEntityType`, `defineRelationshipType`,
-`defineWatcher`, `defineConnection`, `defineAuthProfile`, `secret`, plus
+`defineBehavior`, `defineConnection`, `defineAuthProfile`, `secret`, plus
 `connectorFromFile`, `reactionFromFile`, `skillFromFile`.
 
 Read the complete, working reference before editing:
@@ -160,17 +160,21 @@ Every credential is a `secret("ENV_NAME")` placeholder resolved from `.env` — 
 paste a real key into the config, and never fabricate one. If a secret is missing,
 ask the user to add it to `.env`.
 
-### Watcher (scheduled prompt) + reaction
+### Behavior (event, schedule, or manual) + reaction
 
 ```ts
-const digest = defineWatcher({
+const digest = defineBehavior({
   agent,
   slug: "daily-digest",
   name: "Daily digest",
-  schedule: "0 9 * * *", // cron
+  triggers: [
+    { kind: "schedule", cron: "0 9 * * *", active_run: "coalesce", skip_if_unchanged: true },
+    // Or react to a connector event:
+    // { kind: "event", connector_key: "github", connection: gh, event_types: ["pull_request.created"] },
+  ],
   prompt: "Summarize yesterday's tickets by root cause and post to Slack.",
   // Entity-typed: the output schema comes from the `ticket` entity type's
-  // properties (schema lives on the type, not the watcher), and extracted rows
+  // properties (schema lives on the type, not the Behavior), and extracted rows
   // are keyed + merged into ticket entities across windows.
   keyingConfig: { entityType: "ticket", entityPath: "tickets", keyFields: ["id"], keyOutputField: "ticket_key" },
   // reaction: reactionFromFile<typeof reactionMod>("./daily-digest.reaction.ts"),
@@ -178,9 +182,10 @@ const digest = defineWatcher({
 ```
 
 No `reaction` → the extracted data is written to memory. A `reaction` lets the
-watcher act (post a message, update entities). Omit `keyingConfig` for an
-untyped watcher that runs the worker's free-form `{ summary }` fallback — there
-is no inline watcher schema; the schema is owned by the entity type.
+Behavior act (post a message, update entities). Omit `keyingConfig` for an
+untyped Behavior that runs the worker's free-form `{ summary }` fallback — there
+is no inline Behavior schema; the schema is owned by the entity type. Omit
+`triggers` for a manual-only Behavior.
 
 ### Wire it together
 
@@ -192,7 +197,7 @@ export default defineConfig({
   entities: [ticket],
   connections: [gh],
   authProfiles: [ghAuth],
-  watchers: [digest],
+  behaviors: [digest],
 });
 ```
 

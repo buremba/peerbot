@@ -25,7 +25,12 @@ describe("catalog/merge", () => {
 				{
 					id: "slack",
 					name: "Slack (catalog)",
-					detail: { actions_schema: { ping: {} } },
+					detail: {
+						actions_schema: { ping: {} },
+						behavior_events: [
+							{ key: "message.created", label: "A message is sent" },
+						],
+					},
 				},
 				{
 					id: "github",
@@ -38,6 +43,9 @@ describe("catalog/merge", () => {
 		expect(merged.map((item) => item.id)).toEqual(["slack", "github"]);
 		expect(merged[0]?.detail.installed).toBe(true);
 		expect(merged[0]?.detail.catalog_origin).toBe("org");
+		expect(merged[0]?.detail.behavior_events).toEqual([
+			{ key: "message.created", label: "A message is sent" },
+		]);
 		expect(merged[1]?.detail.installed).toBe(false);
 		expect(merged[1]?.detail.installable).toBe(true);
 	});

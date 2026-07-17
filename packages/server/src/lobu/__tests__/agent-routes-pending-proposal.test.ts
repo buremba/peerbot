@@ -46,11 +46,11 @@ async function seedOrgAndAgent(): Promise<void> {
 /** Insert a pending write-gate run + held-proposal event (queueWriteForApproval shape). */
 async function insertPendingProposal(opts: {
 	organizationId?: string;
-	tool: "manage_agents" | "manage_watchers";
+	tool: "manage_agents" | "manage_behaviors";
 	proposal: Record<string, unknown>;
 	current?: Record<string, unknown> | null;
 	// The event's top-level action. manage_agents keeps `action` on the proposal;
-	// manage_watchers nests it in `args`, so the producer stamps args.action into
+	// manage_behaviors nests it in `args`, so the producer stamps args.action into
 	// metadata.action explicitly — mirror that here rather than reading it off the
 	// (possibly nested) proposal.
 	action?: string;
@@ -170,14 +170,14 @@ describe("GET /:agentId/config/pending/:runId", () => {
 		expect(res.status).toBe(404);
 	});
 
-	test("404 for a manage_watchers run (real shape: agent_id nested in args)", async () => {
+	test("404 for a manage_behaviors run (real shape: agent_id nested in args)", async () => {
 		// buildWatcherProposal returns `{ args, actingAgentId, actingWatcherId }`
 		// with agent_id INSIDE args — a watcher-shaped proposal can't prefill the
 		// agent config form, so this endpoint excludes it (watcher review is a
-		// separate surface). Fixture matches the real ManageWatchersProposal shape.
+		// separate surface). Fixture matches the real ManageBehaviorsProposal shape.
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_watchers",
+			tool: "manage_behaviors",
 			proposal: {
 				args: { action: "update", watcher_id: "w1", agent_id: AGENT, prompt: "x" },
 				actingAgentId: null,
@@ -236,7 +236,7 @@ const WATCHER_ID = 501;
 // metadata (`current.agent_id`, `args.watcher_id`), NOT from the `watchers`
 // table — so no watcher row needs seeding; the proposal fixtures carry it all.
 
-/** A real ManageWatchersProposal: `{ args: {...}, actingAgentId, actingWatcherId }`
+/** A real ManageBehaviorsProposal: `{ args: {...}, actingAgentId, actingWatcherId }`
  *  with watcher_id / agent_id nested INSIDE args. */
 function watcherProposal(
 	args: Record<string, unknown>,
@@ -245,10 +245,10 @@ function watcherProposal(
 }
 
 describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
-	test("returns the held manage_watchers update proposal for the target watcher", async () => {
+	test("returns the held manage_behaviors update proposal for the target watcher", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_watchers",
+			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
 				watcher_id: WATCHER_ID,
@@ -284,7 +284,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 		// version-owned/routing keys (name/watcher_id/action) are excluded.
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_watchers",
+			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
 				watcher_id: WATCHER_ID,
@@ -313,7 +313,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 		// agent-nested route.
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_watchers",
+			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
 				watcher_id: WATCHER_ID,
@@ -328,10 +328,10 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 		expect(res.status).toBe(200);
 	});
 
-	test("404 for a manage_watchers CREATE proposal (not single-form review)", async () => {
+	test("404 for a manage_behaviors CREATE proposal (not single-form review)", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_watchers",
+			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "create",
 				watcher_id: WATCHER_ID,
@@ -359,7 +359,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 	test("404 when the proposal targets a DIFFERENT watcher", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_watchers",
+			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
 				watcher_id: 999,
@@ -376,7 +376,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 	test("404 when the watcher is owned by a DIFFERENT agent (authz boundary)", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_watchers",
+			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
 				watcher_id: WATCHER_ID,
@@ -402,7 +402,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 		`;
 		const runId = await insertPendingProposal({
 			organizationId: "other-w-org",
-			tool: "manage_watchers",
+			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
 				watcher_id: WATCHER_ID,

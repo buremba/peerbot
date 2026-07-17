@@ -20,8 +20,8 @@ import { manageEntity } from "../../../../packages/server/src/tools/admin/manage
 import { manageEntitySchema } from "../../../../packages/server/src/tools/admin/manage_entity_schema";
 import {
   listWatchers,
-  manageWatchers,
-} from "../../../../packages/server/src/tools/admin/manage_watchers";
+  manageBehaviors,
+} from "../../../../packages/server/src/tools/admin/manage_behaviors";
 import { querySql } from "../../../../packages/server/src/tools/admin/query_sql";
 import { saveContent } from "../../../../packages/server/src/tools/save_content";
 import { search } from "../../../../packages/server/src/tools/search";
@@ -116,8 +116,8 @@ export async function dispatchTool(
       return manageEntity(args as never, ENV, ctx);
     case "manage_entity_schema":
       return manageEntitySchema(args as never, ENV, ctx);
-    case "manage_watchers":
-      return manageWatchers(args as never, ENV, ctx);
+    case "manage_behaviors":
+      return manageBehaviors(args as never, ENV, ctx);
     case "list_watchers":
       return listWatchers(args as never, ENV, ctx);
     case "query_sql":
@@ -129,7 +129,7 @@ export async function dispatchTool(
     default:
       throw new Error(
         `Tool "${toolName}" is not supported in this eval harness. ` +
-          `Supported: manage_entity, manage_entity_schema, save_memory, search_memory, query_sql, manage_watchers, list_watchers.`
+          `Supported: manage_entity, manage_entity_schema, save_memory, search_memory, query_sql, manage_behaviors, list_watchers.`
       );
   }
 }

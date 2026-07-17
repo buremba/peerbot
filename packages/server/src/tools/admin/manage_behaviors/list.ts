@@ -1,12 +1,12 @@
 /**
- * list_watchers handler for manage_watchers.
+ * list_watchers handler for manage_behaviors.
  */
 
 import {
 	ListWatchersResultSchema,
 	type ListWatchersArgs,
 	type ListWatchersResult,
-} from "@lobu/core/contracts/tools/manage-watchers";
+} from "@lobu/core/contracts/tools/manage-behaviors";
 import { getDb } from "../../../db/client";
 import type { Env } from "../../../index";
 import logger from "../../../utils/logger";
@@ -51,6 +51,7 @@ export async function handleList(
       i.created_at,
       i.updated_at,
       i.schedule,
+      i.triggers,
       i.next_run_at,
       i.agent_id,
       i.device_worker_id,
@@ -174,7 +175,7 @@ export async function handleList(
 	} catch (error) {
 		logger.error(
 			{ error },
-			"[manage_watchers] Error batch counting unanalyzed content",
+			"[manage_behaviors] Error batch counting unanalyzed content",
 		);
 		counts = new Map();
 	}
@@ -215,14 +216,14 @@ export async function handleList(
 			delete (rest as Record<string, unknown>).description;
 		}
 
-		// Stringify `watcher_id` to match the rest of the manage_watchers
+		// Stringify `watcher_id` to match the rest of the manage_behaviors
 		// contract: `handleCreate` returns `String(watcherId)`, the input schema
 		// declares `watcher_id` as a string, and downstream callers (CLI
 		// `apply-cmd.ts` → `updateWatcher`, MCP tools) forward whatever they
 		// receive straight back. Without the cast the raw integer leaks through
 		// and a follow-up `update`/`upgrade` call fails the schema gate with
 		// `/watcher_id: Expected string`. Same bug pattern for `current_version_id`
-		// (kept as-is — no consumer feeds it back into manage_watchers today).
+		// (kept as-is — no consumer feeds it back into manage_behaviors today).
 		if ((rest as Record<string, unknown>).watcher_id != null) {
 			(rest as Record<string, unknown>).watcher_id = String(
 				(rest as Record<string, unknown>).watcher_id,

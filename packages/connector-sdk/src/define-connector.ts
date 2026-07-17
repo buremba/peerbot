@@ -127,6 +127,7 @@ function buildDefinition(spec: ConnectorSpec): ConnectorDefinition {
     requiredCapability: spec.requiredCapability,
     runtime: spec.runtime,
     webhook: spec.webhook,
+    behaviorEvents: spec.behaviorEvents,
   };
 
   if (spec.feeds) {

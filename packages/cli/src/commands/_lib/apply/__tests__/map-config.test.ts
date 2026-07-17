@@ -7,13 +7,14 @@ import {
   defineConnector,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   secret,
 } from "@lobu/cli/config";
 import {
   mapProjectToDesiredState,
   mergeAgentDirArtifacts,
 } from "../map-config.js";
+import { resolveBehaviorConnectionRefs } from "../apply-cmd.js";
 import type { AgentSettings } from "@lobu/core";
 
 const env: NodeJS.ProcessEnv = {
@@ -140,7 +141,6 @@ describe("mapProjectToDesiredState", () => {
           type: "slack",
           name: "ops",
           config: { botToken: "$SLACK_BOT_TOKEN", appType: "MultiTenant" },
-          channels: ["T1/C1"],
         },
       ],
     });
@@ -166,7 +166,6 @@ describe("mapProjectToDesiredState", () => {
       botToken: "sk-real-token",
       appType: "MultiTenant",
     });
-    expect(platforms[1]?.channels).toEqual(["T1/C1"]);
     expect(state.requiredSecrets).toContain("TELEGRAM_BOT_TOKEN");
     expect(state.requiredSecrets).toContain("SLACK_BOT_TOKEN");
   });
@@ -204,42 +203,22 @@ describe("mapProjectToDesiredState", () => {
       )
     ).toThrow(/duplicate connection slug "gh"/i);
 
-    const w1 = defineWatcher({
+    const w1 = defineBehavior({
       slug: "w",
       agent: a,
       prompt: "p",
     });
-    const w2 = defineWatcher({
+    const w2 = defineBehavior({
       slug: "w",
       agent: a,
       prompt: "p",
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ org: "o", agents: [a], watchers: [w1, w2] }),
+        defineConfig({ org: "o", agents: [a], behaviors: [w1, w2] }),
         env
       )
     ).toThrow(/duplicate watcher slug "w"/i);
-  });
-
-  test("rejects channels on a non-slack platform", () => {
-    const bot = defineAgent({
-      id: "bot",
-      platforms: [{ type: "telegram", config: {}, channels: ["T1/C1"] }],
-    });
-    expect(() =>
-      mapProjectToDesiredState(defineConfig({ org: "o", agents: [bot] }), env)
-    ).toThrow(/channel bindings are only supported on slack/i);
-  });
-
-  test("rejects a malformed slack channel string", () => {
-    const bot = defineAgent({
-      id: "bot",
-      platforms: [{ type: "slack", config: {}, channels: ["not-a-channel"] }],
-    });
-    expect(() =>
-      mapProjectToDesiredState(defineConfig({ org: "o", agents: [bot] }), env)
-    ).toThrow(/invalid channel|teamId.*channelId/i);
   });
 
   test("maps entities + relationships with typed-handle slugs", () => {
@@ -381,9 +360,13 @@ describe("mapProjectToDesiredState", () => {
     ).toBe(false);
   });
 
-  test("maps watchers: agent handle, sources record, notification", () => {
+  test("maps behaviors: agent handle, sources record, notification", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineWatcher({
+    const github = defineConnection({
+      slug: "github-main",
+      connector: "github",
+    });
+    const watcher = defineBehavior({
       agent: crm,
       slug: "health",
       prompt: "assess",
@@ -391,9 +374,25 @@ describe("mapProjectToDesiredState", () => {
       schedule: "0 */12 * * *",
       notification: { channel: "both", priority: "high" },
       minCooldownSeconds: 1800,
+      triggers: [
+        {
+          kind: "event",
+          connector_key: "github",
+          connection: github,
+          event_types: ["pull_request.opened"],
+          execution: "turn",
+          active_run: "queue",
+          output: "silent",
+          skip_if_unchanged: true,
+        },
+      ],
     });
     const state = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], watchers: [watcher] })
+      defineConfig({
+        agents: [crm],
+        behaviors: [watcher],
+        connections: [github],
+      })
     );
     const dw = state.watchers[0];
     expect(dw?.agent).toBe("crm");
@@ -401,11 +400,100 @@ describe("mapProjectToDesiredState", () => {
     expect(dw?.notificationChannel).toBe("both");
     expect(dw?.notificationPriority).toBe("high");
     expect(dw?.minCooldownSeconds).toBe(1800);
+    expect(dw?.triggers?.[0]).toMatchObject({
+      connector_key: "github",
+      connectionSlug: "github-main",
+    });
+
+    resolveBehaviorConnectionRefs(
+      state.watchers,
+      new Map([["github-main", 91]]),
+      true
+    );
+    expect(state.watchers[0]?.triggers?.[0]).toMatchObject({
+      connector_key: "github",
+      connection_id: 91,
+    });
+    expect(state.watchers[0]?.triggers?.[0]).not.toHaveProperty(
+      "connectionSlug"
+    );
+  });
+
+  test("rejects missing and connector-mismatched Behavior connections", () => {
+    const crm = defineAgent({ id: "crm" });
+    const slack = defineConnection({ slug: "chat", connector: "slack" });
+    const behavior = (connection: string) =>
+      defineBehavior({
+        agent: crm,
+        slug: "review-pr",
+        prompt: "Review it",
+        triggers: [
+          {
+            kind: "event",
+            connector_key: "github",
+            connection,
+            event_types: ["pull_request.created"],
+            execution: "turn",
+            active_run: "queue",
+            output: "silent",
+          },
+        ],
+      });
+
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({ agents: [crm], behaviors: [behavior("missing")] })
+      )
+    ).toThrow(/connection "missing".*not declared/i);
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({
+          agents: [crm],
+          connections: [slack],
+          behaviors: [behavior("chat")],
+        })
+      )
+    ).toThrow(/trigger is github.*uses slack/i);
+  });
+
+  test("rejects a Behavior trigger with both connection forms", () => {
+    const crm = defineAgent({ id: "crm" });
+    const github = defineConnection({
+      slug: "github-main",
+      connector: "github",
+    });
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({
+          agents: [crm],
+          connections: [github],
+          behaviors: [
+            defineBehavior({
+              agent: crm,
+              slug: "review-pr",
+              prompt: "Review it",
+              triggers: [
+                {
+                  kind: "event",
+                  connector_key: "github",
+                  connection: github,
+                  connection_id: 12,
+                  event_types: ["pull_request.created"],
+                  execution: "turn",
+                  active_run: "queue",
+                  output: "silent",
+                },
+              ],
+            }),
+          ],
+        })
+      )
+    ).toThrow(/either connection or connection_id/i);
   });
 
   test("maps watcher reactionsGuidance + agentKind", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineWatcher({
+    const watcher = defineBehavior({
       agent: crm,
       slug: "w",
       prompt: "p",
@@ -413,7 +501,7 @@ describe("mapProjectToDesiredState", () => {
       agentKind: "notifier",
     });
     const dw = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], watchers: [watcher] })
+      defineConfig({ agents: [crm], behaviors: [watcher] })
     ).watchers[0];
     expect(dw?.reactionsGuidance).toBe("Notify the account owner.");
     expect(dw?.agentKind).toBe("notifier");
@@ -421,7 +509,7 @@ describe("mapProjectToDesiredState", () => {
 
   test("normalizes keyingConfig camelCase → snake_case for the server", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineWatcher({
+    const watcher = defineBehavior({
       agent: crm,
       slug: "pricing",
       prompt: "extract",
@@ -433,7 +521,7 @@ describe("mapProjectToDesiredState", () => {
       },
     });
     const dw = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], watchers: [watcher] })
+      defineConfig({ agents: [crm], behaviors: [watcher] })
     ).watchers[0];
     // Server reads snake_case (watcher-extraction-schema.ts / promote-keyed-entities.ts);
     // camelCase would silently land the watcher as untyped.
@@ -446,14 +534,14 @@ describe("mapProjectToDesiredState", () => {
   });
 
   test("throws when a watcher names an unknown agent", () => {
-    const watcher = defineWatcher({
+    const watcher = defineBehavior({
       agent: "ghost",
       slug: "x",
       prompt: "p",
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [], watchers: [watcher] })
+        defineConfig({ agents: [], behaviors: [watcher] })
       )
     ).toThrow(/ghost/);
   });
@@ -576,22 +664,22 @@ describe("mapProjectToDesiredState", () => {
 
   test("rejects an invalid cron schedule", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineWatcher({
+    const watcher = defineBehavior({
       agent: crm,
       slug: "w",
       prompt: "p",
-      schedule: "not-a-cron",
+      triggers: [{ kind: "schedule", cron: "not-a-cron" }],
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [crm], watchers: [watcher] })
+        defineConfig({ agents: [crm], behaviors: [watcher] })
       )
     ).toThrow(/invalid schedule/);
   });
 
   test("rejects a sub-minute cron schedule (parity with TOML/server)", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineWatcher({
+    const watcher = defineBehavior({
       agent: crm,
       slug: "w",
       prompt: "p",
@@ -599,7 +687,7 @@ describe("mapProjectToDesiredState", () => {
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [crm], watchers: [watcher] })
+        defineConfig({ agents: [crm], behaviors: [watcher] })
       )
     ).toThrow(/too frequent/);
   });

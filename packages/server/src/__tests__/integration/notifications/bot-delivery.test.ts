@@ -2,7 +2,7 @@
  * Integration test for the notification → bot-connection delivery path.
  *
  * Exercises `resolveBotDeliveryTargets` against a real DB: it JOINs the org's
- * active chat connections to their channel bindings and returns the channel(s)
+ * active chat connections to their Behavior subscriptions and returns the channel(s)
  * each notification should post to. This is the path that was a silent no-op
  * after #846 removed the HTTP endpoints the old implementation called.
  */
@@ -10,9 +10,12 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { resolveBotDeliveryTargets } from "../../../notifications/service";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
+import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
 import {
+	addUserToOrganization,
   createTestAgent,
   createTestOrganization,
+	createTestUser,
   insertChatConnectionRow,
 } from "../../setup/test-fixtures";
 
@@ -42,15 +45,17 @@ async function seedBinding(opts: {
   channelId: string;
   teamId?: string;
 }): Promise<void> {
-  const sql = getTestDb();
-  await sql`
-    INSERT INTO agent_channel_bindings
-      (organization_id, agent_id, platform, channel_id, team_id, connection_id, created_at)
-    SELECT ${opts.organizationId}, ${opts.agentId}, 'slack', ${opts.channelId},
-      ${opts.teamId ?? "T_TEST"}, id, NOW()
-    FROM connections
-    WHERE slug = ${`agentconn-${opts.connectionId}`} AND deleted_at IS NULL
-  `;
+	const configuredBy = await createTestUser();
+	await addUserToOrganization(configuredBy.id, opts.organizationId, "owner");
+  await createTestBehaviorSubscription({
+    organizationId: opts.organizationId,
+    agentId: opts.agentId,
+    connectionSlug: `agentconn-${opts.connectionId}`,
+    platform: "slack",
+    channelId: opts.channelId,
+    teamId: opts.teamId ?? "T_TEST",
+		configuredBy: configuredBy.id,
+  });
 }
 
 describe("resolveBotDeliveryTargets", () => {

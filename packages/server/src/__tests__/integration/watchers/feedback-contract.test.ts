@@ -8,7 +8,7 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { manageWatchers } from '../../../tools/admin/manage_watchers';
+import { manageBehaviors } from '../../../tools/admin/manage_behaviors';
 import type { ToolContext } from '../../../tools/registry';
 import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
@@ -92,7 +92,7 @@ describe('watcher feedback contract', () => {
   });
 
   it('stores set/remove/add field corrections from one batch as separate correction events', async () => {
-    const result = (await manageWatchers(
+    const result = (await manageBehaviors(
       {
         action: 'submit_feedback',
         watcher_id: watcherId,
@@ -136,7 +136,7 @@ describe('watcher feedback contract', () => {
     // feedback id IS its event id (origin_id NULL). Historical rows carry
     // origin_id 'wwff_<seq>' and the reader recovers the legacy id from it.
     const sql = getTestDb();
-    const result = (await manageWatchers(
+    const result = (await manageBehaviors(
       {
         action: 'submit_feedback',
         watcher_id: watcherId,
@@ -163,7 +163,7 @@ describe('watcher feedback contract', () => {
         ${sql.json({ window_id: Number(windowId), watcher_id: Number(watcherId), field_path: 'legacy.field', mutation: 'set', corrected_value: 'old', note: null })},
         NOW(), NOW())
     `;
-    const feedback = (await manageWatchers(
+    const feedback = (await manageBehaviors(
       { action: 'get_feedback', watcher_id: watcherId, window_id: windowId } as never,
       {} as never,
       ownerCtx(workspace)
@@ -185,7 +185,7 @@ describe('watcher feedback contract', () => {
       createdBy: workspace.users.owner.id,
     });
 
-    await manageWatchers(
+    await manageBehaviors(
       {
         action: 'submit_feedback',
         watcher_id: watcherId,
@@ -195,7 +195,7 @@ describe('watcher feedback contract', () => {
       {} as never,
       ownerCtx(workspace)
     );
-    await manageWatchers(
+    await manageBehaviors(
       {
         action: 'submit_feedback',
         watcher_id: watcherId,
@@ -206,7 +206,7 @@ describe('watcher feedback contract', () => {
       ownerCtx(workspace)
     );
 
-    const filtered = (await manageWatchers(
+    const filtered = (await manageBehaviors(
       { action: 'get_feedback', watcher_id: watcherId, window_id: otherWindowId } as never,
       {} as never,
       ownerCtx(workspace)
@@ -218,7 +218,7 @@ describe('watcher feedback contract', () => {
 
   it('rejects malformed corrections and cross-org watcher/window ids', async () => {
     await expect(
-      manageWatchers(
+      manageBehaviors(
         { action: 'submit_feedback', watcher_id: watcherId, window_id: windowId, corrections: [] } as never,
         {} as never,
         ownerCtx(workspace)
@@ -226,7 +226,7 @@ describe('watcher feedback contract', () => {
     ).rejects.toThrow(/non-empty array/);
 
     await expect(
-      manageWatchers(
+      manageBehaviors(
         {
           action: 'submit_feedback',
           watcher_id: watcherId,
@@ -243,7 +243,7 @@ describe('watcher feedback contract', () => {
     const other = await TestWorkspace.create({ name: 'Feedback Stranger Org' });
     const foreign = await seedWatcher(other, 'foreign');
     await expect(
-      manageWatchers(
+      manageBehaviors(
         {
           action: 'submit_feedback',
           watcher_id: foreign.watcherId,
@@ -272,7 +272,7 @@ describe('watcher feedback contract', () => {
     const seeded = await seedWatcher(workspace, `materialize-${Date.now()}`);
     const rootId = seeded.windowId;
 
-    const result = (await manageWatchers(
+    const result = (await manageBehaviors(
       {
         action: 'submit_feedback',
         watcher_id: seeded.watcherId,
@@ -315,7 +315,7 @@ describe('watcher feedback contract', () => {
     const rootId = seeded.windowId;
 
     // First correction supersedes the root → becomes the head.
-    await manageWatchers(
+    await manageBehaviors(
       {
         action: 'submit_feedback',
         watcher_id: seeded.watcherId,
@@ -367,7 +367,7 @@ describe('watcher feedback contract', () => {
     // field_path is caller input — a path through the prototype chain must not
     // assign onto Object.prototype (CodeQL js/prototype-polluting-assignment)
     // and must not become an own key of the payload either.
-    const result = (await manageWatchers(
+    const result = (await manageBehaviors(
       {
         action: 'submit_feedback',
         watcher_id: seeded.watcherId,
@@ -412,7 +412,7 @@ describe('watcher feedback contract', () => {
     // architecturally unreachable (window_id IS the root event id).
     const seeded = await seedWatcher(workspace, `nochain-${Date.now()}`);
     await expect(
-      manageWatchers(
+      manageBehaviors(
         {
           action: 'submit_feedback',
           watcher_id: seeded.watcherId,

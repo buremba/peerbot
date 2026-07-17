@@ -1,5 +1,5 @@
 /**
- * manage_watchers correctness guards:
+ * manage_behaviors correctness guards:
  *
  *  BUG A — a source query that omits `id` is rejected at create/create_version
  *  time. Watcher-mode aggregation keys rows by `id` and the signed window_token
@@ -26,7 +26,7 @@ import {
 } from "../../setup/test-fixtures";
 import { TestApiClient } from "../../setup/test-mcp-client";
 
-describe("manage_watchers source-id + cross-org guards", () => {
+describe("manage_behaviors source-id + cross-org guards", () => {
 	let owner: TestApiClient;
 	let ownerOrgId: string;
 	let agentId: string;

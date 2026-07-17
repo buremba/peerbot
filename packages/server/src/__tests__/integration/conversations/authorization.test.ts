@@ -17,6 +17,10 @@ import {
 } from "../../../gateway/conversations/authorization";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
+  archiveTestBehaviorSubscriptions,
+  createTestBehaviorSubscription,
+} from "../../setup/behavior-subscriptions";
+import {
 	createTestAgent,
 	createTestOrganization,
 	insertChatConnectionRow,
@@ -48,15 +52,14 @@ async function seedBinding(opts: {
   channelId: string;
   teamId?: string;
 }): Promise<void> {
-  const sql = getTestDb();
-  await sql`
-    INSERT INTO agent_channel_bindings
-      (organization_id, agent_id, platform, channel_id, team_id, connection_id, created_at)
-    SELECT ${opts.organizationId}, ${opts.agentId}, 'slack', ${opts.channelId},
-      ${opts.teamId ?? "T_TEST"}, id, NOW()
-    FROM connections
-    WHERE slug = ${`agentconn-${opts.connectionId}`} AND deleted_at IS NULL
-  `;
+  await createTestBehaviorSubscription({
+    organizationId: opts.organizationId,
+    agentId: opts.agentId,
+    connectionSlug: `agentconn-${opts.connectionId}`,
+    platform: "slack",
+    channelId: opts.channelId,
+    teamId: opts.teamId ?? "T_TEST",
+  });
 }
 
 describe("conversation authorization", () => {
@@ -352,7 +355,10 @@ describe("conversation authorization", () => {
 			await resolveAuthorizedTarget(agent.agentId, org.id, t!.handle),
 		).toBeTruthy();
 
-    await getTestDb()`DELETE FROM agent_channel_bindings WHERE organization_id = ${org.id} AND agent_id = ${agent.agentId}`;
+    await archiveTestBehaviorSubscriptions({
+      organizationId: org.id,
+      agentId: agent.agentId,
+    });
 
 		expect(
 			await resolveAuthorizedTarget(agent.agentId, org.id, t!.handle),

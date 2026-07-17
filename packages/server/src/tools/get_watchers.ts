@@ -16,6 +16,7 @@ import { type Static, Type } from '@sinclair/typebox';
 import { createDbClientFromEnv, type DbClient, getDb } from '../db/client';
 import type { Env } from '../index';
 import type {
+  BehaviorTrigger,
   KeyingConfig,
   PendingAnalysis,
   WatcherMetadata,
@@ -210,6 +211,7 @@ interface WatcherQueryRow {
   slug: string | null;
   status: string;
   schedule: string | null;
+  triggers: BehaviorTrigger[] | null;
   next_run_at: string | null;
   agent_id: string | null;
   device_worker_id: string | null;
@@ -598,6 +600,7 @@ async function getWatcherImpl(
         i.slug,
         i.status,
         i.schedule,
+        i.triggers,
         i.next_run_at,
         i.agent_id,
         i.device_worker_id,
@@ -855,6 +858,7 @@ async function getWatcherImpl(
       slug: watcherRow.slug || '',
       status: watcherRow.status as 'active' | 'archived',
       schedule: watcherRow.schedule,
+      triggers: watcherRow.triggers ?? [],
       next_run_at: watcherRow.next_run_at,
       agent_id: watcherRow.agent_id,
       device_worker_id: watcherRow.device_worker_id ?? null,

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { BindingConnection } from "../../gateway/channels/binding-scope-resolver";
-import { resolveBindingTeam } from "../../gateway/channels/binding-scope-resolver";
-import { resolveSlackBindingTeam } from "../../gateway/connections/slack-binding-scope";
+import type { SubscriptionConnection } from "../../gateway/channels/subscription-scope-resolver";
+import { resolveSubscriptionTeam } from "../../gateway/channels/subscription-scope-resolver";
+import { resolveSlackSubscriptionTeam } from "../../gateway/connections/slack-subscription-scope";
 
 /**
- * The binding-team invariant: `agent_channel_bindings.team_id` is ALWAYS the
+ * The subscription-team invariant: a chat Behavior's projected team is ALWAYS the
  * concrete WORKSPACE (`T…`), never a Grid ENTERPRISE id (`E…`). These cover the
  * connector resolver's non-DB branches (hint priority, `T…`-stored fast path)
  * and the generic default dispatch. The `E…` → conversations.info branch (which
@@ -14,7 +14,7 @@ import { resolveSlackBindingTeam } from "../../gateway/connections/slack-binding
 const ENTERPRISE = "E0BDSKL1KJL";
 const WORKSPACE = "T0BF8TKGW79";
 
-function conn(externalTenantId: string | null): BindingConnection {
+function conn(externalTenantId: string | null): SubscriptionConnection {
 	return {
 		connectorKey: "slack",
 		externalTenantId,
@@ -36,9 +36,9 @@ const unusedSecretStore = {
 	},
 };
 
-describe("resolveSlackBindingTeam", () => {
+describe("resolveSlackSubscriptionTeam", () => {
 	it("prefers a trusted workspace (T…) hint over everything, no round-trip", async () => {
-		const team = await resolveSlackBindingTeam(
+		const team = await resolveSlackSubscriptionTeam(
 			{ slackWeb: throwingWeb, secretStore: unusedSecretStore },
 			{ connection: conn(ENTERPRISE), channelId: "slack:C1", workspaceHint: WORKSPACE },
 		);
@@ -46,7 +46,7 @@ describe("resolveSlackBindingTeam", () => {
 	});
 
 	it("uses the connection's stored tenant id when it is already a workspace (T…)", async () => {
-		const team = await resolveSlackBindingTeam(
+		const team = await resolveSlackSubscriptionTeam(
 			{ slackWeb: throwingWeb, secretStore: unusedSecretStore },
 			{ connection: conn(WORKSPACE), channelId: "slack:C1" },
 		);
@@ -55,9 +55,9 @@ describe("resolveSlackBindingTeam", () => {
 
 });
 
-describe("resolveBindingTeam (generic dispatch)", () => {
+describe("resolveSubscriptionTeam (generic dispatch)", () => {
 	it("defaults a non-Slack connector to the connection's stored tenant id", async () => {
-		const team = await resolveBindingTeam({
+		const team = await resolveSubscriptionTeam({
 			connection: {
 				connectorKey: "telegram",
 				externalTenantId: "chat-999",
@@ -70,7 +70,7 @@ describe("resolveBindingTeam (generic dispatch)", () => {
 	});
 
 	it("a trusted hint wins for the default connector too", async () => {
-		const team = await resolveBindingTeam({
+		const team = await resolveSubscriptionTeam({
 			connection: {
 				connectorKey: "telegram",
 				externalTenantId: "chat-999",

@@ -46,7 +46,7 @@
 > **WI-0.1 — Watcher-definition approval queue (critical).**
 > "Slackbot sets up guardrail watchers" fails closed today: `gateWatcherWrite` throws on
 > `require_approval` because no watcher-definition approval queue exists.
-> Files: `packages/server/src/tools/admin/manage_watchers.ts:324-386` (fail-closed comment at
+> Files: `packages/server/src/tools/admin/manage_behaviors.ts:324-386` (fail-closed comment at
 > 326-328, throw at 379-385); `packages/server/src/authz/write-action-manifest.ts:63-74`
 > (`agent_config` create default `approval`). Fix: copy the `queueWriteForApproval` pattern that
 > `manage_agents` already uses (`packages/server/src/tools/admin/manage_agents.ts:585-633`) so a

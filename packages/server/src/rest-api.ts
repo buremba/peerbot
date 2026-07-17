@@ -19,7 +19,7 @@ import { streamInvalidationEvents } from "./events/sse";
 import type { Env } from "./index";
 import { getOperationsSummary } from "./operations/connector-operations";
 import { manageClassifiers } from "./tools/admin/manage_classifiers";
-import { listWatchers } from "./tools/admin/manage_watchers";
+import { listWatchers } from "./tools/admin/manage_behaviors";
 import {
 	executeTool,
 	extractAuthContext,

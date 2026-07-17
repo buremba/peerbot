@@ -291,7 +291,7 @@ export function formatToolResult(
     search_memory: formatSearchResult,
     get_watcher: formatGetWatcherResult,
     read_knowledge: formatGetContentResult,
-    manage_watchers: formatManageWatchersResult,
+    manage_behaviors: formatManageBehaviorsResult,
     list_watchers: formatListWatchersResult,
     query_sql: formatQuerySqlResult,
   };
@@ -754,7 +754,7 @@ function formatGetWatcherResult(result: any, _options: FormatterOptions): string
 }
 
 function formatListWatchersResult(result: any, options: FormatterOptions): string {
-  return formatManageWatchersResult({ ...result, action: 'list' }, options);
+  return formatManageBehaviorsResult({ ...result, action: 'list' }, options);
 }
 
 /**
@@ -823,9 +823,9 @@ function formatExtractedData(data: any, indent: number = 0): string {
 }
 
 /**
- * Format manage_watchers result
+ * Format manage_behaviors result
  */
-function formatManageWatchersResult(result: any, _options: FormatterOptions): string {
+function formatManageBehaviorsResult(result: any, _options: FormatterOptions): string {
   const { action, summary, watchers, results } = result;
 
   let md = `# 📊 Watcher Management: ${action}\n\n`;

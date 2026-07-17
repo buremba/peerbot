@@ -122,6 +122,17 @@ function fullOrgRoutes(): Record<string, () => unknown> {
           agent_id: "sales",
           prompt: "Poll CRM data.",
           schedule: "0 */12 * * *",
+          triggers: [
+            {
+              kind: "event",
+              connector_key: "github",
+              connection_id: 7,
+              event_types: ["pull_request.created"],
+              execution: "turn",
+              active_run: "queue",
+              output: "silent",
+            },
+          ],
           sources: [{ name: "content", query: "SELECT * FROM events" }],
           tags: ["sales", "health"],
           notification_channel: "both",
@@ -308,6 +319,13 @@ describe("lobu init --from-org", () => {
     expect(w?.name).toBe("Account health");
     expect(w?.prompt).toBe("Poll CRM data.");
     expect(w?.schedule).toBe("0 */12 * * *");
+    expect(w?.triggers?.[0]).toMatchObject({
+      kind: "event",
+      connector_key: "github",
+      connectionSlug: "github-lobu",
+      event_types: ["pull_request.created"],
+    });
+    expect(w?.triggers?.[0]).not.toHaveProperty("connection_id");
     // No keyingConfig means this round-trips as an untyped watcher that uses
     // the worker's free-form `{ summary }` fallback.
     expect(w?.keyingConfig).toBeUndefined();

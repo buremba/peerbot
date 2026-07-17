@@ -186,7 +186,7 @@ describe('formatToolResult', () => {
     });
   });
 
-  describe('manage_watchers tool', () => {
+  describe('manage_behaviors tool', () => {
     it('should format create result', () => {
       const result = {
         action: 'create',
@@ -194,7 +194,7 @@ describe('formatToolResult', () => {
         template_version: 1,
         status: 'active',
       };
-      const md = formatToolResult('manage_watchers', result);
+      const md = formatToolResult('manage_behaviors', result);
       expect(md).toContain('Watcher Management');
       expect(md).toContain('42');
     });
@@ -229,7 +229,7 @@ describe('formatToolResult', () => {
           },
         ],
       };
-      const md = formatToolResult('manage_watchers', result);
+      const md = formatToolResult('manage_behaviors', result);
       expect(md).toContain('Templates (1)');
       expect(md).toContain('reddit-opportunity-finder');
     });
@@ -241,7 +241,7 @@ describe('formatToolResult', () => {
         slug: 'reddit-opportunity-finder',
         version: 1,
       };
-      const md = formatToolResult('manage_watchers', result);
+      const md = formatToolResult('manage_behaviors', result);
       expect(md).toContain('New Template Created');
       expect(md).toContain('reddit-opportunity-finder');
     });

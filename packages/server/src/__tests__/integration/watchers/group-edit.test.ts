@@ -17,7 +17,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
-import { manageWatchers } from '../../../tools/admin/manage_watchers';
+import { manageBehaviors } from '../../../tools/admin/manage_behaviors';
 import type { ToolContext } from '../../../tools/registry';
 import { createWatcherRun } from '../../../runs/queue-service';
 import { parseWatcherRunPayload } from '../../../watchers/automation';
@@ -66,7 +66,7 @@ async function assignToEntity(
   versionId: number,
   entityId: number
 ): Promise<number> {
-  const result = (await manageWatchers(
+  const result = (await manageBehaviors(
     {
       action: 'create_from_version',
       version_id: String(versionId),
@@ -133,7 +133,7 @@ describe('watcher group edit contract', () => {
     const workspace = await TestWorkspace.create({ name: 'Group Script Copy Org' });
     const { watcherId: rootId } = await seedRootWatcher(workspace, 'script-copy');
 
-    await manageWatchers(
+    await manageBehaviors(
       {
         action: 'set_reaction_script',
         watcher_id: String(rootId),
@@ -177,7 +177,7 @@ describe('watcher group edit contract', () => {
     const workspace = await TestWorkspace.create({ name: 'Reaction Input Org' });
     const { watcherId: rootId } = await seedRootWatcher(workspace, 'react-input');
 
-    await manageWatchers(
+    await manageBehaviors(
       {
         action: 'set_reaction_script',
         watcher_id: String(rootId),
@@ -200,7 +200,7 @@ describe('watcher group edit contract', () => {
     expect(JSON.stringify(schema)).toContain('"s"');
 
     // Clearing the script wipes the cached schema too.
-    await manageWatchers(
+    await manageBehaviors(
       { action: 'set_reaction_script', watcher_id: String(rootId), reaction_script: '' } as never,
       {} as Env,
       ownerCtx(workspace)
@@ -240,7 +240,7 @@ describe('watcher group edit contract', () => {
     );
 
     // Edit through the SIBLING — group cascade should still apply, not just to the sibling.
-    const result = (await manageWatchers(
+    const result = (await manageBehaviors(
       {
         action: 'create_version',
         watcher_id: String(sibling1Id),
@@ -291,7 +291,7 @@ describe('watcher group edit contract', () => {
       siblingEntity.id
     );
 
-    await manageWatchers(
+    await manageBehaviors(
       {
         action: 'set_reaction_script',
         watcher_id: String(rootId),
@@ -308,7 +308,7 @@ describe('watcher group edit contract', () => {
     expect(rows[1].reaction_script).toContain('v1');
 
     // Calling through the sibling (not the root) — should still cascade.
-    await manageWatchers(
+    await manageBehaviors(
       {
         action: 'set_reaction_script',
         watcher_id: String(siblingId),
@@ -346,7 +346,7 @@ describe('watcher group edit contract', () => {
 
     // Group edit lands AFTER the run was created — current_version_id moves
     // to v2 on the watchers row, but the run's payload still holds v1.
-    await manageWatchers(
+    await manageBehaviors(
       {
         action: 'create_version',
         watcher_id: String(rootId),
@@ -423,7 +423,7 @@ describe('watcher group edit contract', () => {
     // Now bump A's current_version_id to v2 — the snapshot in aRun still
     // points at v1, but if complete_window for B mistakenly uses aRun's id
     // it must NOT pick up A's v1 snapshot.
-    await manageWatchers(
+    await manageBehaviors(
       {
         action: 'create_version',
         watcher_id: String(aId),
@@ -460,7 +460,7 @@ describe('watcher group edit contract', () => {
     // serialize them; one ends up at v2, the other at v3 — neither errors,
     // neither collides on (watcher_id, version) unique index.
     const [r1, r2] = await Promise.all([
-      manageWatchers(
+      manageBehaviors(
         {
           action: 'create_version',
           watcher_id: String(rootId),
@@ -470,7 +470,7 @@ describe('watcher group edit contract', () => {
         {} as Env,
         ownerCtx(workspace)
       ),
-      manageWatchers(
+      manageBehaviors(
         {
           action: 'create_version',
           watcher_id: String(rootId),

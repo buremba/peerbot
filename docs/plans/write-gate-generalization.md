@@ -322,7 +322,7 @@ inspectable as one that needed approval. Do NOT encapsulate the change-set insid
    is still viewable; it just applied without a gate.
 
 **Already partially exists** (grounds this, not net-new): `watcher_run_id` threaded through
-`complete_window` (`manage_watchers/complete-window.ts:72,148`);
+`complete_window` (`manage_behaviors/complete-window.ts:72,148`);
 `promoted-entities-recap.tsx` + `watcher-summary-view.tsx` in owletto render a run recap.
 The work is to make the change-set the FIRST-CLASS primitive both the recap AND the batch
 approval read from — one source, two views (mirrors "one writer many mirrors").

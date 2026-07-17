@@ -50,7 +50,7 @@ describe("ApplyClient", () => {
     expect(watchers).toEqual([{ slug: "digest", name: "Digest" }]);
   });
 
-  test("createWatcher POSTs manage_watchers with action=create and no entity_id", async () => {
+  test("createWatcher POSTs manage_behaviors with action=create and no entity_id", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
@@ -70,7 +70,9 @@ describe("ApplyClient", () => {
       schedule: "0 9 * * 1",
     });
 
-    expect(calls[0]?.url).toBe("https://example.test/api/acme/manage_watchers");
+    expect(calls[0]?.url).toBe(
+      "https://example.test/api/acme/manage_behaviors"
+    );
     expect(calls[0]?.init?.method).toBe("POST");
     const body = JSON.parse(String(calls[0]?.init?.body));
     expect(body).toEqual({
@@ -160,10 +162,12 @@ describe("ApplyClient — prune", () => {
     });
   });
 
-  test("deleteWatcher POSTs manage_watchers delete with watcher_ids array", async () => {
+  test("deleteWatcher POSTs manage_behaviors delete with watcher_ids array", async () => {
     const { calls, client } = recordingClient();
     await client.deleteWatcher("42");
-    expect(calls[0]?.url).toBe("https://example.test/api/acme/manage_watchers");
+    expect(calls[0]?.url).toBe(
+      "https://example.test/api/acme/manage_behaviors"
+    );
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
       action: "delete",
       watcher_ids: ["42"],

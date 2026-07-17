@@ -124,27 +124,27 @@ describe('requiresOwnerAdmin', () => {
     expect(requiresOwnerAdmin('manage_feeds', { action: 'trigger_feed' }, false)).toBe(true);
   });
 
-  it('should require admin for manage_watchers mutating actions', () => {
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'create' }, false)).toBe(true);
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'create_version' }, false)).toBe(true);
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'set_reaction_script' }, false)).toBe(
+  it('should require admin for manage_behaviors mutating actions', () => {
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'create' }, false)).toBe(true);
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'create_version' }, false)).toBe(true);
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'set_reaction_script' }, false)).toBe(
       true
     );
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'trigger' }, false)).toBe(true);
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'create_from_version' }, false)).toBe(
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'trigger' }, false)).toBe(true);
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'create_from_version' }, false)).toBe(
       true
     );
   });
 
-  it('should not require admin for manage_watchers read actions', () => {
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'get_versions' }, false)).toBe(false);
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'get_version_details' }, false)).toBe(
+  it('should not require admin for manage_behaviors read actions', () => {
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'get_versions' }, false)).toBe(false);
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'get_version_details' }, false)).toBe(
       false
     );
     expect(
-      requiresOwnerAdmin('manage_watchers', { action: 'get_component_reference' }, false)
+      requiresOwnerAdmin('manage_behaviors', { action: 'get_component_reference' }, false)
     ).toBe(false);
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'get_feedback' }, false)).toBe(false);
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'get_feedback' }, false)).toBe(false);
   });
 
   it('should require admin for view template mutations while leaving reads as read-tier', () => {
@@ -280,7 +280,7 @@ describe('extractAuthContext adminTools — only the verified worker allowlist r
   it('does NOT derive an allowlist for an admin caller on the REST proxy', () => {
     const ctx = ctxFor({
       scopes: ['mcp:admin'],
-      url: 'http://localhost/api/v1/tools/manage_watchers',
+      url: 'http://localhost/api/v1/tools/manage_behaviors',
     });
     expect(ctx.adminTools).toBeNull();
   });
@@ -385,16 +385,16 @@ describe('isPublicReadable', () => {
     expect(isPublicReadable('unknown_tool', {})).toBe(false);
   });
 
-  it('should allow public read for manage_watchers read actions', () => {
-    expect(isPublicReadable('manage_watchers', { action: 'get_versions' })).toBe(true);
-    expect(isPublicReadable('manage_watchers', { action: 'get_version_details' })).toBe(true);
-    expect(isPublicReadable('manage_watchers', { action: 'get_component_reference' })).toBe(true);
+  it('should allow public read for manage_behaviors read actions', () => {
+    expect(isPublicReadable('manage_behaviors', { action: 'get_versions' })).toBe(true);
+    expect(isPublicReadable('manage_behaviors', { action: 'get_version_details' })).toBe(true);
+    expect(isPublicReadable('manage_behaviors', { action: 'get_component_reference' })).toBe(true);
   });
 
-  it('should deny public read for manage_watchers mutations', () => {
-    expect(isPublicReadable('manage_watchers', { action: 'create' })).toBe(false);
-    expect(isPublicReadable('manage_watchers', { action: 'create_version' })).toBe(false);
-    expect(isPublicReadable('manage_watchers', { action: 'set_reaction_script' })).toBe(false);
+  it('should deny public read for manage_behaviors mutations', () => {
+    expect(isPublicReadable('manage_behaviors', { action: 'create' })).toBe(false);
+    expect(isPublicReadable('manage_behaviors', { action: 'create_version' })).toBe(false);
+    expect(isPublicReadable('manage_behaviors', { action: 'set_reaction_script' })).toBe(false);
   });
 
   it('should allow public read for manage_classifiers list', () => {
@@ -703,7 +703,7 @@ query_sql: read ?=read
 run_sdk: write ?=write
 manage_entity: create=write update=write list=read+public get=read+public delete=admin link=write unlink=write update_link=write list_links=read+public merge=admin resolve_duplicates=admin unmerge=admin ?=read
 manage_entity_schema: list=read+public get=read+public create=admin update=admin delete=admin audit=read+public add_rule=admin remove_rule=admin list_rules=read+public ?=read
-manage_connections: list_connector_groups=read+public list=read+public get=read+public create=write connect=admin update=write apply_chat_connection=admin delete=admin reauthenticate=write test=admin install_connector=admin uninstall_connector=admin toggle_connector_login=admin update_connector_auth=admin update_connector_default_config=admin update_connector_default_repair_agent=admin list_channel_bindings=read+public bind_channel=admin unbind_channel=admin sync_channel_bindings=admin set_channel_about=admin connect_channel_dm=admin ?=read
+manage_connections: list_connector_groups=read+public list=read+public get=read+public create=write connect=admin update=write apply_chat_connection=admin delete=admin reauthenticate=write test=admin install_connector=admin uninstall_connector=admin toggle_connector_login=admin update_connector_auth=admin update_connector_default_config=admin update_connector_default_repair_agent=admin set_channel_about=admin ?=read
 manage_catalog: list_catalog=read+public list_installed=read+public ?=read
 manage_agents: list=admin get=admin create=admin update=admin delete=admin set_system_agent=admin ?=read
 manage_conversations: list=read get=read send=write ?=read
@@ -712,7 +712,7 @@ manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=admin test
 manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public list_activity=read+public approve=write reject=write approve_batch=write reject_batch=write ?=read
 notify: send=admin ?=admin
 manage_schedules: create=admin list=admin update=admin pause=admin cancel=admin ?=admin
-manage_watchers: create=admin update=admin create_version=admin complete_window=write trigger=admin delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read
+manage_behaviors: create=admin update=admin create_version=admin complete_window=write trigger=admin delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read
 list_watchers: read+public ?=read+public
 get_watcher: read+public ?=read+public
 read_knowledge: read+public ?=read+public

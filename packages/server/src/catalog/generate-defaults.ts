@@ -73,6 +73,7 @@ export async function generateConnectorsManifest(): Promise<CatalogManifest> {
 				webhook: metadata.webhook,
 				feeds_schema: metadata.feeds_schema,
 				actions_schema: metadata.actions_schema,
+				behavior_events: metadata.behavior_events,
 				options_schema: metadata.options_schema,
 				favicon_domain: metadata.favicon_domain,
 				required_capability: metadata.required_capability,

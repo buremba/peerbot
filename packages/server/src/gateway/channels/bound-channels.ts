@@ -77,7 +77,7 @@ export async function resolveBoundChannelRows(
           THEN substring(ac.slug from 11) ELSE ac.slug END AS id,
         ac.connector_key AS platform, b.channel_id, b.team_id, b.created_at
       FROM connections ac
-      JOIN agent_channel_bindings b ON b.connection_id = ac.id
+      JOIN behavior_channel_subscriptions b ON b.connection_id = ac.id
       WHERE ac.organization_id = ${organizationId}
         AND ac.status = 'active'
         AND ac.credential_mode IS NOT NULL
@@ -94,9 +94,10 @@ export async function resolveBoundChannelRows(
         CASE WHEN pc.slug LIKE 'agentconn-%'
           THEN substring(pc.slug from 11) ELSE pc.slug END AS id,
         pc.connector_key AS platform, b.channel_id, b.team_id, b.created_at
-      FROM agent_channel_bindings b
+      FROM behavior_channel_subscriptions b
       JOIN connections pc
-        ON pc.connector_key = b.platform
+        ON pc.id = b.connection_id
+       AND pc.connector_key = b.platform
        AND pc.status = 'active'
        AND pc.credential_mode IS NOT NULL
        AND pc.deleted_at IS NULL
@@ -109,7 +110,7 @@ export async function resolveBoundChannelRows(
         AND NOT EXISTS (
           SELECT 1
           FROM connections own
-          JOIN agent_channel_bindings ob ON ob.connection_id = own.id
+          JOIN behavior_channel_subscriptions ob ON ob.connection_id = own.id
           WHERE own.organization_id = ${organizationId}
             AND own.status = 'active'
             AND own.credential_mode IS NOT NULL

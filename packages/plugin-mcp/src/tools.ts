@@ -30,7 +30,7 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
   "manage_agents",
   // Same shape as manage_agents: watcher definition create/update/delete may
   // return pending_approval under the agent_config write-gate.
-  "manage_watchers",
+  "manage_behaviors",
   // manage_entity's update path queues a human-owned-field change for approval
   // (approval_queued + approval_run_id + approval_fields/current). Same reason:
   // we need the JSON to forward the entity_field_change approval card.
@@ -43,7 +43,7 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
  * Approve/Reject diff. Handles three producers:
  *   - manage_agents write gate → `{ status: 'pending_approval', run_id,
  *     action, proposal, current }` (the builder agent's create/update/delete).
- *   - manage_watchers write gate → same `pending_approval` shape (watcher
+ *   - manage_behaviors write gate → same `pending_approval` shape (watcher
  *     definition create/update/delete under agent_config).
  *   - manage_entity update gate → `{ approval_queued: true, approval_run_id,
  *     approval_fields, approval_current, approval_attribution }` (a human-owned
@@ -91,7 +91,7 @@ export async function maybePostApprovalCard(
  * Parse a gated tool result into the /internal/interactions/create body, or
  * null when the result is not a pending approval. entity_field_change carries
  * `fields`/`attribution` (the human-owned-field diff); manage_agents carries
- * `proposal` (the agent row diff); manage_watchers carries flat watcher args
+ * `proposal` (the agent row diff); manage_behaviors carries flat watcher args
  * plus `resourceKind: "watcher"`. All share the `tool_approval` transport.
  */
 function buildApprovalCardBody(
@@ -105,14 +105,14 @@ function buildApprovalCardBody(
     return null;
   }
 
-  if (toolName === "manage_watchers") {
+  if (toolName === "manage_behaviors") {
     if (
       parsed.status !== "pending_approval" ||
       typeof parsed.run_id !== "number"
     ) {
       return null;
     }
-    // Server proposal is `{ args: ManageWatchersArgs }`; SPA renderer needs the
+    // Server proposal is `{ args: ManageBehaviorsArgs }`; SPA renderer needs the
     // flat watcher fields (action, slug, prompt, schedule, …).
     const rawProposal = parsed.proposal;
     const flatProposal =

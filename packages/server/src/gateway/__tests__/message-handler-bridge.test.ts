@@ -9,6 +9,7 @@ import {
   parsePreviewLinkCode,
 } from "../connections/message-handler-bridge.js";
 import type { PlatformConnection } from "../connections/types.js";
+import type { MatchingBehaviorActivation } from "../../behaviors/activation.js";
 import { InMemoryStateAdapter } from "./fixtures/in-memory-state-adapter.js";
 import {
   type ArtifactTestEnv,
@@ -298,7 +299,7 @@ function createBridgeHarness(opts: {
   const services = {
     getArtifactStore: () => null,
     getPublicGatewayUrl: () => "https://gateway.example.com",
-    getChannelBindingService: () => undefined,
+    getBehaviorSubscriptionService: () => undefined,
     getAgentMetadataStore: () => undefined,
     getUserAgentsStore: () => undefined,
     getTranscriptionService: () => undefined,
@@ -312,7 +313,13 @@ function createBridgeHarness(opts: {
     getInstance: () => ({ connection, conversationState }),
   } as any;
 
-  const bridge = new MessageHandlerBridge(connection, services, manager);
+  const bridge = new MessageHandlerBridge(
+    connection,
+    services,
+    manager,
+    undefined,
+    async () => [],
+  );
 
   let adapter: unknown;
   if (opts.withAdapter === false) {
@@ -564,6 +571,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       tryHandle?: (...args: any[]) => Promise<boolean>;
     };
     providerCatalog?: unknown;
+    behaviors?: MatchingBehaviorActivation[];
   }) {
     const state = new InMemoryStateAdapter();
     const conversationState = new ConversationStateStore(state);
@@ -584,14 +592,14 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       updatedAt: 1,
     };
     const enqueueMessage = mock(async () => undefined);
-    const channelBindingService =
+    const behaviorSubscriptionService =
       opts.binding === undefined
         ? undefined
-				: { getBindingForConnection: mock(async () => opts.binding) };
+				: { resolveForConnection: mock(async () => opts.binding) };
     const services = {
       getArtifactStore: () => null,
       getPublicGatewayUrl: () => "https://gateway.example.com",
-      getChannelBindingService: () => channelBindingService,
+      getBehaviorSubscriptionService: () => behaviorSubscriptionService,
       getAgentMetadataStore: () => undefined,
       getUserAgentsStore: () => undefined,
       getTranscriptionService: () => undefined,
@@ -609,8 +617,9 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       services,
       manager,
 			opts.commandDispatcher as never,
+      async () => opts.behaviors ?? [],
     );
-    return { bridge, enqueueMessage };
+    return { bridge, enqueueMessage, conversationState };
   }
 
   test("unlinked chat → posts /lobu link instructions, no agent run", async () => {
@@ -642,6 +651,67 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
 				(c: unknown[]) => !String(c[0]).includes("/lobu link"),
 			),
     ).toBe(true);
+  });
+
+  test("matching reply Behaviors fan out as independent turns with one history entry", async () => {
+    const trigger = {
+      kind: "event" as const,
+      connector_key: "slack",
+      connection_id: 42,
+      event_types: ["message.created"],
+      match: { channel_id: CHANNEL_ID },
+      execution: "turn" as const,
+      active_run: "queue" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+    const behaviors: MatchingBehaviorActivation[] = [
+      {
+        behaviorId: 71,
+        organizationId: "org-a",
+        agentId: "agent-a",
+        deviceWorkerId: null,
+        agentKind: null,
+        model: null,
+        instructions: "Handle support messages.",
+        trigger,
+      },
+      {
+        behaviorId: 72,
+        organizationId: "org-b",
+        agentId: "agent-b",
+        deviceWorkerId: null,
+        agentKind: null,
+        model: null,
+        instructions: "Audit support messages.",
+        trigger,
+      },
+    ];
+    const { bridge, enqueueMessage, conversationState } = makePreviewHarness({
+      behaviors,
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(thread, makeMessage(), "mention");
+
+    expect(enqueueMessage).toHaveBeenCalledTimes(2);
+    const payloads = enqueueMessage.mock.calls.map((call) => call[0] as any);
+    expect(payloads.map((payload) => payload.agentId)).toEqual([
+      "agent-a",
+      "agent-b",
+    ]);
+    expect(payloads.map((payload) => payload.organizationId)).toEqual([
+      "org-a",
+      "org-b",
+    ]);
+    expect(payloads[0]?.messageId).not.toBe(payloads[1]?.messageId);
+    expect(payloads[0]?.ephemeralContext).toContain("Handle support messages.");
+    const entries = await conversationState.getEntries(
+      CONN_ID,
+      CHANNEL_ID,
+      THREAD_ID,
+    );
+    expect(entries).toHaveLength(1);
   });
 
   test("OAuth workspace connection (no agent, not preview): unlinked → link notice, no agent run", async () => {

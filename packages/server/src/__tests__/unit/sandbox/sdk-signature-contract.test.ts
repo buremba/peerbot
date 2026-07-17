@@ -40,8 +40,8 @@ mock.module("../../../tools/get_watchers", () => ({
 	},
 }));
 
-mock.module("../../../tools/admin/manage_watchers", () => ({
-	manageWatchers: captureAction,
+mock.module("../../../tools/admin/manage_behaviors", () => ({
+	manageBehaviors: captureAction,
 	listWatchers: async () => undefined,
 }));
 

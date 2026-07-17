@@ -5,9 +5,13 @@ import {
   resetTestDatabase,
   seedAgentRow,
 } from "../../__tests__/helpers/db-setup.js";
-import { ChannelBindingService } from "../binding-service.js";
+import { BehaviorSubscriptionService } from "../behavior-subscription-service.js";
+import {
+  addUserToOrganization,
+  createTestUser,
+} from "../../../__tests__/setup/test-fixtures.js";
 
-describe("ChannelBindingService connection-scoped routing", () => {
+describe("BehaviorSubscriptionService connection-scoped routing", () => {
   const ORG_A = "org-a";
   const ORG_B = "org-b";
   const CHANNEL = "slack:C123";
@@ -24,6 +28,10 @@ describe("ChannelBindingService connection-scoped routing", () => {
     await seedAgentRow("agent-a", { organizationId: ORG_A });
     await seedAgentRow("agent-a2", { organizationId: ORG_A });
     await seedAgentRow("agent-b", { organizationId: ORG_B });
+    const userA = await createTestUser();
+    const userB = await createTestUser();
+    await addUserToOrganization(userA.id, ORG_A, "owner");
+    await addUserToOrganization(userB.id, ORG_B, "owner");
     const sql = getDb();
     const rows = await sql`
       INSERT INTO connections (
@@ -47,46 +55,46 @@ describe("ChannelBindingService connection-scoped routing", () => {
   });
 
   test("two bot connections in one workspace can bind the same channel independently", async () => {
-    const svc = new ChannelBindingService();
-    await svc.createBinding("agent-a", "slack", CHANNEL, "T1", {
+    const svc = new BehaviorSubscriptionService();
+    await svc.createChatBehavior("agent-a", "slack", CHANNEL, "T1", {
       organizationId: ORG_A,
-      connectionId: String(connectionA),
+      connectionId: connectionA,
     });
-    await svc.createBinding("agent-a2", "slack", CHANNEL, "T1", {
+    await svc.createChatBehavior("agent-a2", "slack", CHANNEL, "T1", {
       organizationId: ORG_A,
-      connectionId: String(connectionA2),
+      connectionId: connectionA2,
     });
 
     expect(
-      (await svc.getBindingForConnection("a", CHANNEL, ORG_A))?.agentId
+      (await svc.resolveForConnection("a", CHANNEL, ORG_A))?.agentId
     ).toBe("agent-a");
     expect(
-      (await svc.getBindingForConnection("a2", CHANNEL, ORG_A))?.agentId
+      (await svc.resolveForConnection("a2", CHANNEL, ORG_A))?.agentId
     ).toBe("agent-a2");
 
     const rows = await getDb()`
-      SELECT connection_id FROM agent_channel_bindings
+      SELECT connection_id FROM behavior_channel_subscriptions
       WHERE organization_id = ${ORG_A} AND channel_id = ${CHANNEL}
     `;
     expect(rows).toHaveLength(2);
   });
 
   test("re-linking one connection updates only that connection's agent", async () => {
-    const svc = new ChannelBindingService();
-    await svc.createBinding("agent-a", "slack", CHANNEL, "T1", {
+    const svc = new BehaviorSubscriptionService();
+    await svc.createChatBehavior("agent-a", "slack", CHANNEL, "T1", {
       organizationId: ORG_A,
-      connectionId: String(connectionA),
+      connectionId: connectionA,
     });
-    await svc.createBinding("agent-a2", "slack", CHANNEL, "T1", {
+    await svc.createChatBehavior("agent-a2", "slack", CHANNEL, "T1", {
       organizationId: ORG_A,
-      connectionId: String(connectionA),
+      connectionId: connectionA,
     });
 
     expect(
-      (await svc.getBindingForConnection("a", CHANNEL, ORG_A))?.agentId
+      (await svc.resolveForConnection("a", CHANNEL, ORG_A))?.agentId
     ).toBe("agent-a2");
     const rows = await getDb()`
-      SELECT 1 FROM agent_channel_bindings
+      SELECT 1 FROM behavior_channel_subscriptions
       WHERE organization_id = ${ORG_A}
         AND connection_id = ${connectionA}
         AND channel_id = ${CHANNEL}
@@ -95,16 +103,16 @@ describe("ChannelBindingService connection-scoped routing", () => {
   });
 
   test("preview routing can resolve a binding owned by another org", async () => {
-    const svc = new ChannelBindingService();
-    await svc.createBinding("agent-a", "slack", CHANNEL, "T1", {
+    const svc = new BehaviorSubscriptionService();
+    await svc.createChatBehavior("agent-a", "slack", CHANNEL, "T1", {
       organizationId: ORG_A,
-      connectionId: String(previewConnection),
+      connectionId: previewConnection,
     });
 
     expect(
-      await svc.getBindingForConnection("preview", CHANNEL, ORG_B)
+      await svc.resolveForConnection("preview", CHANNEL, ORG_B)
     ).toBeNull();
-    const binding = await svc.getBindingForConnection(
+    const binding = await svc.resolveForConnection(
       "preview",
       CHANNEL,
       ORG_B,
@@ -113,4 +121,14 @@ describe("ChannelBindingService connection-scoped routing", () => {
     expect(binding?.agentId).toBe("agent-a");
     expect(binding?.organizationId).toBe(ORG_A);
   });
+
+	test("rejects string connection ids before persisting an invalid trigger", async () => {
+		const svc = new BehaviorSubscriptionService();
+		await expect(
+			svc.createChatBehavior("agent-a", "slack", CHANNEL, "T1", {
+				organizationId: ORG_A,
+				connectionId: String(connectionA) as never,
+			}),
+		).rejects.toThrow("connectionId must be a positive integer");
+	});
 });

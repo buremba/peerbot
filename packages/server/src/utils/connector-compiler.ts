@@ -20,6 +20,7 @@ export interface ConnectorMetadata {
   webhook: Record<string, unknown> | null;
   feeds: Record<string, unknown> | null;
   actions: Record<string, unknown> | null;
+  behaviorEvents: Array<Record<string, unknown>> | null;
   optionsSchema: Record<string, unknown> | null;
   faviconDomain?: string | null;
   mcpConfig?: Record<string, unknown> | null;
@@ -87,6 +88,7 @@ async function main() {
       webhook: def.webhook || null,
       feeds: def.feeds || null,
       actions: def.actions || null,
+      behaviorEvents: def.behaviorEvents || null,
       optionsSchema: def.optionsSchema || null,
       faviconDomain: def.faviconDomain || null,
       mcpConfig: def.mcpConfig || null,

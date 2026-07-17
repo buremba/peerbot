@@ -1,5 +1,5 @@
 /**
- * Shared types, utilities, and helpers used across manage_watchers sub-handlers.
+ * Shared types, utilities, and helpers used across manage_behaviors sub-handlers.
  */
 
 import type { DbClient } from '../../../db/client';
@@ -15,7 +15,7 @@ import { validateTemplate } from '../../../watchers/renderer';
 import { queryProjectsIdColumn } from '../../../utils/execute-data-sources';
 import { validateWatcherSourceRef, resolveWatcherSourcesForSave } from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
-import { normalizeWatcherTags } from '@lobu/core/contracts/tools/manage-watchers';
+import { normalizeWatcherTags } from '@lobu/core/contracts/tools/manage-behaviors';
 
 // ============================================
 // Types

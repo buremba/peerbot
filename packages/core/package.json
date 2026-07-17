@@ -130,11 +130,11 @@
       "import": "./dist/contracts/tools/manage-entity.js",
       "require": "./dist/contracts/tools/manage-entity.js"
     },
-    "./contracts/tools/manage-watchers": {
-      "types": "./dist/contracts/tools/manage-watchers.d.ts",
-      "bun": "./src/contracts/tools/manage-watchers.ts",
-      "import": "./dist/contracts/tools/manage-watchers.js",
-      "require": "./dist/contracts/tools/manage-watchers.js"
+    "./contracts/tools/manage-behaviors": {
+      "types": "./dist/contracts/tools/manage-behaviors.d.ts",
+      "bun": "./src/contracts/tools/manage-behaviors.ts",
+      "import": "./dist/contracts/tools/manage-behaviors.js",
+      "require": "./dist/contracts/tools/manage-behaviors.js"
     },
     "./reserved": {
       "types": "./dist/reserved.d.ts",

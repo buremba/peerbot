@@ -40,7 +40,7 @@ const ADMIN_TOOL_SDK_NAMESPACE: Record<string, keyof ReturnType<typeof buildClie
 	manage_operations: "operations",
 	notify: "notifications",
 	manage_schedules: "schedules",
-	manage_watchers: "watchers",
+	manage_behaviors: "watchers",
 	list_watchers: "watchers",
 	get_watcher: "watchers",
 	read_knowledge: "knowledge",
@@ -167,7 +167,7 @@ describe("tool registry split", () => {
 		const rest = getAllTools();
 		expect(rest.length).toBeGreaterThan(getMcpTools().length);
 		const internal = rest.filter((t) => "internal" in t && t.internal);
-		expect(internal.map((t) => t.name)).toContain("manage_watchers");
+		expect(internal.map((t) => t.name)).toContain("manage_behaviors");
 		expect(internal.map((t) => t.name)).not.toContain("run_sdk");
 	});
 });

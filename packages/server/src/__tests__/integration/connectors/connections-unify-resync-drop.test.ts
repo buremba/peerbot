@@ -63,6 +63,14 @@ const CREATE_LEGACY = `
 		created_at timestamp with time zone DEFAULT now() NOT NULL,
 		updated_at timestamp with time zone DEFAULT now() NOT NULL,
 		organization_id text NOT NULL
+	);
+	CREATE TABLE public.agent_channel_bindings (
+		organization_id text NOT NULL,
+		agent_id text NOT NULL,
+		platform text NOT NULL,
+		channel_id text NOT NULL,
+		team_id text,
+		connection_id bigint
 	)
 `;
 

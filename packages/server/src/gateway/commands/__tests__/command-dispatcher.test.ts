@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { CommandDispatcher } from "../command-dispatcher.js";
 
 /**
- * Builds a dispatcher with a registry/binding-service stubbed out, capturing
+ * Builds a dispatcher with a registry/behavior-subscription-service stubbed out, capturing
  * the (commandName, args) the registry is asked to handle.
  */
 function makeDispatcher() {
@@ -13,12 +13,12 @@ function makeDispatcher() {
       return true;
     }),
   };
-	const channelBindingService = {
-		getBindingForConnection: mock(async () => null),
+	const behaviorSubscriptionService = {
+		resolveForConnection: mock(async () => null),
 	};
   const dispatcher = new CommandDispatcher({
     registry: registry as never,
-    channelBindingService: channelBindingService as never,
+    behaviorSubscriptionService: behaviorSubscriptionService as never,
   });
   return { dispatcher, calls };
 }

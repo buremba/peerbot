@@ -2,7 +2,7 @@
  * Shared database helpers for admin tools.
  *
  * Provides reusable "check exists or throw" patterns used across
- * manage_watchers, manage_entity_schema, manage_classifiers, etc.
+ * manage_behaviors, manage_entity_schema, manage_classifiers, etc.
  */
 
 import { type DbClient, pgBigintArray } from '../../../db/client';

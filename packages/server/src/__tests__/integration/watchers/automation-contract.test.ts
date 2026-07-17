@@ -93,6 +93,15 @@ async function createAutomatedWatcher() {
 		name: "Automation Watcher",
 		prompt: "Summarize content for {{entities}}.",
 		schedule: "0 9 * * *",
+		triggers: [
+			{
+				kind: "schedule",
+				cron: "0 9 * * *",
+				execution: "window",
+				active_run: "coalesce",
+				skip_if_unchanged: false,
+			},
+		],
 		agent_id: agent.agentId,
 	})) as { watcher_id: string };
 	const watcherId = Number(watcher.watcher_id);
@@ -185,7 +194,7 @@ describe("watcher automation contract", () => {
 			runMetadata: { source: "external", watcher_run_id: queued.runId },
 		});
 
-		const result = await dispatchPendingWatcherRuns({} as Env, {
+		const result = await dispatchPendingWatcherRuns({
 			db: dbClient,
 			runIds: [queued.runId],
 		});
@@ -314,7 +323,7 @@ describe("watcher automation contract", () => {
       WHERE id = ${queued.runId}
     `;
 
-		const result = await dispatchPendingWatcherRuns({} as Env, {
+		const result = await dispatchPendingWatcherRuns({
 			db: dbClient,
 		});
 
@@ -333,7 +342,7 @@ describe("watcher automation contract", () => {
 		// Explicit runIds path must also refuse to claim — the dispatcher's
 		// queueAndDispatchWatcherRun helper hits this branch when a watcher run
 		// is manually triggered.
-		const targeted = await dispatchPendingWatcherRuns({} as Env, {
+		const targeted = await dispatchPendingWatcherRuns({
 			db: dbClient,
 			runIds: [queued.runId],
 		});
@@ -1564,6 +1573,15 @@ describe("watcher automation contract", () => {
 				name: "Tick Watcher B",
 				prompt: "Summarize content for {{entities}}.",
 				schedule: "0 9 * * *",
+				triggers: [
+					{
+						kind: "schedule",
+						cron: "0 9 * * *",
+						execution: "window",
+						active_run: "coalesce",
+						skip_if_unchanged: false,
+					},
+				],
 				agent_id: agent.agentId,
 			})) as { watcher_id: string };
 			const watcherBId = Number(watcherB.watcher_id);

@@ -7,7 +7,7 @@ import {
 	EMPTY_SUMMARY,
 	getOperationsSummaryBatch,
 } from "../operations/connector-operations";
-import { handleList } from "../tools/admin/manage_watchers/list";
+import { handleList } from "../tools/admin/manage_behaviors/list";
 import type { ToolContext } from "../tools/registry";
 import { connectorSourcePathToUri } from "../utils/connector-definition-install";
 import { listScopedConnectorDefinitions } from "./connector-definitions";
@@ -62,6 +62,7 @@ export async function listOrgInstalled(
 					auth_schema: row.auth_schema,
 					feeds_schema: row.feeds_schema,
 					actions_schema: row.actions_schema,
+					behavior_events: row.behavior_events ?? undefined,
 					options_schema: row.options_schema,
 					favicon_domain: row.favicon_domain,
 					required_capability: row.required_capability,

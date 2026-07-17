@@ -73,6 +73,9 @@ import type {
   ManageAuthProfilesData,
   ManageAuthProfilesErrors,
   ManageAuthProfilesResponses,
+  ManageBehaviorsData,
+  ManageBehaviorsErrors,
+  ManageBehaviorsResponses,
   ManageCatalogData,
   ManageCatalogErrors,
   ManageCatalogResponses,
@@ -103,9 +106,6 @@ import type {
   ManageViewTemplatesData,
   ManageViewTemplatesErrors,
   ManageViewTemplatesResponses,
-  ManageWatchersData,
-  ManageWatchersErrors,
-  ManageWatchersResponses,
   MetricSeriesData,
   MetricSeriesErrors,
   MetricSeriesResponses,
@@ -201,7 +201,7 @@ export const searchMemory = <ThrowOnError extends boolean = false>(
 /**
  * Save user-shared facts, preferences, decisions, observations, and notes to workspace memory
  *
- * Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_id })`; semantic search indexing is asynchronous and reported as `indexing_status`.
+ * Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; semantic search indexing is asynchronous and reported as `indexing_status`.
  */
 export const saveMemory = <ThrowOnError extends boolean = false>(
   options: Options<SaveMemoryData, ThrowOnError>,
@@ -551,19 +551,23 @@ export const manageSchedules = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Watcher management
+ * Create and manage Behaviors
  *
- * Watcher management. SDK alternative: client.watchers.
+ * Create and manage Behaviors. The current SDK namespace remains client.watchers while the storage engine is migrated.
  */
-export const manageWatchers = <ThrowOnError extends boolean = false>(
-  options: Options<ManageWatchersData, ThrowOnError>,
-): RequestResult<ManageWatchersResponses, ManageWatchersErrors, ThrowOnError> =>
+export const manageBehaviors = <ThrowOnError extends boolean = false>(
+  options: Options<ManageBehaviorsData, ThrowOnError>,
+): RequestResult<
+  ManageBehaviorsResponses,
+  ManageBehaviorsErrors,
+  ThrowOnError
+> =>
   (options.client ?? client).post<
-    ManageWatchersResponses,
-    ManageWatchersErrors,
+    ManageBehaviorsResponses,
+    ManageBehaviorsErrors,
     ThrowOnError
   >({
-    url: "/api/{orgSlug}/manage_watchers",
+    url: "/api/{orgSlug}/manage_behaviors",
     ...options,
     headers: {
       "Content-Type": "application/json",

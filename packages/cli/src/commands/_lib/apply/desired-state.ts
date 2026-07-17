@@ -9,6 +9,10 @@ import type {
   FeedDefinition,
 } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
+import type {
+  BehaviorEventTrigger,
+  BehaviorScheduleTrigger,
+} from "@lobu/core/contracts/tools/manage-behaviors";
 import { createAjv } from "@lobu/core/ajv";
 import type Ajv from "ajv";
 import type {
@@ -46,8 +50,6 @@ export interface DesiredPlatform {
   name?: string;
   /** Platform config — values may still contain `$VAR` references. */
   config: Record<string, string>;
-  /** Declarative channel bindings (`"<teamId>/<channelId>"`); Slack only. */
-  channels?: string[];
 }
 
 export interface DesiredEntityType {
@@ -103,13 +105,14 @@ export interface DesiredWatcher {
   name?: string;
   description?: string;
   schedule?: string;
+  triggers?: DesiredBehaviorTrigger[];
   prompt: string;
   /** Optional SQL data sources; server applies a default when omitted. */
   sources?: WatcherSource[];
   /**
    * Reaction script — TypeScript source compiled + executed in an isolate at
    * watcher-firing time. Authored as a sibling `.ts` file referenced by
-   * `defineWatcher({ reaction: reactionFromFile("./reactions/foo.reaction.ts") })`;
+   * `defineBehavior({ reaction: reactionFromFile("./reactions/foo.reaction.ts") })`;
    * the CLI reads it and pushes raw source via `set_reaction_script`.
    */
   reactionScript?: { sourcePath: string; sourceCode: string };
@@ -134,6 +137,14 @@ export interface DesiredWatcher {
   /** Classifier definitions for extraction (server-side feature). */
   classifiers?: unknown[];
 }
+
+/** Apply-internal trigger form; `connectionSlug` is resolved before mutation. */
+export type DesiredBehaviorEventTrigger = BehaviorEventTrigger & {
+  connectionSlug?: string;
+};
+export type DesiredBehaviorTrigger =
+  | DesiredBehaviorEventTrigger
+  | BehaviorScheduleTrigger;
 
 export interface DesiredFeed {
   /** Feed key from the connector definition (`FeedDefinition.key`). */
@@ -277,7 +288,7 @@ export interface DesiredState {
     entityTypes: DesiredEntityType[];
     relationshipTypes: DesiredRelationshipType[];
   };
-  /** Watchers declared via `defineWatcher`. */
+  /** Behaviors declared via `defineBehavior`. */
   watchers: DesiredWatcher[];
   /**
    * Connectors: local `*.connector.ts` definitions (declared via
@@ -998,11 +1009,11 @@ export async function loadDesiredStateFromConfig(
     })
   );
 
-  // Watcher reaction scripts: a sibling `.ts` file referenced by path. The
+  // Behavior reaction scripts: a sibling `.ts` file referenced by path. The
   // mapper stays pure; resolve + read the source here (raw, server compiles
-  // it) and attach it. state.watchers[i] aligns with typedProject.watchers[i]
+  // it) and attach it. state.watchers[i] aligns with typedProject.behaviors[i]
   // (the mapper maps them in order).
-  (typedProject.watchers ?? []).forEach((watcher, i) => {
+  (typedProject.behaviors ?? []).forEach((watcher, i) => {
     // Gate on absence, not truthiness — a present-but-empty
     // `reactionFromFile("")` must reach the validator (which rejects it),
     // matching parseWatcher.
@@ -1017,7 +1028,7 @@ export async function loadDesiredStateFromConfig(
     const reactionPath = (watcher.reaction as { path?: unknown }).path;
     if (typeof reactionPath !== "string") {
       throw new Error(
-        `Watcher "${watcher.slug}": set reaction with reactionFromFile("./x.reaction.ts"), not a bare string path.`
+        `Behavior "${watcher.slug}": set reaction with reactionFromFile("./x.reaction.ts"), not a bare string path.`
       );
     }
     dw.reactionScript = resolveReactionScript(

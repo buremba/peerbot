@@ -30,7 +30,7 @@ export interface ChannelAboutTarget {
 	channelId: string;
 	/** The concrete workspace/tenant this channel lives in — the SAME real team
 	 *  the binding is keyed on (for Slack Grid: the workspace `T…`, NEVER the
-	 *  enterprise `E…`). Resolved connector-side (`resolveBindingTeam`) and threaded
+	 *  enterprise `E…`). Resolved connector-side (`resolveSubscriptionTeam`) and threaded
 	 *  in so the about edge attaches to the SAME channel resource entity the ACL
 	 *  graph + binding own. `null`/undefined = unknown yet (skip, heal from inbound)
 	 *  for a team-scoped connector, mirroring the binding's null-team behavior. */
@@ -574,7 +574,7 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
 /** Channel key stored on `about` edge metadata for a streaming feed row.
  *
  * The team half is the channel's CONCRETE workspace, taken from the streaming
- * feed's binding (`agent_channel_bindings.team_id`) — the SAME real team the
+ * feed's Behavior subscription team — the SAME real team the
  * about-edge writer keyed on. For a Grid org-wide install the connection's
  * `external_tenant_id` is the enterprise `E…`, so it must NOT be used as the
  * team; the binding holds the real `T…`. The `external_tenant_id` fallback stands
@@ -589,7 +589,7 @@ export function streamingFeedChannelKeyExpr(
     COALESCE(
       (
         SELECT b.team_id
-        FROM agent_channel_bindings b
+        FROM behavior_channel_subscriptions b
         WHERE b.connection_id = ${feedAlias}.connection_id
           AND b.channel_id = ${feedAlias}.feed_key
           AND b.team_id IS NOT NULL

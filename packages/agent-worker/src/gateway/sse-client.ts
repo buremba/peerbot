@@ -797,12 +797,19 @@ export class GatewayClient {
       return;
     }
 
-    // A `!`-bash message must never be batch-merged: the "Message N:" join would
-    // bury the command in a combined prompt (and it carries its own bangBash
-    // control flag the worker reads). If any message in this batch is a `!`-bash
-    // action, run each individually in arrival order.
+    // Some deliveries require one isolated turn: a `!`-bash command would be
+    // buried by the "Message N:" join, and a queue-policy Behavior explicitly
+    // promises one turn per event. If either appears, preserve arrival order and
+    // run every delivery in this batch independently.
     if (
-      messages.some((message) => message.payload.platformMetadata?.bangBash)
+      messages.some((message) => {
+        const metadata = message.payload.platformMetadata;
+        return Boolean(
+          metadata?.bangBash ||
+            (metadata?.behaviorId &&
+              metadata.behaviorActiveRunPolicy === "queue")
+        );
+      })
     ) {
       for (const message of messages) {
         await this.processSingleMessage(message, [message.payload.messageId]);
@@ -1138,6 +1145,12 @@ const AUTOMATION_SOURCES = new Set([
 ]);
 
 export function isSteerableHumanMessage(payload: MessagePayload): boolean {
+  if (
+    payload.platformMetadata?.behaviorId &&
+    payload.platformMetadata?.behaviorActiveRunPolicy !== "steer"
+  ) {
+    return false;
+  }
   // `/new` must run after the active turn: it flushes memory, deletes the
   // transcript, and purges durable snapshots. Steering it into the current Pi
   // session would treat the control command as ordinary text and preserve the

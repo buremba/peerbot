@@ -16,8 +16,10 @@ import { autoLinkBuilderAndWelcome } from "../../../gateway/connections/slack-cl
 import type { SlackWebApi } from "../../../gateway/connections/slack-web";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
+	addUserToOrganization,
   createTestAgent,
   createTestOrganization,
+	createTestUser,
   insertChatConnectionRow,
 } from "../../setup/test-fixtures";
 
@@ -61,12 +63,15 @@ function makeSecretStore() {
 
 async function seedClaimedWorkspace(orgId: string): Promise<void> {
   const sql = getTestDb();
+	const owner = await createTestUser({ email: "claim-owner@example.com" });
+	await addUserToOrganization(owner.id, orgId, "owner");
   // The org's Builder agent + the system-agent pointer, mirroring
   // ensureBuilderAgent's end state so autoLink binds to it.
   await createTestAgent({
     organizationId: orgId,
     agentId: BUILDER_AGENT_ID,
     name: "Builder",
+		ownerUserId: owner.id,
   });
   await sql`
     UPDATE "organization" SET system_agent_id = ${BUILDER_AGENT_ID}
@@ -104,7 +109,7 @@ async function bindingsForBuilder(orgId: string): Promise<
 > {
   return (await getTestDb()`
     SELECT agent_id, channel_id, platform
-    FROM agent_channel_bindings
+    FROM behavior_channel_subscriptions
     WHERE organization_id = ${orgId} AND agent_id = ${BUILDER_AGENT_ID}
   `) as Array<{ agent_id: string; channel_id: string; platform: string }>;
 }

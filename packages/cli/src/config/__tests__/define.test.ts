@@ -10,7 +10,7 @@ import {
   defineConnection,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   type EntityType,
   reactionFromFile,
 } from "../define.js";
@@ -41,7 +41,7 @@ describe("authoring producers", () => {
     expect((worksAt.rules?.[0]?.source as EntityType).key).toBe("person");
   });
 
-  test("agent + watcher use typed handles", () => {
+  test("agent + behavior use typed handles", () => {
     const crm = defineAgent({
       id: "crm",
       providers: [
@@ -51,12 +51,12 @@ describe("authoring producers", () => {
     expect(crm.kind).toBe("agent");
     expect(isSecretRef(crm.providers?.[0]?.key)).toBe(true);
 
-    const w = defineWatcher({
+    const w = defineBehavior({
       agent: crm,
       slug: "health",
       prompt: "assess",
     });
-    expect(w.kind).toBe("watcher");
+    expect(w.kind).toBe("behavior");
     expect((w.agent as Agent).id).toBe("crm");
   });
 
@@ -67,7 +67,7 @@ describe("authoring producers", () => {
       path: "./reactions/health.reaction.ts",
     });
 
-    const w = defineWatcher({
+    const w = defineBehavior({
       agent: "crm",
       slug: "health",
       prompt: "assess",

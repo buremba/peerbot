@@ -76,7 +76,7 @@ export async function buildAgentSettingsUrl(
 /**
  * Build a watcher's edit URL —
  * `<webOrigin>/<orgSlug>/agents/<agentId>/behaviors/watcher/<watcherId>` — the
- * review target for a pending `manage_watchers` update. Mirrors
+ * review target for a pending `manage_behaviors` update. Mirrors
  * {@link buildAgentSettingsUrl}: `?run_id=<id>` prefills the watcher edit form
  * with the proposed change for Approve/Reject (WI-0.3, watcher parity).
  *

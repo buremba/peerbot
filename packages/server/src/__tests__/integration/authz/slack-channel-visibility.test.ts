@@ -33,6 +33,7 @@ import { clearEntityLinkRulesCache } from "../../../utils/entity-link-upsert";
 import { ensureMemberEntity } from "../../../utils/member-entity";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
+import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
 import {
   addUserToOrganization,
   createTestAgent,
@@ -78,12 +79,14 @@ async function bindChannel(opts: {
   text: string;
 }): Promise<void> {
   const sql = getTestDb();
-  await sql`
-    INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
-    SELECT ${opts.orgId}, ${opts.agentId}, 'slack', ${opts.channelId}, ${TEAM}, id
-    FROM connections
-    WHERE organization_id = ${opts.orgId} AND slug = ${`agentconn-${CONN}`} AND deleted_at IS NULL
-  `;
+  await createTestBehaviorSubscription({
+    organizationId: opts.orgId,
+    agentId: opts.agentId,
+    connectionSlug: `agentconn-${CONN}`,
+    platform: "slack",
+    channelId: opts.channelId,
+    teamId: TEAM,
+  });
   await sql`
     INSERT INTO channel_messages (
       organization_id, connection_id, platform, channel_id,
@@ -358,12 +361,14 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     });
     // Bindings carry the concrete WORKSPACE T… (post-invariant), NOT the E….
     for (const channel of ["C01ENG", "C01SEC"]) {
-      await sql`
-        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
-        SELECT ${org.id}, ${agent.agentId}, 'slack', ${channel}, ${WORKSPACE}, id
-        FROM connections
-        WHERE organization_id = ${org.id} AND slug = ${GRID_CONN} AND deleted_at IS NULL
-      `;
+			await createTestBehaviorSubscription({
+				organizationId: org.id,
+				agentId: agent.agentId,
+				connectionSlug: GRID_CONN,
+				platform: "slack",
+				channelId: channel,
+				teamId: WORKSPACE,
+			});
       await sql`
         INSERT INTO channel_messages (
           organization_id, connection_id, platform, channel_id,
@@ -488,12 +493,14 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     `;
     // Bindings carry the concrete sibling WORKSPACE T… (post-invariant).
     for (const channel of ["C01ENG", "C01SEC"]) {
-      await sql`
-        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
-        SELECT ${org.id}, ${agent.agentId}, 'slack', ${channel}, ${WORKSPACE}, id
-        FROM connections
-        WHERE organization_id = ${org.id} AND slug = ${INSTALL_ID} AND deleted_at IS NULL
-      `;
+			await createTestBehaviorSubscription({
+				organizationId: org.id,
+				agentId: agent.agentId,
+				connectionSlug: INSTALL_ID,
+				platform: "slack",
+				channelId: channel,
+				teamId: WORKSPACE,
+			});
       await sql`
         INSERT INTO channel_messages (
           organization_id, connection_id, platform, channel_id,
@@ -603,12 +610,14 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     // A binding to a channel in a DIFFERENT workspace (the same agent's second
     // Slack connection) must NOT be synced under CONN — otherwise CONN would
     // fetch it with the wrong token and fail closed, or stamp it under itself.
-    await sql`
-      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
-      SELECT ${org.id}, ${agent.agentId}, 'slack', 'C02FOREIGN', 'T02OTHER', id
-      FROM connections
-      WHERE organization_id = ${org.id} AND slug = ${`agentconn-${CONN}`} AND deleted_at IS NULL
-    `;
+		await createTestBehaviorSubscription({
+			organizationId: org.id,
+			agentId: agent.agentId,
+			connectionSlug: `agentconn-${CONN}`,
+			platform: "slack",
+			channelId: "C02FOREIGN",
+			teamId: "T02OTHER",
+		});
 
     const fetched: string[] = [];
     const result = await syncSlackConnectionAcl(

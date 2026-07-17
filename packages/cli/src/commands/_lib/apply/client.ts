@@ -97,6 +97,7 @@ export interface RemoteWatcher {
   watcher_id?: string;
   agent_id?: string | null;
   schedule?: string | null;
+  triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
   device_worker_id?: string | null;
   goal_id?: number | null;
   scheduler_client_id?: string | null;
@@ -601,31 +602,6 @@ export class ApplyClient {
     };
   }
 
-  /**
-   * Reconcile a platform's declarative channel bindings.
-   *
-   * Uses the stable connection id; the server derives platform and tenant
-   * identity from the connection row.
-   */
-  async syncPlatformChannels(
-    agentId: string,
-    platformId: string,
-    channels: string[]
-  ): Promise<{ bound: string[]; removed: string[] }> {
-    const body = await this.connectionsTool<{
-      bound?: string[];
-      removed?: string[];
-      error?: string;
-    }>({
-      action: "sync_channel_bindings",
-      agent_id: agentId,
-      connection_id: platformId,
-      channels,
-    });
-    if (body.error) throw new Error(body.error);
-    return { bound: body.bound ?? [], removed: body.removed ?? [] };
-  }
-
   // ── Memory schema ─────────────────────────────────────────────────────────
 
   async listEntityTypes(): Promise<RemoteEntityType[]> {
@@ -951,6 +927,7 @@ export class ApplyClient {
     description?: string;
     prompt: string;
     schedule?: string;
+    triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
     sources?: WatcherSource[];
     reactions_guidance?: string;
     device_worker_id?: string;
@@ -965,7 +942,7 @@ export class ApplyClient {
   }): Promise<{ watcher_id?: string }> {
     const { body } = await this.request<{ watcher_id?: string }>(
       "POST",
-      `/api/${this.orgSlug}/manage_watchers`,
+      `/api/${this.orgSlug}/manage_behaviors`,
       {
         action: "create",
         slug: payload.slug,
@@ -974,6 +951,9 @@ export class ApplyClient {
         ...(payload.description ? { description: payload.description } : {}),
         prompt: payload.prompt,
         ...(payload.schedule ? { schedule: payload.schedule } : {}),
+        ...(payload.triggers !== undefined
+          ? { triggers: payload.triggers }
+          : {}),
         ...(payload.sources?.length ? { sources: payload.sources } : {}),
         ...(payload.reactions_guidance !== undefined
           ? { reactions_guidance: payload.reactions_guidance }
@@ -1020,6 +1000,7 @@ export class ApplyClient {
   async updateWatcher(payload: {
     watcher_id: string;
     schedule?: string | null;
+    triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
     agent_id?: string;
     device_worker_id?: string | null;
     scheduler_client_id?: string | null;
@@ -1029,10 +1010,11 @@ export class ApplyClient {
     tags?: string[];
     agent_kind?: string | null;
   }): Promise<void> {
-    await this.request("POST", `/api/${this.orgSlug}/manage_watchers`, {
+    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "update",
       watcher_id: payload.watcher_id,
       ...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
+      ...(payload.triggers !== undefined ? { triggers: payload.triggers } : {}),
       ...(payload.agent_id !== undefined ? { agent_id: payload.agent_id } : {}),
       ...(payload.device_worker_id !== undefined
         ? { device_worker_id: payload.device_worker_id }
@@ -1072,7 +1054,7 @@ export class ApplyClient {
   }): Promise<{ version?: number }> {
     const { body } = await this.request<{ version?: number }>(
       "POST",
-      `/api/${this.orgSlug}/manage_watchers`,
+      `/api/${this.orgSlug}/manage_behaviors`,
       {
         action: "create_version",
         watcher_id: payload.watcher_id,
@@ -1104,7 +1086,7 @@ export class ApplyClient {
     watcherId: string,
     reactionScript: string
   ): Promise<void> {
-    await this.request("POST", `/api/${this.orgSlug}/manage_watchers`, {
+    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "set_reaction_script",
       watcher_id: watcherId,
       reaction_script: reactionScript,
@@ -1117,7 +1099,7 @@ export class ApplyClient {
    * failure is attributable.
    */
   async deleteWatcher(watcherId: string): Promise<void> {
-    await this.request("POST", `/api/${this.orgSlug}/manage_watchers`, {
+    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "delete",
       watcher_ids: [watcherId],
     });

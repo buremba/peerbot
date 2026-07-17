@@ -84,13 +84,14 @@ grep -Fq 'review_validate_claude_model "$CLAUDE_REVIEW_MODEL"' "$review_script" 
   fail "review.sh must fail closed on disallowed Claude reviewer models"
 
 schema_arg_count="$(grep -F -- '--json-schema "$(cat "$SCHEMA_FILE")"' "$review_script" | wc -l | tr -d ' ')"
-[ "$schema_arg_count" -eq 2 ] ||
-  fail "Claude reviewer must receive the verdict schema inline and in Herdr"
+[ "$schema_arg_count" -eq 1 ] ||
+  fail "Claude reviewer must receive the verdict schema exactly once (inline path)"
 
 grep -Fq '2> "$diagnostic_file"' "$review_script" ||
   fail "inline Codex reviewer stderr must be retained for fail-closed diagnostics"
 
-grep -Fq 'CLAUDE_REVIEW_HERDR="${CLAUDE_REVIEW_HERDR:-0}"' "$review_script" ||
-  fail "Herdr review tabs must default off (opt-in) to avoid stale empty tabs"
+if grep -Eiq 'herdr|CLAUDE_REVIEW_HERDR' "$review_script"; then
+  fail "review.sh must not reference Herdr (inline-only reviewer)"
+fi
 
 echo "review reviewer selection tests passed"

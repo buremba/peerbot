@@ -334,13 +334,20 @@ Additional final-audit regressions are green after the settled commits:
   every later code change is covered by the focused final reruns above.
 - Browser E2E: list/editor/catalog/capability checks plus a real
   create/list/archive round-trip are green; browser errors are empty.
-- `make review BASE=origin/main`: run after this handoff commit; record its
-  exact outcome below if the external quota remains unavailable.
-- Final root and Owletto worktrees: clean before this handoff update; recheck
-  after its commit and reviewer attempt.
+- `make review BASE=origin/main`: attempted exactly once on settled root HEAD
+  `72159c46`. The configured `claude` reviewer exited before reviewing because
+  it rejected the repository's JSON Schema draft URI (`--json-schema is not a
+  valid JSON Schema: no schema with key or ref
+  https://json-schema.org/draft/2020-12/schema`). The fail-closed wrapper exited
+  `2`; no verdict or GitHub status was posted. This is independent reviewer
+  installation/schema compatibility, not an implementation finding. The build
+  stage completed before reviewer invocation.
+- Final root and Owletto worktrees: clean after the reviewer attempt and before
+  this final record-only update.
 - Diff statistics against the respective bases:
   - root, including the Owletto submodule pointer and this handoff: 225 files,
-    6,903 insertions, 4,073 deletions, net +2,830;
+    6,943 insertions, 4,073 deletions, net +2,870 before this final record-only
+    update;
   - Owletto: 36 files, 1,552 insertions, 2,135 deletions, net -583.
 
 The consolidated product UI is net negative. The repository-wide change is

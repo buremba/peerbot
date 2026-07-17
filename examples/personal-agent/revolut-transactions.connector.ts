@@ -799,11 +799,118 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
           },
         },
       },
+      balances: {
+        key: "balances",
+        name: "Balances & Investments",
+        description: "Scrapes Revolut account balances from the DOM",
+        configSchema: { type: "object", properties: {} },
+        eventKinds: {
+          balance: {
+            description: "An account balance or investment",
+            metadataSchema: {
+              type: "object",
+              properties: {
+                balance: { type: "number" },
+                currency: { type: "string" },
+                description: { type: "string" }
+              }
+            }
+          }
+        }
+      },
     },
     optionsSchema: configSchema,
   };
 
+  async syncBalances(ctx: SyncContext): Promise<SyncResult> {
+    const dispatcher = requireExtensionDispatcher(ctx);
+
+    const nav = await dispatcher.dispatch<{ tab_id: number }>("navigate", {
+      url: "https://app.revolut.com/home",
+      persistent: true,
+      window_focused: false,
+      wait_for_load: false,
+      allowed_origins: ["revolut.com", "*.revolut.com"]
+    });
+    const tabId = nav.tab_id;
+
+    // Check auth like we do for transactions
+    const setup = await dispatcher.dispatch<{ value?: { authed?: boolean } }>("evaluate", {
+      tab_id: tabId,
+      expression: `(async () => {
+        if (location.host.indexOf("sso.") >= 0 || location.pathname.indexOf("signin") >= 0) return { authed: false };
+        return { authed: true };
+      })()`,
+      allowed_origins: ["revolut.com", "*.revolut.com"]
+    });
+
+    if (!setup.value?.authed) {
+      await notifyRevolutAuthWall(dispatcher, "https://app.revolut.com/home");
+      throw new RevolutAuthWallError("https://app.revolut.com/home");
+    }
+
+    // Scroll to bottom a few times to load balances
+    await dispatcher.dispatch("evaluate", {
+      tab_id: tabId,
+      expression: `(async () => {
+        for (let i = 0; i < 6; i++) {
+          window.scrollTo(0, document.body.scrollHeight);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      })()`,
+      allowed_origins: ["revolut.com", "*.revolut.com"]
+    });
+
+    const homeText = await dispatcher.dispatch<{ value: string }>("evaluate", {
+      tab_id: tabId,
+      expression: "document.body.innerText",
+      allowed_origins: ["revolut.com", "*.revolut.com"]
+    });
+
+    await dispatcher.dispatch("navigate", {
+      tab_id: tabId,
+      url: "https://app.revolut.com/invest",
+      wait_for_load: false,
+      allowed_origins: ["revolut.com", "*.revolut.com"]
+    });
+
+    await dispatcher.dispatch("evaluate", {
+      tab_id: tabId,
+      expression: `(async () => {
+        for (let i = 0; i < 6; i++) {
+          window.scrollTo(0, document.body.scrollHeight);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      })()`,
+      allowed_origins: ["revolut.com", "*.revolut.com"]
+    });
+
+    const investText = await dispatcher.dispatch<{ value: string }>("evaluate", {
+      tab_id: tabId,
+      expression: "document.body.innerText",
+      allowed_origins: ["revolut.com", "*.revolut.com"]
+    });
+
+    return {
+      events: [
+        {
+          origin_id: "revolut-balances-" + Date.now(),
+          occurred_at: new Date(),
+          semantic_type: "balance_raw",
+          payload_text: "HOME:\\n" + (homeText.value || "") + "\\n\\nINVEST:\\n" + (investText.value || ""),
+          metadata: {}
+        }
+      ],
+      checkpoint: {},
+      metadata: { backend: "extension-dom" }
+    };
+  }
+
   async sync(ctx: SyncContext): Promise<SyncResult> {
+    if (ctx.feedKey === "balances") {
+      return this.syncBalances(ctx);
+    }
+
     const config = (ctx.config ?? {}) as Record<string, unknown>;
     const checkpoint = (ctx.checkpoint ?? {}) as RevolutCheckpoint;
     const dispatcher = requireExtensionDispatcher(ctx);

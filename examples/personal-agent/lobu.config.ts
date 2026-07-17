@@ -12,6 +12,7 @@ import type RevolutTransactionsConnector from "./revolut-transactions.connector.
 import type SpotifyConnector from "./spotify.connector.ts";
 import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
 import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
+import type MidasConnector from "./midas.connector.ts";
 
 const personalAgent = defineAgent({
   id: "personal-agent",
@@ -607,7 +608,10 @@ const revolutConnection = defineConnection({
   slug: "revolut-buremba",
   connector: "revolut",
   name: "Revolut",
-  feeds: [{ feed: "transactions", config: { max_scrolls: 20 } }],
+  feeds: [
+    { feed: "transactions", config: { max_scrolls: 20 } },
+    { feed: "balances", config: {} }
+  ],
 });
 
 const localTakeoutRoot = process.env.LOCAL_TAKEOUT_ROOT ?? "./takeout";
@@ -716,8 +720,18 @@ const linkedinConnection = defineConnection({
   ],
 });
 
+const midasConnection = defineConnection({
+  slug: "midas",
+  connector: "midas",
+  name: "Midas",
+  feeds: [
+    { feed: "assets", config: {} }
+  ],
+});
+
 export default defineConfig({
   connectors: [
+    connectorFromFile<typeof MidasConnector>("./midas.connector.ts"),
     connectorFromFile<typeof RevolutTransactionsConnector>(
       "./revolut-transactions.connector.ts"
     ),
@@ -743,6 +757,7 @@ export default defineConfig({
   agents: [personalAgent],
   entities: [person, company, asset, subscription, topic, trip, goal, learning],
   connections: [
+    midasConnection,
     revolutConnection,
     takeoutConnection,
     twitterTakeoutConnection,

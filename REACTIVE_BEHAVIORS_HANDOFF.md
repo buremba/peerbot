@@ -275,12 +275,24 @@ Green before the final review-fix pass:
   - action-result subscribable propagation.
 - Fresh ephemeral PostgreSQL 18 migration chain after the final SQL cleanup:
   - migration invariants: 14 tests;
-  - legacy channel subscription backfill/Slack team repair/drop/view: 1 test.
+  - legacy channel subscription backfill/Slack team repair/drop/view/down migration: 2 tests.
 - Targeted declarative contract rerun after the public-doc cleanup: 56 tests.
-- Browser verification through the agent-browser workflow with no page errors.
+- Browser verification through the agent-browser workflow with no page errors,
+  including a real Manual Behavior create/list/archive round-trip through UI,
+  API, and PostgreSQL.
 - `git diff --check` in root and Owletto.
 
-The mandatory settled-diff sequence still has to be recorded below after commits: `make review-fix`, any resulting focused retests, final `make pre-pr`, one `make review`, and clean-worktree verification.
+Additional final-audit regressions are green after the settled commits:
+
+- migration rollback projects the newest Behavior when several Behaviors target
+  the same channel;
+- Slack team-ID repair is organization-scoped;
+- configured Behavior creators retain priority over arbitrary organization
+  members;
+- Slack self-healing updates only the exact numeric connection and does so in a
+  single atomic PostgreSQL update;
+- schedule trigger options remain window-only in the UI;
+- connector action prefill survives resolution of its matching connection.
 
 ## Intentional retained internals and gotchas
 
@@ -297,17 +309,45 @@ The mandatory settled-diff sequence still has to be recorded below after commits
 
 ## Finalization record
 
-Update this section after the settled commits and reviewer run:
+- Owletto commits:
+  - `c32c185c feat: consolidate reactive behavior UI`
+  - `77fc2d90 fix: align behavior trigger options`
+  - `c805ca7b fix: preserve behavior action prefill`
+- Root commits:
+  - `f1300244 feat: consolidate reactive behavior triggers`
+  - `b59dbb94 fix: harden behavior subscription migration`
+- `make review-fix BASE=origin/main`: attempted on the settled implementation
+  before the manual audit; the external Codex reviewer exited `2` because its
+  quota is exhausted until July 23, 2026 at 05:16. It made no changes and
+  posted no review.
+- Manual review after that external failure found and fixed the six regression
+  classes listed above. Those fixes are committed in root `b59dbb94` and
+  Owletto `77fc2d90`/`c805ca7b`.
+- Final `make pre-pr`: green.
+- Final `make test-unit`: green across the complete no-Postgres repository
+  suite.
+- Final Owletto suite: 82 files, 701 tests, all green.
+- Final Postgres reruns after the audit fixes:
+  - migration chain: 16 tests, all green;
+  - Behavior subscription organization-scope group: 6 tests, all green.
+- Earlier broad relevant Postgres Behavior/runtime group: 133 tests, all green;
+  every later code change is covered by the focused final reruns above.
+- Browser E2E: list/editor/catalog/capability checks plus a real
+  create/list/archive round-trip are green; browser errors are empty.
+- `make review BASE=origin/main`: run after this handoff commit; record its
+  exact outcome below if the external quota remains unavailable.
+- Final root and Owletto worktrees: clean before this handoff update; recheck
+  after its commit and reviewer attempt.
+- Diff statistics against the respective bases:
+  - root, including the Owletto submodule pointer and this handoff: 225 files,
+    6,903 insertions, 4,073 deletions, net +2,830;
+  - Owletto: 36 files, 1,552 insertions, 2,135 deletions, net -583.
 
-- Owletto commit: pending
-- Root feature commit: pending
-- Review-fix commit: pending if the reviewer edits files
-- `make review-fix BASE=origin/main`: pending
-- final `make pre-pr`: pending
-- final relevant integration rerun: pending
-- `make review BASE=origin/main`: pending
-- final root/submodule status: pending
-- final root and submodule diff statistics: pending
+The consolidated product UI is net negative. The repository-wide change is
+not: durable migrations, compatibility adapters, normalized connector
+contracts, generated client output, and regression coverage outweigh the
+deleted chat/watcher UI and binding implementation. No parallel trigger or
+subscription storage system was added to chase a line-count target.
 
 External release steps, only if explicitly requested later:
 

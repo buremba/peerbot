@@ -798,30 +798,6 @@ const relief_claim = defineEntityType({
   },
 });
 
-const financial_asset = defineEntityType({
-  key: "financial_asset",
-  name: "Financial Asset",
-  description:
-    "A universal asset schema for tracking global net worth across Midas, Revolut, mortgages, etc.",
-  required: ["name", "asset_class", "currency", "quantity", "current_price"],
-  properties: {
-    provider: { type: "string", description: "Midas, Revolut, Chase, etc." },
-    asset_class: {
-      type: "string",
-      enum: ["cash", "equity", "crypto", "real_estate", "liability"],
-    },
-    is_liability: { type: "boolean", default: false },
-    currency: { type: "string" },
-    quantity: { type: "string" },
-    current_price: { type: "string" },
-    total_value_native: { type: "string" },
-    acquisition_price: { type: "string" },
-    acquisition_date: { type: "string", format: "date" },
-    interest_rate: { type: "string" },
-    last_synced_at: { type: "string", format: "date-time" },
-  },
-});
-
 const tax_assessment = defineEntityType({
   key: "tax_assessment",
   name: "Tax Assessment",
@@ -1164,7 +1140,7 @@ const net_worth_watcher = defineWatcher({
   minCooldownSeconds: 60,
   tags: ["net-worth", "assets", "revolut", "midas"],
   reactionsGuidance:
-    "1. Parse the most recent balance for each distinct currency pocket from `revolut_events`.\n2. Parse the investment asset holdings from `midas_events`.\n3. Create or update `financial_asset` entities for each of these assets so the user's dashboard has a live, unified view of their net worth.\n",
+    "1. Parse the most recent balance for each distinct currency pocket from `revolut_events`.\n2. Parse the investment asset holdings from `midas_events`.\n3. Create or update `account` entities for Revolut balances and `holding` entities for Midas assets so the user's dashboard has a live, unified view of their net worth.\n",
   sources: {
     revolut_events:
       "SELECT feed_id, payload_text, metadata::json->>'amount' as amount, metadata::json->>'balance' as balance, metadata::json->>'currency' as currency, metadata::json->>'description' as description, occurred_at FROM events WHERE connector_key = 'revolut' AND (metadata::json->>'balance' IS NOT NULL OR semantic_type = 'balance_raw') ORDER BY occurred_at DESC LIMIT 100\n",
@@ -1172,7 +1148,7 @@ const net_worth_watcher = defineWatcher({
       "SELECT metadata, occurred_at FROM events WHERE connector_key = 'midas' ORDER BY occurred_at DESC LIMIT 50\n",
   },
   prompt:
-    'You are a wealth manager tracking the user\'s global net worth.\n\n## Revolut Events\n{{#if sources.revolut_events}}\n{{sources.revolut_events}}\n{{else}}\nNo Revolut data.\n{{/if}}\n\n## Midas Events\n{{#if sources.midas_events}}\n{{sources.midas_events}}\n{{else}}\nNo Midas data.\n{{/if}}\n\nExtract the latest known balance for each unique account or asset, and create/update `financial_asset` entities for them. Ensure you set `provider` to "Revolut" or "Midas" appropriately, map `currency` and `current_price` / `quantity` correctly.',
+    'You are a wealth manager tracking the user\'s global net worth.\n\n## Revolut Events\n{{#if sources.revolut_events}}\n{{sources.revolut_events}}\n{{else}}\nNo Revolut data.\n{{/if}}\n\n## Midas Events\n{{#if sources.midas_events}}\n{{sources.midas_events}}\n{{else}}\nNo Midas data.\n{{/if}}\n\nExtract the latest known balance for each unique account or asset. For Revolut, create/update `account` entities (setting `provider` to "Revolut" and updating `current_amount`). For Midas, create/update `holding` entities (setting `ticker`, `quantity`, and `avg_cost` based on the price).',
 });
 
 export default defineConfig({
@@ -1191,7 +1167,6 @@ export default defineConfig({
     document,
     expense,
     filing_obligation,
-    financial_asset,
     goal,
     holding,
     income_source,

@@ -798,6 +798,30 @@ const relief_claim = defineEntityType({
   },
 });
 
+const financial_asset = defineEntityType({
+  key: "financial_asset",
+  name: "Financial Asset",
+  description:
+    "A universal asset schema for tracking global net worth across Midas, Revolut, mortgages, etc.",
+  required: ["name", "asset_class", "currency", "quantity", "current_price"],
+  properties: {
+    provider: { type: "string", description: "Midas, Revolut, Chase, etc." },
+    asset_class: {
+      type: "string",
+      enum: ["cash", "equity", "crypto", "real_estate", "liability"],
+    },
+    is_liability: { type: "boolean", default: false },
+    currency: { type: "string" },
+    quantity: { type: "string" },
+    current_price: { type: "string" },
+    total_value_native: { type: "string" },
+    acquisition_price: { type: "string" },
+    acquisition_date: { type: "string", format: "date" },
+    interest_rate: { type: "string" },
+    last_synced_at: { type: "string", format: "date-time" },
+  },
+});
+
 const tax_assessment = defineEntityType({
   key: "tax_assessment",
   name: "Tax Assessment",
@@ -1131,6 +1155,26 @@ const gmail_txWatcher = defineWatcher({
     'You are a private financial accountant scanning the user\'s forwarded Gmail messages for events that matter to a UK Self Assessment return.\n\n## Recent emails\n{{#if sources.gmail_messages}}\n{{sources.gmail_messages}}\n{{else}}\nNo new messages this window.\n{{/if}}\n\n## Active tax year\n{{#if entities}}\n{{#each entities}}\n- {{name}} ({{entity_type}}, ID: {{id}})\n{{/each}}\n{{else}}\nNo tax year context provided.\n{{/if}}\n\n---\n\nIdentify and extract financial events. Each email may yield zero, one, or many events. Be conservative: skip noise (marketing, password resets, etc.).\n\nCategories to extract:\n- **transactions** — deposits, debits, transfers, salary credits, dividend payments hitting an account\n- **cgt_events** — broker contract notes for sells/disposals, gifts, transfers out of a GIA\n- **dividends** — UK or foreign dividend notifications (gross + currency)\n- **documents** — P60/P45/P11D/SA302/contract notes/mortgage statements arriving as attachments or linked PDFs\n\nFor each item, include the source `gmail_message_id` so we can link provenance. Prefer GBP unless the message clearly states a different currency.\n\nSkip transactions inside ISAs and SIPPs unless they are dividends or contributions (which are still reportable). Mark `tax_relevance="none"` for ISA-internal transactions; mark `tax_relevance="cgt"` for non-wrapper disposals.\n',
 });
 
+const net_worth_watcher = defineWatcher({
+  agent: personal_finance,
+  slug: "net-worth",
+  name: "Net Worth Aggregator",
+  schedule: "*/15 * * * *",
+  notification: { priority: "low" },
+  minCooldownSeconds: 60,
+  tags: ["net-worth", "assets", "revolut", "midas"],
+  reactionsGuidance:
+    "1. Parse the most recent balance for each distinct currency pocket from `revolut_events`.\n2. Parse the investment asset holdings from `midas_events`.\n3. Create or update `financial_asset` entities for each of these assets so the user's dashboard has a live, unified view of their net worth.\n",
+  sources: {
+    revolut_events:
+      "SELECT feed_id, payload_text, metadata::json->>'amount' as amount, metadata::json->>'balance' as balance, metadata::json->>'currency' as currency, metadata::json->>'description' as description, occurred_at FROM events WHERE connector_key = 'revolut' AND (metadata::json->>'balance' IS NOT NULL OR semantic_type = 'balance_raw') ORDER BY occurred_at DESC LIMIT 100\n",
+    midas_events:
+      "SELECT metadata, occurred_at FROM events WHERE connector_key = 'midas' ORDER BY occurred_at DESC LIMIT 50\n",
+  },
+  prompt:
+    'You are a wealth manager tracking the user\'s global net worth.\n\n## Revolut Events\n{{#if sources.revolut_events}}\n{{sources.revolut_events}}\n{{else}}\nNo Revolut data.\n{{/if}}\n\n## Midas Events\n{{#if sources.midas_events}}\n{{sources.midas_events}}\n{{else}}\nNo Midas data.\n{{/if}}\n\nExtract the latest known balance for each unique account or asset, and create/update `financial_asset` entities for them. Ensure you set `provider` to "Revolut" or "Midas" appropriately, map `currency` and `current_price` / `quantity` correctly.',
+});
+
 export default defineConfig({
   org: "personal-finance",
   orgName: "Personal Finance",
@@ -1147,6 +1191,7 @@ export default defineConfig({
     document,
     expense,
     filing_obligation,
+    financial_asset,
     goal,
     holding,
     income_source,
@@ -1180,5 +1225,5 @@ export default defineConfig({
     spouse_of,
     transfer_pair,
   ],
-  watchers: [gmail_txWatcher],
+  watchers: [gmail_txWatcher, net_worth_watcher],
 });

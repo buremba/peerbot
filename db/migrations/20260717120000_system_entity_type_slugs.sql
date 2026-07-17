@@ -5,8 +5,14 @@
 -- All ACL access units share ONE entity type: $resource (was channel / repo /
 -- $channel / $repo). Sources are distinguished by identity namespace, not type.
 -- $member is unchanged.
+--
+-- Only absorb *empty-schema* legacy rows so a domain knowledge type that
+-- happens to be named `channel` (with properties) is not destroyed.
 
--- 1) Per org: promote one legacy ACL type row to $resource (if $resource missing).
+-- Predicate helper (repeated): empty / missing properties bag = ACL anchor shape.
+-- (metadata_schema is jsonb; null, {}, {type:object}, or properties:{} count as empty.)
+
+-- 1) Per org: promote one empty-schema legacy ACL type to $resource.
 UPDATE public.entity_types et
 SET
   slug = '$resource',
@@ -16,12 +22,24 @@ SET
   updated_at = current_timestamp
 WHERE et.deleted_at IS NULL
   AND et.slug IN ('channel', 'repo', '$channel', '$repo')
+  AND (
+    et.metadata_schema IS NULL
+    OR et.metadata_schema = '{}'::jsonb
+    OR et.metadata_schema = '{"type":"object"}'::jsonb
+    OR COALESCE(et.metadata_schema->'properties', '{}'::jsonb) = '{}'::jsonb
+  )
   AND et.id = (
     SELECT et2.id
     FROM public.entity_types et2
     WHERE et2.organization_id IS NOT DISTINCT FROM et.organization_id
       AND et2.deleted_at IS NULL
       AND et2.slug IN ('channel', 'repo', '$channel', '$repo')
+      AND (
+        et2.metadata_schema IS NULL
+        OR et2.metadata_schema = '{}'::jsonb
+        OR et2.metadata_schema = '{"type":"object"}'::jsonb
+        OR COALESCE(et2.metadata_schema->'properties', '{}'::jsonb) = '{}'::jsonb
+      )
     ORDER BY
       CASE et2.slug
         WHEN '$channel' THEN 1
@@ -41,7 +59,7 @@ WHERE et.deleted_at IS NULL
       AND x.deleted_at IS NULL
   );
 
--- 2) Point every entity still on a legacy ACL type at the org's $resource type.
+-- 2) Re-point entities on empty-schema legacy ACL types onto $resource.
 UPDATE public.entities e
 SET
   entity_type_id = r.id,
@@ -54,15 +72,27 @@ JOIN public.entity_types r
 WHERE e.entity_type_id = old.id
   AND e.deleted_at IS NULL
   AND old.deleted_at IS NULL
-  AND old.slug IN ('channel', 'repo', '$channel', '$repo');
+  AND old.slug IN ('channel', 'repo', '$channel', '$repo')
+  AND (
+    old.metadata_schema IS NULL
+    OR old.metadata_schema = '{}'::jsonb
+    OR old.metadata_schema = '{"type":"object"}'::jsonb
+    OR COALESCE(old.metadata_schema->'properties', '{}'::jsonb) = '{}'::jsonb
+  );
 
--- 3) Soft-delete leftover legacy ACL type rows (entities already re-pointed).
+-- 3) Soft-delete leftover empty-schema legacy ACL type rows.
 UPDATE public.entity_types
 SET
   deleted_at = current_timestamp,
   updated_at = current_timestamp
 WHERE deleted_at IS NULL
-  AND slug IN ('channel', 'repo', '$channel', '$repo');
+  AND slug IN ('channel', 'repo', '$channel', '$repo')
+  AND (
+    metadata_schema IS NULL
+    OR metadata_schema = '{}'::jsonb
+    OR metadata_schema = '{"type":"object"}'::jsonb
+    OR COALESCE(metadata_schema->'properties', '{}'::jsonb) = '{}'::jsonb
+  );
 
 -- migrate:down
 

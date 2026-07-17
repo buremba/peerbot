@@ -9,6 +9,7 @@
 
 import { randomBytes } from 'node:crypto';
 import {
+  ACL_RESOURCE_TYPE_SLUG,
   type ActionContext,
   type ActionResult,
   type ConnectorDefinition,
@@ -300,7 +301,7 @@ const GITHUB_REPO_ATTRIBUTION: EventAttributionRule = {
   role: 'belongs_to',
   autoCreate: true,
   target: {
-    entityType: '$resource',
+    entityType: ACL_RESOURCE_TYPE_SLUG,
     titlePath: 'metadata.github_repo_full_name',
     identities: [
     {

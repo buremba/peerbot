@@ -94,7 +94,7 @@ export function compileChannelMessagesVisibility(
   )`;
 
   // One channel-membership EXISTS branch per registered chat platform: the
-  // requester is `member_of` the `channel` entity keyed by THIS platform's
+  // requester is `member_of` the `$resource` entity keyed by THIS platform's
   // channel identity + key expression, gated on the row's platform. OR-ed so a
   // multi-platform transcript table is covered without naming any connector.
   const membershipBranch = (

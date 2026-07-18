@@ -52,7 +52,6 @@ import { createSyncRun } from '../../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../utils/run-statuses';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
-import { getDefaultSchedule } from './helpers/connection-helpers';
 import { assertEntityIdsInOrg, callerIsAdmin } from './helpers/db-helpers';
 import {
   resolveFeedDisplayName,
@@ -388,8 +387,7 @@ async function handleReadFeeds(
 
 async function handleCreateFeed(
   args: Static<typeof CreateFeedAction>,
-  ctx: ToolContext,
-  env: Env
+  ctx: ToolContext
 ): Promise<ManageFeedsResult> {
   const sql = getDb();
   const { organizationId } = ctx;
@@ -455,12 +453,15 @@ async function handleCreateFeed(
     if (configError) return { error: configError };
   }
 
-  // Only validate the sync schedule for non-virtual feeds — a virtual feed
-  // persists schedule = NULL, so a (possibly defaulted) schedule string must not
-  // gate its creation.
-  const schedule = isVirtual ? null : (args.schedule ?? getDefaultSchedule(env));
-  if (!isVirtual) {
-    const scheduleError = validateSchedule(schedule as string);
+  // Omit / empty schedule = manual only (no automatic poll). Virtual feeds
+  // always persist schedule = NULL. Do not invent a default cron.
+  const rawSchedule = isVirtual ? null : (args.schedule ?? null);
+  const schedule =
+    rawSchedule == null || String(rawSchedule).trim() === ''
+      ? null
+      : String(rawSchedule).trim();
+  if (schedule) {
+    const scheduleError = validateSchedule(schedule);
     if (scheduleError) {
       return { error: scheduleError };
     }
@@ -557,10 +558,19 @@ async function handleUpdateFeed(
         : '{}'
       : null;
 
-  if (args.schedule) {
-    const scheduleError = validateSchedule(args.schedule);
-    if (scheduleError) {
-      return { error: scheduleError };
+  // `schedule` is tri-state: undefined = leave alone, null/"" = clear (manual),
+  // string = set cron. Mirror timezone / repair_agent_id.
+  const hasScheduleArg = Object.hasOwn(args, 'schedule');
+  let nextSchedule: string | null | undefined;
+  if (hasScheduleArg) {
+    const raw = args.schedule;
+    nextSchedule =
+      raw == null || String(raw).trim() === '' ? null : String(raw).trim();
+    if (nextSchedule) {
+      const scheduleError = validateSchedule(nextSchedule);
+      if (scheduleError) {
+        return { error: scheduleError };
+      }
     }
   }
   if (args.timezone) {
@@ -570,7 +580,7 @@ async function handleUpdateFeed(
     }
   }
   const hasTimezoneArg = args.timezone !== undefined;
-  const touchesCadence = args.schedule !== undefined || hasTimezoneArg;
+  const touchesCadence = hasScheduleArg || hasTimezoneArg;
 
   // `repair_agent_id` is tri-state: undefined = leave alone, null = clear, string = set.
   // Use Object.hasOwn so an explicit null overwrites instead of being skipped.
@@ -629,8 +639,11 @@ async function handleUpdateFeed(
 
     // Recompute next_run_at when the cadence OR its zone changes; the effective
     // pair mixes the incoming args with the stored row for whichever side was
-    // omitted, so a timezone-only update re-anchors the pending sync.
-    const effectiveSchedule = args.schedule ?? (feedRow.schedule as string | null);
+    // omitted, so a timezone-only update re-anchors the pending sync. Clearing
+    // schedule (null) clears next_run_at — manual feeds do not auto-poll.
+    const effectiveSchedule = hasScheduleArg
+      ? (nextSchedule ?? null)
+      : (feedRow.schedule as string | null);
     const effectiveTimezone = hasTimezoneArg
       ? (args.timezone ?? null)
       : (feedRow.timezone as string | null);
@@ -645,7 +658,7 @@ async function handleUpdateFeed(
           status = COALESCE(${args.status ?? null}::text, status),
           entity_ids = COALESCE(${entityIdsValue}::bigint[], entity_ids),
           config = CASE WHEN ${hasConfigArg} THEN ${tx.json(effectiveConfig ?? {})}::jsonb ELSE config END,
-          schedule = COALESCE(${args.schedule ?? null}::text, schedule),
+          schedule = CASE WHEN ${hasScheduleArg} THEN ${nextSchedule ?? null} ELSE schedule END,
           timezone = CASE WHEN ${hasTimezoneArg} THEN ${args.timezone ?? null} ELSE timezone END,
           next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
           repair_agent_id = CASE WHEN ${hasRepairAgentArg} THEN ${repairAgentValue}::text ELSE repair_agent_id END,

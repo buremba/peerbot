@@ -560,6 +560,20 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/connection slug/);
   });
 
+  test("omitted feed schedule maps to null (manual-only, no platform default)", () => {
+    const conn = defineConnection({
+      slug: "gh",
+      connector: "github",
+      feeds: [{ feed: "stars" }],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], connections: [conn] })
+    );
+    expect(state.connectors.connections[0]?.feeds).toEqual([
+      { feedKey: "stars", schedule: null },
+    ]);
+  });
+
   test("rejects an invalid cron schedule", () => {
     const crm = defineAgent({ id: "crm" });
     const watcher = defineWatcher({
@@ -637,6 +651,7 @@ describe("mapProjectToDesiredState", () => {
       {
         feedKey: "query",
         name: "Churn rollup (live)",
+        schedule: null,
         config: { query: "SELECT 1" },
         virtual: true,
       },

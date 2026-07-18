@@ -1,10 +1,13 @@
 /**
  * Cron scheduling utilities shared by feed and watcher schedulers.
+ *
+ * Collected feeds with schedule = NULL are manual-only (trigger_feed). There is
+ * no platform default cadence — callers that want a poll must pass an explicit
+ * cron (e.g. app-install AUTO_FEED_SCHEDULE).
  */
 
 import { CronExpressionParser } from 'cron-parser';
 
-const DEFAULT_SCHEDULE = '0 */6 * * *'; // every 6 hours
 const MIN_INTERVAL_MS = 60_000; // 1 minute minimum between runs
 
 /**
@@ -51,4 +54,3 @@ export function validateSchedule(schedule: string): string | null {
   }
 }
 
-export { DEFAULT_SCHEDULE };

@@ -103,13 +103,14 @@ export function isMidasAuthWall(url: string | null | undefined): boolean {
 /**
  * Parse a number as rendered by Atlas's Turkish UI.
  *
- * Atlas uses European grouping for BOTH USD and TRY on the TR locale:
- *   `$333,69` → 333.69
- *   `$961.629,23` → 961629.23
- *   `₺1.273.667,38` → 1273667.38
- *   `95,257309547` → 95.257309547 (fractional shares)
- *   `14.000` → 14000 (thousand-grouped whole shares)
- *   `-$11.492,08(-%1,18)` → -11492.08 (trailing % annotation ignored)
+ * Atlas uses European grouping for BOTH USD and TRY on the TR locale
+ * (illustrative, synthetic values):
+ *   `$123,45` → 123.45
+ *   `$12.345,67` → 12345.67
+ *   `₺1.234.567,89` → 1234567.89
+ *   `12,345678` → 12.345678 (fractional shares)
+ *   `1.000` → 1000 (thousand-grouped whole shares)
+ *   `-$1.500,50(-%2,00)` → -1500.5 (trailing % annotation ignored)
  *
  * US-style `$1,234.56` is NOT used on this UI; do not strip commas as thousands.
  */
@@ -158,6 +159,16 @@ export function parseLocaleAmount(
 /** Share quantity — same European rendering as money on Atlas TR. */
 export function parseShares(raw: string | null | undefined): number {
   return parseAtlasAmount(raw);
+}
+
+/**
+ * A holding-row cell (shares / price / value) is structurally valid only if it
+ * carries at least one digit. This distinguishes a genuine zero value (`$0,00`,
+ * still has a digit) from a malformed / drifted cell (a label, blank, or dash),
+ * so we skip corrupt rows instead of emitting zero-valued holdings.
+ */
+function hasNumericCell(line: string | undefined): boolean {
+  return typeof line === "string" && /\d/.test(line);
 }
 
 /**
@@ -275,6 +286,16 @@ export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
 
     for (const symbol of tickers) {
       if (currentIdx + HOLDING_ROW_LINES - 1 >= lines.length) break;
+      // Reject drifted layouts: a real row has numeric shares/price/value.
+      // Stop rather than emit corrupt zero-valued holdings from mis-aligned
+      // cells (a genuine $0,00 still passes — it carries a digit).
+      if (
+        !hasNumericCell(lines[currentIdx]) ||
+        !hasNumericCell(lines[currentIdx + 1]) ||
+        !hasNumericCell(lines[currentIdx + 3])
+      ) {
+        break;
+      }
       const shares = parseShares(lines[currentIdx]);
       const price = parseAtlasAmount(lines[currentIdx + 1]);
       const avgCost = parseAtlasAmount(lines[currentIdx + 2]);
@@ -342,10 +363,28 @@ export function balanceToEvent(
   };
 }
 
+/**
+ * Reduce a URL to `origin + pathname` for diagnostics. Auth callbacks may carry
+ * `code`, `state`, tokens, etc. in the query/fragment; those must never reach
+ * notifications, thrown errors, or logs.
+ */
+export function safeDiagnosticUrl(url: string | null | undefined): string {
+  if (!url) return MIDAS_DASHBOARD_URL;
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    // Not a full URL — coarse-strip anything after the first ? or #.
+    return String(url).split(/[?#]/)[0] || MIDAS_DASHBOARD_URL;
+  }
+}
+
 async function notifyMidasAuthWall(
   dispatcher: ChromeActionDispatcher,
   landedUrl: string
 ): Promise<void> {
+  // Never forward raw query params (may contain OAuth code/state/tokens).
+  const safeLanded = safeDiagnosticUrl(landedUrl);
   try {
     await dispatcher.dispatch("show_notification", {
       notification_id: "midas-auth-wall",
@@ -353,8 +392,9 @@ async function notifyMidasAuthWall(
       message:
         "Sign in to Midas in the focused Chrome window, then re-run the sync.",
       body: "Sign in to Midas in the focused Chrome window, then re-run the sync.",
-      landed_url: landedUrl,
-      click_url: landedUrl,
+      landed_url: safeLanded,
+      // Fixed, safe destination — never a callback URL with sensitive params.
+      click_url: MIDAS_DASHBOARD_URL,
     });
   } catch {
     // Best-effort UX; never mask the auth-wall error.
@@ -434,8 +474,11 @@ export default class MidasConnector extends ConnectorRuntime {
     const landedUrl = nav.current_url ?? MIDAS_DASHBOARD_URL;
     if (isMidasAuthWall(landedUrl)) {
       await notifyMidasAuthWall(dispatcher, landedUrl);
+      // Redact query/fragment: an auth-wall URL may carry code/state/tokens.
       throw new Error(
-        `Midas session needs sign-in (landed on ${landedUrl}). Sign in at atlas.getmidas.com in this Chrome profile, then re-run the sync.`
+        `Midas session needs sign-in (landed on ${safeDiagnosticUrl(
+          landedUrl
+        )}). Sign in at atlas.getmidas.com in this Chrome profile, then re-run the sync.`
       );
     }
 
@@ -445,12 +488,22 @@ export default class MidasConnector extends ConnectorRuntime {
       );
     }
 
-    // SPA settle: wait inside the page, then return body text for pure parsing.
+    // SPA settle: poll for the Pozisyonlar section markers until they render
+    // (bounded), rather than a blind fixed sleep that races slow sessions.
     const textObs = await dispatcher.dispatch<{ value?: string }>("evaluate", {
       tab_id: nav.tab_id,
       expression: `(async () => {
-        await new Promise((r) => setTimeout(r, 2500));
-        return document.body ? document.body.innerText : "";
+        const markers = ["Pozisyonlar", "ABD Hisseleri", "BIST Hisseleri"];
+        const deadline = Date.now() + 12000;
+        const bodyText = () => (document.body ? document.body.innerText : "");
+        const ready = () => {
+          const t = bodyText();
+          return markers.some((m) => t.includes(m));
+        };
+        while (Date.now() < deadline && !ready()) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        return bodyText();
       })()`,
       allowed_origins: [...MIDAS_ALLOWED_ORIGINS],
     });

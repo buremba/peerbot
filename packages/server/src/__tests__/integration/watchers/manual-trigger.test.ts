@@ -1,6 +1,6 @@
 /**
  * Integration test for the manual-trigger endpoint:
- *   POST /api/workers/me/watchers/:watcher_id/trigger
+ *   POST /api/workers/me/behaviors/:watcher_id/trigger
  *
  * Verifies:
  *   - Correctly-bound device → 200, pending run row created with manual
@@ -69,9 +69,7 @@ async function createWorkerBoundPat(
  * Set up a device-pinned watcher owned by the workspace owner. Returns
  * everything the tests need to mint the right PAT + assert on the run row.
  */
-async function setupDevicePinnedWatcher(opts: {
-  workerId: string;
-}): Promise<{
+async function setupDevicePinnedWatcher(opts: { workerId: string }): Promise<{
   sql: ReturnType<typeof getTestDb>;
   dbClient: DbClient;
   workspace: Awaited<ReturnType<typeof TestWorkspace.create>>;
@@ -103,12 +101,12 @@ async function setupDevicePinnedWatcher(opts: {
     agentId: 'trigger-agent',
     name: 'Trigger Agent',
   });
-  const watcher = (await workspace.owner.watchers.create({
+  const watcher = (await workspace.owner.behaviors.create({
     entity_id: entity.id,
     slug: 'trigger-watcher',
     name: 'Trigger Watcher',
     prompt: 'Summarize {{entities}}.',
-    schedule: '0 9 * * *',
+    triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
   })) as { watcher_id: string };
   const watcherId = Number(watcher.watcher_id);
@@ -123,10 +121,17 @@ async function setupDevicePinnedWatcher(opts: {
     WHERE id = ${watcherId}
   `;
 
-  return { sql, dbClient, workspace, watcherId, deviceWorkerId, agentId: agent.agentId };
+  return {
+    sql,
+    dbClient,
+    workspace,
+    watcherId,
+    deviceWorkerId,
+    agentId: agent.agentId,
+  };
 }
 
-describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
+describe('POST /api/workers/me/behaviors/:watcher_id/trigger', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
   });
@@ -139,10 +144,7 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
       'mac-trigger-ok'
     );
 
-    const response = await post(
-      `/api/workers/me/watchers/${ctx.watcherId}/trigger`,
-      { token }
-    );
+    const response = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, { token });
     expect(response.status).toBe(200);
     const json = (await response.json()) as {
       run_id: number;
@@ -177,16 +179,9 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
       INSERT INTO device_workers (user_id, worker_id, platform, capabilities, label, organization_id)
       VALUES (${ownerUserId}, 'mac-other', 'macos', ${ctx.sql.json({})}, 'Other Mac', ${ctx.workspace.org.id})
     `;
-    const { token } = await createWorkerBoundPat(
-      ownerUserId,
-      ctx.workspace.org.id,
-      'mac-other'
-    );
+    const { token } = await createWorkerBoundPat(ownerUserId, ctx.workspace.org.id, 'mac-other');
 
-    const response = await post(
-      `/api/workers/me/watchers/${ctx.watcherId}/trigger`,
-      { token }
-    );
+    const response = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, { token });
     expect(response.status).toBe(403);
     const body = (await response.json()) as { error: string };
     expect(body.error).toMatch(/not pinned to this device/i);
@@ -198,25 +193,24 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
   });
 
   it('re-trigger while a run is pending → 200 already_queued, no duplicate run', async () => {
-    const ctx = await setupDevicePinnedWatcher({ workerId: 'mac-trigger-idem' });
+    const ctx = await setupDevicePinnedWatcher({
+      workerId: 'mac-trigger-idem',
+    });
     const { token } = await createWorkerBoundPat(
       ctx.workspace.users.owner.id,
       ctx.workspace.org.id,
       'mac-trigger-idem'
     );
 
-    const first = await post(
-      `/api/workers/me/watchers/${ctx.watcherId}/trigger`,
-      { token }
-    );
+    const first = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, { token });
     expect(first.status).toBe(200);
-    const firstJson = (await first.json()) as { run_id: number; already_queued: boolean };
+    const firstJson = (await first.json()) as {
+      run_id: number;
+      already_queued: boolean;
+    };
     expect(firstJson.already_queued).toBe(false);
 
-    const second = await post(
-      `/api/workers/me/watchers/${ctx.watcherId}/trigger`,
-      { token }
-    );
+    const second = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, { token });
     expect(second.status).toBe(200);
     const secondJson = (await second.json()) as {
       run_id: number;
@@ -233,17 +227,16 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
   });
 
   it('also returns already_queued for claimed/running existing runs', async () => {
-    const ctx = await setupDevicePinnedWatcher({ workerId: 'mac-trigger-claimed' });
+    const ctx = await setupDevicePinnedWatcher({
+      workerId: 'mac-trigger-claimed',
+    });
     const { token } = await createWorkerBoundPat(
       ctx.workspace.users.owner.id,
       ctx.workspace.org.id,
       'mac-trigger-claimed'
     );
 
-    const first = await post(
-      `/api/workers/me/watchers/${ctx.watcherId}/trigger`,
-      { token }
-    );
+    const first = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, { token });
     expect(first.status).toBe(200);
     const firstJson = (await first.json()) as { run_id: number };
 
@@ -254,10 +247,7 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
       WHERE id = ${firstJson.run_id}
     `;
 
-    const second = await post(
-      `/api/workers/me/watchers/${ctx.watcherId}/trigger`,
-      { token }
-    );
+    const second = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, { token });
     expect(second.status).toBe(200);
     const secondJson = (await second.json()) as {
       run_id: number;
@@ -286,10 +276,7 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
     `;
     const beforeNextRun = before.next_run_at as Date | string | null;
 
-    const response = await post(
-      `/api/workers/me/watchers/${ctx.watcherId}/trigger`,
-      { token }
-    );
+    const response = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, { token });
     expect(response.status).toBe(200);
 
     const [after] = await ctx.sql`
@@ -315,7 +302,7 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
       'mac-404'
     );
 
-    const response = await post('/api/workers/me/watchers/999999999/trigger', {
+    const response = await post('/api/workers/me/behaviors/999999999/trigger', {
       token,
     });
     expect(response.status).toBe(404);
@@ -323,7 +310,11 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
 
   it('poll payload carries the watcher execution_config', async () => {
     const ctx = await setupDevicePinnedWatcher({ workerId: 'mac-poll-exec' });
-    const execCfg = { timeout_seconds: 1800, model: 'opus', permission_mode: 'plan' };
+    const execCfg = {
+      timeout_seconds: 1800,
+      model: 'opus',
+      permission_mode: 'plan',
+    };
     await ctx.sql`
       UPDATE watchers SET execution_config = ${ctx.sql.json(execCfg)} WHERE id = ${ctx.watcherId}
     `;
@@ -334,7 +325,7 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
     );
 
     // Trigger queues a pending run pinned to this device.
-    const trig = await post(`/api/workers/me/watchers/${ctx.watcherId}/trigger`, { token });
+    const trig = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, { token });
     expect(trig.status).toBe(200);
 
     // The device poll claims it and gets the payload envelope the dispatcher
@@ -362,7 +353,7 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
 
     // Queue a run: createWatcherRun snapshots the current version (prompt v1)
     // into approved_input.version_id.
-    const trig = await post(`/api/workers/me/watchers/${ctx.watcherId}/trigger`, { token });
+    const trig = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, { token });
     expect(trig.status).toBe(200);
 
     // Edit the watcher AFTER the run is queued: a new current version with a

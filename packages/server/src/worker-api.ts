@@ -11,12 +11,12 @@
 // Polling (device registration + run claiming)
 export { pollWorkerJob } from './worker-api/poll';
 
-// Run lifecycle (heartbeat, stream, complete, watcher/auth/action/embedding)
+// Run lifecycle (heartbeat, stream, complete, Behavior/auth/action/embedding)
 export {
   heartbeat,
   streamContent,
   completeWorkerJob,
-  completeWatcherRun,
+  completeBehaviorRun,
   completeEmbeddings,
   fetchEventsForEmbedding,
   emitAuthArtifact,
@@ -26,7 +26,11 @@ export {
 } from './worker-api/run-lifecycle';
 
 // UI-facing auth run endpoints (session-auth, not worker-token)
-export { getActiveAuthRun, getAuthRun, postAuthSignal } from './worker-api/auth-runs';
+export {
+  getActiveAuthRun,
+  getAuthRun,
+  postAuthSignal,
+} from './worker-api/auth-runs';
 
 // Device worker management (mcpAuth, /api/me/devices/*)
 export {
@@ -44,7 +48,11 @@ export {
 } from './worker-api/device-auth-profiles';
 
 // Device-scoped feed CRUD (/api/workers/me/feeds/*)
-export { listMyDeviceFeeds, createMyDeviceFeed, deleteMyDeviceFeed } from './worker-api/device-feeds';
+export {
+  listMyDeviceFeeds,
+  createMyDeviceFeed,
+  deleteMyDeviceFeed,
+} from './worker-api/device-feeds';
 
-// Device watcher trigger (/api/workers/me/watchers/:id/trigger)
-export { triggerWatcherForDevice } from './worker-api/watcher-trigger';
+// Device Behavior trigger (/api/workers/me/behaviors/:id/trigger)
+export { triggerBehaviorForDevice } from './worker-api/behavior-trigger';

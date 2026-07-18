@@ -573,7 +573,7 @@ const learning = defineEntityType({
     },
     source: {
       type: "string",
-      description: "Where it was learned (conversation, watcher, observation)",
+      description: "Where it was learned (conversation, Behavior, observation)",
     },
     learned_date: {
       type: "string",

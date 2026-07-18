@@ -3,7 +3,7 @@ import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
 
 const calls: Array<{ action: string; input?: Record<string, unknown> }> = [];
-const watcherGets: Array<Record<string, unknown>> = [];
+const behaviorGets: Array<Record<string, unknown>> = [];
 
 const captureAction = async (input: Record<string, unknown>) => {
 	const { action, ...rest } = input;
@@ -33,16 +33,15 @@ mock.module("../../../tools/admin/manage_auth_profiles", () => ({
 	manageAuthProfiles: captureAction,
 }));
 
-mock.module("../../../tools/get_watchers", () => ({
-	getWatcher: async (input: Record<string, unknown>) => {
-		watcherGets.push(input);
+mock.module("../../../tools/get_behavior", () => ({
+	getBehavior: async (input: Record<string, unknown>) => {
+		behaviorGets.push(input);
 		return input;
 	},
 }));
 
 mock.module("../../../tools/admin/manage_behaviors", () => ({
 	manageBehaviors: captureAction,
-	listWatchers: async () => undefined,
 }));
 
 const ctx = {} as ToolContext;
@@ -54,7 +53,7 @@ describe("ClientSDK object signature contract", () => {
 		feeds: typeof import("../../../sandbox/namespaces/feeds").buildFeedsNamespace;
 		classifiers: typeof import("../../../sandbox/namespaces/classifiers").buildClassifiersNamespace;
 		schedules: typeof import("../../../sandbox/namespaces/schedules").buildSchedulesNamespace;
-		watchers: typeof import("../../../sandbox/namespaces/watchers").buildWatchersNamespace;
+		behaviors: typeof import("../../../sandbox/namespaces/behaviors").buildBehaviorsNamespace;
 		entitySchema: typeof import("../../../sandbox/namespaces/entity-schema").buildEntitySchemaNamespace;
 		connections: typeof import("../../../sandbox/namespaces/connections").buildConnectionsNamespace;
 		authProfiles: typeof import("../../../sandbox/namespaces/auth-profiles").buildAuthProfilesNamespace;
@@ -66,27 +65,26 @@ describe("ClientSDK object signature contract", () => {
 			feeds,
 			classifiers,
 			schedules,
-			watchers,
+			behaviors,
 			entitySchema,
 			connections,
 			authProfiles,
-		] =
-			await Promise.all([
-				import("../../../sandbox/namespaces/entities"),
-				import("../../../sandbox/namespaces/feeds"),
-				import("../../../sandbox/namespaces/classifiers"),
-				import("../../../sandbox/namespaces/schedules"),
-				import("../../../sandbox/namespaces/watchers"),
-				import("../../../sandbox/namespaces/entity-schema"),
-				import("../../../sandbox/namespaces/connections"),
-				import("../../../sandbox/namespaces/auth-profiles"),
-			]);
+		] = await Promise.all([
+			import("../../../sandbox/namespaces/entities"),
+			import("../../../sandbox/namespaces/feeds"),
+			import("../../../sandbox/namespaces/classifiers"),
+			import("../../../sandbox/namespaces/schedules"),
+			import("../../../sandbox/namespaces/behaviors"),
+			import("../../../sandbox/namespaces/entity-schema"),
+			import("../../../sandbox/namespaces/connections"),
+			import("../../../sandbox/namespaces/auth-profiles"),
+		]);
 		builders = {
 			entities: entities.buildEntitiesNamespace,
 			feeds: feeds.buildFeedsNamespace,
 			classifiers: classifiers.buildClassifiersNamespace,
 			schedules: schedules.buildSchedulesNamespace,
-			watchers: watchers.buildWatchersNamespace,
+			behaviors: behaviors.buildBehaviorsNamespace,
 			entitySchema: entitySchema.buildEntitySchemaNamespace,
 			connections: connections.buildConnectionsNamespace,
 			authProfiles: authProfiles.buildAuthProfilesNamespace,
@@ -98,7 +96,7 @@ describe("ClientSDK object signature contract", () => {
 		const feeds = builders.feeds(ctx, env);
 		const classifiers = builders.classifiers(ctx, env);
 		const schedules = builders.schedules(ctx, env);
-		const watchers = builders.watchers(ctx, env);
+		const behaviors = builders.behaviors(ctx, env);
 		const entitySchema = builders.entitySchema(ctx, env);
 
 		await entities.get({ entity_id: 11 });
@@ -108,14 +106,14 @@ describe("ClientSDK object signature contract", () => {
 		await feeds.delete({ feed_id: 23 });
 		await classifiers.delete({ classifier_id: 31 });
 		await schedules.cancel({ id: "schedule-41" });
-		await watchers.get({ watcher_id: "51" });
-		await watchers.trigger({ watcher_id: "52" });
-		await watchers.delete({ watcher_ids: ["53", "54"] });
+		await behaviors.get({ watcher_id: "51" });
+		await behaviors.trigger({ watcher_id: "52" });
+		await behaviors.delete({ watcher_ids: ["53", "54"] });
 		await entitySchema.deleteType({ slug: "company" });
 		await entitySchema.deleteRelType({ slug: "works-at" });
 		await entitySchema.listRules({ slug: "works-at" });
 
-		expect(watcherGets).toEqual([{ watcher_id: "51" }]);
+		expect(behaviorGets).toEqual([{ watcher_id: "51" }]);
 		expect(calls).toEqual([
 			{ action: "get", input: { entity_id: 11 } },
 			{
@@ -154,14 +152,16 @@ describe("ClientSDK object signature contract", () => {
 		// Placeholders are neutral (`<connection_id>`, `<auth_profile_slug>`), NOT
 		// real-looking ids — a fresh agent must not copy a fabricated id verbatim.
 		await expect(
-			connections.reauthenticate({ connection_id: 418 } as never),
+			connections.reauthenticate({ connection_id: 418 } as never)
 		).rejects.toThrow(
-			"connections.reauthenticate expects a positional number. Call client.connections.reauthenticate(<connection_id>); do not pass an object.",
+			"connections.reauthenticate expects a positional number. Call client.connections.reauthenticate(<connection_id>); do not pass an object."
 		);
 		await expect(
-			authProfiles.get({ auth_profile_slug: "google-calendar-account" } as never),
+			authProfiles.get({
+				auth_profile_slug: "google-calendar-account",
+			} as never)
 		).rejects.toThrow(
-			"authProfiles.get expects a positional string. Call client.authProfiles.get('<auth_profile_slug>'); do not pass an object.",
+			"authProfiles.get expects a positional string. Call client.authProfiles.get('<auth_profile_slug>'); do not pass an object."
 		);
 	});
 });

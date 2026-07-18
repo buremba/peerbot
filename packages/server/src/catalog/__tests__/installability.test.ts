@@ -23,7 +23,7 @@ function connectorDetail(entry: CatalogEntry): Record<string, unknown> {
 	const all = {
 		connectors: [entry],
 		skills: [],
-		watchers: [],
+		behaviors: [],
 	} satisfies Record<CatalogKind, CatalogEntry[]>;
 	const response = buildCatalogListResponse(["connectors"], all);
 	return response.catalogs.connectors!.entries[0]!.detail;
@@ -47,22 +47,28 @@ describe("connector catalog installability", () => {
 		// the platform boundary, so it is installable by cloud tenants like any
 		// other connector. CLOUD_RESTRICTED_CONNECTOR_KEYS is now empty and
 		// stays as the kill-switch for future warehouse connectors.
-		expect(connectorDetail(connectorEntry("postgres", "PostgreSQL"))).toMatchObject({
+		expect(
+			connectorDetail(connectorEntry("postgres", "PostgreSQL"))
+		).toMatchObject({
 			installable: true,
 		});
 	});
 
 	it("marks the bundled PostgreSQL connector installable when self-hosted", () => {
-		expect(connectorDetail(connectorEntry("postgres", "PostgreSQL"))).toMatchObject({
+		expect(
+			connectorDetail(connectorEntry("postgres", "PostgreSQL"))
+		).toMatchObject({
 			installable: true,
 		});
 	});
 
 	it("marks a stale manifest entry non-installable when its bundle was removed", () => {
-		expect(connectorDetail(connectorEntry("spotify", "Spotify"))).toMatchObject({
-			installable: false,
-			installability_reason: "bundled_source_unavailable",
-		});
+		expect(connectorDetail(connectorEntry("spotify", "Spotify"))).toMatchObject(
+			{
+				installable: false,
+				installability_reason: "bundled_source_unavailable",
+			}
+		);
 	});
 
 	it("no longer blocks PostgreSQL install in cloud at the capability gate", async () => {
@@ -82,7 +88,7 @@ describe("connector catalog installability", () => {
 			installCatalogConnectorDefinition({
 				organizationId: "unused-before-capability-gate",
 				connectorId: "postgres",
-			}),
+			})
 		).rejects.not.toThrow("cloud_restricted");
 	});
 
@@ -95,7 +101,7 @@ describe("connector catalog installability", () => {
 				version: 1,
 				kind: "connectors",
 				entries: [connectorEntry("spotify", "Spotify")],
-			}),
+			})
 		);
 		process.env.LOBU_CATALOG_URIS = manifestPath;
 		clearCatalogCacheForTests();
@@ -105,7 +111,7 @@ describe("connector catalog installability", () => {
 			installCatalogConnectorDefinition({
 				organizationId: "unused-before-capability-gate",
 				connectorId: "spotify",
-			}),
+			})
 		).rejects.toThrow(String(detail.installability_message));
 	});
 });

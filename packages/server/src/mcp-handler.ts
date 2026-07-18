@@ -27,7 +27,11 @@ import { OAuthClientsStore } from './auth/oauth/clients';
 import { isPublicReadable, resolveMaxAccessLevel } from './auth/tool-access';
 import { createDbClientFromEnv } from './db/client';
 import type { Env } from './index';
-import { agentExistsInOrganization, isValidAgentId, touchAgentLastUsed } from './lobu/stores/postgres-stores';
+import {
+  agentExistsInOrganization,
+  isValidAgentId,
+  touchAgentLastUsed,
+} from './lobu/stores/postgres-stores';
 import { readMcpAppBundle } from './utils/mcp-app-bundle';
 import { LOBU_SKILL_MARKDOWN } from './skills/lobu-skill.generated';
 import { McpSessionStore, type PersistedMcpSession } from './mcp-session-store';
@@ -127,20 +131,23 @@ const formatRef = { rawJson: false };
  * a deliberate follow-up, so we don't stamp it today.) Adding an app = one
  * entry + its owletto `src/mcp-apps/<dir>` build — no gateway change.
  */
-const MCP_APP_RESOURCES: Record<string, {
-  name: string;
-  /** Surfaced on `resources/list` — clients show it in resource browsers. */
-  description: string;
-  appDir: string;
-  /**
-   * CSP the host should apply to the rendered iframe. The interaction bundle is
-   * postMessage-only (no fetch/XHR/import/remote assets; verified in
-   * `_shared/host.tsx` + `interaction-card.tsx`), so the policy is strict: no
-   * network, scripts/styles same-origin only. Tailwind's runtime style
-   * injection needs `'unsafe-inline'` on `style-src`.
-   */
-  csp: string;
-}> = {
+const MCP_APP_RESOURCES: Record<
+  string,
+  {
+    name: string;
+    /** Surfaced on `resources/list` — clients show it in resource browsers. */
+    description: string;
+    appDir: string;
+    /**
+     * CSP the host should apply to the rendered iframe. The interaction bundle is
+     * postMessage-only (no fetch/XHR/import/remote assets; verified in
+     * `_shared/host.tsx` + `interaction-card.tsx`), so the policy is strict: no
+     * network, scripts/styles same-origin only. Tailwind's runtime style
+     * injection needs `'unsafe-inline'` on `style-src`.
+     */
+    csp: string;
+  }
+> = {
   'ui://lobu/interaction': {
     name: 'Interaction',
     description:
@@ -168,15 +175,18 @@ export const MCP_APP_DIRS: ReadonlySet<string> = new Set(
  * identically in prod and local dev — `skills/` is not copied into the server
  * image, so a runtime file read would 404 in prod.
  */
-const MCP_SKILL_RESOURCES: Record<string, {
-  name: string;
-  description: string;
-  text: string;
-}> = {
+const MCP_SKILL_RESOURCES: Record<
+  string,
+  {
+    name: string;
+    description: string;
+    text: string;
+  }
+> = {
   'skill://lobu': {
     name: 'Lobu',
     description:
-      'How to work with a Lobu project and Lobu memory: run/validate/evaluate/connect, MCP client setup, knowledge search/save, watchers, and connectors.',
+      'How to work with a Lobu project and Lobu memory: run/validate/evaluate/connect, MCP client setup, knowledge search/save, Behaviors, and connectors.',
     text: LOBU_SKILL_MARKDOWN,
   },
 };
@@ -254,9 +264,7 @@ function createServerForContext(
     if (!app) throw new Error(`Unknown resource: ${uri}`);
     const html = await readMcpAppBundle(app.appDir);
     if (html == null) {
-      throw new Error(
-        `MCP App bundle not built for ${uri} (run owletto build:mcp-apps)`
-      );
+      throw new Error(`MCP App bundle not built for ${uri} (run owletto build:mcp-apps)`);
     }
     return {
       contents: [{ uri, mimeType: 'text/html', text: html }],
@@ -311,7 +319,12 @@ function createServerForContext(
       return { content: [{ type: 'text' as const, text }] };
     } catch (error: any) {
       return {
-        content: [{ type: 'text' as const, text: error.message ?? 'Tool execution failed' }],
+        content: [
+          {
+            type: 'text' as const,
+            text: error.message ?? 'Tool execution failed',
+          },
+        ],
         isError: true,
       };
     }
@@ -479,17 +492,10 @@ async function resolveMembershipRole(
  * Anonymous public-workspace browse (no userId) keeps a null role by design —
  * `resolveMembershipRole` returns null for a null user, so this is a no-op there.
  */
-async function hydrateScopedMemberRole(
-  env: Env,
-  authCtx: AuthContext
-): Promise<void> {
+async function hydrateScopedMemberRole(env: Env, authCtx: AuthContext): Promise<void> {
   if (!authCtx.scopedToOrg || !authCtx.isAuthenticated) return;
   if (!authCtx.organizationId || !authCtx.userId) return;
-  authCtx.memberRole = await resolveMembershipRole(
-    env,
-    authCtx.organizationId,
-    authCtx.userId
-  );
+  authCtx.memberRole = await resolveMembershipRole(env, authCtx.organizationId, authCtx.userId);
 }
 
 async function recoverSessionAuthContext(
@@ -723,7 +729,10 @@ export function withSSEHeartbeat(response: Response, signal?: AbortSignal): Resp
       abortWriter(new Error('Source SSE stream error'));
     });
 
-  return new Response(readable, { status: response.status, headers: response.headers });
+  return new Response(readable, {
+    status: response.status,
+    headers: response.headers,
+  });
 }
 
 // Wrap transport.handleRequest: if the client didn't ask for SSE, convert the
@@ -798,7 +807,12 @@ function createSessionTransport(
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator,
     onsessioninitialized: (id) => {
-      sessions.set(id, { transport, server, authCtx, lastAccessedAt: Date.now() });
+      sessions.set(id, {
+        transport,
+        server,
+        authCtx,
+        lastAccessedAt: Date.now(),
+      });
     },
   });
   transport.onclose = () => {
@@ -818,7 +832,10 @@ async function initializeRecoveredSession(
 ): Promise<void> {
   const initReq = new Request(url, {
     method: 'POST',
-    headers: new Headers({ 'content-type': 'application/json', accept: FULL_MCP_ACCEPT }),
+    headers: new Headers({
+      'content-type': 'application/json',
+      accept: FULL_MCP_ACCEPT,
+    }),
     body: JSON.stringify({
       jsonrpc: '2.0',
       method: 'initialize',
@@ -839,7 +856,10 @@ async function initializeRecoveredSession(
       accept: FULL_MCP_ACCEPT,
       'mcp-session-id': sessionId,
     }),
-    body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+    }),
   });
   await transport.handleRequest(notifyReq);
 }

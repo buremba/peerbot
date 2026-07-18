@@ -121,8 +121,8 @@ function makeAuthFetch(
           { status: 200 }
         );
       }
-      if (urlStr.includes("/watchers")) {
-        return new Response(JSON.stringify({ watchers: [] }), { status: 200 });
+      if (urlStr.includes("/behaviors")) {
+        return new Response(JSON.stringify({ behaviors: [] }), { status: 200 });
       }
     }
 

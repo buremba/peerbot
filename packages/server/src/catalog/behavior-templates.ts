@@ -1,9 +1,9 @@
 import type { CatalogEntry } from "./types";
 
 /**
- * Bundled default watcher templates served by the global catalog
- * (`GET /catalog?kinds=watchers`) when `LOBU_CATALOG_URIS` is unset. Each
- * entry's `detail` mirrors the watcher create-form fields (snake_case) so the
+ * Bundled default Behavior templates served by the global catalog
+ * (`GET /catalog?kinds=behaviors`) when `LOBU_CATALOG_URIS` is unset. Each
+ * entry's `detail` mirrors `manage_behaviors` create fields (snake_case) so the
  * "From catalog" picker can prefill the form directly — the same prefill shape
  * the "Clone existing" path uses.
  *
@@ -11,10 +11,20 @@ import type { CatalogEntry } from "./types";
  * in the form. Specialized templates may include portable `@` sources and a
  * reaction script; an exported reaction input schema then governs extraction.
  * Override or replace these by pointing `LOBU_CATALOG_URIS` at your own
- * `watchers.json` manifest (env wins outright — there is no merge with these
+ * `behaviors.json` manifest (env wins outright — there is no merge with these
  * defaults).
  */
-export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
+function scheduleTrigger(cron: string): Record<string, unknown> {
+	return {
+		kind: "schedule",
+		cron,
+		execution: "window",
+		active_run: "coalesce",
+		skip_if_unchanged: true,
+	};
+}
+
+export const BEHAVIOR_CATALOG_TEMPLATES: CatalogEntry[] = [
 	{
 		id: "daily-summary",
 		name: "Daily summary",
@@ -23,7 +33,7 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			"Summarize the most important activity in each window into a short digest.",
 		detail: {
 			slug: "daily-summary",
-			schedule: "0 8 * * *",
+			triggers: [scheduleTrigger("0 8 * * *")],
 			prompt:
 				"Review the activity in this window and produce a concise summary of what matters most. Call out anything notable, surprising, or worth acting on.\n\nReturn a short narrative summary plus a bullet-point list of the most important highlights.\n",
 			tags: ["summary", "digest"],
@@ -37,7 +47,7 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			"Track sentiment over time and surface the drivers behind shifts.",
 		detail: {
 			slug: "sentiment-monitor",
-			schedule: "0 */6 * * *",
+			triggers: [scheduleTrigger("0 */6 * * *")],
 			prompt:
 				"Analyze the overall sentiment of the activity in this window. Classify it, score it, and explain the main drivers behind the sentiment.\n\nReport the sentiment classification (positive, neutral, or negative), a score from -1 (negative) to 1 (positive), and the key factors driving it.\n",
 			classifiers: [
@@ -59,7 +69,7 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			"Watch for anomalies and rising risk, with guidance on when to escalate.",
 		detail: {
 			slug: "risk-alert",
-			schedule: "0 */4 * * *",
+			triggers: [scheduleTrigger("0 */4 * * *")],
 			prompt:
 				"Inspect the activity in this window for anomalies, risks, or anything that deviates from the norm. Assess the risk level and recommend whether action is needed.\n\nReport the overall risk level (low, medium, or high), the specific anomalies or risks detected, and a recommended action.\n",
 			reactions_guidance:
@@ -75,7 +85,7 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			"Pull tasks, follow-ups, and commitments out of the activity in each window.",
 		detail: {
 			slug: "action-items",
-			schedule: "0 18 * * *",
+			triggers: [scheduleTrigger("0 18 * * *")],
 			prompt:
 				"Extract every actionable task, follow-up, or commitment mentioned in this window. Capture who owns it and any due date if stated.\n\nReturn a list of action items, each with a title and — when known — an owner and a due date or timeframe.\n",
 			tags: ["tasks", "action-items"],
@@ -89,8 +99,8 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			"Find entities that are the same real-world thing and fold duplicates into one canonical record.",
 		detail: {
 			slug: "duplicate-merge",
-			schedule: "0 3 * * *",
-			// A cross-entity watcher: its source surfaces people rather than events.
+			triggers: [scheduleTrigger("0 3 * * *")],
+			// A cross-entity Behavior: its source surfaces people rather than events.
 			// The model explains findings; the entity-resolution module owns grouping,
 			// normalization, auto/review policy, suppression, and merge limits.
 			sources: [{ name: "people", query: "@entity:person" }],

@@ -1,5 +1,5 @@
 /**
- * Admin tool surface (manage_*, watcher reads, knowledge reads, notify).
+ * Admin tool surface (manage_*, Behavior reads, knowledge reads, notify).
  *
  * REST + MCP `tools/call` dispatch surface (`POST /api/:orgSlug/:toolName`).
  * Omitted from MCP `tools/list` — agents reach these via `query_sdk` / `run_sdk`
@@ -9,8 +9,16 @@
 
 import type { TSchema } from "@sinclair/typebox";
 import type { Env } from "../../index";
-import { GetContentSchema, GetContentResultSchema, getContent } from "../get_content";
-import { GetWatcherSchema, GetWatcherResultSchema, getWatcher } from "../get_watchers";
+import {
+	GetContentSchema,
+	GetContentResultSchema,
+	getContent,
+} from "../get_content";
+import {
+	GetBehaviorResultSchema,
+	GetBehaviorSchema,
+	getBehavior,
+} from "../get_behavior";
 import type { ToolAnnotations, ToolContext, ToolDefinition } from "../registry";
 import { ManageAgentsSchema, manageAgents } from "./manage_agents";
 import {
@@ -22,7 +30,11 @@ import {
 	ManageAuthProfilesSchema,
 	manageAuthProfiles,
 } from "./manage_auth_profiles";
-import { ManageCatalogResultSchema, ManageCatalogSchema, manageCatalog } from "./manage_catalog";
+import {
+	ManageCatalogResultSchema,
+	ManageCatalogSchema,
+	manageCatalog,
+} from "./manage_catalog";
 import {
 	ManageClassifiersResultSchema,
 	ManageClassifiersSchema,
@@ -33,13 +45,21 @@ import {
 	ManageConnectionsSchema,
 	manageConnections,
 } from "./manage_connections";
-import { ManageEntitySchema, ManageEntityResultSchema, manageEntity } from "./manage_entity";
+import {
+	ManageEntitySchema,
+	ManageEntityResultSchema,
+	manageEntity,
+} from "./manage_entity";
 import {
 	ManageEntitySchemaResultSchema,
 	ManageEntitySchemaSchema,
 	manageEntitySchema,
 } from "./manage_entity_schema";
-import { ManageFeedsResultSchema, ManageFeedsSchema, manageFeeds } from "./manage_feeds";
+import {
+	ManageFeedsResultSchema,
+	ManageFeedsSchema,
+	manageFeeds,
+} from "./manage_feeds";
 import {
 	ManageOperationsResultSchema,
 	ManageOperationsSchema,
@@ -52,9 +72,6 @@ import {
 	manageViewTemplates,
 } from "./manage_view_templates";
 import {
-	ListWatchersSchema,
-	listWatchers,
-	ListWatchersResultSchema,
 	ManageBehaviorsSchema,
 	manageBehaviors,
 	ManageBehaviorsResultSchema,
@@ -78,15 +95,30 @@ interface AdminToolEntry {
 }
 
 const READ_ONLY: ToolAnnotations = { readOnlyHint: true, idempotentHint: true };
-const WRITE: ToolAnnotations = { destructiveHint: false, idempotentHint: false };
+const WRITE: ToolAnnotations = {
+	destructiveHint: false,
+	idempotentHint: false,
+};
 // Tools whose action union includes an irreversible action (delete / remove /
 // clear / cancel). MCP hints are per-tool, not per-action, so the conservative
 // correct answer for any tool that can destroy data is destructiveHint: true.
-const DESTRUCTIVE: ToolAnnotations = { destructiveHint: true, idempotentHint: false };
+const DESTRUCTIVE: ToolAnnotations = {
+	destructiveHint: true,
+	idempotentHint: false,
+};
 
-const WRITE_WITH_TITLE = (title: string): ToolAnnotations => ({ ...WRITE, title });
-const DESTRUCTIVE_WITH_TITLE = (title: string): ToolAnnotations => ({ ...DESTRUCTIVE, title });
-const READ_ONLY_WITH_TITLE = (title: string): ToolAnnotations => ({ ...READ_ONLY, title });
+const WRITE_WITH_TITLE = (title: string): ToolAnnotations => ({
+	...WRITE,
+	title,
+});
+const DESTRUCTIVE_WITH_TITLE = (title: string): ToolAnnotations => ({
+	...DESTRUCTIVE,
+	title,
+});
+const READ_ONLY_WITH_TITLE = (title: string): ToolAnnotations => ({
+	...READ_ONLY,
+	title,
+});
 
 const ENTRIES: AdminToolEntry[] = [
 	{
@@ -118,7 +150,7 @@ const ENTRIES: AdminToolEntry[] = [
 	{
 		name: "manage_catalog",
 		description:
-			"Browse installable connectors, skills, and watcher templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`. Use `list_installed` with `include_catalog: true` to see installed + available with `installed`/`installable` flags. Read-only. SDK alternative: client.catalog.",
+			"Browse installable connectors, skills, and Behavior templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`. Use `list_installed` with `include_catalog: true` to see installed + available with `installed`/`installable` flags. Read-only. SDK alternative: client.catalog.",
 		schema: ManageCatalogSchema,
 		resultSchema: ManageCatalogResultSchema,
 		handler: manageCatalog,
@@ -169,7 +201,12 @@ const ENTRIES: AdminToolEntry[] = [
 		schema: ManageOperationsSchema,
 		resultSchema: ManageOperationsResultSchema,
 		handler: manageOperations,
-		annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true, title: "Manage operations" },
+		annotations: {
+			destructiveHint: false,
+			idempotentHint: false,
+			openWorldHint: true,
+			title: "Manage operations",
+		},
 	},
 	{
 		name: "notify",
@@ -190,28 +227,20 @@ const ENTRIES: AdminToolEntry[] = [
 	{
 		name: "manage_behaviors",
 		description:
-			"Create and manage Behaviors. The current SDK namespace remains client.watchers while the storage engine is migrated.",
+			"Create, list, and manage Behaviors. SDK alternative: client.behaviors.",
 		schema: ManageBehaviorsSchema,
 		resultSchema: ManageBehaviorsResultSchema,
 		handler: manageBehaviors,
 		annotations: DESTRUCTIVE_WITH_TITLE("Manage behaviors"),
 	},
 	{
-		name: "list_watchers",
-		description: "List watchers. SDK alternative: client.watchers.list.",
-		schema: ListWatchersSchema,
-		resultSchema: ListWatchersResultSchema,
-		handler: listWatchers,
-		annotations: READ_ONLY_WITH_TITLE("List watchers"),
-	},
-	{
-		name: "get_watcher",
+		name: "get_behavior",
 		description:
-			"Watcher detail + windows. SDK alternative: client.watchers.get.",
-		schema: GetWatcherSchema,
-		resultSchema: GetWatcherResultSchema,
-		handler: getWatcher,
-		annotations: READ_ONLY_WITH_TITLE("Get watcher"),
+			"Behavior detail + windows. SDK alternative: client.behaviors.get.",
+		schema: GetBehaviorSchema,
+		resultSchema: GetBehaviorResultSchema,
+		handler: getBehavior,
+		annotations: READ_ONLY_WITH_TITLE("Get behavior"),
 	},
 	{
 		name: "read_knowledge",

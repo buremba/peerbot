@@ -1,9 +1,9 @@
 /**
- * Reaction for the `lunch-finalize` watcher.
+ * Reaction for the `lunch-finalize` Behavior.
  *
  * The agent's turn collects orders and picks a restaurant; this reaction then
  * does the Deliveroo work the agent itself can't (executing connector actions
- * needs the watcher's system context):
+ * needs the Behavior's system context):
  *
  *   1. search_restaurants(restaurant) on the office's Deliveroo connection →
  *      the matching restaurant's live URL.
@@ -84,7 +84,7 @@ export default async (
     return;
   }
   const connectionId = Number(connRows[0].id);
-  const watcherSource = {
+  const behaviorSource = {
     watcher_id: ctx.window.watcher_id,
     window_id: ctx.window.id,
   };
@@ -94,7 +94,7 @@ export default async (
     connection_id: connectionId,
     operation_key: "search_restaurants",
     input: { query: restaurant },
-    watcher_source: watcherSource,
+    watcher_source: behaviorSource,
   });
   if (search.status !== "completed") {
     client.log(
@@ -119,7 +119,7 @@ export default async (
     connection_id: connectionId,
     operation_key: "read_menu",
     input: { restaurant_url: pick.url, max_scrolls: 6 },
-    watcher_source: watcherSource,
+    watcher_source: behaviorSource,
   });
   if (menu.status !== "completed") {
     client.log(
@@ -148,7 +148,7 @@ export default async (
   await client.notifications.send({
     title: `${pick.name} — live menu (${items.length} items)`,
     body,
-    watcher_source: watcherSource,
+    watcher_source: behaviorSource,
   });
 
   client.log(

@@ -31,7 +31,7 @@ import type { KeyingConfig } from '../../../types/watchers';
 import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs } from '../manage_behaviors';
 import { normalizeExtractedData, parseJson, requireWatcherAccess } from './shared';
-import { getErrorMessage } from "@lobu/core";
+import { getErrorMessage } from '@lobu/core';
 
 // Initialize AJV for JSON Schema validation
 // removeAdditional: true strips fields like 'embedding' that workers add but aren't in the schema
@@ -74,7 +74,9 @@ export async function handleCompleteWindow(
   delete provenanceMetadata.prompt_rendered;
   const watcherRunIdRaw = args.watcher_run_id ?? provenanceMetadata.watcher_run_id;
   let watcherRunId =
-    watcherRunIdRaw !== undefined && watcherRunIdRaw !== null && Number.isFinite(Number(watcherRunIdRaw))
+    watcherRunIdRaw !== undefined &&
+    watcherRunIdRaw !== null &&
+    Number.isFinite(Number(watcherRunIdRaw))
       ? Number(watcherRunIdRaw)
       : null;
 
@@ -105,9 +107,7 @@ export async function handleCompleteWindow(
   let tokenPayloads: Awaited<ReturnType<typeof verifyWindowToken>>[];
 
   try {
-    tokenPayloads = await Promise.all(
-      windowTokens.map((token) => verifyWindowToken(token, env))
-    );
+    tokenPayloads = await Promise.all(windowTokens.map((token) => verifyWindowToken(token, env)));
   } catch (error) {
     const errorMsg = getErrorMessage(error);
     // Agent-recoverable validation (the message says how) — ToolUserError so
@@ -204,7 +204,7 @@ export async function handleCompleteWindow(
   if (watcherRows.length === 0) {
     throw new Error(
       `Watcher ${watcherId} not found. ` +
-        'It may have been deleted. Use list_watchers to see available watchers.'
+        "It may have been deleted. Use manage_behaviors with action='list' to see available Behaviors."
     );
   }
 
@@ -326,7 +326,9 @@ export async function handleCompleteWindow(
   const batchContentIds = [...new Set(perTokenIds.flat())];
   const summedContentCount = perTokenIds.reduce((sum, ids) => sum + ids.length, 0);
   if (batchContentIds.length !== summedContentCount) {
-    throw new Error('window_tokens contain overlapping content IDs. Pass each read_knowledge page token once.');
+    throw new Error(
+      'window_tokens contain overlapping content IDs. Pass each read_knowledge page token once.'
+    );
   }
 
   const oldestTokenIssuedAt = Math.min(...tokenPayloads.map((token) => token.iat));
@@ -427,7 +429,10 @@ export async function handleCompleteWindow(
             payloadType: 'json_template',
             payloadData: cleanedExtractedData,
             semanticType: 'canvas_state',
-            metadata: { ...canvasPeriodMeta, root_event_id: existingHead.rootEventId },
+            metadata: {
+              ...canvasPeriodMeta,
+              root_event_id: existingHead.rootEventId,
+            },
             runId: watcherRunId,
             occurredAt: window_end,
             createdBy: watcherCreatedBy,
@@ -665,12 +670,14 @@ export async function handleCompleteWindow(
   // so the durable approval (run + event + notify) is never rolled back with the
   // window, and a failure here never undoes the committed sync. Best-effort each.
   for (const d of deferredApprovals) {
-    await d.queue(ctx, env).catch((err) =>
-      logger.error(
-        { err, watcherId, action: d.display.action },
-        '[complete-window] failed to queue deferred entity approval'
-      )
-    );
+    await d
+      .queue(ctx, env)
+      .catch((err) =>
+        logger.error(
+          { err, watcherId, action: d.display.action },
+          '[complete-window] failed to queue deferred entity approval'
+        )
+      );
   }
 
   // Execute the reaction script inline in the isolated reaction sandbox.
@@ -743,7 +750,7 @@ export async function handleCompleteWindow(
           granularity: timeGranularity,
           content_analyzed: batchContentIds.length,
         },
-        watcher: {
+        behavior: {
           id: Number(result.watcher_id),
           slug: (watcherMeta[0]?.slug ?? `watcher-${result.watcher_id}`) as string,
           name: (watcherMeta[0]?.name ?? `watcher-${result.watcher_id}`) as string,
@@ -773,7 +780,11 @@ export async function handleCompleteWindow(
         if (execResult.success) {
           reactionStatus = 'success';
           logger.info(
-            { watcher_id: result.watcher_id, window_id: result.window_id, attempt },
+            {
+              watcher_id: result.watcher_id,
+              window_id: result.window_id,
+              attempt,
+            },
             'Reaction script executed successfully (inline)'
           );
           break;
@@ -800,5 +811,9 @@ export async function handleCompleteWindow(
     logger.warn({ err }, '[manage_behaviors] Failed to execute reaction script');
   }
 
-  return { ...result, reaction_status: reactionStatus, reaction_error: reactionError };
+  return {
+    ...result,
+    reaction_status: reactionStatus,
+    reaction_error: reactionError,
+  };
 }

@@ -13,9 +13,12 @@ import {
 } from '../../../utils/organization-access';
 import { validateTemplate } from '../../../watchers/renderer';
 import { queryProjectsIdColumn } from '../../../utils/execute-data-sources';
-import { validateWatcherSourceRef, resolveWatcherSourcesForSave } from '../../../watchers/source-refs';
+import {
+  validateWatcherSourceRef,
+  resolveWatcherSourcesForSave,
+} from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
-import { normalizeWatcherTags } from '@lobu/core/contracts/tools/manage-behaviors';
+import { normalizeBehaviorTags } from '@lobu/core/contracts/tools/manage-behaviors';
 
 // ============================================
 // Types
@@ -72,9 +75,7 @@ function coerceJson(
       if (opts.requireObject) throw new Error(opts.requireObject.parseError);
       if (opts.onError === 'keep') return value;
       if (opts.onError === 'throw') {
-        throw new Error(
-          `${opts.label} must be valid JSON: ${getErrorMessage(error)}`
-        );
+        throw new Error(`${opts.label} must be valid JSON: ${getErrorMessage(error)}`);
       }
       if (opts.onError) return opts.onError.fallback;
       throw error;
@@ -108,7 +109,8 @@ export function normalizeExtractedData(value: unknown): Record<string, unknown> 
   return coerceJson(value, {
     requireObject: {
       parseError: 'extracted_data must be a valid JSON object. Received an invalid JSON string.',
-      shapeError: 'extracted_data must be a JSON object matching the watcher\'s extraction contract.',
+      shapeError:
+        "extracted_data must be a JSON object matching the watcher's extraction contract.",
     },
   });
 }
@@ -129,7 +131,7 @@ export function toJsonParam(sql: DbClient, value: unknown): unknown {
 export function toTextArrayParam(values: string[]): string {
   // Same trim/drop-empty/dedupe as the review's proposedAfter (one core helper),
   // so displayed tags == stored tags.
-  const arr = normalizeWatcherTags(values);
+  const arr = normalizeBehaviorTags(values);
   if (arr.length === 0) return '{}';
   return (
     '{' + arr.map((v) => '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"').join(',') + '}'
@@ -138,7 +140,11 @@ export function toTextArrayParam(values: string[]): string {
 
 export function summarizeResults(results: WatcherOperationResult[]) {
   const successful = results.filter((r) => r.success).length;
-  return { total: results.length, successful, failed: results.length - successful };
+  return {
+    total: results.length,
+    successful,
+    failed: results.length - successful,
+  };
 }
 
 // ============================================
@@ -313,7 +319,7 @@ export async function requireWatcherAccess(
 // ============================================
 
 import { entityLinkMatchSql } from '../../../utils/content-search';
-import { getErrorMessage } from "@lobu/core";
+import { getErrorMessage } from '@lobu/core';
 
 /**
  * Batch count unanalyzed content for multiple watchers in a single query.
@@ -332,7 +338,7 @@ export async function batchCountUnanalyzedContent(
 
   // The "total content" count joins current_event_records on the entity link
   // for every watcher in the result. On high-volume entities this scans
-  // 100K+ rows per watcher and dominates list_watchers latency (8-12s on
+  // 100K+ rows per Behavior and dominates list latency (8-12s on
   // prod for orgs with even a single Reddit-Digest-class watcher).
   //
   // Cap the per-watcher total at TOTAL_CAP rows. The badge derived from

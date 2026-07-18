@@ -632,7 +632,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
     ...(watcher.name ? { name: watcher.name } : {}),
     ...(watcher.description ? { description: watcher.description } : {}),
     ...(schedule ? { schedule } : {}),
-    ...(triggers ? { triggers } : {}),
+    triggers: triggers ?? [],
     ...(sources ? { sources } : {}),
     ...(watcher.notification?.channel
       ? { notificationChannel: watcher.notification.channel }

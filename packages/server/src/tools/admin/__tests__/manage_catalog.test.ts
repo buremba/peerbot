@@ -33,7 +33,7 @@ describe("manage_catalog list_installed", () => {
 		const result = await manageCatalog(
 			{ action: "list_installed", kinds: ["skills"] },
 			{} as never,
-			ctx,
+			ctx
 		);
 		expect(result).toEqual({
 			error: "`agent_id` is required for agent-scoped installed kinds.",
@@ -46,22 +46,22 @@ describe("manage_catalog list_installed", () => {
 			{
 				action: "list_installed",
 				agent_id: "agent-1",
-				kinds: ["watchers"],
+				kinds: ["behaviors"],
 			},
 			{} as never,
-			ctx,
+			ctx
 		);
 
 		expect(installed.listOrgInstalled).toHaveBeenCalledWith(
 			"org-1",
-			["watchers"],
+			["behaviors"],
 			expect.objectContaining({
 				organizationId: "org-1",
 				userId: "user-1",
 				memberRole: "owner",
 				isAuthenticated: true,
 			}),
-			{ includeCatalog: false },
+			{ includeCatalog: false }
 		);
 		expect(installed.listAgentInstalled).not.toHaveBeenCalled();
 		expect(result).toEqual({
@@ -78,14 +78,14 @@ describe("manage_catalog list_installed", () => {
 				include_catalog: true,
 			},
 			{} as never,
-			ctx,
+			ctx
 		);
 
 		expect(installed.listOrgInstalled).toHaveBeenCalledWith(
 			"org-1",
 			["connectors"],
 			expect.any(Object),
-			{ includeCatalog: true },
+			{ includeCatalog: true }
 		);
 	});
 });

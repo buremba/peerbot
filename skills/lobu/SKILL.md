@@ -1,13 +1,13 @@
 ---
 name: lobu
-description: Work with an existing Lobu project (run, validate, evaluate, connect) and with Lobu memory from your coding agent. Covers MCP client setup, knowledge search/save, watchers, and browser-authenticated connectors. To scaffold a NEW project run "npx @lobu/cli@latest init"; the AGENTS.md it generates is the config-API guide.
+description: Work with an existing Lobu project (run, validate, evaluate, connect) and with Lobu memory from your coding agent. Covers MCP client setup, knowledge search/save, Behaviors, and browser-authenticated connectors. To scaffold a NEW project run "npx @lobu/cli@latest init"; the AGENTS.md it generates is the config-API guide.
 ---
 
 # Lobu
 
-Use this skill when working with an existing Lobu project — running, validating, evaluating, or connecting one — or with Lobu memory from a coding agent: MCP client setup, knowledge search/save workflows, watchers, and browser-authenticated connectors.
+Use this skill when working with an existing Lobu project — running, validating, evaluating, or connecting one — or with Lobu memory from a coding agent: MCP client setup, knowledge search/save workflows, Behaviors, and browser-authenticated connectors.
 
-To scaffold a NEW project, run `npx @lobu/cli@latest init`. The `AGENTS.md` it writes into the project is the source of truth for the config API (the `define*` helpers, connectors, auth, watchers, memory) — this skill does not duplicate it. For an existing project, jump to "Core Model" + the relevant reference section below.
+To scaffold a NEW project, run `npx @lobu/cli@latest init`. The `AGENTS.md` it writes into the project is the source of truth for the config API (the `define*` helpers, connectors, auth, Behaviors, memory) — this skill does not duplicate it. For an existing project, jump to "Core Model" + the relevant reference section below.
 
 ## Core Model
 

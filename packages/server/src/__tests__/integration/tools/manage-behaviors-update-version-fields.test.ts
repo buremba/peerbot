@@ -50,10 +50,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 	let agentId: string;
 	let watcherId: string;
 
-	const baseCtx = (
-		orgIdValue: string,
-		userId: string,
-	): AuthContext => ({
+	const baseCtx = (orgIdValue: string, userId: string): AuthContext => ({
 		organizationId: orgIdValue,
 		tokenOrganizationId: orgIdValue,
 		userId,
@@ -98,7 +95,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				agent_id: agentId,
 			},
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		)) as { watcher_id?: string };
 		watcherId = created.watcher_id!;
 	});
@@ -115,8 +112,8 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				"manage_behaviors",
 				{ action: "update", watcher_id: watcherId, name: "Renamed" },
 				TEST_ENV,
-				ownerCtx,
-			),
+				ownerCtx
+			)
 		).rejects.toThrow(/create_version/i);
 		// Name unchanged — no silent partial apply.
 		expect(await fetchWatcherName()).toBe("Original");
@@ -128,8 +125,8 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				"manage_behaviors",
 				{ action: "update", watcher_id: watcherId, description: "New desc" },
 				TEST_ENV,
-				ownerCtx,
-			),
+				ownerCtx
+			)
 		).rejects.toThrow(/create_version/i);
 	});
 
@@ -139,8 +136,8 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				"manage_behaviors",
 				{ action: "update", watcher_id: watcherId, prompt: "New prompt" },
 				TEST_ENV,
-				ownerCtx,
-			),
+				ownerCtx
+			)
 		).rejects.toThrow(/create_version/i);
 	});
 
@@ -154,13 +151,13 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 					sources: [{ name: "content", query: "SELECT 1" }],
 				},
 				TEST_ENV,
-				ownerCtx,
-			),
+				ownerCtx
+			)
 		).rejects.toThrow(/create_version/i);
 	});
 
 	it("rejects `update` with name even when a real patch field is also present (no silent drop)", async () => {
-		// name + schedule: schedule is valid, but name must NOT be silently
+		// name + triggers: triggers are valid, but name must NOT be silently
 		// dropped — the whole call must reject so the caller learns name needs
 		// create_version.
 		await expect(
@@ -170,24 +167,28 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 					action: "update",
 					watcher_id: watcherId,
 					name: "Should Not Apply",
-					schedule: "0 9 * * *",
+					triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 				},
 				TEST_ENV,
-				ownerCtx,
-			),
+				ownerCtx
+			)
 		).rejects.toThrow(/create_version/i);
 		expect(await fetchWatcherName()).toBe("Original");
 	});
 
-	it("still applies a legitimate update field (schedule) without name", async () => {
+	it("still applies legitimate triggers without name", async () => {
 		// Control: the reject path must not break real updates.
 		const res = (await executeTool(
 			"manage_behaviors",
-			{ action: "update", watcher_id: watcherId, schedule: "0 9 * * *" },
+			{
+				action: "update",
+				watcher_id: watcherId,
+				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+			},
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		)) as { updated_fields?: string[] };
-		expect(res.updated_fields).toContain("schedule");
+		expect(res.updated_fields).toContain("triggers");
 	});
 
 	it("create_version with a new name cascades to the watchers row", async () => {
@@ -201,7 +202,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				set_as_current: true,
 			},
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		);
 		expect(await fetchWatcherName()).toBe("Renamed Via Version");
 	});

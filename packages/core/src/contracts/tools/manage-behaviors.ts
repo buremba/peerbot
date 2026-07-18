@@ -31,7 +31,7 @@ export const BehaviorEventTriggerSchema = Type.Object(
     execution: Type.Optional(
       Type.Union([Type.Literal("turn"), Type.Literal("window")], {
         description:
-          '"turn" renders the incoming event as the agent input (chat/listen); "window" runs the existing watcher analysis flow.',
+          '"turn" renders the incoming event as the agent input (chat/listen); "window" runs the Behavior analysis flow.',
         default: "turn",
       })
     ),
@@ -95,7 +95,7 @@ export const BehaviorTriggerSchema = Type.Union([
 ]);
 export type BehaviorTrigger = Static<typeof BehaviorTriggerSchema>;
 
-export const WatcherSourceSchema = Type.Object({
+export const BehaviorSourceSchema = Type.Object({
   name: Type.String(),
   query: Type.String(),
   // When true, this SQL source is CONTEXT (like an @entity ref), not event
@@ -107,9 +107,9 @@ export const WatcherSourceSchema = Type.Object({
   // content and its `id` must be an `events.id`.
   context: Type.Optional(Type.Boolean()),
 });
-export type WatcherSource = Static<typeof WatcherSourceSchema>;
+export type BehaviorSource = Static<typeof BehaviorSourceSchema>;
 
-export const WatcherExecutionConfigSchema = Type.Object(
+export const BehaviorExecutionConfigSchema = Type.Object(
   {
     timeout_seconds: Type.Optional(
       Type.Integer({
@@ -159,16 +159,19 @@ export const WatcherExecutionConfigSchema = Type.Object(
         minimum: 0,
         maximum: 5,
         description:
-          "How many extra times to re-dispatch a server-side watcher run that finished WITHOUT calling complete_window before failing it. 0 disables; omitted = global default.",
+          "How many extra times to re-dispatch a server-side Behavior run that finished WITHOUT calling complete_window before failing it. 0 disables; omitted = global default.",
       })
     ),
   },
   {
     additionalProperties: false,
     description:
-      "[create/update] Per-watcher execution settings: device-worker CLI flags plus the server-side finalize-nudge budget. Omitted fields fall back to dispatcher/CLI/global defaults; pass null to clear.",
+      "[create/update] Per-Behavior execution settings: device-worker CLI flags plus the server-side finalize-nudge budget. Omitted fields fall back to dispatcher/CLI/global defaults; pass null to clear.",
   }
 );
+export type BehaviorExecutionConfig = Static<
+  typeof BehaviorExecutionConfigSchema
+>;
 
 // ============================================
 // Typebox Schema (Flattened for MCP)
@@ -190,346 +193,349 @@ export const SourceSchema = Type.Object({
 });
 
 // Flattened schema for MCP compatibility (MCP doesn't support top-level unions)
-export const ManageBehaviorsSchema = Type.Object({
-  action: Type.Union(
-    [
-      Type.Literal("create", {
-        description: "Create a watcher with prompt + sources.",
-      }),
-      Type.Literal("update", { description: "Patch watcher config." }),
-      Type.Literal("create_version", {
-        description: "Create a new versioned watcher config.",
-      }),
-      Type.Literal("complete_window", {
-        description: "Submit a watcher window result.",
-      }),
-      Type.Literal("trigger", { description: "Manually fire a watcher run." }),
-      Type.Literal("delete", { description: "Bulk-delete watchers." }),
-      Type.Literal("set_reaction_script", {
-        description: "Attach/remove a TypeScript reaction script.",
-      }),
-      Type.Literal("get_versions", {
-        description: "List a watcher\u2019s version history.",
-      }),
-      Type.Literal("get_version_details", {
-        description: "Fetch full version config.",
-      }),
-      Type.Literal("get_component_reference", {
-        description: "Static component/data-type documentation.",
-      }),
-      Type.Literal("submit_feedback", {
-        description: "Submit per-field corrections on a window.",
-      }),
-      Type.Literal("get_feedback", {
-        description: "Retrieve feedback for a watcher.",
-      }),
-      Type.Literal("list_promoted", {
-        description: "List entities promoted by a watcher.",
-      }),
-      Type.Literal("create_from_version", {
-        description: "Spin up watchers per entity from a template version.",
-      }),
-    ],
-    { description: "Action to perform" }
-  ),
-
-  // Watcher identity
-  watcher_id: Type.Optional(
-    Type.String({
-      description:
-        "[update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Watcher ID (numeric string)",
-    })
-  ),
-  watcher_ids: Type.Optional(
-    Type.Array(Type.String(), {
-      description: "[delete] Array of watcher IDs (numeric strings)",
-    })
-  ),
-
-  // Fields for action="create"
-  slug: Type.Optional(
-    Type.String({ description: "[create] Unique watcher identifier" })
-  ),
-  name: Type.Optional(
-    Type.String({ description: "[create/create_version] Display name" })
-  ),
-  description: Type.Optional(
-    Type.String({ description: "[create/create_version] Watcher description" })
-  ),
-  entity_id: Type.Optional(
-    Type.Number({
-      description:
-        "Entity ID. Optional for create — provide it to attach the watcher to an entity; omit it for an org-scoped/global watcher. Optional for list.",
-    })
-  ),
-  entity_ids: Type.Optional(
-    Type.Array(Type.Number(), {
-      description:
-        "[create_from_version] Array of entity IDs to create individual watchers for.",
-    })
-  ),
-  version_id: Type.Optional(
-    Type.Number({
-      description:
-        "[create_from_version] Source version ID to use as template for new watchers.",
-    })
-  ),
-  name_pattern: Type.Optional(
-    Type.String({
-      description:
-        '[create_from_version] Name pattern for created watchers. Use {{entity_name}} for substitution. Default: "{version_name}: {entity_name}".',
-    })
-  ),
-
-  // Watcher config fields (create/create_version/update)
-  prompt: Type.Optional(
-    Type.String({
-      description:
-        "[create/create_version] LLM prompt template (Handlebars). Variables: {{entities}}, {{content}}, {{sources.name}}, {{data.name}}, {{#each entities}}{{name}}{{/each}}.",
-    })
-  ),
-  sources: Type.Optional(
-    Type.Array(SourceSchema, {
-      description:
-        "[create/create_version] Array of SQL data sources. Each source is { name, query }. Sources are version-owned — to change them on an existing watcher, publish a new version with action: 'create_version'.",
-    })
-  ),
-  keying_config: Type.Optional(
-    Type.Any({
-      description:
-        "[create/create_version] Config for stable key generation across windows.",
-    })
-  ),
-  classifiers: Type.Optional(
-    Type.Any({
-      description:
-        "[create/create_version] Classifier definitions for extraction.",
-    })
-  ),
-  schedule: Type.Optional(
-    Type.Union([Type.String(), Type.Null()], {
-      description:
-        '[create/update/create_version] Cron expression for watcher schedule (e.g. "0 * * * *" for hourly, "0 9 * * *" for daily at 9am). Null clears the schedule (an unscheduled/manual watcher).',
-    })
-  ),
-  triggers: Type.Optional(
-    Type.Array(BehaviorTriggerSchema, {
-      minItems: 0,
-      maxItems: 16,
-      description:
-        "[create/update/create_version] Canonical Behavior activations. Schedule is retained as a compatibility input but is derived from the schedule trigger when triggers are provided.",
-    })
-  ),
-  timezone: Type.Optional(
-    Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()], {
-      description:
-        "[create/update/create_version] IANA timezone the schedule is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Null clears it (server time / UTC).",
-    })
-  ),
-  agent_id: Type.Optional(
-    Type.String({
-      description: "[create/update] Agent ID that owns/executes this watcher.",
-    })
-  ),
-  scheduler_client_id: Type.Optional(
-    Type.Union([Type.String(), Type.Null()], {
-      description:
-        "[create/update/create_version] Optional MCP client ID that should auto-run this watcher. Null clears it.",
-    })
-  ),
-  device_worker_id: Type.Optional(
-    Type.Union([Type.String(), Type.Null()], {
-      description:
-        "[create/update] Optional device worker UUID to pin this watcher to (when its inputs live on that device). Null clears the pin.",
-    })
-  ),
-  agent_kind: Type.Optional(
-    Type.Union([Type.String(), Type.Null()], {
-      description:
-        '[create/update] Optional agent kind override for this watcher (e.g. "background", "notifier"). Null clears the override.',
-    })
-  ),
-  notification_channel: Type.Optional(
-    Type.Union(
+export const ManageBehaviorsSchema = Type.Object(
+  {
+    action: Type.Union(
       [
-        Type.Literal("canvas"),
-        Type.Literal("notification"),
-        Type.Literal("both"),
-      ],
-      {
-        description:
-          '[create/update] Where firings surface: "canvas" (default), "notification" (OS notification), or "both".',
-      }
-    )
-  ),
-  notification_priority: Type.Optional(
-    Type.Union(
-      [Type.Literal("low"), Type.Literal("normal"), Type.Literal("high")],
-      {
-        description:
-          '[create/update] Priority class used by the dispatcher interrupt budget. Default "normal".',
-      }
-    )
-  ),
-  min_cooldown_seconds: Type.Optional(
-    Type.Number({
-      description:
-        "[create/update] Minimum seconds between two firings of this watcher (0 = no cooldown).",
-      minimum: 0,
-    })
-  ),
-  model_config: Type.Optional(
-    Type.Any({ description: "[create/update] AI model configuration" })
-  ),
-  // Union with Null so `update` can clear a previously-saved config back to
-  // NULL/defaults — omitted = unchanged, null = clear, object = replace. The
-  // object shape lives in WatcherExecutionConfigSchema; the role-policy gate
-  // (assertValidExecutionConfig) stays in the CRUD handlers.
-  execution_config: Type.Optional(
-    Type.Union([Type.Null(), WatcherExecutionConfigSchema])
-  ),
-  tags: Type.Optional(
-    Type.Array(Type.String(), { description: "[create] Tags for filtering" })
-  ),
-
-  // Version management
-  version: Type.Optional(
-    Type.Number({ description: "[upgrade/get_version_details] Version number" })
-  ),
-  target_version: Type.Optional(
-    Type.Number({ description: "[upgrade] Version number to upgrade to" })
-  ),
-  change_notes: Type.Optional(
-    Type.String({
-      description: "[create_version] Change notes for the new version",
-    })
-  ),
-  set_as_current: Type.Optional(
-    Type.Boolean({
-      description: "[create_version] Set as current version (default: true)",
-    })
-  ),
-  reactions_guidance: Type.Optional(
-    Type.String({
-      description:
-        "[create/create_version] Guidance text for LLM agents on what reactions to take.",
-    })
-  ),
-
-  // Fields for action="complete_window"
-  extracted_data: Type.Optional(
-    Type.Object(
-      {},
-      {
-        additionalProperties: true,
-        description:
-          "[complete_window] Required. LLM analysis results. Must match the watcher's extraction contract (derived from its entity type).",
-      }
-    )
-  ),
-  replace_existing: Type.Optional(
-    Type.Boolean({
-      description:
-        "[complete_window] Replace existing window for same period (default: false).",
-    })
-  ),
-  window_token: Type.Optional(
-    Type.String({
-      description:
-        "[complete_window] JWT from read_knowledge(watcher_id, since, until). Pass this or window_tokens.",
-    })
-  ),
-  window_tokens: Type.Optional(
-    Type.Array(Type.String(), {
-      description:
-        "[complete_window] Multiple page JWTs from read_knowledge for the same watcher window. Content IDs are unioned and linked atomically.",
-    })
-  ),
-  client_id: Type.Optional(
-    Type.String({
-      description:
-        "[complete_window] Optional client identifier for execution provenance. Defaults to authenticated MCP client when available.",
-    })
-  ),
-  model: Type.Optional(
-    Type.String({
-      description:
-        "[complete_window] Optional model name used to produce the window result.",
-    })
-  ),
-  run_metadata: Type.Optional(
-    Type.Any({
-      description:
-        "[complete_window] Optional structured execution metadata for provenance (provider, session id, parameters, etc.).",
-    })
-  ),
-  watcher_run_id: Type.Optional(
-    Type.Number({
-      description:
-        "[complete_window] Optional watcher run id for run completion/provenance. Workers should pass the Watcher run ID from the dispatch prompt.",
-    })
-  ),
-  template_version_id: Type.Optional(
-    Type.Number({
-      description:
-        "[complete_window] Pin to a specific watcher_versions.id. Workers receive this from the run dispatch payload (snapshotted from current_version_id at run-creation) and pass it back here so validation uses the same version that produced the extraction. Defaults to the run row's snapshot if available, else the watcher's current_version_id.",
-    })
-  ),
-
-  // Fields for action="create" / "set_reaction_script"
-  reaction_script: Type.Optional(
-    Type.String({
-      description:
-        "[create/set_reaction_script] TypeScript source for an automated reaction. On create, it is compiled before the watcher and its reaction fields are stored in one transaction. Pass an empty string to set_reaction_script to remove an existing script.",
-    })
-  ),
-
-  // Fields for action="submit_feedback" / "get_feedback"
-  window_id: Type.Optional(
-    Type.Number({
-      description:
-        "[submit_feedback] Required. [get_feedback] Optional filter. Window ID to attach feedback to.",
-    })
-  ),
-  corrections: Type.Optional(
-    Type.Array(
-      Type.Object({
-        field_path: Type.String({
-          description:
-            'Dot/bracket path into extracted_data, e.g. "problems[1].severity" or "problems[2]" for an array item.',
+        Type.Literal("create", {
+          description: "Create a Behavior with prompt + sources.",
         }),
-        mutation: Type.Optional(
-          Type.Union(
-            [Type.Literal("set"), Type.Literal("remove"), Type.Literal("add")],
-            {
-              description:
-                'Default "set". Use "remove" to drop an array item; "add" to append one.',
-            }
-          )
-        ),
-        value: Type.Optional(
-          Type.Any({
-            description:
-              "New value for set/add. Omitted for remove. Any JSON type (string/number/object/array).",
-          })
-        ),
-        note: Type.Optional(
-          Type.String({ description: "Optional per-field explanation." })
-        ),
-      }),
-      {
+        Type.Literal("list", { description: "List Behaviors." }),
+        Type.Literal("update", { description: "Patch Behavior config." }),
+        Type.Literal("create_version", {
+          description: "Create a new versioned Behavior config.",
+        }),
+        Type.Literal("complete_window", {
+          description: "Submit a Behavior window result.",
+        }),
+        Type.Literal("trigger", {
+          description: "Manually fire a Behavior run.",
+        }),
+        Type.Literal("delete", { description: "Bulk-delete Behaviors." }),
+        Type.Literal("set_reaction_script", {
+          description: "Attach/remove a TypeScript reaction script.",
+        }),
+        Type.Literal("get_versions", {
+          description: "List a Behavior\u2019s version history.",
+        }),
+        Type.Literal("get_version_details", {
+          description: "Fetch full version config.",
+        }),
+        Type.Literal("get_component_reference", {
+          description: "Static component/data-type documentation.",
+        }),
+        Type.Literal("submit_feedback", {
+          description: "Submit per-field corrections on a window.",
+        }),
+        Type.Literal("get_feedback", {
+          description: "Retrieve feedback for a Behavior.",
+        }),
+        Type.Literal("list_promoted", {
+          description: "List entities promoted by a Behavior.",
+        }),
+        Type.Literal("create_from_version", {
+          description: "Create Behaviors per entity from a template version.",
+        }),
+      ],
+      { description: "Action to perform" }
+    ),
+
+    // Behavior identity (the persisted identifier is watcher_id)
+    watcher_id: Type.Optional(
+      Type.String({
         description:
-          "[submit_feedback] One entry per corrected field. Each row is stored independently so future corrections can supersede earlier ones per field.",
-      }
-    )
-  ),
-  limit: Type.Optional(
-    Type.Number({
-      description:
-        "[get_feedback] Max feedback records to return (default: 50).",
-    })
-  ),
-});
+          "[update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Behavior ID (numeric string)",
+      })
+    ),
+    watcher_ids: Type.Optional(
+      Type.Array(Type.String(), {
+        description: "[delete] Array of Behavior IDs (numeric strings)",
+      })
+    ),
+
+    // Fields for action="create"
+    slug: Type.Optional(
+      Type.String({ description: "[create] Unique Behavior identifier" })
+    ),
+    name: Type.Optional(
+      Type.String({ description: "[create/create_version] Display name" })
+    ),
+    description: Type.Optional(
+      Type.String({
+        description: "[create/create_version] Behavior description",
+      })
+    ),
+    entity_id: Type.Optional(
+      Type.Number({
+        description:
+          "Entity ID. Optional for create — provide it to attach the Behavior to an entity; omit it for an org-scoped/global Behavior. Optional for list.",
+      })
+    ),
+    entity_ids: Type.Optional(
+      Type.Array(Type.Number(), {
+        description:
+          "[create_from_version] Array of entity IDs to create individual Behaviors for.",
+      })
+    ),
+    version_id: Type.Optional(
+      Type.Number({
+        description:
+          "[create_from_version] Source version ID to use as template for new Behaviors.",
+      })
+    ),
+    name_pattern: Type.Optional(
+      Type.String({
+        description:
+          '[create_from_version] Name pattern for created Behaviors. Use {{entity_name}} for substitution. Default: "{version_name}: {entity_name}".',
+      })
+    ),
+
+    // Behavior config fields (create/create_version/update)
+    prompt: Type.Optional(
+      Type.String({
+        description:
+          "[create/create_version] LLM prompt template (Handlebars). Variables: {{entities}}, {{content}}, {{sources.name}}, {{data.name}}, {{#each entities}}{{name}}{{/each}}.",
+      })
+    ),
+    sources: Type.Optional(
+      Type.Array(SourceSchema, {
+        description:
+          "[create/create_version] Array of SQL data sources. Each source is { name, query }. Sources are version-owned — to change them on an existing Behavior, publish a new version with action: 'create_version'.",
+      })
+    ),
+    keying_config: Type.Optional(
+      Type.Any({
+        description:
+          "[create/create_version] Config for stable key generation across windows.",
+      })
+    ),
+    classifiers: Type.Optional(
+      Type.Any({
+        description:
+          "[create/create_version] Classifier definitions for extraction.",
+      })
+    ),
+    triggers: Type.Optional(
+      Type.Array(BehaviorTriggerSchema, {
+        minItems: 0,
+        maxItems: 16,
+        description:
+          "[create/update/create_version] Canonical Behavior activations. Use a schedule trigger for cadence and timezone.",
+      })
+    ),
+    agent_id: Type.Optional(
+      Type.String({
+        description:
+          "[create/update] Agent ID that owns/executes this Behavior.",
+      })
+    ),
+    scheduler_client_id: Type.Optional(
+      Type.Union([Type.String(), Type.Null()], {
+        description:
+          "[create/update/create_version] Optional MCP client ID that should auto-run this Behavior. Null clears it.",
+      })
+    ),
+    device_worker_id: Type.Optional(
+      Type.Union([Type.String(), Type.Null()], {
+        description:
+          "[create/update] Optional device worker UUID to pin this Behavior to (when its inputs live on that device). Null clears the pin.",
+      })
+    ),
+    agent_kind: Type.Optional(
+      Type.Union([Type.String(), Type.Null()], {
+        description:
+          '[create/update] Optional agent kind override for this Behavior (e.g. "background", "notifier"). Null clears the override.',
+      })
+    ),
+    notification_channel: Type.Optional(
+      Type.Union(
+        [
+          Type.Literal("canvas"),
+          Type.Literal("notification"),
+          Type.Literal("both"),
+        ],
+        {
+          description:
+            '[create/update] Where firings surface: "canvas" (default), "notification" (OS notification), or "both".',
+        }
+      )
+    ),
+    notification_priority: Type.Optional(
+      Type.Union(
+        [Type.Literal("low"), Type.Literal("normal"), Type.Literal("high")],
+        {
+          description:
+            '[create/update] Priority class used by the dispatcher interrupt budget. Default "normal".',
+        }
+      )
+    ),
+    min_cooldown_seconds: Type.Optional(
+      Type.Number({
+        description:
+          "[create/update] Minimum seconds between two firings of this Behavior (0 = no cooldown).",
+        minimum: 0,
+      })
+    ),
+    model_config: Type.Optional(
+      Type.Any({ description: "[create/update] AI model configuration" })
+    ),
+    // Union with Null so `update` can clear a previously-saved config back to
+    // NULL/defaults — omitted = unchanged, null = clear, object = replace. The
+    // object shape lives in BehaviorExecutionConfigSchema; the role-policy gate
+    // (assertValidExecutionConfig) stays in the CRUD handlers.
+    execution_config: Type.Optional(
+      Type.Union([Type.Null(), BehaviorExecutionConfigSchema])
+    ),
+    tags: Type.Optional(
+      Type.Array(Type.String(), { description: "[create] Tags for filtering" })
+    ),
+
+    // Version management
+    version: Type.Optional(
+      Type.Number({
+        description: "[upgrade/get_version_details] Version number",
+      })
+    ),
+    target_version: Type.Optional(
+      Type.Number({ description: "[upgrade] Version number to upgrade to" })
+    ),
+    change_notes: Type.Optional(
+      Type.String({
+        description: "[create_version] Change notes for the new version",
+      })
+    ),
+    set_as_current: Type.Optional(
+      Type.Boolean({
+        description: "[create_version] Set as current version (default: true)",
+      })
+    ),
+    reactions_guidance: Type.Optional(
+      Type.String({
+        description:
+          "[create/create_version] Guidance text for LLM agents on what reactions to take.",
+      })
+    ),
+
+    // Fields for action="complete_window"
+    extracted_data: Type.Optional(
+      Type.Object(
+        {},
+        {
+          additionalProperties: true,
+          description:
+            "[complete_window] Required. LLM analysis results. Must match the Behavior's extraction contract (derived from its entity type).",
+        }
+      )
+    ),
+    replace_existing: Type.Optional(
+      Type.Boolean({
+        description:
+          "[complete_window] Replace existing window for same period (default: false).",
+      })
+    ),
+    window_token: Type.Optional(
+      Type.String({
+        description:
+          "[complete_window] JWT from read_knowledge(watcher_id, since, until). Pass this or window_tokens.",
+      })
+    ),
+    window_tokens: Type.Optional(
+      Type.Array(Type.String(), {
+        description:
+          "[complete_window] Multiple page JWTs from read_knowledge for the same Behavior window. Content IDs are unioned and linked atomically.",
+      })
+    ),
+    client_id: Type.Optional(
+      Type.String({
+        description:
+          "[complete_window] Optional client identifier for execution provenance. Defaults to authenticated MCP client when available.",
+      })
+    ),
+    model: Type.Optional(
+      Type.String({
+        description:
+          "[complete_window] Optional model name used to produce the window result.",
+      })
+    ),
+    run_metadata: Type.Optional(
+      Type.Any({
+        description:
+          "[complete_window] Optional structured execution metadata for provenance (provider, session id, parameters, etc.).",
+      })
+    ),
+    watcher_run_id: Type.Optional(
+      Type.Number({
+        description:
+          "[complete_window] Optional Behavior run id for completion/provenance. Workers should pass the run ID from the dispatch prompt.",
+      })
+    ),
+    template_version_id: Type.Optional(
+      Type.Number({
+        description:
+          "[complete_window] Pin to a specific persisted Behavior version. Workers receive this from the run dispatch payload and pass it back so validation uses the same version that produced the extraction. Defaults to the run row's snapshot if available, else the Behavior's current version.",
+      })
+    ),
+
+    // Fields for action="create" / "set_reaction_script"
+    reaction_script: Type.Optional(
+      Type.String({
+        description:
+          "[create/set_reaction_script] TypeScript source for an automated reaction. On create, it is compiled before the Behavior and its reaction fields are stored in one transaction. Pass an empty string to set_reaction_script to remove an existing script.",
+      })
+    ),
+
+    // Fields for action="submit_feedback" / "get_feedback"
+    window_id: Type.Optional(
+      Type.Number({
+        description:
+          "[submit_feedback] Required. [get_feedback] Optional filter. Window ID to attach feedback to.",
+      })
+    ),
+    corrections: Type.Optional(
+      Type.Array(
+        Type.Object({
+          field_path: Type.String({
+            description:
+              'Dot/bracket path into extracted_data, e.g. "problems[1].severity" or "problems[2]" for an array item.',
+          }),
+          mutation: Type.Optional(
+            Type.Union(
+              [
+                Type.Literal("set"),
+                Type.Literal("remove"),
+                Type.Literal("add"),
+              ],
+              {
+                description:
+                  'Default "set". Use "remove" to drop an array item; "add" to append one.',
+              }
+            )
+          ),
+          value: Type.Optional(
+            Type.Any({
+              description:
+                "New value for set/add. Omitted for remove. Any JSON type (string/number/object/array).",
+            })
+          ),
+          note: Type.Optional(
+            Type.String({ description: "Optional per-field explanation." })
+          ),
+        }),
+        {
+          description:
+            "[submit_feedback] One entry per corrected field. Each row is stored independently so future corrections can supersede earlier ones per field.",
+        }
+      )
+    ),
+    limit: Type.Optional(
+      Type.Number({
+        description:
+          "[get_feedback] Max feedback records to return (default: 50).",
+      })
+    ),
+  },
+  { additionalProperties: false }
+);
 
 // ============================================
 // Type Definitions
@@ -541,20 +547,18 @@ export type ManageBehaviorsArgs = Static<typeof ManageBehaviorsSchema>;
  * The watcher columns a `manage_behaviors` UPDATE persists — a type-only `Pick`
  * of {@link ManageBehaviorsArgs} so the field TYPES are reused from the single
  * source (no re-typing); the STORED shape is these fields after the
- * write-normalization {@link normalizeWatcherUpdatePatch} applies.
+ * write-normalization {@link normalizeBehaviorUpdatePatch} applies.
  *
  * EXCLUDES: name/description/prompt/sources (version-owned — an update can't
  * change them, changing them needs create_version) and routing keys
  * (action/watcher_id/entity_id/version_id). `next_run_at` is omitted too — a
  * DERIVED column, not a proposable field.
  */
-export type WatcherUpdatePatch = Pick<
+export type BehaviorUpdatePatch = Pick<
   ManageBehaviorsArgs,
   | "model_config"
   | "execution_config"
-  | "schedule"
   | "triggers"
-  | "timezone"
   | "agent_id"
   | "scheduler_client_id"
   | "tags"
@@ -568,11 +572,11 @@ export type WatcherUpdatePatch = Pick<
 /**
  * Canonical tag normalization for a watcher write — trim, drop empties, dedupe,
  * preserving first-seen order. The SINGLE source for how tags are STORED: the
- * server's `toTextArrayParam` (SQL array param) and `normalizeWatcherUpdatePatch`
+ * server's `toTextArrayParam` (SQL array param) and `normalizeBehaviorUpdatePatch`
  * (review `proposedAfter`) both go through this, so the displayed tags equal the
  * stored tags exactly (e.g. `["  a  ", "a", ""]` → `["a"]`).
  */
-export function normalizeWatcherTags(values: unknown): string[] {
+export function normalizeBehaviorTags(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
   const seen = new Set<string>();
   const out: string[] = [];
@@ -596,31 +600,28 @@ export function normalizeWatcherTags(values: unknown): string[] {
  * returned (absent keys keep their current values). Coercions mirror the stored
  * shape EXACTLY, incl. the ones that used to live only in the SQL params:
  *   - model_config ?? {}
- *   - schedule || null (falsy incl. "")
- *   - tags → normalizeWatcherTags (trim/drop-empty/dedupe)
+ *   - tags → normalizeBehaviorTags (trim/drop-empty/dedupe)
  *   - notification_channel ?? 'canvas', notification_priority ?? 'normal',
  *     min_cooldown_seconds ?? 0
- *   - null-clearable scalars (timezone/agent_id/scheduler_client_id/
+ *   - null-clearable scalars (agent_id/scheduler_client_id/
  *     device_worker_id/agent_kind) and execution_config keep null (a real clear
  *     the write applies) — NOT coerced to undefined, which would hide the clear.
  */
-export function normalizeWatcherUpdatePatch(
+export function normalizeBehaviorUpdatePatch(
   args: ManageBehaviorsArgs
-): WatcherUpdatePatch {
-  const patch: WatcherUpdatePatch = {};
+): BehaviorUpdatePatch {
+  const patch: BehaviorUpdatePatch = {};
   if (args.model_config !== undefined)
     patch.model_config = args.model_config ?? {};
   // null is a REAL clear the write stores (toJsonParam(null) → SQL null); keep it
   // so the review shows the clear rather than hiding it (serializing away).
   if (args.execution_config !== undefined)
     patch.execution_config = args.execution_config ?? null;
-  if (args.schedule !== undefined) patch.schedule = args.schedule || null;
   if (args.triggers !== undefined) patch.triggers = args.triggers;
-  if (args.timezone !== undefined) patch.timezone = args.timezone ?? null;
   if (args.agent_id !== undefined) patch.agent_id = args.agent_id ?? null;
   if (args.scheduler_client_id !== undefined)
     patch.scheduler_client_id = args.scheduler_client_id ?? null;
-  if (args.tags !== undefined) patch.tags = normalizeWatcherTags(args.tags);
+  if (args.tags !== undefined) patch.tags = normalizeBehaviorTags(args.tags);
   if (args.device_worker_id !== undefined)
     patch.device_worker_id = args.device_worker_id ?? null;
   if (args.agent_kind !== undefined) patch.agent_kind = args.agent_kind ?? null;
@@ -678,11 +679,15 @@ export const ManageBehaviorsPromotedEntitySchema = Type.Object({
 
 export const ManageBehaviorsResultSchema = Type.Union([
   Type.Object({
+    action: Type.Literal("list"),
+    behaviors: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+  }),
+  Type.Object({
     action: Type.Literal("create"),
     watcher_id: Type.String(),
     version: Type.Integer(),
     status: Type.String(),
-    sources: Type.Optional(Type.Array(WatcherSourceSchema)),
+    sources: Type.Optional(Type.Array(BehaviorSourceSchema)),
     view_url: Type.Optional(Type.String()),
   }),
   Type.Object({
@@ -776,7 +781,7 @@ export const ManageBehaviorsResultSchema = Type.Union([
       })
     ),
   }),
-  // Builder-gate: non-human principal queued a watcher definition write.
+  // Builder-gate: non-human principal queued a Behavior definition write.
   // Mirrors manage_agents' pending_approval shape so the worker can forward a
   // chat approval card from the same result fields (run_id + proposal).
   Type.Object({
@@ -803,7 +808,7 @@ export const ManageBehaviorsResultSchema = Type.Union([
 export type ManageBehaviorsResult = Static<typeof ManageBehaviorsResultSchema>;
 
 /**
- * Proposed watcher-definition mutation held in `runs.action_input` for a
+ * Proposed Behavior-definition mutation held in `runs.action_input` for a
  * builder-gate run. Captures the original manage_behaviors args so approve can
  * re-run the same write handler.
  *
@@ -812,7 +817,7 @@ export type ManageBehaviorsResult = Static<typeof ManageBehaviorsResultSchema>;
  * human approver). Without this, a group reassigned between queue and approve
  * would let A's pending mutation land on B-owned behavior.
  *
- * Watcher definition writes have no per-field pre-image (unlike manage_agents
+ * Behavior definition writes have no per-field pre-image (unlike manage_agents
  * update `base`); a straight re-run is the launch path — a stale approval may
  * clobber a newer edit (ownership re-check still rejects foreign owners).
  */
@@ -823,23 +828,23 @@ export interface ManageBehaviorsProposal {
   /** Session `actingWatcherId` at queue time, if any. */
   actingWatcherId: string | null;
 }
-export const ListWatchersSchema = Type.Object({
+export const ListBehaviorsSchema = Type.Object({
   watcher_id: Type.Optional(
     Type.String({
       description:
-        "Optional watcher ID (numeric string) to narrow to one watcher",
+        "Optional Behavior ID (numeric string) to narrow to one Behavior",
     })
   ),
   entity_id: Type.Optional(
     Type.Number({
       description:
-        "Optional entity ID to list watchers attached to a specific entity",
+        "Optional entity ID to list Behaviors attached to a specific entity",
     })
   ),
   agent_id: Type.Optional(
     Type.String({
       description:
-        "Optional agent ID to list watchers owned by a specific agent",
+        "Optional agent ID to list Behaviors owned by a specific agent",
     })
   ),
   status: Type.Optional(
@@ -852,12 +857,6 @@ export const ListWatchersSchema = Type.Object({
     Type.Boolean({
       description:
         "Include prompt, schema, and sources in response (default: false)",
-    })
-  ),
-  watcher_group_id: Type.Optional(
-    Type.Number({
-      description:
-        "Filter watchers sharing a watcher_group_id (for legacy group URL resolution)",
     })
   ),
   order_by: Type.Optional(
@@ -873,14 +872,15 @@ export const ListWatchersSchema = Type.Object({
   ),
   limit: Type.Optional(
     Type.Number({
-      description: "Maximum watchers to return (omit for all)",
+      description: "Maximum Behaviors to return (omit for all)",
     })
   ),
 });
 
-export type ListWatchersArgs = Static<typeof ListWatchersSchema>;
+export type ListBehaviorsArgs = Static<typeof ListBehaviorsSchema>;
 
-export const ListWatchersResultSchema = Type.Object({
-  watchers: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+export const ListBehaviorsResultSchema = Type.Object({
+  action: Type.Literal("list"),
+  behaviors: Type.Array(Type.Record(Type.String(), Type.Unknown())),
 });
-export type ListWatchersResult = Static<typeof ListWatchersResultSchema>;
+export type ListBehaviorsResult = Static<typeof ListBehaviorsResultSchema>;

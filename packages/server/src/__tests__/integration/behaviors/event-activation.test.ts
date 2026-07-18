@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { activateBehaviorSignal } from "../../../behaviors/activation";
 import type { Env } from "../../../index";
 import { manageBehaviors } from "../../../tools/admin/manage_behaviors";
-import { getWatcher } from "../../../tools/get_watchers";
+import { getBehavior } from "../../../tools/get_behavior";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -52,7 +52,7 @@ describe("Behavior connector-event activation", () => {
 				triggers: [trigger],
 			},
 			{} as Env,
-			ctx,
+			ctx
 		);
 		if (created.action !== "create" || !("watcher_id" in created)) {
 			throw new Error("Behavior creation did not complete");
@@ -98,12 +98,12 @@ describe("Behavior connector-event activation", () => {
 			SELECT triggers FROM watchers WHERE id = ${behaviorId}
 		`;
 		expect(stored?.triggers).toEqual([trigger]);
-		const detail = await getWatcher(
+		const detail = await getBehavior(
 			{ watcher_id: String(behaviorId) },
 			{} as Env,
-			ctx,
+			ctx
 		);
-		expect(detail.watcher?.triggers).toEqual([trigger]);
+		expect(detail.behavior?.triggers).toEqual([trigger]);
 		const runs = await sql`
 			SELECT approved_input
 			FROM runs
@@ -150,7 +150,7 @@ describe("Behavior connector-event activation", () => {
 				],
 			},
 			{} as Env,
-			ctx,
+			ctx
 		);
 		if (created.action !== "create" || !("watcher_id" in created)) {
 			throw new Error("Behavior creation did not complete");
@@ -216,23 +216,23 @@ describe("Behavior connector-event activation", () => {
 					],
 				},
 				{} as Env,
-				ctx,
+				ctx
 			);
 
 		await expect(
-			create("unsupported-event", { event_types: ["pull_request.deleted"] }),
+			create("unsupported-event", { event_types: ["pull_request.deleted"] })
 		).rejects.toThrow(
-			"GitHub does not support Behavior event 'pull_request.deleted'",
+			"GitHub does not support Behavior event 'pull_request.deleted'"
 		);
 		await expect(
-			create("unsupported-steering", { active_run: "steer" }),
+			create("unsupported-steering", { active_run: "steer" })
 		).rejects.toThrow(
-			"GitHub event 'pull_request.created' does not support steering",
+			"GitHub event 'pull_request.created' does not support steering"
 		);
 		await expect(
-			create("unsupported-source-reply", { output: "reply_to_source" }),
+			create("unsupported-source-reply", { output: "reply_to_source" })
 		).rejects.toThrow(
-			"GitHub event 'pull_request.created' does not support replying to the source",
+			"GitHub event 'pull_request.created' does not support replying to the source"
 		);
 	});
 });

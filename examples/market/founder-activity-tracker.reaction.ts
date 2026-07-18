@@ -1,8 +1,8 @@
 /**
- * Reaction for the `founder-activity-tracker` watcher.
+ * Reaction for the `founder-activity-tracker` Behavior.
  *
  * Records notable public activity (tweets, blog posts, hiring posts, fundraise
- * rumors) as `founder_activity` events. The opportunity-matcher watcher reads
+ * rumors) as `founder_activity` events. The opportunity-matcher Behavior reads
  * these events to suggest cross-portfolio introductions.
  */
 import type { ReactionContext } from "@lobu/connector-sdk";

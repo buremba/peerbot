@@ -3,7 +3,7 @@
  *
  * Single source of truth for the device/connector-worker job protocol:
  * `POST /api/workers/poll`, `/api/workers/complete`, `/complete-action`,
- * `/complete-embeddings`, `/complete-watcher`, `/emit-auth-artifact`,
+ * `/complete-embeddings`, `/complete-behavior`, `/emit-auth-artifact`,
  * `/poll-auth-signal`, `/stream`, and the chrome-action dispatch.
  *
  * Before this module the wire shapes were typed twice with no compiler link:

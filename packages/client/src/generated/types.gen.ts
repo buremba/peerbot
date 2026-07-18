@@ -332,7 +332,7 @@ export type SaveMemoryResponse = SaveMemoryResponses[keyof SaveMemoryResponses];
 export type SearchSdkData = {
   body: {
     /**
-     * SDK method or runtime-helper discovery query. Use a namespace (e.g. 'watchers'), one or more dotted paths separated by whitespace (e.g. 'watchers.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: agents, authProfiles, catalog, classifiers, connections, conversations, ctx, entities, entitySchema, feeds, knowledge, metrics, notifications, operations, organizations, schedules, viewTemplates, watchers.
+     * SDK method or runtime-helper discovery query. Use a namespace (e.g. 'behaviors'), one or more dotted paths separated by whitespace (e.g. 'behaviors.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: agents, authProfiles, behaviors, catalog, classifiers, connections, conversations, ctx, entities, entitySchema, feeds, knowledge, metrics, notifications, operations, organizations, schedules, viewTemplates.
      */
     query: string;
     /**
@@ -1484,9 +1484,6 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
-          /**
-           * Platform system type when true (slug starts with `$`). Derived from slug.
-           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1533,9 +1530,6 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
-          /**
-           * Platform system type when true (slug starts with `$`). Derived from slug.
-           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1580,9 +1574,6 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
-          /**
-           * Platform system type when true (slug starts with `$`). Derived from slug.
-           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1627,9 +1618,6 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
-          /**
-           * Platform system type when true (slug starts with `$`). Derived from slug.
-           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -2473,21 +2461,21 @@ export type ManageCatalogData = {
   body:
     | {
         /**
-         * List available (manifest) catalog entries — connectors, skills, watcher templates. Each connector entry's `detail.source_uri` can be passed to `manage_connections` action `install_connector`.
+         * List available (manifest) catalog entries — connectors, skills, Behavior templates. Each connector entry's `detail.source_uri` can be passed to `manage_connections` action `install_connector`.
          */
         action: "list_catalog";
         /**
          * Manifest catalog kinds. Defaults to all.
          */
-        kinds?: Array<"connectors" | "skills" | "watchers">;
+        kinds?: Array<"connectors" | "skills" | "behaviors">;
       }
     | {
         /**
-         * List installed kinds for the org (connectors, watchers) and/or agent (skills, providers, guardrails, channels). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.
+         * List installed kinds for the org (connectors, behaviors) and/or agent (skills, providers, guardrails, channels). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.
          */
         action: "list_installed";
         /**
-         * Installed kinds. Org: connectors, watchers. Agent: skills, providers, guardrails, channels.
+         * Installed kinds. Org: connectors, behaviors. Agent: skills, providers, guardrails, channels.
          */
         kinds?: Array<string>;
         /**
@@ -3766,6 +3754,7 @@ export type ManageBehaviorsData = {
      */
     action:
       | "create"
+      | "list"
       | "update"
       | "create_version"
       | "complete_window"
@@ -3780,15 +3769,15 @@ export type ManageBehaviorsData = {
       | "list_promoted"
       | "create_from_version";
     /**
-     * [update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Watcher ID (numeric string)
+     * [update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Behavior ID (numeric string)
      */
     watcher_id?: string;
     /**
-     * [delete] Array of watcher IDs (numeric strings)
+     * [delete] Array of Behavior IDs (numeric strings)
      */
     watcher_ids?: Array<string>;
     /**
-     * [create] Unique watcher identifier
+     * [create] Unique Behavior identifier
      */
     slug?: string;
     /**
@@ -3796,23 +3785,23 @@ export type ManageBehaviorsData = {
      */
     name?: string;
     /**
-     * [create/create_version] Watcher description
+     * [create/create_version] Behavior description
      */
     description?: string;
     /**
-     * Entity ID. Optional for create — provide it to attach the watcher to an entity; omit it for an org-scoped/global watcher. Optional for list.
+     * Entity ID. Optional for create — provide it to attach the Behavior to an entity; omit it for an org-scoped/global Behavior. Optional for list.
      */
     entity_id?: number;
     /**
-     * [create_from_version] Array of entity IDs to create individual watchers for.
+     * [create_from_version] Array of entity IDs to create individual Behaviors for.
      */
     entity_ids?: Array<number>;
     /**
-     * [create_from_version] Source version ID to use as template for new watchers.
+     * [create_from_version] Source version ID to use as template for new Behaviors.
      */
     version_id?: number;
     /**
-     * [create_from_version] Name pattern for created watchers. Use {{entity_name}} for substitution. Default: "{version_name}: {entity_name}".
+     * [create_from_version] Name pattern for created Behaviors. Use {{entity_name}} for substitution. Default: "{version_name}: {entity_name}".
      */
     name_pattern?: string;
     /**
@@ -3820,7 +3809,7 @@ export type ManageBehaviorsData = {
      */
     prompt?: string;
     /**
-     * [create/create_version] Array of SQL data sources. Each source is { name, query }. Sources are version-owned — to change them on an existing watcher, publish a new version with action: 'create_version'.
+     * [create/create_version] Array of SQL data sources. Each source is { name, query }. Sources are version-owned — to change them on an existing Behavior, publish a new version with action: 'create_version'.
      */
     sources?: Array<{
       /**
@@ -3845,11 +3834,7 @@ export type ManageBehaviorsData = {
      */
     classifiers?: unknown;
     /**
-     * [create/update/create_version] Cron expression for watcher schedule (e.g. "0 * * * *" for hourly, "0 9 * * *" for daily at 9am). Null clears the schedule (an unscheduled/manual watcher).
-     */
-    schedule?: string | null;
-    /**
-     * [create/update/create_version] Canonical Behavior activations. Schedule is retained as a compatibility input but is derived from the schedule trigger when triggers are provided.
+     * [create/update/create_version] Canonical Behavior activations. Use a schedule trigger for cadence and timezone.
      */
     triggers?: Array<
       | {
@@ -3864,7 +3849,7 @@ export type ManageBehaviorsData = {
             [key: string]: unknown | string | number | boolean | null;
           };
           /**
-           * "turn" renders the incoming event as the agent input (chat/listen); "window" runs the existing watcher analysis flow.
+           * "turn" renders the incoming event as the agent input (chat/listen); "window" runs the Behavior analysis flow.
            */
           execution?: "turn" | "window";
           /**
@@ -3890,23 +3875,19 @@ export type ManageBehaviorsData = {
         }
     >;
     /**
-     * [create/update/create_version] IANA timezone the schedule is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Null clears it (server time / UTC).
-     */
-    timezone?: string | null;
-    /**
-     * [create/update] Agent ID that owns/executes this watcher.
+     * [create/update] Agent ID that owns/executes this Behavior.
      */
     agent_id?: string;
     /**
-     * [create/update/create_version] Optional MCP client ID that should auto-run this watcher. Null clears it.
+     * [create/update/create_version] Optional MCP client ID that should auto-run this Behavior. Null clears it.
      */
     scheduler_client_id?: string | null;
     /**
-     * [create/update] Optional device worker UUID to pin this watcher to (when its inputs live on that device). Null clears the pin.
+     * [create/update] Optional device worker UUID to pin this Behavior to (when its inputs live on that device). Null clears the pin.
      */
     device_worker_id?: string | null;
     /**
-     * [create/update] Optional agent kind override for this watcher (e.g. "background", "notifier"). Null clears the override.
+     * [create/update] Optional agent kind override for this Behavior (e.g. "background", "notifier"). Null clears the override.
      */
     agent_kind?: string | null;
     /**
@@ -3918,7 +3899,7 @@ export type ManageBehaviorsData = {
      */
     notification_priority?: "low" | "normal" | "high";
     /**
-     * [create/update] Minimum seconds between two firings of this watcher (0 = no cooldown).
+     * [create/update] Minimum seconds between two firings of this Behavior (0 = no cooldown).
      */
     min_cooldown_seconds?: number;
     /**
@@ -3953,7 +3934,7 @@ export type ManageBehaviorsData = {
        */
       effort?: "low" | "medium" | "high";
       /**
-       * How many extra times to re-dispatch a server-side watcher run that finished WITHOUT calling complete_window before failing it. 0 disables; omitted = global default.
+       * How many extra times to re-dispatch a server-side Behavior run that finished WITHOUT calling complete_window before failing it. 0 disables; omitted = global default.
        */
       finalize_nudges?: number;
     };
@@ -3982,7 +3963,7 @@ export type ManageBehaviorsData = {
      */
     reactions_guidance?: string;
     /**
-     * [complete_window] Required. LLM analysis results. Must match the watcher's extraction contract (derived from its entity type).
+     * [complete_window] Required. LLM analysis results. Must match the Behavior's extraction contract (derived from its entity type).
      */
     extracted_data?: {
       [key: string]: unknown;
@@ -3996,7 +3977,7 @@ export type ManageBehaviorsData = {
      */
     window_token?: string;
     /**
-     * [complete_window] Multiple page JWTs from read_knowledge for the same watcher window. Content IDs are unioned and linked atomically.
+     * [complete_window] Multiple page JWTs from read_knowledge for the same Behavior window. Content IDs are unioned and linked atomically.
      */
     window_tokens?: Array<string>;
     /**
@@ -4012,15 +3993,15 @@ export type ManageBehaviorsData = {
      */
     run_metadata?: unknown;
     /**
-     * [complete_window] Optional watcher run id for run completion/provenance. Workers should pass the Watcher run ID from the dispatch prompt.
+     * [complete_window] Optional Behavior run id for completion/provenance. Workers should pass the run ID from the dispatch prompt.
      */
     watcher_run_id?: number;
     /**
-     * [complete_window] Pin to a specific watcher_versions.id. Workers receive this from the run dispatch payload (snapshotted from current_version_id at run-creation) and pass it back here so validation uses the same version that produced the extraction. Defaults to the run row's snapshot if available, else the watcher's current_version_id.
+     * [complete_window] Pin to a specific persisted Behavior version. Workers receive this from the run dispatch payload and pass it back so validation uses the same version that produced the extraction. Defaults to the run row's snapshot if available, else the Behavior's current version.
      */
     template_version_id?: number;
     /**
-     * [create/set_reaction_script] TypeScript source for an automated reaction. On create, it is compiled before the watcher and its reaction fields are stored in one transaction. Pass an empty string to set_reaction_script to remove an existing script.
+     * [create/set_reaction_script] TypeScript source for an automated reaction. On create, it is compiled before the Behavior and its reaction fields are stored in one transaction. Pass an empty string to set_reaction_script to remove an existing script.
      */
     reaction_script?: string;
     /**
@@ -4086,6 +4067,12 @@ export type ManageBehaviorsResponses = {
    * Successful response
    */
   200:
+    | {
+        action: "list";
+        behaviors: Array<{
+          [key: string]: unknown;
+        }>;
+      }
     | {
         action: "create";
         watcher_id: string;
@@ -4228,90 +4215,10 @@ export type ManageBehaviorsResponses = {
 export type ManageBehaviorsResponse =
   ManageBehaviorsResponses[keyof ManageBehaviorsResponses];
 
-export type ListWatchersData = {
+export type GetBehaviorData = {
   body: {
     /**
-     * Optional watcher ID (numeric string) to narrow to one watcher
-     */
-    watcher_id?: string;
-    /**
-     * Optional entity ID to list watchers attached to a specific entity
-     */
-    entity_id?: number;
-    /**
-     * Optional agent ID to list watchers owned by a specific agent
-     */
-    agent_id?: string;
-    /**
-     * Optional status filter. Use "active" or "archived". Omit to include all.
-     */
-    status?: string;
-    /**
-     * Include prompt, schema, and sources in response (default: false)
-     */
-    include_details?: boolean;
-    /**
-     * Filter watchers sharing a watcher_group_id (for legacy group URL resolution)
-     */
-    watcher_group_id?: number;
-    /**
-     * Sort field. Omit for created_at DESC (default, backward compatible).
-     */
-    order_by?: "last_fired_at" | "created_at";
-    /**
-     * Sort direction (default: desc)
-     */
-    order_dir?: "asc" | "desc";
-    /**
-     * Maximum watchers to return (omit for all)
-     */
-    limit?: number;
-  };
-  path: {
-    /**
-     * Organization slug (workspace identifier)
-     */
-    orgSlug: string;
-  };
-  query?: never;
-  url: "/api/{orgSlug}/list_watchers";
-};
-
-export type ListWatchersErrors = {
-  /**
-   * Bad request - invalid parameters
-   */
-  400: {
-    error?: string;
-  };
-  /**
-   * Tool not found
-   */
-  404: {
-    error?: string;
-  };
-};
-
-export type ListWatchersError = ListWatchersErrors[keyof ListWatchersErrors];
-
-export type ListWatchersResponses = {
-  /**
-   * Successful response
-   */
-  200: {
-    watchers: Array<{
-      [key: string]: unknown;
-    }>;
-  };
-};
-
-export type ListWatchersResponse =
-  ListWatchersResponses[keyof ListWatchersResponses];
-
-export type GetWatcherData = {
-  body: {
-    /**
-     * Watcher ID to query
+     * Behavior ID to query
      */
     watcher_id: string;
     /**
@@ -4331,7 +4238,7 @@ export type GetWatcherData = {
      */
     granularity?: "daily" | "weekly" | "monthly" | "quarterly";
     /**
-     * Override template version *number* for viewing results. If not provided, uses the watcher's current pinned version. Useful for viewing results with a different renderer or schema. Prefer `template_version_id` when you need a stable reference (version numbers can change if a chain is reorganized).
+     * Override template version *number* for viewing results. If not provided, uses the Behavior's current pinned version. Useful for viewing results with a different renderer or schema. Prefer `template_version_id` when you need a stable reference (version numbers can change if a chain is reorganized).
      */
     template_version?: number;
     /**
@@ -4366,10 +4273,10 @@ export type GetWatcherData = {
     orgSlug: string;
   };
   query?: never;
-  url: "/api/{orgSlug}/get_watcher";
+  url: "/api/{orgSlug}/get_behavior";
 };
 
-export type GetWatcherErrors = {
+export type GetBehaviorErrors = {
   /**
    * Bad request - invalid parameters
    */
@@ -4384,9 +4291,9 @@ export type GetWatcherErrors = {
   };
 };
 
-export type GetWatcherError = GetWatcherErrors[keyof GetWatcherErrors];
+export type GetBehaviorError = GetBehaviorErrors[keyof GetBehaviorErrors];
 
-export type GetWatcherResponses = {
+export type GetBehaviorResponses = {
   /**
    * Successful response
    */
@@ -4433,12 +4340,50 @@ export type GetWatcherResponses = {
         created_at: string;
       }>;
     }>;
-    watcher?: {
+    behavior?: {
       watcher_id: string;
       watcher_name: string;
       slug: string;
       status: "active" | "archived";
       schedule?: string | null;
+      triggers?: Array<
+        | {
+            kind: "event";
+            connector_key: string;
+            connection_id?: number;
+            event_types: Array<string>;
+            /**
+             * Connector-normalized exact-match fields such as resource_ref or channel_id.
+             */
+            match?: {
+              [key: string]: unknown | string | number | boolean | null;
+            };
+            /**
+             * "turn" renders the incoming event as the agent input (chat/listen); "window" runs the Behavior analysis flow.
+             */
+            execution?: "turn" | "window";
+            /**
+             * What to do when this Behavior is busy: queue every event, combine waiting events, or steer the current trusted chat turn.
+             */
+            active_run?: "queue" | "coalesce" | "steer";
+            /**
+             * Keep the result in Lobu or send it back through the source connector when supported.
+             */
+            output?: "silent" | "reply_to_source";
+            /**
+             * For window execution, do not enqueue an agent run when connector polling produced no durable source change.
+             */
+            skip_if_unchanged?: boolean;
+          }
+        | {
+            kind: "schedule";
+            cron: string;
+            timezone?: string | null;
+            execution?: "window";
+            active_run?: "queue" | "coalesce";
+            skip_if_unchanged?: boolean;
+          }
+      >;
       next_run_at?: string | null;
       agent_id?: string | null;
       device_worker_id?: string | null;
@@ -4530,7 +4475,8 @@ export type GetWatcherResponses = {
   };
 };
 
-export type GetWatcherResponse = GetWatcherResponses[keyof GetWatcherResponses];
+export type GetBehaviorResponse =
+  GetBehaviorResponses[keyof GetBehaviorResponses];
 
 export type ReadKnowledgeData = {
   body: {
@@ -5978,22 +5924,23 @@ export type GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesR
     200: unknown;
   };
 
-export type GetApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThreadData = {
+export type GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadData = {
   body?: never;
   path: {
     agentId: string;
     watcherId: string;
   };
   query?: never;
-  url: "/api/v1/agents/{agentId}/history/watchers/{watcherId}/thread";
+  url: "/api/v1/agents/{agentId}/history/behaviors/{watcherId}/thread";
 };
 
-export type GetApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThreadResponses = {
-  /**
-   * OK
-   */
-  200: unknown;
-};
+export type GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadResponses =
+  {
+    /**
+     * OK
+     */
+    200: unknown;
+  };
 
 export type GetApiV1AgentsByAgentIdHistoryStatusData = {
   body?: never;

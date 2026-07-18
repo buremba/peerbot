@@ -50,12 +50,12 @@ async function seedRootWatcher(workspace: TestWorkspace, suffix: string) {
     organizationId: workspace.org.id,
     ownerUserId: workspace.users.owner.id,
   });
-  const watcher = (await workspace.owner.watchers.create({
+  const watcher = (await workspace.owner.behaviors.create({
     entity_id: entity.id,
     slug: `digest-${suffix}`,
     name: `Digest ${suffix}`,
     prompt: 'Summarize content for {{entities}}.',
-    schedule: '0 9 * * *',
+    triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
   })) as { watcher_id: string };
   return { watcherId: Number(watcher.watcher_id), entityId: entity.id };
@@ -130,7 +130,9 @@ describe('watcher group edit contract', () => {
 
   it('create_from_version copies the reaction script AND its input schema onto each new assignment', async () => {
     const sql = getTestDb();
-    const workspace = await TestWorkspace.create({ name: 'Group Script Copy Org' });
+    const workspace = await TestWorkspace.create({
+      name: 'Group Script Copy Org',
+    });
     const { watcherId: rootId } = await seedRootWatcher(workspace, 'script-copy');
 
     await manageBehaviors(
@@ -174,7 +176,9 @@ describe('watcher group edit contract', () => {
 
   it('set_reaction_script extracts the exported input schema to reaction_input_schema', async () => {
     const sql = getTestDb();
-    const workspace = await TestWorkspace.create({ name: 'Reaction Input Org' });
+    const workspace = await TestWorkspace.create({
+      name: 'Reaction Input Org',
+    });
     const { watcherId: rootId } = await seedRootWatcher(workspace, 'react-input');
 
     await manageBehaviors(
@@ -201,7 +205,11 @@ describe('watcher group edit contract', () => {
 
     // Clearing the script wipes the cached schema too.
     await manageBehaviors(
-      { action: 'set_reaction_script', watcher_id: String(rootId), reaction_script: '' } as never,
+      {
+        action: 'set_reaction_script',
+        watcher_id: String(rootId),
+        reaction_script: '',
+      } as never,
       {} as Env,
       ownerCtx(workspace)
     );
@@ -453,7 +461,9 @@ describe('watcher group edit contract', () => {
 
   it('serializes concurrent create_version calls on the same group', async () => {
     const sql = getTestDb();
-    const workspace = await TestWorkspace.create({ name: 'Concurrent Edit Org' });
+    const workspace = await TestWorkspace.create({
+      name: 'Concurrent Edit Org',
+    });
     const { watcherId: rootId } = await seedRootWatcher(workspace, 'concurrent');
 
     // Fire two create_version calls in parallel. The advisory lock should

@@ -1,5 +1,5 @@
 /**
- * Reaction for the `reconciliation-monitor` watcher.
+ * Reaction for the `reconciliation-monitor` Behavior.
  *
  * Persists variance events when unreconciled transactions or new anomalies
  * are detected during the daily reconciliation pass.

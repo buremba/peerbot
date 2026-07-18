@@ -81,9 +81,9 @@ describe("ClientSDK.org() accessor", () => {
 
     it("throws AccessDenied on private org the user is not a member of", async () => {
       const ctx = buildCtx(user1.id, orgA.id);
-      await expect(
-        resolveOrgMembership(orgB.slug, ctx),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+      await expect(resolveOrgMembership(orgB.slug, ctx)).rejects.toBeInstanceOf(
+        AccessDeniedError
+      );
     });
 
     it("returns record with role=null on public org for non-members", async () => {
@@ -96,7 +96,7 @@ describe("ClientSDK.org() accessor", () => {
     it("throws OrgNotFound for an unknown slug-or-id", async () => {
       const ctx = buildCtx(user1.id, orgA.id);
       await expect(
-        resolveOrgMembership("does-not-exist-xyz", ctx),
+        resolveOrgMembership("does-not-exist-xyz", ctx)
       ).rejects.toBeInstanceOf(OrgNotFoundError);
     });
 
@@ -124,7 +124,7 @@ describe("ClientSDK.org() accessor", () => {
       expect(sdk.feeds).toBeDefined();
       expect(sdk.authProfiles).toBeDefined();
       expect(sdk.operations).toBeDefined();
-      expect(sdk.watchers).toBeDefined();
+      expect(sdk.behaviors).toBeDefined();
       expect(sdk.classifiers).toBeDefined();
       expect(sdk.viewTemplates).toBeDefined();
       expect(sdk.knowledge).toBeDefined();
@@ -138,7 +138,7 @@ describe("ClientSDK.org() accessor", () => {
       const ctx = buildCtx(user1.id, orgA.id);
       const sdk = buildClientSDK(ctx, testEnv);
       await expect(sdk.org(orgB.slug)).rejects.toBeInstanceOf(
-        AccessDeniedError,
+        AccessDeniedError
       );
     });
 
@@ -184,7 +184,7 @@ describe("ClientSDK.org() accessor", () => {
       invalidateMembershipRoleCache(orgB.id, user1.id);
 
       await expect(sdk.org(orgB.slug)).rejects.toBeInstanceOf(
-        AccessDeniedError,
+        AccessDeniedError
       );
     });
   });
@@ -194,7 +194,7 @@ describe("ClientSDK.org() accessor", () => {
       const ctx = buildCtx(user2.id, orgB.id);
       const sdk = buildClientSDK(ctx, testEnv);
       await expect(sdk.org(orgA.slug)).rejects.toBeInstanceOf(
-        AccessDeniedError,
+        AccessDeniedError
       );
     });
   });

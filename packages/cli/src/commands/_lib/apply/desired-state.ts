@@ -32,7 +32,7 @@ import {
   type EntityBacking,
   isRecord,
   type RelationshipRule,
-  type WatcherSource,
+  type BehaviorSource,
 } from "./shared.js";
 
 // ── Desired state types ────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ export interface DesiredWatcher {
   triggers?: DesiredBehaviorTrigger[];
   prompt: string;
   /** Optional SQL data sources; server applies a default when omitted. */
-  sources?: WatcherSource[];
+  sources?: BehaviorSource[];
   /**
    * Reaction script — TypeScript source compiled + executed in an isolate at
    * watcher-firing time. Authored as a sibling `.ts` file referenced by

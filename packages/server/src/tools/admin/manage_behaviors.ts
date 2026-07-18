@@ -22,29 +22,21 @@
  */
 
 import {
-  ListWatchersResultSchema,
-  ListWatchersSchema,
+  ListBehaviorsResultSchema,
+  ListBehaviorsSchema,
   ManageBehaviorsResultSchema,
   ManageBehaviorsSchema,
-  type ListWatchersArgs,
-  type ListWatchersResult,
   type ManageBehaviorsArgs,
   type ManageBehaviorsProposal,
   type ManageBehaviorsResult,
 } from '@lobu/core/contracts/tools/manage-behaviors';
-import {
-  resolveActingPrincipal,
-  resolveWritePolicyDecision,
-} from '../../authz/entity-policy';
+import { resolveActingPrincipal, resolveWritePolicyDecision } from '../../authz/entity-policy';
 import { createDbClientFromEnv, getDb, getLockDb } from '../../db/client';
 import type { Env } from '../../index';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { insertEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
-import {
-  buildResourcePermalink,
-  buildWatcherSettingsUrl,
-} from '../../utils/url-builder';
+import { buildResourcePermalink, buildBehaviorSettingsUrl } from '../../utils/url-builder';
 import { ToolUserError } from '../../utils/errors';
 import {
   requireOrgReadAccess,
@@ -57,8 +49,17 @@ import { withValidatedArgs } from '../validate-args';
 import { getOrgUrlContext } from '../view-urls';
 import { defineFlatActionTool, flatAction } from './action-tool';
 import { requireWatcherAccess } from './manage_behaviors/shared';
-import { handleCreate, handleUpdate, handleDelete, handleCreateFromVersion } from './manage_behaviors/crud';
-import { handleCreateVersion, handleGetVersions, handleGetVersionDetails } from './manage_behaviors/version-actions';
+import {
+  handleCreate,
+  handleUpdate,
+  handleDelete,
+  handleCreateFromVersion,
+} from './manage_behaviors/crud';
+import {
+  handleCreateVersion,
+  handleGetVersions,
+  handleGetVersionDetails,
+} from './manage_behaviors/version-actions';
 import { handleCompleteWindow } from './manage_behaviors/complete-window';
 import { handleTrigger, handleSetReactionScript } from './manage_behaviors/trigger';
 import {
@@ -70,8 +71,8 @@ import { handleGetComponentReference } from './manage_behaviors/reference';
 import { handleList } from './manage_behaviors/list';
 
 export {
-  ListWatchersResultSchema,
-  ListWatchersSchema,
+  ListBehaviorsResultSchema,
+  ListBehaviorsSchema,
   ManageBehaviorsResultSchema,
   ManageBehaviorsSchema,
 };
@@ -119,6 +120,12 @@ async function manageBehaviorsImpl(
       await requireWriteAccess(pgSql, args.entity_id, ctx);
     } else {
       await requireOrgWriteAccess(pgSql, ctx);
+    }
+  } else if (args.action === 'list') {
+    if (args.entity_id) {
+      await requireReadAccess(pgSql, args.entity_id, ctx);
+    } else {
+      await requireOrgReadAccess(pgSql, ctx);
     }
   } else if (args.action === 'update' && args.watcher_id) {
     await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
@@ -200,10 +207,14 @@ const WATCHER_GROUP_LOCK_NS = 'watcher_group_ownership';
  */
 async function resolveTargetWatcherGroupId(
   args: ManageBehaviorsArgs,
-  ctx: ToolContext,
+  ctx: ToolContext
 ): Promise<number | null> {
   const sql = getDb();
-  if (args.action === 'update' || args.action === 'create_version' || args.action === 'set_reaction_script') {
+  if (
+    args.action === 'update' ||
+    args.action === 'create_version' ||
+    args.action === 'set_reaction_script'
+  ) {
     if (args.watcher_id == null) return null;
     const rows = await sql<{ watcher_group_id: number | null }>`
       SELECT watcher_group_id FROM watchers
@@ -253,7 +264,7 @@ async function resolveTargetWatcherGroupId(
 async function withWatcherGroupLock<T>(
   args: ManageBehaviorsArgs,
   ctx: ToolContext,
-  fn: () => Promise<T>,
+  fn: () => Promise<T>
 ): Promise<T> {
   if (watcherWriteAction(args.action) === null) return fn();
   const groupId = await resolveTargetWatcherGroupId(args, ctx);
@@ -270,7 +281,7 @@ async function withWatcherGroupLock<T>(
       if ((err as { code?: string }).code === '55P03') {
         throw new ToolUserError(
           'Another change to this watcher group is in progress; retry shortly.',
-          409,
+          409
         );
       }
       throw err;
@@ -288,7 +299,7 @@ async function withWatcherGroupLock<T>(
 /** Maps a manage_behaviors action to its agent_config write verb, or null for a
  * read-only / non-definition action that the write-gate doesn't govern. */
 function watcherWriteAction(
-  action: ManageBehaviorsArgs['action'],
+  action: ManageBehaviorsArgs['action']
 ): 'create' | 'update' | 'delete' | null {
   switch (action) {
     case 'create':
@@ -326,7 +337,7 @@ function watcherWriteAction(
  */
 async function resolveEffectiveWatcherOwners(
   args: ManageBehaviorsArgs,
-  ctx: ToolContext,
+  ctx: ToolContext
 ): Promise<Array<string | null>> {
   const sql = getDb();
   switch (args.action) {
@@ -398,7 +409,7 @@ function watcherActionLabel(args: ManageBehaviorsArgs): string {
  */
 async function fetchCurrentWatcher(
   organizationId: string,
-  args: ManageBehaviorsArgs,
+  args: ManageBehaviorsArgs
 ): Promise<Record<string, unknown> | null> {
   if (args.watcher_id == null) return null;
   const sql = getDb();
@@ -423,7 +434,7 @@ async function fetchCurrentWatcher(
  */
 function buildWatcherProposal(
   args: ManageBehaviorsArgs,
-  acting: { actingAgentId: string | null; actingWatcherId: string | null },
+  acting: { actingAgentId: string | null; actingWatcherId: string | null }
 ): ManageBehaviorsProposal {
   const writeAction = watcherWriteAction(args.action);
   if (!writeAction) {
@@ -434,7 +445,7 @@ function buildWatcherProposal(
     if (!args.prompt) throw new ToolUserError('prompt is required for create action');
     if (!args.agent_id) {
       throw new ToolUserError(
-        'agent_id is required to create a watcher (the agent that executes it).',
+        'agent_id is required to create a watcher (the agent that executes it).'
       );
     }
   }
@@ -452,7 +463,7 @@ function buildWatcherProposal(
     // treats missing as falsy). Require the field explicitly; an empty string is the
     // documented way to clear it.
     throw new ToolUserError(
-      'reaction_script is required for set_reaction_script (pass an empty string to clear the existing script).',
+      'reaction_script is required for set_reaction_script (pass an empty string to clear the existing script).'
     );
   }
   if (args.action === 'create_from_version') {
@@ -525,17 +536,17 @@ function assertWatcherUpdateArgs(args: ManageBehaviorsArgs): void {
   const versionOwned = present(VERSION_OWNED_WATCHER_FIELDS);
   if (versionOwned.length > 0) {
     throw new ToolUserError(
-      `update cannot change version-owned field(s) ${versionOwned.map((f) => `'${f}'`).join(', ')} — use action: 'create_version' to publish a new watcher version (name/description/prompt/sources inherit from the current version when omitted, and the watchers-row name cascades on set_as_current).`,
+      `update cannot change version-owned field(s) ${versionOwned.map((f) => `'${f}'`).join(', ')} — use action: 'create_version' to publish a new watcher version (name/description/prompt/sources inherit from the current version when omitted, and the watchers-row name cascades on set_as_current).`
     );
   }
   if (args.entity_ids !== undefined) {
     throw new ToolUserError(
-      "update cannot change entity_ids — entity targeting is set at create / create_from_version. To re-target per entity, clone a version with action: 'create_from_version'.",
+      "update cannot change entity_ids — entity targeting is set at create / create_from_version. To re-target per entity, clone a version with action: 'create_from_version'."
     );
   }
   if (present(WATCHER_PATCHABLE_FIELDS).length === 0) {
     throw new ToolUserError(
-      'update requires at least one field to change (e.g. schedule, timezone, agent_id, tags, model_config).',
+      'update requires at least one field to change (e.g. schedule, timezone, agent_id, tags, model_config).'
     );
   }
 }
@@ -546,9 +557,7 @@ function assertWatcherUpdateArgs(args: ManageBehaviorsArgs): void {
  * clears); only `action` is omitted (shown in the title). Absent fields
  * (`undefined`) are excluded so the card does not invent values.
  */
-function pickWatcherApprovalDisplayFields(
-  args: ManageBehaviorsArgs,
-): Record<string, unknown> {
+function pickWatcherApprovalDisplayFields(args: ManageBehaviorsArgs): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
     if (WATCHER_APPROVAL_ROUTING_KEYS.has(key)) continue;
@@ -564,7 +573,7 @@ function pickWatcherApprovalDisplayFields(
       // list; object arrays (sources) serialize to JSON so the schema's string
       // field renders the actual structure, not "[object Object]".
       out[key] = value.every(
-        (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v),
+        (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v)
       )
         ? value.join(', ')
         : JSON.stringify(value);
@@ -615,14 +624,11 @@ const WATCHER_APPROVAL_FIELD_TITLES: Record<string, string> = {
   name_pattern: 'Name pattern',
 };
 
-function buildWatcherApprovalInputSchema(
-  fields: Record<string, unknown>,
-): Record<string, unknown> {
+function buildWatcherApprovalInputSchema(fields: Record<string, unknown>): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(fields)) {
     const baseTitle = WATCHER_APPROVAL_FIELD_TITLES[key] ?? key;
-    const title =
-      value === WATCHER_APPROVAL_CLEARED ? `${baseTitle} (cleared)` : baseTitle;
+    const title = value === WATCHER_APPROVAL_CLEARED ? `${baseTitle} (cleared)` : baseTitle;
     // Every field is readOnly: the watcher approval card is a review-and-decide
     // surface, not an editor. The apply path always executes the ORIGINAL
     // proposal.args, so an editable field would silently discard the reviewer's
@@ -663,7 +669,7 @@ function buildWatcherApprovalInputSchema(
 async function queueWatcherWriteForApproval(
   args: ManageBehaviorsArgs,
   ctx: ToolContext,
-  acting: { actingAgentId: string | null; actingWatcherId: string | null },
+  acting: { actingAgentId: string | null; actingWatcherId: string | null }
 ): Promise<ManageBehaviorsResult> {
   const proposal = buildWatcherProposal(args, acting);
   const writeAction = watcherWriteAction(args.action)!;
@@ -671,9 +677,7 @@ async function queueWatcherWriteForApproval(
   // create attributes ownership via created_by — fail at request time rather
   // than after the human approves an unattributable create.
   if (writeAction === 'create' && !ctx.userId) {
-    throw new ToolUserError(
-      'create requires an authenticated caller to own the new watcher',
-    );
+    throw new ToolUserError('create requires an authenticated caller to own the new watcher');
   }
 
   const current = await fetchCurrentWatcher(ctx.organizationId, args);
@@ -738,21 +742,15 @@ async function queueWatcherWriteForApproval(
   // args.agent_id, so prefer the proposed owner, else the current one). create /
   // create_from_version / set_reaction_script etc. aren't a single-form review,
   // so they keep the run permalink (valid across the supersede chain on approve).
-  const ownerAgentId =
-    args.agent_id ?? (current?.agent_id as string | null | undefined) ?? null;
+  const ownerAgentId = args.agent_id ?? (current?.agent_id as string | null | undefined) ?? null;
   const settingsReviewUrl =
     args.action === 'update' && args.watcher_id != null && ownerAgentId
-      ? await buildWatcherSettingsUrl(
-          baseUrl,
-          ctx.organizationId,
-          ownerAgentId,
-          args.watcher_id,
-          { runId },
-        ).catch(() => null)
+      ? await buildBehaviorSettingsUrl(baseUrl, ctx.organizationId, ownerAgentId, args.watcher_id, {
+          runId,
+        }).catch(() => null)
       : null;
   const approvalUrl =
-    settingsReviewUrl ??
-    buildResourcePermalink(ownerSlug, { kind: 'run', runId }, baseUrl);
+    settingsReviewUrl ?? buildResourcePermalink(ownerSlug, { kind: 'run', runId }, baseUrl);
 
   notifyActionApprovalNeeded({
     orgId: ctx.organizationId,
@@ -761,9 +759,7 @@ async function queueWatcherWriteForApproval(
     connectionName: label,
     eventId,
     approvalUrl,
-  }).catch((error) =>
-    logger.error(error, 'Failed to send manage_behaviors approval notification')
-  );
+  }).catch((error) => logger.error(error, 'Failed to send manage_behaviors approval notification'));
 
   return {
     action: args.action as
@@ -798,7 +794,7 @@ async function assertWatcherOwnersMatchActingAgent(
   args: ManageBehaviorsArgs,
   ctx: ToolContext,
   actingAgentId: string | null,
-  actorKind: string = 'agent',
+  actorKind: string = 'agent'
 ): Promise<void> {
   if (actingAgentId == null) return;
   const owners = await resolveEffectiveWatcherOwners(args, ctx);
@@ -806,7 +802,7 @@ async function assertWatcherOwnersMatchActingAgent(
   if (foreign !== undefined) {
     throw new ToolUserError(
       `A ${actorKind} cannot install watcher behavior owned by another agent — every affected owner must be itself (${actingAgentId}); found ${foreign ?? 'none'}.`,
-      403,
+      403
     );
   }
 }
@@ -831,13 +827,12 @@ export async function applyManageBehaviorsProposal(
   proposal: ManageBehaviorsProposal,
   ctx: ToolContext,
   env: Env,
-  ownerUserId: string | null,
+  ownerUserId: string | null
 ): Promise<ManageBehaviorsResult> {
   const args = proposal.args;
   const writeAction = watcherWriteAction(args.action);
   // create attributes ownership to the ORIGINAL requester, not the approver.
-  const applyCtx: ToolContext =
-    writeAction === 'create' ? { ...ctx, userId: ownerUserId } : ctx;
+  const applyCtx: ToolContext = writeAction === 'create' ? { ...ctx, userId: ownerUserId } : ctx;
   // Lock + re-gate under the same session advisory lock as the request path so
   // a concurrent reassign can't slip between the ownership re-check and the write.
   return withWatcherGroupLock(args, applyCtx, async () => {
@@ -846,7 +841,7 @@ export async function applyManageBehaviorsProposal(
       args,
       applyCtx,
       proposal.actingAgentId ?? null,
-      'agent',
+      'agent'
     );
     // Re-run the CURRENT write-gate before applying: policy may have flipped to
     // `deny` (or the acting principal may have been deleted) while the approval
@@ -870,7 +865,7 @@ export async function applyManageBehaviorsProposal(
         if (decision === 'deny') {
           throw new ToolUserError(
             `Policy now denies ${writeGateAction} of watchers for this principal; the approved change was not applied.`,
-            403,
+            403
           );
         }
       }
@@ -888,7 +883,7 @@ export async function applyManageBehaviorsProposal(
  */
 async function gateWatcherWrite(
   args: ManageBehaviorsArgs,
-  ctx: ToolContext,
+  ctx: ToolContext
 ): Promise<ManageBehaviorsResult | null> {
   const action = watcherWriteAction(args.action);
   if (!action) return null;
@@ -905,10 +900,8 @@ async function gateWatcherWrite(
   });
   // Non-human principal identity captured for the ownership guard AND (when
   // queued) the proposal. Same formula the gate has always used.
-  const actingAgentId =
-    actor.kind !== 'user' ? (actor.ownerAgentId ?? actor.id) : null;
-  const actingWatcherId =
-    ctx.actingWatcherId != null ? String(ctx.actingWatcherId) : null;
+  const actingAgentId = actor.kind !== 'user' ? (actor.ownerAgentId ?? actor.id) : null;
+  const actingWatcherId = ctx.actingWatcherId != null ? String(ctx.actingWatcherId) : null;
 
   // Escalation guard: a non-human caller must not end up installing behavior OWNED by
   // another agent. A watcher's `agent_id` IS its policy principal, so if restricted
@@ -920,12 +913,7 @@ async function gateWatcherWrite(
   // and ALL owners a group-wide write touches. EVERY affected owner must be the actor
   // itself. Humans are ungoverned here and may own/assign freely.
   // MUST run BEFORE queueing so a foreign-owner proposal never becomes a pending card.
-  await assertWatcherOwnersMatchActingAgent(
-    args,
-    ctx,
-    actingAgentId,
-    actor.kind,
-  );
+  await assertWatcherOwnersMatchActingAgent(args, ctx, actingAgentId, actor.kind);
 
   const decision = await resolveWritePolicyDecision({
     organizationId: ctx.organizationId,
@@ -945,7 +933,7 @@ async function gateWatcherWrite(
   }
   throw new ToolUserError(
     `Policy denies ${action} of watchers (agent config) for this principal.`,
-    403,
+    403
   );
 }
 
@@ -953,6 +941,7 @@ const runManageBehaviors = defineFlatActionTool<ManageBehaviorsArgs, ManageBehav
   'manage_behaviors',
   {
     create: flatAction((args, ctx, env) => handleCreate(args, env, ctx)),
+    list: flatAction((args: ManageBehaviorsArgs, ctx, env) => handleList(args, env, ctx)),
     update: flatAction((args, ctx, env) => handleUpdate(args, env, ctx)),
     create_version: flatAction((args, ctx, env) => handleCreateVersion(args, env, ctx)),
     complete_window: flatAction((args, ctx, env) => handleCompleteWindow(args, env, ctx)),
@@ -968,23 +957,3 @@ const runManageBehaviors = defineFlatActionTool<ManageBehaviorsArgs, ManageBehav
     create_from_version: flatAction((args, ctx, env) => handleCreateFromVersion(args, env, ctx)),
   }
 );
-
-export const listWatchers = withValidatedArgs(
-  'list_watchers',
-  ListWatchersSchema,
-  listWatchersImpl
-);
-
-async function listWatchersImpl(
-  args: ListWatchersArgs,
-  env: Env,
-  ctx: ToolContext
-): Promise<ListWatchersResult> {
-  const pgSql = createDbClientFromEnv(env);
-  if (args.entity_id) {
-    await requireReadAccess(pgSql, args.entity_id, ctx);
-  } else {
-    await requireOrgReadAccess(pgSql, ctx);
-  }
-  return handleList(args, env, ctx);
-}

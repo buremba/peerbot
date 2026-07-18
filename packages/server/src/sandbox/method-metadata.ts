@@ -61,7 +61,8 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
 		summary:
 			"List entities in the current organization with optional filters. Returns `{ action, entities, metadata }` where `entities` is the page and `metadata` carries `total_count`, `has_more`, `limit`, `offset`.",
 		access: "read",
-		signature: "entities.list(input?: { entity_type?: string; parent_id?: number; search?: string; limit?: number; offset?: number }): Promise<unknown>",
+		signature:
+			"entities.list(input?: { entity_type?: string; parent_id?: number; search?: string; limit?: number; offset?: number }): Promise<unknown>",
 		example:
 			"const { entities } = await client.entities.list({ entity_type: 'company' });",
 		usageExample: `// All companies in the workspace, newest first.
@@ -235,8 +236,7 @@ export default async (_ctx, client) => {
 	"entitySchema.deleteRelType": {
 		summary: "Delete a relationship type.",
 		access: "write",
-		example:
-			"await client.entitySchema.deleteRelType({ slug: 'works-at' });",
+		example: "await client.entitySchema.deleteRelType({ slug: 'works-at' });",
 	},
 	"entitySchema.addRule": {
 		summary:
@@ -412,7 +412,8 @@ export default async (_ctx, client) => {
 };`,
 	},
 	"schedules.update": {
-		summary: "Patch a schedule (next run, cron, wake_agent prompt). Requires admin.",
+		summary:
+			"Patch a schedule (next run, cron, wake_agent prompt). Requires admin.",
 		access: "admin",
 	},
 	"schedules.pause": {
@@ -442,45 +443,46 @@ export default async (ctx, client) => {
 };`,
 	},
 
-	// watchers
-	"watchers.manage": {
+	// Behaviors
+	"behaviors.manage": {
 		summary:
-			"Raw manage_behaviors action wrapper. Prefer named methods such as watchers.trigger or watchers.createVersion.",
+			"Raw manage_behaviors action wrapper. Prefer named methods such as behaviors.trigger or behaviors.createVersion.",
 		access: "external",
 		example:
-			"await client.watchers.manage({ action: 'trigger', watcher_id: '42' });",
+			"await client.behaviors.manage({ action: 'trigger', watcher_id: '42' });",
 	},
-	"watchers.list": {
+	"behaviors.list": {
 		summary:
-			"List watchers, optionally filtered by entity. Returns `{ watchers: [...] }`.",
+			"List Behaviors, optionally filtered by entity. Returns `{ behaviors: [...] }`.",
 		access: "read",
 		example:
-			"const { watchers } = await client.watchers.list({ entity_id: 42 });",
+			"const { behaviors } = await client.behaviors.list({ entity_id: 42 });",
 		usageExample: `export default async (_ctx, client) => {
-  const { watchers } = await client.watchers.list({ entity_id: 42 });
-  return watchers;
+  const { behaviors } = await client.behaviors.list({ entity_id: 42 });
+  return behaviors;
 };`,
 	},
-	"watchers.get": {
-		summary: "Fetch a watcher by id.",
+	"behaviors.get": {
+		summary: "Fetch a Behavior by id.",
 		access: "read",
-		throws: ["WatcherNotFound"],
-		example: "const watcher = await client.watchers.get({ watcher_id: '42' });",
+		throws: ["BehaviorNotFound"],
+		example:
+			"const behavior = await client.behaviors.get({ watcher_id: '42' });",
 	},
-	"watchers.create": {
+	"behaviors.create": {
 		summary:
-			"Create a watcher. REQUIRES slug, prompt, and agent_id (the executing agent — a watcher without one is a zombie row). The output contract is not authored here: set keying_config.entity_type so extraction derives from that entity type's metadata_schema, or omit it for a free-form summary watcher. Each sources[] entry REQUIRES both `name` (the {{placeholder}} the prompt template binds it to) and `query` — a read-only SELECT/WITH projecting an `id` column (it runs against org-scoped virtual tables, NOT a URL); optional `context: true` marks the source as context-only. entity_id is optional (omit for an org-scoped watcher).",
+			"Create a Behavior. Requires slug, prompt, and agent_id. Set keying_config.entity_type to derive the output contract from that entity type's metadata_schema, or omit it for a free-form summary. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Behavior.",
 		access: "admin",
 		throws: ["EntityNotFound"],
 		example:
-			"await client.watchers.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records from {{content}}.', keying_config: { entity_type: 'price', entity_path: 'prices', key_fields: ['sku'], key_output_field: 'price_key' }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
-		usageExample: `// Stand up a watcher that extracts pricing entities from recent events.
+			"await client.behaviors.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records from {{content}}.', keying_config: { entity_type: 'price', entity_path: 'prices', key_fields: ['sku'], key_output_field: 'price_key' }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
+		usageExample: `// Stand up a Behavior that extracts pricing entities from recent events.
 // The output contract is derived from the \`price\` entity type metadata_schema;
 // sources[].query is a read-only SELECT projecting \`id\` (a URL here would be rejected).
 export default async (_ctx, client) => {
-  return client.watchers.create({
-    slug: 'pricing-watcher',
-    agent_id: 'agt_123', // the agent that executes this watcher (required)
+  return client.behaviors.create({
+    slug: 'pricing',
+    agent_id: 'agt_123',
     prompt: 'Extract current pricing records from {{content}}.',
     keying_config: {
       entity_type: 'price',
@@ -494,63 +496,63 @@ export default async (_ctx, client) => {
   });
 };`,
 	},
-	"watchers.update": {
-		summary: "Update watcher config (schedule, agent, model, sources).",
+	"behaviors.update": {
+		summary: "Update Behavior config (triggers, agent, model, sources).",
 		access: "admin",
 	},
-	"watchers.createVersion": {
-		summary: "Create a new watcher template version.",
+	"behaviors.createVersion": {
+		summary: "Create a new Behavior template version.",
 		access: "admin",
 	},
-	"watchers.trigger": {
+	"behaviors.trigger": {
 		summary:
-			"Trigger an immediate watcher run and dispatch it to its assigned agent.",
+			"Trigger an immediate Behavior run and dispatch it to its assigned agent.",
 		access: "external",
-		example: "await client.watchers.trigger({ watcher_id: '42' });",
+		example: "await client.behaviors.trigger({ watcher_id: '42' });",
 		usageExample: `export default async (_ctx, client) => {
-  return client.watchers.trigger({ watcher_id: '42' });
+  return client.behaviors.trigger({ watcher_id: '42' });
 };`,
 	},
-	"watchers.delete": {
-		summary: "Delete one or more watchers.",
+	"behaviors.delete": {
+		summary: "Delete one or more Behaviors.",
 		access: "admin",
-		example: "await client.watchers.delete({ watcher_ids: ['42'] });",
+		example: "await client.behaviors.delete({ watcher_ids: ['42'] });",
 	},
-	"watchers.setReactionScript": {
+	"behaviors.setReactionScript": {
 		summary:
 			"Attach a raw TS reaction script (fires on window completion). Empty string removes it.",
 		access: "admin",
 		throws: ["CompileError"],
 	},
-	"watchers.completeWindow": {
+	"behaviors.completeWindow": {
 		summary:
-			"Submit LLM-extracted data for a watcher window. Requires a signed window_token.",
+			"Submit LLM-extracted data for a Behavior window. Requires a signed window_token.",
 		access: "write",
 	},
-	"watchers.getVersions": {
-		summary: "List template versions for a watcher.",
+	"behaviors.getVersions": {
+		summary: "List template versions for a Behavior.",
 		access: "read",
 	},
-	"watchers.getVersionDetails": {
-		summary: "Fetch a specific watcher template version.",
+	"behaviors.getVersionDetails": {
+		summary: "Fetch a specific Behavior template version.",
 		access: "read",
 	},
-	"watchers.getComponentReference": {
-		summary: "Return watcher UI/component reference documentation.",
+	"behaviors.getComponentReference": {
+		summary: "Return Behavior UI/component reference documentation.",
 		access: "read",
 	},
-	"watchers.submitFeedback": {
-		summary: "Submit field-level corrections for a watcher window.",
+	"behaviors.submitFeedback": {
+		summary: "Submit field-level corrections for a Behavior window.",
 		access: "admin",
 	},
-	"watchers.getFeedback": {
+	"behaviors.getFeedback": {
 		summary:
-			"Read field-level feedback for a watcher, optionally scoped to a window.",
+			"Read field-level feedback for a Behavior, optionally scoped to a window.",
 		access: "read",
 	},
-	"watchers.createFromVersion": {
+	"behaviors.createFromVersion": {
 		summary:
-			"Create watchers for multiple entities from an existing watcher version.",
+			"Create Behaviors for multiple entities from an existing Behavior version.",
 		access: "admin",
 	},
 
@@ -562,13 +564,15 @@ export default async (_ctx, client) => {
 	"connections.list": {
 		summary: "List configured connections in the current organization.",
 		access: "read",
-		signature: "connections.list(input?: { connector_key?: string; status?: string; setup_attempt_id?: string; limit?: number; offset?: number }): Promise<unknown>",
+		signature:
+			"connections.list(input?: { connector_key?: string; status?: string; setup_attempt_id?: string; limit?: number; offset?: number }): Promise<unknown>",
 	},
 	"catalog.listCatalog": {
 		summary:
-			"List global catalog entries. `kinds` values are plural: 'connectors', 'skills', 'watchers' (defaults to all).",
+			"List global catalog entries. `kinds` values are plural: 'connectors', 'skills', 'behaviors' (defaults to all).",
 		access: "read",
-		signature: "catalog.listCatalog(input?: { kinds?: Array<'connectors' | 'skills' | 'watchers'> }): Promise<unknown> // not paginated",
+		signature:
+			"catalog.listCatalog(input?: { kinds?: Array<'connectors' | 'skills' | 'behaviors'> }): Promise<unknown> // not paginated",
 		example: "await client.catalog.listCatalog({ kinds: ['connectors'] });",
 	},
 	"catalog.listInstalled": {
@@ -706,21 +710,25 @@ export default async (_ctx, client) => {
 	"feeds.list": {
 		summary: "List data-sync feeds.",
 		access: "read",
-		signature: "feeds.list(input?: { connection_id?: number; status?: string; limit?: number; offset?: number }): Promise<unknown>",
+		signature:
+			"feeds.list(input?: { connection_id?: number; status?: string; limit?: number; offset?: number }): Promise<unknown>",
 	},
 	"feeds.get": {
 		summary:
 			"Get a feed by id. Collected feeds return feed metadata and recent runs, not stored records; search collected records with knowledge.search/search_memory or client.query. Virtual feeds return live rows.",
 		access: "read",
-		signature: "feeds.get(input: { feed_id: number; limit?: number }): Promise<unknown>",
+		signature:
+			"feeds.get(input: { feed_id: number; limit?: number }): Promise<unknown>",
 		example: "const feed = await client.feeds.get({ feed_id: 42 });",
 	},
 	"feeds.readMany": {
 		summary:
 			"Read several feeds in parallel with per-feed successes/failures. Collected feeds return metadata and recent runs; virtual feeds return live rows. Search collected records with knowledge.search/search_memory or client.query.",
 		access: "read",
-		signature: "feeds.readMany(input: { feed_ids: number[]; limit?: number }): Promise<unknown>",
-		example: "const feeds = await client.feeds.readMany({ feed_ids: [42, 43], limit: 25 });",
+		signature:
+			"feeds.readMany(input: { feed_ids: number[]; limit?: number }): Promise<unknown>",
+		example:
+			"const feeds = await client.feeds.readMany({ feed_ids: [42, 43], limit: 25 });",
 	},
 	"feeds.create": {
 		summary:
@@ -751,23 +759,20 @@ export default async (_ctx, client) => {
 	"authProfiles.list": {
 		summary: "List reusable auth profiles.",
 		access: "read",
-		signature: "authProfiles.list(input?: { connector_key?: string; provider?: string; profile_kind?: AuthProfileKind }): Promise<unknown> // not paginated",
+		signature:
+			"authProfiles.list(input?: { connector_key?: string; provider?: string; profile_kind?: AuthProfileKind }): Promise<unknown> // not paginated",
 	},
 	"authProfiles.get": {
 		summary: "Get an auth profile by slug.",
 		access: "admin",
-		signature:
-			"authProfiles.get(auth_profile_slug: string): Promise<unknown>",
-		example:
-			"await client.authProfiles.get('google-calendar-account');",
+		signature: "authProfiles.get(auth_profile_slug: string): Promise<unknown>",
+		example: "await client.authProfiles.get('google-calendar-account');",
 	},
 	"authProfiles.test": {
 		summary: "Test auth-profile credentials.",
 		access: "external",
-		signature:
-			"authProfiles.test(auth_profile_slug: string): Promise<unknown>",
-		example:
-			"await client.authProfiles.test('google-calendar-account');",
+		signature: "authProfiles.test(auth_profile_slug: string): Promise<unknown>",
+		example: "await client.authProfiles.test('google-calendar-account');",
 	},
 	"authProfiles.create": {
 		summary: "Create an auth profile.",
@@ -787,8 +792,7 @@ export default async (_ctx, client) => {
 		access: "write",
 		signature:
 			"authProfiles.delete(auth_profile_slug: string, options?: { force?: boolean }): Promise<unknown>",
-		example:
-			"await client.authProfiles.delete('google-calendar-account');",
+		example: "await client.authProfiles.delete('google-calendar-account');",
 	},
 
 	// classifiers
@@ -799,7 +803,8 @@ export default async (_ctx, client) => {
 	"classifiers.list": {
 		summary: "List classifier templates.",
 		access: "read",
-		signature: "classifiers.list(input?: { entity_id?: number; status?: string }): Promise<unknown> // not paginated",
+		signature:
+			"classifiers.list(input?: { entity_id?: number; status?: string }): Promise<unknown> // not paginated",
 	},
 	"classifiers.create": {
 		summary: "Create a classifier template.",
@@ -854,8 +859,10 @@ export default async (_ctx, client) => {
 		summary:
 			"List declared metrics per entity type: measures, dimensions, and segments with descriptions. Keyword-search with `q`. Pair with `metrics.query`.",
 		access: "read",
-		signature: "metrics.list(input?: { entity_type?: string; q?: string }): Promise<unknown> // not paginated",
-		example: "const { entity_types } = await client.metrics.list({ q: 'spend' });",
+		signature:
+			"metrics.list(input?: { entity_type?: string; q?: string }): Promise<unknown> // not paginated",
+		example:
+			"const { entity_types } = await client.metrics.list({ q: 'spend' });",
 		usageExample: `// Discover governed measures before running one.
 export default async (_ctx, client) => {
   const { entity_types } = await client.metrics.list({ entity_type: 'company' });
@@ -882,7 +889,7 @@ export default async (_ctx, client) => {
 			"Run read-only time-bucketed SQL for sparklines. Returns { columns, rows } tabular output. Member-safe column allowlist; 5s timeout, 2000-row cap.",
 		access: "read",
 		example:
-			'await client.metrics.series({ sql: "SELECT date_trunc(\\\'day\\\', created_at) AS bucket, COUNT(*)::int AS n FROM events GROUP BY 1 ORDER BY 1" });',
+			"await client.metrics.series({ sql: \"SELECT date_trunc(\\'day\\', created_at) AS bucket, COUNT(*)::int AS n FROM events GROUP BY 1 ORDER BY 1\" });",
 	},
 
 	// top-level

@@ -15,7 +15,7 @@ two on-demand actions, not a feed:
 - `read_menu({ restaurant_url })` — that restaurant's live menu items
   (`{ name, price, price_minor, description, kcal }`).
 
-These actions need the watcher's system context, so the **agent does not call
+These actions need the Behavior's system context, so the **agent does not call
 them in-turn** — the `lunch-finalize` **reaction** does (see
 `lunch-deliveroo.reaction.ts`). After the agent's turn picks a restaurant, the
 reaction searches for it, reads the live menu, and posts the menu + Deliveroo

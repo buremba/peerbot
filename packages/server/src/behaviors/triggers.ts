@@ -27,20 +27,22 @@ interface ConnectorBehaviorEventCatalog {
 	events: BehaviorEventDefinition[];
 }
 
-function parseBehaviorEventDefinitions(value: unknown): BehaviorEventDefinition[] {
+function parseBehaviorEventDefinitions(
+	value: unknown
+): BehaviorEventDefinition[] {
 	if (!Array.isArray(value)) return [];
 	return value.filter(
 		(item): item is BehaviorEventDefinition =>
 			typeof item === "object" &&
 			item !== null &&
-			typeof (item as { key?: unknown }).key === "string",
+			typeof (item as { key?: unknown }).key === "string"
 	);
 }
 
 async function getConnectorBehaviorEventCatalog(
 	sql: DbClient,
 	organizationId: string,
-	connectorKey: string,
+	connectorKey: string
 ): Promise<ConnectorBehaviorEventCatalog> {
 	const rows = await sql`
 		SELECT name, behavior_events
@@ -51,9 +53,7 @@ async function getConnectorBehaviorEventCatalog(
 		ORDER BY updated_at DESC
 		LIMIT 1
 	`;
-	const row = rows[0] as
-		| { name: string; behavior_events: unknown }
-		| undefined;
+	const row = rows[0] as { name: string; behavior_events: unknown } | undefined;
 	if (Array.isArray(row?.behavior_events)) {
 		return {
 			name: row.name,
@@ -65,7 +65,7 @@ async function getConnectorBehaviorEventCatalog(
 	// column. The immutable bundled catalog is a safe rolling-migration fallback;
 	// new and custom installs persist their own metadata above.
 	const catalog = (await listCatalogEntries(["connectors"])).connectors.find(
-		(entry) => entry.id === connectorKey,
+		(entry) => entry.id === connectorKey
 	);
 	return {
 		name: row?.name ?? catalog?.name ?? connectorKey,
@@ -74,7 +74,7 @@ async function getConnectorBehaviorEventCatalog(
 }
 
 function normalizedEventTrigger(
-	trigger: BehaviorEventTrigger,
+	trigger: BehaviorEventTrigger
 ): BehaviorEventTrigger {
 	return {
 		...trigger,
@@ -91,7 +91,7 @@ function normalizedEventTrigger(
 }
 
 function normalizedScheduleTrigger(
-	trigger: BehaviorScheduleTrigger,
+	trigger: BehaviorScheduleTrigger
 ): BehaviorScheduleTrigger {
 	const scheduleError = validateSchedule(trigger.cron);
 	if (scheduleError) throw new ToolUserError(scheduleError);
@@ -110,7 +110,7 @@ function normalizedScheduleTrigger(
 }
 
 export function normalizeBehaviorTriggers(
-	triggers: BehaviorTrigger[],
+	triggers: BehaviorTrigger[]
 ): BehaviorTrigger[] {
 	let scheduleCount = 0;
 	return triggers.map((trigger) => {
@@ -118,7 +118,7 @@ export function normalizeBehaviorTriggers(
 			scheduleCount++;
 			if (scheduleCount > 1) {
 				throw new ToolUserError(
-					"A Behavior can have at most one schedule trigger.",
+					"A Behavior can have at most one schedule trigger."
 				);
 			}
 			return normalizedScheduleTrigger(trigger);
@@ -128,70 +128,23 @@ export function normalizeBehaviorTriggers(
 }
 
 /**
- * Resolve the canonical trigger array and the indexed schedule projection for a
- * create/update. Legacy schedule/timezone callers are folded into the trigger
- * array; callers that send triggers make that array authoritative.
+ * Resolve the canonical trigger array and its indexed schedule projection.
+ * Triggers are the only writable activation contract; schedule/timezone columns
+ * are derived projections used by the scheduler.
  */
 export function resolveBehaviorTriggerWrite(args: {
 	triggers?: BehaviorTrigger[];
-	schedule?: string | null;
-	timezone?: string | null;
 	currentTriggers?: BehaviorTrigger[];
-	currentSchedule?: string | null;
-	currentTimezone?: string | null;
 }): BehaviorTriggerProjection {
 	const current = normalizeBehaviorTriggers(args.currentTriggers ?? []);
-	let triggers =
+	const triggers =
 		args.triggers !== undefined
 			? normalizeBehaviorTriggers(args.triggers)
 			: [...current];
 
-	const suppliedSchedule =
-		args.schedule !== undefined ? args.schedule || null : undefined;
-	const suppliedTimezone =
-		args.timezone !== undefined ? args.timezone ?? null : undefined;
-
-	if (args.triggers === undefined && (suppliedSchedule !== undefined || suppliedTimezone !== undefined)) {
-		const existingSchedule = triggers.find(
-			(trigger): trigger is BehaviorScheduleTrigger =>
-				trigger.kind === "schedule",
-		);
-		const cron =
-			suppliedSchedule !== undefined
-				? suppliedSchedule
-				: existingSchedule?.cron ?? args.currentSchedule ?? null;
-		const timezone =
-			suppliedTimezone !== undefined
-				? suppliedTimezone
-				: existingSchedule?.timezone ?? args.currentTimezone ?? null;
-		triggers = triggers.filter((trigger) => trigger.kind !== "schedule");
-		if (cron) {
-			triggers.push(
-				normalizedScheduleTrigger({
-					kind: "schedule",
-					cron,
-					timezone,
-					execution: "window",
-					active_run: existingSchedule?.active_run ?? "coalesce",
-					skip_if_unchanged:
-						existingSchedule?.skip_if_unchanged ?? true,
-				}),
-			);
-		}
-	}
-
 	const scheduleTrigger = triggers.find(
-		(trigger): trigger is BehaviorScheduleTrigger => trigger.kind === "schedule",
+		(trigger): trigger is BehaviorScheduleTrigger => trigger.kind === "schedule"
 	);
-	if (
-		args.triggers !== undefined &&
-		suppliedSchedule !== undefined &&
-		suppliedSchedule !== (scheduleTrigger?.cron ?? null)
-	) {
-		throw new ToolUserError(
-			"schedule and triggers disagree; send only triggers or use the same cron value.",
-		);
-	}
 
 	return {
 		triggers,
@@ -204,10 +157,10 @@ export function resolveBehaviorTriggerWrite(args: {
 export async function assertBehaviorTriggerConnections(
 	sql: DbClient,
 	organizationId: string,
-	triggers: BehaviorTrigger[],
+	triggers: BehaviorTrigger[]
 ): Promise<void> {
 	const eventTriggers = triggers.filter(
-		(trigger): trigger is BehaviorEventTrigger => trigger.kind === "event",
+		(trigger): trigger is BehaviorEventTrigger => trigger.kind === "event"
 	);
 	const catalogs = new Map<string, ConnectorBehaviorEventCatalog>();
 	for (const trigger of eventTriggers) {
@@ -222,12 +175,12 @@ export async function assertBehaviorTriggerConnections(
 			`;
 			if (rows.length === 0) {
 				throw new ToolUserError(
-					`Connection ${trigger.connection_id} was not found in this organization.`,
+					`Connection ${trigger.connection_id} was not found in this organization.`
 				);
 			}
 			if (String(rows[0]?.connector_key) !== trigger.connector_key) {
 				throw new ToolUserError(
-					`Connection ${trigger.connection_id} is not a ${trigger.connector_key} connection.`,
+					`Connection ${trigger.connection_id} is not a ${trigger.connector_key} connection.`
 				);
 			}
 		}
@@ -237,26 +190,28 @@ export async function assertBehaviorTriggerConnections(
 			catalog = await getConnectorBehaviorEventCatalog(
 				sql,
 				organizationId,
-				trigger.connector_key,
+				trigger.connector_key
 			);
 			catalogs.set(trigger.connector_key, catalog);
 		}
 		if (catalog.events.length === 0) {
 			throw new ToolUserError(
-				`${catalog.name} does not declare any Behavior events.`,
+				`${catalog.name} does not declare any Behavior events.`
 			);
 		}
-		const eventsByKey = new Map(catalog.events.map((event) => [event.key, event]));
+		const eventsByKey = new Map(
+			catalog.events.map((event) => [event.key, event])
+		);
 		for (const eventType of trigger.event_types) {
 			const event = eventsByKey.get(eventType);
 			if (!event) {
 				throw new ToolUserError(
-					`${catalog.name} does not support Behavior event '${eventType}'.`,
+					`${catalog.name} does not support Behavior event '${eventType}'.`
 				);
 			}
 			if (trigger.active_run === "steer" && !event.capabilities?.steering) {
 				throw new ToolUserError(
-					`${catalog.name} event '${eventType}' does not support steering.`,
+					`${catalog.name} event '${eventType}' does not support steering.`
 				);
 			}
 			if (
@@ -264,7 +219,7 @@ export async function assertBehaviorTriggerConnections(
 				!event.capabilities?.replyToSource
 			) {
 				throw new ToolUserError(
-					`${catalog.name} event '${eventType}' does not support replying to the source.`,
+					`${catalog.name} event '${eventType}' does not support replying to the source.`
 				);
 			}
 		}

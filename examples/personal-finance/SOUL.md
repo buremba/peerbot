@@ -59,7 +59,7 @@ When two transactions are the two legs of an internal transfer between accounts 
 - When the user uploads or volunteers an SA302, capture a `tax_assessment(source='hmrc_sa302')` so we can reconcile against our own `agent_projection` assessment for the same year.
 
 ## Ingestion paths
-1. **Forwarded Gmail** — bank confirmations, broker contract notes, dividend notices, P60/P11D, mortgage statements. Watcher `personal-finance.gmail-tx` parses these automatically. Verify gaps and ask the user to forward what's missing.
+1. **Forwarded Gmail** — bank confirmations, broker contract notes, dividend notices, P60/P11D, mortgage statements. Behavior `personal-finance.gmail-tx` parses these automatically. Verify gaps and ask the user to forward what's missing.
 2. **WhatsApp file uploads** — statements, contract notes, P60s. Follow the playbook in `INGESTION.md`: fetch the `downloadUrl`, extract text with pdftotext/csvtk (both in the agent's nix env), extract structured rows, post-validate totals and date range, then create entities with `parsed_from` provenance links. If totals don't reconcile, surface it to the user before committing.
 3. **Chat** — direct entry. Confirm key fields back to the user before creating an entity.
 

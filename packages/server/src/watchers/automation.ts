@@ -92,7 +92,7 @@ interface QueueWatcherRunResult {
 
 export function buildLatestWatcherRunJoinSql(
 	watcherAlias = "i",
-	runAlias = "wr",
+	runAlias = "wr"
 ): string {
 	return `
     LEFT JOIN LATERAL (
@@ -109,7 +109,7 @@ export function buildLatestWatcherRunJoinSql(
 }
 
 export function parseWatcherRunPayload(
-	value: unknown,
+	value: unknown
 ): WatcherRunPayload | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 
@@ -180,7 +180,7 @@ export function parseWatcherRunPayload(
 			: undefined,
 		delivery_ids: Array.isArray(payload.delivery_ids)
 			? payload.delivery_ids.filter(
-					(value): value is string => typeof value === "string",
+					(value): value is string => typeof value === "string"
 				)
 			: undefined,
 		trigger_execution:
@@ -198,7 +198,7 @@ export function parseWatcherRunPayload(
 
 async function loadWatcherForAutomation(
 	sql: DbClient,
-	watcherId: number,
+	watcherId: number
 ): Promise<DueWatcherRow | null> {
 	const rows = await sql<DueWatcherRow>`
     SELECT id, organization_id, agent_id, schedule, status, triggers,
@@ -215,7 +215,7 @@ async function enqueueWatcherRunForRecord(
 	sql: DbClient,
 	watcher: DueWatcherRow,
 	dispatchSource: WatcherRunPayload["dispatch_source"],
-	sourceFingerprint?: string,
+	sourceFingerprint?: string
 ): Promise<QueueWatcherRunResult> {
 	if ((watcher.status ?? "active") !== "active") {
 		throw new Error(`Watcher ${watcher.id} is not active.`);
@@ -229,7 +229,7 @@ async function enqueueWatcherRunForRecord(
 	const { windowStart, windowEnd } = await computePendingWindow(
 		sql,
 		watcher.id,
-		granularity,
+		granularity
 	);
 
 	const queued = await createWatcherRun(
@@ -244,7 +244,7 @@ async function enqueueWatcherRunForRecord(
 			agentKind: watcher.agent_kind ?? null,
 			sourceFingerprint,
 		},
-		sql,
+		sql
 	);
 
 	return queued;
@@ -253,7 +253,7 @@ async function enqueueWatcherRunForRecord(
 export async function enqueueWatcherRunForWatcher(
 	watcherId: number,
 	dispatchSource: WatcherRunPayload["dispatch_source"],
-	db?: DbClient,
+	db?: DbClient
 ): Promise<QueueWatcherRunResult> {
 	const sql = db ?? getDb();
 	const watcher = await loadWatcherForAutomation(sql, watcherId);
@@ -268,7 +268,7 @@ export async function enqueueWatcherRunForWatcher(
 async function markWatcherRunFailedIdempotent(
 	sql: DbClient,
 	runId: number,
-	message: string,
+	message: string
 ): Promise<void> {
 	const failedRows = await sql`
     UPDATE runs
@@ -285,7 +285,7 @@ async function markWatcherRunFailedIdempotent(
 	// failed run still moves the schedule forward by its normal cadence.
 	await advanceWatcherSchedule(
 		sql,
-		failedRows[0]?.watcher_id as number | undefined,
+		failedRows[0]?.watcher_id as number | undefined
 	);
 }
 
@@ -293,8 +293,8 @@ async function markWatcherRunFailedIdempotent(
  * Move a watcher's `next_run_at` forward to the next cron tick after now.
  * Reused by:
  *   - terminal-failure paths in this module (broken watcher shouldn't re-fire each minute)
- *   - client.watchers.completeWindow on successful completion
- *   - the device-side `/api/workers/me/runs/:id/complete-watcher` endpoint
+ *   - client.behaviors.completeWindow on successful completion
+ *   - the device-side `/api/workers/me/runs/:id/complete-behavior` endpoint
  *
  * Idempotent: the target is always `nextRunAt(schedule, now)`, so duplicate
  * completions and manually-triggered runs converge to the same upcoming tick.
@@ -309,7 +309,7 @@ async function markWatcherRunFailedIdempotent(
  */
 export async function advanceWatcherSchedule(
 	sql: DbClient,
-	watcherId: number | undefined,
+	watcherId: number | undefined
 ): Promise<void> {
 	if (watcherId === undefined || watcherId === null) return;
 	try {
@@ -335,7 +335,7 @@ export async function advanceWatcherSchedule(
 
 export async function getWatcherRunInfo(
 	runId: number,
-	db?: DbClient,
+	db?: DbClient
 ): Promise<ActiveWatcherRunInfo | null> {
 	const sql = db ?? getDb();
 	const rows = await sql`
@@ -360,7 +360,7 @@ export async function getWatcherRunInfo(
 }
 
 export async function reconcileWatcherRuns(
-	db?: DbClient,
+	db?: DbClient
 ): Promise<ReconcileWatcherRunsResult> {
 	const sql = db ?? getDb();
 	// Canvas-on-events: an active run that already produced a canvas window (the
@@ -408,10 +408,10 @@ export async function reconcileWatcherRuns(
 	const pendingDispatchIds = pendingDispatchRows
 		.map(
 			(row) =>
-				(row as { dispatched_message_id?: unknown }).dispatched_message_id,
+				(row as { dispatched_message_id?: unknown }).dispatched_message_id
 		)
 		.filter(
-			(value): value is string => typeof value === "string" && value.length > 0,
+			(value): value is string => typeof value === "string" && value.length > 0
 		);
 
 	if (pendingDispatchIds.length === 0) {
@@ -450,17 +450,17 @@ export async function reconcileWatcherRuns(
 	const completedMessageIds = terminalRows
 		.map(
 			(row) =>
-				(row as { dispatched_message_id?: unknown }).dispatched_message_id,
+				(row as { dispatched_message_id?: unknown }).dispatched_message_id
 		)
 		.filter(
-			(value): value is string => typeof value === "string" && value.length > 0,
+			(value): value is string => typeof value === "string" && value.length > 0
 		);
 
 	if (completedMessageIds.length > 0) {
 		await resolveWatcherRunsByMessageIds(
 			completedMessageIds,
 			{ ok: true },
-			sql,
+			sql
 		);
 		reconciled += completedMessageIds.length;
 	}
@@ -501,14 +501,14 @@ export async function reconcileWatcherRuns(
  * (WATCHER_RUN_STALE_INTERVAL / WATCHER_RUN_HEARTBEAT_STALE_INTERVAL).
  */
 export async function sweepStaleWatcherRuns(
-	db?: DbClient,
+	db?: DbClient
 ): Promise<{ timedOut: number }> {
 	const sql = db ?? getDb();
 	const heartbeatStaleInterval = intervals.watcherRunHeartbeatStaleInterval;
 	const coarseStaleInterval = intervals.watcherRunStaleInterval;
 	const pendingTimedOut = await finalizeStalePendingWatcherRuns(
 		sql,
-		coarseStaleInterval,
+		coarseStaleInterval
 	);
 	const executingTimedOut = await markStaleRunsAsTimeout(sql, {
 		runTypes: ["watcher"],
@@ -522,7 +522,7 @@ export async function sweepStaleWatcherRuns(
 	if (timedOut > 0) {
 		logger.warn(
 			{ timedOut, pendingTimedOut, executingTimedOut },
-			"[watchers] Swept stale watcher runs",
+			"[watchers] Swept stale watcher runs"
 		);
 	}
 	return { timedOut };
@@ -547,7 +547,7 @@ export async function sweepStaleWatcherRuns(
  */
 async function finalizeStalePendingWatcherRuns(
 	sql: DbClient,
-	staleInterval: string,
+	staleInterval: string
 ): Promise<number> {
 	return sql.begin(async (tx) => {
 		const candidates = await tx<{
@@ -585,7 +585,7 @@ async function finalizeStalePendingWatcherRuns(
 			const next = nextRunAt(
 				candidate.schedule,
 				new Date(),
-				candidate.timezone,
+				candidate.timezone
 			);
 			await tx`
         UPDATE watchers
@@ -627,7 +627,7 @@ async function finalizeStalePendingWatcherRuns(
  * (WATCHER_ORPHANED_CLAIM_THRESHOLD, default 5 minutes).
  */
 async function resetOrphanedWatcherRuns(
-	db?: DbClient,
+	db?: DbClient
 ): Promise<{ reset: number }> {
 	const sql = db ?? getDb();
 	const result = await sql`
@@ -652,7 +652,7 @@ async function resetOrphanedWatcherRuns(
 
 export async function materializeDueWatcherRuns(
 	_env: Env,
-	db?: DbClient,
+	db?: DbClient
 ): Promise<MaterializeDueWatcherRunsResult> {
 	const sql = db ?? getDb();
 
@@ -728,17 +728,17 @@ export async function materializeDueWatcherRuns(
 		},
 		createRun: async (watcher) => {
 			const scheduleTrigger = watcher.triggers?.find(
-				(trigger) => trigger.kind === "schedule",
+				(trigger) => trigger.kind === "schedule"
 			);
 			let sourceFingerprint: string | undefined;
 			if (scheduleTrigger?.skip_if_unchanged === true) {
 				const granularity = inferWatcherGranularityFromSchedule(
-					watcher.schedule,
+					watcher.schedule
 				);
 				const { windowStart, windowEnd } = await computePendingWindow(
 					sql,
 					watcher.id,
-					granularity,
+					granularity
 				);
 				const sourceState = await fingerprintWatcherSources({
 					sql,
@@ -764,7 +764,7 @@ export async function materializeDueWatcherRuns(
 					await advanceWatcherSchedule(sql, watcher.id);
 					logger.info(
 						{ watcherId: watcher.id, empty: sourceState.empty },
-						"[watcher-automation] Skipped unchanged Behavior sources before agent dispatch",
+						"[watcher-automation] Skipped unchanged Behavior sources before agent dispatch"
 					);
 					return "skipped";
 				}
@@ -773,14 +773,14 @@ export async function materializeDueWatcherRuns(
 				sql,
 				watcher,
 				"scheduled",
-				sourceFingerprint,
+				sourceFingerprint
 			);
 			return result.created ? "created" : "skipped";
 		},
 		onError: async (watcher, error) => {
 			logger.error(
 				{ error, watcherId: watcher.id },
-				"[watcher-automation] Failed to materialize due watcher run",
+				"[watcher-automation] Failed to materialize due watcher run"
 			);
 			// Don't leave next_run_at in the past — that would re-select this watcher
 			// on every 60s tick. Push it forward per the watcher's cron schedule.
@@ -822,12 +822,12 @@ interface WatcherAutomationTickResult {
  * testable without standing up the full TaskScheduler.
  */
 export async function runWatcherAutomationTick(
-	env: Env,
+	env: Env
 ): Promise<WatcherAutomationTickResult> {
 	const errors: string[] = [];
 	const phase = async <T>(
 		name: string,
-		fn: () => Promise<T>,
+		fn: () => Promise<T>
 	): Promise<T | null> => {
 		try {
 			return await fn();
@@ -841,7 +841,7 @@ export async function runWatcherAutomationTick(
 	const reset = await phase("reset", () => resetOrphanedWatcherRuns());
 	const reconciliation = await phase("reconcile", () => reconcileWatcherRuns());
 	const materialize = await phase("materialize", () =>
-		materializeDueWatcherRuns(env),
+		materializeDueWatcherRuns(env)
 	);
 	const dispatch = await phase("dispatch", () => dispatchPendingWatcherRuns());
 
@@ -857,7 +857,7 @@ export async function runWatcherAutomationTick(
 		incrementCounter(
 			"lobu_watcher_runs_created_total",
 			{},
-			materialize.runsCreated,
+			materialize.runsCreated
 		);
 	}
 	if (materialize) {
@@ -918,7 +918,7 @@ export function buildDispatchMessage(params: {
 		.toISOString()
 		.split("T")[0];
 	const readKnowledgeUntil = new Date(
-		new Date(params.payload.window_end).getTime() - 1,
+		new Date(params.payload.window_end).getTime() - 1
 	)
 		.toISOString()
 		.split("T")[0];
@@ -940,7 +940,7 @@ export function buildDispatchMessage(params: {
 		"Required steps:",
 		`1. Call query_sdk with a script that runs client.knowledge.read({ watcher_id: ${params.watcherId}, since: "${readKnowledgeSince}", until: "${readKnowledgeUntil}"${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }).`,
 		"2. Analyze the returned payload using prompt_rendered and extraction_schema.",
-		`3. Call run_sdk with a script that runs client.watchers.completeWindow({ window_token, extracted_data, watcher_run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }) using the window_token from step 1.`,
+		`3. Call run_sdk with a script that runs client.behaviors.completeWindow({ window_token, extracted_data, watcher_run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }) using the window_token from step 1.`,
 		"4. Include this run_metadata object in complete_window exactly, and add any extra provider/job fields you know:",
 		JSON.stringify(
 			{
@@ -951,7 +951,7 @@ export function buildDispatchMessage(params: {
 				session_agent_id: params.sessionAgentId,
 			},
 			null,
-			2,
+			2
 		),
 		"",
 		"Analyze every source result in the knowledge-read payload's `sources` field, even when its `content` array is empty.",
@@ -962,7 +962,7 @@ export function buildDispatchMessage(params: {
 async function getWatcherInstructions(
 	sql: DbClient,
 	watcherId: number,
-	versionId: number | null,
+	versionId: number | null
 ): Promise<string | undefined> {
 	const rows = versionId
 		? await sql`
@@ -985,14 +985,14 @@ async function getWatcherInstructions(
 async function failWatcherRun(
 	sql: DbClient,
 	runId: number,
-	message: string,
+	message: string
 ): Promise<void> {
 	await markWatcherRunFailedIdempotent(sql, runId, message);
 }
 
 async function claimWatcherRun(
 	sql: DbClient,
-	runId?: number,
+	runId?: number
 ): Promise<ClaimedWatcherRunRow | null> {
 	return sql.begin(async (tx) => {
 		const specificRunClause = runId ? tx`AND r.id = ${runId}` : tx``;
@@ -1039,7 +1039,7 @@ async function claimWatcherRun(
 		return {
 			id: Number((claimed[0] as { id: unknown }).id),
 			organization_id: String(
-				(claimed[0] as { organization_id: unknown }).organization_id,
+				(claimed[0] as { organization_id: unknown }).organization_id
 			),
 			watcher_id: Number((claimed[0] as { watcher_id: unknown }).watcher_id),
 			approved_input: (claimed[0] as { approved_input: unknown })
@@ -1058,7 +1058,7 @@ async function claimWatcherRun(
  */
 async function getWatcherModelOverride(
 	sql: DbClient,
-	watcherId: number,
+	watcherId: number
 ): Promise<string | undefined> {
 	const rows = await sql`
     SELECT execution_config->>'model' AS model
@@ -1073,7 +1073,7 @@ async function getWatcherModelOverride(
 async function ensureWatcherAgentExists(
 	sql: DbClient,
 	organizationId: string,
-	agentId: string,
+	agentId: string
 ): Promise<boolean> {
 	const rows = await sql`
     SELECT 1
@@ -1107,7 +1107,7 @@ async function preflightWatcherMemoryTools(params: {
 			organizationId: params.organizationId,
 			platform: "api",
 			sessionKey: `watcher_${params.runId}`,
-		},
+		}
 	);
 	const url = `${getInternalGatewayUrl()}/mcp/${LOBU_MEMORY_MCP_ID}/tools`;
 
@@ -1132,10 +1132,10 @@ async function preflightWatcherMemoryTools(params: {
 		const toolNames = new Set(
 			(body?.tools ?? [])
 				.map((tool) => (typeof tool.name === "string" ? tool.name : ""))
-				.filter(Boolean),
+				.filter(Boolean)
 		);
 		const missing = WATCHER_REQUIRED_TOOLS.filter(
-			(name) => !toolNames.has(name),
+			(name) => !toolNames.has(name)
 		);
 		if (missing.length > 0) {
 			return {
@@ -1155,14 +1155,14 @@ async function preflightWatcherMemoryTools(params: {
 
 async function dispatchWatcherRun(
 	sql: DbClient,
-	run: ClaimedWatcherRunRow,
+	run: ClaimedWatcherRunRow
 ): Promise<"reconciled" | "dispatched" | "failed"> {
 	const payload = parseWatcherRunPayload(run.approved_input);
 	if (!payload) {
 		await failWatcherRun(
 			sql,
 			run.id,
-			"Watcher run is missing a valid dispatch payload.",
+			"Watcher run is missing a valid dispatch payload."
 		);
 		return "failed";
 	}
@@ -1178,13 +1178,13 @@ async function dispatchWatcherRun(
 		!(await ensureWatcherAgentExists(
 			sql,
 			run.organization_id,
-			payload.agent_id,
+			payload.agent_id
 		))
 	) {
 		await failWatcherRun(
 			sql,
 			run.id,
-			`Assigned agent "${payload.agent_id}" does not exist in this organization.`,
+			`Assigned agent "${payload.agent_id}" does not exist in this organization.`
 		);
 		return "failed";
 	}
@@ -1199,7 +1199,7 @@ async function dispatchWatcherRun(
 		await failWatcherRun(
 			sql,
 			run.id,
-			"Failed to generate an embedded Lobu service token.",
+			"Failed to generate an embedded Lobu service token."
 		);
 		return "failed";
 	}
@@ -1224,7 +1224,7 @@ async function dispatchWatcherRun(
 	const behaviorInstructions = await getWatcherInstructions(
 		sql,
 		run.watcher_id,
-		payload.version_id,
+		payload.version_id
 	);
 
 	const baseUrl = `${getInternalGatewayUrl()}/api/v1/agents`;
@@ -1257,7 +1257,7 @@ async function dispatchWatcherRun(
 			await failWatcherRun(
 				sql,
 				run.id,
-				`Failed to create or resume Lobu agent session (${sessionResponse.status}): ${body || "unknown error"}`,
+				`Failed to create or resume Lobu agent session (${sessionResponse.status}): ${body || "unknown error"}`
 			);
 			return "failed";
 		}
@@ -1273,7 +1273,7 @@ async function dispatchWatcherRun(
 			await failWatcherRun(
 				sql,
 				run.id,
-				"Embedded Lobu returned an incomplete agent session.",
+				"Embedded Lobu returned an incomplete agent session."
 			);
 			return "failed";
 		}
@@ -1311,7 +1311,7 @@ async function dispatchWatcherRun(
 			await failWatcherRun(
 				sql,
 				run.id,
-				`Failed to enqueue Lobu watcher message (${messageResponse.status}): ${body || "unknown error"}`,
+				`Failed to enqueue Lobu watcher message (${messageResponse.status}): ${body || "unknown error"}`
 			);
 			return "failed";
 		}
@@ -1323,7 +1323,7 @@ async function dispatchWatcherRun(
 			run.id,
 			error instanceof Error
 				? error.message
-				: "Unexpected Lobu dispatch failure.",
+				: "Unexpected Lobu dispatch failure."
 		);
 		return "failed";
 	}
@@ -1374,7 +1374,7 @@ export async function dispatchPendingWatcherRuns(options?: {
 export async function queueAndDispatchWatcherRun(
 	watcherId: number,
 	dispatchSource: WatcherRunPayload["dispatch_source"],
-	db?: DbClient,
+	db?: DbClient
 ): Promise<{
 	runId: number;
 	status: string;
@@ -1385,7 +1385,7 @@ export async function queueAndDispatchWatcherRun(
 	const queued = await enqueueWatcherRunForWatcher(
 		watcherId,
 		dispatchSource,
-		sql,
+		sql
 	);
 	const dispatch = await dispatchPendingWatcherRuns({
 		db: sql,

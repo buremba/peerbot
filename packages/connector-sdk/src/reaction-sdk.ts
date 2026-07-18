@@ -15,18 +15,18 @@ export interface ReactionEntity {
 
 /**
  * Context passed to reaction scripts containing the analysis results
- * and metadata about the watcher window. Reaction scripts have the
+ * and metadata about the Behavior window. Reaction scripts have the
  * shape `default async (ctx: ReactionContext, client, params?)`.
  */
 export interface ReactionContext {
   /** The extracted analysis data from the completed window */
   extracted_data: Record<string, unknown>;
-  /** All entities the watcher is attached to */
+  /** All entities the Behavior is attached to */
   entities: ReactionEntity[];
   /** The window that was just completed */
   window: {
     id: number;
-    /** Durable watcher run that produced this window, when execution has one. */
+    /** Durable Behavior run that produced this window, when execution has one. */
     run_id?: number | null;
     watcher_id: number;
     window_start: string;
@@ -34,8 +34,8 @@ export interface ReactionContext {
     granularity: string;
     content_analyzed: number;
   };
-  /** Watcher identity */
-  watcher: {
+  /** Behavior identity */
+  behavior: {
     id: number;
     slug: string;
     name: string;

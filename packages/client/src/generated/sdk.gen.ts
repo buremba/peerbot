@@ -28,6 +28,8 @@ import type {
   GetApiV1AgentsByAgentIdEventsErrors,
   GetApiV1AgentsByAgentIdEventsResponse,
   GetApiV1AgentsByAgentIdEventsResponses,
+  GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadData,
+  GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadResponses,
   GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesData,
   GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesResponses,
   GetApiV1AgentsByAgentIdHistorySessionMessagesData,
@@ -40,8 +42,6 @@ import type {
   GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesResponses,
   GetApiV1AgentsByAgentIdHistoryThreadsData,
   GetApiV1AgentsByAgentIdHistoryThreadsResponses,
-  GetApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThreadData,
-  GetApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThreadResponses,
   GetApiV1AgentsByAgentIdPendingApprovalsData,
   GetApiV1AgentsByAgentIdPendingApprovalsResponses,
   GetApiV1AgentsByAgentIdResponses,
@@ -49,24 +49,21 @@ import type {
   GetApiV1AgentsResponses,
   GetApiV1FilesByArtifactIdData,
   GetApiV1FilesByArtifactIdResponses,
+  GetBehaviorData,
+  GetBehaviorErrors,
+  GetBehaviorResponses,
   GetConnectClaimData,
   GetConnectClaimResponses,
   GetGithubAppInstallCallbackData,
   GetGithubAppInstallCallbackResponses,
   GetGithubAppInstallData,
   GetGithubAppInstallResponses,
-  GetWatcherData,
-  GetWatcherErrors,
-  GetWatcherResponses,
   ListMetricsData,
   ListMetricsErrors,
   ListMetricsResponses,
   ListOrganizationsData,
   ListOrganizationsErrors,
   ListOrganizationsResponses,
-  ListWatchersData,
-  ListWatchersErrors,
-  ListWatchersResponses,
   ManageAgentsData,
   ManageAgentsErrors,
   ManageAgentsResponses,
@@ -222,7 +219,7 @@ export const saveMemory = <ThrowOnError extends boolean = false>(
 /**
  * Discover available SDK methods and runtime helpers
  *
- * Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "watchers"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes.
+ * Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "behaviors"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes.
  */
 export const searchSdk = <ThrowOnError extends boolean = false>(
   options: Options<SearchSdkData, ThrowOnError>,
@@ -285,7 +282,7 @@ export const querySql = <ThrowOnError extends boolean = false>(
 /**
  * Perform any workspace action: create/update/delete entities, set up connections (e
  *
- * Perform any workspace action: create/update/delete entities, set up connections (e.g. client.connections.connect({ connector_key: "github" })), manage watchers and feeds, run operations, or modify templates. Use this for anything that changes data. (For read-only access: use query_sdk.
+ * Perform any workspace action: create/update/delete entities, set up connections (e.g. client.connections.connect({ connector_key: "github" })), manage Behaviors and feeds, run operations, or modify templates. Use this for anything that changes data. (For read-only access: use query_sdk.
  */
 export const runSdk = <ThrowOnError extends boolean = false>(
   options: Options<RunSdkData, ThrowOnError>,
@@ -371,9 +368,9 @@ export const manageConnections = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Browse installable connectors, skills, and watcher templates
+ * Browse installable connectors, skills, and Behavior templates
  *
- * Browse installable connectors, skills, and watcher templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`.
+ * Browse installable connectors, skills, and Behavior templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`.
  */
 export const manageCatalog = <ThrowOnError extends boolean = false>(
   options: Options<ManageCatalogData, ThrowOnError>,
@@ -551,9 +548,9 @@ export const manageSchedules = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Create and manage Behaviors
+ * Create, list, and manage Behaviors
  *
- * Create and manage Behaviors. The current SDK namespace remains client.watchers while the storage engine is migrated.
+ * Create, list, and manage Behaviors. SDK alternative: client.behaviors.
  */
 export const manageBehaviors = <ThrowOnError extends boolean = false>(
   options: Options<ManageBehaviorsData, ThrowOnError>,
@@ -576,40 +573,19 @@ export const manageBehaviors = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * List watchers
+ * Behavior detail + windows
  *
- * List watchers. SDK alternative: client.watchers.list.
+ * Behavior detail + windows. SDK alternative: client.behaviors.get.
  */
-export const listWatchers = <ThrowOnError extends boolean = false>(
-  options: Options<ListWatchersData, ThrowOnError>,
-): RequestResult<ListWatchersResponses, ListWatchersErrors, ThrowOnError> =>
+export const getBehavior = <ThrowOnError extends boolean = false>(
+  options: Options<GetBehaviorData, ThrowOnError>,
+): RequestResult<GetBehaviorResponses, GetBehaviorErrors, ThrowOnError> =>
   (options.client ?? client).post<
-    ListWatchersResponses,
-    ListWatchersErrors,
+    GetBehaviorResponses,
+    GetBehaviorErrors,
     ThrowOnError
   >({
-    url: "/api/{orgSlug}/list_watchers",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Watcher detail + windows
- *
- * Watcher detail + windows. SDK alternative: client.watchers.get.
- */
-export const getWatcher = <ThrowOnError extends boolean = false>(
-  options: Options<GetWatcherData, ThrowOnError>,
-): RequestResult<GetWatcherResponses, GetWatcherErrors, ThrowOnError> =>
-  (options.client ?? client).post<
-    GetWatcherResponses,
-    GetWatcherErrors,
-    ThrowOnError
-  >({
-    url: "/api/{orgSlug}/get_watcher",
+    url: "/api/{orgSlug}/get_behavior",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -1098,26 +1074,26 @@ export const getApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessages
     });
 
 /**
- * GET /api/v1/agents/{agentId}/history/watchers/{watcherId}/thread
+ * GET /api/v1/agents/{agentId}/history/behaviors/{watcherId}/thread
  */
-export const getApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThread = <
+export const getApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThread = <
   ThrowOnError extends boolean = false,
 >(
   options: Options<
-    GetApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThreadData,
+    GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadData,
     ThrowOnError
   >,
 ): RequestResult<
-  GetApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThreadResponses,
+  GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadResponses,
   unknown,
   ThrowOnError
 > =>
   (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThreadResponses,
+    GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadResponses,
     unknown,
     ThrowOnError
   >({
-    url: "/api/v1/agents/{agentId}/history/watchers/{watcherId}/thread",
+    url: "/api/v1/agents/{agentId}/history/behaviors/{watcherId}/thread",
     ...options,
   });
 

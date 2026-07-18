@@ -12,7 +12,9 @@ import {
 	seedOwnerContext,
 } from "../../setup/test-fixtures";
 
-const MIGRATION = "20260717123000_behavior_channel_subscriptions.sql";
+const TRIGGER_MIGRATION = "20260717120000_behavior_triggers.sql";
+const SUBSCRIPTION_MIGRATION =
+	"20260717123000_behavior_channel_subscriptions.sql";
 
 function resolveMigrationsDir(): string {
 	let dir = __dirname;
@@ -38,7 +40,7 @@ describe("Behavior channel-subscription migration", () => {
 		await cleanupTestDatabase();
 	});
 
-	it("backfills a legacy binding into one canonical Behavior and drops the state table", async () => {
+	it("backfills one canonical Behavior, drops the state table, and replays safely", async () => {
 		const { org, user } = await seedOwnerContext();
 		const foreignOrg = await createTestOrganization({
 			name: "Foreign migration transcript",
@@ -54,7 +56,15 @@ describe("Behavior channel-subscription migration", () => {
 			created_by: user.id,
 			slug: "slackinst-migration",
 		});
-		const upSection = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
+		const migrationsDir = resolveMigrationsDir();
+		const triggerUp = loadMigrationUpSection(
+			migrationsDir,
+			TRIGGER_MIGRATION,
+		);
+		const subscriptionUp = loadMigrationUpSection(
+			migrationsDir,
+			SUBSCRIPTION_MIGRATION,
+		);
 		const sql = getDb();
 		let captured:
 			| {
@@ -68,6 +78,8 @@ describe("Behavior channel-subscription migration", () => {
 
 		try {
 			await sql.begin(async (tx: typeof sql) => {
+				await tx.unsafe(triggerUp);
+				await tx.unsafe(triggerUp);
 				await tx`
 					INSERT INTO channel_messages (
 						organization_id, connection_id, platform, channel_id,
@@ -105,7 +117,8 @@ describe("Behavior channel-subscription migration", () => {
 					)
 				`;
 
-				await tx.unsafe(upSection);
+				await tx.unsafe(subscriptionUp);
+				await tx.unsafe(subscriptionUp);
 
 				const [behavior] = await tx<{
 					triggers: unknown;

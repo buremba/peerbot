@@ -362,7 +362,7 @@ async function fetchRemoteSnapshot(
       remote.rules = rules.map((r) => ({ source: r.source, target: r.target }));
     }
   }
-  const watchers = only === "agents" ? [] : await client.listWatchers();
+  const watchers = only === "agents" ? [] : await client.listBehaviors();
 
   // Connectors run only on a full apply (`--only` skips them). A pruning config
   // also fetches them even when it declares none, so prune can delete a
@@ -829,13 +829,12 @@ export async function executePlan(
       const w = row.desired;
       let watcherId: string | undefined;
       if (row.verb === "create") {
-        const created = await ctx.client.createWatcher({
+        const created = await ctx.client.createBehavior({
           slug: w.slug,
           agentId: w.agent,
           name: w.name,
           description: w.description,
           prompt: w.prompt,
-          schedule: w.schedule,
           triggers: w.triggers,
           sources: w.sources,
           reactions_guidance: w.reactionsGuidance,
@@ -861,15 +860,13 @@ export async function executePlan(
         const versionBound = new Set(row.versionBoundFields ?? []);
         const changed = new Set(row.changedFields ?? []);
         const scalarChanges = [...changed].filter(
-          (f) => !versionBound.has(f) && f !== "reaction_script"
+          (f) =>
+            !versionBound.has(f) && f !== "reaction_script" && f !== "schedule"
         );
         // a) Scalar fields → manage_behaviors update
         if (scalarChanges.length > 0) {
-          await ctx.client.updateWatcher({
+          await ctx.client.updateBehavior({
             watcher_id: watcherId,
-            ...(scalarChanges.includes("schedule")
-              ? { schedule: w.schedule ?? null }
-              : {}),
             ...(scalarChanges.includes("triggers")
               ? { triggers: w.triggers ?? [] }
               : {}),
@@ -906,7 +903,7 @@ export async function executePlan(
         //    inherits unset fields from the previous version row, but we always
         //    send the desired-side values for the changed keys).
         if (row.versionBoundFields && row.versionBoundFields.length > 0) {
-          await ctx.client.createWatcherVersion({
+          await ctx.client.createBehaviorVersion({
             watcher_id: watcherId,
             ...(versionBound.has("prompt") ? { prompt: w.prompt } : {}),
             ...(versionBound.has("sources") && w.sources !== undefined
@@ -927,7 +924,7 @@ export async function executePlan(
         }
       }
       // c) Reaction script — push when declared (idempotent server-side, no
-      //    drift signal available because it's not returned by list_watchers).
+      //    drift signal available because it's not returned by Behavior lists).
       if (w.reactionScript && watcherId) {
         await ctx.client.setReactionScript(
           watcherId,
@@ -1134,7 +1131,7 @@ async function deleteRemovedDefinitions(ctx: ApplyContext): Promise<void> {
             `delete watcher "${id}": remote watcher_id missing`
           );
         }
-        await ctx.client.deleteWatcher(wid);
+        await ctx.client.deleteBehavior(wid);
       },
     ],
     ["relationship-type", (id) => ctx.client.deleteRelationshipType(id)],

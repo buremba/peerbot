@@ -34,11 +34,11 @@ interface MonthlyLinkedRow {
  * Fold two month-bucketed aggregates — total events per month vs. events linked
  * to a watcher's windows per month — into the `UnprocessedRange[]` histogram.
  *
- * Shared by `get_content` (watcher mode) and `get_watcher` (pending analysis).
+ * Shared by `get_content` (Behavior mode) and `get_behavior` (pending analysis).
  *
  * @param includeComplete when true, months with zero unprocessed content are
  *   still emitted (with `status: 'complete'`). When false, only months with
- *   unprocessed content are emitted. `get_content` passes true; `get_watcher`
+ *   unprocessed content are emitted. `get_content` passes true; `get_behavior`
  *   passes false.
  */
 export function foldUnprocessedRanges(
@@ -149,7 +149,7 @@ export async function computePendingWindow(
 /**
  * Build the SELECT clause for watcher windows queries.
  *
- * This is used by the get_watcher tool for both the main query and fallback granularity queries.
+ * This is used by the get_behavior tool for both the main query and fallback granularity queries.
  * Extracts common SQL to avoid duplication.
  *
  * @returns SQL SELECT ... FROM ... JOIN fragment (without WHERE clause)

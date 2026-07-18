@@ -67,7 +67,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 		userId: string,
 		memberRole: "owner" | "member",
 		scopes: string[],
-		boundAgentId: string | null = null,
+		boundAgentId: string | null = null
 	): AuthContext => ({
 		organizationId: orgIdValue,
 		tokenOrganizationId: orgIdValue,
@@ -122,7 +122,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			owner.id,
 			"owner",
 			["mcp:read", "mcp:write", "mcp:admin"],
-			agentId,
+			agentId
 		);
 	});
 
@@ -137,7 +137,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 				agent_id: agentId,
 			},
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		)) as { action: string; watcher_id?: string; status?: string };
 		// Immediate apply returns the watcher status ('active'), not pending_approval.
 		expect(res.status).not.toBe("pending_approval");
@@ -164,7 +164,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 				agent_id: agentId,
 			},
 			TEST_ENV,
-			agentCtx,
+			agentCtx
 		)) as PendingApproval;
 
 		expect(res.status).toBe("pending_approval");
@@ -207,7 +207,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 				agent_id: agentId,
 			},
 			TEST_ENV,
-			agentCtx,
+			agentCtx
 		)) as PendingApproval;
 		expect(created.status).toBe("pending_approval");
 		expect(await watcherExists(orgId, "approved-watcher")).toBe(false);
@@ -216,7 +216,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			"manage_operations",
 			{ action: "approve", run_id: created.run_id },
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		)) as { approved?: true };
 		expect(approveRes.approved).toBe(true);
 
@@ -250,7 +250,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 				agent_id: agentId,
 			},
 			TEST_ENV,
-			agentCtx,
+			agentCtx
 		)) as PendingApproval;
 		expect(created.status).toBe("pending_approval");
 
@@ -258,7 +258,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			"manage_operations",
 			{ action: "reject", run_id: created.run_id, reason: "not now" },
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		)) as { rejected?: true };
 		expect(rejectRes.rejected).toBe(true);
 
@@ -292,9 +292,11 @@ describe("manage_behaviors — builder gate e2e", () => {
 					agent_id: otherAgentId,
 				},
 				TEST_ENV,
-				agentCtx,
-			),
-		).rejects.toThrow(/cannot install watcher behavior owned by another agent/i);
+				agentCtx
+			)
+		).rejects.toThrow(
+			/cannot install watcher behavior owned by another agent/i
+		);
 
 		const sql = getTestDb();
 		const runRows = await sql`
@@ -318,7 +320,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 				agent_id: agentId,
 			},
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		)) as { watcher_id?: string; status?: string };
 		expect(created.watcher_id).toBeDefined();
 		const watcherId = created.watcher_id!;
@@ -331,10 +333,16 @@ describe("manage_behaviors — builder gate e2e", () => {
 			{
 				action: "update",
 				watcher_id: watcherId,
-				timezone: "Not/A_Real_Zone",
+				triggers: [
+					{
+						kind: "schedule",
+						cron: "0 9 * * *",
+						timezone: "Not/A_Real_Zone",
+					},
+				],
 			},
 			TEST_ENV,
-			agentCtx,
+			agentCtx
 		)) as PendingApproval;
 		expect(pending.status).toBe("pending_approval");
 		expect(typeof pending.run_id).toBe("number");
@@ -343,7 +351,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			"manage_operations",
 			{ action: "approve", run_id: pending.run_id },
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		)) as { approved?: true; message?: string };
 		expect(approveRes.approved).toBe(true);
 		expect(approveRes.message).toMatch(/failed/i);
@@ -377,7 +385,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 				agent_id: agentId,
 			},
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		)) as { watcher_id?: string };
 		const watcherId = created.watcher_id!;
 		await expect(
@@ -385,8 +393,8 @@ describe("manage_behaviors — builder gate e2e", () => {
 				"manage_behaviors",
 				{ action: "update", watcher_id: watcherId },
 				TEST_ENV,
-				agentCtx,
-			),
+				agentCtx
+			)
 		).rejects.toThrow(/at least one field to change/i);
 	});
 
@@ -401,7 +409,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 				agent_id: agentId,
 			},
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		)) as { watcher_id?: string };
 		const watcherId = created.watcher_id!;
 		await expect(
@@ -409,8 +417,8 @@ describe("manage_behaviors — builder gate e2e", () => {
 				"manage_behaviors",
 				{ action: "set_reaction_script", watcher_id: watcherId },
 				TEST_ENV,
-				agentCtx,
-			),
+				agentCtx
+			)
 		).rejects.toThrow(/reaction_script is required/i);
 	});
 
@@ -426,7 +434,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 				agent_id: agentId,
 			},
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		)) as { watcher_id?: string };
 		const watcherId = created.watcher_id!;
 		expect(watcherId).toBeDefined();
@@ -437,10 +445,10 @@ describe("manage_behaviors — builder gate e2e", () => {
 			{
 				action: "update",
 				watcher_id: watcherId,
-				schedule: "0 9 * * *",
+				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 			},
 			TEST_ENV,
-			agentCtx,
+			agentCtx
 		)) as PendingApproval;
 		expect(pending.status).toBe("pending_approval");
 
@@ -458,7 +466,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			"manage_operations",
 			{ action: "approve", run_id: pending.run_id },
 			TEST_ENV,
-			ownerCtx,
+			ownerCtx
 		)) as { approved?: true; message?: string };
 		expect(approveRes.message).toMatch(/failed/i);
 		expect(approveRes.message).not.toMatch(/applied/i);

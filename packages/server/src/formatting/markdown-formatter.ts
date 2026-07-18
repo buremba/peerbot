@@ -289,10 +289,9 @@ export function formatToolResult(
 ): string {
   const formatters: Record<string, (result: any, options: FormatterOptions) => string> = {
     search_memory: formatSearchResult,
-    get_watcher: formatGetWatcherResult,
+    get_behavior: formatGetBehaviorResult,
     read_knowledge: formatGetContentResult,
     manage_behaviors: formatManageBehaviorsResult,
-    list_watchers: formatListWatchersResult,
     query_sql: formatQuerySqlResult,
   };
 
@@ -354,7 +353,11 @@ function formatSearchResult(result: any, options: FormatterOptions): string {
         created: false,
         suggestion,
         metadata: result.metadata,
-        feed_candidates: { existing: result.feeds || [], discovered: {}, status: 'complete' },
+        feed_candidates: {
+          existing: result.feeds || [],
+          discovered: {},
+          status: 'complete',
+        },
       },
       options
     );
@@ -704,14 +707,14 @@ function formatSearchChildEntityResult(result: any, _options: FormatterOptions):
 }
 
 /**
- * Format get_watcher result (window-based)
+ * Format get_behavior result (window-based)
  */
-function formatGetWatcherResult(result: any, _options: FormatterOptions): string {
-  const { windows, warnings, pending_analysis, watcher } = result;
+function formatGetBehaviorResult(result: any, _options: FormatterOptions): string {
+  const { windows, warnings, pending_analysis, behavior } = result;
 
   // No windows found - show diagnostic info
   if (!windows || windows.length === 0) {
-    let md = '# ℹ️ No Watchers Available\n\n';
+    let md = '# ℹ️ No Behavior Windows Available\n\n';
 
     if (warnings && warnings.length > 0) {
       md += '## ⚠️ Warnings\n\n';
@@ -724,8 +727,8 @@ function formatGetWatcherResult(result: any, _options: FormatterOptions): string
     return md;
   }
 
-  // Windows found - show watchers
-  let md = `# 📊 Watcher Windows (${windows.length})\n\n`;
+  // Windows found - show Behaviors
+  let md = `# 📊 Behavior Windows (${windows.length})\n\n`;
 
   windows.forEach((window: any, idx: number) => {
     md += `## ${idx + 1}. ${window.watcher_name}\n\n`;
@@ -747,14 +750,10 @@ function formatGetWatcherResult(result: any, _options: FormatterOptions): string
   });
 
   if (pending_analysis?.unprocessed_ranges?.length > 0) {
-    md += formatUnprocessedRanges(pending_analysis.unprocessed_ranges, watcher?.watcher_id);
+    md += formatUnprocessedRanges(pending_analysis.unprocessed_ranges, behavior?.watcher_id);
   }
 
   return md;
-}
-
-function formatListWatchersResult(result: any, options: FormatterOptions): string {
-  return formatManageBehaviorsResult({ ...result, action: 'list' }, options);
 }
 
 /**
@@ -826,9 +825,9 @@ function formatExtractedData(data: any, indent: number = 0): string {
  * Format manage_behaviors result
  */
 function formatManageBehaviorsResult(result: any, _options: FormatterOptions): string {
-  const { action, summary, watchers, results } = result;
+  const { action, summary, behaviors, results } = result;
 
-  let md = `# 📊 Watcher Management: ${action}\n\n`;
+  let md = `# 📊 Behavior Management: ${action}\n\n`;
 
   if (Array.isArray(result.templates)) {
     md += `## Templates (${result.templates.length})\n\n`;
@@ -939,9 +938,9 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
     md += `- **Content Linked**: ${result.content_linked}\n`;
   }
 
-  if (action === 'list' && watchers && watchers.length > 0) {
-    md += `## Watchers (${watchers.length})\n\n`;
-    for (const watcher of watchers) {
+  if (action === 'list' && behaviors && behaviors.length > 0) {
+    md += `## Behaviors (${behaviors.length})\n\n`;
+    for (const watcher of behaviors) {
       md += `### ${watcher.name || watcher.template_slug}\n`;
       md += `- **ID**: \`${watcher.watcher_id}\`\n`;
       md += `- **Template**: ${watcher.template_slug} (v${watcher.template_version})\n`;
@@ -954,7 +953,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
       md += '\n';
     }
   } else if (action === 'list') {
-    md += '*No watchers found.*\n';
+    md += '*No Behaviors found.*\n';
   }
 
   return md;

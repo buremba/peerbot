@@ -147,8 +147,7 @@ export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	// Internal read-paths — kept for tests that exercise public-readability
 	// semantics; legitimate external access is via `query_sdk` / `run_sdk`.
 	read_knowledge: null,
-	get_watcher: null,
-	list_watchers: null,
+	get_behavior: null,
 	manage_entity: new Set(["list", "get", "list_links"]),
 	manage_entity_schema: new Set(["list", "get", "audit", "list_rules"]),
 	manage_connections: new Set(["list", "list_connector_groups", "get"]),
@@ -162,6 +161,7 @@ export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 		"list_activity",
 	]),
 	manage_behaviors: new Set([
+		"list",
 		"get_versions",
 		"get_version_details",
 		"get_component_reference",
@@ -180,7 +180,7 @@ function getAction(args: unknown): string | null {
 function actionMatches(
 	policy: Record<string, Set<string> | null>,
 	toolName: string,
-	args: unknown,
+	args: unknown
 ): boolean {
 	if (!(toolName in policy)) return false;
 	const allowedActions = policy[toolName];
@@ -192,7 +192,7 @@ function actionMatches(
 export function requiresMemberWrite(
 	toolName: string,
 	args: unknown,
-	readOnlyHint: boolean,
+	readOnlyHint: boolean
 ): boolean {
 	if (requiresOwnerAdmin(toolName, args, readOnlyHint)) return false;
 	return actionMatches(MEMBER_WRITE_ACTIONS, toolName, args);
@@ -201,7 +201,7 @@ export function requiresMemberWrite(
 export function requiresOwnerAdmin(
 	toolName: string,
 	args: unknown,
-	readOnlyHint: boolean,
+	readOnlyHint: boolean
 ): boolean {
 	// query_sql / metric_series are read-tier (members may query their org's
 	// operational data). The auth/identity tables (oauth_tokens, oauth_clients,
@@ -219,7 +219,7 @@ export function requiresOwnerAdmin(
 export function getRequiredAccessLevel(
 	toolName: string,
 	args: unknown,
-	readOnlyHint: boolean,
+	readOnlyHint: boolean
 ): ToolAccessLevel {
 	if (toolName === "list_organizations") return "read";
 	if (requiresOwnerAdmin(toolName, args, readOnlyHint)) return "admin";
@@ -245,7 +245,7 @@ export const SCOPE_CHECK_NOT_APPLICABLE: readonly string[] = ["*"];
 
 export function hasRequiredMcpScope(
 	requiredAccess: ToolAccessLevel,
-	scopes: readonly string[] | null | undefined,
+	scopes: readonly string[] | null | undefined
 ): boolean {
 	// Fail closed: a null/undefined scope set means the caller presented no
 	// MCP scope claim. It must NOT be treated as full access.
@@ -276,7 +276,7 @@ export function hasRequiredMcpScope(
  */
 export function resolveMaxAccessLevel(
 	memberRole: string | null | undefined,
-	scopes: readonly string[] | null | undefined,
+	scopes: readonly string[] | null | undefined
 ): ToolAccessLevel {
 	const roleLevel: ToolAccessLevel = !memberRole
 		? "read"
@@ -299,7 +299,7 @@ export function isPublicReadable(toolName: string, args: unknown): boolean {
 }
 
 export function getPublicReadableActions(
-	toolName: string,
+	toolName: string
 ): Set<string> | null | undefined {
 	return PUBLIC_READ_ACTIONS[toolName];
 }

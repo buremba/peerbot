@@ -1,5 +1,5 @@
 /**
- * Reaction for atlas's `catalog-staleness-checker` watcher.
+ * Reaction for atlas's `catalog-staleness-checker` Behavior.
  *
  * Writes a `catalog_stale` event per stale entry the LLM identified. Atlas is
  * a long-lived reference catalog — entries that haven't been re-verified in

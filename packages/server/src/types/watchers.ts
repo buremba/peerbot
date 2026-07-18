@@ -11,14 +11,17 @@ import { type Static, Type } from '@sinclair/typebox';
 import {
   BehaviorTriggerSchema,
   type BehaviorTrigger,
-  WatcherSourceSchema,
-  type WatcherSource,
+  BehaviorSourceSchema,
+  type BehaviorSource,
 } from '@lobu/core/contracts/tools/manage-behaviors';
+
+type WatcherSource = BehaviorSource;
+const WatcherSourceSchema = BehaviorSourceSchema;
 
 export {
   BehaviorTriggerSchema,
   type BehaviorTrigger,
-  WatcherSourceSchema,
+  BehaviorSourceSchema as WatcherSourceSchema,
   type WatcherSource,
 };
 
@@ -32,7 +35,7 @@ export {
 
 /**
  * One reaction-log entry for a window (from watcher_reactions). Surfaced on
- * get_watcher windows so the UI can show what the reaction script did.
+ * get_behavior windows so the UI can show what the reaction script did.
  */
 export const WatcherWindowReactionSchema = Type.Object({
   id: Type.Integer(),
@@ -45,7 +48,7 @@ export const WatcherWindowReactionSchema = Type.Object({
 export type WatcherWindowReaction = Static<typeof WatcherWindowReactionSchema>;
 
 /**
- * Watcher window data as returned by get_watcher
+ * Behavior window data as returned by get_behavior
  */
 export const WatcherWindowSchema = Type.Object({
   window_id: Type.Integer(),
@@ -108,7 +111,7 @@ export const WatcherVersionInfoSchema = Type.Object({
 export type WatcherVersionInfo = Static<typeof WatcherVersionInfoSchema>;
 
 // ============================================
-// Watcher Metadata (returned by get_watcher)
+// Behavior metadata (returned by get_behavior)
 // ============================================
 
 const WatcherRunSchema = Type.Object({

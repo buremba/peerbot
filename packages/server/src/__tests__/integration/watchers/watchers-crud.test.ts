@@ -7,7 +7,7 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
-import { WATCHER_CATALOG_TEMPLATES } from '../../../catalog/watcher-templates';
+import { BEHAVIOR_CATALOG_TEMPLATES } from '../../../catalog/behavior-templates';
 import { executeReaction } from '../../../watchers/reaction-executor';
 import {
   addUserToOrganization,
@@ -41,10 +41,15 @@ describe('watcher CRUD', () => {
       userId: user.id,
       memberRole: 'owner',
     });
-    const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
+    const agent = await createTestAgent({
+      organizationId: org.id,
+      ownerUserId: user.id,
+    });
     agentId = agent.agentId;
 
-    const otherOrg = await createTestOrganization({ name: 'Watcher Other Org' });
+    const otherOrg = await createTestOrganization({
+      name: 'Watcher Other Org',
+    });
     const otherUser = await createTestUser({ email: 'watcher-other@test.com' });
     await addUserToOrganization(otherUser.id, otherOrg.id, 'owner');
     otherOrgId = otherOrg.id;
@@ -64,39 +69,42 @@ describe('watcher CRUD', () => {
   });
 
   it('creates → reads back → updates → deletes a watcher', async () => {
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'lifecycle-watcher',
       name: 'Lifecycle Watcher',
       prompt: 'Track product launches.',
-      schedule: '0 9 * * *',
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
       agent_id: agentId,
     })) as { watcher_id: string };
     const watcherId = created.watcher_id;
     expect(watcherId).toBeDefined();
 
-    const got = (await owner.watchers.get({ watcher_id: watcherId })) as {
-      watcher?: { watcher_name: string };
+    const got = (await owner.behaviors.get({ watcher_id: watcherId })) as {
+      behavior?: { watcher_name: string };
     };
-    expect(got.watcher?.watcher_name).toBe('Lifecycle Watcher');
+    expect(got.behavior?.watcher_name).toBe('Lifecycle Watcher');
 
-    await owner.watchers.update({ watcher_id: watcherId, schedule: '0 10 * * *' });
-    const after = (await owner.watchers.get({ watcher_id: watcherId })) as {
-      watcher?: { schedule: string | null };
+    await owner.behaviors.update({
+      watcher_id: watcherId,
+      triggers: [{ kind: 'schedule', cron: '0 10 * * *' }],
+    });
+    const after = (await owner.behaviors.get({ watcher_id: watcherId })) as {
+      behavior?: { schedule: string | null };
     };
-    expect(after.watcher?.schedule).toBe('0 10 * * *');
+    expect(after.behavior?.schedule).toBe('0 10 * * *');
 
-    await owner.watchers.delete({ watcher_ids: [watcherId] });
-    const list = (await owner.watchers.list({ entity_id: entityId })) as {
-      watchers?: Array<{ watcher_id: string }>;
+    await owner.behaviors.delete({ watcher_ids: [watcherId] });
+    const list = (await owner.behaviors.list({ entity_id: entityId })) as {
+      behaviors?: Array<{ watcher_id: string }>;
     };
-    expect(list.watchers?.some((w) => w.watcher_id === watcherId)).toBe(false);
+    expect(list.behaviors?.some((w) => w.watcher_id === watcherId)).toBe(false);
   });
 
   it('creates a watcher and its reaction contract atomically', async () => {
     const sql = getTestDb();
     const reaction = `export const input = { type: "object", properties: { merge_proposals: { type: "array" } }, required: ["merge_proposals"] }; export default async function () {}`;
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       slug: 'atomic-reaction-watcher',
       name: 'Atomic Reaction Watcher',
       prompt: 'Return merge proposals.',
@@ -104,11 +112,13 @@ describe('watcher CRUD', () => {
       reaction_script: reaction,
     })) as { watcher_id: string };
 
-    const [row] = await sql<{
-      reaction_script: string | null;
-      reaction_script_compiled: string | null;
-      reaction_input_schema: Record<string, unknown> | null;
-    }[]>`
+    const [row] = await sql<
+      {
+        reaction_script: string | null;
+        reaction_script_compiled: string | null;
+        reaction_input_schema: Record<string, unknown> | null;
+      }[]
+    >`
       SELECT reaction_script, reaction_script_compiled, reaction_input_schema
       FROM watchers WHERE id = ${created.watcher_id}
     `;
@@ -165,11 +175,11 @@ describe('watcher CRUD', () => {
       WHERE id = (SELECT entity_type_id FROM entities WHERE id = ${winner.id})
     `;
 
-    const template = WATCHER_CATALOG_TEMPLATES.find((t) => t.id === 'duplicate-merge');
+    const template = BEHAVIOR_CATALOG_TEMPLATES.find((t) => t.id === 'duplicate-merge');
     if (!template) throw new Error('duplicate-merge watcher template is missing');
     const reactionScript = String(template.detail.reaction_script);
 
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       slug: 'reaction-merge-exec-watcher',
       name: 'Reaction Merge Exec Watcher',
       prompt: 'Find and merge duplicate people.',
@@ -201,7 +211,7 @@ describe('watcher CRUD', () => {
           granularity: 'day',
           content_analyzed: 1,
         },
-        watcher: {
+        behavior: {
           id: watcherId,
           slug: 'reaction-merge-exec-watcher',
           name: 'Reaction Merge Exec Watcher',
@@ -262,12 +272,12 @@ describe('watcher CRUD', () => {
     expect(duplicateRows.every((row) => row.merged_into === null)).toBe(true);
     expect(duplicateRows.every((row) => row.deleted_at === null)).toBe(true);
 
-    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('does not create a watcher when its reaction fails compilation', async () => {
     await expect(
-      owner.watchers.create({
+      owner.behaviors.create({
         slug: 'invalid-reaction-watcher',
         name: 'Invalid Reaction Watcher',
         prompt: 'Return merge proposals.',
@@ -289,7 +299,7 @@ describe('watcher CRUD', () => {
     // precheck emits — not a raw Postgres "duplicate key value" 23505.
     const results = await Promise.allSettled(
       Array.from({ length: 6 }, () =>
-        owner.watchers.create({
+        owner.behaviors.create({
           slug: 'race-watcher',
           name: 'Race Watcher',
           prompt: 'Track races.',
@@ -298,9 +308,7 @@ describe('watcher CRUD', () => {
       )
     );
     const fulfilled = results.filter((r) => r.status === 'fulfilled');
-    const rejected = results.filter(
-      (r): r is PromiseRejectedResult => r.status === 'rejected'
-    );
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
     expect(fulfilled.length).toBe(1);
     expect(rejected.length).toBe(5);
     for (const r of rejected) {
@@ -309,9 +317,8 @@ describe('watcher CRUD', () => {
       expect(e.message).not.toMatch(/23505|duplicate key value/);
       expect(e.httpStatus).toBe(409);
     }
-    const winner = (fulfilled[0] as PromiseFulfilledResult<{ watcher_id: string }>)
-      .value;
-    await owner.watchers.delete({ watcher_ids: [winner.watcher_id] });
+    const winner = (fulfilled[0] as PromiseFulfilledResult<{ watcher_id: string }>).value;
+    await owner.behaviors.delete({ watcher_ids: [winner.watcher_id] });
   });
 
   it('concurrent creates of DISTINCT slugs all succeed with unique ids (no PK collision)', async () => {
@@ -322,7 +329,7 @@ describe('watcher CRUD', () => {
     const N = 6;
     const results = await Promise.all(
       Array.from({ length: N }, (_v, i) =>
-        owner.watchers.create({
+        owner.behaviors.create({
           slug: `distinct-race-${i}`,
           name: `Distinct Race ${i}`,
           prompt: 'Track things.',
@@ -333,7 +340,7 @@ describe('watcher CRUD', () => {
     const ids = results.map((r) => (r as { watcher_id: string }).watcher_id);
     expect(ids.length).toBe(N);
     expect(new Set(ids).size).toBe(N); // all unique — no PK collision
-    await owner.watchers.delete({ watcher_ids: ids });
+    await owner.behaviors.delete({ watcher_ids: ids });
   });
 
   it('concurrent group-locked writes on DISTINCT groups do not exhaust the pool (holder starvation)', async () => {
@@ -350,7 +357,7 @@ describe('watcher CRUD', () => {
     const versionIds: number[] = [];
     const baseIds: string[] = [];
     for (let i = 0; i < N; i++) {
-      const base = (await owner.watchers.create({
+      const base = (await owner.behaviors.create({
         entity_id: entityId,
         slug: `cfv-group-race-base-${i}`,
         name: `CFV Group Race Base ${i}`,
@@ -378,7 +385,10 @@ describe('watcher CRUD', () => {
     // serializes nothing and all N handlers run concurrently.
     const results = await Promise.all(
       versionIds.map((vid, i) =>
-        owner.watchers.createFromVersion({ version_id: vid, entity_ids: [targets[i]] })
+        owner.behaviors.createFromVersion({
+          version_id: vid,
+          entity_ids: [targets[i]],
+        })
       )
     );
     const createdIds = results.flatMap((r) =>
@@ -386,7 +396,7 @@ describe('watcher CRUD', () => {
     );
     expect(createdIds.length).toBe(N);
     expect(new Set(createdIds).size).toBe(N); // all unique — the cross-group id race
-    await owner.watchers.delete({ watcher_ids: [...baseIds, ...createdIds] });
+    await owner.behaviors.delete({ watcher_ids: [...baseIds, ...createdIds] });
   });
 
   it('concurrent create_from_version fan-outs allocate unique ids (no PK collision)', async () => {
@@ -396,7 +406,7 @@ describe('watcher CRUD', () => {
     // only way to fail is the watchers PK colliding on a shared MAX(id)+1.
     const sql = getTestDb();
 
-    const base = (await owner.watchers.create({
+    const base = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'cfv-race-base',
       name: 'CFV Race Base',
@@ -422,7 +432,10 @@ describe('watcher CRUD', () => {
 
     const results = await Promise.all(
       targets.map((eid) =>
-        owner.watchers.createFromVersion({ version_id: versionId, entity_ids: [eid] })
+        owner.behaviors.createFromVersion({
+          version_id: versionId,
+          entity_ids: [eid],
+        })
       )
     );
     const createdIds = results.flatMap((r) =>
@@ -430,7 +443,9 @@ describe('watcher CRUD', () => {
     );
     expect(createdIds.length).toBe(N);
     expect(new Set(createdIds).size).toBe(N); // all unique — no PK collision
-    await owner.watchers.delete({ watcher_ids: [base.watcher_id, ...createdIds] });
+    await owner.behaviors.delete({
+      watcher_ids: [base.watcher_id, ...createdIds],
+    });
   });
 
   it('concurrent create_from_version to the SAME entity: one wins, losers get a coded 409 (not raw 23505)', async () => {
@@ -441,7 +456,7 @@ describe('watcher CRUD', () => {
     // what guarantees all-or-nothing for multi-entity calls).
     const sql = getTestDb();
 
-    const base = (await owner.watchers.create({
+    const base = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'cfv-slug-race-base',
       name: 'CFV Slug Race Base',
@@ -461,16 +476,14 @@ describe('watcher CRUD', () => {
 
     const results = await Promise.allSettled(
       Array.from({ length: 6 }, () =>
-        owner.watchers.createFromVersion({
+        owner.behaviors.createFromVersion({
           version_id: versionId,
           entity_ids: [target.entity.id],
         })
       )
     );
     const fulfilled = results.filter((r) => r.status === 'fulfilled');
-    const rejected = results.filter(
-      (r): r is PromiseRejectedResult => r.status === 'rejected'
-    );
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
     expect(fulfilled.length).toBe(1);
     expect(rejected.length).toBe(5);
     for (const r of rejected) {
@@ -479,9 +492,13 @@ describe('watcher CRUD', () => {
       expect(e.httpStatus).toBe(409);
     }
     const winnerIds = (
-      fulfilled[0] as PromiseFulfilledResult<{ created: Array<{ watcher_id: string }> }>
+      fulfilled[0] as PromiseFulfilledResult<{
+        created: Array<{ watcher_id: string }>;
+      }>
     ).value.created.map((c) => c.watcher_id);
-    await owner.watchers.delete({ watcher_ids: [base.watcher_id, ...winnerIds] });
+    await owner.behaviors.delete({
+      watcher_ids: [base.watcher_id, ...winnerIds],
+    });
   });
 
   it('multi-entity create_from_version is all-or-nothing: a mid-fan-out collision rolls back the earlier target too', async () => {
@@ -491,7 +508,7 @@ describe('watcher CRUD', () => {
     // transaction wrapper exists for; without it the earlier insert would commit.
     const sql = getTestDb();
 
-    const base = (await owner.watchers.create({
+    const base = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'cfv-rollback-base',
       name: 'CFV Rollback Base',
@@ -515,7 +532,7 @@ describe('watcher CRUD', () => {
 
     // Seed the colliding target so a SECOND assignment to it clashes on the
     // derived slug. This assignment succeeds on its own.
-    const seed = (await owner.watchers.createFromVersion({
+    const seed = (await owner.behaviors.createFromVersion({
       version_id: versionId,
       entity_ids: [collidingTarget.entity.id],
     })) as { created: Array<{ watcher_id: string }> };
@@ -524,7 +541,7 @@ describe('watcher CRUD', () => {
     // Now fan out to [fresh, colliding]. The colliding insert hits the seeded
     // slug → 23505 → coded 409, and the whole tx rolls back.
     await expect(
-      owner.watchers.createFromVersion({
+      owner.behaviors.createFromVersion({
         version_id: versionId,
         entity_ids: [freshTarget.entity.id, collidingTarget.entity.id],
       })
@@ -537,24 +554,26 @@ describe('watcher CRUD', () => {
     `;
     expect(leaked.length).toBe(0);
 
-    await owner.watchers.delete({
+    await owner.behaviors.delete({
       watcher_ids: [base.watcher_id, ...seed.created.map((c) => c.watcher_id)],
     });
   });
 
   it('creates an org-scoped watcher without an inline extraction schema', async () => {
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       slug: 'org-scoped-summary-watcher',
       name: 'Org Scoped Summary Watcher',
       prompt: 'Summarize recent workspace activity.',
-      schedule: '0 12 * * *',
+      triggers: [{ kind: 'schedule', cron: '0 12 * * *' }],
       agent_id: agentId,
     })) as { watcher_id: string };
 
-    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
-      watcher?: { entity_id?: number | null };
+    const got = (await owner.behaviors.get({
+      watcher_id: created.watcher_id,
+    })) as {
+      behavior?: { entity_id?: number | null };
     };
-    expect(got.watcher?.entity_id ?? null).toBeNull();
+    expect(got.behavior?.entity_id ?? null).toBeNull();
   });
 
   it('derives sources[] from @-mention tokens in the prompt (no sources sent)', async () => {
@@ -570,7 +589,7 @@ describe('watcher CRUD', () => {
     )}`;
     const prompt = `Summarize @[sql:recent:Recent events](${sqlPath}) each morning.`;
 
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'prompt-derived-sources-watcher',
       name: 'Prompt Derived Sources Watcher',
@@ -579,14 +598,14 @@ describe('watcher CRUD', () => {
       // NOTE: no `sources` — the backend must derive them from the prompt token.
     })) as { watcher_id: string };
 
-    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
-      watcher?: { sources?: Array<{ name: string; query: string }> | null };
+    const got = (await owner.behaviors.get({
+      watcher_id: created.watcher_id,
+    })) as {
+      behavior?: { sources?: Array<{ name: string; query: string }> | null };
     };
-    expect(got.watcher?.sources).toEqual([
-      { name: 'recent_events', query },
-    ]);
+    expect(got.behavior?.sources).toEqual([{ name: 'recent_events', query }]);
 
-    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('re-derives sources on a version bump — an edited SQL chip replaces (not strands) the old query', async () => {
@@ -599,10 +618,10 @@ describe('watcher CRUD', () => {
         /[()'!*~]/g,
         (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
       )}`;
-    const oldQuery = 'SELECT id FROM events WHERE payload_type = \'a\'';
-    const newQuery = 'SELECT id FROM events WHERE payload_type = \'b\'';
+    const oldQuery = "SELECT id FROM events WHERE payload_type = 'a'";
+    const newQuery = "SELECT id FROM events WHERE payload_type = 'b'";
 
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'sql-edit-rederive-watcher',
       name: 'SQL Edit Rederive Watcher',
@@ -611,20 +630,22 @@ describe('watcher CRUD', () => {
     })) as { watcher_id: string };
 
     // Edit the SQL chip: same label/name, new query — a new prompt version.
-    await owner.watchers.createVersion({
+    await owner.behaviors.createVersion({
       watcher_id: created.watcher_id,
       prompt: `Watch @[sql:recent:Recent](${enc(newQuery)}).`,
       change_notes: 'edit sql',
     });
 
-    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
-      watcher?: { sources?: Array<{ name: string; query: string }> | null };
+    const got = (await owner.behaviors.get({
+      watcher_id: created.watcher_id,
+    })) as {
+      behavior?: { sources?: Array<{ name: string; query: string }> | null };
     };
     // Exactly one source, carrying the NEW query — the old one is gone, not
     // stranded under `recent`, and there is no `recent_2`.
-    expect(got.watcher?.sources).toEqual([{ name: 'recent', query: newQuery }]);
+    expect(got.behavior?.sources).toEqual([{ name: 'recent', query: newQuery }]);
 
-    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('clears sources when an edited prompt removes every @-mention chip', async () => {
@@ -637,7 +658,7 @@ describe('watcher CRUD', () => {
         /[()'!*~]/g,
         (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
       )}`;
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'clear-sources-on-edit-watcher',
       name: 'Clear Sources On Edit Watcher',
@@ -646,22 +667,24 @@ describe('watcher CRUD', () => {
     })) as { watcher_id: string };
 
     // New prompt with the chip removed → sources must become empty.
-    await owner.watchers.createVersion({
+    await owner.behaviors.createVersion({
       watcher_id: created.watcher_id,
       prompt: 'Just watch everything, no specific source.',
       change_notes: 'remove chip',
     });
 
-    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
-      watcher?: { sources?: Array<{ name: string; query: string }> | null };
+    const got = (await owner.behaviors.get({
+      watcher_id: created.watcher_id,
+    })) as {
+      behavior?: { sources?: Array<{ name: string; query: string }> | null };
     };
-    expect(got.watcher?.sources ?? []).toEqual([]);
+    expect(got.behavior?.sources ?? []).toEqual([]);
 
-    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('round-trips execution_config through create → list → update', async () => {
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'exec-config-watcher',
       name: 'Exec Config Watcher',
@@ -679,13 +702,19 @@ describe('watcher CRUD', () => {
 
     const findRow = (
       res: {
-        watchers?: Array<{ watcher_id: string; execution_config?: Record<string, unknown> | null }>;
+        behaviors?: Array<{
+          watcher_id: string;
+          execution_config?: Record<string, unknown> | null;
+        }>;
       },
       id: string
-    ) => res.watchers?.find((w) => String(w.watcher_id) === String(id));
+    ) => res.behaviors?.find((w) => String(w.watcher_id) === String(id));
 
-    const list = (await owner.watchers.list({ entity_id: entityId })) as {
-      watchers?: Array<{ watcher_id: string; execution_config?: Record<string, unknown> }>;
+    const list = (await owner.behaviors.list({ entity_id: entityId })) as {
+      behaviors?: Array<{
+        watcher_id: string;
+        execution_config?: Record<string, unknown>;
+      }>;
     };
     expect(findRow(list, watcherId)?.execution_config).toEqual({
       timeout_seconds: 1800,
@@ -696,27 +725,38 @@ describe('watcher CRUD', () => {
     });
 
     // Update replaces the whole jsonb; a partial object is stored verbatim.
-    await owner.watchers.update({
+    await owner.behaviors.update({
       watcher_id: watcherId,
       execution_config: { timeout_seconds: 300 },
     });
-    const after = (await owner.watchers.list({ entity_id: entityId })) as {
-      watchers?: Array<{ watcher_id: string; execution_config?: Record<string, unknown> }>;
+    const after = (await owner.behaviors.list({ entity_id: entityId })) as {
+      behaviors?: Array<{
+        watcher_id: string;
+        execution_config?: Record<string, unknown>;
+      }>;
     };
-    expect(findRow(after, watcherId)?.execution_config).toEqual({ timeout_seconds: 300 });
+    expect(findRow(after, watcherId)?.execution_config).toEqual({
+      timeout_seconds: 300,
+    });
 
     // Passing null clears the saved config back to NULL/defaults.
-    await owner.watchers.update({ watcher_id: watcherId, execution_config: null });
-    const cleared = (await owner.watchers.list({ entity_id: entityId })) as {
-      watchers?: Array<{ watcher_id: string; execution_config?: Record<string, unknown> | null }>;
+    await owner.behaviors.update({
+      watcher_id: watcherId,
+      execution_config: null,
+    });
+    const cleared = (await owner.behaviors.list({ entity_id: entityId })) as {
+      behaviors?: Array<{
+        watcher_id: string;
+        execution_config?: Record<string, unknown> | null;
+      }>;
     };
     expect(findRow(cleared, watcherId)?.execution_config ?? null).toBeNull();
 
-    await owner.watchers.delete({ watcher_ids: [watcherId] });
+    await owner.behaviors.delete({ watcher_ids: [watcherId] });
   });
 
   it('leaves execution_config null when unset', async () => {
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'no-exec-config-watcher',
       name: 'No Exec Config',
@@ -724,16 +764,17 @@ describe('watcher CRUD', () => {
       agent_id: agentId,
     })) as { watcher_id: string };
 
-    const list = (await owner.watchers.list({ entity_id: entityId })) as {
-      watchers?: Array<{ watcher_id: string; execution_config?: Record<string, unknown> | null }>;
+    const list = (await owner.behaviors.list({ entity_id: entityId })) as {
+      behaviors?: Array<{
+        watcher_id: string;
+        execution_config?: Record<string, unknown> | null;
+      }>;
     };
-    const row = list.watchers?.find(
-      (w) => String(w.watcher_id) === String(created.watcher_id)
-    );
+    const row = list.behaviors?.find((w) => String(w.watcher_id) === String(created.watcher_id));
     expect(row).toBeDefined();
     expect(row?.execution_config ?? null).toBeNull();
 
-    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('rejects an invalid execution_config (type/range/unknown-key)', async () => {
@@ -745,13 +786,17 @@ describe('watcher CRUD', () => {
     };
     // timeout_seconds below minimum
     await expect(
-      owner.watchers.create({ ...base, slug: 'bad-1', execution_config: { timeout_seconds: 0 } })
+      owner.behaviors.create({
+        ...base,
+        slug: 'bad-1',
+        execution_config: { timeout_seconds: 0 },
+      })
     ).rejects.toThrow(/execution_config/i);
     // uncoercible type (non-numeric string where integer expected) — would
     // otherwise brick the Swift payload decode at run time. A numeric string
     // like '600' is coerced to 600 by boundary validation instead.
     await expect(
-      owner.watchers.create({
+      owner.behaviors.create({
         ...base,
         slug: 'bad-2',
         execution_config: { timeout_seconds: 'abc' },
@@ -759,7 +804,7 @@ describe('watcher CRUD', () => {
     ).rejects.toThrow(/execution_config/i);
     // unknown key (additionalProperties: false)
     await expect(
-      owner.watchers.create({
+      owner.behaviors.create({
         ...base,
         slug: 'bad-3',
         execution_config: { bogus: true },
@@ -767,7 +812,7 @@ describe('watcher CRUD', () => {
     ).rejects.toThrow(/execution_config/i);
     // above maximum
     await expect(
-      owner.watchers.create({
+      owner.behaviors.create({
         ...base,
         slug: 'bad-4',
         execution_config: { timeout_seconds: 999_999 },
@@ -776,7 +821,7 @@ describe('watcher CRUD', () => {
   });
 
   it('creates an org-scoped watcher with no entity_id', async () => {
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       slug: 'org-scoped-watcher',
       name: 'Org Scoped',
       prompt: 'Track org-wide signals.',
@@ -784,18 +829,20 @@ describe('watcher CRUD', () => {
     })) as { watcher_id: string };
     expect(created.watcher_id).toBeDefined();
 
-    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
-      watcher?: { entity_ids?: number[] };
+    const got = (await owner.behaviors.get({
+      watcher_id: created.watcher_id,
+    })) as {
+      behavior?: { entity_ids?: number[] };
     };
-    expect(got.watcher?.entity_ids ?? []).toEqual([]);
+    expect(got.behavior?.entity_ids ?? []).toEqual([]);
 
-    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('rejects an org-scoped watcher when there is no organization context', async () => {
     const noOrg = owner.withAuth({ organizationId: null });
     await expect(
-      noOrg.watchers.create({
+      noOrg.behaviors.create({
         slug: 'no-org-watcher',
         name: 'No Org',
         prompt: 'should fail',
@@ -805,36 +852,38 @@ describe('watcher CRUD', () => {
   });
 
   it('blocks cross-org reads and writes for org-scoped watchers', async () => {
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       slug: 'cross-org-org-scoped-watcher',
       name: 'Cross Org Protected',
       prompt: 'Track org-wide signals.',
       agent_id: agentId,
     })) as { watcher_id: string };
 
-    await expect(intruder.watchers.get({ watcher_id: created.watcher_id })).rejects.toThrow(
+    await expect(intruder.behaviors.get({ watcher_id: created.watcher_id })).rejects.toThrow(
       /access|organization/i
     );
     await expect(
-      intruder.watchers.update({
+      intruder.behaviors.update({
         watcher_id: created.watcher_id,
-        schedule: '0 11 * * *',
+        triggers: [{ kind: 'schedule', cron: '0 11 * * *' }],
       })
     ).rejects.toThrow(/access|organization/i);
-    await expect(intruder.watchers.delete({ watcher_ids: [created.watcher_id] })).rejects.toThrow(
+    await expect(intruder.behaviors.delete({ watcher_ids: [created.watcher_id] })).rejects.toThrow(
       /access|organization/i
     );
 
-    const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
-      watcher?: { schedule: string | null };
+    const got = (await owner.behaviors.get({
+      watcher_id: created.watcher_id,
+    })) as {
+      behavior?: { schedule: string | null };
     };
-    expect(got.watcher?.schedule).toBeNull();
+    expect(got.behavior?.schedule).toBeNull();
 
-    await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
   });
 
   it('blocks a member from deleting watchers (admin-only)', async () => {
-    const created = (await owner.watchers.create({
+    const created = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'protected-watcher',
       name: 'Protected',
@@ -843,7 +892,7 @@ describe('watcher CRUD', () => {
     })) as { watcher_id: string };
 
     const member = owner.withAuth({ memberRole: 'member' });
-    await expect(member.watchers.delete({ watcher_ids: [created.watcher_id] })).rejects.toThrow(
+    await expect(member.behaviors.delete({ watcher_ids: [created.watcher_id] })).rejects.toThrow(
       /admin|owner|access/i
     );
   });
@@ -877,7 +926,7 @@ describe('watcher CRUD', () => {
         organizationId: ownerOrgId,
         worker: 'dev-in-org',
       });
-      const created = (await owner.watchers.manage({
+      const created = (await owner.behaviors.manage({
         action: 'create',
         entity_id: entityId,
         slug: 'device-pin-allowed',
@@ -888,14 +937,16 @@ describe('watcher CRUD', () => {
       })) as { watcher_id: string };
       expect(created.watcher_id).toBeDefined();
 
-      const got = (await owner.watchers.get({ watcher_id: created.watcher_id })) as {
-        watcher?: { device_worker_id?: string | null };
+      const got = (await owner.behaviors.get({
+        watcher_id: created.watcher_id,
+      })) as {
+        behavior?: { device_worker_id?: string | null };
       };
-      expect(got.watcher?.device_worker_id).toBe(deviceId);
-      await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
+      expect(got.behavior?.device_worker_id).toBe(deviceId);
+      await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
     });
 
-    it("rejects pinning to a device in another org (create)", async () => {
+    it('rejects pinning to a device in another org (create)', async () => {
       // Device owned by another user AND attached to another org — even an owner
       // cannot pin it; this is the privilege-escalation case.
       const foreignDeviceId = await seedDevice({
@@ -904,7 +955,7 @@ describe('watcher CRUD', () => {
         worker: 'dev-foreign-org',
       });
       await expect(
-        owner.watchers.manage({
+        owner.behaviors.manage({
           action: 'create',
           entity_id: entityId,
           slug: 'device-pin-foreign',
@@ -918,7 +969,7 @@ describe('watcher CRUD', () => {
 
     it('rejects pinning to a nonexistent device (create)', async () => {
       await expect(
-        owner.watchers.manage({
+        owner.behaviors.manage({
           action: 'create',
           entity_id: entityId,
           slug: 'device-pin-missing',
@@ -931,7 +982,7 @@ describe('watcher CRUD', () => {
     });
 
     it('rejects re-pinning an existing watcher to a foreign-org device (update)', async () => {
-      const created = (await owner.watchers.create({
+      const created = (await owner.behaviors.create({
         entity_id: entityId,
         slug: 'device-pin-update',
         name: 'Device Pin Update',
@@ -945,14 +996,14 @@ describe('watcher CRUD', () => {
         worker: 'dev-foreign-update',
       });
       await expect(
-        owner.watchers.manage({
+        owner.behaviors.manage({
           action: 'update',
           watcher_id: created.watcher_id,
           device_worker_id: foreignDeviceId,
         })
       ).rejects.toThrow(/device you own|not found or not accessible/i);
 
-      await owner.watchers.delete({ watcher_ids: [created.watcher_id] });
+      await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
     });
   });
 });

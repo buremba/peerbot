@@ -1,7 +1,7 @@
 /**
- * Reaction for the `account-health-monitor` watcher.
+ * Reaction for the `account-health-monitor` Behavior.
  *
- * When the watcher detects a material risk-level change on a tracked account,
+ * When the Behavior detects a material risk-level change on a tracked account,
  * persist a `health_change` event so the renewal-risk view + weekly digest
  * have a stable record without re-extracting from the CRM stream.
  */

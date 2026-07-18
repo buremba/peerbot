@@ -196,7 +196,7 @@ export default class PulseConnector extends ConnectorRuntime<Checkpoint> {
 }
 TS
 
-# Watcher reaction: writes a deterministic, assertable knowledge event when the
+# Behavior reaction: writes a deterministic, assertable knowledge event when the
 # window completes. Kept in its own file so the SDK type-checks it.
 mkdir -p "$PROJ/reactions"
 cat > "$PROJ/reactions/digest.reaction.ts" <<'TS'
@@ -221,7 +221,7 @@ export default async (ctx: ReactionContext, client: ReactionClient): Promise<voi
     content: data.s,
     semantic_type: "summary",
     metadata: {
-      watcher_slug: ctx.watcher.slug,
+      behavior_slug: ctx.behavior.slug,
       window_id: ctx.window.id,
       content_analyzed: ctx.window.content_analyzed,
     },
@@ -584,11 +584,11 @@ echo "✓ connector sync ran the compiled connector and emitted events (items=$R
 #    deterministically drive read_knowledge → complete_window so the reaction
 #    fires regardless of the fixed-reply mock (the agentic turn would never
 #    produce a complete_window tool-call). The reaction saves SDKE2E_REACTION_OK.
-WATCHERS="$RUN_DIR/watchers.json"
-api list_watchers '{}' > "$WATCHERS" 2>/dev/null || fail "could not list watchers"
-WATCHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.watchers||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="digest")||arr[0];const id=w?(w.watcher_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$WATCHERS")"
-[ -n "$WATCHER_ID" ] || { cat "$WATCHERS" >&2; fail "no 'digest' watcher found after apply"; }
-echo "✓ apply created the digest watcher (id=$WATCHER_ID)"
+BEHAVIORS="$RUN_DIR/behaviors.json"
+api manage_behaviors '{"action":"list"}' > "$BEHAVIORS" 2>/dev/null || fail "could not list Behaviors"
+WATCHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.behaviors||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="digest")||arr[0];const id=w?(w.watcher_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$BEHAVIORS")"
+[ -n "$WATCHER_ID" ] || { cat "$BEHAVIORS" >&2; fail "no 'digest' Behavior found after apply"; }
+echo "✓ apply created the digest Behavior (id=$WATCHER_ID)"
 
 # Declarative rendering config: the `company` type's event_kinds + view template
 # must have applied. event_kinds rides manage_entity_schema; the view template is

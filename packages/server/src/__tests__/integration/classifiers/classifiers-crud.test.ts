@@ -37,8 +37,11 @@ describe('classifier CRUD', () => {
     })) as { entity: { id: number } };
     entityId = entity.entity.id;
 
-    const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
-    const w = (await owner.watchers.create({
+    const agent = await createTestAgent({
+      organizationId: org.id,
+      ownerUserId: user.id,
+    });
+    const w = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'cls-watcher',
       name: 'Classifier Watcher',
@@ -58,8 +61,16 @@ describe('classifier CRUD', () => {
       attribute_key: 'sentiment',
       watcher_id: watcherId,
       attribute_values: {
-        positive: { description: 'positive sentiment', examples: ['great'], embedding: stubEmbedding },
-        negative: { description: 'negative sentiment', examples: ['bad'], embedding: stubEmbedding },
+        positive: {
+          description: 'positive sentiment',
+          examples: ['great'],
+          embedding: stubEmbedding,
+        },
+        negative: {
+          description: 'negative sentiment',
+          examples: ['bad'],
+          embedding: stubEmbedding,
+        },
       },
     })) as { data?: { classifier_id: number } };
     expect(created.data?.classifier_id).toBeGreaterThan(0);

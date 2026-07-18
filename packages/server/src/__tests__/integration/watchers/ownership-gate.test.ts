@@ -18,11 +18,7 @@ import type { Env } from '../../../index';
 import type { AuthContext } from '../../../tools/execute';
 import { executeTool } from '../../../tools/execute';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import {
-  createCanvasWindow,
-  createTestAgent,
-  createTestEntity,
-} from '../../setup/test-fixtures';
+import { createCanvasWindow, createTestAgent, createTestEntity } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
 
 const TEST_ENV: Env = {
@@ -61,7 +57,10 @@ async function manageEntityUpdate(
   ctx: AuthContext,
   entityId: number,
   metadata: Record<string, unknown>,
-  opts?: { affirm_fields?: string[]; watcher_source?: { watcher_id: number; window_id: number } }
+  opts?: {
+    affirm_fields?: string[];
+    watcher_source?: { watcher_id: number; window_id: number };
+  }
 ) {
   return executeTool(
     'manage_entity',
@@ -98,7 +97,7 @@ async function seedWatcherAndWindow(workspace: TestWorkspace, suffix: string) {
     organizationId: workspace.org.id,
     ownerUserId: workspace.users.owner.id,
   });
-  const watcher = (await workspace.owner.watchers.create({
+  const watcher = (await workspace.owner.behaviors.create({
     entity_id: entity.id,
     slug: `gate-watcher-${suffix}`,
     name: `Gate Watcher ${suffix}`,
@@ -153,7 +152,9 @@ describe('ownership gate on agent entity writes', () => {
     const user = workspace.users.owner.id;
 
     // Human claims ownership of `severity` by setting it.
-    await manageEntityUpdate(humanCtx(org, user), entity.id, { severity: 'high' });
+    await manageEntityUpdate(humanCtx(org, user), entity.id, {
+      severity: 'high',
+    });
 
     // Agent tries to overwrite the owned field AND write a fresh unowned field.
     const result = await manageEntityUpdate(agentCtx(org, user), entity.id, {
@@ -248,7 +249,9 @@ describe('ownership gate on agent entity writes', () => {
     } = await seedWatcherAndWindow(workspace, 'reaction');
 
     // Human owns the field first.
-    await manageEntityUpdate(humanCtx(org, user), reactionEntity.id, { severity: 'high' });
+    await manageEntityUpdate(humanCtx(org, user), reactionEntity.id, {
+      severity: 'high',
+    });
 
     // The reaction acts as its OWN watcher: the explicit watcher_source names a
     // watcher owned by this agent, so the tag is honored (an agent can only tag
@@ -278,16 +281,19 @@ describe('ownership gate on agent entity writes', () => {
     expect(result.approval_attribution).toBe('watcher');
   });
 
-  it('ignores a caller-supplied watcher_source that is NOT the acting agent\'s own watcher', async () => {
+  it("ignores a caller-supplied watcher_source that is NOT the acting agent's own watcher", async () => {
     const org = workspace.org.id;
     const user = workspace.users.owner.id;
     // A watcher owned by a DIFFERENT agent than the one making the call.
-    const { entity: target, watcherId, windowId } = await seedWatcherAndWindow(
-      workspace,
-      'foreign'
-    );
+    const {
+      entity: target,
+      watcherId,
+      windowId,
+    } = await seedWatcherAndWindow(workspace, 'foreign');
 
-    await manageEntityUpdate(humanCtx(org, user), target.id, { severity: 'high' });
+    await manageEntityUpdate(humanCtx(org, user), target.id, {
+      severity: 'high',
+    });
 
     // A restricted agent tags the foreign watcher, trying to escape its own
     // envelope. The tag must be IGNORED → the write is attributed to the agent,
@@ -306,10 +312,16 @@ describe('ownership gate on agent entity writes', () => {
     const org = workspace.org.id;
     const user = workspace.users.owner.id;
 
-    await manageEntityUpdate(humanCtx(org, user), entity.id, { severity: 'high' });
+    await manageEntityUpdate(humanCtx(org, user), entity.id, {
+      severity: 'high',
+    });
 
-    await manageEntityUpdate(agentCtx(org, user), entity.id, { severity: 'critical' });
-    await manageEntityUpdate(agentCtx(org, user), entity.id, { severity: 'critical' });
+    await manageEntityUpdate(agentCtx(org, user), entity.id, {
+      severity: 'critical',
+    });
+    await manageEntityUpdate(agentCtx(org, user), entity.id, {
+      severity: 'critical',
+    });
 
     const pending = await getTestDb()`
       SELECT id FROM runs
@@ -325,8 +337,12 @@ describe('ownership gate on agent entity writes', () => {
     const org = workspace.org.id;
     const user = workspace.users.owner.id;
 
-    await manageEntityUpdate(humanCtx(org, user), entity.id, { severity: 'high' });
-    await manageEntityUpdate(agentCtx(org, user), entity.id, { severity: 'critical' });
+    await manageEntityUpdate(humanCtx(org, user), entity.id, {
+      severity: 'high',
+    });
+    await manageEntityUpdate(agentCtx(org, user), entity.id, {
+      severity: 'critical',
+    });
 
     const [pending] = await getTestDb()`
       SELECT id FROM runs

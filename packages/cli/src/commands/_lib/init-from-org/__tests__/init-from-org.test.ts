@@ -4,7 +4,7 @@
  * The canonical gate: bootstrap a project from stubbed cloud state, then load
  * the generated `lobu.config.ts` back through `loadDesiredStateFromConfig` and
  * assert the resulting DesiredState matches the stubbed cloud input
- * (entities/relationships/watchers/connections/authProfiles/agents), modulo
+ * (entities/relationships/behaviors/connections/authProfiles/agents), modulo
  * write-only secret values (placeholders) and `installedAt` timestamps.
  *
  * Network is stubbed through an injected fetch impl returning the canned
@@ -106,15 +106,15 @@ function fullOrgRoutes(): Record<string, () => unknown> {
         { agentId: "sales", name: "Sales", description: "Revenue agent" },
       ],
     }),
-    "watchers?watcher_id": () => ({
-      watcher: {
+    "behaviors?watcher_id": () => ({
+      behavior: {
         reaction_script:
           "export default async (ctx, client) => {\n  await client.knowledge.save({ content: 'ok', semantic_type: 'digest' });\n};\n",
         description: null,
       },
     }),
-    "watchers?include_details": () => ({
-      watchers: [
+    "behaviors?include_details": () => ({
+      behaviors: [
         {
           slug: "account-health",
           watcher_id: "1",
@@ -410,7 +410,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -443,7 +443,7 @@ describe("lobu init --from-org", () => {
           updatedAt: 0,
         }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -476,7 +476,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -568,7 +568,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/bot/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "bot", name: "Bot" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -624,7 +624,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/bot/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "bot", name: "Bot" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -661,7 +661,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -730,7 +730,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -827,7 +827,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         // The REAL server `list` action omits rules (only `list_rules` returns
         // them). Branch on the action so this mirrors production: list → no
         // rules; list_rules → the rule rows in the server's snake_case shape.
@@ -885,7 +885,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: (body) => {
           if (body.action === "list_rules") {
             // The owned cross-org rel type binds an owned type to a NON-owned

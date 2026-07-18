@@ -21,7 +21,7 @@ describe("connector-catalog helpers", () => {
 		const watchersManifest = fileURLToPath(uris[2]!);
 		expect(connectorsManifest.endsWith("/connectors.json")).toBe(true);
 		expect(skillsManifest.endsWith("/skills.json")).toBe(true);
-		expect(watchersManifest.endsWith("/watchers.json")).toBe(true);
+		expect(watchersManifest.endsWith("/behaviors.json")).toBe(true);
 		expect(existsSync(findBundledConnectorFile("google.gmail")!)).toBe(true);
 	});
 
@@ -40,13 +40,13 @@ describe("connector-catalog helpers", () => {
 
 		expect(bundledConnectorFile).toBeTruthy();
 		expect(connectorSourcePathToUri("google_gmail.ts")).toBe(
-			normalizeFileSourceUri(bundledConnectorFile!),
+			normalizeFileSourceUri(bundledConnectorFile!)
 		);
 	});
 
 	it("returns null for non-local source paths that cannot be resolved", () => {
 		expect(
-			connectorSourcePathToUri("github.com/example/connector.ts"),
+			connectorSourcePathToUri("github.com/example/connector.ts")
 		).toBeNull();
 	});
 });

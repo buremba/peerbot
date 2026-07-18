@@ -7,15 +7,11 @@ import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { isUniqueViolation } from '../../../utils/pg-errors';
-import { nextRunAt, validateSchedule, validateTimezone } from '../../../utils/cron';
-import {
-  recordChangeEvent,
-  recordLifecycleEvent,
-} from '../../../utils/insert-event';
+import { nextRunAt } from '../../../utils/cron';
+import { recordChangeEvent, recordLifecycleEvent } from '../../../utils/insert-event';
 import { recordToolConfigChange } from '../helpers/config-audit';
 import logger from '../../../utils/logger';
-import { getOrganizationSlug, getPublicWebUrl, buildWatchersUrl } from '../../../utils/url-builder';
-import { toEntityInfo } from '../../view-urls';
+import { buildBehaviorUrl, getOrganizationSlug, getPublicWebUrl } from '../../../utils/url-builder';
 import {
   createClassifiersForWatcher,
   enableClassifiersOnEntity,
@@ -26,8 +22,8 @@ import { assertEntityIdsInOrg, getNextNumericId, requireExists } from '../helper
 import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs } from '../manage_behaviors';
 import {
-  normalizeWatcherUpdatePatch,
-  type WatcherUpdatePatch,
+  normalizeBehaviorUpdatePatch,
+  type BehaviorUpdatePatch,
 } from '@lobu/core/contracts/tools/manage-behaviors';
 import {
   assertWatcherVersionConfigValid,
@@ -38,11 +34,8 @@ import {
   summarizeResults,
   type WatcherOperationResult,
 } from './shared';
-import { getErrorMessage } from "@lobu/core";
-import {
-  extractSourcesFromPromptTokens,
-  mergePromptSources,
-} from '../../../watchers/source-refs';
+import { getErrorMessage } from '@lobu/core';
+import { extractSourcesFromPromptTokens, mergePromptSources } from '../../../watchers/source-refs';
 import {
   compileReactionScript,
   extractReactionInputSchema,
@@ -54,14 +47,14 @@ import {
 import { syncBehaviorChannelFeeds } from '../../../behaviors/channel-subscriptions';
 
 async function syncBehaviorChannelFeedsBestEffort(
-  args: Parameters<typeof syncBehaviorChannelFeeds>[0],
+  args: Parameters<typeof syncBehaviorChannelFeeds>[0]
 ): Promise<void> {
   try {
     await syncBehaviorChannelFeeds(args);
   } catch (error) {
     logger.warn(
       { error: getErrorMessage(error) },
-      '[manage_behaviors] Failed to reconcile derived streaming feeds',
+      '[manage_behaviors] Failed to reconcile derived streaming feeds'
     );
   }
 }
@@ -118,7 +111,12 @@ export async function handleCreate(
   const sources: Array<{ name: string; query: string }> =
     merged.length > 0
       ? merged
-      : [{ name: 'content', query: 'SELECT * FROM events ORDER BY occurred_at DESC' }];
+      : [
+          {
+            name: 'content',
+            query: 'SELECT * FROM events ORDER BY occurred_at DESC',
+          },
+        ];
 
   // Validate watcher config
   assertWatcherVersionConfigValid({
@@ -136,19 +134,6 @@ export async function handleCreate(
     throw new ToolUserError(
       'agent_id is required to create a watcher (the agent that executes it).'
     );
-  }
-
-  if (args.schedule) {
-    const scheduleError = validateSchedule(args.schedule);
-    if (scheduleError) {
-      throw new ToolUserError(scheduleError);
-    }
-  }
-  if (args.timezone) {
-    const tzError = validateTimezone(args.timezone);
-    if (tzError) {
-      throw new ToolUserError(tzError);
-    }
   }
 
   interface EntityRow {
@@ -193,21 +178,13 @@ export async function handleCreate(
   // instead of producing silent empty context at read_knowledge. Custom-SQL
   // sources are skipped here; their id projection is enforced above.
   if (!organizationId) {
-    throw new ToolUserError(
-      'Cannot resolve watcher sources without an organization'
-    );
+    throw new ToolUserError('Cannot resolve watcher sources without an organization');
   }
   await assertWatcherSourcesResolve(sql, organizationId, sources);
   const triggerWrite = resolveBehaviorTriggerWrite({
     triggers: args.triggers,
-    schedule: args.schedule,
-    timezone: args.timezone,
   });
-  await assertBehaviorTriggerConnections(
-    sql,
-    organizationId,
-    triggerWrite.triggers,
-  );
+  await assertBehaviorTriggerConnections(sql, organizationId, triggerWrite.triggers);
 
   // Check slug uniqueness within org
   const existingSlug = await sql`
@@ -241,16 +218,16 @@ export async function handleCreate(
 
   try {
     await sql.begin(async (tx) => {
-    watcherId = await getNextNumericId(tx, 'watchers');
-    versionId = await getNextNumericId(tx, 'watcher_versions');
-    const entityIdsArray = entityId ? [entityId] : [];
+      watcherId = await getNextNumericId(tx, 'watchers');
+      versionId = await getNextNumericId(tx, 'watcher_versions');
+      const entityIdsArray = entityId ? [entityId] : [];
 
-    const nextRunAtVal = triggerWrite.schedule
-      ? nextRunAt(triggerWrite.schedule, new Date(), triggerWrite.timezone)
-      : null;
+      const nextRunAtVal = triggerWrite.schedule
+        ? nextRunAt(triggerWrite.schedule, new Date(), triggerWrite.timezone)
+        : null;
 
-    // 1. Create watcher row
-    await tx`
+      // 1. Create watcher row
+      await tx`
       INSERT INTO watchers (
         id, name, slug, organization_id, entity_ids,
         schedule, timezone, next_run_at, triggers, agent_id, scheduler_client_id, model_config, sources, version,
@@ -279,14 +256,14 @@ export async function handleCreate(
       )
     `;
 
-    // 2. Create watcher_versions row (v1)
-    // Reaction fields (reaction_script/reaction_script_compiled/
-    // reaction_input_schema) intentionally live on the watchers row only, not
-    // on watcher_versions. Reactions are group-shared and unversioned (see
-    // handleCreateFromVersion, which copies them off watchers, and
-    // handleSetReactionScript, which writes them group-wide). Don't add them
-    // here: watcher_versions has no such columns.
-    await tx`
+      // 2. Create watcher_versions row (v1)
+      // Reaction fields (reaction_script/reaction_script_compiled/
+      // reaction_input_schema) intentionally live on the watchers row only, not
+      // on watcher_versions. Reactions are group-shared and unversioned (see
+      // handleCreateFromVersion, which copies them off watchers, and
+      // handleSetReactionScript, which writes them group-wide). Don't add them
+      // here: watcher_versions has no such columns.
+      await tx`
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
         prompt, version_sources,
@@ -300,28 +277,28 @@ export async function handleCreate(
       )
     `;
 
-    // 3. Point watcher to the newly created current version
-    await tx`
+      // 3. Point watcher to the newly created current version
+      await tx`
       UPDATE watchers
       SET current_version_id = ${versionId}
       WHERE id = ${watcherId}
     `;
 
-    // 4. Auto-create classifiers (entity-level only)
-    if (entityId && classifiers && Array.isArray(classifiers) && classifiers.length > 0) {
-      if (!ctx.userId) {
-        throw new Error('Authenticated user is required to create watcher classifiers');
+      // 4. Auto-create classifiers (entity-level only)
+      if (entityId && classifiers && Array.isArray(classifiers) && classifiers.length > 0) {
+        if (!ctx.userId) {
+          throw new Error('Authenticated user is required to create watcher classifiers');
+        }
+
+        await createClassifiersForWatcher(tx, watcherId as number, entityId, classifiers as any[], {
+          createdBy: ctx.userId,
+          organizationId: ctx.organizationId,
+        });
+
+        const slugs = (classifiers as any[]).map((d: any) => d.slug);
+        await enableClassifiersOnEntity(tx, entityId, slugs);
       }
-
-      await createClassifiersForWatcher(tx, watcherId as number, entityId, classifiers as any[], {
-        createdBy: ctx.userId,
-        organizationId: ctx.organizationId,
-      });
-
-      const slugs = (classifiers as any[]).map((d: any) => d.slug);
-      await enableClassifiersOnEntity(tx, entityId, slugs);
-    }
-  });
+    });
   } catch (err) {
     // The slug precheck above is not a lock: two concurrent replicas can both
     // pass it and race idx_watchers_org_slug. Translate that 23505 to the SAME
@@ -339,8 +316,8 @@ export async function handleCreate(
   const baseUrl = getPublicWebUrl(ctx.requestUrl, ctx.baseUrl);
   let viewUrl: string | undefined;
 
-  if (entityRow !== null && organizationSlug) {
-    viewUrl = buildWatchersUrl(toEntityInfo(organizationSlug, entityRow), baseUrl);
+  if (organizationSlug && args.agent_id) {
+    viewUrl = buildBehaviorUrl(organizationSlug, args.agent_id, watcherId as number, baseUrl);
   }
 
   logger.info(`[manage_behaviors] Created watcher ${watcherId} with slug '${args.slug}'`);
@@ -448,31 +425,9 @@ export async function handleUpdate(
   };
   const triggerWrite = resolveBehaviorTriggerWrite({
     triggers: args.triggers,
-    schedule: args.schedule,
-    timezone: args.timezone,
     currentTriggers: currentRow.triggers ?? [],
-    currentSchedule: currentRow.schedule,
-    currentTimezone: currentRow.timezone,
   });
-  await assertBehaviorTriggerConnections(
-    sql,
-    currentRow.organization_id,
-    triggerWrite.triggers,
-  );
-
-  // Validate schedule if provided
-  if (args.schedule) {
-    const scheduleError = validateSchedule(args.schedule);
-    if (scheduleError) {
-      return { error: scheduleError } as any;
-    }
-  }
-  if (args.timezone) {
-    const tzError = validateTimezone(args.timezone);
-    if (tzError) {
-      return { error: tzError } as any;
-    }
-  }
+  await assertBehaviorTriggerConnections(sql, currentRow.organization_id, triggerWrite.triggers);
 
   // Match the invariant from handleCreate: a watcher with no agent_id is
   // a zombie the scheduler will never run (automation joins on
@@ -483,7 +438,7 @@ export async function handleUpdate(
       'agent_id cannot be set to null — every watcher must have an owning agent.'
     );
   }
-  if (args.schedule !== null && args.schedule !== undefined && args.agent_id === undefined) {
+  if (args.triggers !== undefined && triggerWrite.schedule && args.agent_id === undefined) {
     const currentAgentId = currentRow.agent_id;
     if (currentAgentId === null) {
       throw new ToolUserError(
@@ -495,8 +450,6 @@ export async function handleUpdate(
   const updatedFields: string[] = [];
   if (args.model_config !== undefined) updatedFields.push('model_config');
   if (args.execution_config !== undefined) updatedFields.push('execution_config');
-  if (args.schedule !== undefined) updatedFields.push('schedule');
-  if (args.timezone !== undefined) updatedFields.push('timezone');
   if (args.triggers !== undefined) updatedFields.push('triggers');
   if (args.agent_id !== undefined) updatedFields.push('agent_id');
   if (args.scheduler_client_id !== undefined) updatedFields.push('scheduler_client_id');
@@ -520,30 +473,17 @@ export async function handleUpdate(
   // reviewer saw is byte-for-byte what this UPDATE writes (displayed == applied,
   // drift-impossible). `field in patch` reproduces the prior `args.field !==
   // undefined` guard: normalize only emits keys present in args.
-  const patch = normalizeWatcherUpdatePatch(args);
-  if (
-    args.triggers !== undefined ||
-    args.schedule !== undefined ||
-    args.timezone !== undefined
-  ) {
+  const patch = normalizeBehaviorUpdatePatch(args);
+  if (args.triggers !== undefined) {
     patch.triggers = triggerWrite.triggers;
-    patch.schedule = triggerWrite.schedule;
-    patch.timezone = triggerWrite.timezone;
   }
-  const has = (k: keyof WatcherUpdatePatch) => k in patch;
+  const has = (k: keyof BehaviorUpdatePatch) => k in patch;
   // Recompute next_run_at when the cadence OR its zone changes; the effective
   // pair mixes the incoming args with the stored row for whichever side was
   // omitted, so a timezone-only update re-anchors the pending firing.
-  const touchesCadence =
-    args.triggers !== undefined ||
-    args.schedule !== undefined ||
-    args.timezone !== undefined;
-  const effectiveSchedule = touchesCadence
-    ? triggerWrite.schedule
-    : currentRow.schedule;
-  const effectiveTimezone = touchesCadence
-    ? triggerWrite.timezone
-    : currentRow.timezone;
+  const touchesCadence = args.triggers !== undefined;
+  const effectiveSchedule = touchesCadence ? triggerWrite.schedule : currentRow.schedule;
+  const effectiveTimezone = touchesCadence ? triggerWrite.timezone : currentRow.timezone;
   const nextRunAtVal =
     touchesCadence && effectiveSchedule
       ? nextRunAt(effectiveSchedule, new Date(), effectiveTimezone)
@@ -554,8 +494,8 @@ export async function handleUpdate(
       updated_at = NOW(),
       model_config = CASE WHEN ${has('model_config')} THEN ${toJsonParam(sql, patch.model_config)} ELSE model_config END,
       execution_config = CASE WHEN ${has('execution_config')} THEN ${toJsonParam(sql, patch.execution_config)} ELSE execution_config END,
-      schedule = CASE WHEN ${has('schedule')} THEN ${patch.schedule ?? null} ELSE schedule END,
-      timezone = CASE WHEN ${has('timezone')} THEN ${patch.timezone ?? null} ELSE timezone END,
+      schedule = CASE WHEN ${touchesCadence} THEN ${triggerWrite.schedule ?? null} ELSE schedule END,
+      timezone = CASE WHEN ${touchesCadence} THEN ${triggerWrite.timezone ?? null} ELSE timezone END,
       triggers = CASE WHEN ${has('triggers')} THEN ${toJsonParam(sql, patch.triggers)} ELSE triggers END,
       next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
       agent_id = CASE WHEN ${has('agent_id')} THEN ${patch.agent_id ?? null} ELSE agent_id END,
@@ -764,7 +704,11 @@ export async function handleCreateFromVersion(
   const entityMap = new Map(entityRows.map((e: any) => [Number(e.id), e]));
 
   const createdBy = ctx.userId ?? 'system';
-  const created: Array<{ watcher_id: string; entity_id: number; name: string }> = [];
+  const created: Array<{
+    watcher_id: string;
+    entity_id: number;
+    name: string;
+  }> = [];
   // Audit/lifecycle payloads are collected inside the transaction and emitted
   // only after it commits — a rollback must not leak "created" events for
   // watchers that never landed (events is append-only; we can't take them back).
@@ -831,7 +775,11 @@ export async function handleCreateFromVersion(
           )
         `;
 
-        created.push({ watcher_id: String(watcherId), entity_id: entityId, name: watcherName });
+        created.push({
+          watcher_id: String(watcherId),
+          entity_id: entityId,
+          name: watcherName,
+        });
         auditPayloads.push({
           entityId,
           watcherId,

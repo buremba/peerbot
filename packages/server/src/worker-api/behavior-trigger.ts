@@ -1,5 +1,5 @@
 /**
- * POST /api/workers/me/watchers/:watcher_id/trigger
+ * POST /api/workers/me/behaviors/:behavior_id/trigger
  *
  * Manually fire a watcher run from the device that owns it. The Mac app's
  * "Run now" action posts here. Unlike the scheduled path, this:
@@ -22,14 +22,14 @@ import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { enqueueWatcherRunForWatcher } from '../watchers/automation';
 
-export async function triggerWatcherForDevice(c: Context<{ Bindings: Env }>) {
-  const watcherIdParam = c.req.param('watcher_id');
-  if (!watcherIdParam) {
-    return c.json({ error: 'watcher_id is required' }, 400);
+export async function triggerBehaviorForDevice(c: Context<{ Bindings: Env }>) {
+  const behaviorIdParam = c.req.param('behavior_id');
+  if (!behaviorIdParam) {
+    return c.json({ error: 'behavior_id is required' }, 400);
   }
-  const watcherId = Number(watcherIdParam);
+  const watcherId = Number(behaviorIdParam);
   if (!Number.isFinite(watcherId) || watcherId <= 0) {
-    return c.json({ error: 'Invalid watcher_id' }, 400);
+    return c.json({ error: 'Invalid behavior_id' }, 400);
   }
 
   // The middleware already verified the token has `device_worker:run` (or
@@ -76,7 +76,7 @@ export async function triggerWatcherForDevice(c: Context<{ Bindings: Env }>) {
     }
     resolvedDeviceWorkerId = device.id;
   } catch (err) {
-    logger.error({ error: errorMessage(err) }, '[triggerWatcherForDevice] device lookup failed');
+    logger.error({ error: errorMessage(err) }, '[triggerBehaviorForDevice] device lookup failed');
     return c.json({ error: 'Internal error' }, 500);
   }
 
@@ -100,7 +100,7 @@ export async function triggerWatcherForDevice(c: Context<{ Bindings: Env }>) {
   }>;
   const watcher = watcherRows[0];
   if (!watcher) {
-    return c.json({ error: 'Watcher not found' }, 404);
+    return c.json({ error: 'Behavior not found' }, 404);
   }
 
   // Org scope: the watcher's org must be in the caller's base scope OR be a
@@ -120,13 +120,13 @@ export async function triggerWatcherForDevice(c: Context<{ Bindings: Env }>) {
     }
   }
   if (!watcher.device_worker_id || watcher.device_worker_id !== resolvedDeviceWorkerId) {
-    return c.json({ error: 'Watcher is not pinned to this device' }, 403);
+    return c.json({ error: 'Behavior is not pinned to this device' }, 403);
   }
   if ((watcher.status ?? 'active') !== 'active') {
-    return c.json({ error: 'Watcher is not active' }, 409);
+    return c.json({ error: 'Behavior is not active' }, 409);
   }
   if (!watcher.agent_id) {
-    return c.json({ error: 'Watcher has no agent assigned' }, 409);
+    return c.json({ error: 'Behavior has no agent assigned' }, 409);
   }
 
   // Enqueue (or re-use) the run. `enqueueWatcherRunForWatcher` delegates to
@@ -150,7 +150,7 @@ export async function triggerWatcherForDevice(c: Context<{ Bindings: Env }>) {
   } catch (err) {
     logger.error(
       { error: errorMessage(err), watcherId },
-      '[triggerWatcherForDevice] enqueue failed'
+      '[triggerBehaviorForDevice] enqueue failed'
     );
     return c.json({ error: errorMessage(err) }, 500);
   }

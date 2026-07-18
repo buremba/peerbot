@@ -10,10 +10,7 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
-import {
-  compileReactionScript,
-  executeReaction,
-} from '../../../watchers/reaction-executor';
+import { compileReactionScript, executeReaction } from '../../../watchers/reaction-executor';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import { createTestOrganization } from '../../setup/test-fixtures';
@@ -29,7 +26,7 @@ const CTX = (orgId: string, data: Record<string, unknown>) => ({
     granularity: 'day',
     content_analyzed: 1,
   },
-  watcher: { id: 1, slug: 'react-exec', name: 'React Exec', version: 1 },
+  behavior: { id: 1, slug: 'react-exec', name: 'React Exec', version: 1 },
   organization_id: orgId,
 });
 

@@ -7,6 +7,21 @@
 -- when possible and otherwise leave it unknown so the first inbound message can
 -- fill it. This absorbs the old supervised PR1-data-reconcile.sql into the
 -- automatic migration before the source table disappears.
+DO $migration$
+DECLARE
+  binding record;
+  watcher_id integer;
+  version_id integer;
+  created_by_user text;
+  native_channel_id text;
+  behavior_trigger jsonb;
+BEGIN
+  -- The table is deliberately removed at the end of the migration. A replay
+  -- after a successful application therefore has no work left to perform.
+  IF to_regclass('public.agent_channel_bindings') IS NULL THEN
+    RETURN;
+  END IF;
+
 WITH real_team AS (
   SELECT DISTINCT ON (cm.organization_id, cm.connection_id, cm.channel_id)
     cm.organization_id,
@@ -47,15 +62,6 @@ WHERE platform LIKE 'slack%'
   AND team_id IS NOT NULL
   AND team_id !~ '^T';
 
-DO $$
-DECLARE
-  binding record;
-  watcher_id integer;
-  version_id integer;
-  created_by_user text;
-  native_channel_id text;
-  behavior_trigger jsonb;
-BEGIN
   IF EXISTS (
     SELECT 1
     FROM agent_channel_bindings
@@ -228,9 +234,9 @@ BEGIN
     SET current_version_id = version_id
     WHERE id = watcher_id;
   END LOOP;
-END
-$$;
 
-DROP TABLE agent_channel_bindings;
+  DROP TABLE agent_channel_bindings;
+END
+$migration$;
 
 -- migrate:down

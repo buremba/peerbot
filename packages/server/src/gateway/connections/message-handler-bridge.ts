@@ -594,7 +594,7 @@ export class MessageHandlerBridge {
       (candidate) => !replyBehaviors.includes(candidate)
     );
     const behavior = replyBehaviors[0] ?? backgroundBehaviors[0];
-    const legacyResolved = behavior
+    const fallbackResolved = behavior
       ? null
       : await resolveAgentId({
           platform,
@@ -615,7 +615,7 @@ export class MessageHandlerBridge {
           instructions: behavior.instructions,
           behaviorId: behavior.behaviorId,
         }
-      : legacyResolved;
+      : fallbackResolved;
     if (!resolved) {
       // A tenant's OAuth-installed Slack workspace bot has no owning agent —
       // routing is via `/lobu link` bindings. Before the tenant links a

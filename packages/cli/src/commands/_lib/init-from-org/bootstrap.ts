@@ -29,7 +29,7 @@ import type {
   RemoteFeed,
   RemotePlatform,
   RemoteRelationshipType,
-  RemoteWatcher,
+  RemoteBehavior,
 } from "../apply/client.js";
 import { resolveApplyClient } from "../apply/client.js";
 
@@ -543,7 +543,7 @@ function emitRelationshipType(
 }
 
 function emitBehavior(
-  w: RemoteWatcher,
+  w: RemoteBehavior,
   reactionScript: string | null,
   agentHandles: Map<string, string>,
   connectionHandlesById: ReadonlyMap<number, string>,
@@ -814,7 +814,7 @@ interface FetchedState {
   }>;
   entityTypes: RemoteEntityType[];
   relationshipTypes: RemoteRelationshipType[];
-  watchers: Array<{ watcher: RemoteWatcher; reactionScript: string | null }>;
+  watchers: Array<{ watcher: RemoteBehavior; reactionScript: string | null }>;
   authProfiles: RemoteAuthProfile[];
   connections: Array<{ connection: RemoteConnection; feeds: RemoteFeed[] }>;
   /** connector_key → auth_schema (for emitting real credential field keys). */
@@ -837,7 +837,7 @@ async function fetchOrgState(
     client.listAgents(),
     client.listEntityTypes(),
     client.listRelationshipTypes(),
-    client.listWatchers(),
+    client.listBehaviors(),
     client.listAuthProfiles(),
     client.listConnections(),
     // Connector defs carry each connector's auth_schema, so init-from-org can
@@ -880,7 +880,7 @@ async function fetchOrgState(
       .map(async (watcher) => {
         let reactionScript: string | null = null;
         if (watcher.watcher_id) {
-          const detail = await client.getWatcherDetail(watcher.watcher_id);
+          const detail = await client.getBehaviorDetail(watcher.watcher_id);
           reactionScript = detail?.reaction_script ?? null;
           if (detail?.description && !watcher.description) {
             watcher.description = detail.description;

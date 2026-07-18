@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import type { BehaviorEventTrigger } from '@lobu/core/contracts/tools/manage-behaviors';
-import { normalizeSlackBehaviorSignals } from '@lobu/connectors/slack-behavior-events';
 import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
 import { matchingBehaviorTriggers } from '../../behaviors/event-trigger';
 
@@ -44,24 +43,22 @@ describe('behavior event trigger matching', () => {
   });
 
   test('matches Slack through the same path and keeps the message as agent input', () => {
-    const [normalized] = normalizeSlackBehaviorSignals({
-      deliveryId: 'Ev123',
-      contentType: 'application/json',
-      body: JSON.stringify({
-        type: 'event_callback',
-        team_id: 'T123',
-        event: {
-          type: 'app_mention',
-          channel: 'C123',
-          user: 'U123',
-          text: 'Can you summarize this thread?',
-          thread_ts: '171.001',
-        },
-      }),
-    });
     const slackSignal: ConnectorTriggerSignal = {
-      ...normalized,
+      connector_key: 'slack',
       connection_id: 17,
+      resource_type: 'channel',
+      resource_ref: 'slack:channel:T123:C123',
+      event_type: 'message.created',
+      delivery_id: 'Ev123',
+      input_text: 'Can you summarize this thread?',
+      label: 'Slack message in C123',
+      attributes: {
+        channel_id: 'C123',
+        team_id: 'T123',
+        user_id: 'U123',
+        is_mention: true,
+        thread_id: '171.001',
+      },
     };
 
     expect(

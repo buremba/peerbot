@@ -41,7 +41,7 @@ async function seedWatcher(workspace: TestWorkspace, suffix: string) {
     organizationId: workspace.org.id,
     ownerUserId: workspace.users.owner.id,
   });
-  const watcher = (await workspace.owner.watchers.create({
+  const watcher = (await workspace.owner.behaviors.create({
     entity_id: entity.id,
     slug: `feedback-watcher-${suffix}`,
     name: `Feedback Watcher ${suffix}`,
@@ -98,9 +98,17 @@ describe('watcher feedback contract', () => {
         watcher_id: watcherId,
         window_id: windowId,
         corrections: [
-          { field_path: 'problems[0].severity', value: 'high', note: 'misclassified' },
+          {
+            field_path: 'problems[0].severity',
+            value: 'high',
+            note: 'misclassified',
+          },
           { field_path: 'problems[0]', mutation: 'remove' },
-          { field_path: 'problems', mutation: 'add', value: { name: 'B', severity: 'medium' } },
+          {
+            field_path: 'problems',
+            mutation: 'add',
+            value: { name: 'B', severity: 'medium' },
+          },
         ],
       } as never,
       {} as never,
@@ -164,7 +172,11 @@ describe('watcher feedback contract', () => {
         NOW(), NOW())
     `;
     const feedback = (await manageBehaviors(
-      { action: 'get_feedback', watcher_id: watcherId, window_id: windowId } as never,
+      {
+        action: 'get_feedback',
+        watcher_id: watcherId,
+        window_id: windowId,
+      } as never,
       {} as never,
       ownerCtx(workspace)
     )) as { feedback: Array<{ id: number; field_path: string }> };
@@ -207,7 +219,11 @@ describe('watcher feedback contract', () => {
     );
 
     const filtered = (await manageBehaviors(
-      { action: 'get_feedback', watcher_id: watcherId, window_id: otherWindowId } as never,
+      {
+        action: 'get_feedback',
+        watcher_id: watcherId,
+        window_id: otherWindowId,
+      } as never,
       {} as never,
       ownerCtx(workspace)
     )) as { feedback: Array<{ field_path: string }> };
@@ -219,7 +235,12 @@ describe('watcher feedback contract', () => {
   it('rejects malformed corrections and cross-org watcher/window ids', async () => {
     await expect(
       manageBehaviors(
-        { action: 'submit_feedback', watcher_id: watcherId, window_id: windowId, corrections: [] } as never,
+        {
+          action: 'submit_feedback',
+          watcher_id: watcherId,
+          window_id: windowId,
+          corrections: [],
+        } as never,
         {} as never,
         ownerCtx(workspace)
       )
@@ -340,7 +361,10 @@ describe('watcher feedback contract', () => {
           payloadType: 'json_template',
           payloadData: { problems: [{ name: 'A', severity: 'critical' }] },
           semanticType: 'canvas_state',
-          metadata: { watcher_id: Number(seeded.watcherId), root_event_id: rootId },
+          metadata: {
+            watcher_id: Number(seeded.watcherId),
+            root_event_id: rootId,
+          },
           supersedesEventId: rootId,
         },
         { sql: getTestDb() as never }

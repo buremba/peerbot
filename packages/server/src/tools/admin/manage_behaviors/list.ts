@@ -1,36 +1,35 @@
 /**
- * list_watchers handler for manage_behaviors.
+ * list action handler for manage_behaviors.
  */
 
 import {
-	ListWatchersResultSchema,
-	type ListWatchersArgs,
-	type ListWatchersResult,
+	ListBehaviorsResultSchema,
+	type ListBehaviorsArgs,
+	type ListBehaviorsResult,
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import { getDb } from "../../../db/client";
 import type { Env } from "../../../index";
 import logger from "../../../utils/logger";
 import {
-	buildWatchersUrl,
+	buildBehaviorUrl,
 	getOrganizationSlug,
 	getPublicWebUrl,
 } from "../../../utils/url-builder";
 import { buildLatestWatcherRunJoinSql } from "../../../watchers/automation";
 import type { ToolContext } from "../../registry";
-import { toEntityInfo } from "../../view-urls";
 import { batchCountUnanalyzedContent } from "./shared";
 
-export { ListWatchersResultSchema };
+export { ListBehaviorsResultSchema };
 
 // ============================================
 // handleList
 // ============================================
 
 export async function handleList(
-	args: ListWatchersArgs,
+	args: ListBehaviorsArgs,
 	_env: Env,
-	ctx: ToolContext,
-): Promise<ListWatchersResult> {
+	ctx: ToolContext
+): Promise<ListBehaviorsResult> {
 	const sql = getDb();
 
 	if (args.entity_id) {
@@ -134,12 +133,6 @@ export async function handleList(
 		paramCount++;
 	}
 
-	if (args.watcher_group_id != null) {
-		conditions.push(`i.watcher_group_id = $${paramCount}`);
-		params.push(args.watcher_group_id);
-		paramCount++;
-	}
-
 	if (args.status) {
 		conditions.push(`i.status = $${paramCount}`);
 		params.push(args.status);
@@ -175,14 +168,14 @@ export async function handleList(
 	} catch (error) {
 		logger.error(
 			{ error },
-			"[manage_behaviors] Error batch counting unanalyzed content",
+			"[manage_behaviors] Error batch counting unanalyzed content"
 		);
 		counts = new Map();
 	}
 
 	const uniqueOrgIds = [
 		...new Set(
-			(result as any[]).map((r) => r.organization_id as string).filter(Boolean),
+			(result as any[]).map((r) => r.organization_id as string).filter(Boolean)
 		),
 	];
 	const orgSlugMap = new Map<string, string>();
@@ -196,17 +189,10 @@ export async function handleList(
 		const countData = counts.get(watcherId) || { pending: 0, historical: 0 };
 		const orgSlug = orgSlugMap.get(watcher.organization_id as string) ?? null;
 
-		const entityInfo = orgSlug
-			? toEntityInfo(orgSlug, {
-					entity_type: watcher.entity_type,
-					slug: watcher.entity_slug,
-					parent_entity_type: watcher.parent_entity_type ?? null,
-					parent_slug: watcher.parent_slug ?? null,
-				})
-			: null;
-		const viewUrl = entityInfo
-			? buildWatchersUrl(entityInfo, baseUrl)
-			: undefined;
+		const viewUrl =
+			orgSlug && watcher.agent_id
+				? buildBehaviorUrl(orgSlug, watcher.agent_id, watcherId, baseUrl)
+				: undefined;
 
 		const { organization_id: _orgId, ...rest } = watcher;
 
@@ -226,7 +212,7 @@ export async function handleList(
 		// (kept as-is — no consumer feeds it back into manage_behaviors today).
 		if ((rest as Record<string, unknown>).watcher_id != null) {
 			(rest as Record<string, unknown>).watcher_id = String(
-				(rest as Record<string, unknown>).watcher_id,
+				(rest as Record<string, unknown>).watcher_id
 			);
 		}
 
@@ -239,5 +225,5 @@ export async function handleList(
 		};
 	});
 
-	return { watchers: watchersWithPendingCount };
+	return { action: "list", behaviors: watchersWithPendingCount };
 }

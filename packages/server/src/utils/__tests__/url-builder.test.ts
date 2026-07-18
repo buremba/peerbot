@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildAgentSettingsUrl,
+  buildBehaviorSettingsUrl,
+  buildBehaviorUrl,
   buildEntityUrl,
   buildProviderConnectUrl,
   buildProviderManagementUrl,
   buildResourcePermalink,
-  buildWatcherSettingsUrl,
   getPublicWebUrl,
 } from '../url-builder';
 import {
@@ -55,9 +56,9 @@ describe('getPublicWebUrl', () => {
   });
 
   it('prefers explicit baseUrl over requestUrl', () => {
-    expect(
-      getPublicWebUrl('https://request.lobu.com/mcp', 'https://configured.lobu.com')
-    ).toBe('https://configured.lobu.com');
+    expect(getPublicWebUrl('https://request.lobu.com/mcp', 'https://configured.lobu.com')).toBe(
+      'https://configured.lobu.com'
+    );
   });
 
   it('prefers PUBLIC_GATEWAY_URL env var when no explicit baseUrl', () => {
@@ -89,11 +90,7 @@ function stubOrgSlug(): void {
   beforeEach(() => {
     vi.spyOn(workspaceModule, 'getWorkspaceProvider').mockReturnValue({
       getOrgSlug: async (orgId: string) =>
-        orgId === 'org-1'
-          ? 'acme'
-          : orgId === 'org-special'
-            ? 'acme/team'
-            : null,
+        orgId === 'org-1' ? 'acme' : orgId === 'org-special' ? 'acme/team' : null,
     } as unknown as ReturnType<typeof workspaceModule.getWorkspaceProvider>);
   });
   afterEach(() => {
@@ -108,11 +105,7 @@ describe('buildAgentSettingsUrl', () => {
   // /agents/<id> route redirects to Chat — the surface the user just failed on
   // — so a missing /settings suffix drops the admin nowhere useful.
   it('deep-links to the agent /settings tab (not the bare, chat-redirecting route)', async () => {
-    const url = await buildAgentSettingsUrl(
-      'https://app.lobu.com/lobu',
-      'org-1',
-      'lobu-builder'
-    );
+    const url = await buildAgentSettingsUrl('https://app.lobu.com/lobu', 'org-1', 'lobu-builder');
     expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/settings');
     expect(url?.endsWith('/settings')).toBe(true);
   });
@@ -120,50 +113,30 @@ describe('buildAgentSettingsUrl', () => {
   // WI-0.3 config-prefill: an update proposal's approval CTA appends ?run_id=<id>
   // so the settings form opens the review flow prefilled with the held change.
   it('appends ?run_id when a review run is given', async () => {
-    const url = await buildAgentSettingsUrl(
-      'https://app.lobu.com/lobu',
-      'org-1',
-      'lobu-builder',
-      { runId: 42 }
-    );
-    expect(url).toBe(
-      'https://app.lobu.com/acme/agents/lobu-builder/settings?run_id=42'
-    );
+    const url = await buildAgentSettingsUrl('https://app.lobu.com/lobu', 'org-1', 'lobu-builder', {
+      runId: 42,
+    });
+    expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/settings?run_id=42');
   });
 
   it('omits ?run_id when no review run is given', async () => {
-    const url = await buildAgentSettingsUrl(
-      'https://app.lobu.com',
-      'org-1',
-      'lobu-builder',
-      {}
-    );
+    const url = await buildAgentSettingsUrl('https://app.lobu.com', 'org-1', 'lobu-builder', {});
     expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/settings');
   });
 
   it('strips the embedded-mode /lobu suffix from the web origin', async () => {
-    const url = await buildAgentSettingsUrl(
-      'https://app.lobu.com/lobu/',
-      'org-1',
-      'my agent/id'
-    );
+    const url = await buildAgentSettingsUrl('https://app.lobu.com/lobu/', 'org-1', 'my agent/id');
     // agentId is percent-encoded; origin has no /lobu.
     expect(url).toBe('https://app.lobu.com/acme/agents/my%20agent%2Fid/settings');
   });
 
   it('percent-encodes the workspace slug', async () => {
-    const url = await buildAgentSettingsUrl(
-      'https://app.lobu.com',
-      'org-special',
-      'agent-1'
-    );
+    const url = await buildAgentSettingsUrl('https://app.lobu.com', 'org-special', 'agent-1');
     expect(url).toBe('https://app.lobu.com/acme%2Fteam/agents/agent-1/settings');
   });
 
   it('returns null when the org slug cannot be resolved', async () => {
-    expect(
-      await buildAgentSettingsUrl('https://app.lobu.com', 'unknown-org', 'a')
-    ).toBeNull();
+    expect(await buildAgentSettingsUrl('https://app.lobu.com', 'unknown-org', 'a')).toBeNull();
   });
 
   it('returns null when any required piece is missing', async () => {
@@ -173,60 +146,58 @@ describe('buildAgentSettingsUrl', () => {
   });
 });
 
-describe('buildWatcherSettingsUrl', () => {
+describe('buildBehaviorSettingsUrl', () => {
   stubOrgSlug();
-  // WI-0.3 watcher parity: an update proposal's review CTA deep-links to the
-  // watcher edit form (nested under its owning agent), prefilled via ?run_id=.
-  it('deep-links to the watcher edit route under its owning agent', async () => {
-    const url = await buildWatcherSettingsUrl(
+  it('deep-links to the Behavior edit route under its owning agent', async () => {
+    const url = await buildBehaviorSettingsUrl(
       'https://app.lobu.com/lobu',
       'org-1',
       'lobu-builder',
       7
     );
-    expect(url).toBe(
-      'https://app.lobu.com/acme/agents/lobu-builder/behaviors/watcher/7'
-    );
+    expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/behaviors/7');
   });
 
   it('appends ?run_id when a review run is given', async () => {
-    const url = await buildWatcherSettingsUrl(
+    const url = await buildBehaviorSettingsUrl(
       'https://app.lobu.com/lobu',
       'org-1',
       'lobu-builder',
       7,
       { runId: 42 }
     );
-    expect(url).toBe(
-      'https://app.lobu.com/acme/agents/lobu-builder/behaviors/watcher/7?run_id=42'
-    );
+    expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/behaviors/7?run_id=42');
   });
 
-  it('accepts a string watcher id and percent-encodes agent + slug', async () => {
-    const url = await buildWatcherSettingsUrl(
+  it('accepts a string Behavior id and percent-encodes agent + slug', async () => {
+    const url = await buildBehaviorSettingsUrl(
       'https://app.lobu.com',
       'org-special',
       'my agent/id',
       '7'
     );
-    expect(url).toBe(
-      'https://app.lobu.com/acme%2Fteam/agents/my%20agent%2Fid/behaviors/watcher/7'
-    );
+    expect(url).toBe('https://app.lobu.com/acme%2Fteam/agents/my%20agent%2Fid/behaviors/7');
   });
 
   it('returns null when the org slug cannot be resolved', async () => {
     expect(
-      await buildWatcherSettingsUrl('https://app.lobu.com', 'unknown-org', 'a', 7)
+      await buildBehaviorSettingsUrl('https://app.lobu.com', 'unknown-org', 'a', 7)
     ).toBeNull();
   });
 
   it('returns null when any required piece is missing', async () => {
-    expect(await buildWatcherSettingsUrl(undefined, 'org-1', 'a', 7)).toBeNull();
-    expect(await buildWatcherSettingsUrl('https://x', undefined, 'a', 7)).toBeNull();
-    expect(await buildWatcherSettingsUrl('https://x', 'org-1', undefined, 7)).toBeNull();
-    expect(
-      await buildWatcherSettingsUrl('https://x', 'org-1', 'a', undefined)
-    ).toBeNull();
+    expect(await buildBehaviorSettingsUrl(undefined, 'org-1', 'a', 7)).toBeNull();
+    expect(await buildBehaviorSettingsUrl('https://x', undefined, 'a', 7)).toBeNull();
+    expect(await buildBehaviorSettingsUrl('https://x', 'org-1', undefined, 7)).toBeNull();
+    expect(await buildBehaviorSettingsUrl('https://x', 'org-1', 'a', undefined)).toBeNull();
+  });
+});
+
+describe('buildBehaviorUrl', () => {
+  it('builds the canonical Behavior detail route and strips embedded /lobu', () => {
+    expect(buildBehaviorUrl('acme/team', 'agent one', 7, 'https://app.lobu.com/lobu')).toBe(
+      'https://app.lobu.com/acme%2Fteam/agents/agent%20one/behaviors/7'
+    );
   });
 });
 
@@ -236,10 +207,7 @@ describe('buildProviderConnectUrl', () => {
   // Its fix is wiring credentials, so it lands on /inference-providers/new, the
   // live connect form, NOT the agent's model settings.
   it('builds the connect-a-provider URL (distinct page from agent settings)', async () => {
-    const url = await buildProviderConnectUrl(
-      'https://app.lobu.com/lobu',
-      'org-1'
-    );
+    const url = await buildProviderConnectUrl('https://app.lobu.com/lobu', 'org-1');
     expect(url).toBe('https://app.lobu.com/acme/inference-providers/new');
   });
 
@@ -276,22 +244,17 @@ describe('buildProviderManagementUrl', () => {
   stubOrgSlug();
 
   it('targets the exact existing provider and model', async () => {
-    const url = await buildProviderManagementUrl(
-      'https://app.lobu.com/lobu',
-      'org-1',
-      { provider: 'z-ai', model: 'glm-5.2' }
-    );
-    expect(url).toBe(
-      'https://app.lobu.com/acme/infrastructure/models?provider=z-ai&model=glm-5.2'
-    );
+    const url = await buildProviderManagementUrl('https://app.lobu.com/lobu', 'org-1', {
+      provider: 'z-ai',
+      model: 'glm-5.2',
+    });
+    expect(url).toBe('https://app.lobu.com/acme/infrastructure/models?provider=z-ai&model=glm-5.2');
   });
 
   it('returns null when org slug or gateway url is missing', async () => {
     expect(await buildProviderManagementUrl(undefined, 'org-1')).toBeNull();
     expect(await buildProviderManagementUrl('https://x', undefined)).toBeNull();
-    expect(
-      await buildProviderManagementUrl('https://x', 'unknown-org')
-    ).toBeNull();
+    expect(await buildProviderManagementUrl('https://x', 'unknown-org')).toBeNull();
   });
 });
 

@@ -110,13 +110,13 @@ async function setupKeyedWatcher() {
     name: 'Keyed Agent',
   });
 
-  const watcher = (await workspace.owner.watchers.create({
+  const watcher = (await workspace.owner.behaviors.create({
     entity_id: parentEntity.id,
     slug: 'keyed-watcher',
     name: 'Keyed Watcher',
     prompt: 'Extract problems for {{entities}}.',
     keying_config: KEYING_CONFIG,
-    schedule: '0 9 * * *',
+    triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
   })) as { watcher_id: string };
   const watcherId = Number(watcher.watcher_id);
@@ -171,7 +171,9 @@ async function queueRunningRun(ctx: Awaited<ReturnType<typeof setupKeyedWatcher>
 async function readWindowToken(
   ctx: Awaited<ReturnType<typeof setupKeyedWatcher>>
 ): Promise<string> {
-  const content = (await ctx.api.knowledge.read({ watcher_id: ctx.watcherId })) as {
+  const content = (await ctx.api.knowledge.read({
+    watcher_id: ctx.watcherId,
+  })) as {
     window_token: string;
   };
   return content.window_token;
@@ -183,7 +185,7 @@ async function completeWithToken(
   runId: number,
   extractedData: Record<string, unknown> = KEYED_EXTRACTED_DATA
 ): Promise<number> {
-  const completion = (await ctx.api.watchers.completeWindow({
+  const completion = (await ctx.api.behaviors.completeWindow({
     watcher_id: String(ctx.watcherId),
     window_token: windowToken,
     extracted_data: extractedData,
@@ -281,7 +283,10 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(Number(csMeta.window_id)).toBe(windowId);
     expect(Number(csMeta.created_count)).toBe(2);
     expect(Number(csMeta.updated_count)).toBe(0);
-    const csChanges = csMeta.changes as Array<{ kind: string; entityId: number }>;
+    const csChanges = csMeta.changes as Array<{
+      kind: string;
+      entityId: number;
+    }>;
     expect(csChanges).toHaveLength(2);
     expect(csChanges.every((c) => c.kind === 'created')).toBe(true);
   });
@@ -400,7 +405,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     const token = await readWindowToken(ctx);
 
     // Run 1: a non-key `severity` field is synced into the promoted entity's metadata.
-    await ctx.api.watchers.completeWindow({
+    await ctx.api.behaviors.completeWindow({
       watcher_id: String(ctx.watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
@@ -429,7 +434,8 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       metadata: { severity: 'high' },
       field_note: 'confirmed critical with eng',
     });
-    const [edited] = await sql`SELECT metadata, field_controls FROM entities WHERE id = ${entityId}`;
+    const [edited] =
+      await sql`SELECT metadata, field_controls FROM entities WHERE id = ${entityId}`;
     // Slice 1: human edit applies the value AND marks the field owned, carrying the note.
     expect((edited.metadata as Record<string, unknown>).severity).toBe('high');
     const sevControl = (edited.field_controls as Record<string, { note?: string; set_by?: string }>)
@@ -439,7 +445,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(sevControl.set_by).toBe(workspace.users.owner.id);
 
     // Run 2 (replay) proposes a different severity for the SAME key.
-    await ctx.api.watchers.completeWindow({
+    await ctx.api.behaviors.completeWindow({
       watcher_id: String(ctx.watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
@@ -465,13 +471,16 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     `;
     const pending = await pendingRuns();
     expect(pending.length).toBe(1);
-    const proposal = pending[0].action_input as { entity_id: number; fields: Record<string, unknown> };
+    const proposal = pending[0].action_input as {
+      entity_id: number;
+      fields: Record<string, unknown>;
+    };
     expect(proposal.entity_id).toBe(entityId);
     expect(proposal.fields.severity).toBe('critical');
 
     // Idempotency: replaying the SAME window again must NOT stack a second
     // pending approval card (complete_window is replay-safe under retries/replicas).
-    await ctx.api.watchers.completeWindow({
+    await ctx.api.behaviors.completeWindow({
       watcher_id: String(ctx.watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
@@ -494,11 +503,13 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     )) as { approved?: boolean };
     expect(approveRes.approved).toBe(true);
 
-    const [applied] = await sql`SELECT metadata, field_controls FROM entities WHERE id = ${entityId}`;
+    const [applied] =
+      await sql`SELECT metadata, field_controls FROM entities WHERE id = ${entityId}`;
     expect((applied.metadata as Record<string, unknown>).severity).toBe('critical');
     // Still owned — an approved watcher value remains human-owned, not watcher-writable.
     expect((applied.field_controls as Record<string, unknown>).severity).toBeTruthy();
-    const [approvedRun] = await sql`SELECT status, approval_status FROM runs WHERE id = ${Number(pending[0].id)}`;
+    const [approvedRun] =
+      await sql`SELECT status, approval_status FROM runs WHERE id = ${Number(pending[0].id)}`;
     expect(approvedRun.status).toBe('completed');
     expect(approvedRun.approval_status).toBe('approved');
   });
@@ -518,7 +529,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     const token = await readWindowToken(ctx);
 
     // Run 1 seeds the entity; human then owns `severity` at 'high'.
-    await ctx.api.watchers.completeWindow({
+    await ctx.api.behaviors.completeWindow({
       watcher_id: String(watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
@@ -535,10 +546,13 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
     `;
     const entityId = Number(created.id);
-    await workspace.owner.entities.update({ entity_id: entityId, metadata: { severity: 'high' } });
+    await workspace.owner.entities.update({
+      entity_id: entityId,
+      metadata: { severity: 'high' },
+    });
 
     // Run 2: watcher proposes 'critical' against the 'high' snapshot → pending approval.
-    await ctx.api.watchers.completeWindow({
+    await ctx.api.behaviors.completeWindow({
       watcher_id: String(watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
@@ -554,10 +568,15 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       WHERE organization_id = ${workspace.org.id} AND action_key = 'entity_field_change'
         AND approval_status = 'pending'
     `;
-    expect((pending.action_input as { current?: Record<string, unknown> }).current?.severity).toBe('high');
+    expect((pending.action_input as { current?: Record<string, unknown> }).current?.severity).toBe(
+      'high'
+    );
 
     // The human moves severity to 'medium' AFTER the proposal was queued (proposal is now stale).
-    await workspace.owner.entities.update({ entity_id: entityId, metadata: { severity: 'medium' } });
+    await workspace.owner.entities.update({
+      entity_id: entityId,
+      metadata: { severity: 'medium' },
+    });
 
     // Approving the stale proposal must NOT overwrite the human's newer 'medium'.
     const approveRes = (await executeTool(
@@ -571,7 +590,8 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     const [after] = await sql`SELECT metadata FROM entities WHERE id = ${entityId}`;
     expect((after.metadata as Record<string, unknown>).severity).toBe('medium'); // human wins
     // Run still resolves (terminal), it just applied nothing.
-    const [resolved] = await sql`SELECT status, approval_status FROM runs WHERE id = ${Number(pending.id)}`;
+    const [resolved] =
+      await sql`SELECT status, approval_status FROM runs WHERE id = ${Number(pending.id)}`;
     expect(resolved.status).toBe('completed');
     expect(resolved.approval_status).toBe('approved');
   });
@@ -588,7 +608,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
     const runId = await queueRunningRun(ctx);
     const token = await readWindowToken(ctx);
-    const windowId = await ctx.api.watchers.completeWindow({
+    const windowId = await ctx.api.behaviors.completeWindow({
       watcher_id: String(watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
@@ -613,7 +633,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       field_note: 'confirmed critical with eng',
     });
 
-    const res = (await workspace.owner.watchers.manage({
+    const res = (await workspace.owner.behaviors.manage({
       action: 'list_promoted',
       watcher_id: String(watcherId),
     })) as {
@@ -660,7 +680,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     const token = await readWindowToken(ctx);
 
     // Run 1 seeds `severity: 'low'` (watcher-owned, no field_controls yet).
-    await ctx.api.watchers.completeWindow({
+    await ctx.api.behaviors.completeWindow({
       watcher_id: String(watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
@@ -698,7 +718,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     // Run 2 proposes a different severity for the SAME key. Because the human
     // affirmed the field, the watcher must be BLOCKED and queue an approval —
     // proving the affirm actually locked the value.
-    await ctx.api.watchers.completeWindow({
+    await ctx.api.behaviors.completeWindow({
       watcher_id: String(watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
@@ -720,7 +740,10 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         AND approval_status = 'pending'
     `;
     expect(pending.length).toBe(1);
-    const proposal = pending[0].action_input as { entity_id: number; fields: Record<string, unknown> };
+    const proposal = pending[0].action_input as {
+      entity_id: number;
+      fields: Record<string, unknown>;
+    };
     expect(proposal.entity_id).toBe(entityId);
     expect(proposal.fields.severity).toBe('critical');
   });
@@ -786,7 +809,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(Number((promoted[0].metadata as Record<string, unknown>).window_id)).toBe(windowId);
   });
 
-  it('groups a run\'s proposals by window and approves them all in one batch', async () => {
+  it("groups a run's proposals by window and approves them all in one batch", async () => {
     const ctx = await setupKeyedWatcher();
     const { sql, workspace, watcherId } = ctx;
 
@@ -846,7 +869,11 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     const pendingIds = pending.map((row) => Number(row.id));
     const staleBatch = (await executeTool(
       'manage_operations',
-      { action: 'approve_batch', window_id: windowId, run_ids: [pendingIds[0]] },
+      {
+        action: 'approve_batch',
+        window_id: windowId,
+        run_ids: [pendingIds[0]],
+      },
       TEST_ENV,
       ownerAuthCtx(workspace.org.id, workspace.users.owner.id)
     )) as { error?: string };
@@ -865,7 +892,8 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     // Both proposals applied and their runs completed.
     for (const row of ids) {
-      const [applied] = await sql`SELECT metadata FROM entities WHERE id = ${Number(row.entity_id)}`;
+      const [applied] =
+        await sql`SELECT metadata FROM entities WHERE id = ${Number(row.entity_id)}`;
       expect((applied.metadata as Record<string, unknown>).severity).toBe('critical');
     }
     const stillPending = await sql`
@@ -877,7 +905,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(stillPending.length).toBe(0);
   });
 
-  it('reject_batch cancels a run\'s proposals and records the reason for revision', async () => {
+  it("reject_batch cancels a run's proposals and records the reason for revision", async () => {
     const ctx = await setupKeyedWatcher();
     const { sql, workspace } = ctx;
 
@@ -908,7 +936,11 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     const rejectRes = (await executeTool(
       'manage_operations',
-      { action: 'reject_batch', window_id: windowId, reason: 'severity should stay high' },
+      {
+        action: 'reject_batch',
+        window_id: windowId,
+        reason: 'severity should stay high',
+      },
       TEST_ENV,
       ownerAuthCtx(workspace.org.id, workspace.users.owner.id)
     )) as { action: string; rejected_count?: number };

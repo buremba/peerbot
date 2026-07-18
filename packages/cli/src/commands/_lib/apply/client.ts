@@ -18,7 +18,7 @@ import {
   type EntityBacking,
   isRecord,
   type RelationshipRule,
-  type WatcherSource,
+  type BehaviorSource,
 } from "./shared.js";
 
 // ── Wire types ─────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ export interface RemoteInferenceProvider {
   createdAt: string;
 }
 
-export interface RemoteWatcher {
+export interface RemoteBehavior {
   slug: string;
   name?: string;
   watcher_id?: string;
@@ -106,14 +106,14 @@ export interface RemoteWatcher {
   notification_priority?: string | null;
   min_cooldown_seconds?: number | null;
   tags?: string[] | null;
-  sources?: WatcherSource[] | null;
+  sources?: BehaviorSource[] | null;
   // include_details=true → version-bound fields
   description?: string | null;
   prompt?: string | null;
   classifiers?: unknown[] | null;
   keying_config?: Record<string, unknown> | null;
   reactions_guidance?: string | null;
-  // NB: reaction_script is NOT in list_watchers — push always (idempotent).
+  // NB: reaction_script is not included in Behavior lists — push always (idempotent).
 }
 
 interface UpsertPlatformResult {
@@ -876,59 +876,58 @@ export class ApplyClient {
     });
   }
 
-  // ── Watchers ──────────────────────────────────────────────────────────────
+  // ── Behaviors ─────────────────────────────────────────────────────────────
 
   /**
-   * Fetch a single watcher's full payload — `getWatcher` server-side, which
+   * Fetch a single Behavior's full payload, including the reaction script.
    * returns reaction_script (not in the list response). Used by
    * `lobu init --from-org` to round-trip reaction scripts back to sibling
    * `.ts` files.
    */
-  async getWatcherDetail(watcherId: string): Promise<{
+  async getBehaviorDetail(watcherId: string): Promise<{
     reaction_script?: string | null;
     description?: string | null;
   } | null> {
     try {
       const { body } = await this.request<{
-        watcher?: {
+        behavior?: {
           reaction_script?: string | null;
           description?: string | null;
         };
       }>(
         "GET",
-        `/api/${this.orgSlug}/watchers?watcher_id=${encodeURIComponent(watcherId)}`
+        `/api/${this.orgSlug}/behaviors?watcher_id=${encodeURIComponent(watcherId)}`
       );
-      return body.watcher ?? null;
+      return body.behavior ?? null;
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) return null;
       throw err;
     }
   }
 
-  async listWatchers(): Promise<RemoteWatcher[]> {
+  async listBehaviors(): Promise<RemoteBehavior[]> {
     // `include_details=true` pulls the version-bound fields (prompt,
     // classifiers, keying_config, reactions_guidance) too.
     // Apply diffs against these to detect drift on prompt / sources / etc.
-    const { body } = await this.request<{ watchers?: RemoteWatcher[] }>(
+    const { body } = await this.request<{ behaviors?: RemoteBehavior[] }>(
       "GET",
-      `/api/${this.orgSlug}/watchers?include_details=true`
+      `/api/${this.orgSlug}/behaviors?include_details=true`
     );
-    return body.watchers ?? [];
+    return body.behaviors ?? [];
   }
 
   /**
-   * Create a watcher owned by `agentId`. Duplicate-slug surfaces as a
+   * Create a Behavior owned by `agentId`. Duplicate-slug surfaces as a
    * structured error the caller swallows for idempotency.
    */
-  async createWatcher(payload: {
+  async createBehavior(payload: {
     slug: string;
     agentId: string;
     name?: string;
     description?: string;
     prompt: string;
-    schedule?: string;
     triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
-    sources?: WatcherSource[];
+    sources?: BehaviorSource[];
     reactions_guidance?: string;
     device_worker_id?: string;
     scheduler_client_id?: string;
@@ -950,7 +949,6 @@ export class ApplyClient {
         ...(payload.name ? { name: payload.name } : {}),
         ...(payload.description ? { description: payload.description } : {}),
         prompt: payload.prompt,
-        ...(payload.schedule ? { schedule: payload.schedule } : {}),
         ...(payload.triggers !== undefined
           ? { triggers: payload.triggers }
           : {}),
@@ -991,15 +989,14 @@ export class ApplyClient {
   /**
    * Update the **scalar** fields on the `watchers` row — these don't require
    * a new version. Version-bound fields (prompt / sources / reactions_guidance /
-   * keying_config / classifiers) require `createWatcherVersion`
+   * keying_config / classifiers) require `createBehaviorVersion`
    * instead.
    *
    * `null` clears nullable fields (device_worker_id, scheduler_client_id,
    * agent_kind) per the server contract.
    */
-  async updateWatcher(payload: {
+  async updateBehavior(payload: {
     watcher_id: string;
-    schedule?: string | null;
     triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
     agent_id?: string;
     device_worker_id?: string | null;
@@ -1013,7 +1010,6 @@ export class ApplyClient {
     await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "update",
       watcher_id: payload.watcher_id,
-      ...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
       ...(payload.triggers !== undefined ? { triggers: payload.triggers } : {}),
       ...(payload.agent_id !== undefined ? { agent_id: payload.agent_id } : {}),
       ...(payload.device_worker_id !== undefined
@@ -1043,10 +1039,10 @@ export class ApplyClient {
    * upgrade the watcher's `current_version_id` to that new version. Server
    * inherits unset fields from the previous version row.
    */
-  async createWatcherVersion(payload: {
+  async createBehaviorVersion(payload: {
     watcher_id: string;
     prompt?: string;
-    sources?: WatcherSource[];
+    sources?: BehaviorSource[];
     keying_config?: Record<string, unknown>;
     classifiers?: unknown[];
     reactions_guidance?: string;
@@ -1098,7 +1094,7 @@ export class ApplyClient {
    * admin tool takes an array; we delete one slug's watcher at a time so a
    * failure is attributable.
    */
-  async deleteWatcher(watcherId: string): Promise<void> {
+  async deleteBehavior(watcherId: string): Promise<void> {
     await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "delete",
       watcher_ids: [watcherId],

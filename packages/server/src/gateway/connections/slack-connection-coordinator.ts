@@ -235,9 +235,6 @@ export async function maybeSendSlackWorkspaceWelcome(args: {
   }
 }
 
-// Compatibility export while callers migrate to connector-normalized signals.
-export { parseSlackUserMessageEvent };
-
 /**
  * True when the Events API body is an `app_uninstalled` / `app_deleted` event —
  * Slack posts these when a workspace or org removes (or deletes) the app, killing

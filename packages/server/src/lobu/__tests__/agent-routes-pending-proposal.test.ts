@@ -93,7 +93,7 @@ async function insertPendingProposal(opts: {
 				status: "pending_approval",
 				run_id: runId,
 			},
-		}),
+		})
 	);
 	return runId;
 }
@@ -179,7 +179,12 @@ describe("GET /:agentId/config/pending/:runId", () => {
 		const runId = await insertPendingProposal({
 			tool: "manage_behaviors",
 			proposal: {
-				args: { action: "update", watcher_id: "w1", agent_id: AGENT, prompt: "x" },
+				args: {
+					action: "update",
+					watcher_id: "w1",
+					agent_id: AGENT,
+					prompt: "x",
+				},
 				actingAgentId: null,
 				actingWatcherId: null,
 			},
@@ -239,12 +244,12 @@ const WATCHER_ID = 501;
 /** A real ManageBehaviorsProposal: `{ args: {...}, actingAgentId, actingWatcherId }`
  *  with watcher_id / agent_id nested INSIDE args. */
 function watcherProposal(
-	args: Record<string, unknown>,
+	args: Record<string, unknown>
 ): Record<string, unknown> {
 	return { args, actingAgentId: null, actingWatcherId: null };
 }
 
-describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
+describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 	test("returns the held manage_behaviors update proposal for the target watcher", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
@@ -259,7 +264,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 		});
 
 		const res = await app.request(
-			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as {
@@ -272,9 +277,9 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 		expect(body.runId).toBe(runId);
 		expect(body.resourceKind).toBe("watcher");
 		expect(body.action).toBe("update");
-		expect(
-			(body.proposal as { args?: { name?: string } }).args?.name,
-		).toBe("New Watcher Name");
+		expect((body.proposal as { args?: { name?: string } }).args?.name).toBe(
+			"New Watcher Name"
+		);
 		expect(body.current).toMatchObject({ id: WATCHER_ID });
 	});
 
@@ -295,7 +300,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 			current: { id: WATCHER_ID, agent_id: AGENT },
 		});
 		const res = await app.request(
-			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as {
@@ -304,7 +309,9 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 		expect(body.proposedAfter).toEqual({ schedule: null, timezone: "UTC" });
 		// version-owned/routing keys never appear in the applied patch
 		expect(body.proposedAfter && "name" in body.proposedAfter).toBe(false);
-		expect(body.proposedAfter && "watcher_id" in body.proposedAfter).toBe(false);
+		expect(body.proposedAfter && "watcher_id" in body.proposedAfter).toBe(
+			false
+		);
 	});
 
 	test("resolves the owning agent from the proposal args when it reassigns owner", async () => {
@@ -323,7 +330,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 			current: { id: WATCHER_ID, agent_id: "old-owner" },
 		});
 		const res = await app.request(
-			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(200);
 	});
@@ -339,7 +346,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 			}),
 		});
 		const res = await app.request(
-			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
@@ -351,7 +358,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 			proposal: { action: "update", agent_id: AGENT, name: "X" },
 		});
 		const res = await app.request(
-			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
@@ -368,7 +375,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 			current: { id: 999, agent_id: AGENT },
 		});
 		const res = await app.request(
-			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
@@ -387,7 +394,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 		// Path agent is AGENT, but the watcher's owner (current + no args.agent_id)
 		// is other-agent → 404.
 		const res = await app.request(
-			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
@@ -411,7 +418,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 			current: { id: WATCHER_ID, agent_id: AGENT },
 		});
 		const res = await app.request(
-			`/${AGENT}/watchers/${WATCHER_ID}/pending/${runId}`,
+			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
@@ -419,7 +426,7 @@ describe("GET /:agentId/watchers/:watcherId/pending/:runId", () => {
 	test("400 on a non-numeric run id", async () => {
 		const app = await importAgentRoutes();
 		const res = await app.request(
-			`/${AGENT}/watchers/${WATCHER_ID}/pending/not-a-number`,
+			`/${AGENT}/behaviors/${WATCHER_ID}/pending/not-a-number`
 		);
 		expect(res.status).toBe(400);
 	});

@@ -5,13 +5,13 @@ import {
 	compileReactionScript,
 	extractReactionInputSchema,
 } from "../watchers/reaction-executor";
-import { WATCHER_CATALOG_TEMPLATES } from "./watcher-templates";
+import { BEHAVIOR_CATALOG_TEMPLATES } from "./behavior-templates";
 
-const duplicateMergeTemplate = WATCHER_CATALOG_TEMPLATES.find(
+const duplicateMergeTemplate = BEHAVIOR_CATALOG_TEMPLATES.find(
 	(entry) => entry.id === "duplicate-merge",
 );
 if (!duplicateMergeTemplate) {
-	throw new Error("duplicate-merge watcher template is missing");
+	throw new Error("duplicate-merge Behavior template is missing");
 }
 const duplicateMergeReaction = String(
 	duplicateMergeTemplate.detail.reaction_script,
@@ -46,7 +46,7 @@ async function executeReaction(
 	return { calls, result };
 }
 
-describe("duplicate merge watcher template", () => {
+describe("duplicate merge Behavior template", () => {
 	it("keeps the model explanatory and makes the entity type policy authoritative", () => {
 		const prompt = String(duplicateMergeTemplate.detail.prompt);
 		expect(prompt).toContain("analysis_summary");

@@ -19,14 +19,14 @@ import { streamInvalidationEvents } from "./events/sse";
 import type { Env } from "./index";
 import { getOperationsSummary } from "./operations/connector-operations";
 import { manageClassifiers } from "./tools/admin/manage_classifiers";
-import { listWatchers } from "./tools/admin/manage_behaviors";
+import { manageBehaviors } from "./tools/admin/manage_behaviors";
 import {
 	executeTool,
 	extractAuthContext,
 	toToolContext,
 } from "./tools/execute";
 import { getContent } from "./tools/get_content";
-import { getWatcher } from "./tools/get_watchers";
+import { getBehavior } from "./tools/get_behavior";
 import { getAllTools, getTool, type ToolContext } from "./tools/registry";
 import {
 	errorMessage,
@@ -39,7 +39,7 @@ import { getRuntimeInfo } from "./utils/runtime-info";
 
 function clamp(
 	value: number,
-	options?: { min?: number; max?: number },
+	options?: { min?: number; max?: number }
 ): number {
 	let result = value;
 	if (options?.min !== undefined) result = Math.max(options.min, result);
@@ -49,7 +49,7 @@ function clamp(
 
 function safeParseInt(
 	value: string | undefined,
-	options?: { min?: number; max?: number },
+	options?: { min?: number; max?: number }
 ): number | undefined {
 	if (!value) return undefined;
 	const parsed = parseInt(value, 10);
@@ -58,7 +58,7 @@ function safeParseInt(
 
 function safeParseFloat(
 	value: string | undefined,
-	options?: { min?: number; max?: number },
+	options?: { min?: number; max?: number }
 ): number | undefined {
 	if (!value) return undefined;
 	const parsed = parseFloat(value);
@@ -66,7 +66,7 @@ function safeParseFloat(
 }
 
 async function resolvePublicOrganizationId(
-	orgSlug: string,
+	orgSlug: string
 ): Promise<string | null> {
 	const sql = getDb();
 	const rows = await sql`
@@ -81,7 +81,7 @@ async function resolvePublicOrganizationId(
 
 function publicToolContext(
 	requestUrl: string,
-	organizationId: string,
+	organizationId: string
 ): ToolContext {
 	return {
 		organizationId,
@@ -103,7 +103,7 @@ function publicToolContext(
 
 async function withPublicOrg<T>(
 	c: Context<{ Bindings: Env }>,
-	handler: (organizationId: string) => Promise<T>,
+	handler: (organizationId: string) => Promise<T>
 ): Promise<Response> {
 	try {
 		const orgSlug = c.req.param("orgSlug");
@@ -120,7 +120,7 @@ async function withPublicOrg<T>(
 		if (error instanceof ToolUserError) {
 			return c.json(
 				{ error: error.message },
-				error.httpStatus as 400 | 403 | 404 | 409 | 422,
+				error.httpStatus as 400 | 403 | 404 | 409 | 422
 			);
 		}
 		return c.json({ error: errorMessage(error) }, 400);
@@ -128,24 +128,25 @@ async function withPublicOrg<T>(
 }
 
 /**
- * GET /api/watchers
- * Get or list watchers (wrapper for list_watchers and get_watcher tools)
+ * GET /api/behaviors
+ * Get or list Behaviors.
  */
-export async function restGetWatchers(c: Context<{ Bindings: Env }>) {
+export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 	try {
 		const watcherId = c.req.query("watcher_id");
 		const entityId = safeParseInt(c.req.query("entity_id"), { min: 1 });
 
 		if (!watcherId) {
-			const result = await listWatchers(
+			const result = await manageBehaviors(
 				{
+					action: "list",
 					watcher_id: watcherId,
 					entity_id: entityId,
 					status: c.req.query("status") || undefined,
 					include_details: c.req.query("include_details") === "true",
 				} as any,
 				c.env,
-				toToolContext(extractAuthContext(c)),
+				toToolContext(extractAuthContext(c))
 			);
 			return c.json(toJsonSafe(result));
 		}
@@ -170,14 +171,14 @@ export async function restGetWatchers(c: Context<{ Bindings: Env }>) {
 		};
 
 		const ctx = toToolContext(extractAuthContext(c));
-		const result = await getWatcher(params as any, c.env, ctx);
+		const result = await getBehavior(params as any, c.env, ctx);
 		return c.json(toJsonSafe(result));
 	} catch (error) {
 		return c.json({ error: errorMessage(error) }, 400);
 	}
 }
 
-export async function publicRestGetWatchers(c: Context<{ Bindings: Env }>) {
+export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 	return withPublicOrg(c, async (organizationId) => {
 		const watcherId = c.req.query("watcher_id");
 		const entityId = safeParseInt(c.req.query("entity_id"), { min: 1 });
@@ -197,18 +198,19 @@ export async function publicRestGetWatchers(c: Context<{ Bindings: Env }>) {
 			].some((key) => c.req.query(key) !== undefined);
 
 		if (!detailRequested) {
-			return listWatchers(
+			return manageBehaviors(
 				{
+					action: "list",
 					entity_id: entityId,
 					status: c.req.query("status") || undefined,
 					include_details: c.req.query("include_details") === "true",
 				} as any,
 				c.env,
-				ctx,
+				ctx
 			);
 		}
 
-		return getWatcher(
+		return getBehavior(
 			{
 				watcher_id: watcherId,
 				entity_id: entityId,
@@ -228,7 +230,7 @@ export async function publicRestGetWatchers(c: Context<{ Bindings: Env }>) {
 				include_template_details: watcherId ? true : undefined,
 			} as any,
 			c.env,
-			ctx,
+			ctx
 		);
 	});
 }
@@ -256,7 +258,7 @@ export async function restHealth(c: Context<{ Bindings: Env }>) {
 export async function restToolProxy(
 	c: Context<{ Bindings: Env }>,
 	explicitToolName?: string,
-	explicitArgs?: Record<string, unknown>,
+	explicitArgs?: Record<string, unknown>
 ) {
 	try {
 		const toolName = explicitToolName ?? c.req.param("toolName");
@@ -271,7 +273,7 @@ export async function restToolProxy(
 		if (error instanceof ToolUserError) {
 			return c.json(
 				{ error: error.message },
-				error.httpStatus as 400 | 403 | 404 | 409 | 422,
+				error.httpStatus as 400 | 403 | 404 | 409 | 422
 			);
 		}
 		if (error instanceof ToolNotRegisteredError) {
@@ -302,12 +304,12 @@ export async function restListTools(c: Context<{ Bindings: Env }>) {
 					error:
 						"Organization context required. Authenticate with OAuth or API key.",
 				},
-				401,
+				401
 			);
 		}
 		const maxAccessLevel = resolveMaxAccessLevel(
 			authCtx.memberRole,
-			authCtx.scopes,
+			authCtx.scopes
 		);
 		const tools = getAllTools({
 			publicOnly: false,
@@ -363,7 +365,7 @@ function parseStringListParam(raw: string | undefined): string[] | undefined {
 /** Merge `platforms=a,b` with legacy singular `platform=a` into schema `platforms`. */
 export function parsePlatformsQuery(
 	platformsCsv: string | undefined,
-	platformSingular: string | undefined,
+	platformSingular: string | undefined
 ): string[] | undefined {
 	const fromList = parseStringListParam(platformsCsv);
 	const singular = platformSingular?.trim();
@@ -391,7 +393,7 @@ export async function restSearchKnowledge(c: Context<{ Bindings: Env }>) {
 			run_ids: parseIdListParam(c.req.query("run_ids")),
 			platforms: parsePlatformsQuery(
 				c.req.query("platforms"),
-				c.req.query("platform"),
+				c.req.query("platform")
 			),
 			since: c.req.query("since"),
 			until: c.req.query("until"),
@@ -436,7 +438,7 @@ export async function publicRestSearchKnowledge(c: Context<{ Bindings: Env }>) {
 			run_ids: parseIdListParam(c.req.query("run_ids")),
 			platforms: parsePlatformsQuery(
 				c.req.query("platforms"),
-				c.req.query("platform"),
+				c.req.query("platform")
 			),
 			since: c.req.query("since"),
 			until: c.req.query("until"),
@@ -486,7 +488,7 @@ export async function publicRestSearchKnowledge(c: Context<{ Bindings: Env }>) {
 		return getContent(
 			params as any,
 			c.env,
-			publicToolContext(c.req.url, organizationId),
+			publicToolContext(c.req.url, organizationId)
 		);
 	});
 }
@@ -497,7 +499,7 @@ export async function publicRestListClassifiers(c: Context<{ Bindings: Env }>) {
 		return manageClassifiers(
 			{ action: "list", entity_id: entityId },
 			c.env,
-			publicToolContext(c.req.url, organizationId),
+			publicToolContext(c.req.url, organizationId)
 		);
 	});
 }
@@ -521,8 +523,8 @@ export async function publicRestListConnectors(c: Context<{ Bindings: Env }>) {
       `;
 			entityConnectorKeys = new Set(
 				keyRows.map((r) =>
-					String((r as { connector_key: string }).connector_key),
-				),
+					String((r as { connector_key: string }).connector_key)
+				)
 			);
 		}
 
@@ -607,7 +609,7 @@ export async function publicRestGetConnector(c: Context<{ Bindings: Env }>) {
 
 		const operationsSummary = await getOperationsSummary(
 			organizationId,
-			connector.key,
+			connector.key
 		);
 
 		return {
@@ -694,7 +696,7 @@ export async function publicRestEventsStream(c: Context<{ Bindings: Env }>) {
 	return streamInvalidationEvents(c, organizationId, {
 		filter: (event) => {
 			const publicKeys = event.keys.filter((k) =>
-				PUBLIC_INVALIDATION_KEYS.has(k),
+				PUBLIC_INVALIDATION_KEYS.has(k)
 			);
 			if (publicKeys.length === 0) return null;
 			return { ...event, keys: publicKeys };
@@ -714,7 +716,7 @@ export async function publicRestEventsStream(c: Context<{ Bindings: Env }>) {
  * - value: string | null (null to unset)
  */
 export async function restUpdateContentClassification(
-	c: Context<{ Bindings: Env }>,
+	c: Context<{ Bindings: Env }>
 ) {
 	try {
 		const contentId = parseInt(c.req.param("id") ?? "", 10);
@@ -739,7 +741,7 @@ export async function restUpdateContentClassification(
 		if (role !== "owner" && role !== "admin") {
 			return c.json(
 				{ error: "Forbidden", message: "Owner or admin role required" },
-				403,
+				403
 			);
 		}
 
@@ -752,7 +754,7 @@ export async function restUpdateContentClassification(
 				value: body.value,
 			},
 			c.env,
-			ctx,
+			ctx
 		);
 
 		if (!result.success) {
@@ -790,7 +792,7 @@ export async function restUpdateContentClassification(
 			toJsonSafe({
 				attribute_key,
 				classification: classificationData,
-			}),
+			})
 		);
 	} catch (error) {
 		logger.error({ error }, "[REST API] Update classification error");

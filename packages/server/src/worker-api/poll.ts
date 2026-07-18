@@ -238,7 +238,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             manifests: connectorManifestsRaw,
           })
         : null;
-      const connectorManifestMap = validConnectorManifests ? storedManifestMap(validConnectorManifests) : null;
+      const connectorManifestMap = validConnectorManifests
+        ? storedManifestMap(validConnectorManifests)
+        : null;
 
       // `xmax = 0` on the RETURNING row distinguishes a brand-new device
       // registration from a routine poll-update so we only emit the
@@ -271,7 +273,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           END,
           last_seen_at = now()
         RETURNING id, organization_id, (xmax = 0) AS inserted
-      `) as unknown as Array<{ id: string; organization_id: string | null; inserted: boolean }>;
+      `) as unknown as Array<{
+        id: string;
+        organization_id: string | null;
+        inserted: boolean;
+      }>;
       deviceWorkerId = upserted[0]?.id ?? null;
       if (upserted[0]?.inserted && upserted[0]?.organization_id) {
         recordLifecycleEvent({
@@ -655,7 +661,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   };
 
   // Watcher run: device worker is going to spawn a local CLI executor and
-  // return the result via /api/workers/me/runs/:runId/complete-watcher. No
+  // return the result via /api/workers/me/runs/:runId/complete-behavior. No
   // connector code, no connection credentials, no compiled_code lookup —
   // just the payload envelope the dispatcher needs to build a prompt. The
   // server-side claim filter (#802 + this PR) already guarantees only the
@@ -699,9 +705,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           notification_priority: row.watcher_notification_priority ?? 'normal',
           // Strip server-only keys (e.g. finalize_nudges) so the device-worker's
           // strict payload decode never sees a field it doesn't know.
-          execution_config: stripServerOnlyExecutionConfig(
-            row.watcher_execution_config
-          ),
+          execution_config: stripServerOnlyExecutionConfig(row.watcher_execution_config),
           // The prompt of the version this run was pinned to at creation
           // (run's snapshotted approved_input.version_id, else the watcher's
           // current_version_id) — same source complete_window validates
@@ -715,7 +719,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           // The derived extraction contract (entity-typed → derived from that
           // entity type's metadata_schema; untyped → null). The dispatcher embeds
           // it in the prompt as the output contract: the CLI must finish with a
-          // JSON object matching it, which /complete-watcher feeds through the
+          // JSON object matching it, which /complete-behavior feeds through the
           // shared complete_window pipeline (schema validation included). Null
           // when the watcher is untyped — the dispatcher then asks for a
           // free-form `{"summary": ...}` object.
@@ -775,7 +779,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         { run_id: row.run_id, connector_key: row.connector_key },
         'Blocked cloud-restricted connector run under LOBU_CLOUD_MODE'
       );
-      return c.json({ next_poll_seconds: 1, skipped_run_id: row.run_id, error: message });
+      return c.json({
+        next_poll_seconds: 1,
+        skipped_run_id: row.run_id,
+        error: message,
+      });
     }
   }
 
@@ -814,7 +822,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         { run_id: row.run_id, connector_key: row.connector_key, err },
         'Failed to resolve connector code for claimed worker run'
       );
-      return c.json({ next_poll_seconds: 1, skipped_run_id: row.run_id, error: message });
+      return c.json({
+        next_poll_seconds: 1,
+        skipped_run_id: row.run_id,
+        error: message,
+      });
     }
   }
 
@@ -827,7 +839,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //    a connector misconfigured with both a `required_capability` and an auth
   //    profile still can't leak secrets to an arbitrary capability-matched device.
   const connectionIsDevicePinned = row.connection_device_worker_id != null;
-  const deliverConnectionAuth = !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
+  const deliverConnectionAuth =
+    !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
   // `user_data_dir` and `cdp_url` for device-bound browser profiles flow to
   // the worker via `sessionState.user_data_dir` / `sessionState.cdp_url`
   // (set inside resolveExecutionAuth). No need to thread them as separate
@@ -884,6 +897,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     operation_key: row.action_key ?? undefined,
     action_input: (row as any).approved_input ?? row.action_input ?? undefined,
     auth_profile_id: deliverConnectionAuth ? (row.run_auth_profile_id ?? undefined) : undefined,
-    previous_credentials: deliverConnectionAuth ? (row.auth_profile_auth_data ?? undefined) : undefined,
+    previous_credentials: deliverConnectionAuth
+      ? (row.auth_profile_auth_data ?? undefined)
+      : undefined,
   });
 }

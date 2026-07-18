@@ -1,5 +1,5 @@
 /**
- * Tool: get_watcher (Incremental Time Windows)
+ * Tool: get_behavior (Incremental Time Windows)
  *
  * Query a single watcher's analysis windows by date range and granularity.
  * Returns time-windowed watcher data sourced from canvas_state event chains
@@ -45,7 +45,11 @@ import {
 } from '../utils/organization-access';
 
 import { renderPromptPreview } from '../watchers/template-renderer';
-import { buildWatchersUrl, type EntityInfo, getPublicWebUrl } from '../utils/url-builder';
+import {
+  buildBehaviorUrl,
+  getOrganizationSlug,
+  getPublicWebUrl,
+} from '../utils/url-builder';
 import {
   buildWindowsCountFromClause,
   buildWindowsSelectClause,
@@ -55,7 +59,6 @@ import {
   parseBigintArray,
 } from '../utils/window-utils';
 import { buildLatestWatcherRunJoinSql } from '../watchers/automation';
-import { getWorkspaceProvider } from '../workspace';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
 
@@ -63,8 +66,8 @@ import { withValidatedArgs } from './validate-args';
 // Typebox Schema
 // ============================================
 
-export const GetWatcherSchema = Type.Object({
-  watcher_id: Type.String({ description: 'Watcher ID to query' }),
+export const GetBehaviorSchema = Type.Object({
+  watcher_id: Type.String({ description: 'Behavior ID to query' }),
   entity_id: Type.Optional(
     Type.Number({
       description: 'Optional entity ID for access validation and URL context',
@@ -99,7 +102,7 @@ export const GetWatcherSchema = Type.Object({
   template_version: Type.Optional(
     Type.Number({
       description:
-        "Override template version *number* for viewing results. If not provided, uses the watcher's current pinned version. Useful for viewing results with a different renderer or schema. Prefer `template_version_id` when you need a stable reference (version numbers can change if a chain is reorganized).",
+        "Override template version *number* for viewing results. If not provided, uses the Behavior's current pinned version. Useful for viewing results with a different renderer or schema. Prefer `template_version_id` when you need a stable reference (version numbers can change if a chain is reorganized).",
     })
   ),
   template_version_id: Type.Optional(
@@ -135,7 +138,7 @@ export const GetWatcherSchema = Type.Object({
 // Type Definitions
 // ============================================
 
-type GetWatcherArgs = Static<typeof GetWatcherSchema>;
+type GetBehaviorArgs = Static<typeof GetBehaviorSchema>;
 
 const WindowGapSchema = Type.Object({
   start: Type.String(),
@@ -144,13 +147,13 @@ const WindowGapSchema = Type.Object({
 type WindowGap = Static<typeof WindowGapSchema>;
 
 /**
- * Result of `get_watcher`. TypeBox-first (single source of truth): the handler's
+ * Result of `get_behavior`. TypeBox-first (single source of truth): the handler's
  * return type is `Static<>`-derived, and the same schema is the tool's
  * `outputSchema`. Nested watcher types come from `types/watchers.ts`.
  */
-export const GetWatcherResultSchema = Type.Object({
+export const GetBehaviorResultSchema = Type.Object({
   windows: Type.Array(WatcherWindowSchema),
-  watcher: Type.Optional(WatcherMetadataSchema),
+  behavior: Type.Optional(WatcherMetadataSchema),
   pending_analysis: Type.Optional(PendingAnalysisSchema),
   gaps: Type.Optional(Type.Array(WindowGapSchema)),
   pagination: Type.Object({
@@ -171,7 +174,7 @@ export const GetWatcherResultSchema = Type.Object({
   warnings: Type.Optional(Type.Array(Type.String())),
   view_url: Type.Optional(Type.String()),
 });
-export type GetWatcherResult = Static<typeof GetWatcherResultSchema>;
+export type GetBehaviorResult = Static<typeof GetBehaviorResultSchema>;
 
 // ============================================
 // Database Row Types (for query result typing)
@@ -269,29 +272,6 @@ function parseWatcherSources(value: unknown): WatcherSource[] {
   return [];
 }
 
-async function buildEntityInfo(entityRow: Record<string, unknown>): Promise<{
-  entityInfoForUrl: EntityInfo | null;
-  entityName: string | null;
-  entityType: string | null;
-}> {
-  const organizationSlug = await getWorkspaceProvider().getOrgSlug(
-    entityRow.organization_id as string
-  );
-  return {
-    entityInfoForUrl: organizationSlug
-      ? {
-          ownerSlug: organizationSlug,
-          entityType: entityRow.entity_type as string,
-          slug: entityRow.slug as string,
-          parentType: (entityRow.parent_entity_type as string) ?? null,
-          parentSlug: (entityRow.parent_slug as string) ?? null,
-        }
-      : null,
-    entityName: (entityRow.name as string) ?? null,
-    entityType: (entityRow.entity_type as string) ?? null,
-  };
-}
-
 async function requireWatcherReadAccess(
   sql: DbClient,
   watcherId: string,
@@ -327,13 +307,17 @@ async function requireWatcherReadAccess(
 // Tool Implementation
 // ============================================
 
-export const getWatcher = withValidatedArgs('get_watcher', GetWatcherSchema, getWatcherImpl);
+export const getBehavior = withValidatedArgs(
+  'get_behavior',
+  GetBehaviorSchema,
+  getBehaviorImpl
+);
 
-async function getWatcherImpl(
-  args: GetWatcherArgs,
+async function getBehaviorImpl(
+  args: GetBehaviorArgs,
   env: Env,
   ctx: ToolContext
-): Promise<GetWatcherResult> {
+): Promise<GetBehaviorResult> {
   const pgSql = createDbClientFromEnv(env);
   const sql = getDb();
   const baseUrl = getPublicWebUrl(ctx.requestUrl, ctx.baseUrl);
@@ -361,33 +345,30 @@ async function getWatcherImpl(
   // ============================================
 
   if (!args.watcher_id) {
-    throw new Error('watcher_id is required. Use list_watchers to discover available watchers.');
+    throw new Error(
+      "watcher_id is required. Use manage_behaviors with action='list' to discover Behaviors."
+    );
   }
 
   await requireWatcherReadAccess(pgSql, args.watcher_id, ctx);
 
   // Entity resolution is deferred — for the typical case (only watcher_id
   // given), the watcher metadata query below already returns the watcher's
-  // entities as a nested jsonb_agg, so we build entityInfoForUrl /
-  // entitiesForTemplate from that single result rather than firing a
+  // entities as a nested jsonb_agg, so we build entitiesForTemplate from that
+  // single result rather than firing a
   // dedicated entity lookup.
   //
   // The exception is when args.entity_id is passed and we need to validate
   // the entity exists / is accessible — that's a cheap PK check we keep
   // up-front so we throw early. (The page doesn't pass entity_id on default
   // load, so this branch is rare.)
-  let entityInfoForUrl: EntityInfo | null = null;
   let entitiesForTemplate: Array<{ name: string; type: string }> = [];
 
   if (args.entity_id) {
     const entityCheck = await sql`
-      SELECT e.id, e.name, et.slug AS entity_type, e.slug, e.parent_id,
-        parent.slug as parent_slug, pet.slug as parent_entity_type,
-        e.organization_id
+      SELECT e.id, e.name, et.slug AS entity_type
       FROM entities e
       JOIN entity_types et ON et.id = e.entity_type_id
-      LEFT JOIN entities parent ON e.parent_id = parent.id
-      LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
       WHERE e.id = ${args.entity_id}
     `;
 
@@ -395,9 +376,12 @@ async function getWatcherImpl(
       throw new Error(`Entity with ID ${args.entity_id} not found`);
     }
 
-    const info = await buildEntityInfo(entityCheck[0]);
-    entityInfoForUrl = info.entityInfoForUrl;
-    entitiesForTemplate = [{ name: info.entityName ?? '', type: info.entityType ?? '' }];
+    entitiesForTemplate = [
+      {
+        name: String(entityCheck[0].name ?? ''),
+        type: String(entityCheck[0].entity_type ?? ''),
+      },
+    ];
   }
 
   const page = Math.max(1, args.page || 1);
@@ -478,7 +462,7 @@ async function getWatcherImpl(
 
       if (fallbackWindows.length > 0) {
         logger.info(
-          `[get_watcher] Fallback: No ${finalGranularity} windows found, showing ${fallbackWindows.length} ${fallbackGranularity} windows instead`
+          `[get_behavior] Fallback: No ${finalGranularity} windows found, showing ${fallbackWindows.length} ${fallbackGranularity} windows instead`
         );
         windows = fallbackWindows;
         actualGranularity = fallbackGranularity;
@@ -623,7 +607,7 @@ async function getWatcherImpl(
         sv.reactions_guidance as sel_version_reactions_guidance,
         -- Latest window end for the unprocessedCount bound.
         (SELECT MAX(window_end) FROM canvas_windows WHERE watcher_id = i.id) as latest_window_end,
-        -- Entities + parent info for entityInfoForUrl / entitiesForTemplate
+        -- Entities for prompt-template context.
         (SELECT jsonb_agg(jsonb_build_object(
           'id', e.id,
           'name', e.name,
@@ -672,11 +656,11 @@ async function getWatcherImpl(
 
   logger.info(
     { windowIds, includeClassificationSummary },
-    '[get_watcher] Checking classification stats'
+    '[get_behavior] Checking classification stats'
   );
   if (windowIds.length > 0 && includeClassificationSummary) {
     try {
-      logger.info({ windowCount: windowIds.length }, '[get_watcher] Fetching classification stats');
+      logger.info({ windowCount: windowIds.length }, '[get_behavior] Fetching classification stats');
       const statsResult = await sql.unsafe(
         `
         SELECT
@@ -697,7 +681,7 @@ async function getWatcherImpl(
 
       logger.info(
         { statsResultCount: statsResult.length },
-        '[get_watcher] Got classification stats'
+        '[get_behavior] Got classification stats'
       );
       for (const row of statsResult as unknown as ClassificationStatsRow[]) {
         const windowId = ensureNumber(row.window_id);
@@ -716,11 +700,11 @@ async function getWatcherImpl(
           mapSize: classificationStatsMap.size,
           mapKeys: Array.from(classificationStatsMap.keys()),
         },
-        '[get_watcher] Classification stats map built'
+        '[get_behavior] Classification stats map built'
       );
     } catch (error) {
       // Log but don't fail if classification stats query fails
-      logger.warn({ error, windowIds }, '[get_watcher] Failed to fetch classification stats');
+      logger.warn({ error, windowIds }, '[get_behavior] Failed to fetch classification stats');
     }
   }
 
@@ -734,14 +718,10 @@ async function getWatcherImpl(
     watcherRow = watcherQuery.length > 0 ? (watcherQuery[0] as unknown as WatcherQueryRow) : null;
   }
 
-  // Resolve entityInfoForUrl / entitiesForTemplate from the entities array
-  // that was folded into the watcher metadata query — only for the typical
-  // case (no args.entity_id), which has been deferred from the start of the
-  // function. When args.entity_id is set we already populated these above
-  // from the dedicated entityCheck query.
+  // Resolve entitiesForTemplate from the entities array folded into the
+  // Behavior metadata query. When args.entity_id is set we already populated
+  // it above from the dedicated entityCheck query.
   if (!args.entity_id && watcherRow?.entities && watcherRow.entities.length > 0) {
-    const info = await buildEntityInfo(watcherRow.entities[0] as unknown as Record<string, unknown>);
-    entityInfoForUrl = info.entityInfoForUrl;
     entitiesForTemplate = watcherRow.entities.map((e) => ({
       name: String(e.name),
       type: String(e.entity_type),
@@ -1094,7 +1074,7 @@ async function getWatcherImpl(
 
     if (unprocessedCount > 0) {
       logger.info(
-        `[get_watcher] Found ${unprocessedCount} unprocessed content items for watcher ${args.watcher_id}`
+        `[get_behavior] Found ${unprocessedCount} unprocessed content items for Behavior ${args.watcher_id}`
       );
     }
   }
@@ -1113,9 +1093,9 @@ async function getWatcherImpl(
 
   if (formattedWindows.length === 0 && watcherRow) {
     if (watcherRow.status === 'archived') {
-      warnings.push(`Watcher "${watcherRow.name ?? args.watcher_id}" is archived.`);
+      warnings.push(`Behavior "${watcherRow.name ?? args.watcher_id}" is archived.`);
     } else {
-      warnings.push(`Watcher "${watcherRow.name ?? args.watcher_id}" has no windows yet.`);
+      warnings.push(`Behavior "${watcherRow.name ?? args.watcher_id}" has no windows yet.`);
     }
   }
 
@@ -1149,9 +1129,17 @@ async function getWatcherImpl(
     if (gaps.length > 0) windowGaps = gaps;
   }
 
-  const result: GetWatcherResult = {
+  const organizationSlug = watcherRow?.organization_id
+    ? await getOrganizationSlug(watcherRow.organization_id)
+    : null;
+  const viewUrl =
+    organizationSlug && watcherRow?.agent_id
+      ? buildBehaviorUrl(organizationSlug, watcherRow.agent_id, args.watcher_id, baseUrl)
+      : undefined;
+
+  const result: GetBehaviorResult = {
     windows: formattedWindows,
-    ...(watcherMetadata && { watcher: watcherMetadata }),
+    ...(watcherMetadata && { behavior: watcherMetadata }),
     ...(pendingAnalysis && { pending_analysis: pendingAnalysis }),
     ...(windowGaps && { gaps: windowGaps }),
     pagination: {
@@ -1170,7 +1158,7 @@ async function getWatcherImpl(
       granularity_fallback_used: usedFallback,
     },
     ...(warnings.length > 0 && { warnings }),
-    ...(entityInfoForUrl && { view_url: buildWatchersUrl(entityInfoForUrl, baseUrl) }),
+    ...(viewUrl && { view_url: viewUrl }),
   };
 
   return result;

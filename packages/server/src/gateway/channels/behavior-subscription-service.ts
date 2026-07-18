@@ -1,6 +1,11 @@
 import { createLogger } from "@lobu/core";
 import type { BehaviorEventTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
-import { type DbClient, getDb, tsTime } from "../../db/client.js";
+import {
+	type DbClient,
+	getDb,
+	pgBigintArray,
+	tsTime,
+} from "../../db/client.js";
 import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection.js";
 import { requireOrgId } from "../../lobu/stores/org-context.js";
 import {
@@ -483,45 +488,47 @@ export class BehaviorSubscriptionService {
 			organizationId,
 			"BehaviorSubscriptionService.archiveChatBehavior",
 		);
-		const rows = await sql<{ id: number; platform: string }>`
-			SELECT w.id, trigger->>'connector_key' AS platform
-			FROM watchers w
-			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
-			WHERE w.status = 'active'
-			  AND w.organization_id = ${orgId}
-			  AND w.agent_id = ${agentId}
-			  AND trigger->>'kind' = 'event'
-			  AND jsonb_typeof(trigger->'connection_id') = 'number'
-			  AND (trigger->>'connection_id')::bigint = ${connectionId}
-			  AND trigger->'event_types' ? 'message.created'
-			  AND trigger->'match'->>'channel_id' = ${nativeChannelIdFromAny(channelId)}
-			  AND w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[]
-			FOR UPDATE OF w
-		`;
-		if (rows.length === 0) return false;
-		await sql`
-			UPDATE watchers
-			SET status = 'archived', updated_at = current_timestamp
-			WHERE id = ANY(${sql.array(rows.map((row) => row.id), "int4")})
-		`;
+		const write = async (tx: DbClient): Promise<boolean> => {
+			const rows = await tx<{ id: number; platform: string }>`
+				SELECT w.id, trigger->>'connector_key' AS platform
+				FROM watchers w
+				CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+				WHERE w.status = 'active'
+				  AND w.organization_id = ${orgId}
+				  AND w.agent_id = ${agentId}
+				  AND trigger->>'kind' = 'event'
+				  AND jsonb_typeof(trigger->'connection_id') = 'number'
+				  AND (trigger->>'connection_id')::bigint = ${connectionId}
+				  AND trigger->'event_types' ? 'message.created'
+				  AND trigger->'match'->>'channel_id' = ${nativeChannelIdFromAny(channelId)}
+				  AND w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[]
+				FOR UPDATE OF w
+			`;
+			const archived = rows[0];
+			if (!archived) return false;
+			await tx`
+				UPDATE watchers
+				SET status = 'archived', updated_at = current_timestamp
+				WHERE id = ANY(${pgBigintArray(rows.map((row) => row.id))}::bigint[])
+			`;
 
-		const archived = rows[0];
-		if (!archived) return false;
-		const canonicalChannelId = `${archived.platform}:${nativeChannelIdFromAny(channelId)}`;
-		if (
-			!(await hasChannelSubscription(
-				sql,
-				String(connectionId),
-				canonicalChannelId,
-			))
-		) {
-			await softDeleteStreamingChannelFeed({
-				connectionId: String(connectionId),
-				channelKey: canonicalChannelId,
-				sql,
-			});
-		}
-		return true;
+			const canonicalChannelId = `${archived.platform}:${nativeChannelIdFromAny(channelId)}`;
+			if (
+				!(await hasChannelSubscription(
+					tx,
+					String(connectionId),
+					canonicalChannelId,
+				))
+			) {
+				await softDeleteStreamingChannelFeed({
+					connectionId: String(connectionId),
+					channelKey: canonicalChannelId,
+					sql: tx,
+				});
+			}
+			return true;
+		};
+		return options?.sql ? write(sql) : sql.begin(write);
 	}
 
 	async listChatBehaviors(
@@ -587,48 +594,54 @@ export class BehaviorSubscriptionService {
 			organizationId,
 			"BehaviorSubscriptionService.archiveAllChatBehaviors",
 		);
-		const rows = await sql<{
-			behavior_id: number;
-			connection_id: string;
-			channel_id: string;
-		}>`
-			SELECT
-				w.id AS behavior_id,
-				(trigger->>'connection_id')::text AS connection_id,
-				COALESCE(
-					NULLIF(trigger->'match'->>'channel_key', ''),
-					(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
-				) AS channel_id
-			FROM watchers w
-			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
-			WHERE w.status = 'active'
-			  AND w.organization_id = ${orgId}
-			  AND w.agent_id = ${agentId}
-			  AND trigger->>'kind' = 'event'
-			  AND jsonb_typeof(trigger->'connection_id') = 'number'
-			  AND trigger->'event_types' ? 'message.created'
-			  AND trigger->'match'->>'channel_id' IS NOT NULL
-			  AND w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[]
-			FOR UPDATE OF w
-		`;
-		if (rows.length > 0) {
-			await sql`
-				UPDATE watchers
-				SET status = 'archived', updated_at = current_timestamp
-				WHERE id = ANY(${sql.array(rows.map((row) => row.behavior_id), "int4")})
+		return sql.begin(async (tx) => {
+			const rows = await tx<{
+				behavior_id: number;
+				connection_id: string;
+				channel_id: string;
+			}>`
+				SELECT
+					w.id AS behavior_id,
+					(trigger->>'connection_id')::text AS connection_id,
+					COALESCE(
+						NULLIF(trigger->'match'->>'channel_key', ''),
+						(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+					) AS channel_id
+				FROM watchers w
+				CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+				WHERE w.status = 'active'
+				  AND w.organization_id = ${orgId}
+				  AND w.agent_id = ${agentId}
+				  AND trigger->>'kind' = 'event'
+				  AND jsonb_typeof(trigger->'connection_id') = 'number'
+				  AND trigger->'event_types' ? 'message.created'
+				  AND trigger->'match'->>'channel_id' IS NOT NULL
+				  AND w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[]
+				FOR UPDATE OF w
 			`;
-		}
-		for (const row of rows) {
-			if (
-				!(await hasChannelSubscription(sql, row.connection_id, row.channel_id))
-			) {
-				await softDeleteStreamingChannelFeed({
-					connectionId: row.connection_id,
-					channelKey: row.channel_id,
-					sql,
-				});
+			if (rows.length > 0) {
+				await tx`
+					UPDATE watchers
+					SET status = 'archived', updated_at = current_timestamp
+					WHERE id = ANY(${pgBigintArray(rows.map((row) => row.behavior_id))}::bigint[])
+				`;
 			}
-		}
-		return rows.length;
+			for (const row of rows) {
+				if (
+					!(await hasChannelSubscription(
+						tx,
+						row.connection_id,
+						row.channel_id,
+					))
+				) {
+					await softDeleteStreamingChannelFeed({
+						connectionId: row.connection_id,
+						channelKey: row.channel_id,
+						sql: tx,
+					});
+				}
+			}
+			return rows.length;
+		});
 	}
 }

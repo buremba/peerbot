@@ -49,17 +49,21 @@ async function seedReactionWatcher(workspace: TestWorkspace, suffix: string, scr
     organizationId: workspace.org.id,
     ownerUserId: workspace.users.owner.id,
   });
-  const watcher = (await workspace.owner.watchers.create({
+  const watcher = (await workspace.owner.behaviors.create({
     entity_id: entity.id,
     slug: `react-${suffix}`,
     name: `React ${suffix}`,
     prompt: 'Summarize {{entities}}.',
-    schedule: '0 9 * * *',
+    triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
   })) as { watcher_id: string };
   const watcherId = Number(watcher.watcher_id);
   await manageBehaviors(
-    { action: 'set_reaction_script', watcher_id: String(watcherId), reaction_script: script } as never,
+    {
+      action: 'set_reaction_script',
+      watcher_id: String(watcherId),
+      reaction_script: script,
+    } as never,
     {} as Env,
     ownerCtx(workspace)
   );
@@ -87,7 +91,8 @@ describe('backfillReactionInputSchema', () => {
     });
     expect(dry.groups).toBe(1);
     expect(dry.filled).toBe(1);
-    const [afterDry] = await sql`SELECT reaction_input_schema FROM watchers WHERE id = ${watcherId}`;
+    const [afterDry] =
+      await sql`SELECT reaction_input_schema FROM watchers WHERE id = ${watcherId}`;
     expect(afterDry.reaction_input_schema).toBeNull();
 
     // Execute: fills the column with the extracted contract.
@@ -97,8 +102,11 @@ describe('backfillReactionInputSchema', () => {
       execute: true,
     });
     expect(run.filled).toBe(1);
-    const [afterRun] = await sql`SELECT reaction_input_schema FROM watchers WHERE id = ${watcherId}`;
-    const schema = afterRun.reaction_input_schema as { properties?: Record<string, unknown> } | null;
+    const [afterRun] =
+      await sql`SELECT reaction_input_schema FROM watchers WHERE id = ${watcherId}`;
+    const schema = afterRun.reaction_input_schema as {
+      properties?: Record<string, unknown>;
+    } | null;
     expect(schema).not.toBeNull();
     expect(Object.keys(schema?.properties ?? {}).sort()).toEqual(['count', 'outcome']);
 
@@ -114,7 +122,9 @@ describe('backfillReactionInputSchema', () => {
 
   it('leaves a reaction with no `input` export as NULL (counted, never written)', async () => {
     const sql = getTestDb();
-    const workspace = await TestWorkspace.create({ name: 'Backfill NoInput Org' });
+    const workspace = await TestWorkspace.create({
+      name: 'Backfill NoInput Org',
+    });
     const watcherId = await seedReactionWatcher(workspace, 'noinput', REACTION_NO_INPUT);
     await sql`UPDATE watchers SET reaction_input_schema = NULL WHERE id = ${watcherId}`;
 

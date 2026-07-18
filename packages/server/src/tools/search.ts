@@ -9,10 +9,7 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
-import {
-  evaluateEntityMutation,
-  resolveActingPrincipal,
-} from '../authz/entity-policy';
+import { evaluateEntityMutation, resolveActingPrincipal } from '../authz/entity-policy';
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb } from '../db/client';
@@ -34,7 +31,7 @@ import { buildEntityUrl, getPublicWebUrl } from '../utils/url-builder';
 import { getWorkspaceProvider } from '../workspace';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
-import { getErrorMessage } from "@lobu/core";
+import { getErrorMessage } from '@lobu/core';
 
 // ============================================
 // Typebox Schema
@@ -115,8 +112,7 @@ export const SearchSchema = Type.Object({
   ),
   metadata_filter: Type.Optional(
     Type.Record(Type.String(), Type.String(), {
-      description:
-        'Filter entities by metadata key-value pairs (e.g. {"category": "preference"})',
+      description: 'Filter entities by metadata key-value pairs (e.g. {"category": "preference"})',
     })
   ),
   agent_id: Type.Optional(
@@ -317,9 +313,7 @@ export const UnifiedSearchResultSchema = Type.Object({
     Type.Array(
       Type.Object({
         entity_type: Type.String(),
-        entities: Type.Array(
-          Type.Object({ id: Type.Integer(), name: Type.String() })
-        ),
+        entities: Type.Array(Type.Object({ id: Type.Integer(), name: Type.String() })),
       })
     )
   ),
@@ -375,7 +369,10 @@ async function fetchContentSnippets(
       // connection-visibility clause is skipped entirely, so search_memory
       // (publicly readable) would expose another member's private-connection
       // content. See get-content-visibility / search-cross-org tests.
-      visibility_scope: { organizationId: gate.organizationId, userId: gate.principal },
+      visibility_scope: {
+        organizationId: gate.organizationId,
+        userId: gate.principal,
+      },
       limit: contentLimit,
       min_similarity: 0.4,
       query_embedding: queryEmbedding,
@@ -413,12 +410,57 @@ async function fetchContentSnippets(
 // transcript — if a prompt is ONLY these, keyword matching would return nothing,
 // so we fall back to recency (the "catch me up" case get_channel_history served).
 const RECALL_STOPWORDS = new Set([
-  'the', 'and', 'you', 'our', 'what', 'did', 'was', 'were', 'are', 'has', 'had',
-  'about', 'talk', 'talked', 'talking', 'discuss', 'discussed', 'discussion',
-  'earlier', 'previous', 'prev', 'past', 'before', 'recent', 'recently', 'lately',
-  'message', 'messages', 'thread', 'threads', 'conversation', 'conversations',
-  'history', 'said', 'say', 'tell', 'told', 'catch', 'again', 'this', 'that',
-  'they', 'them', 'here', 'there', 'with', 'from', 'your', 'mine', 'last', 'into',
+  'the',
+  'and',
+  'you',
+  'our',
+  'what',
+  'did',
+  'was',
+  'were',
+  'are',
+  'has',
+  'had',
+  'about',
+  'talk',
+  'talked',
+  'talking',
+  'discuss',
+  'discussed',
+  'discussion',
+  'earlier',
+  'previous',
+  'prev',
+  'past',
+  'before',
+  'recent',
+  'recently',
+  'lately',
+  'message',
+  'messages',
+  'thread',
+  'threads',
+  'conversation',
+  'conversations',
+  'history',
+  'said',
+  'say',
+  'tell',
+  'told',
+  'catch',
+  'again',
+  'this',
+  'that',
+  'they',
+  'them',
+  'here',
+  'there',
+  'with',
+  'from',
+  'your',
+  'mine',
+  'last',
+  'into',
 ]);
 
 /**
@@ -613,7 +655,11 @@ const conversationSource: RecallSource = {
     // (`gate.principal`) is the per-user side of the gate — see
     // fetchConversationSnippets.
     if (!ctx.query || !gate.agentId) return {};
-    const conversation_messages = await fetchConversationSnippets(gate, ctx.query, ctx.contentLimit);
+    const conversation_messages = await fetchConversationSnippets(
+      gate,
+      ctx.query,
+      ctx.contentLimit
+    );
     return conversation_messages.length > 0 ? { conversation_messages } : {};
   },
 };
@@ -658,7 +704,7 @@ const virtualSource: RecallSource = {
          ${vis}
        ORDER BY f.id
        LIMIT ${MAX_VIRTUAL_RECALL_FEEDS + 1}`,
-      [gate.organizationId],
+      [gate.organizationId]
     )) as unknown as Array<{ id: number; feed_key: string }>;
 
     if (feedRows.length === 0) return {};
@@ -681,7 +727,12 @@ const virtualSource: RecallSource = {
             limit: ctx.contentLimit,
           });
           if (live.rows.length === 0) return null;
-          return { feed_id: f.id, feed_key: f.feed_key, columns: live.columns, rows: live.rows };
+          return {
+            feed_id: f.id,
+            feed_key: f.feed_key,
+            columns: live.columns,
+            rows: live.rows,
+          };
         } catch (err) {
           logger.warn(`[search] virtual feed ${f.id} recall failed: ${getErrorMessage(err)}`);
           return null;
@@ -734,7 +785,7 @@ export const search = withValidatedArgs('search_memory', SearchSchema, searchImp
  */
 async function filterEntitiesByReadPolicy<T extends { entity_type: string }>(
   ctx: ToolContext,
-  entities: T[],
+  entities: T[]
 ): Promise<T[]> {
   if (entities.length === 0 || !ctx.organizationId) return entities;
   // Human-driven tools (no agent/watcher) keep full org entity search.
@@ -746,7 +797,7 @@ async function filterEntitiesByReadPolicy<T extends { entity_type: string }>(
     explicitWatcherId: null,
     sessionWatcherId: ctx.actingWatcherId ?? null,
   });
-  if (actor.kind === "user") return entities;
+  if (actor.kind === 'user') return entities;
   const typeCache = new Map<string, boolean>();
   const out: T[] = [];
   for (const entity of entities) {
@@ -759,11 +810,11 @@ async function filterEntitiesByReadPolicy<T extends { entity_type: string }>(
         principalId: actor.id,
         ownerAgentId: actor.ownerAgentId,
         ownerResolved: actor.ownerResolved,
-        action: "read",
+        action: 'read',
         entityTypeSlug: slug,
         sql: getDb(),
       });
-      ok = decision === "allow";
+      ok = decision === 'allow';
       typeCache.set(slug, ok);
     }
     if (ok) out.push(entity);
@@ -791,7 +842,9 @@ async function searchImpl(
   const contentLimit = Math.min(args.content_limit ?? 5, 50);
 
   if (!ctx.organizationId) {
-    return emptyResult({ suggestion: 'No accessible entities found in this workspace scope' });
+    return emptyResult({
+      suggestion: 'No accessible entities found in this workspace scope',
+    });
   }
 
   // Validate: must have either query, ID, or embedding
@@ -801,13 +854,11 @@ async function searchImpl(
 
   // Type-scoped search: fail closed before querying when the agent can't read that type.
   if (args.entity_type) {
-    const probe = await filterEntitiesByReadPolicy(ctx, [
-      { entity_type: args.entity_type },
-    ]);
+    const probe = await filterEntitiesByReadPolicy(ctx, [{ entity_type: args.entity_type }]);
     if (probe.length === 0) {
       throw new ToolUserError(
         `Policy denies reading entities of type '${args.entity_type}' for this principal.`,
-        403,
+        403
       );
     }
   }
@@ -861,7 +912,7 @@ async function searchImpl(
             entity_type: entity.entity_type,
             suggestion: `Entity with ID ${args.entity_id} is not readable under this agent's entity read policy`,
           }),
-          recall,
+          recall
         );
       }
       return withRecall(await formatEntityResult(readable, args, ctx), recall);
@@ -895,7 +946,9 @@ async function searchImpl(
   ]);
 
   if (results.length === 0 && query && !args.query_embedding?.length) {
-    const fallbackQueries = expandSearchQueries(query, { maxVariants: 8 }).slice(1);
+    const fallbackQueries = expandSearchQueries(query, {
+      maxVariants: 8,
+    }).slice(1);
     for (const fallbackQuery of fallbackQueries) {
       results = await queryEntities(
         fallbackQuery.slice(0, 200).trim() || null,
@@ -929,14 +982,14 @@ async function searchImpl(
     '**Next steps:** call `run_sdk` with a TS script over `client`:\n' +
     `1. Create the entity: \`await client.entities.create({ type: '<entity_type>', name: '${query}' })\` (optionally pass parent_id for hierarchy)\n` +
     "2. Create a connection: `await client.connections.create({ connector_key: '<connector>', ... })`, then scope it with `await client.feeds.create({ ... })`\n" +
-    '3. Wait for ingestion to start automatically, then discover watchers with `client.watchers.list(...)` and inspect results with `client.knowledge.read(...)` / `client.watchers.get(...)`.\n\n' +
+    '3. Wait for ingestion to start automatically, then discover Behaviors with `client.behaviors.list(...)` and inspect results with `client.knowledge.read(...)` / `client.behaviors.get(...)`.\n\n' +
     '**Alternative:** If you know this entity should exist, verify the spelling or try a different search term.';
 
   // Fetch top entities per type so the LLM knows what exists (still filtered by read policy).
   let existing_entities = await fetchTopEntitiesByType(ctx.organizationId);
   if (existing_entities.length > 0) {
     const flat = existing_entities.flatMap((g) =>
-      g.entities.map((e) => ({ ...e, entity_type: g.entity_type })),
+      g.entities.map((e) => ({ ...e, entity_type: g.entity_type }))
     );
     const allowed = await filterEntitiesByReadPolicy(ctx, flat);
     const byType = new Map<string, Array<{ id: number; name: string }>>();
@@ -951,10 +1004,7 @@ async function searchImpl(
     }));
   }
 
-  return withRecall(
-    emptyResult({ suggestion: suggestionText, existing_entities }),
-    recall
-  );
+  return withRecall(emptyResult({ suggestion: suggestionText, existing_entities }), recall);
 }
 
 // ============================================
@@ -985,7 +1035,10 @@ async function fetchTopEntitiesByType(
     }
   }
 
-  return [...byType.entries()].map(([entity_type, entities]) => ({ entity_type, entities }));
+  return [...byType.entries()].map(([entity_type, entities]) => ({
+    entity_type,
+    entities,
+  }));
 }
 
 // ============================================
@@ -1257,8 +1310,7 @@ async function formatEntityResult(
   // operational data, never canonical, so skip them entirely for cross-org
   // public results.
   let connections: ConnectionInfo[] | undefined;
-  const primaryIsCallerOrg =
-    String(primaryRow.organization_id) === ctx.organizationId;
+  const primaryIsCallerOrg = String(primaryRow.organization_id) === ctx.organizationId;
   if ((args.include_connections ?? true) && primaryIsCallerOrg) {
     connections = await fetchConnectionsForEntity(primaryEntity.id);
   }

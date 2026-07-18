@@ -28,7 +28,10 @@ const INTERNAL_FLAT_TOOL_SDK_PATH: Record<string, string> = {
 };
 
 /** Every internal admin tool must be reachable via run_sdk/query_sdk. */
-const ADMIN_TOOL_SDK_NAMESPACE: Record<string, keyof ReturnType<typeof buildClientSDK>> = {
+const ADMIN_TOOL_SDK_NAMESPACE: Record<
+	string,
+	keyof ReturnType<typeof buildClientSDK>
+> = {
 	manage_entity: "entities",
 	manage_entity_schema: "entitySchema",
 	manage_connections: "connections",
@@ -40,9 +43,8 @@ const ADMIN_TOOL_SDK_NAMESPACE: Record<string, keyof ReturnType<typeof buildClie
 	manage_operations: "operations",
 	notify: "notifications",
 	manage_schedules: "schedules",
-	manage_behaviors: "watchers",
-	list_watchers: "watchers",
-	get_watcher: "watchers",
+	manage_behaviors: "behaviors",
+	get_behavior: "behaviors",
 	read_knowledge: "knowledge",
 	manage_classifiers: "classifiers",
 	manage_view_templates: "viewTemplates",
@@ -61,7 +63,9 @@ const testCtx: ToolContext = {
 
 describe("tool registry split", () => {
 	it("advertises the agent MCP surface via getMcpTools", () => {
-		const names = getMcpTools().map((t) => t.name).sort();
+		const names = getMcpTools()
+			.map((t) => t.name)
+			.sort();
 		expect(names).toEqual(
 			[
 				"query_sdk",
@@ -70,7 +74,7 @@ describe("tool registry split", () => {
 				"save_memory",
 				"search_memory",
 				"search_sdk",
-			].sort(),
+			].sort()
 		);
 		expect(AGENT_TOOL_NAMES.size).toBe(6);
 	});
@@ -94,14 +98,20 @@ describe("tool registry split", () => {
 		})();
 		const runtime = new Set([...namespaceMethods, ...topLevelMethods]);
 
-		for (const [toolName, sdkPath] of Object.entries(INTERNAL_FLAT_TOOL_SDK_PATH)) {
-			expect(getTool(toolName), `${toolName} must stay dispatchable`).toBeDefined();
-			expect(isInternalDispatchTool(toolName), `${toolName} should be internal`).toBe(
-				true,
-			);
+		for (const [toolName, sdkPath] of Object.entries(
+			INTERNAL_FLAT_TOOL_SDK_PATH
+		)) {
+			expect(
+				getTool(toolName),
+				`${toolName} must stay dispatchable`
+			).toBeDefined();
+			expect(
+				isInternalDispatchTool(toolName),
+				`${toolName} should be internal`
+			).toBe(true);
 			expect(
 				METHOD_METADATA[sdkPath],
-				`${toolName} → ${sdkPath} missing METHOD_METADATA`,
+				`${toolName} → ${sdkPath} missing METHOD_METADATA`
 			).toBeDefined();
 			expect(runtime.has(sdkPath), `${sdkPath} not on ClientSDK`).toBe(true);
 		}
@@ -126,13 +136,16 @@ describe("tool registry split", () => {
 		})();
 		const runtime = new Set([...namespaceMethods, ...topLevelMethods]);
 
-		for (const [toolName, sdkPath] of Object.entries(AGENT_FLAT_TOOL_SDK_PATH)) {
-			expect(AGENT_TOOL_NAMES.has(toolName), `${toolName} should be an agent tool`).toBe(
-				true,
-			);
+		for (const [toolName, sdkPath] of Object.entries(
+			AGENT_FLAT_TOOL_SDK_PATH
+		)) {
+			expect(
+				AGENT_TOOL_NAMES.has(toolName),
+				`${toolName} should be an agent tool`
+			).toBe(true);
 			expect(
 				METHOD_METADATA[sdkPath],
-				`${toolName} → ${sdkPath} missing METHOD_METADATA`,
+				`${toolName} → ${sdkPath} missing METHOD_METADATA`
 			).toBeDefined();
 			const [ns, method] = sdkPath.includes(".")
 				? sdkPath.split(".")
@@ -151,17 +164,22 @@ describe("tool registry split", () => {
 		for (const tool of ADMIN_TOOLS) {
 			const ns = ADMIN_TOOL_SDK_NAMESPACE[tool.name];
 			expect(ns, `${tool.name} missing SDK namespace mapping`).toBeDefined();
-			expect(sdk[ns!], `${tool.name} → client.${String(ns)} not on ClientSDK`).toBeDefined();
+			expect(
+				sdk[ns!],
+				`${tool.name} → client.${String(ns)} not on ClientSDK`
+			).toBeDefined();
 		}
 		expect(Object.keys(ADMIN_TOOL_SDK_NAMESPACE).sort()).toEqual(
-			ADMIN_TOOLS.map((t) => t.name).sort(),
+			ADMIN_TOOLS.map((t) => t.name).sort()
 		);
 	});
 
-	it("keeps internal admin tools dispatchable and marks them internal on REST list", () => {
-		expect(getTool("list_watchers")).toBeDefined();
+	it("keeps only Behavior-native admin tools dispatchable", () => {
+		expect(getTool("list_watchers")).toBeUndefined();
+		expect(getTool("get_watcher")).toBeUndefined();
+		expect(getTool("get_behavior")).toBeDefined();
 		expect(getTool("manage_entity")).toBeDefined();
-		expect(isInternalDispatchTool("list_watchers")).toBe(true);
+		expect(isInternalDispatchTool("manage_behaviors")).toBe(true);
 		expect(isInternalDispatchTool("run_sdk")).toBe(false);
 
 		const rest = getAllTools();

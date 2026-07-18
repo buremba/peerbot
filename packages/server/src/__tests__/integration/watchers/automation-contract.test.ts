@@ -48,7 +48,7 @@ async function createWorkerBoundPat(
 	userId: string,
 	organizationId: string,
 	workerId: string,
-	scope = "device_worker:run",
+	scope = "device_worker:run"
 ): Promise<{ token: string }> {
 	const sql = getTestDb();
 	const token = `owl_pat_${generateSecureToken(24)}`;
@@ -87,12 +87,11 @@ async function createAutomatedWatcher() {
 		name: "Watcher Agent",
 	});
 
-	const watcher = (await workspace.owner.watchers.create({
+	const watcher = (await workspace.owner.behaviors.create({
 		entity_id: entity.id,
 		slug: "automation-watcher",
 		name: "Automation Watcher",
 		prompt: "Summarize content for {{entities}}.",
-		schedule: "0 9 * * *",
 		triggers: [
 			{
 				kind: "schedule",
@@ -168,7 +167,7 @@ describe("watcher automation contract", () => {
 		const { windowStart, windowEnd } = await computePendingWindow(
 			dbClient,
 			watcherId,
-			granularity,
+			granularity
 		);
 		const queued = await createWatcherRun({
 			organizationId: workspace.org.id,
@@ -224,7 +223,7 @@ describe("watcher automation contract", () => {
 		const { windowStart, windowEnd } = await computePendingWindow(
 			dbClient,
 			watcherId,
-			granularity,
+			granularity
 		);
 		const queued = await createWatcherRun({
 			organizationId: workspace.org.id,
@@ -248,7 +247,7 @@ describe("watcher automation contract", () => {
 			{
 				organizationId: workspace.org.id,
 				sourceConversationId: `${agent.agentId}_watcher_${watcherId}_run_${queued.runId}`,
-			},
+			}
 		)) as {
 			window_token: string;
 			window_start: string;
@@ -261,21 +260,21 @@ describe("watcher automation contract", () => {
 		expect(
 			String(
 				(promptStampedRun.run_metadata as Record<string, unknown>)
-					.prompt_rendered,
-			),
+					.prompt_rendered
+			)
 		).toContain("Summarize content for Automation Entity.");
 
-		const completion = (await api.watchers.completeWindow({
+		const completion = (await api.behaviors.completeWindow({
 			watcher_id: String(watcherId),
 			window_token: content.window_token,
 			extracted_data: { summary: "Automated watcher summary" },
-				run_metadata: {
-					executor: "lobu-agent",
-					agent_id: agent.agentId,
-					watcher_run_id: queued.runId,
-					dispatch_source: "scheduled",
-					prompt_rendered: "forged by completion payload",
-				},
+			run_metadata: {
+				executor: "lobu-agent",
+				agent_id: agent.agentId,
+				watcher_run_id: queued.runId,
+				dispatch_source: "scheduled",
+				prompt_rendered: "forged by completion payload",
+			},
 		})) as { action: string; window_id: number };
 
 		const [run] = await sql`
@@ -288,10 +287,10 @@ describe("watcher automation contract", () => {
 		expect(String(run.status)).toBe("completed");
 		expect(Number(run.window_id)).toBe(completion.window_id);
 		expect(
-			String((run.run_metadata as Record<string, unknown>).prompt_rendered),
+			String((run.run_metadata as Record<string, unknown>).prompt_rendered)
 		).toContain("Summarize content for Automation Entity.");
 		expect((run.run_metadata as Record<string, unknown>).executor).toBe(
-			"lobu-agent",
+			"lobu-agent"
 		);
 	});
 
@@ -303,7 +302,7 @@ describe("watcher automation contract", () => {
 		const { windowStart, windowEnd } = await computePendingWindow(
 			dbClient,
 			watcherId,
-			granularity,
+			granularity
 		);
 		const queued = await createWatcherRun({
 			organizationId: workspace.org.id,
@@ -368,7 +367,7 @@ describe("watcher automation contract", () => {
 					title: `Paginated event ${i}`,
 					content: `Paginated watcher content ${i}`,
 					occurred_at: new Date(base - i * 60_000),
-				}),
+				})
 			);
 		}
 
@@ -415,7 +414,7 @@ describe("watcher automation contract", () => {
 		]);
 		expect(page2.page.has_more).toBe(true);
 
-		const completion = (await api.watchers.completeWindow({
+		const completion = (await api.behaviors.completeWindow({
 			watcher_id: String(watcherId),
 			window_tokens: [page1.window_token, page2.window_token],
 			extracted_data: { summary: "Summary across two pages" },
@@ -431,11 +430,11 @@ describe("watcher automation contract", () => {
 		expect(completion.action).toBe("complete_window");
 		expect(completion.content_linked).toBe(4);
 		expect(
-			links.map((row) => Number(row.event_id)).sort((a, b) => a - b),
+			links.map((row) => Number(row.event_id)).sort((a, b) => a - b)
 		).toEqual(
 			[events[0].id, events[1].id, events[2].id, events[3].id].sort(
-				(a, b) => a - b,
-			),
+				(a, b) => a - b
+			)
 		);
 	});
 
@@ -461,10 +460,10 @@ describe("watcher automation contract", () => {
 				content_count: 1,
 				content_ids: [event.id],
 			},
-			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
+			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env
 		);
 
-		const completion = (await api.watchers.completeWindow({
+		const completion = (await api.behaviors.completeWindow({
 			watcher_id: String(watcherId),
 			window_token: windowToken,
 			extracted_data: { summary: "Summary from exact content IDs" },
@@ -497,7 +496,7 @@ describe("watcher automation contract", () => {
 	//     → materializeDueWatcherRuns persists the pin into approved_input
 	//     → server-side dispatcher refuses to claim (#802 covers this; checked
 	//       above by the "skips watcher runs pinned to a device worker" test)
-	//     → device posts to /api/workers/me/runs/:id/complete-watcher
+	//     → device posts to /api/workers/me/runs/:id/complete-behavior
 	//         which writes the watcher_windows row + advances last_fired_at.
 	describe("device-pinned execution (#798)", () => {
 		it("persists watchers.device_worker_id and agent_kind into approved_input on materialization", async () => {
@@ -543,7 +542,7 @@ describe("watcher automation contract", () => {
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
-				granularity,
+				granularity
 			);
 
 			const queued = await createWatcherRun({
@@ -573,7 +572,7 @@ describe("watcher automation contract", () => {
 			const content = (await api.knowledge.read({ watcher_id: watcherId })) as {
 				window_token: string;
 			};
-			const completion = (await api.watchers.completeWindow({
+			const completion = (await api.behaviors.completeWindow({
 				watcher_id: String(watcherId),
 				window_token: content.window_token,
 				extracted_data: { summary: "Looked at 5 events, no anomalies." },
@@ -587,7 +586,7 @@ describe("watcher automation contract", () => {
 
 			// The subprocess exits; the dispatcher posts the exit report.
 			const response = await post(
-				`/api/workers/me/runs/${queued.runId}/complete-watcher`,
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{
 					body: {
 						worker_id: workerId,
@@ -596,7 +595,7 @@ describe("watcher automation contract", () => {
 						exit_code: 0,
 						exit_reason: "ok",
 					},
-				},
+				}
 			);
 			expect(response.status).toBe(200);
 			const json = (await response.json()) as {
@@ -648,7 +647,7 @@ describe("watcher automation contract", () => {
 
 			// A duplicate exit report acks idempotently without re-stamping.
 			const dup = await post(
-				`/api/workers/me/runs/${queued.runId}/complete-watcher`,
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{
 					body: {
 						worker_id: workerId,
@@ -656,7 +655,7 @@ describe("watcher automation contract", () => {
 						duration_ms: 9,
 						exit_code: 0,
 					},
-				},
+				}
 			);
 			expect(dup.status).toBe(200);
 			const dupJson = (await dup.json()) as {
@@ -682,7 +681,7 @@ describe("watcher automation contract", () => {
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
-				granularity,
+				granularity
 			);
 			const queued = await createWatcherRun({
 				organizationId: workspace.org.id,
@@ -703,7 +702,7 @@ describe("watcher automation contract", () => {
 			const content = (await api.knowledge.read({ watcher_id: watcherId })) as {
 				window_token: string;
 			};
-			await api.watchers.completeWindow({
+			await api.behaviors.completeWindow({
 				watcher_id: String(watcherId),
 				window_token: content.window_token,
 				extracted_data: { summary: "No-duration exit report case." },
@@ -716,7 +715,7 @@ describe("watcher automation contract", () => {
 
 			// Exit report with NO duration_ms.
 			const response = await post(
-				`/api/workers/me/runs/${queued.runId}/complete-watcher`,
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{
 					body: {
 						worker_id: workerId,
@@ -724,7 +723,7 @@ describe("watcher automation contract", () => {
 						exit_code: 0,
 						exit_reason: "ok",
 					},
-				},
+				}
 			);
 			expect(response.status).toBe(200);
 
@@ -741,11 +740,11 @@ describe("watcher automation contract", () => {
 		// Content-less windows (device runs fetch their own context; nothing is
 		// linked server-side) still fire the reaction script — the signal is the
 		// extracted_data itself. The reaction log is surfaced on the window via
-		// get_watcher so the UI can show what the script did.
+		// get_behavior so the UI can show what the script did.
 		it("fires the reaction script for a content-less window and surfaces the log", async () => {
 			const { sql, dbClient, workspace, api, watcherId, agent } =
 				await createAutomatedWatcher();
-			await api.watchers.setReactionScript({
+			await api.behaviors.setReactionScript({
 				watcher_id: String(watcherId),
 				reaction_script: "export default async function reaction() { return; }",
 			});
@@ -754,7 +753,7 @@ describe("watcher automation contract", () => {
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
-				granularity,
+				granularity
 			);
 			const queued = await createWatcherRun({
 				organizationId: workspace.org.id,
@@ -775,7 +774,7 @@ describe("watcher automation contract", () => {
 			const content = (await api.knowledge.read({ watcher_id: watcherId })) as {
 				window_token: string;
 			};
-			const completion = (await api.watchers.completeWindow({
+			const completion = (await api.behaviors.completeWindow({
 				watcher_id: String(watcherId),
 				window_token: content.window_token,
 				extracted_data: { summary: "Device-run result, no server content." },
@@ -801,15 +800,17 @@ describe("watcher automation contract", () => {
 			expect(reactionRows.length).toBeGreaterThan(0);
 			expect(String(reactionRows[0].reaction_type)).toBe("script_execution");
 
-			// The window surfaces its reaction log through get_watcher.
-			const detail = (await api.watchers.get({ watcher_id: String(watcherId) })) as {
+			// The window surfaces its reaction log through get_behavior.
+			const detail = (await api.behaviors.get({
+				watcher_id: String(watcherId),
+			})) as {
 				windows: Array<{
 					window_id: number;
 					reactions?: Array<{ tool_name: string }>;
 				}>;
 			};
 			const window = detail.windows.find(
-				(w) => w.window_id === completion.window_id,
+				(w) => w.window_id === completion.window_id
 			);
 			expect(window).toBeDefined();
 			expect(window?.reactions?.length ?? 0).toBeGreaterThan(0);
@@ -822,12 +823,12 @@ describe("watcher automation contract", () => {
 		// (legacy parity: the recreate set window_created=true and reactions ran).
 		it("fires the reaction script on a zero-content replace_existing (head_superseded gate)", async () => {
 			const { api, watcherId } = await createAutomatedWatcher();
-			await api.watchers.setReactionScript({
+			await api.behaviors.setReactionScript({
 				watcher_id: String(watcherId),
 				reaction_script: "export default async function reaction() { return; }",
 			});
 			const windowStart = new Date(
-				Date.now() - 2 * 60 * 60 * 1000,
+				Date.now() - 2 * 60 * 60 * 1000
 			).toISOString();
 			const windowEnd = new Date().toISOString();
 			const env = { JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env;
@@ -841,16 +842,16 @@ describe("watcher automation contract", () => {
 						content_count: 0,
 						content_ids: [],
 					},
-					env,
+					env
 				);
 
-			const first = (await api.watchers.completeWindow({
+			const first = (await api.behaviors.completeWindow({
 				watcher_id: String(watcherId),
 				window_token: await mint(),
 				extracted_data: { summary: "v1" },
 			})) as { window_id: number };
 
-			const replaced = (await api.watchers.completeWindow({
+			const replaced = (await api.behaviors.completeWindow({
 				watcher_id: String(watcherId),
 				window_token: await mint(),
 				extracted_data: { summary: "v2 re-analysis" },
@@ -884,7 +885,7 @@ describe("watcher automation contract", () => {
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
-				granularity,
+				granularity
 			);
 			const queued = await createWatcherRun({
 				organizationId: workspace.org.id,
@@ -908,7 +909,7 @@ describe("watcher automation contract", () => {
 			const beforeNextRun = before.next_run_at as Date | string | null;
 
 			const response = await post(
-				`/api/workers/me/runs/${queued.runId}/complete-watcher`,
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{
 					body: {
 						worker_id: workerId,
@@ -918,7 +919,7 @@ describe("watcher automation contract", () => {
 						exit_code: 0,
 						exit_reason: "ok",
 					},
-				},
+				}
 			);
 			expect(response.status).toBe(200);
 			const json = (await response.json()) as {
@@ -953,14 +954,14 @@ describe("watcher automation contract", () => {
 			expect(afterMs).toBeGreaterThan(beforeMs);
 		});
 
-		it("complete-watcher endpoint marks the run failed when error is supplied", async () => {
+		it("complete-behavior endpoint marks the run failed when error is supplied", async () => {
 			const { sql, dbClient, workspace, watcherId, agent } =
 				await createAutomatedWatcher();
 			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
-				granularity,
+				granularity
 			);
 
 			const queued = await createWatcherRun({
@@ -984,7 +985,7 @@ describe("watcher automation contract", () => {
       `;
 
 			const response = await post(
-				`/api/workers/me/runs/${queued.runId}/complete-watcher`,
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{
 					body: {
 						worker_id: workerId,
@@ -993,7 +994,7 @@ describe("watcher automation contract", () => {
 						exit_reason: "crash",
 						exit_code: 127,
 					},
-				},
+				}
 			);
 			expect(response.status).toBe(200);
 			const json = (await response.json()) as { ok: boolean; status: string };
@@ -1017,7 +1018,7 @@ describe("watcher automation contract", () => {
 			expect(windows).toHaveLength(0);
 		});
 
-		it("complete-watcher endpoint refuses non-watcher run types", async () => {
+		it("complete-behavior endpoint refuses non-watcher run types", async () => {
 			const sql = getTestDb();
 			const { workspace } = await createAutomatedWatcher();
 
@@ -1029,22 +1030,22 @@ describe("watcher automation contract", () => {
 			const runId = Number((authRun as { id: unknown }).id);
 
 			const response = await post(
-				`/api/workers/me/runs/${runId}/complete-watcher`,
+				`/api/workers/me/runs/${runId}/complete-behavior`,
 				{
 					body: { worker_id: "any", output: "", duration_ms: 1 },
-				},
+				}
 			);
 			expect(response.status).toBe(409);
 			const body = (await response.json()) as { error: string };
 			expect(body.error).toMatch(/watcher/i);
 		});
 
-		it("complete-watcher endpoint returns 404 for an unknown run id", async () => {
+		it("complete-behavior endpoint returns 404 for an unknown run id", async () => {
 			const response = await post(
-				"/api/workers/me/runs/999999999/complete-watcher",
+				"/api/workers/me/runs/999999999/complete-behavior",
 				{
 					body: { worker_id: "any", output: "", duration_ms: 1 },
-				},
+				}
 			);
 			expect(response.status).toBe(404);
 		});
@@ -1060,7 +1061,7 @@ describe("watcher automation contract", () => {
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
-				granularity,
+				granularity
 			);
 
 			const [before] = await sql`
@@ -1087,14 +1088,14 @@ describe("watcher automation contract", () => {
       `;
 
 			const response = await post(
-				`/api/workers/me/runs/${queued.runId}/complete-watcher`,
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{
 					body: {
 						worker_id: workerId,
 						output: "agent exited without completing",
 						duration_ms: 5,
 					},
-				},
+				}
 			);
 			expect(response.status).toBe(200);
 
@@ -1125,7 +1126,7 @@ describe("watcher automation contract", () => {
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
-				granularity,
+				granularity
 			);
 
 			const queued = await createWatcherRun({
@@ -1148,14 +1149,14 @@ describe("watcher automation contract", () => {
 
 			// First report fails the run (no complete_window happened).
 			const first = await post(
-				`/api/workers/me/runs/${queued.runId}/complete-watcher`,
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{
 					body: { worker_id: workerId, output: "first exit", duration_ms: 11 },
-				},
+				}
 			);
 			expect(first.status).toBe(200);
 			expect(((await first.json()) as { status: string }).status).toBe(
-				"failed",
+				"failed"
 			);
 
 			const [afterFirst] =
@@ -1164,10 +1165,10 @@ describe("watcher automation contract", () => {
 
 			// Second report acks the terminal state; no extra side effects.
 			const second = await post(
-				`/api/workers/me/runs/${queued.runId}/complete-watcher`,
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{
 					body: { worker_id: workerId, output: "second exit", duration_ms: 12 },
-				},
+				}
 			);
 			expect(second.status).toBe(200);
 			const secondJson = (await second.json()) as {
@@ -1180,7 +1181,7 @@ describe("watcher automation contract", () => {
 			const [afterSecond] =
 				await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
 			expect(new Date(afterSecond.next_run_at as string).getTime()).toBe(
-				advancedOnce,
+				advancedOnce
 			);
 
 			const windowsForRun = await sql`
@@ -1218,7 +1219,7 @@ describe("watcher automation contract", () => {
 			const { token: patForA } = await createWorkerBoundPat(
 				ownerUserId,
 				workspace.org.id,
-				"worker-A",
+				"worker-A"
 			);
 
 			// Watcher run pinned to worker B (via approved_input.device_worker_id).
@@ -1226,7 +1227,7 @@ describe("watcher automation contract", () => {
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
-				granularity,
+				granularity
 			);
 			const queued = await createWatcherRun({
 				organizationId: workspace.org.id,
@@ -1248,11 +1249,11 @@ describe("watcher automation contract", () => {
       `;
 
 			const response = await post(
-				`/api/workers/me/runs/${queued.runId}/complete-watcher`,
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{
 					token: patForA,
 					body: { worker_id: "worker-B", output: "spoofed", duration_ms: 1 },
-				},
+				}
 			);
 			expect(response.status).toBe(403);
 			const body = (await response.json()) as { error: string };
@@ -1302,7 +1303,7 @@ describe("watcher automation contract", () => {
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
-				granularity,
+				granularity
 			);
 			const queued = await createWatcherRun({
 				organizationId: workspace.org.id,
@@ -1350,7 +1351,7 @@ describe("watcher automation contract", () => {
 			return new UnifiedThreadResponseConsumer(
 				queueStub as never,
 				platformRegistry as never,
-				sseManager as never,
+				sseManager as never
 			);
 		}
 
@@ -1390,8 +1391,8 @@ describe("watcher automation contract", () => {
 			expect(
 				Number(
 					(run.approved_input as { finalize_nudge_count?: unknown })
-						.finalize_nudge_count,
-				),
+						.finalize_nudge_count
+				)
 			).toBe(1);
 		});
 
@@ -1499,7 +1500,7 @@ describe("watcher automation contract", () => {
 		const { windowStart, windowEnd } = await computePendingWindow(
 			dbClient,
 			watcherId,
-			granularity,
+			granularity
 		);
 		const queued = await createWatcherRun({
 			organizationId: workspace.org.id,
@@ -1544,7 +1545,7 @@ describe("watcher automation contract", () => {
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
-				granularity,
+				granularity
 			);
 			const stuck = await createWatcherRun({
 				organizationId: workspace.org.id,
@@ -1567,12 +1568,11 @@ describe("watcher automation contract", () => {
 				organization_id: workspace.org.id,
 				created_by: workspace.users.owner.id,
 			});
-			const watcherB = (await workspace.owner.watchers.create({
+			const watcherB = (await workspace.owner.behaviors.create({
 				entity_id: entityB.id,
 				slug: "tick-watcher-b",
 				name: "Tick Watcher B",
 				prompt: "Summarize content for {{entities}}.",
-				schedule: "0 9 * * *",
 				triggers: [
 					{
 						kind: "schedule",
@@ -1660,7 +1660,7 @@ describe("watcher automation contract", () => {
 			const [watcher] =
 				await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
 			expect(new Date(watcher.next_run_at as string).getTime()).toBeGreaterThan(
-				Date.now(),
+				Date.now()
 			);
 
 			const retry = await materializeDueWatcherRuns({} as Env);
@@ -1707,7 +1707,7 @@ describe("watcher automation contract", () => {
 			const [watcher] =
 				await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
 			expect(new Date(watcher.next_run_at as string).getTime()).toBeLessThan(
-				Date.now(),
+				Date.now()
 			);
 		});
 
@@ -1725,7 +1725,7 @@ describe("watcher automation contract", () => {
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
-				granularity,
+				granularity
 			);
 			const queued = await createWatcherRun({
 				organizationId: workspace.org.id,
@@ -1821,7 +1821,7 @@ describe("canvas-on-events window completion", () => {
 			extracted_data?: Record<string, unknown>;
 			replace_existing?: boolean;
 			client_id?: string;
-		} = {},
+		} = {}
 	) {
 		const { sql, workspace, api, entityId, watcherId } =
 			await createAutomatedWatcher();
@@ -1842,9 +1842,9 @@ describe("canvas-on-events window completion", () => {
 				content_count: 1,
 				content_ids: [event.id],
 			},
-			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
+			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env
 		);
-		const completion = (await api.watchers.completeWindow({
+		const completion = (await api.behaviors.completeWindow({
 			watcher_id: String(watcherId),
 			window_token: windowToken,
 			extracted_data: overrides.extracted_data ?? {
@@ -1879,7 +1879,7 @@ describe("canvas-on-events window completion", () => {
 		expect(rows[0].supersedes_event_id).toBeNull();
 		expect(rows[0].granularity).toBe("daily");
 		expect((rows[0].payload_data as Record<string, unknown>).summary).toBe(
-			"hello canvas",
+			"hello canvas"
 		);
 	});
 
@@ -1902,7 +1902,7 @@ describe("canvas-on-events window completion", () => {
     `;
 		expect(root.client_id).toBeNull();
 		expect((root.payload_data as Record<string, unknown>).summary).toBe(
-			"pat canvas",
+			"pat canvas"
 		);
 		// The canvas root IS the window (window_id = root event id).
 		expect(Number(root.id)).toBe(completion.window_id);
@@ -1926,9 +1926,9 @@ describe("canvas-on-events window completion", () => {
 				content_count: 0,
 				content_ids: [],
 			},
-			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
+			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env
 		);
-		const retry = (await api.watchers.completeWindow({
+		const retry = (await api.behaviors.completeWindow({
 			watcher_id: String(watcherId),
 			window_token: retryToken,
 			extracted_data: { summary: "v2 changed but not a replace" },
@@ -1944,7 +1944,7 @@ describe("canvas-on-events window completion", () => {
     `;
 		expect(chain).toHaveLength(1);
 		expect((chain[0].payload_data as Record<string, unknown>).summary).toBe(
-			"v1",
+			"v1"
 		);
 	});
 
@@ -1974,9 +1974,9 @@ describe("canvas-on-events window completion", () => {
 				content_count: 1,
 				content_ids: [Number(event[0].id)],
 			},
-			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
+			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env
 		);
-		await api.watchers.completeWindow({
+		await api.behaviors.completeWindow({
 			watcher_id: String(watcherId),
 			window_token: windowToken,
 			extracted_data: { summary: "v2" },
@@ -2003,12 +2003,14 @@ describe("canvas-on-events window completion", () => {
     `;
 		expect(head).toHaveLength(1);
 		expect((head[0].payload_data as Record<string, unknown>).summary).toBe(
-			"v2",
+			"v2"
 		);
 		expect(Number(head[0].root_event_id)).toBe(rootId);
 
-		// The read flip surfaces the HEAD payload via get_watcher.
-		const view = (await api.watchers.get({ watcher_id: String(watcherId) })) as {
+		// The read flip surfaces the HEAD payload via get_behavior.
+		const view = (await api.behaviors.get({
+			watcher_id: String(watcherId),
+		})) as {
 			windows: Array<{ extracted_data: Record<string, unknown> }>;
 		};
 		expect(view.windows[0].extracted_data.summary).toBe("v2");
@@ -2046,9 +2048,9 @@ describe("canvas-on-events window completion", () => {
 				content_count: 1,
 				content_ids: [eventA.id],
 			},
-			env,
+			env
 		);
-		const first = (await api.watchers.completeWindow({
+		const first = (await api.behaviors.completeWindow({
 			watcher_id: String(watcherId),
 			window_token: tokenA,
 			extracted_data: { summary: "v1 over A" },
@@ -2063,9 +2065,9 @@ describe("canvas-on-events window completion", () => {
 				content_count: 1,
 				content_ids: [eventB.id],
 			},
-			env,
+			env
 		);
-		const second = (await api.watchers.completeWindow({
+		const second = (await api.behaviors.completeWindow({
 			watcher_id: String(watcherId),
 			window_token: tokenB,
 			extracted_data: { summary: "v2 over B" },
@@ -2098,9 +2100,9 @@ describe("canvas-on-events window completion", () => {
 				content_count: 1,
 				content_ids: [Number(event[0].id)],
 			},
-			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
+			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env
 		);
-		await api.watchers.completeWindow({
+		await api.behaviors.completeWindow({
 			watcher_id: String(watcherId),
 			window_token: windowToken,
 			extracted_data: { summary: "v2" },
@@ -2115,7 +2117,7 @@ describe("canvas-on-events window completion", () => {
 		// Only the HEAD (v2) is current; the superseded v1 root is masked.
 		expect(current).toHaveLength(1);
 		expect((current[0].payload_data as Record<string, unknown>).summary).toBe(
-			"v2",
+			"v2"
 		);
 	});
 
@@ -2141,7 +2143,7 @@ describe("canvas-on-events window completion", () => {
 		const [after] =
 			await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
 		expect(new Date(after.next_run_at as string).getTime()).toBe(
-			new Date(upcomingTick).getTime(),
+			new Date(upcomingTick).getTime()
 		);
 	});
 });

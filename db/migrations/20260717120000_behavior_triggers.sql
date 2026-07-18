@@ -62,7 +62,7 @@ COMMENT ON COLUMN connector_definitions.behavior_events IS
 -- may wait for one Behavior, but only one run may execute at a time.
 DROP INDEX IF EXISTS idx_runs_active_watcher_per_watcher;
 
-CREATE UNIQUE INDEX idx_runs_executing_watcher_per_watcher
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_executing_watcher_per_watcher
   ON runs (watcher_id)
   WHERE run_type = 'watcher'
     AND watcher_id IS NOT NULL
@@ -72,7 +72,7 @@ CREATE UNIQUE INDEX idx_runs_executing_watcher_per_watcher
 
 DROP INDEX IF EXISTS idx_runs_executing_watcher_per_watcher;
 
-CREATE UNIQUE INDEX idx_runs_active_watcher_per_watcher
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_active_watcher_per_watcher
   ON runs (watcher_id)
   WHERE run_type = 'watcher'
     AND watcher_id IS NOT NULL

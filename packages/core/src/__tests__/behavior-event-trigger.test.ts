@@ -3,7 +3,8 @@ import { Value } from "@sinclair/typebox/value";
 import {
   BehaviorEventTriggerSchema,
   BehaviorScheduleTriggerSchema,
-  WatcherSourceSchema,
+  BehaviorSourceSchema,
+  ManageBehaviorsSchema,
 } from "../contracts/tools/manage-behaviors";
 
 const query = "SELECT id, payload_text FROM events ORDER BY occurred_at DESC";
@@ -22,7 +23,7 @@ describe("behavior event trigger", () => {
     };
     expect(Value.Check(BehaviorEventTriggerSchema, trigger)).toBe(true);
     expect(
-      Value.Check(WatcherSourceSchema, { name: "pull_request", query })
+      Value.Check(BehaviorSourceSchema, { name: "pull_request", query })
     ).toBe(true);
   });
 
@@ -52,7 +53,7 @@ describe("behavior event trigger", () => {
     ).toBe(false);
   });
 
-  test("uses the existing watcher cadence as the schedule trigger projection", () => {
+  test("uses a schedule trigger as the canonical cadence", () => {
     expect(
       Value.Check(BehaviorScheduleTriggerSchema, {
         kind: "schedule",
@@ -63,6 +64,17 @@ describe("behavior event trigger", () => {
         skip_if_unchanged: true,
       })
     ).toBe(true);
+  });
+
+  test("rejects the removed schedule and timezone compatibility inputs", () => {
+    expect(
+      Value.Check(ManageBehaviorsSchema, {
+        action: "update",
+        watcher_id: "1",
+        schedule: "0 9 * * *",
+        timezone: "Europe/London",
+      })
+    ).toBe(false);
   });
 
   test("rejects provider-specific keys outside the normalized match object", () => {

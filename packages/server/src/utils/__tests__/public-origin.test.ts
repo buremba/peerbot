@@ -12,10 +12,10 @@ describe('getCanonicalRedirectUrl', () => {
   it('redirects non-canonical hosts to the configured origin', () => {
     expect(
       getCanonicalRedirectUrl(
-        'https://lobu.com/brand/acme/watchers?tab=recent',
+        'https://lobu.com/brand/acme/behaviors?tab=recent',
         'https://community.lobu.ai'
       )
-    ).toBe('https://community.lobu.ai/brand/acme/watchers?tab=recent');
+    ).toBe('https://community.lobu.ai/brand/acme/behaviors?tab=recent');
   });
 
   it('does not redirect requests already on the canonical host', () => {
@@ -67,9 +67,9 @@ describe('getCanonicalRedirectUrl', () => {
   });
 
   it('still redirects unrelated hosts when a cookie zone is set', () => {
-    expect(
-      getCanonicalRedirectUrl('https://lobu.com/foo', 'https://app.lobu.ai', '.lobu.ai')
-    ).toBe('https://app.lobu.ai/foo');
+    expect(getCanonicalRedirectUrl('https://lobu.com/foo', 'https://app.lobu.ai', '.lobu.ai')).toBe(
+      'https://app.lobu.ai/foo'
+    );
   });
 });
 

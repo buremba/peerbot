@@ -28,7 +28,13 @@ import { ListOrganizationsSchema } from './organizations';
 import { ResolvePathSchema, ResolvePathResultSchema, resolvePath } from './resolve_path';
 import { SaveContentSchema, saveContent } from './save_content';
 import { PublicSearchSchema, SearchSchema, UnifiedSearchResultSchema, search } from './search';
-import { QuerySchema, RunSchema, SdkScriptResultSchema, querySdkScript, runSdkScript } from './sdk_run';
+import {
+  QuerySchema,
+  RunSchema,
+  SdkScriptResultSchema,
+  querySdkScript,
+  runSdkScript,
+} from './sdk_run';
 import { SdkSearchSchema, SdkSearchResultSchema, sdkSearch } from './sdk_search';
 
 // ============================================
@@ -155,7 +161,10 @@ export interface ToolDefinition<T = any> {
 
 const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const;
 
-const WRITE_WITHOUT_CONFIRM: ToolAnnotations = { destructiveHint: false, idempotentHint: false };
+const WRITE_WITHOUT_CONFIRM: ToolAnnotations = {
+  destructiveHint: false,
+  idempotentHint: false,
+};
 
 /** Tools advertised on MCP `tools/list` and external OpenAPI. */
 const AGENT_TOOLS: ToolDefinition[] = [
@@ -176,7 +185,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'save_memory',
     description:
-      "Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.",
+      'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
     inputSchema: SaveContentSchema,
     annotations: { ...WRITE_WITHOUT_CONFIRM, title: 'Save memory' },
     handler: saveContent,
@@ -184,7 +193,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'search_sdk',
     description:
-      'Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "watchers"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes. Pass mode="read" to show only query_sdk-safe methods.)',
+      'Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "behaviors"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes. Pass mode="read" to show only query_sdk-safe methods.)',
     inputSchema: SdkSearchSchema,
     outputSchema: SdkSearchResultSchema,
     annotations: { ...READ_ONLY, title: 'Search SDK docs' },
@@ -211,10 +220,14 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'run_sdk',
     description:
-      'Perform any workspace action: create/update/delete entities, set up connections (e.g. client.connections.connect({ connector_key: "github" })), manage watchers and feeds, run operations, or modify templates. Use this for anything that changes data. (For read-only access: use query_sdk. To discover available methods: use search_sdk. Preview changes without executing: set dry_run=true.)',
+      'Perform any workspace action: create/update/delete entities, set up connections (e.g. client.connections.connect({ connector_key: "github" })), manage Behaviors and feeds, run operations, or modify templates. Use this for anything that changes data. (For read-only access: use query_sdk. To discover available methods: use search_sdk. Preview changes without executing: set dry_run=true.)',
     inputSchema: RunSchema,
     outputSchema: SdkScriptResultSchema,
-    annotations: { destructiveHint: true, idempotentHint: false, title: 'Run SDK' },
+    annotations: {
+      destructiveHint: true,
+      idempotentHint: false,
+      title: 'Run SDK',
+    },
     handler: runSdkScript,
   },
 ];
@@ -246,8 +259,7 @@ const INTERNAL_DISPATCH_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'query_metric',
-    description:
-      'Run a declared metric. SDK alternative: client.metrics.query.',
+    description: 'Run a declared metric. SDK alternative: client.metrics.query.',
     inputSchema: QueryMetricSchema,
     annotations: { ...READ_ONLY, title: 'Query metric' },
     handler: queryMetric,
@@ -271,17 +283,12 @@ const INTERNAL_DISPATCH_TOOLS: ToolDefinition[] = [
   },
 ];
 
-const ALL_DISPATCH_TOOLS: ToolDefinition[] = [
-  ...AGENT_TOOLS,
-  ...INTERNAL_DISPATCH_TOOLS,
-];
+const ALL_DISPATCH_TOOLS: ToolDefinition[] = [...AGENT_TOOLS, ...INTERNAL_DISPATCH_TOOLS];
 
-export const AGENT_TOOL_NAMES: ReadonlySet<string> = new Set(
-  AGENT_TOOLS.map((tool) => tool.name),
-);
+export const AGENT_TOOL_NAMES: ReadonlySet<string> = new Set(AGENT_TOOLS.map((tool) => tool.name));
 
 const INTERNAL_TOOL_NAMES: ReadonlySet<string> = new Set(
-  INTERNAL_DISPATCH_TOOLS.map((tool) => tool.name),
+  INTERNAL_DISPATCH_TOOLS.map((tool) => tool.name)
 );
 
 // ============================================
@@ -289,7 +296,7 @@ const INTERNAL_TOOL_NAMES: ReadonlySet<string> = new Set(
 // ============================================
 
 const DISPATCH_BY_NAME: Map<string, ToolDefinition> = new Map(
-  ALL_DISPATCH_TOOLS.map((tool) => [tool.name, tool]),
+  ALL_DISPATCH_TOOLS.map((tool) => [tool.name, tool])
 );
 
 /**
@@ -329,8 +336,7 @@ function flattenUnionSchema(schema: any): any {
     }
     // Variant's `required` array carries non-Optional prop names — the
     // basis for the per-action "Required: ..." line in the enum description.
-    const requiredFields = (variant.required ?? [])
-      .filter((k: string) => k !== 'action');
+    const requiredFields = (variant.required ?? []).filter((k: string) => k !== 'action');
     if (requiredFields.length > 0) {
       actionRequired.set(actionName, requiredFields);
     }
@@ -349,11 +355,7 @@ function flattenUnionSchema(schema: any): any {
       action: {
         type: 'string',
         enum: actionValues,
-        description: buildActionEnumDescription(
-          actionValues,
-          actionDescriptions,
-          actionRequired,
-        ),
+        description: buildActionEnumDescription(actionValues, actionDescriptions, actionRequired),
       },
       ...mergedProperties,
     },
@@ -372,14 +374,16 @@ function flattenUnionSchema(schema: any): any {
 function buildActionEnumDescription(
   actionValues: string[],
   actionDescriptions: Map<string, string>,
-  actionRequired: Map<string, string[]>,
+  actionRequired: Map<string, string[]>
 ): string {
   const lines: string[] = ['Action to perform.'];
   for (const name of actionValues) {
     const purpose = actionDescriptions.get(name);
     const head = purpose ? `- ${name}: ${purpose}` : `- ${name}`;
     const required = actionRequired.get(name);
-    lines.push(required && required.length > 0 ? `${head} Required: ${required.join(', ')}.` : head);
+    lines.push(
+      required && required.length > 0 ? `${head} Required: ${required.join(', ')}.` : head
+    );
   }
   return lines.join('\n');
 }
@@ -480,7 +484,7 @@ export function getMcpTools(options?: ListedToolOptions) {
 export function getAllTools(options?: ListedToolOptions) {
   const listed = getListedTools(ALL_DISPATCH_TOOLS, options);
   return listed.map((tool) =>
-    INTERNAL_TOOL_NAMES.has(tool.name) ? { ...tool, internal: true as const } : tool,
+    INTERNAL_TOOL_NAMES.has(tool.name) ? { ...tool, internal: true as const } : tool
   );
 }
 
@@ -522,10 +526,7 @@ export function getRawDispatchTools(): RawDispatchTool[] {
   }));
 }
 
-function getListedTools(
-  source: ToolDefinition[],
-  options?: ListedToolOptions,
-) {
+function getListedTools(source: ToolDefinition[], options?: ListedToolOptions) {
   const publicOnly = options?.publicOnly ?? false;
   const maxAccessLevel = options?.maxAccessLevel ?? 'admin';
   const cacheKey = `${source === AGENT_TOOLS ? 'mcp' : 'all'}:${publicOnly ? 1 : 0}:${maxAccessLevel}`;
@@ -585,7 +586,9 @@ function computeListedTools(
         // with no top-level `type`, which a validating host rejects. Stamp
         // `type: "object"` on top so the union is advertised as a valid object
         // schema while the `anyOf` still tells the client which variant applied.
-        ...(tool.outputSchema && { outputSchema: normalizeOutputSchema(tool.outputSchema) }),
+        ...(tool.outputSchema && {
+          outputSchema: normalizeOutputSchema(tool.outputSchema),
+        }),
       };
     })
     .filter((tool): tool is NonNullable<typeof tool> => tool !== null);

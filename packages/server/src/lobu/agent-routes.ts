@@ -7,7 +7,7 @@
 import { type AuthProfile, isSdkCompat } from "@lobu/core";
 import {
 	type ManageBehaviorsArgs,
-	normalizeWatcherUpdatePatch,
+	normalizeBehaviorUpdatePatch,
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import { Hono } from "hono";
 import { ensureBuilderAgent } from "../auth/builder-provisioning";
@@ -109,7 +109,10 @@ function buildRequestBaseUrls(c: any, agentId: string, providerId: string) {
  * dropped — silently dropping would reset a RESTRICTED agent to `models = NULL`
  * (allow-all), widening access. Exported for the route guard + its test.
  */
-export const LEGACY_MODEL_FIELDS = ["defaultModel", "installedProviders"] as const;
+export const LEGACY_MODEL_FIELDS = [
+	"defaultModel",
+	"installedProviders",
+] as const;
 
 export async function validateModelsUpdate(params: {
 	models: unknown;
@@ -152,7 +155,7 @@ export async function validateModelsUpdate(params: {
 
 	// Org-level slug resolution: registry modules ∪ the org's provider rows.
 	const orgSlugs = new Set<string>(
-		getModelProviderModules().map((m) => m.providerId),
+		getModelProviderModules().map((m) => m.providerId)
 	);
 	for (const row of await listInferenceProviders(params.organizationId)) {
 		orgSlugs.add(row.slug);
@@ -231,7 +234,7 @@ export function requireSessionOrAdminPat(c: any): Response | null {
 				error_description:
 					"This route requires a web session or a token with mcp:admin scope.",
 			},
-			403,
+			403
 		);
 	}
 
@@ -252,7 +255,7 @@ function emitConfigChange(
 		summary: string;
 		state: Record<string, unknown> | null;
 		changedFields?: string[];
-	},
+	}
 ): void {
 	const applyCtx = getApplyContext(c);
 	recordConfigChangeEvent({
@@ -267,7 +270,7 @@ function emitConfigChange(
 
 /** Whitelist profile metadata down to the non-secret fields (email, expiresAt, accountId). */
 function sanitizeClientProfileMetadata(
-	metadata: AuthProfile["metadata"],
+	metadata: AuthProfile["metadata"]
 ): AuthProfile["metadata"] | undefined {
 	if (!metadata) return undefined;
 	const next = {
@@ -320,12 +323,12 @@ function sanitizeAuthProfileForClient(profile: AuthProfile) {
 async function reconcileAgentAuthProfiles(
 	agentId: string,
 	userId: string,
-	desired: AuthProfile[],
+	desired: AuthProfile[]
 ): Promise<void> {
 	const manager = getLobuCoreServices()?.getAuthProfilesManager?.();
 	if (!manager) {
 		throw new Error(
-			"Auth profile store is not available — retry once startup completes",
+			"Auth profile store is not available — retry once startup completes"
 		);
 	}
 	const store = manager.getUserAuthProfileStore();
@@ -348,7 +351,7 @@ async function reconcileAgentAuthProfiles(
 		});
 	}
 	const desiredIds = new Set(
-		desired.map((profile) => profile.id).filter(Boolean),
+		desired.map((profile) => profile.id).filter(Boolean)
 	);
 	const current = await store.list(userId, agentId);
 	for (const existing of current) {
@@ -366,7 +369,7 @@ function hasFreshCredential(profiles: AuthProfile[]): boolean {
 	return profiles.some(
 		(profile) =>
 			typeof profile.credential === "string" &&
-			profile.credential.trim().length > 0,
+			profile.credential.trim().length > 0
 	);
 }
 
@@ -412,7 +415,7 @@ routes.get("/", async (c) => {
   `;
 	const countMap = new Map(connCounts.map((r: any) => [r.agent_id, r.count]));
 	const activeCountMap = new Map(
-		connCounts.map((r: any) => [r.agent_id, r.active_count]),
+		connCounts.map((r: any) => [r.agent_id, r.active_count])
 	);
 
 	const [
@@ -469,13 +472,13 @@ routes.get("/", async (c) => {
 		for (const clientId of runtimeIds) ids.add(clientId);
 	}
 	const watcherCountMap = new Map(
-		watcherCounts.map((r: any) => [r.agent_id, r.count]),
+		watcherCounts.map((r: any) => [r.agent_id, r.count])
 	);
 	const userCountMap = new Map(
-		userCounts.map((r: any) => [r.agent_id, r.count]),
+		userCounts.map((r: any) => [r.agent_id, r.count])
 	);
 	const platformsMap = new Map(
-		platformRows.map((r: any) => [r.agent_id, toStringArray(r.platforms)]),
+		platformRows.map((r: any) => [r.agent_id, toStringArray(r.platforms)])
 	);
 	const providersMap = new Map<string, string[]>();
 	for (const r of providerRows) {
@@ -527,7 +530,7 @@ routes.post("/", async (c) => {
 				error:
 					"agentId must be 3-60 lowercase alphanumeric chars with hyphens, starting with a letter",
 			},
-			400,
+			400
 		);
 	}
 
@@ -575,7 +578,7 @@ routes.post("/", async (c) => {
 				name: existing.name,
 				description: existing.description,
 			},
-			200,
+			200
 		);
 	}
 
@@ -619,7 +622,7 @@ routes.get("/inference-providers/catalog", async (c) => {
 	} catch (err) {
 		logger.warn(
 			{ err: err instanceof Error ? err.message : String(err) },
-			"[inference-providers/catalog] failed to load bundled provider catalog",
+			"[inference-providers/catalog] failed to load bundled provider catalog"
 		);
 		return c.json({ catalog: [] });
 	}
@@ -636,7 +639,7 @@ routes.get("/inference-providers/catalog", async (c) => {
 
 async function ensureVisibleOAuthProvidersForUser(
 	c: any,
-	orgId: string,
+	orgId: string
 ): Promise<void> {
 	const user = c.get("user") as { id: string } | undefined;
 	if (!user?.id) return;
@@ -648,8 +651,8 @@ async function ensureVisibleOAuthProvidersForUser(
 			authProfilesManager.getProviderProfiles(
 				orgBucketAgentId(orgId),
 				config.id,
-				user.id,
-			),
+				user.id
+			)
 		);
 		if (profiles.length === 0) continue;
 		await ensureOAuthInferenceProvider({
@@ -665,14 +668,14 @@ async function ensureVisibleOAuthProvidersForUser(
 /** Resolve the OAuth provider config, or a 400 Response if unknown. */
 function resolveOAuthProvider(
 	c: any,
-	providerId: unknown,
+	providerId: unknown
 ): OAuthProviderConfig | Response {
 	const id = typeof providerId === "string" ? providerId : "";
 	const config = getOAuthProviderConfig(id);
 	if (!config) {
 		return c.json(
 			{ error: `Provider '${id}' does not support OAuth sign-in` },
-			400,
+			400
 		);
 	}
 	return config;
@@ -689,7 +692,7 @@ function requireInteractiveUser(c: any): { id: string } | Response {
 	if (authSource !== "session" || !user) {
 		return c.json(
 			{ error: "OAuth providers require interactive sign-in" },
-			403,
+			403
 		);
 	}
 	return user;
@@ -725,7 +728,7 @@ routes.post("/inference-providers/oauth/start", async (c) => {
 		const result = await strategy.start(
 			config,
 			{ kind: "org", slug: orgId, organizationId: orgId, userId: user.id },
-			{ stateToken, codeVerifier },
+			{ stateToken, codeVerifier }
 		);
 		return c.json(result);
 	}
@@ -778,7 +781,7 @@ routes.post("/inference-providers/oauth/complete", async (c) => {
 			if (parts.length !== 2 || !parts[0] || !parts[1]) {
 				return c.json(
 					{ error: "OAuth code must be in code#state format" },
-					400,
+					400
 				);
 			}
 			const oauthStateStore = getLobuCoreServices()?.getOAuthStateStore?.();
@@ -792,7 +795,7 @@ routes.post("/inference-providers/oauth/complete", async (c) => {
 			if (stateData.userId !== user.id || stateData.agentId !== bucketAgentId) {
 				return c.json(
 					{ error: "OAuth state does not match this session" },
-					403,
+					403
 				);
 			}
 			stored = await strategy.complete(config, scope, {
@@ -834,7 +837,7 @@ routes.post("/inference-providers/oauth/complete", async (c) => {
 			label: createAuthProfileLabel(
 				config.name,
 				stored.accessToken,
-				stored.accountId,
+				stored.accountId
 			),
 			metadata: {
 				...(stored.refreshToken ? { refreshToken: stored.refreshToken } : {}),
@@ -873,7 +876,7 @@ routes.post("/inference-providers/oauth/complete", async (c) => {
 			{
 				error: error instanceof Error ? error.message : "OAuth exchange failed",
 			},
-			400,
+			400
 		);
 	}
 });
@@ -916,14 +919,14 @@ routes.post("/inference-providers", async (c) => {
 				error:
 					"`slug` must be lowercase alphanumeric + hyphen, 1-63 chars, no leading/trailing hyphen",
 			},
-			400,
+			400
 		);
 	}
 	if (!kind) return c.json({ error: "Body must include a `kind` string" }, 400);
 	if (!apiKey) {
 		return c.json(
 			{ error: "Body must include a non-empty `apiKey` string" },
-			400,
+			400
 		);
 	}
 	const capErr = validateCapabilitiesMap(body.capabilities);
@@ -944,7 +947,7 @@ routes.post("/inference-providers", async (c) => {
 				{
 					error: `Provider '${kind}' can't be added with an API key — it signs in instead.`,
 				},
-				400,
+				400
 			);
 		}
 	} catch (err) {
@@ -952,7 +955,7 @@ routes.post("/inference-providers", async (c) => {
 		// read. The synthesize path still gates routing downstream.
 		logger.warn(
 			{ err: err instanceof Error ? err.message : String(err) },
-			"[inference-providers POST] catalog gate check failed; allowing",
+			"[inference-providers POST] catalog gate check failed; allowing"
 		);
 	}
 
@@ -970,7 +973,7 @@ routes.post("/inference-providers", async (c) => {
 	if ("error" in result) {
 		return c.json(
 			{ error: `A provider with slug '${result.slug}' already exists` },
-			409,
+			409
 		);
 	}
 	emitConfigChange(c, {
@@ -1002,7 +1005,7 @@ routes.post("/inference-providers", async (c) => {
 				createdAt: result.createdAt,
 			},
 		},
-		201,
+		201
 	);
 });
 
@@ -1095,7 +1098,7 @@ routes.put("/inference-providers/:slug/capabilities/:modality", async (c) => {
 	if (!isInferenceModality(modality)) {
 		return c.json(
 			{ error: "modality must be one of: text, image, stt, tts" },
-			400,
+			400
 		);
 	}
 
@@ -1113,7 +1116,7 @@ routes.put("/inference-providers/:slug/capabilities/:modality", async (c) => {
 		orgId,
 		slug,
 		modality,
-		block as InferenceCapabilityBlock,
+		block as InferenceCapabilityBlock
 	);
 	if (!updated) return c.json({ error: "Provider not found" }, 404);
 	emitConfigChange(c, {
@@ -1162,7 +1165,7 @@ routes.put("/inference-providers/:slug/key", async (c) => {
 	if (!value) {
 		return c.json(
 			{ error: "Body must include a non-empty `value` string" },
-			400,
+			400
 		);
 	}
 
@@ -1175,7 +1178,7 @@ routes.put("/inference-providers/:slug/key", async (c) => {
 			{
 				error: `Provider '${slug}' signs in via OAuth — it has no API key to rotate`,
 			},
-			400,
+			400
 		);
 	}
 	// Metadata-only: key rotations are audited but the value is never snapshotted.
@@ -1210,8 +1213,8 @@ routes.delete("/inference-providers/:slug", async (c) => {
 			authProfilesManager.deleteProviderProfiles(
 				orgBucketAgentId(orgId),
 				oauthConfig.id,
-				{ userId: user.id },
-			),
+				{ userId: user.id }
+			)
 		);
 	}
 	emitConfigChange(c, {
@@ -1401,7 +1404,8 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 	// The held proposal must target the agent in the path (manage_agents keeps
 	// agent_id top-level). Don't leak whether a run exists for another agent —
 	// same 404 as "no pending proposal".
-	const targetAgentId = (rawProposal as { agent_id?: unknown }).agent_id ?? null;
+	const targetAgentId =
+		(rawProposal as { agent_id?: unknown }).agent_id ?? null;
 	if (targetAgentId !== agentId) {
 		return c.json({ error: "No pending proposal for this run" }, 404);
 	}
@@ -1415,7 +1419,7 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 	});
 });
 
-// GET /:agentId/watchers/:watcherId/pending/:runId — the watcher parity of the
+// GET /:agentId/behaviors/:watcherId/pending/:runId — the Behavior parity of the
 // agent config-prefill endpoint above. A pending `manage_behaviors` update run is
 // reviewed on the watcher edit form (nested under its owning agent), prefilled
 // via `?run_id=`. Returns the held proposal so the form can render + approve it.
@@ -1424,7 +1428,7 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 // AND be owned by `:agentId`. A manage_behaviors proposal is `{ args, ... }` with
 // watcher_id / agent_id nested INSIDE `args` (unlike manage_agents, top-level) —
 // hence a separate endpoint rather than folding into the agent one.
-routes.get("/:agentId/watchers/:watcherId/pending/:runId", async (c) => {
+routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
 	const { agentId, watcherId } = c.req.param();
 	const organizationId = c.get("organizationId") as string;
 	const runId = Number(c.req.param("runId"));
@@ -1495,7 +1499,9 @@ routes.get("/:agentId/watchers/:watcherId/pending/:runId", async (c) => {
 	// SAME normalizer the apply handler (handleUpdate) uses. The review renders
 	// current→proposedAfter directly, so "displayed == applied" needs no coercion
 	// knowledge on the client and can't drift from the handler.
-	const proposedAfter = normalizeWatcherUpdatePatch(args as ManageBehaviorsArgs);
+	const proposedAfter = normalizeBehaviorUpdatePatch(
+		args as ManageBehaviorsArgs
+	);
 
 	return c.json({
 		runId,
@@ -1660,12 +1666,12 @@ routes.patch("/:agentId/config", async (c) => {
 	// (or missing name/policy) would otherwise be written verbatim and then crash
 	// the guardrail aggregator mid-message (it indexes `seen[stage]`).
 	const guardrailError = validateGuardrailsInline(
-		(updates as { guardrailsInline?: unknown }).guardrailsInline,
+		(updates as { guardrailsInline?: unknown }).guardrailsInline
 	);
 	if (guardrailError) {
 		return c.json(
 			{ error: "invalid_guardrail", error_description: guardrailError },
-			400,
+			400
 		);
 	}
 
@@ -1681,7 +1687,7 @@ routes.patch("/:agentId/config", async (c) => {
 			updates as { guardrailsInline: Array<{ name?: string; model?: string }> }
 		).guardrailsInline;
 		const missing = inline.find(
-			(g) => typeof g?.model !== "string" || g.model.trim() === "",
+			(g) => typeof g?.model !== "string" || g.model.trim() === ""
 		);
 		if (missing) {
 			return c.json(
@@ -1689,7 +1695,7 @@ routes.patch("/:agentId/config", async (c) => {
 					error: "guardrail_model_required",
 					error_description: `Custom guardrail "${missing.name ?? "(unnamed)"}" needs a model: the gateway has no default judge model (EGRESS_JUDGE_MODEL is unset).`,
 				},
-				400,
+				400
 			);
 		}
 	}
@@ -1711,11 +1717,10 @@ routes.patch("/:agentId/config", async (c) => {
 			return c.json(
 				{
 					error: "legacy_model_field",
-					error_description:
-						`This server no longer accepts "${legacyField}". The agent's model configuration is now a single ordered "models" list of explicit "<provider>/<model>" refs. Upgrade your client (CLI / web) and send "models" instead.`,
+					error_description: `This server no longer accepts "${legacyField}". The agent's model configuration is now a single ordered "models" list of explicit "<provider>/<model>" refs. Upgrade your client (CLI / web) and send "models" instead.`,
 					field: legacyField,
 				},
-				400,
+				400
 			);
 		}
 	}
@@ -1741,7 +1746,7 @@ routes.patch("/:agentId/config", async (c) => {
 			// access). Nothing has been mutated yet, so this is a true no-op.
 			logger.warn(
 				{ agentId, err },
-				"Failed to validate models list before saving agent settings — rejecting",
+				"Failed to validate models list before saving agent settings — rejecting"
 			);
 			return c.json(
 				{
@@ -1749,13 +1754,13 @@ routes.patch("/:agentId/config", async (c) => {
 					error_description:
 						"Could not validate the models list against the organization's providers. No change was saved; please retry.",
 				},
-				503,
+				503
 			);
 		}
 		if (error) return c.json(error, 400);
 		// Persist the trimmed refs, not the raw client payload.
 		settingsUpdates.models = (settingsUpdates.models as string[]).map((m) =>
-			m.trim(),
+			m.trim()
 		);
 	}
 
@@ -1767,7 +1772,7 @@ routes.patch("/:agentId/config", async (c) => {
 			if (hasFreshCredential(authProfiles)) {
 				return c.json(
 					{ error: "Setting agent auth profiles requires a web session" },
-					403,
+					403
 				);
 			}
 		} else {
@@ -1781,7 +1786,7 @@ routes.patch("/:agentId/config", async (c) => {
 								? error.message
 								: "Failed to persist auth profiles",
 					},
-					503,
+					503
 				);
 			}
 		}

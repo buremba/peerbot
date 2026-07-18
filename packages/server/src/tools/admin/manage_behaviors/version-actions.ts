@@ -5,13 +5,10 @@
 
 import { getDb } from '../../../db/client';
 import { recordToolConfigChange } from '../helpers/config-audit';
-import { nextRunAt, validateSchedule, validateTimezone } from '../../../utils/cron';
+import { nextRunAt } from '../../../utils/cron';
 import { resolveUsernames } from '../../../utils/resolve-usernames';
 import { getNextNumericId } from '../helpers/db-helpers';
-import {
-  extractSourcesFromPromptTokens,
-  mergePromptSources,
-} from '../../../watchers/source-refs';
+import { extractSourcesFromPromptTokens, mergePromptSources } from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs, ManageBehaviorsResult } from '../manage_behaviors';
 import {
@@ -131,33 +128,12 @@ export async function handleCreateVersion(
     await assertWatcherSourcesResolve(sql, versionOrganizationId, sources);
   }
 
-  if (args.schedule) {
-    const scheduleError = validateSchedule(args.schedule);
-    if (scheduleError) {
-      throw new Error(scheduleError);
-    }
-  }
-  if (args.timezone) {
-    const tzError = validateTimezone(args.timezone);
-    if (tzError) {
-      throw new Error(tzError);
-    }
-  }
-
   const triggerWrite = resolveBehaviorTriggerWrite({
     triggers: args.triggers,
-    schedule: args.schedule,
-    timezone: args.timezone,
     currentTriggers: watcherRows[0].triggers ?? [],
-    currentSchedule: (watcherRows[0].schedule as string | null) ?? null,
-    currentTimezone: (watcherRows[0].timezone as string | null) ?? null,
   });
   if (versionOrganizationId) {
-    await assertBehaviorTriggerConnections(
-      sql,
-      versionOrganizationId,
-      triggerWrite.triggers,
-    );
+    await assertBehaviorTriggerConnections(sql, versionOrganizationId, triggerWrite.triggers);
   }
 
   const createdBy = ctx.userId ?? 'system';
@@ -212,15 +188,12 @@ export async function handleCreateVersion(
     // schedule, scheduler_client_id) update only the targeted row.
     const setAsCurrent = args.set_as_current !== false;
     if (setAsCurrent) {
-      const shouldUpdateSchedule = args.schedule !== undefined;
-      const shouldUpdateTimezone = args.timezone !== undefined;
       const shouldUpdateTriggers = args.triggers !== undefined;
       const scheduleValue = triggerWrite.schedule;
       const timezoneValue = triggerWrite.timezone;
       // Recompute next_run_at when the cadence OR its zone changes, mixing
       // incoming args with the stored row for whichever side was omitted.
-      const touchesCadence =
-        shouldUpdateSchedule || shouldUpdateTimezone || shouldUpdateTriggers;
+      const touchesCadence = shouldUpdateTriggers;
       const effectiveSchedule = touchesCadence
         ? scheduleValue
         : ((watcherRows[0].schedule as string | null) ?? null);
@@ -279,8 +252,8 @@ export async function handleCreateVersion(
         classifiers: classifiers ?? null,
         reactions_guidance: args.reactions_guidance ?? (prev.reactions_guidance as string) ?? null,
         change_notes: args.change_notes ?? null,
-        ...(args.schedule !== undefined ? { schedule: args.schedule ?? null } : {}),
-        ...(args.timezone !== undefined ? { timezone: args.timezone ?? null } : {}),
+        ...(args.triggers !== undefined ? { schedule: triggerWrite.schedule } : {}),
+        ...(args.triggers !== undefined ? { timezone: triggerWrite.timezone } : {}),
         ...(args.triggers !== undefined ? { triggers: triggerWrite.triggers } : {}),
       },
       changedFields: [
@@ -291,8 +264,7 @@ export async function handleCreateVersion(
         ...(args.keying_config !== undefined ? ['keying_config'] : []),
         ...(args.classifiers !== undefined ? ['classifiers'] : []),
         ...(args.reactions_guidance !== undefined ? ['reactions_guidance'] : []),
-        ...(args.schedule !== undefined ? ['schedule'] : []),
-        ...(args.timezone !== undefined ? ['timezone'] : []),
+        ...(args.triggers !== undefined ? ['schedule', 'timezone'] : []),
         ...(args.triggers !== undefined ? ['triggers'] : []),
       ],
     });
@@ -306,7 +278,6 @@ export async function handleCreateVersion(
     previous_version: previousVersion,
   };
 }
-
 
 // ============================================
 // handleGetVersions

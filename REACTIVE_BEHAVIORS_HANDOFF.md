@@ -1,93 +1,175 @@
 # Reactive Behaviors consolidation handoff
 
-## Current scope
+## Objective and status
 
 Worktree: `/Users/burakemre/Code/lobu-ai/lobu/.claude/worktrees/reactive-subscriptions-spike`
 
-Goal: consolidate watchers, schedules, Slack/chat bindings, and connector event listening into one Behavior trigger model without adding parallel subscription storage.
+Branch: `feat/reactive-subscriptions-spike`
 
-The intended product shape is:
+The branch is rebased on `origin/main`. The implementation consolidates scheduled watches, connector events, and chat-message activation into one Behavior trigger model. It does not add a second subscription system.
 
-- Behaviors are still stored in the existing `watchers` / `watcher_versions` / `watcher_windows` tables.
-- Behavior activation is configured by `watchers.triggers`.
-- `event` triggers cover connector events such as GitHub PR events and Slack messages.
-- `schedule` triggers cover cron starts and project to existing indexed `schedule`, `timezone`, and `next_run_at` columns.
-- `triggers: []` means manual/API/CLI/MCP-only.
-- `agent_channel_bindings` is migrated into ordinary tagged Behaviors and dropped.
-- No webhook payload table, subscription ledger, compatibility view, or adapter table is introduced.
+The final cleanup is intentionally a breaking migration: old Watcher-named public tools, REST routes, SDK namespaces, catalog kinds, declarative config, UI routes, and worker routes are removed rather than adapted. Existing database storage names are retained as storage vocabulary only.
 
-## Important completed cleanup
+## Final architecture
 
-- Removed the `behavior_channel_subscriptions` compatibility view from `db/migrations/20260717123000_behavior_channel_subscriptions.sql`.
-- Made runtime readers project active `message.created` subscriptions directly from `watchers.triggers`.
-- Removed the old Owletto `/watchers/create` redirect route and its generated route references.
-- Removed declarative `Behavior.schedule`; CLI config now uses canonical schedule triggers and derives the indexed schedule projection from them.
-- Updated `init-from-org` to emit `defineBehavior({ triggers: [{ kind: "schedule", ... }] })` instead of a top-level schedule field.
-- Updated stale docs that described `behavior_channel_subscriptions` as a current view.
-- Added a scheduled-delivery auth regression so one connection’s channel Behavior cannot authorize delivery on another connection with the same platform/team/channel.
+A Behavior is the single user-facing automation resource. It owns an ordered `triggers` array:
 
-## Files to inspect first after compaction
+- `event` triggers activate from normalized connector signals such as GitHub PR creation or Slack `message.created`.
+- `schedule` triggers activate from cron and use the existing scheduler projection.
+- `triggers: []` is manual/API/CLI/MCP-only.
 
-- `packages/server/src/scheduled/scheduled-jobs-service.ts`
-  - `validateDeliveryAuthorization` now selects the resolved connection `id` and filters trigger projections with `c.id = connection.id`.
-- `packages/server/src/tools/admin/__tests__/manage-schedules-delivery.test.ts`
-  - New regression: “does not authorize a schedule through another connection's matching channel Behavior”.
-- `packages/cli/src/commands/_lib/apply/map-config.ts`
-  - `mapBehavior` rejects multiple schedule triggers, validates schedule trigger cron, and sets `DesiredWatcher.schedule` from the schedule trigger.
-- `packages/cli/src/commands/_lib/init-from-org/bootstrap.ts`
-  - Behavior export no longer emits top-level `schedule`.
-- `packages/server/src/gateway/channels/behavior-subscription-service.ts`
-  - Main product-link/preview chat subscription service; no compatibility view should be reintroduced here.
-- `packages/server/src/__tests__/setup/behavior-subscriptions.ts`
-  - Test-only helper for projecting active message-event subscriptions from Behavior triggers.
+Event trigger policy is part of the trigger:
 
-## Validation already run in this continuation
+- `execution: "turn" | "window"`
+- `active_run: "queue" | "coalesce" | "steer"` where connector capabilities permit it
+- `output: "silent" | "reply_to_source"` where connector capabilities permit it
+- `skip_if_unchanged` for window/batch execution
+- connector-specific exact-match fields in `match`
 
-Review-fix was started and applied changes, then was interrupted because it continued into long manual audits. It exited with code `130`, so treat its edits as ordinary changes that were verified by the focused checks below.
+Connectors expose supported Behavior events declaratively. Connector ingestion emits normalized Behavior signals after durable event persistence. Core activation consumes those normalized signals; provider-specific webhook parsing remains in connector code.
 
-Green runs observed during/after review-fix and the final cleanup:
+Cross-replica correctness is Postgres-mediated. Trigger matching, run creation, active-run coalescing/queueing, and durable source state do not rely on a process-local map.
 
-- `make pre-pr`
-  - Passed after the final scheduled-auth patch.
-- `git diff --check`
-  - Passed.
-- `git -C packages/owletto diff --check`
-  - Passed.
-- `bun test packages/cli/src/commands/_lib/apply/__tests__/map-config.test.ts packages/cli/src/commands/_lib/init-from-org/__tests__/init-from-org.test.ts packages/cli/src/config/__tests__/define.test.ts`
-  - 70 passing.
-- `bun run test -- src/app/__smoke__/all-routes.test.tsx src/components/agents/behaviors/behaviors-new.test.tsx src/lib/behaviors/model.test.ts src/lib/behaviors/subscription-candidate.test.ts` in `packages/owletto`
-  - 68 passing.
-- `LOBU_EMBEDDED=1 bun test packages/server/src/tools/admin/__tests__/manage-schedules-delivery.test.ts`
-  - 7 passing.
-- `LOBU_EMBEDDED=1 bun test packages/server/src/gateway/channels/__tests__/behavior-subscription-service-org-scope.test.ts packages/server/src/__tests__/integration/behaviors/channel-subscription-migration.test.ts packages/server/src/gateway/__tests__/dm-link-e2e.test.ts packages/server/src/gateway/__tests__/dm-link-message-e2e.test.ts packages/server/src/__tests__/integration/slack/claim-onboarding.test.ts packages/server/src/tools/admin/__tests__/manage-schedules-delivery.test.ts`
-  - 19 passing.
-- `bun run vitest run src/tools/__tests__/search-managed-recall-and-acl.test.ts src/preview/__tests__/slack-preview.test.ts` in `packages/server`
-  - 23 passing.
-- `bun test packages/agent-worker/src/__tests__/custom-tools.test.ts packages/agent-worker/src/__tests__/sse-client-harden.test.ts packages/agent-worker/src/__tests__/tool-use-events.test.ts packages/server/src/__tests__/unit/behavior-event-trigger.test.ts packages/server/src/__tests__/unit/connector-behavior-signal.test.ts packages/server/src/__tests__/unit/manage-wire-schema.test.ts packages/server/src/__tests__/unit/watcher-execution-config.test.ts packages/connectors/src/__tests__/github-behavior-events.test.ts packages/connectors/src/__tests__/slack-behavior-events.test.ts`
-  - 105 passing.
+## Canonical public surface
 
-Review status:
+### MCP/admin tools
 
-- `make review BASE=origin/main` was run once on the settled diff.
-- It failed before producing a verdict because the review wrapper rejected its JSON schema input:
-  - `Error: --json-schema is not a valid JSON Schema: no schema with key or ref "https://json-schema.org/draft/2020-12/schema"`
-  - The wrapper exited fail-closed with code `2`.
+- `manage_behaviors` owns create, list, update, versions, trigger, delete, reaction scripts, feedback, and window completion.
+- `get_behavior` owns the detailed Behavior/window read.
+- `manage_catalog` uses the `behaviors` kind.
+- `list_watchers`, `get_watcher`, and `manage_watchers` are absent from the registry and explicitly covered by absence tests.
 
-## Commit status
+### Sandboxed SDK
 
-- Owletto submodule commit: `84199349 chore: remove legacy watcher create route`.
-- Root commit message: `chore: remove behavior subscription compatibility paths`.
-- Final status after these commits was clean in both the root worktree and `packages/owletto`.
+- Canonical namespace: `client.behaviors`.
+- `client.watchers` is deleted.
+- Method metadata and `search_sdk` advertise only Behavior methods.
+- Reactions receive `ctx.behavior`; `ctx.watcher` is deleted.
+- Persisted window/provenance fields such as `watcher_id` remain because they identify rows in retained watcher storage; they are not a compatibility namespace or duplicate execution path.
+
+### REST and generated client
+
+- `/api/:orgSlug/behaviors`
+- `/api/:orgSlug/public/behaviors`
+- `/api/:orgSlug/behaviors/windows/:windowId`
+- `/api/v1/agents/:agentId/history/behaviors/:behaviorId/thread`
+- `/api/:orgSlug/manage_behaviors`
+- `/api/:orgSlug/get_behavior`
+
+Legacy `/watchers` REST paths are removed. The complete OpenAPI document was regenerated into `packages/client/src/generated`; unrelated routes remain present.
+
+### Worker/device API
+
+- `POST /api/workers/me/behaviors/:behavior_id/trigger`
+- `POST /api/workers/me/runs/:runId/complete-behavior`
+
+The former `/api/workers/me/watchers/...` and `complete-watcher` paths are removed. Owletto macOS callers and integration tests use the canonical routes.
+
+### Declarative CLI/config
+
+- `defineBehavior(...)`
+- top-level `behaviors: [...]`
+- schedules are declared only as `triggers: [{ kind: "schedule", cron, timezone }]`
+- top-level Behavior `schedule` and `timezone` inputs are rejected
+
+The CLI apply/export/bootstrap paths all use the new public names and trigger schema. Internal desired-state variables may still say watcher where they directly model retained `watchers` rows.
+
+### Catalog
+
+- Catalog kind: `behaviors`
+- Manifest: `behaviors.json`
+- Generator: `generateBehaviorsManifest`
+- Templates: `BEHAVIOR_CATALOG_TEMPLATES`
+- Stale `dist/catalogs/watchers.json` is removed before generation
+
+Templates store canonical triggers and no longer emit a top-level schedule.
+
+### UI
+
+Canonical routes:
+
+- `/$owner/agents/$agentId/behaviors`
+- `/$owner/agents/$agentId/behaviors/new`
+- `/$owner/agents/$agentId/behaviors/$watcherId`
+
+The Behavior editor first chooses Manual, Schedule, or a connection event. Event choices come from connector capability descriptors. Steering and reply-to-source controls appear only when the selected connector event supports them. Additional triggers are preserved when the current single-trigger editor saves.
+
+Deleted UI paths/code:
+
+- `/$owner/agents/$agentId/watchers`
+- `/$owner/agents/$agentId/watchers/$watcherId`
+- the intermediate `behaviors/watcher/$watcherId` route
+- `src/lib/api/watchers.ts`
+- watcher index/route compatibility resolvers
+
+Server-produced Behavior links now target the canonical agent-owned detail route. Embedded `/lobu` is stripped when composing web UI links.
+
+## Database and migration boundary
+
+No new subscription table was added.
+
+- Existing `watchers.triggers` is the source of truth.
+- Existing `watchers.schedule`, `timezone`, and `next_run_at` remain indexed scheduler projections derived from the schedule trigger. They are not a second public trigger model.
+- `agent_channel_bindings` is migrated to tagged message-event Behaviors and dropped by `20260717123000_behavior_channel_subscriptions.sql`.
+- No `behavior_channel_subscriptions` table/view remains.
+- No raw webhook payload table, wake-up ledger, compatibility view, or adapter table was introduced.
+- Existing GitHub App installation and connector webhook ingestion are reused; activation is attached after durable connector-event persistence.
+- `watchers`, `watcher_versions`, `watcher_id`, and related columns remain the storage contract. Renaming those tables/columns would be a separate destructive data migration with no execution-path simplification, so it is deliberately not mixed into this change.
+- The old `watcher_windows` write model was already retired in favor of canvas-on-events; historical baseline/down migrations still mention it, while active runtime code uses the canvas projection.
+- `events` remains append-only.
+
+## Compatibility and deletion inventory
+
+There are no runtime compatibility adapters for the old public API. In runtime and example code, the only exact old API-name occurrences allowed after the audit are:
+
+- negative tests asserting `list_watchers` and `get_watcher` are absent
+- the catalog build cleanup that deletes a stale generated `watchers.json`
+
+Old storage vocabulary remains only where code talks directly to existing rows, columns, run types, and provenance.
+
+## Example migration
+
+All example configs use `defineBehavior` and `behaviors`. Reaction examples use `ctx.behavior`. Example docs, skills, and eval scenarios refer to Behaviors and the new tools.
+
+The remaining `watcher_id`, `watcher_source`, and direct `watchers` SQL references in examples are persisted provenance/storage fields. They are not calls to the deleted Watcher API; changing them would require the separate storage migration described above.
+
+The exact audit is:
+
+```bash
+rg -n 'defineWatcher|manage_watchers|list_watchers|get_watcher|client\.watchers|/watchers(?:/|\b)|watchers\s*:|ctx\.watcher\b|complete-watcher' examples
+```
+
+Expected result: no matches.
+
+The positive audit finds `defineBehavior`, `behaviors`, `manage_behaviors`, and `ctx.behavior` across the examples. No example needs to call `get_behavior` or `client.behaviors` directly today.
+
+## Validation completed
+
+- Branch HEAD is based on the local `origin/main` ref.
+- Pre-review audits fixed migration replay safety, transaction-scoped chat Behavior archival, an unused Slack normalization helper, the final Slack parser compatibility re-export, and stale public-API claims in changed plans.
+- `make pre-pr` passed: fresh builds, strict typechecks, Knip, and Biome.
+- Focused cross-package Bun tests passed, including core event matching, connector descriptors, agent-worker streaming, CLI config, message routing, and Slack parsing.
+- Focused server Behavior event-activation, schedule-skip, and template tests passed: 10 tests.
+- Owletto route, create-form, model, subscription-candidate, chat-route, and history tests passed: 83 tests.
+- Catalog generation passed: 20 connectors, 2 skills, 5 Behaviors.
+- Owletto production Vite build passed after the route cleanup.
+- Postgres migration replay and channel-feed lifecycle tests passed: 11 tests. The archive transaction fix had explicit red (`malformed array literal`) → fix (`pgBigintArray`) → green evidence.
+- Connection-scoped chat Behavior routing tests passed: 6 tests.
+- `git diff --check` passes in both root and Owletto.
+
+Still required before merge-ready status:
+
+1. Inspect and commit Owletto with explicit paths, then commit the root with explicit paths and the submodule pointer.
+2. Verify committed HEAD and the exact `origin/main...HEAD` path list.
+3. Run one posted `make review BASE=origin/main`.
 
 ## Gotchas
 
-- Do not re-add `behavior_channel_subscriptions`; the agreed direction is direct projection from `watchers.triggers`.
-- Do not re-add `agent_channel_bindings`; the migration is one-way and manual rollback is acceptable.
-- Do not re-add declarative `Behavior.schedule`; source config should use canonical schedule triggers.
-- `schedule` remains as a server/API indexed projection for existing schedule machinery. That is not a second trigger system.
-- `watchers` table naming remains storage vocabulary. Renaming it is a separate large migration and out of scope.
-- Connector action `subscribable` hints only prefill the Behavior editor. They must not create subscriptions themselves.
-- Provider-specific event parsing stays in connector code. Core should receive only normalized connector signals.
-- No raw webhook payloads or credentials should enter runs.
-- `events` remains append-only.
-- Any cross-replica state must be Postgres-mediated; no in-memory singleton state for trigger/dedupe behavior.
+- Do not reintroduce `agent_channel_bindings` or `behavior_channel_subscriptions`.
+- Do not add a second schedule API; schedule columns are derived/indexed storage.
+- Do not create a raw webhook payload store just to wake an agent. Persist connector events through the existing append-only event path, then emit normalized signals.
+- Connector action `subscribable` hints prefill the editor; they do not silently create subscriptions.
+- Validate event capability, steering, and reply support when saving a trigger.
+- Runtime connection IDs may be slugs/managed IDs in connector infrastructure, but persisted Behavior trigger `connection_id` is the validated numeric connection row ID.
+- Preserve trigger ordering and unknown additional triggers in UI edits until a full multi-trigger editor exists.
+- Keep required shared state in Postgres so the design holds with three or more replicas.

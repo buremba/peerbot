@@ -42,7 +42,10 @@ describe('prune (server gate)', () => {
 
   describe('definition deletes (prune targets)', () => {
     it('deletes an entity type with no instances', async () => {
-      await owner.entity_schema.createType({ slug: 'prune-empty', name: 'Empty' });
+      await owner.entity_schema.createType({
+        slug: 'prune-empty',
+        name: 'Empty',
+      });
       await owner.entity_schema.deleteType({ slug: 'prune-empty' });
       const got = (await owner.entity_schema.getType('prune-empty')) as {
         entity_type: unknown;
@@ -51,26 +54,30 @@ describe('prune (server gate)', () => {
     });
 
     it('refuses to delete an entity type while instances exist (data is exempt)', async () => {
-      await owner.entity_schema.createType({ slug: 'prune-busy', name: 'Busy' });
+      await owner.entity_schema.createType({
+        slug: 'prune-busy',
+        name: 'Busy',
+      });
       await createTestEntity({
         name: 'A live instance',
         entity_type: 'prune-busy',
         organization_id: orgId,
       });
-      await expect(
-        owner.entity_schema.deleteType({ slug: 'prune-busy' })
-      ).rejects.toThrow(/entities of this type exist|cannot delete/i);
+      await expect(owner.entity_schema.deleteType({ slug: 'prune-busy' })).rejects.toThrow(
+        /entities of this type exist|cannot delete/i
+      );
     });
 
     it('deletes a relationship type with no instances', async () => {
-      await owner.entity_schema.createRelType({ slug: 'prune-rel', name: 'Rel' });
+      await owner.entity_schema.createRelType({
+        slug: 'prune-rel',
+        name: 'Rel',
+      });
       await owner.entity_schema.deleteRelType({ slug: 'prune-rel' });
       const list = (await owner.entity_schema.listTypes()) as {
         relationship_types?: Array<{ slug: string }>;
       };
-      expect(
-        (list.relationship_types ?? []).some((r) => r.slug === 'prune-rel')
-      ).toBe(false);
+      expect((list.relationship_types ?? []).some((r) => r.slug === 'prune-rel')).toBe(false);
     });
 
     it('refuses to delete a relationship type while instances exist (data is exempt)', async () => {
@@ -100,9 +107,9 @@ describe('prune (server gate)', () => {
           (organization_id, from_entity_id, to_entity_id, relationship_type_id, created_by)
         VALUES (${orgId}, ${a.id}, ${b.id}, ${rt?.id}, ${userId})
       `;
-      await expect(
-        owner.entity_schema.deleteRelType({ slug: 'prune-rel-busy' })
-      ).rejects.toThrow(/relationships of this type exist|cannot delete/i);
+      await expect(owner.entity_schema.deleteRelType({ slug: 'prune-rel-busy' })).rejects.toThrow(
+        /relationships of this type exist|cannot delete/i
+      );
     });
 
     it('a foreign public rel-type with the same slug does not block the org owning/managing its own', async () => {
@@ -142,9 +149,9 @@ describe('prune (server gate)', () => {
       // The caller has no own 'foreign-only'. Write-mode lookup is org-scoped,
       // so it must report 'not found' — never 'access denied', which would leak
       // that the slug exists in another org.
-      await expect(
-        owner.entity_schema.deleteRelType({ slug: 'foreign-only' })
-      ).rejects.toThrow(/not found/i);
+      await expect(owner.entity_schema.deleteRelType({ slug: 'foreign-only' })).rejects.toThrow(
+        /not found/i
+      );
       await expect(
         owner.entity_schema.updateRelType({ slug: 'foreign-only', name: 'x' })
       ).rejects.toThrow(/not found/i);
@@ -159,20 +166,20 @@ describe('prune (server gate)', () => {
 
     it('deletes a watcher', async () => {
       const agent = await createTestAgent({ organizationId: orgId });
-      const created = (await owner.watchers.create({
+      const created = (await owner.behaviors.create({
         slug: 'prune-watcher',
         agent_id: agent.agentId,
         prompt: 'Watch for things.',
       })) as { watcher_id?: string };
       expect(created.watcher_id).toBeTruthy();
 
-      await owner.watchers.delete({ watcher_ids: [created.watcher_id as string] });
-      const list = (await owner.watchers.list({})) as {
-        watchers?: Array<{ slug: string }>;
+      await owner.behaviors.delete({
+        watcher_ids: [created.watcher_id as string],
+      });
+      const list = (await owner.behaviors.list({})) as {
+        behaviors?: Array<{ slug: string }>;
       };
-      expect((list.watchers ?? []).some((w) => w.slug === 'prune-watcher')).toBe(
-        false
-      );
+      expect((list.watchers ?? []).some((w) => w.slug === 'prune-watcher')).toBe(false);
     });
 
     it('re-creates a relationship type with the same slug after delete (prune → re-add)', async () => {
@@ -181,9 +188,15 @@ describe('prune (server gate)', () => {
       // re-create of the same slug hit a unique violation. delete now also sets
       // status='archived' to vacate the index — `lobu apply` prune then re-add
       // must round-trip.
-      await owner.entity_schema.createRelType({ slug: 'prune-readd', name: 'First' });
+      await owner.entity_schema.createRelType({
+        slug: 'prune-readd',
+        name: 'First',
+      });
       await owner.entity_schema.deleteRelType({ slug: 'prune-readd' });
-      await owner.entity_schema.createRelType({ slug: 'prune-readd', name: 'Second' });
+      await owner.entity_schema.createRelType({
+        slug: 'prune-readd',
+        name: 'Second',
+      });
       const got = (await owner.entity_schema.getRelType('prune-readd')) as {
         relationship_type: { name: string; status: string } | null;
       };
@@ -195,7 +208,9 @@ describe('prune (server gate)', () => {
   describe('relationship-type inverse scoping (tenant isolation)', () => {
     it("rejects inverse_type_slug that resolves to another org's PRIVATE type and never mutates it", async () => {
       const sql = getTestDb();
-      const other = await createTestOrganization({ name: 'Private Inverse Org' });
+      const other = await createTestOrganization({
+        name: 'Private Inverse Org',
+      });
       await sql`
         INSERT INTO entity_relationship_types (organization_id, slug, name, status, created_at, updated_at)
         VALUES (${other.id}, ${'foreign-private-inv'}, 'Foreign Private', 'active', NOW(), NOW())

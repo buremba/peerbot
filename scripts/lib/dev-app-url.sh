@@ -1,14 +1,34 @@
-# dev-app-url.sh — local dev UI URL (PUBLIC_GATEWAY_URL) for logs and OPEN=1.
+# dev-app-url.sh — local dev UI URL for logs and OPEN=1.
 # Sourced after .env / .env.local are loaded; REPO_ROOT must be set.
+#
+# PUBLIC_GATEWAY_URL is the *Agent API* base (mounted at /lobu on the wrapper
+# app — see server-lifecycle.ts). The SPA is pathless at the origin. Never open
+# …/lobu in a browser; that mount is API + docs, not the UI.
+
+# Strip a trailing /lobu path (and trailing slashes) so a gateway URL becomes
+# the pathless SPA origin. Leaves other path suffixes alone.
+lobu_dev_spa_origin_from_gateway_url() {
+  local raw="${1:-}"
+  # Drop query/fragment if present.
+  raw="${raw%%\?*}"
+  raw="${raw%%#*}"
+  # Strip trailing slashes, then a final /lobu segment.
+  while [[ "$raw" == */ ]]; do raw="${raw%/}"; done
+  if [[ "$raw" == */lobu ]]; then
+    raw="${raw%/lobu}"
+  fi
+  while [[ "$raw" == */ ]]; do raw="${raw%/}"; done
+  printf '%s' "$raw"
+}
 
 lobu_dev_app_url() {
   if [[ -n "${PUBLIC_GATEWAY_URL:-}" ]]; then
-    printf '%s' "$PUBLIC_GATEWAY_URL"
+    lobu_dev_spa_origin_from_gateway_url "$PUBLIC_GATEWAY_URL"
     return 0
   fi
   local host="${HOST:-127.0.0.1}"
   local port="${PORT:-8787}"
-  printf 'http://%s:%s/lobu' "$host" "$port"
+  printf 'http://%s:%s' "$host" "$port"
 }
 
 lobu_dev_print_app_url() {

@@ -21,6 +21,7 @@ import {
 import { extractConnectorMetadata, type ConnectorMetadata } from '../utils/connector-compiler';
 import { upsertConnectorDefinitionRecords } from '../utils/connector-definition-install';
 import { ensureUniqueConnectionSlug } from '../utils/connections';
+import { clearDevicePinTombstoneIfPinned } from '../utils/device-pin-tombstones';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { getDeviceManifestSourcesForUser, sortJson, type DeviceConnectorSource } from './device-manifests';
@@ -77,6 +78,12 @@ async function ensureDeviceConnectorWired(
         AND device_worker_id IS DISTINCT FROM ${target}::uuid
         AND (device_worker_id IS NULL OR NOT (device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[])))
     `;
+    // Pin restore (or already-valid pin): drop DELETE/move tombstones so the
+    // connection is not stuck as active + red "Device was removed".
+    await clearDevicePinTombstoneIfPinned(db, {
+      connectionId,
+      matchingDeviceIds,
+    });
   };
 
   try {

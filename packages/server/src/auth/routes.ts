@@ -258,11 +258,16 @@ function assertLoopbackClient(
     c.req.header('x-forwarded-proto') ||
     c.req.header('x-real-ip') ||
     c.req.header('forwarded');
-  if (proxied) {
+  // Tailscale Serve / local reverse proxies connect to 127.0.0.1 (peer is
+  // loopback) but inject Forwarded-*. Public tunnels (Funnel, ngrok) look the
+  // same — refuse by default so a misconfigured public frontend can't mint
+  // passwordless sessions. Operators who intentionally reach a single-user
+  // install over private Tailscale Serve set LOBU_LOCAL_INIT_ALLOW_PROXY=1.
+  if (proxied && c.env.LOBU_LOCAL_INIT_ALLOW_PROXY !== '1') {
     return {
       error: 'proxied_request_refused',
       error_description:
-        'This endpoint is for loopback callers only. Forwarded-* headers are not allowed.',
+        'This endpoint is for loopback callers only. Forwarded-* headers are not allowed. For private Tailscale Serve, set LOBU_LOCAL_INIT_ALLOW_PROXY=1 on the host (single-user installs only).',
     };
   }
   if (!c.req.header('x-lobu-client')) {
@@ -604,10 +609,12 @@ credentialRoutes.get('/extension-bootstrap', (c) => {
  * point the caller at /sign-up.
  *
  * Trust model:
- *   - Refuses when any `x-forwarded-*` / `forwarded` header is present. A
- *     Tailscale Funnel / ngrok / cloudflared / nginx proxy fronting a
- *     loopback bind sets these — the bind looks local but the *exposure*
- *     isn't, so a public client could otherwise reach this endpoint.
+ *   - Requires a loopback TCP peer (the server must be reached via 127.0.0.1
+ *     on the host — Tailscale Serve qualifies; a remote TCP peer does not).
+ *   - Refuses when any `x-forwarded-*` / `forwarded` header is present,
+ *     unless `LOBU_LOCAL_INIT_ALLOW_PROXY=1` (opt-in for private Tailscale
+ *     Serve). Public tunnels (Funnel, ngrok) must not set this — the bind
+ *     looks local but the exposure isn't.
  *   - Refuses when the deployment has more than one user.
  *   - Refuses when the single user has no personal org (shouldn't happen —
  *     databaseHooks.user.create.after provisions one).

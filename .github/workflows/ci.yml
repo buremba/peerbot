@@ -129,6 +129,12 @@ jobs:
           mv coverage/lcov.info coverage/server-units.lcov.info
           bun test packages/server/src/auth/__tests__/tool-access.test.ts packages/server/src/auth/__tests__/system-provider-resolution.test.ts --coverage
           mv coverage/lcov.info coverage/server-units-auth.lcov.info
+          # Pure-unit bun:test files that live outside src/__tests__/unit: the
+          # device-pin tombstone helpers and the activity-feed collapse logic.
+          # No Postgres needed (DB imports in the module graph are lazy), so they
+          # run here rather than in the integration job.
+          bun test packages/server/src/utils/__tests__/device-pin-tombstones.test.ts packages/server/src/tools/admin/manage_operations/__tests__/activity-feed-collapse.test.ts --coverage
+          mv coverage/lcov.info coverage/server-units-activity.lcov.info
 
       - name: connector-worker (bun:test)
         run: |
@@ -165,7 +171,7 @@ jobs:
         if: always()
         uses: codecov/codecov-action@v7
         with:
-          files: coverage/core-cli.lcov.info,coverage/plugin-runtime.lcov.info,coverage/agent-worker.lcov.info,coverage/server-units.lcov.info,coverage/server-units-auth.lcov.info,coverage/connector-worker.lcov.info,coverage/client-promptfoo.lcov.info,coverage/connector-sdk.lcov.info,coverage/connectors.lcov.info
+          files: coverage/core-cli.lcov.info,coverage/plugin-runtime.lcov.info,coverage/agent-worker.lcov.info,coverage/server-units.lcov.info,coverage/server-units-auth.lcov.info,coverage/server-units-activity.lcov.info,coverage/connector-worker.lcov.info,coverage/client-promptfoo.lcov.info,coverage/connector-sdk.lcov.info,coverage/connectors.lcov.info
           flags: unit
           fail_ci_if_error: false
 

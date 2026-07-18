@@ -127,6 +127,8 @@ export ENVIRONMENT="${ENVIRONMENT:-development}"
 export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-8787}"
 export WORKER_PROXY_PORT="${WORKER_PROXY_PORT:-8118}"
+# Agent API base (mounted at /lobu). SPA is pathless at the origin — see
+# scripts/lib/dev-app-url.sh. Do not open …/lobu in a browser for the UI.
 export PUBLIC_GATEWAY_URL="${PUBLIC_GATEWAY_URL:-http://localhost:${PORT}/lobu}"
 export LOBU_PROVIDER_REGISTRY_PATH="${LOBU_PROVIDER_REGISTRY_PATH:-$REPO_ROOT/config/providers.json}"
 export LOBU_DEV_PROJECT_PATH="${LOBU_DEV_PROJECT_PATH:-$REPO_ROOT}"

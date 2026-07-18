@@ -21,9 +21,10 @@
 
 import type { DispatchChromeActionRequest } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
-import { getDb } from '../db/client';
+import { getDb, pgTextArray } from '../db/client';
 import type { Env } from '../index';
 import { waitForDeviceActionRun } from '../tools/admin/device-action-wait';
+import { DEVICE_PIN_TOMBSTONE_MESSAGES } from '../utils/device-pin-tombstones';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
@@ -296,7 +297,13 @@ export async function resolveOnlineChromeConnection(
 
         const updated = (await tx`
           UPDATE connections
-          SET device_worker_id = ${deviceWorkerId}::uuid, updated_at = now()
+          SET device_worker_id = ${deviceWorkerId}::uuid,
+              error_message = CASE
+                WHEN error_message = ANY(${pgTextArray([...DEVICE_PIN_TOMBSTONE_MESSAGES])}::text[])
+                THEN NULL
+                ELSE error_message
+              END,
+              updated_at = now()
           WHERE id = ${connIdNum}
             AND deleted_at IS NULL
             AND status = 'active'

@@ -539,6 +539,7 @@ export async function createAuth(
 								userId,
 								orgName,
 								inviterName,
+								invitationId: data.id,
 							});
 						}
 					} catch (err) {

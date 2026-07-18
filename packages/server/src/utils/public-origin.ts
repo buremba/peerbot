@@ -196,6 +196,11 @@ export function getCanonicalRedirectUrl(
   const requestHost = request.hostname;
   const canonicalHost = canonical.hostname;
 
+  // Never force-redirect TO loopback. Local PUBLIC_GATEWAY_URL (127.0.0.1 /
+  // localhost) is for on-box dev; bouncing Tailscale/LAN hosts there breaks
+  // every other machine (the client's localhost is not this server).
+  if (LOCALHOST_HOSTNAMES.has(canonicalHost)) return null;
+  // On-box loopback traffic is already on the right host — leave it alone.
   if (LOCALHOST_HOSTNAMES.has(requestHost)) return null;
   if (request.origin === canonical.origin) return null;
   if (requestHost === canonicalHost || requestHost.endsWith(`.${canonicalHost}`)) {

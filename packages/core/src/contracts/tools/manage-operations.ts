@@ -147,9 +147,11 @@ export const ListActivityAction = Type.Object({
       "Org attention feed: notifications + recent user-facing runs (watcher/sync/action/internal), with optional adjacent aggregation and deep-links for the UI and agent context.",
   }),
   limit: Type.Optional(
-    Type.Number({
+    Type.Integer({
       description: "Max cards after aggregation (default 24, max 50)",
       default: 24,
+      minimum: 1,
+      maximum: 50,
     })
   ),
   /** Include notifications (default true when user is authenticated). */

@@ -293,7 +293,9 @@ export async function listOrgActivity(opts: {
 			const { notifications } = await listNotifications({
 				organizationId: opts.organizationId,
 				userId: opts.userId,
-				limit: 30,
+				// Match the run window (60) so notifications can survive the
+				// merge into the final chronological slice even at limit: 50.
+				limit: 60,
 			});
 			for (const n of notifications) {
 				const type = String(n.type ?? "generic");
@@ -416,7 +418,30 @@ export async function listOrgActivity(opts: {
 	return { items, total: items.length, limit };
 }
 
-/** Compact prompt block for first-turn agent context (≤ ~2k chars). */
+/** Drop the query string + fragment from a deep-link (absolute or relative).
+ * Notification hrefs can carry OAuth authorization codes and invitation ids as
+ * query params; those must never reach worker context. Kept out of the UI path
+ * on purpose: listOrgActivity still returns full hrefs for the trusted client. */
+function stripUrlParams(url: string): string {
+	const cut = url.search(/[?#]/);
+	return cut >= 0 ? url.slice(0, cut) : url;
+}
+
+/** Redact query strings from any URL embedded in free-form body text, so a
+ * notification body like "re-auth here: https://…?code=…" cannot smuggle a
+ * credential into worker context. */
+function redactBodyUrls(text: string): string {
+	return text.replace(/(https?:\/\/[^\s?#]+)[^\s]*/g, "$1");
+}
+
+/**
+ * Compact prompt block for first-turn agent context (≤ ~2k chars).
+ *
+ * This feeds worker `ephemeralContext`, an untrusted-prompt surface, so it
+ * emits an allowlisted, worker-safe projection only: query params are stripped
+ * from links and body URLs (OAuth codes, invitation ids), and titles, errors,
+ * and names are forwarded solely as sanitized untrusted text.
+ */
 export function formatActivityAttentionBlock(
 	items: ActivityCard[],
 	maxLines = 10,
@@ -427,8 +452,10 @@ export function formatActivityAttentionBlock(
 	for (const it of slice) {
 		const status = it.status ? ` [${it.status}]` : "";
 		const count = it.count > 1 ? ` ×${it.count}` : "";
-		const body = it.body ? ` — ${it.body.replace(/\s+/g, " ").slice(0, 120)}` : "";
-		const href = it.href ? ` (${it.href})` : "";
+		const body = it.body
+			? ` — ${redactBodyUrls(it.body).replace(/\s+/g, " ").slice(0, 120)}`
+			: "";
+		const href = it.href ? ` (${stripUrlParams(it.href)})` : "";
 		let line = `- ${it.title}${count}${status}${body}${href}`;
 		// Sanitize control chars like buildRunContextBlock
 		line = [...line]

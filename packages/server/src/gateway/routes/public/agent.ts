@@ -1516,17 +1516,27 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         (session.turnCount ?? 0) === 0 &&
         !ephemeralForTurn &&
         session.intent?.kind !== "watcher_run" &&
-        messageOrganizationId &&
-        session.userId
+        messageOrganizationId
       ) {
         try {
+          // Notifications are per-recipient, so scope the read to the
+          // AUTHENTICATED principal, never `session.userId`, which is
+          // client-supplied via CreateAgentRequestSchema.userId (an agent owner
+          // could stamp a session with another member's id and siphon their
+          // notifications). Fall back to null (org runs only, no notifications)
+          // when no trusted human principal is present (e.g. worker token).
+          const attentionUserId =
+            msgAccess.callerUserId ??
+            (c.get("authContext")?.userId as string | undefined) ??
+            (await verifySettingsSessionOrToken(c))?.userId ??
+            null;
           const orgRow = (await getDb()`
             SELECT slug FROM organization WHERE id = ${messageOrganizationId} LIMIT 1
           `) as unknown as Array<{ slug: string }>;
           const ownerSlug = orgRow[0]?.slug ?? messageOrganizationId;
           const { items } = await listOrgActivity({
             organizationId: messageOrganizationId,
-            userId: session.userId,
+            userId: attentionUserId,
             ownerSlug,
             limit: 12,
             aggregate: true,

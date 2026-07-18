@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { collapseAdjacentActivityCards } from "../activity-feed";
+import type { ActivityCard } from "../activity-feed";
+import {
+	collapseAdjacentActivityCards,
+	formatActivityAttentionBlock,
+} from "../activity-feed";
 
 function card(
 	partial: Partial<Parameters<typeof collapseAdjacentActivityCards>[0][number]> & {
@@ -42,5 +46,44 @@ describe("collapseAdjacentActivityCards", () => {
 			card({ id: "r:2", status: "failed" }),
 		]);
 		expect(out).toHaveLength(2);
+	});
+});
+
+describe("formatActivityAttentionBlock (worker-safe projection)", () => {
+	const notif = (partial: Partial<ActivityCard> & { id: string }): ActivityCard => ({
+		kind: "notification",
+		title: "Notification",
+		body: null,
+		at: new Date().toISOString(),
+		status: "generic",
+		count: 1,
+		href: null,
+		...partial,
+	});
+
+	it("strips query params and fragments from deep-links", () => {
+		const block = formatActivityAttentionBlock([
+			notif({
+				id: "n:1",
+				title: "Reconnect Chrome",
+				href: "/auth/accept-invitation?invitationId=secret-token#frag",
+			}),
+		]);
+		expect(block).toContain("/auth/accept-invitation");
+		expect(block).not.toContain("secret-token");
+		expect(block).not.toContain("invitationId");
+	});
+
+	it("redacts query strings from URLs embedded in notification bodies", () => {
+		const block = formatActivityAttentionBlock([
+			notif({
+				id: "n:2",
+				title: "Re-authorize",
+				body: "Re-auth here: https://provider.example/oauth/authorize?code=abc123&state=xyz",
+			}),
+		]);
+		expect(block).toContain("https://provider.example/oauth/authorize");
+		expect(block).not.toContain("abc123");
+		expect(block).not.toContain("code=");
 	});
 });

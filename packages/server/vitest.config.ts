@@ -42,6 +42,16 @@ export default defineConfig({
       // test job). Do NOT broaden to src/auth/__tests__/** — that orphans the
       // vitest files. (tool-access is framework-less and runs fine in both.)
       "src/auth/__tests__/system-provider-resolution.test.ts",
+      // src/tools/admin/manage_operations/__tests__ is a bun:test-only dir
+      // (activity-feed collapse unit suite). Keep it off vitest; it runs via the
+      // server bun:test units job. (Sibling src/tools/admin/__tests__ is handled
+      // by its own exclude above.)
+      "src/tools/admin/manage_operations/__tests__/**",
+      // src/utils/__tests__ is a MIXED dir: most files are vitest-style. Only
+      // device-pin-tombstones imports bun:test, so exclude just that file (it
+      // runs via the server bun:test units job). Do NOT broaden to
+      // src/utils/__tests__/** — that orphans the vitest files.
+      "src/utils/__tests__/device-pin-tombstones.test.ts",
       "**/node_modules/**",
       "**/dist/**",
     ],

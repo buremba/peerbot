@@ -330,23 +330,28 @@ jobs:
         if: steps.submodule.outputs.stubbed != 'true'
         run: cd packages/owletto && bun run build
 
-      - name: Install Google Chrome (SPA boot smoke)
-        # Ubuntu 24.04's apt `chromium`/`chromium-browser` is a snap shim that
-        # will not launch under the runner cgroup (snap confinement fails in
-        # CI: "is not a snap cgroup for tag snap.chromium.chromium"), so the
-        # boot smoke never gets a browser. Install the real Google Chrome .deb
-        # (non-snap) and point the smoke at it explicitly.
+      - name: Install Google Chrome for SPA boot smoke
+        # Ubuntu apt chromium/chromium-browser is a *snap* shim. Snap will not
+        # launch under Blacksmith's runner cgroup:
+        #   "is not a snap cgroup for tag snap.chromium.chromium"
+        # Playwright's bundled browser also fights monorepo patchright/playwright
+        # revision skew. Install real Google Chrome .deb (non-snap) and point
+        # the smoke at it.
         if: steps.submodule.outputs.stubbed != 'true'
         run: |
+          set -euo pipefail
           curl -fsSL -o /tmp/google-chrome.deb \
             https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends /tmp/google-chrome.deb
+          test -x /usr/bin/google-chrome-stable
+          /usr/bin/google-chrome-stable --version
           echo "SPA_SMOKE_CHROME=/usr/bin/google-chrome-stable" >> "$GITHUB_ENV"
 
-      - name: SPA cold-boot smoke (Chromium)
+      - name: SPA cold-boot smoke (Chrome)
         # Loads dist/ in a real browser; fails on pageerror (e.g. process is
         # not defined). Network API failures are ignored — no backend here.
+        # spa-boot-smoke refuses snap Chromium; SPA_SMOKE_CHROME is required in CI.
         if: steps.submodule.outputs.stubbed != 'true'
         run: cd packages/owletto && bun run smoke:boot
 

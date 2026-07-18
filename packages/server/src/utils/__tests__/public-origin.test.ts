@@ -39,6 +39,24 @@ describe('getCanonicalRedirectUrl', () => {
     ).toBeNull();
   });
 
+  it('does not redirect remote hosts when the canonical origin is loopback', () => {
+    // PUBLIC_GATEWAY_URL=http://127.0.0.1:8811/lobu + Tailscale Serve would
+    // otherwise bounce https://mac-mini.ts.net/ → http://127.0.0.1:8811/ and
+    // break every other machine on the tailnet.
+    expect(
+      getCanonicalRedirectUrl(
+        'https://buraks-mac-mini.brill-kanyu.ts.net/',
+        'http://127.0.0.1:8811'
+      )
+    ).toBeNull();
+    expect(
+      getCanonicalRedirectUrl(
+        'https://buraks-mac-mini.brill-kanyu.ts.net/dev',
+        'http://localhost:8811'
+      )
+    ).toBeNull();
+  });
+
   it('preserves sibling subdomains under the auth cookie zone', () => {
     expect(
       getCanonicalRedirectUrl('https://acme.lobu.ai/dashboard', 'https://app.lobu.ai', '.lobu.ai')

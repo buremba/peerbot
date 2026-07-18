@@ -330,22 +330,19 @@ jobs:
         if: steps.submodule.outputs.stubbed != 'true'
         run: cd packages/owletto && bun run build
 
-      - name: Install system Chromium (SPA boot smoke)
-        # Prefer apt Chromium over Playwright's versioned browser download so
-        # we don't fight patchright/playwright package skew in the monorepo.
+      - name: Install Google Chrome (SPA boot smoke)
+        # Ubuntu 24.04's apt `chromium`/`chromium-browser` is a snap shim that
+        # will not launch under the runner cgroup (snap confinement fails in
+        # CI: "is not a snap cgroup for tag snap.chromium.chromium"), so the
+        # boot smoke never gets a browser. Install the real Google Chrome .deb
+        # (non-snap) and point the smoke at it explicitly.
         if: steps.submodule.outputs.stubbed != 'true'
         run: |
+          curl -fsSL -o /tmp/google-chrome.deb \
+            https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends chromium-browser \
-            || sudo apt-get install -y --no-install-recommends chromium
-          # Point the smoke at whatever binary apt gave us.
-          for b in /usr/bin/chromium-browser /usr/bin/chromium /usr/bin/google-chrome; do
-            if [ -x "$b" ]; then
-              echo "SPA_SMOKE_CHROME=$b" >> "$GITHUB_ENV"
-              echo "Using $b"
-              break
-            fi
-          done
+          sudo apt-get install -y --no-install-recommends /tmp/google-chrome.deb
+          echo "SPA_SMOKE_CHROME=/usr/bin/google-chrome-stable" >> "$GITHUB_ENV"
 
       - name: SPA cold-boot smoke (Chromium)
         # Loads dist/ in a real browser; fails on pageerror (e.g. process is

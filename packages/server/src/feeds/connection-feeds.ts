@@ -42,11 +42,19 @@ export async function listConnectionFeeds(
 			f.last_sync_at                        AS last_sync_at,
 			f.items_collected                     AS items_collected,
 			(
-				SELECT b.agent_id
-				FROM behavior_channel_subscriptions b
-				WHERE b.organization_id = f.organization_id
-					AND b.connection_id  = f.connection_id
-					AND b.channel_id     = f.feed_key
+				SELECT w.agent_id
+				FROM watchers w
+				CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+				WHERE w.status = 'active'
+					AND w.organization_id = f.organization_id
+					AND trigger->>'kind' = 'event'
+					AND jsonb_typeof(trigger->'connection_id') = 'number'
+					AND (trigger->>'connection_id')::bigint = f.connection_id
+					AND trigger->'event_types' ? 'message.created'
+					AND COALESCE(
+						NULLIF(trigger->'match'->>'channel_key', ''),
+						(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+					) = f.feed_key
 				LIMIT 1
 			)                                     AS target_agent_id
 		FROM feeds f

@@ -377,8 +377,6 @@ export interface Behavior {
   agent: Agent | string;
   name?: string;
   description?: string;
-  /** @deprecated Prefer a `schedule` trigger in `triggers`. */
-  schedule?: string;
   /** Connector events and/or cadence that activate this Behavior. */
   triggers?: BehaviorTriggerConfig[];
   prompt: string;

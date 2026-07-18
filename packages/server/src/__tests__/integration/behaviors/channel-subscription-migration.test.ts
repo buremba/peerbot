@@ -1,10 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "../../../db/client";
 import { loadMigrationUpSection } from "../../../db/migration-loader";
 import { initWorkspaceProvider } from "../../../workspace";
-import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
 import { cleanupTestDatabase } from "../../setup/test-db";
 import {
 	createTestAgent,
@@ -25,13 +24,6 @@ function resolveMigrationsDir(): string {
 		dir = parent;
 	}
 	throw new Error("Could not locate db/migrations from the test directory");
-}
-
-function loadMigrationDownSection(): string {
-	const source = readFileSync(join(resolveMigrationsDir(), MIGRATION), "utf8");
-	const [, down] = source.split(/^-- migrate:down\s*$/m);
-	if (!down?.trim()) throw new Error(`${MIGRATION} has no down section`);
-	return down;
 }
 
 class Rollback extends Error {}
@@ -67,17 +59,15 @@ describe("Behavior channel-subscription migration", () => {
 		let captured:
 			| {
 					legacyTable: string | null;
+					compatView: string | null;
 					triggers: unknown;
 					tagged: boolean;
 					executionConfig: unknown;
-					channelId: string;
-					connectionId: number;
 			  }
 			| undefined;
 
 		try {
 			await sql.begin(async (tx: typeof sql) => {
-				await tx`DROP VIEW behavior_channel_subscriptions`;
 				await tx`
 					INSERT INTO channel_messages (
 						organization_id, connection_id, platform, channel_id,
@@ -131,24 +121,18 @@ describe("Behavior channel-subscription migration", () => {
 					  AND agent_id = ${agent.agentId}
 					  AND tags @> ARRAY['system:chat-link']::text[]
 				`;
-				const [subscription] = await tx<{
-					channel_id: string;
-					connection_id: number;
-				}>`
-					SELECT channel_id, connection_id
-					FROM behavior_channel_subscriptions
-					WHERE organization_id = ${org.id}
-				`;
 				const [legacy] = await tx<{ name: string | null }>`
 					SELECT to_regclass('public.agent_channel_bindings')::text AS name
 				`;
+				const [compatView] = await tx<{ name: string | null }>`
+					SELECT to_regclass('public.behavior_channel_subscriptions')::text AS name
+				`;
 				captured = {
 					legacyTable: legacy.name,
+					compatView: compatView.name,
 					triggers: behavior.triggers,
 					tagged: behavior.tagged,
 					executionConfig: behavior.execution_config,
-					channelId: subscription.channel_id,
-					connectionId: Number(subscription.connection_id),
 				};
 				throw new Rollback();
 			});
@@ -158,6 +142,7 @@ describe("Behavior channel-subscription migration", () => {
 
 		expect(captured).toEqual({
 			legacyTable: null,
+			compatView: null,
 			triggers: [
 				{
 					kind: "event",
@@ -176,53 +161,6 @@ describe("Behavior channel-subscription migration", () => {
 			],
 			tagged: true,
 			executionConfig: { model: "anthropic/claude-sonnet" },
-			channelId: "slack:C-MIGRATION",
-			connectionId: connection.id,
 		});
-	});
-
-	it("collapses duplicate channel Behaviors when restoring the unique legacy table", async () => {
-		const { org, user } = await seedOwnerContext();
-		const agent = await createTestAgent({
-			organizationId: org.id,
-			ownerUserId: user.id,
-			agentId: "rollback-agent",
-		});
-		const connection = await createTestConnection({
-			organization_id: org.id,
-			connector_key: "slack",
-			created_by: user.id,
-			slug: "slackinst-rollback",
-		});
-		for (let index = 0; index < 2; index++) {
-			await createTestBehaviorSubscription({
-				organizationId: org.id,
-				agentId: agent.agentId,
-				connectionId: connection.id,
-				channelId: "slack:C-ROLLBACK",
-				configuredBy: user.id,
-			});
-		}
-
-		const sql = getDb();
-		let restoredCount = 0;
-		try {
-			await sql.begin(async (tx: typeof sql) => {
-				await tx.unsafe(loadMigrationDownSection());
-				const [row] = await tx<{ count: number }>`
-					SELECT count(*)::integer AS count
-					FROM agent_channel_bindings
-					WHERE organization_id = ${org.id}
-					  AND connection_id = ${connection.id}
-					  AND channel_id = 'slack:C-ROLLBACK'
-				`;
-				restoredCount = row.count;
-				throw new Rollback();
-			});
-		} catch (error) {
-			if (!(error instanceof Rollback)) throw error;
-		}
-
-		expect(restoredCount).toBe(1);
 	});
 });

@@ -288,6 +288,77 @@ describe("manage_schedules wake_agent chat delivery", () => {
     expect(rows[0].delivery_context.connectionId).toBe("slackinst-real");
   });
 
+  test("does not authorize a schedule through another connection's matching channel Behavior", async () => {
+    await seedChatConnection({
+      id: "slackinst-target",
+      agentId: null,
+      externalTenantId: "T-real",
+    });
+    await seedChatConnection({
+      id: "slackinst-other",
+      agentId: null,
+      externalTenantId: "T-other",
+    });
+
+    await createTestBehaviorSubscription({
+      organizationId: ORG,
+      agentId: AGENT,
+      connectionSlug: runtimeConnectionIdToSlug("slackinst-other"),
+      platform: "slack",
+      channelId: "C-real",
+      teamId: "T-other",
+      configuredBy: USER,
+    });
+
+    const wrongConnection = await manageSchedules(
+      {
+        action: "create",
+        description: "wrong connection binding",
+        run_at: new Date(Date.now() + 60_000).toISOString(),
+        payload: { type: "wake_agent", agent_id: AGENT, prompt: "wake up" },
+      },
+      {} as any,
+      ctx({
+        platform: "slack",
+        connectionId: "slackinst-target",
+        channelId: "C-real",
+        conversationId: "slack:C-real:123",
+        teamId: "T-real",
+        userId: USER,
+      }),
+    );
+    expect(wrongConnection.error).toMatch(/channel is not bound/);
+
+    await createTestBehaviorSubscription({
+      organizationId: ORG,
+      agentId: AGENT,
+      connectionSlug: runtimeConnectionIdToSlug("slackinst-target"),
+      platform: "slack",
+      channelId: "C-real",
+      teamId: "T-real",
+      configuredBy: USER,
+    });
+
+    const targetConnection = await manageSchedules(
+      {
+        action: "create",
+        description: "target connection binding",
+        run_at: new Date(Date.now() + 60_000).toISOString(),
+        payload: { type: "wake_agent", agent_id: AGENT, prompt: "wake up" },
+      },
+      {} as any,
+      ctx({
+        platform: "slack",
+        connectionId: "slackinst-target",
+        channelId: "C-real",
+        conversationId: "slack:C-real:123",
+        teamId: "T-real",
+        userId: USER,
+      }),
+    );
+    expect(targetConnection.error).toBeUndefined();
+  });
+
   test("update rejects an empty cron but still clears the cadence on null", async () => {
     const created = await manageSchedules(
       {

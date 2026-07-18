@@ -130,9 +130,26 @@ async function hasChannelSubscription(
 ): Promise<boolean> {
 	const rows = await sql`
 		SELECT 1
-		FROM behavior_channel_subscriptions
-		WHERE connection_id = ${connectionId}::bigint
-		  AND channel_id = ${channelId}
+		FROM watchers w
+		CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+		JOIN connections c
+		  ON c.id = CASE
+			WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+				THEN (trigger->>'connection_id')::bigint
+			ELSE NULL
+		  END
+		 AND c.connector_key = trigger->>'connector_key'
+		 AND c.deleted_at IS NULL
+		WHERE w.status = 'active'
+		  AND trigger->>'kind' = 'event'
+		  AND jsonb_typeof(trigger->'connection_id') = 'number'
+		  AND trigger->'event_types' ? 'message.created'
+		  AND jsonb_typeof(trigger->'match') = 'object'
+		  AND c.id = ${connectionId}::bigint
+		  AND COALESCE(
+			NULLIF(trigger->'match'->>'channel_key', ''),
+			(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+		  ) = ${channelId}
 		LIMIT 1
 	`;
 	return rows.length > 0;
@@ -155,7 +172,42 @@ export class BehaviorSubscriptionService {
 		const rows = crossOrg
 			? await sql`
 				SELECT s.*
-				FROM behavior_channel_subscriptions s
+				FROM (
+					SELECT
+						w.id AS behavior_id,
+						w.organization_id,
+						w.agent_id,
+						trigger->>'connector_key' AS platform,
+						COALESCE(
+							NULLIF(trigger->'match'->>'channel_key', ''),
+							(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+						) AS channel_id,
+						COALESCE(
+							NULLIF(trigger->'match'->>'team_id', ''),
+							c.external_tenant_id,
+							c.config->'chatMetadata'->>'teamId'
+						) AS team_id,
+						c.id AS connection_id,
+						NULLIF(w.execution_config->>'model', '') AS model,
+						w.created_at,
+						w.updated_at
+					FROM watchers w
+					CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+					JOIN connections c
+					  ON c.id = CASE
+						WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+							THEN (trigger->>'connection_id')::bigint
+						ELSE NULL
+					  END
+					 AND c.connector_key = trigger->>'connector_key'
+					 AND c.deleted_at IS NULL
+					WHERE w.status = 'active'
+					  AND trigger->>'kind' = 'event'
+					  AND jsonb_typeof(trigger->'connection_id') = 'number'
+					  AND trigger->'event_types' ? 'message.created'
+					  AND jsonb_typeof(trigger->'match') = 'object'
+					  AND NULLIF(trigger->'match'->>'channel_id', '') IS NOT NULL
+				) s
 				JOIN connections c ON c.id = s.connection_id
 				WHERE c.organization_id = ${connectionOrganizationId}
 				  AND c.slug = ${slug}
@@ -169,7 +221,42 @@ export class BehaviorSubscriptionService {
 			`
 			: await sql`
 				SELECT s.*
-				FROM behavior_channel_subscriptions s
+				FROM (
+					SELECT
+						w.id AS behavior_id,
+						w.organization_id,
+						w.agent_id,
+						trigger->>'connector_key' AS platform,
+						COALESCE(
+							NULLIF(trigger->'match'->>'channel_key', ''),
+							(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+						) AS channel_id,
+						COALESCE(
+							NULLIF(trigger->'match'->>'team_id', ''),
+							c.external_tenant_id,
+							c.config->'chatMetadata'->>'teamId'
+						) AS team_id,
+						c.id AS connection_id,
+						NULLIF(w.execution_config->>'model', '') AS model,
+						w.created_at,
+						w.updated_at
+					FROM watchers w
+					CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+					JOIN connections c
+					  ON c.id = CASE
+						WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+							THEN (trigger->>'connection_id')::bigint
+						ELSE NULL
+					  END
+					 AND c.connector_key = trigger->>'connector_key'
+					 AND c.deleted_at IS NULL
+					WHERE w.status = 'active'
+					  AND trigger->>'kind' = 'event'
+					  AND jsonb_typeof(trigger->'connection_id') = 'number'
+					  AND trigger->'event_types' ? 'message.created'
+					  AND jsonb_typeof(trigger->'match') = 'object'
+					  AND NULLIF(trigger->'match'->>'channel_id', '') IS NOT NULL
+				) s
 				JOIN connections c ON c.id = s.connection_id
 				WHERE c.organization_id = ${connectionOrganizationId}
 				  AND c.slug = ${slug}
@@ -232,11 +319,14 @@ export class BehaviorSubscriptionService {
 			  AND c.deleted_at IS NULL
 			  AND EXISTS (
 				SELECT 1
-				FROM behavior_channel_subscriptions s
-				WHERE s.behavior_id = w.id
-				  AND s.connection_id = c.id
-				  AND split_part(s.channel_id, ':', 2) = ${native}
-				  AND (s.team_id IS NULL OR s.team_id = '')
+				FROM jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) existing
+				WHERE existing->>'kind' = 'event'
+				  AND existing->>'connector_key' = c.connector_key
+				  AND jsonb_typeof(existing->'connection_id') = 'number'
+				  AND (existing->>'connection_id')::bigint = c.id
+				  AND existing->'event_types' ? 'message.created'
+				  AND existing->'match'->>'channel_id' = ${native}
+				  AND COALESCE(existing->'match'->>'team_id', '') = ''
 			  )
 		`;
 	}
@@ -292,14 +382,19 @@ export class BehaviorSubscriptionService {
 			}
 
 			const existing = await tx<{ behavior_id: number }>`
-				SELECT s.behavior_id
-				FROM behavior_channel_subscriptions s
-				JOIN watchers w ON w.id = s.behavior_id
-				WHERE s.organization_id = ${organizationId}
-				  AND s.connection_id = ${options.connectionId}
-				  AND split_part(s.channel_id, ':', 2) = ${nativeChannelId(platform, channelId)}
+				SELECT w.id AS behavior_id
+				FROM watchers w
+				CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+				WHERE w.status = 'active'
+				  AND w.organization_id = ${organizationId}
+				  AND trigger->>'kind' = 'event'
+				  AND trigger->>'connector_key' = ${platform}
+				  AND jsonb_typeof(trigger->'connection_id') = 'number'
+				  AND (trigger->>'connection_id')::bigint = ${options.connectionId}
+				  AND trigger->'event_types' ? 'message.created'
+				  AND trigger->'match'->>'channel_id' = ${nativeChannelId(platform, channelId)}
 				  AND w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[]
-				ORDER BY s.updated_at DESC, s.behavior_id DESC
+				ORDER BY w.updated_at DESC, w.id DESC
 				LIMIT 1
 				FOR UPDATE OF w
 			`;
@@ -389,18 +484,26 @@ export class BehaviorSubscriptionService {
 			"BehaviorSubscriptionService.archiveChatBehavior",
 		);
 		const rows = await sql<{ id: number; platform: string }>`
-			UPDATE watchers w
-			SET status = 'archived', updated_at = current_timestamp
-			FROM behavior_channel_subscriptions s
-			WHERE s.behavior_id = w.id
-			  AND s.organization_id = ${orgId}
-			  AND s.agent_id = ${agentId}
-			  AND s.connection_id = ${connectionId}
-			  AND split_part(s.channel_id, ':', 2) = ${nativeChannelIdFromAny(channelId)}
+			SELECT w.id, trigger->>'connector_key' AS platform
+			FROM watchers w
+			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+			WHERE w.status = 'active'
+			  AND w.organization_id = ${orgId}
+			  AND w.agent_id = ${agentId}
+			  AND trigger->>'kind' = 'event'
+			  AND jsonb_typeof(trigger->'connection_id') = 'number'
+			  AND (trigger->>'connection_id')::bigint = ${connectionId}
+			  AND trigger->'event_types' ? 'message.created'
+			  AND trigger->'match'->>'channel_id' = ${nativeChannelIdFromAny(channelId)}
 			  AND w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[]
-			RETURNING w.id, s.platform
+			FOR UPDATE OF w
 		`;
 		if (rows.length === 0) return false;
+		await sql`
+			UPDATE watchers
+			SET status = 'archived', updated_at = current_timestamp
+			WHERE id = ANY(${sql.array(rows.map((row) => row.id), "int4")})
+		`;
 
 		const archived = rows[0];
 		if (!archived) return false;
@@ -432,9 +535,44 @@ export class BehaviorSubscriptionService {
 		);
 		const rows = await sql`
 			SELECT *
-			FROM behavior_channel_subscriptions
-			WHERE agent_id = ${agentId}
-			  AND organization_id = ${orgId}
+			FROM (
+				SELECT
+					w.id AS behavior_id,
+					w.organization_id,
+					w.agent_id,
+					trigger->>'connector_key' AS platform,
+					COALESCE(
+						NULLIF(trigger->'match'->>'channel_key', ''),
+						(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+					) AS channel_id,
+					COALESCE(
+						NULLIF(trigger->'match'->>'team_id', ''),
+						c.external_tenant_id,
+						c.config->'chatMetadata'->>'teamId'
+					) AS team_id,
+					c.id AS connection_id,
+					NULLIF(w.execution_config->>'model', '') AS model,
+					w.created_at,
+					w.updated_at
+				FROM watchers w
+				CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+				JOIN connections c
+				  ON c.id = CASE
+					WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+						THEN (trigger->>'connection_id')::bigint
+					ELSE NULL
+				  END
+				 AND c.connector_key = trigger->>'connector_key'
+				 AND c.deleted_at IS NULL
+				WHERE w.status = 'active'
+				  AND trigger->>'kind' = 'event'
+				  AND jsonb_typeof(trigger->'connection_id') = 'number'
+				  AND trigger->'event_types' ? 'message.created'
+				  AND jsonb_typeof(trigger->'match') = 'object'
+				  AND NULLIF(trigger->'match'->>'channel_id', '') IS NOT NULL
+			) s
+			WHERE s.agent_id = ${agentId}
+			  AND s.organization_id = ${orgId}
 			ORDER BY created_at, behavior_id
 		`;
 		return rows.map(rowToSubscription);
@@ -450,18 +588,36 @@ export class BehaviorSubscriptionService {
 			"BehaviorSubscriptionService.archiveAllChatBehaviors",
 		);
 		const rows = await sql<{
+			behavior_id: number;
 			connection_id: string;
 			channel_id: string;
 		}>`
-			UPDATE watchers w
-			SET status = 'archived', updated_at = current_timestamp
-			FROM behavior_channel_subscriptions s
-			WHERE s.behavior_id = w.id
-			  AND s.organization_id = ${orgId}
-			  AND s.agent_id = ${agentId}
+			SELECT
+				w.id AS behavior_id,
+				(trigger->>'connection_id')::text AS connection_id,
+				COALESCE(
+					NULLIF(trigger->'match'->>'channel_key', ''),
+					(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+				) AS channel_id
+			FROM watchers w
+			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+			WHERE w.status = 'active'
+			  AND w.organization_id = ${orgId}
+			  AND w.agent_id = ${agentId}
+			  AND trigger->>'kind' = 'event'
+			  AND jsonb_typeof(trigger->'connection_id') = 'number'
+			  AND trigger->'event_types' ? 'message.created'
+			  AND trigger->'match'->>'channel_id' IS NOT NULL
 			  AND w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[]
-			RETURNING s.connection_id::text AS connection_id, s.channel_id
+			FOR UPDATE OF w
 		`;
+		if (rows.length > 0) {
+			await sql`
+				UPDATE watchers
+				SET status = 'archived', updated_at = current_timestamp
+				WHERE id = ANY(${sql.array(rows.map((row) => row.behavior_id), "int4")})
+			`;
+		}
 		for (const row of rows) {
 			if (
 				!(await hasChannelSubscription(sql, row.connection_id, row.channel_id))

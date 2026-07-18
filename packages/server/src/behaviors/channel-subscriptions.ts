@@ -64,9 +64,26 @@ export async function syncBehaviorChannelFeeds(args: {
 		if (afterKeys.has(key(ref))) continue;
 		const remaining = await args.sql`
 			SELECT 1
-			FROM behavior_channel_subscriptions
-			WHERE connection_id = ${ref.connectionId}
-			  AND channel_id = ${ref.channelKey}
+			FROM watchers w
+			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+			JOIN connections c
+			  ON c.id = CASE
+				WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+					THEN (trigger->>'connection_id')::bigint
+				ELSE NULL
+			  END
+			 AND c.connector_key = trigger->>'connector_key'
+			 AND c.deleted_at IS NULL
+			WHERE w.status = 'active'
+			  AND trigger->>'kind' = 'event'
+			  AND jsonb_typeof(trigger->'connection_id') = 'number'
+			  AND trigger->'event_types' ? 'message.created'
+			  AND jsonb_typeof(trigger->'match') = 'object'
+			  AND c.id = ${ref.connectionId}
+			  AND COALESCE(
+				NULLIF(trigger->'match'->>'channel_key', ''),
+				(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+			  ) = ${ref.channelKey}
 			LIMIT 1
 		`;
 		if (remaining.length > 0) continue;

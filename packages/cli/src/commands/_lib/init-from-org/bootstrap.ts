@@ -558,7 +558,6 @@ function emitBehavior(
   ];
   if (w.name) fields.push(`name: ${str(w.name)}`);
   if (w.description) fields.push(`description: ${str(w.description)}`);
-  if (w.schedule) fields.push(`schedule: ${str(w.schedule)}`);
   if (w.triggers?.length) {
     const triggers = w.triggers.map((trigger) => {
       if (trigger.kind !== "event" || trigger.connection_id == null) {

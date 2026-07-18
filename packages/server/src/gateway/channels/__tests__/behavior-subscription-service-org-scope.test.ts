@@ -10,6 +10,7 @@ import {
 	addUserToOrganization,
 	createTestUser,
 } from "../../../__tests__/setup/test-fixtures.js";
+import { listTestBehaviorSubscriptions } from "../../../__tests__/setup/behavior-subscriptions.js";
 import { getDb } from "../../../db/client.js";
 import {
 	ensureDbForGatewayTests,
@@ -79,10 +80,10 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 			(await svc.resolveForConnection("a2", CHANNEL, ORG_A))?.agentId,
 		).toBe("agent-a2");
 
-		const rows = await getDb()`
-      SELECT connection_id FROM behavior_channel_subscriptions
-      WHERE organization_id = ${ORG_A} AND channel_id = ${CHANNEL}
-    `;
+		const rows = await listTestBehaviorSubscriptions({
+			organizationId: ORG_A,
+			channelId: CHANNEL,
+		});
 		expect(rows).toHaveLength(2);
 	});
 
@@ -100,12 +101,12 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 		expect((await svc.resolveForConnection("a", CHANNEL, ORG_A))?.agentId).toBe(
 			"agent-a2",
 		);
-		const rows = await getDb()`
-      SELECT 1 FROM behavior_channel_subscriptions
-      WHERE organization_id = ${ORG_A}
-        AND connection_id = ${connectionA}
-        AND channel_id = ${CHANNEL}
-    `;
+		const rows = (
+			await listTestBehaviorSubscriptions({
+				organizationId: ORG_A,
+				channelId: CHANNEL,
+			})
+		).filter((row) => Number(row.connection_id) === connectionA);
 		expect(rows).toHaveLength(1);
 	});
 

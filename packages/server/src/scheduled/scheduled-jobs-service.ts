@@ -72,7 +72,7 @@ export async function validateDeliveryAuthorization(params: {
   const sql = getDb();
   const { organizationId, agentId, delivery } = params;
   const connectionRows = (await sql`
-    SELECT connector_key, agent_id, status
+    SELECT id, connector_key, agent_id, status
     FROM connections
     WHERE organization_id = ${organizationId}
       AND slug = ${runtimeConnectionIdToSlug(delivery.connectionId)}
@@ -80,6 +80,7 @@ export async function validateDeliveryAuthorization(params: {
       AND deleted_at IS NULL
     LIMIT 1
   `) as unknown as Array<{
+    id: number;
     connector_key: string;
     agent_id: string | null;
     status: string;
@@ -101,20 +102,78 @@ export async function validateDeliveryAuthorization(params: {
   const bindingRows = delivery.teamId
     ? await sql`
         SELECT agent_id
-        FROM behavior_channel_subscriptions
-        WHERE organization_id = ${organizationId}
-          AND platform = ${delivery.platform}
-          AND channel_id = ${delivery.channelId}
-          AND team_id = ${delivery.teamId}
+        FROM (
+          SELECT
+            w.agent_id,
+            COALESCE(
+              NULLIF(trigger->'match'->>'team_id', ''),
+              c.external_tenant_id,
+              c.config->'chatMetadata'->>'teamId'
+            ) AS team_id
+          FROM watchers w
+          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+          JOIN connections c
+            ON c.id = CASE
+              WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+                THEN (trigger->>'connection_id')::bigint
+              ELSE NULL
+            END
+           AND c.connector_key = trigger->>'connector_key'
+           AND c.deleted_at IS NULL
+          WHERE w.status = 'active'
+            AND w.organization_id = ${organizationId}
+            AND trigger->>'kind' = 'event'
+            AND trigger->>'connector_key' = ${delivery.platform}
+            AND jsonb_typeof(trigger->'connection_id') = 'number'
+            AND c.id = ${connection.id}
+            AND trigger->'event_types' ? 'message.created'
+            AND (
+              COALESCE(
+                NULLIF(trigger->'match'->>'channel_key', ''),
+                (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+              ) = ${delivery.channelId}
+              OR trigger->'match'->>'channel_id' = ${delivery.channelId}
+            )
+        ) subscription
+        WHERE team_id = ${delivery.teamId}
         LIMIT 1
       `
     : await sql`
         SELECT agent_id
-        FROM behavior_channel_subscriptions
-        WHERE organization_id = ${organizationId}
-          AND platform = ${delivery.platform}
-          AND channel_id = ${delivery.channelId}
-          AND team_id IS NULL
+        FROM (
+          SELECT
+            w.agent_id,
+            COALESCE(
+              NULLIF(trigger->'match'->>'team_id', ''),
+              c.external_tenant_id,
+              c.config->'chatMetadata'->>'teamId'
+            ) AS team_id
+          FROM watchers w
+          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+          JOIN connections c
+            ON c.id = CASE
+              WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+                THEN (trigger->>'connection_id')::bigint
+              ELSE NULL
+            END
+           AND c.connector_key = trigger->>'connector_key'
+           AND c.deleted_at IS NULL
+          WHERE w.status = 'active'
+            AND w.organization_id = ${organizationId}
+            AND trigger->>'kind' = 'event'
+            AND trigger->>'connector_key' = ${delivery.platform}
+            AND jsonb_typeof(trigger->'connection_id') = 'number'
+            AND c.id = ${connection.id}
+            AND trigger->'event_types' ? 'message.created'
+            AND (
+              COALESCE(
+                NULLIF(trigger->'match'->>'channel_key', ''),
+                (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+              ) = ${delivery.channelId}
+              OR trigger->'match'->>'channel_id' = ${delivery.channelId}
+            )
+        ) subscription
+        WHERE team_id IS NULL
         LIMIT 1
       `;
   const binding = (bindingRows as unknown as Array<{ agent_id: string }>)[0];

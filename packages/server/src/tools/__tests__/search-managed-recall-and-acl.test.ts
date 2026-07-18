@@ -14,6 +14,7 @@
 import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTestDatabase, getTestDb } from "../../__tests__/setup/test-db";
+import { listTestBehaviorSubscriptions } from "../../__tests__/setup/behavior-subscriptions";
 import {
   addUserToOrganization,
   createTestAgent,
@@ -117,11 +118,14 @@ describe("managed-install recall (Item 2) + author attribution surfacing (Item 3
 
     // The fix's load-bearing assertion: the binding is now linked to the managed
     // connection (this is what makes branch (A) resolve a NULL-agent install).
+    const [subscription] = await listTestBehaviorSubscriptions({
+      organizationId: org.id,
+      channelId: "slack:CMANAGED",
+    });
     const [binding] = (await sql`
-      SELECT b.connection_id, c.slug
-      FROM behavior_channel_subscriptions b
-      JOIN connections c ON c.id = b.connection_id
-      WHERE b.organization_id = ${org.id} AND b.channel_id = 'slack:CMANAGED'
+      SELECT id AS connection_id, slug
+      FROM connections
+      WHERE id = ${subscription?.connection_id ?? null}
     `) as Array<{ connection_id: number; slug: string }>;
     expect(binding).toBeDefined();
     expect(binding.slug).toBe(MANAGED_CONN);

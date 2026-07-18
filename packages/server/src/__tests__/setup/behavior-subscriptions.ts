@@ -127,3 +127,70 @@ export async function archiveTestBehaviorSubscriptions(opts: {
 		  )
 	`;
 }
+
+export interface TestBehaviorSubscription {
+	behavior_id: number;
+	organization_id: string;
+	agent_id: string;
+	platform: string;
+	channel_id: string;
+	team_id: string | null;
+	connection_id: number;
+}
+
+export async function listTestBehaviorSubscriptions(filters?: {
+	organizationId?: string;
+	platform?: string;
+	channelId?: string;
+	teamId?: string | null;
+}): Promise<TestBehaviorSubscription[]> {
+	const sql = getTestDb();
+	return await sql<TestBehaviorSubscription>`
+		SELECT *
+		FROM (
+			SELECT
+				w.id AS behavior_id,
+				w.organization_id,
+				w.agent_id,
+				trigger->>'connector_key' AS platform,
+				COALESCE(
+					NULLIF(trigger->'match'->>'channel_key', ''),
+					(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+				) AS channel_id,
+				COALESCE(
+					NULLIF(trigger->'match'->>'team_id', ''),
+					c.external_tenant_id,
+					c.config->'chatMetadata'->>'teamId'
+				) AS team_id,
+				c.id AS connection_id
+			FROM watchers w
+			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+			JOIN connections c
+			  ON c.id = CASE
+				WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+					THEN (trigger->>'connection_id')::bigint
+				ELSE NULL
+			  END
+			 AND c.connector_key = trigger->>'connector_key'
+			 AND c.deleted_at IS NULL
+			WHERE w.status = 'active'
+			  AND trigger->>'kind' = 'event'
+			  AND jsonb_typeof(trigger->'connection_id') = 'number'
+			  AND trigger->'event_types' ? 'message.created'
+			  AND jsonb_typeof(trigger->'match') = 'object'
+			  AND NULLIF(trigger->'match'->>'channel_id', '') IS NOT NULL
+		) subscriptions
+		WHERE TRUE
+		  ${filters?.organizationId ? sql`AND organization_id = ${filters.organizationId}` : sql``}
+		  ${filters?.platform ? sql`AND platform = ${filters.platform}` : sql``}
+		  ${filters?.channelId ? sql`AND channel_id = ${filters.channelId}` : sql``}
+		  ${
+				filters?.teamId !== undefined
+					? filters.teamId === null
+						? sql`AND team_id IS NULL`
+						: sql`AND team_id = ${filters.teamId}`
+					: sql``
+			}
+		ORDER BY behavior_id
+	`;
+}

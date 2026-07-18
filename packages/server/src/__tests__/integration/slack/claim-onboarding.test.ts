@@ -109,8 +109,22 @@ async function bindingsForBuilder(orgId: string): Promise<
 > {
   return (await getTestDb()`
     SELECT agent_id, channel_id, platform
-    FROM behavior_channel_subscriptions
-    WHERE organization_id = ${orgId} AND agent_id = ${BUILDER_AGENT_ID}
+    FROM (
+      SELECT
+        w.agent_id,
+        trigger->>'connector_key' AS platform,
+        COALESCE(
+          NULLIF(trigger->'match'->>'channel_key', ''),
+          (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+        ) AS channel_id
+      FROM watchers w
+      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+      WHERE w.status = 'active'
+        AND w.organization_id = ${orgId}
+        AND w.agent_id = ${BUILDER_AGENT_ID}
+        AND trigger->>'kind' = 'event'
+        AND trigger->'event_types' ? 'message.created'
+    ) subscriptions
   `) as Array<{ agent_id: string; channel_id: string; platform: string }>;
 }
 

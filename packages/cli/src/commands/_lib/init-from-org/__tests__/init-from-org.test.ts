@@ -132,6 +132,13 @@ function fullOrgRoutes(): Record<string, () => unknown> {
               active_run: "queue",
               output: "silent",
             },
+            {
+              kind: "schedule",
+              cron: "0 */12 * * *",
+              execution: "window",
+              active_run: "coalesce",
+              skip_if_unchanged: true,
+            },
           ],
           sources: [{ name: "content", query: "SELECT * FROM events" }],
           tags: ["sales", "health"],

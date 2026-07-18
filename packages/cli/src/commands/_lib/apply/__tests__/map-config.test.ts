@@ -371,7 +371,6 @@ describe("mapProjectToDesiredState", () => {
       slug: "health",
       prompt: "assess",
       sources: { accounts: "SELECT 1" },
-      schedule: "0 */12 * * *",
       notification: { channel: "both", priority: "high" },
       minCooldownSeconds: 1800,
       triggers: [
@@ -385,6 +384,7 @@ describe("mapProjectToDesiredState", () => {
           output: "silent",
           skip_if_unchanged: true,
         },
+        { kind: "schedule", cron: "0 */12 * * *" },
       ],
     });
     const state = mapProjectToDesiredState(
@@ -400,6 +400,7 @@ describe("mapProjectToDesiredState", () => {
     expect(dw?.notificationChannel).toBe("both");
     expect(dw?.notificationPriority).toBe("high");
     expect(dw?.minCooldownSeconds).toBe(1800);
+    expect(dw?.schedule).toBe("0 */12 * * *");
     expect(dw?.triggers?.[0]).toMatchObject({
       connector_key: "github",
       connectionSlug: "github-main",
@@ -683,13 +684,31 @@ describe("mapProjectToDesiredState", () => {
       agent: crm,
       slug: "w",
       prompt: "p",
-      schedule: "*/30 * * * * *",
+      triggers: [{ kind: "schedule", cron: "*/30 * * * * *" }],
     });
     expect(() =>
       mapProjectToDesiredState(
         defineConfig({ agents: [crm], behaviors: [watcher] })
       )
     ).toThrow(/too frequent/);
+  });
+
+  test("rejects multiple schedule triggers before apply", () => {
+    const crm = defineAgent({ id: "crm" });
+    const behavior = defineBehavior({
+      agent: crm,
+      slug: "w",
+      prompt: "p",
+      triggers: [
+        { kind: "schedule", cron: "0 8 * * *" },
+        { kind: "schedule", cron: "0 9 * * *" },
+      ],
+    });
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({ agents: [crm], behaviors: [behavior] })
+      )
+    ).toThrow(/more than one schedule trigger/i);
   });
 
   test("rejects credentials on an interactive auth profile", () => {

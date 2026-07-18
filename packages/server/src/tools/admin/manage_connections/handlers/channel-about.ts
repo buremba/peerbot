@@ -30,11 +30,34 @@ export async function handleSetChannelAbout(
 
 	const subscribedTeam = await sql<{ team_id: string | null }>`
 		SELECT team_id
-		FROM behavior_channel_subscriptions
-		WHERE organization_id = ${organizationId}
-		  AND connection_id = ${connection.id}
-		  AND channel_id = ${args.channel_id}
-		  AND team_id IS NOT NULL
+		FROM (
+			SELECT COALESCE(
+				NULLIF(trigger->'match'->>'team_id', ''),
+				c.external_tenant_id,
+				c.config->'chatMetadata'->>'teamId'
+			) AS team_id
+			FROM watchers w
+			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+			JOIN connections c
+			  ON c.id = CASE
+				WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+					THEN (trigger->>'connection_id')::bigint
+				ELSE NULL
+			  END
+			 AND c.connector_key = trigger->>'connector_key'
+			 AND c.deleted_at IS NULL
+			WHERE w.status = 'active'
+			  AND w.organization_id = ${organizationId}
+			  AND trigger->>'kind' = 'event'
+			  AND jsonb_typeof(trigger->'connection_id') = 'number'
+			  AND c.id = ${connection.id}
+			  AND trigger->'event_types' ? 'message.created'
+			  AND COALESCE(
+				NULLIF(trigger->'match'->>'channel_key', ''),
+				(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+			  ) = ${args.channel_id}
+		) subscribed
+		WHERE team_id IS NOT NULL
 		LIMIT 1
 	`;
 	const teamId =

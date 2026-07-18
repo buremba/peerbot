@@ -92,9 +92,9 @@ decides reply‑vs‑silence and must be per‑context.
   schedule without creating an agent run or LLM call. Without the flag, the
   schedule always runs.
 - **The old binding storage is gone.** The migration backfills linked chat
-  bindings into Event Behaviors, drops `agent_channel_bindings`, and exposes a
-  read-only `behavior_channel_subscriptions` compatibility projection for
-  internal routing/ACL readers. It is a view, not a second write model.
+  bindings into Event Behaviors and drops `agent_channel_bindings`. Internal
+  routing and ACL readers project active message triggers directly from
+  `watchers.triggers`; there is no compatibility view or second write model.
 - **Runs / Activity** use the existing `runs`, watcher windows, and chat
   transcript paths. Event turns finish with their normal response and do not
   advance a cron schedule.
@@ -232,8 +232,8 @@ new engine or admin tool:
   carry normalized `behavior_signals`.
 - Public API, generated client, MCP registry, CLI config/apply/init, and UI all
   use the same trigger schema.
-- Two migrations alter/reuse existing storage and create the read-only
-  subscription projection; no new state table is introduced.
+- Two migrations alter/reuse existing storage; no subscription view or new
+  state table is introduced.
 - Self-wake for future workflows remains a capability grant over
   `manage_schedules`, not a new trigger engine.
 

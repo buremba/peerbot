@@ -583,31 +583,30 @@ function normalizeKeyingConfig(
 
 function mapBehavior(behavior: Behavior): DesiredWatcher {
   const watcher = behavior;
-  if (watcher.schedule) {
-    const err = cronError(watcher.schedule);
-    if (err) {
-      throw new ValidationError(
-        `watcher "${watcher.slug}" has an invalid schedule "${watcher.schedule}": ${err}`
-      );
-    }
-  }
   const sources = watcher.sources
     ? Object.entries(watcher.sources).map(([name, query]) => ({ name, query }))
     : undefined;
+  let schedule: string | undefined;
   const triggers = watcher.triggers?.map((trigger) => {
     if (trigger.kind === "schedule") {
+      if (schedule !== undefined) {
+        throw new ValidationError(
+          `Behavior "${watcher.slug}" has more than one schedule trigger`
+        );
+      }
       const err = cronError(trigger.cron);
       if (err) {
         throw new ValidationError(
           `Behavior "${watcher.slug}" has an invalid schedule trigger "${trigger.cron}": ${err}`
         );
       }
+      schedule = trigger.cron;
       return trigger;
     }
     const { connection, ...eventTrigger } = trigger;
     if (connection !== undefined && trigger.connection_id !== undefined) {
       throw new ValidationError(
-        `watcher "${watcher.slug}" trigger must use either connection or connection_id, not both`
+        `Behavior "${watcher.slug}" trigger must use either connection or connection_id, not both`
       );
     }
     if (connection === undefined) return eventTrigger;
@@ -616,7 +615,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
       connectorKey(connection.connector) !== trigger.connector_key
     ) {
       throw new ValidationError(
-        `watcher "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${connection.slug}" uses ${connectorKey(connection.connector)}`
+        `Behavior "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${connection.slug}" uses ${connectorKey(connection.connector)}`
       );
     }
     const connectionSlug =
@@ -632,7 +631,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
       : {}),
     ...(watcher.name ? { name: watcher.name } : {}),
     ...(watcher.description ? { description: watcher.description } : {}),
-    ...(watcher.schedule ? { schedule: watcher.schedule } : {}),
+    ...(schedule ? { schedule } : {}),
     ...(triggers ? { triggers } : {}),
     ...(sources ? { sources } : {}),
     ...(watcher.notification?.channel

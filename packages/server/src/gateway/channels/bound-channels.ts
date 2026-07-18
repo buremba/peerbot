@@ -70,6 +70,40 @@ export async function resolveBoundChannelRows(
   // settings/metadata → `config.{settings,chatMetadata}`, teamId →
   // `external_tenant_id`. Chat rows carry `credential_mode IS NOT NULL`.
   return (await sql`
+    WITH active_message_subscriptions AS (
+      SELECT
+        w.id AS behavior_id,
+        w.organization_id,
+        w.agent_id,
+        trigger->>'connector_key' AS platform,
+        COALESCE(
+          NULLIF(trigger->'match'->>'channel_key', ''),
+          (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+        ) AS channel_id,
+        COALESCE(
+          NULLIF(trigger->'match'->>'team_id', ''),
+          c.external_tenant_id,
+          c.config->'chatMetadata'->>'teamId'
+        ) AS team_id,
+        c.id AS connection_id,
+        w.created_at
+      FROM watchers w
+      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+      JOIN connections c
+        ON c.id = CASE
+          WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+            THEN (trigger->>'connection_id')::bigint
+          ELSE NULL
+        END
+       AND c.connector_key = trigger->>'connector_key'
+       AND c.deleted_at IS NULL
+      WHERE w.status = 'active'
+        AND trigger->>'kind' = 'event'
+        AND jsonb_typeof(trigger->'connection_id') = 'number'
+        AND trigger->'event_types' ? 'message.created'
+        AND jsonb_typeof(trigger->'match') = 'object'
+        AND NULLIF(trigger->'match'->>'channel_id', '') IS NOT NULL
+    )
     SELECT id, platform, channel_id, team_id, created_at FROM (
       -- (A) the org's own connections. connection_id is the sole routing key.
       SELECT
@@ -77,7 +111,7 @@ export async function resolveBoundChannelRows(
           THEN substring(ac.slug from 11) ELSE ac.slug END AS id,
         ac.connector_key AS platform, b.channel_id, b.team_id, b.created_at
       FROM connections ac
-      JOIN behavior_channel_subscriptions b ON b.connection_id = ac.id
+      JOIN active_message_subscriptions b ON b.connection_id = ac.id
       WHERE ac.organization_id = ${organizationId}
         AND ac.status = 'active'
         AND ac.credential_mode IS NOT NULL
@@ -94,7 +128,7 @@ export async function resolveBoundChannelRows(
         CASE WHEN pc.slug LIKE 'agentconn-%'
           THEN substring(pc.slug from 11) ELSE pc.slug END AS id,
         pc.connector_key AS platform, b.channel_id, b.team_id, b.created_at
-      FROM behavior_channel_subscriptions b
+      FROM active_message_subscriptions b
       JOIN connections pc
         ON pc.id = b.connection_id
        AND pc.connector_key = b.platform
@@ -110,7 +144,7 @@ export async function resolveBoundChannelRows(
         AND NOT EXISTS (
           SELECT 1
           FROM connections own
-          JOIN behavior_channel_subscriptions ob ON ob.connection_id = own.id
+          JOIN active_message_subscriptions ob ON ob.connection_id = own.id
           WHERE own.organization_id = ${organizationId}
             AND own.status = 'active'
             AND own.credential_mode IS NOT NULL

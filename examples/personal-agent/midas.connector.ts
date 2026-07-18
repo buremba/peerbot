@@ -26,6 +26,9 @@ export interface MidasHolding {
   symbol: string;
   shares: number;
   price: number;
+  /** Average cost basis per share (Ort. Maliyet). */
+  avg_cost: number;
+  /** Mark-to-market position value (Pozisyon). */
   value: number;
   currency: "USD" | "TRY";
 }
@@ -98,53 +101,63 @@ export function isMidasAuthWall(url: string | null | undefined): boolean {
 }
 
 /**
- * Parse a money string for the given market locale.
+ * Parse a number as rendered by Atlas's Turkish UI.
  *
- * - US: `$1,234.56` → 1234.56 (comma thousands, dot decimal)
- * - TR: `₺1.234,56` → 1234.56 (dot thousands, comma decimal)
+ * Atlas uses European grouping for BOTH USD and TRY on the TR locale:
+ *   `$333,69` → 333.69
+ *   `$961.629,23` → 961629.23
+ *   `₺1.273.667,38` → 1273667.38
+ *   `95,257309547` → 95.257309547 (fractional shares)
+ *   `14.000` → 14000 (thousand-grouped whole shares)
+ *   `-$11.492,08(-%1,18)` → -11492.08 (trailing % annotation ignored)
  *
- * The original connector used a single `replace(/[^0-9.-]/g, '')` path which
- * mis-parsed TR amounts (`1.234,56` → `1.23456`).
+ * US-style `$1,234.56` is NOT used on this UI; do not strip commas as thousands.
  */
-export function parseLocaleAmount(
-  raw: string | null | undefined,
-  market: MidasMarket
-): number {
+export function parseAtlasAmount(raw: string | null | undefined): number {
   if (raw == null) return 0;
-  const s = String(raw).trim();
+  let s = String(raw).trim();
   if (!s) return 0;
 
-  if (market === "TR") {
-    // Drop currency symbols / letters / spaces; keep digits, separators, sign.
-    const cleaned = s.replace(/[^\d.,-]/g, "");
-    // Last comma is decimal; dots are thousands.
-    const normalized = cleaned.replace(/\./g, "").replace(",", ".");
-    const n = Number.parseFloat(normalized);
-    return Number.isFinite(n) ? n : 0;
+  // Drop parenthetical annotations: $40,86(%0,13) / -$11.492,08(-%1,18)
+  s = s.replace(/\([^)]*\)/g, "").trim();
+
+  // Optional leading sign after currency symbol: -$1.234,56 or $-1.234,56
+  const sign = /^-|^\$-|^₺-|^€-|^£-/.test(s.replace(/\s/g, "")) ? -1 : 1;
+
+  // Keep digits + separators only.
+  const num = s.replace(/[^\d.,]/g, "");
+  if (!num) return 0;
+
+  // European: dots = thousands, last comma = decimal (if present).
+  let normalized: string;
+  if (num.includes(",")) {
+    normalized = num.replace(/\./g, "").replace(",", ".");
+  } else if (/^\d{1,3}(\.\d{3})+$/.test(num)) {
+    // 14.000 / 1.273.667 — pure thousand groups, no decimal part.
+    normalized = num.replace(/\./g, "");
+  } else {
+    // Bare integer or single-dot decimal without grouping.
+    normalized = num;
   }
 
-  // US / default: drop everything except digits, dots, minus; strip commas.
-  const cleaned = s.replace(/,/g, "").replace(/[^\d.-]/g, "");
-  const n = Number.parseFloat(cleaned);
-  return Number.isFinite(n) ? n : 0;
+  const n = Number.parseFloat(normalized);
+  return Number.isFinite(n) ? sign * n : 0;
 }
 
 /**
- * Share quantity: US uses `.` decimal; TR commonly uses `.` thousands + `,` decimal.
+ * @deprecated Prefer {@link parseAtlasAmount}. Kept for call sites that still
+ * pass a market key; Atlas TR UI uses European amounts for both markets.
  */
-export function parseShares(
+export function parseLocaleAmount(
   raw: string | null | undefined,
-  market: MidasMarket
+  _market?: MidasMarket
 ): number {
-  if (raw == null) return 0;
-  const s = String(raw).trim();
-  if (!s) return 0;
-  if (market === "TR") {
-    const n = Number.parseFloat(s.replace(/\./g, "").replace(",", "."));
-    return Number.isFinite(n) ? n : 0;
-  }
-  const n = Number.parseFloat(s.replace(/,/g, ""));
-  return Number.isFinite(n) ? n : 0;
+  return parseAtlasAmount(raw);
+}
+
+/** Share quantity — same European rendering as money on Atlas TR. */
+export function parseShares(raw: string | null | undefined): number {
+  return parseAtlasAmount(raw);
 }
 
 /**
@@ -157,14 +170,28 @@ function looksLikeNumberLine(line: string): boolean {
   if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(line) && /[A-Za-z]/.test(line)) {
     return false;
   }
-  // Counts ("2"), money ("$1,234.56", "₺50.000,00"), percents ("+1.2%").
+  // Counts ("17"), money ("$333,69", "₺50.000,00"), percents ("%3,31").
   return /\d/.test(line);
 }
 
 /**
+ * Rows in the Pozisyonlar table after the section total:
+ *   count
+ *   section_total
+ *   section_daily_return   ← skip
+ *   section_total_return   ← skip
+ *   per holding × 7:
+ *     shares, price, avg_cost, value, allocation%, daily_return, total_return
+ *
+ * Verified against a live Atlas TR capture (2026-07-18).
+ */
+const SECTION_SUMMARY_LINES = 2; // daily + total return after section total
+const HOLDING_ROW_LINES = 7;
+
+/**
  * Parse the Atlas dashboard body text into holdings + totals.
  *
- * Layout observed on the Turkish Atlas UI (section headers in TR):
+ * Layout (Turkish Atlas UI, "Pozisyonlar" module):
  *
  *   ABD Hisseleri
  *   <US tickers…>
@@ -172,12 +199,14 @@ function looksLikeNumberLine(line: string): boolean {
  *   <TR tickers…>
  *   <usCount>
  *   <totalUsd>
- *   <3 label lines>
- *   per US holding × 7 lines: shares, price, ?, value, ?, ?, ?
+ *   <section daily return>
+ *   <section total return>
+ *   per US holding × 7: shares, price, avg_cost, value, alloc%, daily, total
  *   <trCount>
  *   <totalTry>
- *   <3 label lines>
- *   per TR holding × 7 lines (same shape)
+ *   <section daily return>
+ *   <section total return>
+ *   per TR holding × 7 (same shape)
  *
  * Pure function so unit tests can fixture the DOM text without Owletto.
  */
@@ -211,7 +240,8 @@ export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
     }
   }
 
-  // After the ticker name lists, numeric blocks start at the first count line.
+  // Numeric blocks start immediately after the ticker name lists.
+  // Order is always US then TR (matches section header order).
   let currentIdx = 0;
   if (trStartIdx !== -1) {
     currentIdx = trStartIdx + 1 + trTickers.length;
@@ -229,31 +259,40 @@ export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
     currency: "USD" | "TRY"
   ): number => {
     if (currentIdx >= lines.length || tickers.length === 0) return 0;
-    // count line
+
+    // Optional count line — prefer matching ticker length; still advance if present.
+    const countRaw = lines[currentIdx];
+    const count = Number.parseInt(countRaw.replace(/[^\d]/g, ""), 10);
+    if (Number.isFinite(count) && count > 0) {
+      currentIdx += 1;
+    }
+
+    const total = parseAtlasAmount(lines[currentIdx]);
     currentIdx += 1;
-    const total = parseLocaleAmount(lines[currentIdx], market);
-    currentIdx += 1;
-    // three label / change lines after the total
-    currentIdx += 3;
+
+    // Section daily return + total return (not per-holding).
+    currentIdx += SECTION_SUMMARY_LINES;
 
     for (const symbol of tickers) {
-      const shares = parseShares(lines[currentIdx], market);
-      const price = parseLocaleAmount(lines[currentIdx + 1], market);
-      const value = parseLocaleAmount(lines[currentIdx + 3], market);
+      if (currentIdx + HOLDING_ROW_LINES - 1 >= lines.length) break;
+      const shares = parseShares(lines[currentIdx]);
+      const price = parseAtlasAmount(lines[currentIdx + 1]);
+      const avgCost = parseAtlasAmount(lines[currentIdx + 2]);
+      const value = parseAtlasAmount(lines[currentIdx + 3]);
       holdings.push({
         symbol,
         shares,
         price,
+        avg_cost: avgCost,
         value,
         currency,
         type: market,
       });
-      currentIdx += 7;
+      currentIdx += HOLDING_ROW_LINES;
     }
     return total;
   };
 
-  // Numeric section order is US then TR (matches the original scraper).
   totalUsd = readBlock(usTickers, "US", "USD");
   totalTry = readBlock(trTickers, "TR", "TRY");
 
@@ -268,7 +307,7 @@ export function holdingToEvent(
   return {
     origin_id: `midas-holding-${h.type}-${h.symbol}`,
     title: `Midas Holding: ${h.symbol}`,
-    payload_text: `${h.symbol} (${h.type}): ${h.shares} @ ${h.price} ${h.currency} = ${h.value} ${h.currency}`,
+    payload_text: `${h.symbol} (${h.type}): ${h.shares} @ ${h.price} ${h.currency} = ${h.value} ${h.currency} (avg ${h.avg_cost})`,
     occurred_at: occurredAt,
     semantic_type: "financial_asset",
     source_url: MIDAS_DASHBOARD_URL,
@@ -277,6 +316,7 @@ export function holdingToEvent(
       symbol: h.symbol,
       shares: h.shares,
       price: h.price,
+      avg_cost: h.avg_cost,
       value: h.value,
       currency: h.currency,
     },
@@ -327,7 +367,7 @@ export default class MidasConnector extends ConnectorRuntime {
     name: "Midas",
     description:
       "Syncs Midas portfolio holdings via the Owletto Chrome extension.",
-    version: "1.0.1",
+    version: "1.0.2",
     faviconDomain: "atlas.getmidas.com",
     authSchema: {
       methods: [{ type: "none" }],
@@ -349,6 +389,7 @@ export default class MidasConnector extends ConnectorRuntime {
                 symbol: { type: "string" },
                 shares: { type: "number" },
                 price: { type: "number" },
+                avg_cost: { type: "number" },
                 value: { type: "number" },
                 currency: { type: "string" },
               },
@@ -431,7 +472,7 @@ export default class MidasConnector extends ConnectorRuntime {
         );
       }
       throw new Error(
-        'Failed to parse Midas dashboard (no holdings or totals found). Confirm the Atlas UI still shows "ABD Hisseleri" / "BIST Hisseleri" sections, or capture body text for a parser update.'
+        'Failed to parse Midas dashboard (no holdings or totals found). Confirm the Atlas UI still shows "ABD Hisseleri" / "BIST Hisseleri" under Pozisyonlar, or capture body text for a parser update.'
       );
     }
 

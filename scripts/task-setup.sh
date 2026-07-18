@@ -190,13 +190,16 @@ fi
 # server hands the SPA absolute sse/messages URLs on the wrong port, so the chat
 # silently fails ("Failed to fetch") in every non-default-port worktree. .env.local
 # is sourced after .env, so these win.
+#
+# …/lobu is the Agent API mount (wrapper.route("/lobu", lobuApp)), not the SPA.
+# The browser app is pathless at http://127.0.0.1:$port .
 cat > "$worktree_dir/.env.local" <<EOF
 PORT=$port
 WORKER_PROXY_PORT=$proxy
 PUBLIC_GATEWAY_URL=http://127.0.0.1:$port/lobu
 LOBU_TASK_NAME=$name
 EOF
-echo "→ .env.local: PORT=$port WORKER_PROXY_PORT=$proxy PUBLIC_GATEWAY_URL=http://127.0.0.1:$port/lobu"
+echo "→ .env.local: PORT=$port WORKER_PROXY_PORT=$proxy PUBLIC_GATEWAY_URL=http://127.0.0.1:$port/lobu (API; SPA is pathless at :$port)"
 
 echo "$name" > "$worktree_dir/.task"
 
@@ -228,7 +231,8 @@ cat <<EOF
   owletto branch:    $branch (real named branch, not detached HEAD)
   PORT:              $port
   WORKER_PROXY_PORT: $proxy
-  App (browser):     http://127.0.0.1:$port/lobu
+  App (browser):     http://127.0.0.1:$port
+  Agent API:         http://127.0.0.1:$port/lobu
 
   make dev              # in this worktree
   OPEN=1 make dev       # same, opens the app URL in your browser after ~5s

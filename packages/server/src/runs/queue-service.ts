@@ -250,11 +250,11 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
   }
   const connectorVersion = resolved.version;
 
-  const nextRunAt = nextRunAtFromCron(
-    feed.schedule ?? '0 */6 * * *',
-    new Date(),
-    feed.timezone
-  );
+  // Manual feeds (schedule null) keep next_run_at null after enqueue so they
+  // are not re-picked by the due-feed scheduler.
+  const nextRunAt = feed.schedule
+    ? nextRunAtFromCron(feed.schedule, new Date(), feed.timezone)
+    : null;
   const inserted = await sql`
     WITH inserted AS (
       INSERT INTO runs (

@@ -139,7 +139,11 @@ export interface DesiredFeed {
   /** Feed key from the connector definition (`FeedDefinition.key`). */
   feedKey: string;
   name?: string;
-  schedule?: string;
+  /**
+   * Cron for automatic sync. `null` / omitted after map-config means manual-only
+   * (no platform default). Virtual feeds always null.
+   */
+  schedule?: string | null;
   config?: Record<string, unknown>;
   /** Federated (live-pushdown, no-copy) feed — never synced; schedule is NULL. */
   virtual?: boolean;

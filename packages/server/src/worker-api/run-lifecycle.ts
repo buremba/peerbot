@@ -442,8 +442,11 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
       SELECT schedule, timezone FROM feeds WHERE id = ${feedId}
     `) as unknown as Array<{ schedule: string | null; timezone: string | null }>;
 
-			const schedule = feedRows[0]?.schedule ?? "0 */6 * * *";
-			const nextRun = nextRunAtFromCron(schedule, new Date(), feedRows[0]?.timezone ?? null);
+			// Manual feeds (no schedule) stay unscheduled after completion.
+			const schedule = feedRows[0]?.schedule ?? null;
+			const nextRun = schedule
+				? nextRunAtFromCron(schedule, new Date(), feedRows[0]?.timezone ?? null)
+				: null;
 			const isSuccess = req.status === "success";
 
 			await sql`

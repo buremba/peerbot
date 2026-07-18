@@ -1019,7 +1019,8 @@ export async function executePlan(
     if (remoteFeed && row.verb === "update") {
       await ctx.client.updateFeed(remoteFeed.id, {
         name: feed.name,
-        schedule: feed.schedule,
+        // null clears remote cron (manual-only); string sets it.
+        schedule: feed.schedule ?? null,
         config: feed.config ?? {},
       });
     } else {
@@ -1027,7 +1028,7 @@ export async function executePlan(
         connectionId,
         feedKey: feed.feedKey,
         name: feed.name,
-        schedule: feed.schedule,
+        schedule: feed.schedule ?? null,
         config: feed.config,
         virtual: feed.virtual,
       });

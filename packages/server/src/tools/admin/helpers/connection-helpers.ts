@@ -6,7 +6,6 @@
 
 import { getScopedConnectorDefinition } from '../../../catalog/connector-definitions';
 import { getDb } from '../../../db/client';
-import type { Env } from '../../../index';
 import {
   type AuthProfileKind,
   type AuthProfileRow,
@@ -20,7 +19,6 @@ import {
   summarizeBrowserSessionAuthData,
   updateAuthProfile,
 } from '../../../utils/auth-profiles';
-import { DEFAULT_SCHEDULE } from '../../../utils/cron';
 import { createConnectToken } from '../../../utils/connect-tokens';
 import { getConfiguredPublicGatewayUrl } from '../../../utils/public-origin';
 import {
@@ -417,10 +415,6 @@ export async function upsertConnectorAuthProfiles(params: {
 // ============================================
 // Shared Helpers
 // ============================================
-
-export function getDefaultSchedule(env: Env): string {
-  return env.DEFAULT_SYNC_SCHEDULE ?? DEFAULT_SCHEDULE;
-}
 
 export function mapConnectionStatusToFeedStatus(status: string): 'active' | 'paused' {
   return status === 'active' ? 'active' : 'paused';

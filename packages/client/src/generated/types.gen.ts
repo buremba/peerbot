@@ -2885,9 +2885,9 @@ export type ManageFeedsData = {
           [key: string]: unknown;
         };
         /**
-         * Cron expression for sync schedule (default: every 6 hours)
+         * Cron expression for automatic sync. Omit or null for manual-only.
          */
-        schedule?: string;
+        schedule?: string | null;
         /**
          * IANA timezone the schedule is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Omit for server time (UTC).
          */
@@ -2920,9 +2920,9 @@ export type ManageFeedsData = {
          */
         replace_config?: boolean;
         /**
-         * Cron expression for sync schedule
+         * Cron expression for automatic sync. Null clears the schedule (manual-only).
          */
-        schedule?: string;
+        schedule?: string | null;
         /**
          * IANA timezone the schedule is evaluated in. Null clears it (server time / UTC).
          */

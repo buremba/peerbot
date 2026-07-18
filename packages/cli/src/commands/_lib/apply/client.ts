@@ -1406,7 +1406,8 @@ export class ApplyClient {
     connectionId: number;
     feedKey: string;
     name?: string;
-    schedule?: string;
+    /** Cron string, or null for manual-only. */
+    schedule?: string | null;
     config?: Record<string, unknown>;
     virtual?: boolean;
   }): Promise<RemoteFeed> {
@@ -1415,7 +1416,9 @@ export class ApplyClient {
       connection_id: payload.connectionId,
       feed_key: payload.feedKey,
       ...(payload.name ? { display_name: payload.name } : {}),
-      ...(payload.schedule ? { schedule: payload.schedule } : {}),
+      // Always send schedule when provided (including null) so the server does
+      // not have to invent a default.
+      ...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
       ...(payload.config ? { config: payload.config } : {}),
       ...(payload.virtual ? { virtual: true } : {}),
     });
@@ -1431,7 +1434,8 @@ export class ApplyClient {
     feedId: number,
     payload: {
       name?: string;
-      schedule?: string;
+      /** Cron string, or null to clear (manual-only). */
+      schedule?: string | null;
       config?: Record<string, unknown>;
     }
   ): Promise<RemoteFeed> {

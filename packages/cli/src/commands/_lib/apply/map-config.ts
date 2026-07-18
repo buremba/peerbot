@@ -713,7 +713,8 @@ function mapConnection(connection: Connection): DesiredConnection {
     return {
       feedKey: feed.feed,
       ...(feed.name ? { name: feed.name } : {}),
-      ...(feed.schedule ? { schedule: feed.schedule } : {}),
+      // Omit in config → manual-only (null). Never invent a default cron.
+      schedule: feed.virtual ? null : (feed.schedule ?? null),
       ...(feed.config ? { config: feed.config } : {}),
       ...(feed.virtual ? { virtual: true } : {}),
     };

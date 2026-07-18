@@ -362,6 +362,7 @@ describe("lobu init --from-org", () => {
       {
         feedKey: "query",
         name: "Churn rollup (live)",
+        schedule: null,
         config: { query: "SELECT 1" },
         virtual: true,
       },

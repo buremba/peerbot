@@ -112,8 +112,9 @@ export const CreateFeedAction = Type.Object({
     })
   ),
   schedule: Type.Optional(
-    Type.String({
-      description: "Cron expression for sync schedule (default: every 6 hours)",
+    Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
+      description:
+        "Cron expression for automatic sync. Omit or null for manual-only (trigger_feed); no platform default cadence.",
     })
   ),
   timezone: Type.Optional(
@@ -148,7 +149,10 @@ export const UpdateFeedAction = Type.Object({
     })
   ),
   schedule: Type.Optional(
-    Type.String({ description: "Cron expression for sync schedule" })
+    Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
+      description:
+        "Cron expression for automatic sync. Null clears the schedule (manual-only).",
+    })
   ),
   timezone: Type.Optional(
     Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()], {

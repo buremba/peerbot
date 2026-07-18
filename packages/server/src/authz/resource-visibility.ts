@@ -14,9 +14,8 @@
  *     `freshness_state='fresh'`, synced within the freshness window) is visible
  *     ONLY when the requester is `member_of` one of the RESOURCE entities the
  *     event is linked to (`events.entity_ids`), where "resource" = an entity whose
- *     type is the shared ACL resource type (`$resource` via `RESOURCE_TYPE_SLUGS`).
- *     This is deliberately scoped to resource types so the coarse person→`company`
- *     (org) `member_of` edge never satisfies it — org membership must NOT grant
+ *     type is `$resource`. Scoped so the coarse person→`company` (org)
+ *     `member_of` edge never satisfies it — org membership must NOT grant
  *     repo-level read;
  *   - an event on an onboarded-but-STALE connection (a row exists but is
  *     partial/failed/stale/aged-out — i.e. NOT in the enforced set) FAILS CLOSED:
@@ -33,14 +32,12 @@
  * resource entity.
  */
 
+import { ACL_RESOURCE_TYPE_SLUG } from '@lobu/connector-sdk';
 import { aclStateExistsSelectSql, enforcedConnectionsSelectSql } from './acl-state.js';
 import type { AuthzScope } from './scope.js';
-import { RESOURCE_TYPE_SLUGS } from './sources.js';
 
-/** Resource type slugs as a safe SQL `IN (...)` list. Registry enforces
- * `$resource` only; inlining as literals is injection-safe (and avoids binding
- * a text[] param, which the fetch_types:false driver rejects). */
-const RESOURCE_TYPE_IN_LIST = RESOURCE_TYPE_SLUGS.map((s) => `'${s}'`).join(', ');
+/** Sole ACL resource type slug, inlined as a SQL string literal (constant). */
+const RESOURCE_TYPE_SQL = `'${ACL_RESOURCE_TYPE_SLUG}'`;
 
 /**
  * Predicate for a table holding events (alias has `connection_id` + `entity_ids`).
@@ -55,12 +52,6 @@ export function compileResourceVisibility(
 ): { sql: string; params: Array<string | null> } {
   const orgParam = `$${baseParamIndex}::text`;
   const userParam = `$${baseParamIndex + 1}::text`;
-
-  // No registered resource types → nothing to enforce (defensive; the registry
-  // is non-empty today).
-  if (RESOURCE_TYPE_SLUGS.length === 0) {
-    return { sql: '', params: [] };
-  }
 
   // `events.connection_id` is the bigint `connections.id`, but
   // `authz_source_acl_state.connection_id` is text — the ACL sync stamps it as
@@ -94,7 +85,7 @@ export function compileResourceVisibility(
         JOIN public.entity_types ret
           ON ret.id = re.entity_type_id
          AND ret.organization_id = re.organization_id
-         AND ret.slug IN (${RESOURCE_TYPE_IN_LIST})
+         AND ret.slug = ${RESOURCE_TYPE_SQL}
         WHERE rr.organization_id = ${orgParam}
           AND rr.deleted_at IS NULL
           AND rr.to_entity_id = ANY(${tableAlias}.entity_ids)

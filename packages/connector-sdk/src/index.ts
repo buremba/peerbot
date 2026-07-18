@@ -148,12 +148,11 @@ export type {
   AccessIdentitySpec,
   AccessMember,
   AccessResource,
-  AccessResourceType,
   AclSourceDef,
   ChannelReadIdentity,
 } from './acl-source.js';
 export {
-  ACL_RESOURCE_TYPE_DEFAULTS,
+  ACL_RESOURCE_TYPE,
   ACL_RESOURCE_TYPE_SLUG,
 } from './acl-source.js';
 import {

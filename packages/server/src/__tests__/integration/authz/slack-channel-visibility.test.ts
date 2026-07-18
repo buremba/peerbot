@@ -167,7 +167,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
       organizationId: org.id,
       connectionId: CONN,
       connectorKey: slackAclSource.key,
-      resourceType: slackAclSource.resourceType,
+      resourceNamespace: slackAclSource.resourceNamespace,
       memberIdentities: slackAclSource.memberIdentities,
       resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
@@ -194,7 +194,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
       organizationId: org.id,
       connectionId: CONN,
       connectorKey: slackAclSource.key,
-      resourceType: slackAclSource.resourceType,
+      resourceNamespace: slackAclSource.resourceNamespace,
       memberIdentities: slackAclSource.memberIdentities,
       resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
@@ -219,7 +219,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
       organizationId: org.id,
       connectionId: CONN,
       connectorKey: slackAclSource.key,
-      resourceType: slackAclSource.resourceType,
+      resourceNamespace: slackAclSource.resourceNamespace,
       memberIdentities: slackAclSource.memberIdentities,
 			resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
@@ -235,7 +235,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
       organizationId: org.id,
       connectionId: CONN,
       connectorKey: slackAclSource.key,
-      resourceType: slackAclSource.resourceType,
+      resourceNamespace: slackAclSource.resourceNamespace,
       memberIdentities: slackAclSource.memberIdentities,
 			resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01BOB"] },
@@ -265,7 +265,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
       organizationId: org.id,
       connectionId: CONN,
       connectorKey: slackAclSource.key,
-      resourceType: slackAclSource.resourceType,
+      resourceNamespace: slackAclSource.resourceNamespace,
       memberIdentities: slackAclSource.memberIdentities,
 			resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
@@ -693,7 +693,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
       organizationId: org.id,
       connectionId: CONN,
       connectorKey: slackAclSource.key,
-      resourceType: slackAclSource.resourceType,
+      resourceNamespace: slackAclSource.resourceNamespace,
       memberIdentities: slackAclSource.memberIdentities,
       resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01CAROL"] },
@@ -841,7 +841,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
       organizationId: org.id,
       connectionId: CONN,
       connectorKey: slackAclSource.key,
-      resourceType: slackAclSource.resourceType,
+      resourceNamespace: slackAclSource.resourceNamespace,
       memberIdentities: slackAclSource.memberIdentities,
       resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01DAVE"] },
@@ -875,7 +875,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
       organizationId: org.id,
       connectionId: CONN,
       connectorKey: slackAclSource.key,
-      resourceType: slackAclSource.resourceType,
+      resourceNamespace: slackAclSource.resourceNamespace,
       memberIdentities: slackAclSource.memberIdentities,
       resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },

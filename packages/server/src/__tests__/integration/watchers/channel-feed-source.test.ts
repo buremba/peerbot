@@ -182,7 +182,7 @@ describe("streaming feed as a watcher @feed source", () => {
       organizationId: orgId,
       connectionId: conn.runtimeId,
       connectorKey: slackAclSource.key,
-      resourceType: slackAclSource.resourceType,
+      resourceNamespace: slackAclSource.resourceNamespace,
       memberIdentities: slackAclSource.memberIdentities,
       resources: slackChannelsToResources(TEAM_ID, [
         { channelId: CHANNEL, name: "general", memberSlackUserIds: ["UMEMBER"] },
@@ -231,7 +231,7 @@ describe("streaming feed as a watcher @feed source", () => {
       organizationId: orgId,
       connectionId: conn.runtimeId,
       connectorKey: slackAclSource.key,
-      resourceType: slackAclSource.resourceType,
+      resourceNamespace: slackAclSource.resourceNamespace,
       memberIdentities: slackAclSource.memberIdentities,
       resources: slackChannelsToResources(TEAM_ID, [
         { channelId: CHANNEL, name: "general", memberSlackUserIds: [] },

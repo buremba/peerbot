@@ -8,6 +8,7 @@
  */
 
 import { createLogger } from "@lobu/core";
+import { ACL_RESOURCE_TYPE_SLUG } from "@lobu/connector-sdk";
 import {
 	type DbClient,
 	getDb,
@@ -134,18 +135,17 @@ export async function ensureChannelResourceEntity(opts: {
 	if (readIdentity && readIdentity.buildChannelKey(opts.teamId, bare) === null) {
 		return null;
 	}
-	// The resource entity type comes from the connector's ACL source. A connector
-	// that declares none produces no access-controlled channel resource, so there
-	// is nothing to materialize — skip rather than fabricate a type.
-	const resourceType = aclSourceFor(opts.connectorKey)?.resourceType;
-	if (!resourceType) return null;
+	// Connector must register an ACL source; otherwise there is no resource to
+	// materialize.
+	const aclSource = aclSourceFor(opts.connectorKey);
+	if (!aclSource) return null;
 
 	const { namespace, key } = channelResourceIdentity(
 		opts.connectorKey,
 		opts.teamId,
 		opts.channelId,
 	);
-	await ensureResourceEntityType(opts.organizationId, resourceType);
+	await ensureResourceEntityType(opts.organizationId);
 
 	const resolved = await resolveEventAttributionsForItems(
 		{
@@ -164,7 +164,7 @@ export async function ensureChannelResourceEntity(opts: {
 				channel_about: [
 					{
 						role: "about",
-						entityType: resourceType.slug,
+						entityType: ACL_RESOURCE_TYPE_SLUG,
 						autoCreate: true,
 						titlePath: "metadata.resource_name",
 						identities: [

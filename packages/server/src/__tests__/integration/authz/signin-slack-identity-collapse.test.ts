@@ -136,7 +136,7 @@ describe("sign-in slack_user_id collapse (e2e via channel graph)", () => {
 			organizationId: org.id,
 			connectionId: CONN,
 			connectorKey: slackAclSource.key,
-			resourceType: slackAclSource.resourceType,
+			resourceNamespace: slackAclSource.resourceNamespace,
 			memberIdentities: slackAclSource.memberIdentities,
 			resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: [SLACK_USER] },

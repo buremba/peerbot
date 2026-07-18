@@ -35,7 +35,7 @@ function buildSlackChannelGraph(params: {
     organizationId: params.organizationId,
     connectionId: params.connectionId,
     connectorKey: slackAclSource.key,
-    resourceType: slackAclSource.resourceType,
+    resourceNamespace: slackAclSource.resourceNamespace,
     memberIdentities: slackAclSource.memberIdentities,
     resources: slackChannelsToResources(params.teamId, params.channels),
   });

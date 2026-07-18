@@ -340,7 +340,7 @@ describe("slack sign-in slack_user_id e2e (real BetterAuth handler)", () => {
 			organizationId: org.id,
 			connectionId: CONN,
 			connectorKey: slackAclSource.key,
-			resourceType: slackAclSource.resourceType,
+			resourceNamespace: slackAclSource.resourceNamespace,
 			memberIdentities: slackAclSource.memberIdentities,
 			resources: slackChannelsToResources(TEAM, [
 				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: [SLACK_USER] },

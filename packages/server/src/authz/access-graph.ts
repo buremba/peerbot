@@ -32,21 +32,23 @@
  */
 
 import { createLogger } from '@lobu/core';
-import type {
-  AccessIdentitySpec,
-  AccessMember,
-  AccessResource,
-  AccessResourceType,
+import {
+  ACL_RESOURCE_TYPE_SLUG,
+  type AccessIdentitySpec,
+  type AccessMember,
+  type AccessResource,
 } from '@lobu/connector-sdk';
 import { getDb, pgBigintArray, pgTextArray } from '../db/client.js';
 import { runtimeConnectionIdToSlug } from '../lobu/stores/connections-projection.js';
 import { resolveEventAttributionsForItems } from '../utils/entity-link-upsert.js';
+import { ensureResourceEntityType } from './acl-resource-type.js';
 
 const logger = createLogger('access-graph');
 
 const MEMBER_OF_TYPE_SLUG = 'member_of';
 
-export type { AccessIdentitySpec, AccessMember, AccessResource, AccessResourceType };
+export type { AccessIdentitySpec, AccessMember, AccessResource };
+export { ensureResourceEntityType } from './acl-resource-type.js';
 
 export interface AccessGraphResult {
   /** Resource key → the entity id that now represents it. */
@@ -77,21 +79,6 @@ async function resolveOrgCreator(orgId: string): Promise<string | null> {
 		LIMIT 1
 	`;
   return rows.length > 0 ? rows[0].userId : null;
-}
-
-/** Find-or-create the org-scoped `$resource` entity type (reuse, no migration).
- * All ACL sources share this one type; identity namespace distinguishes them. */
-export async function ensureResourceEntityType(orgId: string, type: AccessResourceType): Promise<void> {
-  const sql = getDb();
-  await sql`
-		INSERT INTO entity_types (slug, name, description, icon, organization_id, created_at, updated_at)
-		VALUES (
-			${type.slug}, ${type.name}, ${type.description}, ${type.icon},
-			${orgId}, current_timestamp, current_timestamp
-		)
-		ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
-		DO NOTHING
-	`;
 }
 
 /** Ensure the org has a `person` entity type — the type new (genuinely-unknown)
@@ -243,11 +230,13 @@ export async function buildAccessGraph(params: {
   organizationId: string;
   connectionId: string;
   connectorKey: string;
-  resourceType: AccessResourceType;
+  /** Identity namespace for resource keys (e.g. `slack_channel_id`). */
+  resourceNamespace: string;
   memberIdentities: AccessIdentitySpec[];
   resources: AccessResource[];
 }): Promise<AccessGraphResult> {
-  const { organizationId, connectionId, connectorKey, resourceType, memberIdentities } = params;
+  const { organizationId, connectionId, connectorKey, resourceNamespace, memberIdentities } =
+    params;
   const resources = params.resources.filter((r) => r.key);
   if (resources.length === 0) return EMPTY_RESULT;
 
@@ -260,7 +249,7 @@ export async function buildAccessGraph(params: {
     return EMPTY_RESULT;
   }
 
-  await ensureResourceEntityType(organizationId, resourceType);
+  await ensureResourceEntityType(organizationId);
   await ensurePersonEntityType(organizationId);
 
   // ACL state uses a runtime connection id, while identity provenance references
@@ -296,11 +285,15 @@ export async function buildAccessGraph(params: {
       access_resource: [
         {
           role: 'belongs_to',
-          entityType: resourceType.slug,
+          entityType: ACL_RESOURCE_TYPE_SLUG,
           autoCreate: true,
           titlePath: 'metadata.resource_name',
           identities: [
-            { namespace: resourceType.namespace, eventPath: 'metadata.resource_key', primary: true },
+            {
+              namespace: resourceNamespace,
+              eventPath: 'metadata.resource_key',
+              primary: true,
+            },
           ],
         },
       ],
@@ -417,7 +410,8 @@ export async function buildAccessGraph(params: {
       organization_id: organizationId,
       connection_id: connectionId,
       connector: connectorKey,
-      resource_type: resourceType.slug,
+      resource_type: ACL_RESOURCE_TYPE_SLUG,
+      resource_namespace: resourceNamespace,
       resources: Object.keys(resourceEntityIds).length,
       members: memberEntityIds.size,
       created_edges: createdEdges,

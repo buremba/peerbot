@@ -92,7 +92,7 @@ export async function syncGithubConnectionAcl(
       organizationId,
       connectionId,
       connectorKey: githubAclSource.key,
-      resourceType: githubAclSource.resourceType,
+      resourceNamespace: githubAclSource.resourceNamespace,
       memberIdentities: githubAclSource.memberIdentities,
       resources: githubReposToResources(repoInputs),
     });

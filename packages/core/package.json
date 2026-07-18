@@ -40,6 +40,12 @@
       "import": "./dist/errors.js",
       "require": "./dist/errors.js"
     },
+    "./reserved": {
+      "types": "./dist/reserved.d.ts",
+      "bun": "./src/reserved.ts",
+      "import": "./dist/reserved.js",
+      "require": "./dist/reserved.js"
+    },
     "./ajv": {
       "types": "./dist/utils/ajv.d.ts",
       "bun": "./src/utils/ajv.ts",

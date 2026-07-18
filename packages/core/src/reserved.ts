@@ -1,30 +1,21 @@
 /**
  * Canonical reserved names and entity-type classification helpers.
  *
- * Two separate jobs — do not collapse them:
  * 1. System types — slug starts with `$` (`$member`, `$resource`, …)
- * 2. Reserved slug lists — illegal *names* for user create / routes (may not be rows)
+ * 2. Reserved slug lists — illegal *names* for user create / routes
  *
  * Users cannot create `$…` types. Hide + prune use the `$` prefix only.
- * `created_by` is audit only and must never be used as a stand-in for system.
  */
 
 // ── Entity type classification ──────────────────────────────────────────────
 
 /**
  * True when a type is platform-owned (hidden from rail, never pruned).
- * Sole signal: slug starts with `$` (not created_by, not hide-slug denylists).
+ * Sole signal: slug starts with `$`.
  */
-export function isSystemEntityType(et: {
-  slug?: string | null;
-  /** @deprecated ignored — classification is slug `$` only */
-  is_system?: boolean | null;
-}): boolean {
+export function isSystemEntityType(et: { slug?: string | null }): boolean {
   return typeof et.slug === "string" && et.slug.startsWith("$");
 }
-
-/** @deprecated Use isSystemEntityType */
-export const isSystemResourceEntityType = isSystemEntityType;
 
 // ── Route / path reserved names ─────────────────────────────────────────────
 
@@ -101,9 +92,6 @@ export const RESERVED_ENTITY_TYPE_SLUGS = [
   "source",
   "connector",
 ] as const;
-
-/** @deprecated Use RESERVED_ENTITY_TYPE_SLUGS */
-export const RESERVED_ENTITY_TYPES = RESERVED_ENTITY_TYPE_SLUGS;
 
 /**
  * Whether a proposed entity-type slug is illegal for user/API create.

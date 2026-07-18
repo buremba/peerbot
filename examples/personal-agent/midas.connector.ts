@@ -70,7 +70,7 @@ export function requireExtensionDispatcher(ctx: {
  */
 export function isMidasAuthWall(url: string | null | undefined): boolean {
   if (!url) return false;
-  let pathname = url;
+  let pathname: string;
   let host = "";
   try {
     const u = new URL(url);

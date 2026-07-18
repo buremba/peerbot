@@ -239,7 +239,7 @@ export async function syncSlackConnectionAcl(
         organizationId,
         connectionId,
         connectorKey: slackAclSource.key,
-        resourceType: slackAclSource.resourceType,
+        resourceNamespace: slackAclSource.resourceNamespace,
         memberIdentities: slackAclSource.memberIdentities,
         resources: slackChannelsToResources(teamId, channels),
       });

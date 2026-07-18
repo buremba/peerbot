@@ -78,6 +78,11 @@ export function connectorSdkMock() {
     throw new Error(`${name} is not used in connector unit tests`);
   };
   return {
+    // Sole platform entity-type slug for ACL-gated resources. Inlined (not
+    // imported from connector-sdk/src) to keep this mock valid when copied
+    // verbatim into the cli's dist/ (see the file header). Must stay in step
+    // with ACL_RESOURCE_TYPE_SLUG in packages/connector-sdk/src/acl-source.ts.
+    ACL_RESOURCE_TYPE_SLUG: '$resource',
     acquireBrowser: notUsed('acquireBrowser'),
     captureErrorArtifacts: notUsed('captureErrorArtifacts'),
     HttpStatusError,

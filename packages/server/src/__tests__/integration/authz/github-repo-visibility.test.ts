@@ -34,7 +34,7 @@ function buildGithubRepoGraph(params: {
     organizationId: params.organizationId,
     connectionId: params.connectionId,
     connectorKey: githubAclSource.key,
-    resourceType: githubAclSource.resourceType,
+    resourceNamespace: githubAclSource.resourceNamespace,
     memberIdentities: githubAclSource.memberIdentities,
     resources: githubReposToResources(params.repos),
   });

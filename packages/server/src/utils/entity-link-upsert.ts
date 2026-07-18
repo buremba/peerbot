@@ -17,13 +17,15 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import type {
-  EntityIdentitySpec,
-  EntityLinkPredicate,
-  EntityTraitSpec,
-  EventAttributionRule,
+import {
+  ACL_RESOURCE_TYPE_SLUG,
+  type EntityIdentitySpec,
+  type EntityLinkPredicate,
+  type EntityTraitSpec,
+  type EventAttributionRule,
 } from '@lobu/connector-sdk';
 import { normalizeIdentifier } from '@lobu/connector-sdk/identity-normalize';
+import { ensureResourceEntityType } from '../authz/acl-resource-type';
 import { type DbClient, getDb, pgTextArray } from '../db/client';
 import { normalizeConnectorIdentityValue } from '../identity/connector-identity-modules';
 import logger from './logger';
@@ -390,7 +392,7 @@ async function createEntityWithIdentities(
   // Resolve entity_type slug → entity_types(id). Same schema search path as
   // createEntity: try the entity's own org first, then any visibility='public'
   // catalog. First match wins. See createEntity for the slug-poisoning caveat.
-  const typeRow = await sql<{ id: number; backing_sql: string | null }>`
+  let typeRow = await sql<{ id: number; backing_sql: string | null }>`
     SELECT et.id, et.backing_sql
     FROM entity_types et
     LEFT JOIN organization o ON o.id = et.organization_id
@@ -404,11 +406,32 @@ async function createEntityWithIdentities(
     LIMIT 1
   `;
   if (typeRow.length === 0) {
-    logger.warn(
-      { entityType: params.entityType, orgId: params.orgId },
-      'entity create failed: unknown entity type'
-    );
-    return null;
+    // Platform ACL type is ensured on the fly so event attribution can race
+    // ahead of the first ACL sync without failing closed on a missing type.
+    if (params.entityType === ACL_RESOURCE_TYPE_SLUG) {
+      await ensureResourceEntityType(params.orgId);
+      typeRow = await sql<{ id: number; backing_sql: string | null }>`
+        SELECT et.id, et.backing_sql
+        FROM entity_types et
+        WHERE et.slug = ${params.entityType}
+          AND et.deleted_at IS NULL
+          AND et.organization_id = ${params.orgId}
+        LIMIT 1
+      `;
+      if (typeRow.length === 0) {
+        logger.warn(
+          { entityType: params.entityType, orgId: params.orgId },
+          'entity create failed: $resource type ensure did not materialize'
+        );
+        return null;
+      }
+    } else {
+      logger.warn(
+        { entityType: params.entityType, orgId: params.orgId },
+        'entity create failed: unknown entity type'
+      );
+      return null;
+    }
   }
   // Derived (view-backed) types have no stored rows — skip auto-create (the
   // view ignores any row this would insert). Mirrors createEntity's guard for

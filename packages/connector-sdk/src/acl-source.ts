@@ -2,29 +2,23 @@
  * ACL-source contract — the shared shape between a connector and the generic
  * access-graph engine.
  *
- * A connector that gates read access on membership (a Slack workspace's
- * channels, a GitHub org's repos, …) reduces to the same shape: a set of
- * RESOURCES, each with an AUDIENCE of MEMBERS who may read it. The connector
- * owns how its raw API data normalizes into that shape (`AclSourceDef`); the
- * server owns the generic materialization (resolve entities, member_of edges,
- * departure reconcile) driven entirely by these DTOs. Core code never names a
- * specific connector — it iterates `AclSourceDef`s the connectors contribute.
+ * A connector that gates read access on membership (Slack channels, GitHub
+ * repos, …) reduces to: RESOURCES × AUDIENCE of MEMBERS. The connector owns
+ * normalization into that shape; the server materializes entities, identities,
+ * and `member_of` edges. Core never names a connector.
  *
- * All ACL resources share ONE entity type: {@link ACL_RESOURCE_TYPE_SLUG}
- * (`$resource`). Sources are distinguished by identity namespace, not type slug.
- *
- * These are pure data types (no server/db dependency) so they live in the SDK
- * and can be imported by both a connector package and the server engine.
+ * All ACL resources are entity type `$resource`. Sources differ only by
+ * resource identity namespace and member identity namespaces.
  */
 
 /**
- * Sole platform entity-type slug for ACL-gated units (Slack channels, GitHub
- * repos, …). `$` prefix → system (hide rail, never prune, user-create blocked).
+ * Sole platform entity-type slug for ACL-gated units.
+ * `$` prefix → system (hide rail, never prune, user-create blocked).
  */
 export const ACL_RESOURCE_TYPE_SLUG = '$resource' as const;
 
-/** Shared name/icon for {@link ACL_RESOURCE_TYPE_SLUG} (all sources use this). */
-export const ACL_RESOURCE_TYPE_DEFAULTS = {
+/** Columns used when ensuring the platform `$resource` entity type. */
+export const ACL_RESOURCE_TYPE = {
   slug: ACL_RESOURCE_TYPE_SLUG,
   name: 'Resource',
   description:
@@ -44,51 +38,39 @@ export interface AccessIdentitySpec {
 
 /** One member of a resource's audience. */
 export interface AccessMember {
-  /** Stable dedupe key for this member across resources (the primary identity
-   * value is the natural choice: `T…:U…` for Slack, the numeric id for GitHub). */
+  /** Stable dedupe key (e.g. `T…:U…` for Slack, numeric id for GitHub). */
   key: string;
   /** Display name for an auto-created `person`. Falls back to `key`. */
   name?: string;
-  /** This member's identity claims (namespaces declared in `memberIdentities`). */
+  /** This member's identity claims (namespaces in `memberIdentities`). */
   identities: { namespace: string; value: string }[];
 }
 
 /** One resource (channel/repo/…) and the members who may read it. */
 export interface AccessResource {
-  /** Stored as the resource entity's identity under `resourceType.namespace`
-   * (`T…:C…` for Slack, `owner/repo` or the numeric id for GitHub). */
+  /**
+   * Stored under the source's `resourceNamespace`
+   * (`T…:C…` for Slack, `owner/repo` for GitHub).
+   */
   key: string;
   name?: string;
   members: AccessMember[];
 }
 
-/** The resource entity type to find-or-create and key resources under. */
-export interface AccessResourceType {
-  /**
-   * Must be {@link ACL_RESOURCE_TYPE_SLUG} (`$resource`). One type for every
-   * ACL source; identity `namespace` distinguishes channel vs repo vs …
-   */
-  slug: typeof ACL_RESOURCE_TYPE_SLUG | string;
-  name: string;
-  description: string;
-  icon: string;
-  /** Identity namespace the resource key is stored/looked-up under. */
-  namespace: string;
-}
-
 /**
  * A connector's ACL-source descriptor — the ONE thing a connector declares to
- * become access-controlled. Says "this connector produces resources of THIS
- * entity type, keyed on THIS identity namespace, whose members are identified
- * by THESE namespaces." The generic server materializer reads it; no new gate
- * or engine code per connector.
+ * become access-controlled. All resources materialize as `$resource`; only the
+ * identity namespaces are source-specific.
  */
 export interface AclSourceDef {
   /** Connector/platform key (`slack`, `github`, …). */
   key: string;
-  /** The resource entity type this source's resources materialize as. */
-  resourceType: AccessResourceType;
-  /** How a member of one of this source's resources is identified. */
+  /**
+   * Identity namespace for resource keys (e.g. `slack_channel_id`,
+   * `github_repo_full_name`).
+   */
+  resourceNamespace: string;
+  /** How a member of a resource is identified. */
   memberIdentities: AccessIdentitySpec[];
 }
 
@@ -96,14 +78,11 @@ export interface AclSourceDef {
  * A chat platform's READ-gate identity model — how the per-channel visibility
  * gate keys a channel and a requester for THIS platform. Unlike `AclSourceDef`
  * (pure data, persisted, replayed generically) this carries key-BUILDER
- * functions, so it is used only in-process at the server's authz edge (the read
- * gate runs live and may import connector code). It is what lets the fail-closed
- * channel gate be platform-parametric instead of Slack-hardcoded.
+ * functions, so it is used only in-process at the server's authz edge.
  *
  * A binding stores a bare channel id (`C…`) + a tenant/team id; the gate must
  * reconstruct the exact team-scoped key the ACL sync wrote (`T…:C…`) to match
- * the graphed `$resource` entity. `channelKeySql` is the SAME construction as a
- * SQL expression, for the message-visibility compiler that keys inside a query.
+ * the graphed `$resource` entity.
  */
 export interface ChannelReadIdentity {
   /** Platform key (`slack`, …) — matched against a binding's `platform`. */
@@ -114,8 +93,7 @@ export interface ChannelReadIdentity {
   userNamespace: string;
   /**
    * Build the team-scoped channel key (`T…:C…`) from a tenant/team id and a
-   * BARE channel id. Returns null when the inputs can't form a valid key (→ the
-   * gate drops the channel fail-closed).
+   * BARE channel id. Returns null when the inputs can't form a valid key.
    */
   buildChannelKey(teamId: string | null | undefined, bareChannelId: string): string | null;
   /**
@@ -124,10 +102,8 @@ export interface ChannelReadIdentity {
    */
   buildUserKey(teamId: string | null | undefined, userId: string | null | undefined): string | null;
   /**
-   * The same channel-key construction as a SQL expression, given the SQL column
-   * references (already-safe identifiers, NOT user input) for the team id and
-   * the bare channel id. Must produce a value byte-identical to
-   * `buildChannelKey` so an in-query match agrees with the TS path.
+   * The same channel-key construction as a SQL expression, given safe SQL
+   * column expressions for team id and bare channel id.
    */
   channelKeySql(teamColExpr: string, channelColExpr: string): string;
 }

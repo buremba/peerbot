@@ -395,7 +395,7 @@ describe("channel streaming feeds", () => {
       organizationId: orgId,
       connectionId: runtimeConnId,
       connectorKey: slackAclSource.key,
-      resourceType: slackAclSource.resourceType,
+      resourceNamespace: slackAclSource.resourceNamespace,
       memberIdentities: slackAclSource.memberIdentities,
       resources: slackChannelsToResources("TENF", [
         { channelId: "CENF", name: "secret", memberSlackUserIds: [] },

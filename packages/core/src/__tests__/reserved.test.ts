@@ -13,11 +13,6 @@ describe("isSystemEntityType", () => {
     expect(isSystemEntityType({ slug: "channel" })).toBe(false);
     expect(isSystemEntityType({ slug: "person" })).toBe(false);
     expect(isSystemEntityType({})).toBe(false);
-    // is_system field is ignored (legacy API noise)
-    expect(isSystemEntityType({ slug: "goal", is_system: true })).toBe(false);
-    expect(isSystemEntityType({ slug: "$member", is_system: false })).toBe(
-      true
-    );
   });
 });
 

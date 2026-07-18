@@ -100,7 +100,7 @@ describe("channel about edges", () => {
 			organizationId: org.id,
 			connectionId,
 			connectorKey: slackAclSource.key,
-			resourceType: slackAclSource.resourceType,
+			resourceNamespace: slackAclSource.resourceNamespace,
 			memberIdentities: slackAclSource.memberIdentities,
 			resources: slackChannelsToResources(TEAM, [
 				{

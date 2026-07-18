@@ -135,6 +135,12 @@
       "bun": "./src/contracts/tools/manage-watchers.ts",
       "import": "./dist/contracts/tools/manage-watchers.js",
       "require": "./dist/contracts/tools/manage-watchers.js"
+    },
+    "./reserved": {
+      "types": "./dist/reserved.d.ts",
+      "bun": "./src/reserved.ts",
+      "import": "./dist/reserved.js",
+      "require": "./dist/reserved.js"
     }
   },
   "scripts": {

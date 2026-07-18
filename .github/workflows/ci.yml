@@ -287,11 +287,14 @@ jobs:
       - name: CLI command-coverage smoke (every command runs)
         run: bash scripts/cli-smoke.sh
 
-  # Frontend tests run under jsdom via vitest. owletto is a submodule;
-  # forks without the deploy key get a stub package and skip these.
+  # Frontend: vitest (jsdom) + prod SPA build + Chromium cold-boot smoke.
+  # The boot smoke is the SPA equivalent of connector-parity-smoke: unit tests
+  # run in Node (where `process` exists) and cannot catch "CI green, browser
+  # white-screen" packaging bugs. Build uses the same `bun run build` path as
+  # docker/app/Dockerfile. Forks without the deploy key get a stub and skip.
   frontend:
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -310,19 +313,42 @@ jobs:
 
       - name: Build core + connector-sdk (owletto imports their compiled dist)
         # connector-sdk imports @lobu/core; resolving the type-only barrel
-        # import needs core/dist on disk first.
+        # import needs core/dist on disk first. core/reserved subpath is what
+        # the SPA imports at runtime — must be on disk for the prod build.
         if: steps.submodule.outputs.stubbed != 'true'
         run: |
           cd packages/core && bun run build && cd ../..
           cd packages/connector-sdk && bun run build && cd ../..
 
       - name: owletto tests (vitest)
-        # owletto doesn't define a `test` script in its package.json yet
-        # (that change ships as a separate submodule PR). Invoke vitest
-        # directly via the workspace-installed binary so this works on
-        # whatever submodule SHA the parent repo points at.
         if: steps.submodule.outputs.stubbed != 'true'
         run: cd packages/owletto && ../../node_modules/.bin/vitest run
+
+      - name: SPA prod build (barrel ban + vite + bundle tripwire)
+        # Same command docker/app uses. Fails on runtime `@lobu/core` barrel
+        # imports, untransformed CJS, Node contamination markers, entry bloat.
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: cd packages/owletto && bun run build
+
+      - name: Install Google Chrome (SPA boot smoke)
+        # Ubuntu 24.04's apt `chromium`/`chromium-browser` is a snap shim that
+        # will not launch under the runner cgroup (snap confinement fails in
+        # CI: "is not a snap cgroup for tag snap.chromium.chromium"), so the
+        # boot smoke never gets a browser. Install the real Google Chrome .deb
+        # (non-snap) and point the smoke at it explicitly.
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: |
+          curl -fsSL -o /tmp/google-chrome.deb \
+            https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends /tmp/google-chrome.deb
+          echo "SPA_SMOKE_CHROME=/usr/bin/google-chrome-stable" >> "$GITHUB_ENV"
+
+      - name: SPA cold-boot smoke (Chromium)
+        # Loads dist/ in a real browser; fails on pageerror (e.g. process is
+        # not defined). Network API failures are ignored — no backend here.
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: cd packages/owletto && bun run smoke:boot
 
   # Backend integration tests need a real Postgres + pgvector. We run them
   # under Node (not bun) for two reasons: (1) the vitest suite uses Node-only

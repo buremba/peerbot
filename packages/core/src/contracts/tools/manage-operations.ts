@@ -150,7 +150,7 @@ export const ListActivityAction = Type.Object({
     Type.Number({
       description: "Max cards after aggregation (default 24, max 50)",
       default: 24,
-    }),
+    })
   ),
   /** Include notifications (default true when user is authenticated). */
   include_notifications: Type.Optional(Type.Boolean({ default: true })),
@@ -297,7 +297,7 @@ export const ManageOperationsResultSchema = Type.Union([
         member_run_ids: Type.Optional(Type.Array(Type.Integer())),
         connection_id: Type.Optional(Type.Integer()),
         watcher_id: Type.Optional(Type.Integer()),
-      }),
+      })
     ),
     total: Type.Integer(),
     limit: Type.Integer(),

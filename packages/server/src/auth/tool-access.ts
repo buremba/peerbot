@@ -168,7 +168,12 @@ export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	manage_catalog: new Set(["list_catalog", "list_installed"]),
 	manage_feeds: new Set(["list_feeds", "read_feed", "read_feeds"]),
 	manage_auth_profiles: new Set(["list_auth_profiles"]),
-	manage_operations: new Set(["list_available", "list_runs", "get_run"]),
+	manage_operations: new Set([
+		"list_available",
+		"list_runs",
+		"get_run",
+		"list_activity",
+	]),
 	manage_watchers: new Set([
 		"get_versions",
 		"get_version_details",

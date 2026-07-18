@@ -21,6 +21,10 @@ import { captureServerError } from '../sentry';
 import { errorMessage } from '../utils/errors';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
+import {
+  DEVICE_MOVED_TOMBSTONE,
+  DEVICE_REMOVED_TOMBSTONE,
+} from '../utils/device-pin-tombstones';
 import { getWorkspaceRole } from '../utils/organization-access';
 import { parseJsonBody } from '../gateway/routes/shared/helpers';
 
@@ -454,7 +458,7 @@ export async function updateDeviceWorkerOrg(c: Context<{ Bindings: Env }>) {
           UPDATE connections
           SET device_worker_id = NULL,
               status = 'paused',
-              error_message = 'Device was moved to another workspace',
+              error_message = ${DEVICE_MOVED_TOMBSTONE},
               updated_at = NOW()
           WHERE device_worker_id = ${deviceWorkerId}
           RETURNING id
@@ -525,7 +529,7 @@ export async function deleteDeviceWorker(c: Context<{ Bindings: Env }>) {
         UPDATE connections
         SET device_worker_id = NULL,
             status = 'paused',
-            error_message = 'Device was removed',
+            error_message = ${DEVICE_REMOVED_TOMBSTONE},
             updated_at = NOW()
         WHERE device_worker_id = ${deviceWorkerId}
         RETURNING id

@@ -48,6 +48,10 @@ import { verifyOwnedAgentAccess } from "../shared/agent-ownership.js";
 import { errorResponse } from "../shared/helpers.js";
 import { errorResponses } from "../shared/openapi-responses.js";
 import { verifySettingsSessionOrToken } from "./settings-auth.js";
+import {
+  formatActivityAttentionBlock,
+  listOrgActivity,
+} from "../../../tools/admin/manage_operations/activity-feed.js";
 
 const logger = createLogger("agent-api");
 
@@ -1505,8 +1509,35 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         ...remainingOptions
       } = agentOptions;
 
+      // First turn only: client ephemeralContext wins; otherwise auto-inject a
+      // short workspace attention digest (same cards as manage_operations.list_activity).
+      let ephemeralForTurn = rawEphemeralContext;
+      if (
+        (session.turnCount ?? 0) === 0 &&
+        !ephemeralForTurn &&
+        session.intent?.kind !== "watcher_run" &&
+        messageOrganizationId &&
+        session.userId
+      ) {
+        try {
+          const orgRow = (await getDb()`
+            SELECT slug FROM organization WHERE id = ${messageOrganizationId} LIMIT 1
+          `) as unknown as Array<{ slug: string }>;
+          const ownerSlug = orgRow[0]?.slug ?? messageOrganizationId;
+          const { items } = await listOrgActivity({
+            organizationId: messageOrganizationId,
+            userId: session.userId,
+            ownerSlug,
+            limit: 12,
+            aggregate: true,
+          });
+          ephemeralForTurn = formatActivityAttentionBlock(items);
+        } catch {
+          // Attention is best-effort — never block chat on feed failure.
+        }
+      }
       const applyEphemeralContext =
-        rawEphemeralContext.length > 0 && (session.turnCount ?? 0) === 0;
+        ephemeralForTurn.length > 0 && (session.turnCount ?? 0) === 0;
 
       // Inbound attachments: publish each uploaded file as a signed gateway
       // artifact and forward the worker-facing `files` array in
@@ -1561,7 +1592,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         platform: "api",
         messageText: messageTextForTranscript,
         ...(applyEphemeralContext
-          ? { ephemeralContext: rawEphemeralContext.slice(0, 2048) }
+          ? { ephemeralContext: ephemeralForTurn.slice(0, 2048) }
           : {}),
         platformMetadata: {
           agentId: realAgentId,

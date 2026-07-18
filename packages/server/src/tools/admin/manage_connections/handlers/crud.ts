@@ -11,6 +11,7 @@ import {
 	getDb,
 	parsePgNumberArray,
 	pgBigintArray,
+	pgTextArray,
 	type DbClient,
 } from "../../../../db/client";
 import { recordToolConfigChange } from "../../helpers/config-audit";
@@ -29,6 +30,11 @@ import {
   getAuthProfileBySlug,
   getBrowserSessionReadiness,
 } from "../../../../utils/auth-profiles";
+import {
+	DEVICE_PIN_TOMBSTONE_MESSAGES,
+	effectiveConnectionErrorMessage,
+	isDevicePinTombstone,
+} from "../../../../utils/device-pin-tombstones";
 import {
   ConnectionSlugConflictError,
   connectionSlugFormatError,
@@ -377,6 +383,16 @@ export async function handleList(
       // Postgres returns bigint[] as a literal string ('{2}'); parse to number[]
       // so the API contract matches the typed entity_ids the UI picker expects.
       entity_ids: parsePgNumberArray(row.entity_ids),
+			// Pin-tombstone self-heal for display: device re-paired but error_message
+			// still says "Device was removed" (write paths clear on pin; this covers
+			// already-stuck rows until the next reconcile).
+			error_message: effectiveConnectionErrorMessage({
+				error_message: row.error_message as string | null,
+				device_worker_id: row.device_worker_id as string | null,
+				device_last_seen_at: row.device_last_seen_at as string | null,
+				device_worker_handle: row.device_worker_handle as string | null,
+				device_label: row.device_label as string | null,
+			}),
       operations_summary: operationsSummary,
       has_operations: hasOperations,
       facets: deriveConnectionFacets({
@@ -516,6 +532,13 @@ export async function handleGet(
 		action: "get",
     connection: {
       ...resolved,
+			error_message: effectiveConnectionErrorMessage({
+				error_message: getRow.error_message as string | null,
+				device_worker_id: getRow.device_worker_id as string | null,
+				device_last_seen_at: getRow.device_last_seen_at as string | null,
+				device_worker_handle: getRow.device_worker_handle as string | null,
+				device_label: getRow.device_label as string | null,
+			}),
       ...(connectToken ? { connect_token: connectToken } : {}),
       operations_summary: operationsSummary,
       has_operations: hasOperations,
@@ -1718,22 +1741,26 @@ export async function handleUpdate(
 		hasDeviceWorkerArg ||
 		(updateProfileDeviceWorkerId && !hasDeviceWorkerArg)
 	) {
-    // Re-pinning (or clearing) the device also clears the "Device was removed"
-    // tombstone left by DELETE /api/me/devices — otherwise the connection stays
-    // active but UI-flagged error forever after the user picks a new device.
-		const previousError = (updated[0] as Record<string, unknown>).error_message;
-		clearedDeviceTombstone =
-			previousError === "Device was removed" ||
-			previousError === "Device was moved to another workspace";
-    await sql`
+		// Any change to the pin (set or clear) drops DELETE/move tombstones.
+		// Re-pinning a live device also un-pauses so the connection can run again.
+		const previousError = (updated[0] as Record<string, unknown>)
+			.error_message as string | null;
+		const pinningDevice = nextDeviceWorkerId != null;
+		clearedDeviceTombstone = isDevicePinTombstone(previousError);
+		await sql`
       UPDATE connections
       SET device_worker_id = ${nextDeviceWorkerId},
           error_message = CASE
-            WHEN error_message IN (
-              'Device was removed',
-              'Device was moved to another workspace'
-            ) THEN NULL
+            WHEN error_message = ANY(${pgTextArray([...DEVICE_PIN_TOMBSTONE_MESSAGES])}::text[])
+            THEN NULL
             ELSE error_message
+          END,
+          status = CASE
+            WHEN ${pinningDevice}
+             AND status = 'paused'
+             AND error_message = ANY(${pgTextArray([...DEVICE_PIN_TOMBSTONE_MESSAGES])}::text[])
+            THEN 'active'
+            ELSE status
           END,
           updated_at = NOW()
       WHERE id = ${args.connection_id}
@@ -1744,6 +1771,12 @@ export async function handleUpdate(
 			nextDeviceWorkerId;
 		if (clearedDeviceTombstone) {
 			(updated[0] as Record<string, unknown>).error_message = null;
+			if (
+				pinningDevice &&
+				(updated[0] as Record<string, unknown>).status === "paused"
+			) {
+				(updated[0] as Record<string, unknown>).status = "active";
+			}
 		}
   }
 

@@ -442,6 +442,16 @@ export async function notifyActionApprovalNeeded(params: {
 	});
 }
 
+/** Deep-link into a single connection (settings / re-auth), not the connectors list. */
+function connectionDetailUrl(
+	orgSlug: string | null | undefined,
+	connectorKey: string,
+	connectionId: number,
+): string | undefined {
+	if (!orgSlug) return undefined;
+	return `/${orgSlug}/connectors/${connectorKey}/${connectionId}`;
+}
+
 export async function notifyConnectionPermissionRequest(params: {
 	orgId: string;
 	connectionId: number;
@@ -458,7 +468,12 @@ export async function notifyConnectionPermissionRequest(params: {
 			body: `A new connection was created and requires OAuth authorization.${urlLine}`,
 			resourceType: "connection",
 			resourceId: String(params.connectionId),
-			resourceUrl: orgSlug ? `/${orgSlug}/connectors` : undefined,
+			// Land on the connection that needs OAuth — not the bare connectors index.
+			resourceUrl: connectionDetailUrl(
+				orgSlug,
+				params.connectorKey,
+				params.connectionId,
+			),
 		};
 	});
 }
@@ -486,7 +501,13 @@ export async function notifyBrowserAuthExpired(params: {
 				`Open ${params.connectorKey} in the browser where your Owletto extension runs and sign in to resume.`,
 		resourceType: "connection",
 		resourceId: String(params.connectionId),
-		resourceUrl: orgSlug ? `/${orgSlug}/connectors` : undefined,
+		// Connection detail is where re-auth / browser profile is managed —
+		// not Infrastructure (devices) or a bare connectors list.
+		resourceUrl: connectionDetailUrl(
+			orgSlug,
+			params.connectorKey,
+			params.connectionId,
+		),
 	}));
 }
 
@@ -495,13 +516,18 @@ export async function notifyInvitationReceived(params: {
 	userId: string;
 	orgName: string;
 	inviterName?: string;
+	/** Invitation row id — required for the accept deep-link. */
+	invitationId: string;
 }): Promise<void> {
 	const inviterLabel = params.inviterName ? ` by ${params.inviterName}` : "";
+	// Same path the invite email uses — members list is NOT the accept UI.
+	const acceptPath = `/auth/accept-invitation?invitationId=${encodeURIComponent(params.invitationId)}`;
 	await sendNotification(params.orgId, [params.userId], {
 		type: "invitation_received",
 		title: `You've been invited to ${params.orgName}`,
 		body: `You were invited${inviterLabel} to join the organization.`,
-		resourceType: "organization",
-		resourceId: params.orgId,
+		resourceType: "invitation",
+		resourceId: params.invitationId,
+		resourceUrl: acceptPath,
 	});
 }

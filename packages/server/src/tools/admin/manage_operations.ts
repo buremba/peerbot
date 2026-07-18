@@ -13,6 +13,7 @@ import {
 	ApproveBatchAction,
 	ExecuteAction,
 	GetRunAction,
+	ListActivityAction,
 	ListAvailableAction,
 	ListRunsAction,
 	type ManageOperationsResult,
@@ -80,6 +81,11 @@ import { action, defineActionTool } from "./action-tool";
 // (breaks a circular init cycle that left MANAGE_WATCHERS_ACTION_KEY in TDZ).
 import { waitForDeviceActionRun } from "./device-action-wait";
 export { waitForDeviceActionRun };
+import { listOrgActivity } from "./manage_operations/activity-feed";
+export {
+	formatActivityAttentionBlock,
+	listOrgActivity,
+} from "./manage_operations/activity-feed";
 import {
 	applyEntityChangeProposal,
 	ENTITY_CHANGE_ACTION_KEYS,
@@ -164,6 +170,7 @@ const manageOperationsTool = defineActionTool("manage_operations", {
   execute: action(ExecuteAction, handleExecute),
   list_runs: action(ListRunsAction, handleListRuns),
   get_run: action(GetRunAction, handleGetRun),
+  list_activity: action(ListActivityAction, handleListActivity),
   approve: action(ApproveAction, handleApprove),
   reject: action(RejectAction, handleReject),
   approve_batch: action(ApproveBatchAction, handleApproveBatch),
@@ -1173,6 +1180,33 @@ async function handleExecute(
 		run_id: runId,
 		status: "failed",
 		error_message: result.error_message,
+	};
+}
+
+async function handleListActivity(
+	args: Static<typeof ListActivityAction>,
+	ctx: ToolContext,
+): Promise<ManageOperationsResult> {
+	const sql = getDb();
+	const orgRows = (await sql`
+    SELECT slug FROM organization WHERE id = ${ctx.organizationId} LIMIT 1
+  `) as unknown as Array<{ slug: string }>;
+	const ownerSlug = orgRows[0]?.slug ?? ctx.organizationId;
+	const result = await listOrgActivity({
+		organizationId: ctx.organizationId,
+		userId: ctx.userId,
+		ownerSlug,
+		limit: args.limit,
+		includeNotifications: args.include_notifications,
+		includeRuns: args.include_runs,
+		aggregate: args.aggregate,
+		kinds: args.kinds,
+	});
+	return {
+		action: "list_activity",
+		items: result.items,
+		total: result.total,
+		limit: result.limit,
 	};
 }
 

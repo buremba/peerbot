@@ -136,6 +136,35 @@ export const GetRunAction = Type.Object({
   run_id: Type.Number(),
 });
 
+/**
+ * Unified workspace attention feed for Home UI + agent context.
+ * Member-readable (same tier as list_runs). Optionally collapses adjacent
+ * same-connection/same-status runs; always returns deep-links (`href`).
+ */
+export const ListActivityAction = Type.Object({
+  action: Type.Literal("list_activity", {
+    description:
+      "Org attention feed: notifications + recent user-facing runs (watcher/sync/action/internal), with optional adjacent aggregation and deep-links for the UI and agent context.",
+  }),
+  limit: Type.Optional(
+    Type.Number({
+      description: "Max cards after aggregation (default 24, max 50)",
+      default: 24,
+    }),
+  ),
+  /** Include notifications (default true when user is authenticated). */
+  include_notifications: Type.Optional(Type.Boolean({ default: true })),
+  /** Include runs (default true). */
+  include_runs: Type.Optional(Type.Boolean({ default: true })),
+  /**
+   * Collapse adjacent same-connection (or watcher) runs that share status.
+   * Failures never merge with successes. Default true.
+   */
+  aggregate: Type.Optional(Type.Boolean({ default: true })),
+  /** Restrict run kinds: watcher | sync | action | notification (default all). */
+  kinds: Type.Optional(Type.Array(Type.String())),
+});
+
 export const ApproveAction = Type.Object({
   action: Type.Literal("approve", {
     description:
@@ -251,6 +280,29 @@ export const ManageOperationsResultSchema = Type.Union([
     run: Type.Record(Type.String(), Type.Unknown()),
   }),
   Type.Object({
+    action: Type.Literal("list_activity"),
+    items: Type.Array(
+      Type.Object({
+        id: Type.String(),
+        kind: Type.String(),
+        title: Type.String(),
+        body: Type.Union([Type.String(), Type.Null()]),
+        at: Type.String(),
+        status: Type.Union([Type.String(), Type.Null()]),
+        count: Type.Integer(),
+        href: Type.Union([Type.String(), Type.Null()]),
+        unread: Type.Optional(Type.Boolean()),
+        notification_id: Type.Optional(Type.Integer()),
+        run_id: Type.Optional(Type.Integer()),
+        member_run_ids: Type.Optional(Type.Array(Type.Integer())),
+        connection_id: Type.Optional(Type.Integer()),
+        watcher_id: Type.Optional(Type.Integer()),
+      }),
+    ),
+    total: Type.Integer(),
+    limit: Type.Integer(),
+  }),
+  Type.Object({
     action: Type.Literal("approve"),
     approved: Type.Literal(true),
     run_id: Type.Integer(),
@@ -288,6 +340,7 @@ export const ManageOperationsSchema = Type.Union([
   ExecuteAction,
   ListRunsAction,
   GetRunAction,
+  ListActivityAction,
   ApproveAction,
   RejectAction,
   ApproveBatchAction,

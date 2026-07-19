@@ -114,6 +114,59 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 		expect(await svc.resolveForConnection("a", CHANNEL, ORG_A)).toBeNull();
 	});
 
+	test("prefers system:chat-link over a newer non-link message Behavior", async () => {
+		// Slash/button routing takes LIMIT 1. A digest Behavior that also matches
+		// message.created on the same channel must not steal the chat-link agent
+		// just because it was updated more recently.
+		const svc = new BehaviorSubscriptionService();
+		await svc.createChatBehavior("agent-a", "slack", CHANNEL, "T1", {
+			organizationId: ORG_A,
+			connectionId: connectionA,
+		});
+		const sql = getDb();
+		const member = await sql<{ userId: string }>`
+			SELECT "userId" FROM member
+			WHERE "organizationId" = ${ORG_A}
+			ORDER BY "createdAt"
+			LIMIT 1
+		`;
+		const createdBy = member[0]?.userId;
+		if (!createdBy) throw new Error("Expected an organization member");
+		const digestId = 9001;
+		await sql`
+			INSERT INTO watchers (
+				id, name, slug, description, organization_id, entity_ids,
+				schedule, next_run_at, triggers, agent_id, model_config,
+				execution_config, sources, version, current_version_id, tags,
+				status, created_by, created_at, updated_at, watcher_group_id
+			) VALUES (
+				${digestId}, 'Channel digest', 'channel-digest',
+				'Background digest', ${ORG_A}, '{}'::bigint[],
+				NULL, NULL,
+				${sql.json([
+					{
+						kind: "event",
+						connector_key: "slack",
+						connection_id: connectionA,
+						event_types: ["message.created"],
+						match: { channel_id: "C123", team_id: "T1" },
+						execution: "turn",
+						active_run: "queue",
+						output: "none",
+						skip_if_unchanged: false,
+					},
+				])},
+				'agent-a2', '{}'::jsonb, NULL, '[]'::jsonb, 1, NULL,
+				ARRAY['digest']::text[], 'active', ${createdBy},
+				current_timestamp, current_timestamp + interval '1 hour',
+				${digestId}
+			)
+		`;
+
+		const resolved = await svc.resolveForConnection("a", CHANNEL, ORG_A);
+		expect(resolved?.agentId).toBe("agent-a");
+	});
+
 	test("serializes concurrent createChatBehavior writes into one Behavior", async () => {
 		const svc = new BehaviorSubscriptionService();
 		await Promise.all([

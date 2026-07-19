@@ -183,12 +183,26 @@ async function loadChatBehaviorSubscriptions(
 		)`
 		: sql``;
 	const limit = filters.limit ? sql`LIMIT ${filters.limit}` : sql``;
+	// Prefer system:chat-link Behaviors over other message.created Behaviors
+	// that share the same channel (digests, recorders). Slash/button routing and
+	// resolveForConnection take LIMIT 1 — without the chat-link preference, a
+	// background Behavior with a newer updated_at steals the interaction.
+	// Tie-break: newest update, then stable behavior_id.
 	const order = filters.oldestFirst
-		? sql`s.created_at ASC, s.behavior_id ASC`
-		: sql`s.updated_at DESC, s.behavior_id DESC`;
+		? sql`
+			CASE WHEN w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[] THEN 0 ELSE 1 END ASC,
+			s.created_at ASC,
+			s.behavior_id ASC
+		`
+		: sql`
+			CASE WHEN w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[] THEN 0 ELSE 1 END ASC,
+			s.updated_at DESC,
+			s.behavior_id DESC
+		`;
 	const rows = await sql`
 		SELECT s.*
 		FROM behavior_message_subscriptions s
+		JOIN watchers w ON w.id = s.behavior_id
 		WHERE true
 		  ${behaviorOrgFilter}
 		  ${agentFilter}

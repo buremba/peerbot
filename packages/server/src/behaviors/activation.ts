@@ -27,11 +27,42 @@ export interface BehaviorActivationResult extends BehaviorEventRunResult {
   trigger: BehaviorEventTrigger;
 }
 
+export interface BehaviorActivationPlan {
+  signal: ConnectorTriggerSignal;
+  replyTargets: MatchingBehaviorActivation[];
+  backgroundTargets: MatchingBehaviorActivation[];
+}
+
 export interface RuntimeConnectionBehaviorLookup {
   connectionOrganizationId: string;
   runtimeConnectionId: string;
   signal: ConnectorTriggerSignal;
   crossOrganization?: boolean;
+}
+
+/**
+ * Split matching Behaviors once, at the connector-neutral activation seam.
+ * Reply targets stay with the chat transport so they retain thread history,
+ * attachments, and live steering; every other target uses the durable run
+ * queue. Connectors never implement this policy themselves.
+ */
+export function planBehaviorActivations(
+  signal: ConnectorTriggerSignal,
+  matches: MatchingBehaviorActivation[],
+): BehaviorActivationPlan {
+  const replyTargets: MatchingBehaviorActivation[] = [];
+  const backgroundTargets: MatchingBehaviorActivation[] = [];
+  for (const match of matches) {
+    if (
+      (match.trigger.execution ?? "turn") === "turn" &&
+      (match.trigger.output ?? "silent") === "reply_to_source"
+    ) {
+      replyTargets.push(match);
+    } else {
+      backgroundTargets.push(match);
+    }
+  }
+  return { signal, replyTargets, backgroundTargets };
 }
 
 /** Connector-neutral Behavior lookup used by webhooks, pollers, and chat. */
@@ -99,10 +130,10 @@ export async function findMatchingBehaviorActivations(
  * triggers, then perform the normal connector-neutral match. Runtime ids are
  * deliberately stable slugs (for example `slackinst-…`), not database ids.
  */
-export async function findMatchingBehaviorActivationsForRuntimeConnection(
+export async function planBehaviorActivationsForRuntimeConnection(
   args: RuntimeConnectionBehaviorLookup,
   db: DbClient = getDb(),
-): Promise<MatchingBehaviorActivation[]> {
+): Promise<BehaviorActivationPlan> {
   const connections = await db<{ id: number }>`
 		SELECT id
 		FROM connections
@@ -111,31 +142,29 @@ export async function findMatchingBehaviorActivationsForRuntimeConnection(
 		  AND connector_key = ${args.signal.connector_key}
 		  AND deleted_at IS NULL
 		LIMIT 1
-	`;
+  `;
   const connectionId = connections[0]?.id;
-  if (connectionId == null) return [];
-  return findMatchingBehaviorActivations(
+  if (connectionId == null) return planBehaviorActivations(args.signal, []);
+  const signal = { ...args.signal, connection_id: Number(connectionId) };
+  const matches = await findMatchingBehaviorActivations(
     args.connectionOrganizationId,
-    { ...args.signal, connection_id: Number(connectionId) },
+    signal,
     db,
     { crossOrganization: args.crossOrganization },
   );
+  return planBehaviorActivations(signal, matches);
 }
 
-/** Match a normalized signal and durably queue its Behavior runs. */
-export async function activateBehaviorSignal(args: {
-  organizationId: string;
+/** Durably queue a precomputed set of Behavior activations. */
+export async function queueBehaviorActivations(args: {
+  matches: MatchingBehaviorActivation[];
   signal: ConnectorTriggerSignal;
   db?: DbClient;
 }): Promise<BehaviorActivationResult[]> {
+  if (args.matches.length === 0) return [];
   const sql = args.db ?? getDb();
-  const matches = await findMatchingBehaviorActivations(
-    args.organizationId,
-    args.signal,
-    sql,
-  );
   const results: BehaviorActivationResult[] = [];
-  for (const match of matches) {
+  for (const match of args.matches) {
     const queued = await createBehaviorEventRun(
       {
         organizationId: match.organizationId,
@@ -156,6 +185,25 @@ export async function activateBehaviorSignal(args: {
   }
 
   return results;
+}
+
+/** Match a normalized signal and durably queue its Behavior runs. */
+export async function activateBehaviorSignal(args: {
+  organizationId: string;
+  signal: ConnectorTriggerSignal;
+  db?: DbClient;
+}): Promise<BehaviorActivationResult[]> {
+  const sql = args.db ?? getDb();
+  const matches = await findMatchingBehaviorActivations(
+    args.organizationId,
+    args.signal,
+    sql,
+  );
+  return queueBehaviorActivations({
+    matches,
+    signal: args.signal,
+    db: sql,
+  });
 }
 
 /**

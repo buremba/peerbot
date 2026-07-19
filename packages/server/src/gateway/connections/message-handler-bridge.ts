@@ -28,12 +28,12 @@ import {
 } from "../services/platform-helpers.js";
 import { resolveSlackBotIdentity } from "../../authz/slack-acl-sync.js";
 import {
+  type BehaviorActivationPlan,
   dispatchBehaviorRunsBestEffort,
-  findMatchingBehaviorActivationsForRuntimeConnection,
-  type MatchingBehaviorActivation,
+  planBehaviorActivationsForRuntimeConnection,
+  queueBehaviorActivations,
   type RuntimeConnectionBehaviorLookup,
 } from "../../behaviors/activation.js";
-import { createBehaviorEventRun } from "../../runs/queue-service.js";
 import {
   buildAgentSettingsUrl,
   buildProviderConnectUrl,
@@ -450,11 +450,9 @@ export class MessageHandlerBridge {
     private services: CoreServices,
     private manager: ChatInstanceManager,
     private commandDispatcher?: CommandDispatcher,
-    private behaviorLookup: (
+    private behaviorPlanner: (
       args: RuntimeConnectionBehaviorLookup
-    ) => Promise<
-      MatchingBehaviorActivation[]
-    > = findMatchingBehaviorActivationsForRuntimeConnection
+    ) => Promise<BehaviorActivationPlan> = planBehaviorActivationsForRuntimeConnection
   ) {
     this.artifactStore = services.getArtifactStore();
     this.publicGatewayUrl = services.getPublicGatewayUrl();
@@ -579,22 +577,20 @@ export class MessageHandlerBridge {
         ...(conversationId !== channelId ? { thread_id: conversationId } : {}),
       },
     };
-    const behaviors = this.connection.organizationId
-      ? await this.behaviorLookup({
+    const behaviorPlan = this.connection.organizationId
+      ? await this.behaviorPlanner({
           connectionOrganizationId: this.connection.organizationId,
           runtimeConnectionId: this.connection.id,
           signal: behaviorSignal,
           crossOrganization: isPreview,
         })
-      : [];
-    const replyBehaviors = behaviors.filter(
-      (candidate) =>
-        (candidate.trigger.execution ?? "turn") === "turn" &&
-        (candidate.trigger.output ?? "silent") === "reply_to_source"
-    );
-    const backgroundBehaviors = behaviors.filter(
-      (candidate) => !replyBehaviors.includes(candidate)
-    );
+      : {
+          signal: behaviorSignal,
+          replyTargets: [],
+          backgroundTargets: [],
+        };
+    const replyBehaviors = behaviorPlan.replyTargets;
+    const backgroundBehaviors = behaviorPlan.backgroundTargets;
     const behavior = replyBehaviors[0] ?? backgroundBehaviors[0];
     const fallbackResolved = behavior
       ? null
@@ -700,7 +696,8 @@ export class MessageHandlerBridge {
       resolved.organizationId ?? this.connection.organizationId;
     const routingOrganizationIds = [
       ...new Set([
-        ...behaviors.map((candidate) => candidate.organizationId),
+        ...replyBehaviors.map((candidate) => candidate.organizationId),
+        ...backgroundBehaviors.map((candidate) => candidate.organizationId),
         ...(routingOrgId ? [routingOrgId] : []),
       ]),
     ];
@@ -1025,20 +1022,13 @@ export class MessageHandlerBridge {
       }
     }
 
-    const effectiveSignal = { ...behaviorSignal, input_text: messageText };
-    const backgroundRuns: Array<{ runId: number; status: string }> = [];
-    for (const candidate of backgroundBehaviors) {
-      const queued = await createBehaviorEventRun({
-        organizationId: candidate.organizationId,
-        watcherId: candidate.behaviorId,
-        agentId: candidate.agentId,
-        trigger: candidate.trigger,
-        signal: effectiveSignal,
-        deviceWorkerId: candidate.deviceWorkerId,
-        agentKind: candidate.agentKind,
-      });
-      backgroundRuns.push(queued);
-    }
+    const backgroundRuns = await queueBehaviorActivations({
+      matches: backgroundBehaviors,
+      signal: {
+        ...behaviorPlan.signal,
+        input_text: messageText,
+      },
+    });
     await dispatchBehaviorRunsBestEffort(backgroundRuns);
 
     const directTargets =

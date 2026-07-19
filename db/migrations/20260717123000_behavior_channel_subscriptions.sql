@@ -6,6 +6,9 @@
 -- synchronizes their writes with the new runtime. A later contract migration
 -- must replay this backfill after old replicas are gone, then remove the table
 -- and bridge.
+-- Operational cost: O(agent_channel_bindings) under a write lock. This is an
+-- admin-sized table, but the migration has not been timed against production;
+-- verify its row count and runtime before the pre-upgrade hook.
 
 -- Historical Slack Grid rows could contain an enterprise id (E...) where a
 -- concrete workspace id (T...) belongs. Heal from the durable channel transcript
@@ -260,6 +263,56 @@ WHERE platform LIKE 'slack%'
 END
 $migration$;
 
+-- Canonical read projection for every chat-routing consumer. This is an
+-- ordinary view (no stored state): Behaviors remain the sole source of truth.
+CREATE OR REPLACE VIEW behavior_message_subscriptions AS
+SELECT
+  w.id AS behavior_id,
+  w.organization_id,
+  w.agent_id,
+  trigger->>'connector_key' AS platform,
+  COALESCE(
+    NULLIF(trigger->'match'->>'channel_key', ''),
+    (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+  ) AS channel_id,
+  trigger->'match'->>'channel_id' AS native_channel_id,
+  COALESCE(
+    NULLIF(trigger->'match'->>'team_id', ''),
+    c.external_tenant_id,
+    c.config->'chatMetadata'->>'teamId'
+  ) AS team_id,
+  NULLIF(trigger->'match'->>'team_id', '') AS trigger_team_id,
+  c.id AS connection_id,
+  c.organization_id AS connection_organization_id,
+  c.slug AS connection_slug,
+  CASE WHEN c.slug LIKE 'agentconn-%'
+    THEN substring(c.slug FROM 11) ELSE c.slug END AS runtime_connection_id,
+  c.status AS connection_status,
+  c.credential_mode,
+  c.config->'settings'->'previewMode' = 'true'::jsonb AS preview_mode,
+  COALESCE(c.external_tenant_id, c.config->'chatMetadata'->>'teamId')
+    AS connection_team_id,
+  NULLIF(w.execution_config->>'model', '') AS model,
+  w.created_at,
+  w.updated_at
+FROM watchers w
+CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+JOIN connections c
+  ON c.id = CASE
+    WHEN jsonb_typeof(trigger->'connection_id') = 'number'
+      THEN (trigger->>'connection_id')::bigint
+    ELSE NULL
+  END
+ AND c.connector_key = trigger->>'connector_key'
+ AND c.deleted_at IS NULL
+WHERE w.status = 'active'
+  AND w.agent_id IS NOT NULL
+  AND trigger->>'kind' = 'event'
+  AND jsonb_typeof(trigger->'connection_id') = 'number'
+  AND trigger->'event_types' ? 'message.created'
+  AND jsonb_typeof(trigger->'match') = 'object'
+  AND NULLIF(trigger->'match'->>'channel_id', '') IS NOT NULL;
+
 -- Old replicas still write the retained table during the rolling deployment.
 -- Fold those writes into the tagged canonical Behavior under the same advisory
 -- lock used by the new runtime. New replicas mirror their writes in the other
@@ -506,6 +559,8 @@ WHEN (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL)
 EXECUTE FUNCTION archive_chat_behaviors_for_deleted_connection();
 
 -- migrate:down
+
+DROP VIEW IF EXISTS behavior_message_subscriptions;
 
 DROP TRIGGER IF EXISTS sync_legacy_channel_binding_behavior
   ON agent_channel_bindings;

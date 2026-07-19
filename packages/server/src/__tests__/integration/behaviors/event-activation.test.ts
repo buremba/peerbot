@@ -1,5 +1,8 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { activateBehaviorSignal } from "../../../behaviors/activation";
+import {
+	activateBehaviorSignal,
+	planBehaviorActivationsForRuntimeConnection,
+} from "../../../behaviors/activation";
 import type { Env } from "../../../index";
 import { manageBehaviors } from "../../../tools/admin/manage_behaviors";
 import { getBehavior } from "../../../tools/get_behavior";
@@ -30,6 +33,7 @@ describe("Behavior connector-event activation", () => {
 		const connection = await createTestConnection({
 			organization_id: org.id,
 			connector_key: "github",
+			slug: "agentconn-runtime-test",
 			created_by: user.id,
 		});
 		const trigger = {
@@ -71,6 +75,14 @@ describe("Behavior connector-event activation", () => {
 			input_text: "Review PR 208",
 			attributes: { repository: "lobu-ai/lobu", pull_number: 208 },
 		};
+		const runtimePlan = await planBehaviorActivationsForRuntimeConnection({
+			connectionOrganizationId: org.id,
+			runtimeConnectionId: "runtime-test",
+			signal: { ...signal, connection_id: undefined },
+		});
+		expect(runtimePlan.signal.connection_id).toBe(connection.id);
+		expect(runtimePlan.backgroundTargets).toHaveLength(1);
+		expect(runtimePlan.replyTargets).toHaveLength(0);
 		const first = await activateBehaviorSignal({
 			organizationId: org.id,
 			signal,

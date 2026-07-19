@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import type { MatchingBehaviorActivation } from "../../behaviors/activation.js";
+import {
+  type MatchingBehaviorActivation,
+  planBehaviorActivations,
+} from "../../behaviors/activation.js";
 import { ConversationStateStore } from "../connections/conversation-state-store.js";
 import {
   buildAttachmentTranscriptText,
@@ -318,7 +321,7 @@ function createBridgeHarness(opts: {
     services,
     manager,
     undefined,
-    async () => [],
+    async ({ signal }) => planBehaviorActivations(signal, []),
   );
 
   let adapter: unknown;
@@ -621,7 +624,14 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       services,
       manager,
 			opts.commandDispatcher as never,
-      async () => opts.behaviors ?? [],
+      async ({ signal }) =>
+        planBehaviorActivations(
+          {
+            ...signal,
+            connection_id: opts.behaviors?.[0]?.trigger.connection_id,
+          },
+          opts.behaviors ?? [],
+        ),
     );
     return {
       bridge,

@@ -99,83 +99,19 @@ export async function validateDeliveryAuthorization(params: {
       : { authorized: false, reason: 'agent-mismatch' };
   }
 
-  const bindingRows = delivery.teamId
-    ? await sql`
-        SELECT agent_id
-        FROM (
-          SELECT
-            w.agent_id,
-            COALESCE(
-              NULLIF(trigger->'match'->>'team_id', ''),
-              c.external_tenant_id,
-              c.config->'chatMetadata'->>'teamId'
-            ) AS team_id
-          FROM watchers w
-          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
-          JOIN connections c
-            ON c.id = CASE
-              WHEN jsonb_typeof(trigger->'connection_id') = 'number'
-                THEN (trigger->>'connection_id')::bigint
-              ELSE NULL
-            END
-           AND c.connector_key = trigger->>'connector_key'
-           AND c.deleted_at IS NULL
-          WHERE w.status = 'active'
-            AND w.organization_id = ${organizationId}
-            AND trigger->>'kind' = 'event'
-            AND trigger->>'connector_key' = ${delivery.platform}
-            AND jsonb_typeof(trigger->'connection_id') = 'number'
-            AND c.id = ${connection.id}
-            AND trigger->'event_types' ? 'message.created'
-            AND (
-              COALESCE(
-                NULLIF(trigger->'match'->>'channel_key', ''),
-                (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
-              ) = ${delivery.channelId}
-              OR trigger->'match'->>'channel_id' = ${delivery.channelId}
-            )
-        ) subscription
-        WHERE team_id = ${delivery.teamId}
-        LIMIT 1
-      `
-    : await sql`
-        SELECT agent_id
-        FROM (
-          SELECT
-            w.agent_id,
-            COALESCE(
-              NULLIF(trigger->'match'->>'team_id', ''),
-              c.external_tenant_id,
-              c.config->'chatMetadata'->>'teamId'
-            ) AS team_id
-          FROM watchers w
-          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
-          JOIN connections c
-            ON c.id = CASE
-              WHEN jsonb_typeof(trigger->'connection_id') = 'number'
-                THEN (trigger->>'connection_id')::bigint
-              ELSE NULL
-            END
-           AND c.connector_key = trigger->>'connector_key'
-           AND c.deleted_at IS NULL
-          WHERE w.status = 'active'
-            AND w.organization_id = ${organizationId}
-            AND trigger->>'kind' = 'event'
-            AND trigger->>'connector_key' = ${delivery.platform}
-            AND jsonb_typeof(trigger->'connection_id') = 'number'
-            AND c.id = ${connection.id}
-            AND trigger->'event_types' ? 'message.created'
-            AND (
-              COALESCE(
-                NULLIF(trigger->'match'->>'channel_key', ''),
-                (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
-              ) = ${delivery.channelId}
-              OR trigger->'match'->>'channel_id' = ${delivery.channelId}
-            )
-        ) subscription
-        WHERE team_id IS NULL
-        LIMIT 1
-      `;
+  const bindingRows = await sql`
+    SELECT agent_id
+    FROM behavior_message_subscriptions
+    WHERE organization_id = ${organizationId}
+      AND platform = ${delivery.platform}
+      AND connection_id = ${connection.id}
+      AND (
+        channel_id = ${delivery.channelId}
+        OR native_channel_id = ${delivery.channelId}
+      )
+      AND team_id IS NOT DISTINCT FROM ${delivery.teamId ?? null}::text
+    LIMIT 1
+  `;
   const binding = (bindingRows as unknown as Array<{ agent_id: string }>)[0];
   return binding?.agent_id === agentId
     ? { authorized: true }

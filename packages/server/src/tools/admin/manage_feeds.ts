@@ -168,19 +168,11 @@ async function handleListFeeds(
            -- Agent this feed's channel is bound to (streaming feeds only), so the
            -- Behaviors Listen picker can hide channels already owned by another
            -- agent instead of silently reassigning them on bind.
-           (SELECT w.agent_id
-             FROM watchers w
-             CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
-             WHERE w.status = 'active'
-               AND w.organization_id = p.organization_id
-               AND trigger->>'kind' = 'event'
-               AND jsonb_typeof(trigger->'connection_id') = 'number'
-               AND (trigger->>'connection_id')::bigint = p.connection_id
-               AND trigger->'event_types' ? 'message.created'
-               AND COALESCE(
-                 NULLIF(trigger->'match'->>'channel_key', ''),
-                 (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
-               ) = p.feed_key
+           (SELECT subscription.agent_id
+             FROM behavior_message_subscriptions subscription
+             WHERE subscription.organization_id = p.organization_id
+               AND subscription.connection_id = p.connection_id
+               AND subscription.channel_id = p.feed_key
              LIMIT 1) AS target_agent_id,
            COALESCE(ec.event_count, 0)::int AS event_count
     FROM page p
@@ -229,20 +221,12 @@ async function handleReadFeed(
            -- team the about-edge writer keyed on. For a Grid org-wide install the
            -- connection tenant is the enterprise E-id, so the about lookup must
            -- NOT fall back to it; the binding holds the real T-id.
-           (SELECT NULLIF(trigger->'match'->>'team_id', '')
-             FROM watchers w
-             CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
-             WHERE w.status = 'active'
-               AND w.organization_id = f.organization_id
-               AND trigger->>'kind' = 'event'
-               AND jsonb_typeof(trigger->'connection_id') = 'number'
-               AND (trigger->>'connection_id')::bigint = f.connection_id
-               AND trigger->'event_types' ? 'message.created'
-               AND COALESCE(
-                 NULLIF(trigger->'match'->>'channel_key', ''),
-                 (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
-               ) = f.feed_key
-               AND NULLIF(trigger->'match'->>'team_id', '') IS NOT NULL
+           (SELECT subscription.trigger_team_id
+             FROM behavior_message_subscriptions subscription
+             WHERE subscription.organization_id = f.organization_id
+               AND subscription.connection_id = f.connection_id
+               AND subscription.channel_id = f.feed_key
+               AND subscription.trigger_team_id IS NOT NULL
              LIMIT 1) AS binding_team_id,
            (
              SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)

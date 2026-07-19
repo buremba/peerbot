@@ -32,6 +32,12 @@ RUN_LOG="$RUN_DIR/run.log"
 MOCK_LOG="$RUN_DIR/mock.log"
 CHAT_OUT="$RUN_DIR/chat.out"
 
+# Isolate CLI contexts, credentials, and embedded-runtime discovery from the
+# developer's real HOME. Without this, `lobu run` changes the active local
+# context and a running Owletto menubar follows the E2E gateway, contaminating
+# its fresh database with real device registrations and default Behaviors.
+export HOME="$RUN_DIR/home"
+
 # Node 22-24 is required (the worker uses isolated-vm). Prefer a Homebrew node@22
 # locally; CI provides node via actions/setup-node.
 if [ -x /opt/homebrew/opt/node@22/bin/node ] && ! node --version 2>/dev/null | grep -qE '^v(22|23|24)\.'; then
@@ -49,7 +55,7 @@ trap cleanup EXIT
 fail() { echo "❌ SDK e2e FAILED: $*" >&2; [ -f "$RUN_LOG" ] && { echo "--- last 40 lines of run.log ---" >&2; tail -40 "$RUN_LOG" >&2; }; exit 1; }
 
 echo "▶ node $(node --version), gateway :$GW_PORT, mock :$MOCK_PORT"
-rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR"
+rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR" "$HOME"
 cleanup  # free ports from any prior run
 
 # 0) Make embedded Postgres self-contained on Linux. The @embedded-postgres PG18

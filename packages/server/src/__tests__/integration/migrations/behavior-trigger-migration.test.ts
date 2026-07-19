@@ -8,6 +8,7 @@ import { cleanupTestDatabase } from '../../setup/test-db';
 import { createTestAgent, seedOwnerContext } from '../../setup/test-fixtures';
 
 const TRIGGER_MIGRATION = '20260717121000_behavior_triggers.sql';
+const SUBSCRIPTION_MIGRATION = '20260717123000_behavior_channel_subscriptions.sql';
 
 function resolveMigrationsDir(): string {
   let dir = __dirname;
@@ -43,6 +44,10 @@ describe('Behavior trigger migration', () => {
     const migrationsDir = resolveMigrationsDir();
     const up = loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION);
     const down = loadMigrationDownSection(migrationsDir, TRIGGER_MIGRATION);
+    const subscriptionDown = loadMigrationDownSection(
+      migrationsDir,
+      SUBSCRIPTION_MIGRATION
+    );
     const sql = getDb();
     const canonicalWrite = [
       {
@@ -123,6 +128,9 @@ describe('Behavior trigger migration', () => {
           SELECT triggers FROM watchers WHERE id = ${watcherId}
         `;
 
+        // Roll migrations back in production order: the later subscription
+        // projection depends on watchers.triggers and must be removed first.
+        await tx.unsafe(subscriptionDown);
         await tx.unsafe(down);
         const [artifacts] = await tx<{ count: number }>`
           SELECT (

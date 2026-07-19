@@ -588,20 +588,12 @@ export function streamingFeedChannelKeyExpr(
 	return `UPPER(
     COALESCE(
       (
-        SELECT NULLIF(trigger->'match'->>'team_id', '')
-        FROM watchers w
-        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
-        WHERE w.status = 'active'
-          AND w.organization_id = ${feedAlias}.organization_id
-          AND trigger->>'kind' = 'event'
-          AND jsonb_typeof(trigger->'connection_id') = 'number'
-          AND (trigger->>'connection_id')::bigint = ${feedAlias}.connection_id
-          AND trigger->'event_types' ? 'message.created'
-          AND COALESCE(
-            NULLIF(trigger->'match'->>'channel_key', ''),
-            (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
-          ) = ${feedAlias}.feed_key
-          AND NULLIF(trigger->'match'->>'team_id', '') IS NOT NULL
+        SELECT subscription.trigger_team_id
+        FROM behavior_message_subscriptions subscription
+        WHERE subscription.organization_id = ${feedAlias}.organization_id
+          AND subscription.connection_id = ${feedAlias}.connection_id
+          AND subscription.channel_id = ${feedAlias}.feed_key
+          AND subscription.trigger_team_id IS NOT NULL
         LIMIT 1
       ),
       ${connectionAlias}.external_tenant_id,

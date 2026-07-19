@@ -341,10 +341,10 @@ expect_grep "lobu memory seed --dry-run" "Dry run" "$SEEDPROJ" memory seed --dry
 # memory exec -- run a trivial ClientSDK script.
 echo 'export default async () => "cli-smoke-exec-ok";' > "$RUN_DIR/exec.ts"
 expect_ok "lobu memory exec (ClientSDK script)" "$PROJ" memory exec "$RUN_DIR/exec.ts" -c local
-# memory init -- wire a local MCP CLIENT (the --agent is a coding tool like
-# codex/claude-code, NOT a Lobu agent id) to the memory MCP url. --url skips
-# the picker; --skip-auth skips the login step; isolated HOME contains the write.
-( cd "$PROJ" && timeout 30 node "$LOBU_BIN" memory init --url "http://localhost:$GW_PORT/mcp" --agent codex --skip-auth ) > "$OUT" 2>&1 </dev/null; RC=$?
+# memory init -- wire a local MCP client to the memory MCP url. Cursor's config
+# is a deterministic file write under the isolated HOME, with no external CLI
+# process or browser handoff. --url skips the picker; --skip-auth skips login.
+( cd "$PROJ" && timeout 30 node "$LOBU_BIN" memory init --url "http://localhost:$GW_PORT/mcp" --agent cursor --skip-auth ) > "$OUT" 2>&1 </dev/null; RC=$?
 [ "$RC" -eq 0 ] && pass "lobu memory init --url --agent --skip-auth" || softfail "lobu memory init (exit=$RC)"
 expect_grep "lobu doctor --memory-only" "ok: true" "$PROJ" doctor --memory-only
 

@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { defineAgent, defineBehavior, defineConfig } from "@lobu/cli/config";
 import type { AgentSettings } from "@lobu/core";
 import chalk from "chalk";
 import type { DesiredAgent, DesiredState } from "../desired-state.js";
 import { computeDiff, type RemoteSnapshot } from "../diff.js";
+import { mapProjectToDesiredState } from "../map-config.js";
 import { renderPlan, renderSummary } from "../render.js";
 
 // Force chalk to render plain text in snapshots regardless of TTY detection.
@@ -656,6 +658,51 @@ describe("apply diff — watchers", () => {
     const row = plan.rows.find((r) => r.kind === "watcher");
     expect(row?.verb).toBe("noop");
     expect(plan.counts.create).toBe(0);
+  });
+
+  test("noop after the server expands minimally authored trigger defaults", () => {
+    const agent = defineAgent({ id: "triage" });
+    const desired = mapProjectToDesiredState(
+      defineConfig({
+        agents: [agent],
+        behaviors: [
+          defineBehavior({
+            agent,
+            slug: "minimal-schedule",
+            prompt: "Produce a digest.",
+            triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
+          }),
+        ],
+      })
+    );
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      agents: [{ agentId: "triage", name: "triage" }],
+      agentSettings: new Map([["triage", null]]),
+      platformsByAgent: new Map([["triage", []]]),
+      watchers: [
+        {
+          slug: "minimal-schedule",
+          agent_id: "triage",
+          prompt: "Produce a digest.",
+          triggers: [
+            {
+              kind: "schedule",
+              cron: "0 9 * * 1",
+              timezone: null,
+              execution: "window",
+              active_run: "coalesce",
+              skip_if_unchanged: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    const row = computeDiff(desired, remote).rows.find(
+      (candidate) => candidate.kind === "watcher"
+    );
+    expect(row?.verb).toBe("noop");
   });
 
   test("update when a schedule trigger changes remotely", () => {

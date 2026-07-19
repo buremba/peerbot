@@ -601,15 +601,34 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
         );
       }
       hasSchedule = true;
-      return trigger;
+      return {
+        kind: "schedule" as const,
+        cron: trigger.cron.trim(),
+        timezone: trigger.timezone ?? null,
+        execution: "window" as const,
+        active_run: "coalesce" as const,
+        skip_if_unchanged: trigger.skip_if_unchanged ?? true,
+      };
     }
     const { connection, ...eventTrigger } = trigger;
+    const normalizedEventTrigger = {
+      ...eventTrigger,
+      event_types: Array.from(new Set(eventTrigger.event_types)),
+      match:
+        eventTrigger.match && Object.keys(eventTrigger.match).length > 0
+          ? eventTrigger.match
+          : undefined,
+      execution: eventTrigger.execution ?? "turn",
+      active_run: eventTrigger.active_run ?? "queue",
+      output: eventTrigger.output ?? "silent",
+      skip_if_unchanged: eventTrigger.skip_if_unchanged ?? true,
+    } as const;
     if (connection !== undefined && trigger.connection_id !== undefined) {
       throw new ValidationError(
         `Behavior "${watcher.slug}" trigger must use either connection or connection_id, not both`
       );
     }
-    if (connection === undefined) return eventTrigger;
+    if (connection === undefined) return normalizedEventTrigger;
     if (
       typeof connection !== "string" &&
       connectorKey(connection.connector) !== trigger.connector_key
@@ -620,7 +639,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
     }
     const connectionSlug =
       typeof connection === "string" ? connection : connection.slug;
-    return { ...eventTrigger, connectionSlug };
+    return { ...normalizedEventTrigger, connectionSlug };
   });
   return {
     slug: watcher.slug,

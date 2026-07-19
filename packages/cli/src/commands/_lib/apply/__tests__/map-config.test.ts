@@ -379,10 +379,6 @@ describe("mapProjectToDesiredState", () => {
           connector_key: "github",
           connection: github,
           event_types: ["pull_request.opened"],
-          execution: "turn",
-          active_run: "queue",
-          output: "silent",
-          skip_if_unchanged: true,
         },
         { kind: "schedule", cron: "0 */12 * * *" },
       ],
@@ -403,10 +399,18 @@ describe("mapProjectToDesiredState", () => {
     expect(dw?.triggers?.[1]).toEqual({
       kind: "schedule",
       cron: "0 */12 * * *",
+      timezone: null,
+      execution: "window",
+      active_run: "coalesce",
+      skip_if_unchanged: true,
     });
     expect(dw?.triggers?.[0]).toMatchObject({
       connector_key: "github",
       connectionSlug: "github-main",
+      execution: "turn",
+      active_run: "queue",
+      output: "silent",
+      skip_if_unchanged: true,
     });
 
     resolveBehaviorConnectionRefs(

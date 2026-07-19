@@ -8,6 +8,7 @@ import {
 } from "../../db/client.js";
 import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection.js";
 import { requireOrgId } from "../../lobu/stores/org-context.js";
+import { getNextNumericId } from "../../tools/admin/helpers/db-helpers.js";
 import {
 	resolveStreamingChannelFeedId,
 	softDeleteStreamingChannelFeed,
@@ -425,15 +426,8 @@ export class BehaviorSubscriptionService {
 				agentId,
 				options.configuredBy,
 			);
-			const ids = await tx<{ watcher_id: number; version_id: number }>`
-				SELECT
-					nextval('watchers_id_seq')::integer AS watcher_id,
-					nextval('watcher_template_versions_id_seq')::integer AS version_id
-			`;
-			const allocated = ids[0];
-			if (!allocated) throw new Error("Failed to allocate Behavior IDs.");
-			const watcherId = allocated.watcher_id;
-			const versionId = allocated.version_id;
+			const watcherId = await getNextNumericId(tx, "watchers");
+			const versionId = await getNextNumericId(tx, "watcher_versions");
 			await tx`
 				INSERT INTO watchers (
 					id, name, slug, description, organization_id, entity_ids,

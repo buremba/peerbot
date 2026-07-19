@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "../../../db/client";
 import { loadMigrationUpSection } from "../../../db/migration-loader";
+import type { Env } from "../../../index";
+import { manageBehaviors } from "../../../tools/admin/manage_behaviors";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase } from "../../setup/test-db";
 import {
@@ -41,7 +43,7 @@ describe("Behavior channel-subscription migration", () => {
 	});
 
 	it("backfills one canonical Behavior, drops the state table, and replays safely", async () => {
-		const { org, user } = await seedOwnerContext();
+		const { org, user, ctx } = await seedOwnerContext();
 		const foreignOrg = await createTestOrganization({
 			name: "Foreign migration transcript",
 		});
@@ -56,6 +58,33 @@ describe("Behavior channel-subscription migration", () => {
 			created_by: user.id,
 			slug: "slackinst-migration",
 		});
+		const sql = getDb();
+		const scheduled = await manageBehaviors(
+			{
+				action: "create",
+				slug: "legacy-scheduled-behavior",
+				name: "Legacy scheduled Behavior",
+				prompt: "Run on every legacy schedule tick.",
+				agent_id: agent.agentId,
+				triggers: [
+					{
+						kind: "schedule",
+						cron: "0 * * * *",
+						skip_if_unchanged: false,
+					},
+				],
+			},
+			{} as Env,
+			ctx,
+		);
+		if (scheduled.action !== "create" || !("watcher_id" in scheduled)) {
+			throw new Error("Scheduled Behavior creation did not complete");
+		}
+		const scheduledBehaviorId = Number(scheduled.watcher_id);
+		await sql`
+			UPDATE watchers SET triggers = '[]'::jsonb
+			WHERE id = ${scheduledBehaviorId}
+		`;
 		const migrationsDir = resolveMigrationsDir();
 		const triggerUp = loadMigrationUpSection(
 			migrationsDir,
@@ -65,7 +94,6 @@ describe("Behavior channel-subscription migration", () => {
 			migrationsDir,
 			SUBSCRIPTION_MIGRATION,
 		);
-		const sql = getDb();
 		let captured:
 			| {
 					legacyTable: string | null;
@@ -73,6 +101,7 @@ describe("Behavior channel-subscription migration", () => {
 					triggers: unknown;
 					tagged: boolean;
 					executionConfig: unknown;
+					scheduledTriggers: unknown;
 			  }
 			| undefined;
 
@@ -140,12 +169,16 @@ describe("Behavior channel-subscription migration", () => {
 				const [compatView] = await tx<{ name: string | null }>`
 					SELECT to_regclass('public.behavior_channel_subscriptions')::text AS name
 				`;
+				const [scheduledBehavior] = await tx<{ triggers: unknown }>`
+					SELECT triggers FROM watchers WHERE id = ${scheduledBehaviorId}
+				`;
 				captured = {
 					legacyTable: legacy.name,
 					compatView: compatView.name,
 					triggers: behavior.triggers,
 					tagged: behavior.tagged,
 					executionConfig: behavior.execution_config,
+					scheduledTriggers: scheduledBehavior.triggers,
 				};
 				throw new Rollback();
 			});
@@ -174,6 +207,15 @@ describe("Behavior channel-subscription migration", () => {
 			],
 			tagged: true,
 			executionConfig: { model: "anthropic/claude-sonnet" },
+			scheduledTriggers: [
+				{
+					kind: "schedule",
+					cron: "0 * * * *",
+					execution: "window",
+					active_run: "coalesce",
+					skip_if_unchanged: false,
+				},
+			],
 		});
 	});
 });

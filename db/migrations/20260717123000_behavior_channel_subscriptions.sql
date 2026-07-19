@@ -22,6 +22,12 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Share the canonical runtime allocator locks while deriving MAX(id)+1.
+  -- This keeps a rolling-deploy writer from choosing the same IDs while the
+  -- legacy rows are being folded into Behaviors.
+  PERFORM pg_advisory_xact_lock(hashtext('watchers_id_alloc'));
+  PERFORM pg_advisory_xact_lock(hashtext('watcher_versions_id_alloc'));
+
 WITH real_team AS (
   SELECT DISTINCT ON (cm.organization_id, cm.connection_id, cm.channel_id)
     cm.organization_id,
@@ -138,8 +144,12 @@ WHERE platform LIKE 'slack%'
         binding.organization_id;
     END IF;
 
-    watcher_id := nextval('watchers_id_seq')::integer;
-    version_id := nextval('watcher_template_versions_id_seq')::integer;
+    -- Runtime Behavior creation uses the repository's locked MAX(id)+1
+    -- allocator rather than these legacy sequences. Allocate from the live
+    -- tables too, otherwise a populated install can have a stale sequence and
+    -- collide with an existing primary key during this one-shot migration.
+    SELECT COALESCE(MAX(id), 0) + 1 INTO watcher_id FROM watchers;
+    SELECT COALESCE(MAX(id), 0) + 1 INTO version_id FROM watcher_versions;
     behavior_trigger := jsonb_build_array(
       jsonb_build_object(
         'kind', 'event',

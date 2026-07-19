@@ -139,4 +139,6 @@ export interface ConnectorTriggerSignal {
 	url?: string;
 	occurred_at?: string;
 	attributes?: Record<string, string | number | boolean | null>;
+	/** The connector delivered the same durable event state again. */
+	unchanged?: boolean;
 }

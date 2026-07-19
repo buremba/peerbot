@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { inferWatcherGranularityFromSchedule } from "@lobu/connector-sdk";
+import {
+	inferWatcherGranularityFromSchedule,
+	type WatcherTimeGranularity,
+} from "@lobu/connector-sdk";
 import { generateWorkerToken, getErrorMessage } from "@lobu/core";
 import { intervals } from "../config/intervals";
 import type { DbClient } from "../db/client";
-import { getDb, pgTextArray } from "../db/client";
+import { getDb, parsePgNumberArray, pgTextArray } from "../db/client";
 import { getInternalGatewayUrl } from "../gateway/config/index";
 import { incrementCounter, setGauge } from "../gateway/metrics/prometheus";
 import type { Env } from "../index";
@@ -17,7 +20,10 @@ import { materializeDueItems } from "../scheduled/due-materializer";
 import { markStaleRunsAsTimeout } from "../scheduled/stale-run-sweeper";
 import { fingerprintWatcherSources } from "../tools/get_content/watcher-mode";
 import { nextRunAt } from "../utils/cron";
+import { ensureCanvasEntity, findCanvasHead } from "../utils/canvas-events";
+import { insertEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
+import { isUniqueViolation } from "../utils/pg-errors";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
 import { computePendingWindow } from "../utils/window-utils";
 import {
@@ -46,6 +52,9 @@ interface DueWatcherRow {
 	/** Preferred local agent kind on the pinned device (e.g. 'claude-code'). */
 	agent_kind?: string | null;
 	triggers?: Array<Record<string, unknown>>;
+	entity_ids?: unknown;
+	created_by?: string | null;
+	current_version_id?: number | string | null;
 }
 
 interface ClaimedWatcherRunRow {
@@ -248,6 +257,62 @@ async function enqueueWatcherRunForRecord(
 	);
 
 	return queued;
+}
+
+async function persistSkippedWatcherWindow(
+	sql: DbClient,
+	watcher: DueWatcherRow,
+	granularity: WatcherTimeGranularity,
+	windowStart: Date,
+	windowEnd: Date,
+): Promise<void> {
+	try {
+		await sql.begin(async (tx) => {
+			const period = {
+				watcherId: watcher.id,
+				granularity,
+				windowStart: windowStart.toISOString(),
+			};
+			if (await findCanvasHead(tx, period)) return;
+
+			const entityIds = parsePgNumberArray(watcher.entity_ids);
+			const canvasEntityId = await ensureCanvasEntity({
+				tx,
+				watcherId: watcher.id,
+				organizationId: watcher.organization_id,
+				parentEntityId: entityIds[0] ?? null,
+				createdBy: watcher.created_by,
+			});
+			await insertEvent(
+				{
+					entityIds: canvasEntityId == null ? [] : [canvasEntityId],
+					organizationId: watcher.organization_id,
+					originId: `canvas_skip_${randomUUID()}`,
+					payloadType: "json_template",
+					payloadData: {},
+					semanticType: "canvas_state",
+					metadata: {
+						watcher_id: watcher.id,
+						granularity,
+						window_start: windowStart.toISOString(),
+						window_end: windowEnd.toISOString(),
+						content_analyzed: 0,
+						version_id:
+							watcher.current_version_id == null
+								? null
+								: Number(watcher.current_version_id),
+					},
+					occurredAt: windowEnd,
+					createdBy: watcher.created_by,
+				},
+				{ sql: tx },
+			);
+		});
+	} catch (error) {
+		// Two scheduler replicas can fingerprint the same due period. The unique
+		// canvas-root index makes the cursor write a DB-mediated idempotent race.
+		if (!isUniqueViolation(error, "idx_canvas_chain_root")) throw error;
+	}
 }
 
 export async function enqueueWatcherRunForWatcher(
@@ -670,7 +735,8 @@ export async function materializeDueWatcherRuns(
 			// dispatch-time `ensureWatcherAgentExists` check stays as a delete-after-select
 			// backstop.
 			const dueWatchers = await sql<DueWatcherRow>`
-        SELECT w.id, w.organization_id, w.agent_id, w.schedule, w.triggers,
+				SELECT w.id, w.organization_id, w.agent_id, w.schedule, w.triggers,
+				       w.entity_ids, w.created_by, w.current_version_id,
                w.device_worker_id::text AS device_worker_id, w.agent_kind
         FROM watchers w
         WHERE w.status = 'active'
@@ -761,6 +827,13 @@ export async function materializeDueWatcherRuns(
 					sourceState.empty ||
 					previous[0]?.fingerprint === sourceState.fingerprint
 				) {
+					await persistSkippedWatcherWindow(
+						sql,
+						watcher,
+						granularity,
+						windowStart,
+						windowEnd,
+					);
 					await advanceWatcherSchedule(sql, watcher.id);
 					logger.info(
 						{ watcherId: watcher.id, empty: sourceState.empty },

@@ -15,7 +15,7 @@ describe("scheduled Behavior unchanged gate", () => {
 		await cleanupTestDatabase();
 	});
 
-	it("advances an empty schedule without creating an agent run", async () => {
+	it("persists an empty-window cursor so the next period can dispatch new data", async () => {
 		const { org, user, ctx } = await seedOwnerContext();
 		const agent = await createTestAgent({
 			organizationId: org.id,
@@ -76,5 +76,45 @@ describe("scheduled Behavior unchanged gate", () => {
 			FROM watchers WHERE id = ${behaviorId}
 		`;
 		expect(watcher?.advanced).toBe(true);
+
+		const [skippedWindow] = await sql`
+			SELECT window_start, window_end, content_analyzed
+			FROM canvas_windows
+			WHERE watcher_id = ${behaviorId}
+		`;
+		expect(skippedWindow).toMatchObject({ content_analyzed: 0 });
+
+		const nextOccurredAt = new Date(
+			new Date(skippedWindow.window_end as string).getTime() + 30_000,
+		);
+		await sql`
+			INSERT INTO events (
+				entity_ids, organization_id, origin_id, payload_type, payload_text,
+				semantic_type, connector_key, occurred_at
+			) VALUES (
+				'{}'::bigint[], ${org.id}, 'next-period-event', 'text', 'new data',
+				'content', 'never-present', ${nextOccurredAt}
+			)
+		`;
+		await sql`
+			UPDATE watchers
+			SET next_run_at = current_timestamp - interval '1 minute'
+			WHERE id = ${behaviorId}
+		`;
+
+		const nextResult = await materializeDueWatcherRuns({} as Env, sql);
+		expect(nextResult).toMatchObject({
+			dueWatchers: 1,
+			runsCreated: 1,
+			skipped: 0,
+		});
+		const [nextRun] = await sql`
+			SELECT approved_input
+			FROM runs
+			WHERE watcher_id = ${behaviorId} AND run_type = 'watcher'
+		`;
+		expect(nextRun.approved_input).toMatchObject({
+			window_start: new Date(skippedWindow.window_end as string).toISOString(),
+		});
 	});
 });

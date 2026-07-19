@@ -18,49 +18,49 @@ describe("materializeConnectorBehaviorSignal", () => {
 				change: "inserted",
 				connectorKey: "example",
 				connectionId: 17,
-				eventId: 91,
-				draftIndex: 2,
+				deliveryId: "sync:7:event:91:2",
 			}),
 		).toMatchObject({
 			connector_key: "example",
 			connection_id: 17,
 			event_type: "item.created",
-			delivery_id: "event:91:2",
+			delivery_id: "sync:7:event:91:2",
 		});
 	});
 
-	test("uses the update event only for a superseding row", () => {
+	test("uses the update event for an existing row", () => {
 		expect(
 			materializeConnectorBehaviorSignal({
 				draft,
 				change: "superseded",
 				connectorKey: "example",
 				connectionId: 17,
-				eventId: 92,
-				draftIndex: 0,
+				deliveryId: "sync:8:event:92:0",
 			})?.event_type,
 		).toBe("item.updated");
 	});
 
-	test("skips unchanged rows and updates without an update event", () => {
+	test("marks unchanged rows and skips superseding rows without an update event", () => {
 		expect(
 			materializeConnectorBehaviorSignal({
 				draft,
 				change: "unchanged",
 				connectorKey: "example",
 				connectionId: 17,
-				eventId: 92,
-				draftIndex: 0,
+				deliveryId: "sync:9:event:92:0",
 			}),
-		).toBeNull();
+		).toMatchObject({
+			event_type: "item.updated",
+			delivery_id: "sync:9:event:92:0",
+			unchanged: true,
+		});
 		expect(
 			materializeConnectorBehaviorSignal({
 				draft: { ...draft, updated_event_type: undefined },
 				change: "superseded",
 				connectorKey: "example",
 				connectionId: 17,
-				eventId: 92,
-				draftIndex: 0,
+				deliveryId: "sync:10:event:92:0",
 			}),
 		).toBeNull();
 	});

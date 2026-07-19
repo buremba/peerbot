@@ -186,6 +186,70 @@ describe("Behavior connector-event activation", () => {
 		});
 	});
 
+	it("applies unchanged-delivery policy per matching trigger", async () => {
+		const { org, user, ctx } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		const connection = await createTestConnection({
+			organization_id: org.id,
+			connector_key: "github",
+			created_by: user.id,
+		});
+		const create = async (slug: string, skipIfUnchanged: boolean) => {
+			const result = await manageBehaviors(
+				{
+					action: "create",
+					slug,
+					name: slug,
+					prompt: "Handle the connector delivery.",
+					agent_id: agent.agentId,
+					triggers: [
+						{
+							kind: "event",
+							connector_key: "github",
+							connection_id: connection.id,
+							event_types: ["pull_request.updated"],
+							execution: "window",
+							active_run: "queue",
+							skip_if_unchanged: skipIfUnchanged,
+						},
+					],
+				},
+				{} as Env,
+				ctx,
+			);
+			if (result.action !== "create" || !("watcher_id" in result)) {
+				throw new Error("Behavior creation did not complete");
+			}
+			return Number(result.watcher_id);
+		};
+		await create("skip-unchanged-deliveries", true);
+		const alwaysRunId = await create("run-unchanged-deliveries", false);
+
+		const activated = await activateBehaviorSignal({
+			organizationId: org.id,
+			signal: {
+				connector_key: "github",
+				connection_id: connection.id,
+				event_type: "pull_request.updated",
+				delivery_id: "sync:77:event:42:0",
+				label: "Unchanged PR",
+				input_text: "The connector delivered an unchanged pull request.",
+				unchanged: true,
+			},
+		});
+
+		expect(activated).toMatchObject([
+			{ behaviorId: alwaysRunId, created: true, disposition: "queued" },
+		]);
+		const runs = await getTestDb()`
+			SELECT watcher_id FROM runs WHERE run_type = 'watcher'
+		`;
+		expect(runs.map((run) => Number(run.watcher_id))).toEqual([alwaysRunId]);
+	});
+
 	it("rejects events and delivery modes the connector does not support", async () => {
 		const { org, user, ctx } = await seedOwnerContext();
 		const agent = await createTestAgent({

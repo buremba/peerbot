@@ -8,7 +8,7 @@
 --
 -- Shape: { timeout_seconds, max_budget_usd, model, permission_mode, effort }.
 -- A single jsonb (mirroring watchers.model_config) so future knobs don't need
--- a migration. Validated on write by the manage_watchers TypeBox schema.
+-- a migration. Validated on write by the manage_behaviors TypeBox schema.
 ALTER TABLE public.watchers ADD COLUMN IF NOT EXISTS execution_config jsonb;
 
 COMMENT ON COLUMN public.watchers.execution_config IS 'Per-watcher device-worker CLI execution settings: { timeout_seconds, max_budget_usd, model, permission_mode, effort }. NULL = defaults.';

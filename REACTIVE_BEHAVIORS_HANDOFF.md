@@ -166,7 +166,10 @@ The positive audit finds `defineBehavior`, `behaviors`, `manage_behaviors`, and 
 - Catalog generation passed: 20 connectors, 2 skills, 5 Behaviors.
 - Owletto production Vite build passed after the route cleanup.
 - Postgres migration replay and channel-feed lifecycle tests passed: 11 tests. The archive transaction fix had explicit red (`malformed array literal`) → fix (`pgBigintArray`) → green evidence.
-- Connection-scoped chat Behavior routing tests passed: 6 tests.
+- Connection-scoped chat Behavior routing tests passed: 7 tests. A new
+  red-to-green regression proves chat-link creation uses the same
+  Postgres-locked numeric ID allocator as canonical Behavior creation instead
+  of stale watcher/version sequences.
 - The final deletion audit added explicit red→green evidence:
   - activity links expected `/behaviors/:id` and initially received `/watchers/:id` in both server and Owletto tests;
   - `resolve_path` initially returned the retired `recent_watchers` property;
@@ -177,15 +180,66 @@ The positive audit finds `defineBehavior`, `behaviors`, `manage_behaviors`, and 
 - The typed client was regenerated from the live post-rebase OpenAPI document. The document contains `manage_behaviors` and contains no `manage_watchers`, `list_watchers`, `get_watcher`, `recent_watchers`, or `/watchers` path.
 - The final examples audit returns no matches for the exact old public API pattern. Positive matches are `defineBehavior`, `behaviors`, and `manage_behaviors` only.
 - The settled review-fix pass found a device-polling regression for queued event runs: once a device-pinned Behavior had a `running` run, a second poll could claim another pending run and violate the one-executing-run partial index. The regression was reproduced red with PostgreSQL `23505`, fixed by excluding Behaviors with a `claimed`/`running` run in the device claim query, and the full 9-test manual-trigger integration file is green using the real `createBehaviorEventRun` queue path.
-- The deletion-audit working diff is net negative across the root and Owletto: 439 insertions and 536 deletions (net `-97`). The complete feature remains net positive because it adds the generalized trigger model, connector event descriptors, migrations, UI, and regression coverage; compared with both repositories' rebased bases it is 13,480 insertions and 11,276 deletions (net `+2,204`).
+- The deletion-audit working diff was net negative across the root and Owletto:
+  439 insertions and 536 deletions (net `-97`). The complete feature remains
+  net positive because it adds the generalized trigger model, connector event
+  descriptors, migrations, UI, and regression coverage. Final rebased totals
+  are 13,810 insertions and 11,281 deletions across root plus Owletto (net
+  `+2,529`): root is 11,348/7,939 and Owletto is 2,462/3,342.
 
-## Finalization checkpoint before posted review
+## Posted review findings and fixes
+
+The installed Claude reviewer could not accept the repository's Draft 2020-12
+JSON schema, so the supported Codex reviewer fallback was used. The first
+completed posted review identified three blockers; each was reproduced with a
+focused regression and fixed across its whole class:
+
+1. Empty or unchanged scheduled windows advanced cron without advancing the
+   durable canvas cursor. A skipped tick now appends a zero-content
+   `canvas_state` root before advancing `next_run_at`, so the next period starts
+   at the prior `window_end`. The append races safely on
+   `idx_canvas_chain_root`; `events` remains append-only.
+2. The trigger migration backfilled legacy schedules with
+   `skip_if_unchanged: true`, changing their prior always-run behavior. The
+   backfill now writes `false`; new Behaviors may opt into the gate explicitly.
+3. Connector ingestion discarded every unchanged durable delivery before
+   trigger matching. It now materializes an `unchanged` normalized signal and
+   applies the policy per matching trigger. Retry-stable delivery IDs include
+   the sync run, persisted event, and draft index. Existing resources use the
+   connector's update event key when declared, so an opted-out PR-update
+   trigger can match.
+
+The populated-database migration regression also exposed the same stale-ID
+allocator class in chat Behavior creation. Runtime chat linking now uses the
+canonical transaction-scoped advisory-lock allocator, and the migration takes
+those allocator locks while deriving `MAX(id)+1`.
+
+Focused green evidence after the fixes:
+
+- connector-signal unit tests: 3/3
+- connector-event activation: 4/4
+- scheduled unchanged cursor: 1/1
+- channel-subscription migration/replay: 1/1
+- connection-scoped chat Behavior routing and stale-ID allocation: 7/7
+- device/manual Behavior triggering: 9/9
+
+## Finalization checkpoint
 
 - Owletto cleanup commit: `c2222835` (`refactor: remove legacy Watcher UI remnants`).
 - Root cleanup commit: `refactor: finish Behavior API deletion cleanup`, including the Owletto submodule pointer. Its hash is intentionally not embedded in this self-referential commit; use `git rev-parse HEAD`.
-- Both worktrees are clean. `git show HEAD:<file>` confirms the device queue fix and trigger-only declarative model are committed.
+- Review-blocker fix commit: current HEAD
+  (`fix: preserve reactive Behavior delivery semantics`; use
+  `git rev-parse HEAD`). The source fixes and focused regressions were verified
+  from committed HEAD with `git show`.
 - Root and Owletto merge bases equal their current `origin/main` refs, and both committed diffs pass `git diff --check`.
-- The only remaining gate at this checkpoint is exactly one posted `make review BASE=origin/main`; do not use posted reviews as a find/fix loop.
+- The final `make pre-pr` is green on the settled fix commit: fresh builds,
+  strict typechecks, Knip, and Biome all pass.
+- A full-branch Codex reviewer rerun was stopped after it resent 316 files /
+  19,281 changed lines and the user flagged excessive weekly-token spend. A
+  bounded `HEAD^..HEAD` rerun (17 files / 417 changed lines) was also stopped
+  after four minutes without a verdict. No second verdict exists; do not claim
+  that reviewer gate is green. If policy still requires another model verdict,
+  resume with the bounded fix-commit base only—never resend the whole branch.
 
 ## Gotchas
 

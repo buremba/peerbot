@@ -24,7 +24,9 @@ SET triggers = jsonb_build_array(
       'timezone', timezone,
       'execution', 'window',
       'active_run', 'coalesce',
-      'skip_if_unchanged', true
+      -- Existing scheduled watchers ran on every tick. Preserve that behavior;
+      -- new Behaviors can explicitly opt into the cheap unchanged-data gate.
+      'skip_if_unchanged', false
     )
   )
 )

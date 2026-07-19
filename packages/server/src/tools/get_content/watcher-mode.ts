@@ -251,8 +251,8 @@ async function queryContentData(
 /**
  * Cheap-vs-LLM schedule gate: execute the same normalized sources used by
  * read_knowledge and fingerprint their JSON rows. No model is called. The
- * pending window stays fixed while skipped, so identical source state hashes
- * identically until a connector lands a durable change.
+ * A skipped window is persisted as durable zero-content cursor progress, so
+ * subsequent ticks fingerprint the next period instead of retrying stale time.
  */
 export async function fingerprintWatcherSources(args: {
   sql: DbClient;

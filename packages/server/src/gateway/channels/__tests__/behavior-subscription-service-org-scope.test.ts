@@ -161,6 +161,47 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 		expect(behavior.created_by).toBe(configuredBy);
 	});
 
+	test("allocates chat Behavior IDs after canonical Behavior writes", async () => {
+		const sql = getDb();
+		await sql`
+			INSERT INTO watchers (
+				id, name, slug, organization_id, agent_id, created_by,
+				watcher_group_id
+			)
+			SELECT 1, 'Existing Behavior', 'existing-behavior', ${ORG_A},
+				'agent-a', m."userId", 1
+			FROM member m
+			WHERE m."organizationId" = ${ORG_A}
+			ORDER BY m."createdAt"
+			LIMIT 1
+		`;
+		await sql`
+			INSERT INTO watcher_versions (
+				id, watcher_id, version, name, prompt, created_by
+			)
+			SELECT 1, 1, 1, 'Existing Behavior', 'Already persisted.', m."userId"
+			FROM member m
+			WHERE m."organizationId" = ${ORG_A}
+			ORDER BY m."createdAt"
+			LIMIT 1
+		`;
+		await sql`
+			SELECT setval('watchers_id_seq', 1, false),
+			       setval('watcher_template_versions_id_seq', 1, false)
+		`;
+
+		const svc = new BehaviorSubscriptionService();
+		await svc.createChatBehavior("agent-a", "slack", CHANNEL, "T1", {
+			organizationId: ORG_A,
+			connectionId: connectionA,
+		});
+
+		const ids = await sql<{ id: number }>`
+			SELECT id FROM watchers WHERE organization_id = ${ORG_A} ORDER BY id
+		`;
+		expect(ids.map(({ id }) => Number(id))).toEqual([1, 2]);
+	});
+
 	test("heals only the matching connection trigger with an unknown team", async () => {
 		const svc = new BehaviorSubscriptionService();
 		await svc.createChatBehavior("agent-a", "slack", CHANNEL, undefined, {

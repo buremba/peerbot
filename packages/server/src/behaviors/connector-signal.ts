@@ -14,14 +14,14 @@ export function materializeConnectorBehaviorSignal(args: {
 	change: InsertedEvent["change"];
 	connectorKey: string;
 	connectionId: number | null;
-	eventId: number;
-	draftIndex: number;
+	deliveryId: string;
 }): ConnectorTriggerSignal | null {
-	if (args.change === "unchanged" || args.connectionId == null) return null;
+	if (args.connectionId == null) return null;
 	const eventType =
-		args.change === "superseded"
-			? args.draft.updated_event_type
-			: args.draft.event_type;
+		args.change === "inserted"
+			? args.draft.event_type
+			: (args.draft.updated_event_type ??
+				(args.change === "unchanged" ? args.draft.event_type : undefined));
 	if (!eventType) return null;
 
 	return {
@@ -30,11 +30,12 @@ export function materializeConnectorBehaviorSignal(args: {
 		resource_type: args.draft.resource_type,
 		resource_ref: args.draft.resource_ref,
 		event_type: eventType,
-		delivery_id: `event:${args.eventId}:${args.draftIndex}`,
+		delivery_id: args.deliveryId,
 		label: args.draft.label,
 		input_text: args.draft.input_text,
 		url: args.draft.url,
 		occurred_at: args.draft.occurred_at,
 		attributes: args.draft.attributes,
+		unchanged: args.change === "unchanged" ? true : undefined,
 	};
 }

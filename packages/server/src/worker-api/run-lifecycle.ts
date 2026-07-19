@@ -327,8 +327,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 									change: persisted.change,
 									connectorKey: run.connector_key,
 									connectionId: run.connection_id,
-									eventId: Number(persisted.id),
-									draftIndex,
+									deliveryId: `sync:${batch.run_id}:event:${persisted.id}:${draftIndex}`,
 								});
 								if (!signal) continue;
 								activations.push(

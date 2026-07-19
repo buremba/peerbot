@@ -13,6 +13,7 @@ function matchesTrigger(
   signal: ConnectorTriggerSignal,
 ): boolean {
   if (trigger.connector_key !== signal.connector_key) return false;
+  if (signal.unchanged && trigger.skip_if_unchanged !== false) return false;
   if (
     trigger.connection_id !== undefined &&
     trigger.connection_id !== signal.connection_id

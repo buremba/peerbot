@@ -64,6 +64,10 @@ const CREATE_LEGACY = `
 		updated_at timestamp with time zone DEFAULT now() NOT NULL,
 		organization_id text NOT NULL
 	);
+	-- The current schema retains this table as a rolling-deploy projection.
+	-- Replace it inside the rolled-back transaction with the historical shell
+	-- that existed when the migration under test ran.
+	DROP TABLE public.agent_channel_bindings;
 	CREATE TABLE public.agent_channel_bindings (
 		organization_id text NOT NULL,
 		agent_id text NOT NULL,

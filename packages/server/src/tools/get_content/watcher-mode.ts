@@ -284,9 +284,19 @@ export async function fingerprintWatcherSources(args: {
   const sourceState = Object.fromEntries(
     Object.entries(result.sourcesContent).map(([sourceName, sourceRows]) => [
       sourceName,
-      [...sourceRows].sort((left, right) =>
-        stableJson(left).localeCompare(stableJson(right))
-      ),
+      sourceRows
+        .filter((sourceRow) => {
+          if (typeof sourceRow !== 'object' || sourceRow === null) return true;
+          const record = sourceRow as Record<string, unknown>;
+          if (record.semantic_type !== 'canvas_state') return true;
+          const metadata = record.metadata;
+          return !(
+            typeof metadata === 'object' &&
+            metadata !== null &&
+            Number((metadata as Record<string, unknown>).watcher_id) === args.watcherId
+          );
+        })
+        .sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
     ])
   );
   const fingerprint = createHash('sha256')

@@ -123,7 +123,7 @@ function normalizedScheduleTrigger(
 		cron: trigger.cron.trim(),
 		timezone: trigger.timezone ?? null,
 		execution: "window",
-		active_run: trigger.active_run ?? "coalesce",
+		active_run: "coalesce",
 		skip_if_unchanged: trigger.skip_if_unchanged ?? true,
 	};
 }

@@ -66,6 +66,16 @@ describe("behavior event trigger", () => {
     ).toBe(true);
   });
 
+  test("rejects unsupported queued schedule ticks", () => {
+    expect(
+      Value.Check(BehaviorScheduleTriggerSchema, {
+        kind: "schedule",
+        cron: "0 9 * * 1-5",
+        active_run: "queue",
+      })
+    ).toBe(false);
+  });
+
   test("rejects the removed schedule and timezone compatibility inputs", () => {
     expect(
       Value.Check(ManageBehaviorsSchema, {

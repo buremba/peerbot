@@ -117,4 +117,53 @@ describe("scheduled Behavior unchanged gate", () => {
 			window_start: new Date(skippedWindow.window_end as string).toISOString(),
 		});
 	});
+
+	it("does not treat its own empty-window cursor as default-source content", async () => {
+		const { org, user, ctx } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		const created = await manageBehaviors(
+			{
+				action: "create",
+				slug: "empty-default-source",
+				name: "Empty default source",
+				prompt: "Summarize new workspace content.",
+				agent_id: agent.agentId,
+				triggers: [
+					{
+						kind: "schedule",
+						cron: "* * * * *",
+						skip_if_unchanged: true,
+					},
+				],
+			},
+			{} as Env,
+			ctx,
+		);
+		if (created.action !== "create" || !("watcher_id" in created)) {
+			throw new Error("Behavior creation did not complete");
+		}
+		const behaviorId = Number(created.watcher_id);
+		const sql = getTestDb();
+		const makeDue = () => sql`
+			UPDATE watchers
+			SET next_run_at = current_timestamp - interval '1 minute'
+			WHERE id = ${behaviorId}
+		`;
+
+		await makeDue();
+		const first = await materializeDueWatcherRuns({} as Env, sql);
+		await makeDue();
+		const second = await materializeDueWatcherRuns({} as Env, sql);
+
+		expect(first).toMatchObject({ runsCreated: 0, skipped: 1 });
+		expect(second).toMatchObject({ runsCreated: 0, skipped: 1 });
+		const runs = await sql`
+			SELECT id FROM runs
+			WHERE watcher_id = ${behaviorId} AND run_type = 'watcher'
+		`;
+		expect(runs).toHaveLength(0);
+	});
 });

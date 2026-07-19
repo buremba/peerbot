@@ -77,7 +77,7 @@ export const BehaviorScheduleTriggerSchema = Type.Object(
     ),
     execution: Type.Optional(Type.Literal("window", { default: "window" })),
     active_run: Type.Optional(
-      Type.Union([Type.Literal("queue"), Type.Literal("coalesce")], {
+      Type.Literal("coalesce", {
         default: "coalesce",
       })
     ),

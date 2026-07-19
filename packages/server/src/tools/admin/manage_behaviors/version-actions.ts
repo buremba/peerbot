@@ -20,6 +20,7 @@ import {
 } from './shared';
 import {
   assertBehaviorTriggerConnections,
+  behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
 } from '../../../behaviors/triggers';
 
@@ -132,7 +133,11 @@ export async function handleCreateVersion(
     triggers: args.triggers,
     currentTriggers: watcherRows[0].triggers ?? [],
   });
-  if (versionOrganizationId) {
+  if (
+    versionOrganizationId &&
+    args.triggers !== undefined &&
+    !behaviorTriggersEqual(watcherRows[0].triggers ?? [], triggerWrite.triggers)
+  ) {
     await assertBehaviorTriggerConnections(sql, versionOrganizationId, triggerWrite.triggers);
   }
 

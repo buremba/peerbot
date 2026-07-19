@@ -22,16 +22,19 @@
  * believe a version-owned change applied.
  */
 import { beforeAll, describe, expect, it } from "vitest";
+import type { BehaviorTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
 import type { Env } from "../../../index";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
 import { initWorkspaceProvider } from "../../../workspace";
+import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
 	createTestAgent,
 	createTestOrganization,
 	createTestUser,
+	insertChatConnectionRow,
 } from "../../setup/test-fixtures";
 
 const TEST_ENV: Env = {
@@ -49,6 +52,9 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 	let ownerCtx: AuthContext;
 	let agentId: string;
 	let watcherId: string;
+	const previewConnectionId = "preview-update-version";
+	let previewUpdate: { watcherId: string; triggers: BehaviorTrigger[] };
+	let previewVersion: { watcherId: string; triggers: BehaviorTrigger[] };
 
 	const baseCtx = (orgIdValue: string, userId: string): AuthContext => ({
 		organizationId: orgIdValue,
@@ -85,6 +91,23 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 		});
 		agentId = agent.agentId;
 
+		const previewHostOrg = await createTestOrganization({
+			name: "Watcher update preview host",
+		});
+		const previewHostAgent = await createTestAgent({
+			organizationId: previewHostOrg.id,
+			agentId: "watcher-update-preview-host",
+		});
+		await insertChatConnectionRow({
+			id: previewConnectionId,
+			organizationId: previewHostOrg.id,
+			agentId: previewHostAgent.agentId,
+			platform: "slack",
+			settings: { previewMode: true },
+		});
+		previewUpdate = await createCrossOrgPreviewBehavior("update");
+		previewVersion = await createCrossOrgPreviewBehavior("version");
+
 		const created = (await executeTool(
 			"manage_behaviors",
 			{
@@ -104,6 +127,34 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 		const sql = getTestDb();
 		const rows = await sql`SELECT name FROM watchers WHERE id = ${watcherId}`;
 		return (rows[0] as { name: string }).name;
+	}
+
+	async function createCrossOrgPreviewBehavior(suffix: string): Promise<{
+		watcherId: string;
+		triggers: BehaviorTrigger[];
+	}> {
+		const sql = getTestDb();
+		await createTestBehaviorSubscription({
+			organizationId: orgId,
+			agentId,
+			connectionSlug: `agentconn-${previewConnectionId}`,
+			platform: "slack",
+			channelId: `slack:C-${suffix}`,
+			configuredBy: ownerId,
+		});
+		const [behavior] = await sql<{
+			id: number;
+			triggers: BehaviorTrigger[];
+		}>`
+			SELECT id, triggers
+			FROM watchers
+			WHERE organization_id = ${orgId}
+			  AND agent_id = ${agentId}
+			  AND tags @> ARRAY['system:chat-link']::text[]
+			ORDER BY id DESC
+			LIMIT 1
+		`;
+		return { watcherId: String(behavior.id), triggers: behavior.triggers };
 	}
 
 	it("rejects `update` with name only (version-owned) — points to create_version", async () => {
@@ -205,5 +256,62 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			ownerCtx
 		);
 		expect(await fetchWatcherName()).toBe("Renamed Via Version");
+	});
+
+	it("updates metadata when a cross-org preview trigger is resent unchanged", async () => {
+		const result = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "update",
+				watcher_id: previewUpdate.watcherId,
+				triggers: previewUpdate.triggers,
+				tags: ["system:chat-link", "edited"],
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { updated_fields?: string[] };
+		expect(result.updated_fields).toContain("tags");
+
+		const changedTriggers = previewUpdate.triggers.map((trigger) =>
+			trigger.kind === "event"
+				? {
+						...trigger,
+						match: { ...trigger.match, channel_id: "C-DIFFERENT" },
+					}
+				: trigger,
+		);
+		await expect(
+			executeTool(
+				"manage_behaviors",
+				{
+					action: "update",
+					watcher_id: previewUpdate.watcherId,
+					triggers: changedTriggers,
+				},
+				TEST_ENV,
+				ownerCtx,
+			),
+		).rejects.toThrow("was not found in this organization");
+	});
+
+	it("creates a prompt-only version for a cross-org preview Behavior", async () => {
+		const result = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create_version",
+				watcher_id: previewVersion.watcherId,
+				prompt: "Updated preview response instructions.",
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { version?: number };
+		expect(result.version).toBe(2);
+		const [stored] = await getTestDb()<{ prompt: string }>`
+			SELECT prompt
+			FROM watcher_versions
+			WHERE watcher_id = ${previewVersion.watcherId}
+			  AND version = 2
+		`;
+		expect(stored.prompt).toBe("Updated preview response instructions.");
 	});
 });

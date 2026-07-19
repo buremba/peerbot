@@ -42,6 +42,7 @@ import {
 } from '../../../watchers/reaction-executor';
 import {
   assertBehaviorTriggerConnections,
+  behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
 } from '../../../behaviors/triggers';
 import { syncBehaviorChannelFeeds } from '../../../behaviors/channel-subscriptions';
@@ -427,7 +428,12 @@ export async function handleUpdate(
     triggers: args.triggers,
     currentTriggers: currentRow.triggers ?? [],
   });
-  await assertBehaviorTriggerConnections(sql, currentRow.organization_id, triggerWrite.triggers);
+  if (
+    args.triggers !== undefined &&
+    !behaviorTriggersEqual(currentRow.triggers ?? [], triggerWrite.triggers)
+  ) {
+    await assertBehaviorTriggerConnections(sql, currentRow.organization_id, triggerWrite.triggers);
+  }
 
   // Match the invariant from handleCreate: a watcher with no agent_id is
   // a zombie the scheduler will never run (automation joins on

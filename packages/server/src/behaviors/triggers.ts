@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type {
 	BehaviorEventTrigger,
 	BehaviorScheduleTrigger,
@@ -143,6 +144,17 @@ export function normalizeBehaviorTriggers(
 		}
 		return normalizedEventTrigger(trigger);
 	});
+}
+
+/** Compare trigger contracts after applying their canonical defaults. */
+export function behaviorTriggersEqual(
+	left: BehaviorTrigger[],
+	right: BehaviorTrigger[]
+): boolean {
+	return isDeepStrictEqual(
+		normalizeBehaviorTriggers(left),
+		normalizeBehaviorTriggers(right)
+	);
 }
 
 /**

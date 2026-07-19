@@ -757,11 +757,13 @@ export class MessageHandlerBridge {
     // Whole-channel capture mode: a subscribed (non-mention) channel message is
     // now recorded above, but should NOT trigger an agent turn — the bot mirrors
     // the channel without responding to everything. Mentions/DMs still respond.
+    // Applies equally to Behavior-routed channels (post-migration chat links):
+    // the pre-Behavior path honored this flag, and exempting Behaviors silently
+    // flipped record-only installs into full responders after the cutover.
     if (
       source === "subscribed" &&
       message.isMention !== true &&
-      connection.settings?.recordChannelMessages === true &&
-      resolved.source !== "behavior"
+      connection.settings?.recordChannelMessages === true
     ) {
       return;
     }

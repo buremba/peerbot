@@ -579,6 +579,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     previewMode?: boolean;
     agentId?: string | undefined;
     metadata?: Record<string, unknown>;
+    settings?: Record<string, unknown>;
     commandDispatcher?: {
       tryHandleSlashText?: (...args: any[]) => Promise<boolean>;
       tryHandle?: (...args: any[]) => Promise<boolean>;
@@ -598,7 +599,11 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       // live in OTHER orgs (see the cross-org test below).
       organizationId: "org-connection",
       config: { platform: "slack" } as any,
-      settings: { allowGroups: true, previewMode: opts.previewMode ?? true },
+      settings: {
+        allowGroups: true,
+        previewMode: opts.previewMode ?? true,
+        ...opts.settings,
+      },
       metadata: opts.metadata ?? { botUsername: "testbot", botUserId: "U_BOT" },
       status: "active",
       createdAt: 1,
@@ -836,6 +841,44 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
 
     expect(enqueueMessage).not.toHaveBeenCalled();
     expect(resolveForConnection).not.toHaveBeenCalled();
+  });
+
+  test("recordChannelMessages skips agent turns for Behavior-routed subscribed messages", async () => {
+    // Pre-Behavior, record-only mode captured non-mention channel traffic
+    // without starting a turn. After the cutover, Behavior-routed channels
+    // must honor the same flag (mentions still respond).
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      linkedBehavior: { agentId: "linked-agent" },
+      previewMode: false,
+      settings: { recordChannelMessages: true },
+    });
+
+    await bridge.handleMessage(
+      makeThread(undefined),
+      makeMessage({
+        text: "ordinary channel chatter",
+        isMention: false,
+      }),
+      "subscribed",
+    );
+
+    expect(enqueueMessage).not.toHaveBeenCalled();
+  });
+
+  test("recordChannelMessages still enqueues Behavior turns on mentions", async () => {
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      linkedBehavior: { agentId: "linked-agent" },
+      previewMode: false,
+      settings: { recordChannelMessages: true },
+    });
+
+    await bridge.handleMessage(
+      makeThread(undefined),
+      makeMessage({ isMention: true }),
+      "mention",
+    );
+
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
   });
 
   test("matching Behavior self-heals its Slack workspace team", async () => {

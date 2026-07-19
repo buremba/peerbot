@@ -10,7 +10,6 @@ const logger = createLogger("behavior-channel-feeds");
 
 interface ChannelSubscriptionRef {
 	connectionId: number;
-	connectorKey: string;
 	channelKey: string;
 }
 
@@ -30,7 +29,6 @@ function channelSubscriptions(
 		if (typeof nativeChannelId !== "string" || !nativeChannelId.trim()) continue;
 		refs.push({
 			connectionId: trigger.connection_id,
-			connectorKey: trigger.connector_key,
 			channelKey: `${trigger.connector_key}:${nativeChannelId.trim()}`,
 		});
 	}

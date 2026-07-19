@@ -210,6 +210,54 @@ describe("channel streaming feeds", () => {
     expect(Number(after[0]?.n)).toBe(0);
   });
 
+  it("create_version reconciles streaming feeds when message triggers change", async () => {
+    const conn = await makeChatConnection({ orgId, teamId: "TACME" });
+    const { agentId } = await createTestAgent({ organizationId: orgId });
+    const created = (await workspace.owner.behaviors.create({
+      slug: "versioned-channel-feed",
+      prompt: "Respond to channel messages.",
+      agent_id: agentId,
+      triggers: [],
+    })) as { watcher_id: string };
+    const messageTrigger = {
+      kind: "event" as const,
+      connector_key: "slack",
+      connection_id: conn.id,
+      event_types: ["message.created"],
+      match: { channel_id: "C350" },
+      execution: "turn" as const,
+      active_run: "steer" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+
+    await workspace.owner.behaviors.createVersion({
+      watcher_id: created.watcher_id,
+      triggers: [messageTrigger],
+    });
+
+    const sql = getDb();
+    const active = await sql`
+      SELECT feed_key, deleted_at FROM feeds
+      WHERE organization_id = ${orgId} AND connection_id = ${conn.id}
+    `;
+    expect(active).toHaveLength(1);
+    expect(active[0]?.feed_key).toBe("slack:C350");
+    expect(active[0]?.deleted_at).toBeNull();
+
+    await workspace.owner.behaviors.createVersion({
+      watcher_id: created.watcher_id,
+      triggers: [],
+    });
+
+    const [removed] = await sql`
+      SELECT deleted_at FROM feeds
+      WHERE organization_id = ${orgId} AND connection_id = ${conn.id}
+        AND feed_key = 'slack:C350'
+    `;
+    expect(removed.deleted_at).not.toBeNull();
+  });
+
   it("read_feed returns a streaming feed's transcript (kind dispatch)", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
     const feedId = await ensureStreamingChannelFeed({

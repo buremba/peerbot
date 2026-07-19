@@ -23,6 +23,7 @@ import {
   behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
 } from '../../../behaviors/triggers';
+import { syncBehaviorChannelFeedsBestEffort } from '../../../behaviors/channel-subscriptions';
 
 // ============================================
 // handleCreateVersion
@@ -133,15 +134,20 @@ export async function handleCreateVersion(
     triggers: args.triggers,
     currentTriggers: watcherRows[0].triggers ?? [],
   });
-  if (
-    versionOrganizationId &&
+  const previousTriggers = watcherRows[0].triggers ?? [];
+  const triggersChanged =
     args.triggers !== undefined &&
-    !behaviorTriggersEqual(watcherRows[0].triggers ?? [], triggerWrite.triggers)
-  ) {
-    await assertBehaviorTriggerConnections(sql, versionOrganizationId, triggerWrite.triggers);
+    !behaviorTriggersEqual(previousTriggers, triggerWrite.triggers);
+  if (versionOrganizationId && triggersChanged) {
+    await assertBehaviorTriggerConnections(
+      sql,
+      versionOrganizationId,
+      triggerWrite.triggers
+    );
   }
 
   const createdBy = ctx.userId ?? 'system';
+  const setAsCurrent = args.set_as_current !== false;
   let versionId = 0;
   let lockedNextVersion = nextVersion;
   await sql.begin(async (tx) => {
@@ -191,7 +197,6 @@ export async function handleCreateVersion(
     // Group-shared fields (current_version_id, version, name) cascade to
     // every watcher in the group; per-assignment fields (sources,
     // schedule, scheduler_client_id) update only the targeted row.
-    const setAsCurrent = args.set_as_current !== false;
     if (setAsCurrent) {
       const shouldUpdateTriggers = args.triggers !== undefined;
       const scheduleValue = triggerWrite.schedule;
@@ -236,8 +241,16 @@ export async function handleCreateVersion(
     }
   });
 
+  if (versionOrganizationId && setAsCurrent && triggersChanged) {
+    await syncBehaviorChannelFeedsBestEffort({
+      organizationId: versionOrganizationId,
+      before: previousTriggers,
+      after: triggerWrite.triggers,
+      sql,
+    });
+  }
+
   if (versionOrganizationId) {
-    const setAsCurrent = args.set_as_current !== false;
     recordToolConfigChange(ctx, {
       organizationId: versionOrganizationId,
       resourceKind: 'watcher',

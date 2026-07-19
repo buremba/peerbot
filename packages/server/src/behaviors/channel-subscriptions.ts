@@ -1,9 +1,12 @@
+import { createLogger, getErrorMessage } from "@lobu/core";
 import type { BehaviorTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
 import type { DbClient } from "../db/client";
 import {
 	resolveStreamingChannelFeedId,
 	softDeleteStreamingChannelFeed,
 } from "../gateway/channels/channel-feed";
+
+const logger = createLogger("behavior-channel-feeds");
 
 interface ChannelSubscriptionRef {
 	connectionId: number;
@@ -92,5 +95,19 @@ export async function syncBehaviorChannelFeeds(args: {
 			channelKey: ref.channelKey,
 			sql: args.sql,
 		});
+	}
+}
+
+/** Reconcile the derived feed projection without failing an already-committed Behavior write. */
+export async function syncBehaviorChannelFeedsBestEffort(
+	args: Parameters<typeof syncBehaviorChannelFeeds>[0],
+): Promise<void> {
+	try {
+		await syncBehaviorChannelFeeds(args);
+	} catch (error) {
+		logger.warn(
+			{ error: getErrorMessage(error) },
+			"Failed to reconcile derived streaming feeds",
+		);
 	}
 }

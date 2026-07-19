@@ -45,20 +45,7 @@ import {
   behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
 } from '../../../behaviors/triggers';
-import { syncBehaviorChannelFeeds } from '../../../behaviors/channel-subscriptions';
-
-async function syncBehaviorChannelFeedsBestEffort(
-  args: Parameters<typeof syncBehaviorChannelFeeds>[0]
-): Promise<void> {
-  try {
-    await syncBehaviorChannelFeeds(args);
-  } catch (error) {
-    logger.warn(
-      { error: getErrorMessage(error) },
-      '[manage_behaviors] Failed to reconcile derived streaming feeds'
-    );
-  }
-}
+import { syncBehaviorChannelFeedsBestEffort } from '../../../behaviors/channel-subscriptions';
 
 // ============================================
 // handleCreate

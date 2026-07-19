@@ -91,10 +91,12 @@ decides reply‑vs‑silence and must be per‑context.
   their durable state before dispatch. Empty or identical state advances the
   schedule without creating an agent run or LLM call. Without the flag, the
   schedule always runs.
-- **The old binding storage is gone.** The migration backfills linked chat
-  bindings into Event Behaviors and drops `agent_channel_bindings`. Internal
-  routing and ACL readers project active message triggers directly from
-  `watchers.triggers`; there is no compatibility view or second write model.
+- **The old binding storage is a temporary rollout projection.** The migration
+  backfills linked chat bindings into Event Behaviors, and new replicas mirror
+  chat-link writes into `agent_channel_bindings` while older replicas may still
+  read it. Canonical routing and ACL readers use active message triggers from
+  `watchers.triggers`; a later contract migration removes the projection after
+  every replica runs the Behavior-only runtime.
 - **Runs / Activity** use the existing `runs`, watcher windows, and chat
   transcript paths. Event turns finish with their normal response and do not
   advance a cron schedule.

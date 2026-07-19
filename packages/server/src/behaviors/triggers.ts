@@ -95,13 +95,25 @@ function normalizedEventTrigger(
 			"Steering requires a turn that replies to the source; use queue or coalesce for silent output."
 		);
 	}
+	// Unchecked UI checkboxes serialize as false. For opt-in filters like
+	// mention_only, false means "no filter" — not "invert the condition". Drop
+	// those keys so stored match objects stay sparse and exact-equality matching
+	// cannot invert semantics.
+	let match = trigger.match;
+	if (match && Object.keys(match).length > 0) {
+		const cleaned: Record<string, string | number | boolean | null> = {};
+		for (const [key, value] of Object.entries(match)) {
+			if (key === "mention_only" && value === false) continue;
+			cleaned[key] = value;
+		}
+		match = Object.keys(cleaned).length > 0 ? cleaned : undefined;
+	} else {
+		match = undefined;
+	}
 	return {
 		...trigger,
 		event_types: Array.from(new Set(trigger.event_types)),
-		match:
-			trigger.match && Object.keys(trigger.match).length > 0
-				? trigger.match
-				: undefined,
+		match,
 		execution,
 		active_run: activeRun,
 		output,

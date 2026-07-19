@@ -37,6 +37,10 @@ function matchesTrigger(
     // here silently drops Slack Connect messages (author's workspace id) and
     // payloads that omit team. channel/connection identity still gates.
     if (key === 'team_id') return true;
+    // mention_only:false is an unchecked UI checkbox ("no filter"), not
+    // "only non-mentions". Treat it as absent so already-stored rows still
+    // match every message; writes strip the key in normalizeBehaviorTriggers.
+    if (key === 'mention_only' && expected === false) return true;
     return normalizedFields[key] === expected;
   });
 }

@@ -116,6 +116,88 @@ describe('behavior event trigger matching', () => {
     expect(matchingBehaviorTriggers([slackTrigger], signal)).toEqual([]);
   });
 
+  test('mention_only:false is unfiltered (unchecked checkbox), not "only non-mentions"', () => {
+    const falseFilter: BehaviorEventTrigger = {
+      ...slackTrigger,
+      match: { channel_id: 'C123', mention_only: false },
+    };
+    const mentionSignal: ConnectorTriggerSignal = {
+      connector_key: 'slack',
+      connection_id: 17,
+      resource_type: 'channel',
+      event_type: 'message.created',
+      delivery_id: 'Ev-mention',
+      input_text: '@bot hi',
+      attributes: {
+        channel_id: 'C123',
+        is_mention: true,
+        mention_only: true,
+      },
+    };
+    const plainSignal: ConnectorTriggerSignal = {
+      ...mentionSignal,
+      delivery_id: 'Ev-plain',
+      input_text: 'plain chatter',
+      attributes: {
+        channel_id: 'C123',
+        is_mention: false,
+        mention_only: false,
+      },
+    };
+
+    // Match-time: already-stored false must not invert.
+    expect(matchingBehaviorTriggers([falseFilter], mentionSignal)).toEqual([
+      falseFilter,
+    ]);
+    expect(matchingBehaviorTriggers([falseFilter], plainSignal)).toEqual([
+      falseFilter,
+    ]);
+
+    // Write-time: false is stripped so the stored match is sparse.
+    const normalized = normalizeBehaviorTriggers([falseFilter]);
+    expect(normalized[0]).toMatchObject({
+      kind: 'event',
+      match: { channel_id: 'C123' },
+    });
+    expect(
+      (normalized[0] as BehaviorEventTrigger).match,
+    ).not.toHaveProperty('mention_only');
+  });
+
+  test('mention_only:true still requires a mention signal', () => {
+    const mentionOnly: BehaviorEventTrigger = {
+      ...slackTrigger,
+      match: { channel_id: 'C123', mention_only: true },
+    };
+    const mentionSignal: ConnectorTriggerSignal = {
+      connector_key: 'slack',
+      connection_id: 17,
+      resource_type: 'channel',
+      event_type: 'message.created',
+      delivery_id: 'Ev-m',
+      input_text: '@bot hi',
+      attributes: {
+        channel_id: 'C123',
+        is_mention: true,
+        mention_only: true,
+      },
+    };
+    const plainSignal: ConnectorTriggerSignal = {
+      ...mentionSignal,
+      delivery_id: 'Ev-p',
+      attributes: {
+        channel_id: 'C123',
+        is_mention: false,
+        mention_only: false,
+      },
+    };
+
+    expect(matchingBehaviorTriggers([mentionOnly], mentionSignal)).toEqual([
+      mentionOnly,
+    ]);
+    expect(matchingBehaviorTriggers([mentionOnly], plainSignal)).toEqual([]);
+  });
+
   test('rejects unsupported execution, output, and active-run combinations', () => {
     expect(() =>
       normalizeBehaviorTriggers([

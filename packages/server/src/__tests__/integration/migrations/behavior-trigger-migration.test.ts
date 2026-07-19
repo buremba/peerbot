@@ -179,4 +179,53 @@ describe('Behavior trigger migration', () => {
       remainingArtifacts: 0,
     });
   });
+
+  it('rejects concurrent pending runs from legacy scheduler replicas', async () => {
+    const { org, user } = await seedOwnerContext();
+    const agent = await createTestAgent({
+      organizationId: org.id,
+      ownerUserId: user.id,
+      agentId: 'legacy-scheduler-race-agent',
+    });
+    const sql = getDb();
+    const [ids] = await sql<{ watcherId: number }>`
+      SELECT (COALESCE(MAX(id), 0) + 1)::int AS "watcherId" FROM watchers
+    `;
+    const watcherId = ids.watcherId;
+    await sql`
+      INSERT INTO watchers (
+        id, name, slug, organization_id, entity_ids, schedule, timezone,
+        next_run_at, agent_id, model_config, sources, version, tags, status,
+        created_by, created_at, updated_at, watcher_group_id
+      ) VALUES (
+        ${watcherId}, 'Legacy scheduler race', 'legacy-scheduler-race',
+        ${org.id}, '{}'::bigint[], '0 9 * * *', 'UTC', NOW(),
+        ${agent.agentId}, '{}'::jsonb, '[]'::jsonb, 1, '{}'::text[],
+        'active', ${user.id}, NOW(), NOW(), ${watcherId}
+      )
+    `;
+
+    const insertLegacyRun = (suffix: string) => sql`
+      INSERT INTO runs (
+        organization_id, run_type, watcher_id, approval_status, status,
+        approved_input, idempotency_key, created_at
+      ) VALUES (
+        ${org.id}, 'watcher', ${watcherId}, 'auto', 'pending',
+        ${sql.json({ watcher_id: watcherId, agent_id: agent.agentId })},
+        ${`legacy-scheduler-race:${suffix}`}, NOW()
+      )
+      RETURNING id
+    `;
+    const results = await Promise.allSettled([
+      insertLegacyRun('one'),
+      insertLegacyRun('two'),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((result) => result.status === 'rejected');
+    expect(rejected?.status).toBe('rejected');
+    if (rejected?.status === 'rejected') {
+      expect((rejected.reason as { code?: string }).code).toBe('23505');
+    }
+  });
 });

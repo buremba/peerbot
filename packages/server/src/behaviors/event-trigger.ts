@@ -30,9 +30,15 @@ function matchesTrigger(
     resource_type: signal.resource_type,
     resource_ref: signal.resource_ref,
   };
-  return Object.entries(trigger.match ?? {}).every(
-    ([key, expected]) => normalizedFields[key] === expected,
-  );
+  return Object.entries(trigger.match ?? {}).every(([key, expected]) => {
+    // team_id is system-written delivery metadata (chat-link creation, Grid
+    // self-heal, migration backfill), never a user-facing catalog filter. The
+    // legacy binding lookup routed by channel alone; enforcing team equality
+    // here silently drops Slack Connect messages (author's workspace id) and
+    // payloads that omit team. channel/connection identity still gates.
+    if (key === 'team_id') return true;
+    return normalizedFields[key] === expected;
+  });
 }
 
 /** Select event activations independently from a Behavior's context sources. */

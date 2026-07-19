@@ -69,6 +69,41 @@ describe('behavior event trigger matching', () => {
     expect(slackSignal.input_text).toBe('Can you summarize this thread?');
   });
 
+  test('treats a stored team_id as delivery metadata, not a routing predicate', () => {
+    const teamScopedTrigger: BehaviorEventTrigger = {
+      ...slackTrigger,
+      match: { channel_id: 'C123', team_id: 'T_OURS' },
+    };
+    const baseSignal: ConnectorTriggerSignal = {
+      connector_key: 'slack',
+      connection_id: 17,
+      resource_type: 'channel',
+      event_type: 'message.created',
+      delivery_id: 'Ev200',
+      input_text: 'hello from a partner workspace',
+      attributes: { channel_id: 'C123', user_id: 'U9' },
+    };
+
+    // Slack Connect: the author's workspace id differs from the stored team.
+    expect(
+      matchingBehaviorTriggers([teamScopedTrigger], {
+        ...baseSignal,
+        attributes: { ...baseSignal.attributes, team_id: 'T_THEIRS' },
+      }),
+    ).toEqual([teamScopedTrigger]);
+    // Payloads that omit team entirely must still route.
+    expect(matchingBehaviorTriggers([teamScopedTrigger], baseSignal)).toEqual([
+      teamScopedTrigger,
+    ]);
+    // Channel identity still gates.
+    expect(
+      matchingBehaviorTriggers([teamScopedTrigger], {
+        ...baseSignal,
+        attributes: { ...baseSignal.attributes, channel_id: 'C999' },
+      }),
+    ).toEqual([]);
+  });
+
   test('fails closed across connections and normalized match fields', () => {
     const signal: ConnectorTriggerSignal = {
       connector_key: 'slack',

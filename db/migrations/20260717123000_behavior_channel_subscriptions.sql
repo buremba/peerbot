@@ -560,6 +560,22 @@ EXECUTE FUNCTION archive_chat_behaviors_for_deleted_connection();
 
 -- migrate:down
 
+-- The older runtime routes these rows from agent_channel_bindings. Retire the
+-- canonical copies before the trigger column is removed so a later reapply
+-- backfills exactly one active Behavior instead of leaving a triggerless active
+-- row beside its replacement. Historical rows remain available as archived
+-- Behaviors; this rollback never deletes them.
+UPDATE watchers w
+SET status = 'archived', updated_at = current_timestamp
+WHERE w.status = 'active'
+  AND w.tags @> ARRAY['system:chat-link']::text[]
+  AND EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+    WHERE trigger->>'kind' = 'event'
+      AND trigger->'event_types' ? 'message.created'
+  );
+
 DROP VIEW IF EXISTS behavior_message_subscriptions;
 
 DROP TRIGGER IF EXISTS sync_legacy_channel_binding_behavior

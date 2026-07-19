@@ -285,7 +285,7 @@ describe("Behavior channel-subscription migration", () => {
 		});
 	});
 
-	it("removes the rollout bridge before the trigger column is rolled back", async () => {
+	it("archives chat Behaviors before a full rollback and reapply", async () => {
 		const { org, user } = await seedOwnerContext();
 		const agent = await createTestAgent({
 			organizationId: org.id,
@@ -313,10 +313,30 @@ describe("Behavior channel-subscription migration", () => {
 			SUBSCRIPTION_MIGRATION,
 		);
 		const sql = getDb();
-		let remainingArtifacts: number | undefined;
+		let captured:
+			| {
+					remainingArtifacts: number;
+					archivedAfterDown: number;
+					activeAfterReapply: number;
+					archivedAfterReapply: number;
+			  }
+			| undefined;
 
 		try {
 			await sql.begin(async (tx: typeof sql) => {
+				// Start from the schema an old replica sees, then exercise the full
+				// expand -> contract -> expand cycle in production migration order.
+				await tx.unsafe(subscriptionDown);
+				await tx.unsafe(triggerDown);
+				await tx`
+					INSERT INTO agent_channel_bindings (
+						organization_id, agent_id, platform, channel_id,
+						team_id, connection_id
+					) VALUES (
+						${org.id}, ${agent.agentId}, 'slack', 'slack:C-ROLLBACK',
+						'T-ROLLBACK', ${connection.id}
+					)
+				`;
 				await tx.unsafe(triggerUp);
 				await tx.unsafe(subscriptionUp);
 				await tx.unsafe(subscriptionDown);
@@ -340,28 +360,45 @@ describe("Behavior channel-subscription migration", () => {
 						  )
 					) AS count
 				`;
-				remainingArtifacts = artifacts.count;
+				const [afterDown] = await tx<{ archived: number }>`
+					SELECT COUNT(*)::int AS archived
+					FROM watchers
+					WHERE organization_id = ${org.id}
+					  AND tags @> ARRAY['system:chat-link']::text[]
+					  AND status = 'archived'
+				`;
 
 				await tx.unsafe(triggerDown);
-				await tx`
-					INSERT INTO agent_channel_bindings (
-						organization_id, agent_id, platform, channel_id,
-						team_id, connection_id
-					) VALUES (
-						${org.id}, ${agent.agentId}, 'slack', 'slack:C-ROLLBACK',
-						'T-ROLLBACK', ${connection.id}
-					)
+				await tx.unsafe(triggerUp);
+				await tx.unsafe(subscriptionUp);
+				const [afterReapply] = await tx<{
+					active: number;
+					archived: number;
+				}>`
+					SELECT
+						COUNT(*) FILTER (WHERE status = 'active')::int AS active,
+						COUNT(*) FILTER (WHERE status = 'archived')::int AS archived
+					FROM watchers
+					WHERE organization_id = ${org.id}
+					  AND tags @> ARRAY['system:chat-link']::text[]
 				`;
-				await tx`
-					UPDATE connections SET deleted_at = NOW()
-					WHERE id = ${connection.id}
-				`;
+				captured = {
+					remainingArtifacts: artifacts.count,
+					archivedAfterDown: afterDown.archived,
+					activeAfterReapply: afterReapply.active,
+					archivedAfterReapply: afterReapply.archived,
+				};
 				throw new Rollback();
 			});
 		} catch (error) {
 			if (!(error instanceof Rollback)) throw error;
 		}
 
-		expect(remainingArtifacts).toBe(0);
+		expect(captured).toEqual({
+			remainingArtifacts: 0,
+			archivedAfterDown: 1,
+			activeAfterReapply: 1,
+			archivedAfterReapply: 1,
+		});
 	});
 });

@@ -38,75 +38,9 @@ SET triggers = jsonb_build_array(
 WHERE schedule IS NOT NULL
   AND triggers = '[]'::jsonb;
 
--- Old replicas write the indexed schedule/timezone columns directly during a
--- rolling deployment. Mirror only writes that did not also change the canonical
--- trigger array; new replicas update both representations atomically.
-CREATE OR REPLACE FUNCTION sync_legacy_watcher_schedule_trigger()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $bridge$
-DECLARE
-  existing_schedule jsonb;
-  non_schedule_triggers jsonb;
-  schedule_trigger jsonb;
-BEGIN
-  IF TG_OP = 'INSERT' THEN
-    IF COALESCE(NEW.triggers, '[]'::jsonb) <> '[]'::jsonb THEN
-      RETURN NEW;
-    END IF;
-  ELSE
-    IF NEW.triggers IS DISTINCT FROM OLD.triggers THEN
-      RETURN NEW;
-    END IF;
-    IF NEW.schedule IS NOT DISTINCT FROM OLD.schedule
-      AND NEW.timezone IS NOT DISTINCT FROM OLD.timezone THEN
-      RETURN NEW;
-    END IF;
-  END IF;
-
-  SELECT item INTO existing_schedule
-  FROM jsonb_array_elements(COALESCE(NEW.triggers, '[]'::jsonb))
-    WITH ORDINALITY AS entry(item, ordinal)
-  WHERE item->>'kind' = 'schedule'
-  ORDER BY ordinal
-  LIMIT 1;
-
-  SELECT COALESCE(jsonb_agg(item ORDER BY ordinal), '[]'::jsonb)
-  INTO non_schedule_triggers
-  FROM jsonb_array_elements(COALESCE(NEW.triggers, '[]'::jsonb))
-    WITH ORDINALITY AS entry(item, ordinal)
-  WHERE item->>'kind' IS DISTINCT FROM 'schedule';
-
-  IF NEW.schedule IS NULL THEN
-    NEW.triggers := non_schedule_triggers;
-    RETURN NEW;
-  END IF;
-
-  schedule_trigger := COALESCE(
-    existing_schedule,
-    jsonb_build_object(
-      'kind', 'schedule',
-      'execution', 'window',
-      'active_run', 'coalesce',
-      'skip_if_unchanged', false
-    )
-  ) || jsonb_build_object('kind', 'schedule', 'cron', NEW.schedule);
-  IF NEW.timezone IS NULL THEN
-    schedule_trigger := schedule_trigger - 'timezone';
-  ELSE
-    schedule_trigger := schedule_trigger
-      || jsonb_build_object('timezone', NEW.timezone);
-  END IF;
-
-  NEW.triggers := non_schedule_triggers || jsonb_build_array(schedule_trigger);
-  RETURN NEW;
-END
-$bridge$;
-
-DROP TRIGGER IF EXISTS sync_legacy_watcher_schedule_trigger ON watchers;
-CREATE TRIGGER sync_legacy_watcher_schedule_trigger
-BEFORE INSERT OR UPDATE OF schedule, timezone, triggers ON watchers
-FOR EACH ROW EXECUTE FUNCTION sync_legacy_watcher_schedule_trigger();
+-- Clean cut: the app always writes triggers together with the indexed
+-- schedule/timezone projections. No dual-write trigger for old schedule-only
+-- writers — those paths are gone with the Behavior public API.
 
 COMMENT ON COLUMN watchers.triggers IS
   'Canonical declarative Behavior activations. schedule/timezone are derived indexed projections of the schedule trigger.';
@@ -135,9 +69,6 @@ COMMENT ON COLUMN connector_definitions.behavior_events IS
   'Connector-owned Behavior event catalog, including filters, defaults, and source-delivery capabilities.';
 
 -- migrate:down
-
-DROP TRIGGER IF EXISTS sync_legacy_watcher_schedule_trigger ON watchers;
-DROP FUNCTION IF EXISTS sync_legacy_watcher_schedule_trigger();
 
 ALTER TABLE connector_definitions
   DROP CONSTRAINT IF EXISTS connector_definitions_behavior_events_array_check;

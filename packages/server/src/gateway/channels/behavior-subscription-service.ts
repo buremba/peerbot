@@ -135,12 +135,14 @@ async function hasChannelSubscription(
 	channelId: string,
 ): Promise<boolean> {
 	return (
-		await loadChatBehaviorSubscriptions(sql, {
-			connectionId,
-			channelId,
-			limit: 1,
-		})
-	).length > 0;
+		(
+			await loadChatBehaviorSubscriptions(sql, {
+				connectionId,
+				channelId,
+				limit: 1,
+			})
+		).length > 0
+	);
 }
 
 async function loadChatBehaviorSubscriptions(
@@ -200,52 +202,11 @@ async function loadChatBehaviorSubscriptions(
 	return rows.map(rowToSubscription);
 }
 
-async function lockLegacySubscriptionProjection(sql: DbClient): Promise<void> {
-	await sql`
-		SELECT pg_advisory_xact_lock(hashtext('behavior_chat_link_rollout'))
-	`;
-}
-
-// New replicas mirror chat-link writes into the retained rollout projection so
-// old replicas see the same routing state. Remove this helper with the contract
-// migration after every replica runs the Behavior-only runtime.
-async function upsertLegacySubscription(
-	sql: DbClient,
-	subscription: {
-		organizationId: string;
-		agentId: string;
-		platform: string;
-		channelId: string;
-		teamId?: string;
-		connectionId: number;
-		model: string | null;
-	},
-): Promise<void> {
-	await sql`
-		INSERT INTO agent_channel_bindings (
-			organization_id, agent_id, platform, channel_id, team_id,
-			connection_id, model, created_at
-		) VALUES (
-			${subscription.organizationId}, ${subscription.agentId},
-			${subscription.platform}, ${subscription.channelId},
-			${subscription.teamId ?? null}, ${subscription.connectionId},
-			${subscription.model}, current_timestamp
-		)
-		ON CONFLICT (organization_id, connection_id, channel_id)
-			WHERE connection_id IS NOT NULL
-		DO UPDATE SET
-			agent_id = EXCLUDED.agent_id,
-			platform = EXCLUDED.platform,
-			team_id = EXCLUDED.team_id,
-			model = EXCLUDED.model,
-			created_at = EXCLUDED.created_at
-	`;
-}
-
 /**
- * Chat/preview adapter over canonical Behaviors. Reads project active triggers
- * and writes create, update, or archive a tagged Behavior. During the rolling
- * migration window, writes also update the old replica projection.
+ * Chat/preview adapter over canonical Behaviors. Reads project from the
+ * `behavior_message_subscriptions` view and writes create/update/archive a
+ * tagged Behavior. Behaviors are the only source of truth — no dual-write
+ * to a legacy bindings table.
  */
 export class BehaviorSubscriptionService {
 	async resolveForConnection(
@@ -256,9 +217,7 @@ export class BehaviorSubscriptionService {
 	): Promise<ChatBehaviorSubscription | null> {
 		const sql = getDb();
 		const rows = await loadChatBehaviorSubscriptions(sql, {
-			behaviorOrganizationId: crossOrg
-				? undefined
-				: connectionOrganizationId,
+			behaviorOrganizationId: crossOrg ? undefined : connectionOrganizationId,
 			connectionOrganizationId,
 			connectionSlug: runtimeConnectionIdToSlug(connectionId),
 			channelId,
@@ -356,7 +315,7 @@ export class BehaviorSubscriptionService {
 		});
 
 		const write = async (tx: DbClient): Promise<void> => {
-			await lockLegacySubscriptionProjection(tx);
+			// Serialize concurrent create/relink for the same org+connection+channel.
 			await tx`
 				SELECT pg_advisory_xact_lock(
 					hashtext('behavior_chat_link'),
@@ -407,15 +366,6 @@ export class BehaviorSubscriptionService {
 						updated_at = current_timestamp
 					WHERE id = ${existing[0].behavior_id}
 				`;
-				await upsertLegacySubscription(tx, {
-					organizationId,
-					agentId,
-					platform,
-					channelId,
-					teamId,
-					connectionId: options.connectionId,
-					model,
-				});
 				return;
 			}
 
@@ -456,15 +406,6 @@ export class BehaviorSubscriptionService {
 				UPDATE watchers SET current_version_id = ${versionId}
 				WHERE id = ${watcherId}
 			`;
-			await upsertLegacySubscription(tx, {
-				organizationId,
-				agentId,
-				platform,
-				channelId,
-				teamId,
-				connectionId: options.connectionId,
-				model,
-			});
 		};
 		if (options.sql) await write(sql);
 		else await sql.begin(write);
@@ -491,7 +432,6 @@ export class BehaviorSubscriptionService {
 			"BehaviorSubscriptionService.archiveChatBehavior",
 		);
 		const write = async (tx: DbClient): Promise<boolean> => {
-			await lockLegacySubscriptionProjection(tx);
 			const rows = await tx<{ id: number; platform: string }>`
 				SELECT w.id, trigger->>'connector_key' AS platform
 				FROM watchers w
@@ -515,18 +455,6 @@ export class BehaviorSubscriptionService {
 				WHERE id = ANY(${pgBigintArray(rows.map((row) => row.id))}::bigint[])
 			`;
 			const native = nativeChannelIdFromAny(channelId);
-			await tx`
-				DELETE FROM agent_channel_bindings
-				WHERE organization_id = ${orgId}
-				  AND agent_id = ${agentId}
-				  AND connection_id = ${connectionId}
-				  AND (
-					channel_id = ${channelId}
-					OR channel_id = ${native}
-					OR split_part(channel_id, ':', 2) = ${native}
-				  )
-			`;
-
 			const canonicalChannelId = `${archived.platform}:${native}`;
 			if (
 				!(await hasChannelSubscription(
@@ -572,7 +500,6 @@ export class BehaviorSubscriptionService {
 			"BehaviorSubscriptionService.archiveAllChatBehaviors",
 		);
 		return sql.begin(async (tx) => {
-			await lockLegacySubscriptionProjection(tx);
 			const rows = await tx<{
 				behavior_id: number;
 				connection_id: string;
@@ -604,18 +531,9 @@ export class BehaviorSubscriptionService {
 					WHERE id = ANY(${pgBigintArray(rows.map((row) => row.behavior_id))}::bigint[])
 				`;
 			}
-			await tx`
-				DELETE FROM agent_channel_bindings
-				WHERE agent_id = ${agentId}
-				  AND organization_id = ${orgId}
-			`;
 			for (const row of rows) {
 				if (
-					!(await hasChannelSubscription(
-						tx,
-						row.connection_id,
-						row.channel_id,
-					))
+					!(await hasChannelSubscription(tx, row.connection_id, row.channel_id))
 				) {
 					await softDeleteStreamingChannelFeed({
 						connectionId: row.connection_id,

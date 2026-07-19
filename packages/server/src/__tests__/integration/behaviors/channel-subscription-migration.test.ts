@@ -45,7 +45,7 @@ describe("Behavior channel-subscription migration", () => {
 		await cleanupTestDatabase();
 	});
 
-	it("backfills one canonical Behavior, retains the rollout bridge, and replays safely", async () => {
+	it("one-shot backfills Behaviors, drops bindings, and replays safely", async () => {
 		const { org, user, ctx } = await seedOwnerContext();
 		const foreignOrg = await createTestOrganization({
 			name: "Foreign migration transcript",
@@ -132,24 +132,37 @@ describe("Behavior channel-subscription migration", () => {
 					behaviorCount: number;
 					deletedConnectionBehaviorCount: number;
 					legacyTable: string | null;
-					compatView: string | null;
+					messageView: string | null;
 					triggers: unknown;
 					tagged: boolean;
 					executionConfig: unknown;
 					scheduledTriggers: unknown;
+					bridgeArtifacts: number;
 			  }
 			| undefined;
 
 		try {
 			await sql.begin(async (tx: typeof sql) => {
-				await tx.unsafe(triggerUp);
-				await tx.unsafe(triggerUp);
+				// Test DB already applied these migrations (table may already be
+				// dropped). Re-create a minimal bindings table so the one-shot
+				// backfill can exercise clean-cut drop semantics.
 				await tx.unsafe(`
-					DROP TRIGGER IF EXISTS lock_legacy_channel_binding_projection
-						ON agent_channel_bindings;
-					DROP TRIGGER IF EXISTS sync_legacy_channel_binding_behavior
-						ON agent_channel_bindings;
+					CREATE TABLE IF NOT EXISTS agent_channel_bindings (
+						organization_id text NOT NULL,
+						agent_id text NOT NULL,
+						platform text NOT NULL,
+						channel_id text NOT NULL,
+						team_id text,
+						connection_id bigint,
+						model text,
+						created_at timestamptz NOT NULL DEFAULT now()
+					);
+					CREATE UNIQUE INDEX IF NOT EXISTS agent_channel_bindings_connection_channel_unique
+						ON agent_channel_bindings (organization_id, connection_id, channel_id)
+						WHERE connection_id IS NOT NULL;
 				`);
+				await tx.unsafe(triggerUp);
+				await tx.unsafe(triggerUp);
 				await tx`
 					INSERT INTO channel_messages (
 						organization_id, connection_id, platform, channel_id,
@@ -227,22 +240,38 @@ describe("Behavior channel-subscription migration", () => {
 						WHERE trigger->>'connection_id' = ${String(deletedConnection.id)}
 					  )
 				`;
-				const [compatView] = await tx<{ name: string | null }>`
-					SELECT to_regclass('public.behavior_channel_subscriptions')::text AS name
+				const [messageView] = await tx<{ name: string | null }>`
+					SELECT to_regclass('public.behavior_message_subscriptions')::text AS name
 				`;
 				const [scheduledBehavior] = await tx<{ triggers: unknown }>`
 					SELECT triggers FROM watchers WHERE id = ${scheduledBehaviorId}
 				`;
+				const [bridgeArtifacts] = await tx<{ count: number }>`
+					SELECT (
+						SELECT COUNT(*)::int FROM pg_trigger
+						WHERE NOT tgisinternal
+						  AND tgname IN (
+							'lock_legacy_channel_binding_projection',
+							'sync_legacy_channel_binding_behavior'
+						  )
+					) + (
+						SELECT COUNT(*)::int FROM pg_proc
+						WHERE proname IN (
+							'lock_legacy_channel_binding_projection',
+							'sync_legacy_channel_binding_behavior'
+						  )
+					) AS count
+				`;
 				captured = {
 					behaviorCount: behaviorCount.count,
-					deletedConnectionBehaviorCount:
-						deletedConnectionBehaviorCount.count,
+					deletedConnectionBehaviorCount: deletedConnectionBehaviorCount.count,
 					legacyTable: legacy.name,
-					compatView: compatView.name,
+					messageView: messageView.name,
 					triggers: behavior.triggers,
 					tagged: behavior.tagged,
 					executionConfig: behavior.execution_config,
 					scheduledTriggers: scheduledBehavior.triggers,
+					bridgeArtifacts: bridgeArtifacts.count,
 				};
 				throw new Rollback();
 			});
@@ -253,8 +282,8 @@ describe("Behavior channel-subscription migration", () => {
 		expect(captured).toEqual({
 			behaviorCount: 1,
 			deletedConnectionBehaviorCount: 0,
-			legacyTable: "agent_channel_bindings",
-			compatView: null,
+			legacyTable: null,
+			messageView: "behavior_message_subscriptions",
 			triggers: [
 				{
 					kind: "event",
@@ -282,10 +311,11 @@ describe("Behavior channel-subscription migration", () => {
 					skip_if_unchanged: false,
 				},
 			],
+			bridgeArtifacts: 0,
 		});
 	});
 
-	it("archives chat Behaviors before a full rollback and reapply", async () => {
+	it("archives chat Behaviors on rollback and leaves no dual-write artifacts", async () => {
 		const { org, user } = await seedOwnerContext();
 		const agent = await createTestAgent({
 			organizationId: org.id,
@@ -300,10 +330,6 @@ describe("Behavior channel-subscription migration", () => {
 		});
 		const migrationsDir = resolveMigrationsDir();
 		const triggerUp = loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION);
-		const triggerDown = loadMigrationDownSection(
-			migrationsDir,
-			TRIGGER_MIGRATION,
-		);
 		const subscriptionUp = loadMigrationUpSection(
 			migrationsDir,
 			SUBSCRIPTION_MIGRATION,
@@ -315,19 +341,29 @@ describe("Behavior channel-subscription migration", () => {
 		const sql = getDb();
 		let captured:
 			| {
-					remainingArtifacts: number;
+					remainingBridgeArtifacts: number;
 					archivedAfterDown: number;
-					activeAfterReapply: number;
-					archivedAfterReapply: number;
+					archiveTriggerPresent: boolean;
 			  }
 			| undefined;
 
 		try {
 			await sql.begin(async (tx: typeof sql) => {
-				// Start from the schema an old replica sees, then exercise the full
-				// expand -> contract -> expand cycle in production migration order.
-				await tx.unsafe(subscriptionDown);
-				await tx.unsafe(triggerDown);
+				await tx.unsafe(`
+					CREATE TABLE IF NOT EXISTS agent_channel_bindings (
+						organization_id text NOT NULL,
+						agent_id text NOT NULL,
+						platform text NOT NULL,
+						channel_id text NOT NULL,
+						team_id text,
+						connection_id bigint,
+						model text,
+						created_at timestamptz NOT NULL DEFAULT now()
+					);
+					CREATE UNIQUE INDEX IF NOT EXISTS agent_channel_bindings_connection_channel_unique
+						ON agent_channel_bindings (organization_id, connection_id, channel_id)
+						WHERE connection_id IS NOT NULL;
+				`);
 				await tx`
 					INSERT INTO agent_channel_bindings (
 						organization_id, agent_id, platform, channel_id,
@@ -347,16 +383,14 @@ describe("Behavior channel-subscription migration", () => {
 						WHERE NOT tgisinternal
 						  AND tgname IN (
 							'lock_legacy_channel_binding_projection',
-							'sync_legacy_channel_binding_behavior',
-							'archive_chat_behaviors_for_deleted_connection'
+							'sync_legacy_channel_binding_behavior'
 						  )
 					) + (
 						SELECT COUNT(*)::int
 						FROM pg_proc
 						WHERE proname IN (
 							'lock_legacy_channel_binding_projection',
-							'sync_legacy_channel_binding_behavior',
-							'archive_chat_behaviors_for_deleted_connection'
+							'sync_legacy_channel_binding_behavior'
 						  )
 					) AS count
 				`;
@@ -367,26 +401,18 @@ describe("Behavior channel-subscription migration", () => {
 					  AND tags @> ARRAY['system:chat-link']::text[]
 					  AND status = 'archived'
 				`;
-
-				await tx.unsafe(triggerDown);
-				await tx.unsafe(triggerUp);
-				await tx.unsafe(subscriptionUp);
-				const [afterReapply] = await tx<{
-					active: number;
-					archived: number;
-				}>`
-					SELECT
-						COUNT(*) FILTER (WHERE status = 'active')::int AS active,
-						COUNT(*) FILTER (WHERE status = 'archived')::int AS archived
-					FROM watchers
-					WHERE organization_id = ${org.id}
-					  AND tags @> ARRAY['system:chat-link']::text[]
+				const [archiveTrigger] = await tx<{ present: boolean }>`
+					SELECT EXISTS (
+						SELECT 1 FROM pg_trigger
+						WHERE NOT tgisinternal
+						  AND tgname = 'archive_chat_behaviors_for_deleted_connection'
+					) AS present
 				`;
 				captured = {
-					remainingArtifacts: artifacts.count,
+					remainingBridgeArtifacts: artifacts.count,
 					archivedAfterDown: afterDown.archived,
-					activeAfterReapply: afterReapply.active,
-					archivedAfterReapply: afterReapply.archived,
+					// Down removes the product archive trigger with the migration.
+					archiveTriggerPresent: archiveTrigger.present,
 				};
 				throw new Rollback();
 			});
@@ -395,10 +421,9 @@ describe("Behavior channel-subscription migration", () => {
 		}
 
 		expect(captured).toEqual({
-			remainingArtifacts: 0,
+			remainingBridgeArtifacts: 0,
 			archivedAfterDown: 1,
-			activeAfterReapply: 1,
-			archivedAfterReapply: 1,
+			archiveTriggerPresent: false,
 		});
 	});
 });

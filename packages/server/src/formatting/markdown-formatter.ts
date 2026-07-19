@@ -843,7 +843,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
       if (template.current_version) md += `- **Current Version**: ${template.current_version}\n`;
       if (template.version) md += `- **Version**: ${template.version}\n`;
       if (template.watchers_count !== undefined) {
-        md += `- **Watchers**: ${template.watchers_count}\n`;
+        md += `- **Behaviors**: ${template.watchers_count}\n`;
       }
       if (template.installed !== undefined) {
         md += `- **Installed**: ${template.installed ? 'Yes' : 'No'}\n`;
@@ -875,7 +875,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
 
   if (action === 'set_reaction_script') {
     md += '## Reaction Script\n\n';
-    md += `- **Watcher ID**: \`${result.watcher_id}\`\n`;
+    md += `- **Behavior ID**: \`${result.watcher_id}\`\n`;
     md += `- **Installed**: ${result.has_script ? 'Yes' : 'No'}\n`;
     if (result.message) md += `- **Message**: ${result.message}\n`;
     return md;
@@ -896,7 +896,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
     if (failedResults.length > 0) {
       md += '## ❌ Failed Operations\n\n';
       for (const r of failedResults) {
-        md += `- **Watcher ID**: \`${r.watcher_id}\`\n`;
+        md += `- **Behavior ID**: \`${r.watcher_id}\`\n`;
         md += `  - **Error**: ${r.message}\n\n`;
       }
     }
@@ -904,14 +904,14 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
     if (successfulResults.length > 0) {
       md += '## ✅ Successful Operations\n\n';
       for (const r of successfulResults) {
-        md += `- **Watcher ID**: \`${r.watcher_id}\`\n`;
+        md += `- **Behavior ID**: \`${r.watcher_id}\`\n`;
         md += `  - **Status**: ${r.message}\n\n`;
       }
     }
   }
 
   if (action === 'create' && result.watcher_id) {
-    md += '## New Watcher Created\n\n';
+    md += '## New Behavior Created\n\n';
     md += `- **ID**: \`${result.watcher_id}\`\n`;
     md += `- **Template Version**: ${result.template_version}\n`;
     md += `- **Status**: ${result.status}\n`;
@@ -932,7 +932,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
 
   if (action === 'complete_window') {
     md += '## ✅ Window Completed\n\n';
-    md += `- **Watcher ID**: \`${result.watcher_id}\`\n`;
+    md += `- **Behavior ID**: \`${result.watcher_id}\`\n`;
     md += `- **Window ID**: \`${result.window_id}\`\n`;
     md += `- **Period**: ${result.window_start?.substring(0, 10)} - ${result.window_end?.substring(0, 10)}\n`;
     md += `- **Content Linked**: ${result.content_linked}\n`;
@@ -1144,9 +1144,9 @@ function formatGetContentResult(result: any, _options: FormatterOptions): string
 
   let md = `# \uD83D\uDCDD Content (${total} total)\n\n`;
 
-  // Watcher mode: show window info and token
+  // Behavior mode: show window info and token
   if (window_token) {
-    md += '## 🎯 Watcher Window\n\n';
+    md += '## 🎯 Behavior Window\n\n';
     md += `- **Window Start**: ${window_start}\n`;
     md += `- **Window End**: ${window_end}\n`;
     md += `- **Window Token**: \`${window_token}\`\n`;

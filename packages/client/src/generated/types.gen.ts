@@ -278,11 +278,11 @@ export type SaveMemoryData = {
      */
     supersedes_event_id?: number;
     /**
-     * Attribution source when save is triggered by a watcher reaction
+     * Attribution source when save is triggered by a Behavior reaction
      */
     watcher_source?: {
       /**
-       * Watcher that triggered this save
+       * Behavior that triggered this save
        */
       watcher_id: number;
       /**
@@ -787,7 +787,7 @@ export type ManageEntityData = {
      */
     candidate_entity_ids?: Array<number>;
     /**
-     * [merge] Optional structured evidence for human-initiated merge provenance. Agent and watcher evidence is always recomputed from the entity type's resolution policy.
+     * [merge] Optional structured evidence for human-initiated merge provenance. Agent and Behavior evidence is always recomputed from the entity type's resolution policy.
      */
     merge_evidence?: Array<{
       kind: string;
@@ -853,11 +853,11 @@ export type ManageEntityData = {
       [key: string]: unknown;
     };
     /**
-     * [update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so a watcher (and the UI) can see why the value was set.
+     * [update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so a Behavior (and the UI) can see why the value was set.
      */
     field_note?: string;
     /**
-     * [update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so a watcher can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.
+     * [update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so a Behavior can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.
      */
     affirm_fields?: Array<string>;
     /**
@@ -921,11 +921,11 @@ export type ManageEntityData = {
      */
     include_deleted?: boolean;
     /**
-     * Attribution source when mutation is triggered by a watcher reaction
+     * Attribution source when mutation is triggered by a Behavior reaction
      */
     watcher_source?: {
       /**
-       * Watcher that triggered this mutation
+       * Behavior that triggered this mutation
        */
       watcher_id: number;
       /**
@@ -2814,7 +2814,7 @@ export type ManageFeedsData = {
           [key: string]: unknown;
         };
         /**
-         * Cron expression for automatic sync. Omit or null for manual-only.
+         * Cron expression for automatic sync. Omit or null for manual-only (trigger_feed); no platform default cadence.
          */
         schedule?: string | null;
         /**
@@ -3376,6 +3376,20 @@ export type ManageOperationsData = {
       }
     | {
         /**
+         * Org attention feed: notifications + recent user-facing runs (Behavior/sync/action/internal), with optional adjacent aggregation and deep-links for the UI and agent context.
+         */
+        action: "list_activity";
+        /**
+         * Max cards after aggregation (default 24, max 50)
+         */
+        limit?: number;
+        include_notifications?: boolean;
+        include_runs?: boolean;
+        aggregate?: boolean;
+        kinds?: Array<string>;
+      }
+    | {
+        /**
          * Approve a pending run (also handles agent + entity_field_change gates).
          */
         action: "approve";
@@ -3394,7 +3408,7 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Approve every pending proposal a watcher run produced, in one go. Groups by the run's window.
+         * Approve every pending proposal a Behavior run produced, in one go. Groups by the run's window.
          */
         action: "approve_batch";
         window_id: number;
@@ -3405,7 +3419,7 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Reject every pending proposal a watcher run produced. The reason is fed back to the agent so it can revise its proposals (the conversational revision loop).
+         * Reject every pending proposal a Behavior run produced. The reason is fed back to the agent so it can revise its proposals (the conversational revision loop).
          */
         action: "reject_batch";
         window_id: number;
@@ -3504,6 +3518,27 @@ export type ManageOperationsResponses = {
         };
       }
     | {
+        action: "list_activity";
+        items: Array<{
+          id: string;
+          kind: string;
+          title: string;
+          body: string | null;
+          at: string;
+          status: string | null;
+          count: number;
+          href: string | null;
+          unread?: boolean;
+          notification_id?: number;
+          run_id?: number;
+          member_run_ids?: Array<number>;
+          connection_id?: number;
+          watcher_id?: number;
+        }>;
+        total: number;
+        limit: number;
+      }
+    | {
         action: "approve";
         approved: true;
         run_id: number;
@@ -3572,11 +3607,11 @@ export type NotifyData = {
       [key: string]: unknown;
     };
     /**
-     * Attribution source when notification is triggered by a watcher reaction
+     * Attribution source when notification is triggered by a Behavior reaction
      */
     watcher_source?: {
       /**
-       * Watcher that triggered this notification
+       * Behavior that triggered this notification
        */
       watcher_id: number;
       /**
@@ -4242,7 +4277,7 @@ export type GetBehaviorData = {
      */
     template_version?: number;
     /**
-     * Pin to a specific watcher_versions.id. Workers receive this from runs.approved_input.version_id and pass it back so the agent loop reads the same version it extracted with, even if the group is edited mid-run.
+     * Pin to a specific persisted Behavior version. Workers receive this from runs.approved_input.version_id and pass it back so the agent loop reads the same version it extracted with, even if the group is edited mid-run.
      */
     template_version_id?: number;
     /**
@@ -4345,7 +4380,6 @@ export type GetBehaviorResponses = {
       watcher_name: string;
       slug: string;
       status: "active" | "archived";
-      schedule?: string | null;
       triggers?: Array<
         | {
             kind: "event";
@@ -4489,11 +4523,11 @@ export type ReadKnowledgeData = {
      */
     entity_id?: number;
     /**
-     * Watcher ID to fetch content for. When provided, uses watcher's sources and computes pending window. Returns window_token for complete_window action.
+     * Persisted Behavior ID (`watcher_id`) to fetch content for. When provided, uses the Behavior's sources and computes its pending window. Returns window_token for complete_window action.
      */
     watcher_id?: number;
     /**
-     * Pin to a specific watcher_versions.id when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the watcher's current_version_id.
+     * Pin to a specific persisted Behavior version when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the Behavior's current version.
      */
     template_version_id?: number;
     /**
@@ -4517,11 +4551,11 @@ export type ReadKnowledgeData = {
      */
     platforms?: Array<string>;
     /**
-     * Watcher window ID to filter by (shows only content analyzed in this window)
+     * Behavior window ID to filter by (shows only content analyzed in this window)
      */
     window_id?: number;
     /**
-     * Limit results to events this watcher has analyzed (any window). Distinct from watcher_id, which enters watcher read mode.
+     * Limit results to events this Behavior has analyzed (any window). Distinct from watcher_id, which enters Behavior read mode.
      */
     analyzed_by_watcher_id?: number;
     /**
@@ -4599,11 +4633,11 @@ export type ReadKnowledgeData = {
      */
     classification_source?: "user" | "embedding" | "llm";
     /**
-     * Filter to specific content IDs. Useful for showing content linked to watcher analysis.
+     * Filter to specific content IDs. Useful for showing content linked to Behavior analysis.
      */
     content_ids?: Array<number>;
     /**
-     * Exclude content already analyzed in any window for this watcher. Returns only unprocessed content for client-driven watcher generation.
+     * Exclude content already analyzed in any window for this Behavior. Returns only unprocessed content for client-driven Behavior generation.
      */
     exclude_watcher_id?: number;
     /**
@@ -4725,7 +4759,7 @@ export type ManageClassifiersData = {
      */
     entity_id?: number;
     /**
-     * [create] Watcher ID as returned by the watcher APIs (numeric string; required)
+     * [create] Persisted Behavior ID (`watcher_id`) returned by manage_behaviors (numeric string; required)
      */
     watcher_id?: string;
     /**
@@ -5398,22 +5432,6 @@ export type ResolvePathResponses = {
         created_at: string;
         updated_at: string;
       }>;
-      recent_watchers: Array<{
-        watcher_id: string;
-        name: string;
-        status: string;
-        schedule: string;
-        entity_id: number | null;
-        entity_type: string | null;
-        entity_name: string | null;
-        entity_slug: string | null;
-        parent_slug: string | null;
-        parent_entity_type: string | null;
-        organization_slug: string;
-        windows_count: number;
-        created_at: string;
-        updated_at: string;
-      }>;
       connector_definitions: Array<{
         key: string;
         name: string;
@@ -5739,7 +5757,7 @@ export type PostApiV1AgentsByAgentIdMessagesData = {
     message?: string;
     messageId?: string;
     /**
-     * Optional per-message model override (a `provider/model` ref or "auto"). Wins over the agent/org default. Used by behavior dispatch (e.g. watcher runs).
+     * Optional per-message model override (a `provider/model` ref or "auto"). Wins over the agent/org default. Used by Behavior dispatch.
      */
     model?: string;
     /**

@@ -239,7 +239,7 @@ async function loadWatcherLabel(
 		return { actorLabel: "An agent", watcherName: null, watcherAgentId: null };
 	}
 	if (!watcherId) {
-		return { actorLabel: "A watcher", watcherName: null, watcherAgentId: null };
+		return { actorLabel: "A Behavior", watcherName: null, watcherAgentId: null };
 	}
 	const rows = await getDb()<{
 		name: string | null;
@@ -252,7 +252,7 @@ async function loadWatcherLabel(
     LIMIT 1
   `;
 	return {
-		actorLabel: rows[0]?.name ?? `Watcher ${watcherId}`,
+		actorLabel: rows[0]?.name ?? `Behavior ${watcherId}`,
 		watcherName: rows[0]?.name ?? null,
 		watcherAgentId: rows[0]?.agent_id ?? null,
 	};
@@ -555,7 +555,7 @@ export async function proposeEntityChange(
 	const fieldKeys = updateProposal ? Object.keys(updateProposal.fields) : [];
 	const fieldList = fieldKeys.join(", ");
 	const attribution = proposal.attribution ?? "watcher";
-	const actorNoun = attribution === "agent" ? "An agent" : "A watcher";
+	const actorNoun = attribution === "agent" ? "An agent" : "A Behavior";
 	const [{ actorLabel, watcherName, watcherAgentId }, entity] =
 		await Promise.all([
 			loadWatcherLabel(ctx, proposal.watcher_id, attribution),

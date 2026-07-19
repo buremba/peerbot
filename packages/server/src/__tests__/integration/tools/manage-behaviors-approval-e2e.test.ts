@@ -295,7 +295,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 				agentCtx
 			)
 		).rejects.toThrow(
-			/cannot install watcher behavior owned by another agent/i
+			/cannot install a Behavior owned by another agent/i
 		);
 
 		const sql = getTestDb();

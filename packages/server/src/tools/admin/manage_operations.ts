@@ -1442,7 +1442,7 @@ async function resolveReviewer(
 interface BuilderApprovalHandler {
 	/** `runs.action_key` this family's pending rows carry. */
 	actionKey: string;
-	/** Noun for the result message, e.g. "Agent" / "Watcher". */
+	/** Noun for the result message, e.g. "Agent" / "Behavior". */
 	nounLabel: string;
 	/** The proposal shape stored in `action_input` is valid for this family. */
 	isValidProposal(proposal: unknown): boolean;
@@ -1490,7 +1490,7 @@ function detectManageBehaviorsApplyFailure(output: unknown): string | null {
 	) {
 		const total =
 			typeof summary.total === "number" ? summary.total : summary.failed;
-		return `Watcher delete failed: 0 of ${total} succeeded`;
+		return `Behavior delete failed: 0 of ${total} succeeded`;
 	}
 	return null;
 }
@@ -1517,7 +1517,7 @@ function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
 		},
 		{
 			actionKey: MANAGE_BEHAVIORS_ACTION_KEY,
-			nounLabel: "Watcher",
+			nounLabel: "Behavior",
 			isValidProposal: (p) =>
 				(p as ManageBehaviorsProposal | null)?.args != null,
 			apply: (p, ctx, env, owner) =>
@@ -2004,7 +2004,7 @@ async function tryApproveEntityChangeRun(
 			run_id: args.run_id,
 			event_id: eventId,
 			message: allStale
-				? `Field change skipped: ${staleFields.join(", ")} was changed by a human after the watcher proposed it.`
+				? `Field change skipped: ${staleFields.join(", ")} was changed by a human after the Behavior proposed it.`
 				: operation === "update"
 					? `Field change approved and applied: ${description}.`
 					: `Entity ${operation} approved and applied: ${description}.`,
@@ -2081,7 +2081,7 @@ async function tryApproveEntityChangeRun(
 							ctx.organizationId,
 							"rejected",
 							"entity_merge — rejected",
-							"This unchanged duplicate candidate was already rejected in another watcher run.",
+							"This unchanged duplicate candidate was already rejected in another Behavior run.",
 							{
 								reject_reason:
 									"The same resolution candidate was already rejected",
@@ -2091,7 +2091,7 @@ async function tryApproveEntityChangeRun(
 						);
 						return {
 							error:
-								"This duplicate candidate was already rejected. Refresh the watcher run.",
+								"This duplicate candidate was already rejected. Refresh the Behavior run.",
 						};
 					}
 				}
@@ -2682,7 +2682,7 @@ async function handleRejectBatch(
 		run_ids: runIds,
 		message:
 			rejected > 0
-				? `Rejected ${rejected} proposals. The watcher's next run will see this feedback and revise.`
+				? `Rejected ${rejected} proposals. The Behavior's next run will see this feedback and revise.`
 				: "No pending proposals for this run.",
 	};
 }

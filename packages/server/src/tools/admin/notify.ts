@@ -63,10 +63,10 @@ const SendAction = Type.Object({
   watcher_source: Type.Optional(
     Type.Object(
       {
-        watcher_id: Type.Number({ description: 'Watcher that triggered this notification' }),
+        watcher_id: Type.Number({ description: 'Behavior that triggered this notification' }),
         window_id: Type.Number({ description: 'Window that triggered this notification' }),
       },
-      { description: 'Attribution source when notification is triggered by a watcher reaction' }
+      { description: 'Attribution source when notification is triggered by a Behavior reaction' }
     )
   ),
 });

@@ -98,7 +98,6 @@ const PUBLIC_APP_ROUTE_PREFIXES = new Set([
   'connectors',
   'events',
   'members',
-  'watchers',
 ]);
 
 function getPublicOrigin(requestUrl: string): string {
@@ -447,7 +446,7 @@ function buildWorkspaceModel(
         'knowledge item'
       )}, ${formatCountLabel(summary?.active_connections ?? 0, 'connector')}, and ${formatCountLabel(
         summary?.watchers_count ?? 0,
-        'watcher'
+        'behavior'
       )}.`,
     180
   );
@@ -462,8 +461,8 @@ function buildWorkspaceModel(
           value: formatCountLabel(summary?.active_connections ?? 0, 'active connector'),
         },
         {
-          label: 'Watchers',
-          value: formatCountLabel(summary?.watchers_count ?? 0, 'active watcher'),
+          label: 'Behaviors',
+          value: formatCountLabel(summary?.watchers_count ?? 0, 'active behavior'),
         },
       ]),
     },
@@ -643,7 +642,7 @@ function buildEntityModel(
         'knowledge item'
       )}, ${formatCountLabel(entity.active_connections, 'connector')}, and ${formatCountLabel(
         entity.watchers_count,
-        'watcher'
+        'behavior'
       )}.`,
     180
   );
@@ -668,7 +667,7 @@ function buildEntityModel(
           label: 'Connectors',
           value: formatCountLabel(entity.active_connections, 'active connector'),
         },
-        { label: 'Watchers', value: formatCountLabel(entity.watchers_count, 'active watcher') },
+        { label: 'Behaviors', value: formatCountLabel(entity.watchers_count, 'active behavior') },
       ]),
     },
     {
@@ -968,7 +967,7 @@ export async function buildPublicPageModel(
       );
     }
 
-    // If any segment after the owner is a known app-route prefix (e.g. watchers, agents),
+    // If any segment after the owner is a known app-route prefix (e.g. agents),
     // this is a deep SPA route — let the client handle it entirely.
     const entitySegments = segments.slice(1);
     for (let i = 0; i < entitySegments.length; i += 2) {

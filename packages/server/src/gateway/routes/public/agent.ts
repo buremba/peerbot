@@ -125,7 +125,7 @@ const SendMessageRequestSchema = Type.Object(
       Type.String({
         description:
           'Optional per-message model override (a `provider/model` ref or "auto"). ' +
-          "Wins over the agent/org default. Used by behavior dispatch (e.g. watcher runs).",
+          "Wins over the agent/org default. Used by Behavior dispatch.",
       }),
     ),
     platform: Type.Optional(
@@ -1483,7 +1483,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     try {
       const channelId = session.channelId || `api_${session.userId}`;
 
-      // A per-message model override (behavior dispatch, e.g. watcher runs)
+      // A per-message model override (including Behavior dispatch)
       // wins over the session's model; otherwise the session model (already the
       // agent/org resolution) carries through. resolveAgentOptions then applies
       // the layered fallback for the empty case.

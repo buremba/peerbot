@@ -1,13 +1,5 @@
-import { BehaviorExecutionConfigSchema } from '@lobu/core/contracts/tools/manage-behaviors';
 import { ToolUserError } from '../../utils/errors';
 import { isAdminOrOwnerRole } from '../access-control';
-
-/**
- * Per-watcher device-worker CLI execution settings. The pure TypeBox schema
- * lives in @lobu/core with the manage_behaviors contract; this server module
- * keeps the authorization/runtime helpers colocated with their callers.
- */
-export { BehaviorExecutionConfigSchema as WatcherExecutionConfigSchema };
 
 /**
  * execution_config keys that are SERVER-ONLY and must never reach a

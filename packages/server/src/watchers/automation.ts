@@ -218,11 +218,11 @@ async function enqueueWatcherRunForRecord(
 	sourceFingerprint?: string
 ): Promise<QueueWatcherRunResult> {
 	if ((watcher.status ?? "active") !== "active") {
-		throw new Error(`Watcher ${watcher.id} is not active.`);
+		throw new Error(`Behavior ${watcher.id} is not active.`);
 	}
 
 	if (!watcher.agent_id) {
-		throw new Error(`Watcher ${watcher.id} is not assigned to a Lobu agent.`);
+		throw new Error(`Behavior ${watcher.id} is not assigned to a Lobu agent.`);
 	}
 
 	const granularity = inferWatcherGranularityFromSchedule(watcher.schedule);
@@ -259,7 +259,7 @@ export async function enqueueWatcherRunForWatcher(
 	const watcher = await loadWatcherForAutomation(sql, watcherId);
 
 	if (!watcher) {
-		throw new Error(`Watcher ${watcherId} not found.`);
+		throw new Error(`Behavior ${watcherId} not found.`);
 	}
 
 	return enqueueWatcherRunForRecord(sql, watcher, dispatchSource);
@@ -515,8 +515,8 @@ export async function sweepStaleWatcherRuns(
 		heartbeatSemantics: "beat-after-claim",
 		heartbeatStaleInterval,
 		coarseStaleInterval,
-		heartbeatErrorMessage: `Watcher run heartbeat went silent for over ${heartbeatStaleInterval} — the executor crashed or was abandoned`,
-		coarseErrorMessage: `Watcher run exceeded ${coarseStaleInterval} without reaching terminal state`,
+		heartbeatErrorMessage: `Behavior run heartbeat went silent for over ${heartbeatStaleInterval} — the executor crashed or was abandoned`,
+		coarseErrorMessage: `Behavior run exceeded ${coarseStaleInterval} without reaching terminal state`,
 	});
 	const timedOut = pendingTimedOut + executingTimedOut;
 	if (timedOut > 0) {
@@ -574,7 +574,7 @@ async function finalizeStalePendingWatcherRuns(
         UPDATE runs
         SET status = 'timeout',
             completed_at = current_timestamp,
-            error_message = ${`Watcher run remained pending for over ${staleInterval} without being claimed`}
+            error_message = ${`Behavior run remained pending for over ${staleInterval} without being claimed`}
         WHERE id = ${candidate.id}
           AND status = 'pending'
       `;
@@ -924,10 +924,10 @@ export function buildDispatchMessage(params: {
 		.split("T")[0];
 
 	return [
-		"Run this watcher now using the lobu-memory MCP tools.",
+		"Run this Behavior now using the lobu-memory MCP tools.",
 		"",
-		`Watcher ID: ${params.watcherId}`,
-		`Watcher run ID: ${params.runId}`,
+		`Behavior ID: ${params.watcherId}`,
+		`Behavior run ID: ${params.runId}`,
 		`Assigned agent ID: ${params.agentId}`,
 		`Session agent ID: ${params.sessionAgentId}`,
 		`Queued window start: ${params.payload.window_start}`,
@@ -955,7 +955,7 @@ export function buildDispatchMessage(params: {
 		),
 		"",
 		"Analyze every source result in the knowledge-read payload's `sources` field, even when its `content` array is empty.",
-		"Treat the watcher as having no data only when `content` and every array in `sources` are empty. In that case, do not fabricate results.",
+		"Treat the Behavior as having no data only when `content` and every array in `sources` are empty. In that case, do not fabricate results.",
 	].join("\n");
 }
 
@@ -1052,7 +1052,7 @@ async function claimWatcherRun(
  * Read a watcher's optional per-watcher model override from
  * `watchers.execution_config.model` (a `provider/model` ref or "auto"). This is
  * the SAME field the device-worker lane already reads as the CLI `--model` flag
- * (WatcherExecutionConfigSchema.model), so the server-side dispatch lane and the
+ * (BehaviorExecutionConfigSchema.model), so the server-side dispatch lane and the
  * device lane share one storage location. Returns undefined when unset so the
  * caller falls through to the agent/org default.
  */
@@ -1162,7 +1162,7 @@ async function dispatchWatcherRun(
 		await failWatcherRun(
 			sql,
 			run.id,
-			"Watcher run is missing a valid dispatch payload."
+			"Behavior run is missing a valid dispatch payload."
 		);
 		return "failed";
 	}
@@ -1311,7 +1311,7 @@ async function dispatchWatcherRun(
 			await failWatcherRun(
 				sql,
 				run.id,
-				`Failed to enqueue Lobu watcher message (${messageResponse.status}): ${body || "unknown error"}`
+				`Failed to enqueue Lobu Behavior message (${messageResponse.status}): ${body || "unknown error"}`
 			);
 			return "failed";
 		}

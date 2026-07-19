@@ -627,7 +627,7 @@ describe("apply diff — watchers", () => {
     agent: "triage",
     name: "Weekly digest",
     prompt: "Produce a digest.",
-    schedule: "0 9 * * 1",
+    triggers: [{ kind: "schedule" as const, cron: "0 9 * * 1" }],
   };
 
   test("create when watcher missing remotely", () => {
@@ -648,7 +648,7 @@ describe("apply diff — watchers", () => {
           name: "Weekly digest",
           agent_id: "triage",
           prompt: "Produce a digest.",
-          schedule: "0 9 * * 1",
+          triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
         },
       ],
     };
@@ -658,7 +658,7 @@ describe("apply diff — watchers", () => {
     expect(plan.counts.create).toBe(0);
   });
 
-  test("update with scalar drift when schedule changes remotely", () => {
+  test("update when a schedule trigger changes remotely", () => {
     const desired = buildState([], { watchers: [desiredWatcher] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
@@ -668,14 +668,14 @@ describe("apply diff — watchers", () => {
           name: "Weekly digest",
           agent_id: "triage",
           prompt: "Produce a digest.",
-          schedule: "0 10 * * 1",
+          triggers: [{ kind: "schedule", cron: "0 10 * * 1" }],
         },
       ],
     };
     const plan = computeDiff(desired, remote);
     const row = plan.rows.find((r) => r.kind === "watcher");
     expect(row?.verb).toBe("update");
-    expect(row?.changedFields).toContain("schedule");
+    expect(row?.changedFields).toContain("triggers");
     expect(
       (row as { versionBoundFields?: string[] }).versionBoundFields
     ).toBeUndefined();
@@ -691,7 +691,7 @@ describe("apply diff — watchers", () => {
           name: "Weekly digest",
           agent_id: "triage",
           prompt: "Old prompt",
-          schedule: "0 9 * * 1",
+          triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
         },
       ],
     };
@@ -723,7 +723,7 @@ describe("apply diff — watchers", () => {
           name: "Weekly digest",
           agent_id: "triage",
           prompt: "Produce a digest.",
-          schedule: "0 9 * * 1",
+          triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
         },
       ],
     };

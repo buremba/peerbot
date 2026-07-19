@@ -854,14 +854,13 @@ export async function executePlan(
         watcherId = remote?.watcher_id;
         if (!watcherId) {
           throw new ApiError(
-            `update watcher "${w.slug}" failed: remote row is missing watcher_id (refetch may be stale)`
+            `update behavior "${w.slug}" failed: remote row is missing watcher_id (refetch may be stale)`
           );
         }
         const versionBound = new Set(row.versionBoundFields ?? []);
         const changed = new Set(row.changedFields ?? []);
         const scalarChanges = [...changed].filter(
-          (f) =>
-            !versionBound.has(f) && f !== "reaction_script" && f !== "schedule"
+          (f) => !versionBound.has(f) && f !== "reaction_script"
         );
         // a) Scalar fields → manage_behaviors update
         if (scalarChanges.length > 0) {
@@ -1128,7 +1127,7 @@ async function deleteRemovedDefinitions(ctx: ApplyContext): Promise<void> {
         const wid = watcherIdBySlug.get(id);
         if (!wid) {
           throw new ApiError(
-            `delete watcher "${id}": remote watcher_id missing`
+            `delete behavior "${id}": remote watcher_id missing`
           );
         }
         await ctx.client.deleteBehavior(wid);
@@ -1338,7 +1337,7 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   }
 
   // Prune is config-declared (`defineConfig({ prune: true })`): when on, apply
-  // deletes any org-owned definition (entity/relationship type, watcher,
+  // deletes any org-owned definition (entity/relationship type, Behavior,
   // connector definition) that's absent from the config — INCLUDING ones added
   // via the dashboard/API. Data, connections, auth profiles, and agents are
   // never pruned. The blast-radius confirm below is the safety net.
@@ -1346,7 +1345,7 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   if (prune) {
     printText(
       chalk.yellow(
-        "Prune is on: apply will DELETE any org-owned definition (entity/relationship type, watcher, connector) that is not in this config — including ones created in the UI."
+        "Prune is on: apply will DELETE any org-owned definition (entity/relationship type, Behavior, connector) that is not in this config — including ones created in the UI."
       )
     );
   }

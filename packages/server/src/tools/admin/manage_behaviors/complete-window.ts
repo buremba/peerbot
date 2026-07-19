@@ -129,7 +129,7 @@ export async function handleCompleteWindow(
       token.window_end !== window_end ||
       token.granularity !== granularity
     ) {
-      throw new Error('All window_tokens must belong to the same watcher window.');
+      throw new Error('All window_tokens must belong to the same Behavior window.');
     }
   }
 
@@ -203,7 +203,7 @@ export async function handleCompleteWindow(
 
   if (watcherRows.length === 0) {
     throw new Error(
-      `Watcher ${watcherId} not found. ` +
+      `Behavior ${watcherId} not found. ` +
         "It may have been deleted. Use manage_behaviors with action='list' to see available Behaviors."
     );
   }
@@ -274,7 +274,7 @@ export async function handleCompleteWindow(
       });
 
       throw new Error(
-        `extracted_data does not match the watcher\'s extraction contract (derived from its entity type or reaction \`input\` schema).\n\n` +
+        `extracted_data does not match the Behavior\'s extraction contract (derived from its entity type or reaction \`input\` schema).\n\n` +
           `Validation errors:\n${errorMessages.join('\n')}\n\n` +
           'Expected schema requires:\n' +
           `  - Required fields: ${JSON.stringify(extractionSchema.required || [])}\n` +
@@ -444,7 +444,7 @@ export async function handleCompleteWindow(
       } catch (err) {
         if (isUniqueViolation(err, 'idx_events_superseded_by')) {
           throw new ToolUserError(
-            `Canvas for watcher ${watcherId} period ${window_start} was concurrently updated. Retry with the latest state.`,
+            `Canvas for Behavior ${watcherId} period ${window_start} was concurrently updated. Retry with the latest state.`,
             409
           );
         }
@@ -487,7 +487,7 @@ export async function handleCompleteWindow(
       } catch (err) {
         if (isUniqueViolation(err, 'idx_canvas_chain_root')) {
           throw new ToolUserError(
-            `Window already exists for watcher ${watcherId} for period ${window_start} to ${window_end}. ` +
+            `Window already exists for Behavior ${watcherId} for period ${window_start} to ${window_end}. ` +
               'Use replace_existing: true to replace it, or query a different time period.',
             409
           );
@@ -560,7 +560,7 @@ export async function handleCompleteWindow(
             entityIds: promote.changes.map((c) => c.entityId),
             organizationId: watcherOrgId,
             originId: `run_${watcherRunId}_changeset`,
-            title: `Watcher applied ${createdCount} new + ${updatedCount} updated`,
+            title: `Behavior applied ${createdCount} new + ${updatedCount} updated`,
             content: `This run created ${createdCount} and updated ${updatedCount} entities.`,
             semanticType: 'change_set',
             runId: watcherRunId,

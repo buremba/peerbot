@@ -164,7 +164,7 @@ export async function handleSubmitFeedback(
       AND w.organization_id = ${ctx.organizationId}
   `;
   if (windowCheck.length === 0) {
-    throw new Error(`Window ${args.window_id} not found for watcher ${watcherId}`);
+    throw new Error(`Window ${args.window_id} not found for Behavior ${watcherId}`);
   }
   const organizationId = windowCheck[0].organization_id as string;
   const windowGranularity = windowCheck[0].granularity as string;
@@ -274,7 +274,7 @@ export async function handleSubmitFeedback(
         } catch (err) {
           if (isUniqueViolation(err, 'idx_events_superseded_by')) {
             throw new ToolUserError(
-              `Canvas for watcher ${watcherId} was concurrently updated. Reload the latest state and retry.`,
+              `Canvas for Behavior ${watcherId} was concurrently updated. Reload the latest state and retry.`,
               409
             );
           }

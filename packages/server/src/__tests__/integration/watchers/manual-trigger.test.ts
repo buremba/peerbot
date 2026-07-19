@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import type { Env } from '../../../index';
 import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
+import { createBehaviorEventRun } from '../../../runs/queue-service';
 import { manageBehaviors } from '../../../tools/admin/manage_behaviors';
 import type { ToolContext } from '../../../tools/registry';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -341,6 +342,59 @@ describe('POST /api/workers/me/behaviors/:watcher_id/trigger', () => {
     };
     expect(job.run_type).toBe('watcher');
     expect(job.payload?.watcher?.execution_config).toEqual(execCfg);
+  });
+
+  it('leaves a second queued run pending while the same Behavior is running', async () => {
+    const ctx = await setupDevicePinnedWatcher({ workerId: 'mac-poll-serial' });
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      'mac-poll-serial'
+    );
+
+    const trig = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, { token });
+    expect(trig.status).toBe(200);
+
+    const firstPoll = await post('/api/workers/poll', {
+      token,
+      body: { worker_id: 'mac-poll-serial', capabilities: {} },
+    });
+    expect(firstPoll.status).toBe(200);
+    const firstJob = (await firstPoll.json()) as { run_id?: number };
+    expect(firstJob.run_id).toBeDefined();
+
+    const queued = await createBehaviorEventRun({
+      organizationId: ctx.workspace.org.id,
+      watcherId: ctx.watcherId,
+      agentId: ctx.agentId,
+      trigger: {
+        kind: 'event',
+        connector_key: 'github',
+        event_types: ['pull_request.created'],
+        active_run: 'queue',
+      },
+      signal: {
+        connector_key: 'github',
+        event_type: 'pull_request.created',
+        delivery_id: 'event:device-queued',
+        label: 'Queued event',
+        input_text: 'A second event arrived while the Behavior was running.',
+      },
+      deviceWorkerId: ctx.deviceWorkerId,
+      agentKind: 'claude-code',
+    });
+
+    const secondPoll = await post('/api/workers/poll', {
+      token,
+      body: { worker_id: 'mac-poll-serial', capabilities: {} },
+    });
+    expect(secondPoll.status).toBe(200);
+    expect(await secondPoll.json()).toEqual({ next_poll_seconds: 10 });
+
+    const [stillQueued] = await ctx.sql`
+      SELECT status FROM runs WHERE id = ${queued.runId}
+    `;
+    expect(stillQueued.status).toBe('pending');
   });
 
   it('poll payload carries the run-pinned version prompt, not a later edit', async () => {

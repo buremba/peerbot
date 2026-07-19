@@ -110,7 +110,7 @@ export function normalizeExtractedData(value: unknown): Record<string, unknown> 
     requireObject: {
       parseError: 'extracted_data must be a valid JSON object. Received an invalid JSON string.',
       shapeError:
-        "extracted_data must be a JSON object matching the watcher's extraction contract.",
+        "extracted_data must be a JSON object matching the Behavior's extraction contract.",
     },
   });
 }
@@ -221,7 +221,7 @@ export function assertWatcherVersionConfigValid(parsed: {
     sources: parsed.sources,
   });
   if (validation) {
-    throw new ToolUserError(`Watcher validation failed: ${validation}`, 422);
+    throw new ToolUserError(`Behavior validation failed: ${validation}`, 422);
   }
 }
 
@@ -241,7 +241,7 @@ export async function assertWatcherSourcesResolve(
     await resolveWatcherSourcesForSave(sql, organizationId, sources);
   } catch (err) {
     throw new ToolUserError(
-      `Watcher validation failed: ${err instanceof Error ? err.message : String(err)}`,
+      `Behavior validation failed: ${err instanceof Error ? err.message : String(err)}`,
       422
     );
   }
@@ -289,7 +289,7 @@ export async function requireWatcherAccess(
       // error — surface it as a 403 ToolUserError so the REST layer returns the
       // right status and it stays out of the operational alert feed.
       throw new ToolUserError(
-        `Access denied: watcher ${row.id} does not belong to your organization`,
+        `Access denied: Behavior ${row.id} does not belong to your organization`,
         403
       );
     }

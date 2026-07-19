@@ -49,7 +49,6 @@ export async function handleList(
       i.version,
       i.created_at,
       i.updated_at,
-      i.schedule,
       i.triggers,
       i.next_run_at,
       i.agent_id,

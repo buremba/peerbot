@@ -132,7 +132,7 @@ export async function handleCreate(
     // because the field is shared across all manage_behaviors actions, but
     // create enforces it: a watcher with no owning agent is a zombie row.
     throw new ToolUserError(
-      'agent_id is required to create a watcher (the agent that executes it).'
+      'agent_id is required to create a Behavior (the agent that executes it).'
     );
   }
 
@@ -168,7 +168,7 @@ export async function handleCreate(
   } else {
     if (!organizationId) {
       throw new ToolUserError(
-        'entity_id or an organization context is required to create a watcher'
+        'entity_id or an organization context is required to create a Behavior'
       );
     }
     organizationSlug = await getOrganizationSlug(organizationId);
@@ -178,7 +178,7 @@ export async function handleCreate(
   // instead of producing silent empty context at read_knowledge. Custom-SQL
   // sources are skipped here; their id projection is enforced above.
   if (!organizationId) {
-    throw new ToolUserError('Cannot resolve watcher sources without an organization');
+    throw new ToolUserError('Cannot resolve Behavior sources without an organization');
   }
   await assertWatcherSourcesResolve(sql, organizationId, sources);
   const triggerWrite = resolveBehaviorTriggerWrite({
@@ -194,7 +194,7 @@ export async function handleCreate(
   `;
   if (existingSlug.length > 0) {
     throw new ToolUserError(
-      `Watcher with slug '${args.slug}' already exists in this organization`,
+      `Behavior with slug '${args.slug}' already exists in this organization`,
       409
     );
   }
@@ -287,7 +287,7 @@ export async function handleCreate(
       // 4. Auto-create classifiers (entity-level only)
       if (entityId && classifiers && Array.isArray(classifiers) && classifiers.length > 0) {
         if (!ctx.userId) {
-          throw new Error('Authenticated user is required to create watcher classifiers');
+          throw new Error('Authenticated user is required to create Behavior classifiers');
         }
 
         await createClassifiersForWatcher(tx, watcherId as number, entityId, classifiers as any[], {
@@ -305,7 +305,7 @@ export async function handleCreate(
     // coded 409 the precheck emits so callers see one stable duplicate signal.
     if (isUniqueViolation(err, 'idx_watchers_org_slug')) {
       throw new ToolUserError(
-        `Watcher with slug '${args.slug}' already exists in this organization`,
+        `Behavior with slug '${args.slug}' already exists in this organization`,
         409
       );
     }
@@ -334,7 +334,7 @@ export async function handleCreate(
       entityType: 'watcher',
       op: 'created',
       entityId: watcherId,
-      summary: `Watcher "${args.name ?? args.slug}" created`,
+      summary: `Behavior "${args.name ?? args.slug}" created`,
       extra: { slug: args.slug, agent_id: args.agent_id ?? null },
     });
 
@@ -343,7 +343,7 @@ export async function handleCreate(
       resourceKind: 'watcher',
       resourceId: watcherId,
       op: 'created',
-      summary: `Watcher '${args.name ?? args.slug}' created`,
+      summary: `Behavior '${args.name ?? args.slug}' created`,
       // Post-insert state composed from the inserted values (the row is not
       // refetched); includes the v1 version-bound fields (prompt, sources, …).
       state: {
@@ -409,7 +409,7 @@ export async function handleUpdate(
   // undefined = unchanged and null = clear the pin both pass without a lookup.
   await assertDeviceWorkerAccess(sql, args.device_worker_id, ctx);
 
-  await requireExists(sql, 'watchers', args.watcher_id, 'Watcher');
+  await requireExists(sql, 'watchers', args.watcher_id, 'Behavior');
   const currentRows = await sql`
     SELECT organization_id, agent_id, schedule, timezone, triggers
     FROM watchers
@@ -435,14 +435,14 @@ export async function handleUpdate(
   // that would leave a scheduled watcher orphaned.
   if (args.agent_id === null) {
     throw new ToolUserError(
-      'agent_id cannot be set to null — every watcher must have an owning agent.'
+      'agent_id cannot be set to null — every Behavior must have an owning agent.'
     );
   }
   if (args.triggers !== undefined && triggerWrite.schedule && args.agent_id === undefined) {
     const currentAgentId = currentRow.agent_id;
     if (currentAgentId === null) {
       throw new ToolUserError(
-        'Cannot schedule a watcher with no owning agent. Assign agent_id in the same update.'
+        'Cannot schedule a Behavior with no owning agent. Assign agent_id in the same update.'
       );
     }
   }
@@ -524,7 +524,7 @@ export async function handleUpdate(
     resourceKind: 'watcher',
     resourceId: args.watcher_id,
     op: 'updated',
-    summary: `Watcher '${updatedRow?.name ?? args.watcher_id}' updated`,
+    summary: `Behavior '${updatedRow?.name ?? args.watcher_id}' updated`,
     state: updatedRow,
     changedFields: updatedFields,
   });
@@ -569,7 +569,7 @@ export async function handleDelete(
         results.push({
           watcher_id: watcherId,
           success: false,
-          message: 'Watcher not found or already archived',
+          message: 'Behavior not found or already archived',
         });
       } else {
         const watcher = updated[0];
@@ -580,8 +580,8 @@ export async function handleDelete(
           recordChangeEvent({
             entityIds: entityIds.map(Number),
             organizationId: watcher.organization_id as string,
-            title: `Watcher archived: ${watcher.name || watcherId}`,
-            content: `Watcher "${watcher.name || watcherId}" (id: ${watcherId}) was archived.`,
+            title: `Behavior archived: ${watcher.name || watcherId}`,
+            content: `Behavior "${watcher.name || watcherId}" (id: ${watcherId}) was archived.`,
             metadata: {
               action: 'watcher_archived',
               watcher_id: watcherId,
@@ -600,7 +600,7 @@ export async function handleDelete(
             entityType: 'watcher',
             op: 'deleted',
             entityId: watcherId,
-            summary: `Watcher "${watcher.name || watcherId}" archived`,
+            summary: `Behavior "${watcher.name || watcherId}" archived`,
           });
 
           recordToolConfigChange(ctx, {
@@ -608,7 +608,7 @@ export async function handleDelete(
             resourceKind: 'watcher',
             resourceId: watcherId,
             op: 'deleted',
-            summary: `Watcher '${watcher.name || watcherId}' archived`,
+            summary: `Behavior '${watcher.name || watcherId}' archived`,
             state: null,
           });
         }
@@ -616,7 +616,7 @@ export async function handleDelete(
         results.push({
           watcher_id: watcherId,
           success: true,
-          message: 'Watcher archived successfully',
+          message: 'Behavior archived successfully',
         });
       }
     } catch (error) {
@@ -677,14 +677,14 @@ export async function handleCreateFromVersion(
   const organizationId = version.organization_id as string;
   if (!organizationId || organizationId !== ctx.organizationId) {
     throw new Error(
-      `Access denied: watcher version ${args.version_id} does not belong to your organization`
+      `Access denied: Behavior version ${args.version_id} does not belong to your organization`
     );
   }
   if (!version.agent_id) {
     // Source watcher has no agent — cloning would silently inherit null and
     // produce active zombies the scheduler skips. Same invariant as handleCreate.
     throw new ToolUserError(
-      `Source watcher version ${args.version_id} has no agent_id; assign an agent on the source before cloning.`
+      `Source Behavior version ${args.version_id} has no agent_id; assign an agent on the source before cloning.`
     );
   }
 
@@ -797,7 +797,7 @@ export async function handleCreateFromVersion(
     // idx_watchers_org_slug. Surface a coded 409 instead of leaking a raw 23505.
     if (isUniqueViolation(err, 'idx_watchers_org_slug')) {
       throw new ToolUserError(
-        `A watcher assignment with a colliding slug already exists in this organization`,
+        `A Behavior assignment with a colliding slug already exists in this organization`,
         409
       );
     }
@@ -811,7 +811,7 @@ export async function handleCreateFromVersion(
       entityType: 'watcher',
       op: 'created',
       entityId: p.watcherId,
-      summary: `Watcher "${p.watcherName}" created`,
+      summary: `Behavior "${p.watcherName}" created`,
       extra: { slug: p.watcherSlug, via: 'create_from_version' },
     });
 
@@ -820,7 +820,7 @@ export async function handleCreateFromVersion(
       resourceKind: 'watcher',
       resourceId: p.watcherId,
       op: 'created',
-      summary: `Watcher '${p.watcherName}' created from version ${args.version_id}`,
+      summary: `Behavior '${p.watcherName}' created from version ${args.version_id}`,
       // Composed from the cloned insert values (row not refetched); the
       // version-bound fields come from the shared source version row.
       state: {

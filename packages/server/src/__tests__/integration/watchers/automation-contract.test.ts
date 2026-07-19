@@ -1018,7 +1018,7 @@ describe("watcher automation contract", () => {
 			expect(windows).toHaveLength(0);
 		});
 
-		it("complete-behavior endpoint refuses non-watcher run types", async () => {
+		it("complete-behavior endpoint refuses non-Behavior run types", async () => {
 			const sql = getTestDb();
 			const { workspace } = await createAutomatedWatcher();
 
@@ -1037,7 +1037,7 @@ describe("watcher automation contract", () => {
 			);
 			expect(response.status).toBe(409);
 			const body = (await response.json()) as { error: string };
-			expect(body.error).toMatch(/watcher/i);
+			expect(body.error).toMatch(/Behavior/i);
 		});
 
 		it("complete-behavior endpoint returns 404 for an unknown run id", async () => {

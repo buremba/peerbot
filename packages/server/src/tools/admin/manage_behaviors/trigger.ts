@@ -51,7 +51,7 @@ export async function handleTrigger(
   if (dispatchResult.dispatch.failed > 0) {
     const failedRun = await getWatcherRunInfo(dispatchResult.runId, sql);
     throw new Error(
-      failedRun?.error_message || "Failed to dispatch watcher run.",
+      failedRun?.error_message || "Failed to dispatch Behavior run.",
     );
   }
 
@@ -83,7 +83,7 @@ export async function handleSetReactionScript(
     throw new Error("watcher_id is required for set_reaction_script");
   }
 
-  await requireExists(sql, "watchers", args.watcher_id, "Watcher");
+  await requireExists(sql, "watchers", args.watcher_id, "Behavior");
 
   // Reaction script is a group-shared field — every assignment in the
   // group runs the same reactions on its windows. Resolve the group once
@@ -106,7 +106,7 @@ export async function handleSetReactionScript(
       resourceKind: "watcher",
       resourceId: args.watcher_id,
       op: "updated",
-      summary: `Watcher ${args.watcher_id} reaction script removed`,
+      summary: `Behavior ${args.watcher_id} reaction script removed`,
       state: {
         id: args.watcher_id,
         watcher_group_id: groupId,
@@ -144,7 +144,7 @@ export async function handleSetReactionScript(
     resourceKind: "watcher",
     resourceId: args.watcher_id,
     op: "updated",
-    summary: `Watcher ${args.watcher_id} reaction script updated`,
+    summary: `Behavior ${args.watcher_id} reaction script updated`,
     // Snapshot of the fields just written (row not refetched); compiled code
     // is intentionally omitted to keep the state small.
     state: {

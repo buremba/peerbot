@@ -96,7 +96,6 @@ export interface RemoteBehavior {
   name?: string;
   watcher_id?: string;
   agent_id?: string | null;
-  schedule?: string | null;
   triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
   device_worker_id?: string | null;
   goal_id?: number | null;

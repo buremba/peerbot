@@ -90,7 +90,7 @@ describe("manage_behaviors owner-escalation guard", () => {
 				"escalation-attempt"
 			)
 		).rejects.toThrow(
-			/cannot install watcher behavior owned by another agent/i
+			/cannot install a Behavior owned by another agent/i
 		);
 	});
 
@@ -137,7 +137,7 @@ describe("manage_behaviors owner-escalation guard", () => {
 				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
 			)
 		).rejects.toThrow(
-			/cannot install watcher behavior owned by another agent/i
+			/cannot install a Behavior owned by another agent/i
 		);
 	});
 
@@ -162,7 +162,7 @@ describe("manage_behaviors owner-escalation guard", () => {
 				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
 			)
 		).rejects.toThrow(
-			/cannot install watcher behavior owned by another agent/i
+			/cannot install a Behavior owned by another agent/i
 		);
 	});
 
@@ -199,7 +199,7 @@ describe("manage_behaviors owner-escalation guard", () => {
 				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
 			)
 		).rejects.toThrow(
-			/cannot install watcher behavior owned by another agent/i
+			/cannot install a Behavior owned by another agent/i
 		);
 	});
 
@@ -241,7 +241,7 @@ describe("manage_behaviors owner-escalation guard", () => {
 				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
 			)
 		).rejects.toThrow(
-			/cannot install watcher behavior owned by another agent/i
+			/cannot install a Behavior owned by another agent/i
 		);
 	});
 });

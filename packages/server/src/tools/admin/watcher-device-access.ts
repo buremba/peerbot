@@ -66,7 +66,7 @@ export function evaluateDeviceWorkerAccess(
     return null;
   }
 
-  return `You can only pin a watcher to a device you own (or, as an org owner/admin, a device attached to your workspace).`;
+  return `You can only pin a Behavior to a device you own (or, as an org owner/admin, a device attached to your workspace).`;
 }
 
 /**

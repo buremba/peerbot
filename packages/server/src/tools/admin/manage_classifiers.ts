@@ -136,7 +136,7 @@ async function handleCreate(
     return {
       success: false,
       action: 'create',
-      message: 'Missing required field: watcher_id. Classifiers must be associated with a watcher.',
+      message: 'Missing required field: watcher_id. Classifiers must be associated with a Behavior.',
     };
   }
 
@@ -150,7 +150,7 @@ async function handleCreate(
     return {
       success: false,
       action: 'create',
-      message: `Watcher not found: ${args.watcher_id}`,
+      message: `Behavior not found: ${args.watcher_id}`,
     };
   }
 

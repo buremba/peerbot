@@ -203,23 +203,6 @@ const BootstrapFeedItemSchema = Type.Object({
   updated_at: Type.String(),
 });
 
-const BootstrapWatcherItemSchema = Type.Object({
-  watcher_id: Type.String(),
-  name: Type.String(),
-  status: Type.String(),
-  schedule: Type.String(),
-  entity_id: Type.Union([Type.Integer(), Type.Null()]),
-  entity_type: Type.Union([Type.String(), Type.Null()]),
-  entity_name: Type.Union([Type.String(), Type.Null()]),
-  entity_slug: Type.Union([Type.String(), Type.Null()]),
-  parent_slug: Type.Union([Type.String(), Type.Null()]),
-  parent_entity_type: Type.Union([Type.String(), Type.Null()]),
-  organization_slug: Type.String(),
-  windows_count: Type.Integer(),
-  created_at: Type.String(),
-  updated_at: Type.String(),
-});
-
 const BootstrapConnectorDefinitionSchema = Type.Object({
   key: Type.String(),
   name: Type.String(),
@@ -233,7 +216,6 @@ export const ResolvePathBootstrapSchema = Type.Object({
   summary: BootstrapScopeSummarySchema,
   recent_content: Type.Array(BootstrapContentItemSchema),
   recent_feeds: Type.Array(BootstrapFeedItemSchema),
-  recent_watchers: Type.Array(BootstrapWatcherItemSchema),
   connector_definitions: Type.Array(BootstrapConnectorDefinitionSchema),
 });
 export type ResolvePathBootstrap = Static<typeof ResolvePathBootstrapSchema>;
@@ -242,13 +224,12 @@ type BootstrapEntityTypeSummary = Static<typeof BootstrapEntityTypeSummarySchema
 type BootstrapScopeSummary = Static<typeof BootstrapScopeSummarySchema>;
 type BootstrapContentItem = Static<typeof BootstrapContentItemSchema>;
 type BootstrapFeedItem = Static<typeof BootstrapFeedItemSchema>;
-type BootstrapWatcherItem = Static<typeof BootstrapWatcherItemSchema>;
 type BootstrapConnectorDefinition = Static<typeof BootstrapConnectorDefinitionSchema>;
 
 /**
  * Coerce a timestamp value from a SQL row to an ISO string, tolerating NULL.
  * `new Date(String(null)).toISOString()` throws (`new Date('null')` is Invalid
- * Date → RangeError), and the feed/watcher queries ORDER BY
+ * Date → RangeError), and the feed query orders by
  * `COALESCE(updated_at, created_at)` precisely because `updated_at` can be NULL.
  * `fallback` supplies that same coalesced value so a non-null `updated_at`
  * column stays a non-null string in the result. If both are absent, returns the
@@ -905,7 +886,7 @@ async function resolveDerivedLeaf(
 
   return {
     // Derived rows have no stored numeric id; routing/identity use the slug, and
-    // the id-keyed tabs (knowledge/connectors/watchers) are hidden client-side.
+    // the id-keyed tabs (knowledge/connectors/behaviors) are hidden client-side.
     id: 0,
     entity_type: segment.entity_type,
     slug: segment.slug,
@@ -961,17 +942,15 @@ async function fetchBootstrap(
       },
       recent_content: [],
       recent_feeds: [],
-      recent_watchers: [],
       connector_definitions: [],
     };
   }
 
-  const [entityTypes, summary, recentContent, recentFeeds, recentWatchers] = await Promise.all([
+  const [entityTypes, summary, recentContent, recentFeeds] = await Promise.all([
     listEntityTypes(sql, workspace.id),
     fetchScopeSummary(sql, workspace.id, entity, ctx.userId),
     fetchRecentContent(sql, workspace.id, entity?.id ?? null),
     fetchRecentFeeds(sql, workspace.id, entity?.id ?? null),
-    fetchRecentWatchers(sql, workspace.slug, workspace.id, entity?.id ?? null),
   ]);
   const connectorDefinitions = await listWorkspaceConnectorDefinitions(
     sql,
@@ -983,7 +962,6 @@ async function fetchBootstrap(
     summary,
     recent_content: recentContent,
     recent_feeds: recentFeeds,
-    recent_watchers: recentWatchers,
     connector_definitions: connectorDefinitions,
   };
 }
@@ -1227,82 +1205,6 @@ async function fetchRecentFeeds(
     connector_name: row.connector_name ? String(row.connector_name) : null,
     connection_name: row.connection_name ? String(row.connection_name) : null,
     event_count: Number(row.event_count) || 0,
-    created_at: toIso(row.created_at),
-    updated_at: toIso(row.updated_at, row.created_at),
-  }));
-}
-
-async function fetchRecentWatchers(
-  sql: DbClient,
-  organizationSlug: string,
-  organizationId: string,
-  entityId: number | null
-): Promise<BootstrapWatcherItem[]> {
-  const rows = await sql`
-    WITH scoped_watchers AS (
-      SELECT
-        w.id,
-        w.name,
-        w.status,
-        w.schedule,
-        w.entity_ids,
-        w.created_at,
-        w.updated_at
-      FROM watchers w
-      WHERE w.organization_id = ${organizationId}
-        AND w.status = 'active'
-        AND (${entityId}::int IS NULL OR ${entityId}::int = ANY(w.entity_ids))
-      ORDER BY COALESCE(w.updated_at, w.created_at) DESC
-      LIMIT ${BOOTSTRAP_RECENT_LIMIT}
-    ),
-    watcher_window_counts AS (
-      SELECT ww.watcher_id, COUNT(*)::int AS windows_count
-      FROM canvas_windows ww
-      WHERE ww.watcher_id IN (SELECT id FROM scoped_watchers)
-      GROUP BY ww.watcher_id
-    )
-    SELECT
-      sw.id AS watcher_id,
-      sw.name,
-      sw.status,
-      sw.schedule,
-      sw.created_at,
-      sw.updated_at,
-      e.id AS entity_id,
-      e.entity_type,
-      e.name AS entity_name,
-      e.slug AS entity_slug,
-      parent.slug AS parent_slug,
-      pet.slug AS parent_entity_type,
-      COALESCE(wwc.windows_count, 0)::int AS windows_count
-    FROM scoped_watchers sw
-    LEFT JOIN LATERAL (
-      SELECT entity.id, et_ent.slug AS entity_type, entity.name, entity.slug, entity.parent_id
-      FROM entities entity
-      JOIN entity_types et_ent ON et_ent.id = entity.entity_type_id
-      WHERE entity.id = ANY(sw.entity_ids)
-      ORDER BY entity.name ASC
-      LIMIT 1
-    ) e ON TRUE
-    LEFT JOIN entities parent ON parent.id = e.parent_id
-    LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
-    LEFT JOIN watcher_window_counts wwc ON wwc.watcher_id = sw.id
-    ORDER BY COALESCE(sw.updated_at, sw.created_at) DESC
-  `;
-
-  return (rows as Array<Record<string, unknown>>).map((row) => ({
-    watcher_id: String(row.watcher_id),
-    name: String(row.name),
-    status: String(row.status),
-    schedule: String(row.schedule),
-    entity_id: row.entity_id ? Number(row.entity_id) : null,
-    entity_type: row.entity_type ? String(row.entity_type) : null,
-    entity_name: row.entity_name ? String(row.entity_name) : null,
-    entity_slug: row.entity_slug ? String(row.entity_slug) : null,
-    parent_slug: row.parent_slug ? String(row.parent_slug) : null,
-    parent_entity_type: row.parent_entity_type ? String(row.parent_entity_type) : null,
-    organization_slug: organizationSlug,
-    windows_count: Number(row.windows_count) || 0,
     created_at: toIso(row.created_at),
     updated_at: toIso(row.updated_at, row.created_at),
   }));

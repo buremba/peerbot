@@ -218,7 +218,7 @@ describe("mapProjectToDesiredState", () => {
         defineConfig({ org: "o", agents: [a], behaviors: [w1, w2] }),
         env
       )
-    ).toThrow(/duplicate watcher slug "w"/i);
+    ).toThrow(/duplicate Behavior slug "w"/i);
   });
 
   test("maps entities + relationships with typed-handle slugs", () => {
@@ -400,7 +400,10 @@ describe("mapProjectToDesiredState", () => {
     expect(dw?.notificationChannel).toBe("both");
     expect(dw?.notificationPriority).toBe("high");
     expect(dw?.minCooldownSeconds).toBe(1800);
-    expect(dw?.schedule).toBe("0 */12 * * *");
+    expect(dw?.triggers?.[1]).toEqual({
+      kind: "schedule",
+      cron: "0 */12 * * *",
+    });
     expect(dw?.triggers?.[0]).toMatchObject({
       connector_key: "github",
       connectionSlug: "github-main",

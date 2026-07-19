@@ -20,7 +20,7 @@ import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 
-export type WatcherDispatchSource = 'scheduled' | 'manual' | 'event';
+type WatcherDispatchSource = 'scheduled' | 'manual' | 'event';
 
 export interface WatcherRunPayload {
   watcher_id: number;

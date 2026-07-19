@@ -93,7 +93,7 @@ export const ManageEntitySchema = Type.Object({
       {
         maxItems: 25,
         description:
-          "[merge] Optional structured evidence for human-initiated merge provenance. Agent and watcher evidence is always recomputed from the entity type's resolution policy.",
+          "[merge] Optional structured evidence for human-initiated merge provenance. Agent and Behavior evidence is always recomputed from the entity type's resolution policy.",
       }
     )
   ),
@@ -182,7 +182,7 @@ export const ManageEntitySchema = Type.Object({
   field_note: Type.Optional(
     Type.String({
       description:
-        "[update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so a watcher (and the UI) can see why the value was set.",
+        "[update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so a Behavior (and the UI) can see why the value was set.",
     })
   ),
 
@@ -190,7 +190,7 @@ export const ManageEntitySchema = Type.Object({
   affirm_fields: Type.Optional(
     Type.Array(Type.String(), {
       description:
-        "[update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so a watcher can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.",
+        "[update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so a Behavior can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.",
     })
   ),
 
@@ -280,7 +280,7 @@ export const ManageEntitySchema = Type.Object({
     Type.Object(
       {
         watcher_id: Type.Number({
-          description: "Watcher that triggered this mutation",
+          description: "Behavior that triggered this mutation",
         }),
         window_id: Type.Number({
           description: "Window that triggered this mutation",
@@ -288,7 +288,7 @@ export const ManageEntitySchema = Type.Object({
       },
       {
         description:
-          "Attribution source when mutation is triggered by a watcher reaction",
+          "Attribution source when mutation is triggered by a Behavior reaction",
       }
     )
   ),

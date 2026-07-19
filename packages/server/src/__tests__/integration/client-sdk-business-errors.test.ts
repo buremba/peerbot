@@ -103,7 +103,7 @@ describe("ClientSDK business failure boundary", () => {
 		await expect(promise).rejects.toMatchObject({
 			name: "ClientSdkActionError",
 			action: "create",
-			message: "Watcher not found: 999999",
+			message: "Behavior not found: 999999",
 			httpStatus: 400,
 		});
 	});
@@ -114,7 +114,7 @@ describe("ClientSDK business failure boundary", () => {
 		).rejects.toMatchObject({
 			name: "ClientSdkActionError",
 			action: "delete",
-			message: "Watcher not found or already archived",
+			message: "Behavior not found or already archived",
 			httpStatus: 400,
 		});
 	});

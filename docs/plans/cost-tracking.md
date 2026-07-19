@@ -80,7 +80,7 @@ model_price_overrides(organization_id, provider, model,
 
 **Definition surfaces (two, admin-gated):**
 1. **owletto web UI — primary.** A "Cost" settings page: a *Budgets* editor (add a cap: scope · window · soft/hard $) and a *Price overrides* editor (model → rates). For non-technical workforce admins. Gated to owner/admin (§8).
-2. **CLI — `lobu.config.ts` → `lobu apply`.** Code-first orgs declare budgets/overrides in config; `apply` reconciles them into the two tables via the existing desired-state path (same as agents/watchers/connections). **No MCP tool** (decided).
+2. **CLI — `lobu.config.ts` → `lobu apply`.** Code-first orgs declare budgets/overrides in config; `apply` reconciles them into the two tables via the existing desired-state path (same as agents/Behaviors/connections). **No MCP tool** (decided).
 
 **Behavior overlap:** the existing `watchers.execution_config.max_budget_usd` is a *per-run* ceiling (claude-CLI flag), kept as-is. The new *sliding-window* Behavior cap lives in `cost_budgets` (`scope='watcher'`); the Behavior panel surfaces/links the budget editor — one budgets model, no two-places-to-set-a-cap.
 

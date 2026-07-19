@@ -15,8 +15,8 @@
  * - get_versions: View version history for a watcher
  * - get_version_details: Get full config for a specific version
  * - get_component_reference: Get available components and data types documentation
- * - submit_feedback: Submit feedback on a watcher window
- * - get_feedback: Retrieve feedback for a watcher
+ * - submit_feedback: Submit feedback on a Behavior window
+ * - get_feedback: Retrieve feedback for a Behavior
  *
  * This file is the entry point only — action handlers live in ./manage_behaviors/.
  */
@@ -280,7 +280,7 @@ async function withWatcherGroupLock<T>(
       // conflict instead of an unbounded stall.
       if ((err as { code?: string }).code === '55P03') {
         throw new ToolUserError(
-          'Another change to this watcher group is in progress; retry shortly.',
+          'Another change to this Behavior group is in progress; retry shortly.',
           409
         );
       }
@@ -387,19 +387,19 @@ async function resolveEffectiveWatcherOwners(
 function watcherActionLabel(args: ManageBehaviorsArgs): string {
   switch (args.action) {
     case 'create':
-      return `Create watcher "${args.slug ?? args.name ?? 'new'}"`;
+      return `Create Behavior "${args.slug ?? args.name ?? 'new'}"`;
     case 'create_from_version':
-      return `Create watchers from version ${args.version_id ?? '?'}`;
+      return `Create Behaviors from version ${args.version_id ?? '?'}`;
     case 'update':
-      return `Update watcher ${args.watcher_id ?? '?'}`;
+      return `Update Behavior ${args.watcher_id ?? '?'}`;
     case 'create_version':
-      return `Create version for watcher ${args.watcher_id ?? '?'}`;
+      return `Create version for Behavior ${args.watcher_id ?? '?'}`;
     case 'set_reaction_script':
-      return `Set reaction script on watcher ${args.watcher_id ?? '?'}`;
+      return `Set reaction script on Behavior ${args.watcher_id ?? '?'}`;
     case 'delete':
-      return `Delete watcher(s) ${(args.watcher_ids ?? []).join(', ') || '?'}`;
+      return `Delete Behavior(s) ${(args.watcher_ids ?? []).join(', ') || '?'}`;
     default:
-      return `Watcher ${args.action}`;
+      return `Behavior ${args.action}`;
   }
 }
 
@@ -438,14 +438,14 @@ function buildWatcherProposal(
 ): ManageBehaviorsProposal {
   const writeAction = watcherWriteAction(args.action);
   if (!writeAction) {
-    throw new ToolUserError(`action "${args.action}" is not a gated watcher write`);
+    throw new ToolUserError(`action "${args.action}" is not a gated Behavior write`);
   }
   if (args.action === 'create') {
     if (!args.slug) throw new ToolUserError('slug is required for create action');
     if (!args.prompt) throw new ToolUserError('prompt is required for create action');
     if (!args.agent_id) {
       throw new ToolUserError(
-        'agent_id is required to create a watcher (the agent that executes it).'
+        'agent_id is required to create a Behavior (the agent that executes it).'
       );
     }
   }
@@ -536,7 +536,7 @@ function assertWatcherUpdateArgs(args: ManageBehaviorsArgs): void {
   const versionOwned = present(VERSION_OWNED_WATCHER_FIELDS);
   if (versionOwned.length > 0) {
     throw new ToolUserError(
-      `update cannot change version-owned field(s) ${versionOwned.map((f) => `'${f}'`).join(', ')} — use action: 'create_version' to publish a new watcher version (name/description/prompt/sources inherit from the current version when omitted, and the watchers-row name cascades on set_as_current).`
+      `update cannot change version-owned field(s) ${versionOwned.map((f) => `'${f}'`).join(', ')} — use action: 'create_version' to publish a new Behavior version (name/description/prompt/sources inherit from the current version when omitted, and the persisted name cascades on set_as_current).`
     );
   }
   if (args.entity_ids !== undefined) {
@@ -590,7 +590,7 @@ function pickWatcherApprovalDisplayFields(args: ManageBehaviorsArgs): Record<str
   return out;
 }
 
-/** Human-readable titles for common watcher approval fields. */
+/** Human-readable titles for common Behavior approval fields. */
 const WATCHER_APPROVAL_FIELD_TITLES: Record<string, string> = {
   slug: 'Slug',
   name: 'Name',
@@ -600,8 +600,8 @@ const WATCHER_APPROVAL_FIELD_TITLES: Record<string, string> = {
   triggers: 'Triggers',
   timezone: 'Timezone',
   agent_id: 'Agent',
-  watcher_id: 'Watcher ID',
-  watcher_ids: 'Watcher IDs',
+  watcher_id: 'Behavior ID',
+  watcher_ids: 'Behavior IDs',
   version_id: 'Version ID',
   entity_id: 'Entity ID',
   entity_ids: 'Entity IDs',
@@ -677,12 +677,12 @@ async function queueWatcherWriteForApproval(
   // create attributes ownership via created_by — fail at request time rather
   // than after the human approves an unattributable create.
   if (writeAction === 'create' && !ctx.userId) {
-    throw new ToolUserError('create requires an authenticated caller to own the new watcher');
+    throw new ToolUserError('create requires an authenticated caller to own the new Behavior');
   }
 
   const current = await fetchCurrentWatcher(ctx.organizationId, args);
   if (args.action === 'update' && !current) {
-    throw new ToolUserError(`Watcher "${args.watcher_id}" not found`, 404);
+    throw new ToolUserError(`Behavior "${args.watcher_id}" not found`, 404);
   }
 
   const sql = getDb();
@@ -801,7 +801,7 @@ async function assertWatcherOwnersMatchActingAgent(
   const foreign = owners.find((o) => o !== actingAgentId);
   if (foreign !== undefined) {
     throw new ToolUserError(
-      `A ${actorKind} cannot install watcher behavior owned by another agent — every affected owner must be itself (${actingAgentId}); found ${foreign ?? 'none'}.`,
+      `A ${actorKind} cannot install a Behavior owned by another agent — every affected owner must be itself (${actingAgentId}); found ${foreign ?? 'none'}.`,
       403
     );
   }
@@ -864,7 +864,7 @@ export async function applyManageBehaviorsProposal(
         // `require_approval` decision is already satisfied and must not re-block.
         if (decision === 'deny') {
           throw new ToolUserError(
-            `Policy now denies ${writeGateAction} of watchers for this principal; the approved change was not applied.`,
+            `Policy now denies ${writeGateAction} of Behaviors for this principal; the approved change was not applied.`,
             403
           );
         }
@@ -932,7 +932,7 @@ async function gateWatcherWrite(
     });
   }
   throw new ToolUserError(
-    `Policy denies ${action} of watchers (agent config) for this principal.`,
+    `Policy denies ${action} of Behaviors (agent config) for this principal.`,
     403
   );
 }

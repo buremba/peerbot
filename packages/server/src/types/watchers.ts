@@ -135,7 +135,6 @@ export const WatcherMetadataSchema = Type.Object({
   watcher_name: Type.String(),
   slug: Type.String(),
   status: Type.Union([Type.Literal('active'), Type.Literal('archived')]),
-  schedule: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   triggers: Type.Optional(Type.Array(BehaviorTriggerSchema)),
   next_run_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   agent_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),

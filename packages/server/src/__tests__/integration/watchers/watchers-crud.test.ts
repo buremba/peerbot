@@ -90,9 +90,19 @@ describe('watcher CRUD', () => {
       triggers: [{ kind: 'schedule', cron: '0 10 * * *' }],
     });
     const after = (await owner.behaviors.get({ watcher_id: watcherId })) as {
-      behavior?: { schedule: string | null };
+      behavior?: { triggers: Array<{ kind: string; cron?: string }> };
     };
-    expect(after.behavior?.schedule).toBe('0 10 * * *');
+    expect(after.behavior).not.toHaveProperty('schedule');
+    expect(after.behavior?.triggers).toMatchObject([
+      { kind: 'schedule', cron: '0 10 * * *' },
+    ]);
+
+    const listed = (await owner.behaviors.list({ entity_id: entityId })) as {
+      behaviors?: Array<Record<string, unknown>>;
+    };
+    const listedBehavior = listed.behaviors?.find((behavior) => behavior.watcher_id === watcherId);
+    expect(listedBehavior).not.toHaveProperty('schedule');
+    expect(listedBehavior?.triggers).toEqual(after.behavior?.triggers);
 
     await owner.behaviors.delete({ watcher_ids: [watcherId] });
     const list = (await owner.behaviors.list({ entity_id: entityId })) as {
@@ -313,7 +323,7 @@ describe('watcher CRUD', () => {
     expect(rejected.length).toBe(5);
     for (const r of rejected) {
       const e = r.reason as Error & { httpStatus?: number };
-      expect(e.message).toMatch(/Watcher with slug .*already exists/);
+      expect(e.message).toMatch(/Behavior with slug .*already exists/);
       expect(e.message).not.toMatch(/23505|duplicate key value/);
       expect(e.httpStatus).toBe(409);
     }
@@ -875,9 +885,9 @@ describe('watcher CRUD', () => {
     const got = (await owner.behaviors.get({
       watcher_id: created.watcher_id,
     })) as {
-      behavior?: { schedule: string | null };
+      behavior?: { triggers: unknown[] };
     };
-    expect(got.behavior?.schedule).toBeNull();
+    expect(got.behavior?.triggers).toEqual([]);
 
     await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
   });

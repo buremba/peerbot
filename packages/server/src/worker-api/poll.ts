@@ -512,6 +512,13 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               AND r.approved_input ? 'device_worker_id'
               AND r.approved_input->>'device_worker_id' = ${deviceWorkerId}::text
               AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
+              AND NOT EXISTS (
+                SELECT 1
+                FROM runs active
+                WHERE active.watcher_id = r.watcher_id
+                  AND active.run_type = 'watcher'
+                  AND active.status IN ('claimed', 'running')
+              )
             )
           )
         ORDER BY

@@ -56,7 +56,7 @@ export async function handleCreateVersion(
     FROM watchers i WHERE i.id = ${args.watcher_id}
   `;
   if (watcherRows.length === 0) {
-    throw new Error(`Watcher ${args.watcher_id} not found`);
+    throw new Error(`Behavior ${args.watcher_id} not found`);
   }
 
   const groupId = Number(watcherRows[0].watcher_group_id);
@@ -76,8 +76,8 @@ export async function handleCreateVersion(
   `;
   if (prevRows.length === 0) {
     throw new Error(
-      `No previous version found for watcher group ${groupId}. ` +
-        'This group is missing version rows on its root — likely a stale clone from before the version-sharing refactor. Run cleanup or create a fresh watcher.'
+      `No previous version found for Behavior group ${groupId}. ` +
+        'This group is missing version rows on its root — likely a stale clone from before the version-sharing refactor. Run cleanup or create a fresh Behavior.'
     );
   }
   const prev = prevRows[0] as Record<string, unknown>;
@@ -173,7 +173,7 @@ export async function handleCreateVersion(
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${groupId}, ${lockedNextVersion},
-        ${args.name ?? (prev.name as string) ?? 'Watcher'},
+        ${args.name ?? (prev.name as string) ?? 'Behavior'},
         ${args.description !== undefined ? (args.description ?? null) : ((prev.description as string) ?? null)},
         ${prompt}, NULL,
         ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
@@ -238,12 +238,12 @@ export async function handleCreateVersion(
       resourceKind: 'watcher',
       resourceId: args.watcher_id,
       op: 'updated',
-      summary: `Watcher '${args.name ?? (prev.name as string) ?? args.watcher_id}' version ${lockedNextVersion} created`,
+      summary: `Behavior '${args.name ?? (prev.name as string) ?? args.watcher_id}' version ${lockedNextVersion} created`,
       // Composed from the values just written (watcher row not refetched);
       // carries the new version-bound fields.
       state: {
         id: args.watcher_id,
-        name: args.name ?? (prev.name as string) ?? 'Watcher',
+        name: args.name ?? (prev.name as string) ?? 'Behavior',
         version: lockedNextVersion,
         current_version_id: setAsCurrent ? versionId : undefined,
         prompt,
@@ -298,7 +298,7 @@ export async function handleGetVersions(args: ManageBehaviorsArgs): Promise<{
     SELECT id, name, slug, current_version_id, watcher_group_id FROM watchers WHERE id = ${args.watcher_id}
   `;
   if (watcherRows.length === 0) {
-    throw new Error(`Watcher ${args.watcher_id} not found`);
+    throw new Error(`Behavior ${args.watcher_id} not found`);
   }
 
   const currentVersionId = watcherRows[0].current_version_id;
@@ -385,7 +385,7 @@ export async function handleGetVersionDetails(
 
   if (rows.length === 0) {
     throw new Error(
-      `Version ${args.version ?? 'current'} not found for watcher ${args.watcher_id}`
+      `Version ${args.version ?? 'current'} not found for Behavior ${args.watcher_id}`
     );
   }
 

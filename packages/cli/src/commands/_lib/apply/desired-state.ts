@@ -104,7 +104,6 @@ export interface DesiredWatcher {
   agent: string;
   name?: string;
   description?: string;
-  schedule?: string;
   triggers?: DesiredBehaviorTrigger[];
   prompt: string;
   /** Optional SQL data sources; server applies a default when omitted. */
@@ -857,7 +856,7 @@ function resolveConnectorSources(
 const REACTION_SCRIPT_MAX_BYTES = 256 * 1024;
 
 /**
- * Resolve + read a watcher reaction script (`reactionFromFile(path)`): relative
+ * Resolve + read a Behavior reaction script (`reactionFromFile(path)`): relative
  * POSIX path under the config directory, ends in `.ts`, no `..` / absolute /
  * backslash segments, ≤256KB. Ships RAW source — the server compiles it on
  * receipt via `set_reaction_script`.
@@ -870,22 +869,22 @@ function resolveReactionScript(
   const trimmed = rel.trim();
   if (!trimmed) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` must be a path to a sibling .ts file (e.g. \`reaction: reactionFromFile("./reactions/foo.reaction.ts")\`)`
+      `Behavior "${watcherSlug}" \`reaction\` must be a path to a sibling .ts file (e.g. \`reaction: reactionFromFile("./reactions/foo.reaction.ts")\`)`
     );
   }
   if (trimmed.startsWith("/") || trimmed.includes("\\")) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` must be a relative POSIX path (./foo.reaction.ts) — absolute paths and backslashes are not allowed`
+      `Behavior "${watcherSlug}" \`reaction\` must be a relative POSIX path (./foo.reaction.ts) — absolute paths and backslashes are not allowed`
     );
   }
   if (trimmed.split("/").some((seg) => seg === "..")) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` must not contain \`..\` segments — keep the script under the config directory`
+      `Behavior "${watcherSlug}" \`reaction\` must not contain \`..\` segments — keep the script under the config directory`
     );
   }
   if (!trimmed.endsWith(".ts")) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` must end in \`.ts\` (got ${JSON.stringify(trimmed)})`
+      `Behavior "${watcherSlug}" \`reaction\` must end in \`.ts\` (got ${JSON.stringify(trimmed)})`
     );
   }
   const baseDir = resolve(cwd);
@@ -901,7 +900,7 @@ function resolveReactionScript(
     isAbsolute(relPath)
   ) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` resolves outside the config directory (${abs})`
+      `Behavior "${watcherSlug}" \`reaction\` resolves outside the config directory (${abs})`
     );
   }
   let sourceCode: string;
@@ -909,12 +908,12 @@ function resolveReactionScript(
     sourceCode = readFileSync(abs, "utf-8");
   } catch {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` ${trimmed} does not exist (resolved to ${abs})`
+      `Behavior "${watcherSlug}" \`reaction\` ${trimmed} does not exist (resolved to ${abs})`
     );
   }
   if (Buffer.byteLength(sourceCode, "utf8") > REACTION_SCRIPT_MAX_BYTES) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` exceeds the ${REACTION_SCRIPT_MAX_BYTES}-byte cap — reaction scripts should be a few hundred lines, not a vendored library`
+      `Behavior "${watcherSlug}" \`reaction\` exceeds the ${REACTION_SCRIPT_MAX_BYTES}-byte cap — reaction scripts should be a few hundred lines, not a vendored library`
     );
   }
   return { sourcePath: abs, sourceCode };

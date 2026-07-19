@@ -108,7 +108,7 @@ export const GetBehaviorSchema = Type.Object({
   template_version_id: Type.Optional(
     Type.Number({
       description:
-        "Pin to a specific watcher_versions.id. Workers receive this from runs.approved_input.version_id and pass it back so the agent loop reads the same version it extracted with, even if the group is edited mid-run.",
+        "Pin to a specific persisted Behavior version. Workers receive this from runs.approved_input.version_id and pass it back so the agent loop reads the same version it extracted with, even if the group is edited mid-run.",
     })
   ),
   page: Type.Optional(Type.Number({ description: 'Page number for pagination (default: 1)' })),
@@ -288,7 +288,7 @@ async function requireWatcherReadAccess(
   const row = rows[0] as { organization_id: string | null; entity_ids: unknown };
   if (!row.organization_id || row.organization_id !== ctx.organizationId) {
     throw new ToolUserError(
-      `Access denied: watcher ${watcherId} is not accessible to your organization`,
+      `Access denied: Behavior ${watcherId} is not accessible to your organization`,
       403
     );
   }
@@ -834,10 +834,9 @@ async function getBehaviorImpl(
 
     watcherMetadata = {
       watcher_id: watcherRow.watcher_id,
-      watcher_name: watcherRow.name || (version?.name as string) || 'Watcher',
+      watcher_name: watcherRow.name || (version?.name as string) || 'Behavior',
       slug: watcherRow.slug || '',
       status: watcherRow.status as 'active' | 'archived',
-      schedule: watcherRow.schedule,
       triggers: watcherRow.triggers ?? [],
       next_run_at: watcherRow.next_run_at,
       agent_id: watcherRow.agent_id,
@@ -881,7 +880,7 @@ async function getBehaviorImpl(
   // ============================================
   // Count content NOT in any window for this watcher (using watcher_window_events)
   // Calculate next window bounds based on schedule
-  // Generate processing instructions for client-driven watcher generation
+  // Generate processing instructions for client-driven Behavior generation
 
   let pendingAnalysis: PendingAnalysis | undefined;
 

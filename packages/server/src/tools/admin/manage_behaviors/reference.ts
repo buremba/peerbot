@@ -1,6 +1,6 @@
 /**
  * get_component_reference action handler for manage_behaviors.
- * Returns static documentation about available watcher components and data types.
+ * Returns static documentation about available Behavior components and data types.
  */
 
 import type { ComponentReferenceDocumentation } from '../../../types/templates';
@@ -17,7 +17,7 @@ export function handleGetComponentReference(): {
     action: 'get_component_reference',
     documentation: {
       overview:
-        'Watchers define extraction prompts, schemas, SQL source queries, and optional JSON rendering.',
+        'Behaviors define extraction prompts, schemas, SQL source queries, and optional JSON rendering.',
       data_types: [
         {
           type: 'source',

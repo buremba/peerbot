@@ -586,10 +586,10 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
   const sources = watcher.sources
     ? Object.entries(watcher.sources).map(([name, query]) => ({ name, query }))
     : undefined;
-  let schedule: string | undefined;
+  let hasSchedule = false;
   const triggers = watcher.triggers?.map((trigger) => {
     if (trigger.kind === "schedule") {
-      if (schedule !== undefined) {
+      if (hasSchedule) {
         throw new ValidationError(
           `Behavior "${watcher.slug}" has more than one schedule trigger`
         );
@@ -600,7 +600,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
           `Behavior "${watcher.slug}" has an invalid schedule trigger "${trigger.cron}": ${err}`
         );
       }
-      schedule = trigger.cron;
+      hasSchedule = true;
       return trigger;
     }
     const { connection, ...eventTrigger } = trigger;
@@ -631,7 +631,6 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
       : {}),
     ...(watcher.name ? { name: watcher.name } : {}),
     ...(watcher.description ? { description: watcher.description } : {}),
-    ...(schedule ? { schedule } : {}),
     triggers: triggers ?? [],
     ...(sources ? { sources } : {}),
     ...(watcher.notification?.channel
@@ -798,7 +797,7 @@ export function mapProjectToDesiredState(
   assertUniqueBy(agents, (a) => a.metadata.agentId, "agent id");
   assertUniqueBy(entityTypes, (e) => e.slug, "entity type key");
   assertUniqueBy(relationshipTypes, (r) => r.slug, "relationship type key");
-  assertUniqueBy(watchers, (w) => w.slug, "watcher slug");
+  assertUniqueBy(watchers, (w) => w.slug, "Behavior slug");
   assertUniqueBy(authProfiles, (p) => p.slug, "auth profile slug");
   assertUniqueBy(connections, (c) => c.slug, "connection slug");
   assertUniqueBy(providers, (p) => p.slug, "provider slug");
@@ -807,7 +806,7 @@ export function mapProjectToDesiredState(
   for (const watcher of watchers) {
     if (!agentIds.has(watcher.agent)) {
       throw new ValidationError(
-        `watcher "${watcher.slug}" names agent "${watcher.agent}", but no agent with that id is declared in lobu.config.ts`
+        `Behavior "${watcher.slug}" names agent "${watcher.agent}", but no agent with that id is declared in lobu.config.ts`
       );
     }
     for (const trigger of watcher.triggers ?? []) {
@@ -817,12 +816,12 @@ export function mapProjectToDesiredState(
       );
       if (!connection) {
         throw new ValidationError(
-          `watcher "${watcher.slug}" references connection "${trigger.connectionSlug}", but it is not declared in lobu.config.ts`
+          `Behavior "${watcher.slug}" references connection "${trigger.connectionSlug}", but it is not declared in lobu.config.ts`
         );
       }
       if (connection.connector !== trigger.connector_key) {
         throw new ValidationError(
-          `watcher "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${trigger.connectionSlug}" uses ${connection.connector}`
+          `Behavior "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${trigger.connectionSlug}" uses ${connection.connector}`
         );
       }
     }

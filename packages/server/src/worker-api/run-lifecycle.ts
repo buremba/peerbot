@@ -720,7 +720,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	const run = runRows[0];
 	if (!run) return c.json({ error: "Run not found" }, 404);
 	if (run.run_type !== "watcher") {
-		return c.json({ error: "Not a watcher run" }, 409);
+		return c.json({ error: "Not a Behavior run" }, 409);
 	}
 	if (run.watcher_id == null) {
 		return c.json({ error: "Behavior run missing watcher_id" }, 500);
@@ -888,8 +888,8 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			entityId: String(watcherId),
 			summary:
 				outcome === "failed"
-					? `Watcher run ${runId} failed on device CLI: ${detail ?? "unknown error"}`
-					: `Watcher run ${runId} completed via device CLI`,
+					? `Behavior run ${runId} failed on device CLI: ${detail ?? "unknown error"}`
+					: `Behavior run ${runId} completed via device CLI`,
 			extra: {
 				run_id: runId,
 				source: "device_worker",
@@ -1001,7 +1001,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	// runs.output_tail for diagnosis.
 	const reason =
 		"Device CLI exited without calling run_sdk (client.behaviors.completeWindow). " +
-		"The watcher prompt instructs the agent to complete via the lobu MCP server — check that " +
+		"The Behavior prompt instructs the agent to complete via the lobu MCP server — check that " +
 		"the dispatcher passed --mcp-config with query_sdk/run_sdk allowed, the gateway is reachable " +
 		"from the device, and the device token has mcp:write scope.";
 	await failRun(reason);

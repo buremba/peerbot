@@ -260,7 +260,7 @@ export default async (_ctx, client) => {
 		access: "read",
 		example:
 			"const hits = await client.knowledge.search({ query: 'revenue update', limit: 10 });",
-		usageExample: `// Pull recent revenue updates across all watcher windows.
+		usageExample: `// Pull recent revenue updates across all Behavior windows.
 export default async (_ctx, client) => {
   return client.knowledge.search({ query: 'revenue update', limit: 10 });
 };`,
@@ -277,7 +277,7 @@ export default async (_ctx, client) => {
 	},
 	"knowledge.read": {
 		summary:
-			"Read knowledge events by id (`content_ids`, an array — there is no singular `content_id` arg), or watcher-window context.",
+			"Read knowledge events by id (`content_ids`, an array — there is no singular `content_id` arg), or Behavior-window context.",
 		access: "read",
 		example: "await client.knowledge.read({ content_ids: [2321593] });",
 	},
@@ -429,11 +429,11 @@ export default async (_ctx, client) => {
 	// notifications
 	"notifications.send": {
 		summary:
-			"Send a notification to org users. Writes an `agent_message` notification (in-app inbox) and fans it out to the org's active bot connections (Slack/Telegram) — the way a watcher reaction surfaces its digest to a chat channel. Pass an optional `card` (a `chat` CardElement) for rich cross-platform rendering, and `watcher_source` when firing from a reaction.",
+			"Send a notification to org users. Writes an `agent_message` notification (in-app inbox) and fans it out to the org's active bot connections (Slack/Telegram) — the way a Behavior reaction surfaces its digest to a chat channel. Pass an optional `card` (a `chat` CardElement) for rich cross-platform rendering, and `watcher_source` when firing from a reaction.",
 		access: "write",
 		example:
 			"await client.notifications.send({ title: 'Weekly funnel digest', body: '3 new leads...', watcher_source: { watcher_id: ctx.window.watcher_id, window_id: ctx.window.id } });",
-		usageExample: `// Push a watcher digest to the org's Slack/Telegram connections + inbox.
+		usageExample: `// Push a Behavior digest to the org's Slack/Telegram connections + inbox.
 export default async (ctx, client) => {
   await client.notifications.send({
     title: 'Weekly funnel digest',

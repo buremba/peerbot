@@ -5,7 +5,7 @@
  * validation rules and the privilege gate without the integration harness.
  *
  * Shape/type/range validation moved to the tool boundary (lobu#1137):
- * WatcherExecutionConfigSchema is embedded in ManageBehaviorsSchema, and
+ * BehaviorExecutionConfigSchema is embedded in ManageBehaviorsSchema, and
  * `withValidatedArgs` enforces it before the handler runs. The schema tests
  * below therefore go through `validateToolArgs` with the full tool schema —
  * the same path a real manage_behaviors call takes — while the role-policy

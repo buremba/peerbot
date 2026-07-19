@@ -343,7 +343,7 @@ export async function handleWatcherMode(
   `;
 
   if (watcherResult.length === 0) {
-    throw new Error(`Watcher ${watcherId} not found`);
+    throw new Error(`Behavior ${watcherId} not found`);
   }
 
   const watcher = watcherResult[0];
@@ -547,7 +547,7 @@ export async function handleWatcherMode(
   if (enrichedPrompt && contentPage?.has_more) {
     enrichedPrompt +=
       '\n\n## Pagination\n' +
-      `This page includes ${allContent.length} content items and more items are available in this same watcher window. ` +
+      `This page includes ${allContent.length} content items and more items are available in this same Behavior window. ` +
       'If you need more evidence before completing the window, call read_knowledge again with the same watcher_id/since/until and page.next_cursor as before_occurred_at/before_id.';
   }
   if (enrichedPrompt) {

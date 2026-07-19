@@ -273,7 +273,7 @@ export async function listAgentThreads(args: {
 			const at = row.last_at.getTime();
 			byKey.set(key, {
 				id: key,
-				title: row.name ?? `Watcher ${row.watcher_id}`,
+				title: row.name ?? `Behavior ${row.watcher_id}`,
 				createdAt: at,
 				updatedAt: at,
 				platform: "watcher",

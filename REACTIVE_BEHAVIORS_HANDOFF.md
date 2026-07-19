@@ -10,6 +10,12 @@ The branch is rebased on `origin/main`. The implementation consolidates schedule
 
 The final cleanup is intentionally a breaking migration: old Watcher-named public tools, REST routes, SDK namespaces, catalog kinds, declarative config, UI routes, and worker routes are removed rather than adapted. Existing database storage names are retained as storage vocabulary only.
 
+Rebase state on 2026-07-18:
+
+- Root base: `origin/main` at `f4858e11` (`feat: list_activity feed + Home + agent attention inject`).
+- Owletto base: `origin/main` at `c8e2dbe1`.
+- The rebase preserved main's manual-feed invariant: a feed without a schedule remains manual-only and does not regain the historical six-hour cadence.
+
 ## Final architecture
 
 A Behavior is the single user-facing automation resource. It owns an ordered `triggers` array:
@@ -58,6 +64,8 @@ Cross-replica correctness is Postgres-mediated. Trigger matching, run creation, 
 
 Legacy `/watchers` REST paths are removed. The complete OpenAPI document was regenerated into `packages/client/src/generated`; unrelated routes remain present.
 
+The unused `resolve_path.bootstrap.recent_watchers` DTO and query are also removed. The Behavior pages load through the canonical Behavior API, so retaining that unused bootstrap branch would have kept a second stale public shape and an unnecessary SQL query.
+
 ### Worker/device API
 
 - `POST /api/workers/me/behaviors/:behavior_id/trigger`
@@ -104,6 +112,8 @@ Deleted UI paths/code:
 
 Server-produced Behavior links now target the canonical agent-owned detail route. Embedded `/lobu` is stripped when composing web UI links.
 
+Home activity links were audited in both the server feed and Owletto. Both now target `/$owner/agents/$agentId/behaviors/$watcherId`; neither emits the deleted `/watchers/$watcherId` route. User-visible fallbacks and public-page counters say Behavior/Behaviors while `run_type='watcher'` and `watcher_id` remain storage values.
+
 ## Database and migration boundary
 
 No new subscription table was added.
@@ -145,23 +155,37 @@ The positive audit finds `defineBehavior`, `behaviors`, `manage_behaviors`, and 
 
 ## Validation completed
 
-- Branch HEAD is based on the local `origin/main` ref.
+- The branch and Owletto submodule are rebased on their current `origin/main` refs listed above.
 - Pre-review audits fixed migration replay safety, transaction-scoped chat Behavior archival, an unused Slack normalization helper, the final Slack parser compatibility re-export, and stale public-API claims in changed plans.
-- `make pre-pr` passed: fresh builds, strict typechecks, Knip, and Biome.
+- The final post-rebase `make pre-pr` passed: fresh builds, strict typechecks, Knip, and Biome.
 - Focused cross-package Bun tests passed, including core event matching, connector descriptors, agent-worker streaming, CLI config, message routing, and Slack parsing.
-- Focused server Behavior event-activation, schedule-skip, and template tests passed: 10 tests.
-- Owletto route, create-form, model, subscription-candidate, chat-route, and history tests passed: 83 tests.
+- Final focused server unit tests passed: 92 tests across auth/tool access, registry deletion guards, Behavior dispatch messages, markdown formatting, and activity links.
+- Core tests passed: 347 tests. Client tests passed: 7 tests.
+- Final focused Postgres tests passed: 7 files / 28 tests covering event activation, unchanged scheduled batches, channel-subscription migration/replay, streaming feeds, manual feeds, terminal worker completion, and the `resolve_path` contract.
+- Owletto route, create-form, Behavior model, subscription candidate, chat-route, history, activity-link, and notification tests passed: 9 files / 111 tests.
 - Catalog generation passed: 20 connectors, 2 skills, 5 Behaviors.
 - Owletto production Vite build passed after the route cleanup.
 - Postgres migration replay and channel-feed lifecycle tests passed: 11 tests. The archive transaction fix had explicit red (`malformed array literal`) → fix (`pgBigintArray`) → green evidence.
 - Connection-scoped chat Behavior routing tests passed: 6 tests.
-- `git diff --check` passes in both root and Owletto.
+- The final deletion audit added explicit red→green evidence:
+  - activity links expected `/behaviors/:id` and initially received `/watchers/:id` in both server and Owletto tests;
+  - `resolve_path` initially returned the retired `recent_watchers` property;
+  - after deletion, the activity-link tests (17 Owletto + 5 server) and resolve-path contract (6 Postgres tests) are green.
+- The settled pre-review pass also caught and fixed two stale integration assumptions:
+  - the Owletto branch initially reintroduced the deleted `/$owner/c/$threadId` route; the route helper was removed and the production build is green;
+  - the CLI diff test still changed the retired scalar schedule instead of canonical triggers; the schedule-trigger drift test and all 216 focused CLI tests are green.
+- The typed client was regenerated from the live post-rebase OpenAPI document. The document contains `manage_behaviors` and contains no `manage_watchers`, `list_watchers`, `get_watcher`, `recent_watchers`, or `/watchers` path.
+- The final examples audit returns no matches for the exact old public API pattern. Positive matches are `defineBehavior`, `behaviors`, and `manage_behaviors` only.
+- The settled review-fix pass found a device-polling regression for queued event runs: once a device-pinned Behavior had a `running` run, a second poll could claim another pending run and violate the one-executing-run partial index. The regression was reproduced red with PostgreSQL `23505`, fixed by excluding Behaviors with a `claimed`/`running` run in the device claim query, and the full 9-test manual-trigger integration file is green using the real `createBehaviorEventRun` queue path.
+- The deletion-audit working diff is net negative across the root and Owletto: 439 insertions and 536 deletions (net `-97`). The complete feature remains net positive because it adds the generalized trigger model, connector event descriptors, migrations, UI, and regression coverage; compared with both repositories' rebased bases it is 13,480 insertions and 11,276 deletions (net `+2,204`).
 
-Still required before merge-ready status:
+## Finalization checkpoint before posted review
 
-1. Inspect and commit Owletto with explicit paths, then commit the root with explicit paths and the submodule pointer.
-2. Verify committed HEAD and the exact `origin/main...HEAD` path list.
-3. Run one posted `make review BASE=origin/main`.
+- Owletto cleanup commit: `c2222835` (`refactor: remove legacy Watcher UI remnants`).
+- Root cleanup commit: `refactor: finish Behavior API deletion cleanup`, including the Owletto submodule pointer. Its hash is intentionally not embedded in this self-referential commit; use `git rev-parse HEAD`.
+- Both worktrees are clean. `git show HEAD:<file>` confirms the device queue fix and trigger-only declarative model are committed.
+- Root and Owletto merge bases equal their current `origin/main` refs, and both committed diffs pass `git diff --check`.
+- The only remaining gate at this checkpoint is exactly one posted `make review BASE=origin/main`; do not use posted reviews as a find/fix loop.
 
 ## Gotchas
 

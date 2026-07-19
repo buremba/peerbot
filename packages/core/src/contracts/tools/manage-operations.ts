@@ -115,7 +115,7 @@ export const ListRunsAction = Type.Object({
   ),
   /** Filter watcher runs by watcher id(s). */
   watcher_ids: Type.Optional(
-    Type.Array(Type.Number({ description: "Filter by watcher IDs" }))
+    Type.Array(Type.Number({ description: "Filter by persisted Behavior IDs" }))
   ),
   /** Keyset cursor: return runs ordered before (before_created_at, before_id). */
   before_id: Type.Optional(
@@ -144,7 +144,7 @@ export const GetRunAction = Type.Object({
 export const ListActivityAction = Type.Object({
   action: Type.Literal("list_activity", {
     description:
-      "Org attention feed: notifications + recent user-facing runs (watcher/sync/action/internal), with optional adjacent aggregation and deep-links for the UI and agent context.",
+      "Org attention feed: notifications + recent user-facing runs (Behavior/sync/action/internal), with optional adjacent aggregation and deep-links for the UI and agent context.",
   }),
   limit: Type.Optional(
     Type.Integer({
@@ -187,7 +187,7 @@ export const RejectAction = Type.Object({
 export const ApproveBatchAction = Type.Object({
   action: Type.Literal("approve_batch", {
     description:
-      "Approve every pending proposal a watcher run produced, in one go. Groups by the run's window.",
+      "Approve every pending proposal a Behavior run produced, in one go. Groups by the run's window.",
   }),
   window_id: Type.Number(),
   run_ids: Type.Optional(
@@ -204,7 +204,7 @@ export const ApproveBatchAction = Type.Object({
 export const RejectBatchAction = Type.Object({
   action: Type.Literal("reject_batch", {
     description:
-      "Reject every pending proposal a watcher run produced. The reason is fed back to the agent so it can revise its proposals (the conversational revision loop).",
+      "Reject every pending proposal a Behavior run produced. The reason is fed back to the agent so it can revise its proposals (the conversational revision loop).",
   }),
   window_id: Type.Number(),
   run_ids: Type.Optional(

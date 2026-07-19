@@ -614,6 +614,27 @@ export class MessageHandlerBridge {
         }
       : fallbackResolved;
     if (!resolved) {
+      // Linked channel but trigger filters rejected this message (e.g.
+      // mention_only on a non-mention). The planner is the authority for
+      // activation; do not fall through to the "unlinked" notice or the notice
+      // would spam every ordinary message in a mention-only linked channel.
+      if (
+        behaviorSubscriptionService &&
+        this.connection.organizationId &&
+        (await behaviorSubscriptionService.channelHasMessageSubscription(
+          this.connection.id,
+          channelId,
+          this.connection.organizationId,
+          isPreview
+        ))
+      ) {
+        logger.info(
+          { platform, channelId, teamId, connectionId: this.connection.id },
+          "Channel has Behavior subscription(s) but none matched this message — dropping"
+        );
+        return;
+      }
+
       // A tenant's OAuth-installed Slack workspace bot has no owning agent —
       // routing is via tagged Behaviors created by `/lobu link`. Before the
       // tenant links a channel, a non-command message resolves to nothing. Reply with a

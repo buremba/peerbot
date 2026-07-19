@@ -240,6 +240,30 @@ export class BehaviorSubscriptionService {
 		return rows[0] ?? null;
 	}
 
+	/**
+	 * True when any active message.created Behavior covers this connection+channel
+	 * (ignoring trigger match filters like mention_only/team). Used by the chat
+	 * bridge to distinguish "filters rejected a linked channel" from "channel is
+	 * unlinked" so we do not spam the "link your agent" notice on every
+	 * non-mention in a mention_only channel.
+	 */
+	async channelHasMessageSubscription(
+		connectionId: string,
+		channelId: string,
+		connectionOrganizationId: string,
+		crossOrg = false,
+	): Promise<boolean> {
+		const sql = getDb();
+		const rows = await loadChatBehaviorSubscriptions(sql, {
+			behaviorOrganizationId: crossOrg ? undefined : connectionOrganizationId,
+			connectionOrganizationId,
+			connectionSlug: runtimeConnectionIdToSlug(connectionId),
+			channelId,
+			limit: 1,
+		});
+		return rows.length > 0;
+	}
+
 	async healSubscriptionTeam(
 		connectionId: string,
 		channelId: string,

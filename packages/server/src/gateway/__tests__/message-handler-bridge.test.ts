@@ -641,12 +641,18 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     const resolveForConnection = mock(
       async () => opts.fallbackSubscription ?? null,
     );
+    // Default: if the harness planned Behaviors for this channel, treat the
+    // channel as subscribed (even when trigger filters reject this message).
+    const channelHasMessageSubscription = mock(
+      async () => plannedBehaviors.length > 0,
+    );
     const behaviorSubscriptionService =
       plannedBehaviors.length === 0 && opts.fallbackSubscription === undefined
         ? undefined
 				: {
 						resolveForConnection,
 						healSubscriptionTeam,
+						channelHasMessageSubscription,
 					};
     const services = {
       getArtifactStore: () => null,
@@ -832,15 +838,18 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
         },
       ],
     });
+    const thread = makeThread(undefined);
 
     await bridge.handleMessage(
-      makeThread(undefined),
-      makeMessage({ isMention: false }),
+      thread,
+      makeMessage({ text: "ordinary chatter", isMention: false }),
       "subscribed",
     );
 
     expect(enqueueMessage).not.toHaveBeenCalled();
     expect(resolveForConnection).not.toHaveBeenCalled();
+    // Linked + filter-rejected must not spam the "link your agent" notice.
+    expect(thread.post).not.toHaveBeenCalled();
   });
 
   test("recordChannelMessages skips agent turns for Behavior-routed subscribed messages", async () => {

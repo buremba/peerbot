@@ -105,54 +105,61 @@ export async function resolveBoundChannelRows(
         AND NULLIF(trigger->'match'->>'channel_id', '') IS NOT NULL
     )
     SELECT id, platform, channel_id, team_id, created_at FROM (
-      -- (A) the org's own connections. connection_id is the sole routing key.
-      SELECT
-        CASE WHEN ac.slug LIKE 'agentconn-%'
-          THEN substring(ac.slug from 11) ELSE ac.slug END AS id,
-        ac.connector_key AS platform, b.channel_id, b.team_id, b.created_at
-      FROM connections ac
-      JOIN active_message_subscriptions b ON b.connection_id = ac.id
-      WHERE ac.organization_id = ${organizationId}
-        AND ac.status = 'active'
-        AND ac.credential_mode IS NOT NULL
-        AND ac.deleted_at IS NULL
-        ${agentFilterA}
-        ${connFilterA}
+      SELECT DISTINCT ON (id, platform, channel_id)
+        id, platform, channel_id, team_id, created_at
+      FROM (
+        -- (A) the org's own connections. connection_id is the sole routing key.
+        SELECT
+          CASE WHEN ac.slug LIKE 'agentconn-%'
+            THEN substring(ac.slug from 11) ELSE ac.slug END AS id,
+          ac.connector_key AS platform, b.channel_id, b.team_id, b.created_at
+        FROM connections ac
+        JOIN active_message_subscriptions b ON b.connection_id = ac.id
+        WHERE ac.organization_id = ${organizationId}
+          AND b.organization_id = ${organizationId}
+          AND ac.status = 'active'
+          AND ac.credential_mode IS NOT NULL
+          AND ac.deleted_at IS NULL
+          ${agentFilterA}
+          ${connFilterA}
 
-      UNION
+        UNION ALL
 
-      -- (B) hosted-preview cross-org: this org's (agent's) bindings via the
-      -- shared preview connection. NO agent_id join on the preview conn; gated
-      -- to previewMode + no teamId so a normal bot is never borrowed.
-      SELECT
-        CASE WHEN pc.slug LIKE 'agentconn-%'
-          THEN substring(pc.slug from 11) ELSE pc.slug END AS id,
-        pc.connector_key AS platform, b.channel_id, b.team_id, b.created_at
-      FROM active_message_subscriptions b
-      JOIN connections pc
-        ON pc.id = b.connection_id
-       AND pc.connector_key = b.platform
-       AND pc.status = 'active'
-       AND pc.credential_mode IS NOT NULL
-       AND pc.deleted_at IS NULL
-       AND pc.config->'settings'->'previewMode' = 'true'::jsonb
-       AND COALESCE(pc.external_tenant_id, pc.config->'chatMetadata'->>'teamId') IS NULL
-      WHERE b.organization_id = ${organizationId}
-        ${agentFilterB}
-        ${connFilterB}
-        -- Skip channels the org/agent already owns via branch A.
-        AND NOT EXISTS (
-          SELECT 1
-          FROM connections own
-          JOIN active_message_subscriptions ob ON ob.connection_id = own.id
-          WHERE own.organization_id = ${organizationId}
-            AND own.status = 'active'
-            AND own.credential_mode IS NOT NULL
-            AND own.deleted_at IS NULL
-            ${ownAgentFilter}
-            AND ob.platform = b.platform
-            AND ob.channel_id = b.channel_id
-        )
+        -- (B) hosted-preview cross-org: this org's (agent's) bindings via the
+        -- shared preview connection. NO agent_id join on the preview conn; gated
+        -- to previewMode + no teamId so a normal bot is never borrowed.
+        SELECT
+          CASE WHEN pc.slug LIKE 'agentconn-%'
+            THEN substring(pc.slug from 11) ELSE pc.slug END AS id,
+          pc.connector_key AS platform, b.channel_id, b.team_id, b.created_at
+        FROM active_message_subscriptions b
+        JOIN connections pc
+          ON pc.id = b.connection_id
+         AND pc.connector_key = b.platform
+         AND pc.status = 'active'
+         AND pc.credential_mode IS NOT NULL
+         AND pc.deleted_at IS NULL
+         AND pc.config->'settings'->'previewMode' = 'true'::jsonb
+         AND COALESCE(pc.external_tenant_id, pc.config->'chatMetadata'->>'teamId') IS NULL
+        WHERE b.organization_id = ${organizationId}
+          ${agentFilterB}
+          ${connFilterB}
+          -- Skip channels the org/agent already owns via branch A.
+          AND NOT EXISTS (
+            SELECT 1
+            FROM connections own
+            JOIN active_message_subscriptions ob ON ob.connection_id = own.id
+            WHERE own.organization_id = ${organizationId}
+              AND ob.organization_id = ${organizationId}
+              AND own.status = 'active'
+              AND own.credential_mode IS NOT NULL
+              AND own.deleted_at IS NULL
+              ${ownAgentFilter}
+              AND ob.platform = b.platform
+              AND ob.channel_id = b.channel_id
+          )
+      ) candidates
+      ORDER BY id, platform, channel_id, created_at ASC
     ) targets
     -- Binding-creation order: the primary channel (earliest binding) first.
     ORDER BY created_at ASC

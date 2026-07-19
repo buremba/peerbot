@@ -68,7 +68,10 @@ import { agentRoutes } from "./lobu/agent-routes";
 import { clientRoutes } from "./lobu/client-routes";
 import { deploymentRoutes } from "./lobu/deployment-routes";
 import { environmentRoutes } from "./lobu/environment-routes";
-import { getLobuCoreServices, isLobuGatewayRunning } from "./lobu/gateway";
+import {
+	getLobuCoreServices,
+	isLobuGatewayRunning,
+} from "./lobu/gateway";
 import {
 	claimSlackPendingInstall,
 	resolveSlackActiveBindingElsewhere,
@@ -172,7 +175,7 @@ export function getOwnedOwlettoExtensionIds(env: Env): string[] {
 export function isAllowedCorsOrigin(
 	origin: string,
 	env: Env,
-	requestUrl: string
+	requestUrl: string,
 ): boolean {
 	let parsed: URL;
 	try {
@@ -243,7 +246,7 @@ const STATIC_BINARY_CONTENT_TYPES: Record<string, string> = {
 
 const APP_ROOT = path.resolve(
 	fileURLToPath(new URL(".", import.meta.url)),
-	".."
+	"..",
 );
 
 let webDistDirectoryCache: string | null | undefined;
@@ -281,7 +284,7 @@ async function loadSpaHtmlTemplate(): Promise<string | null> {
 	if (viteDev) {
 		return fs.readFile(
 			path.resolve(viteDev.config.root, "index.html"),
-			"utf-8"
+			"utf-8",
 		);
 	}
 
@@ -335,14 +338,14 @@ function getContentTypeForStaticFile(filePath: string): string {
 }
 
 function hasBetterAuthSessionCookie(
-	cookieHeader: string | null | undefined
+	cookieHeader: string | null | undefined,
 ): boolean {
 	return (cookieHeader ?? "").includes("better-auth.session_token=");
 }
 
 function resolveStaticFilePath(
 	distDir: string,
-	requestPath: string
+	requestPath: string,
 ): string | null {
 	const normalizedPath = path.posix.normalize(requestPath || "/");
 	if (normalizedPath.includes("..")) {
@@ -361,7 +364,7 @@ function resolveStaticFilePath(
 
 async function serveStaticFile(
 	c: Context<{ Bindings: Env }>,
-	filePath: string
+	filePath: string,
 ) {
 	const stat = await fs.stat(filePath);
 	if (!stat.isFile()) {
@@ -377,7 +380,7 @@ async function serveStaticFile(
 		"Cache-Control",
 		isHtml
 			? "public, max-age=0, s-maxage=60, stale-while-revalidate=300"
-			: "public, max-age=31536000, immutable"
+			: "public, max-age=31536000, immutable",
 	);
 	// Hono's Data type expects Uint8Array<ArrayBuffer>; copy into a fresh
 	// ArrayBuffer since fs.readFile returns Buffer<ArrayBufferLike>.
@@ -410,7 +413,7 @@ app.use(
 		],
 		exposeHeaders: ["Content-Type"],
 		credentials: true, // Required for better-auth cookies
-	})
+	}),
 );
 
 // Add security headers for ChatGPT connector safety
@@ -450,7 +453,7 @@ app.use("/*", async (c, next) => {
 			.join("");
 		c.header(
 			"Content-Security-Policy",
-			`frame-ancestors 'self' ${frameAncestors}${extensionAllowed}`
+			`frame-ancestors 'self' ${frameAncestors}${extensionAllowed}`,
 		);
 	}
 
@@ -486,7 +489,7 @@ app.use("/*", async (c, next) => {
 	const sub = extractSubdomainOrg(
 		c.req.header("host"),
 		zone,
-		RESERVED_SUBDOMAINS
+		RESERVED_SUBDOMAINS,
 	);
 	c.set("subdomainOrg", sub);
 
@@ -562,7 +565,7 @@ app.get("/health/ready", async (c) => {
 	} catch (error) {
 		return c.json(
 			{ status: "unready", service: "lobu-api", error: errorMessage(error) },
-			503
+			503,
 		);
 	}
 });
@@ -606,7 +609,7 @@ app.get("/health/scheduler", async (c) => {
 				issues: ["Failed to check scheduler health"],
 				error: errorMessage(error),
 			},
-			500
+			500,
 		);
 	}
 });
@@ -747,8 +750,8 @@ app.route("", createRuntimeRoutes());
 import {
 	completeActionRun,
 	completeAuthRun,
-	completeBehaviorRun,
 	completeEmbeddings,
+	completeBehaviorRun,
 	completeWorkerJob,
 	createMyDeviceAuthProfile,
 	createMyDeviceFeed,
@@ -826,7 +829,7 @@ app.use("/api/workers/*", async (c, next) => {
 						error_description:
 							"Worker endpoints require a worker token, not a browser session",
 					},
-					401
+					401,
 				);
 			}
 			// User-scoped workers can only hit the endpoints needed to run a job
@@ -847,7 +850,7 @@ app.use("/api/workers/*", async (c, next) => {
 			]);
 			const requestPath = new URL(c.req.url).pathname;
 			const isAuthProfileSubpath = requestPath.startsWith(
-				"/api/workers/me/auth-profiles"
+				"/api/workers/me/auth-profiles",
 			);
 			const isFeedSubpath = requestPath.startsWith("/api/workers/me/feeds");
 			// /api/workers/me/runs/<runId>/complete-behavior — device-side Behavior
@@ -871,7 +874,7 @@ app.use("/api/workers/*", async (c, next) => {
 			) {
 				return c.json(
 					{ error: "Endpoint not available to user-scoped workers" },
-					403
+					403,
 				);
 			}
 			const scopes = c.var.mcpAuthInfo?.scopes ?? [];
@@ -882,7 +885,7 @@ app.use("/api/workers/*", async (c, next) => {
 			) {
 				return c.json(
 					{ error: "Worker token missing device_worker:run scope" },
-					403
+					403,
 				);
 			}
 			const userId = c.var.user.id;
@@ -894,13 +897,13 @@ app.use("/api/workers/*", async (c, next) => {
 			const personalOrg = await findExistingPersonalOrg(userId, getDb());
 			const orgIds = Array.from(
 				new Set(
-					[boundOrgId, personalOrg?.id].filter((id): id is string => !!id)
-				)
+					[boundOrgId, personalOrg?.id].filter((id): id is string => !!id),
+				),
 			);
 			if (orgIds.length === 0) {
 				return c.json(
 					{ error: "No organization in scope for this worker token" },
-					403
+					403,
 				);
 			}
 			c.set("workerAuthMode", "user");
@@ -943,7 +946,7 @@ app.post("/api/workers/complete-embeddings", completeEmbeddings);
 app.post("/api/workers/me/runs/:runId/complete-behavior", completeBehaviorRun);
 app.post(
 	"/api/workers/me/behaviors/:behavior_id/trigger",
-	triggerBehaviorForDevice
+	triggerBehaviorForDevice,
 );
 app.post("/api/workers/fetch-events", fetchEventsForEmbedding);
 app.post("/api/workers/emit-auth-artifact", emitAuthArtifact);
@@ -994,7 +997,7 @@ app.get("/api/invitation-preview", async (c) => {
 	const clientIP = getClientIP(c.req.raw, c.var.peerRemoteAddress);
 	const rateLimit = rateLimiter.checkLimit(
 		`rate:invitation-preview:${clientIP}`,
-		RateLimitPresets.INVITATION_PREVIEW_PER_IP_MINUTE
+		RateLimitPresets.INVITATION_PREVIEW_PER_IP_MINUTE,
 	);
 	if (!rateLimit.allowed) {
 		return c.json({ error: rateLimit.errorMessage }, 429);
@@ -1068,7 +1071,7 @@ app.post("/api/:orgSlug/preview/claims", mcpAuth, createPreviewClaim);
 app.get(
 	"/api/:orgSlug/connector-run/auth-profile/:slug",
 	mcpAuth,
-	restGetAuthProfileForRun
+	restGetAuthProfileForRun,
 );
 app.get("/api/:orgSlug/connector-run/feed/:id", mcpAuth, restGetFeedForRun);
 
@@ -1076,13 +1079,13 @@ app.get("/api/:orgSlug/notifications", mcpAuth, restListNotifications);
 app.get(
 	"/api/:orgSlug/notifications/unread-count",
 	mcpAuth,
-	restGetUnreadCount
+	restGetUnreadCount,
 );
 app.patch("/api/:orgSlug/notifications/:id/read", mcpAuth, restMarkAsRead);
 app.post(
 	"/api/:orgSlug/notifications/mark-all-read",
 	mcpAuth,
-	restMarkAllAsRead
+	restMarkAllAsRead,
 );
 app.delete("/api/:orgSlug/notifications/:id", mcpAuth, restDeleteNotification);
 
@@ -1092,14 +1095,14 @@ app.get("/api/:orgSlug/public/classifiers", publicRestListClassifiers);
 app.get("/api/:orgSlug/public/connectors", publicRestListConnectors);
 app.get(
 	"/api/:orgSlug/public/connectors/:connectorKey",
-	publicRestGetConnector
+	publicRestGetConnector,
 );
 app.get("/api/:orgSlug/public/organization", publicRestGetOrganization);
 app.get("/api/:orgSlug/public/events", publicRestEventsStream);
 app.patch(
 	"/api/:orgSlug/content/:id/classifications/:classifier_slug",
 	mcpAuth,
-	restUpdateContentClassification
+	restUpdateContentClassification,
 );
 app.get("/api/:orgSlug/behaviors", mcpAuth, restGetBehaviors);
 app.get("/api/:orgSlug/public/behaviors", publicRestGetBehaviors);
@@ -1198,7 +1201,7 @@ async function handleContentDistribution(c: Context<{ Bindings: Env }>) {
       GROUP BY TO_CHAR(DATE_TRUNC('day', COALESCE(f.occurred_at, f.created_at)), 'YYYY-MM-DD')${platformGroupBy}
       ORDER BY date ASC
     `,
-			params
+			params,
 		);
 		return c.json({ distribution });
 	} catch (error) {
@@ -1209,7 +1212,7 @@ async function handleContentDistribution(c: Context<{ Bindings: Env }>) {
 app.get(
 	"/api/:orgSlug/entities/:entityId/content-distribution",
 	mcpAuth,
-	handleContentDistribution
+	handleContentDistribution,
 );
 
 // ============================================
@@ -1299,7 +1302,7 @@ async function requireOrganizationSettingsAdmin(c: Context) {
 				error: "forbidden",
 				message: "Workspace settings require owner or admin access.",
 			},
-			403
+			403,
 		);
 	}
 
@@ -1310,7 +1313,7 @@ async function requireOrganizationSettingsAdmin(c: Context) {
 				error: "forbidden",
 				message: "Use OAuth or a web session to change workspace settings.",
 			},
-			403
+			403,
 		);
 	}
 
@@ -1321,7 +1324,7 @@ async function requireOrganizationSettingsAdmin(c: Context) {
 				error: "forbidden",
 				message: "Workspace settings changes require mcp:admin scope.",
 			},
-			403
+			403,
 		);
 	}
 
@@ -1364,12 +1367,14 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		(p) =>
 			typeScoped(p) &&
 			(p.principalKind === null ||
-				(p.principalKind === "agent" && p.principalId === null))
+				(p.principalKind === "agent" && p.principalId === null)),
 	);
 	// Agent rows: this agent only.
 	const agent = all.filter(
 		(p) =>
-			p.principalKind === "agent" && p.principalId === agentId && typeScoped(p)
+			p.principalKind === "agent" &&
+			p.principalId === agentId &&
+			typeScoped(p),
 	);
 	// Types the org can create/update entities for: its own PLUS any public-catalog
 	// org's (visibility='public') — the same local-or-public resolution entity
@@ -1465,7 +1470,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	} catch {
 		return c.json(
 			{ error: "invalid_request", message: "Request body must be JSON." },
-			400
+			400,
 		);
 	}
 	// Valid JSON `null` / an array / a primitive parses without throwing but isn't a
@@ -1473,11 +1478,8 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	// object so we return the intended 400.
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
 		return c.json(
-			{
-				error: "invalid_request",
-				message: "Request body must be a JSON object.",
-			},
-			400
+			{ error: "invalid_request", message: "Request body must be a JSON object." },
+			400,
 		);
 	}
 
@@ -1494,7 +1496,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				message:
 					"resource_class must be entity, agent_config, or connector_action.",
 			},
-			400
+			400,
 		);
 	}
 
@@ -1516,7 +1518,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	if (!rawEffects) {
 		return c.json(
 			{ error: "invalid_request", message: "effects must be a JSON object." },
-			400
+			400,
 		);
 	}
 	const effects: Partial<Record<WriteAction, EntityMutationMode>> = {};
@@ -1530,7 +1532,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 					error: "invalid_request",
 					message: `Illegal effect for ${resourceClass}: '${action}' = '${String(effect)}'.`,
 				},
-				400
+				400,
 			);
 		}
 		effects[action as WriteAction] = effect;
@@ -1548,7 +1550,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `entity_type_slug is only valid for resource_class 'entity', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (
@@ -1561,7 +1563,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: "entity_type_slug must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const entityTypeSlug =
@@ -1583,19 +1585,20 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `operation_key is only valid for resource_class 'connector_action', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (
 		opKeyPresent &&
-		(typeof body.operation_key !== "string" || body.operation_key.trim() === "")
+		(typeof body.operation_key !== "string" ||
+			body.operation_key.trim() === "")
 	) {
 		return c.json(
 			{
 				error: "invalid_request",
 				message: "operation_key must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const operationKey =
@@ -1618,8 +1621,8 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 		});
 		const knownQualified = new Set(
 			known.operations.map((op) =>
-				qualifiedOperationKey(op.connector_key, op.operation_key)
-			)
+				qualifiedOperationKey(op.connector_key, op.operation_key),
+			),
 		);
 		if (!knownQualified.has(operationKey)) {
 			return c.json(
@@ -1627,7 +1630,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 					error: "invalid_request",
 					message: `Unknown connector operation '${operationKey}' for this workspace.`,
 				},
-				400
+				400,
 			);
 		}
 	}
@@ -1641,7 +1644,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `target_agent_id is only valid for resource_class 'agent_config', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (
@@ -1654,7 +1657,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: "target_agent_id must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const targetAgentId =
@@ -1675,7 +1678,7 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 					error: "invalid_request",
 					message: `Unknown target agent '${targetAgentId}' for this workspace.`,
 				},
-				400
+				400,
 			);
 		}
 	}
@@ -1690,11 +1693,8 @@ app.put("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
   `;
 	if (!agentExists[0]) {
 		return c.json(
-			{
-				error: "not_found",
-				message: `Agent '${agentId}' not found in this workspace.`,
-			},
-			404
+			{ error: "not_found", message: `Agent '${agentId}' not found in this workspace.` },
+			404,
 		);
 	}
 
@@ -1734,7 +1734,7 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	if (!resourceClass) {
 		return c.json(
 			{ error: "invalid_request", message: "resource_class is required." },
-			400
+			400,
 		);
 	}
 	// entity_type_slug picks WHICH row to delete (null = the blanket all-types row).
@@ -1747,7 +1747,7 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `entity_type_slug is only valid for resource_class 'entity', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (slugRaw !== undefined && slugRaw.trim() === "") {
@@ -1756,7 +1756,7 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: "entity_type_slug must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const entityTypeSlug =
@@ -1775,7 +1775,7 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `operation_key is only valid for resource_class 'connector_action', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (opKeyRaw !== undefined && opKeyRaw.trim() === "") {
@@ -1784,13 +1784,11 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: "operation_key must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const operationKey =
-		resourceClass === "connector_action"
-			? (opKeyRaw?.trim() ?? null) || null
-			: null;
+		resourceClass === "connector_action" ? (opKeyRaw?.trim() ?? null) || null : null;
 	const targetRaw = c.req.query("target_agent_id");
 	if (
 		targetRaw !== undefined &&
@@ -1802,7 +1800,7 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `target_agent_id is only valid for resource_class 'agent_config', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (targetRaw !== undefined && targetRaw.trim() === "") {
@@ -1811,13 +1809,11 @@ app.delete("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: "target_agent_id must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const targetAgentId =
-		resourceClass === "agent_config"
-			? (targetRaw?.trim() ?? null) || null
-			: null;
+		resourceClass === "agent_config" ? (targetRaw?.trim() ?? null) || null : null;
 	const deleted = await deleteEntityApprovalPolicy({
 		organizationId,
 		resourceClass,
@@ -1855,7 +1851,7 @@ app.get("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 		(p) =>
 			typeScoped(p) &&
 			(p.principalKind === null ||
-				(p.principalKind === "agent" && p.principalId === null))
+				(p.principalKind === "agent" && p.principalId === null)),
 	);
 	const typeRows = await getDb()<{
 		slug: string;
@@ -1939,16 +1935,13 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 	} catch {
 		return c.json(
 			{ error: "invalid_request", message: "Request body must be JSON." },
-			400
+			400,
 		);
 	}
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
 		return c.json(
-			{
-				error: "invalid_request",
-				message: "Request body must be a JSON object.",
-			},
-			400
+			{ error: "invalid_request", message: "Request body must be a JSON object." },
+			400,
 		);
 	}
 
@@ -1965,7 +1958,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				message:
 					"resource_class must be entity, agent_config, or connector_action.",
 			},
-			400
+			400,
 		);
 	}
 
@@ -1978,7 +1971,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 	if (!rawEffects) {
 		return c.json(
 			{ error: "invalid_request", message: "effects must be a JSON object." },
-			400
+			400,
 		);
 	}
 	const effects: Partial<Record<WriteAction, EntityMutationMode>> = {};
@@ -1992,7 +1985,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 					error: "invalid_request",
 					message: `Illegal effect for ${resourceClass}: '${action}' = '${String(effect)}'.`,
 				},
-				400
+				400,
 			);
 		}
 		effects[action as WriteAction] = effect;
@@ -2006,7 +1999,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `entity_type_slug is only valid for resource_class 'entity', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (
@@ -2019,7 +2012,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: "entity_type_slug must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const entityTypeSlug =
@@ -2037,19 +2030,20 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `operation_key is only valid for resource_class 'connector_action', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (
 		opKeyPresent &&
-		(typeof body.operation_key !== "string" || body.operation_key.trim() === "")
+		(typeof body.operation_key !== "string" ||
+			body.operation_key.trim() === "")
 	) {
 		return c.json(
 			{
 				error: "invalid_request",
 				message: "operation_key must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const operationKey =
@@ -2068,8 +2062,8 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 		});
 		const knownQualified = new Set(
 			known.operations.map((op) =>
-				qualifiedOperationKey(op.connector_key, op.operation_key)
-			)
+				qualifiedOperationKey(op.connector_key, op.operation_key),
+			),
 		);
 		if (!knownQualified.has(operationKey)) {
 			return c.json(
@@ -2077,7 +2071,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 					error: "invalid_request",
 					message: `Unknown connector operation '${operationKey}' for this workspace.`,
 				},
-				400
+				400,
 			);
 		}
 	}
@@ -2090,7 +2084,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `target_agent_id is only valid for resource_class 'agent_config', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (
@@ -2103,7 +2097,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: "target_agent_id must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const targetAgentId =
@@ -2124,7 +2118,7 @@ app.put("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 					error: "invalid_request",
 					message: `Unknown target agent '${targetAgentId}' for this workspace.`,
 				},
-				400
+				400,
 			);
 		}
 	}
@@ -2162,7 +2156,7 @@ app.delete("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 	if (!resourceClass) {
 		return c.json(
 			{ error: "invalid_request", message: "resource_class is required." },
-			400
+			400,
 		);
 	}
 	const slugRaw = c.req.query("entity_type_slug");
@@ -2172,7 +2166,7 @@ app.delete("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `entity_type_slug is only valid for resource_class 'entity', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (slugRaw !== undefined && slugRaw.trim() === "") {
@@ -2181,7 +2175,7 @@ app.delete("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: "entity_type_slug must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const entityTypeSlug =
@@ -2197,7 +2191,7 @@ app.delete("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `operation_key is only valid for resource_class 'connector_action', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (opKeyRaw !== undefined && opKeyRaw.trim() === "") {
@@ -2206,13 +2200,11 @@ app.delete("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: "operation_key must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const operationKey =
-		resourceClass === "connector_action"
-			? (opKeyRaw?.trim() ?? null) || null
-			: null;
+		resourceClass === "connector_action" ? (opKeyRaw?.trim() ?? null) || null : null;
 	const targetRaw = c.req.query("target_agent_id");
 	if (
 		targetRaw !== undefined &&
@@ -2224,7 +2216,7 @@ app.delete("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: `target_agent_id is only valid for resource_class 'agent_config', not '${resourceClass}'.`,
 			},
-			400
+			400,
 		);
 	}
 	if (targetRaw !== undefined && targetRaw.trim() === "") {
@@ -2233,13 +2225,11 @@ app.delete("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: "target_agent_id must be a non-empty string or omitted.",
 			},
-			400
+			400,
 		);
 	}
 	const targetAgentId =
-		resourceClass === "agent_config"
-			? (targetRaw?.trim() ?? null) || null
-			: null;
+		resourceClass === "agent_config" ? (targetRaw?.trim() ?? null) || null : null;
 
 	// Unscoped entity floor delete is blocked inside deleteEntityApprovalPolicy
 	// (returns false). Blanket agent_config / connector_action floor rows may clear.
@@ -2272,7 +2262,7 @@ app.patch("/api/:orgSlug/organization/visibility", mcpAuth, async (c) => {
 				error: "forbidden",
 				message: "Workspace visibility requires owner or admin access.",
 			},
-			403
+			403,
 		);
 	}
 
@@ -2283,7 +2273,7 @@ app.patch("/api/:orgSlug/organization/visibility", mcpAuth, async (c) => {
 				error: "forbidden",
 				message: "Use OAuth or a web session to change workspace visibility.",
 			},
-			403
+			403,
 		);
 	}
 
@@ -2294,7 +2284,7 @@ app.patch("/api/:orgSlug/organization/visibility", mcpAuth, async (c) => {
 				error: "forbidden",
 				message: "Workspace visibility changes require mcp:admin scope.",
 			},
-			403
+			403,
 		);
 	}
 
@@ -2304,7 +2294,7 @@ app.patch("/api/:orgSlug/organization/visibility", mcpAuth, async (c) => {
 	} catch {
 		return c.json(
 			{ error: "invalid_request", message: "Request body must be JSON." },
-			400
+			400,
 		);
 	}
 
@@ -2315,7 +2305,7 @@ app.patch("/api/:orgSlug/organization/visibility", mcpAuth, async (c) => {
 				error: "invalid_request",
 				message: 'Visibility must be "public" or "private".',
 			},
-			400
+			400,
 		);
 	}
 
@@ -2387,7 +2377,7 @@ app.post("/api/:orgSlug/join", async (c) => {
 	const clientIP = getClientIP(c.req.raw, c.var.peerRemoteAddress);
 	const rateLimit = rateLimiter.checkLimit(
 		`rate:join-public-org:${clientIP}`,
-		RateLimitPresets.JOIN_PUBLIC_ORG_PER_IP_HOUR
+		RateLimitPresets.JOIN_PUBLIC_ORG_PER_IP_HOUR,
 	);
 	if (!rateLimit.allowed) {
 		return c.json({ error: rateLimit.errorMessage }, 429);
@@ -2402,7 +2392,7 @@ app.post("/api/:orgSlug/join", async (c) => {
 				error: "unauthorized",
 				error_description: "Sign in to join a workspace.",
 			},
-			401
+			401,
 		);
 	}
 
@@ -2413,7 +2403,7 @@ app.post("/api/:orgSlug/join", async (c) => {
 	if (result.status === "not_found") {
 		return c.json(
 			{ error: "not_found", error_description: "Workspace not found." },
-			404
+			404,
 		);
 	}
 	if (result.status === "not_public") {
@@ -2423,7 +2413,7 @@ app.post("/api/:orgSlug/join", async (c) => {
 				error_description:
 					"This workspace is private. Ask an owner for an invitation.",
 			},
-			403
+			403,
 		);
 	}
 
@@ -2448,7 +2438,7 @@ app.post("/api/:orgSlug/join", async (c) => {
 // (same pattern as /api/:orgSlug/join). Cookie or Better-Auth bearer.
 async function resolveClaimSessionUser(
 	env: Env,
-	req: Request
+	req: Request,
 ): Promise<string | null> {
 	try {
 		const auth = await createAuth(env);
@@ -2512,13 +2502,13 @@ function buildSlackClaimProvider(): ClaimProvider {
 			team,
 			enterpriseId,
 			isEnterpriseInstall,
-			targetOrganizationId
+			targetOrganizationId,
 		) => {
 			const foreign = await resolveSlackActiveBindingElsewhere(
 				team,
 				enterpriseId,
 				isEnterpriseInstall,
-				targetOrganizationId
+				targetOrganizationId,
 			);
 			return foreign
 				? {
@@ -2538,7 +2528,7 @@ function buildSlackClaimProvider(): ClaimProvider {
 				core.getSecretStore(),
 				pending,
 				organizationId,
-				confirmMove
+				confirmMove,
 			);
 			// Post-claim, best-effort: auto-link the org's Builder agent to the
 			// installer's DM and fire the welcome DM. Never throws — a failure here
@@ -2592,13 +2582,13 @@ app.get("/api/connector/:connector/connection/claim-context", async (c) => {
 	if (ctx.status === "signin_required") {
 		return c.json(
 			{ error: ctx.status, signinProvider: ctx.signinProvider },
-			claimHttpStatus(ctx.status)
+			claimHttpStatus(ctx.status),
 		);
 	}
 	if (ctx.status === "not_authorized") {
 		return c.json(
 			{ error: ctx.status, code: ctx.code },
-			claimHttpStatus(ctx.status)
+			claimHttpStatus(ctx.status),
 		);
 	}
 	return c.json({ error: ctx.status }, claimHttpStatus(ctx.status));
@@ -2668,26 +2658,26 @@ app.post("/api/connector/:connector/connection/claim", async (c) => {
 				existing: result.existing,
 				provider: provider.provider,
 			},
-			claimHttpStatus(result.status)
+			claimHttpStatus(result.status),
 		);
 	}
 	if (result.status === "claim_failed") {
 		logger.error(
 			{ connector: provider.provider, ref, err: result.message },
-			"Connection claim failed"
+			"Connection claim failed",
 		);
 		return c.json({ error: "claim_failed", message: result.message }, 500);
 	}
 	if (result.status === "signin_required") {
 		return c.json(
 			{ error: result.status, signinProvider: result.signinProvider },
-			claimHttpStatus(result.status)
+			claimHttpStatus(result.status),
 		);
 	}
 	if (result.status === "not_authorized") {
 		return c.json(
 			{ error: result.status, code: result.code },
-			claimHttpStatus(result.status)
+			claimHttpStatus(result.status),
 		);
 	}
 	return c.json({ error: result.status }, claimHttpStatus(result.status));
@@ -2808,7 +2798,7 @@ app.get("*", async (c) => {
 	const hasSessionCookie = hasBetterAuthSessionCookie(c.req.header("cookie"));
 	const hasFileExtension =
 		/\.(?:js|css|html|json|map|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|eot|txt|xml)$/i.test(
-			requestPath
+			requestPath,
 		);
 	const isSpaRoute = !hasFileExtension && !isExcludedSpaPath(requestPath);
 	// Generic signed-in requests still need the SPA shell; otherwise they would fall through to the
@@ -2824,7 +2814,7 @@ app.get("*", async (c) => {
 			requestPath,
 			c.env,
 			c.req.url,
-			c.get("subdomainOrg")
+			c.get("subdomainOrg"),
 		);
 		if (publicPageModel) {
 			const template = await loadAnySpaHtmlTemplate();
@@ -2845,7 +2835,7 @@ app.get("*", async (c) => {
 		if (shouldServeSpaFallback) {
 			const raw = await fs.readFile(
 				path.resolve(viteDev.config.root, "index.html"),
-				"utf-8"
+				"utf-8",
 			);
 			const html = await viteDev.transformIndexHtml(c.req.path, raw);
 			return c.html(html);

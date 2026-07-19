@@ -620,6 +620,14 @@ export async function createBehaviorEventRun(
 
     const policy = params.trigger.active_run ?? 'queue';
     const triggerKey = behaviorEventTriggerKey(params.trigger);
+    const occurredAt = params.signal.occurred_at
+      ? new Date(params.signal.occurred_at)
+      : new Date();
+    const safeOccurredAt = Number.isNaN(occurredAt.getTime())
+      ? new Date()
+      : occurredAt;
+    const signalWindowStart = safeOccurredAt.toISOString();
+    const signalWindowEnd = new Date(safeOccurredAt.getTime() + 1).toISOString();
     if (policy === 'coalesce') {
       const pending = await tx`
         SELECT id, status, approved_input
@@ -639,8 +647,18 @@ export async function createBehaviorEventRun(
           (input.trigger_signal ? [input.trigger_signal] : []);
         const deliveryIds = input.delivery_ids ??
           signals.map((signal) => signal.delivery_id);
+        const currentWindowStart = Date.parse(input.window_start);
+        const currentWindowEnd = Date.parse(input.window_end);
         const nextInput: WatcherRunPayload = {
           ...input,
+          window_start: Number.isFinite(currentWindowStart) &&
+              currentWindowStart <= safeOccurredAt.getTime()
+            ? input.window_start
+            : signalWindowStart,
+          window_end: Number.isFinite(currentWindowEnd) &&
+              currentWindowEnd >= safeOccurredAt.getTime() + 1
+            ? input.window_end
+            : signalWindowEnd,
           trigger_signals: [...signals, params.signal],
           delivery_ids: [...deliveryIds, params.signal.delivery_id],
         };
@@ -668,17 +686,11 @@ export async function createBehaviorEventRun(
     const versionId = versionRows[0]?.current_version_id == null
       ? null
       : Number(versionRows[0]?.current_version_id);
-    const occurredAt = params.signal.occurred_at
-      ? new Date(params.signal.occurred_at)
-      : new Date();
-    const safeOccurredAt = Number.isNaN(occurredAt.getTime())
-      ? new Date()
-      : occurredAt;
     const payload: WatcherRunPayload = {
       watcher_id: params.watcherId,
       agent_id: params.agentId,
-      window_start: safeOccurredAt.toISOString(),
-      window_end: new Date(safeOccurredAt.getTime() + 1).toISOString(),
+      window_start: signalWindowStart,
+      window_end: signalWindowEnd,
       dispatch_source: 'event',
       version_id: versionId,
       device_worker_id: params.deviceWorkerId ?? null,

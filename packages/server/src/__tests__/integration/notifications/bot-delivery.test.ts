@@ -96,6 +96,36 @@ describe("resolveBotDeliveryTargets", () => {
     ]);
   });
 
+	it("returns one target when multiple Behaviors share a physical channel", async () => {
+		const org = await createTestOrganization();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			agentId: "crm",
+		});
+		await seedSlackConnection({
+			organizationId: org.id,
+			agentId: agent.agentId,
+			connectionId: "conn-shared",
+		});
+		for (let i = 0; i < 2; i++) {
+			await seedBinding({
+				organizationId: org.id,
+				agentId: agent.agentId,
+				connectionId: "conn-shared",
+				channelId: "slack:C-SHARED",
+			});
+		}
+
+		expect(await resolveBotDeliveryTargets(org.id)).toEqual([
+			{
+				connectionId: "conn-shared",
+				platform: "slack",
+				channelKey: "slack:C-SHARED",
+				teamId: "T_TEST",
+			},
+		]);
+	});
+
 	it("returns nothing for a connection with no binding", async () => {
     const org = await createTestOrganization();
 		const agent = await createTestAgent({
@@ -226,6 +256,30 @@ describe("resolveBotDeliveryTargets", () => {
 			},
     ]);
   });
+
+	it("cross-org: does not expose a tenant binding to the preview connection owner", async () => {
+		const hostOrg = await createTestOrganization();
+		const tenantOrg = await createTestOrganization();
+		await createTestAgent({ organizationId: hostOrg.id, agentId: "concierge" });
+		await createTestAgent({
+			organizationId: tenantOrg.id,
+			agentId: "food-ordering",
+		});
+		await seedSlackConnection({
+			organizationId: hostOrg.id,
+			agentId: "concierge",
+			connectionId: "preview-conn",
+			settings: { previewMode: true },
+		});
+		await seedBinding({
+			organizationId: tenantOrg.id,
+			agentId: "food-ordering",
+			connectionId: "preview-conn",
+			channelId: "slack:C-TENANT",
+		});
+
+		expect(await resolveBotDeliveryTargets(hostOrg.id)).toEqual([]);
+	});
 
 	it("cross-org guardrail: a NORMAL (non-preview) connection in another org is never used", async () => {
     const otherOrg = await createTestOrganization();

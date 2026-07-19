@@ -161,6 +161,7 @@ describe("Behavior connector-event activation", () => {
 			connector_key: "github",
 			connection_id: connection.id,
 			event_type: "pull_request.updated",
+			occurred_at: "2026-07-18T23:30:00.000Z",
 			label: "PR changed",
 			input_text: "A pull request changed",
 		};
@@ -170,7 +171,11 @@ describe("Behavior connector-event activation", () => {
 		});
 		const coalesced = await activateBehaviorSignal({
 			organizationId: org.id,
-			signal: { ...baseSignal, delivery_id: "event:102" },
+			signal: {
+				...baseSignal,
+				delivery_id: "event:102",
+				occurred_at: "2026-07-20T01:15:00.000Z",
+			},
 		});
 
 		expect(coalesced).toMatchObject([
@@ -184,6 +189,8 @@ describe("Behavior connector-event activation", () => {
 		expect(runs[0]?.approved_input).toMatchObject({
 			delivery_ids: ["event:101", "event:102"],
 			trigger_execution: "window",
+			window_start: "2026-07-18T23:30:00.000Z",
+			window_end: "2026-07-20T01:15:00.001Z",
 		});
 	});
 

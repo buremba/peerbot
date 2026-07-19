@@ -68,6 +68,33 @@ describe("Behavior channel-subscription migration", () => {
 			created_by: user.id,
 			slug: "slackinst-deleted-migration",
 		});
+		const silent = await manageBehaviors(
+			{
+				action: "create",
+				slug: "preexisting-silent-message-behavior",
+				name: "Preexisting silent message Behavior",
+				prompt: "Record messages without replying.",
+				agent_id: agent.agentId,
+				triggers: [
+					{
+						kind: "event",
+						connector_key: "slack",
+						connection_id: connection.id,
+						event_types: ["message.created"],
+						match: { channel_id: "C-MIGRATION" },
+						execution: "turn",
+						active_run: "queue",
+						output: "silent",
+						skip_if_unchanged: true,
+					},
+				],
+			},
+			{} as Env,
+			ctx,
+		);
+		if (silent.action !== "create" || !("watcher_id" in silent)) {
+			throw new Error("Silent Behavior creation did not complete");
+		}
 		const scheduled = await manageBehaviors(
 			{
 				action: "create",
@@ -117,6 +144,12 @@ describe("Behavior channel-subscription migration", () => {
 			await sql.begin(async (tx: typeof sql) => {
 				await tx.unsafe(triggerUp);
 				await tx.unsafe(triggerUp);
+				await tx.unsafe(`
+					DROP TRIGGER IF EXISTS lock_legacy_channel_binding_projection
+						ON agent_channel_bindings;
+					DROP TRIGGER IF EXISTS sync_legacy_channel_binding_behavior
+						ON agent_channel_bindings;
+				`);
 				await tx`
 					INSERT INTO channel_messages (
 						organization_id, connection_id, platform, channel_id,

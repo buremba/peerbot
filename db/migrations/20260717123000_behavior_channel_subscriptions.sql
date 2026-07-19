@@ -113,11 +113,17 @@ WHERE platform LIKE 'slack%'
       WHERE w.status = 'active'
         AND w.organization_id = binding.organization_id
         AND w.agent_id = binding.agent_id
+        AND w.tags @> ARRAY['system:chat-link']::text[]
         AND trigger->>'kind' = 'event'
         AND trigger->>'connector_key' = binding.platform
         AND trigger->>'connection_id' = binding.connection_id::text
-        AND trigger->'event_types' ? 'message.created'
+        AND trigger->'event_types' = '["message.created"]'::jsonb
         AND trigger->'match'->>'channel_id' = native_channel_id
+        AND (trigger->'match'->>'team_id') IS NOT DISTINCT FROM binding.team_id
+        AND trigger->>'execution' = 'turn'
+        AND trigger->>'active_run' = 'steer'
+        AND trigger->>'output' = 'reply_to_source'
+        AND trigger->'skip_if_unchanged' = 'false'::jsonb
     ) THEN
       CONTINUE;
     END IF;

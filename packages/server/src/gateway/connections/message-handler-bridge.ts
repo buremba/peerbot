@@ -592,17 +592,16 @@ export class MessageHandlerBridge {
     const replyBehaviors = behaviorPlan.replyTargets;
     const backgroundBehaviors = behaviorPlan.backgroundTargets;
     const behavior = replyBehaviors[0] ?? backgroundBehaviors[0];
+    // The planner above is the only Behavior routing decision because it
+    // evaluates the complete trigger predicate. A channel-only subscription
+    // lookup here would re-select Behaviors rejected by mention/team filters.
     const fallbackResolved = behavior
       ? null
       : await resolveAgentId({
           platform,
           channelId,
-          teamId,
           agentId: this.connection.agentId,
           organizationId: this.connection.organizationId,
-          connectionId: this.connection.id,
-          behaviorSubscriptionService,
-          crossOrg: isPreview,
         });
     const resolved = behavior
       ? {
@@ -708,7 +707,7 @@ export class MessageHandlerBridge {
     // to it on the first message. Guarded to fill only an unknown team; best-
     // effort — a heal failure must never block routing.
     if (
-      (resolved.source === "subscription" || resolved.source === "behavior") &&
+      resolved.source === "behavior" &&
       behaviorSubscriptionService &&
       platform === "slack" &&
       /^T[A-Z0-9]+$/i.test(teamId ?? "") &&

@@ -357,12 +357,14 @@ FOR EACH ROW
 WHEN (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL)
 EXECUTE FUNCTION archive_chat_behaviors_for_deleted_connection();
 
--- Clean cut: drop the legacy table (cascades any leftover dual-write triggers)
--- and any orphaned bridge functions from intermediate PR revisions.
--- squawk-ignore ban-drop-table -- intentional one-shot clean-cut after backfill; no dual-write bridge retained
-DROP TABLE IF EXISTS agent_channel_bindings CASCADE;
-DROP FUNCTION IF EXISTS sync_legacy_channel_binding_behavior();
-DROP FUNCTION IF EXISTS lock_legacy_channel_binding_projection();
+-- Drop dual-write bridge functions from intermediate PR revisions. Do NOT
+-- DROP agent_channel_bindings here: the chart runs migrations as a pre-upgrade
+-- hook while the previous pod is still serving, and that revision still reads
+-- the bindings table. Behavior-only code in this release stops using the table;
+-- a follow-up migration (after Behavior-only is the only running revision) drops
+-- the empty legacy table. No dual-write bridge is retained.
+DROP FUNCTION IF EXISTS sync_legacy_channel_binding_behavior() CASCADE;
+DROP FUNCTION IF EXISTS lock_legacy_channel_binding_projection() CASCADE;
 
 -- migrate:down
 

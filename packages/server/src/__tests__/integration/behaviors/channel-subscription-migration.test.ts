@@ -282,7 +282,9 @@ describe("Behavior channel-subscription migration", () => {
 		expect(captured).toEqual({
 			behaviorCount: 1,
 			deletedConnectionBehaviorCount: 0,
-			legacyTable: null,
+			// Table retained through this release so pre-upgrade migration does not
+			// break still-serving pods; Behavior-only code stops using it.
+			legacyTable: "agent_channel_bindings",
 			messageView: "behavior_message_subscriptions",
 			triggers: [
 				{
@@ -406,9 +408,10 @@ describe("Behavior channel-subscription migration", () => {
 		}
 
 		// NULL-connection binding skipped; only the concrete-connection row backfills.
+		// Legacy table stays until a follow-up drop migration (pre-upgrade safety).
 		expect(captured).toEqual({
 			behaviorCount: 1,
-			legacyTable: null,
+			legacyTable: "agent_channel_bindings",
 			messageView: "behavior_message_subscriptions",
 		});
 	});

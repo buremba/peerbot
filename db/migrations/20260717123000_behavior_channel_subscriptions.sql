@@ -500,3 +500,14 @@ WHEN (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL)
 EXECUTE FUNCTION archive_chat_behaviors_for_deleted_connection();
 
 -- migrate:down
+
+DROP TRIGGER IF EXISTS sync_legacy_channel_binding_behavior
+  ON agent_channel_bindings;
+DROP TRIGGER IF EXISTS lock_legacy_channel_binding_projection
+  ON agent_channel_bindings;
+DROP TRIGGER IF EXISTS archive_chat_behaviors_for_deleted_connection
+  ON connections;
+
+DROP FUNCTION IF EXISTS sync_legacy_channel_binding_behavior();
+DROP FUNCTION IF EXISTS lock_legacy_channel_binding_projection();
+DROP FUNCTION IF EXISTS archive_chat_behaviors_for_deleted_connection();

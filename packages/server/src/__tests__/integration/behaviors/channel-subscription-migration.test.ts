@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "../../../db/client";
@@ -28,6 +28,14 @@ function resolveMigrationsDir(): string {
 		dir = parent;
 	}
 	throw new Error("Could not locate db/migrations from the test directory");
+}
+
+function loadMigrationDownSection(migrationsDir: string, file: string): string {
+	const [, down] = readFileSync(join(migrationsDir, file), "utf-8").split(
+		/^-- migrate:down.*$/m,
+	);
+	if (!down?.trim()) throw new Error(`${file} has no down migration`);
+	return down.trim();
 }
 
 class Rollback extends Error {}
@@ -247,5 +255,85 @@ describe("Behavior channel-subscription migration", () => {
 				},
 			],
 		});
+	});
+
+	it("removes the rollout bridge before the trigger column is rolled back", async () => {
+		const { org, user } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+			agentId: "rollback-agent",
+		});
+		const connection = await createTestConnection({
+			organization_id: org.id,
+			connector_key: "slack",
+			created_by: user.id,
+			slug: "slackinst-rollback",
+		});
+		const migrationsDir = resolveMigrationsDir();
+		const triggerUp = loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION);
+		const triggerDown = loadMigrationDownSection(
+			migrationsDir,
+			TRIGGER_MIGRATION,
+		);
+		const subscriptionUp = loadMigrationUpSection(
+			migrationsDir,
+			SUBSCRIPTION_MIGRATION,
+		);
+		const subscriptionDown = loadMigrationDownSection(
+			migrationsDir,
+			SUBSCRIPTION_MIGRATION,
+		);
+		const sql = getDb();
+		let remainingArtifacts: number | undefined;
+
+		try {
+			await sql.begin(async (tx: typeof sql) => {
+				await tx.unsafe(triggerUp);
+				await tx.unsafe(subscriptionUp);
+				await tx.unsafe(subscriptionDown);
+				const [artifacts] = await tx<{ count: number }>`
+					SELECT (
+						SELECT COUNT(*)::int
+						FROM pg_trigger
+						WHERE NOT tgisinternal
+						  AND tgname IN (
+							'lock_legacy_channel_binding_projection',
+							'sync_legacy_channel_binding_behavior',
+							'archive_chat_behaviors_for_deleted_connection'
+						  )
+					) + (
+						SELECT COUNT(*)::int
+						FROM pg_proc
+						WHERE proname IN (
+							'lock_legacy_channel_binding_projection',
+							'sync_legacy_channel_binding_behavior',
+							'archive_chat_behaviors_for_deleted_connection'
+						  )
+					) AS count
+				`;
+				remainingArtifacts = artifacts.count;
+
+				await tx.unsafe(triggerDown);
+				await tx`
+					INSERT INTO agent_channel_bindings (
+						organization_id, agent_id, platform, channel_id,
+						team_id, connection_id
+					) VALUES (
+						${org.id}, ${agent.agentId}, 'slack', 'slack:C-ROLLBACK',
+						'T-ROLLBACK', ${connection.id}
+					)
+				`;
+				await tx`
+					UPDATE connections SET deleted_at = NOW()
+					WHERE id = ${connection.id}
+				`;
+				throw new Rollback();
+			});
+		} catch (error) {
+			if (!(error instanceof Rollback)) throw error;
+		}
+
+		expect(remainingArtifacts).toBe(0);
 	});
 });

@@ -594,7 +594,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       // Default to the template agent; tests for an OAuth-installed workspace
       // connection (no owning agent) pass `agentId: undefined` explicitly.
       agentId: "agentId" in opts ? opts.agentId : TEMPLATE_AGENT_ID,
-      // The hosted preview connection lives in its OWN org; bound agents may
+      // The hosted preview connection lives in its OWN org; linked Behaviors may
       // live in OTHER orgs (see the cross-org test below).
       organizationId: "org-connection",
       config: { platform: "slack" } as any,
@@ -701,7 +701,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     expect(enqueueMessage).not.toHaveBeenCalled();
   });
 
-  test("linked chat → routes to the bound agent, no notice", async () => {
+  test("linked chat → routes to the Behavior's agent, no notice", async () => {
     const { bridge, enqueueMessage } = makePreviewHarness({
       linkedBehavior: { agentId: "linked-agent" },
     });
@@ -881,7 +881,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
 
   test("OAuth workspace connection (no agent, not preview): unlinked → link notice, no agent run", async () => {
     // A tenant's OAuth-installed bot has no owning agent and metadata.teamId.
-    // An unbound non-command message must get a one-line "link your agent"
+    // An unlinked non-command message must get a one-line "link your agent"
     // notice instead of being silently dropped (the install dead-end we reverted
     // for), and must NOT enqueue a worker turn against a non-existent agent.
     const { bridge, enqueueMessage } = makePreviewHarness({
@@ -1105,10 +1105,10 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     );
   });
 
-  test("cross-org: routes the worker turn under the BOUND agent's org, not the connection's", async () => {
+  test("cross-org: routes the worker turn under the Behavior's org, not the connection's", async () => {
     // Regression for the hosted-preview cross-org bug: a `/lobu link <code>`
-    // binds an agent that lives in a DIFFERENT org than the preview connection.
-    // The worker turn MUST run under the binding's org, or the agent's workspace
+    // creates a Behavior for an agent in a DIFFERENT org than the preview connection.
+    // The worker turn MUST run under the Behavior's org, or the agent's workspace
     // (knowledge, secrets, providers) resolves under the wrong tenant.
     const { bridge, enqueueMessage } = makePreviewHarness({
       linkedBehavior: {
@@ -1125,7 +1125,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     expect(payload.agentId ?? payload.platformMetadata?.agentId).toBe(
 			"food-ordering",
     );
-    // The binding's org wins over the connection's org ("org-connection").
+    // The Behavior's org wins over the connection's org ("org-connection").
     expect(payload.organizationId).toBe("org-bound");
   });
 

@@ -548,9 +548,9 @@ export class MessageHandlerBridge {
       (message.raw as Record<string, unknown> | undefined)?.team;
     const teamId = typeof rawTeamId === "string" ? rawTeamId : undefined;
 
-    // Preview connections fan out to agents in OTHER orgs (a `/lobu link <code>`
-    // binds under the claim's org, not this connection's), so resolve the
-    // binding org-agnostically and route by the binding's own org.
+    // Preview connections fan out to Behaviors in OTHER orgs (a
+    // `/lobu link <code>` creates one under the claim's org, not this
+    // connection's), so plan org-agnostically and route by the Behavior's org.
     const isPreview = this.connection.settings?.previewMode === true;
     const normalizedChannelId = stripPlatformPrefix(platform, channelId);
     const behaviorSignal = {
@@ -615,8 +615,8 @@ export class MessageHandlerBridge {
       : fallbackResolved;
     if (!resolved) {
       // A tenant's OAuth-installed Slack workspace bot has no owning agent —
-      // routing is via `/lobu link` bindings. Before the tenant links a
-      // channel, a non-command message resolves to nothing. Reply with a
+      // routing is via tagged Behaviors created by `/lobu link`. Before the
+      // tenant links a channel, a non-command message resolves to nothing. Reply with a
       // one-line "link your agent" notice instead of silently dropping so the
       // install never dead-ends. (Slash commands like `/lobu link` take the
       // `onSlashCommand` path and never reach here.)
@@ -665,8 +665,8 @@ export class MessageHandlerBridge {
           platform,
           this.connection.organizationId,
           // Fall back to the connection's stored team when the raw message omits
-          // team_id, so the deep-link stays team-scoped (the binding is keyed on
-          // team). The connection always carries it — it's the gate above.
+          // team_id, so the deep-link stays team-scoped. The connection always
+          // carries it — it's the gate above.
           {
             channelId,
             teamId: linkTeamId,
@@ -724,7 +724,7 @@ export class MessageHandlerBridge {
         } catch (err) {
           logger.debug(
             { channelId, teamId, organizationId, error: String(err) },
-            "binding team self-heal failed (non-fatal)"
+            "Behavior team self-heal failed (non-fatal)"
           );
         }
       }
@@ -1129,8 +1129,8 @@ export class MessageHandlerBridge {
    */
   private async enqueueUserTurn(args: {
     agentId: string;
-    /** Org the turn runs under. For preview connections this is the bound
-     * agent's org (cross-org), not necessarily the connection's org. */
+    /** Org the turn runs under. For preview connections this is the linked
+     * Behavior's org (cross-org), not necessarily the connection's org. */
     organizationId: string | undefined;
     userId: string;
     channelId: string;
@@ -1148,8 +1148,8 @@ export class MessageHandlerBridge {
     /** The `teamId` field passed to `buildMessagePayload` (routing key). */
     payloadTeamId: string;
     /**
-     * Per-binding (Listen behavior) model override — a `provider/model` ref or
-     * "auto". When set it wins the layered fallback at enqueue; undefined =
+     * Per-Behavior model override — a `provider/model` ref. When set it wins
+     * the layered fallback at enqueue; undefined =
      * fall back to the agent, then org, default.
      */
     model?: string;
@@ -1232,8 +1232,8 @@ export class MessageHandlerBridge {
     });
 
     try {
-      // A per-binding (Listen behavior) model override arrives on the resolved
-      // channel Behavior and wins the layered fallback; otherwise the agent/org
+      // A per-Behavior model override arrives on the resolved channel Behavior
+      // and wins the layered fallback; otherwise the agent/org
       // default resolves inside resolveAgentOptions. organizationId lets the org
       // default tail fire on this path.
       const agentOptions = await resolveAgentOptions(

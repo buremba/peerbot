@@ -36,9 +36,12 @@ BEGIN
 END
 $migration$;
 
+-- Partial predicate is status-only. `triggers <> '[]'` is unprovable from the
+-- activation `@>` lookup, so the planner would never use this index with that
+-- extra clause. Empty trigger arrays still fail `@>` and are harmless.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_watchers_triggers_gin
   ON watchers USING gin (triggers jsonb_path_ops)
-  WHERE status = 'active' AND triggers <> '[]'::jsonb;
+  WHERE status = 'active';
 
 -- migrate:down transaction:false
 

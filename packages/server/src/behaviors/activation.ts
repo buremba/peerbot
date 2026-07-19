@@ -72,18 +72,32 @@ export async function findMatchingBehaviorActivations(
   db: DbClient = getDb(),
   options?: { crossOrganization?: boolean },
 ): Promise<MatchingBehaviorActivation[]> {
-  const coarseNeedle = [
-    {
-      kind: "event",
-      connector_key: signal.connector_key,
-      ...(options?.crossOrganization
-        ? { connection_id: signal.connection_id }
-        : {}),
-    },
-  ];
+  // Coarse GIN needle: kind + connector_key. When the signal carries a
+  // connection_id, match that connection's triggers OR connector-wide triggers
+  // (no connection_id on the trigger element). Without the connection arm the
+  // org-scoped query pulled every Behavior for the connector across all
+  // connections; the connection arm alone would drop connector-wide drafts.
+  const baseNeedle = {
+    kind: "event" as const,
+    connector_key: signal.connector_key,
+  };
   const organizationFilter = options?.crossOrganization
     ? db``
     : db`AND w.organization_id = ${organizationId}`;
+  const connectionId = signal.connection_id;
+  const triggerFilter =
+    connectionId != null
+      ? db`(
+          w.triggers @> ${db.json([{ ...baseNeedle, connection_id: connectionId }])}::jsonb
+          OR EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) t
+            WHERE t->>'kind' = 'event'
+              AND t->>'connector_key' = ${signal.connector_key}
+              AND t->>'connection_id' IS NULL
+          )
+        )`
+      : db`w.triggers @> ${db.json([baseNeedle])}::jsonb`;
   const rows = await db`
 		SELECT w.id, w.organization_id, w.agent_id, w.device_worker_id::text AS device_worker_id,
 		       w.agent_kind, w.triggers, w.execution_config->>'model' AS model,
@@ -92,7 +106,7 @@ export async function findMatchingBehaviorActivations(
 		JOIN watcher_versions v ON v.id = w.current_version_id
 		WHERE w.status = 'active'
 		  AND w.agent_id IS NOT NULL
-		  AND w.triggers @> ${db.json(coarseNeedle)}::jsonb
+		  AND ${triggerFilter}
 		  ${organizationFilter}
 		ORDER BY w.id ASC
 	`;

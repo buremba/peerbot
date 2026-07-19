@@ -808,6 +808,69 @@ describe("mapProjectToDesiredState", () => {
     expect(state.agents).toHaveLength(1);
   });
 
+  test("--only agents excludes Behaviors before validating their connections", () => {
+    const crm = defineAgent({ id: "crm" });
+    const behavior = defineBehavior({
+      agent: crm,
+      slug: "review-pr",
+      prompt: "Review it",
+      triggers: [
+        {
+          kind: "event",
+          connector_key: "github",
+          connection: "github-main",
+          event_types: ["pull_request.created"],
+          execution: "turn",
+          active_run: "queue",
+          output: "silent",
+        },
+      ],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [crm], behaviors: [behavior] }),
+      env,
+      "agents"
+    );
+    expect(state.watchers).toEqual([]);
+  });
+
+  test("--only memory validates Behavior handles without reconciling connections", () => {
+    const crm = defineAgent({ id: "crm" });
+    const github = defineConnection({
+      slug: "github-main",
+      connector: "github",
+    });
+    const behavior = defineBehavior({
+      agent: crm,
+      slug: "review-pr",
+      prompt: "Review it",
+      triggers: [
+        {
+          kind: "event",
+          connector_key: "github",
+          connection: github,
+          event_types: ["pull_request.created"],
+          execution: "turn",
+          active_run: "queue",
+          output: "silent",
+        },
+      ],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({
+        agents: [crm],
+        behaviors: [behavior],
+        connections: [github],
+      }),
+      env,
+      "memory"
+    );
+    expect(state.watchers[0]?.triggers?.[0]).toMatchObject({
+      connectionSlug: "github-main",
+    });
+    expect(state.connectors.connections).toEqual([]);
+  });
+
   test("maps network allow/deny domains", () => {
     const agent = defineAgent({
       id: "ofc",

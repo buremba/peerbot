@@ -773,7 +773,8 @@ export function mapProjectToDesiredState(
   const relationshipTypes = (project.relationships ?? []).map(
     mapRelationshipType
   );
-  const watchers = (project.behaviors ?? []).map(mapBehavior);
+  const watchers =
+    only === "agents" ? [] : (project.behaviors ?? []).map(mapBehavior);
   const authProfiles = only
     ? []
     : (project.authProfiles ?? []).map((profile) =>
@@ -811,7 +812,7 @@ export function mapProjectToDesiredState(
     }
     for (const trigger of watcher.triggers ?? []) {
       if (trigger.kind !== "event" || !trigger.connectionSlug) continue;
-      const connection = connections.find(
+      const connection = (project.connections ?? []).find(
         (candidate) => candidate.slug === trigger.connectionSlug
       );
       if (!connection) {
@@ -819,9 +820,10 @@ export function mapProjectToDesiredState(
           `Behavior "${watcher.slug}" references connection "${trigger.connectionSlug}", but it is not declared in lobu.config.ts`
         );
       }
-      if (connection.connector !== trigger.connector_key) {
+      const declaredConnector = connectorKey(connection.connector);
+      if (declaredConnector !== trigger.connector_key) {
         throw new ValidationError(
-          `Behavior "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${trigger.connectionSlug}" uses ${connection.connector}`
+          `Behavior "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${trigger.connectionSlug}" uses ${declaredConnector}`
         );
       }
     }

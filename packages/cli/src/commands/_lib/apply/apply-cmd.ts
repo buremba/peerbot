@@ -370,11 +370,22 @@ async function fetchRemoteSnapshot(
   // empty desired-connectors set would skip the fetch entirely).
   const hasConnectors = hasDesiredConnectors(state);
   const fetchConnectors = !only && (hasConnectors || prune);
+  const fetchBehaviorConnections =
+    only === "memory" &&
+    state.watchers.some((watcher) =>
+      watcher.triggers?.some(
+        (trigger) =>
+          trigger.kind === "event" && trigger.connectionSlug !== undefined
+      )
+    );
   const connectorDefinitions = fetchConnectors
     ? await client.listConnectors(true)
     : [];
   const authProfiles = fetchConnectors ? await client.listAuthProfiles() : [];
-  const connections = fetchConnectors ? await client.listConnections() : [];
+  const connections =
+    fetchConnectors || fetchBehaviorConnections
+      ? await client.listConnections()
+      : [];
   const feedsByConnectionId = new Map<number, RemoteFeed[]>();
   if (!only && hasConnectors) {
     const desiredConnSlugs = new Set(

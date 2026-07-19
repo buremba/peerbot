@@ -662,18 +662,24 @@ export async function createBehaviorEventRun(
           trigger_signals: [...signals, params.signal],
           delivery_ids: [...deliveryIds, params.signal.delivery_id],
         };
-        await tx`
+        const merged = await tx`
           UPDATE runs
           SET approved_input = ${tx.json(nextInput)}
           WHERE id = ${pending[0]?.id}
             AND status = 'pending'
         `;
-        return {
-          runId: Number(pending[0]?.id),
-          status: String(pending[0]?.status),
-          created: false,
-          disposition: 'coalesced',
-        };
+        // A zero rowcount means the run left 'pending' between the snapshot
+        // and the merge (only possible for writers outside our advisory
+        // lock, e.g. old pods during a rolling deploy). Fall through and
+        // queue a fresh run rather than dropping the signal.
+        if (merged.count > 0) {
+          return {
+            runId: Number(pending[0]?.id),
+            status: String(pending[0]?.status),
+            created: false,
+            disposition: 'coalesced',
+          };
+        }
       }
     }
 
@@ -722,7 +728,32 @@ export async function createBehaviorEventRun(
     };
   };
 
-  return db ? execute(sql) : sql.begin(execute);
+  if (db) return execute(sql);
+  try {
+    return await sql.begin(execute);
+  } catch (error) {
+    // Concurrent insert of the same delivery from a writer that did not
+    // serialize on our advisory lock (rolling-deploy old pods). The existing
+    // run is authoritative; report it instead of failing the delivery.
+    if (isUniqueViolation(error, 'runs_idempotency_key_uniq')) {
+      const rows = await sql`
+        SELECT id, status
+        FROM runs
+        WHERE idempotency_key = ${`behavior:${params.watcherId}:${params.signal.delivery_id}`}
+        ORDER BY created_at DESC
+        LIMIT 1
+      `;
+      if (rows.length > 0) {
+        return {
+          runId: Number(rows[0]?.id),
+          status: String(rows[0]?.status),
+          created: false,
+          disposition: 'duplicate',
+        };
+      }
+    }
+    throw error;
+  }
 }
 
 /**

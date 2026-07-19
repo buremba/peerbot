@@ -155,14 +155,17 @@ export async function planBehaviorActivationsForRuntimeConnection(
   return planBehaviorActivations(signal, matches);
 }
 
-/** Durably queue a precomputed set of Behavior activations. */
+/**
+ * Durably queue a precomputed set of Behavior activations. `db` must be an
+ * open transaction when provided; when omitted, each run creation opens its
+ * own so the per-Behavior lock and coalesce reads stay replica-safe.
+ */
 export async function queueBehaviorActivations(args: {
   matches: MatchingBehaviorActivation[];
   signal: ConnectorTriggerSignal;
   db?: DbClient;
 }): Promise<BehaviorActivationResult[]> {
   if (args.matches.length === 0) return [];
-  const sql = args.db ?? getDb();
   const results: BehaviorActivationResult[] = [];
   for (const match of args.matches) {
     const queued = await createBehaviorEventRun(
@@ -175,7 +178,7 @@ export async function queueBehaviorActivations(args: {
         deviceWorkerId: match.deviceWorkerId,
         agentKind: match.agentKind,
       },
-      sql,
+      args.db,
     );
     results.push({
       ...queued,
@@ -202,7 +205,7 @@ export async function activateBehaviorSignal(args: {
   return queueBehaviorActivations({
     matches,
     signal: args.signal,
-    db: sql,
+    db: args.db,
   });
 }
 

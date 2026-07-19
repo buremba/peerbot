@@ -22,6 +22,7 @@
  */
 
 import { getErrorMessage } from "@lobu/core";
+import { resolveBehaviorTriggerWrite } from "../behaviors/triggers";
 import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
 import { getNextNumericId } from "../tools/admin/helpers/db-helpers";
@@ -43,7 +44,7 @@ const DEFAULT_AGENT_IDENTITY =
 
 export const DEFAULT_WATCHER_SLUG = "daily-checkin";
 const DEFAULT_WATCHER_NAME = "Daily check-in";
-const DEFAULT_WATCHER_SCHEDULE = "0 9 * * *";
+export const DEFAULT_WATCHER_SCHEDULE = "0 9 * * *";
 const DEFAULT_WATCHER_PROMPT =
 	"Summarize what the user worked on yesterday in 1-2 sentences. " +
 	"Suggest 1-3 concrete priorities for today. " +
@@ -455,15 +456,26 @@ export async function ensureDefaultWatcher(params: {
 			{ name: "content", query: "SELECT * FROM events ORDER BY occurred_at DESC" },
 		];
 
+		// triggers is the canonical activation contract; schedule/timezone/
+		// next_run_at are derived projections (same path as manage_behaviors
+		// create). Writing only the schedule column left triggers as '[]',
+		// so a later triggers-touching update would reproject schedule to NULL
+		// and unschedule the default watcher.
+		const triggerWrite = resolveBehaviorTriggerWrite({
+			triggers: [{ kind: "schedule", cron: DEFAULT_WATCHER_SCHEDULE }],
+		});
+		const scheduledNextRun = triggerWrite.schedule
+			? nextRunAt(triggerWrite.schedule, new Date(), triggerWrite.timezone)
+			: null;
+
 		await sql.begin(async (tx) => {
 			const watcherId = await getNextNumericId(tx, "watchers");
 			const versionId = await getNextNumericId(tx, "watcher_versions");
-			const scheduledNextRun = nextRunAt(DEFAULT_WATCHER_SCHEDULE);
 
 			await tx`
         INSERT INTO watchers (
           id, name, slug, organization_id, entity_ids,
-          schedule, next_run_at, agent_id, scheduler_client_id, model_config, sources, version,
+          schedule, timezone, next_run_at, triggers, agent_id, scheduler_client_id, model_config, sources, version,
           current_version_id, tags, status, created_by, created_at, updated_at,
           watcher_group_id,
           device_worker_id, agent_kind,
@@ -471,7 +483,8 @@ export async function ensureDefaultWatcher(params: {
         ) VALUES (
           ${watcherId}, ${DEFAULT_WATCHER_NAME}, ${DEFAULT_WATCHER_SLUG},
           ${params.organizationId}, ${"{}"}::bigint[],
-          ${DEFAULT_WATCHER_SCHEDULE}, ${scheduledNextRun},
+          ${triggerWrite.schedule}, ${triggerWrite.timezone}, ${scheduledNextRun},
+          ${tx.json(triggerWrite.triggers)},
           ${resolvedAgentId}, NULL,
           ${tx.json({})}, ${tx.json(sources)},
           1, NULL, ${"{}"}::text[],

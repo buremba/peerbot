@@ -11,12 +11,14 @@ import { generateSecureToken } from '../../../auth/oauth/utils';
 import {
   DEFAULT_AGENT_ID,
   DEFAULT_AGENT_SENTINEL,
+  DEFAULT_WATCHER_SCHEDULE,
   DEFAULT_WATCHER_SENTINEL,
   DEFAULT_WATCHER_SLUG,
   ensureDefaultAgent,
   ensureDefaultWatcher,
   hasOrgSentinel,
 } from '../../../auth/default-provisioning';
+import { normalizeBehaviorTriggers } from '../../../behaviors/triggers';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 
 async function seedOrg(orgId: string): Promise<void> {
@@ -323,7 +325,8 @@ describe('ensureDefaultWatcher', () => {
 
     const sql = getTestDb();
     const watchers = await sql`
-      SELECT id, slug, agent_id, device_worker_id::text AS device_worker_id, schedule, status
+      SELECT id, slug, agent_id, device_worker_id::text AS device_worker_id,
+             schedule, timezone, triggers, status
       FROM watchers
       WHERE organization_id = ${orgId}
     `;
@@ -332,8 +335,23 @@ describe('ensureDefaultWatcher', () => {
     expect(String(w.slug)).toBe(DEFAULT_WATCHER_SLUG);
     expect(String(w.agent_id)).toBe(DEFAULT_AGENT_ID);
     expect(String(w.device_worker_id)).toBe(deviceWorkerId);
-    expect(String(w.schedule)).toBe('0 9 * * *');
+    expect(String(w.schedule)).toBe(DEFAULT_WATCHER_SCHEDULE);
     expect(String(w.status)).toBe('active');
+
+    // triggers is the canonical activation contract; schedule/timezone are its
+    // projection. Must match manage_behaviors create with a schedule trigger.
+    const expectedTriggers = normalizeBehaviorTriggers([
+      { kind: 'schedule', cron: DEFAULT_WATCHER_SCHEDULE },
+    ]);
+    expect(w.triggers).toEqual(expectedTriggers);
+    const scheduleTrigger = (w.triggers as Array<{ kind: string; cron?: string }>).find(
+      (t) => t.kind === 'schedule',
+    );
+    expect(scheduleTrigger?.cron).toBe(DEFAULT_WATCHER_SCHEDULE);
+    expect(String(w.schedule)).toBe(scheduleTrigger?.cron);
+    expect(w.timezone).toBe(
+      (scheduleTrigger as { timezone?: string | null } | undefined)?.timezone ?? null,
+    );
 
     const versions = await sql`
       SELECT prompt FROM watcher_versions WHERE watcher_id = ${w.id}

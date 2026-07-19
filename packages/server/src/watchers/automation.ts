@@ -13,6 +13,7 @@ import type { Env } from "../index";
 import { isLobuGatewayRunning } from "../lobu/gateway";
 import { getLobuServiceToken } from "../lobu/service-token";
 import {
+	claimPendingWatcherRun,
 	createWatcherRun,
 	type WatcherRunPayload,
 } from "../runs/queue-service";
@@ -1081,47 +1082,50 @@ async function claimWatcherRun(
 		// The pin currently lives in approved_input JSONB (issue #799 will add a
 		// proper column); both shapes are guarded here so the filter survives
 		// either schema.
-		const claimed = await tx`
-      WITH next_run AS (
-        SELECT r.id
-        FROM runs r
-        WHERE r.run_type = 'watcher'
-          AND r.status = 'pending'
-          AND NOT EXISTS (
-            SELECT 1
-            FROM runs active
-            WHERE active.watcher_id = r.watcher_id
-              AND active.run_type = 'watcher'
-              AND active.status IN ('claimed', 'running')
-          )
-          AND (
-            r.approved_input->>'device_worker_id' IS NULL
-            OR r.approved_input->>'device_worker_id' = ''
-          )
-          ${specificRunClause}
-        ORDER BY r.created_at ASC
-        FOR UPDATE SKIP LOCKED
-        LIMIT 1
-      )
-      UPDATE runs r
-      SET status = 'claimed',
-          claimed_at = current_timestamp,
-          claimed_by = 'lobu-dispatcher'
-      FROM next_run nr
-      WHERE r.id = nr.id
-      RETURNING r.id, r.organization_id, r.watcher_id, r.approved_input
+		const candidates = await tx`
+      SELECT r.id, r.organization_id, r.watcher_id, r.approved_input
+      FROM runs r
+      WHERE r.run_type = 'watcher'
+        AND r.status = 'pending'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM runs active
+          WHERE active.watcher_id = r.watcher_id
+            AND active.run_type = 'watcher'
+            AND active.status IN ('claimed', 'running')
+        )
+        AND (
+          r.approved_input->>'device_worker_id' IS NULL
+          OR r.approved_input->>'device_worker_id' = ''
+        )
+        ${specificRunClause}
+      ORDER BY r.created_at ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT 1
     `;
 
-		if (claimed.length === 0) return null;
+		if (candidates.length === 0) return null;
+		const candidate = candidates[0] as {
+			id: unknown;
+			organization_id: unknown;
+			watcher_id: unknown;
+			approved_input: unknown;
+		};
+		const candidateId = Number(candidate.id);
+		const watcherId = Number(candidate.watcher_id);
+		const claimed = await claimPendingWatcherRun(tx, {
+			runId: candidateId,
+			watcherId,
+			claimedBy: "lobu-dispatcher",
+			status: "claimed",
+		});
+		if (!claimed) return null;
 
 		return {
-			id: Number((claimed[0] as { id: unknown }).id),
-			organization_id: String(
-				(claimed[0] as { organization_id: unknown }).organization_id
-			),
-			watcher_id: Number((claimed[0] as { watcher_id: unknown }).watcher_id),
-			approved_input: (claimed[0] as { approved_input: unknown })
-				.approved_input,
+			id: candidateId,
+			organization_id: String(candidate.organization_id),
+			watcher_id: watcherId,
+			approved_input: candidate.approved_input,
 		};
 	});
 }

@@ -77,6 +77,66 @@ function behaviorEventTriggerKey(trigger: BehaviorEventTrigger): string {
   });
 }
 
+const WATCHER_EXECUTION_UNIQUE_INDEX = 'idx_runs_executing_watcher_per_watcher';
+
+/**
+ * Claim one pending Behavior run while holding the durable per-Behavior row
+ * lock. Both the server dispatcher and device poller use this transition so
+ * replicas cannot promote different queued runs from the same Behavior at the
+ * same time.
+ */
+export async function claimPendingWatcherRun(
+  tx: DbClient,
+  params: {
+    runId: number;
+    watcherId: number;
+    claimedBy: string;
+    status: 'claimed' | 'running';
+  }
+): Promise<boolean> {
+  const watcher = await tx`
+    SELECT id
+    FROM watchers
+    WHERE id = ${params.watcherId}
+    FOR UPDATE SKIP LOCKED
+  `;
+  if (watcher.length === 0) return false;
+
+  try {
+    const claimed = await tx.savepoint(
+      async (sp) => sp`
+        UPDATE runs r
+        SET status = ${params.status},
+            claimed_at = current_timestamp,
+            last_heartbeat_at = CASE
+              WHEN ${params.status}::text = 'running' THEN current_timestamp
+              ELSE r.last_heartbeat_at
+            END,
+            claimed_by = ${params.claimedBy}
+        WHERE r.id = ${params.runId}
+          AND r.watcher_id = ${params.watcherId}
+          AND r.run_type = 'watcher'
+          AND r.status = 'pending'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM runs active
+            WHERE active.watcher_id = r.watcher_id
+              AND active.run_type = 'watcher'
+              AND active.status IN ('claimed', 'running')
+          )
+        RETURNING r.id
+      `
+    );
+    return claimed.length > 0;
+  } catch (error) {
+    // During a rolling deployment an older replica may still claim without
+    // taking the watcher row lock. The unique index remains authoritative;
+    // contain that expected contention inside the savepoint and skip the run.
+    if (isUniqueViolation(error, WATCHER_EXECUTION_UNIQUE_INDEX)) return false;
+    throw error;
+  }
+}
+
 // ============================================
 // Run Management
 // ============================================

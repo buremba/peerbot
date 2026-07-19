@@ -397,6 +397,67 @@ describe('POST /api/workers/me/behaviors/:watcher_id/trigger', () => {
     expect(stillQueued.status).toBe('pending');
   });
 
+  it('serializes concurrent claims for two pending runs of one Behavior', async () => {
+    const ctx = await setupDevicePinnedWatcher({ workerId: 'mac-poll-race' });
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      'mac-poll-race'
+    );
+
+    const triggered = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, {
+      token,
+    });
+    expect(triggered.status).toBe(200);
+    const firstRunId = Number(((await triggered.json()) as { run_id: number }).run_id);
+    const second = await createBehaviorEventRun({
+      organizationId: ctx.workspace.org.id,
+      watcherId: ctx.watcherId,
+      agentId: ctx.agentId,
+      trigger: {
+        kind: 'event',
+        connector_key: 'github',
+        event_types: ['pull_request.created'],
+        active_run: 'queue',
+      },
+      signal: {
+        connector_key: 'github',
+        event_type: 'pull_request.created',
+        delivery_id: 'event:device-race',
+        label: 'Concurrent queued event',
+        input_text: 'A second event is waiting for the same Behavior.',
+      },
+      deviceWorkerId: ctx.deviceWorkerId,
+      agentKind: 'claude-code',
+    });
+
+    const responses = await Promise.all([
+      post('/api/workers/poll', {
+        token,
+        body: { worker_id: 'mac-poll-race', capabilities: {} },
+      }),
+      post('/api/workers/poll', {
+        token,
+        body: { worker_id: 'mac-poll-race', capabilities: {} },
+      }),
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    const bodies = await Promise.all(
+      responses.map((response) => response.json() as Promise<Record<string, unknown>>)
+    );
+    expect(bodies.filter((body) => typeof body.run_id === 'number')).toHaveLength(1);
+    expect(bodies.filter((body) => body.next_poll_seconds === 10)).toHaveLength(1);
+
+    const runs = await ctx.sql`
+      SELECT id, status
+      FROM runs
+      WHERE id IN (${firstRunId}, ${second.runId})
+      ORDER BY id
+    `;
+    expect(runs.filter((run) => run.status === 'running')).toHaveLength(1);
+    expect(runs.filter((run) => run.status === 'pending')).toHaveLength(1);
+  });
+
   it('poll payload carries the run-pinned version prompt, not a later edit', async () => {
     const ctx = await setupDevicePinnedWatcher({ workerId: 'mac-poll-prompt' });
     const { token } = await createWorkerBoundPat(

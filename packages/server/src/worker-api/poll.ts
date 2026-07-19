@@ -13,6 +13,7 @@ import type { KeyingConfig } from '../types/watchers';
 import { deriveWatcherExtractionSchema } from '../utils/watcher-extraction-schema';
 import { withDbRetry } from '../db/with-retry';
 import type { Env } from '../index';
+import { claimPendingWatcherRun } from '../runs/queue-service';
 import { materializeDueFeeds } from '../scheduled/check-due-feeds';
 import {
   DEFAULT_AGENT_ID,
@@ -407,9 +408,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
 
   const claimNextPendingRun = async () =>
     sql.begin(async (tx) => {
-      const claimed = await tx`
+      const candidates = await tx`
       WITH next_run AS (
-        SELECT r.id
+        SELECT r.id, r.run_type, r.watcher_id
         FROM runs r
         LEFT JOIN connections con ON con.id = r.connection_id
         -- Pin target platform: chrome-extension pins on non-chrome connectors mean
@@ -527,21 +528,41 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         FOR UPDATE OF r SKIP LOCKED
         LIMIT 1
       )
-      UPDATE runs r
-      SET status = 'running',
-          claimed_at = current_timestamp,
-          last_heartbeat_at = current_timestamp,
-          claimed_by = ${worker_id}
-      FROM next_run nr
-      WHERE r.id = nr.id
-      RETURNING r.id
+      SELECT id, run_type, watcher_id
+      FROM next_run
     `;
 
-      if (claimed.length === 0) {
+      if (candidates.length === 0) {
         return null;
       }
 
-      const runId = Number((claimed[0] as { id: unknown }).id);
+      const candidate = candidates[0] as {
+        id: unknown;
+        run_type: unknown;
+        watcher_id: unknown;
+      };
+      const runId = Number(candidate.id);
+      if (candidate.run_type === 'watcher') {
+        const claimed = await claimPendingWatcherRun(tx, {
+          runId,
+          watcherId: Number(candidate.watcher_id),
+          claimedBy: worker_id,
+          status: 'running',
+        });
+        if (!claimed) return null;
+      } else {
+        const claimed = await tx`
+          UPDATE runs
+          SET status = 'running',
+              claimed_at = current_timestamp,
+              last_heartbeat_at = current_timestamp,
+              claimed_by = ${worker_id}
+          WHERE id = ${runId}
+            AND status = 'pending'
+          RETURNING id
+        `;
+        if (claimed.length === 0) return null;
+      }
 
       const rows = await tx`
       SELECT

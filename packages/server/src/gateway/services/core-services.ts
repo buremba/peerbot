@@ -1083,7 +1083,7 @@ export class CoreServices {
 
 	getBehaviorSubscriptionService(): BehaviorSubscriptionService {
 		if (!this.behaviorSubscriptionService)
-			throw new Error("Channel binding service not initialized");
+			throw new Error("Behavior subscription service not initialized");
 		return this.behaviorSubscriptionService;
 	}
 

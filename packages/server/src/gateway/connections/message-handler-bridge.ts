@@ -4,6 +4,8 @@
  * settings links, allowlist, audio transcription, etc.
  */
 
+import { randomUUID } from "node:crypto";
+
 import {
   createLogger,
   createRootSpan,
@@ -1415,7 +1417,7 @@ export class MessageHandlerBridge {
       return;
     }
 
-    const messageId = `click-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const messageId = `click-${randomUUID()}`;
     const isGroup = conversationId !== channelId;
 
     const behaviorSubscriptionService =

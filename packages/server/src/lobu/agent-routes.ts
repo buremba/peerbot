@@ -12,6 +12,7 @@ import {
 import { Hono } from "hono";
 import { ensureBuilderAgent } from "../auth/builder-provisioning";
 import { mcpAuth } from "../auth/middleware";
+import { resolveBehaviorTriggerWrite } from "../behaviors/triggers";
 import { getDb } from "../db/client";
 import { grantStrategyFor } from "../gateway/auth/oauth/grant-strategy";
 import {
@@ -1502,6 +1503,11 @@ routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
 	const proposedAfter = normalizeBehaviorUpdatePatch(
 		args as ManageBehaviorsArgs
 	);
+	if (args.triggers !== undefined) {
+		proposedAfter.triggers = resolveBehaviorTriggerWrite({
+			triggers: args.triggers as ManageBehaviorsArgs["triggers"],
+		}).triggers;
+	}
 
 	return c.json({
 		runId,

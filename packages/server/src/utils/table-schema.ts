@@ -129,6 +129,7 @@ export const QUERYABLE_SCHEMA = {
         'current_version_id',
         'schedule',
         'timezone',
+        'triggers',
         'next_run_at',
         'agent_id',
         'scheduler_client_id',
@@ -364,7 +365,8 @@ export const QUERYABLE_SCHEMA = {
         'favicon_domain',
         'default_repair_agent_id',
         'required_capability',
-        'runtime'
+        'runtime',
+        'behavior_events'
       ),
     },
   ],

@@ -325,7 +325,6 @@ describe("lobu init --from-org", () => {
     expect(w?.agent).toBe("sales");
     expect(w?.name).toBe("Account health");
     expect(w?.prompt).toBe("Poll CRM data.");
-    expect(w?.schedule).toBe("0 */12 * * *");
     expect(w?.triggers?.[0]).toMatchObject({
       kind: "event",
       connector_key: "github",
@@ -333,6 +332,13 @@ describe("lobu init --from-org", () => {
       event_types: ["pull_request.created"],
     });
     expect(w?.triggers?.[0]).not.toHaveProperty("connection_id");
+    expect(w?.triggers?.[1]).toMatchObject({
+      kind: "schedule",
+      cron: "0 */12 * * *",
+      execution: "window",
+      active_run: "coalesce",
+      skip_if_unchanged: true,
+    });
     // No keyingConfig means this round-trips as an untyped watcher that uses
     // the worker's free-form `{ summary }` fallback.
     expect(w?.keyingConfig).toBeUndefined();

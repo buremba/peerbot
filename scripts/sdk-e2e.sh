@@ -13,7 +13,7 @@
 #      prune:true fixture this also guards the system-type ($member) exemption —
 #      an un-exempted prune halts every apply.
 #   2. every declared definition is created (agent, entity/relationship types,
-#      watcher).
+#      Behavior).
 #   3. `lobu chat` drives a real turn through the worker → the mock's reply.
 #   4. a stable re-apply is idempotent (0 deletes).
 #
@@ -280,7 +280,7 @@ grep -qiE "Apply halted" "$RUN_LOG" && fail "apply halted on a failure"
 echo "✓ lobu run auto-applied the project (Apply complete)"
 
 # 2b) Every declared definition created.
-for marker in "+ entity-type company" "+ entity-type contact" "+ relationship-type works-at" "+ watcher digest"; do
+for marker in "+ entity-type company" "+ entity-type contact" "+ relationship-type works-at" "+ behavior digest"; do
   grep -qF "$marker" "$RUN_LOG" || fail "expected created definition not in plan: '$marker'"
 done
 # System $member must be ignorable drift, never a delete row (the prune-halt bug).

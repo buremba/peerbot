@@ -285,16 +285,21 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 
 	test("returns a normalized proposedAfter (displayed == applied)", async () => {
 		// The endpoint computes proposedAfter with the SAME normalizer handleUpdate
-		// uses, so the review shows STORED values: schedule "" → null, and
-		// version-owned/routing keys (name/watcher_id/action) are excluded.
+		// uses, so the review shows the canonical trigger values that are stored,
+		// and version-owned/routing keys (name/watcher_id/action) are excluded.
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
 			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
 				watcher_id: WATCHER_ID,
-				schedule: "",
-				timezone: "UTC",
+				triggers: [
+					{
+						kind: "schedule",
+						cron: " 0 9 * * * ",
+						timezone: "UTC",
+					},
+				],
 				name: "ignored-version-owned",
 			}),
 			current: { id: WATCHER_ID, agent_id: AGENT },
@@ -306,7 +311,18 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 		const body = (await res.json()) as {
 			proposedAfter: Record<string, unknown> | null;
 		};
-		expect(body.proposedAfter).toEqual({ schedule: null, timezone: "UTC" });
+		expect(body.proposedAfter).toEqual({
+			triggers: [
+				{
+					kind: "schedule",
+					cron: "0 9 * * *",
+					timezone: "UTC",
+					execution: "window",
+					active_run: "coalesce",
+					skip_if_unchanged: true,
+				},
+			],
+		});
 		// version-owned/routing keys never appear in the applied patch
 		expect(body.proposedAfter && "name" in body.proposedAfter).toBe(false);
 		expect(body.proposedAfter && "watcher_id" in body.proposedAfter).toBe(

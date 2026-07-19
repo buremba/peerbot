@@ -27,31 +27,45 @@ export async function createTestBehaviorSubscription(opts: {
 	`;
 	const connection = rows[0];
 	if (!connection) throw new Error("Test chat connection was not found");
-	const users = await sql<{ id: string }>`
-		SELECT u.id FROM "user" u
-		WHERE u.id = ${opts.configuredBy ?? null}
-		  AND EXISTS (
-			SELECT 1 FROM member m
-			WHERE m."organizationId" = ${opts.organizationId}
-			  AND m."userId" = u.id
-		  )
-		UNION ALL
-		SELECT u.id
-		FROM agents a
-		JOIN "user" u ON u.id = a.owner_user_id
-		WHERE a.organization_id = ${opts.organizationId}
-		  AND a.id = ${opts.agentId}
-		  AND a.owner_user_id IS NOT NULL
-		UNION ALL
-		SELECT u.id
-		FROM member m
-		JOIN "user" u ON u.id = m."userId"
-		WHERE m."organizationId" = ${opts.organizationId}
-		ORDER BY id
-		LIMIT 1
+	const creators = await sql<{ id: string }>`
+		SELECT COALESCE(
+			${opts.configuredBy ?? null}::text,
+			(
+				SELECT a.owner_user_id
+				FROM agents a
+				WHERE a.organization_id = ${opts.organizationId}
+				  AND a.id = ${opts.agentId}
+				  AND a.owner_user_id IS NOT NULL
+				LIMIT 1
+			),
+			(
+				SELECT m."userId"
+				FROM member m
+				WHERE m."organizationId" = ${opts.organizationId}
+				ORDER BY m."createdAt", m.id
+				LIMIT 1
+			),
+			'test-behavior-subscription'
+		) AS id
 	`;
-	const createdBy = users[0]?.id;
-	if (!createdBy) throw new Error("A test user is required for a Behavior");
+	const createdBy = creators[0]?.id;
+	if (!createdBy) throw new Error("Could not resolve a test Behavior creator");
+	// createTestAgent intentionally permits an owner id without seeding a full
+	// auth user. Behavior rows have a real created_by FK, so materialize only
+	// that identity here without adding org membership (authorization tests rely
+	// on their membership setup remaining unchanged).
+	await sql`
+		INSERT INTO "user" (
+			id, email, name, username, "emailVerified", "createdAt", "updatedAt"
+		) VALUES (
+			${createdBy},
+			${`behavior-${createdBy}@test.example.com`},
+			'Test Behavior Creator',
+			${`behavior-${createdBy}`},
+			true, NOW(), NOW()
+		)
+		ON CONFLICT (id) DO NOTHING
+	`;
 	const ids = await sql<{ watcher_id: number; version_id: number }>`
 		SELECT
 		  nextval('watchers_id_seq')::integer AS watcher_id,

@@ -25,7 +25,13 @@ type CorrectionInput = {
  * prototype chain instead of the payload's own data (prototype pollution).
  * field_path is user input — a path like `__proto__.polluted` must be a no-op.
  */
-const FORBIDDEN_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
+function isForbiddenPathSegment(segment: string | number): boolean {
+  return (
+    segment === '__proto__' ||
+    segment === 'constructor' ||
+    segment === 'prototype'
+  );
+}
 
 /**
  * Parse a correction field_path into path segments, supporting dot notation and
@@ -49,15 +55,15 @@ function parseFieldPath(path: string): (string | number)[] | null {
       }
     }
   }
-  if (segments.some((s) => typeof s === 'string' && FORBIDDEN_PATH_SEGMENTS.has(s))) {
+  if (segments.some(isForbiddenPathSegment)) {
     return null;
   }
   return segments;
 }
 
 /**
- * Apply a single set/remove/add correction to `data` in place (mutates a copy
- * the caller owns). Mirrors the advisory correction semantics:
+ * Apply a single set/remove/add correction and return a new payload. Mirrors
+ * the advisory correction semantics:
  *   - set:    write `value` at the path (creating intermediate objects/arrays).
  *   - remove: delete the array element / object key at the path.
  *   - add:    push `value` onto the array at the path (creating it if absent).
@@ -69,52 +75,91 @@ function applyCorrectionToData(
   fieldPath: string,
   mutation: 'set' | 'remove' | 'add',
   value: unknown
-): void {
+): Record<string, unknown> {
   const segments = parseFieldPath(fieldPath);
-  if (segments == null || segments.length === 0) return;
+  if (segments == null || segments.length === 0) return data;
+  const updated = applyCorrectionAt(data, segments, mutation, value);
+  return updated != null && typeof updated === 'object' && !Array.isArray(updated)
+    ? (updated as Record<string, unknown>)
+    : data;
+}
 
-  // Walk to the parent container of the final segment, creating intermediates
-  // for set/add (never for remove — removing a missing path is a no-op). Only
-  // OWN properties are traversed — inherited (prototype) values are treated as
-  // absent, so the walk can never step onto the prototype chain.
-  let parent: unknown = data;
-  for (let i = 0; i < segments.length - 1; i++) {
-    const seg = segments[i];
-    const next = segments[i + 1];
-    if (parent == null || typeof parent !== 'object') return;
-    const container = parent as Record<string | number, unknown>;
-    if (!Object.hasOwn(container, seg) || container[seg] == null) {
-      if (mutation === 'remove') return;
-      container[seg] = typeof next === 'number' ? [] : {};
-    }
-    parent = container[seg];
-  }
-  if (parent == null || typeof parent !== 'object') return;
+/**
+ * Immutable path update. Object writes use computed object-literal properties,
+ * whose `__proto__` semantics are ordinary own data properties rather than the
+ * legacy prototype setter. The parser still rejects all prototype-chain names,
+ * so forbidden paths remain inert and never reach this function.
+ */
+function applyCorrectionAt(
+  current: unknown,
+  segments: readonly (string | number)[],
+  mutation: 'set' | 'remove' | 'add',
+  value: unknown
+): unknown {
+  const segment = segments[0];
+  if (segment == null || isForbiddenPathSegment(segment)) return current;
+  const leaf = segments.length === 1;
 
-  const last = segments[segments.length - 1];
-  const container = parent as Record<string | number, unknown>;
+  if (Array.isArray(current)) {
+    if (typeof segment !== 'number' || !Number.isSafeInteger(segment) || segment < 0) {
+      return current;
+    }
+    const copy = [...current];
+    if (leaf) {
+      if (mutation === 'remove') {
+        copy.splice(segment, 1);
+      } else if (mutation === 'add') {
+        const target = copy[segment];
+        copy[segment] = Array.isArray(target)
+          ? [...target, value]
+          : target == null
+            ? [value]
+            : [target, value];
+      } else {
+        copy[segment] = value;
+      }
+      return copy;
+    }
+    const existing = copy[segment];
+    if (existing == null && mutation === 'remove') return current;
+    const seed =
+      existing == null ? (typeof segments[1] === 'number' ? [] : {}) : existing;
+    copy[segment] = applyCorrectionAt(seed, segments.slice(1), mutation, value);
+    return copy;
+  }
 
-  if (mutation === 'remove') {
-    if (Array.isArray(container) && typeof last === 'number') {
-      container.splice(last, 1);
-    } else {
-      delete container[last];
+  if (current == null || typeof current !== 'object') return current;
+  const object = current as Record<string, unknown>;
+  const key = String(segment);
+  if (leaf) {
+    if (mutation === 'remove') {
+      if (!Object.hasOwn(object, key)) return current;
+      const { [key]: removed, ...rest } = object;
+      void removed;
+      return rest;
     }
-    return;
-  }
-  if (mutation === 'add') {
-    const target = container[last];
-    if (Array.isArray(target)) {
-      target.push(value);
-    } else if (target == null) {
-      container[last] = [value];
-    } else {
-      container[last] = [target, value];
+    if (mutation === 'add') {
+      const target = Object.hasOwn(object, key) ? object[key] : undefined;
+      return {
+        ...object,
+        [key]: Array.isArray(target)
+          ? [...target, value]
+          : target == null
+            ? [value]
+            : [target, value],
+      };
     }
-    return;
+    return { ...object, [key]: value };
   }
-  // set
-  container[last] = value;
+
+  const existing = Object.hasOwn(object, key) ? object[key] : undefined;
+  if (existing == null && mutation === 'remove') return current;
+  const seed =
+    existing == null ? (typeof segments[1] === 'number' ? [] : {}) : existing;
+  return {
+    ...object,
+    [key]: applyCorrectionAt(seed, segments.slice(1), mutation, value),
+  };
 }
 
 // ============================================
@@ -234,9 +279,14 @@ export async function handleSubmitFeedback(
           return;
         }
 
-        const nextPayload = structuredClone(head.payloadData);
+        let nextPayload = structuredClone(head.payloadData);
         for (const c of corrections) {
-          applyCorrectionToData(nextPayload, c.field_path, c.mutation ?? 'set', c.value);
+          nextPayload = applyCorrectionToData(
+            nextPayload,
+            c.field_path,
+            c.mutation ?? 'set',
+            c.value
+          );
         }
 
         const parentEntityId = parsePgNumberArray(windowCheck[0].entity_ids)[0] ?? null;

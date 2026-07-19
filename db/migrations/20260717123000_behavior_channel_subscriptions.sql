@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- Channel subscriptions are Behaviors. Backfill the legacy routing rows into
 -- ordinary watcher/version records, then remove the duplicate state table.
 -- Runtime readers project active message triggers directly from watchers.

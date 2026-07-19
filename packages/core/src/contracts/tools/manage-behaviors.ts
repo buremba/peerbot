@@ -244,7 +244,7 @@ export const ManageBehaviorsSchema = Type.Object(
     watcher_id: Type.Optional(
       Type.String({
         description:
-          "[update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Behavior ID (numeric string)",
+          "[list/update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Behavior ID (numeric string)",
       })
     ),
     watcher_ids: Type.Optional(
@@ -326,7 +326,29 @@ export const ManageBehaviorsSchema = Type.Object(
     agent_id: Type.Optional(
       Type.String({
         description:
-          "[create/update] Agent ID that owns/executes this Behavior.",
+          "[create/update] Agent ID that owns/executes this Behavior. [list] Optional owner filter.",
+      })
+    ),
+    status: Type.Optional(
+      Type.Union([Type.Literal("active"), Type.Literal("archived")], {
+        description:
+          "[list] Optional status filter. Omit to include active Behaviors only.",
+      })
+    ),
+    include_details: Type.Optional(
+      Type.Boolean({
+        description:
+          "[list] Include prompt, schema, and sources in the response (default: false).",
+      })
+    ),
+    order_by: Type.Optional(
+      Type.Union([Type.Literal("last_fired_at"), Type.Literal("created_at")], {
+        description: "[list] Sort field (default: created_at).",
+      })
+    ),
+    order_dir: Type.Optional(
+      Type.Union([Type.Literal("asc"), Type.Literal("desc")], {
+        description: "[list] Sort direction (default: desc).",
       })
     ),
     scheduler_client_id: Type.Optional(
@@ -530,7 +552,7 @@ export const ManageBehaviorsSchema = Type.Object(
     limit: Type.Optional(
       Type.Number({
         description:
-          "[get_feedback] Max feedback records to return (default: 50).",
+          "[list/get_feedback] Maximum records to return. get_feedback defaults to 50; list defaults to all matching Behaviors.",
       })
     ),
   },
@@ -828,54 +850,18 @@ export interface ManageBehaviorsProposal {
   /** Session `actingWatcherId` at queue time, if any. */
   actingWatcherId: string | null;
 }
-export const ListBehaviorsSchema = Type.Object({
-  watcher_id: Type.Optional(
-    Type.String({
-      description:
-        "Optional Behavior ID (numeric string) to narrow to one Behavior",
-    })
-  ),
-  entity_id: Type.Optional(
-    Type.Number({
-      description:
-        "Optional entity ID to list Behaviors attached to a specific entity",
-    })
-  ),
-  agent_id: Type.Optional(
-    Type.String({
-      description:
-        "Optional agent ID to list Behaviors owned by a specific agent",
-    })
-  ),
-  status: Type.Optional(
-    Type.String({
-      description:
-        'Optional status filter. Use "active" or "archived". Omit to include all.',
-    })
-  ),
-  include_details: Type.Optional(
-    Type.Boolean({
-      description:
-        "Include prompt, schema, and sources in response (default: false)",
-    })
-  ),
-  order_by: Type.Optional(
-    Type.Union([Type.Literal("last_fired_at"), Type.Literal("created_at")], {
-      description:
-        "Sort field. Omit for created_at DESC (default, backward compatible).",
-    })
-  ),
-  order_dir: Type.Optional(
-    Type.Union([Type.Literal("asc"), Type.Literal("desc")], {
-      description: "Sort direction (default: desc)",
-    })
-  ),
-  limit: Type.Optional(
-    Type.Number({
-      description: "Maximum Behaviors to return (omit for all)",
-    })
-  ),
-});
+// The REST/list helper is a projection of the canonical flattened tool schema,
+// not a second hand-maintained contract that can drift from manage_behaviors.
+export const ListBehaviorsSchema = Type.Pick(ManageBehaviorsSchema, [
+  "watcher_id",
+  "entity_id",
+  "agent_id",
+  "status",
+  "include_details",
+  "order_by",
+  "order_dir",
+  "limit",
+]);
 
 export type ListBehaviorsArgs = Static<typeof ListBehaviorsSchema>;
 

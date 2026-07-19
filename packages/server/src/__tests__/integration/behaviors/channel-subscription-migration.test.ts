@@ -14,7 +14,7 @@ import {
 	seedOwnerContext,
 } from "../../setup/test-fixtures";
 
-const TRIGGER_MIGRATION = "20260717120000_behavior_triggers.sql";
+const TRIGGER_MIGRATION = "20260717121000_behavior_triggers.sql";
 const SUBSCRIPTION_MIGRATION =
 	"20260717123000_behavior_channel_subscriptions.sql";
 

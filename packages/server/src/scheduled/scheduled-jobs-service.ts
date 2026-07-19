@@ -99,6 +99,14 @@ export async function validateDeliveryAuthorization(params: {
       : { authorized: false, reason: 'agent-mismatch' };
   }
 
+  // team_id on the view is COALESCE(trigger match, connection external_tenant_id,
+  // config teamId) — so a Slack connection with external_tenant_id never exposes
+  // team_id as NULL. trigger_team_id is the trigger's own team constraint only
+  // (nullable). Delivery auth must use trigger semantics: a delivery with no
+  // teamId is allowed when the trigger has no team constraint; a delivery with
+  // a teamId matches either the trigger team or the resolved COALESCE team_id
+  // (so team-scoped deliveries keep working via the connection fallback).
+  const deliveryTeamId = delivery.teamId ?? null;
   const bindingRows = await sql`
     SELECT agent_id
     FROM behavior_message_subscriptions
@@ -109,7 +117,13 @@ export async function validateDeliveryAuthorization(params: {
         channel_id = ${delivery.channelId}
         OR native_channel_id = ${delivery.channelId}
       )
-      AND team_id IS NOT DISTINCT FROM ${delivery.teamId ?? null}::text
+      AND (
+        trigger_team_id IS NOT DISTINCT FROM ${deliveryTeamId}::text
+        OR (
+          ${deliveryTeamId}::text IS NOT NULL
+          AND team_id IS NOT DISTINCT FROM ${deliveryTeamId}::text
+        )
+      )
     LIMIT 1
   `;
   const binding = (bindingRows as unknown as Array<{ agent_id: string }>)[0];

@@ -95,6 +95,7 @@ const PUBLIC_XML_CACHE_CONTROL = 'public, max-age=1800, stale-while-revalidate=8
 const PUBLIC_LIST_LIMIT = 50;
 const PUBLIC_APP_ROUTE_PREFIXES = new Set([
   'agents',
+  'behaviors',
   'connectors',
   'events',
   'members',

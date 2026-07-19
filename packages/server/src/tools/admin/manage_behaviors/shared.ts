@@ -264,13 +264,22 @@ function parseWatcherEntityIds(raw: unknown): number[] {
   return [];
 }
 
-async function getWatcherAccessRows(watcherIds: string[]): Promise<WatcherAccessRow[]> {
+async function getWatcherAccessRows(
+  watcherIds: string[],
+  organizationId: string | null | undefined,
+): Promise<WatcherAccessRow[]> {
   if (watcherIds.length === 0) return [];
   const sql = getDb();
-  const placeholders = watcherIds.map((_, idx) => `$${idx + 1}`).join(',');
+  // Always scope the read to the caller's org so a TOCTOU swap of watcher_id
+  // to another tenant's row cannot surface foreign organization_id/entity_ids
+  // into the access check (and so mutating paths that reuse these ids stay
+  // org-bound at the first load).
+  if (!organizationId) return [];
+  const placeholders = watcherIds.map((_, idx) => `$${idx + 2}`).join(',');
   return sql.unsafe<WatcherAccessRow>(
-    `SELECT id, organization_id, entity_ids FROM watchers WHERE id IN (${placeholders})`,
-    watcherIds
+    `SELECT id, organization_id, entity_ids FROM watchers
+     WHERE organization_id = $1 AND id IN (${placeholders})`,
+    [organizationId, ...watcherIds],
   );
 }
 
@@ -280,7 +289,13 @@ export async function requireWatcherAccess(
   ctx: ToolContext,
   mode: WatcherAccessMode
 ): Promise<void> {
-  const rows = await getWatcherAccessRows(watcherIds);
+  const rows = await getWatcherAccessRows(watcherIds, ctx.organizationId);
+  if (rows.length !== watcherIds.length) {
+    throw new ToolUserError(
+      'Access denied: one or more Behaviors were not found in your organization',
+      403,
+    );
+  }
 
   for (const row of rows) {
     const watcherOrgId = row.organization_id ? String(row.organization_id) : null;

@@ -85,7 +85,7 @@ export function resolveBehaviorConnectionRefs(
       if (connectionId === undefined) {
         if (requireResolved) {
           throw new ApiError(
-            `behavior "${watcher.slug}" references connection "${trigger.connectionSlug}" which has no remote ID — connection create may have failed`
+            `behavior "${watcher.slug}" references connection "${trigger.connectionSlug}" which has no remote ID — create the connection first, or omit --only so apply can create it`
           );
         }
         return trigger;

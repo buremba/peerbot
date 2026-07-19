@@ -878,10 +878,9 @@ export class ApplyClient {
   // ── Behaviors ─────────────────────────────────────────────────────────────
 
   /**
-   * Fetch a single Behavior's full payload, including the reaction script.
-   * returns reaction_script (not in the list response). Used by
-   * `lobu init --from-org` to round-trip reaction scripts back to sibling
-   * `.ts` files.
+   * Fetch a single Behavior's full payload, including the reaction script
+   * (not in the list response). Used by `lobu init --from-org` to round-trip
+   * reaction scripts back to sibling `.ts` files.
    */
   async getBehaviorDetail(watcherId: string): Promise<{
     reaction_script?: string | null;

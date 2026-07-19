@@ -126,7 +126,15 @@ WHERE platform LIKE 'slack%'
         AND trigger->>'connection_id' = binding.connection_id::text
         AND trigger->'event_types' = '["message.created"]'::jsonb
         AND trigger->'match'->>'channel_id' = native_channel_id
-        AND (trigger->'match'->>'team_id') IS NOT DISTINCT FROM binding.team_id
+        -- Team is delivery metadata, not a routing predicate (see H3). Tolerate
+        -- team differences so a UI-created chat-link without team_id does not
+        -- get a second Behavior for the same agent+channel+connection (double
+        -- reply after migration).
+        AND (
+          (trigger->'match'->>'team_id') IS NOT DISTINCT FROM binding.team_id
+          OR NULLIF(trigger->'match'->>'team_id', '') IS NULL
+          OR binding.team_id IS NULL
+        )
         AND trigger->>'execution' = 'turn'
         AND trigger->>'active_run' = 'steer'
         AND trigger->>'output' = 'reply_to_source'

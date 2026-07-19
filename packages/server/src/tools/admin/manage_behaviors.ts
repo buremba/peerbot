@@ -507,9 +507,9 @@ const VERSION_OWNED_WATCHER_FIELDS = ['name', 'description', 'prompt', 'sources'
 const WATCHER_PATCHABLE_FIELDS = [
   'model_config',
   'execution_config',
-  'schedule',
+  // schedule/timezone are projections of triggers (resolveBehaviorTriggerWrite);
+  // patch them only via triggers, not as direct writable fields.
   'triggers',
-  'timezone',
   'agent_id',
   'scheduler_client_id',
   'tags',
@@ -546,7 +546,7 @@ function assertWatcherUpdateArgs(args: ManageBehaviorsArgs): void {
   }
   if (present(WATCHER_PATCHABLE_FIELDS).length === 0) {
     throw new ToolUserError(
-      'update requires at least one field to change (e.g. schedule, timezone, agent_id, tags, model_config).'
+      'update requires at least one field to change (e.g. triggers, agent_id, tags, model_config).'
     );
   }
 }

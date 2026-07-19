@@ -116,6 +116,13 @@ async function resolveCreatedBy(
 			FROM member m
 			JOIN "user" u ON u.id = m."userId"
 			WHERE m."organizationId" = ${organizationId}
+			UNION ALL
+			-- Member-less orgs (preview claim, headless deploy): attribute to the
+			-- configuring user even when they are not yet a member row, so
+			-- /lobu link does not hard-fail.
+			SELECT u.id, 3 AS priority
+			FROM "user" u
+			WHERE u.id = ${configuredBy ?? null}
 		) candidate
 		ORDER BY candidate.priority, candidate.id
 		LIMIT 1
@@ -123,7 +130,7 @@ async function resolveCreatedBy(
 	const userId = rows[0]?.id;
 	if (!userId) {
 		throw new Error(
-			`Cannot create a chat Behavior for organization ${organizationId}: no member user exists.`,
+			`Cannot create a chat Behavior for organization ${organizationId}: no user available to attribute created_by.`,
 		);
 	}
 	return userId;
@@ -392,10 +399,38 @@ export class BehaviorSubscriptionService {
 				FOR UPDATE OF w
 			`;
 			if (existing[0]) {
+				// Relink must not wipe user-added triggers (schedule, extra events)
+				// on the same Behavior — only replace the chat message.created
+				// trigger for this connection+channel.
+				const [row] = await tx<{ triggers: unknown }>`
+					SELECT triggers FROM watchers WHERE id = ${existing[0].behavior_id}
+				`;
+				const prev = Array.isArray(row?.triggers) ? row.triggers : [];
+				const native = nativeChannelId(platform, channelId);
+				const kept = prev.filter((candidate) => {
+					if (!candidate || typeof candidate !== "object") return true;
+					const t = candidate as Record<string, unknown>;
+					if (t.kind !== "event") return true;
+					if (t.connector_key !== platform) return true;
+					if (Number(t.connection_id) !== options.connectionId) return true;
+					const eventTypes = t.event_types;
+					if (
+						!Array.isArray(eventTypes) ||
+						!eventTypes.includes("message.created")
+					) {
+						return true;
+					}
+					const match =
+						t.match && typeof t.match === "object"
+							? (t.match as Record<string, unknown>)
+							: null;
+					if (match?.channel_id !== native) return true;
+					return false;
+				});
 				await tx`
 					UPDATE watchers
 					SET agent_id = ${agentId},
-						triggers = ${tx.json([trigger])},
+						triggers = ${tx.json([...kept, trigger])},
 						execution_config = CASE
 							WHEN ${model}::text IS NULL
 								THEN NULLIF(COALESCE(execution_config, '{}'::jsonb) - 'model', '{}'::jsonb)

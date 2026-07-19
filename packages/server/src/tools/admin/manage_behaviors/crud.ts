@@ -23,6 +23,7 @@ import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs } from '../manage_behaviors';
 import {
   normalizeBehaviorUpdatePatch,
+  type BehaviorTrigger,
   type BehaviorUpdatePatch,
 } from '@lobu/core/contracts/tools/manage-behaviors';
 import {
@@ -46,6 +47,28 @@ import {
   resolveBehaviorTriggerWrite,
 } from '../../../behaviors/triggers';
 import { syncBehaviorChannelFeedsBestEffort } from '../../../behaviors/channel-subscriptions';
+
+/**
+ * Drop chat-link style triggers when cloning a Behavior onto an entity.
+ * Steer + reply_to_source on message.created is the live channel responder
+ * contract; copying it would double-reply in linked channels.
+ */
+function stripChatLinkTriggers(triggers: unknown): unknown {
+  if (!Array.isArray(triggers)) return triggers ?? [];
+  return triggers.filter((candidate) => {
+    if (!candidate || typeof candidate !== 'object') return true;
+    const t = candidate as Record<string, unknown>;
+    if (t.kind !== 'event') return true;
+    const eventTypes = t.event_types;
+    if (!Array.isArray(eventTypes) || !eventTypes.includes('message.created')) {
+      return true;
+    }
+    if (t.active_run === 'steer' && t.output === 'reply_to_source') {
+      return false;
+    }
+    return true;
+  });
+}
 
 // ============================================
 // handleCreate
@@ -745,6 +768,13 @@ export async function handleCreateFromVersion(
         // the group point at the same chain.
         const sharedVersionId = Number(args.version_id);
         const groupId = (version.watcher_group_id ?? version.watcher_id) as number;
+        // Entity clones must not inherit chat-link steer/reply triggers (or the
+        // system:chat-link tag): those bind a live channel responder, and
+        // cloning them would create a second agent turn for the same message.
+        const cloneTriggers = stripChatLinkTriggers(version.triggers);
+        const cloneTags = ((version.tags as string[]) || []).filter(
+          (tag) => tag !== 'system:chat-link',
+        );
 
         await tx`
           INSERT INTO watchers (
@@ -756,10 +786,10 @@ export async function handleCreateFromVersion(
           ) VALUES (
             ${watcherId}, ${watcherName}, ${watcherSlug}, ${organizationId},
             ${`{${entityId}}`}::bigint[],
-            ${version.schedule ?? null}, ${version.timezone ?? null}, ${version.schedule ? nextRunAt(version.schedule as string, new Date(), version.timezone as string | null) : null}, ${toJsonParam(tx, version.triggers)},
+            ${version.schedule ?? null}, ${version.timezone ?? null}, ${version.schedule ? nextRunAt(version.schedule as string, new Date(), version.timezone as string | null) : null}, ${toJsonParam(tx, cloneTriggers)},
             ${version.agent_id ?? null}, ${version.scheduler_client_id ?? null},
             ${toJsonParam(tx, version.model_config)}, ${toJsonParam(tx, version.execution_config)}, ${toJsonParam(tx, sources)},
-            ${(version.version as number) ?? 1}, ${sharedVersionId}, ${toTextArrayParam((version.tags as string[]) || [])}::text[],
+            ${(version.version as number) ?? 1}, ${sharedVersionId}, ${toTextArrayParam(cloneTags)}::text[],
             'active', ${createdBy}, NOW(), NOW(),
             ${groupId}, ${version.watcher_id},
             ${(version.reaction_script as string | null) ?? null},
@@ -781,6 +811,14 @@ export async function handleCreateFromVersion(
           sources,
           sharedVersionId,
           groupId,
+        });
+        // Keep channel feeds in sync with any remaining event triggers on the clone.
+        await syncBehaviorChannelFeedsBestEffort({
+          organizationId,
+          after: Array.isArray(cloneTriggers)
+            ? (cloneTriggers as BehaviorTrigger[])
+            : [],
+          sql: tx,
         });
       }
     });

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/block-dist.sh"
+            "command": "bash -c 's=\"${CLAUDE_PROJECT_DIR:+$CLAUDE_PROJECT_DIR/.claude/hooks/block-dist.sh}\"; [ -n \"$s\" ] && [ -f \"$s\" ] || s=\"$(git rev-parse --show-toplevel)/.claude/hooks/block-dist.sh\"; exec bash \"$s\"'"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/enforce-bun.sh"
+            "command": "bash -c 's=\"${CLAUDE_PROJECT_DIR:+$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-bun.sh}\"; [ -n \"$s\" ] && [ -f \"$s\" ] || s=\"$(git rev-parse --show-toplevel)/.claude/hooks/enforce-bun.sh\"; exec bash \"$s\"'"
           }
         ]
       }

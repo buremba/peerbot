@@ -46,7 +46,10 @@ import {
   behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
 } from '../../../behaviors/triggers';
-import { syncBehaviorChannelFeeds } from '../../../behaviors/channel-subscriptions';
+import {
+  syncBehaviorChannelFeeds,
+  syncBehaviorChannelFeedsBestEffort,
+} from '../../../behaviors/channel-subscriptions';
 
 /**
  * Drop chat-link style triggers when cloning a Behavior onto an entity.

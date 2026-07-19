@@ -45,12 +45,12 @@ try {
 NODE
 }
 
-# Fail FAST, before dbmate touches anything, when a PENDING migration will
+# Fail FAST, before the migration runner touches anything, when a PENDING migration will
 # `ALTER COLUMN ... SET NOT NULL` on a column that still has NULL rows. That is
 # the signature of a contract migration whose out-of-band backfill precondition
 # was skipped (incident 2026-06-24: a classifier-collapse contract migration hit
-# this, dbmate errored mid-run, the Helm pre-upgrade hook failed, and the
-# HelmRelease wedged + rolled back for hours, spamming #devops). dbmate's own
+# this, the migration failed mid-run, the Helm pre-upgrade hook failed, and the
+# HelmRelease wedged + rolled back for hours, spamming #devops). The database
 # error ("column X contains null values") is buried after partial work; this
 # surfaces the exact table.column + NULL count + remediation up front.
 #
@@ -123,7 +123,7 @@ try {
         if (n > 0) violations.push({ file, table, col, n });
       } catch (e) {
         // Column/table may be created by an earlier still-pending migration, so
-        // it can't be pre-verified — let dbmate handle it. Fail open.
+        // it can't be pre-verified — let the migration runner handle it. Fail open.
         console.warn(`preflight: cannot check ${table}.${col} (${file}): ${e.message}`);
       }
     }
@@ -138,7 +138,7 @@ try {
     console.error("");
     console.error("This is a contract migration whose out-of-band backfill must run to completion FIRST");
     console.error("(see the migration header / scripts/). Run the backfill, confirm 0 NULLs, then redeploy.");
-    console.error("Aborting before dbmate so the deploy fails fast with a clear cause, not mid-migration.");
+    console.error("Aborting before migrations so the deploy fails fast with a clear cause, not mid-migration.");
     process.exit(1);
   }
   console.log("NOT NULL preflight passed");

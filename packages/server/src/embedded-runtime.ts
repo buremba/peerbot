@@ -264,16 +264,16 @@ export function resolveMigrationsDir(): string | null {
 }
 
 /**
- * Apply `db/migrations/*.sql` (the same set dbmate runs in prod) against
+ * Apply `db/migrations/*.sql` (the same set the production runner applies) against
  * `databaseUrl`. Idempotent: the squashed baseline is gated by the
  * `schema_migrations` ledger (with a duplicate-object fallback) and forward
  * deltas use `IF NOT EXISTS`, so replaying against an already-migrated DB is a
  * no-op. Used by the embedded runtime AND by the external-DATABASE_URL `lobu
  * run` path (`server.ts`), which owns the local DB lifecycle. Prod never calls
- * this — dbmate's migration Job applies migrations separately.
+ * this — the production migration Job applies migrations separately.
  */
 export async function runMigrations(databaseUrl: string): Promise<void> {
-	// Same migrations dbmate uses for prod, applied unconditionally. The dir is
+	// Same migrations the production runner uses, applied unconditionally. The dir is
 	// a single squashed baseline + forward deltas; both replay idempotently
 	// (baseline gated by the schema_migrations ledger, deltas use IF NOT EXISTS).
 	const sql = postgres(databaseUrl, { max: 1 });

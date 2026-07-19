@@ -296,8 +296,8 @@ migrations:
 releaseGates:
   databasePreflight:
     # When migrations are enabled, verify the target database is reachable
-    # before invoking dbmate. This fails fast on wrong DB names instead of
-    # letting dbmate attempt to create a missing production database.
+    # before invoking the migration runner. This fails fast on wrong DB names
+    # instead of attempting migrations against a missing production database.
     enabled: true
     timeoutSeconds: 10
   smokeTest:

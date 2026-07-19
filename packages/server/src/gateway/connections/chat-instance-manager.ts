@@ -1271,6 +1271,8 @@ export class ChatInstanceManager {
                         connectorKey: "github",
                         rawBody,
                         headers,
+                        storeWebhookEvents:
+                          process.env.GITHUB_WEBHOOK_STORE_EVENTS !== "false",
                       });
                     return new Response(
                       JSON.stringify({ ok: true, triggered }),
@@ -1318,9 +1320,10 @@ export class ChatInstanceManager {
    * misses, this resolves the connector row, validates it actually registered a
    * webhook
    * (scheme + secret stamped onto its config), and returns a synthetic
-   * `StoredConnection` shaped for `handleWebhookIngest`. The id is preserved so
-   * the landed event's `connector_key = webhook:<connId>` still hits the
-   * existing `events_webhook_ingest_dedupe` partial unique index (no migration).
+   * `StoredConnection` shaped for `handleWebhookIngest`. Non-GitHub deliveries
+   * preserve the id so raw events use `connector_key = webhook:<connId>` and the
+   * existing `events_webhook_ingest_dedupe` partial unique index. GitHub takes
+   * the poll-canonical override above instead.
    * Returns null when there is no such connection or it never registered a
    * webhook — the caller then 404s rather than accepting an unsigned delivery.
    */

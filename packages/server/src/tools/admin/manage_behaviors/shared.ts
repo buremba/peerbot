@@ -289,8 +289,9 @@ export async function requireWatcherAccess(
   ctx: ToolContext,
   mode: WatcherAccessMode
 ): Promise<void> {
-  const rows = await getWatcherAccessRows(watcherIds, ctx.organizationId);
-  if (rows.length !== watcherIds.length) {
+  const uniqueWatcherIds = [...new Set(watcherIds)];
+  const rows = await getWatcherAccessRows(uniqueWatcherIds, ctx.organizationId);
+  if (rows.length !== uniqueWatcherIds.length) {
     throw new ToolUserError(
       'Access denied: one or more Behaviors were not found in your organization',
       403,

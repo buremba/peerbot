@@ -137,7 +137,31 @@ async function executeSection(sqlClient, section) {
   }
 }
 
+async function recordMigration(sqlClient, version) {
+  await sqlClient.unsafe(
+    `INSERT INTO public.schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`,
+    [version]
+  );
+}
+
+async function applyMigration(sqlClient, section, version) {
+  if (section.transaction) {
+    await sqlClient.begin(async (tx) => {
+      await executeSection(tx, section);
+      await recordMigration(tx, version);
+    });
+    return;
+  }
+
+  // CONCURRENTLY cannot share a transaction with the ledger write. These
+  // migrations must therefore remain replay-safe, as dbmate also requires for
+  // transaction:false migrations interrupted before their version is recorded.
+  await executeSection(sqlClient, section);
+  await recordMigration(sqlClient, version);
+}
+
 const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+let migrationLockHeld = false;
 
 try {
   await sql.unsafe(`
@@ -145,6 +169,11 @@ try {
       version character varying(128) NOT NULL PRIMARY KEY
     )
   `);
+
+  // start.sh runs on every replica. Serialize the ledger read + migration loop
+  // on one Postgres session so two fresh pods cannot apply the same version.
+  await sql.unsafe(`SELECT pg_advisory_lock(hashtext('lobu_migrate_up'))`);
+  migrationLockHeld = true;
 
   const appliedRows = await sql.unsafe(
     `SELECT version FROM public.schema_migrations`
@@ -159,15 +188,16 @@ try {
 
     console.log(`Applying: ${file}`);
     await sql.unsafe("SET search_path TO public");
-    await executeSection(sql, up);
-    await sql.unsafe(
-      `INSERT INTO public.schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`,
-      [version]
-    );
+    await applyMigration(sql, up, version);
     console.log(`Applied: ${file}`);
   }
 
   console.log("Migrations complete");
 } finally {
+  if (migrationLockHeld) {
+    await sql
+      .unsafe(`SELECT pg_advisory_unlock(hashtext('lobu_migrate_up'))`)
+      .catch(() => undefined);
+  }
   await sql.end({ timeout: 1 }).catch(() => undefined);
 }

@@ -277,6 +277,7 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
 	// a single squashed baseline + forward deltas; both replay idempotently
 	// (baseline gated by the schema_migrations ledger, deltas use IF NOT EXISTS).
 	const sql = postgres(databaseUrl, { max: 1 });
+	let migrationLockHeld = false;
 
 	try {
 		const migrationsDir = resolveMigrationsDir();
@@ -287,6 +288,8 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
         version character varying(128) NOT NULL PRIMARY KEY
       )
     `);
+		await sql.unsafe(`SELECT pg_advisory_lock(hashtext('lobu_migrate_up'))`);
+		migrationLockHeld = true;
 
 		const appliedRows = (await sql.unsafe(
 			`SELECT version FROM public.schema_migrations`,
@@ -308,9 +311,29 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
 
 			await sql.unsafe("SET search_path TO public");
 			try {
-				// transaction:false sections (CONCURRENTLY + heal DO) must run
-				// statement-at-a-time — see migration-loader.executeMigrationSection.
-				await executeMigrationSection((statement) => sql.unsafe(statement), up);
+				if (up.transaction) {
+					await sql.begin(async (tx) => {
+						await executeMigrationSection(
+							(statement) => tx.unsafe(statement),
+							up,
+						);
+						await tx`
+              INSERT INTO public.schema_migrations (version) VALUES (${version})
+              ON CONFLICT DO NOTHING
+            `;
+					});
+				} else {
+					// CONCURRENTLY sections cannot include the ledger write in one
+					// transaction, so execute their top-level statements separately.
+					await executeMigrationSection(
+						(statement) => sql.unsafe(statement),
+						up,
+					);
+					await sql`
+              INSERT INTO public.schema_migrations (version) VALUES (${version})
+              ON CONFLICT DO NOTHING
+            `;
+				}
 			} catch (err) {
 				const code = (err as { code?: string } | null)?.code;
 				const isDuplicateObject =
@@ -322,14 +345,19 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
 					{ migration: file, version, pgErrorCode: code },
 					"Migration already applied (idempotent skip)",
 				);
+				await sql`
+          INSERT INTO public.schema_migrations (version) VALUES (${version})
+          ON CONFLICT DO NOTHING
+        `;
 			}
-			await sql`
-        INSERT INTO public.schema_migrations (version) VALUES (${version})
-        ON CONFLICT DO NOTHING
-      `;
 		}
 		logger.info("Migrations complete");
 	} finally {
+		if (migrationLockHeld) {
+			await sql
+				.unsafe(`SELECT pg_advisory_unlock(hashtext('lobu_migrate_up'))`)
+				.catch(() => undefined);
+		}
 		await sql.end();
 	}
 }

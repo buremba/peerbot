@@ -46,7 +46,7 @@ import {
   behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
 } from '../../../behaviors/triggers';
-import { syncBehaviorChannelFeedsBestEffort } from '../../../behaviors/channel-subscriptions';
+import { syncBehaviorChannelFeeds } from '../../../behaviors/channel-subscriptions';
 
 /**
  * Drop chat-link style triggers when cloning a Behavior onto an entity.
@@ -812,8 +812,9 @@ export async function handleCreateFromVersion(
           sharedVersionId,
           groupId,
         });
-        // Keep channel feeds in sync with any remaining event triggers on the clone.
-        await syncBehaviorChannelFeedsBestEffort({
+        // This runs inside the clone transaction, so projection failure must
+        // roll the clone back with it.
+        await syncBehaviorChannelFeeds({
           organizationId,
           after: Array.isArray(cloneTriggers)
             ? (cloneTriggers as BehaviorTrigger[])

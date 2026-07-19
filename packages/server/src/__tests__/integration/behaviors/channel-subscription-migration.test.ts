@@ -59,6 +59,12 @@ describe("Behavior channel-subscription migration", () => {
 			slug: "slackinst-migration",
 		});
 		const sql = getDb();
+		const deletedConnection = await createTestConnection({
+			organization_id: org.id,
+			connector_key: "slack",
+			created_by: user.id,
+			slug: "slackinst-deleted-migration",
+		});
 		const scheduled = await manageBehaviors(
 			{
 				action: "create",
@@ -94,6 +100,7 @@ describe("Behavior channel-subscription migration", () => {
 		let captured:
 			| {
 					behaviorCount: number;
+					deletedConnectionBehaviorCount: number;
 					legacyTable: string | null;
 					compatView: string | null;
 					triggers: unknown;
@@ -126,10 +133,19 @@ describe("Behavior channel-subscription migration", () => {
 					INSERT INTO agent_channel_bindings (
 						organization_id, agent_id, platform, channel_id,
 						team_id, connection_id, model
-					) VALUES (
-						${org.id}, ${agent.agentId}, 'slack', 'slack:C-MIGRATION',
-						'E-MIGRATION', ${connection.id}, 'anthropic/claude-sonnet'
-					)
+					) VALUES
+						(
+							${org.id}, ${agent.agentId}, 'slack', 'slack:C-MIGRATION',
+							'E-MIGRATION', ${connection.id}, 'anthropic/claude-sonnet'
+						),
+						(
+							${org.id}, ${agent.agentId}, 'slack', 'slack:C-DELETED',
+							'T-DELETED', ${deletedConnection.id}, NULL
+						)
+				`;
+				await tx`
+					UPDATE connections SET deleted_at = NOW()
+					WHERE id = ${deletedConnection.id}
 				`;
 
 				await tx.unsafe(subscriptionUp);
@@ -147,6 +163,7 @@ describe("Behavior channel-subscription migration", () => {
 					FROM watchers
 					WHERE organization_id = ${org.id}
 					  AND agent_id = ${agent.agentId}
+					  AND status = 'active'
 					  AND tags @> ARRAY['system:chat-link']::text[]
 				`;
 				const [legacy] = await tx<{ name: string | null }>`
@@ -157,7 +174,22 @@ describe("Behavior channel-subscription migration", () => {
 					FROM watchers
 					WHERE organization_id = ${org.id}
 					  AND agent_id = ${agent.agentId}
+					  AND status = 'active'
 					  AND tags @> ARRAY['system:chat-link']::text[]
+				`;
+				const [deletedConnectionBehaviorCount] = await tx<{
+					count: number;
+				}>`
+					SELECT COUNT(*)::int AS count
+					FROM watchers w
+					WHERE w.organization_id = ${org.id}
+					  AND w.status = 'active'
+					  AND w.tags @> ARRAY['system:chat-link']::text[]
+					  AND EXISTS (
+						SELECT 1
+						FROM jsonb_array_elements(w.triggers) trigger
+						WHERE trigger->>'connection_id' = ${String(deletedConnection.id)}
+					  )
 				`;
 				const [compatView] = await tx<{ name: string | null }>`
 					SELECT to_regclass('public.behavior_channel_subscriptions')::text AS name
@@ -167,6 +199,8 @@ describe("Behavior channel-subscription migration", () => {
 				`;
 				captured = {
 					behaviorCount: behaviorCount.count,
+					deletedConnectionBehaviorCount:
+						deletedConnectionBehaviorCount.count,
 					legacyTable: legacy.name,
 					compatView: compatView.name,
 					triggers: behavior.triggers,
@@ -182,6 +216,7 @@ describe("Behavior channel-subscription migration", () => {
 
 		expect(captured).toEqual({
 			behaviorCount: 1,
+			deletedConnectionBehaviorCount: 0,
 			legacyTable: "agent_channel_bindings",
 			compatView: null,
 			triggers: [

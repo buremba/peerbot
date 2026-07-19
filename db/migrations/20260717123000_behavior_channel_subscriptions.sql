@@ -92,6 +92,9 @@ WHERE platform LIKE 'slack%'
       b.model,
       b.created_at
     FROM agent_channel_bindings b
+    JOIN connections c
+      ON c.id = b.connection_id
+     AND c.deleted_at IS NULL
     WHERE b.connection_id IS NOT NULL
     ORDER BY b.created_at, b.organization_id, b.agent_id
   LOOP

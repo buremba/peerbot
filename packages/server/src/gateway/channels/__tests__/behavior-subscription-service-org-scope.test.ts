@@ -174,6 +174,32 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 		).toBe(legacy.agent_id);
 	});
 
+	test("archives the Behavior when its connection is deleted", async () => {
+		const svc = new BehaviorSubscriptionService();
+		await svc.createChatBehavior("agent-a", "slack", CHANNEL, "T1", {
+			organizationId: ORG_A,
+			connectionId: connectionA,
+		});
+		const sql = getDb();
+
+		await sql`DELETE FROM connections WHERE id = ${connectionA}`;
+
+		const [behavior] = await sql<{ status: string }>`
+			SELECT status
+			FROM watchers
+			WHERE organization_id = ${ORG_A}
+			  AND tags @> ARRAY['system:chat-link']::text[]
+		`;
+		expect(behavior.status).toBe("archived");
+		const [legacy] = await sql<{ connection_id: string | null }>`
+			SELECT connection_id
+			FROM agent_channel_bindings
+			WHERE organization_id = ${ORG_A}
+			  AND channel_id = ${CHANNEL}
+		`;
+		expect(legacy.connection_id).toBeNull();
+	});
+
 	test("re-linking one connection updates only that connection's agent", async () => {
 		const svc = new BehaviorSubscriptionService();
 		await svc.createChatBehavior("agent-a", "slack", CHANNEL, "T1", {

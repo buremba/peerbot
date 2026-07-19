@@ -267,7 +267,7 @@ DECLARE
   version_id integer;
   created_by_user text;
 BEGIN
-  IF TG_OP = 'DELETE' THEN
+  IF TG_OP = 'DELETE' OR (TG_OP = 'UPDATE' AND NEW.connection_id IS NULL) THEN
     native_channel_id := CASE
       WHEN OLD.channel_id LIKE OLD.platform || ':%'
         THEN substring(OLD.channel_id FROM length(OLD.platform) + 2)
@@ -289,12 +289,10 @@ BEGIN
           AND trigger->'event_types' ? 'message.created'
           AND trigger->'match'->>'channel_id' = native_channel_id
       );
-    RETURN OLD;
-  END IF;
-
-  IF NEW.connection_id IS NULL THEN
-    RAISE EXCEPTION
-      'Cannot sync channel subscription: legacy binding has no concrete connection_id';
+    IF TG_OP = 'DELETE' THEN
+      RETURN OLD;
+    END IF;
+    RETURN NEW;
   END IF;
   IF NOT EXISTS (
     SELECT 1

@@ -880,6 +880,75 @@ describe("live steering classification", () => {
     ]);
   });
 
+  test("does not combine coalescing deliveries from different Behaviors", async () => {
+    const client = makeClient();
+    const processSingleMessage = mock(async () => undefined);
+    (client as any).processSingleMessage = processSingleMessage;
+    const first = {
+      payload: {
+        ...payload,
+        messageId: "behavior-first",
+        platformMetadata: {
+          behaviorId: 7,
+          behaviorActiveRunPolicy: "coalesce",
+        },
+      },
+      timestamp: 1,
+    };
+    const second = {
+      payload: {
+        ...payload,
+        messageId: "behavior-second",
+        platformMetadata: {
+          behaviorId: 8,
+          behaviorActiveRunPolicy: "coalesce",
+        },
+      },
+      timestamp: 2,
+    };
+
+    await (client as any).processBatchedMessages([first, second]);
+
+    expect(processSingleMessage).toHaveBeenNthCalledWith(1, first, [
+      "behavior-first",
+    ]);
+    expect(processSingleMessage).toHaveBeenNthCalledWith(2, second, [
+      "behavior-second",
+    ]);
+  });
+
+  test("does not combine a Behavior delivery with a human message", async () => {
+    const client = makeClient();
+    const processSingleMessage = mock(async () => undefined);
+    (client as any).processSingleMessage = processSingleMessage;
+    const behavior = {
+      payload: {
+        ...payload,
+        messageId: "behavior",
+        platformMetadata: {
+          behaviorId: 7,
+          behaviorActiveRunPolicy: "coalesce",
+        },
+      },
+      timestamp: 1,
+    };
+    const human = {
+      payload: {
+        ...payload,
+        messageId: "human",
+        platformMetadata: {},
+      },
+      timestamp: 2,
+    };
+
+    await (client as any).processBatchedMessages([behavior, human]);
+
+    expect(processSingleMessage).toHaveBeenNthCalledWith(1, behavior, [
+      "behavior",
+    ]);
+    expect(processSingleMessage).toHaveBeenNthCalledWith(2, human, ["human"]);
+  });
+
   test("routes explicit cancel to the active worker before steering", async () => {
     const client = makeClient();
     const cancel = mock(async () => true);

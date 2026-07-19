@@ -696,12 +696,19 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
         trigger,
       },
     ];
-    const { bridge, enqueueMessage, conversationState } = makePreviewHarness({
-      behaviors,
-    });
+    const {
+      bridge,
+      enqueueMessage,
+      conversationState,
+      healSubscriptionTeam,
+    } = makePreviewHarness({ behaviors });
     const thread = makeThread(undefined);
 
-    await bridge.handleMessage(thread, makeMessage(), "mention");
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ raw: { team_id: "TREAL" } }),
+      "mention",
+    );
 
     expect(enqueueMessage).toHaveBeenCalledTimes(2);
     const payloads = enqueueMessage.mock.calls.map((call) => call[0] as any);
@@ -715,6 +722,11 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     ]);
     expect(payloads[0]?.messageId).not.toBe(payloads[1]?.messageId);
     expect(payloads[0]?.ephemeralContext).toContain("Handle support messages.");
+    expect(healSubscriptionTeam).toHaveBeenCalledTimes(2);
+    expect(healSubscriptionTeam.mock.calls.map((call) => call[2])).toEqual([
+      "org-a",
+      "org-b",
+    ]);
     const entries = await conversationState.getEntries(
       CONN_ID,
       CHANNEL_ID,

@@ -462,4 +462,38 @@ CREATE TRIGGER sync_legacy_channel_binding_behavior
 AFTER INSERT OR UPDATE OR DELETE ON agent_channel_bindings
 FOR EACH ROW EXECUTE FUNCTION sync_legacy_channel_binding_behavior();
 
+-- Connection removal is a soft delete in every production path, so the legacy
+-- binding FK never fires. Retire the canonical chat Behaviors directly when the
+-- connection tombstone lands. Keeping this at the database seam covers managed
+-- and BYO deletion from every replica and every service path.
+CREATE OR REPLACE FUNCTION archive_chat_behaviors_for_deleted_connection()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $archive$
+BEGIN
+  UPDATE watchers w
+  SET status = 'archived', updated_at = current_timestamp
+  WHERE w.status = 'active'
+    AND w.tags @> ARRAY['system:chat-link']::text[]
+    AND EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) behavior_trigger
+      WHERE behavior_trigger->>'kind' = 'event'
+        AND behavior_trigger->>'connector_key' = NEW.connector_key
+        AND jsonb_typeof(behavior_trigger->'connection_id') = 'number'
+        AND (behavior_trigger->>'connection_id')::bigint = NEW.id
+        AND behavior_trigger->'event_types' ? 'message.created'
+    );
+  RETURN NEW;
+END
+$archive$;
+
+DROP TRIGGER IF EXISTS archive_chat_behaviors_for_deleted_connection
+  ON connections;
+CREATE TRIGGER archive_chat_behaviors_for_deleted_connection
+AFTER UPDATE OF deleted_at ON connections
+FOR EACH ROW
+WHEN (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL)
+EXECUTE FUNCTION archive_chat_behaviors_for_deleted_connection();
+
 -- migrate:down

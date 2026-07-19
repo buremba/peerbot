@@ -797,19 +797,25 @@ export class GatewayClient {
       return;
     }
 
+    const batchBehaviorId = messages[0]?.payload.platformMetadata?.behaviorId;
+    const canCoalesceBehaviorBatch = messages.every((message) => {
+      const metadata = message.payload.platformMetadata;
+      return batchBehaviorId === undefined
+        ? metadata?.behaviorId === undefined
+        : metadata?.behaviorId === batchBehaviorId &&
+            metadata.behaviorActiveRunPolicy === "coalesce";
+    });
+
     // Some deliveries require one isolated turn: a `!`-bash command would be
-    // buried by the "Message N:" join, and a queue-policy Behavior explicitly
-    // promises one turn per event. If either appears, preserve arrival order and
-    // run every delivery in this batch independently.
+    // buried by the "Message N:" join, while Behavior metadata/instructions may
+    // only be shared by deliveries for the same coalescing Behavior. Preserve
+    // arrival order for mixed Behaviors, Behavior/human batches, and non-
+    // coalescing policies so the first delivery cannot overwrite the rest.
     if (
-      messages.some((message) => {
-        const metadata = message.payload.platformMetadata;
-        return Boolean(
-          metadata?.bangBash ||
-            (metadata?.behaviorId &&
-              metadata.behaviorActiveRunPolicy === "queue")
-        );
-      })
+      !canCoalesceBehaviorBatch ||
+      messages.some(
+        (message) => message.payload.platformMetadata?.bangBash !== undefined
+      )
     ) {
       for (const message of messages) {
         await this.processSingleMessage(message, [message.payload.messageId]);

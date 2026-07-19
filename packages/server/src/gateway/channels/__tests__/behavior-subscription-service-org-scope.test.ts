@@ -12,6 +12,7 @@ import {
 	createTestUser,
 } from "../../../__tests__/setup/test-fixtures.js";
 import { getDb } from "../../../db/client.js";
+import { softDeleteChatConnectionProjection } from "../../../lobu/stores/connections-projection.js";
 import {
 	ensureDbForGatewayTests,
 	resetTestDatabase,
@@ -174,7 +175,7 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 		).toBe(legacy.agent_id);
 	});
 
-	test("archives the Behavior when its connection is deleted", async () => {
+	test("archives the Behavior when its connection is soft-deleted", async () => {
 		const svc = new BehaviorSubscriptionService();
 		await svc.createChatBehavior("agent-a", "slack", CHANNEL, "T1", {
 			organizationId: ORG_A,
@@ -182,7 +183,7 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 		});
 		const sql = getDb();
 
-		await sql`DELETE FROM connections WHERE id = ${connectionA}`;
+		await softDeleteChatConnectionProjection(sql, ORG_A, "a");
 
 		const [behavior] = await sql<{ status: string }>`
 			SELECT status
@@ -191,13 +192,10 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 			  AND tags @> ARRAY['system:chat-link']::text[]
 		`;
 		expect(behavior.status).toBe("archived");
-		const [legacy] = await sql<{ connection_id: string | null }>`
-			SELECT connection_id
-			FROM agent_channel_bindings
-			WHERE organization_id = ${ORG_A}
-			  AND channel_id = ${CHANNEL}
+		const [connection] = await sql<{ deleted_at: Date | null }>`
+			SELECT deleted_at FROM connections WHERE id = ${connectionA}
 		`;
-		expect(legacy.connection_id).toBeNull();
+		expect(connection.deleted_at).toBeInstanceOf(Date);
 	});
 
 	test("re-linking one connection updates only that connection's agent", async () => {

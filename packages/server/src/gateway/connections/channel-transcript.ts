@@ -4,8 +4,9 @@
  * Persists the messages a connection sees — inbound from users and the bot's own
  * outbound posts — from the real-time event stream, so `read_conversation` can
  * read channel history from Postgres instead of the throttled platform history
- * API. Idempotent on (connection, channel, platform_message_id): webhook
- * redeliveries and the bot's own echoed messages collapse to one row.
+ * API. Idempotent on (organization, connection, channel, platform_message_id):
+ * webhook redeliveries and the bot's own echoed messages collapse to one row,
+ * while each organization bound to a shared preview channel keeps its own copy.
  *
  * Capture is best-effort and fire-and-forget — a transcript-write failure must
  * never block a turn or a webhook ack. Call sites use `.catch()`.
@@ -100,7 +101,9 @@ export async function persistChannelMessage(
       ${params.authorId ?? null}, ${params.authorName ?? null}, ${teamId},
       ${authorEntityId}, ${params.isBot}, ${text}, ${params.occurredAt}
     )
-    ON CONFLICT (connection_id, channel_id, platform_message_id) DO NOTHING
+    ON CONFLICT (
+      organization_id, connection_id, channel_id, platform_message_id
+    ) DO NOTHING
   `;
 }
 

@@ -698,6 +698,12 @@ export class MessageHandlerBridge {
     const agentId = resolved.agentId;
     const routingOrgId =
       resolved.organizationId ?? this.connection.organizationId;
+    const routingOrganizationIds = [
+      ...new Set([
+        ...behaviors.map((candidate) => candidate.organizationId),
+        ...(routingOrgId ? [routingOrgId] : []),
+      ]),
+    ];
 
     // Lazy self-heal (Slack Grid): a Behavior written before its workspace was
     // known carries no team. Inbound Slack events reliably carry the REAL
@@ -709,20 +715,22 @@ export class MessageHandlerBridge {
       behaviorSubscriptionService &&
       platform === "slack" &&
       /^T[A-Z0-9]+$/i.test(teamId ?? "") &&
-      routingOrgId
+      routingOrganizationIds.length > 0
     ) {
-      try {
-        await behaviorSubscriptionService.healSubscriptionTeam(
-          this.connection.id,
-          channelId,
-          routingOrgId,
-          teamId as string
-        );
-      } catch (err) {
-        logger.debug(
-          { channelId, teamId, error: String(err) },
-          "binding team self-heal failed (non-fatal)"
-        );
+      for (const organizationId of routingOrganizationIds) {
+        try {
+          await behaviorSubscriptionService.healSubscriptionTeam(
+            this.connection.id,
+            channelId,
+            organizationId,
+            teamId as string
+          );
+        } catch (err) {
+          logger.debug(
+            { channelId, teamId, organizationId, error: String(err) },
+            "binding team self-heal failed (non-fatal)"
+          );
+        }
       }
     }
 
@@ -730,9 +738,9 @@ export class MessageHandlerBridge {
     // read_conversation can serve channel history from Postgres instead of the
     // throttled platform history API. Fire-and-forget + idempotent. thread_id is
     // the thread the message lives in (null at channel level).
-    if (routingOrgId) {
+    for (const organizationId of routingOrganizationIds) {
       captureChannelMessage({
-        organizationId: routingOrgId,
+        organizationId,
         connectionId: connection.id,
         platform,
         channelId,
@@ -977,21 +985,24 @@ export class MessageHandlerBridge {
               }
             );
             // Seed the durable transcript from the thread's prior messages too.
-            if (routingOrgId && prior.id) {
-              captureChannelMessage({
-                organizationId: routingOrgId,
-                connectionId: this.connection.id,
-                platform,
-                channelId,
-                threadId: conversationId !== channelId ? conversationId : null,
-                platformMessageId: prior.id,
-                authorId: prior.author?.userId,
-                authorName: prior.author?.fullName,
-                teamId: teamId ?? null,
-                isBot: prior.author?.isMe === true,
-                text,
-                occurredAt: new Date(sentAt),
-              });
+            if (prior.id) {
+              for (const organizationId of routingOrganizationIds) {
+                captureChannelMessage({
+                  organizationId,
+                  connectionId: this.connection.id,
+                  platform,
+                  channelId,
+                  threadId:
+                    conversationId !== channelId ? conversationId : null,
+                  platformMessageId: prior.id,
+                  authorId: prior.author?.userId,
+                  authorName: prior.author?.fullName,
+                  teamId: teamId ?? null,
+                  isBot: prior.author?.isMe === true,
+                  text,
+                  occurredAt: new Date(sentAt),
+                });
+              }
             }
           }
           backfillSucceeded = true;

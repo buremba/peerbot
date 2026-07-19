@@ -18,8 +18,9 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import {
+	executeMigrationSection,
 	listMigrationFiles,
-	loadMigrationUpSection,
+	loadMigrationUp,
 } from "./db/migration-loader";
 import { buildLocalBootstrapHooks } from "./local-bootstrap";
 import logger from "./utils/logger";
@@ -302,12 +303,14 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
 		for (const file of listMigrationFiles(migrationsDir)) {
 			const version = file.split("_")[0] ?? "";
 			if (applied.has(version)) continue;
-			const migrationSql = loadMigrationUpSection(migrationsDir, file);
-			if (!migrationSql) continue;
+			const up = loadMigrationUp(migrationsDir, file);
+			if (!up.sql) continue;
 
 			await sql.unsafe("SET search_path TO public");
 			try {
-				await sql.unsafe(migrationSql);
+				// transaction:false sections (CONCURRENTLY + heal DO) must run
+				// statement-at-a-time — see migration-loader.executeMigrationSection.
+				await executeMigrationSection((statement) => sql.unsafe(statement), up);
 			} catch (err) {
 				const code = (err as { code?: string } | null)?.code;
 				const isDuplicateObject =

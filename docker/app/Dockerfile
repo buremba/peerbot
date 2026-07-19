@@ -175,8 +175,9 @@ COPY --from=builder /app/packages/connector-worker ./packages/connector-worker
 COPY --from=builder /app/packages/server ./packages/server
 COPY --from=builder /app/packages/owletto ./packages/owletto
 
-# Database migrations
+# Database migrations (+ statement-at-a-time runner for transaction:false)
 COPY db/migrations ./db/migrations
+COPY scripts/migrate-up.mjs ./scripts/migrate-up.mjs
 
 # Install Playwright/patchright Chromium for browser-based connectors.
 # PLAYWRIGHT_BROWSERS_PATH pins both the install target and the runtime lookup to

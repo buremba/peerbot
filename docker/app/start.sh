@@ -166,7 +166,12 @@ run_migrations() {
 
   echo ""
   echo "Running database migrations..."
-  dbmate --url "$DATABASE_URL" --migrations-dir /app/db/migrations --no-dump-schema up
+  # Statement-at-a-time for transaction:false (CONCURRENTLY + heal DO). Plain
+  # dbmate Exec's the whole up section as one simple-query batch, which Postgres
+  # wraps in an implicit transaction that CREATE INDEX CONCURRENTLY refuses.
+  # scripts/migrate-up.mjs is schema_migrations-compatible with dbmate.
+  MIGRATIONS_DIR="${MIGRATIONS_DIR:-/app/db/migrations}" \
+    node /app/scripts/migrate-up.mjs
   echo "Migrations complete"
 }
 

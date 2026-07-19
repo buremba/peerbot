@@ -9,7 +9,11 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import postgres from 'postgres';
 import { PROD_PG_VALUE_OPTIONS } from '../../db/client';
-import { listMigrationFiles, loadMigrationUpSection } from '../../db/migration-loader';
+import {
+  executeMigrationSection,
+  listMigrationFiles,
+  loadMigrationUp,
+} from '../../db/migration-loader';
 import { clearInMemoryMcpSessionsForTests } from '../../mcp-session-state';
 import { clearMultiTenantCachesForTests } from '../../workspace/multi-tenant-caches';
 import { clearMcpSessions } from './mcp-session-cache';
@@ -170,21 +174,22 @@ export async function setupTestDatabase(): Promise<void> {
 
     await ensureSeedUserIfPossible(db);
 
-    let normalizedUpSection = loadMigrationUpSection(migrationsDir, file);
-
+    const loaded = loadMigrationUp(migrationsDir, file);
     // When the connection user doesn't own schema `public` (PG15+ fresh
     // `createdb` where the postgres superuser still owns it), the baseline's
     // cosmetic `COMMENT ON SCHEMA public` / `COMMENT ON EXTENSION ...` lines
     // throw `must be owner of schema/extension`. These comments carry no
     // functional weight for tests, so drop them rather than require the test
     // role to be the schema owner.
-    if (!ownsPublicSchema) {
-      normalizedUpSection = stripOwnerOnlyComments(normalizedUpSection);
-    }
+    const up = ownsPublicSchema
+      ? loaded
+      : { ...loaded, sql: stripOwnerOnlyComments(loaded.sql) };
 
-    if (normalizedUpSection) {
+    if (up.sql) {
       try {
-        await db.unsafe(normalizedUpSection);
+        // transaction:false sections (CONCURRENTLY + heal DO) must run
+        // statement-at-a-time — see migration-loader.executeMigrationSection.
+        await executeMigrationSection((statement) => db.unsafe(statement), up);
       } catch (err) {
         console.error(`Migration failed for ${file}:`, err);
         throw err;

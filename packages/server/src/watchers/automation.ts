@@ -597,21 +597,24 @@ export async function sweepStaleWatcherRuns(
 }
 
 /**
- * Terminalize scheduled watcher runs that were never claimed before the
- * coarse watcher TTL elapsed. A `pending` row is part of the active-run set,
- * so without this recovery it blocks materialization forever while the
- * watcher's `next_run_at` remains in the past.
+ * Terminalize watcher runs that were never claimed before the coarse watcher
+ * TTL elapsed. A `pending` row is part of the active-run set, so without this
+ * recovery it blocks materialization forever while the watcher's `next_run_at`
+ * remains in the past (scheduled) — and a device-pinned event run that never
+ * gets claimed (device offline / unpinned) can starve the Behavior's schedule
+ * path indefinitely if left pending.
  *
  * The run and watcher are locked together in Postgres. Competing replicas,
  * dispatchers, and materializers therefore converge on one transition:
  * either a dispatcher claims the row first, or one sweeper marks it timeout
- * and advances the schedule. Advancing inside the same transaction prevents
- * the next automation tick from immediately recreating the missed run.
+ * and (for scheduled deliveries only) advances the schedule. Advancing inside
+ * the same transaction prevents the next automation tick from immediately
+ * recreating the missed run.
  *
  * Manual runs are intentionally excluded: a manual caller owns retry policy.
- * Fresh scheduled rows are protected by the same generous TTL used for
- * non-heartbeating executions, allowing device-pinned watchers to wait for a
- * temporarily offline device without being churned.
+ * Fresh rows are protected by the same generous TTL used for non-heartbeating
+ * executions, allowing device-pinned Behaviors to wait for a temporarily
+ * offline device without being churned.
  */
 async function finalizeStalePendingWatcherRuns(
 	sql: DbClient,
@@ -623,14 +626,16 @@ async function finalizeStalePendingWatcherRuns(
 			watcher_id: number;
 			schedule: string | null;
 			timezone: string | null;
+			dispatch_source: string | null;
 		}>`
-      SELECT r.id, r.watcher_id, w.schedule, w.timezone
+      SELECT r.id, r.watcher_id, w.schedule, w.timezone,
+             r.approved_input->>'dispatch_source' AS dispatch_source
       FROM runs r
       JOIN watchers w ON w.id = r.watcher_id
       WHERE r.run_type = 'watcher'
         AND r.status = 'pending'
         AND r.created_at < current_timestamp - ${staleInterval}::interval
-        AND r.approved_input->>'dispatch_source' = 'scheduled'
+        AND COALESCE(r.approved_input->>'dispatch_source', 'scheduled') <> 'manual'
       ORDER BY r.created_at ASC
       FOR UPDATE OF r, w SKIP LOCKED
       LIMIT 100
@@ -649,6 +654,15 @@ async function finalizeStalePendingWatcherRuns(
 			if (Number(result.count ?? 0) === 0) continue;
 			finalized++;
 
+			// Only scheduled deliveries own the next_run_at projection. Timing out
+			// a stale event run must free the active-run slot without advancing
+			// (or inventing) a schedule the event did not miss.
+			if (
+				candidate.dispatch_source !== "scheduled" &&
+				candidate.dispatch_source != null
+			) {
+				continue;
+			}
 			if (!candidate.schedule) continue;
 			const next = nextRunAt(
 				candidate.schedule,

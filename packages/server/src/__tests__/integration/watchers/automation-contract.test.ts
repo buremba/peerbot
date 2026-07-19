@@ -1744,6 +1744,45 @@ describe("watcher automation contract", () => {
 			);
 		});
 
+		it("finalizes a stale pending event run without advancing the schedule", async () => {
+			// Device-pinned event deliveries that never get claimed (device offline)
+			// must not sit pending forever and block the Behavior's schedule path.
+			// Timeout frees the slot; schedule projection is owned by scheduled runs.
+			const { sql, watcherId } = await createAutomatedWatcher();
+			await materializeDueWatcherRuns({} as Env);
+			const [before] =
+				await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+			const nextBefore = new Date(before.next_run_at as string).getTime();
+
+			await sql`
+        UPDATE runs
+        SET created_at = NOW() - INTERVAL '3 hours',
+            approved_input = jsonb_set(
+              approved_input,
+              '{dispatch_source}',
+              '"event"'::jsonb
+            )
+        WHERE watcher_id = ${watcherId}
+          AND run_type = 'watcher'
+          AND status = 'pending'
+      `;
+
+			const { timedOut } = await sweepStaleWatcherRuns(sql);
+			expect(timedOut).toBe(1);
+			const [run] = await sql`
+        SELECT status, error_message FROM runs
+        WHERE watcher_id = ${watcherId} AND run_type = 'watcher'
+      `;
+			expect(String(run.status)).toBe("timeout");
+			expect(String(run.error_message ?? "")).toMatch(/pending/i);
+
+			const [after] =
+				await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+			// Event timeout must not advance schedule — leave next_run_at as it was
+			// (still overdue from materialize, not pushed into the future).
+			expect(new Date(after.next_run_at as string).getTime()).toBe(nextBefore);
+		});
+
 		// Seed a `running` watcher run with controlled claim/heartbeat ages.
 		// Omitting `heartbeatAgo` mirrors a client that never heartbeats — the
 		// claim sets last_heartbeat_at == claimed_at, so the row must fall to the

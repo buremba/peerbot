@@ -42,7 +42,7 @@ describe("Behavior channel-subscription migration", () => {
 		await cleanupTestDatabase();
 	});
 
-	it("backfills one canonical Behavior, drops the state table, and replays safely", async () => {
+	it("backfills one canonical Behavior, retains the rollout bridge, and replays safely", async () => {
 		const { org, user, ctx } = await seedOwnerContext();
 		const foreignOrg = await createTestOrganization({
 			name: "Foreign migration transcript",
@@ -86,16 +86,14 @@ describe("Behavior channel-subscription migration", () => {
 			WHERE id = ${scheduledBehaviorId}
 		`;
 		const migrationsDir = resolveMigrationsDir();
-		const triggerUp = loadMigrationUpSection(
-			migrationsDir,
-			TRIGGER_MIGRATION,
-		);
+		const triggerUp = loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION);
 		const subscriptionUp = loadMigrationUpSection(
 			migrationsDir,
 			SUBSCRIPTION_MIGRATION,
 		);
 		let captured:
 			| {
+					behaviorCount: number;
 					legacyTable: string | null;
 					compatView: string | null;
 					triggers: unknown;
@@ -124,18 +122,6 @@ describe("Behavior channel-subscription migration", () => {
 						'foreign-message', 'T-FOREIGN', false, 'foreign', NOW()
 					)
 				`;
-				await tx.unsafe(`
-					CREATE TABLE agent_channel_bindings (
-						agent_id text NOT NULL,
-						platform text NOT NULL,
-						channel_id text NOT NULL,
-						team_id text,
-						created_at timestamptz DEFAULT now() NOT NULL,
-						organization_id text NOT NULL,
-						connection_id bigint,
-						model text
-					)
-				`);
 				await tx`
 					INSERT INTO agent_channel_bindings (
 						organization_id, agent_id, platform, channel_id,
@@ -166,6 +152,13 @@ describe("Behavior channel-subscription migration", () => {
 				const [legacy] = await tx<{ name: string | null }>`
 					SELECT to_regclass('public.agent_channel_bindings')::text AS name
 				`;
+				const [behaviorCount] = await tx<{ count: number }>`
+					SELECT COUNT(*)::int AS count
+					FROM watchers
+					WHERE organization_id = ${org.id}
+					  AND agent_id = ${agent.agentId}
+					  AND tags @> ARRAY['system:chat-link']::text[]
+				`;
 				const [compatView] = await tx<{ name: string | null }>`
 					SELECT to_regclass('public.behavior_channel_subscriptions')::text AS name
 				`;
@@ -173,6 +166,7 @@ describe("Behavior channel-subscription migration", () => {
 					SELECT triggers FROM watchers WHERE id = ${scheduledBehaviorId}
 				`;
 				captured = {
+					behaviorCount: behaviorCount.count,
 					legacyTable: legacy.name,
 					compatView: compatView.name,
 					triggers: behavior.triggers,
@@ -187,7 +181,8 @@ describe("Behavior channel-subscription migration", () => {
 		}
 
 		expect(captured).toEqual({
-			legacyTable: null,
+			behaviorCount: 1,
+			legacyTable: "agent_channel_bindings",
 			compatView: null,
 			triggers: [
 				{

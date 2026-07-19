@@ -6,11 +6,11 @@ import {
 	expect,
 	test,
 } from "bun:test";
+import { listTestBehaviorSubscriptions } from "../../../__tests__/setup/behavior-subscriptions.js";
 import {
 	addUserToOrganization,
 	createTestUser,
 } from "../../../__tests__/setup/test-fixtures.js";
-import { listTestBehaviorSubscriptions } from "../../../__tests__/setup/behavior-subscriptions.js";
 import { getDb } from "../../../db/client.js";
 import {
 	ensureDbForGatewayTests,
@@ -85,6 +85,93 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 			channelId: CHANNEL,
 		});
 		expect(rows).toHaveLength(2);
+		const sql = getDb();
+		const [legacy] = await sql<{ count: number }>`
+			SELECT COUNT(*)::int AS count
+			FROM agent_channel_bindings
+			WHERE organization_id = ${ORG_A}
+		`;
+		expect(legacy.count).toBe(2);
+	});
+
+	test("reads and retires a link written by an old replica", async () => {
+		const sql = getDb();
+		await sql`
+			INSERT INTO agent_channel_bindings (
+				organization_id, agent_id, platform, channel_id, team_id,
+				connection_id, model
+			) VALUES (
+				${ORG_A}, 'agent-a', 'slack', ${CHANNEL}, 'T1',
+				${connectionA}, 'openai/gpt-5'
+			)
+		`;
+
+		const svc = new BehaviorSubscriptionService();
+		expect(
+			(await svc.resolveForConnection("a", CHANNEL, ORG_A))?.agentId,
+		).toBe("agent-a");
+		await sql`
+			UPDATE agent_channel_bindings
+			SET agent_id = 'agent-a2', model = 'anthropic/claude-sonnet'
+			WHERE organization_id = ${ORG_A}
+			  AND connection_id = ${connectionA}
+			  AND channel_id = ${CHANNEL}
+		`;
+
+		const relinked = await svc.resolveForConnection("a", CHANNEL, ORG_A);
+		expect(relinked?.agentId).toBe("agent-a2");
+		expect(relinked?.model).toBe("anthropic/claude-sonnet");
+		expect(await svc.listChatBehaviors("agent-a2", ORG_A)).toHaveLength(1);
+		expect(
+			await svc.archiveChatBehavior("agent-a2", CHANNEL, connectionA, ORG_A),
+		).toBe(true);
+
+		const [remaining] = await sql<{ count: number }>`
+			SELECT COUNT(*)::int AS count
+			FROM agent_channel_bindings
+			WHERE organization_id = ${ORG_A}
+		`;
+		expect(remaining.count).toBe(0);
+	});
+
+	test("serializes old and new replica writes into one Behavior", async () => {
+		const sql = getDb();
+		const svc = new BehaviorSubscriptionService();
+		await Promise.all([
+			svc.createChatBehavior("agent-a", "slack", CHANNEL, "T1", {
+				organizationId: ORG_A,
+				connectionId: connectionA,
+			}),
+			sql`
+				INSERT INTO agent_channel_bindings (
+					organization_id, agent_id, platform, channel_id, team_id,
+					connection_id
+				) VALUES (
+					${ORG_A}, 'agent-a2', 'slack', ${CHANNEL}, 'T1', ${connectionA}
+				)
+				ON CONFLICT (organization_id, connection_id, channel_id)
+					WHERE connection_id IS NOT NULL
+				DO UPDATE SET agent_id = EXCLUDED.agent_id
+			`,
+		]);
+
+		const rows = (
+			await listTestBehaviorSubscriptions({
+				organizationId: ORG_A,
+				channelId: CHANNEL,
+			})
+		).filter((row) => Number(row.connection_id) === connectionA);
+		expect(rows).toHaveLength(1);
+		const [legacy] = await sql<{ agent_id: string }>`
+			SELECT agent_id
+			FROM agent_channel_bindings
+			WHERE organization_id = ${ORG_A}
+			  AND connection_id = ${connectionA}
+			  AND channel_id = ${CHANNEL}
+		`;
+		expect(
+			(await svc.resolveForConnection("a", CHANNEL, ORG_A))?.agentId,
+		).toBe(legacy.agent_id);
 	});
 
 	test("re-linking one connection updates only that connection's agent", async () => {

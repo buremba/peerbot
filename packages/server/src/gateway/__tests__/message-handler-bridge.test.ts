@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import type { MatchingBehaviorActivation } from "../../behaviors/activation.js";
 import { ConversationStateStore } from "../connections/conversation-state-store.js";
 import {
   buildAttachmentTranscriptText,
@@ -9,7 +10,6 @@ import {
   parsePreviewLinkCode,
 } from "../connections/message-handler-bridge.js";
 import type { PlatformConnection } from "../connections/types.js";
-import type { MatchingBehaviorActivation } from "../../behaviors/activation.js";
 import { InMemoryStateAdapter } from "./fixtures/in-memory-state-adapter.js";
 import {
   type ArtifactTestEnv,
@@ -592,10 +592,14 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       updatedAt: 1,
     };
     const enqueueMessage = mock(async () => undefined);
+    const healSubscriptionTeam = mock(async () => undefined);
     const behaviorSubscriptionService =
-      opts.binding === undefined
+      opts.binding === undefined && opts.behaviors === undefined
         ? undefined
-				: { resolveForConnection: mock(async () => opts.binding) };
+				: {
+						resolveForConnection: mock(async () => opts.binding ?? null),
+						healSubscriptionTeam,
+					};
     const services = {
       getArtifactStore: () => null,
       getPublicGatewayUrl: () => "https://gateway.example.com",
@@ -619,7 +623,12 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
 			opts.commandDispatcher as never,
       async () => opts.behaviors ?? [],
     );
-    return { bridge, enqueueMessage, conversationState };
+    return {
+      bridge,
+      enqueueMessage,
+      conversationState,
+      healSubscriptionTeam,
+    };
   }
 
   test("unlinked chat → posts /lobu link instructions, no agent run", async () => {
@@ -712,6 +721,47 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       THREAD_ID,
     );
     expect(entries).toHaveLength(1);
+  });
+
+  test("matching Behavior self-heals its Slack workspace team", async () => {
+    const trigger = {
+      kind: "event" as const,
+      connector_key: "slack",
+      connection_id: 42,
+      event_types: ["message.created"],
+      match: { channel_id: CHANNEL_ID },
+      execution: "turn" as const,
+      active_run: "queue" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+    const { bridge, healSubscriptionTeam } = makePreviewHarness({
+      behaviors: [
+        {
+          behaviorId: 71,
+          organizationId: "org-behavior",
+          agentId: "agent-a",
+          deviceWorkerId: null,
+          agentKind: null,
+          model: null,
+          instructions: "Handle support messages.",
+          trigger,
+        },
+      ],
+    });
+
+    await bridge.handleMessage(
+      makeThread(undefined),
+      makeMessage({ raw: { team_id: "TREAL" } }),
+      "mention",
+    );
+
+    expect(healSubscriptionTeam).toHaveBeenCalledWith(
+      CONN_ID,
+      CHANNEL_ID,
+      "org-behavior",
+      "TREAL",
+    );
   });
 
   test("OAuth workspace connection (no agent, not preview): unlinked → link notice, no agent run", async () => {

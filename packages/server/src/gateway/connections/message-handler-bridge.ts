@@ -699,13 +699,14 @@ export class MessageHandlerBridge {
     const routingOrgId =
       resolved.organizationId ?? this.connection.organizationId;
 
-    // Lazy self-heal (Slack Grid): a binding written before its workspace was
-    // known carries a NULL team. Inbound Slack events reliably carry the REAL
-    // workspace `T…` (never the enterprise `E…`), so converge the binding's team
+    // Lazy self-heal (Slack Grid): a Behavior written before its workspace was
+    // known carries no team. Inbound Slack events reliably carry the REAL
+    // workspace `T…` (never the enterprise `E…`), so converge the trigger's team
     // to it on the first message. Guarded to fill only an unknown team; best-
     // effort — a heal failure must never block routing.
     if (
-      resolved.source === "subscription" &&
+      (resolved.source === "subscription" || resolved.source === "behavior") &&
+      behaviorSubscriptionService &&
       platform === "slack" &&
       /^T[A-Z0-9]+$/i.test(teamId ?? "") &&
       routingOrgId

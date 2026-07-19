@@ -16,6 +16,7 @@ import { isCloudMode } from '../utils/cloud-mode';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
 import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import { nextRunAt as nextRunAtFromCron } from '../utils/cron';
+import { stableJson } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
@@ -58,7 +59,22 @@ export interface WatcherRunPayload {
   delivery_ids?: string[];
   trigger_execution?: 'turn' | 'window';
   trigger_output?: 'silent' | 'reply_to_source';
+  trigger_key?: string;
   source_fingerprint?: string;
+}
+
+function behaviorEventTriggerKey(trigger: BehaviorEventTrigger): string {
+  return stableJson({
+    kind: 'event',
+    connector_key: trigger.connector_key,
+    connection_id: trigger.connection_id ?? null,
+    event_types: [...trigger.event_types].sort(),
+    match: trigger.match ?? null,
+    execution: trigger.execution ?? 'turn',
+    active_run: trigger.active_run ?? 'queue',
+    output: trigger.output ?? 'silent',
+    skip_if_unchanged: trigger.skip_if_unchanged ?? true,
+  });
 }
 
 // ============================================
@@ -543,6 +559,7 @@ export async function createBehaviorEventRun(
     }
 
     const policy = params.trigger.active_run ?? 'queue';
+    const triggerKey = behaviorEventTriggerKey(params.trigger);
     if (policy === 'coalesce') {
       const pending = await tx`
         SELECT id, status, approved_input
@@ -551,6 +568,7 @@ export async function createBehaviorEventRun(
           AND run_type = 'watcher'
           AND status = 'pending'
           AND approved_input->>'dispatch_source' = 'event'
+          AND approved_input->>'trigger_key' = ${triggerKey}
         ORDER BY created_at ASC
         LIMIT 1
         FOR UPDATE
@@ -610,6 +628,7 @@ export async function createBehaviorEventRun(
       delivery_ids: [params.signal.delivery_id],
       trigger_execution: params.trigger.execution ?? 'turn',
       trigger_output: params.trigger.output ?? 'silent',
+      trigger_key: triggerKey,
     };
     const inserted = await tx`
       INSERT INTO runs (

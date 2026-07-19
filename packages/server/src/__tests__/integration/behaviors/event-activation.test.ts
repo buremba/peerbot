@@ -187,6 +187,104 @@ describe("Behavior connector-event activation", () => {
 		});
 	});
 
+	it("does not coalesce deliveries from incompatible triggers", async () => {
+		const { org, user, ctx } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		const connection = await createTestConnection({
+			organization_id: org.id,
+			connector_key: "github",
+			created_by: user.id,
+		});
+		const created = await manageBehaviors(
+			{
+				action: "create",
+				slug: "github-mixed-delivery-policy",
+				name: "GitHub mixed delivery policy",
+				prompt: "Handle changed pull requests.",
+				agent_id: agent.agentId,
+				triggers: [
+					{
+						kind: "event",
+						connector_key: "github",
+						connection_id: connection.id,
+						event_types: ["pull_request.created"],
+						execution: "turn",
+						active_run: "queue",
+						output: "silent",
+					},
+					{
+						kind: "event",
+						connector_key: "github",
+						connection_id: connection.id,
+						event_types: ["pull_request.updated"],
+						execution: "window",
+						active_run: "coalesce",
+						output: "silent",
+					},
+				],
+			},
+			{} as Env,
+			ctx
+		);
+		if (created.action !== "create" || !("watcher_id" in created)) {
+			throw new Error("Behavior creation did not complete");
+		}
+		const behaviorId = Number(created.watcher_id);
+		const signal = {
+			connector_key: "github",
+			connection_id: connection.id,
+			label: "PR changed",
+			input_text: "A pull request changed.",
+		};
+		const [queued] = await activateBehaviorSignal({
+			organizationId: org.id,
+			signal: {
+				...signal,
+				event_type: "pull_request.created",
+				delivery_id: "event:mixed:created",
+			},
+		});
+		const [windowed] = await activateBehaviorSignal({
+			organizationId: org.id,
+			signal: {
+				...signal,
+				event_type: "pull_request.updated",
+				delivery_id: "event:mixed:updated",
+			},
+		});
+
+		expect(queued).toMatchObject({
+			behaviorId,
+			created: true,
+			disposition: "queued",
+		});
+		expect(windowed).toMatchObject({
+			behaviorId,
+			created: true,
+			disposition: "queued",
+		});
+		const runs = await getTestDb()`
+			SELECT approved_input
+			FROM runs
+			WHERE watcher_id = ${behaviorId}
+			ORDER BY id ASC
+		`;
+		expect(runs).toHaveLength(2);
+		expect(runs.map((run) => run.approved_input)).toMatchObject([
+			{
+				delivery_ids: ["event:mixed:created"],
+				trigger_execution: "turn",
+			},
+			{
+				delivery_ids: ["event:mixed:updated"],
+				trigger_execution: "window",
+			},
+		]);
+	});
+
 	it("does not advance the schedule when an event delivery fails", async () => {
 		const { org, user, ctx } = await seedOwnerContext();
 		const agent = await createTestAgent({

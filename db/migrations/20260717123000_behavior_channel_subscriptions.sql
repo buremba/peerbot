@@ -345,6 +345,7 @@ EXECUTE FUNCTION archive_chat_behaviors_for_deleted_connection();
 
 -- Clean cut: drop the legacy table (cascades any leftover dual-write triggers)
 -- and any orphaned bridge functions from intermediate PR revisions.
+-- squawk-ignore ban-drop-table -- intentional one-shot clean-cut after backfill; no dual-write bridge retained
 DROP TABLE IF EXISTS agent_channel_bindings CASCADE;
 DROP FUNCTION IF EXISTS sync_legacy_channel_binding_behavior();
 DROP FUNCTION IF EXISTS lock_legacy_channel_binding_projection();

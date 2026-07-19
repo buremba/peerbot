@@ -561,6 +561,31 @@ export async function createWatcherRun(
       }
     }
 
+    // Partial unique index idx_runs_pending_non_event_watcher_per_watcher:
+    // one pending non-event watcher run per watcher. Manual vs scheduled
+    // (different idempotency keys) still collides here under TOCTOU races.
+    if (isUniqueViolation(error, 'idx_runs_pending_non_event_watcher_per_watcher')) {
+      const rows = await sql`
+        SELECT id, status
+        FROM runs
+        WHERE watcher_id = ${params.watcherId}
+          AND run_type = 'watcher'
+          AND watcher_id IS NOT NULL
+          AND status = 'pending'
+          AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
+        LIMIT 1
+      `;
+      const existing = rows.length > 0
+        ? { id: Number(rows[0]?.id), status: String(rows[0]?.status) }
+        : null;
+      if (existing) {
+        logger.info(
+          `[queue] Reusing concurrent pending non-event watcher run ${existing.id} for watcher ${params.watcherId}`
+        );
+        return { runId: existing.id, status: existing.status, created: false };
+      }
+    }
+
     logger.error({ error, watcherId: params.watcherId }, '[queue] Failed to create watcher run');
     throw error;
   }

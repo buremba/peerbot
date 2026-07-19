@@ -3,6 +3,7 @@ import {
 	GITHUB_BEHAVIOR_EVENTS,
 	githubBehaviorSignalDrafts,
 	githubPullRequestSubscribable,
+	githubSyncShouldEmitBehaviorSignals,
 } from "../github-behavior-events";
 
 describe("GitHub Behavior events", () => {
@@ -44,5 +45,20 @@ describe("GitHub Behavior events", () => {
 				resourceType: "pull_request",
 			}),
 		);
+	});
+
+	test("suppresses Behavior signals on cold-start / checkpoint-reset syncs", () => {
+		// lookback_days floods pull_request.created for every first-seen PR when
+		// last_sync_at is missing. Steady-state deltas keep signals.
+		expect(githubSyncShouldEmitBehaviorSignals(null)).toBe(false);
+		expect(githubSyncShouldEmitBehaviorSignals({})).toBe(false);
+		expect(githubSyncShouldEmitBehaviorSignals({ last_sync_at: "" })).toBe(
+			false,
+		);
+		expect(
+			githubSyncShouldEmitBehaviorSignals({
+				last_sync_at: "2026-07-01T00:00:00Z",
+			}),
+		).toBe(true);
 	});
 });

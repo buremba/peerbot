@@ -58,6 +58,19 @@ export const GITHUB_BEHAVIOR_EVENTS: ConnectorBehaviorEvent[] = [
 	},
 ];
 
+/**
+ * Whether a GitHub feed sync should attach behavior_signals to envelopes.
+ * Cold start and checkpoint-reset runs walk lookback_days of history; first-seen
+ * rows would all fire pull_request.created and flood subscribers. Only emit
+ * Behavior signals once a prior last_sync_at exists (steady-state delta).
+ */
+export function githubSyncShouldEmitBehaviorSignals(
+	checkpoint: { last_sync_at?: unknown } | null | undefined,
+): boolean {
+	const lastSync = checkpoint?.last_sync_at;
+	return typeof lastSync === "string" && lastSync.trim().length > 0;
+}
+
 export function githubPullRequestResourceRef(
 	fullName: string,
 	pullNumber: number,

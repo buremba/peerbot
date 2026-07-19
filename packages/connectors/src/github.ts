@@ -28,6 +28,7 @@ import {
   GITHUB_BEHAVIOR_EVENTS,
   githubBehaviorSignalDrafts,
   githubPullRequestSubscribable,
+  githubSyncShouldEmitBehaviorSignals,
 } from './github-behavior-events.js';
 import {
   GITHUB_IDENTITY,
@@ -840,11 +841,18 @@ export default class GitHubConnector extends ConnectorRuntime {
     const repo = this.resolveRepo(config, {});
     const token = this.resolveToken(ctx.credentials?.accessToken, config);
     const contentType = (ctx.feedKey ?? 'issues') as GitHubContentType;
+    // Cold start / checkpoint reset: resolveSince falls back to lookback_days
+    // (default 365). Every PR in that window is first-seen and would flood
+    // pull_request.created Behavior activations. Only attach behavior_signals
+    // once a prior last_sync_at exists (steady-state delta).
+    const attachBehaviorSignals = githubSyncShouldEmitBehaviorSignals(
+      ctx.checkpoint as GitHubCheckpoint | null,
+    );
     const sinceIso = this.resolveSince(ctx.checkpoint, config.lookback_days ?? 365);
 
     if (contentType === 'stargazers') {
       const result = await this.syncStargazers(repo, ctx.checkpoint, token);
-      this.stampRepoAttribution(result.events, repo);
+      this.stampRepoAttribution(result.events, repo, { attachBehaviorSignals });
       return {
         events: result.events,
         checkpoint: {
@@ -865,7 +873,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       labelsFilter: config.labels_filter ?? [],
       token,
     });
-    this.stampRepoAttribution(events, repo);
+    this.stampRepoAttribution(events, repo, { attachBehaviorSignals });
 
     return {
       events,
@@ -1071,15 +1079,21 @@ export default class GitHubConnector extends ConnectorRuntime {
    * GITHUB_REPO_ENTITY_LINK) and restrict recall to repos the requester belongs
    * to. Normalized to match the repo graph ACL keys.
    */
-  private stampRepoAttribution(events: EventEnvelope[], repo: RepoRef): void {
+  private stampRepoAttribution(
+    events: EventEnvelope[],
+    repo: RepoRef,
+    options?: { attachBehaviorSignals?: boolean },
+  ): void {
     const fullName =
       normalizeGithubRepoFullName(`${repo.owner}/${repo.repo}`) ??
       `${repo.owner}/${repo.repo}`.toLowerCase();
+    const attachBehaviorSignals = options?.attachBehaviorSignals !== false;
     for (const event of events) {
       event.metadata = {
         ...(event.metadata ?? {}),
         github_repo_full_name: fullName,
       };
+      if (!attachBehaviorSignals) continue;
       const behaviorSignals = githubBehaviorSignalDrafts(event);
       if (behaviorSignals.length > 0) event.behavior_signals = behaviorSignals;
     }

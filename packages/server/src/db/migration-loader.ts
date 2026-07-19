@@ -71,7 +71,8 @@ export function loadMigrationDown(migrationsDir: string, file: string): Migratio
  *
  * Respects dollar-quoted bodies (`$tag$...$tag$`) and single-quoted string
  * literals so semicolons inside DO/function bodies are not treated as splits.
- * SQL line (`--`) and block comments are skipped.
+ * SQL line (`--`) and block comments are preserved without scanning their
+ * contents for statement boundaries.
  */
 export function splitSqlStatements(sql: string): string[] {
   const statements: string[] = [];

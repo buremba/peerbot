@@ -126,7 +126,7 @@ WHERE platform LIKE 'slack%'
         AND trigger->>'connection_id' = binding.connection_id::text
         AND trigger->'event_types' = '["message.created"]'::jsonb
         AND trigger->'match'->>'channel_id' = native_channel_id
-        -- Team is delivery metadata, not a routing predicate (see H3). Tolerate
+        -- Team is delivery metadata, not a routing predicate. Tolerate
         -- team differences so a UI-created chat-link without team_id does not
         -- get a second Behavior for the same agent+channel+connection (double
         -- reply after migration).

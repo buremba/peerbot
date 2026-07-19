@@ -1,8 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "../../../db/client";
-import { loadMigrationUpSection } from "../../../db/migration-loader";
+import {
+	loadMigrationDownSection,
+	loadMigrationUpSection,
+} from "../../../db/migration-loader";
 import type { Env } from "../../../index";
 import { manageBehaviors } from "../../../tools/admin/manage_behaviors";
 import { initWorkspaceProvider } from "../../../workspace";
@@ -28,14 +31,6 @@ function resolveMigrationsDir(): string {
 		dir = parent;
 	}
 	throw new Error("Could not locate db/migrations from the test directory");
-}
-
-function loadMigrationDownSection(migrationsDir: string, file: string): string {
-	const [, down] = readFileSync(join(migrationsDir, file), "utf-8").split(
-		/^-- migrate:down.*$/m,
-	);
-	if (!down?.trim()) throw new Error(`${file} has no down migration`);
-	return down.trim();
 }
 
 class Rollback extends Error {}

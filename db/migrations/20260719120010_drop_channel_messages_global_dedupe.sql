@@ -9,6 +9,11 @@
 ALTER TABLE public.channel_messages
   DROP CONSTRAINT IF EXISTS channel_messages_dedup;
 
+-- Rollback recreates the legacy arbiter as a plain index rather than a
+-- constraint. Remove either representation so this migration is replayable.
+-- squawk-ignore require-concurrent-index-deletion -- the ALTER above already takes ACCESS EXCLUSIVE; dbmate sends this section as one query, which prevents CONCURRENTLY
+DROP INDEX IF EXISTS public.channel_messages_dedup;
+
 -- migrate:down transaction:false
 
 -- Rollback is possible only before cross-organization duplicates have landed.

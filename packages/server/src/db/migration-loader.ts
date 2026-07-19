@@ -19,7 +19,18 @@ function extractMigrationUpSection(content: string): string {
   );
 }
 
+function extractMigrationDownSection(content: string, file: string): string {
+  const [, down] = content.split(/^-- migrate:down.*$/m);
+  if (!down?.trim()) throw new Error(`${file} has no down migration`);
+  return down.trim();
+}
+
 export function loadMigrationUpSection(migrationsDir: string, file: string): string {
   const content = readFileSync(join(migrationsDir, file), 'utf-8');
   return extractMigrationUpSection(content);
+}
+
+export function loadMigrationDownSection(migrationsDir: string, file: string): string {
+  const content = readFileSync(join(migrationsDir, file), 'utf-8');
+  return extractMigrationDownSection(content, file);
 }

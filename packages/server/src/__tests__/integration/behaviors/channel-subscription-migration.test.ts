@@ -315,6 +315,104 @@ describe("Behavior channel-subscription migration", () => {
 		});
 	});
 
+	it("skips legacy NULL-connection bindings and still completes the clean-cut", async () => {
+		const { org, user } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+			agentId: "null-connection-migration-agent",
+		});
+		const connection = await createTestConnection({
+			organization_id: org.id,
+			connector_key: "slack",
+			created_by: user.id,
+			slug: "slackinst-null-conn-migration",
+		});
+		const migrationsDir = resolveMigrationsDir();
+		const triggerUp = loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION);
+		const subscriptionUp = loadMigrationUpSection(
+			migrationsDir,
+			SUBSCRIPTION_MIGRATION,
+		);
+		const sql = getDb();
+		let captured:
+			| {
+					behaviorCount: number;
+					legacyTable: string | null;
+					messageView: string | null;
+			  }
+			| undefined;
+
+		try {
+			await sql.begin(async (tx: typeof sql) => {
+				await tx.unsafe(`
+					CREATE TABLE IF NOT EXISTS agent_channel_bindings (
+						organization_id text NOT NULL,
+						agent_id text NOT NULL,
+						platform text NOT NULL,
+						channel_id text NOT NULL,
+						team_id text,
+						connection_id bigint,
+						model text,
+						created_at timestamptz NOT NULL DEFAULT now()
+					);
+					CREATE UNIQUE INDEX IF NOT EXISTS agent_channel_bindings_connection_channel_unique
+						ON agent_channel_bindings (organization_id, connection_id, channel_id)
+						WHERE connection_id IS NOT NULL;
+				`);
+				await tx.unsafe(triggerUp);
+				// One routable binding + one legally-nullable NULL-connection binding.
+				// Pre-fix, the NULL row hard-failed the whole migration with RAISE.
+				await tx`
+					INSERT INTO agent_channel_bindings (
+						organization_id, agent_id, platform, channel_id,
+						team_id, connection_id
+					) VALUES
+						(
+							${org.id}, ${agent.agentId}, 'slack', 'slack:C-NULL-SKIP',
+							'T-NULL-SKIP', ${connection.id}
+						),
+						(
+							${org.id}, ${agent.agentId}, 'slack', 'slack:C-ORPHAN',
+							'T-ORPHAN', NULL
+						)
+				`;
+
+				await tx.unsafe(subscriptionUp);
+
+				const [behaviorCount] = await tx<{ count: number }>`
+					SELECT COUNT(*)::int AS count
+					FROM watchers
+					WHERE organization_id = ${org.id}
+					  AND agent_id = ${agent.agentId}
+					  AND status = 'active'
+					  AND tags @> ARRAY['system:chat-link']::text[]
+				`;
+				const [legacy] = await tx<{ name: string | null }>`
+					SELECT to_regclass('public.agent_channel_bindings')::text AS name
+				`;
+				const [messageView] = await tx<{ name: string | null }>`
+					SELECT to_regclass('public.behavior_message_subscriptions')::text AS name
+				`;
+				captured = {
+					behaviorCount: behaviorCount.count,
+					legacyTable: legacy.name,
+					messageView: messageView.name,
+				};
+				throw new Rollback();
+			});
+		} catch (error) {
+			if (!(error instanceof Rollback)) throw error;
+		}
+
+		// NULL-connection binding skipped; only the concrete-connection row backfills.
+		expect(captured).toEqual({
+			behaviorCount: 1,
+			legacyTable: null,
+			messageView: "behavior_message_subscriptions",
+		});
+	});
+
 	it("archives chat Behaviors on rollback and leaves no dual-write artifacts", async () => {
 		const { org, user } = await seedOwnerContext();
 		const agent = await createTestAgent({

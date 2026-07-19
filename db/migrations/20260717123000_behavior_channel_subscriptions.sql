@@ -19,6 +19,7 @@ DECLARE
   created_by_user text;
   native_channel_id text;
   behavior_trigger jsonb;
+  null_connection_bindings integer;
 BEGIN
   -- Replay-safe: after the clean-cut DROP below, re-running this section is a no-op.
   IF to_regclass('public.agent_channel_bindings') IS NULL THEN
@@ -73,13 +74,18 @@ WHERE platform LIKE 'slack%'
   AND team_id IS NOT NULL
   AND team_id !~ '^T';
 
-  IF EXISTS (
-    SELECT 1
-    FROM agent_channel_bindings
-    WHERE connection_id IS NULL
-  ) THEN
-    RAISE EXCEPTION
-      'Cannot migrate channel subscriptions: at least one legacy binding has no concrete connection_id';
+  -- connection_id is nullable (FK ON DELETE SET NULL; legacy NULL rows also
+  -- coexist per 20260703300000). Those bindings were unroutable under the old
+  -- getBindingForConnection path (required the connection join) — same as
+  -- soft-deleted connections, which the JOIN below already skips. Skip them
+  -- rather than aborting the whole deploy on one stale row.
+  SELECT count(*) INTO null_connection_bindings
+  FROM agent_channel_bindings
+  WHERE connection_id IS NULL;
+  IF null_connection_bindings > 0 THEN
+    RAISE NOTICE
+      'behavior_channel_subscriptions: skipping % legacy binding row(s) with connection_id IS NULL (unroutable; not migrated)',
+      null_connection_bindings;
   END IF;
 
   FOR binding IN

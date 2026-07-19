@@ -20,7 +20,8 @@ export const GITHUB_BEHAVIOR_EVENTS: ConnectorBehaviorEvent[] = [
 	{
 		key: "pull_request.created",
 		label: "A pull request is created",
-		description: "Runs for each newly opened pull request in this connection.",
+		description:
+			"Runs for each newly opened pull request observed after the last sync. Webhooks mark the feed due so the poll (not the webhook payload itself) produces the signal.",
 		resourceType: "pull_request",
 		filterSchema: {
 			type: "object",

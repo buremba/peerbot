@@ -343,6 +343,20 @@ export interface WebhookIngestOverrides {
 	 * delivery never mutates the graph. A null/throw lands the row unattributed.
 	 */
 	resolveActor?: (sql: DbClient) => Promise<WebhookActorAttribution | null>;
+	/**
+	 * After auth + size/rate limits, handle the delivery instead of persisting a
+	 * raw `webhook:<id>` event. Used by poll-canonical connectors (GitHub) so
+	 * OAuth/PAT webhooks mark the matching feed due (or store event-complete
+	 * signals) the same way app-webhooks do — Behavior signals then ride the
+	 * poll path with full envelopes. Returning a Response short-circuits insert.
+	 */
+	handleInsteadOfPersist?: (ctx: {
+		rawBody: Uint8Array;
+		headers: Headers;
+		parsed: unknown;
+		organizationId: string;
+		connectionId: string;
+	}) => Promise<Response>;
 }
 
 /**
@@ -480,6 +494,19 @@ export async function handleWebhookIngest(
 		parsed = JSON.parse(new TextDecoder().decode(rawBody));
 	} catch {
 		return json(400, { error: "Request body must be valid JSON" });
+	}
+
+	// Poll-canonical connectors (GitHub OAuth/PAT) replace raw webhook:<id>
+	// storage with feed-due / structured-store handling so Behavior activations
+	// share the same envelope path as scheduled polls. Auth above is identical.
+	if (overrides?.handleInsteadOfPersist) {
+		return overrides.handleInsteadOfPersist({
+			rawBody,
+			headers: request.headers,
+			parsed,
+			organizationId,
+			connectionId: stored.id,
+		});
 	}
 
 	// 5. Dedupe key: provider delivery id header when configured and present,

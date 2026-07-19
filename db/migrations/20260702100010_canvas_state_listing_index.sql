@@ -2,7 +2,7 @@
 
 -- Canvas-on-events: listing / pagination index over ALL chain members (roots and
 -- superseders alike), keyed on the same period columns the write path stamps.
--- Serves Behavior-window pagination (ORDER BY window_start DESC) and previous-period
+-- Serves get_watchers pagination (ORDER BY window_start DESC) and previous-period
 -- lookups without scanning the full events table. Non-unique on purpose — a
 -- period has one root but many chain members (edit history).
 --
@@ -12,7 +12,7 @@
 --
 -- window_start indexed as canonical text (see idx_canvas_chain_root) — a UTC
 -- ISO-8601 string sorts lexicographically in timestamp order, so DESC text
--- ordering matches DESC chronological ordering for Behavior-window pagination.
+-- ordering matches DESC chronological ordering for get_watchers pagination.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_canvas_state_listing
   ON public.events (
     ((metadata->>'watcher_id')::bigint),

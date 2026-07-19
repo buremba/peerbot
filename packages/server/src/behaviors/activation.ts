@@ -122,11 +122,7 @@ export async function findMatchingBehaviorActivationsForRuntimeConnection(
   );
 }
 
-/**
- * Match and durably queue a normalized signal. When an Env is supplied, newly
- * pending server-side runs are dispatched immediately; the existing periodic
- * automation tick remains the crash/restart backstop.
- */
+/** Match a normalized signal and durably queue its Behavior runs. */
 export async function activateBehaviorSignal(args: {
   organizationId: string;
   signal: ConnectorTriggerSignal;
@@ -163,9 +159,9 @@ export async function activateBehaviorSignal(args: {
 }
 
 /**
- * Start newly durable Behavior runs without turning an already-committed
- * connector delivery into a failed sync when immediate dispatch is unavailable.
- * The periodic automation tick remains the durable retry path.
+ * Start newly durable Behavior runs without failing an already-committed
+ * connector delivery if the immediate dispatcher itself throws. The periodic
+ * automation tick recovers any claim stranded by that failure.
  */
 export async function dispatchBehaviorRunsBestEffort(
   results: Array<{ runId: number; status: string }>,
@@ -179,7 +175,7 @@ export async function dispatchBehaviorRunsBestEffort(
   } catch (error) {
     logger.error(
       { error, runIds },
-      "Immediate Behavior dispatch failed; automation will retry",
+      "Immediate Behavior dispatch threw; automation will recover stranded claims",
     );
   }
 }

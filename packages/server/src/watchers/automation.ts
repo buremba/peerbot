@@ -342,16 +342,18 @@ async function markWatcherRunFailedIdempotent(
         error_message = ${message}
     WHERE id = ${runId}
       AND status IN ('running', 'claimed', 'pending')
-    RETURNING watcher_id
+    RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
   `;
 	// Advance next_run_at on terminal failure too — otherwise a permanently
-	// broken watcher re-materializes + re-dispatches a fresh agent run every
-	// single minute forever (token/worker burn). Mirrors the feeds model: a
-	// failed run still moves the schedule forward by its normal cadence.
-	await advanceWatcherSchedule(
-		sql,
-		failedRows[0]?.watcher_id as number | undefined
-	);
+	// broken scheduled/manual run re-materializes + re-dispatches every minute.
+	// Event delivery is independent of the cron cursor and must not skip its next
+	// scheduled activation.
+	if (failedRows[0]?.dispatch_source !== "event") {
+		await advanceWatcherSchedule(
+			sql,
+			failedRows[0]?.watcher_id as number | undefined
+		);
+	}
 }
 
 /**
@@ -669,8 +671,8 @@ async function finalizeStalePendingWatcherRuns(
 }
 
 /**
- * Recover scheduled watcher runs that were claimed by the dispatcher but
- * never transitioned to `running` (process crashed between claim and POST).
+ * Recover server-dispatched Behavior runs that were claimed by the dispatcher
+ * but never transitioned to `running` (process crashed between claim and POST).
  * Run every watcher-automation tick — the staleness threshold means the
  * UPDATE is a no-op for rows currently being dispatched, so cross-pod
  * coordination via the runs-queue claim path is sufficient.
@@ -679,13 +681,15 @@ async function finalizeStalePendingWatcherRuns(
  * - `status='claimed'` only. `running` rows are NOT reset — in a multi-pod
  *   deployment another pod may be legitimately executing that agent turn,
  *   and we have no per-pod fencing (no worker_instance_id). Mid-turn crashes
- *   instead self-heal: sweepStaleWatcherRuns marks them `timeout` after 2h,
- *   then materializeDueWatcherRuns creates a fresh pending run on the next
- *   tick since next_run_at is still in the past.
+ *   instead become `timeout` through sweepStaleWatcherRuns after 2h. Scheduled
+ *   runs then rematerialize on a later tick while `next_run_at` is still due;
+ *   event and manual deliveries remain terminal to avoid duplicating a turn
+ *   that may already have reached the agent.
  * - `claimed_at < now() - 5min` to avoid racing the dispatcher on a row it
  *   just claimed but hasn't yet moved to `running`.
- * - `dispatch_source='scheduled'` only. Manual triggers are not auto-retried;
- *   the caller would see the failure and decide whether to re-trigger.
+ * - Claimed scheduled and event deliveries retry after a dispatcher crash
+ *   before `running`. Manual triggers are not auto-retried; the caller owns
+ *   retry policy.
  *
  * Module-private: `runWatcherAutomationTick` is the only driver. The
  * stale-claim threshold lives in config/intervals.ts
@@ -706,7 +710,8 @@ async function resetOrphanedWatcherRuns(
       AND status = 'claimed'
       AND claimed_by = 'lobu-dispatcher'
       AND claimed_at < now() - ${intervals.watcherOrphanedClaimThreshold}::interval
-      AND COALESCE(approved_input->>'dispatch_source', 'scheduled') = 'scheduled'
+      AND COALESCE(approved_input->>'dispatch_source', 'scheduled')
+          IN ('scheduled', 'event')
   `;
 	const reset = Number(result.count ?? 0);
 	if (reset > 0) {

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { BehaviorEventTrigger } from '@lobu/core/contracts/tools/manage-behaviors';
 import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
 import { matchingBehaviorTriggers } from '../../behaviors/event-trigger';
+import { normalizeBehaviorTriggers } from '../../behaviors/triggers';
 
 const githubTrigger: BehaviorEventTrigger = {
   kind: 'event',
@@ -20,6 +21,7 @@ const slackTrigger: BehaviorEventTrigger = {
   match: { channel_id: 'C123' },
   execution: 'turn',
   active_run: 'steer',
+  output: 'reply_to_source',
 };
 
 describe('behavior event trigger matching', () => {
@@ -77,5 +79,38 @@ describe('behavior event trigger matching', () => {
       attributes: { channel_id: 'C123' },
     };
     expect(matchingBehaviorTriggers([slackTrigger], signal)).toEqual([]);
+  });
+
+  test('rejects unsupported execution, output, and active-run combinations', () => {
+    expect(() =>
+      normalizeBehaviorTriggers([
+        {
+          ...slackTrigger,
+          execution: 'window',
+          active_run: 'steer',
+          output: 'silent',
+        },
+      ]),
+    ).toThrow('Window execution does not support steering');
+    expect(() =>
+      normalizeBehaviorTriggers([
+        {
+          ...slackTrigger,
+          execution: 'window',
+          active_run: 'coalesce',
+          output: 'reply_to_source',
+        },
+      ]),
+    ).toThrow('Window execution cannot reply to the source');
+    expect(() =>
+      normalizeBehaviorTriggers([
+        {
+          ...slackTrigger,
+          execution: 'turn',
+          active_run: 'steer',
+          output: 'silent',
+        },
+      ]),
+    ).toThrow('Steering requires a turn that replies to the source');
   });
 });

@@ -76,6 +76,24 @@ async function getConnectorBehaviorEventCatalog(
 function normalizedEventTrigger(
 	trigger: BehaviorEventTrigger
 ): BehaviorEventTrigger {
+	const execution = trigger.execution ?? "turn";
+	const activeRun = trigger.active_run ?? "queue";
+	const output = trigger.output ?? "silent";
+	if (execution === "window" && activeRun === "steer") {
+		throw new ToolUserError(
+			"Window execution does not support steering; use queue or coalesce."
+		);
+	}
+	if (execution === "window" && output === "reply_to_source") {
+		throw new ToolUserError(
+			"Window execution cannot reply to the source; use turn execution or silent output."
+		);
+	}
+	if (activeRun === "steer" && output !== "reply_to_source") {
+		throw new ToolUserError(
+			"Steering requires a turn that replies to the source; use queue or coalesce for silent output."
+		);
+	}
 	return {
 		...trigger,
 		event_types: Array.from(new Set(trigger.event_types)),
@@ -83,9 +101,9 @@ function normalizedEventTrigger(
 			trigger.match && Object.keys(trigger.match).length > 0
 				? trigger.match
 				: undefined,
-		execution: trigger.execution ?? "turn",
-		active_run: trigger.active_run ?? "queue",
-		output: trigger.output ?? "silent",
+		execution,
+		active_run: activeRun,
+		output,
 		skip_if_unchanged: trigger.skip_if_unchanged ?? true,
 	};
 }

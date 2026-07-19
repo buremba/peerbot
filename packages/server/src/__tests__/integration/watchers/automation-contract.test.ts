@@ -1530,6 +1530,39 @@ describe("watcher automation contract", () => {
 	});
 
 	describe("watcher-automation tick orchestration", () => {
+		it("recovers an orphaned event-delivery claim for durable retry", async () => {
+			const { sql, watcherId } = await createAutomatedWatcher();
+			const materialized = await materializeDueWatcherRuns({} as Env);
+			expect(materialized.runsCreated).toBe(1);
+
+			const [claimed] = await sql<{ id: number }>`
+				UPDATE runs
+				SET status = 'claimed',
+					claimed_by = 'lobu-dispatcher',
+					claimed_at = NOW() - INTERVAL '10 minutes',
+					approved_input = approved_input || ${sql.json({
+						dispatch_source: "event",
+						device_worker_id: "11111111-1111-1111-1111-111111111111",
+					})}
+				WHERE watcher_id = ${watcherId}
+				  AND run_type = 'watcher'
+				RETURNING id
+			`;
+			expect(claimed).toBeDefined();
+
+			const result = await runWatcherAutomationTick({} as Env);
+			expect(result.reset).toBe(1);
+
+			const [recovered] = await sql`
+				SELECT status, claimed_by, claimed_at
+				FROM runs
+				WHERE id = ${claimed.id}
+			`;
+			expect(recovered.status).toBe("pending");
+			expect(recovered.claimed_by).toBeNull();
+			expect(recovered.claimed_at).toBeNull();
+		});
+
 		// End-to-end regression for the 12-day outage: a stuck active run carrying a
 		// dispatched_message_id used to make reconcile throw `malformed array literal`,
 		// which (pre phase-isolation) aborted materialize + dispatch every tick. The

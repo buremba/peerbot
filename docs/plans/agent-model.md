@@ -232,7 +232,7 @@ new engine or admin tool:
   carry normalized `behavior_signals`.
 - Public API, generated client, MCP registry, CLI config/apply/init, and UI all
   use the same trigger schema.
-- Two migrations alter/reuse existing storage; no subscription view or new
+- The migrations alter/reuse existing storage; no subscription view or new
   state table is introduced.
 - Self-wake for future workflows remains a capability grant over
   `manage_schedules`, not a new trigger engine.

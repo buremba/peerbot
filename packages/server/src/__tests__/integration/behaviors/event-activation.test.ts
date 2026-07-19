@@ -3,6 +3,7 @@ import { activateBehaviorSignal } from "../../../behaviors/activation";
 import type { Env } from "../../../index";
 import { manageBehaviors } from "../../../tools/admin/manage_behaviors";
 import { getBehavior } from "../../../tools/get_behavior";
+import { dispatchPendingWatcherRuns } from "../../../watchers/automation";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -186,6 +187,87 @@ describe("Behavior connector-event activation", () => {
 		});
 	});
 
+	it("does not advance the schedule when an event delivery fails", async () => {
+		const { org, user, ctx } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		const connection = await createTestConnection({
+			organization_id: org.id,
+			connector_key: "github",
+			created_by: user.id,
+		});
+		const created = await manageBehaviors(
+			{
+				action: "create",
+				slug: "event-failure-with-schedule",
+				name: "Event failure with schedule",
+				prompt: "Handle the delivery.",
+				agent_id: agent.agentId,
+				triggers: [
+					{
+						kind: "event",
+						connector_key: "github",
+						connection_id: connection.id,
+						event_types: ["pull_request.created"],
+						execution: "turn",
+					},
+					{
+						kind: "schedule",
+						cron: "0 9 * * *",
+						execution: "window",
+					},
+				],
+			},
+			{} as Env,
+			ctx
+		);
+		if (created.action !== "create" || !("watcher_id" in created)) {
+			throw new Error("Behavior creation did not complete");
+		}
+		const behaviorId = Number(created.watcher_id);
+		const sql = getTestDb();
+		await sql`
+			UPDATE watchers
+			SET next_run_at = NOW() - INTERVAL '1 hour'
+			WHERE id = ${behaviorId}
+		`;
+		const [activation] = await activateBehaviorSignal({
+			organizationId: org.id,
+			signal: {
+				connector_key: "github",
+				connection_id: connection.id,
+				event_type: "pull_request.created",
+				delivery_id: "event:failed-dispatch",
+				label: "PR created",
+				input_text: "A pull request was created.",
+			},
+		});
+		await sql`
+			UPDATE runs
+			SET approved_input = jsonb_set(
+				approved_input,
+				'{agent_id}',
+				'"missing-agent"'::jsonb
+			)
+			WHERE id = ${activation.runId}
+		`;
+
+		await dispatchPendingWatcherRuns({ runIds: [activation.runId] });
+
+		const [stored] = await sql`
+			SELECT r.status, w.next_run_at
+			FROM runs r
+			JOIN watchers w ON w.id = r.watcher_id
+			WHERE r.id = ${activation.runId}
+		`;
+		expect(stored.status).toBe("failed");
+		expect(new Date(stored.next_run_at as string).getTime()).toBeLessThan(
+			Date.now()
+		);
+	});
+
 	it("applies unchanged-delivery policy per matching trigger", async () => {
 		const { org, user, ctx } = await seedOwnerContext();
 		const agent = await createTestAgent({
@@ -289,7 +371,10 @@ describe("Behavior connector-event activation", () => {
 			"GitHub does not support Behavior event 'pull_request.deleted'"
 		);
 		await expect(
-			create("unsupported-steering", { active_run: "steer" })
+			create("unsupported-steering", {
+				active_run: "steer",
+				output: "reply_to_source",
+			})
 		).rejects.toThrow(
 			"GitHub event 'pull_request.created' does not support steering"
 		);

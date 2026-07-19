@@ -6,6 +6,10 @@
 -- routing keeps resolving a nonexistent agent (unrunnable turns, stale
 -- bound-channel targets, undeliverable notifications). Archive every active
 -- Behavior owned by the agent — none of them can run once the agent is gone.
+--
+-- agents has composite PK (organization_id, id). Scope the archive to the
+-- deleted row's organization so a shared agent id in another tenant is not
+-- corrupted.
 CREATE OR REPLACE FUNCTION archive_behaviors_for_deleted_agent()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -14,6 +18,7 @@ BEGIN
   UPDATE watchers w
   SET status = 'archived', updated_at = current_timestamp
   WHERE w.status = 'active'
+    AND w.organization_id = OLD.organization_id
     AND w.agent_id = OLD.id;
   RETURN OLD;
 END
@@ -26,12 +31,19 @@ FOR EACH ROW
 EXECUTE FUNCTION archive_behaviors_for_deleted_agent();
 
 -- Backfill: archive Behaviors already orphaned by agent deletes that happened
--- before this trigger existed.
+-- before this trigger existed. Correlate on organization_id so a live agent
+-- with the same id in another org does not keep a foreign orphan active (or
+-- incorrectly spare a local orphan).
 UPDATE watchers w
 SET status = 'archived', updated_at = current_timestamp
 WHERE w.status = 'active'
   AND w.agent_id IS NOT NULL
-  AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.id = w.agent_id);
+  AND NOT EXISTS (
+    SELECT 1
+    FROM agents a
+    WHERE a.id = w.agent_id
+      AND a.organization_id = w.organization_id
+  );
 
 -- migrate:down
 

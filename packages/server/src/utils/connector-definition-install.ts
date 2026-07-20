@@ -299,6 +299,10 @@ export async function upsertConnectorDefinitionRecords(params: {
   const mcpConfigJson = metadata.mcpConfig ? sql.json(metadata.mcpConfig) : null;
   const openapiConfigJson = metadata.openapiConfig ? sql.json(metadata.openapiConfig) : null;
   const runtimeJson = metadata.runtime ? sql.json(metadata.runtime) : null;
+  // Capability flag (#2033 item 2): readiness reads this instead of assuming a
+  // declared action is executable. Older metadata (no field) stays NULL =
+  // "assume supported" so nothing regresses.
+  const supportsExecute = metadata.supportsExecute ?? null;
 
   const existing = await sql`
     SELECT id, status, login_enabled
@@ -335,6 +339,7 @@ export async function upsertConnectorDefinitionRecords(params: {
           favicon_domain = ${metadata.faviconDomain ?? null},
           required_capability = ${metadata.requiredCapability ?? null},
           runtime = ${runtimeJson},
+          supports_execute = ${supportsExecute},
           login_enabled = ${preservedLoginEnabled},
           updated_at = NOW()
       WHERE id = ${existingRow.id}
@@ -352,7 +357,7 @@ export async function upsertConnectorDefinitionRecords(params: {
         organization_id, key, name, description, version,
         auth_schema, feeds_schema, actions_schema, behavior_events, options_schema,
         mcp_config, openapi_config, favicon_domain, required_capability,
-        runtime, status, login_enabled
+        runtime, supports_execute, status, login_enabled
       ) VALUES (
         ${params.organizationId}, ${metadata.key}, ${metadata.name},
         ${metadata.description ?? null}, ${metadata.version},
@@ -360,7 +365,7 @@ export async function upsertConnectorDefinitionRecords(params: {
         ${optionsSchemaJson},
         ${mcpConfigJson}, ${openapiConfigJson},
         ${metadata.faviconDomain ?? null}, ${metadata.requiredCapability ?? null},
-        ${runtimeJson}, 'active', ${preservedLoginEnabled}
+        ${runtimeJson}, ${supportsExecute}, 'active', ${preservedLoginEnabled}
       )
       ON CONFLICT (organization_id, key)
         WHERE organization_id IS NOT NULL AND status = 'active'
@@ -388,6 +393,7 @@ export async function upsertConnectorDefinitionRecords(params: {
             favicon_domain = ${metadata.faviconDomain ?? null},
             required_capability = ${metadata.requiredCapability ?? null},
             runtime = ${runtimeJson},
+            supports_execute = ${supportsExecute},
             updated_at = NOW()
         WHERE key = ${metadata.key}
           AND organization_id = ${params.organizationId}

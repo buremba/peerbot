@@ -888,8 +888,16 @@ export async function createConnectorOperationRun(params: {
    */
   policyPrincipalKind?: 'agent' | 'watcher' | 'user' | null;
   policyPrincipalId?: string | null;
+  /**
+   * Optional transaction handle. When passed, the run INSERT (and its
+   * connector-version read) execute on the caller's transaction instead of the
+   * singleton pool, so the caller can bind run creation atomically to a sibling
+   * write (e.g. the pending approval EVENT — #2033 item 16). If the caller's tx
+   * rolls back, the run never exists.
+   */
+  db?: DbClient;
 }): Promise<number> {
-  const sql = getDb();
+  const sql = params.db ?? getDb();
 
   const approvalStatus = params.approvalMode === 'queued' ? 'pending' : 'auto';
   const status = params.approvalMode === 'inline' ? 'running' : 'pending';

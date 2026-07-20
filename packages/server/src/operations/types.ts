@@ -20,6 +20,14 @@ export interface AvailableOperation {
   annotations?: OperationAnnotations;
   input_schema?: Record<string, unknown>;
   output_schema?: Record<string, unknown>;
+  /**
+   * For `local_action` operations: whether the compiled connector runtime
+   * actually overrides execute(). `false` means the op is declared in the
+   * catalog but the code would throw "Actions not supported" — readiness must
+   * report it as unsupported (#2033 item 2). `undefined`/`true` = supported
+   * (or a backend where this does not apply, e.g. mcp_tool / http_operation).
+   */
+  supports_execute?: boolean;
 }
 
 interface LocalActionBackendConfig {

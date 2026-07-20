@@ -458,6 +458,9 @@ function operationReadinessReason(
 	executable: boolean,
 ): string {
 	if (executable) return "At least one visible connection is ready.";
+	if (readiness === "unsupported") {
+		return "This connector's installed code does not implement this action (declared in the catalog but not executable).";
+	}
 	if (readiness === "disconnected") {
 		return "No visible connection exists for this connector.";
 	}
@@ -598,6 +601,15 @@ function buildOperationNextAction(args: {
 			],
 		};
 	}
+	if (readiness === "unsupported") {
+		// Not a connection/auth problem the caller can fix by wiring — the
+		// installed connector code simply lacks an execute() for this action.
+		return {
+			action: "unsupported",
+			manual: true,
+			...(viewUrl ? { view_url: viewUrl } : {}),
+		};
+	}
 	if (
 		["pending_auth", "error", "revoked"].includes(readiness) &&
 		["interactive", "oauth_account"].includes(remediationAuthKind ?? "")
@@ -642,8 +654,16 @@ function buildAvailableOperation(args: {
 			reason: "This operation is disabled on the connection.",
 		};
 	});
-	const { readyTarget, executable, readiness } =
-		resolveOperationReadiness(targets);
+	// Capability gate (#2033 item 2): a local_action op whose compiled runtime
+	// does NOT override execute() is declared in the catalog but would throw
+	// "Actions not supported" at execution. Report it unsupported here so
+	// readiness agrees with execution — regardless of connection status.
+	const executeUnsupported =
+		operation.backend === "local_action" &&
+		(operation as OperationDescriptor).supports_execute === false;
+	const { readyTarget, executable, readiness } = executeUnsupported
+		? { readyTarget: undefined, executable: false, readiness: "unsupported" }
+		: resolveOperationReadiness(targets);
 	const remediationTarget =
 		targets.find((target) => target.status === readiness) ?? targets[0];
 	const remediationInternalTarget = internalTargets.find(
@@ -1007,38 +1027,12 @@ async function handleExecute(
 			? "device"
 			: "inline";
 
-	const runId = await createConnectorOperationRun({
-		organizationId: ctx.organizationId,
-		connectionId: connection.id,
-		connectorKey: connection.connector_key,
-		operationKey: operation.operation_key,
-		operationInput: input,
-		approvalMode,
-		requireCompiledCode: operation.backend === "local_action",
-		// Persist the TRUSTED principal so a queued run's policy is re-evaluated
-		// at approve time against who queued it, not who approves it (sol #5) —
-		// and in the SAME acting mode, so an autonomous run's tighter autonomous
-		// rule isn't lost to an attended recheck.
-		policyPrincipalKind: actor.kind,
-		policyPrincipalId: actor.id,
-	});
-
-	if (args.watcher_source) {
-		await trackWatcherReaction({
-			organizationId: ctx.organizationId,
-			watcherId: args.watcher_source.watcher_id,
-			windowId: args.watcher_source.window_id,
-			reactionType: "action_executed",
-			toolName: "manage_operations",
-			toolArgs: {
-				operation_key: args.operation_key,
-				connection_id: args.connection_id,
-				input,
-			},
-			runId,
-		});
-	}
-
+	// Queued (approval) runs bind run creation to the pending approval EVENT in
+	// ONE transaction (#2033 item 16): if the event write fails, the run must
+	// not exist — otherwise the run is durably pending but the /memory approval
+	// page (events-only) shows nothing and the agent can never approve it.
+	// Device/inline runs have no approval event, so they create the run on the
+	// pool as before.
 	if (shouldQueue) {
 		const feedRows = await sql`
       SELECT entity_ids FROM feeds
@@ -1053,43 +1047,89 @@ async function handleExecute(
 				? rawEntityIds
 				: `{${(rawEntityIds as number[]).join(",")}}`
 			: null;
-		const event = await insertEvent({
-			entityIds:
-				entityIdsLiteral && typeof entityIdsLiteral === "string"
-					? entityIdsLiteral
-							.replace(/[{}]/g, "")
-							.split(",")
-							.filter(Boolean)
-							.map(Number)
-					: [],
-			organizationId: ctx.organizationId,
-			originId: `run_${runId}_pending`,
-			title: `${operation.name} — pending approval`,
-			content: `Agent requested operation: ${operation.name}`,
-			semanticType: "operation",
-			connectorKey: connection.connector_key,
-			connectionId: args.connection_id,
-			runId,
-			interactionType: "approval",
-			interactionStatus: "pending",
-			interactionInputSchema:
-				(operation.input_schema as Record<string, unknown> | undefined) ?? null,
-			interactionInput: input,
-			metadata: {
-				operation_key: operation.operation_key,
-				operation_name: operation.name,
-				action_key: operation.operation_key,
-				action_name: operation.name,
-				operation_input: input,
-				action_input: input,
-				input_schema: operation.input_schema ?? null,
-				status: "pending_approval",
-				connection_name: connection.display_name ?? connection.connector_key,
-				run_id: runId,
+		const entityIds =
+			entityIdsLiteral && typeof entityIdsLiteral === "string"
+				? entityIdsLiteral
+						.replace(/[{}]/g, "")
+						.split(",")
+						.filter(Boolean)
+						.map(Number)
+				: [];
+
+		// Atomic: run + approval event commit together or not at all. Both writes
+		// run on `tx`; insertEvent threads it via options.sql, and
+		// createConnectorOperationRun via its db param (which also carries its
+		// connector-version read into the same tx — safe, it is a read).
+		const { runId, eventId } = await sql.begin(async (tx) => {
+			const createdRunId = await createConnectorOperationRun({
+				organizationId: ctx.organizationId,
+				connectionId: connection.id,
+				connectorKey: connection.connector_key,
+				operationKey: operation.operation_key,
+				operationInput: input,
+				approvalMode,
+				requireCompiledCode: operation.backend === "local_action",
+				// Persist the TRUSTED principal so a queued run's policy is
+				// re-evaluated at approve time against who queued it, not who
+				// approves it (sol #5) — and in the SAME acting mode, so an
+				// autonomous run's tighter autonomous rule isn't lost to an
+				// attended recheck.
+				policyPrincipalKind: actor.kind,
+				policyPrincipalId: actor.id,
+				db: tx,
+			});
+			const event = await insertEvent({
+				entityIds,
+				organizationId: ctx.organizationId,
+				originId: `run_${createdRunId}_pending`,
+				title: `${operation.name} — pending approval`,
+				content: `Agent requested operation: ${operation.name}`,
+				semanticType: "operation",
+				connectorKey: connection.connector_key,
+				connectionId: args.connection_id,
+				runId: createdRunId,
+				interactionType: "approval",
+				interactionStatus: "pending",
+				interactionInputSchema:
+					(operation.input_schema as Record<string, unknown> | undefined) ??
+					null,
+				interactionInput: input,
+				metadata: {
+					operation_key: operation.operation_key,
+					operation_name: operation.name,
+					action_key: operation.operation_key,
+					action_name: operation.name,
+					operation_input: input,
+					action_input: input,
+					input_schema: operation.input_schema ?? null,
+					status: "pending_approval",
+					connection_name: connection.display_name ?? connection.connector_key,
+					run_id: createdRunId,
+				},
+				authorName: ctx.clientId ?? "agent",
 			},
-			authorName: ctx.clientId ?? "agent",
+			{ sql: tx });
+			return { runId: createdRunId, eventId: Number(event.id) };
 		});
-		const eventId = Number(event.id);
+
+		// Telemetry + notification run AFTER the run+event are durably committed,
+		// so they never reference a rolled-back run and stay off the hot path.
+		if (args.watcher_source) {
+			await trackWatcherReaction({
+				organizationId: ctx.organizationId,
+				watcherId: args.watcher_source.watcher_id,
+				windowId: args.watcher_source.window_id,
+				reactionType: "action_executed",
+				toolName: "manage_operations",
+				toolArgs: {
+					operation_key: args.operation_key,
+					connection_id: args.connection_id,
+					input,
+				},
+				runId,
+			});
+		}
+
 		const { ownerSlug: orgSlug, baseUrl } = await getOrgUrlContext(ctx);
 		// Run-scoped, not event-scoped: the pending event is superseded on
 		// approve→complete and drops out of the live view, but a run_ids permalink
@@ -1120,6 +1160,36 @@ async function handleExecute(
 			status: "pending_approval",
 			message: `Operation '${operation.name}' requires approval. Share the approval_url with the user to confirm.`,
 		};
+	}
+
+	// Non-queued (device / inline) runs carry no approval event, so there is no
+	// second write to bind atomically — create the run on the pool.
+	const runId = await createConnectorOperationRun({
+		organizationId: ctx.organizationId,
+		connectionId: connection.id,
+		connectorKey: connection.connector_key,
+		operationKey: operation.operation_key,
+		operationInput: input,
+		approvalMode,
+		requireCompiledCode: operation.backend === "local_action",
+		policyPrincipalKind: actor.kind,
+		policyPrincipalId: actor.id,
+	});
+
+	if (args.watcher_source) {
+		await trackWatcherReaction({
+			organizationId: ctx.organizationId,
+			watcherId: args.watcher_source.watcher_id,
+			windowId: args.watcher_source.window_id,
+			reactionType: "action_executed",
+			toolName: "manage_operations",
+			toolArgs: {
+				operation_key: args.operation_key,
+				connection_id: args.connection_id,
+				input,
+			},
+			runId,
+		});
 	}
 
 	// Device-bound branch: the run is pending; a device worker (chrome

@@ -69,6 +69,11 @@ export function deviceManifestToConnectorMetadata(manifest: DeviceConnectorManif
     openapiConfig: null,
     requiredCapability: manifest.required_capability,
     runtime: manifest.runtime as ConnectorMetadata['runtime'],
+    // Device connectors execute on the paired device. A manifest that declares
+    // actions is asserting it implements them there, so support tracks the
+    // presence of an actions schema (#2033 item 2). Device-online is a separate
+    // readiness axis handled elsewhere.
+    supportsExecute: manifest.actions_schema != null,
   };
 }
 

@@ -14,6 +14,9 @@ type ConnectorRow = {
 	actions_schema: Record<string, any> | null;
 	mcp_config: Record<string, unknown> | null;
 	openapi_config: Record<string, unknown> | null;
+	// #2033 item 2: NULL (legacy) is treated as supported; only an explicit
+	// `false` marks local_action ops unsupported.
+	supports_execute?: boolean | null;
 };
 
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete", "head"] as const;
@@ -413,8 +416,13 @@ function getLocalActionOperations(
 	connectorKey: string,
 	connectorName: string,
 	actionsSchema: Record<string, any> | null,
+	supportsExecute: boolean | null | undefined,
 ): OperationDescriptor[] {
 	if (!actionsSchema) return [];
+	// NULL/undefined (legacy definition installed before the flag) is treated as
+	// supported so nothing regresses; only an explicit `false` marks the op
+	// unsupported (#2033 item 2).
+	const executeSupported = supportsExecute !== false;
 	return Object.entries(actionsSchema).map(([key, def]) => ({
 		connector_key: connectorKey,
 		connector_name: connectorName,
@@ -429,6 +437,7 @@ function getLocalActionOperations(
 			((def.requiresApproval ?? false) ? { destructiveHint: true } : undefined),
 		input_schema: def.input_schema ?? def.inputSchema,
 		output_schema: def.output_schema ?? def.outputSchema,
+		supports_execute: executeSupported,
 		backend_config: {
 			backend: "local_action",
 			actionKey: key,
@@ -464,6 +473,7 @@ async function buildConnectorOperations(
 				connector.key,
 				connector.name,
 				connector.actions_schema,
+				connector.supports_execute,
 			),
 		),
 		getMcpOperations(
@@ -491,7 +501,7 @@ async function getConnectorsForListing(params: {
 
 	if (params.connectionId) {
 		const rows = await sql`
-      SELECT cd.key, cd.name, cd.actions_schema, cd.mcp_config, cd.openapi_config
+      SELECT cd.key, cd.name, cd.actions_schema, cd.mcp_config, cd.openapi_config, cd.supports_execute
       FROM connections c
       JOIN connector_definitions cd
         ON cd.key = c.connector_key
@@ -509,7 +519,7 @@ async function getConnectorsForListing(params: {
 	if (params.entityId) {
 		const rows = await sql`
       SELECT DISTINCT ON (cd.key)
-        cd.key, cd.name, cd.actions_schema, cd.mcp_config, cd.openapi_config
+        cd.key, cd.name, cd.actions_schema, cd.mcp_config, cd.openapi_config, cd.supports_execute
       FROM connections c
       JOIN feeds f ON f.connection_id = c.id
       JOIN connector_definitions cd
@@ -528,7 +538,7 @@ async function getConnectorsForListing(params: {
 
 	let query = sql`
     SELECT DISTINCT ON (cd.key)
-      cd.key, cd.name, cd.actions_schema, cd.mcp_config, cd.openapi_config
+      cd.key, cd.name, cd.actions_schema, cd.mcp_config, cd.openapi_config, cd.supports_execute
     FROM connector_definitions cd
     WHERE cd.status = 'active'
       AND cd.organization_id = ${params.organizationId}

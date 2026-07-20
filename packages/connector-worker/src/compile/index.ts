@@ -194,6 +194,25 @@ export async function flattenConnectorSourceFromFile(filePath: string): Promise<
         {
           name: 'external-non-relative',
           setup(b) {
+            // Absolute-path imports (`/etc/passwd`) are NOT caught by the
+            // externalise filter below (`[^./]` excludes a leading `/`), so
+            // without this they fall through to esbuild's default resolver and,
+            // with bundle:true, get their host-file contents inlined into the
+            // flattened snapshot BEFORE the downstream source-text import guard
+            // (compiler-core) can reject them. Reject them here too, for
+            // containment. Skip the entry point: esbuild passes it as an
+            // absolute path.
+            b.onResolve({ filter: /^\// }, (args) =>
+              args.kind === 'entry-point'
+                ? undefined
+                : {
+                    errors: [
+                      {
+                        text: `Unsupported absolute import "${args.path}". Connector sources may only import from lobu, npm:... specifiers, published packages, or sibling relative files.`,
+                      },
+                    ],
+                  }
+            );
             // Everything that is not a relative path (bare packages, npm:,
             // lobu, node:) is left as-is for the real compile step.
             b.onResolve({ filter: /^[^./]/ }, (args) => ({ path: args.path, external: true }));

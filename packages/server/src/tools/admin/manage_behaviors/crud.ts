@@ -3,7 +3,7 @@
  *   create, update, delete, create_from_version
  */
 
-import { getDb } from '../../../db/client';
+import { getDb, parsePgTextArray } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { isUniqueViolation } from '../../../utils/pg-errors';
@@ -775,9 +775,12 @@ export async function handleCreateFromVersion(
         // system:chat-link tag): those bind a live channel responder, and
         // cloning them would create a second agent turn for the same message.
         const cloneTriggers = stripChatLinkTriggers(version.triggers);
-        const cloneTags = ((version.tags as string[]) || []).filter(
-          (tag) => tag !== 'system:chat-link',
-        );
+        // `tags` is a text[] column read under fetch_types:false, so postgres.js
+        // hands back a raw array literal string (e.g. "{}" or "{system:chat-link}"),
+        // not a JS array. Parse it before filtering.
+        const cloneTags = parsePgTextArray(
+          version.tags as string | string[] | null,
+        ).filter((tag) => tag !== 'system:chat-link');
 
         await tx`
           INSERT INTO watchers (

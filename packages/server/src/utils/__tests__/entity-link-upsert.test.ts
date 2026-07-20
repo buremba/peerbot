@@ -830,7 +830,7 @@ describe('gmail promote-on-interaction (real connector rule)', () => {
     `;
   }
 
-  it('promotes only replied-to counterparties: no raw-sender rows, bidirectional contact minted with metric aliases', async () => {
+  it('promotes only mintable counterparties: no raw-sender rows, minted contact carries metric aliases', async () => {
     const { org, sql } = await setupGmailOrg();
 
     await applyEventAttributions({
@@ -839,9 +839,9 @@ describe('gmail promote-on-interaction (real connector rule)', () => {
       orgId: org.id,
       items: [
         // Inbound-only brand blast — has a from_name, still must NOT mint.
-        thread({ from_email: 'promo@brand.example', from_name: 'Brand', replied: false }),
-        // Genuine bidirectional exchange — promotes.
-        thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: true }),
+        thread({ from_email: 'promo@brand.example', from_name: 'Brand', outbound: false, replied: false, mintable: false }),
+        // We sent into this thread and attributed a real counterparty — promotes.
+        thread({ from_email: 'alice@example.com', from_name: 'Alice', outbound: true, replied: true, mintable: true }),
       ],
     });
 
@@ -859,9 +859,32 @@ describe('gmail promote-on-interaction (real connector rule)', () => {
     expect(brandIdent[0].count).toBe('0');
   });
 
-  it('promotion is idempotent: re-syncing the same replied thread never duplicates the contact', async () => {
+  it('mints cold outbound: we sent, nobody replied yet, contact still promoted', async () => {
     const { org, sql } = await setupGmailOrg();
-    const items = [thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: true })];
+
+    await applyEventAttributions({
+      connectorKey: GMAIL_KEY,
+      feedKey: GMAIL_FEED,
+      orgId: org.id,
+      items: [
+        thread({
+          from_email: 'dana@acme.example',
+          from_name: 'Dana Fox',
+          outbound: true,
+          replied: false,
+          mintable: true,
+        }),
+      ],
+    });
+
+    // The old `replied` gate refused this thread; sending is now enough.
+    const people = await personRows(sql, org.id);
+    expect(people.map((p) => p.name)).toEqual(['Dana Fox']);
+  });
+
+  it('promotion is idempotent: re-syncing the same mintable thread never duplicates the contact', async () => {
+    const { org, sql } = await setupGmailOrg();
+    const items = [thread({ from_email: 'alice@example.com', from_name: 'Alice', outbound: true, replied: true, mintable: true })];
 
     await applyEventAttributions({ connectorKey: GMAIL_KEY, feedKey: GMAIL_FEED, orgId: org.id, items });
     await applyEventAttributions({ connectorKey: GMAIL_KEY, feedKey: GMAIL_FEED, orgId: org.id, items });
@@ -873,14 +896,14 @@ describe('gmail promote-on-interaction (real connector rule)', () => {
   it('an inbound-only thread from an already-promoted contact still links to it (match is never gated)', async () => {
     const { org, sql } = await setupGmailOrg();
 
-    // Promote Alice via a replied thread, then receive an inbound-only one.
+    // Promote Alice via a mintable thread, then receive an inbound-only one.
     await applyEventAttributions({
       connectorKey: GMAIL_KEY,
       feedKey: GMAIL_FEED,
       orgId: org.id,
-      items: [thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: true })],
+      items: [thread({ from_email: 'alice@example.com', from_name: 'Alice', outbound: true, replied: true, mintable: true })],
     });
-    const later = thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: false });
+    const later = thread({ from_email: 'alice@example.com', from_name: 'Alice', outbound: false, replied: false, mintable: false });
     await applyEventAttributions({
       connectorKey: GMAIL_KEY,
       feedKey: GMAIL_FEED,

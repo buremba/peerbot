@@ -2,24 +2,401 @@ import {
   type ChromeActionDispatcher,
   type ConnectorDefinition,
   ConnectorRuntime,
+  type EventEnvelope,
   type SyncContext,
   type SyncResult,
 } from "@lobu/connector-sdk";
 
+/** Atlas web app dashboard — holdings live here when the user is signed in. */
+export const MIDAS_DASHBOARD_URL = "https://atlas.getmidas.com/dashboard";
+
+/**
+ * Origins the Owletto extension may touch for this connector. Forwarded on
+ * every chrome action so the extension's origin gate stays locked down.
+ */
+export const MIDAS_ALLOWED_ORIGINS = [
+  "getmidas.com",
+  "*.getmidas.com",
+] as const;
+
+export type MidasMarket = "US" | "TR";
+
 export interface MidasHolding {
-  type: string;
+  type: MidasMarket;
   symbol: string;
   shares: number;
-  price: string;
-  value: string;
+  price: number;
+  /** Average cost basis per share (Ort. Maliyet). */
+  avg_cost: number;
+  /** Mark-to-market position value (Pozisyon). */
+  value: number;
+  currency: "USD" | "TRY";
+}
+
+export interface MidasDashboardSnapshot {
+  holdings: MidasHolding[];
+  total_usd: number;
+  total_try: number;
+}
+
+export interface MidasCheckpoint {
+  last_run?: string;
+}
+
+/**
+ * Pull the chrome action dispatcher from sessionState.
+ *
+ * The connector-worker subprocess (child-runner.ts) splices a live
+ * `chrome_dispatcher` object onto every sync's sessionState; `dispatch()`
+ * rides IPC up to the daemon and out through the gateway chrome-action
+ * bridge to a paired Owletto extension. Looking at `ctx.channel` is wrong —
+ * that field is the chat/channel facet, not the extension bridge (prod failure:
+ * "MidasConnector requires a ChromeActionDispatcher" with Owletto online).
+ */
+export function requireExtensionDispatcher(ctx: {
+  sessionState?: Record<string, unknown> | null;
+}): ChromeActionDispatcher {
+  const handle = (
+    ctx.sessionState as Record<string, unknown> | null | undefined
+  )?.chrome_dispatcher as ChromeActionDispatcher | undefined;
+  if (!handle || typeof handle.dispatch !== "function") {
+    throw new Error(
+      "Midas connector requires a paired Owletto Chrome extension. No chrome_dispatcher was injected into sessionState — re-run on a connector-worker that has the dispatcher bridge."
+    );
+  }
+  return handle;
+}
+
+/**
+ * True when navigate landed on a sign-in / SSO wall rather than the dashboard.
+ * Atlas redirects unauthenticated users off `/dashboard`.
+ */
+export function isMidasAuthWall(url: string | null | undefined): boolean {
+  if (!url) return false;
+  let pathname: string;
+  let host = "";
+  try {
+    const u = new URL(url);
+    pathname = u.pathname.toLowerCase();
+    host = u.hostname.toLowerCase();
+  } catch {
+    pathname = url.toLowerCase();
+  }
+  if (host.includes("sso.") || host.includes("login.")) return true;
+  // Path segments only — avoid substring false-positives on unrelated routes.
+  const segments = pathname.split("/").filter(Boolean);
+  return segments.some((seg) =>
+    [
+      "login",
+      "signin",
+      "sign-in",
+      "signup",
+      "sign-up",
+      "register",
+      "auth",
+      "oauth",
+      "sso",
+    ].includes(seg)
+  );
+}
+
+/**
+ * Parse a number as rendered by Atlas's Turkish UI.
+ *
+ * Atlas uses European grouping for BOTH USD and TRY on the TR locale
+ * (illustrative, synthetic values):
+ *   `$123,45` → 123.45
+ *   `$12.345,67` → 12345.67
+ *   `₺1.234.567,89` → 1234567.89
+ *   `12,345678` → 12.345678 (fractional shares)
+ *   `1.000` → 1000 (thousand-grouped whole shares)
+ *   `-$1.500,50(-%2,00)` → -1500.5 (trailing % annotation ignored)
+ *
+ * US-style `$1,234.56` is NOT used on this UI; do not strip commas as thousands.
+ */
+export function parseAtlasAmount(raw: string | null | undefined): number {
+  if (raw == null) return 0;
+  let s = String(raw).trim();
+  if (!s) return 0;
+
+  // Drop parenthetical annotations: $40,86(%0,13) / -$11.492,08(-%1,18)
+  s = s.replace(/\([^)]*\)/g, "").trim();
+
+  // Optional leading sign after currency symbol: -$1.234,56 or $-1.234,56
+  const sign = /^-|^\$-|^₺-|^€-|^£-/.test(s.replace(/\s/g, "")) ? -1 : 1;
+
+  // Keep digits + separators only.
+  const num = s.replace(/[^\d.,]/g, "");
+  if (!num) return 0;
+
+  // European: dots = thousands, last comma = decimal (if present).
+  let normalized: string;
+  if (num.includes(",")) {
+    normalized = num.replace(/\./g, "").replace(",", ".");
+  } else if (/^\d{1,3}(\.\d{3})+$/.test(num)) {
+    // 14.000 / 1.273.667 — pure thousand groups, no decimal part.
+    normalized = num.replace(/\./g, "");
+  } else {
+    // Bare integer or single-dot decimal without grouping.
+    normalized = num;
+  }
+
+  const n = Number.parseFloat(normalized);
+  return Number.isFinite(n) ? sign * n : 0;
+}
+
+/** Share quantity — same European rendering as money on Atlas TR. */
+export function parseShares(raw: string | null | undefined): number {
+  return parseAtlasAmount(raw);
+}
+
+/**
+ * A holding-row cell (shares / price / value) is structurally valid only if it
+ * carries at least one digit. This distinguishes a genuine zero value (`$0,00`,
+ * still has a digit) from a malformed / drifted cell (a label, blank, or dash),
+ * so we skip corrupt rows instead of emitting zero-valued holdings.
+ */
+function hasNumericCell(line: string | undefined): boolean {
+  return typeof line === "string" && /\d/.test(line);
+}
+
+/**
+ * True when a dashboard line looks like a numeric section marker, not a ticker.
+ * Tickers may include digits (`3M`, `BRK.B`); counts/money/percents may not be
+ * pure symbol tokens.
+ */
+function looksLikeNumberLine(line: string): boolean {
+  // Alphanumeric symbol token (letters required) → ticker, never a section marker.
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(line) && /[A-Za-z]/.test(line)) {
+    return false;
+  }
+  // Counts ("17"), money ("$333,69", "₺50.000,00"), percents ("%3,31").
+  return /\d/.test(line);
+}
+
+/**
+ * Rows in the Pozisyonlar table after the section total:
+ *   count
+ *   section_total
+ *   section_daily_return   ← skip
+ *   section_total_return   ← skip
+ *   per holding × 7:
+ *     shares, price, avg_cost, value, allocation%, daily_return, total_return
+ *
+ * Verified against a live Atlas TR capture (2026-07-18).
+ */
+const SECTION_SUMMARY_LINES = 2; // daily + total return after section total
+const HOLDING_ROW_LINES = 7;
+
+/**
+ * Parse the Atlas dashboard body text into holdings + totals.
+ *
+ * Layout (Turkish Atlas UI, "Pozisyonlar" module):
+ *
+ *   ABD Hisseleri
+ *   <US tickers…>
+ *   BIST Hisseleri
+ *   <TR tickers…>
+ *   <usCount>
+ *   <totalUsd>
+ *   <section daily return>
+ *   <section total return>
+ *   per US holding × 7: shares, price, avg_cost, value, alloc%, daily, total
+ *   <trCount>
+ *   <totalTry>
+ *   <section daily return>
+ *   <section total return>
+ *   per TR holding × 7 (same shape)
+ *
+ * Pure function so unit tests can fixture the DOM text without Owletto.
+ */
+export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const usStartIdx = lines.indexOf("ABD Hisseleri");
+  const trStartIdx = lines.indexOf("BIST Hisseleri");
+
+  const usTickers: string[] = [];
+  const trTickers: string[] = [];
+
+  if (usStartIdx !== -1 && trStartIdx !== -1) {
+    for (let i = usStartIdx + 1; i < trStartIdx; i++) {
+      if (!looksLikeNumberLine(lines[i])) usTickers.push(lines[i]);
+    }
+  } else if (usStartIdx !== -1) {
+    for (let i = usStartIdx + 1; i < lines.length; i++) {
+      if (looksLikeNumberLine(lines[i])) break;
+      usTickers.push(lines[i]);
+    }
+  }
+
+  if (trStartIdx !== -1) {
+    for (let i = trStartIdx + 1; i < lines.length; i++) {
+      if (looksLikeNumberLine(lines[i])) break;
+      trTickers.push(lines[i]);
+    }
+  }
+
+  // Numeric blocks start immediately after the ticker name lists.
+  // Order is always US then TR (matches section header order).
+  let currentIdx = 0;
+  if (trStartIdx !== -1) {
+    currentIdx = trStartIdx + 1 + trTickers.length;
+  } else if (usStartIdx !== -1) {
+    currentIdx = usStartIdx + 1 + usTickers.length;
+  }
+
+  const holdings: MidasHolding[] = [];
+  let totalUsd = 0;
+  let totalTry = 0;
+
+  const readBlock = (
+    tickers: string[],
+    market: MidasMarket,
+    currency: "USD" | "TRY"
+  ): number => {
+    if (currentIdx >= lines.length || tickers.length === 0) return 0;
+
+    // Optional holdings-count line: advance past it when the current line is a
+    // bare positive integer, otherwise treat the current line as the section total.
+    const countRaw = lines[currentIdx];
+    const count = Number.parseInt(countRaw.replace(/[^\d]/g, ""), 10);
+    if (Number.isFinite(count) && count > 0) {
+      currentIdx += 1;
+    }
+
+    const total = parseAtlasAmount(lines[currentIdx]);
+    currentIdx += 1;
+
+    // Section daily return + total return (not per-holding).
+    currentIdx += SECTION_SUMMARY_LINES;
+
+    for (const symbol of tickers) {
+      if (currentIdx + HOLDING_ROW_LINES - 1 >= lines.length) break;
+      // Reject drifted layouts: a real row has numeric shares/price/value.
+      // Stop rather than emit corrupt zero-valued holdings from mis-aligned
+      // cells (a genuine $0,00 still passes — it carries a digit).
+      if (
+        !hasNumericCell(lines[currentIdx]) ||
+        !hasNumericCell(lines[currentIdx + 1]) ||
+        !hasNumericCell(lines[currentIdx + 3])
+      ) {
+        break;
+      }
+      const shares = parseShares(lines[currentIdx]);
+      const price = parseAtlasAmount(lines[currentIdx + 1]);
+      const avgCost = parseAtlasAmount(lines[currentIdx + 2]);
+      const value = parseAtlasAmount(lines[currentIdx + 3]);
+      holdings.push({
+        symbol,
+        shares,
+        price,
+        avg_cost: avgCost,
+        value,
+        currency,
+        type: market,
+      });
+      currentIdx += HOLDING_ROW_LINES;
+    }
+    return total;
+  };
+
+  totalUsd = readBlock(usTickers, "US", "USD");
+  totalTry = readBlock(trTickers, "TR", "TRY");
+
+  return { holdings, total_usd: totalUsd, total_try: totalTry };
+}
+
+export function holdingToEvent(
+  h: MidasHolding,
+  occurredAt: Date = new Date()
+): EventEnvelope {
+  // Namespace by market so a dual-listed ticker cannot collide on origin_id.
+  return {
+    origin_id: `midas-holding-${h.type}-${h.symbol}`,
+    title: `Midas Holding: ${h.symbol}`,
+    payload_text: `${h.symbol} (${h.type}): ${h.shares} @ ${h.price} ${h.currency} = ${h.value} ${h.currency} (avg ${h.avg_cost})`,
+    occurred_at: occurredAt,
+    semantic_type: "financial_asset",
+    source_url: MIDAS_DASHBOARD_URL,
+    metadata: {
+      type: h.type,
+      symbol: h.symbol,
+      shares: h.shares,
+      price: h.price,
+      avg_cost: h.avg_cost,
+      value: h.value,
+      currency: h.currency,
+    },
+  };
+}
+
+export function balanceToEvent(
+  snapshot: Pick<MidasDashboardSnapshot, "total_usd" | "total_try">,
+  occurredAt: Date = new Date()
+): EventEnvelope {
+  return {
+    origin_id: "midas-balance",
+    title: "Midas Balance",
+    payload_text: `Midas totals: $${snapshot.total_usd} USD / ₺${snapshot.total_try} TRY`,
+    occurred_at: occurredAt,
+    semantic_type: "balance_raw",
+    source_url: MIDAS_DASHBOARD_URL,
+    metadata: {
+      balance: snapshot.total_usd,
+      currency: "USD",
+      total_try: snapshot.total_try,
+    },
+  };
+}
+
+/**
+ * Reduce a URL to `origin + pathname` for diagnostics. Auth callbacks may carry
+ * `code`, `state`, tokens, etc. in the query/fragment; those must never reach
+ * notifications, thrown errors, or logs.
+ */
+export function safeDiagnosticUrl(url: string | null | undefined): string {
+  if (!url) return MIDAS_DASHBOARD_URL;
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    // Not a full URL — coarse-strip anything after the first ? or #.
+    return String(url).split(/[?#]/)[0] || MIDAS_DASHBOARD_URL;
+  }
+}
+
+async function notifyMidasAuthWall(
+  dispatcher: ChromeActionDispatcher,
+  landedUrl: string
+): Promise<void> {
+  // Never forward raw query params (may contain OAuth code/state/tokens).
+  const safeLanded = safeDiagnosticUrl(landedUrl);
+  try {
+    await dispatcher.dispatch("show_notification", {
+      notification_id: "midas-auth-wall",
+      title: "Midas needs sign-in",
+      message:
+        "Sign in to Midas in the focused Chrome window, then re-run the sync.",
+      landed_url: safeLanded,
+      // Fixed, safe destination — never a callback URL with sensitive params.
+      click_url: MIDAS_DASHBOARD_URL,
+    });
+  } catch {
+    // Best-effort UX; never mask the auth-wall error.
+  }
 }
 
 export default class MidasConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: "midas",
     name: "Midas",
-    description: "Syncs Midas portfolio holdings.",
-    version: "1.0.0",
+    description:
+      "Syncs Midas portfolio holdings via the Owletto Chrome extension.",
+    version: "1.0.2",
     faviconDomain: "atlas.getmidas.com",
     authSchema: {
       methods: [{ type: "none" }],
@@ -28,7 +405,8 @@ export default class MidasConnector extends ConnectorRuntime {
       assets: {
         key: "assets",
         name: "Midas Holdings",
-        description: "Scrapes Midas portfolio holdings.",
+        description:
+          "Scrapes Midas portfolio holdings from atlas.getmidas.com.",
         configSchema: { type: "object", properties: {} },
         eventKinds: {
           financial_asset: {
@@ -40,6 +418,7 @@ export default class MidasConnector extends ConnectorRuntime {
                 symbol: { type: "string" },
                 shares: { type: "number" },
                 price: { type: "number" },
+                avg_cost: { type: "number" },
                 value: { type: "number" },
                 currency: { type: "string" },
               },
@@ -63,156 +442,102 @@ export default class MidasConnector extends ConnectorRuntime {
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
-    const dispatcher = ctx.channel as unknown as ChromeActionDispatcher;
-    if (!dispatcher || typeof dispatcher.dispatch !== "function") {
-      throw new Error(
-        "MidasConnector requires a ChromeActionDispatcher (Owletto extension)"
-      );
-    }
-
     if (ctx.feedKey !== "assets") {
       throw new Error(`Unknown feed: ${ctx.feedKey}`);
     }
 
-    const nav = await dispatcher.dispatch<{ tab_id: number }>("navigate", {
-      url: "https://atlas.getmidas.com/dashboard",
+    const dispatcher = requireExtensionDispatcher(ctx);
+
+    const nav = await dispatcher.dispatch<{
+      tab_id: number;
+      current_url?: string;
+    }>("navigate", {
+      url: MIDAS_DASHBOARD_URL,
       persistent: true,
       window_focused: false,
-      wait_for_load: false,
-      allowed_origins: ["getmidas.com", "*.getmidas.com"],
+      // Wait for frame stop — better than a blind 5s sleep that still races SPAs.
+      wait_for_load: true,
+      allowed_origins: [...MIDAS_ALLOWED_ORIGINS],
     });
 
-    // Wait a bit to ensure it loads
-    await new Promise((r) => setTimeout(r, 5000));
-
-    const setup = await dispatcher.dispatch<{ value?: any }>("evaluate", {
-      tab_id: nav.tab_id,
-      expression: `(() => {
-        const text = document.body.innerText;
-        const lines = text.split("\\n").map(l => l.trim()).filter(Boolean);
-        const holdings = [];
-        
-        const usStartIdx = lines.indexOf("ABD Hisseleri");
-        const trStartIdx = lines.indexOf("BIST Hisseleri");
-        
-        let usTickers = [];
-        let trTickers = [];
-        
-        if (usStartIdx !== -1 && trStartIdx !== -1) {
-          usTickers = lines.slice(usStartIdx + 1, trStartIdx);
-        } else if (usStartIdx !== -1) {
-          let idx = usStartIdx + 1;
-          while(idx < lines.length && isNaN(parseInt(lines[idx]))) {
-             usTickers.push(lines[idx]);
-             idx++;
-          }
-        }
-        
-        let nextIdx = trStartIdx !== -1 ? trStartIdx + 1 : -1;
-        if (nextIdx !== -1) {
-          while (nextIdx < lines.length && isNaN(parseInt(lines[nextIdx]))) {
-            trTickers.push(lines[nextIdx]);
-            nextIdx++;
-          }
-        } else {
-          nextIdx = usStartIdx !== -1 ? usStartIdx + 1 + usTickers.length : 0;
-        }
-        
-        let currentIdx = nextIdx;
-        
-        const parseCurrency = (str) => {
-          if (!str) return 0;
-          return parseFloat(str.replace(/[^0-9.-]/g, '')) || 0;
-        };
-
-        let totalUsd = "0";
-        let totalTry = "0";
-        
-        if (currentIdx < lines.length && usTickers.length > 0) {
-          const numUs = parseInt(lines[currentIdx]); 
-          currentIdx++;
-          totalUsd = lines[currentIdx];
-          currentIdx += 3;
-          
-          for (let i = 0; i < usTickers.length; i++) {
-            holdings.push({
-              symbol: usTickers[i],
-              shares: parseFloat(lines[currentIdx]?.replace(",", ".") || "0"),
-              price: parseCurrency(lines[currentIdx+1]),
-              value: parseCurrency(lines[currentIdx+3]),
-              currency: "USD",
-              type: "US"
-            });
-            currentIdx += 7;
-          }
-        }
-        
-        if (currentIdx < lines.length && trTickers.length > 0) {
-          const numTr = parseInt(lines[currentIdx]);
-          currentIdx++;
-          totalTry = lines[currentIdx];
-          currentIdx += 3;
-          
-          for (let i = 0; i < trTickers.length; i++) {
-            holdings.push({
-              symbol: trTickers[i],
-              shares: parseFloat(lines[currentIdx]?.replace(".", "").replace(",", ".") || "0"),
-              price: parseCurrency(lines[currentIdx+1]),
-              value: parseCurrency(lines[currentIdx+3]),
-              currency: "TRY",
-              type: "TR"
-            });
-            currentIdx += 7;
-          }
-        }
-
-        return { total_usd: parseCurrency(totalUsd), total_try: parseCurrency(totalTry), holdings };
-      })()`,
-      allowed_origins: ["getmidas.com", "*.getmidas.com"],
-    });
-
-    if (!setup.value || !setup.value.holdings) {
+    const landedUrl = nav.current_url ?? MIDAS_DASHBOARD_URL;
+    if (isMidasAuthWall(landedUrl)) {
+      await notifyMidasAuthWall(dispatcher, landedUrl);
+      // Redact query/fragment: an auth-wall URL may carry code/state/tokens.
       throw new Error(
-        "Failed to parse Midas dashboard. Make sure you are logged in."
+        `Midas session needs sign-in (landed on ${safeDiagnosticUrl(
+          landedUrl
+        )}). Sign in at atlas.getmidas.com in this Chrome profile, then re-run the sync.`
       );
     }
 
-    const data = setup.value;
-    const events = [];
-
-    for (const h of data.holdings) {
-      events.push({
-        origin_id: "midas-holding-" + h.symbol,
-        title: "Midas Holding: " + h.symbol,
-        occurred_at: new Date().toISOString(),
-        semantic_type: "financial_asset",
-        metadata: h,
-      });
+    if (typeof nav.tab_id !== "number") {
+      throw new Error(
+        "Midas navigate did not return a tab_id — Owletto may have failed to open the dashboard."
+      );
     }
 
-    events.push({
-      origin_id: "midas-balance",
-      title: "Midas Balance",
-      occurred_at: new Date().toISOString(),
-      semantic_type: "balance_raw",
-      metadata: {
-        balance: data.total_usd,
-        currency: "USD",
-        total_try: data.total_try,
-      },
+    // SPA settle: poll for the Pozisyonlar section markers until they render
+    // (bounded), rather than a blind fixed sleep that races slow sessions.
+    const textObs = await dispatcher.dispatch<{ value?: string }>("evaluate", {
+      tab_id: nav.tab_id,
+      expression: `(async () => {
+        const markers = ["Pozisyonlar", "ABD Hisseleri", "BIST Hisseleri"];
+        const deadline = Date.now() + 12000;
+        const bodyText = () => (document.body ? document.body.innerText : "");
+        const ready = () => {
+          const t = bodyText();
+          return markers.some((m) => t.includes(m));
+        };
+        while (Date.now() < deadline && !ready()) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        return bodyText();
+      })()`,
+      allowed_origins: [...MIDAS_ALLOWED_ORIGINS],
     });
+
+    const bodyText = textObs.value ?? "";
+    const snapshot = parseMidasDashboardText(bodyText);
+
+    if (
+      snapshot.holdings.length === 0 &&
+      snapshot.total_usd === 0 &&
+      snapshot.total_try === 0
+    ) {
+      // Empty portfolio is rare; more often the UI language/layout changed or
+      // the session is soft-logged-out without a hard redirect.
+      if (/giriş yap|sign in|log in|login/i.test(bodyText)) {
+        await notifyMidasAuthWall(dispatcher, landedUrl);
+        throw new Error(
+          "Failed to parse Midas dashboard — page looks unauthenticated. Sign in at atlas.getmidas.com and re-run."
+        );
+      }
+      throw new Error(
+        'Failed to parse Midas dashboard (no holdings or totals found). Confirm the Atlas UI still shows "ABD Hisseleri" / "BIST Hisseleri" under Pozisyonlar, or capture body text for a parser update.'
+      );
+    }
+
+    const occurredAt = new Date();
+    const events: EventEnvelope[] = [
+      ...snapshot.holdings.map((h) => holdingToEvent(h, occurredAt)),
+      balanceToEvent(snapshot, occurredAt),
+    ];
+
+    const checkpoint: MidasCheckpoint = {
+      last_run: occurredAt.toISOString(),
+    };
 
     return {
       events,
-      checkpoint: { last_run: new Date().toISOString() } as unknown as Record<
-        string,
-        unknown
-      >,
-      metadata: { items_found: events.length },
+      checkpoint: checkpoint as unknown as Record<string, unknown>,
+      metadata: {
+        items_found: events.length,
+        holdings: snapshot.holdings.length,
+        total_usd: snapshot.total_usd,
+        total_try: snapshot.total_try,
+        backend: "extension-dom",
+      },
     };
-  }
-
-  async execute(ctx: any): Promise<any> {
-    throw new Error("Not implemented");
   }
 }

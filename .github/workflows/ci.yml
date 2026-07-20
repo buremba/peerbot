@@ -726,6 +726,20 @@ jobs:
             echo "[dup-version-rename] sentinel present; immutability check is skipped for this PR."
             exit 0
           fi
+          # 4. PRs whose commit message contains `[migration-never-applied]` may
+          #    edit a migration that has NEVER successfully applied in any
+          #    environment. This exists for the one legitimate edit case the
+          #    path-based check cannot tell from a forbidden one: a migration
+          #    that CI's `dbmate up` has always rejected (so main went red the
+          #    moment it merged and no deploy could have applied it). Because it
+          #    never recorded a schema_migrations row anywhere, editing its body
+          #    does not silently no-op — the fix is genuinely applied on next
+          #    run. Code review is the gate: confirm the edited migration is
+          #    absent from every live schema_migrations before using this.
+          if git log "$BASE_SHA"..HEAD --format=%B | grep -qF '[migration-never-applied]'; then
+            echo "[migration-never-applied] sentinel present; immutability check is skipped for this PR."
+            exit 0
+          fi
           edited=$(git diff --name-only --diff-filter=MRD "$BASE_SHA"...HEAD -- db/migrations/ \
             | grep -v '^db/migrations/00000000000000_baseline\.sql$' || true)
           if [ -n "$edited" ]; then

@@ -4,26 +4,11 @@
 -- connection, event-type, and match filters in code. Build the supporting GIN
 -- index without blocking writes to existing Behavior rows.
 --
--- IF NOT EXISTS does not repair an INVALID same-named index left by an
--- interrupted concurrent build. Drop only that carcass before rebuilding;
--- the migration runners execute this DO separately from CREATE CONCURRENTLY.
-
-DO $migration$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-    FROM pg_index i
-    JOIN pg_class c ON c.oid = i.indexrelid
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public'
-      AND c.relname = 'idx_watchers_triggers_gin'
-      AND NOT i.indisvalid
-  ) THEN
-    EXECUTE 'DROP INDEX public.idx_watchers_triggers_gin';
-  END IF;
-END
-$migration$;
-
+-- INVALID-carcass heal for this index runs first in the companion migration
+-- 20260717121009_behavior_triggers_index_heal.sql. This file is intentionally
+-- a SINGLE statement: dbmate runs a multi-statement transaction:false body in
+-- one implicit transaction, which CREATE INDEX CONCURRENTLY refuses.
+--
 -- Partial predicate is status-only. `triggers <> '[]'` is unprovable from the
 -- activation `@>` lookup, so the planner would never use this index with that
 -- extra clause. Empty trigger arrays still fail `@>` and are harmless.

@@ -224,6 +224,18 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }
 
+/**
+ * Coerce a GitHub list response to an array. `http.json()` returns
+ * `await response.json()`, which is `null`/`undefined` for an empty-body 200
+ * (GitHub occasionally serves these). The list sync paths immediately read
+ * `.length` / iterate, so a bare null threw
+ * `Cannot read properties of undefined (reading 'length')` and crashed the
+ * whole sync (#2033). Treat any non-array response as an empty page.
+ */
+function asArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function toIsoOrUndefined(value: unknown): string | undefined {
   const str = asString(value);
   if (!str) return undefined;
@@ -1144,7 +1156,9 @@ export default class GitHubConnector extends ConnectorRuntime {
           since: sinceIso,
         });
         const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/commits?${query.toString()}`;
-        const commits = await this.requestJson<GitHubCommitLike[]>({ url, token });
+        const commits = asArray(
+          await this.requestJson<GitHubCommitLike[]>({ url, token })
+        );
         return { items: commits, hasMore: commits.length === pageSize };
       },
       { pageSize: 100, maxPages: COMMITS_MAX_PAGES }
@@ -1208,7 +1222,7 @@ export default class GitHubConnector extends ConnectorRuntime {
     }
 
     const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues?${query.toString()}`;
-    const items = await this.requestJson<GitHubIssueLike[]>({ url, token });
+    const items = asArray(await this.requestJson<GitHubIssueLike[]>({ url, token }));
     const events: EventEnvelope[] = [];
 
     for (const item of items) {
@@ -1260,7 +1274,9 @@ export default class GitHubConnector extends ConnectorRuntime {
       since: sinceIso,
     });
     const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues/comments?${query.toString()}`;
-    const comments = await this.requestJson<GitHubCommentLike[]>({ url, token });
+    const comments = asArray(
+      await this.requestJson<GitHubCommentLike[]>({ url, token })
+    );
 
     return comments
       .map((comment): EventEnvelope | null => {
@@ -1302,7 +1318,9 @@ export default class GitHubConnector extends ConnectorRuntime {
       since: sinceIso,
     });
     const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/comments?${query.toString()}`;
-    const comments = await this.requestJson<GitHubCommentLike[]>({ url, token });
+    const comments = asArray(
+      await this.requestJson<GitHubCommentLike[]>({ url, token })
+    );
 
     return comments
       .map((comment): EventEnvelope | null => {
@@ -1505,11 +1523,13 @@ export default class GitHubConnector extends ConnectorRuntime {
           page: String(offset / pageSize + 1),
         });
         const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/stargazers?${query.toString()}`;
-        const stargazers = await this.requestJson<GitHubStargazerLike[]>({
-          url,
-          token,
-          accept: 'application/vnd.github.star+json',
-        });
+        const stargazers = asArray(
+          await this.requestJson<GitHubStargazerLike[]>({
+            url,
+            token,
+            accept: 'application/vnd.github.star+json',
+          })
+        );
         return { items: stargazers, hasMore: stargazers.length === pageSize };
       },
       { pageSize: 100 }

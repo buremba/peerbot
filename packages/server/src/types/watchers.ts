@@ -158,6 +158,16 @@ export const WatcherMetadataSchema = Type.Object({
   available_versions: Type.Optional(Type.Array(WatcherVersionInfoSchema)),
   reaction_script: Type.Optional(Type.String()),
   behavior_run: Type.Optional(WatcherRunSchema),
+  /** Computed scheduling health (item 3, #2033): `degraded` when an active
+   *  behavior has missed a firing (next_run_at overdue past the cron margin) or
+   *  its latest run is stuck pending past the stale interval; else `healthy`. */
+  health: Type.Optional(
+    Type.Union([Type.Literal('healthy'), Type.Literal('degraded')])
+  ),
+  /** Reasons behind a `degraded` verdict (empty/omitted when healthy). */
+  health_reasons: Type.Optional(Type.Array(Type.String())),
+  /** Latest run error surfaced alongside the health verdict. */
+  last_scheduling_error: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 });
 export type WatcherMetadata = Static<typeof WatcherMetadataSchema>;
 

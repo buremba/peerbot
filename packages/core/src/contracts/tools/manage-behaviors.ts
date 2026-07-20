@@ -192,6 +192,38 @@ export const SourceSchema = Type.Object({
   ),
 });
 
+/**
+ * A single classifier definition embedded in a Behavior version. The key
+ * invariant for #2033 item 4 is `attribute_values`: it MUST be an object-MAP
+ * keyed by value string, never an array. An array read back through
+ * `Object.entries` becomes numeric keys `{"0":…}` and, after embedding
+ * stripping, the corrupted `{"0":{},"1":{}}` — so we forbid the array shape at
+ * the contract boundary. Other fields are extraction config and stay open
+ * (`additionalProperties` allowed) to avoid breaking authored connectors.
+ */
+const BehaviorClassifierDefinitionSchema = Type.Object(
+  {
+    slug: Type.Optional(Type.String()),
+    name: Type.Optional(Type.String()),
+    source_path: Type.Optional(Type.String()),
+    value_field: Type.Optional(Type.String()),
+    description_field: Type.Optional(Type.String()),
+    examples_field: Type.Optional(Type.String()),
+    attribute_key: Type.Optional(Type.String()),
+    attribute_values: Type.Optional(
+      Type.Record(Type.String({ minLength: 1 }), Type.Unknown(), {
+        description:
+          "Object MAP keyed by value string. An array here corrupts on read (#2033).",
+      })
+    ),
+  },
+  {
+    additionalProperties: true,
+    description:
+      "Classifier definition. attribute_values MUST be an object map, not an array.",
+  }
+);
+
 // Flattened schema for MCP compatibility (MCP doesn't support top-level unions)
 export const ManageBehaviorsSchema = Type.Object(
   {
@@ -310,10 +342,19 @@ export const ManageBehaviorsSchema = Type.Object(
       })
     ),
     classifiers: Type.Optional(
-      Type.Any({
-        description:
-          "[create/create_version] Classifier definitions for extraction.",
-      })
+      Type.Union(
+        [
+          // Callers may pass a pre-serialized JSON string (coerced by
+          // parseJsonInput) or the array directly. Either way, the array shape
+          // enforces `attribute_values` is a map, not an array (#2033 item 4).
+          Type.String(),
+          Type.Array(BehaviorClassifierDefinitionSchema),
+        ],
+        {
+          description:
+            "[create/create_version] Classifier definitions for extraction. Each attribute_values MUST be an object map keyed by value, never an array.",
+        }
+      )
     ),
     triggers: Type.Optional(
       Type.Array(BehaviorTriggerSchema, {

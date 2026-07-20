@@ -30,6 +30,17 @@ export interface ConnectorMetadata {
     platforms: Array<'ios' | 'android' | 'macos' | 'windows' | 'linux' | 'chrome-extension'>;
     scopes?: string[];
   } | null;
+  /**
+   * Whether the concrete runtime class OVERRIDES `execute()` (i.e. owns its own
+   * `execute` on its prototype rather than inheriting the base class's rejecting
+   * default). This is the capability signal readiness uses so it agrees with
+   * execution — a connector that declares actions but never overrides execute()
+   * would otherwise report "ready" and then throw "Actions not supported"
+   * (#2033 item 2). Computed once at compile time. Absent for metadata sources
+   * with no local runtime (e.g. MCP-proxy connectors) — persisted as NULL,
+   * treated as "assume supported".
+   */
+  supportsExecute?: boolean;
 }
 
 const CONNECTOR_RUNNER_CODE = `
@@ -78,6 +89,14 @@ async function main() {
       throw new Error('ConnectorRuntime class must expose a definition property.');
     }
 
+    // Capability probe (#2033 item 2): does the concrete class OVERRIDE execute()?
+    // The base ConnectorRuntime defines execute() (which rejects), so
+    // \`typeof prototype.execute === 'function'\` is always true and can't tell an
+    // override from the inherited default. An OWN \`execute\` on the class's own
+    // prototype means the connector actually implements execution.
+    const supportsExecute =
+      Object.getOwnPropertyNames(RuntimeClass.prototype).includes('execute');
+
     const metadata = {
       key: def.key || null,
       name: def.name || null,
@@ -95,6 +114,7 @@ async function main() {
       openapiConfig: def.openapiConfig || null,
       requiredCapability: def.requiredCapability || null,
       runtime: def.runtime || null,
+      supportsExecute,
     };
 
     process.send({ success: true, metadata });

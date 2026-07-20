@@ -77,21 +77,48 @@ async function hydrateAttributeEmbeddings(
   return { attributeValues: updated, generatedCount: valuesToEmbed.length };
 }
 
+/**
+ * Drop `embedding` from a classifier's `attribute_values` map for wire
+ * responses while preserving every other field (`description`, `examples`, …).
+ *
+ * The stored shape is an object-MAP keyed by value string. A malformed row can
+ * hold a JSON ARRAY (or any non-record root) — historically these were fed
+ * straight into `Object.entries`, which turned `[a, b]` into a map with numeric
+ * keys `{"0":a,"1":b}` and, once the array elements only carried `embedding`,
+ * into the corrupted `{"0":{},"1":{}}` that then got re-persisted. Guard the
+ * root: an array or non-record never becomes a numeric-keyed map here — it is
+ * rejected (returned as `null`) so callers surface "needs repair" rather than
+ * silently emitting and re-saving corruption. Valid object-maps round-trip
+ * exactly (plain-string entries and rich `{description, examples}` entries
+ * alike), minus `embedding`.
+ */
 function stripEmbeddingsFromAttributeValues(
   attributeValues: unknown
 ): Record<string, { description: string; examples: string[] }> | null {
   if (!attributeValues) return null;
-  const parsed =
-    typeof attributeValues === 'string' ? JSON.parse(attributeValues) : attributeValues;
-  if (typeof parsed !== 'object' || parsed === null) return null;
+  let parsed: unknown = attributeValues;
+  if (typeof attributeValues === 'string') {
+    try {
+      parsed = JSON.parse(attributeValues);
+    } catch {
+      return null;
+    }
+  }
+  // Reject non-record roots. A jsonb array would otherwise be coerced by
+  // Object.entries into `{"0":…}` numeric keys — the corruption this guards.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
 
   const stripped: Record<string, { description: string; examples: string[] }> = {};
-  for (const [key, value] of Object.entries(parsed as Record<string, any>)) {
-    if (value && typeof value === 'object') {
-      const { embedding, ...rest } = value;
-      stripped[key] = rest;
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const { embedding, ...rest } = value as Record<string, unknown>;
+      void embedding;
+      stripped[key] = rest as { description: string; examples: string[] };
     } else {
-      stripped[key] = value;
+      // Plain-string (or other scalar) entries round-trip untouched.
+      stripped[key] = value as unknown as { description: string; examples: string[] };
     }
   }
   return stripped;

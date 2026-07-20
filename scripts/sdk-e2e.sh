@@ -592,7 +592,7 @@ echo "✓ connector sync ran the compiled connector and emitted events (items=$R
 #    produce a complete_window tool-call). The reaction saves SDKE2E_REACTION_OK.
 BEHAVIORS="$RUN_DIR/behaviors.json"
 api manage_behaviors '{"action":"list"}' > "$BEHAVIORS" 2>/dev/null || fail "could not list Behaviors"
-WATCHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.behaviors||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="digest")||arr[0];const id=w?(w.watcher_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$BEHAVIORS")"
+WATCHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.behaviors||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="digest")||arr[0];const id=w?(w.behavior_id??w.watcher_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$BEHAVIORS")"
 [ -n "$WATCHER_ID" ] || { cat "$BEHAVIORS" >&2; fail "no 'digest' Behavior found after apply"; }
 echo "✓ apply created the digest Behavior (id=$WATCHER_ID)"
 
@@ -621,7 +621,7 @@ echo "✓ apply set entity-type view template (company default v$VT_V1)"
 # token (the regression this guards — a missing `lobu-internal` client fails
 # every watcher run), and that a watcher worker session actually started.
 TW="$RUN_DIR/trigger-watcher.json"
-api manage_behaviors "{\"action\":\"trigger\",\"watcher_id\":\"$WATCHER_ID\"}" > "$TW" 2>/dev/null \
+api manage_behaviors "{\"action\":\"trigger\",\"behavior_id\":\"$WATCHER_ID\"}" > "$TW" 2>/dev/null \
   || { cat "$TW" >&2; fail "watcher trigger failed"; }
 TRIG_RUN_ID="$(jget run_id < "$TW" 2>/dev/null || echo)"
 [ -n "$TRIG_RUN_ID" ] || { cat "$TW" >&2; fail "watcher trigger did not dispatch a run (no run_id)"; }
@@ -647,7 +647,7 @@ WINDOW_TOKEN="$(jget window_token < "$RK")"
 [ -n "$WINDOW_TOKEN" ] || { cat "$RK" >&2; fail "read_knowledge returned no window_token (no content in window — connector events missing?)"; }
 
 CW="$RUN_DIR/complete-window.json"
-api manage_behaviors "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",watcher_id:w,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$WATCHER_ID")" > "$CW" 2>/dev/null \
+api manage_behaviors "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",behavior_id:w,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$WATCHER_ID")" > "$CW" 2>/dev/null \
   || { cat "$CW" >&2; fail "complete_window failed"; }
 grep -q '"action":"complete_window"\|"action": "complete_window"' "$CW" || { cat "$CW" >&2; fail "complete_window did not return the expected action"; }
 

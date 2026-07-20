@@ -1,11 +1,11 @@
 import {
   connectorFromFile,
   defineAgent,
+  defineBehavior,
   defineConfig,
   defineConnection,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
 } from "@lobu/cli/config";
 import type GoogleTakeoutConnector from "./google-takeout.connector.ts";
 import type InstagramTakeoutConnector from "./instagram-takeout.connector.ts";
@@ -908,13 +908,13 @@ const mentions = defineRelationshipType({
   description: "Auto-discovered content reference",
 });
 
-// ── Watchers (must be declared under prune or apply deletes them) ─
+// ── Behaviors (must be declared under prune or apply deletes them) ─
 
-const hourlyTaskCollaborator = defineWatcher({
+const hourlyTaskCollaborator = defineBehavior({
   agent: personalAgent,
   slug: "hourly-task-collaborator",
   name: "Hourly Task Collaborator",
-  schedule: "0 * * * *",
+  triggers: [{ kind: "schedule", cron: "0 * * * *" }],
   notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 300,
   keyingConfig: {
@@ -937,7 +937,7 @@ const hourlyTaskCollaborator = defineWatcher({
     'Review the current hourly window in {{content}} and the collaborative task list in sources.task_list. The task_list source includes recently closed tasks (metadata status done or dismissed) for reference so you know what is already finished. Return a JSON object with a tasks array matching the provided task schema. Extract only concrete actions Burak or his personal agent should take; ignore advertisements, newsletters, automated notices, passive information, and vague ideas. Use concise imperative wording in action so equivalent requests deduplicate across runs. Preserve existing tasks instead of restating them. Never re-emit, reopen, or recreate any task whose status is done or dismissed in the task list, even if the originating message still appears in recent signals. Set status to backlog unless there is clear evidence work has started. Assign owner "Burak" unless the action can be safely completed by the personal agent. Use ISO-8601 due_date only when a real deadline is present. Include source_event_id and source when available, and a short rationale. Produce at most 12 tasks, ordered by priority.',
 });
 
-const duplicateEntityResolution = defineWatcher({
+const duplicateEntityResolution = defineBehavior({
   agent: personalAgent,
   slug: "duplicate-entity-resolution-real-v3-final",
   name: "Duplicate entity resolution — real contacts",
@@ -959,7 +959,7 @@ const duplicateEntityResolution = defineWatcher({
 
 export default defineConfig({
   // Source of truth for buremba definitions. Deletes org-owned entity /
-  // relationship types and watchers absent from this config (including
+  // relationship types and behaviors absent from this config (including
   // UI-created ones). Data rows, connections, auth profiles, and agents are
   // never pruned. Tax-graph types belong in examples/personal-finance only.
   prune: true,
@@ -1000,7 +1000,7 @@ export default defineConfig({
     learning,
   ],
   relationships: [worksAt, memberOf, mentions],
-  watchers: [hourlyTaskCollaborator, duplicateEntityResolution],
+  behaviors: [hourlyTaskCollaborator, duplicateEntityResolution],
   connections: [
     midasConnection,
     revolutConnection,

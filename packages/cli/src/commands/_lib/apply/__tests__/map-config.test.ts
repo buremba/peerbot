@@ -370,7 +370,10 @@ describe("mapProjectToDesiredState", () => {
       agent: crm,
       slug: "health",
       prompt: "assess",
-      sources: { accounts: "SELECT 1" },
+      sources: {
+        accounts: "SELECT 1",
+        ctx: { query: "SELECT 2", context: true },
+      },
       notification: { channel: "both", priority: "high" },
       minCooldownSeconds: 1800,
       triggers: [
@@ -392,7 +395,10 @@ describe("mapProjectToDesiredState", () => {
     );
     const dw = state.watchers[0];
     expect(dw?.agent).toBe("crm");
-    expect(dw?.sources).toEqual([{ name: "accounts", query: "SELECT 1" }]);
+    expect(dw?.sources).toEqual([
+      { name: "accounts", query: "SELECT 1" },
+      { name: "ctx", query: "SELECT 2", context: true },
+    ]);
     expect(dw?.notificationChannel).toBe("both");
     expect(dw?.notificationPriority).toBe("high");
     expect(dw?.minCooldownSeconds).toBe(1800);

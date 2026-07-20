@@ -24,6 +24,7 @@ import {
 	dispatchBehaviorRunsBestEffort,
 } from "../behaviors/activation";
 import { materializeConnectorBehaviorSignal } from "../behaviors/connector-signal";
+import { feedBackoff } from "../connectors/feed-backoff";
 import {
 	maybeCloseRepairThread,
 	maybeOpenOrAppendRepairThread,
@@ -486,6 +487,23 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 				: null;
 			const isSuccess = req.status === "success";
 
+			// Failure rescheduling (item 5, #2033):
+			//  - On success: reset consecutive_failures to 0 and use the plain cron
+			//    next_run_at so a recovered feed immediately resumes normal cadence.
+			//  - On failure: apply exponential backoff on top of the cron cadence so
+			//    a persistently-failing feed retries progressively less often instead
+			//    of re-enqueueing every plain cadence (which hammered the connector,
+			//    the worker lane, and upstream rate limits). The backoff is computed
+			//    from the NEW consecutive_failures count (post-increment) directly in
+			//    SQL so it stays correct under concurrent completions across replicas.
+			//  - Hard auto-pause: once the NEW count crosses the pause threshold, the
+			//    feed is paused (status='paused'; the DB trigger nulls next_run_at)
+			//    independent of any repair agent. Manual feeds (no schedule) can't
+			//    exponentially back off (nextRun is NULL) but still hard-pause.
+			const backoffBaseMs = feedBackoff.baseMs;
+			const backoffMaxMs = feedBackoff.maxMs;
+			const pauseThreshold = feedBackoff.pauseThreshold;
+
 			await sql`
         UPDATE feeds
         SET last_sync_at = current_timestamp,
@@ -495,7 +513,26 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
             first_failure_at = ${isSuccess ? sql`NULL` : sql`COALESCE(first_failure_at, current_timestamp)`},
             items_collected = ${isSuccess ? sql`items_collected + ${req.items_collected ?? 0}` : sql`items_collected`},
             checkpoint = ${isSuccess ? sql`COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint)` : sql`checkpoint`},
-            next_run_at = ${nextRun},
+            status = ${
+							isSuccess
+								? sql`status`
+								: sql`CASE WHEN consecutive_failures + 1 >= ${pauseThreshold} THEN 'paused' ELSE status END`
+						},
+            next_run_at = ${
+							isSuccess
+								? nextRun
+								: sql`CASE
+                    WHEN consecutive_failures + 1 >= ${pauseThreshold} THEN NULL
+                    WHEN ${nextRun}::timestamptz IS NULL THEN NULL
+                    ELSE GREATEST(
+                      ${nextRun}::timestamptz,
+                      current_timestamp + (LEAST(
+                        ${backoffBaseMs}::bigint * (2 ^ LEAST(consecutive_failures, 30))::bigint,
+                        ${backoffMaxMs}::bigint
+                      ) || ' milliseconds')::interval
+                    )
+                  END`
+						},
             updated_at = current_timestamp
         WHERE id = ${feedId}
       `;

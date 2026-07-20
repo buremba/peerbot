@@ -59,6 +59,7 @@ import {
   parseBigintArray,
 } from '../utils/window-utils';
 import { buildLatestWatcherRunJoinSql } from '../watchers/automation';
+import { computeBehaviorHealth } from '../watchers/behavior-health';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
 
@@ -832,6 +833,16 @@ async function getBehaviorImpl(
     // Sources come from watcher row (or version if present)
     const watcherSources = parseWatcherSources(watcherRow.sources);
 
+    // Computed scheduling health (item 3, #2033) — pure derivation over the
+    // already-selected schedule/run columns; no extra query.
+    const behaviorHealth = computeBehaviorHealth({
+      status: watcherRow.status,
+      nextRunAt: watcherRow.next_run_at,
+      latestRunStatus: watcherRow.watcher_run_status,
+      latestRunCreatedAt: watcherRow.watcher_run_created_at,
+      latestRunError: watcherRow.watcher_run_error,
+    });
+
     watcherMetadata = {
       behavior_id: String(watcherRow.watcher_id),
       behavior_name: watcherRow.name || (version?.name as string) || 'Behavior',
@@ -872,6 +883,11 @@ async function getBehaviorImpl(
               completed_at: watcherRow.watcher_run_completed_at,
             }
           : undefined,
+      health: behaviorHealth.health,
+      ...(behaviorHealth.reasons.length > 0 && {
+        health_reasons: behaviorHealth.reasons,
+      }),
+      last_scheduling_error: behaviorHealth.last_scheduling_error,
     };
   }
 

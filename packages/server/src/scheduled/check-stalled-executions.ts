@@ -40,6 +40,7 @@
 
 import type { ReservedSql } from 'postgres';
 import { intervals } from '../config/intervals';
+import { feedBackoff } from '../connectors/feed-backoff';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { expireStaleConnectTokens } from '../utils/connect-tokens';
@@ -103,6 +104,11 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
     try {
       const heartbeatErrorMessage = 'worker_heartbeat_lost';
       const claimErrorMessage = 'worker_claim_timeout';
+      // Failure-backoff / auto-pause policy shared with the completion path
+      // (run-lifecycle.ts) so both apply identical math (item 5, #2033).
+      const backoffBaseMs = feedBackoff.baseMs;
+      const backoffMaxMs = feedBackoff.maxMs;
+      const pauseThreshold = feedBackoff.pauseThreshold;
       // Reap + recover in a single statement using CTEs. Claimed/running sync
       // rows get one fresh retry; never-claimed rows are finalized on the feed
       // without a retry because another pending row would only repeat the same
@@ -176,12 +182,33 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           RETURNING id, feed_id
         ),
         finalized_pending_feeds AS (
+          -- Never-claimed sync runs (device/worker offline). Without a
+          -- next_run_at backoff these feeds re-enqueue every plain cadence
+          -- (check-due-feeds picks next_run_at <= now()), so an offline device
+          -- gets hammered every 5 min forever. Apply the SAME exponential
+          -- backoff as the completion path (feed-backoff.ts), computed from the
+          -- post-increment failure count, and hard-pause past the threshold
+          -- (the feeds trigger nulls next_run_at on status='paused').
           UPDATE public.feeds f
           SET last_sync_at = current_timestamp,
               last_sync_status = 'failed',
               last_error = ${claimErrorMessage},
               consecutive_failures = f.consecutive_failures + 1,
               first_failure_at = COALESCE(f.first_failure_at, current_timestamp),
+              status = CASE
+                WHEN f.consecutive_failures + 1 >= ${pauseThreshold} THEN 'paused'
+                ELSE f.status
+              END,
+              next_run_at = CASE
+                WHEN f.consecutive_failures + 1 >= ${pauseThreshold} THEN NULL
+                ELSE GREATEST(
+                  COALESCE(f.next_run_at, current_timestamp),
+                  current_timestamp + (LEAST(
+                    ${backoffBaseMs}::bigint * (2 ^ LEAST(f.consecutive_failures, 30))::bigint,
+                    ${backoffMaxMs}::bigint
+                  ) || ' milliseconds')::interval
+                )
+              END,
               updated_at = current_timestamp
           FROM timed_out t
           WHERE t.run_type = 'sync'

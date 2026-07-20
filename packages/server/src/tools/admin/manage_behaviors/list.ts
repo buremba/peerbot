@@ -16,6 +16,7 @@ import {
 	getPublicWebUrl,
 } from "../../../utils/url-builder";
 import { buildLatestWatcherRunJoinSql } from "../../../watchers/automation";
+import { computeBehaviorHealth } from "../../../watchers/behavior-health";
 import type { ToolContext } from "../../registry";
 import { batchCountUnanalyzedContent } from "./shared";
 
@@ -215,12 +216,27 @@ export async function handleList(
 			);
 		}
 
+		// Computed scheduling health (item 3, #2033) — derived from the
+		// already-selected schedule/run columns, no extra query.
+		const behaviorHealth = computeBehaviorHealth({
+			status: watcher.status,
+			nextRunAt: watcher.next_run_at,
+			latestRunStatus: watcher.watcher_run_status,
+			latestRunCreatedAt: watcher.watcher_run_created_at,
+			latestRunError: watcher.watcher_run_error,
+		});
+
 		return {
 			...rest,
 			organization_slug: orgSlug,
 			pending_content_count: countData.pending,
 			historical_content_count: countData.historical,
 			view_url: viewUrl,
+			health: behaviorHealth.health,
+			...(behaviorHealth.reasons.length > 0 && {
+				health_reasons: behaviorHealth.reasons,
+			}),
+			last_scheduling_error: behaviorHealth.last_scheduling_error,
 		};
 	});
 

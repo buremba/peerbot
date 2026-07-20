@@ -344,4 +344,48 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 		})) as { created: Array<{ watcher_id: string }> };
 		expect(result.created.length).toBe(1);
 	});
+
+	// ---- BUG C: delete/update must not archive/mutate cross-org rows ----
+	// requireWatcherAccess lets an id that is absent from the caller's org fall
+	// through to the per-id aggregate (so genuinely-missing ids report "not
+	// found"). Watcher ids are sequential integers, so a foreign-tenant row can
+	// occupy the id the caller aimed at. The mutation SQL is org-scoped so that
+	// foreign row is never archived — it only reports as a per-id failure.
+	it("delete cannot archive a watcher owned by another org", async () => {
+		const foreignOrg = await createTestOrganization({ name: "Delete Foreign Org" });
+		const foreignUser = await createTestUser({ email: "delete-foreign@test.com" });
+		await addUserToOrganization(foreignUser.id, foreignOrg.id, "owner");
+		const foreignClient = await TestApiClient.for({
+			organizationId: foreignOrg.id,
+			userId: foreignUser.id,
+			memberRole: "owner",
+		});
+		const foreignAgent = await createTestAgent({
+			organizationId: foreignOrg.id,
+			ownerUserId: foreignUser.id,
+		});
+		const foreignWatcher = (await foreignClient.behaviors.create({
+			slug: "foreign-del-target",
+			name: "Foreign Behavior",
+			prompt: "Track stuff.",
+			agent_id: foreignAgent.agentId,
+			sources: [{ name: "content", query: "SELECT id FROM events" }],
+		})) as { watcher_id: string };
+		const foreignId = String(foreignWatcher.watcher_id);
+
+		// The owner (a different org) targets the foreign row's id directly. It
+		// exists under another tenant, so requireWatcherAccess rejects it 403 —
+		// and even if that gate were bypassed, the org-scoped archive UPDATE
+		// leaves the foreign row untouched.
+		await expect(
+			owner.behaviors.delete({ watcher_ids: [foreignId] })
+		).rejects.toMatchObject({ httpStatus: 403 });
+
+		// The foreign row is untouched — still active, not archived.
+		const sql = getTestDb();
+		const [after] = await sql<{ status: string }[]>`
+      SELECT status FROM watchers WHERE id = ${foreignId}
+    `;
+		expect(after?.status).toBe("active");
+	});
 });

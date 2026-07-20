@@ -525,7 +525,7 @@ export async function handleUpdate(
       notification_channel = CASE WHEN ${has('notification_channel')} THEN ${patch.notification_channel ?? 'canvas'} ELSE notification_channel END,
       notification_priority = CASE WHEN ${has('notification_priority')} THEN ${patch.notification_priority ?? 'normal'} ELSE notification_priority END,
       min_cooldown_seconds = CASE WHEN ${has('min_cooldown_seconds')} THEN ${patch.min_cooldown_seconds ?? 0} ELSE min_cooldown_seconds END
-    WHERE id = ${args.watcher_id}
+    WHERE id = ${args.watcher_id} AND organization_id = ${ctx.organizationId}
     RETURNING *
   `;
 
@@ -577,10 +577,16 @@ export async function handleDelete(
 
   for (const watcherId of args.watcher_ids) {
     try {
+      // Org-scope the mutation: requireWatcherAccess now lets ids that aren't
+      // in-org at check time fall through to this aggregate, and watcher ids are
+      // sequential integers — so a racing cross-tenant insert between check and
+      // write must not be archivable. organization_id fences that TOCTOU.
       const updated = await sql`
         UPDATE watchers
         SET status = 'archived', updated_at = NOW()
-        WHERE id = ${watcherId} AND status != 'archived'
+        WHERE id = ${watcherId}
+          AND organization_id = ${ctx.organizationId}
+          AND status != 'archived'
         RETURNING id, name, entity_ids, organization_id, triggers
       `;
 

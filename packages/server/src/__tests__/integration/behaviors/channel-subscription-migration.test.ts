@@ -131,7 +131,7 @@ describe("Behavior channel-subscription migration", () => {
 			| {
 					behaviorCount: number;
 					deletedConnectionBehaviorCount: number;
-					legacyTable: string | null;
+					bindingsTable: string | null;
 					messageView: string | null;
 					triggers: unknown;
 					tagged: boolean;
@@ -265,7 +265,7 @@ describe("Behavior channel-subscription migration", () => {
 				captured = {
 					behaviorCount: behaviorCount.count,
 					deletedConnectionBehaviorCount: deletedConnectionBehaviorCount.count,
-					legacyTable: legacy.name,
+					bindingsTable: legacy.name,
 					messageView: messageView.name,
 					triggers: behavior.triggers,
 					tagged: behavior.tagged,
@@ -282,9 +282,8 @@ describe("Behavior channel-subscription migration", () => {
 		expect(captured).toEqual({
 			behaviorCount: 1,
 			deletedConnectionBehaviorCount: 0,
-			// Table retained through this release so pre-upgrade migration does not
-			// break still-serving pods; Behavior-only code stops using it.
-			legacyTable: "agent_channel_bindings",
+			// Clean-cut drop: table is gone after the migration.
+			bindingsTable: null,
 			messageView: "behavior_message_subscriptions",
 			triggers: [
 				{
@@ -340,7 +339,7 @@ describe("Behavior channel-subscription migration", () => {
 		let captured:
 			| {
 					behaviorCount: number;
-					legacyTable: string | null;
+					bindingsTable: string | null;
 					messageView: string | null;
 			  }
 			| undefined;
@@ -398,7 +397,7 @@ describe("Behavior channel-subscription migration", () => {
 				`;
 				captured = {
 					behaviorCount: behaviorCount.count,
-					legacyTable: legacy.name,
+					bindingsTable: legacy.name,
 					messageView: messageView.name,
 				};
 				throw new Rollback();
@@ -408,10 +407,10 @@ describe("Behavior channel-subscription migration", () => {
 		}
 
 		// NULL-connection binding skipped; only the concrete-connection row backfills.
-		// Legacy table stays until a follow-up drop migration (pre-upgrade safety).
+		// Clean-cut drop: bindings table is gone after the migration.
 		expect(captured).toEqual({
 			behaviorCount: 1,
-			legacyTable: "agent_channel_bindings",
+			bindingsTable: null,
 			messageView: "behavior_message_subscriptions",
 		});
 	});

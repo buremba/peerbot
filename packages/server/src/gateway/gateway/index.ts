@@ -356,25 +356,9 @@ export class WorkerGateway {
 
     const { deploymentName } = auth.tokenData;
 
-    // Update connection activity (SSE stale-cleanup clock).
+    // SSE stale-cleanup clock: every worker HTTP response (including pure
+    // heartbeats) proves the SSE connection is still alive.
     this.connectionManager.touchConnection(deploymentName);
-    // Also refresh the DEPLOYMENT manager's idle clock. `touchConnection` above
-    // only feeds the connection manager's stale-SSE sweep — it does NOT touch
-    // `EmbeddedWorkerEntry.lastActivity`, which the idle reaper
-    // (reconcileDeployments → buildDeploymentInfoSummary.isIdle) reads. Without
-    // this, that timestamp stays frozen at the last dispatch, so a worker
-    // running a single long turn (no new inbound message) past
-    // WORKER_IDLE_CLEANUP_MINUTES is scaled to 0 and killed mid-turn. Every
-    // worker-driven HTTP response (delta, status_update, ACK, terminal reply)
-    // hits this path, so any liveness signal keeps the idle clock fresh; a
-    // truly silent worker still stops POSTing and ages out as intended.
-    void this.deploymentActivityTracker
-      ?.updateDeploymentActivity(deploymentName)
-      .catch((err) => {
-        logger.warn(
-          `[WORKER-GATEWAY] Failed to refresh deployment activity for ${deploymentName}: ${err}`
-        );
-      });
 
     try {
       const body = await c.req.json();
@@ -401,6 +385,29 @@ export class WorkerGateway {
             }
           : orgEnriched;
 
+      // Deployment idle clock (`EmbeddedWorkerEntry.lastActivity`) feeds the
+      // idle reaper (WORKER_IDLE_CLEANUP_MINUTES). Mid-turn liveness still
+      // needs refresh (status_update / deltas / terminal / delivery ACKs) so a
+      // long turn is not scaled to 0. Pure SSE heartbeat ACKs do NOT prove the
+      // worker is doing useful work — they fire forever on warm idle children
+      // and made idle cleanup a no-op (16× ~180MB children stuck forever, the
+      // dominant prod OOM cost). So a heartbeat-only ACK no longer refreshes the
+      // idle clock: WORKER_IDLE_CLEANUP_MINUTES is now the single dial that reaps
+      // warm idle children. Turn-liveness deadlines still extend via
+      // extendTurnDeadlines below, so a live-but-slow mid-turn worker is safe.
+      const isHeartbeatOnlyAck = !!(
+        enrichedResponse.received && enrichedResponse.heartbeat
+      );
+      if (!isHeartbeatOnlyAck) {
+        void this.deploymentActivityTracker
+          ?.updateDeploymentActivity(deploymentName)
+          .catch((err) => {
+            logger.warn(
+              `[WORKER-GATEWAY] Failed to refresh deployment activity for ${deploymentName}: ${err}`
+            );
+          });
+      }
+
       // Acknowledge job completion if jobId provided
       if (jobId) {
         this.jobRouter.acknowledgeJob(jobId);
@@ -409,8 +416,6 @@ export class WorkerGateway {
       // Delivery receipts (worker ACKs) have no message payload — just acknowledge and return
       if (enrichedResponse.received) {
         if (enrichedResponse.heartbeat) {
-          // touchConnection already ran above for all /worker/response calls,
-          // keeping this worker alive in stale-cleanup.
           logger.debug(
             `[WORKER-GATEWAY] Received heartbeat ACK from ${deploymentName}`
           );

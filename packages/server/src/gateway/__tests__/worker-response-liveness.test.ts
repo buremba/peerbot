@@ -223,7 +223,7 @@ describe("POST /worker/response — deployment idle clock (#12)", () => {
     expect(touched).toContain(DEPLOYMENT);
   });
 
-  test("a delivery ACK also refreshes the deployment activity tracker", async () => {
+  test("a delivery ACK (not a heartbeat) refreshes the deployment activity tracker", async () => {
     await armLiveTurn("m1");
     const touched: string[] = [];
     const tracker = {
@@ -232,12 +232,45 @@ describe("POST /worker/response — deployment idle clock (#12)", () => {
       },
     };
 
-    const res = await postWorkerResponse(
+    // A delivery receipt (received, no `heartbeat` flag) is real worker
+    // progress and must still refresh the idle clock — only pure heartbeats
+    // are excluded.
+    const res = await postWorkerResponse({ received: true }, { tracker });
+    expect(res.status).toBe(200);
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(touched).toContain(DEPLOYMENT);
+  });
+
+  test("heartbeat-only ACK does not refresh the idle clock; real work does", async () => {
+    await armLiveTurn("m1");
+    const touched: string[] = [];
+    const tracker = {
+      updateDeploymentActivity: async (d: string) => {
+        touched.push(d);
+      },
+    };
+
+    // A pure heartbeat ACK must not pin the deployment as active — otherwise
+    // WORKER_IDLE_CLEANUP_MINUTES never reaps a warm idle child.
+    const heartbeatRes = await postWorkerResponse(
       { received: true, heartbeat: true },
       { tracker }
     );
-    expect(res.status).toBe(200);
+    expect(heartbeatRes.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(touched).not.toContain(DEPLOYMENT);
 
+    // Non-heartbeat work still refreshes the idle clock (mid-turn safety).
+    const statusRes = await postWorkerResponse(
+      {
+        messageId: "m1",
+        conversationId: "conv-1",
+        statusUpdate: { elapsedSeconds: 40, state: "working" },
+      },
+      { tracker }
+    );
+    expect(statusRes.status).toBe(200);
     await new Promise((r) => setTimeout(r, 20));
     expect(touched).toContain(DEPLOYMENT);
   });

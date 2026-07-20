@@ -25,7 +25,7 @@ export type ConfigResourceKind =
   | 'platform'
   | 'entity-type'
   | 'relationship-type'
-  | 'watcher'
+  | 'behavior'
   | 'connector-definition'
   | 'auth-profile'
   | 'connection'

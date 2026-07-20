@@ -18,7 +18,7 @@ export interface OperationsExecuteInput {
 	 * Watcher provenance when this operation fires from a reaction. Both ids are
 	 * numeric.
 	 */
-	watcher_source?: { watcher_id: number; window_id: number };
+	behavior_source?: { behavior_id: number; window_id: number };
 }
 
 export interface OperationsNamespace {

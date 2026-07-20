@@ -275,7 +275,7 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 			current: Record<string, unknown> | null;
 		};
 		expect(body.runId).toBe(runId);
-		expect(body.resourceKind).toBe("watcher");
+		expect(body.resourceKind).toBe("behavior");
 		expect(body.action).toBe("update");
 		expect((body.proposal as { args?: { name?: string } }).args?.name).toBe(
 			"New Watcher Name"

@@ -60,7 +60,7 @@ const ConnectorBehaviorSignalDraftSchema = Type.Object(
 export const RunTypeSchema = Type.Union([
   Type.Literal("sync"),
   Type.Literal("action"),
-  Type.Literal("watcher"),
+  Type.Literal("behavior"),
   Type.Literal("embed_backfill"),
   Type.Literal("auth"),
 ]);

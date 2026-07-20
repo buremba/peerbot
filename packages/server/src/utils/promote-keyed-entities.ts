@@ -347,7 +347,7 @@ async function upsertKeyedEntity(params: {
       // specific restriction is never loosened away.
       principalKind: 'watcher',
       sql: tx,
-      attribution: 'watcher',
+      attribution: 'behavior',
       watcherId: params.watcherId,
       principalId: mutationPrincipalId({ watcherId: params.watcherId }),
       ownerAgentId: params.watcherAgentId,
@@ -527,7 +527,7 @@ export async function promoteKeyedEntities(
     // tighten further, never be loosened away.
     principalKind: 'watcher',
     sql: tx,
-    attribution: 'watcher',
+    attribution: 'behavior',
     watcherId,
     principalId: mutationPrincipalId({ watcherId }),
     ownerAgentId: watcherOwner.ownerAgentId,
@@ -615,7 +615,7 @@ export async function promoteKeyedEntities(
                 metadata,
               },
               proposal: createProposal,
-              attribution: 'watcher',
+              attribution: 'behavior',
               watcherId,
               windowId,
             })
@@ -640,7 +640,7 @@ export async function promoteKeyedEntities(
             entityId,
             fields: Object.fromEntries(blockedFields.map((f) => [f, blocked[f].proposed])),
             current: Object.fromEntries(blockedFields.map((f) => [f, blocked[f].current])),
-            attribution: 'watcher',
+            attribution: 'behavior',
             watcherId,
             windowId,
           })

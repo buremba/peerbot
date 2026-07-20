@@ -61,14 +61,16 @@ export interface BehaviorUpdateInput {
 
 export interface BehaviorCompleteWindowInput {
 	behavior_id: BehaviorId;
-	/** JWT obtained from read_knowledge(watcher_id, since, until). */
+	/** JWT obtained from read_knowledge(behavior_id, since, until). */
 	window_token?: string;
-	/** Multiple page JWTs obtained from read_knowledge for the same watcher window. */
+	/** Multiple page JWTs obtained from read_knowledge for the same Behavior window. */
 	window_tokens?: string[];
 	extracted_data: Record<string, unknown>;
 	replace_existing?: boolean;
 	client_id?: string;
 	model?: string;
+	/** Optional Behavior run id for completion/provenance (from the dispatch prompt). */
+	behavior_run_id?: number;
 	run_metadata?: Record<string, unknown>;
 	template_version_id?: number;
 }

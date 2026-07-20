@@ -444,7 +444,7 @@ describe("Behavior connector-event activation", () => {
 			{ behaviorId: alwaysRunId, created: true, disposition: "queued" },
 		]);
 		const runs = await getTestDb()`
-			SELECT watcher_id FROM runs WHERE run_type = 'watcher'
+			SELECT watcher_id FROM runs WHERE run_type = 'behavior'
 		`;
 		expect(runs.map((run) => Number(run.watcher_id))).toEqual([alwaysRunId]);
 	});

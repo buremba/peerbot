@@ -658,7 +658,7 @@ export interface Feed {
 // Run
 // =============================================================================
 
-export type RunType = 'sync' | 'action' | 'code' | 'watcher' | 'auth';
+export type RunType = 'sync' | 'action' | 'code' | 'behavior' | 'auth';
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timeout';
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'auto';
 

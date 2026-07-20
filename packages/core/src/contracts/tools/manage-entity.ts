@@ -209,7 +209,7 @@ export const ManageEntitySchema = Type.Object({
   sort_by: Type.Optional(
     Type.String({
       description:
-        "[list] Sort by column (name, created_at, domain, total_content, active_connections, watchers_count, children_count)",
+        "[list] Sort by column (name, created_at, domain, total_content, active_connections, behaviors_count, children_count)",
     })
   ),
   sort_order: SortOrderField("[list] Sort order (asc or desc)"),
@@ -277,10 +277,10 @@ export const ManageEntitySchema = Type.Object({
         "[get] Return the entity even if it is soft-deleted (deleted_at set). [list_links] Include soft-deleted relationships.",
     })
   ),
-  watcher_source: Type.Optional(
+  behavior_source: Type.Optional(
     Type.Object(
       {
-        watcher_id: Type.Number({
+        behavior_id: Type.Number({
           description: "Behavior that triggered this mutation",
         }),
         window_id: Type.Number({
@@ -364,7 +364,7 @@ export const ManageEntityItemSchema = Type.Object({
   created_at: Type.Optional(Type.String()),
   total_content: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   active_connections: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
-  watchers_count: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  behaviors_count: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   children_count: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   space_name: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   view_url: Type.Optional(Type.String()),
@@ -390,13 +390,13 @@ export const ManageEntityResultSchema = Type.Union([
     ),
     approval_current: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
     approval_attribution: Type.Optional(
-      Type.Union([Type.Literal("agent"), Type.Literal("watcher")])
+      Type.Union([Type.Literal("agent"), Type.Literal("behavior")])
     ),
   }),
   Type.Object({
     action: Type.Literal("update"),
     entity: ManageEntityItemSchema,
-    /** Fields the ownership-aware merge wrote (unowned for a watcher-source edit). */
+    /** Fields the ownership-aware merge wrote (unowned for a behavior-source edit). */
     applied_fields: Type.Optional(Type.Array(Type.String())),
     /** Human-owned fields the edit was blocked from writing — queued for approval. */
     blocked_fields: Type.Optional(Type.Array(Type.String())),
@@ -411,9 +411,9 @@ export const ManageEntityResultSchema = Type.Union([
     approval_fields: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
     /** Blocked field_path -> current human-owned value, for the diff. */
     approval_current: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-    /** Who proposed the blocked change: 'agent' | 'watcher'. */
+    /** Who proposed the blocked change: 'agent' | 'behavior'. */
     approval_attribution: Type.Optional(
-      Type.Union([Type.Literal("agent"), Type.Literal("watcher")])
+      Type.Union([Type.Literal("agent"), Type.Literal("behavior")])
     ),
   }),
   Type.Object({
@@ -468,7 +468,7 @@ export const ManageEntityResultSchema = Type.Union([
     ),
     approval_current: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
     approval_attribution: Type.Optional(
-      Type.Union([Type.Literal("agent"), Type.Literal("watcher")])
+      Type.Union([Type.Literal("agent"), Type.Literal("behavior")])
     ),
   }),
   Type.Object({
@@ -531,7 +531,7 @@ export const ManageEntityResultSchema = Type.Union([
       }),
       approval_attribution: Type.Union([
         Type.Literal("agent"),
-        Type.Literal("watcher"),
+        Type.Literal("behavior"),
       ]),
       next_steps: Type.Array(Type.String()),
       resolution: Type.Optional(

@@ -498,7 +498,7 @@ describe("POST /api/v1/agents — watcher session id shape", () => {
         userId: "watcher-5",
         thread: "watcher-5",
         forceNew: true,
-        intent: { kind: "watcher_run", runId: 27, watcherId: 5 },
+        intent: { kind: "behavior_run", runId: 27, behaviorId: 5 },
       }),
     });
 

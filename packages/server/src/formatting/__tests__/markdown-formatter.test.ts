@@ -162,7 +162,7 @@ describe('formatToolResult', () => {
       const result = {
         windows: [
           {
-            watcher_name: 'Sentiment',
+            behavior_name: 'Sentiment',
             window_start: '2025-01-01T00:00:00Z',
             window_end: '2025-01-07T00:00:00Z',
             granularity: 'weekly',
@@ -226,7 +226,7 @@ describe('formatToolResult', () => {
             slug: 'reddit-opportunity-finder',
             name: 'Reddit Opportunity Finder',
             current_version: 1,
-            watchers_count: 0,
+            behaviors_count: 0,
           },
         ],
       };

@@ -1,9 +1,9 @@
 /**
  * createWatcherRun catch handling for
- * idx_runs_pending_non_event_watcher_per_watcher.
+ * idx_runs_pending_non_event_per_behavior.
  *
  * Index (db/migrations/20260717121025): unique on runs(watcher_id) WHERE
- *   run_type = 'watcher'
+ *   run_type = 'behavior'
  *   AND watcher_id IS NOT NULL
  *   AND status = 'pending'
  *   AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
@@ -88,7 +88,7 @@ describe('createWatcherRun pending non-event unique index', () => {
     await cleanupTestDatabase();
   });
 
-  it('reuses existing pending scheduled run when manual insert hits idx_runs_pending_non_event_watcher_per_watcher', async () => {
+  it('reuses existing pending scheduled run when manual insert hits idx_runs_pending_non_event_per_behavior', async () => {
     const { sql, workspace, watcherId, agentId } = await setupWatcher();
 
     // Seed a pending scheduled run via createWatcherRun (different window from
@@ -144,7 +144,7 @@ describe('createWatcherRun pending non-event unique index', () => {
           created_at
         ) VALUES (
           ${workspace.org.id},
-          'watcher',
+          'behavior',
           ${watcherId},
           'auto',
           'pending',
@@ -185,7 +185,7 @@ describe('createWatcherRun pending non-event unique index', () => {
       SELECT id, status, approved_input
       FROM runs
       WHERE watcher_id = ${watcherId}
-        AND run_type = 'watcher'
+        AND run_type = 'behavior'
         AND status = 'pending'
         AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
     `;

@@ -354,7 +354,7 @@ export async function handleCreate(
 
     recordToolConfigChange(ctx, {
       organizationId,
-      resourceKind: 'watcher',
+      resourceKind: 'behavior',
       resourceId: watcherId,
       op: 'created',
       summary: `Behavior '${args.name ?? args.slug}' created`,
@@ -540,7 +540,7 @@ export async function handleUpdate(
   });
   recordToolConfigChange(ctx, {
     organizationId: (updatedRow?.organization_id as string | null) ?? ctx.organizationId,
-    resourceKind: 'watcher',
+    resourceKind: 'behavior',
     resourceId: args.behavior_id,
     op: 'updated',
     summary: `Behavior '${updatedRow?.name ?? args.behavior_id}' updated`,
@@ -630,7 +630,7 @@ export async function handleDelete(
 
           recordToolConfigChange(ctx, {
             organizationId: watcher.organization_id as string,
-            resourceKind: 'watcher',
+            resourceKind: 'behavior',
             resourceId: watcherId,
             op: 'deleted',
             summary: `Behavior '${watcher.name || watcherId}' archived`,
@@ -861,7 +861,7 @@ export async function handleCreateFromVersion(
 
     recordToolConfigChange(ctx, {
       organizationId,
-      resourceKind: 'watcher',
+      resourceKind: 'behavior',
       resourceId: p.watcherId,
       op: 'created',
       summary: `Behavior '${p.watcherName}' created from version ${args.version_id}`,

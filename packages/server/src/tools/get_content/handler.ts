@@ -181,7 +181,7 @@ async function getContentImpl(
 
   try {
     // If watcher_id is provided, use watcher-mode: fetch content for all sources and generate window_token
-    if (args.watcher_id) {
+    if (args.behavior_id) {
       return await handleWatcherMode(args, env, sql, {
         organizationId: ctx.organizationId,
         sourceConversationId: ctx.sourceContext?.conversationId ?? null,
@@ -387,11 +387,11 @@ async function getContentImpl(
         ...(args.engagement_min !== undefined && { engagement_min: args.engagement_min }),
         ...(args.engagement_max !== undefined && { engagement_max: args.engagement_max }),
         ...(args.window_id !== undefined && { window_id: args.window_id }),
-        ...(args.analyzed_by_watcher_id !== undefined && {
-          analyzed_by_watcher_id: args.analyzed_by_watcher_id,
+        ...(args.analyzed_by_behavior_id !== undefined && {
+          analyzed_by_watcher_id: args.analyzed_by_behavior_id,
         }),
-        ...(args.exclude_watcher_id !== undefined && {
-          exclude_watcher_id: args.exclude_watcher_id,
+        ...(args.exclude_behavior_id !== undefined && {
+          exclude_watcher_id: args.exclude_behavior_id,
         }),
         ...(classificationFilters?.length && { classification_filters: classificationFilters }),
         ...(args.classification_source && { classification_source: args.classification_source }),
@@ -424,8 +424,8 @@ async function getContentImpl(
         ...(args.agent_id && { agent_id: args.agent_id }),
         visibility_scope: visibilityScope,
         window_id: args.window_id,
-        analyzed_by_watcher_id: args.analyzed_by_watcher_id,
-        exclude_watcher_id: args.exclude_watcher_id,
+        analyzed_by_watcher_id: args.analyzed_by_behavior_id,
+        exclude_watcher_id: args.exclude_behavior_id,
         platform: effectivePlatform,
         since: args.since,
         until: args.until,
@@ -581,7 +581,7 @@ async function getContentImpl(
     }
 
     // Entity summary: when searching org-wide (query provided, no entity_id/watcher_id)
-    if (args.query && !args.entity_id && !args.watcher_id && contentItems.length > 0) {
+    if (args.query && !args.entity_id && !args.behavior_id && contentItems.length > 0) {
       const entityCountMap = new Map<number, number>();
       for (const item of contentItems) {
         for (const eid of item.entity_ids) {

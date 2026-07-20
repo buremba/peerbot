@@ -59,7 +59,7 @@ async function manageEntityUpdate(
   metadata: Record<string, unknown>,
   opts?: {
     affirm_fields?: string[];
-    watcher_source?: { watcher_id: number; window_id: number };
+    behavior_source?: { behavior_id: number; window_id: number };
   }
 ) {
   return executeTool(
@@ -69,7 +69,7 @@ async function manageEntityUpdate(
       entity_id: entityId,
       metadata,
       ...(opts?.affirm_fields ? { affirm_fields: opts.affirm_fields } : {}),
-      ...(opts?.watcher_source ? { watcher_source: opts.watcher_source } : {}),
+      ...(opts?.behavior_source ? { behavior_source: opts.behavior_source } : {}),
     },
     TEST_ENV,
     ctx
@@ -82,7 +82,7 @@ async function manageEntityUpdate(
     approval_run_id?: number;
     approval_fields?: Record<string, unknown>;
     approval_current?: Record<string, unknown>;
-    approval_attribution?: 'agent' | 'watcher';
+    approval_attribution?: 'agent' | 'behavior';
   }>;
 }
 
@@ -260,7 +260,7 @@ describe('ownership gate on agent entity writes', () => {
       agentCtx(org, user, agentId),
       reactionEntity.id,
       { severity: 'critical' },
-      { watcher_source: { watcher_id: watcherId, window_id: windowId } }
+      { behavior_source: { behavior_id: watcherId, window_id: windowId } }
     );
 
     const [row] = await getTestDb()`SELECT metadata FROM entities WHERE id = ${reactionEntity.id}`;
@@ -276,9 +276,9 @@ describe('ownership gate on agent entity writes', () => {
     expect(run).toBeTruthy();
     expect(Number((run.action_input as { watcher_id: number }).watcher_id)).toBe(watcherId);
 
-    // The card attribution flows through as 'watcher' so the SPA labels it
+    // The card attribution flows through as 'behavior' so the SPA labels it
     // "A watcher proposes…" instead of "An agent proposes…".
-    expect(result.approval_attribution).toBe('watcher');
+    expect(result.approval_attribution).toBe('behavior');
   });
 
   it("ignores a caller-supplied watcher_source that is NOT the acting agent's own watcher", async () => {
@@ -302,7 +302,7 @@ describe('ownership gate on agent entity writes', () => {
       agentCtx(org, user, 'restricted-agent'),
       target.id,
       { severity: 'critical' },
-      { watcher_source: { watcher_id: watcherId, window_id: windowId } }
+      { behavior_source: { behavior_id: watcherId, window_id: windowId } }
     );
 
     expect(result.approval_attribution).toBe('agent');

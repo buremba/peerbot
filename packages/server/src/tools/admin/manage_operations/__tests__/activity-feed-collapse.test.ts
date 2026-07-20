@@ -55,7 +55,7 @@ describe("runHref", () => {
 		expect(
 			runHref("acme", {
 				id: 42,
-				run_type: "watcher",
+				run_type: "behavior",
 				watcher_id: 7,
 				connection_id: null,
 				connector_key: null,

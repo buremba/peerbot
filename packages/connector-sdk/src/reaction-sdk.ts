@@ -28,7 +28,7 @@ export interface ReactionContext {
     id: number;
     /** Durable Behavior run that produced this window, when execution has one. */
     run_id?: number | null;
-    watcher_id: number;
+    behavior_id: number;
     window_start: string;
     window_end: string;
     granularity: string;

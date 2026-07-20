@@ -18,13 +18,13 @@ export const GetContentSchema = Type.Object({
   ),
   entity_id: Type.Optional(
     Type.Number({
-      description: 'Entity ID to filter by. Required unless watcher_id is provided.',
+      description: 'Entity ID to filter by. Required unless behavior_id is provided.',
     })
   ),
-  watcher_id: Type.Optional(
+  behavior_id: Type.Optional(
     Type.Number({
       description:
-        "Persisted Behavior ID (`watcher_id`) to fetch content for. When provided, uses the Behavior's sources and computes its pending window. Returns window_token for complete_window action.",
+        "Persisted Behavior ID (`behavior_id`) to fetch content for. When provided, uses the Behavior's sources and computes its pending window. Returns window_token for complete_window action.",
     })
   ),
   template_version_id: Type.Optional(
@@ -64,22 +64,22 @@ export const GetContentSchema = Type.Object({
       description: 'Behavior window ID to filter by (shows only content analyzed in this window)',
     })
   ),
-  analyzed_by_watcher_id: Type.Optional(
+  analyzed_by_behavior_id: Type.Optional(
     Type.Number({
       description:
-        'Limit results to events this Behavior has analyzed (any window). Distinct from watcher_id, which enters Behavior read mode.',
+        'Limit results to events this Behavior has analyzed (any window). Distinct from behavior_id, which enters Behavior read mode.',
     })
   ),
   since: Type.Optional(
     Type.String({
       description:
-        'Filter events published since this date. Supports: ISO 8601 ("2025-01-01"), named aliases ("yesterday", "last_week"), or relative ("7d", "30d", "1m", "1y"). When used with watcher_id, also sets window_start in the generated token.',
+        'Filter events published since this date. Supports: ISO 8601 ("2025-01-01"), named aliases ("yesterday", "last_week"), or relative ("7d", "30d", "1m", "1y"). When used with behavior_id, also sets window_start in the generated token.',
     })
   ),
   until: Type.Optional(
     Type.String({
       description:
-        'Filter events published until this date. Supports: ISO 8601 ("2025-01-31"), named aliases ("today", "yesterday"), or relative ("7d", "30d", "1m", "1y"). When used with watcher_id, also sets window_end in the generated token.',
+        'Filter events published until this date. Supports: ISO 8601 ("2025-01-31"), named aliases ("today", "yesterday"), or relative ("7d", "30d", "1m", "1y"). When used with behavior_id, also sets window_end in the generated token.',
     })
   ),
   min_similarity: Type.Optional(
@@ -195,7 +195,7 @@ export const GetContentSchema = Type.Object({
         'Filter to specific content IDs. Useful for showing content linked to Behavior analysis.',
     })
   ),
-  exclude_watcher_id: Type.Optional(
+  exclude_behavior_id: Type.Optional(
     Type.Number({
       description:
         'Exclude content already analyzed in any window for this Behavior. Returns only unprocessed content for client-driven Behavior generation.',

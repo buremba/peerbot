@@ -81,9 +81,9 @@ describe('watcher CRUD', () => {
     expect(watcherId).toBeDefined();
 
     const got = (await owner.behaviors.get({ behavior_id: watcherId })) as {
-      behavior?: { watcher_name: string };
+      behavior?: { behavior_name: string };
     };
-    expect(got.behavior?.watcher_name).toBe('Lifecycle Watcher');
+    expect(got.behavior?.behavior_name).toBe('Lifecycle Watcher');
 
     await owner.behaviors.update({
       behavior_id: watcherId,
@@ -215,7 +215,7 @@ describe('watcher CRUD', () => {
         entities: [],
         window: {
           id: windowId,
-          watcher_id: watcherId,
+          behavior_id: watcherId,
           window_start: new Date('2026-01-01').toISOString(),
           window_end: new Date('2026-01-02').toISOString(),
           granularity: 'day',

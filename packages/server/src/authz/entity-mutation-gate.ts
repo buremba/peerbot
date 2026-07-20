@@ -50,7 +50,7 @@ import {
 export type MutationPrincipalKind = "user" | "agent" | "watcher";
 
 /** Attribution for a deferred (queued-for-approval) mutation. */
-export type MutationAttribution = "watcher" | "agent";
+export type MutationAttribution = "behavior" | "agent";
 
 /** Field ownership as seen by an update request ("human" pins the value). */
 export type FieldOwner = "human" | "none";

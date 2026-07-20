@@ -78,9 +78,9 @@ export const ExecuteAction = Type.Object({
   input: Type.Optional(
     Type.Record(Type.String(), Type.Any(), { description: "Operation input" })
   ),
-  watcher_source: Type.Optional(
+  behavior_source: Type.Optional(
     Type.Object({
-      watcher_id: Type.Number(),
+      behavior_id: Type.Number(),
       window_id: Type.Number(),
     })
   ),
@@ -113,8 +113,8 @@ export const ListRunsAction = Type.Object({
   run_types: Type.Optional(
     Type.Array(Type.String({ description: "Filter by run types" }))
   ),
-  /** Filter watcher runs by watcher id(s). */
-  watcher_ids: Type.Optional(
+  /** Filter behavior runs by behavior id(s). */
+  behavior_ids: Type.Optional(
     Type.Array(Type.Number({ description: "Filter by persisted Behavior IDs" }))
   ),
   /** Keyset cursor: return runs ordered before (before_created_at, before_id). */
@@ -159,11 +159,11 @@ export const ListActivityAction = Type.Object({
   /** Include runs (default true). */
   include_runs: Type.Optional(Type.Boolean({ default: true })),
   /**
-   * Collapse adjacent same-connection (or watcher) runs that share status.
+   * Collapse adjacent same-connection (or behavior) runs that share status.
    * Failures never merge with successes. Default true.
    */
   aggregate: Type.Optional(Type.Boolean({ default: true })),
-  /** Restrict run kinds: watcher | sync | action | notification (default all). */
+  /** Restrict run kinds: behavior | sync | action | notification (default all). */
   kinds: Type.Optional(Type.Array(Type.String())),
   /**
    * Scope the feed to a single agent: only that agent's Behavior runs are
@@ -306,7 +306,7 @@ export const ManageOperationsResultSchema = Type.Union([
         run_id: Type.Optional(Type.Integer()),
         member_run_ids: Type.Optional(Type.Array(Type.Integer())),
         connection_id: Type.Optional(Type.Integer()),
-        watcher_id: Type.Optional(Type.Integer()),
+        behavior_id: Type.Optional(Type.Integer()),
       })
     ),
     total: Type.Integer(),

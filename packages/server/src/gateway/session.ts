@@ -47,7 +47,7 @@ export interface ThreadSession {
   /** Process without persisting history */
   dryRun?: boolean;
   /** Internal automation intent for one-shot system sessions. */
-  intent?: { kind: "watcher_run"; runId: number; watcherId: number };
+  intent?: { kind: "behavior_run"; runId: number; behaviorId: number };
 }
 
 /**

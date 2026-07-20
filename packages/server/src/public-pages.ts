@@ -44,7 +44,7 @@ interface PublicEntityListItem {
   created_at: string;
   total_content: number;
   active_connections: number;
-  watchers_count: number;
+  behaviors_count: number;
   children_count: number;
 }
 
@@ -414,7 +414,7 @@ async function getPublicEntityTypeList(
       created_at: new Date(entity.created_at).toISOString(),
       total_content: Number(entity.total_content) || 0,
       active_connections: Number(entity.active_connections) || 0,
-      watchers_count: Number(entity.watchers_count) || 0,
+      behaviors_count: Number(entity.behaviors_count) || 0,
       children_count: Number(entity.children_count) || 0,
       ...(relMap.size > 0 && relMap.has(entity.id) ? { relationships: relMap.get(entity.id) } : {}),
     })),
@@ -446,7 +446,7 @@ function buildWorkspaceModel(
         summary?.total_content ?? 0,
         'knowledge item'
       )}, ${formatCountLabel(summary?.active_connections ?? 0, 'connector')}, and ${formatCountLabel(
-        summary?.watchers_count ?? 0,
+        summary?.behaviors_count ?? 0,
         'behavior'
       )}.`,
     180
@@ -463,7 +463,7 @@ function buildWorkspaceModel(
         },
         {
           label: 'Behaviors',
-          value: formatCountLabel(summary?.watchers_count ?? 0, 'active behavior'),
+          value: formatCountLabel(summary?.behaviors_count ?? 0, 'active behavior'),
         },
       ]),
     },
@@ -642,7 +642,7 @@ function buildEntityModel(
         entity.total_content,
         'knowledge item'
       )}, ${formatCountLabel(entity.active_connections, 'connector')}, and ${formatCountLabel(
-        entity.watchers_count,
+        entity.behaviors_count,
         'behavior'
       )}.`,
     180
@@ -668,7 +668,7 @@ function buildEntityModel(
           label: 'Connectors',
           value: formatCountLabel(entity.active_connections, 'active connector'),
         },
-        { label: 'Behaviors', value: formatCountLabel(entity.watchers_count, 'active behavior') },
+        { label: 'Behaviors', value: formatCountLabel(entity.behaviors_count, 'active behavior') },
       ]),
     },
     {

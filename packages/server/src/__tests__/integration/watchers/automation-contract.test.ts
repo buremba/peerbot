@@ -147,7 +147,7 @@ describe("watcher automation contract", () => {
       SELECT status, approved_input
       FROM runs
       WHERE watcher_id = ${watcherId}
-        AND run_type = 'watcher'
+        AND run_type = 'behavior'
         AND organization_id = ${workspace.org.id}
     `;
 		expect(runs).toHaveLength(1);
@@ -241,7 +241,7 @@ describe("watcher automation contract", () => {
     `;
 
 		const content = (await handleWatcherMode(
-			{ watcher_id: watcherId },
+			{ behavior_id: watcherId },
 			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
 			dbClient,
 			{
@@ -372,7 +372,7 @@ describe("watcher automation contract", () => {
 		}
 
 		const page1 = (await api.knowledge.read({
-			watcher_id: watcherId,
+			behavior_id: watcherId,
 			since: "2026-01-02",
 			until: "2026-01-02",
 			limit: 2,
@@ -393,7 +393,7 @@ describe("watcher automation contract", () => {
 		expect(page1.page.next_cursor).toBeDefined();
 
 		const page2 = (await api.knowledge.read({
-			watcher_id: watcherId,
+			behavior_id: watcherId,
 			since: "2026-01-02",
 			until: "2026-01-02",
 			limit: 2,
@@ -524,7 +524,7 @@ describe("watcher automation contract", () => {
         SELECT approved_input
         FROM runs
         WHERE watcher_id = ${watcherId}
-          AND run_type = 'watcher'
+          AND run_type = 'behavior'
       `;
 			const payload = run.approved_input as Record<string, unknown>;
 			expect(payload.device_worker_id).toBe(deviceWorkerId);
@@ -569,7 +569,7 @@ describe("watcher automation contract", () => {
 
 			// The spawned CLI agent completes over MCP, exactly like a server
 			// agent: query_sdk → window_token → run_sdk (completeWindow).
-			const content = (await api.knowledge.read({ watcher_id: watcherId })) as {
+			const content = (await api.knowledge.read({ behavior_id: watcherId })) as {
 				window_token: string;
 			};
 			const completion = (await api.behaviors.completeWindow({
@@ -699,7 +699,7 @@ describe("watcher automation contract", () => {
         SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
         WHERE id = ${queued.runId}
       `;
-			const content = (await api.knowledge.read({ watcher_id: watcherId })) as {
+			const content = (await api.knowledge.read({ behavior_id: watcherId })) as {
 				window_token: string;
 			};
 			await api.behaviors.completeWindow({
@@ -771,7 +771,7 @@ describe("watcher automation contract", () => {
         WHERE id = ${queued.runId}
       `;
 
-			const content = (await api.knowledge.read({ watcher_id: watcherId })) as {
+			const content = (await api.knowledge.read({ behavior_id: watcherId })) as {
 				window_token: string;
 			};
 			const completion = (await api.behaviors.completeWindow({
@@ -1545,7 +1545,7 @@ describe("watcher automation contract", () => {
 						device_worker_id: "11111111-1111-1111-1111-111111111111",
 					})}
 				WHERE watcher_id = ${watcherId}
-				  AND run_type = 'watcher'
+				  AND run_type = 'behavior'
 				RETURNING id
 			`;
 			expect(claimed).toBeDefined();
@@ -1629,7 +1629,7 @@ describe("watcher automation contract", () => {
 			expect(result.runsCreated).toBeGreaterThanOrEqual(1);
 			const [runB] = await sql`
         SELECT status FROM runs
-        WHERE watcher_id = ${watcherBId} AND run_type = 'watcher'
+        WHERE watcher_id = ${watcherBId} AND run_type = 'behavior'
       `;
 			expect(runB).toBeDefined();
 		});
@@ -1653,7 +1653,7 @@ describe("watcher automation contract", () => {
 			expect(result.runsCreated).toBe(0);
 			expect(result.unrunnable).toBeGreaterThanOrEqual(1);
 			const runs = await sql`
-        SELECT id FROM runs WHERE watcher_id = ${watcherId} AND run_type = 'watcher'
+        SELECT id FROM runs WHERE watcher_id = ${watcherId} AND run_type = 'behavior'
       `;
 			expect(runs).toHaveLength(0);
 		});
@@ -1669,7 +1669,7 @@ describe("watcher automation contract", () => {
         UPDATE runs
         SET created_at = NOW() - INTERVAL '3 hours'
         WHERE watcher_id = ${watcherId}
-          AND run_type = 'watcher'
+          AND run_type = 'behavior'
           AND status = 'pending'
         RETURNING id
       `;
@@ -1709,7 +1709,7 @@ describe("watcher automation contract", () => {
 			expect(timedOut).toBe(0);
 			const [run] = await sql`
         SELECT status FROM runs
-        WHERE watcher_id = ${watcherId} AND run_type = 'watcher'
+        WHERE watcher_id = ${watcherId} AND run_type = 'behavior'
       `;
 			expect(String(run.status)).toBe("pending");
 		});
@@ -1726,7 +1726,7 @@ describe("watcher automation contract", () => {
               '"manual"'::jsonb
             )
         WHERE watcher_id = ${watcherId}
-          AND run_type = 'watcher'
+          AND run_type = 'behavior'
           AND status = 'pending'
       `;
 
@@ -1734,7 +1734,7 @@ describe("watcher automation contract", () => {
 			expect(timedOut).toBe(0);
 			const [run] = await sql`
         SELECT status FROM runs
-        WHERE watcher_id = ${watcherId} AND run_type = 'watcher'
+        WHERE watcher_id = ${watcherId} AND run_type = 'behavior'
       `;
 			expect(String(run.status)).toBe("pending");
 			const [watcher] =
@@ -1763,7 +1763,7 @@ describe("watcher automation contract", () => {
               '"event"'::jsonb
             )
         WHERE watcher_id = ${watcherId}
-          AND run_type = 'watcher'
+          AND run_type = 'behavior'
           AND status = 'pending'
       `;
 
@@ -1771,7 +1771,7 @@ describe("watcher automation contract", () => {
 			expect(timedOut).toBe(1);
 			const [run] = await sql`
         SELECT status, error_message FROM runs
-        WHERE watcher_id = ${watcherId} AND run_type = 'watcher'
+        WHERE watcher_id = ${watcherId} AND run_type = 'behavior'
       `;
 			expect(String(run.status)).toBe("timeout");
 			expect(String(run.error_message ?? "")).toMatch(/pending/i);

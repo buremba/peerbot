@@ -253,7 +253,7 @@ export async function handleCreateVersion(
   if (versionOrganizationId) {
     recordToolConfigChange(ctx, {
       organizationId: versionOrganizationId,
-      resourceKind: 'watcher',
+      resourceKind: 'behavior',
       resourceId: args.behavior_id,
       op: 'updated',
       summary: `Behavior '${args.name ?? (prev.name as string) ?? args.behavior_id}' version ${lockedNextVersion} created`,

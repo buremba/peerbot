@@ -372,18 +372,18 @@ export async function fetchIncludeSuperseded(opts: {
     queryParams.push(args.window_id);
     paramIndex += 1;
   }
-  if (args.analyzed_by_watcher_id !== undefined) {
+  if (args.analyzed_by_behavior_id !== undefined) {
     conditions.push(
       `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = e.id AND iwf.watcher_id = $${paramIndex})`
     );
-    queryParams.push(args.analyzed_by_watcher_id);
+    queryParams.push(args.analyzed_by_behavior_id);
     paramIndex += 1;
   }
-  if (args.exclude_watcher_id !== undefined) {
+  if (args.exclude_behavior_id !== undefined) {
     conditions.push(
       `NOT EXISTS (SELECT 1 FROM watcher_window_events exc_iwe WHERE exc_iwe.event_id = e.id AND exc_iwe.watcher_id = $${paramIndex})`
     );
-    queryParams.push(args.exclude_watcher_id);
+    queryParams.push(args.exclude_behavior_id);
     paramIndex += 1;
   }
   if (args.engagement_min !== undefined) {
@@ -547,17 +547,17 @@ export async function fetchClassificationStats(opts: {
     params.push(args.window_id);
     paramIndex++;
   }
-  if (args.analyzed_by_watcher_id !== undefined) {
+  if (args.analyzed_by_behavior_id !== undefined) {
     conditions.push(
       `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = f.id AND iwf.watcher_id = $${paramIndex++})`
     );
-    params.push(args.analyzed_by_watcher_id);
+    params.push(args.analyzed_by_behavior_id);
   }
-  if (args.exclude_watcher_id !== undefined) {
+  if (args.exclude_behavior_id !== undefined) {
     conditions.push(
       `NOT EXISTS (SELECT 1 FROM watcher_window_events exc_iwe WHERE exc_iwe.event_id = f.id AND exc_iwe.watcher_id = $${paramIndex++})`
     );
-    params.push(args.exclude_watcher_id);
+    params.push(args.exclude_behavior_id);
   }
   if (args.agent_id) {
     conditions.push(`f.metadata->>'agent_id' = $${paramIndex++}`);

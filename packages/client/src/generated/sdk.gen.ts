@@ -28,8 +28,8 @@ import type {
   GetApiV1AgentsByAgentIdEventsErrors,
   GetApiV1AgentsByAgentIdEventsResponse,
   GetApiV1AgentsByAgentIdEventsResponses,
-  GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadData,
-  GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadResponses,
+  GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadData,
+  GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadResponses,
   GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesData,
   GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesResponses,
   GetApiV1AgentsByAgentIdHistorySessionMessagesData,
@@ -1074,26 +1074,26 @@ export const getApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessages
     });
 
 /**
- * GET /api/v1/agents/{agentId}/history/behaviors/{watcherId}/thread
+ * GET /api/v1/agents/{agentId}/history/behaviors/{behaviorId}/thread
  */
-export const getApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThread = <
+export const getApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThread = <
   ThrowOnError extends boolean = false,
 >(
   options: Options<
-    GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadData,
+    GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadData,
     ThrowOnError
   >,
 ): RequestResult<
-  GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadResponses,
+  GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadResponses,
   unknown,
   ThrowOnError
 > =>
   (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadResponses,
+    GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadResponses,
     unknown,
     ThrowOnError
   >({
-    url: "/api/v1/agents/{agentId}/history/behaviors/{watcherId}/thread",
+    url: "/api/v1/agents/{agentId}/history/behaviors/{behaviorId}/thread",
     ...options,
   });
 

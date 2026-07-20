@@ -10,7 +10,7 @@ import { getDb, pgTextArray } from "../../../db/client";
 import { listNotifications } from "../../../notifications/service";
 import { buildResourcePermalink } from "../../../utils/url-builder";
 
-const USER_FACING_RUN_TYPES = ["watcher", "sync", "action", "internal"] as const;
+const USER_FACING_RUN_TYPES = ["behavior", "sync", "action", "internal"] as const;
 
 export type ActivityCard = {
 	id: string;
@@ -111,7 +111,7 @@ export function runHref(
 		agent_id: string | null;
 	},
 ): string | null {
-	if (row.run_type === "watcher" && row.watcher_id != null && row.agent_id) {
+	if (row.run_type === "behavior" && row.watcher_id != null && row.agent_id) {
 		return `/${ownerSlug}/agents/${row.agent_id}/behaviors/${row.watcher_id}`;
 	}
 	if (
@@ -149,7 +149,7 @@ function runTitle(row: {
 	connector_key: string | null;
 	id: number;
 }): string {
-	if (row.run_type === "watcher") {
+	if (row.run_type === "behavior") {
 		return (
 			row.watcher_name ??
 			(row.watcher_id != null
@@ -195,7 +195,7 @@ function collapseKeyForRun(row: {
 		}
 		return null;
 	}
-	if (row.run_type === "watcher" && row.watcher_id != null) {
+	if (row.run_type === "behavior" && row.watcher_id != null) {
 		return `watcher:${row.watcher_id}`;
 	}
 	return null;
@@ -256,8 +256,8 @@ export function collapseAdjacentActivityCards(items: RawCard[]): RawCard[] {
 				kind:
 					latest.kind === "sync"
 						? "sync_group"
-						: latest.kind === "watcher_run"
-							? "watcher_run_group"
+						: latest.kind === "behavior_run"
+							? "behavior_run_group"
 							: `${latest.kind}_group`,
 				body,
 				count,
@@ -391,8 +391,8 @@ export async function listOrgActivity(opts: {
 						: String(r.created_at);
 				const atMs = new Date(created).getTime();
 				const kind =
-					r.run_type === "watcher"
-						? "watcher_run"
+					r.run_type === "behavior"
+						? "behavior_run"
 						: r.run_type === "sync"
 							? "sync"
 							: "run";

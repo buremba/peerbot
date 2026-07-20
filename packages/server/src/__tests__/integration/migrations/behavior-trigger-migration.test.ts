@@ -199,7 +199,7 @@ describe("Behavior trigger migration", () => {
         organization_id, run_type, watcher_id, approval_status, status,
         approved_input, idempotency_key, created_at
       ) VALUES (
-        ${org.id}, 'watcher', ${watcherId}, 'auto', 'pending',
+        ${org.id}, 'behavior', ${watcherId}, 'auto', 'pending',
         ${sql.json({ watcher_id: watcherId, agent_id: agent.agentId })},
         ${`legacy-scheduler-race:${suffix}`}, NOW()
       )

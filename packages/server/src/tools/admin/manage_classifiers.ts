@@ -159,25 +159,26 @@ async function handleCreate(
     };
   }
 
-  if (!args.watcher_id) {
+  if (!args.behavior_id) {
     return {
       success: false,
       action: 'create',
-      message: 'Missing required field: watcher_id. Classifiers must be associated with a Behavior.',
+      message: 'Missing required field: behavior_id. Classifiers must be associated with a Behavior.',
     };
   }
 
   const entityId = args.entity_id ?? null;
+  const behaviorId = args.behavior_id;
 
   const watcher = await sql`
     SELECT id FROM watchers
-    WHERE id = ${args.watcher_id} AND organization_id = ${ctx.organizationId}
+    WHERE id = ${behaviorId} AND organization_id = ${ctx.organizationId}
   `;
   if (watcher.length === 0) {
     return {
       success: false,
       action: 'create',
-      message: `Behavior not found: ${args.watcher_id}`,
+      message: `Behavior not found: ${behaviorId}`,
     };
   }
 
@@ -228,9 +229,9 @@ async function handleCreate(
       ${args.slug}, ${args.name}, ${args.description || null}, ${args.attribute_key},
       'active', ${createdBy}, ${entityId},
       CASE WHEN ${entityId}::bigint IS NULL THEN ARRAY[]::bigint[] ELSE ARRAY[${entityId}]::bigint[] END,
-      ${args.watcher_id}, ${sql.json(withEmbeddings)}, ${args.min_similarity ?? 0.7}, ${args.fallback_value ?? null}
+      ${behaviorId}, ${sql.json(withEmbeddings)}, ${args.min_similarity ?? 0.7}, ${args.fallback_value ?? null}
     )
-    RETURNING id, slug, name, attribute_key, entity_id, entity_ids, watcher_id
+    RETURNING id, slug, name, attribute_key, entity_id, entity_ids, watcher_id as behavior_id
   `;
   const classifier = classifierResult[0];
 
@@ -274,8 +275,8 @@ async function handleList(
       fc.id, fc.slug, fc.name, fc.description, fc.attribute_key, fc.entity_ids,
       et.slug AS entity_type, fc.status, fc.created_at, fc.updated_at,
       fc.min_similarity, fc.fallback_value, fc.attribute_values,
-      fc.watcher_id,
-      w.name as watcher_name,
+      fc.watcher_id as behavior_id,
+      w.name as behavior_name,
       CASE
         WHEN fc.entity_ids IS NULL OR cardinality(fc.entity_ids) = 0 THEN 'global'
         WHEN e.parent_id IS NULL THEN 'root'

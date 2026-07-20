@@ -52,7 +52,7 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
     slug,
     name: `${slug} Classifier`,
     attribute_key: slug,
-    watcher_id: watcher.behavior_id,
+    behavior_id: watcher.behavior_id,
     attribute_values: {
       positive: {
         description: 'positive signal',

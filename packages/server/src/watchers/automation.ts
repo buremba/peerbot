@@ -109,7 +109,7 @@ export function buildLatestWatcherRunJoinSql(
       SELECT r.id, r.status, r.error_message, r.created_at, r.completed_at
       FROM runs r
       WHERE r.watcher_id = ${watcherAlias}.id
-        AND r.run_type = 'watcher'
+        AND r.run_type = 'behavior'
       ORDER BY
         CASE WHEN r.status IN ('pending', 'claimed', 'running') THEN 0 ELSE 1 END,
         r.created_at DESC
@@ -410,7 +410,7 @@ export async function getWatcherRunInfo(
     SELECT id as run_id, watcher_id, status, error_message
     FROM runs
     WHERE id = ${runId}
-      AND run_type = 'watcher'
+      AND run_type = 'behavior'
     LIMIT 1
   `;
 
@@ -445,7 +445,7 @@ export async function reconcileWatcherRuns(
     JOIN events ww
       ON ww.run_id = r.id
      AND ww.semantic_type = 'canvas_state'
-    WHERE r.run_type = 'watcher'
+    WHERE r.run_type = 'behavior'
       AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
     ORDER BY r.created_at ASC
     LIMIT 100
@@ -468,7 +468,7 @@ export async function reconcileWatcherRuns(
 	const pendingDispatchRows = await sql`
     SELECT DISTINCT r.dispatched_message_id
     FROM runs r
-    WHERE r.run_type = 'watcher'
+    WHERE r.run_type = 'behavior'
       AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
       AND r.dispatched_message_id IS NOT NULL
     LIMIT 200
@@ -508,7 +508,7 @@ export async function reconcileWatcherRuns(
     JOIN response_payloads rp
       ON rp.payload ? 'processedMessageIds'
      AND rp.payload->'processedMessageIds' ? r.dispatched_message_id
-    WHERE r.run_type = 'watcher'
+    WHERE r.run_type = 'behavior'
       AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
       AND r.dispatched_message_id = ANY(${pgTextArray(pendingDispatchIds)}::text[])
     ORDER BY r.dispatched_message_id ASC
@@ -579,7 +579,7 @@ export async function sweepStaleWatcherRuns(
 		coarseStaleInterval
 	);
 	const executingTimedOut = await markStaleRunsAsTimeout(sql, {
-		runTypes: ["watcher"],
+		runTypes: ["behavior"],
 		heartbeatSemantics: "beat-after-claim",
 		heartbeatStaleInterval,
 		coarseStaleInterval,
@@ -632,7 +632,7 @@ async function finalizeStalePendingWatcherRuns(
              r.approved_input->>'dispatch_source' AS dispatch_source
       FROM runs r
       JOIN watchers w ON w.id = r.watcher_id
-      WHERE r.run_type = 'watcher'
+      WHERE r.run_type = 'behavior'
         AND r.status = 'pending'
         AND r.created_at < current_timestamp - ${staleInterval}::interval
         AND COALESCE(r.approved_input->>'dispatch_source', 'scheduled') <> 'manual'
@@ -721,7 +721,7 @@ async function resetOrphanedWatcherRuns(
         claimed_at = NULL,
         dispatched_message_id = NULL,
         error_message = NULL
-    WHERE run_type = 'watcher'
+    WHERE run_type = 'behavior'
       AND status = 'claimed'
       AND claimed_by = 'lobu-dispatcher'
       AND claimed_at < now() - ${intervals.watcherOrphanedClaimThreshold}::interval
@@ -777,7 +777,7 @@ export async function materializeDueWatcherRuns(
           AND NOT EXISTS (
             SELECT 1 FROM runs r
             WHERE r.watcher_id = w.id
-              AND r.run_type = 'watcher'
+              AND r.run_type = 'behavior'
               AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
           )
         ORDER BY w.next_run_at ASC
@@ -804,7 +804,7 @@ export async function materializeDueWatcherRuns(
           AND NOT EXISTS (
             SELECT 1 FROM runs r
             WHERE r.watcher_id = w.id
-              AND r.run_type = 'watcher'
+              AND r.run_type = 'behavior'
               AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
           )
       `;
@@ -837,7 +837,7 @@ export async function materializeDueWatcherRuns(
 					SELECT approved_input->>'source_fingerprint' AS fingerprint
 					FROM runs
 					WHERE watcher_id = ${watcher.id}
-					  AND run_type = 'watcher'
+					  AND run_type = 'behavior'
 					  AND status = 'completed'
 					  AND approved_input->>'source_fingerprint' IS NOT NULL
 					ORDER BY completed_at DESC NULLS LAST, id DESC
@@ -1031,9 +1031,9 @@ export function buildDispatchMessage(params: {
 			: []),
 		"",
 		"Required steps:",
-		`1. Call query_sdk with a script that runs client.knowledge.read({ watcher_id: ${params.watcherId}, since: "${readKnowledgeSince}", until: "${readKnowledgeUntil}"${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }).`,
+		`1. Call query_sdk with a script that runs client.knowledge.read({ behavior_id: ${params.watcherId}, since: "${readKnowledgeSince}", until: "${readKnowledgeUntil}"${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }).`,
 		"2. Analyze the returned payload using prompt_rendered and extraction_schema.",
-		`3. Call run_sdk with a script that runs client.behaviors.completeWindow({ window_token, extracted_data, watcher_run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }) using the window_token from step 1.`,
+		`3. Call run_sdk with a script that runs client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }) using the window_token from step 1.`,
 		"4. Include this run_metadata object in complete_window exactly, and add any extra provider/job fields you know:",
 		JSON.stringify(
 			{
@@ -1099,13 +1099,13 @@ async function claimWatcherRun(
 		const candidates = await tx`
       SELECT r.id, r.organization_id, r.watcher_id, r.approved_input
       FROM runs r
-      WHERE r.run_type = 'watcher'
+      WHERE r.run_type = 'behavior'
         AND r.status = 'pending'
         AND NOT EXISTS (
           SELECT 1
           FROM runs active
           WHERE active.watcher_id = r.watcher_id
-            AND active.run_type = 'watcher'
+            AND active.run_type = 'behavior'
             AND active.status IN ('claimed', 'running')
         )
         AND (
@@ -1341,9 +1341,9 @@ async function dispatchWatcherRun(
 				forceNew: true,
 				dryRun: false,
 				intent: {
-					kind: "watcher_run",
+					kind: "behavior_run",
 					runId: run.id,
-					watcherId: run.watcher_id,
+					behaviorId: run.watcher_id,
 				},
 			}),
 		});

@@ -114,7 +114,7 @@ export const ResolvedEntityDetailsSchema = Type.Intersect([
     // Stats
     total_content: Type.Integer(),
     active_connections: Type.Integer(),
-    watchers_count: Type.Integer(),
+    behaviors_count: Type.Integer(),
     // Derived ("view") entity: synthesized from the type's `backing_sql` filtered
     // to this slug, not a stored `entities` row. `metadata` holds the full view
     // row; `measure_columns` are its aggregate columns. Stored entities omit both.
@@ -169,7 +169,7 @@ const BootstrapEntityTypeSummarySchema = Type.Object({
 const BootstrapScopeSummarySchema = Type.Object({
   total_content: Type.Integer(),
   active_connections: Type.Integer(),
-  watchers_count: Type.Integer(),
+  behaviors_count: Type.Integer(),
   // Org-level regardless of the focused entity (sidebar nav badges).
   agents_count: Type.Integer(),
   // Devices are owned by the requesting user, not the org — count is per-user.
@@ -644,7 +644,7 @@ async function _resolvePath(
       created_at: createdAt,
       total_content: Number(eventsCount?.cnt) || 0,
       active_connections: Number(connectionsCount?.cnt) || 0,
-      watchers_count: Number(watchersCount?.cnt) || 0,
+      behaviors_count: Number(watchersCount?.cnt) || 0,
     };
   }
 
@@ -902,7 +902,7 @@ async function resolveDerivedLeaf(
     created_at: new Date().toISOString(),
     total_content: 0,
     active_connections: 0,
-    watchers_count: 0,
+    behaviors_count: 0,
     is_derived: true,
     measure_columns: measures,
   };
@@ -936,7 +936,7 @@ async function fetchBootstrap(
       summary: {
         total_content: 0,
         active_connections: 0,
-        watchers_count: 0,
+        behaviors_count: 0,
         agents_count: 0,
         devices_count: 0,
       },
@@ -1029,7 +1029,7 @@ async function fetchScopeSummary(
     return {
       total_content: entity.total_content,
       active_connections: entity.active_connections,
-      watchers_count: entity.watchers_count,
+      behaviors_count: entity.behaviors_count,
       agents_count: agentsCount,
       devices_count: devicesCount,
     };
@@ -1055,14 +1055,14 @@ async function fetchScopeSummary(
         FROM watchers w
         WHERE w.organization_id = ${organizationId}
           AND w.status = 'active'
-      ) AS watchers_count
+      ) AS behaviors_count
   `;
 
   return {
     total_content: Number((row as { total_content?: number } | undefined)?.total_content) || 0,
     active_connections:
       Number((row as { active_connections?: number } | undefined)?.active_connections) || 0,
-    watchers_count: Number((row as { watchers_count?: number } | undefined)?.watchers_count) || 0,
+    behaviors_count: Number((row as { behaviors_count?: number } | undefined)?.behaviors_count) || 0,
     agents_count: agentsCount,
     devices_count: devicesCount,
   };

@@ -91,7 +91,7 @@ describe('classifier attribute_values corruption (item 4)', () => {
       slug: 'quality',
       name: 'Quality',
       attribute_key: 'quality',
-      watcher_id: watcherId,
+      behavior_id: watcherId,
       attribute_values: {
         high: { description: 'high quality', examples: ['excellent', 'superb'], embedding: stubEmbedding },
         low: { description: 'low quality', examples: ['poor'], embedding: stubEmbedding },

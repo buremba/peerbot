@@ -53,7 +53,7 @@ describe('redactConfigState', () => {
   });
 
   it('preserves arrays and leaves null secret values untouched', () => {
-    const out = redactConfigState('watcher', {
+    const out = redactConfigState('behavior', {
       sources: [{ feed: 'gmail' }],
       api_key: null,
     });

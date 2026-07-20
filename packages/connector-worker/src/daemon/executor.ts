@@ -102,7 +102,7 @@ export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
 /**
  * Execute a run (sync, action, or watcher).
  *
- * Dispatches to sync, action, or watcher execution based on run_type.
+ * Dispatches to sync, action, or behavior execution based on run_type.
  */
 export async function executeRun(
   client: ExecutorClient,
@@ -118,15 +118,15 @@ export async function executeRun(
   switch (job.run_type) {
     case 'action':
       return executeActionRun(client, job, env, cfg);
-    case 'watcher':
-      // Watcher reactions execute inline in the API process (complete_window) and
-      // the poll endpoint's run_type allowlist should never hand a watcher run to
+    case 'behavior':
+      // Behavior reactions execute inline in the API process (complete_window) and
+      // the poll endpoint's run_type allowlist should never hand a behavior run to
       // this daemon. If one slips through (deploy skew, regression), do NOT mark
-      // it success — that would stomp a live watcher run and prevent any retry.
+      // it success — that would stomp a live behavior run and prevent any retry.
       console.error(
-        `[executor] Refusing to handle watcher run ${job.run_id} — watcher runs must not reach the connector-worker daemon`
+        `[executor] Refusing to handle behavior run ${job.run_id} — behavior runs must not reach the connector-worker daemon`
       );
-      return { itemsCollected: 0, error: 'watcher run not handled by daemon' };
+      return { itemsCollected: 0, error: 'behavior run not handled by daemon' };
     case 'embed_backfill':
       return executeEmbedBackfillRun(client, job, env, cfg);
     case 'auth':

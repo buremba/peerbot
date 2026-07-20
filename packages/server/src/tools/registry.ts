@@ -87,7 +87,7 @@ export interface ToolContext {
    * The watcher whose reaction script is driving these tool calls, when the
    * session IS a watcher reaction (set by the reaction executor). Every gated
    * write then resolves this watcher's owning agent and evaluates autonomously,
-   * WITHOUT the script having to pass `watcher_source` — so a reaction can never
+   * WITHOUT the script having to pass `behavior_source` — so a reaction can never
    * escape its agent's envelope by simply omitting the attribution. Null for all
    * non-reaction sessions.
    */
@@ -97,7 +97,7 @@ export interface ToolContext {
    * reaction executor alongside {@link actingWatcherId}. Threaded into a deferred
    * approval's `runs.window_id` so proposals from the same window batch into one
    * approval card and identical proposals from DIFFERENT windows stay distinct —
-   * even when the script omits an explicit `watcher_source`. Null off-reaction.
+   * even when the script omits an explicit `behavior_source`. Null off-reaction.
    */
   actingWindowId?: number | null;
   /** Durable watcher run driving this reaction. Used only for provenance. */

@@ -53,7 +53,7 @@ export type WatcherWindowReaction = Static<typeof WatcherWindowReactionSchema>;
 export const WatcherWindowSchema = Type.Object({
   window_id: Type.Integer(),
   behavior_id: Type.String(),
-  watcher_name: Type.String(),
+  behavior_name: Type.String(),
   granularity: Type.String(),
   window_start: Type.String(),
   window_end: Type.String(),
@@ -132,7 +132,7 @@ const WatcherRunSchema = Type.Object({
 
 export const WatcherMetadataSchema = Type.Object({
   behavior_id: Type.String(),
-  watcher_name: Type.String(),
+  behavior_name: Type.String(),
   slug: Type.String(),
   status: Type.Union([Type.Literal('active'), Type.Literal('archived')]),
   triggers: Type.Optional(Type.Array(BehaviorTriggerSchema)),
@@ -157,7 +157,7 @@ export const WatcherMetadataSchema = Type.Object({
   rendered_prompt: Type.Optional(Type.String()),
   available_versions: Type.Optional(Type.Array(WatcherVersionInfoSchema)),
   reaction_script: Type.Optional(Type.String()),
-  watcher_run: Type.Optional(WatcherRunSchema),
+  behavior_run: Type.Optional(WatcherRunSchema),
 });
 export type WatcherMetadata = Static<typeof WatcherMetadataSchema>;
 

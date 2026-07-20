@@ -40,7 +40,7 @@ export interface KnowledgeReadInput {
 	/** Fetch specific content events by id. */
 	content_ids?: number[];
 	/** Fetch knowledge for a watcher window (prompt rendering). */
-	watcher_id?: number;
+	behavior_id?: number;
 	since?: string;
 	until?: string;
 	limit?: number;

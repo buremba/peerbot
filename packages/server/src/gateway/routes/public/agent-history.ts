@@ -72,7 +72,7 @@ type ToolApprovalHistoryInteraction = {
 	current: Record<string, unknown> | null;
 	fields: Record<string, unknown> | null;
 	attribution: string | null;
-	/** Discriminator: "agent" | "watcher" | "entity". */
+	/** Discriminator: "agent" | "behavior" | "entity". */
 	resourceKind: string | null;
 	reason: string | null;
 };
@@ -554,19 +554,23 @@ export function createAgentHistoryRoutes(deps: {
 				ORDER BY run_id
 			`;
 			interactions = rows.map((r) => {
-				const resourceKind =
+				// Normalize the legacy stored `resource_kind: "watcher"` to the public
+				// "behavior" value so old and new events emit one canonical discriminator.
+				const rawResourceKind =
 					r.resource_kind ??
 					(r.tool === "manage_behaviors"
-						? "watcher"
+						? "behavior"
 						: r.tool === "manage_agents"
 							? "agent"
 							: r.tool === "entity_field_change" || r.tool === "entity_change"
 								? "entity"
 								: null);
+				const resourceKind =
+					rawResourceKind === "watcher" ? "behavior" : rawResourceKind;
 				// manage_behaviors stores proposal as `{ args }`; SPA expects flat fields.
 				const rawProposal = r.proposal ?? null;
 				const proposal =
-					resourceKind === "watcher" &&
+					resourceKind === "behavior" &&
 					rawProposal &&
 					typeof rawProposal === "object" &&
 					(rawProposal as { args?: unknown }).args &&
@@ -654,14 +658,14 @@ export function createAgentHistoryRoutes(deps: {
 	// read-only run history rendered as one conversation. Watcher conversation
 	// ids are org-less but the snapshot row carries the org; the service bridges
 	// that, so we just hand it the requester's resolved org.
-	app.get("/behaviors/:watcherId/thread", async (c) => {
+	app.get("/behaviors/:behaviorId/thread", async (c) => {
 		const scope = await getAuthorizedAgentScope(c);
 		if (!scope) return errorResponse(c, "Unauthorized", 401);
 		if (!scope.organizationId) return c.json({ runs: [] });
 
-		const watcherId = Number(c.req.param("watcherId"));
+		const watcherId = Number(c.req.param("behaviorId"));
 		if (!Number.isFinite(watcherId)) {
-			return errorResponse(c, "Invalid watcher id", 400);
+			return errorResponse(c, "Invalid behavior id", 400);
 		}
 		const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 50);
 

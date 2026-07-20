@@ -108,14 +108,16 @@ describe("ClientSDK business failure boundary", () => {
 		});
 	});
 
-	it("throws when watchers.delete returns an all-failed aggregate", async () => {
+	it("throws 403 when watchers.delete targets an id outside the org", async () => {
+		// delete runs requireWatcherAccess as a preflight: an id that isn't in the
+		// caller's org (999999 here) is rejected 403 before the per-item aggregate,
+		// so existence never leaks across orgs.
 		await expect(
 			workspace.owner.behaviors.delete({ watcher_ids: ["999999"] })
 		).rejects.toMatchObject({
-			name: "ClientSdkActionError",
-			action: "delete",
-			message: "Behavior not found or already archived",
-			httpStatus: 400,
+			name: "ToolUserError",
+			message: "Access denied: one or more Behaviors were not found in your organization",
+			httpStatus: 403,
 		});
 	});
 });

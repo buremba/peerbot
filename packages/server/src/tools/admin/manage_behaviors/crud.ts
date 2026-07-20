@@ -3,7 +3,7 @@
  *   create, update, delete, create_from_version
  */
 
-import { getDb } from '../../../db/client';
+import { getDb, parsePgTextArray } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { isUniqueViolation } from '../../../utils/pg-errors';
@@ -775,7 +775,10 @@ export async function handleCreateFromVersion(
         // system:chat-link tag): those bind a live channel responder, and
         // cloning them would create a second agent turn for the same message.
         const cloneTriggers = stripChatLinkTriggers(version.triggers);
-        const cloneTags = ((version.tags as string[]) || []).filter(
+        // getDb() runs with fetch_types:false, so a text[] column arrives as a
+        // raw Postgres array literal (`{a,b}`), not a JS array — parse before
+        // filtering or `.filter` throws.
+        const cloneTags = parsePgTextArray(version.tags as string | string[]).filter(
           (tag) => tag !== 'system:chat-link',
         );
 

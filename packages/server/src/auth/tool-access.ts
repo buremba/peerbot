@@ -123,8 +123,9 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"create_from_version",
 	]),
 	manage_agents: new Set([
-		"list",
-		"get",
+		// `list`/`get` are org-read (the handler gates them with
+		// requireOrgReadAccess) and live in PUBLIC_READ_ACTIONS — agent
+		// ADMINISTRATION (create/update/delete/set_system_agent) stays owner-admin.
 		"create",
 		"update",
 		"delete",
@@ -169,6 +170,10 @@ export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	]),
 	manage_classifiers: new Set(["list"]),
 	manage_view_templates: new Set(["get"]),
+	// `list`/`get` are org-read-gated in the handler (requireOrgReadAccess);
+	// their METHOD_METADATA tier is `read` so query_sdk read mode surfaces them.
+	// The mutating siblings stay owner-admin (OWNER_ADMIN_ACTIONS).
+	manage_agents: new Set(["list", "get"]),
 };
 
 function getAction(args: unknown): string | null {

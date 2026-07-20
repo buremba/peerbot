@@ -145,17 +145,6 @@ export function parseAtlasAmount(raw: string | null | undefined): number {
   return Number.isFinite(n) ? sign * n : 0;
 }
 
-/**
- * @deprecated Prefer {@link parseAtlasAmount}. Kept for call sites that still
- * pass a market key; Atlas TR UI uses European amounts for both markets.
- */
-export function parseLocaleAmount(
-  raw: string | null | undefined,
-  _market?: MidasMarket
-): number {
-  return parseAtlasAmount(raw);
-}
-
 /** Share quantity — same European rendering as money on Atlas TR. */
 export function parseShares(raw: string | null | undefined): number {
   return parseAtlasAmount(raw);

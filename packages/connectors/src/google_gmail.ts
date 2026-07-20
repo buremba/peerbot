@@ -86,62 +86,6 @@ const GMAIL_SEARCH_COLUMNS = [
   { name: 'url', type: 'string' },
 ];
 
-/**
- * Local-parts that identify a role/system mailbox rather than a human. Sending
- * to one of these is a support ticket or a signup, not a relationship, so it
- * must never mint a `person`.
- */
-const ROLE_LOCAL_PARTS = new Set([
-  'noreply',
-  'no-reply',
-  'donotreply',
-  'do-not-reply',
-  'no_reply',
-  'mailer-daemon',
-  'postmaster',
-  'support',
-  'help',
-  'info',
-  'hello',
-  'contact',
-  'billing',
-  'invoices',
-  'invoice',
-  'receipts',
-  'receipt',
-  'notifications',
-  'notification',
-  'newsletter',
-  'news',
-  'updates',
-  'marketing',
-  'team',
-  'jobs',
-  'careers',
-  'hr',
-  'sales',
-  'abuse',
-  'security',
-]);
-
-/** `Precedence` values that mark automated bulk mail. */
-const BULK_PRECEDENCE = new Set(['bulk', 'list', 'junk']);
-
-/**
- * Above this many distinct external recipients on the opening SENT message the
- * thread reads as a blast, not a one-to-one reach-out. Such threads only mint
- * once the counterparty writes back (`replied`).
- */
-const BROADCAST_RECIPIENT_CAP = 3;
-
-const isSentMessage = (m: GmailMessage): boolean => (m.labelIds ?? []).includes('SENT');
-
-const normalizeEmail = (email: string | null | undefined): string =>
-  (email ?? '').trim().toLowerCase();
-
-const isRoleAddress = (email: string): boolean =>
-  ROLE_LOCAL_PARTS.has(normalizeEmail(email).split('@')[0] ?? '');
-
 // ---------------------------------------------------------------------------
 // Connector
 // ---------------------------------------------------------------------------
@@ -183,8 +127,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
             label: {
               type: 'string',
               default: 'INBOX',
-              description:
-                'Gmail label to sync alongside sent mail (e.g. "INBOX" or "STARRED").',
+              description: 'Gmail label to sync (e.g. "INBOX", "SENT", "STARRED").',
             },
             max_results: {
               type: 'integer',
@@ -213,32 +156,29 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                 snippet: { type: 'string' },
                 from_email: { type: 'string' },
                 from_name: { type: 'string' },
-                outbound: {
-                  type: 'boolean',
-                  description:
-                    'True when the thread contains at least one mailbox-authored SENT-labeled message.',
-                },
                 replied: {
                   type: 'boolean',
                   description:
-                    'True when the thread contains both a counterparty message and a mailbox-authored SENT-labeled message — a bidirectional exchange. Quality/metadata signal only; it relaxes the broadcast cap but does not itself gate contact promotion.',
-                },
-                mintable: {
-                  type: 'boolean',
-                  description:
-                    'True when we sent into the thread and attributed a direct, non-self, non-list, non-role counterparty.',
+                    'True when the thread contains both a counterparty message and a mailbox-authored SENT-labeled message — the interaction signal that gates contact promotion.',
                 },
               },
             },
             attributions: [
               {
                 role: 'authored_by',
-                // Receive-only senders may still link to an existing contact,
-                // but only a vetted counterparty we sent to can create one.
+                // Promote on interaction, never on receipt. Every from-address is
+                // a sender — overwhelmingly brands, newsletters, and no-reply
+                // system addresses, all of which carry a from_name — so receipt
+                // alone must not mint a contact. `replied` (computed in sync from
+                // per-message SENT labels) marks a genuine bidirectional exchange.
+                // Only those senders materialize a `person`; everything else still
+                // links to an existing contact on identity match. A thread replied
+                // to after its first sync re-syncs (the reply is a new message
+                // inside the `after:` window), so promotion follows the reply.
                 autoCreate: true,
                 target: {
                   entityType: 'person',
-                  createWhen: { path: 'metadata.mintable', equals: true },
+                  createWhen: { path: 'metadata.replied', equals: true },
                   titlePath: 'metadata.from_name',
                   identities: [{ namespace: 'email', eventPath: 'metadata.from_email' }],
                 },
@@ -384,9 +324,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     // precision. Using `YYYY/MM/DD` (day granularity, host timezone) meant every
     // sync within the same day re-fetched the whole day's threads as duplicates.
     const afterEpochSeconds = Math.floor(afterDate.getTime() / 1000);
-    // Include SENT explicitly so a new outbound-only thread is discoverable
-    // even when the configured feed label is INBOX (the default).
-    const query = `after:${afterEpochSeconds} {label:${label} in:sent}`;
+    const query = `after:${afterEpochSeconds} label:${label}`;
 
     const http = this.createClient(token);
     const events: EventEnvelope[] = [];
@@ -423,7 +361,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
       // Fetch each thread with metadata format
       for (const threadStub of threads) {
         try {
-          const threadUrl = `${this.BASE_URL}/threads/${threadStub.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Reply-To&metadataHeaders=List-Id&metadataHeaders=Precedence`;
+          const threadUrl = `${this.BASE_URL}/threads/${threadStub.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`;
           const threadResponse = await http.raw(threadUrl);
 
           if (!threadResponse.ok) continue;
@@ -433,20 +371,25 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
           if (!thread.messages || thread.messages.length === 0) continue;
 
           const firstMessage = thread.messages[0];
-          const counterpartyMessage = thread.messages.find((message) => !isSentMessage(message));
+          const isSent = (m: GmailMessage) => (m.labelIds ?? []).includes('SENT');
+          const counterpartyMessage = thread.messages.find((message) => !isSent(message));
           const subject = this.getHeader(firstMessage, 'Subject') || '(no subject)';
           const from = counterpartyMessage
             ? this.getHeader(counterpartyMessage, 'From') || 'Unknown'
             : 'Unknown';
-          const mint = this.computeMintability(thread.messages);
-          const fromName = mint.fromName;
-          const fromEmail = mint.fromEmail;
+          const { name: fromName, email: fromEmail } = this.parseFromHeader(from);
           const dateHeader = this.getHeader(firstMessage, 'Date');
           const occurredAt = dateHeader
             ? new Date(dateHeader)
             : new Date(parseInt(firstMessage.internalDate, 10));
 
           if (Number.isNaN(occurredAt.getTime())) continue;
+
+          // A bidirectional exchange has at least one mailbox-authored message
+          // and one counterparty-authored message, regardless of who started it.
+          // Attribute the event to the first counterparty message so an
+          // owner-started thread never promotes the mailbox owner's own address.
+          const replied = counterpartyMessage !== undefined && thread.messages.some(isSent);
 
           const event: EventEnvelope = {
             origin_id: thread.id,
@@ -460,9 +403,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
               message_count: thread.messages.length,
               label_ids: firstMessage.labelIds ?? [],
               snippet: firstMessage.snippet,
-              outbound: mint.outbound,
-              replied: mint.replied,
-              mintable: mint.mintable,
+              replied,
               ...(fromEmail ? { from_email: fromEmail } : {}),
               ...(fromName ? { from_name: fromName } : {}),
             },
@@ -914,139 +855,6 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
-
-  /**
-   * Compute event attribution and the create-on-miss gate. SENT-message From
-   * headers are the available self-address set; aliases absent from the thread
-   * cannot be recognized as self.
-   */
-  private computeMintability(messages: GmailMessage[]): {
-    outbound: boolean;
-    replied: boolean;
-    mintable: boolean;
-    fromName: string | null;
-    fromEmail: string | null;
-  } {
-    const sentMessages = messages.filter(isSentMessage);
-    const nonSentMessages = messages.filter((message) => !isSentMessage(message));
-    const outbound = sentMessages.length > 0;
-
-    const selfAddresses = new Set(
-      sentMessages
-        .map((m) => normalizeEmail(this.parseFromHeader(this.getHeader(m, 'From') ?? '').email))
-        .filter(Boolean)
-    );
-    const isSelf = (email: string) => selfAddresses.has(normalizeEmail(email));
-
-    // A bidirectional exchange needs a message from someone OTHER than us.
-    // Gmail drops our own sends into the mailbox too (and send-as aliases vary
-    // in case), so counting any non-SENT message would score a note-to-self as
-    // `replied` — which would then wrongly relax the broadcast cap below.
-    const counterpartyMessage = nonSentMessages.find(
-      (m) => !isSelf(this.parseFromHeader(this.getHeader(m, 'From') ?? '').email ?? '')
-    );
-    // Prefer an inbound message from a real human over one from a role mailbox:
-    // a thread a Jira notification opened, a colleague replied to, and we then
-    // answered is a relationship with the colleague — attributing the bot
-    // address would sink it. Falls back to the role sender when that is all
-    // there is, which the role filter below then correctly refuses to mint.
-    const humanCounterpartyMessage =
-      nonSentMessages.find((m) => {
-        const email = this.parseFromHeader(this.getHeader(m, 'From') ?? '').email ?? '';
-        return email && !isSelf(email) && !isRoleAddress(email);
-      }) ?? counterpartyMessage;
-    const replied = outbound && counterpartyMessage !== undefined;
-    const earliestSent = sentMessages[0];
-    let fromName: string | null = null;
-    let fromEmail: string | null = null;
-    if (humanCounterpartyMessage) {
-      const parsed = this.parseFromHeader(this.getHeader(humanCounterpartyMessage, 'From') ?? '');
-      fromName = parsed.name;
-      fromEmail = parsed.email;
-    } else if (earliestSent) {
-      // Skip role mailboxes rather than attributing one: a message addressed to
-      // `support@vendor, Real Human <human@acme>` is still a real reach-out to
-      // the human, and attributing the role address would sink the whole thread.
-      const recipient = this.parseAddressList(this.getHeader(earliestSent, 'To')).find(
-        (address) => !isSelf(address.email) && !isRoleAddress(address.email)
-      );
-      fromName = recipient?.name ?? null;
-      fromEmail = recipient?.email ?? null;
-    }
-    const addressedDirectly = sentMessages.some((message) =>
-      this.parseAddressList(this.getHeader(message, 'To')).some(
-        (address) => normalizeEmail(address.email) === normalizeEmail(fromEmail)
-      )
-    );
-
-    const mintable =
-      outbound &&
-      // A SENT message with no parseable From leaves us unable to tell self from
-      // counterparty, so every self-check below would silently pass. Fail closed.
-      selfAddresses.size > 0 &&
-      !!fromEmail &&
-      !isSelf(fromEmail) &&
-      !isRoleAddress(fromEmail) &&
-      !this.isListThread(messages) &&
-      (addressedDirectly || replied) &&
-      // Broadcast cap: a wide opening blast only mints once someone writes back.
-      (replied || this.externalRecipientCount(earliestSent, isSelf) <= BROADCAST_RECIPIENT_CAP);
-
-    return { outbound, replied, mintable, fromName, fromEmail };
-  }
-
-  private isListThread(messages: GmailMessage[]): boolean {
-    return messages.some((m) => {
-      if ((this.getHeader(m, 'List-Id') ?? '').trim()) return true;
-      const precedence = (this.getHeader(m, 'Precedence') ?? '').trim().toLowerCase();
-      return BULK_PRECEDENCE.has(precedence);
-    });
-  }
-
-  private externalRecipientCount(
-    message: GmailMessage | undefined,
-    isSelf: (email: string) => boolean
-  ): number {
-    if (!message) return 0;
-    const recipients = [
-      ...this.parseAddressList(this.getHeader(message, 'To')),
-      ...this.parseAddressList(this.getHeader(message, 'Cc')),
-    ];
-    const distinct = new Set(
-      recipients
-        .map((a) => normalizeEmail(a.email))
-        .filter((email) => email && !isSelf(email))
-    );
-    return distinct.size;
-  }
-
-  /**
-   * Split an RFC 5322 address-list header into individual addresses. Commas
-   * inside a quoted display name (`"Doe, Jane" <jane@x>`) do not separate.
-   */
-  private parseAddressList(raw: string | undefined): Array<{ name: string | null; email: string }> {
-    if (!raw?.trim()) return [];
-    const parts: string[] = [];
-    let current = '';
-    let inQuotes = false;
-    let inAngle = false;
-    for (const char of raw) {
-      if (char === '"') inQuotes = !inQuotes;
-      else if (char === '<' && !inQuotes) inAngle = true;
-      else if (char === '>' && !inQuotes) inAngle = false;
-      if (char === ',' && !inQuotes && !inAngle) {
-        parts.push(current);
-        current = '';
-        continue;
-      }
-      current += char;
-    }
-    parts.push(current);
-
-    return parts
-      .map((part) => this.parseFromHeader(part))
-      .filter((parsed): parsed is { name: string | null; email: string } => !!parsed.email);
-  }
 
   private getHeader(message: GmailMessage, name: string): string | undefined {
     const header = message.payload.headers.find((h) => h.name.toLowerCase() === name.toLowerCase());

@@ -39,6 +39,8 @@ export async function handleCreateVersion(
   version_id: string;
   version: number;
   previous_version: number;
+  source_count: number;
+  removed_sources?: string[];
 }> {
   const sql = getDb();
 
@@ -86,29 +88,34 @@ export async function handleCreateVersion(
 
   const promptEdited = args.prompt !== undefined;
   const prompt = args.prompt ?? (prev.prompt as string);
-  // Sources derivation on a version bump. The prompt is the single source of
-  // truth for prompt-derived sources: the current prompt's `@`-mention tokens
-  // are authoritative, so we derive fresh from `prompt` and do NOT union with
-  // the stored sources — otherwise a deleted chip's source would linger forever
-  // and an edited SQL chip would leave its OLD query running under the original
-  // name (union-merge is monotonic; it can only add). We union ONLY explicit
-  // `args.sources` (an API caller that passes sources directly, not the UI which
-  // sends just the prompt).
+  // Sources on a version bump — full-replacement semantics keyed on INTENT,
+  // distinguishing "the caller omitted sources" (inherit) from "the caller
+  // explicitly set them" (replace, even to empty). This closes #2048: passing
+  // `sources: []` used to be conflated with "omitted" and silently re-inherited
+  // the stored sources. The three authoring intents, in precedence order:
+  //
+  //   1. Prompt edited            → derive fresh from the new prompt's `@`-chips
+  //      (unioned with any explicit sources). The prompt is authoritative: a
+  //      deleted chip's source must NOT linger, an edited SQL chip must not keep
+  //      its OLD query under the same name (union-merge is monotonic, add-only),
+  //      so we derive fresh rather than union with stored.
+  //   2. `sources` passed (prompt not edited) → EXPLICIT replacement. The given
+  //      list is authoritative even when empty (`[]` clears). This is the fix:
+  //      an API caller that passes sources means exactly that list.
+  //   3. Neither prompt nor sources supplied → INHERIT the stored sources, so a
+  //      metadata-only bump (schedule/name) preserves a legacy watcher's sources.
   const promptSources = extractSourcesFromPromptTokens(prompt);
+  const sourcesProvided = args.sources !== undefined;
   const explicitSources = args.sources ?? [];
-  const derived = mergePromptSources(explicitSources, promptSources);
-  // When the caller EDITED the prompt, the derived set is authoritative even if
-  // empty — removing every source chip must clear the sources, not silently keep
-  // the stale stored ones. Only fall back to the stored sources for a bump that
-  // did NOT touch the prompt (e.g. a schedule-only change), so a legacy watcher's
-  // sources survive a metadata edit.
-  const sources =
-    promptEdited || derived.length > 0
-      ? derived
-      : normalizeStoredJsonField(
-          watcherRows[0].sources,
-          [] as Array<{ name: string; query: string }>
-        );
+  const storedSources = normalizeStoredJsonField(
+    watcherRows[0].sources,
+    [] as Array<{ name: string; query: string }>
+  );
+  const sources = promptEdited
+    ? mergePromptSources(explicitSources, promptSources)
+    : sourcesProvided
+      ? explicitSources
+      : storedSources;
   const keyingConfig =
     parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config') ??
     normalizeStoredJsonField(prev.keying_config, undefined as Record<string, unknown> | undefined);
@@ -288,12 +295,23 @@ export async function handleCreateVersion(
     });
   }
 
+  // Report the resulting source set + what a full-replacement dropped, so a
+  // caller can SEE that publishing this version removed sources (rather than
+  // discovering it at the next run). `removed_sources` = names present on the
+  // prior assignment but absent from the new version (#2048).
+  const newSourceNames = new Set(sources.map((s) => s.name));
+  const removedSources = storedSources
+    .map((s) => s.name)
+    .filter((name) => !newSourceNames.has(name));
+
   return {
     action: 'create_version',
     behavior_id: args.behavior_id,
     version_id: String(versionId),
     version: lockedNextVersion,
     previous_version: previousVersion,
+    source_count: sources.length,
+    ...(removedSources.length > 0 ? { removed_sources: removedSources } : {}),
   };
 }
 

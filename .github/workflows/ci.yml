@@ -135,6 +135,11 @@ jobs:
           # run here rather than in the integration job.
           bun test packages/server/src/utils/__tests__/device-pin-tombstones.test.ts packages/server/src/tools/admin/manage_operations/__tests__/activity-feed-collapse.test.ts --coverage
           mv coverage/lcov.info coverage/server-units-activity.lcov.info
+          # Connector-compiler bun:test suites (#2042/#2043): pure source-text
+          # and AST-level compilation checks (esbuild only, no Postgres in the
+          # module graph), so they run in the pure-unit job rather than integration.
+          bun test packages/server/src/utils/__tests__/catalog-connectors-compile.test.ts packages/server/src/utils/__tests__/compiler-core.test.ts --coverage
+          mv coverage/lcov.info coverage/server-units-compiler.lcov.info
 
       - name: connector-worker (bun:test)
         run: |
@@ -171,7 +176,7 @@ jobs:
         if: always()
         uses: codecov/codecov-action@v7
         with:
-          files: coverage/core-cli.lcov.info,coverage/plugin-runtime.lcov.info,coverage/agent-worker.lcov.info,coverage/server-units.lcov.info,coverage/server-units-auth.lcov.info,coverage/server-units-activity.lcov.info,coverage/connector-worker.lcov.info,coverage/client-promptfoo.lcov.info,coverage/connector-sdk.lcov.info,coverage/connectors.lcov.info
+          files: coverage/core-cli.lcov.info,coverage/plugin-runtime.lcov.info,coverage/agent-worker.lcov.info,coverage/server-units.lcov.info,coverage/server-units-auth.lcov.info,coverage/server-units-activity.lcov.info,coverage/server-units-compiler.lcov.info,coverage/connector-worker.lcov.info,coverage/client-promptfoo.lcov.info,coverage/connector-sdk.lcov.info,coverage/connectors.lcov.info
           flags: unit
           fail_ci_if_error: false
 

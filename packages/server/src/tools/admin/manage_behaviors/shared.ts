@@ -283,6 +283,26 @@ async function getWatcherAccessRows(
   );
 }
 
+/**
+ * Existence probe across all orgs for the given watcher ids, reading ONLY the
+ * id column — never organization_id/entity_ids. The org-scoped
+ * {@link getWatcherAccessRows} load stays the single source of truth for every
+ * actual access decision (TOCTOU-safe); this probe exists purely to tell a
+ * cross-org id (exists under another tenant — a 403 access fault) apart from an
+ * id that exists nowhere (which a mutation handler must be allowed to report
+ * per-id, e.g. delete's all-failed "not found or already archived" aggregate).
+ */
+async function findExistingWatcherIds(watcherIds: string[]): Promise<Set<string>> {
+  if (watcherIds.length === 0) return new Set();
+  const sql = getDb();
+  const placeholders = watcherIds.map((_, idx) => `$${idx + 1}`).join(',');
+  const rows = await sql.unsafe<{ id: string | number }>(
+    `SELECT id FROM watchers WHERE id IN (${placeholders})`,
+    watcherIds,
+  );
+  return new Set(rows.map((row) => String(row.id)));
+}
+
 export async function requireWatcherAccess(
   sql: DbClient,
   watcherIds: string[],
@@ -292,10 +312,21 @@ export async function requireWatcherAccess(
   const uniqueWatcherIds = [...new Set(watcherIds)];
   const rows = await getWatcherAccessRows(uniqueWatcherIds, ctx.organizationId);
   if (rows.length !== uniqueWatcherIds.length) {
-    throw new ToolUserError(
-      'Access denied: one or more Behaviors were not found in your organization',
-      403,
-    );
+    // Some requested ids are absent from the caller's org. A cross-org id
+    // (exists, but under another tenant) is a 403 access fault; an id that
+    // exists nowhere must instead fall through so the mutation handler reports
+    // it per-id (delete surfaces it in the all-failed aggregate as "Behavior
+    // not found or already archived"). Probe only bare existence here — the
+    // org-scoped load above still gates every real access decision.
+    const foundIds = new Set(rows.map((row) => String(row.id)));
+    const missingIds = uniqueWatcherIds.filter((id) => !foundIds.has(String(id)));
+    const existElsewhere = await findExistingWatcherIds(missingIds);
+    if (existElsewhere.size > 0) {
+      throw new ToolUserError(
+        'Access denied: one or more Behaviors were not found in your organization',
+        403,
+      );
+    }
   }
 
   for (const row of rows) {

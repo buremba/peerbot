@@ -235,7 +235,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				note: "lists the seeded Behavior attached to the entity",
 			},
 			get_behavior: {
-				args: () => ({ watcher_id: watcherId, entity_id: entityId }),
+				args: () => ({ behavior_id: watcherId, entity_id: entityId }),
 				coverage: "round-trip",
 				note: "reads back the Behavior seeded in beforeAll",
 			},
@@ -349,9 +349,9 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			},
 			TEST_ENV,
 			authCtx
-		)) as { watcher_id: string };
-		expect(watcher.watcher_id).toBeDefined();
-		watcherId = watcher.watcher_id;
+		)) as { behavior_id: string };
+		expect(watcher.behavior_id).toBeDefined();
+		watcherId = watcher.behavior_id;
 	});
 
 	it("covers every registry tool in the args fixture (catches new uncovered tools)", () => {

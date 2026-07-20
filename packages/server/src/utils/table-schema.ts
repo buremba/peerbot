@@ -366,7 +366,8 @@ export const QUERYABLE_SCHEMA = {
         'default_repair_agent_id',
         'required_capability',
         'runtime',
-        'behavior_events'
+        'behavior_events',
+        'supports_execute'
       ),
     },
   ],

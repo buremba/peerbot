@@ -140,9 +140,33 @@ describe("sdkSearch", () => {
 	});
 
 	it("hides admin methods from write-tier callers", async () => {
-		const result = await sdkSearch({ query: "agents.list" }, stubEnv, writeCtx);
+		// agents.setSystemAgent stays admin (a mutation); a write-tier caller must
+		// not see it. (agents.list/get are now `read` and intentionally visible —
+		// see the read-mode test below.)
+		const result = await sdkSearch(
+			{ query: "agents.setSystemAgent" },
+			stubEnv,
+			writeCtx
+		);
 		expect(result.match_count).toBe(0);
 		expect(result.notes).toContain("mcp:admin");
+	});
+
+	it("shows the reclassified org-read agent lists in read mode", async () => {
+		// agents.list/get were mistagged admin, so query_sdk read mode dropped the
+		// whole `agents` namespace → opaque "Cannot read properties of undefined".
+		// They are org-read-gated at runtime, so read mode must surface them.
+		const result = await sdkSearch(
+			{ query: "agents", mode: "read" },
+			stubEnv,
+			readCtx
+		);
+		const joined = result.results.join("\n");
+		expect(joined).toContain("agents.list");
+		expect(joined).toContain("agents.get");
+		// The mutating siblings stay hidden in read mode.
+		expect(joined).not.toContain("agents.create");
+		expect(joined).not.toContain("agents.setSystemAgent");
 	});
 
 	it("lists a camelCase namespace from a lowercased query without a false hidden note", async () => {
@@ -159,16 +183,16 @@ describe("sdkSearch", () => {
 		expect(result.notes ?? "").not.toContain("none are visible");
 	});
 
-	it("names an admin-only namespace in read mode instead of a silent dead end", async () => {
-		// Live failure: search_sdk query='agents' mode='read' returned unrelated
-		// matches with no hint that agents.* exists behind run_sdk — the client
-		// concluded the namespace does not exist.
+	it("names a write-only namespace in read mode instead of a silent dead end", async () => {
+		// A namespace whose methods are ALL non-read (notifications = send only) is
+		// filtered out of read mode. search_sdk must still hint that it exists behind
+		// run_sdk, not return an empty dead end that reads as "does not exist".
 		const result = await sdkSearch(
-			{ query: "agents", mode: "read" },
+			{ query: "notifications", mode: "read" },
 			stubEnv,
 			readCtx
 		);
-		expect(result.notes ?? "").toContain("agents.*");
+		expect(result.notes ?? "").toContain("notifications.*");
 		expect(result.notes ?? "").toContain("run_sdk");
 	});
 

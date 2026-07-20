@@ -139,8 +139,16 @@ describe('getContent > content_ids resolves the full supersede chain', () => {
 
     // Whole lineage comes back, chronological, not a 404.
     expect(ids).toEqual([pending, executing, completed]);
-    // total counts the chain as ONE unit, not three rows.
-    expect(result.total).toBe(1);
+    // total is now ROW-accurate: three rows returned -> total 3 (the old
+    // chain-count `total:1` lied about how many rows the caller got).
+    expect(result.total).toBe(3);
+    // chain_total still reports the atomic-unit (one lineage) count.
+    expect(result.chain_total).toBe(1);
+    // The superseded history is flagged so callers can find the live head.
+    const byId = new Map(result.content.map((c) => [c.id, c]));
+    expect(byId.get(pending)?.is_superseded).toBe(true);
+    expect(byId.get(executing)?.is_superseded).toBe(true);
+    expect(byId.get(completed)?.is_superseded).toBe(false);
   });
 
   it('walk arm: a run_id-less superseded id resolves via superseded_by/supersedes_event_id', async () => {
@@ -169,7 +177,11 @@ describe('getContent > content_ids resolves the full supersede chain', () => {
     );
     const ids = result.content.map((c) => c.id).sort((a, b) => a - b);
     expect(ids).toEqual([v1, v2].sort((a, b) => a - b));
-    expect(result.total).toBe(1);
+    expect(result.total).toBe(2);
+    expect(result.chain_total).toBe(1);
+    const walkById = new Map(result.content.map((c) => [c.id, c]));
+    expect(walkById.get(v1)?.is_superseded).toBe(true);
+    expect(walkById.get(v2)?.is_superseded).toBe(false);
   });
 
   it('walk arm: entering from the HEAD id still returns the full history (backward walk)', async () => {
@@ -207,7 +219,8 @@ describe('getContent > content_ids resolves the full supersede chain', () => {
     );
     const ids = result.content.map((c) => c.id).sort((a, b) => a - b);
     expect(ids).toEqual([v1, v2, v3].sort((a, b) => a - b));
-    expect(result.total).toBe(1);
+    expect(result.total).toBe(3);
+    expect(result.chain_total).toBe(1);
   });
 
   it('two ids from the same chain do not double-return the lineage', async () => {
@@ -242,6 +255,8 @@ describe('getContent > content_ids resolves the full supersede chain', () => {
     const ids = result.content.map((c) => c.id);
     // Each chain row appears exactly once even though both its ids were asked for.
     expect(ids.sort((x, y) => x - y)).toEqual([a, b].sort((x, y) => x - y));
-    expect(result.total).toBe(1);
+    // Two rows, still one lineage — the dedup keeps rows unique.
+    expect(result.total).toBe(2);
+    expect(result.chain_total).toBe(1);
   });
 });

@@ -694,9 +694,11 @@ export async function getEntity(
 	entityId: number,
 	_env: Env,
 	ctx: ToolContext,
+	opts?: { includeDeleted?: boolean },
 ): Promise<CreatedEntity | null> {
   const sql = getDb();
   if (!ctx.organizationId) return null;
+  const includeDeleted = opts?.includeDeleted ?? false;
 
   // Operational counts always scope to the caller's org. When `e` is a
   // public-catalog entity, totals reflect the caller's events/feeds/watchers/
@@ -746,7 +748,7 @@ export async function getEntity(
         e.organization_id = ${ctx.organizationId}
         OR (eo.visibility = 'public' AND et.slug <> '$member')
       )
-      AND e.deleted_at IS NULL
+      ${includeDeleted ? sql`` : sql`AND e.deleted_at IS NULL`}
   `;
 
   return result.length > 0 ? result[0] : null;

@@ -107,6 +107,37 @@ describe("method-metadata", () => {
 		expect(METHOD_METADATA["organizations.list"].access).toBe("read");
 	});
 
+	it("exposes org-read admin lists in read mode (agents.list/get, schedules.list)", () => {
+		// These are org-read-gated at runtime (requireOrgReadAccess / org-scoped
+		// query) but were tagged access:"admin", so query_sdk read mode dropped the
+		// whole namespace → opaque "Cannot read properties of undefined". Reclassify
+		// ONLY the reads; the mutating siblings must stay admin.
+		expect(METHOD_METADATA["agents.list"].access).toBe("read");
+		expect(METHOD_METADATA["agents.get"].access).toBe("read");
+		expect(METHOD_METADATA["schedules.list"].access).toBe("read");
+		// Mutations stay admin-gated — reclassifying reads must not leak writes.
+		expect(METHOD_METADATA["agents.create"].access).toBe("admin");
+		expect(METHOD_METADATA["agents.update"].access).toBe("admin");
+		expect(METHOD_METADATA["agents.delete"].access).toBe("admin");
+		expect(METHOD_METADATA["agents.setSystemAgent"].access).toBe("admin");
+		expect(METHOD_METADATA["schedules.create"].access).toBe("admin");
+		expect(METHOD_METADATA["schedules.update"].access).toBe("admin");
+		expect(METHOD_METADATA["schedules.pause"].access).toBe("admin");
+		expect(METHOD_METADATA["schedules.cancel"].access).toBe("admin");
+	});
+
+	it("spells the runtime-enforced enums into entities.link / entities.listLinks signatures", () => {
+		// The enums are validated at runtime (contract manage-entity.ts) but weren't
+		// in the search_sdk signatures, so a client had no way to discover the legal
+		// values before a call rejected.
+		const linkSig = METHOD_METADATA["entities.link"].signature ?? "";
+		expect(linkSig).toContain("source?: 'ui' | 'llm' | 'feed' | 'api'");
+		const listLinksSig = METHOD_METADATA["entities.listLinks"].signature ?? "";
+		expect(listLinksSig).toContain(
+			"direction?: 'outbound' | 'inbound' | 'both'",
+		);
+	});
+
 	it("does not claim SQL positional parameters in the query example", () => {
 		const example = METHOD_METADATA.query.example ?? "";
 		expect(example).not.toMatch(/\$\d+/);

@@ -73,7 +73,7 @@ describe('deleteContent (tombstone) > end-to-end', () => {
     });
 
     const result = await deleteContent(
-      { event_id: target.id } as never,
+      { content_id: target.id } as never,
       {} as never,
       callerCtx
     );
@@ -115,7 +115,7 @@ describe('deleteContent (tombstone) > end-to-end', () => {
     });
 
     const result = await deleteContent(
-      { event_id: foreign.id } as never,
+      { content_id: foreign.id } as never,
       {} as never,
       callerCtx
     );
@@ -138,7 +138,7 @@ describe('deleteContent (tombstone) > end-to-end', () => {
     });
 
     const first = await deleteContent(
-      { event_id: target.id } as never,
+      { content_id: target.id } as never,
       {} as never,
       callerCtx
     );
@@ -147,7 +147,7 @@ describe('deleteContent (tombstone) > end-to-end', () => {
 
     // Second delete — already superseded by the first tombstone.
     const second = await deleteContent(
-      { event_id: target.id } as never,
+      { content_id: target.id } as never,
       {} as never,
       callerCtx
     );
@@ -174,7 +174,7 @@ describe('deleteContent (tombstone) > end-to-end', () => {
       content: 'Will be tombstoned before the batch runs',
     });
     await deleteContent(
-      { event_id: supersededTarget.id } as never,
+      { content_id: supersededTarget.id } as never,
       {} as never,
       callerCtx
     );
@@ -186,7 +186,7 @@ describe('deleteContent (tombstone) > end-to-end', () => {
 
     const result = await deleteContent(
       {
-        event_ids: [own.id, supersededTarget.id, foreign.id, ghostId],
+        content_ids: [own.id, supersededTarget.id, foreign.id, ghostId],
         reason: 'batch test',
       } as never,
       {} as never,

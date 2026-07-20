@@ -172,6 +172,13 @@ export async function buildContentItems(opts: {
         : undefined,
       interaction_error: f.interaction_error ?? undefined,
       supersedes_event_id: f.supersedes_event_id == null ? null : Number(f.supersedes_event_id),
+      // `superseded_by` is the denormalized forward edge (the newer row that
+      // replaced this one). Its presence is exactly what makes a row the
+      // tombstone/stale side of a supersede chain, so `is_superseded` lets a
+      // caller reading the full chain (content_ids resolution) tell the live
+      // head from the superseded history without re-deriving it.
+      superseded_by: f.superseded_by == null ? null : Number(f.superseded_by),
+      is_superseded: f.superseded_by != null,
       run_id: f.run_id == null ? null : Number(f.run_id),
       parent_context:
         parentContextMap.get(f.origin_parent_id as string) ??

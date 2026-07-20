@@ -123,6 +123,30 @@ describe('entity CRUD', () => {
     await expect(owner.entities.get({ entity_id: created.entity.id })).rejects.toThrow(/not found/i);
   });
 
+  it('get honors include_deleted: soft-deleted entity is hidden by default, returned with the flag', async () => {
+    const sql = getTestDb();
+    const created = (await owner.entities.create({
+      type: 'company',
+      name: 'Soft Deleted Co',
+    })) as { entity: { id: number } };
+    const id = created.entity.id;
+
+    // Soft-delete directly (stamp deleted_at) so getEntity's default
+    // `AND e.deleted_at IS NULL` filters it out.
+    await sql`UPDATE entities SET deleted_at = NOW() WHERE id = ${id}`;
+
+    // Default read: the soft-deleted row is invisible → not-found.
+    await expect(owner.entities.get({ entity_id: id })).rejects.toThrow(/not found/i);
+
+    // With include_deleted: the row comes back.
+    const got = (await owner.entities.get({
+      entity_id: id,
+      include_deleted: true,
+    })) as { entity?: { id: number; name: string } };
+    expect(got.entity?.id).toBe(id);
+    expect(got.entity?.name).toBe('Soft Deleted Co');
+  });
+
   describe('access control', () => {
     it('lets a member create + list (write scope is enough)', async () => {
       const created = (await member.entities.create({

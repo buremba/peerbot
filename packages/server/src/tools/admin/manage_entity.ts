@@ -153,9 +153,13 @@ const runManageEntity = defineFlatActionTool<
 		},
 	),
 	list: flatAction((args, ctx, env) => handleList(args, env, ctx)),
-	get: flatAction((args, ctx, env) => handleGet(args.entity_id!, env, ctx), {
-		requires: ["entity_id"],
-	}),
+	get: flatAction(
+		(args, ctx, env) =>
+			handleGet(args.entity_id!, env, ctx, args.include_deleted ?? false),
+		{
+			requires: ["entity_id"],
+		},
+	),
 	delete: flatAction(
 		(args, ctx, env) =>
 			handleDelete(
@@ -1230,8 +1234,9 @@ async function handleGet(
 	entityId: number,
 	env: Env,
 	ctx: ToolContext,
+	includeDeleted = false,
 ): Promise<ManageEntityResult> {
-	const entity = await getEntity(entityId, env, ctx);
+	const entity = await getEntity(entityId, env, ctx, { includeDeleted });
 
 	if (!entity) {
 		throw new Error(`Entity with ID ${entityId} not found`);

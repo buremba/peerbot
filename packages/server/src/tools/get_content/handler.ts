@@ -304,6 +304,11 @@ async function getContentImpl(
     // 3. If no query + sort_by=date -> use searchContentByText with date sorting
     let rawContent: ContentRow[];
     let total: number;
+    // Distinct-lineage count from the content_ids branch (one requested id can
+    // resolve to a whole supersede chain). Surfaced as `chain_total` so callers
+    // can distinguish "how many rows" (`total`) from "how many things I asked
+    // resolved to" (`chain_total`).
+    let chainTotal: number | undefined;
     let pageInfo: GetContentResult['page'] = {
       limit,
       offset,
@@ -347,7 +352,7 @@ async function getContentImpl(
     }
 
     if (args.content_ids && args.content_ids.length > 0) {
-      ({ rawContent, total, pageInfo } = await fetchByContentIds({
+      ({ rawContent, total, chainTotal, pageInfo } = await fetchByContentIds({
         args,
         sql,
         organizationId: ctx.organizationId,
@@ -553,6 +558,10 @@ async function getContentImpl(
       total,
       page: pageInfo,
     };
+
+    if (chainTotal !== undefined) {
+      result.chain_total = chainTotal;
+    }
 
     if (classificationStats) {
       result.classification_stats = classificationStats;

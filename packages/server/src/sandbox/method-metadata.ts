@@ -78,6 +78,8 @@ export default async (_ctx, client) => {
 	"entities.get": {
 		summary: "Fetch a single entity by id.",
 		access: "read",
+		signature:
+			"entities.get(input: { entity_id: number; include_deleted?: boolean }): Promise<unknown>",
 		throws: ["EntityNotFound"],
 		example: "const entity = await client.entities.get({ entity_id: 42 });",
 		usageExample: `export default async (_ctx, client) => {
@@ -122,6 +124,8 @@ export default async (_ctx, client) => {
 	"entities.delete": {
 		summary: "Delete an entity, optionally cascading to descendants.",
 		access: "admin",
+		signature:
+			"entities.delete(input: { entity_id: number; force_delete_tree?: boolean }): Promise<unknown>",
 		example:
 			"await client.entities.delete({ entity_id: 42, force_delete_tree: true });",
 	},
@@ -129,6 +133,8 @@ export default async (_ctx, client) => {
 		summary:
 			"Create a relationship between two entities. Needs the two entity IDs AND a relationship TYPE that already exists — if the relationship type is new, call `entitySchema.createRelType` first; list existing ones with `entitySchema.listRelTypes()`. (`entitySchema.addRule` does NOT create a type; it restricts the allowed source/target entity-type pairs on a type that already exists.)",
 		access: "write",
+		signature:
+			"entities.link(input: { from_entity_id: number; to_entity_id: number; relationship_type_slug: string; source?: 'ui' | 'llm' | 'feed' | 'api'; confidence?: number; metadata?: object }): Promise<unknown>",
 		example:
 			"await client.entities.link({ from_entity_id: 42, to_entity_id: 43, relationship_type_slug: 'customer_of' });",
 		usageExample: `// Two-hop: the relationship TYPE must exist before linking. Ensure it
@@ -165,6 +171,8 @@ export default async (_ctx, client) => {
 	"entities.listLinks": {
 		summary: "List relationships for an entity.",
 		access: "read",
+		signature:
+			"entities.listLinks(input: { entity_id: number; direction?: 'outbound' | 'inbound' | 'both'; relationship_type_slug?: string; confidence_min?: number; include_deleted?: boolean }): Promise<unknown>",
 	},
 	"entities.search": {
 		summary:
@@ -289,7 +297,7 @@ export default async (_ctx, client) => {
 		usageExample: `// Hide a smoke-test write that should not have landed.
 export default async (_ctx, client) => {
   const result = await client.knowledge.delete({
-    event_ids: [2321593, 2321594],
+    content_ids: [2321593, 2321594],
     reason: 'smoke test cleanup',
   });
   return result;
@@ -304,14 +312,14 @@ export default async (_ctx, client) => {
 	},
 	"agents.list": {
 		summary:
-			"List agents the principal may read (agent_config read; default all). Requires admin tier.",
-		access: "admin",
+			"List agents the principal may read (agent_config read; default all). Org-read gated via requireOrgReadAccess.",
+		access: "read",
 		example: "const { agents } = await client.agents.list();",
 	},
 	"agents.get": {
 		summary:
-			"Fetch one agent by id when agent_config read allows that target. Requires admin tier.",
-		access: "admin",
+			"Fetch one agent by id when agent_config read allows that target. Org-read gated via requireOrgReadAccess.",
+		access: "read",
 		example: "const { agent } = await client.agents.get('builder');",
 	},
 	"agents.create": {
@@ -384,8 +392,9 @@ export default async (ctx, client) => {
 		access: "admin",
 	},
 	"schedules.list": {
-		summary: "List scheduled jobs with optional filters. Requires admin.",
-		access: "admin",
+		summary:
+			"List scheduled jobs with optional filters. Results are scoped to the caller's organization.",
+		access: "read",
 		example:
 			"const { schedules } = await client.schedules.list({ agent_id: 'builder' });",
 	},

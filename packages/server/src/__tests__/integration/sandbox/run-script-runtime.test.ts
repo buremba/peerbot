@@ -155,6 +155,48 @@ describe("sandbox runtime", () => {
     });
   });
 
+  it("read mode: a known-but-hidden namespace throws a structured error, not undefined", async () => {
+    // `notifications` has only a write method (`send`), so read mode filters the
+    // whole namespace out of the manifest. Before the stub, `client.notifications`
+    // was undefined and the guest died with the opaque "Cannot read properties of
+    // undefined (reading 'send')". Now it must throw a NamespaceNotAvailable error
+    // naming the namespace, so discovery and runtime agree.
+    const stubSdk = {
+      query: async () => [],
+      log: () => undefined,
+    } as unknown as ClientSDK;
+
+    const result = await runScript({
+      source:
+        "export default async (_ctx, client) => client.notifications.send({ title: 'x' });",
+      sdk: stubSdk,
+      sdkMode: "read",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain("NamespaceNotAvailable");
+    expect(result.error?.message).toContain("notifications");
+    // The stub must NOT dispatch to the host — it fails guest-side.
+    expect(result.sdkCalls).toBe(0);
+  });
+
+  it("read mode: a genuinely unknown namespace stays undefined (not a false stub)", async () => {
+    const stubSdk = {
+      query: async () => [],
+      log: () => undefined,
+    } as unknown as ClientSDK;
+
+    const result = await runScript({
+      source:
+        "export default async (_ctx, client) => ({ t: typeof client.totallyMadeUp });",
+      sdk: stubSdk,
+      sdkMode: "read",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toEqual({ t: "undefined" });
+  });
+
   it("enforces wall-clock timeout while awaiting SDK calls", async () => {
     const stubSdk = {
       entities: {

@@ -577,7 +577,7 @@ describe('org-wide guidance context', () => {
 
     // Real delete path: inserts an empty-payload tombstone that supersedes it.
     const del = (await deleteContent(
-      { event_id: saved.id } as never,
+      { content_id: saved.id } as never,
       env,
       ctx
     )) as { tombstone_ids: number[] };
@@ -648,7 +648,7 @@ describe('org-wide guidance context', () => {
     )) as { id: number };
 
     await expect(
-      deleteContent({ event_id: guarded.id } as never, env, memberCtx)
+      deleteContent({ content_id: guarded.id } as never, env, memberCtx)
     ).rejects.toThrow(/only organization owners\/admins/i);
 
     expect(await loadOrgGuidanceBlock(org.id)).toContain('Do not delete me.');

@@ -150,13 +150,19 @@ describe("access-model cross-check", () => {
 
 	it("the agents.* triple agrees (AGENTS_SDK_ACTION ↔ METHOD_METADATA ↔ manage_agents)", () => {
 		// AGENTS_SDK_ACTION enumerates the agents.* SDK paths gated by
-		// agent_config policy. Every such path must also have METHOD_METADATA,
-		// and (excluding the raw `.manage` passthrough) map to a manage_agents
-		// action declared owner-admin — agents administration is admin-tier.
-		const managedAgentActions = OWNER_ADMIN_ACTIONS.manage_agents;
-		expect(managedAgentActions).toBeDefined();
+		// agent_config policy, each mapped to the agent_config verb it needs.
+		// `read`-verb paths (list/get) are org-read: METHOD_METADATA tier `read`,
+		// runtime declared in PUBLIC_READ_ACTIONS.manage_agents (the handler gates
+		// them with requireOrgReadAccess). Write-verb paths (create/update/delete/
+		// setSystemAgent) are administration: METHOD_METADATA tier `admin`, runtime
+		// owner-admin. The raw `.manage` passthrough carries the namespace's
+		// most-privileged tier (admin) and maps to no single action.
+		const adminAgentActions = OWNER_ADMIN_ACTIONS.manage_agents;
+		const readAgentActions = PUBLIC_READ_ACTIONS.manage_agents;
+		expect(adminAgentActions).toBeDefined();
+		expect(readAgentActions).toBeDefined();
 
-		for (const path of Object.keys(AGENTS_SDK_ACTION)) {
+		for (const [path, verb] of Object.entries(AGENTS_SDK_ACTION)) {
 			// Index directly, not `toHaveProperty(path)`: the dotted keys
 			// ("agents.list") are LITERAL keys, but toHaveProperty parses a dotted
 			// string as a nested traversal (METHOD_METADATA.agents.list) — behavior
@@ -165,19 +171,30 @@ describe("access-model cross-check", () => {
 				METHOD_METADATA[path],
 				`${path} missing METHOD_METADATA`,
 			).toBeDefined();
-			// Every agents.* SDK method is admin-tier in metadata.
+
+			// A `read` agent_config verb is an org-read method; anything else
+			// (create/update/delete/any) is admin-tier administration.
+			const isRead = verb === "read";
+			const expectedTier = isRead ? "read" : "admin";
 			expect(
 				METHOD_METADATA[path]?.access,
-				`${path} should be admin in METHOD_METADATA`,
-			).toBe("admin");
+				`${path} should be ${expectedTier} in METHOD_METADATA`,
+			).toBe(expectedTier);
 
 			const method = path.split(".")[1];
 			if (method === "manage") continue;
 			const action = method.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
-			expect(
-				managedAgentActions?.has(action),
-				`agents.${method} → manage_agents.${action} must be owner-admin`,
-			).toBe(true);
+			if (isRead) {
+				expect(
+					readAgentActions?.has(action),
+					`agents.${method} → manage_agents.${action} must be public-read`,
+				).toBe(true);
+			} else {
+				expect(
+					adminAgentActions?.has(action),
+					`agents.${method} → manage_agents.${action} must be owner-admin`,
+				).toBe(true);
+			}
 		}
 	});
 });

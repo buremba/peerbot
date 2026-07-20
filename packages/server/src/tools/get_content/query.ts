@@ -25,6 +25,12 @@ interface VisibilityScope {
 interface ListPageResult {
   rawContent: ContentRow[];
   total: number;
+  /**
+   * Distinct-lineage count, set only by the content_ids branch where one id can
+   * expand to a whole supersede chain. `total` counts returned rows; this counts
+   * the atomic chains those rows collapse into.
+   */
+  chainTotal?: number;
   pageInfo: GetContentResult['page'];
 }
 
@@ -73,6 +79,7 @@ function buildContentQuery(opts: {
       ${a}.interaction_output,
       ${a}.interaction_error,
       ${a}.supersedes_event_id,
+      ${a}.superseded_by,
       ${a}.run_id,
       oc.client_name,
       -- classifications was sourced from latest_event_classifications, a denormalized cache that was
@@ -228,14 +235,20 @@ export async function fetchByContentIds(opts: {
     queryParams
   );
 
-  // Count distinct chains via the resolver's stable `chain_key`, not expanded
-  // rows: a chain is an atomic unit and paging must never split it. Joining
-  // resolved_ids also re-applies the same org/entity/visibility WHERE to the
-  // counted set, so it can't drift from the list above.
+  // `total` counts the returned ROWS, not chains: a chain expands to its whole
+  // supersede lineage (original + tombstone), so a chain-count `total` under-
+  // reports (says 1 when 2 rows return) — a lying count. `total` and the
+  // row-wise `has_more` below now agree with what the caller actually receives.
+  // `chain_total` is kept as the atomic-unit count (distinct lineages), for
+  // callers that want "how many things did my ids resolve to". Both re-apply the
+  // same org/entity/visibility WHERE via the resolved_ids join, so neither can
+  // drift from the list above.
   const countResult = await sql.unsafe(
     `
     WITH ${RESOLVED_IDS_CTE}
-    SELECT COUNT(DISTINCT ri.chain_key) as total
+    SELECT
+      COUNT(*) as total,
+      COUNT(DISTINCT ri.chain_key) as chain_total
     FROM events f
     JOIN resolved_ids ri ON ri.id = f.id
     LEFT JOIN connections c ON c.id = f.connection_id
@@ -246,9 +259,11 @@ export async function fetchByContentIds(opts: {
 
   const rawContent = result as unknown as ContentRow[];
   const total = Number(countResult[0]?.total ?? 0);
+  const chainTotal = Number(countResult[0]?.chain_total ?? 0);
   return {
     rawContent,
     total,
+    chainTotal,
     pageInfo: {
       limit,
       offset,

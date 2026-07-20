@@ -307,21 +307,32 @@ export async function requireWatcherAccess(
   sql: DbClient,
   watcherIds: string[],
   ctx: ToolContext,
-  mode: WatcherAccessMode
+  mode: WatcherAccessMode,
+  opts?: { allowMissing?: boolean }
 ): Promise<void> {
   const uniqueWatcherIds = [...new Set(watcherIds)];
   const rows = await getWatcherAccessRows(uniqueWatcherIds, ctx.organizationId);
   if (rows.length !== uniqueWatcherIds.length) {
-    // Some requested ids are absent from the caller's org. A cross-org id
-    // (exists, but under another tenant) is a 403 access fault; an id that
-    // exists nowhere must instead fall through so the mutation handler reports
-    // it per-id (delete surfaces it in the all-failed aggregate as "Behavior
-    // not found or already archived"). Probe only bare existence here — the
-    // org-scoped load above still gates every real access decision.
+    // Some requested ids are absent from the caller's org. By default this is a
+    // hard 403 — the strict gate every action but delete relies on, so no
+    // action reaches a handler with an id it did not prove in-org.
+    //
+    // `allowMissing` (delete only) relaxes this ONE case: an id that exists
+    // nowhere may fall through so the handler reports it per-id (delete's
+    // all-failed "not found or already archived" aggregate). A cross-org id
+    // (exists under another tenant) is STILL a 403 — never fall through for it,
+    // or a caller could probe/hit foreign rows on the sequential id space.
     const foundIds = new Set(rows.map((row) => String(row.id)));
     const missingIds = uniqueWatcherIds.filter((id) => !foundIds.has(String(id)));
-    const existElsewhere = await findExistingWatcherIds(missingIds);
-    if (existElsewhere.size > 0) {
+    if (opts?.allowMissing) {
+      const existElsewhere = await findExistingWatcherIds(missingIds);
+      if (existElsewhere.size > 0) {
+        throw new ToolUserError(
+          'Access denied: one or more Behaviors were not found in your organization',
+          403,
+        );
+      }
+    } else {
       throw new ToolUserError(
         'Access denied: one or more Behaviors were not found in your organization',
         403,

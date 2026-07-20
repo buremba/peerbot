@@ -132,7 +132,11 @@ async function manageBehaviorsImpl(
   } else if (args.action === 'trigger' && args.watcher_id) {
     await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
   } else if (args.action === 'delete' && args.watcher_ids && args.watcher_ids.length > 0) {
-    await requireWatcherAccess(pgSql, args.watcher_ids, ctx, 'write');
+    // delete alone allows missing ids to fall through to its per-id aggregate
+    // ("not found or already archived"); every other action stays a hard 403.
+    await requireWatcherAccess(pgSql, args.watcher_ids, ctx, 'write', {
+      allowMissing: true,
+    });
   } else if (args.action === 'complete_window' && args.entity_id) {
     await requireWriteAccess(pgSql, args.entity_id, ctx);
   } else if (args.action === 'create_version' && args.watcher_id) {

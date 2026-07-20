@@ -45,7 +45,7 @@ export interface KnowledgeSaveInput {
 export interface KnowledgeReadInput {
   /** Fetch specific content events by id (read_knowledge takes an array). */
   content_ids?: number[];
-  watcher_id?: number;
+  behavior_id?: number;
   since?: string;
   until?: string;
   limit?: number;
@@ -111,8 +111,8 @@ export interface NotificationsSendInput {
   connection_id?: string;
   /** Arbitrary JSON payload appended to the body as formatted JSON. */
   data?: Record<string, unknown>;
-  /** Attribution when sent from a watcher reaction. */
-  watcher_source?: { watcher_id: number; window_id: number };
+  /** Attribution when sent from a behavior reaction. */
+  behavior_source?: { behavior_id: number; window_id: number };
 }
 
 // ── Client ───────────────────────────────────────────────────────────────────
@@ -174,7 +174,7 @@ export interface ReactionClient {
    * Run a connection's operations (connector actions / MCP tools) on demand.
    * Reactions run in the watcher's system context, so they may execute
    * operations the agent itself can't call in-turn — e.g. driving the paired
-   * Owletto Chrome extension via a connector action. Pass `watcher_source` for
+   * Owletto Chrome extension via a connector action. Pass `behavior_source` for
    * run attribution back to the firing window.
    */
   operations: {
@@ -188,7 +188,7 @@ export interface ReactionClient {
       connection_id: number;
       operation_key: string;
       input?: Record<string, unknown>;
-      watcher_source?: { watcher_id: number; window_id: number };
+      behavior_source?: { behavior_id: number; window_id: number };
     }): Promise<{
       status?: "completed" | "failed" | "timeout" | "pending_approval";
       output?: Record<string, unknown>;

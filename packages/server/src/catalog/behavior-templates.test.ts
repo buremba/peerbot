@@ -37,7 +37,7 @@ async function executeReaction(
 		sdk,
 		context: {
 			window: {
-				watcher_id: 7,
+				behavior_id: 7,
 				window_start: "2026-01-01T00:00:00.000Z",
 				window_end: "2026-01-02T00:00:00.000Z",
 			},

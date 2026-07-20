@@ -76,10 +76,10 @@ const NixConfigSchema = Type.Object({
   packages: Type.Optional(Type.Array(Type.String())),
 });
 
-const WatcherRunIntentSchema = Type.Object({
-  kind: Type.Literal("watcher_run"),
+const BehaviorRunIntentSchema = Type.Object({
+  kind: Type.Literal("behavior_run"),
   runId: Type.Integer({ minimum: 1 }),
-  watcherId: Type.Integer({ minimum: 1 }),
+  behaviorId: Type.Integer({ minimum: 1 }),
 });
 
 const CreateAgentRequestSchema = Type.Object({
@@ -90,7 +90,7 @@ const CreateAgentRequestSchema = Type.Object({
   thread: Type.Optional(Type.String()),
   forceNew: Type.Optional(Type.Boolean()),
   dryRun: Type.Optional(Type.Boolean()),
-  intent: Type.Optional(WatcherRunIntentSchema),
+  intent: Type.Optional(BehaviorRunIntentSchema),
   networkConfig: Type.Optional(NetworkConfigSchema),
   nix: Type.Optional(NixConfigSchema),
 });
@@ -860,7 +860,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     const tokenOrganizationId =
       ownership.organizationId ?? metadataOrgId ?? callerOrgId;
 
-    const watcherIntent = intent?.kind === "watcher_run" ? intent : null;
+    const behaviorIntent = intent?.kind === "behavior_run" ? intent : null;
     // userId backs `conversationId = ${agentId}_${userId}[_${thread}]`, which
     // is the session-store key. For pinned agents the agentId is per-org so
     // collisions are bounded to a single tenant. For the default-agent path
@@ -874,16 +874,20 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // client-supplied panel userId — the builder admin-tool grant
     // (resolveBuilderAdminTools) keys on this run's userId, so trusting a
     // client value would let any caller name an admin to mint the grant.
-    const userId = watcherIntent
-      ? `watcher_${watcherIntent.watcherId}`
+    const userId = behaviorIntent
+      ? // Internal correlation key: the `..._watcher_<id>_run_<id>` conversationId
+        // shape is prod-proven and drives worker dispatch + SSE owner-routing
+        // (see the conversationId comment below). Keep the internal `watcher_`
+        // wire prefix even though the public intent field is `behaviorId`.
+        `watcher_${behaviorIntent.behaviorId}`
       : isSystemAgentSession
         ? (systemCallerUserId as string)
         : requestedUserId || authUserId || agentId;
-    const effectiveThread = watcherIntent
-      ? `run_${watcherIntent.runId}`
+    const effectiveThread = behaviorIntent
+      ? `run_${behaviorIntent.runId}`
       : thread;
-    const effectiveForceNew = watcherIntent ? true : forceNew;
-    const effectiveDryRun = watcherIntent ? false : dryRun || false;
+    const effectiveForceNew = behaviorIntent ? true : forceNew;
+    const effectiveDryRun = behaviorIntent ? false : dryRun || false;
 
     // Build composite conversationId for user-specific sessions.
     // Uses _ separator (colons not allowed in BullMQ custom IDs). Watcher
@@ -908,7 +912,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     const conversationId = buildApiConversationId({
       agentId,
       userId,
-      organizationId: watcherIntent ? undefined : tokenOrganizationId,
+      organizationId: behaviorIntent ? undefined : tokenOrganizationId,
       threadId: effectiveThread || undefined,
     });
     const channelId = `api_${userId}`;
@@ -995,7 +999,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       agentId,
       ...(tokenOrganizationId ? { organizationId: tokenOrganizationId } : {}),
       dryRun: effectiveDryRun,
-      intent: watcherIntent ?? undefined,
+      intent: behaviorIntent ?? undefined,
     };
     await sessMgr.setSession(session);
 
@@ -1515,7 +1519,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       if (
         (session.turnCount ?? 0) === 0 &&
         !ephemeralForTurn &&
-        session.intent?.kind !== "watcher_run" &&
+        session.intent?.kind !== "behavior_run" &&
         messageOrganizationId
       ) {
         try {
@@ -1586,7 +1590,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       // text, never a deterministic shell trigger. The Chat SDK bridge does the
       // same for platform inbound.
       const bangBash =
-        session.intent?.kind === "watcher_run"
+        session.intent?.kind === "behavior_run"
           ? null
           : parseBangBashCommand(messageContent);
 
@@ -1609,7 +1613,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
           // Echoed back on every response row so output-guardrail audit events
           // remain scoped to the authoritative organization.
           organizationId: messageOrganizationId,
-          source: session.intent?.kind === "watcher_run" ? "watcher-run" : "direct-api",
+          source: session.intent?.kind === "behavior_run" ? "watcher-run" : "direct-api",
           traceparent: traceparent || undefined,
           dryRun: session.dryRun || false,
           intent: session.intent,

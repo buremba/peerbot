@@ -690,7 +690,7 @@ async function dispatchAgentWrite(
   // Resolve identity through the shared seam so a watcher reaction (which sets
   // ctx.actingWatcherId but no agentId) binds its owning agent's `agent_config`
   // envelope — otherwise it would gate as a null-id agent and skip the owner's
-  // approval/deny override. manage_agents has no watcher_source arg, so only the
+  // approval/deny override. manage_agents has no behavior_source arg, so only the
   // trusted session watcher applies.
   const actor = await actingPrincipalFor(ctx);
   // update/delete name the target agent; create has no target (blanket only).

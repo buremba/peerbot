@@ -178,7 +178,7 @@ describe("listAgentThreads scope=all", () => {
 			  (run_type, status, organization_id, watcher_id, approval_status,
 			   run_metadata, created_at, completed_at)
 			VALUES
-			  ('watcher', 'completed', ${org}, ${OTHER_WATCHER_ID}, 'auto',
+			  ('behavior', 'completed', ${org}, ${OTHER_WATCHER_ID}, 'auto',
 			   ${sql.json({ prompt_rendered: "Other agent secret watcher task" })},
 			   '2026-06-28T00:31:00Z', '2026-06-28T00:32:00Z')
 		`;
@@ -187,7 +187,7 @@ describe("listAgentThreads scope=all", () => {
 			  (run_type, status, organization_id, watcher_id, window_id,
 			   approval_status, run_metadata, created_at, completed_at)
 			VALUES
-			  ('watcher', 'completed', ${org}, ${WATCHER_ID}, 700001,
+			  ('behavior', 'completed', ${org}, ${WATCHER_ID}, 700001,
 			   'auto', ${sql.json({ prompt_rendered: "Rendered watcher task" })},
 			   '2026-06-28T00:29:00Z', '2026-06-28T00:30:00Z')
 			RETURNING id`;
@@ -225,7 +225,7 @@ describe("listAgentThreads scope=all", () => {
 				tool: "entity_field_change",
 				resourceKind: "entity",
 				fields: { email: "new@example.com" },
-				attribution: "watcher",
+				attribution: "behavior",
 			},
 		});
 	});
@@ -249,9 +249,9 @@ describe("listAgentThreads scope=all", () => {
 		expect(slack?.id).toBe(SLACK_CONV);
 		expect(slack?.conversationId).toBe(SLACK_CONV);
 
-		const watcher = byPlatform.get("watcher");
-		expect(watcher?.watcherId).toBe(WATCHER_ID);
-		expect(watcher?.title).toBe("Test Watcher");
+		const behavior = byPlatform.get("behavior");
+		expect(behavior?.behaviorId).toBe(WATCHER_ID);
+		expect(behavior?.title).toBe("Test Watcher");
 
 		// Newest VISIBLE is the bound Slack channel at 02:00 — the unbound channel
 		// at 03:00 is fenced out, so it must not take the top slot (or any slot).
@@ -318,7 +318,7 @@ describe("listAgentThreads scope=all", () => {
 				eventId: expect.any(Number),
 				action: "update",
 				fields: { email: "new@example.com" },
-				attribution: "watcher",
+				attribution: "behavior",
 				resourceKind: "entity",
 			}),
 		]);
@@ -346,7 +346,7 @@ describe("listAgentThreads scope=all", () => {
 			  (run_type, status, organization_id, watcher_id, window_id,
 			   approval_status, created_at, completed_at)
 			VALUES
-			  ('watcher', 'completed', ${org}, ${WATCHER_ID}, 700002,
+			  ('behavior', 'completed', ${org}, ${WATCHER_ID}, 700002,
 			   'auto', '2026-06-28T04:00:00Z', '2026-06-28T04:01:00Z')
 			RETURNING id
 		`;
@@ -419,7 +419,7 @@ describe("listAgentThreads scope=all", () => {
 			  (run_type, status, organization_id, watcher_id, window_id,
 			   approval_status, run_metadata, created_at, completed_at)
 			VALUES
-			  ('watcher', 'completed', ${org}, ${WATCHER_ID}, 700003,
+			  ('behavior', 'completed', ${org}, ${WATCHER_ID}, 700003,
 			   'auto', ${sql.json({ prompt_rendered: "Run without a transcript" })},
 			   '2026-06-28T05:00:00Z', '2026-06-28T05:01:00Z')
 			RETURNING id

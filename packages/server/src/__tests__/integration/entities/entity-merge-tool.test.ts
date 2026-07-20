@@ -290,7 +290,7 @@ describe("manage_entity merge action", () => {
 			  (run_type, status, organization_id, watcher_id, window_id,
 			   approval_status, created_at, completed_at)
 			VALUES
-			  ('watcher', 'completed', ${org.id}, 6009, 7001, 'auto', now(), now())
+			  ('behavior', 'completed', ${org.id}, 6009, 7001, 'auto', now(), now())
 			RETURNING id
 		`;
 

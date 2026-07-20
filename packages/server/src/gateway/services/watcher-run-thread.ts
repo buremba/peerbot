@@ -81,7 +81,7 @@ export async function readWatcherRunThreads(args: {
 			WHERE r.organization_id = ${organizationId}
 			  AND r.watcher_id = ${watcherId}
 			  AND w.agent_id = ${agentId}
-			  AND r.run_type = 'watcher'
+			  AND r.run_type = 'behavior'
 			ORDER BY COALESCE(r.completed_at, r.created_at) DESC, r.id DESC
 			LIMIT ${limit}
 		)
@@ -224,18 +224,21 @@ export async function readWatcherRunThreads(args: {
 		ORDER BY e.run_id
 	`;
 	const actions = approvalRows.map((row) => {
-		const resourceKind =
+		// Normalize legacy stored `resource_kind: "watcher"` to the public "behavior".
+		const rawResourceKind =
 			row.resource_kind ??
 			(row.tool === "manage_behaviors"
-				? "watcher"
+				? "behavior"
 				: row.tool === "manage_agents"
 					? "agent"
 					: row.tool === "entity_field_change" || row.tool === "entity_change"
 						? "entity"
 						: null);
+		const resourceKind =
+			rawResourceKind === "watcher" ? "behavior" : rawResourceKind;
 		const rawProposal = row.proposal ?? null;
 		const proposal =
-			resourceKind === "watcher" &&
+			resourceKind === "behavior" &&
 			rawProposal &&
 			typeof rawProposal === "object" &&
 			(rawProposal as { args?: unknown }).args &&

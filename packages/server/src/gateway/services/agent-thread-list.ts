@@ -33,13 +33,13 @@ export interface AgentThreadSummary {
 	title: string;
 	createdAt: number;
 	updatedAt: number;
-	/** "web" for the app's own threads; "watcher" for watcher activity; otherwise
+	/** "web" for the app's own threads; "behavior" for behavior activity; otherwise
 	 *  the source platform derived from the conversation id prefix (slack, …). */
 	platform: string;
 	/** Raw conversation id — used to read a platform conversation read-only. */
 	conversationId: string;
-	/** Set on `platform: "watcher"` entries — routes to the watcher's page. */
-	watcherId?: number;
+	/** Set on `platform: "behavior"` entries — routes to the behavior's page. */
+	behaviorId?: number;
 }
 
 /** `{platform}:{team}:{channel}` — team-scoped so the same channel id in two
@@ -276,9 +276,9 @@ export async function listAgentThreads(args: {
 				title: row.name ?? `Behavior ${row.watcher_id}`,
 				createdAt: at,
 				updatedAt: at,
-				platform: "watcher",
+				platform: "behavior",
 				conversationId: key,
-				watcherId: row.watcher_id,
+				behaviorId: row.watcher_id,
 			});
 		}
 	}

@@ -141,7 +141,7 @@ describe("sandbox runtime", () => {
 
     const result = await runScript({
       source:
-        "export default async (ctx, client) => client.notifications.send({ title: 'Digest', body: 'x', watcher_source: { watcher_id: 7, window_id: 9 } });",
+        "export default async (ctx, client) => client.notifications.send({ title: 'Digest', body: 'x', behavior_source: { behavior_id: 7, window_id: 9 } });",
       sdk: stubSdk,
     });
 
@@ -151,7 +151,7 @@ describe("sandbox runtime", () => {
     expect(captured).toEqual({
       title: "Digest",
       body: "x",
-      watcher_source: { watcher_id: 7, window_id: 9 },
+      behavior_source: { behavior_id: 7, window_id: 9 },
     });
   });
 

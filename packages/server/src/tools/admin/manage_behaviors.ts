@@ -728,7 +728,7 @@ async function queueWatcherWriteForApproval(
       tool: 'manage_behaviors',
       action_key: MANAGE_BEHAVIORS_ACTION_KEY,
       action: args.action,
-      resourceKind: 'watcher',
+      resourceKind: 'behavior',
       watcher_id: args.behavior_id ?? null,
       proposal,
       current: current ?? null,
@@ -897,7 +897,7 @@ async function gateWatcherWrite(
   // Resolve the actor through the shared seam. A reaction script editing watchers
   // acts as its own watcher (ctx.actingWatcherId) — the seam folds that watcher's
   // owning agent so the agent's agent_config envelope binds and the reaction can't
-  // self-escalate. manage_behaviors has no watcher_source arg, so only the session
+  // self-escalate. manage_behaviors has no behavior_source arg, so only the session
   // watcher applies.
   const actor = await resolveActingPrincipal(getDb(), {
     organizationId: ctx.organizationId,

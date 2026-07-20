@@ -323,7 +323,7 @@ export async function handleWatcherMode(
 ): Promise<GetContentResult> {
   const { generateWindowToken } = await import('../../utils/jwt');
 
-  const watcherId = args.watcher_id!;
+  const watcherId = args.behavior_id!;
 
   // Workers pass `template_version_id` (snapshotted at run-creation time)
   // so the prompt/schema we hand back matches the version this run was
@@ -558,7 +558,7 @@ export async function handleWatcherMode(
     enrichedPrompt +=
       '\n\n## Pagination\n' +
       `This page includes ${allContent.length} content items and more items are available in this same Behavior window. ` +
-      'If you need more evidence before completing the window, call read_knowledge again with the same watcher_id/since/until and page.next_cursor as before_occurred_at/before_id.';
+      'If you need more evidence before completing the window, call read_knowledge again with the same behavior_id/since/until and page.next_cursor as before_occurred_at/before_id.';
   }
   if (enrichedPrompt) {
     if (reactionsGuidance) {
@@ -587,7 +587,7 @@ export async function handleWatcherMode(
       WHERE id = ${runId}
         AND organization_id = ${context.organizationId}
         AND watcher_id = ${watcherId}
-        AND run_type = 'watcher'
+        AND run_type = 'behavior'
     `;
   }
 

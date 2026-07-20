@@ -89,10 +89,10 @@ function capitalize(value: string): string {
 
 /**
  * The acting principal for an entity mutation, resolved through the shared seam
- * ({@link resolveActingPrincipal}): merges the explicit `watcher_source` and the
+ * ({@link resolveActingPrincipal}): merges the explicit `behavior_source` and the
  * reaction session's own watcher, looks up the owning agent, and pins autonomous
  * mode for a watcher — so a reaction can't dodge its agent's envelope by omitting
- * watcher_source.
+ * behavior_source.
  */
 function actingPrincipalFor(
 	args: ManageEntityArgs | undefined,
@@ -102,7 +102,7 @@ function actingPrincipalFor(
 		organizationId: ctx.organizationId,
 		userId: ctx.userId,
 		agentId: ctx.agentId,
-		explicitWatcherId: args?.watcher_source?.watcher_id ?? null,
+		explicitWatcherId: args?.behavior_source?.behavior_id ?? null,
 		sessionWatcherId: ctx.actingWatcherId ?? null,
 	});
 }
@@ -200,7 +200,7 @@ async function manageEntityImpl(
   const result = await runManageEntity(args, env, ctx);
 
   // Track watcher reaction for mutating actions
-	if (args.watcher_source && "action" in result) {
+	if (args.behavior_source && "action" in result) {
     const reactionType =
 			result.action === "create"
 				? "entity_created"
@@ -216,8 +216,8 @@ async function manageEntityImpl(
           : args.entity_id;
       await trackWatcherReaction({
         organizationId: ctx.organizationId,
-        watcherId: args.watcher_source.watcher_id,
-        windowId: args.watcher_source.window_id,
+        watcherId: args.behavior_source.behavior_id,
+        windowId: args.behavior_source.window_id,
         reactionType,
 				toolName: "manage_entity",
         toolArgs: {
@@ -302,8 +302,8 @@ async function handleCreate(
 		metadata: entityData.metadata ?? {},
 	};
 	const actor = await actingPrincipalFor(args, ctx);
-	const attribution: "agent" | "watcher" =
-		actor.kind === "watcher" ? "watcher" : "agent";
+	const attribution: "agent" | "behavior" =
+		actor.kind === "watcher" ? "behavior" : "agent";
 	const createDecision = await runMutationGate({
 		action: "create",
 		organizationId: ctx.organizationId,
@@ -312,10 +312,10 @@ async function handleCreate(
 		attribution,
 		// The TRUSTED reaction-session watcher/window WINS (same precedence as
 		// resolveActingPrincipal): a reaction can't retag its deferral into another
-		// watcher's approval batch by passing a foreign watcher_source. The
+		// watcher's approval batch by passing a foreign behavior_source. The
 		// caller-supplied source is only honored OUTSIDE a reaction session.
-		watcherId: ctx.actingWatcherId ?? args.watcher_source?.watcher_id ?? null,
-		windowId: ctx.actingWindowId ?? args.watcher_source?.window_id ?? null,
+		watcherId: ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null,
+		windowId: ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
 		principalId: actor.id,
 		ownerAgentId: actor.ownerAgentId,
 		ownerResolved: actor.ownerResolved,
@@ -466,10 +466,10 @@ async function handleUpdate(
 	const updateActor = await actingPrincipalFor(args, ctx);
 	const updatedEntity = await updateEntity(entityId, updateData, env, ctx, {
 		policyPrincipalKind: updateActor.kind,
-		attribution: updateActor.kind === "watcher" ? "watcher" : "agent",
+		attribution: updateActor.kind === "watcher" ? "behavior" : "agent",
 		principalId: updateActor.id,
 		// Trusted reaction-session window WINS — see the create path.
-		windowId: ctx.actingWindowId ?? args.watcher_source?.window_id ?? null,
+		windowId: ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
 		ownerAgentId: updateActor.ownerAgentId,
 		ownerResolved: updateActor.ownerResolved,
 	});
@@ -711,7 +711,7 @@ async function handleMerge(
 	}
 
 	if (actor.kind !== "user" && resolution?.decision === "review") {
-		const attribution = actor.kind === "watcher" ? "watcher" : "agent";
+		const attribution = actor.kind === "watcher" ? "behavior" : "agent";
 		if (
 			await wasResolutionRejected(sql, {
 				organizationId: ctx.organizationId,
@@ -735,8 +735,8 @@ async function handleMerge(
 			winner_entity_id: winnerId,
 			evidence: resolution.evidence,
 			watcher_id:
-				ctx.actingWatcherId ?? args.watcher_source?.watcher_id ?? null,
-			window_id: ctx.actingWindowId ?? args.watcher_source?.window_id ?? null,
+				ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null,
+			window_id: ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
 			source_run_id: ctx.actingRunId ?? null,
 			policy_hash: resolution.policyHash,
 			resolution_fingerprint: resolution.fingerprint,
@@ -784,11 +784,11 @@ async function handleMerge(
 							sourceRunId: ctx.actingRunId ?? null,
 							watcherId:
 								ctx.actingWatcherId ??
-								args.watcher_source?.watcher_id ??
+								args.behavior_source?.behavior_id ??
 								null,
 							windowId:
 								ctx.actingWindowId ??
-								args.watcher_source?.window_id ??
+								args.behavior_source?.window_id ??
 								null,
 							policyHash: resolution?.policyHash ?? null,
 							evidence: resolution?.evidence ?? [],
@@ -1085,7 +1085,7 @@ async function handleList(
 				created_at: toIsoStringOrNow(e.created_at),
 				total_content: e.total_content,
 				active_connections: e.active_connections,
-				watchers_count: e.watchers_count,
+				behaviors_count: e.behaviors_count,
 				children_count: e.children_count,
 				view_url: entityInfo ? buildEntityUrl(entityInfo, baseUrl) : undefined,
 				...(relMap.size > 0 && relMap.has(e.id)
@@ -1303,8 +1303,8 @@ async function handleDelete(
 	}
 
 	const deleteActor = await actingPrincipalFor(args, ctx);
-	const attribution: "agent" | "watcher" =
-		deleteActor.kind === "watcher" ? "watcher" : "agent";
+	const attribution: "agent" | "behavior" =
+		deleteActor.kind === "watcher" ? "behavior" : "agent";
 	const current = {
 		id: entity.id,
 		entity_type: entity.entity_type,
@@ -1320,8 +1320,8 @@ async function handleDelete(
 		sql: getDb(),
 		attribution,
 		// Trusted reaction-session watcher/window WINS — see the create path.
-		watcherId: ctx.actingWatcherId ?? args?.watcher_source?.watcher_id ?? null,
-		windowId: ctx.actingWindowId ?? args?.watcher_source?.window_id ?? null,
+		watcherId: ctx.actingWatcherId ?? args?.behavior_source?.behavior_id ?? null,
+		windowId: ctx.actingWindowId ?? args?.behavior_source?.window_id ?? null,
 		principalId: deleteActor.id,
 		ownerAgentId: deleteActor.ownerAgentId,
 		ownerResolved: deleteActor.ownerResolved,

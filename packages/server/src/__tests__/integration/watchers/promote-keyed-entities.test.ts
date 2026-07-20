@@ -172,7 +172,7 @@ async function readWindowToken(
   ctx: Awaited<ReturnType<typeof setupKeyedWatcher>>
 ): Promise<string> {
   const content = (await ctx.api.knowledge.read({
-    watcher_id: ctx.watcherId,
+    behavior_id: ctx.watcherId,
   })) as {
     window_token: string;
   };

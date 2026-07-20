@@ -20,7 +20,7 @@ const CTX = (orgId: string, data: Record<string, unknown>) => ({
   entities: [],
   window: {
     id: 1,
-    watcher_id: 1,
+    behavior_id: 1,
     window_start: new Date('2026-01-01').toISOString(),
     window_end: new Date('2026-01-02').toISOString(),
     granularity: 'day',

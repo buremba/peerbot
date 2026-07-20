@@ -116,7 +116,7 @@ export type SearchMemoryResponses = {
         connection_count: number;
         active_connection_count: number;
         children_count: number;
-        watcher_count: number;
+        behavior_count: number;
       };
       match_score: number;
       match_reason: string;
@@ -139,7 +139,7 @@ export type SearchMemoryResponses = {
         connection_count: number;
         active_connection_count: number;
         children_count: number;
-        watcher_count: number;
+        behavior_count: number;
       };
       match_score: number;
       match_reason: string;
@@ -280,11 +280,11 @@ export type SaveMemoryData = {
     /**
      * Attribution source when save is triggered by a Behavior reaction
      */
-    watcher_source?: {
+    behavior_source?: {
       /**
        * Behavior that triggered this save
        */
-      watcher_id: number;
+      behavior_id: number;
       /**
        * Window that triggered this save
        */
@@ -873,7 +873,7 @@ export type ManageEntityData = {
      */
     offset?: number;
     /**
-     * [list] Sort by column (name, created_at, domain, total_content, active_connections, watchers_count, children_count)
+     * [list] Sort by column (name, created_at, domain, total_content, active_connections, behaviors_count, children_count)
      */
     sort_by?: string;
     /**
@@ -923,11 +923,11 @@ export type ManageEntityData = {
     /**
      * Attribution source when mutation is triggered by a Behavior reaction
      */
-    watcher_source?: {
+    behavior_source?: {
       /**
        * Behavior that triggered this mutation
        */
-      watcher_id: number;
+      behavior_id: number;
       /**
        * Window that triggered this mutation
        */
@@ -984,7 +984,7 @@ export type ManageEntityResponses = {
           created_at?: string;
           total_content?: number | null;
           active_connections?: number | null;
-          watchers_count?: number | null;
+          behaviors_count?: number | null;
           children_count?: number | null;
           space_name?: string | null;
           view_url?: string;
@@ -1001,7 +1001,7 @@ export type ManageEntityResponses = {
         approval_current?: {
           [key: string]: unknown;
         };
-        approval_attribution?: "agent" | "watcher";
+        approval_attribution?: "agent" | "behavior";
       }
     | {
         action: "update";
@@ -1021,7 +1021,7 @@ export type ManageEntityResponses = {
           created_at?: string;
           total_content?: number | null;
           active_connections?: number | null;
-          watchers_count?: number | null;
+          behaviors_count?: number | null;
           children_count?: number | null;
           space_name?: string | null;
           view_url?: string;
@@ -1037,7 +1037,7 @@ export type ManageEntityResponses = {
         approval_current?: {
           [key: string]: unknown;
         };
-        approval_attribution?: "agent" | "watcher";
+        approval_attribution?: "agent" | "behavior";
       }
     | {
         action: "list";
@@ -1057,7 +1057,7 @@ export type ManageEntityResponses = {
           created_at?: string;
           total_content?: number | null;
           active_connections?: number | null;
-          watchers_count?: number | null;
+          behaviors_count?: number | null;
           children_count?: number | null;
           space_name?: string | null;
           view_url?: string;
@@ -1104,7 +1104,7 @@ export type ManageEntityResponses = {
           created_at?: string;
           total_content?: number | null;
           active_connections?: number | null;
-          watchers_count?: number | null;
+          behaviors_count?: number | null;
           children_count?: number | null;
           space_name?: string | null;
           view_url?: string;
@@ -1125,7 +1125,7 @@ export type ManageEntityResponses = {
         approval_current?: {
           [key: string]: unknown;
         };
-        approval_attribution?: "agent" | "watcher";
+        approval_attribution?: "agent" | "behavior";
       }
     | {
         action: "link";
@@ -1253,7 +1253,7 @@ export type ManageEntityResponses = {
           entity_ids?: Array<number>;
           winner_entity_id: number;
         };
-        approval_attribution: "agent" | "watcher";
+        approval_attribution: "agent" | "behavior";
         next_steps: Array<string>;
         resolution?: {
           decision: "review";
@@ -3316,8 +3316,8 @@ export type ManageOperationsData = {
         input?: {
           [key: string]: unknown;
         };
-        watcher_source?: {
-          watcher_id: number;
+        behavior_source?: {
+          behavior_id: number;
           window_id: number;
         };
       }
@@ -3349,7 +3349,7 @@ export type ManageOperationsData = {
          */
         approval_status?: string;
         run_types?: Array<string>;
-        watcher_ids?: Array<number>;
+        behavior_ids?: Array<number>;
         /**
          * Keyset cursor: return runs before this ID
          */
@@ -3533,7 +3533,7 @@ export type ManageOperationsResponses = {
           run_id?: number;
           member_run_ids?: Array<number>;
           connection_id?: number;
-          watcher_id?: number;
+          behavior_id?: number;
         }>;
         total: number;
         limit: number;
@@ -3609,11 +3609,11 @@ export type NotifyData = {
     /**
      * Attribution source when notification is triggered by a Behavior reaction
      */
-    watcher_source?: {
+    behavior_source?: {
       /**
        * Behavior that triggered this notification
        */
-      watcher_id: number;
+      behavior_id: number;
       /**
        * Window that triggered this notification
        */
@@ -4008,7 +4008,7 @@ export type ManageBehaviorsData = {
      */
     replace_existing?: boolean;
     /**
-     * [complete_window] JWT from read_knowledge(watcher_id, since, until). Pass this or window_tokens.
+     * [complete_window] JWT from read_knowledge(behavior_id, since, until). Pass this or window_tokens.
      */
     window_token?: string;
     /**
@@ -4030,7 +4030,7 @@ export type ManageBehaviorsData = {
     /**
      * [complete_window] Optional Behavior run id for completion/provenance. Workers should pass the run ID from the dispatch prompt.
      */
-    watcher_run_id?: number;
+    behavior_run_id?: number;
     /**
      * [complete_window] Pin to a specific persisted Behavior version. Workers receive this from the run dispatch payload and pass it back so validation uses the same version that produced the extraction. Defaults to the run row's snapshot if available, else the Behavior's current version.
      */
@@ -4336,7 +4336,7 @@ export type GetBehaviorResponses = {
     windows: Array<{
       window_id: number;
       behavior_id: string;
-      watcher_name: string;
+      behavior_name: string;
       granularity: string;
       window_start: string;
       window_end: string;
@@ -4377,7 +4377,7 @@ export type GetBehaviorResponses = {
     }>;
     behavior?: {
       behavior_id: string;
-      watcher_name: string;
+      behavior_name: string;
       slug: string;
       status: "active" | "archived";
       triggers?: Array<
@@ -4446,7 +4446,7 @@ export type GetBehaviorResponses = {
         is_current: boolean;
       }>;
       reaction_script?: string;
-      watcher_run?: {
+      behavior_run?: {
         run_id: number;
         status:
           | "pending"
@@ -4519,13 +4519,13 @@ export type ReadKnowledgeData = {
      */
     query?: string;
     /**
-     * Entity ID to filter by. Required unless watcher_id is provided.
+     * Entity ID to filter by. Required unless behavior_id is provided.
      */
     entity_id?: number;
     /**
-     * Persisted Behavior ID (`watcher_id`) to fetch content for. When provided, uses the Behavior's sources and computes its pending window. Returns window_token for complete_window action.
+     * Persisted Behavior ID (`behavior_id`) to fetch content for. When provided, uses the Behavior's sources and computes its pending window. Returns window_token for complete_window action.
      */
-    watcher_id?: number;
+    behavior_id?: number;
     /**
      * Pin to a specific persisted Behavior version when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the Behavior's current version.
      */
@@ -4555,15 +4555,15 @@ export type ReadKnowledgeData = {
      */
     window_id?: number;
     /**
-     * Limit results to events this Behavior has analyzed (any window). Distinct from watcher_id, which enters Behavior read mode.
+     * Limit results to events this Behavior has analyzed (any window). Distinct from behavior_id, which enters Behavior read mode.
      */
-    analyzed_by_watcher_id?: number;
+    analyzed_by_behavior_id?: number;
     /**
-     * Filter events published since this date. Supports: ISO 8601 ("2025-01-01"), named aliases ("yesterday", "last_week"), or relative ("7d", "30d", "1m", "1y"). When used with watcher_id, also sets window_start in the generated token.
+     * Filter events published since this date. Supports: ISO 8601 ("2025-01-01"), named aliases ("yesterday", "last_week"), or relative ("7d", "30d", "1m", "1y"). When used with behavior_id, also sets window_start in the generated token.
      */
     since?: string;
     /**
-     * Filter events published until this date. Supports: ISO 8601 ("2025-01-31"), named aliases ("today", "yesterday"), or relative ("7d", "30d", "1m", "1y"). When used with watcher_id, also sets window_end in the generated token.
+     * Filter events published until this date. Supports: ISO 8601 ("2025-01-31"), named aliases ("today", "yesterday"), or relative ("7d", "30d", "1m", "1y"). When used with behavior_id, also sets window_end in the generated token.
      */
     until?: string;
     /**
@@ -4639,7 +4639,7 @@ export type ReadKnowledgeData = {
     /**
      * Exclude content already analyzed in any window for this Behavior. Returns only unprocessed content for client-driven Behavior generation.
      */
-    exclude_watcher_id?: number;
+    exclude_behavior_id?: number;
     /**
      * Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. Matches the semantic_type set via save_memory.
      */
@@ -4759,9 +4759,9 @@ export type ManageClassifiersData = {
      */
     entity_id?: number;
     /**
-     * [create] Persisted Behavior ID (`watcher_id`) returned by manage_behaviors (numeric string; required)
+     * [create] Persisted Behavior ID (`behavior_id`) returned by manage_behaviors (numeric string; required)
      */
-    watcher_id?: string;
+    behavior_id?: string;
     /**
      * [generate_embeddings/delete] Classifier ID
      */
@@ -5360,7 +5360,7 @@ export type ResolvePathResponses = {
           created_at: string;
           total_content: number;
           active_connections: number;
-          watchers_count: number;
+          behaviors_count: number;
           is_derived?: boolean;
           measure_columns?: Array<string>;
           merged_records?: Array<{
@@ -5403,7 +5403,7 @@ export type ResolvePathResponses = {
       summary: {
         total_content: number;
         active_connections: number;
-        watchers_count: number;
+        behaviors_count: number;
         agents_count: number;
         devices_count: number;
       };
@@ -5535,9 +5535,9 @@ export type PostApiV1AgentsData = {
     forceNew?: boolean;
     dryRun?: boolean;
     intent?: {
-      kind: "watcher_run";
+      kind: "behavior_run";
       runId: number;
-      watcherId: number;
+      behaviorId: number;
     };
     networkConfig?: {
       allowedDomains?: Array<string>;
@@ -5942,17 +5942,17 @@ export type GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesR
     200: unknown;
   };
 
-export type GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadData = {
+export type GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadData = {
   body?: never;
   path: {
     agentId: string;
-    watcherId: string;
+    behaviorId: string;
   };
   query?: never;
-  url: "/api/v1/agents/{agentId}/history/behaviors/{watcherId}/thread";
+  url: "/api/v1/agents/{agentId}/history/behaviors/{behaviorId}/thread";
 };
 
-export type GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadResponses =
+export type GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadResponses =
   {
     /**
      * OK

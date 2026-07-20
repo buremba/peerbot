@@ -68,7 +68,7 @@ describe("scheduled Behavior unchanged gate", () => {
 		});
 		const runs = await sql`
 			SELECT id FROM runs
-			WHERE watcher_id = ${behaviorId} AND run_type = 'watcher'
+			WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
 		`;
 		expect(runs).toHaveLength(0);
 		const [watcher] = await sql`
@@ -111,7 +111,7 @@ describe("scheduled Behavior unchanged gate", () => {
 		const [nextRun] = await sql`
 			SELECT approved_input
 			FROM runs
-			WHERE watcher_id = ${behaviorId} AND run_type = 'watcher'
+			WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
 		`;
 		expect(nextRun.approved_input).toMatchObject({
 			window_start: new Date(skippedWindow.window_end as string).toISOString(),
@@ -162,7 +162,7 @@ describe("scheduled Behavior unchanged gate", () => {
 		expect(second).toMatchObject({ runsCreated: 0, skipped: 1 });
 		const runs = await sql`
 			SELECT id FROM runs
-			WHERE watcher_id = ${behaviorId} AND run_type = 'watcher'
+			WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
 		`;
 		expect(runs).toHaveLength(0);
 	});

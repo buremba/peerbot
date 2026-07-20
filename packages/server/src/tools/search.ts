@@ -177,7 +177,7 @@ export const EntitySchema = Type.Object({
     connection_count: Type.Integer(),
     active_connection_count: Type.Integer(),
     children_count: Type.Integer(), // child count for root entities
-    watcher_count: Type.Integer(),
+    behavior_count: Type.Integer(),
   }),
   match_score: Type.Number(),
   match_reason: Type.String(),
@@ -212,7 +212,7 @@ interface EntityQueryRow {
   connection_count: number;
   active_connection_count: number;
   children_count: number;
-  watcher_count: number;
+  behavior_count: number;
   match_score?: number;
   match_reason?: string;
   organization_slug?: string | null;
@@ -1091,7 +1091,7 @@ function entitySelectColumns(callerOrgParamIdx: number): string {
   ELSE 0 END as children_count,
   CASE WHEN ${ownOrg} THEN
     COALESCE((SELECT COUNT(*) FROM watchers i WHERE e.id = ANY(i.entity_ids) AND i.organization_id = e.organization_id), 0)
-  ELSE 0 END as watcher_count`;
+  ELSE 0 END as behavior_count`;
 }
 
 const ENTITY_JOINS = `
@@ -1291,7 +1291,7 @@ async function formatEntityResult(
       connection_count: Number(row.connection_count) || 0,
       active_connection_count: Number(row.active_connection_count) || 0,
       children_count: Number(row.children_count) || 0,
-      watcher_count: Number(row.watcher_count) || 0,
+      behavior_count: Number(row.behavior_count) || 0,
     },
     match_score: Number(row.match_score) || 1.0,
     match_reason: row.match_reason || 'exact_name',

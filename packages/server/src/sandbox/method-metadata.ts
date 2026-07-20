@@ -438,16 +438,16 @@ export default async (_ctx, client) => {
 	// notifications
 	"notifications.send": {
 		summary:
-			"Send a notification to org users. Writes an `agent_message` notification (in-app inbox) and fans it out to the org's active bot connections (Slack/Telegram) — the way a Behavior reaction surfaces its digest to a chat channel. Pass an optional `card` (a `chat` CardElement) for rich cross-platform rendering, and `watcher_source` when firing from a reaction.",
+			"Send a notification to org users. Writes an `agent_message` notification (in-app inbox) and fans it out to the org's active bot connections (Slack/Telegram) — the way a Behavior reaction surfaces its digest to a chat channel. Pass an optional `card` (a `chat` CardElement) for rich cross-platform rendering, and `behavior_source` when firing from a reaction.",
 		access: "write",
 		example:
-			"await client.notifications.send({ title: 'Weekly funnel digest', body: '3 new leads...', watcher_source: { watcher_id: ctx.window.watcher_id, window_id: ctx.window.id } });",
+			"await client.notifications.send({ title: 'Weekly funnel digest', body: '3 new leads...', behavior_source: { behavior_id: ctx.window.behavior_id, window_id: ctx.window.id } });",
 		usageExample: `// Push a Behavior digest to the org's Slack/Telegram connections + inbox.
 export default async (ctx, client) => {
   await client.notifications.send({
     title: 'Weekly funnel digest',
     body: 'Top action: send the Acme pilot offer\\nNew leads: 3',
-    watcher_source: { watcher_id: ctx.window.watcher_id, window_id: ctx.window.id },
+    behavior_source: { behavior_id: ctx.window.behavior_id, window_id: ctx.window.id },
   });
 };`,
 	},
@@ -506,7 +506,8 @@ export default async (_ctx, client) => {
 };`,
 	},
 	"behaviors.update": {
-		summary: "Update Behavior config (triggers, agent, model, sources).",
+		summary:
+			"Update runtime config only (triggers, agent, model, sources, status). Version-owned fields (name, prompt, schema) are immutable here — use createVersion for those.",
 		access: "admin",
 	},
 	"behaviors.createVersion": {
@@ -523,7 +524,8 @@ export default async (_ctx, client) => {
 };`,
 	},
 	"behaviors.delete": {
-		summary: "Delete one or more Behaviors.",
+		summary:
+			"Archive one or more Behaviors (soft delete): sets status='archived' and stops scheduling. The row and its versions are retained; there is no hard delete.",
 		access: "admin",
 		example: "await client.behaviors.delete({ behavior_ids: ['42'] });",
 	},
@@ -686,7 +688,7 @@ export default async (_ctx, client) => {
 	},
 	"operations.execute": {
 		summary:
-			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, watcher_source?: { watcher_id: number, window_id: number } }). connector_key is not accepted. Sends an external request.",
+			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, behavior_source?: { behavior_id: number, window_id: number } }). connector_key is not accepted. Sends an external request.",
 		access: "external",
 		cost: "expensive",
 		example:

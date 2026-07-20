@@ -24,7 +24,7 @@ export interface ClassifierCreateInput {
 		}
 	>;
 	entity_id?: number;
-	watcher_id: string;
+	behavior_id: string;
 	min_similarity?: number;
 	fallback_value?: unknown;
 	created_by?: string;

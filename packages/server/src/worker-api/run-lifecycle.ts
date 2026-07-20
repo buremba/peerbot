@@ -718,7 +718,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	}>;
 	const run = runRows[0];
 	if (!run) return c.json({ error: "Run not found" }, 404);
-	if (run.run_type !== "watcher") {
+	if (run.run_type !== "behavior") {
 		return c.json({ error: "Not a Behavior run" }, 409);
 	}
 	if (run.watcher_id == null) {

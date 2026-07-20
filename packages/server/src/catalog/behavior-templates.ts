@@ -120,7 +120,7 @@ export default async function reaction(ctx, client) {
 	const MAX_CANDIDATES = 5000;
 	const since = String(ctx.window.window_start).slice(0, 10);
 	const until = new Date(new Date(ctx.window.window_end).getTime() - 1).toISOString().slice(0, 10);
-	const knowledge = await client.knowledge.read({ watcher_id: ctx.window.watcher_id, since, until });
+	const knowledge = await client.knowledge.read({ behavior_id: ctx.window.behavior_id, since, until });
 	const candidates = Array.isArray(knowledge?.sources?.people) ? knowledge.sources.people : [];
 	const candidateIds = [...new Set(candidates
 		.map((candidate) => candidate?.id)

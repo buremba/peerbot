@@ -180,7 +180,7 @@ export interface CreatedEntity {
   created_at: Date;
   total_content?: number | null;
   active_connections?: number | null;
-  watchers_count?: number | null;
+  behaviors_count?: number | null;
   children_count?: number | null;
   current_view_template_version_id?: number | null;
   warnings?: string[];
@@ -731,7 +731,7 @@ export async function getEntity(
         SELECT COUNT(*) FROM watchers i
         WHERE e.id = ANY(i.entity_ids)
           AND i.organization_id = ${ctx.organizationId}
-      ) as watchers_count,
+      ) as behaviors_count,
       (
         SELECT COUNT(*) FROM entities c
         WHERE c.parent_id = e.id
@@ -1135,7 +1135,7 @@ export async function listEntities(
 		created_at: "e.created_at",
 		total_content: "total_content",
 		active_connections: "active_connections",
-		watchers_count: "watchers_count",
+		behaviors_count: "behaviors_count",
 		children_count: "children_count",
 	};
 
@@ -1176,7 +1176,7 @@ export async function listEntities(
       e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
       COALESCE(tc.cnt, 0) as total_content,
       COALESCE(ac.cnt, 0) as active_connections,
-      COALESCE(ic.cnt, 0) as watchers_count,
+      COALESCE(ic.cnt, 0) as behaviors_count,
       COALESCE(cc.cnt, 0) as children_count,
       pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type
     ${baseQuery}
@@ -1277,7 +1277,7 @@ async function listDerivedEntities(
 			created_at: createdAt,
 			total_content: 0,
 			active_connections: 0,
-			watchers_count: 0,
+			behaviors_count: 0,
 			children_count: 0,
 		});
 	});

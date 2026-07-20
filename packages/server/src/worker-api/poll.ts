@@ -508,7 +508,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             --     this branch is the only legal claim path for them.
             OR (
               ${isUserScopedWorker}
-              AND r.run_type = 'watcher'
+              AND r.run_type = 'behavior'
               AND ${deviceWorkerId}::uuid IS NOT NULL
               AND r.approved_input ? 'device_worker_id'
               AND r.approved_input->>'device_worker_id' = ${deviceWorkerId}::text
@@ -517,7 +517,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 SELECT 1
                 FROM runs active
                 WHERE active.watcher_id = r.watcher_id
-                  AND active.run_type = 'watcher'
+                  AND active.run_type = 'behavior'
                   AND active.status IN ('claimed', 'running')
               )
             )
@@ -542,7 +542,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         watcher_id: unknown;
       };
       const runId = Number(candidate.id);
-      if (candidate.run_type === 'watcher') {
+      if (candidate.run_type === 'behavior') {
         const claimed = await claimPendingWatcherRun(tx, {
           runId,
           watcherId: Number(candidate.watcher_id),
@@ -694,7 +694,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // just the payload envelope the dispatcher needs to build a prompt. The
   // server-side claim filter (#802 + this PR) already guarantees only the
   // matching device can land on this row.
-  if (row.run_type === 'watcher') {
+  if (row.run_type === 'behavior') {
     const approved = (row.approved_input ?? {}) as Record<string, unknown>;
     const firedAtRaw = row.run_created_at;
     const firedAt =

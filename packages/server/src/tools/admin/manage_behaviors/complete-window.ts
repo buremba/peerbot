@@ -72,7 +72,9 @@ export async function handleCompleteWindow(
   // The rendered task is stamped by get_content from the server-side prompt.
   // A completion payload may add provenance but must not replace that source.
   delete provenanceMetadata.prompt_rendered;
-  const watcherRunIdRaw = args.watcher_run_id ?? provenanceMetadata.watcher_run_id;
+  // Public arg is `behavior_run_id`; the persisted provenance jsonb key stays
+  // the internal `watcher_run_id` (run_metadata is not part of the API surface).
+  const watcherRunIdRaw = args.behavior_run_id ?? provenanceMetadata.watcher_run_id;
   let watcherRunId =
     watcherRunIdRaw !== undefined &&
     watcherRunIdRaw !== null &&
@@ -92,7 +94,7 @@ export async function handleCompleteWindow(
   if (windowTokens.length === 0) {
     throw new Error(
       'window_token or window_tokens is required for complete_window action. ' +
-        'Get tokens from read_knowledge({ watcher_id: ... }) responses.'
+        'Get tokens from read_knowledge({ behavior_id: ... }) responses.'
     );
   }
   if (!args.extracted_data) {
@@ -115,7 +117,7 @@ export async function handleCompleteWindow(
     throw new ToolUserError(
       `Invalid window_token: ${errorMsg}. ` +
         'The token may have expired or been tampered with. ' +
-        'Get a fresh token from read_knowledge({ watcher_id: ... }).'
+        'Get a fresh token from read_knowledge({ behavior_id: ... }).'
     );
   }
 
@@ -141,7 +143,7 @@ export async function handleCompleteWindow(
       SELECT id
       FROM runs
       WHERE watcher_id = ${watcherId}
-        AND run_type = 'watcher'
+        AND run_type = 'behavior'
         AND status = 'running'
       ORDER BY created_at DESC
       LIMIT 1
@@ -303,7 +305,7 @@ export async function handleCompleteWindow(
   const perTokenIds = tokenPayloads.map((token) => {
     if (!Array.isArray(token.content_ids)) {
       throw new ToolUserError(
-        'Invalid window_token: content_ids is required. Get a fresh token from read_knowledge({ watcher_id: ... }).'
+        'Invalid window_token: content_ids is required. Get a fresh token from read_knowledge({ behavior_id: ... }).'
       );
     }
     const ids = [
@@ -317,7 +319,7 @@ export async function handleCompleteWindow(
     if (ids.length !== token.content_count) {
       throw new ToolUserError(
         `Invalid window_token: content_ids has ${ids.length} IDs, but content_count is ${token.content_count}. ` +
-          'Get a fresh token from read_knowledge({ watcher_id: ... }).'
+          'Get a fresh token from read_knowledge({ behavior_id: ... }).'
       );
     }
     return ids;
@@ -614,7 +616,7 @@ export async function handleCompleteWindow(
             error_message = NULL
         WHERE id = ${watcherRunId}
           AND watcher_id = ${watcherId}
-          AND run_type = 'watcher'
+          AND run_type = 'behavior'
           AND status IN ('running', 'claimed')
         RETURNING id, approved_input->>'dispatch_source' AS dispatch_source
       `;
@@ -633,7 +635,7 @@ export async function handleCompleteWindow(
               run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)}
           WHERE id = ${watcherRunId}
             AND watcher_id = ${watcherId}
-            AND run_type = 'watcher'
+            AND run_type = 'behavior'
         `;
       }
     }
@@ -744,7 +746,7 @@ export async function handleCompleteWindow(
         window: {
           id: result.window_id,
           run_id: watcherRunId,
-          watcher_id: Number(result.behavior_id),
+          behavior_id: Number(result.behavior_id),
           window_start: result.window_start,
           window_end: result.window_end,
           granularity: timeGranularity,

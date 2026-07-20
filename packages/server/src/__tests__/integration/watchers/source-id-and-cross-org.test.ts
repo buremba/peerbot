@@ -144,7 +144,7 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 		})) as { behavior_id: string };
 
 		const result = (await owner.knowledge.read({
-			watcher_id: created.behavior_id,
+			behavior_id: created.behavior_id,
 			since: "today",
 			until: "today",
 		})) as {
@@ -177,7 +177,7 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 		})) as { behavior_id: string };
 
 		const orgResult = (await owner.knowledge.read({
-			watcher_id: orgScoped.behavior_id,
+			behavior_id: orgScoped.behavior_id,
 			since: "today",
 			until: "today",
 		})) as {

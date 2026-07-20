@@ -26,6 +26,13 @@ import { orgContext } from "./stores/org-context";
 
 const routes = new Hono<{ Bindings: Env }>();
 
+// Legacy config-audit events stored `resource_kind: "watcher"`; the public
+// discriminator is now "behavior". Normalize on read so old and new events agree.
+function normalizeResourceKind(kind: unknown): string | null {
+	if (kind == null) return null;
+	return kind === "watcher" ? "behavior" : String(kind);
+}
+
 routes.use("*", mcpAuth);
 
 routes.use("*", async (c, next) => {
@@ -185,7 +192,7 @@ routes.get("/", async (c) => {
 			id: row.id,
 			createdAt: row.created_at,
 			title: row.title,
-			resourceKind: metadata.resource_kind ?? null,
+			resourceKind: normalizeResourceKind(metadata.resource_kind),
 			resourceId: metadata.resource_id ?? null,
 			op: metadata.op ?? null,
 			changedFields: metadata.changed_fields ?? null,
@@ -248,7 +255,7 @@ function toChangeDetail(row: Record<string, any>) {
 		id: row.id,
 		createdAt: row.created_at,
 		title: row.title,
-		resourceKind: metadata.resource_kind ?? null,
+		resourceKind: normalizeResourceKind(metadata.resource_kind),
 		resourceId: metadata.resource_id ?? null,
 		op: metadata.op ?? null,
 		changedFields: metadata.changed_fields ?? null,

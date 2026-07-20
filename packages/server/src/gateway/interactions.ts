@@ -126,9 +126,9 @@ export interface PostedDurableApproval extends BaseMessage {
   /** entity_field_change diff: field_path -> proposed value. Null for manage_agents.
    *  The SPA routes on this (non-empty) to the entity-field-change card. */
   fields: Record<string, unknown> | null;
-  /** Who proposed the entity_field_change: 'agent' | 'watcher'. Null for manage_agents. */
+  /** Who proposed the entity_field_change: 'agent' | 'behavior'. Null for manage_agents. */
   attribution: string | null;
-  /** Discriminator for the SPA: "agent" | "watcher" | "entity". */
+  /** Discriminator for the SPA: "agent" | "behavior" | "entity". */
   resourceKind: string | null;
   /** Headless-origin marker (parity with PostedQuestion/PostedToolApproval). */
   source?: string;

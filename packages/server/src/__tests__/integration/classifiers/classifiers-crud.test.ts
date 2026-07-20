@@ -59,7 +59,7 @@ describe('classifier CRUD', () => {
       slug: 'sentiment',
       name: 'Sentiment',
       attribute_key: 'sentiment',
-      watcher_id: watcherId,
+      behavior_id: watcherId,
       attribute_values: {
         positive: {
           description: 'positive sentiment',
@@ -94,7 +94,7 @@ describe('classifier CRUD', () => {
         slug: 'blocked-cls',
         name: 'Blocked',
         attribute_key: 'sentiment',
-        watcher_id: watcherId,
+        behavior_id: watcherId,
         attribute_values: {
           v: { description: 'v', examples: ['v'], embedding: stubEmbedding },
         },

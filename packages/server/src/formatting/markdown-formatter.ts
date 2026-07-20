@@ -731,7 +731,7 @@ function formatGetBehaviorResult(result: any, _options: FormatterOptions): strin
   let md = `# 📊 Behavior Windows (${windows.length})\n\n`;
 
   windows.forEach((window: any, idx: number) => {
-    md += `## ${idx + 1}. ${window.watcher_name}\n\n`;
+    md += `## ${idx + 1}. ${window.behavior_name}\n\n`;
 
     md += `**Window**: ${new Date(window.window_start).toLocaleDateString()} - ${new Date(window.window_end).toLocaleDateString()}  \n`;
     md += `**Granularity**: ${window.granularity}  \n`;
@@ -842,8 +842,8 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
       if (template.slug) md += `- **Slug**: ${template.slug}\n`;
       if (template.current_version) md += `- **Current Version**: ${template.current_version}\n`;
       if (template.version) md += `- **Version**: ${template.version}\n`;
-      if (template.watchers_count !== undefined) {
-        md += `- **Behaviors**: ${template.watchers_count}\n`;
+      if (template.behaviors_count !== undefined) {
+        md += `- **Behaviors**: ${template.behaviors_count}\n`;
       }
       if (template.installed !== undefined) {
         md += `- **Installed**: ${template.installed ? 'Yes' : 'No'}\n`;

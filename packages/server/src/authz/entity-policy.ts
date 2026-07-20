@@ -261,8 +261,8 @@ export function defaultEntityApprovalPolicy(
 /**
  * Who is performing this mutation, for policy purposes. Precedence is DELIBERATE
  * and security-relevant: a real agent run (trusted `agentId` on the context) is
- * classified as an agent EVEN IF the request also carries a `watcher_source`.
- * `watcher_source` is a caller-supplied arg (attribution, e.g. for card labels);
+ * classified as an agent EVEN IF the request also carries a `behavior_source`.
+ * `behavior_source` is a caller-supplied arg (attribution, e.g. for card labels);
  * letting it override the trusted agent identity would let an agent escape its
  * own per-principal policy by tagging its write as a watcher's. A genuine watcher
  * promotion runs with no agentId, so it still classifies as a watcher. A real
@@ -284,7 +284,7 @@ export function classifyMutationPrincipal(args: {
  * Stable identity of the acting non-human principal, for per-principal policy
  * matching. Mirrors {@link classifyMutationPrincipal}'s precedence: a trusted
  * `agentId` wins — an agent run resolves to its own agent id even when a
- * `watcherId` (from a caller-supplied watcher_source) is also present, so it
+ * `watcherId` (from a caller-supplied behavior_source) is also present, so it
  * can't spoof `watcher:<id>` to dodge its agent policy. Only a genuine watcher
  * path (agentId null) resolves to `watcher:<id>`; no id → null ("any agent").
  */
@@ -366,7 +366,7 @@ export interface ActingPrincipal {
  * Resolve WHO is performing a write, from the two channels an acting watcher can
  * arrive on, in ONE place — so no call site has to merge them. A watcher is
  * identified by `ctx.actingWatcherId` (the reaction session's own watcher, stamped
- * by the reaction executor) OR by an explicit `watcher_source.watcher_id` (a tag
+ * by the reaction executor) OR by an explicit `behavior_source.behavior_id` (a tag
  * the caller passed, e.g. a keyed-promotion). The trusted SESSION watcher wins:
  * a reaction script can't retag itself with a different (nonexistent or
  * less-restricted) watcher to dodge its owning agent's envelope. Any watcher
@@ -403,7 +403,7 @@ export async function resolveActingPrincipal(
 	},
 ): Promise<ActingPrincipal> {
 	// The trusted SESSION watcher (stamped by the reaction executor) always wins and
-	// folds its owning agent. An EXPLICIT watcher_source is caller-controlled, so it
+	// folds its owning agent. An EXPLICIT behavior_source is caller-controlled, so it
 	// can't override an authenticated agent's identity: honor it only when there is
 	// no agent (the system/keyed-promotion path) OR when it genuinely belongs to that
 	// agent (an agent tagging its own watcher). Otherwise a restricted agent could

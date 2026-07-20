@@ -162,7 +162,7 @@ describe('POST /api/workers/me/behaviors/:watcher_id/trigger', () => {
       WHERE watcher_id = ${ctx.watcherId}
     `;
     expect(runs).toHaveLength(1);
-    expect(String(runs[0].run_type)).toBe('watcher');
+    expect(String(runs[0].run_type)).toBe('behavior');
     expect(String(runs[0].status)).toBe('pending');
     const approved = runs[0].approved_input as Record<string, unknown>;
     expect(approved.dispatch_source).toBe('manual');
@@ -340,7 +340,7 @@ describe('POST /api/workers/me/behaviors/:watcher_id/trigger', () => {
       run_type?: string;
       payload?: { watcher?: { execution_config?: Record<string, unknown> } };
     };
-    expect(job.run_type).toBe('watcher');
+    expect(job.run_type).toBe('behavior');
     expect(job.payload?.watcher?.execution_config).toEqual(execCfg);
   });
 
@@ -496,7 +496,7 @@ describe('POST /api/workers/me/behaviors/:watcher_id/trigger', () => {
       run_type?: string;
       payload?: { watcher?: { prompt?: string } };
     };
-    expect(job.run_type).toBe('watcher');
+    expect(job.run_type).toBe('behavior');
     expect(job.payload?.watcher?.prompt).toBe('Summarize {{entities}}.');
   });
 });

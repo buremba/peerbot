@@ -77,7 +77,7 @@ function behaviorEventTriggerKey(trigger: BehaviorEventTrigger): string {
   });
 }
 
-const WATCHER_EXECUTION_UNIQUE_INDEX = 'idx_runs_executing_watcher_per_watcher';
+const WATCHER_EXECUTION_UNIQUE_INDEX = 'idx_runs_executing_per_behavior';
 
 /**
  * Claim one pending Behavior run while holding the durable per-Behavior row
@@ -115,13 +115,13 @@ export async function claimPendingWatcherRun(
             claimed_by = ${params.claimedBy}
         WHERE r.id = ${params.runId}
           AND r.watcher_id = ${params.watcherId}
-          AND r.run_type = 'watcher'
+          AND r.run_type = 'behavior'
           AND r.status = 'pending'
           AND NOT EXISTS (
             SELECT 1
             FROM runs active
             WHERE active.watcher_id = r.watcher_id
-              AND active.run_type = 'watcher'
+              AND active.run_type = 'behavior'
               AND active.status IN ('claimed', 'running')
           )
         RETURNING r.id
@@ -400,7 +400,7 @@ async function findActiveWatcherRun(
     SELECT id, status
     FROM runs
     WHERE watcher_id = ${watcherId}
-      AND run_type = 'watcher'
+      AND run_type = 'behavior'
       AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
     ORDER BY created_at ASC
     LIMIT 1
@@ -491,7 +491,7 @@ async function createWatcherRunWithClient(
       created_at
     ) VALUES (
       ${params.organizationId},
-      'watcher',
+      'behavior',
       ${params.watcherId},
       'auto',
       'pending',
@@ -561,15 +561,15 @@ export async function createWatcherRun(
       }
     }
 
-    // Partial unique index idx_runs_pending_non_event_watcher_per_watcher:
-    // one pending non-event watcher run per watcher. Manual vs scheduled
+    // Partial unique index idx_runs_pending_non_event_per_behavior:
+    // one pending non-event behavior run per behavior. Manual vs scheduled
     // (different idempotency keys) still collides here under TOCTOU races.
-    if (isUniqueViolation(error, 'idx_runs_pending_non_event_watcher_per_watcher')) {
+    if (isUniqueViolation(error, 'idx_runs_pending_non_event_per_behavior')) {
       const rows = await sql`
         SELECT id, status
         FROM runs
         WHERE watcher_id = ${params.watcherId}
-          AND run_type = 'watcher'
+          AND run_type = 'behavior'
           AND watcher_id IS NOT NULL
           AND status = 'pending'
           AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
@@ -628,7 +628,7 @@ export async function createBehaviorEventRun(
       SELECT id, status
       FROM runs
       WHERE watcher_id = ${params.watcherId}
-        AND run_type = 'watcher'
+        AND run_type = 'behavior'
         AND COALESCE(approved_input->'delivery_ids', '[]'::jsonb)
             @> ${tx.json([params.signal.delivery_id])}::jsonb
       ORDER BY created_at DESC
@@ -658,7 +658,7 @@ export async function createBehaviorEventRun(
         SELECT id, status, approved_input
         FROM runs
         WHERE watcher_id = ${params.watcherId}
-          AND run_type = 'watcher'
+          AND run_type = 'behavior'
           AND status = 'pending'
           AND approved_input->>'dispatch_source' = 'event'
           AND approved_input->>'trigger_key' = ${triggerKey}
@@ -738,7 +738,7 @@ export async function createBehaviorEventRun(
         organization_id, run_type, watcher_id, approval_status, status,
         approved_input, idempotency_key, created_at
       ) VALUES (
-        ${params.organizationId}, 'watcher', ${params.watcherId}, 'auto',
+        ${params.organizationId}, 'behavior', ${params.watcherId}, 'auto',
         'pending', ${tx.json(payload)},
         ${`behavior:${params.watcherId}:${params.signal.delivery_id}`},
         current_timestamp

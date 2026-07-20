@@ -243,7 +243,10 @@ export const ManageBehaviorsSchema = Type.Object(
         Type.Literal("trigger", {
           description: "Manually fire a Behavior run.",
         }),
-        Type.Literal("delete", { description: "Bulk-delete Behaviors." }),
+        Type.Literal("delete", {
+          description:
+            "Archive one or more Behaviors (soft delete: status='archived', scheduling stops). Rows and versions are retained; no hard delete.",
+        }),
         Type.Literal("set_reaction_script", {
           description: "Attach/remove a TypeScript reaction script.",
         }),
@@ -499,7 +502,7 @@ export const ManageBehaviorsSchema = Type.Object(
     window_token: Type.Optional(
       Type.String({
         description:
-          "[complete_window] JWT from read_knowledge(watcher_id, since, until). Pass this or window_tokens.",
+          "[complete_window] JWT from read_knowledge(behavior_id, since, until). Pass this or window_tokens.",
       })
     ),
     window_tokens: Type.Optional(
@@ -526,7 +529,7 @@ export const ManageBehaviorsSchema = Type.Object(
           "[complete_window] Optional structured execution metadata for provenance (provider, session id, parameters, etc.).",
       })
     ),
-    watcher_run_id: Type.Optional(
+    behavior_run_id: Type.Optional(
       Type.Number({
         description:
           "[complete_window] Optional Behavior run id for completion/provenance. Workers should pass the run ID from the dispatch prompt.",

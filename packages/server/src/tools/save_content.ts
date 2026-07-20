@@ -126,10 +126,10 @@ export const SaveContentSchema = Type.Object({
         'ID of an existing event this content replaces (e.g. updated preference, corrected fact). The old event is marked as superseded and excluded from future searches.',
     })
   ),
-  watcher_source: Type.Optional(
+  behavior_source: Type.Optional(
     Type.Object(
       {
-        watcher_id: Type.Number({ description: 'Behavior that triggered this save' }),
+        behavior_id: Type.Number({ description: 'Behavior that triggered this save' }),
         window_id: Type.Number({ description: 'Window that triggered this save' }),
       },
       { description: 'Attribution source when save is triggered by a Behavior reaction' }
@@ -449,17 +449,17 @@ async function saveContentImpl(
   );
 
   // Track watcher reaction if attribution source is provided
-  if (args.watcher_source) {
+  if (args.behavior_source) {
     await trackWatcherReaction({
       organizationId: ctx.organizationId,
-      watcherId: args.watcher_source.watcher_id,
-      windowId: args.watcher_source.window_id,
+      watcherId: args.behavior_source.behavior_id,
+      windowId: args.behavior_source.window_id,
       reactionType: 'content_saved',
       toolName: 'save_memory',
       toolArgs: { entity_ids: finalEntityIds, semantic_type: semanticType, title: args.title },
       entityId: finalEntityIds[0],
     }).catch((err) => {
-      logger.warn({ err, watcherSource: args.watcher_source }, 'trackWatcherReaction failed');
+      logger.warn({ err, behaviorSource: args.behavior_source }, 'trackWatcherReaction failed');
     });
   }
 

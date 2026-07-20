@@ -32,7 +32,7 @@ export interface NotificationsSendInput {
 	/** Arbitrary JSON payload appended to the body as formatted JSON. */
 	data?: Record<string, unknown>;
 	/** Attribution when sent from a watcher reaction — both ids are numeric. */
-	watcher_source?: { watcher_id: number; window_id: number };
+	behavior_source?: { behavior_id: number; window_id: number };
 }
 
 export interface NotificationsNamespace {

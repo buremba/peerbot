@@ -41,7 +41,7 @@ interface SeedRunOpts {
   status: 'pending' | 'claimed' | 'running' | 'completed';
   lastHeartbeatAgoSeconds: number | null;
   claimedAtAgoSeconds?: number | null;
-  runType?: 'sync' | 'action' | 'embed_backfill' | 'auth' | 'watcher';
+  runType?: 'sync' | 'action' | 'embed_backfill' | 'auth' | 'behavior';
   feedId?: number | null;
   createdAtAgoSeconds?: number;
 }
@@ -238,7 +238,7 @@ describe('reapStaleRuns — connector lanes', () => {
       status: 'running',
       lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 10,
       claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 10,
-      runType: 'watcher',
+      runType: 'behavior',
     });
     const result = await reapStaleRuns();
     expect(result.reaped).toBe(0);

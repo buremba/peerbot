@@ -745,7 +745,7 @@ async function getBehaviorImpl(
     return {
       window_id: ensureNumber(w.window_id),
       behavior_id: String(w.watcher_id),
-      watcher_name: w.watcher_name,
+      behavior_name: w.watcher_name,
       granularity: w.granularity,
       // window_start/end and created_at come back from postgres.js as Date
       // objects (raw timestamp columns, no ::text cast), while the outputSchema
@@ -834,7 +834,7 @@ async function getBehaviorImpl(
 
     watcherMetadata = {
       behavior_id: String(watcherRow.watcher_id),
-      watcher_name: watcherRow.name || (version?.name as string) || 'Behavior',
+      behavior_name: watcherRow.name || (version?.name as string) || 'Behavior',
       slug: watcherRow.slug || '',
       status: watcherRow.status as 'active' | 'archived',
       triggers: watcherRow.triggers ?? [],
@@ -855,7 +855,7 @@ async function getBehaviorImpl(
         : undefined,
       ...(availableVersions !== undefined && { available_versions: availableVersions }),
       reaction_script: watcherRow.reaction_script || undefined,
-      watcher_run:
+      behavior_run:
         watcherRow.watcher_run_id && watcherRow.watcher_run_status
           ? {
               run_id: Number(watcherRow.watcher_run_id),
@@ -1055,7 +1055,7 @@ async function getBehaviorImpl(
       ? {
           tool: 'read_knowledge',
           params: {
-            watcher_id: args.behavior_id,
+            behavior_id: args.behavior_id,
             since: nextWindow.start.split('T')[0],
             until: nextWindow.end.split('T')[0],
           },

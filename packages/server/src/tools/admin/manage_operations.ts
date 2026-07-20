@@ -965,14 +965,14 @@ async function handleExecute(
 	// policy governs non-human principals); with no policy row, the class default
 	// is auto, so the connection mode alone decides — today's behavior is intact.
 	// Resolve WHO is acting through the single seam — merges the explicit
-	// watcher_source and the reaction session's own watcher, looks up the owning
+	// behavior_source and the reaction session's own watcher, looks up the owning
 	// agent, and pins autonomous mode for a watcher. Persisted with the run so the
 	// approve-time recheck re-evaluates in the SAME mode/principal.
 	const actor = await resolveActingPrincipal(sql, {
 		organizationId: ctx.organizationId,
 		userId: ctx.userId,
 		agentId: ctx.agentId,
-		explicitWatcherId: args.watcher_source?.watcher_id ?? null,
+		explicitWatcherId: args.behavior_source?.behavior_id ?? null,
 		sessionWatcherId: ctx.actingWatcherId ?? null,
 	});
 	// Agent write-policy applies to WRITE ops only. Reads stay available under
@@ -1114,11 +1114,11 @@ async function handleExecute(
 
 		// Telemetry + notification run AFTER the run+event are durably committed,
 		// so they never reference a rolled-back run and stay off the hot path.
-		if (args.watcher_source) {
+		if (args.behavior_source) {
 			await trackWatcherReaction({
 				organizationId: ctx.organizationId,
-				watcherId: args.watcher_source.watcher_id,
-				windowId: args.watcher_source.window_id,
+				watcherId: args.behavior_source.behavior_id,
+				windowId: args.behavior_source.window_id,
 				reactionType: "action_executed",
 				toolName: "manage_operations",
 				toolArgs: {
@@ -1176,11 +1176,11 @@ async function handleExecute(
 		policyPrincipalId: actor.id,
 	});
 
-	if (args.watcher_source) {
+	if (args.behavior_source) {
 		await trackWatcherReaction({
 			organizationId: ctx.organizationId,
-			watcherId: args.watcher_source.watcher_id,
-			windowId: args.watcher_source.window_id,
+			watcherId: args.behavior_source.behavior_id,
+			windowId: args.behavior_source.window_id,
 			reactionType: "action_executed",
 			toolName: "manage_operations",
 			toolArgs: {
@@ -1326,8 +1326,8 @@ async function handleListRuns(
   if (args.approval_status) {
     where = sql`${where} AND r.approval_status = ${args.approval_status}`;
   }
-  if (args.watcher_ids && args.watcher_ids.length > 0) {
-    where = sql`${where} AND r.watcher_id = ANY(${pgBigintArray(args.watcher_ids)}::bigint[])`;
+  if (args.behavior_ids && args.behavior_ids.length > 0) {
+    where = sql`${where} AND r.watcher_id = ANY(${pgBigintArray(args.behavior_ids)}::bigint[])`;
   }
 
   const countQuery = sql`SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`;

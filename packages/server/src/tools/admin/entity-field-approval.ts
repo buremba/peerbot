@@ -61,7 +61,7 @@ export interface EntityFieldChangeProposal {
 	 */
 	window_id?: number | null;
 	/** Who proposed the change — drives the card label/author. Defaults to 'watcher'. */
-	attribution?: "watcher" | "agent";
+	attribution?: "behavior" | "agent";
 	reason?: string | null;
 	/**
 	 * The ONE human who owns every gated field (distinct
@@ -90,7 +90,7 @@ export interface EntityDeleteProposal {
 	watcher_id?: number | null;
 	/** See EntityFieldChangeProposal.window_id — batches proposals by run window. */
 	window_id?: number | null;
-	attribution?: "watcher" | "agent";
+	attribution?: "behavior" | "agent";
 	reason?: string | null;
 }
 
@@ -101,7 +101,7 @@ export interface EntityCreateProposal {
 	watcher_id?: number | null;
 	/** See EntityFieldChangeProposal.window_id — batches proposals by run window. */
 	window_id?: number | null;
-	attribution?: "watcher" | "agent";
+	attribution?: "behavior" | "agent";
 	reason?: string | null;
 }
 
@@ -128,7 +128,7 @@ export interface EntityMergeProposal {
 	source_run_id?: number | null;
 	policy_hash?: string | null;
 	resolution_fingerprint?: string | null;
-	attribution?: "watcher" | "agent";
+	attribution?: "behavior" | "agent";
 	reason?: string | null;
 }
 
@@ -229,13 +229,13 @@ function entityChangeIdempotencyKey(
 async function loadWatcherLabel(
 	ctx: ToolContext,
 	watcherId: number | null | undefined,
-	attribution: "watcher" | "agent" | undefined,
+	attribution: "behavior" | "agent" | undefined,
 ): Promise<{
 	actorLabel: string;
 	watcherName: string | null;
 	watcherAgentId: string | null;
 }> {
-	if (attribution !== "watcher") {
+	if (attribution !== "behavior") {
 		return { actorLabel: "An agent", watcherName: null, watcherAgentId: null };
 	}
 	if (!watcherId) {
@@ -554,7 +554,7 @@ export async function proposeEntityChange(
 
 	const fieldKeys = updateProposal ? Object.keys(updateProposal.fields) : [];
 	const fieldList = fieldKeys.join(", ");
-	const attribution = proposal.attribution ?? "watcher";
+	const attribution = proposal.attribution ?? "behavior";
 	const actorNoun = attribution === "agent" ? "An agent" : "A Behavior";
 	const [{ actorLabel, watcherName, watcherAgentId }, entity] =
 		await Promise.all([

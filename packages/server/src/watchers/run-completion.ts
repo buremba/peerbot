@@ -140,7 +140,7 @@ export async function resolveWatcherRunsByMessageIds(
     SELECT r.id, r.approved_input, w.execution_config
     FROM runs r
     LEFT JOIN watchers w ON w.id = r.watcher_id
-    WHERE r.run_type = 'watcher'
+    WHERE r.run_type = 'behavior'
       AND r.dispatched_message_id = ANY(${pgTextArray(ids)}::text[])
       AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
   `;

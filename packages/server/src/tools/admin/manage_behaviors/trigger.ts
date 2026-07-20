@@ -103,7 +103,7 @@ export async function handleSetReactionScript(
       WHERE watcher_group_id = ${groupId}
     `;
     recordToolConfigChange(ctx, {
-      resourceKind: "watcher",
+      resourceKind: "behavior",
       resourceId: args.behavior_id,
       op: "updated",
       summary: `Behavior ${args.behavior_id} reaction script removed`,
@@ -141,7 +141,7 @@ export async function handleSetReactionScript(
   );
 
   recordToolConfigChange(ctx, {
-    resourceKind: "watcher",
+    resourceKind: "behavior",
     resourceId: args.behavior_id,
     op: "updated",
     summary: `Behavior ${args.behavior_id} reaction script updated`,

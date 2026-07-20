@@ -1511,7 +1511,7 @@ routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
 
 	return c.json({
 		runId,
-		resourceKind: "watcher" as const,
+		resourceKind: "behavior" as const,
 		action: row.action,
 		proposal: rawProposal,
 		current,

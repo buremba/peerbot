@@ -87,10 +87,10 @@ describe("ClientSDK business failure boundary", () => {
 	it("throws when classifiers.create returns success false", async () => {
 		const stubEmbedding = Array.from({ length: 768 }, () => 0);
 		const promise = workspace.owner.classifiers.create({
-			slug: "missing-watcher-classifier",
-			name: "Missing Watcher Classifier",
+			slug: "missing-behavior-classifier",
+			name: "Missing Behavior Classifier",
 			attribute_key: "sentiment",
-			watcher_id: 999_999,
+			behavior_id: 999_999,
 			attribute_values: {
 				positive: {
 					description: "positive sentiment",

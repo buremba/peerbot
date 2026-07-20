@@ -42,7 +42,7 @@ function reasonFor(
 	entityTypeSlug: string,
 	name: string | undefined,
 ): string {
-	const actor = attribution === "watcher" ? "A watcher" : "An agent";
+	const actor = attribution === "behavior" ? "A Behavior" : "An agent";
 	const label = name ? `${entityTypeSlug} "${name}"` : entityTypeSlug;
 	return `${actor} proposes ${verb} ${label}.`;
 }
@@ -51,7 +51,7 @@ function fieldChangeReason(
 	attribution: MutationAttribution,
 	fields: string[],
 ): string {
-	const actor = attribution === "watcher" ? "A watcher" : "An agent";
+	const actor = attribution === "behavior" ? "A Behavior" : "An agent";
 	return `${actor} proposes updating ${fields.join(", ")} on this entity.`;
 }
 

@@ -61,11 +61,11 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
     // here makes EVERY gated write it performs (connector ops, entity mutations,
     // watcher edits) resolve the watcher's owning agent and evaluate in
     // autonomous mode — the script cannot dodge its agent's envelope by omitting
-    // an explicit `watcher_source`. `source: 'watcher-run'` marks the turn
+    // an explicit `behavior_source`. `source: 'watcher-run'` marks the turn
     // autonomous even for surfaces that read only sourceContext.
-    actingWatcherId: context.window.watcher_id,
+    actingWatcherId: context.window.behavior_id,
     // The window too, so a deferred approval batches per window and dedups across
-    // windows even when the script omits `watcher_source` (see ToolContext).
+    // windows even when the script omits `behavior_source` (see ToolContext).
     actingWindowId: context.window.id,
     actingRunId: context.window.run_id ?? null,
     sourceContext: { source: 'watcher-run' as const },
@@ -84,7 +84,7 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
   if (result.success) {
     logger.info(
       {
-        watcher_id: context.window.watcher_id,
+        behavior_id: context.window.behavior_id,
         window_id: context.window.id,
         sdk_calls: result.sdkCalls,
         duration_ms: result.durationMs,
@@ -100,7 +100,7 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
 
   logger.error(
     {
-      watcher_id: context.window.watcher_id,
+      behavior_id: context.window.behavior_id,
       window_id: context.window.id,
       error: errorMessage,
     },

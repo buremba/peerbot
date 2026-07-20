@@ -33,10 +33,10 @@ export const ManageClassifiersSchema = Type.Object({
         "[create/list] Entity ID to scope classifiers (global if omitted)",
     })
   ),
-  watcher_id: Type.Optional(
+  behavior_id: Type.Optional(
     Type.String({
       description:
-        "[create] Persisted Behavior ID (`watcher_id`) returned by manage_behaviors (numeric string; required)",
+        "[create] Persisted Behavior ID (`behavior_id`) returned by manage_behaviors (numeric string; required)",
     })
   ),
   classifier_id: Type.Optional(

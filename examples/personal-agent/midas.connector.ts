@@ -380,7 +380,6 @@ async function notifyMidasAuthWall(
       title: "Midas needs sign-in",
       message:
         "Sign in to Midas in the focused Chrome window, then re-run the sync.",
-      body: "Sign in to Midas in the focused Chrome window, then re-run the sync.",
       landed_url: safeLanded,
       // Fixed, safe destination — never a callback URL with sensitive params.
       click_url: MIDAS_DASHBOARD_URL,

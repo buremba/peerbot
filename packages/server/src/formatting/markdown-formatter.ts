@@ -750,7 +750,7 @@ function formatGetBehaviorResult(result: any, _options: FormatterOptions): strin
   });
 
   if (pending_analysis?.unprocessed_ranges?.length > 0) {
-    md += formatUnprocessedRanges(pending_analysis.unprocessed_ranges, behavior?.watcher_id);
+    md += formatUnprocessedRanges(pending_analysis.unprocessed_ranges, behavior?.behavior_id);
   }
 
   return md;
@@ -855,7 +855,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
     return md;
   }
 
-  if (action === 'create' && result.template_id && !result.watcher_id) {
+  if (action === 'create' && result.template_id && !result.behavior_id) {
     md += '## New Template Created\n\n';
     md += `- **ID**: \`${result.template_id}\`\n`;
     md += `- **Slug**: ${result.slug}\n`;
@@ -875,7 +875,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
 
   if (action === 'set_reaction_script') {
     md += '## Reaction Script\n\n';
-    md += `- **Behavior ID**: \`${result.watcher_id}\`\n`;
+    md += `- **Behavior ID**: \`${result.behavior_id}\`\n`;
     md += `- **Installed**: ${result.has_script ? 'Yes' : 'No'}\n`;
     if (result.message) md += `- **Message**: ${result.message}\n`;
     return md;
@@ -896,7 +896,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
     if (failedResults.length > 0) {
       md += '## ❌ Failed Operations\n\n';
       for (const r of failedResults) {
-        md += `- **Behavior ID**: \`${r.watcher_id}\`\n`;
+        md += `- **Behavior ID**: \`${r.behavior_id}\`\n`;
         md += `  - **Error**: ${r.message}\n\n`;
       }
     }
@@ -904,15 +904,15 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
     if (successfulResults.length > 0) {
       md += '## ✅ Successful Operations\n\n';
       for (const r of successfulResults) {
-        md += `- **Behavior ID**: \`${r.watcher_id}\`\n`;
+        md += `- **Behavior ID**: \`${r.behavior_id}\`\n`;
         md += `  - **Status**: ${r.message}\n\n`;
       }
     }
   }
 
-  if (action === 'create' && result.watcher_id) {
+  if (action === 'create' && result.behavior_id) {
     md += '## New Behavior Created\n\n';
-    md += `- **ID**: \`${result.watcher_id}\`\n`;
+    md += `- **ID**: \`${result.behavior_id}\`\n`;
     md += `- **Template Version**: ${result.template_version}\n`;
     md += `- **Status**: ${result.status}\n`;
     if (result.view_url) {
@@ -932,7 +932,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
 
   if (action === 'complete_window') {
     md += '## ✅ Window Completed\n\n';
-    md += `- **Behavior ID**: \`${result.watcher_id}\`\n`;
+    md += `- **Behavior ID**: \`${result.behavior_id}\`\n`;
     md += `- **Window ID**: \`${result.window_id}\`\n`;
     md += `- **Period**: ${result.window_start?.substring(0, 10)} - ${result.window_end?.substring(0, 10)}\n`;
     md += `- **Content Linked**: ${result.content_linked}\n`;
@@ -942,7 +942,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
     md += `## Behaviors (${behaviors.length})\n\n`;
     for (const watcher of behaviors) {
       md += `### ${watcher.name || watcher.template_slug}\n`;
-      md += `- **ID**: \`${watcher.watcher_id}\`\n`;
+      md += `- **ID**: \`${watcher.behavior_id}\`\n`;
       md += `- **Template**: ${watcher.template_slug} (v${watcher.template_version})\n`;
       md += `- **Status**: ${watcher.status}\n`;
       md += `- **Entity**: ${watcher.entity_name} (${watcher.entity_type})\n`;

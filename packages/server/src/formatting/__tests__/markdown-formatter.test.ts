@@ -190,7 +190,7 @@ describe('formatToolResult', () => {
     it('should format create result', () => {
       const result = {
         action: 'create',
-        watcher_id: 42,
+        behavior_id: 42,
         template_version: 1,
         status: 'active',
       };
@@ -204,7 +204,7 @@ describe('formatToolResult', () => {
         action: 'list',
         behaviors: [
           {
-            watcher_id: 1,
+            behavior_id: 1,
             template_slug: 'sentiment',
             status: 'active',
             entity_name: 'Acme',

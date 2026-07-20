@@ -650,10 +650,13 @@ jobs:
 
   migrations:
     # Catches the class of bug that has now broken prod twice in one
-    # session: a migration file that's syntactically a SQL file but that
-    # `dbmate up` rejects (missing -- migrate:up directive, constraint
-    # violations against legacy data, etc.). Runs every migration in
-    # order against an empty Postgres on every PR.
+    # session: a migration file that's syntactically a SQL file but that the
+    # migration runner rejects (missing -- migrate:up directive, constraint
+    # violations against legacy data, etc.). Runs every migration in order
+    # against an empty Postgres on every PR using the SAME runner production
+    # uses (scripts/migrate-up.mjs), so a migration that only the prod runner
+    # can apply (e.g. transaction:false heal-DO + CONCURRENTLY) is validated
+    # here instead of silently diverging from `dbmate up`.
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     services:
@@ -785,7 +788,25 @@ jobs:
         # to a fresh DB. That's the only schema check left after the squash —
         # db/schema.sql + the drift-gate-vs-baseline diff are gone since the
         # baseline IS the canonical schema.
-        run: dbmate --migrations-dir db/migrations up
+        #
+        # Apply with the SAME runner production uses (scripts/migrate-up.mjs, via
+        # docker/app/start.sh), NOT `dbmate up`. dbmate Exec's a migration's
+        # whole up section as one simple-query batch, which Postgres runs in an
+        # implicit transaction; a `transaction:false` migration that pairs a heal
+        # DO with CREATE/DROP INDEX CONCURRENTLY then fails with "CREATE INDEX
+        # CONCURRENTLY cannot run inside a transaction block". migrate-up.mjs
+        # splits top-level statements so CONCURRENTLY runs on its own, and still
+        # records versions in the dbmate-compatible public.schema_migrations
+        # ledger (the `dbmate status` verify step below reads it). Its only
+        # runtime dep is `postgres`; npm can't install the workspace root
+        # (workspace: protocol), so install just that package in a scratch dir
+        # and expose it via a top-level node_modules entry the ESM loader resolves.
+        run: |
+          tmp="$(mktemp -d)"
+          (cd "$tmp" && npm init -y >/dev/null && npm install --no-audit --no-fund postgres@^3.4.7 >/dev/null)
+          mkdir -p node_modules
+          cp -r "$tmp/node_modules/postgres" node_modules/postgres
+          node scripts/migrate-up.mjs
 
       - name: Verify migrations are listed in the schema_migrations table
         env:

@@ -83,7 +83,7 @@ export async function handleCreate(
   ctx: ToolContext
 ): Promise<{
   action: 'create';
-  watcher_id: string;
+  behavior_id: string;
   version: number;
   status: string;
   sources?: Array<{ name: string; query: string }>;
@@ -395,7 +395,7 @@ export async function handleCreate(
 
   return {
     action: 'create',
-    watcher_id: String(watcherId),
+    behavior_id: String(watcherId),
     version: 1,
     status: 'active',
     sources,
@@ -411,11 +411,11 @@ export async function handleUpdate(
   args: ManageBehaviorsArgs,
   _env: Env,
   ctx: ToolContext
-): Promise<{ action: 'update'; watcher_id: string; updated_fields: string[] }> {
+): Promise<{ action: 'update'; behavior_id: string; updated_fields: string[] }> {
   const sql = getDb();
 
-  if (!args.watcher_id) {
-    throw new Error('watcher_id is required for update action');
+  if (!args.behavior_id) {
+    throw new Error('behavior_id is required for update action');
   }
   assertValidExecutionConfig(args.execution_config, ctx);
   // Re-pinning to a device targets that device owner's machine — validate the
@@ -423,11 +423,11 @@ export async function handleUpdate(
   // undefined = unchanged and null = clear the pin both pass without a lookup.
   await assertDeviceWorkerAccess(sql, args.device_worker_id, ctx);
 
-  await requireExists(sql, 'watchers', args.watcher_id, 'Behavior');
+  await requireExists(sql, 'watchers', args.behavior_id, 'Behavior');
   const currentRows = await sql`
     SELECT organization_id, agent_id, schedule, timezone, triggers
     FROM watchers
-    WHERE id = ${args.watcher_id}
+    WHERE id = ${args.behavior_id}
     LIMIT 1
   `;
   const currentRow = currentRows[0] as {
@@ -482,7 +482,7 @@ export async function handleUpdate(
   if (updatedFields.length === 0) {
     return {
       action: 'update',
-      watcher_id: args.watcher_id,
+      behavior_id: args.behavior_id,
       updated_fields: [],
     };
   }
@@ -525,11 +525,11 @@ export async function handleUpdate(
       notification_channel = CASE WHEN ${has('notification_channel')} THEN ${patch.notification_channel ?? 'canvas'} ELSE notification_channel END,
       notification_priority = CASE WHEN ${has('notification_priority')} THEN ${patch.notification_priority ?? 'normal'} ELSE notification_priority END,
       min_cooldown_seconds = CASE WHEN ${has('min_cooldown_seconds')} THEN ${patch.min_cooldown_seconds ?? 0} ELSE min_cooldown_seconds END
-    WHERE id = ${args.watcher_id} AND organization_id = ${ctx.organizationId}
+    WHERE id = ${args.behavior_id} AND organization_id = ${ctx.organizationId}
     RETURNING *
   `;
 
-  logger.info(`[manage_behaviors] Updated watcher ${args.watcher_id}: ${updatedFields.join(', ')}`);
+  logger.info(`[manage_behaviors] Updated watcher ${args.behavior_id}: ${updatedFields.join(', ')}`);
 
   const updatedRow = (updatedRows[0] ?? null) as Record<string, unknown> | null;
   await syncBehaviorChannelFeedsBestEffort({
@@ -541,16 +541,16 @@ export async function handleUpdate(
   recordToolConfigChange(ctx, {
     organizationId: (updatedRow?.organization_id as string | null) ?? ctx.organizationId,
     resourceKind: 'watcher',
-    resourceId: args.watcher_id,
+    resourceId: args.behavior_id,
     op: 'updated',
-    summary: `Behavior '${updatedRow?.name ?? args.watcher_id}' updated`,
+    summary: `Behavior '${updatedRow?.name ?? args.behavior_id}' updated`,
     state: updatedRow,
     changedFields: updatedFields,
   });
 
   return {
     action: 'update',
-    watcher_id: args.watcher_id,
+    behavior_id: args.behavior_id,
     updated_fields: updatedFields,
   };
 }
@@ -569,13 +569,13 @@ export async function handleDelete(
 }> {
   const sql = getDb();
 
-  if (!args.watcher_ids || args.watcher_ids.length === 0) {
-    throw new Error('watcher_ids is required and cannot be empty');
+  if (!args.behavior_ids || args.behavior_ids.length === 0) {
+    throw new Error('behavior_ids is required and cannot be empty');
   }
 
   const results: WatcherOperationResult[] = [];
 
-  for (const watcherId of args.watcher_ids) {
+  for (const watcherId of args.behavior_ids) {
     try {
       // Org-scope the mutation: requireWatcherAccess now lets ids that aren't
       // in-org at check time fall through to this aggregate, and watcher ids are
@@ -592,7 +592,7 @@ export async function handleDelete(
 
       if (updated.length === 0) {
         results.push({
-          watcher_id: watcherId,
+          behavior_id: watcherId,
           success: false,
           message: 'Behavior not found or already archived',
         });
@@ -639,14 +639,14 @@ export async function handleDelete(
         }
 
         results.push({
-          watcher_id: watcherId,
+          behavior_id: watcherId,
           success: true,
           message: 'Behavior archived successfully',
         });
       }
     } catch (error) {
       results.push({
-        watcher_id: watcherId,
+        behavior_id: watcherId,
         success: false,
         message: getErrorMessage(error),
       });
@@ -670,7 +670,7 @@ export async function handleCreateFromVersion(
   ctx: ToolContext
 ): Promise<{
   action: 'create_from_version';
-  created: Array<{ watcher_id: string; entity_id: number; name: string }>;
+  created: Array<{ behavior_id: string; entity_id: number; name: string }>;
 }> {
   const sql = getDb();
 
@@ -730,7 +730,7 @@ export async function handleCreateFromVersion(
 
   const createdBy = ctx.userId ?? 'system';
   const created: Array<{
-    watcher_id: string;
+    behavior_id: string;
     entity_id: number;
     name: string;
   }> = [];
@@ -811,7 +811,7 @@ export async function handleCreateFromVersion(
         `;
 
         created.push({
-          watcher_id: String(watcherId),
+          behavior_id: String(watcherId),
           entity_id: entityId,
           name: watcherName,
         });

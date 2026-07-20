@@ -240,14 +240,14 @@ export const ManageBehaviorsSchema = Type.Object(
       { description: "Action to perform" }
     ),
 
-    // Behavior identity (the persisted identifier is watcher_id)
-    watcher_id: Type.Optional(
+    // Behavior identity (the persisted DB column is watcher_id)
+    behavior_id: Type.Optional(
       Type.String({
         description:
           "[list/update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Behavior ID (numeric string)",
       })
     ),
-    watcher_ids: Type.Optional(
+    behavior_ids: Type.Optional(
       Type.Array(Type.String(), {
         description: "[delete] Array of Behavior IDs (numeric strings)",
       })
@@ -573,7 +573,7 @@ export type ManageBehaviorsArgs = Static<typeof ManageBehaviorsSchema>;
  *
  * EXCLUDES: name/description/prompt/sources (version-owned — an update can't
  * change them, changing them needs create_version) and routing keys
- * (action/watcher_id/entity_id/version_id). `next_run_at` is omitted too — a
+ * (action/behavior_id/entity_id/version_id). `next_run_at` is omitted too — a
  * DERIVED column, not a proposable field.
  */
 export type BehaviorUpdatePatch = Pick<
@@ -666,7 +666,7 @@ export function normalizeBehaviorUpdatePatch(
  * honest rather than a brittle mirror of shapes that are intentionally open.
  */
 export const ManageBehaviorsDeleteResultSchema = Type.Object({
-  watcher_id: Type.String(),
+  behavior_id: Type.String(),
   success: Type.Boolean(),
   message: Type.String(),
   version: Type.Optional(Type.Integer()),
@@ -706,7 +706,7 @@ export const ManageBehaviorsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("create"),
-    watcher_id: Type.String(),
+    behavior_id: Type.String(),
     version: Type.Integer(),
     status: Type.String(),
     sources: Type.Optional(Type.Array(BehaviorSourceSchema)),
@@ -714,19 +714,19 @@ export const ManageBehaviorsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("update"),
-    watcher_id: Type.String(),
+    behavior_id: Type.String(),
     updated_fields: Type.Array(Type.String()),
   }),
   Type.Object({
     action: Type.Literal("create_version"),
-    watcher_id: Type.String(),
+    behavior_id: Type.String(),
     version_id: Type.String(),
     version: Type.Integer(),
     previous_version: Type.Integer(),
   }),
   Type.Object({
     action: Type.Literal("complete_window"),
-    watcher_id: Type.String(),
+    behavior_id: Type.String(),
     window_id: Type.Integer(),
     window_start: Type.String(),
     window_end: Type.String(),
@@ -734,7 +734,7 @@ export const ManageBehaviorsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("trigger"),
-    watcher_id: Type.String(),
+    behavior_id: Type.String(),
     run_id: Type.Integer(),
     status: Type.String(),
   }),
@@ -749,14 +749,14 @@ export const ManageBehaviorsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("set_reaction_script"),
-    watcher_id: Type.String(),
+    behavior_id: Type.String(),
     has_script: Type.Boolean(),
     message: Type.String(),
   }),
   // Intentionally permissive: version rows are arbitrary config snapshots.
   Type.Object({
     action: Type.Literal("get_versions"),
-    watcher_id: Type.String(),
+    behavior_id: Type.String(),
     versions: Type.Array(Type.Unknown()),
   }),
   // Intentionally permissive: carries an open `[key: string]: any` index sig
@@ -766,7 +766,7 @@ export const ManageBehaviorsResultSchema = Type.Union([
   Type.Intersect([
     Type.Object({
       action: Type.Literal("get_version_details"),
-      watcher_id: Type.String(),
+      behavior_id: Type.String(),
     }),
     Type.Record(Type.String(), Type.Unknown()),
   ]),
@@ -779,25 +779,25 @@ export const ManageBehaviorsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("submit_feedback"),
-    watcher_id: Type.String(),
+    behavior_id: Type.String(),
     window_id: Type.Integer(),
     feedback_ids: Type.Array(Type.Integer()),
   }),
   Type.Object({
     action: Type.Literal("get_feedback"),
-    watcher_id: Type.String(),
+    behavior_id: Type.String(),
     feedback: Type.Array(ManageBehaviorsFeedbackItemSchema),
   }),
   Type.Object({
     action: Type.Literal("list_promoted"),
-    watcher_id: Type.String(),
+    behavior_id: Type.String(),
     entities: Type.Array(ManageBehaviorsPromotedEntitySchema),
   }),
   Type.Object({
     action: Type.Literal("create_from_version"),
     created: Type.Array(
       Type.Object({
-        watcher_id: Type.String(),
+        behavior_id: Type.String(),
         entity_id: Type.Integer(),
         name: Type.String(),
       })
@@ -853,7 +853,7 @@ export interface ManageBehaviorsProposal {
 // The REST/list helper is a projection of the canonical flattened tool schema,
 // not a second hand-maintained contract that can drift from manage_behaviors.
 export const ListBehaviorsSchema = Type.Pick(ManageBehaviorsSchema, [
-  "watcher_id",
+  "behavior_id",
   "entity_id",
   "agent_id",
   "status",

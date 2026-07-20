@@ -170,7 +170,7 @@ export async function handleSubmitFeedback(
   args: ManageBehaviorsArgs,
   ctx: ToolContext
 ): Promise<ManageBehaviorsResult> {
-  if (!args.watcher_id) throw new Error('watcher_id is required');
+  if (!args.behavior_id) throw new Error('behavior_id is required');
   if (!args.window_id) throw new Error('window_id is required');
   if (!ctx.userId) {
     throw new Error('Authentication required to submit feedback');
@@ -194,7 +194,7 @@ export async function handleSubmitFeedback(
   }
 
   const sql = getDb();
-  const watcherId = Number(args.watcher_id);
+  const watcherId = Number(args.behavior_id);
 
   // Scope to the caller's current org so a member of org A can't write
   // feedback against a watcher in org B by passing its watcher_id. window_id is
@@ -347,7 +347,7 @@ export async function handleSubmitFeedback(
 
   return {
     action: 'submit_feedback',
-    watcher_id: args.watcher_id,
+    behavior_id: args.behavior_id,
     window_id: args.window_id,
     feedback_ids: feedbackIds,
   };
@@ -361,10 +361,10 @@ export async function handleGetFeedback(
   args: ManageBehaviorsArgs,
   ctx: ToolContext
 ): Promise<ManageBehaviorsResult> {
-  if (!args.watcher_id) throw new Error('watcher_id is required');
+  if (!args.behavior_id) throw new Error('behavior_id is required');
 
   const sql = getDb();
-  const watcherId = Number(args.watcher_id);
+  const watcherId = Number(args.behavior_id);
   const limit = args.limit ?? 50;
 
   // Scope to the caller's current org so a member of org A can't enumerate feedback for a watcher
@@ -410,7 +410,7 @@ export async function handleGetFeedback(
 
   return {
     action: 'get_feedback',
-    watcher_id: args.watcher_id,
+    behavior_id: args.behavior_id,
     feedback: feedback.map((row) => ({
       id: Number(row.id),
       window_id: Number(row.window_id),
@@ -445,10 +445,10 @@ export async function handleListPromoted(
   args: ManageBehaviorsArgs,
   ctx: ToolContext
 ): Promise<ManageBehaviorsResult> {
-  if (!args.watcher_id) throw new Error('watcher_id is required');
+  if (!args.behavior_id) throw new Error('behavior_id is required');
 
   const sql = getDb();
-  const watcherId = String(Number(args.watcher_id));
+  const watcherId = String(Number(args.behavior_id));
   const limit = args.limit ?? 200;
 
   const rows = await sql`
@@ -465,7 +465,7 @@ export async function handleListPromoted(
 
   return {
     action: 'list_promoted',
-    watcher_id: args.watcher_id,
+    behavior_id: args.behavior_id,
     entities: rows.map((row) => {
       const metadata = parseJsonObject(row.metadata);
       const fieldControls = parseJsonObject(row.field_controls);

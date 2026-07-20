@@ -35,15 +35,15 @@ export async function handleCreateVersion(
   ctx: ToolContext
 ): Promise<{
   action: 'create_version';
-  watcher_id: string;
+  behavior_id: string;
   version_id: string;
   version: number;
   previous_version: number;
 }> {
   const sql = getDb();
 
-  if (!args.watcher_id) {
-    throw new Error('watcher_id is required for create_version action');
+  if (!args.behavior_id) {
+    throw new Error('behavior_id is required for create_version action');
   }
 
   // Get current watcher + resolve the group root. Versioned config
@@ -55,10 +55,10 @@ export async function handleCreateVersion(
   const watcherRows = await sql`
     SELECT i.id, i.version, i.current_version_id, i.watcher_group_id, i.sources, i.organization_id,
            i.schedule, i.timezone, i.triggers
-    FROM watchers i WHERE i.id = ${args.watcher_id}
+    FROM watchers i WHERE i.id = ${args.behavior_id}
   `;
   if (watcherRows.length === 0) {
-    throw new Error(`Behavior ${args.watcher_id} not found`);
+    throw new Error(`Behavior ${args.behavior_id} not found`);
   }
 
   const groupId = Number(watcherRows[0].watcher_group_id);
@@ -236,7 +236,7 @@ export async function handleCreateVersion(
           timezone = CASE WHEN ${touchesCadence} THEN ${timezoneValue} ELSE timezone END,
           triggers = CASE WHEN ${touchesCadence} THEN ${tx.json(triggerWrite.triggers)} ELSE triggers END,
           next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END
-        WHERE id = ${args.watcher_id}
+        WHERE id = ${args.behavior_id}
       `;
     }
   });
@@ -254,13 +254,13 @@ export async function handleCreateVersion(
     recordToolConfigChange(ctx, {
       organizationId: versionOrganizationId,
       resourceKind: 'watcher',
-      resourceId: args.watcher_id,
+      resourceId: args.behavior_id,
       op: 'updated',
-      summary: `Behavior '${args.name ?? (prev.name as string) ?? args.watcher_id}' version ${lockedNextVersion} created`,
+      summary: `Behavior '${args.name ?? (prev.name as string) ?? args.behavior_id}' version ${lockedNextVersion} created`,
       // Composed from the values just written (watcher row not refetched);
       // carries the new version-bound fields.
       state: {
-        id: args.watcher_id,
+        id: args.behavior_id,
         name: args.name ?? (prev.name as string) ?? 'Behavior',
         version: lockedNextVersion,
         current_version_id: setAsCurrent ? versionId : undefined,
@@ -290,7 +290,7 @@ export async function handleCreateVersion(
 
   return {
     action: 'create_version',
-    watcher_id: args.watcher_id,
+    behavior_id: args.behavior_id,
     version_id: String(versionId),
     version: lockedNextVersion,
     previous_version: previousVersion,
@@ -303,20 +303,20 @@ export async function handleCreateVersion(
 
 export async function handleGetVersions(args: ManageBehaviorsArgs): Promise<{
   action: 'get_versions';
-  watcher_id: string;
+  behavior_id: string;
   versions: any[];
 }> {
   const sql = getDb();
 
-  if (!args.watcher_id) {
-    throw new Error('watcher_id is required for get_versions action');
+  if (!args.behavior_id) {
+    throw new Error('behavior_id is required for get_versions action');
   }
 
   const watcherRows = await sql`
-    SELECT id, name, slug, current_version_id, watcher_group_id FROM watchers WHERE id = ${args.watcher_id}
+    SELECT id, name, slug, current_version_id, watcher_group_id FROM watchers WHERE id = ${args.behavior_id}
   `;
   if (watcherRows.length === 0) {
-    throw new Error(`Behavior ${args.watcher_id} not found`);
+    throw new Error(`Behavior ${args.behavior_id} not found`);
   }
 
   const currentVersionId = watcherRows[0].current_version_id;
@@ -357,7 +357,7 @@ export async function handleGetVersions(args: ManageBehaviorsArgs): Promise<{
 
   return {
     action: 'get_versions',
-    watcher_id: args.watcher_id,
+    behavior_id: args.behavior_id,
     versions,
   };
 }
@@ -371,8 +371,8 @@ export async function handleGetVersionDetails(
 ): Promise<ManageBehaviorsResult> {
   const sql = getDb();
 
-  if (!args.watcher_id) {
-    throw new Error('watcher_id is required for get_version_details action');
+  if (!args.behavior_id) {
+    throw new Error('behavior_id is required for get_version_details action');
   }
 
   let rows;
@@ -384,7 +384,7 @@ export async function handleGetVersionDetails(
         keying_config, classifiers,
         reactions_guidance
       FROM watcher_versions
-      WHERE watcher_id = ${args.watcher_id} AND version = ${args.version}
+      WHERE watcher_id = ${args.behavior_id} AND version = ${args.version}
       LIMIT 1
     `;
   } else {
@@ -396,14 +396,14 @@ export async function handleGetVersionDetails(
         v.reactions_guidance
       FROM watcher_versions v
       JOIN watchers w ON v.id = w.current_version_id
-      WHERE w.id = ${args.watcher_id}
+      WHERE w.id = ${args.behavior_id}
       LIMIT 1
     `;
   }
 
   if (rows.length === 0) {
     throw new Error(
-      `Version ${args.version ?? 'current'} not found for Behavior ${args.watcher_id}`
+      `Version ${args.version ?? 'current'} not found for Behavior ${args.behavior_id}`
     );
   }
 
@@ -411,7 +411,7 @@ export async function handleGetVersionDetails(
 
   return {
     action: 'get_version_details',
-    watcher_id: args.watcher_id,
+    behavior_id: args.behavior_id,
     version_id: String(v.id),
     version: Number(v.version),
     name: v.name as string | undefined,

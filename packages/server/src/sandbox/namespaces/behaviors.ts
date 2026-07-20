@@ -23,8 +23,8 @@ import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
 type BehaviorId = string;
-type BehaviorActionInput = Omit<ManageBehaviorsArgs, "action" | "watcher_id"> & {
-	watcher_id?: BehaviorId;
+type BehaviorActionInput = Omit<ManageBehaviorsArgs, "action" | "behavior_id"> & {
+	behavior_id?: BehaviorId;
 };
 
 export type BehaviorListFilter = ListBehaviorsArgs;
@@ -50,7 +50,7 @@ export interface BehaviorCreateInput {
 }
 
 export interface BehaviorUpdateInput {
-	watcher_id: BehaviorId;
+	behavior_id: BehaviorId;
 	triggers?: BehaviorTrigger[];
 	agent_id?: string;
 	scheduler_client_id?: string;
@@ -60,7 +60,7 @@ export interface BehaviorUpdateInput {
 }
 
 export interface BehaviorCompleteWindowInput {
-	watcher_id: BehaviorId;
+	behavior_id: BehaviorId;
 	/** JWT obtained from read_knowledge(watcher_id, since, until). */
 	window_token?: string;
 	/** Multiple page JWTs obtained from read_knowledge for the same watcher window. */
@@ -74,16 +74,16 @@ export interface BehaviorCompleteWindowInput {
 }
 
 export interface BehaviorCreateVersionInput extends BehaviorActionInput {
-	watcher_id: BehaviorId;
+	behavior_id: BehaviorId;
 }
 
 export interface BehaviorVersionDetailsInput {
-	watcher_id: BehaviorId;
+	behavior_id: BehaviorId;
 	version?: number;
 }
 
 export interface BehaviorSubmitFeedbackInput {
-	watcher_id: BehaviorId;
+	behavior_id: BehaviorId;
 	window_id: number;
 	corrections: Array<{
 		field_path: string;
@@ -94,7 +94,7 @@ export interface BehaviorSubmitFeedbackInput {
 }
 
 export interface BehaviorGetFeedbackInput {
-	watcher_id: BehaviorId;
+	behavior_id: BehaviorId;
 	window_id?: number;
 	limit?: number;
 }
@@ -109,20 +109,20 @@ export interface BehaviorsNamespace {
 	/** Raw escape hatch for any manage_behaviors action. Prefer named methods. */
 	manage(input: ManageBehaviorsArgs): Promise<unknown>;
 	list(filter?: BehaviorListFilter): Promise<unknown>;
-	get(input: { watcher_id: BehaviorId }): Promise<unknown>;
+	get(input: { behavior_id: BehaviorId }): Promise<unknown>;
 	create(input: BehaviorCreateInput): Promise<unknown>;
 	update(input: BehaviorUpdateInput): Promise<unknown>;
 	createVersion(input: BehaviorCreateVersionInput): Promise<unknown>;
 	completeWindow(input: BehaviorCompleteWindowInput): Promise<unknown>;
-	trigger(input: { watcher_id: BehaviorId }): Promise<unknown>;
+	trigger(input: { behavior_id: BehaviorId }): Promise<unknown>;
 	/** Delete one or more Behaviors. */
-	delete(input: { watcher_ids: BehaviorId[] }): Promise<unknown>;
+	delete(input: { behavior_ids: BehaviorId[] }): Promise<unknown>;
 	setReactionScript(input: {
-		watcher_id: BehaviorId;
+		behavior_id: BehaviorId;
 		/** TypeScript source. Empty string removes it. */
 		reaction_script: string;
 	}): Promise<unknown>;
-	getVersions(watcher_id: BehaviorId): Promise<unknown>;
+	getVersions(behavior_id: BehaviorId): Promise<unknown>;
 	getVersionDetails(
 		input: BehaviorId | BehaviorVersionDetailsInput,
 	): Promise<unknown>;
@@ -134,9 +134,9 @@ export interface BehaviorsNamespace {
 
 function normalizeVersionDetailsInput(
 	input: BehaviorId | BehaviorVersionDetailsInput,
-): { watcher_id: string; version?: number } {
+): { behavior_id: string; version?: number } {
 	if (typeof input === "string") {
-		return { watcher_id: input };
+		return { behavior_id: input };
 	}
 	return input;
 }
@@ -164,7 +164,7 @@ export function buildBehaviorsNamespace(
 		trigger: (input) => action("trigger", input),
 		delete: (input) => action("delete", input),
 		setReactionScript: (input) => action("set_reaction_script", input),
-		getVersions: (watcher_id) => action("get_versions", { watcher_id }),
+		getVersions: (behavior_id) => action("get_versions", { behavior_id }),
 		getVersionDetails: (input) =>
 			action("get_version_details", normalizeVersionDetailsInput(input)),
 		getComponentReference: () => action("get_component_reference"),

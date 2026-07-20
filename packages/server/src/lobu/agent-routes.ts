@@ -1483,8 +1483,8 @@ routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
 	if (!args || typeof args !== "object") {
 		return c.json({ error: "No pending proposal for this run" }, 404);
 	}
-	const targetWatcherId = args.watcher_id ?? null;
-	if (String(targetWatcherId) !== String(watcherId)) {
+	const targetBehaviorId = args.behavior_id ?? null;
+	if (String(targetBehaviorId) !== String(watcherId)) {
 		return c.json({ error: "No pending proposal for this run" }, 404);
 	}
 	const current = row.current ?? null;

@@ -25,7 +25,7 @@ import { normalizeBehaviorTags } from '@lobu/core/contracts/tools/manage-behavio
 // ============================================
 
 export interface WatcherOperationResult {
-  watcher_id: string;
+  behavior_id: string;
   success: boolean;
   message: string;
   version?: number;

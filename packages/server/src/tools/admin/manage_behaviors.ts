@@ -127,32 +127,32 @@ async function manageBehaviorsImpl(
     } else {
       await requireOrgReadAccess(pgSql, ctx);
     }
-  } else if (args.action === 'update' && args.watcher_id) {
-    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
-  } else if (args.action === 'trigger' && args.watcher_id) {
-    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
-  } else if (args.action === 'delete' && args.watcher_ids && args.watcher_ids.length > 0) {
+  } else if (args.action === 'update' && args.behavior_id) {
+    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'write');
+  } else if (args.action === 'trigger' && args.behavior_id) {
+    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'write');
+  } else if (args.action === 'delete' && args.behavior_ids && args.behavior_ids.length > 0) {
     // delete alone allows missing ids to fall through to its per-id aggregate
     // ("not found or already archived"); every other action stays a hard 403.
-    await requireWatcherAccess(pgSql, args.watcher_ids, ctx, 'write', {
+    await requireWatcherAccess(pgSql, args.behavior_ids, ctx, 'write', {
       allowMissing: true,
     });
   } else if (args.action === 'complete_window' && args.entity_id) {
     await requireWriteAccess(pgSql, args.entity_id, ctx);
-  } else if (args.action === 'create_version' && args.watcher_id) {
-    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
-  } else if (args.action === 'set_reaction_script' && args.watcher_id) {
-    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
-  } else if (args.action === 'submit_feedback' && args.watcher_id) {
-    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
-  } else if (args.action === 'get_feedback' && args.watcher_id) {
-    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'read');
-  } else if (args.action === 'list_promoted' && args.watcher_id) {
-    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'read');
-  } else if (args.action === 'get_versions' && args.watcher_id) {
-    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'read');
-  } else if (args.action === 'get_version_details' && args.watcher_id) {
-    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'read');
+  } else if (args.action === 'create_version' && args.behavior_id) {
+    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'write');
+  } else if (args.action === 'set_reaction_script' && args.behavior_id) {
+    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'write');
+  } else if (args.action === 'submit_feedback' && args.behavior_id) {
+    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'write');
+  } else if (args.action === 'get_feedback' && args.behavior_id) {
+    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'read');
+  } else if (args.action === 'list_promoted' && args.behavior_id) {
+    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'read');
+  } else if (args.action === 'get_versions' && args.behavior_id) {
+    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'read');
+  } else if (args.action === 'get_version_details' && args.behavior_id) {
+    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'read');
   } else if (args.action === 'create_from_version' && args.entity_ids) {
     for (const eid of args.entity_ids) {
       await requireWriteAccess(pgSql, eid, ctx);
@@ -203,8 +203,8 @@ const WATCHER_GROUP_LOCK_NS = 'watcher_group_ownership';
  * escalation guard reads and the mutation writes must not have its owner changed
  * underneath us. Returns null when there is no pre-existing group to race on:
  *   - `create` mints a brand-new row (no target yet).
- *   - `update` targets args.watcher_id → its group.
- *   - `create_version` / `set_reaction_script` write GROUP-WIDE off args.watcher_id.
+ *   - `update` targets args.behavior_id → its group.
+ *   - `create_version` / `set_reaction_script` write GROUP-WIDE off args.behavior_id.
  *   - `create_from_version` reads a SOURCE version → lock the source watcher's group
  *     so a concurrent reassign of the source can't change the owner we clone.
  * All lookups are org-scoped.
@@ -219,10 +219,10 @@ async function resolveTargetWatcherGroupId(
     args.action === 'create_version' ||
     args.action === 'set_reaction_script'
   ) {
-    if (args.watcher_id == null) return null;
+    if (args.behavior_id == null) return null;
     const rows = await sql<{ watcher_group_id: number | null }>`
       SELECT watcher_group_id FROM watchers
-      WHERE id = ${Number(args.watcher_id)} AND organization_id = ${ctx.organizationId}
+      WHERE id = ${Number(args.behavior_id)} AND organization_id = ${ctx.organizationId}
       LIMIT 1
     `;
     const gid = rows.length > 0 ? rows[0].watcher_group_id : null;
@@ -362,24 +362,24 @@ async function resolveEffectiveWatcherOwners(
     }
     case 'update': {
       if (args.agent_id != null) return [args.agent_id];
-      if (args.watcher_id == null) return [];
+      if (args.behavior_id == null) return [];
       const rows = await sql<{ agent_id: string | null }>`
         SELECT agent_id FROM watchers
-        WHERE id = ${Number(args.watcher_id)} AND organization_id = ${ctx.organizationId}
+        WHERE id = ${Number(args.behavior_id)} AND organization_id = ${ctx.organizationId}
         LIMIT 1
       `;
       return rows.length > 0 ? [rows[0].agent_id ?? null] : [];
     }
     case 'create_version':
     case 'set_reaction_script': {
-      if (args.watcher_id == null) return [];
+      if (args.behavior_id == null) return [];
       // Group-wide: EVERY owner in the target watcher's group is affected.
       const rows = await sql<{ agent_id: string | null }>`
         SELECT DISTINCT agent_id FROM watchers
         WHERE organization_id = ${ctx.organizationId}
           AND watcher_group_id = (
             SELECT watcher_group_id FROM watchers
-            WHERE id = ${Number(args.watcher_id)} AND organization_id = ${ctx.organizationId}
+            WHERE id = ${Number(args.behavior_id)} AND organization_id = ${ctx.organizationId}
             LIMIT 1
           )
       `;
@@ -398,13 +398,13 @@ function watcherActionLabel(args: ManageBehaviorsArgs): string {
     case 'create_from_version':
       return `Create Behaviors from version ${args.version_id ?? '?'}`;
     case 'update':
-      return `Update Behavior ${args.watcher_id ?? '?'}`;
+      return `Update Behavior ${args.behavior_id ?? '?'}`;
     case 'create_version':
-      return `Create version for Behavior ${args.watcher_id ?? '?'}`;
+      return `Create version for Behavior ${args.behavior_id ?? '?'}`;
     case 'set_reaction_script':
-      return `Set reaction script on Behavior ${args.watcher_id ?? '?'}`;
+      return `Set reaction script on Behavior ${args.behavior_id ?? '?'}`;
     case 'delete':
-      return `Delete Behavior(s) ${(args.watcher_ids ?? []).join(', ') || '?'}`;
+      return `Delete Behavior(s) ${(args.behavior_ids ?? []).join(', ') || '?'}`;
     default:
       return `Behavior ${args.action}`;
   }
@@ -418,12 +418,12 @@ async function fetchCurrentWatcher(
   organizationId: string,
   args: ManageBehaviorsArgs
 ): Promise<Record<string, unknown> | null> {
-  if (args.watcher_id == null) return null;
+  if (args.behavior_id == null) return null;
   const sql = getDb();
   const rows = await sql`
     SELECT id, slug, name, description, agent_id, schedule, timezone, triggers, status
     FROM watchers
-    WHERE organization_id = ${organizationId} AND id = ${Number(args.watcher_id)}
+    WHERE organization_id = ${organizationId} AND id = ${Number(args.behavior_id)}
     LIMIT 1
   `;
   return (rows[0] as Record<string, unknown> | undefined) ?? null;
@@ -456,14 +456,14 @@ function buildWatcherProposal(
       );
     }
   }
-  if (args.action === 'delete' && (!args.watcher_ids || args.watcher_ids.length === 0)) {
-    throw new ToolUserError('watcher_ids is required for delete action');
+  if (args.action === 'delete' && (!args.behavior_ids || args.behavior_ids.length === 0)) {
+    throw new ToolUserError('behavior_ids is required for delete action');
   }
   if (
     (args.action === 'create_version' || args.action === 'set_reaction_script') &&
-    args.watcher_id == null
+    args.behavior_id == null
   ) {
-    throw new ToolUserError(`watcher_id is required for ${args.action} action`);
+    throw new ToolUserError(`behavior_id is required for ${args.action} action`);
   }
   if (args.action === 'set_reaction_script' && args.reaction_script === undefined) {
     // An omitted script silently REMOVES the existing reaction (handleSetReactionScript
@@ -535,8 +535,8 @@ const WATCHER_PATCHABLE_FIELDS = [
  * silent `updated_fields: []`).
  */
 function assertWatcherUpdateArgs(args: ManageBehaviorsArgs): void {
-  if (args.watcher_id == null) {
-    throw new ToolUserError('watcher_id is required for update action');
+  if (args.behavior_id == null) {
+    throw new ToolUserError('behavior_id is required for update action');
   }
   const present = (keys: readonly string[]): string[] =>
     keys.filter((k) => args[k as keyof ManageBehaviorsArgs] !== undefined);
@@ -576,7 +576,7 @@ function pickWatcherApprovalDisplayFields(args: ManageBehaviorsArgs): Record<str
       continue;
     }
     if (Array.isArray(value)) {
-      // Primitive arrays (watcher_ids, entity_ids, tags) collapse to a readable
+      // Primitive arrays (behavior_ids, entity_ids, tags) collapse to a readable
       // list; object arrays (sources) serialize to JSON so the schema's string
       // field renders the actual structure, not "[object Object]".
       out[key] = value.every(
@@ -607,8 +607,8 @@ const WATCHER_APPROVAL_FIELD_TITLES: Record<string, string> = {
   triggers: 'Triggers',
   timezone: 'Timezone',
   agent_id: 'Agent',
-  watcher_id: 'Behavior ID',
-  watcher_ids: 'Behavior IDs',
+  behavior_id: 'Behavior ID',
+  behavior_ids: 'Behavior IDs',
   version_id: 'Version ID',
   entity_id: 'Entity ID',
   entity_ids: 'Entity IDs',
@@ -689,7 +689,7 @@ async function queueWatcherWriteForApproval(
 
   const current = await fetchCurrentWatcher(ctx.organizationId, args);
   if (args.action === 'update' && !current) {
-    throw new ToolUserError(`Behavior "${args.watcher_id}" not found`, 404);
+    throw new ToolUserError(`Behavior "${args.behavior_id}" not found`, 404);
   }
 
   const sql = getDb();
@@ -729,7 +729,7 @@ async function queueWatcherWriteForApproval(
       action_key: MANAGE_BEHAVIORS_ACTION_KEY,
       action: args.action,
       resourceKind: 'watcher',
-      watcher_id: args.watcher_id ?? null,
+      watcher_id: args.behavior_id ?? null,
       proposal,
       current: current ?? null,
       status: 'pending_approval',
@@ -751,8 +751,8 @@ async function queueWatcherWriteForApproval(
   // so they keep the run permalink (valid across the supersede chain on approve).
   const ownerAgentId = args.agent_id ?? (current?.agent_id as string | null | undefined) ?? null;
   const settingsReviewUrl =
-    args.action === 'update' && args.watcher_id != null && ownerAgentId
-      ? await buildBehaviorSettingsUrl(baseUrl, ctx.organizationId, ownerAgentId, args.watcher_id, {
+    args.action === 'update' && args.behavior_id != null && ownerAgentId
+      ? await buildBehaviorSettingsUrl(baseUrl, ctx.organizationId, ownerAgentId, args.behavior_id, {
           runId,
         }).catch(() => null)
       : null;

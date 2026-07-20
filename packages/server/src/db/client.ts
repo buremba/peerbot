@@ -313,10 +313,11 @@ export function getLockDb(): Sql {
       max_lifetime: 60 * 30,
       connection: {
         application_name: 'server-locks',
-        // Startup GUC (milliseconds): bounds every lock wait on these
-        // sessions, advisory locks included. 55P03 (lock_not_available)
-        // on expiry.
-        lock_timeout: 30000,
+        // Do NOT set lock_timeout here as a startup GUC — Neon/PgBouncer and
+        // other poolers reject unsupported startup parameters and the whole
+        // reserve() fails with "unsupported startup parameter: lock_timeout".
+        // Callers SET lock_timeout on the reserved session instead
+        // (see withWatcherGroupLock).
       },
     });
     logger.info('[DB] PostgreSQL advisory-lock pool created');

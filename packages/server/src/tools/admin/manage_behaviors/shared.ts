@@ -283,19 +283,61 @@ async function getWatcherAccessRows(
   );
 }
 
+/**
+ * Existence probe across all orgs for the given watcher ids, reading ONLY the
+ * id column — never organization_id/entity_ids. The org-scoped
+ * {@link getWatcherAccessRows} load stays the single source of truth for every
+ * actual access decision (TOCTOU-safe); this probe exists purely to tell a
+ * cross-org id (exists under another tenant — a 403 access fault) apart from an
+ * id that exists nowhere (which a mutation handler must be allowed to report
+ * per-id, e.g. delete's all-failed "not found or already archived" aggregate).
+ */
+async function findExistingWatcherIds(watcherIds: string[]): Promise<Set<string>> {
+  if (watcherIds.length === 0) return new Set();
+  const sql = getDb();
+  const placeholders = watcherIds.map((_, idx) => `$${idx + 1}`).join(',');
+  const rows = await sql.unsafe<{ id: string | number }>(
+    `SELECT id FROM watchers WHERE id IN (${placeholders})`,
+    watcherIds,
+  );
+  return new Set(rows.map((row) => String(row.id)));
+}
+
 export async function requireWatcherAccess(
   sql: DbClient,
   watcherIds: string[],
   ctx: ToolContext,
-  mode: WatcherAccessMode
+  mode: WatcherAccessMode,
+  opts?: { allowMissing?: boolean }
 ): Promise<void> {
   const uniqueWatcherIds = [...new Set(watcherIds)];
   const rows = await getWatcherAccessRows(uniqueWatcherIds, ctx.organizationId);
   if (rows.length !== uniqueWatcherIds.length) {
-    throw new ToolUserError(
-      'Access denied: one or more Behaviors were not found in your organization',
-      403,
-    );
+    // Some requested ids are absent from the caller's org. By default this is a
+    // hard 403 — the strict gate every action but delete relies on, so no
+    // action reaches a handler with an id it did not prove in-org.
+    //
+    // `allowMissing` (delete only) relaxes this ONE case: an id that exists
+    // nowhere may fall through so the handler reports it per-id (delete's
+    // all-failed "not found or already archived" aggregate). A cross-org id
+    // (exists under another tenant) is STILL a 403 — never fall through for it,
+    // or a caller could probe/hit foreign rows on the sequential id space.
+    const foundIds = new Set(rows.map((row) => String(row.id)));
+    const missingIds = uniqueWatcherIds.filter((id) => !foundIds.has(String(id)));
+    if (opts?.allowMissing) {
+      const existElsewhere = await findExistingWatcherIds(missingIds);
+      if (existElsewhere.size > 0) {
+        throw new ToolUserError(
+          'Access denied: one or more Behaviors were not found in your organization',
+          403,
+        );
+      }
+    } else {
+      throw new ToolUserError(
+        'Access denied: one or more Behaviors were not found in your organization',
+        403,
+      );
+    }
   }
 
   for (const row of rows) {

@@ -132,7 +132,11 @@ async function manageBehaviorsImpl(
   } else if (args.action === 'trigger' && args.watcher_id) {
     await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
   } else if (args.action === 'delete' && args.watcher_ids && args.watcher_ids.length > 0) {
-    await requireWatcherAccess(pgSql, args.watcher_ids, ctx, 'write');
+    // delete alone allows missing ids to fall through to its per-id aggregate
+    // ("not found or already archived"); every other action stays a hard 403.
+    await requireWatcherAccess(pgSql, args.watcher_ids, ctx, 'write', {
+      allowMissing: true,
+    });
   } else if (args.action === 'complete_window' && args.entity_id) {
     await requireWriteAccess(pgSql, args.entity_id, ctx);
   } else if (args.action === 'create_version' && args.watcher_id) {
@@ -272,6 +276,9 @@ async function withWatcherGroupLock<T>(
 
   const reserved = await getLockDb().reserve();
   try {
+    // Session GUC (not a startup parameter — poolers reject lock_timeout on
+    // connect). Bounds advisory-lock wait: 55P03 → coded 409 below.
+    await reserved`SELECT set_config('lock_timeout', '30s', false)`;
     try {
       await reserved`SELECT pg_advisory_lock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
     } catch (err) {

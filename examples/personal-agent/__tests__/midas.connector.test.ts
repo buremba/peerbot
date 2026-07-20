@@ -10,6 +10,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeAll, describe, expect, mock, test } from "bun:test";
+import type { ChromeActionDispatcher } from "@lobu/connector-sdk";
 import { connectorSdkMock } from "./connector-sdk.mock";
 
 // Stub @lobu/connector-sdk (it pulls in playwright) so the connector imports
@@ -69,7 +70,9 @@ describe("requireExtensionDispatcher", () => {
   });
 
   test("returns the injected chrome_dispatcher handle", () => {
-    const handle = { dispatch: async () => ({ tab_id: 1 }) };
+    const handle: ChromeActionDispatcher = {
+      dispatch: async () => ({}) as never,
+    };
     expect(
       requireExtensionDispatcher({
         sessionState: { chrome_dispatcher: handle },

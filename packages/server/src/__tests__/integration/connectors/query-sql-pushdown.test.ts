@@ -117,43 +117,41 @@ describe('query_sql connection pushdown', () => {
   }, 60_000);
 
   it('rejects a top-level LIMIT in the pushed-down SQL (the connector paginates)', async () => {
-    const res = await querySql(
-      { sql: 'SELECT id, name FROM qsp_ext LIMIT 1', connection: 'qsp-ext-db' },
-      {},
-      ctx
-    );
-    expect(res.error).toMatch(/top-level LIMIT/i);
+    // A pushdown failure is a hard tool error, never a success-shaped empty
+    // table an agent could read as "no data" (#2042).
+    await expect(
+      querySql({ sql: 'SELECT id, name FROM qsp_ext LIMIT 1', connection: 'qsp-ext-db' }, {}, ctx)
+    ).rejects.toThrow(/top-level LIMIT/i);
   }, 60_000);
 
   it('rejects duplicate output column names', async () => {
-    const res = await querySql(
-      { sql: 'SELECT id AS dup, name AS dup FROM qsp_ext', connection: 'qsp-ext-db' },
-      {},
-      ctx
-    );
-    expect(res.error).toMatch(/duplicate output column/i);
+    await expect(
+      querySql({ sql: 'SELECT id AS dup, name AS dup FROM qsp_ext', connection: 'qsp-ext-db' }, {}, ctx)
+    ).rejects.toThrow(/duplicate output column/i);
   }, 60_000);
 
   it('errors on a missing connection', async () => {
-    const res = await querySql({ sql: 'SELECT 1', connection: 'nope' }, {}, ctx);
-    expect(res.error).toMatch(/not found or not accessible/i);
+    await expect(querySql({ sql: 'SELECT 1', connection: 'nope' }, {}, ctx)).rejects.toThrow(
+      /not found or not accessible/i
+    );
   }, 60_000);
 
   it('errors on a write-capable query (connector read-only contract)', async () => {
-    const res = await querySql(
-      { sql: 'WITH x AS (INSERT INTO qsp_ext (name) VALUES (1) RETURNING id) SELECT * FROM x', connection: 'qsp-ext-db' },
-      {},
-      ctx
-    );
-    expect(res.error).toMatch(/data-modifying/i);
+    await expect(
+      querySql(
+        { sql: 'WITH x AS (INSERT INTO qsp_ext (name) VALUES (1) RETURNING id) SELECT * FROM x', connection: 'qsp-ext-db' },
+        {},
+        ctx
+      )
+    ).rejects.toThrow(/data-modifying/i);
     const [{ n }] = await getTestDb()`SELECT count(*)::int AS n FROM qsp_ext WHERE name = '1'`;
     expect(Number(n)).toBe(0);
   }, 60_000);
 
   it('a member cannot reach another user’s PRIVATE connection by slug', async () => {
-    const res = await querySql({ sql: 'SELECT 1', connection: 'qsp-priv-db' }, {}, memberCtx());
-    expect(res.rows).toHaveLength(0);
-    expect(res.error).toMatch(/not found or not accessible/i);
+    await expect(
+      querySql({ sql: 'SELECT 1', connection: 'qsp-priv-db' }, {}, memberCtx())
+    ).rejects.toThrow(/not found or not accessible/i);
     // …and an owner/admin still can.
     const ok = await querySql({ sql: 'SELECT count(*)::int AS n FROM qsp_ext', connection: 'qsp-priv-db' }, {}, ctx);
     expect(ok.error).toBeUndefined();
@@ -164,12 +162,16 @@ describe('query_sql connection pushdown', () => {
     // no longer refused up front ("not available on Lobu Cloud"). Instead the
     // injected block-private policy takes over — and the test DB is on loopback
     // (and/or sslmode=disable), so the connector's egress guard rejects it
-    // before any socket opens. That is the cloud security boundary now.
+    // before any socket opens. That is the cloud security boundary now. A
+    // pushdown failure surfaces as a thrown hard error (#2042).
     process.env.LOBU_CLOUD_MODE = '1';
     try {
-      const res = await querySql({ sql: 'SELECT 1', connection: 'qsp-ext-db' }, {}, ctx);
-      expect(res.error).not.toMatch(/Lobu Cloud/i);
-      expect(res.error).toMatch(/blocked internal\/metadata|TLS is required/i);
+      const err = (await querySql({ sql: 'SELECT 1', connection: 'qsp-ext-db' }, {}, ctx).catch(
+        (e) => e
+      )) as Error;
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).not.toMatch(/Lobu Cloud/i);
+      expect(err.message).toMatch(/blocked internal\/metadata|TLS is required/i);
     } finally {
       process.env.LOBU_CLOUD_MODE = undefined;
     }

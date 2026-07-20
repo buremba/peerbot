@@ -221,9 +221,9 @@ export async function handleList(
 		const behaviorHealth = computeBehaviorHealth({
 			status: watcher.status,
 			nextRunAt: watcher.next_run_at,
-			latestRunStatus: watcher.watcher_run_status,
-			latestRunCreatedAt: watcher.watcher_run_created_at,
-			latestRunError: watcher.watcher_run_error,
+			latestRunStatus: watcher.behavior_run_status,
+			latestRunCreatedAt: watcher.behavior_run_created_at,
+			latestRunError: watcher.behavior_run_error,
 		});
 
 		return {

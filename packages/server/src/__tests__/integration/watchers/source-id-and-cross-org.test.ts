@@ -370,15 +370,15 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 			prompt: "Track stuff.",
 			agent_id: foreignAgent.agentId,
 			sources: [{ name: "content", query: "SELECT id FROM events" }],
-		})) as { watcher_id: string };
-		const foreignId = String(foreignWatcher.watcher_id);
+		})) as { behavior_id: string };
+		const foreignId = String(foreignWatcher.behavior_id);
 
 		// The owner (a different org) targets the foreign row's id directly. It
 		// exists under another tenant, so requireWatcherAccess rejects it 403 —
 		// and even if that gate were bypassed, the org-scoped archive UPDATE
 		// leaves the foreign row untouched.
 		await expect(
-			owner.behaviors.delete({ watcher_ids: [foreignId] })
+			owner.behaviors.delete({ behavior_ids: [foreignId] })
 		).rejects.toMatchObject({ httpStatus: 403 });
 
 		// The foreign row is untouched — still active, not archived.

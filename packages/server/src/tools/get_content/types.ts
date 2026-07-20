@@ -38,6 +38,12 @@ export interface ClassifierConfig {
 export const GetContentResultSchema = Type.Object({
   content: Type.Array(Type.Unknown()),
   total: Type.Integer(),
+  /**
+   * content_ids reads only. `total` counts returned rows (a supersede chain
+   * expands to all its rows); `chain_total` counts the distinct lineages those
+   * rows collapse into — i.e. how many of the requested ids resolved to a thing.
+   */
+  chain_total: Type.Optional(Type.Integer()),
   page: Type.Object({
     limit: Type.Integer(),
     offset: Type.Integer(),
@@ -148,6 +154,7 @@ export interface ContentRow {
   interaction_output?: Record<string, unknown> | null;
   interaction_error?: string | null;
   supersedes_event_id?: number | null;
+  superseded_by?: number | string | null;
   run_id?: number | string | null;
   parent_context?: Record<string, unknown> | null;
   root_context?: Record<string, unknown> | null;

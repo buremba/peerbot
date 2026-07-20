@@ -51,7 +51,7 @@ export interface KnowledgeReadInput {
 
 export type KnowledgeDeleteInput =
 	| number
-	| { event_id?: number; event_ids?: number[]; reason?: string };
+	| { content_id?: number; content_ids?: number[]; reason?: string };
 
 export interface KnowledgeNamespace {
 	search(input: KnowledgeSearchInput): Promise<unknown>;
@@ -76,7 +76,7 @@ export function buildKnowledgeNamespace(
 		},
 		delete(input) {
 			const args =
-				typeof input === "number" ? { event_id: input } : (input ?? {});
+				typeof input === "number" ? { content_id: input } : (input ?? {});
 			return deleteContent(args as never, env, ctx) as Promise<unknown>;
 		},
 	};

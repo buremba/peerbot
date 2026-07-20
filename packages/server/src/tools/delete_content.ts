@@ -30,14 +30,14 @@ import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
 
 const DeleteContentSchema = Type.Object({
-  event_id: Type.Optional(
+  content_id: Type.Optional(
     Type.Number({
-      description: 'Single event id to delete. Provide either this or `event_ids`.',
+      description: 'Single content id to delete. Provide either this or `content_ids`.',
     })
   ),
-  event_ids: Type.Optional(
+  content_ids: Type.Optional(
     Type.Array(Type.Number(), {
-      description: 'Batch of event ids to delete. Provide either this or `event_id`.',
+      description: 'Batch of content ids to delete. Provide either this or `content_id`.',
     })
   ),
   reason: Type.Optional(
@@ -79,7 +79,7 @@ async function deleteContentImpl(
 
   const requested = collectIds(args);
   if (requested.length === 0) {
-    throw new Error('Provide event_id or a non-empty event_ids array');
+    throw new Error('Provide content_id or a non-empty content_ids array');
   }
 
   const sql = getDb();
@@ -155,7 +155,7 @@ async function deleteContentImpl(
 
 function collectIds(args: DeleteContentArgs): number[] {
   const ids: number[] = [];
-  if (typeof args.event_id === 'number') ids.push(args.event_id);
-  if (Array.isArray(args.event_ids)) ids.push(...args.event_ids);
+  if (typeof args.content_id === 'number') ids.push(args.content_id);
+  if (Array.isArray(args.content_ids)) ids.push(...args.content_ids);
   return Array.from(new Set(ids.filter((id) => Number.isFinite(id) && id > 0)));
 }

@@ -385,6 +385,13 @@ const __manifest = JSON.parse(__sdk_manifest_json);
 const __namespaceMethods = __manifest.byNamespace;
 const __topLevelKeys = new Set(__manifest.topLevel);
 const __namespaceKeys = new Set(Object.keys(__namespaceMethods));
+// Namespaces that EXIST in the SDK but are hidden by the current mode/tier
+// (e.g. \`agents\` when running below admin). Accessing one should throw a
+// structured "not available in this mode" error, not return undefined and fail
+// later with the opaque "Cannot read properties of undefined (reading 'list')".
+const __hiddenNamespaceKeys = new Set(
+  (__manifest.allNamespaces || []).filter((ns) => !__namespaceKeys.has(ns))
+);
 
 // Skip awaitable/coercion probes (\`then\`, \`toJSON\`, etc.) before they hit the
 // host. Otherwise an accidental \`JSON.stringify(client.x)\` consumes quota.
@@ -428,8 +435,24 @@ function __makeNamespaceProxy(ns, orgPath) {
   });
 }
 
+// A namespace known to the SDK but filtered out of THIS mode. Every method
+// access returns a thunk that throws the same structured error the host would,
+// so discovery (search_sdk) and runtime agree instead of the guest hitting an
+// undefined property. Mirrors the client.org stub pattern above.
+function __makeHiddenNamespaceProxy(ns) {
+  const err = () => {
+    throw new Error('NamespaceNotAvailable: the \\'' + ns + '\\' namespace is not available in this SDK mode (read-only or restricted tier). Re-run with a session that has the required access, or use a namespace listed by search_sdk in this mode.');
+  };
+  return new Proxy({}, {
+    get: (_, k) => __isReservedKey(k) ? undefined : err,
+    has: () => true,
+    ownKeys: () => [],
+    getOwnPropertyDescriptor: () => undefined,
+  });
+}
+
 function __makeClient(orgPath) {
-  const allKeys = new Set([...__topLevelKeys, ...__namespaceKeys]);
+  const allKeys = new Set([...__topLevelKeys, ...__namespaceKeys, ...__hiddenNamespaceKeys]);
   return new Proxy({}, {
     get(_, key) {
       if (__isReservedKey(key)) return undefined;
@@ -447,6 +470,7 @@ function __makeClient(orgPath) {
         : () => { throw new Error('CrossOrgAccessDenied: cross-org access is not available on this connection. Use the unscoped /mcp endpoint with an OAuth session, or reconnect to the target workspace.'); };
       if (__topLevelKeys.has(k)) return __dispatchCall(k, orgPath);
       if (__namespaceKeys.has(k)) return __makeNamespaceProxy(k, orgPath);
+      if (__hiddenNamespaceKeys.has(k)) return __makeHiddenNamespaceProxy(k);
       return undefined;
     },
     has: (_, k) => typeof k === 'string' && allKeys.has(k),

@@ -273,7 +273,8 @@ export const ManageEntitySchema = Type.Object({
   ),
   include_deleted: Type.Optional(
     Type.Boolean({
-      description: "[list_links] Include soft-deleted relationships",
+      description:
+        "[get] Return the entity even if it is soft-deleted (deleted_at set). [list_links] Include soft-deleted relationships.",
     })
   ),
   watcher_source: Type.Optional(

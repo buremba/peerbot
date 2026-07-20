@@ -49,13 +49,18 @@ export interface EntityLinkInput {
 	from_entity_id: number;
 	to_entity_id: number;
 	relationship_type_slug: string;
+	source?: "ui" | "llm" | "feed" | "api";
+	confidence?: number;
 	metadata?: Record<string, unknown>;
 }
 
 export interface EntitiesNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
 	list(filter?: EntityListFilter): Promise<unknown>;
-	get(input: { entity_id: number }): Promise<unknown>;
+	get(input: {
+		entity_id: number;
+		include_deleted?: boolean;
+	}): Promise<unknown>;
 	create(input: EntityCreateInput): Promise<unknown>;
 	update(input: EntityUpdateInput): Promise<unknown>;
 	delete(input: {
@@ -76,7 +81,10 @@ export interface EntitiesNamespace {
 	}): Promise<unknown>;
 	listLinks(input: {
 		entity_id: number;
+		direction?: "outbound" | "inbound" | "both";
 		relationship_type_slug?: string;
+		confidence_min?: number;
+		include_deleted?: boolean;
 		limit?: number;
 		offset?: number;
 	}): Promise<unknown>;

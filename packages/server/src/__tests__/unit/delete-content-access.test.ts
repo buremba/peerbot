@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { deleteContent } from '../../tools/delete_content';
 import type { ToolContext } from '../../tools/registry';
 
-const args = { event_id: 1 } as never;
+const args = { content_id: 1 } as never;
 const baseCtx: ToolContext = {
   organizationId: 'org_test',
   userId: 'user_visitor',
@@ -67,21 +67,21 @@ describe('deleteContent auth gate', () => {
 describe('deleteContent input validation', () => {
   const writingCtx = ctx({ memberRole: 'member', scopes: ['mcp:write'] });
 
-  it('rejects when neither event_id nor event_ids is provided', async () => {
+  it('rejects when neither content_id nor content_ids is provided', async () => {
     await expect(
       deleteContent({} as never, {} as never, writingCtx)
-    ).rejects.toThrow(/event_id or a non-empty event_ids/i);
+    ).rejects.toThrow(/content_id or a non-empty content_ids/i);
   });
 
-  it('rejects when event_ids is empty', async () => {
+  it('rejects when content_ids is empty', async () => {
     await expect(
-      deleteContent({ event_ids: [] } as never, {} as never, writingCtx)
-    ).rejects.toThrow(/event_id or a non-empty event_ids/i);
+      deleteContent({ content_ids: [] } as never, {} as never, writingCtx)
+    ).rejects.toThrow(/content_id or a non-empty content_ids/i);
   });
 
   it('rejects when ids are non-positive', async () => {
     await expect(
-      deleteContent({ event_ids: [0, -3] } as never, {} as never, writingCtx)
-    ).rejects.toThrow(/event_id or a non-empty event_ids/i);
+      deleteContent({ content_ids: [0, -3] } as never, {} as never, writingCtx)
+    ).rejects.toThrow(/content_id or a non-empty content_ids/i);
   });
 });

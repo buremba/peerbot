@@ -13,7 +13,25 @@ export type SDKMode = "read" | "full";
 type SDKManifest = {
 	topLevel: string[];
 	byNamespace: Record<string, string[]>;
+	/**
+	 * Every namespace that exists in METHOD_METADATA, regardless of this mode's
+	 * access filter. Lets the guest tell a KNOWN namespace hidden by the current
+	 * mode (e.g. `agents` in a lower tier) from a genuinely unknown key, so it can
+	 * throw a structured "not available in this mode" error instead of the opaque
+	 * "Cannot read properties of undefined".
+	 */
+	allNamespaces: string[];
 };
+
+/** Every namespace present in METHOD_METADATA, mode-independent. */
+function allKnownNamespaces(): string[] {
+	const set = new Set<string>();
+	for (const path of Object.keys(METHOD_METADATA)) {
+		const dot = path.indexOf(".");
+		if (dot !== -1) set.add(path.slice(0, dot));
+	}
+	return [...set];
+}
 
 const manifestCache = new Map<string, SDKManifest>();
 
@@ -36,7 +54,7 @@ function buildSDKManifest(
 		const ns = path.slice(0, dot);
 		(byNamespace[ns] ??= []).push(path.slice(dot + 1));
 	}
-	return { topLevel, byNamespace };
+	return { topLevel, byNamespace, allNamespaces: allKnownNamespaces() };
 }
 
 export function enumerateSDKManifest(

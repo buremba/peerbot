@@ -1152,6 +1152,13 @@ export interface ContentItem {
   interaction_output?: Record<string, unknown> | null;
   interaction_error?: string | null;
   supersedes_event_id?: number | null;
+  /** The newer event that superseded this one, when this row is the stale/
+   *  tombstone side of a supersede chain (denormalized forward edge). */
+  superseded_by?: number | null;
+  /** True when a newer row in the same supersede chain replaced this one — i.e.
+   *  this is not the live head. Lets callers reading the full chain (content_ids
+   *  resolution returns the whole lineage) tell the head from the history. */
+  is_superseded?: boolean;
   /** The run this event belongs to, when it originated from one (operation
    *  chains, approval notifications). Lets the client group a run's satellite
    *  events (the "needs approval" notification) onto the same timeline node as

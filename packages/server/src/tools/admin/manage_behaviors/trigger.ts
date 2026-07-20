@@ -29,21 +29,21 @@ export async function handleTrigger(
   _env: Env,
 ): Promise<{
   action: "trigger";
-  watcher_id: string;
+  behavior_id: string;
   run_id: number;
   status: string;
 }> {
   const sql = getDb();
 
-  if (!args.watcher_id) {
-    throw new Error("watcher_id is required for trigger action");
+  if (!args.behavior_id) {
+    throw new Error("behavior_id is required for trigger action");
   }
 
   if (!isLobuGatewayRunning()) {
     throw new Error("Embedded Lobu is not available.");
   }
   const dispatchResult = await queueAndDispatchWatcherRun(
-    Number(args.watcher_id),
+    Number(args.behavior_id),
     "manual",
     sql,
   );
@@ -57,7 +57,7 @@ export async function handleTrigger(
 
   return {
     action: "trigger",
-    watcher_id: args.watcher_id,
+    behavior_id: args.behavior_id,
     run_id: dispatchResult.runId,
     status: dispatchResult.status,
   };
@@ -73,23 +73,23 @@ export async function handleSetReactionScript(
   ctx: ToolContext,
 ): Promise<{
   action: "set_reaction_script";
-  watcher_id: string;
+  behavior_id: string;
   has_script: boolean;
   message: string;
 }> {
   const sql = getDb();
 
-  if (!args.watcher_id) {
-    throw new Error("watcher_id is required for set_reaction_script");
+  if (!args.behavior_id) {
+    throw new Error("behavior_id is required for set_reaction_script");
   }
 
-  await requireExists(sql, "watchers", args.watcher_id, "Behavior");
+  await requireExists(sql, "watchers", args.behavior_id, "Behavior");
 
   // Reaction script is a group-shared field — every assignment in the
   // group runs the same reactions on its windows. Resolve the group once
   // and cascade across all assignments so we don't silently fork.
   const groupRows = await sql`
-    SELECT watcher_group_id FROM watchers WHERE id = ${args.watcher_id} LIMIT 1
+    SELECT watcher_group_id FROM watchers WHERE id = ${args.behavior_id} LIMIT 1
   `;
   const groupId = Number(groupRows[0].watcher_group_id);
 
@@ -104,11 +104,11 @@ export async function handleSetReactionScript(
     `;
     recordToolConfigChange(ctx, {
       resourceKind: "watcher",
-      resourceId: args.watcher_id,
+      resourceId: args.behavior_id,
       op: "updated",
-      summary: `Behavior ${args.watcher_id} reaction script removed`,
+      summary: `Behavior ${args.behavior_id} reaction script removed`,
       state: {
-        id: args.watcher_id,
+        id: args.behavior_id,
         watcher_group_id: groupId,
         reaction_script: null,
         reaction_input_schema: null,
@@ -117,7 +117,7 @@ export async function handleSetReactionScript(
     });
     return {
       action: "set_reaction_script",
-      watcher_id: String(args.watcher_id),
+      behavior_id: String(args.behavior_id),
       has_script: false,
       message: "Reaction script removed.",
     };
@@ -137,18 +137,18 @@ export async function handleSetReactionScript(
   `;
 
   logger.info(
-    `[manage_behaviors] Set reaction script for watcher ${args.watcher_id}`,
+    `[manage_behaviors] Set reaction script for watcher ${args.behavior_id}`,
   );
 
   recordToolConfigChange(ctx, {
     resourceKind: "watcher",
-    resourceId: args.watcher_id,
+    resourceId: args.behavior_id,
     op: "updated",
-    summary: `Behavior ${args.watcher_id} reaction script updated`,
+    summary: `Behavior ${args.behavior_id} reaction script updated`,
     // Snapshot of the fields just written (row not refetched); compiled code
     // is intentionally omitted to keep the state small.
     state: {
-      id: args.watcher_id,
+      id: args.behavior_id,
       watcher_group_id: groupId,
       reaction_script: script,
       reaction_input_schema: reactionInputSchema ?? null,
@@ -158,7 +158,7 @@ export async function handleSetReactionScript(
 
   return {
     action: "set_reaction_script",
-    watcher_id: String(args.watcher_id),
+    behavior_id: String(args.behavior_id),
     has_script: true,
     message:
       "Reaction script compiled and saved. It will auto-execute on future complete_window calls.",

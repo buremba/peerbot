@@ -80,7 +80,7 @@ describe("behavior event trigger", () => {
     expect(
       Value.Check(ManageBehaviorsSchema, {
         action: "update",
-        watcher_id: "1",
+        behavior_id: "1",
         schedule: "0 9 * * *",
         timezone: "Europe/London",
       })

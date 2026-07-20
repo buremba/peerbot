@@ -73,12 +73,12 @@ async function setupWatcher() {
     prompt: 'Summarize {{entities}}.',
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
-  })) as { watcher_id: string };
+  })) as { behavior_id: string };
 
   return {
     sql,
     workspace,
-    watcherId: Number(watcher.watcher_id),
+    watcherId: Number(watcher.behavior_id),
     agentId: agent.agentId,
   };
 }

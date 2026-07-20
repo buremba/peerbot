@@ -12,7 +12,7 @@ import {
  * server tools/admin/manage_behaviors/crud.ts handleUpdate.
  */
 const update = (extra: Partial<ManageBehaviorsArgs>): ManageBehaviorsArgs =>
-  ({ action: "update", watcher_id: "1", ...extra }) as ManageBehaviorsArgs;
+  ({ action: "update", behavior_id: "1", ...extra }) as ManageBehaviorsArgs;
 
 describe("normalizeBehaviorUpdatePatch", () => {
   it("only emits keys PRESENT in args (a PATCH — absent keys keep current)", () => {
@@ -97,7 +97,7 @@ describe("normalizeBehaviorUpdatePatch", () => {
     });
   });
 
-  it("excludes version-owned + routing fields (name/prompt/watcher_id/etc.)", () => {
+  it("excludes version-owned + routing fields (name/prompt/behavior_id/etc.)", () => {
     const p = normalizeBehaviorUpdatePatch(
       update({
         name: "X",
@@ -107,7 +107,7 @@ describe("normalizeBehaviorUpdatePatch", () => {
     );
     expect("name" in p).toBe(false);
     expect("prompt" in p).toBe(false);
-    expect("watcher_id" in p).toBe(false);
+    expect("behavior_id" in p).toBe(false);
     expect("action" in p).toBe(false);
     expect(p.triggers).toEqual([{ kind: "schedule", cron: "0 9 * * *" }]);
   });

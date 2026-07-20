@@ -3806,11 +3806,11 @@ export type ManageBehaviorsData = {
     /**
      * [update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Behavior ID (numeric string)
      */
-    watcher_id?: string;
+    behavior_id?: string;
     /**
      * [delete] Array of Behavior IDs (numeric strings)
      */
-    watcher_ids?: Array<string>;
+    behavior_ids?: Array<string>;
     /**
      * [create] Unique Behavior identifier
      */
@@ -4110,7 +4110,7 @@ export type ManageBehaviorsResponses = {
       }
     | {
         action: "create";
-        watcher_id: string;
+        behavior_id: string;
         version: number;
         status: string;
         sources?: Array<{
@@ -4122,19 +4122,19 @@ export type ManageBehaviorsResponses = {
       }
     | {
         action: "update";
-        watcher_id: string;
+        behavior_id: string;
         updated_fields: Array<string>;
       }
     | {
         action: "create_version";
-        watcher_id: string;
+        behavior_id: string;
         version_id: string;
         version: number;
         previous_version: number;
       }
     | {
         action: "complete_window";
-        watcher_id: string;
+        behavior_id: string;
         window_id: number;
         window_start: string;
         window_end: string;
@@ -4142,14 +4142,14 @@ export type ManageBehaviorsResponses = {
       }
     | {
         action: "trigger";
-        watcher_id: string;
+        behavior_id: string;
         run_id: number;
         status: string;
       }
     | {
         action: "delete";
         results: Array<{
-          watcher_id: string;
+          behavior_id: string;
           success: boolean;
           message: string;
           version?: number;
@@ -4162,18 +4162,18 @@ export type ManageBehaviorsResponses = {
       }
     | {
         action: "set_reaction_script";
-        watcher_id: string;
+        behavior_id: string;
         has_script: boolean;
         message: string;
       }
     | {
         action: "get_versions";
-        watcher_id: string;
+        behavior_id: string;
         versions: Array<unknown>;
       }
     | ({
         action: "get_version_details";
-        watcher_id: string;
+        behavior_id: string;
       } & {
         [key: string]: unknown;
       })
@@ -4183,13 +4183,13 @@ export type ManageBehaviorsResponses = {
       }
     | {
         action: "submit_feedback";
-        watcher_id: string;
+        behavior_id: string;
         window_id: number;
         feedback_ids: Array<number>;
       }
     | {
         action: "get_feedback";
-        watcher_id: string;
+        behavior_id: string;
         feedback: Array<{
           id: number;
           window_id: number;
@@ -4205,7 +4205,7 @@ export type ManageBehaviorsResponses = {
       }
     | {
         action: "list_promoted";
-        watcher_id: string;
+        behavior_id: string;
         entities: Array<{
           id: number;
           name: string;
@@ -4223,7 +4223,7 @@ export type ManageBehaviorsResponses = {
     | {
         action: "create_from_version";
         created: Array<{
-          watcher_id: string;
+          behavior_id: string;
           entity_id: number;
           name: string;
         }>;
@@ -4255,7 +4255,7 @@ export type GetBehaviorData = {
     /**
      * Behavior ID to query
      */
-    watcher_id: string;
+    behavior_id: string;
     /**
      * Optional entity ID for access validation and URL context
      */
@@ -4335,7 +4335,7 @@ export type GetBehaviorResponses = {
   200: {
     windows: Array<{
       window_id: number;
-      watcher_id: string;
+      behavior_id: string;
       watcher_name: string;
       granularity: string;
       window_start: string;
@@ -4376,7 +4376,7 @@ export type GetBehaviorResponses = {
       }>;
     }>;
     behavior?: {
-      watcher_id: string;
+      behavior_id: string;
       watcher_name: string;
       slug: string;
       status: "active" | "archived";

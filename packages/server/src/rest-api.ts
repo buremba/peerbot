@@ -133,14 +133,14 @@ async function withPublicOrg<T>(
  */
 export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 	try {
-		const watcherId = c.req.query("watcher_id");
+		const behaviorId = c.req.query("behavior_id");
 		const entityId = safeParseInt(c.req.query("entity_id"), { min: 1 });
 
-		if (!watcherId) {
+		if (!behaviorId) {
 			const result = await manageBehaviors(
 				{
 					action: "list",
-					watcher_id: watcherId,
+					behavior_id: behaviorId,
 					entity_id: entityId,
 					status: c.req.query("status") || undefined,
 					include_details: c.req.query("include_details") === "true",
@@ -152,7 +152,7 @@ export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 		}
 
 		const params = {
-			watcher_id: watcherId,
+			behavior_id: behaviorId,
 			entity_id: entityId,
 			content_since: c.req.query("content_since"),
 			content_until: c.req.query("content_until"),
@@ -180,11 +180,11 @@ export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 
 export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 	return withPublicOrg(c, async (organizationId) => {
-		const watcherId = c.req.query("watcher_id");
+		const behaviorId = c.req.query("behavior_id");
 		const entityId = safeParseInt(c.req.query("entity_id"), { min: 1 });
 		const ctx = publicToolContext(c.req.url, organizationId);
 		const detailRequested =
-			!!watcherId ||
+			!!behaviorId ||
 			[
 				"content_since",
 				"content_until",
@@ -212,7 +212,7 @@ export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 
 		return getBehavior(
 			{
-				watcher_id: watcherId,
+				behavior_id: behaviorId,
 				entity_id: entityId,
 				content_since: c.req.query("content_since"),
 				content_until: c.req.query("content_until"),
@@ -227,7 +227,7 @@ export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 				include_versions: c.req.query("include_versions") === "true",
 				include_pending_ranges:
 					c.req.query("include_pending_ranges") === "true",
-				include_template_details: watcherId ? true : undefined,
+				include_template_details: behaviorId ? true : undefined,
 			} as any,
 			c.env,
 			ctx

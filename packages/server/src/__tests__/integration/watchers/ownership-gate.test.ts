@@ -103,9 +103,9 @@ async function seedWatcherAndWindow(workspace: TestWorkspace, suffix: string) {
     name: `Gate Watcher ${suffix}`,
     prompt: 'Analyze inputs.',
     agent_id: agent.agentId,
-  })) as { watcher_id: string };
+  })) as { behavior_id: string };
   const windowId = await createCanvasWindow({
-    watcherId: Number(watcher.watcher_id),
+    watcherId: Number(watcher.behavior_id),
     organizationId: workspace.org.id,
     granularity: 'weekly',
     windowStart: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
@@ -116,7 +116,7 @@ async function seedWatcherAndWindow(workspace: TestWorkspace, suffix: string) {
   });
   return {
     entity,
-    watcherId: Number(watcher.watcher_id),
+    watcherId: Number(watcher.behavior_id),
     windowId,
     agentId: agent.agentId,
   };

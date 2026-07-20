@@ -46,13 +46,13 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
     name: `${slug} Watcher`,
     prompt: 'collect signals.',
     agent_id: agent.agentId,
-  })) as { watcher_id: string };
+  })) as { behavior_id: string };
 
   const created = (await workspace.owner.classifiers.create({
     slug,
     name: `${slug} Classifier`,
     attribute_key: slug,
-    watcher_id: watcher.watcher_id,
+    watcher_id: watcher.behavior_id,
     attribute_values: {
       positive: {
         description: 'positive signal',
@@ -77,7 +77,7 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
   return {
     workspace,
     entityId: entity.entity.id,
-    watcherId: Number(watcher.watcher_id),
+    watcherId: Number(watcher.behavior_id),
     classifierId: created.data!.classifier_id,
     eventId: event.id,
   };

@@ -47,12 +47,12 @@ async function seedWatcher(workspace: TestWorkspace, suffix: string) {
     name: `Feedback Watcher ${suffix}`,
     prompt: 'Analyze inputs.',
     agent_id: agent.agentId,
-  })) as { watcher_id: string };
+  })) as { behavior_id: string };
 
   // Canvas-on-events: the window is a canvas_state chain root; its event id is
   // the window_id the feedback API keys on.
   const windowId = await createCanvasWindow({
-    watcherId: Number(watcher.watcher_id),
+    watcherId: Number(watcher.behavior_id),
     organizationId: workspace.org.id,
     granularity: 'weekly',
     windowStart: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
@@ -62,7 +62,7 @@ async function seedWatcher(workspace: TestWorkspace, suffix: string) {
     entityIds: [entity.id],
   });
 
-  return { watcherId: watcher.watcher_id, windowId };
+  return { watcherId: watcher.behavior_id, windowId };
 }
 
 describe('watcher feedback contract', () => {
@@ -95,7 +95,7 @@ describe('watcher feedback contract', () => {
     const result = (await manageBehaviors(
       {
         action: 'submit_feedback',
-        watcher_id: watcherId,
+        behavior_id: watcherId,
         window_id: windowId,
         corrections: [
           {
@@ -147,7 +147,7 @@ describe('watcher feedback contract', () => {
     const result = (await manageBehaviors(
       {
         action: 'submit_feedback',
-        watcher_id: watcherId,
+        behavior_id: watcherId,
         window_id: windowId,
         corrections: [{ field_path: 'summary', value: 'id-contract', note: 'id check' }],
       } as never,
@@ -174,7 +174,7 @@ describe('watcher feedback contract', () => {
     const feedback = (await manageBehaviors(
       {
         action: 'get_feedback',
-        watcher_id: watcherId,
+        behavior_id: watcherId,
         window_id: windowId,
       } as never,
       {} as never,
@@ -200,7 +200,7 @@ describe('watcher feedback contract', () => {
     await manageBehaviors(
       {
         action: 'submit_feedback',
-        watcher_id: watcherId,
+        behavior_id: watcherId,
         window_id: windowId,
         corrections: [{ field_path: 'current', value: 1 }],
       } as never,
@@ -210,7 +210,7 @@ describe('watcher feedback contract', () => {
     await manageBehaviors(
       {
         action: 'submit_feedback',
-        watcher_id: watcherId,
+        behavior_id: watcherId,
         window_id: otherWindowId,
         corrections: [{ field_path: 'other', value: 2 }],
       } as never,
@@ -221,7 +221,7 @@ describe('watcher feedback contract', () => {
     const filtered = (await manageBehaviors(
       {
         action: 'get_feedback',
-        watcher_id: watcherId,
+        behavior_id: watcherId,
         window_id: otherWindowId,
       } as never,
       {} as never,
@@ -237,7 +237,7 @@ describe('watcher feedback contract', () => {
       manageBehaviors(
         {
           action: 'submit_feedback',
-          watcher_id: watcherId,
+          behavior_id: watcherId,
           window_id: windowId,
           corrections: [],
         } as never,
@@ -250,7 +250,7 @@ describe('watcher feedback contract', () => {
       manageBehaviors(
         {
           action: 'submit_feedback',
-          watcher_id: watcherId,
+          behavior_id: watcherId,
           window_id: windowId,
           corrections: [{ field_path: 'problems[0]', mutation: 'patch', value: 'x' }],
         } as never,
@@ -267,7 +267,7 @@ describe('watcher feedback contract', () => {
       manageBehaviors(
         {
           action: 'submit_feedback',
-          watcher_id: foreign.watcherId,
+          behavior_id: foreign.watcherId,
           window_id: foreign.windowId,
           corrections: [{ field_path: 'problems[0]', value: 'x' }],
         } as never,
@@ -296,7 +296,7 @@ describe('watcher feedback contract', () => {
     const result = (await manageBehaviors(
       {
         action: 'submit_feedback',
-        watcher_id: seeded.watcherId,
+        behavior_id: seeded.watcherId,
         window_id: seeded.windowId,
         corrections: [{ field_path: 'problems[0].severity', value: 'high' }],
       } as never,
@@ -339,7 +339,7 @@ describe('watcher feedback contract', () => {
     await manageBehaviors(
       {
         action: 'submit_feedback',
-        watcher_id: seeded.watcherId,
+        behavior_id: seeded.watcherId,
         window_id: seeded.windowId,
         corrections: [{ field_path: 'problems[0].severity', value: 'high' }],
       } as never,
@@ -394,7 +394,7 @@ describe('watcher feedback contract', () => {
     const result = (await manageBehaviors(
       {
         action: 'submit_feedback',
-        watcher_id: seeded.watcherId,
+        behavior_id: seeded.watcherId,
         window_id: seeded.windowId,
         corrections: [
           { field_path: '__proto__.polluted', value: 'evil' },
@@ -439,7 +439,7 @@ describe('watcher feedback contract', () => {
       manageBehaviors(
         {
           action: 'submit_feedback',
-          watcher_id: seeded.watcherId,
+          behavior_id: seeded.watcherId,
           window_id: 999_999_999,
           corrections: [{ field_path: 'problems[0].severity', value: 'high' }],
         } as never,

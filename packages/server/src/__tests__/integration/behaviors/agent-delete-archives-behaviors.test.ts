@@ -62,10 +62,10 @@ describe("agent delete archives its Behaviors", () => {
 				{} as Env,
 				ctx
 			);
-			if (result.action !== "create" || !("watcher_id" in result)) {
+			if (result.action !== "create" || !("behavior_id" in result)) {
 				throw new Error("Behavior creation did not complete");
 			}
-			return Number(result.watcher_id);
+			return Number(result.behavior_id);
 		};
 		const doomedBehavior = await create(agent.agentId, "doomed-chat-link");
 		const survivorBehavior = await create(
@@ -146,10 +146,10 @@ describe("agent delete archives its Behaviors", () => {
 				{} as Env,
 				ctx,
 			);
-			if (result.action !== "create" || !("watcher_id" in result)) {
+			if (result.action !== "create" || !("behavior_id" in result)) {
 				throw new Error("Behavior creation did not complete");
 			}
-			return Number(result.watcher_id);
+			return Number(result.behavior_id);
 		};
 
 		const behaviorA = await create(

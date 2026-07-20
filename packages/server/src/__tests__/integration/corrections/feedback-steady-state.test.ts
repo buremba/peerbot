@@ -49,7 +49,7 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
 
     const submitted = await handleSubmitFeedback(
       {
-        watcher_id: watcherId,
+        behavior_id: watcherId,
         window_id: windowId,
         corrections: [
           { field_path: 'a', mutation: 'set', value: 'v', note: 'n' },
@@ -67,7 +67,7 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
     expect(reg[0].t).toBeNull();
 
     // get_feedback returns both, from events, with recovered ids + org scoping.
-    const got = (await handleGetFeedback({ watcher_id: watcherId } as never, ctx)) as {
+    const got = (await handleGetFeedback({ behavior_id: watcherId } as never, ctx)) as {
       feedback: Array<{ id: number; field_path: string; mutation: string; created_by: string }>;
     };
     expect(got.feedback).toHaveLength(2);

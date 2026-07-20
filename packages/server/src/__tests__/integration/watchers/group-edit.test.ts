@@ -57,8 +57,8 @@ async function seedRootWatcher(workspace: TestWorkspace, suffix: string) {
     prompt: 'Summarize content for {{entities}}.',
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
-  })) as { watcher_id: string };
-  return { watcherId: Number(watcher.watcher_id), entityId: entity.id };
+  })) as { behavior_id: string };
+  return { watcherId: Number(watcher.behavior_id), entityId: entity.id };
 }
 
 async function assignToEntity(
@@ -74,8 +74,8 @@ async function assignToEntity(
     } as never,
     {} as Env,
     ownerCtx(workspace)
-  )) as { created: Array<{ watcher_id: string }> };
-  return Number(result.created[0].watcher_id);
+  )) as { created: Array<{ behavior_id: string }> };
+  return Number(result.created[0].behavior_id);
 }
 
 describe('watcher group edit contract', () => {
@@ -138,7 +138,7 @@ describe('watcher group edit contract', () => {
     await manageBehaviors(
       {
         action: 'set_reaction_script',
-        watcher_id: String(rootId),
+        behavior_id: String(rootId),
         // Declares an `input` contract → reaction_input_schema is populated. A
         // clone must carry BOTH the script and the schema, else the cloned
         // reaction silently loses its extraction contract (runs free-form).
@@ -184,7 +184,7 @@ describe('watcher group edit contract', () => {
     await manageBehaviors(
       {
         action: 'set_reaction_script',
-        watcher_id: String(rootId),
+        behavior_id: String(rootId),
         // `input` is a PLAIN JSON Schema (no typebox — it breaks the isolate
         // client). The host validates extracted_data against it.
         reaction_script:
@@ -207,7 +207,7 @@ describe('watcher group edit contract', () => {
     await manageBehaviors(
       {
         action: 'set_reaction_script',
-        watcher_id: String(rootId),
+        behavior_id: String(rootId),
         reaction_script: '',
       } as never,
       {} as Env,
@@ -251,7 +251,7 @@ describe('watcher group edit contract', () => {
     const result = (await manageBehaviors(
       {
         action: 'create_version',
-        watcher_id: String(sibling1Id),
+        behavior_id: String(sibling1Id),
         prompt: 'Cascaded prompt v2.',
         name: 'Cascaded Name v2',
         change_notes: 'group cascade',
@@ -302,7 +302,7 @@ describe('watcher group edit contract', () => {
     await manageBehaviors(
       {
         action: 'set_reaction_script',
-        watcher_id: String(rootId),
+        behavior_id: String(rootId),
         reaction_script: 'export default async function reaction() { /* v1 */ }',
       } as never,
       {} as Env,
@@ -319,7 +319,7 @@ describe('watcher group edit contract', () => {
     await manageBehaviors(
       {
         action: 'set_reaction_script',
-        watcher_id: String(siblingId),
+        behavior_id: String(siblingId),
         reaction_script: '',
       } as never,
       {} as Env,
@@ -357,7 +357,7 @@ describe('watcher group edit contract', () => {
     await manageBehaviors(
       {
         action: 'create_version',
-        watcher_id: String(rootId),
+        behavior_id: String(rootId),
         prompt: 'Post-run edit.',
         change_notes: 'after run created',
       } as never,
@@ -434,7 +434,7 @@ describe('watcher group edit contract', () => {
     await manageBehaviors(
       {
         action: 'create_version',
-        watcher_id: String(aId),
+        behavior_id: String(aId),
         prompt: "A's v2",
         change_notes: 'bump A',
       } as never,
@@ -473,7 +473,7 @@ describe('watcher group edit contract', () => {
       manageBehaviors(
         {
           action: 'create_version',
-          watcher_id: String(rootId),
+          behavior_id: String(rootId),
           prompt: 'edit A',
           change_notes: 'A',
         } as never,
@@ -483,7 +483,7 @@ describe('watcher group edit contract', () => {
       manageBehaviors(
         {
           action: 'create_version',
-          watcher_id: String(rootId),
+          behavior_id: String(rootId),
           prompt: 'edit B',
           change_notes: 'B',
         } as never,

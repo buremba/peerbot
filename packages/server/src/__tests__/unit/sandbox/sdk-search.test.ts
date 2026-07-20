@@ -96,9 +96,9 @@ describe("sdkSearch", () => {
 		["feeds.delete", "client.feeds.delete({ feed_id: 42 })"],
 		["classifiers.delete", "client.classifiers.delete({ classifier_id: 42 })"],
 		["schedules.cancel", "client.schedules.cancel({ id: 'schedule-id' })"],
-		["behaviors.get", "client.behaviors.get({ watcher_id: '42' })"],
-		["behaviors.trigger", "client.behaviors.trigger({ watcher_id: '42' })"],
-		["behaviors.delete", "client.behaviors.delete({ watcher_ids: ['42'] })"],
+		["behaviors.get", "client.behaviors.get({ behavior_id: '42' })"],
+		["behaviors.trigger", "client.behaviors.trigger({ behavior_id: '42' })"],
+		["behaviors.delete", "client.behaviors.delete({ behavior_ids: ['42'] })"],
 	])("renders the current %s signature in exact drill-down", async (path, snippet) => {
 		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
 

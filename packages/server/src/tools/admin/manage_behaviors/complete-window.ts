@@ -48,7 +48,7 @@ export async function handleCompleteWindow(
   ctx: ToolContext
 ): Promise<{
   action: 'complete_window';
-  watcher_id: string;
+  behavior_id: string;
   window_id: number;
   window_start: string;
   window_end: string;
@@ -655,7 +655,7 @@ export async function handleCompleteWindow(
 
     return {
       action: 'complete_window' as const,
-      watcher_id: String(watcherId),
+      behavior_id: String(watcherId),
       window_id: windowId,
       window_start,
       window_end,
@@ -698,7 +698,7 @@ export async function handleCompleteWindow(
            wv.version as watcher_version
     FROM watchers w
     LEFT JOIN watcher_versions wv ON w.current_version_id = wv.id
-    WHERE w.id = ${result.watcher_id}
+    WHERE w.id = ${result.behavior_id}
   `;
 
   try {
@@ -730,7 +730,7 @@ export async function handleCompleteWindow(
                COALESCE(w.slug, 'watcher-' || w.id) as slug
         FROM watchers w
         LEFT JOIN watcher_versions wv ON w.current_version_id = wv.id
-        WHERE w.id = ${result.watcher_id}
+        WHERE w.id = ${result.behavior_id}
       `;
 
       const reactionContext = {
@@ -744,16 +744,16 @@ export async function handleCompleteWindow(
         window: {
           id: result.window_id,
           run_id: watcherRunId,
-          watcher_id: Number(result.watcher_id),
+          watcher_id: Number(result.behavior_id),
           window_start: result.window_start,
           window_end: result.window_end,
           granularity: timeGranularity,
           content_analyzed: batchContentIds.length,
         },
         behavior: {
-          id: Number(result.watcher_id),
-          slug: (watcherMeta[0]?.slug ?? `watcher-${result.watcher_id}`) as string,
-          name: (watcherMeta[0]?.name ?? `watcher-${result.watcher_id}`) as string,
+          id: Number(result.behavior_id),
+          slug: (watcherMeta[0]?.slug ?? `watcher-${result.behavior_id}`) as string,
+          name: (watcherMeta[0]?.name ?? `watcher-${result.behavior_id}`) as string,
           version: Number(row.watcher_version ?? 1),
         },
         organization_id: orgId,
@@ -769,7 +769,7 @@ export async function handleCompleteWindow(
 
         await trackWatcherReaction({
           organizationId: orgId,
-          watcherId: Number(result.watcher_id),
+          watcherId: Number(result.behavior_id),
           windowId: result.window_id,
           reactionType: 'script_execution',
           toolName: 'reaction_executor',
@@ -781,7 +781,7 @@ export async function handleCompleteWindow(
           reactionStatus = 'success';
           logger.info(
             {
-              watcher_id: result.watcher_id,
+              watcher_id: result.behavior_id,
               window_id: result.window_id,
               attempt,
             },
@@ -791,7 +791,7 @@ export async function handleCompleteWindow(
         }
         if (attempt < MAX_ATTEMPTS) {
           logger.warn(
-            { watcher_id: result.watcher_id, attempt, error: execResult.error },
+            { watcher_id: result.behavior_id, attempt, error: execResult.error },
             'Reaction script failed, retrying...'
           );
           await new Promise((r) => setTimeout(r, 1000));
@@ -799,7 +799,7 @@ export async function handleCompleteWindow(
           reactionStatus = 'failed';
           reactionError = execResult.error;
           logger.error(
-            { watcher_id: result.watcher_id, error: execResult.error },
+            { watcher_id: result.behavior_id, error: execResult.error },
             'Reaction script failed after all retries'
           );
         }

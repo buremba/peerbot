@@ -24,7 +24,7 @@ import { ToolUserError } from '../../utils/errors';
 function validateUpdateWith(executionConfig: unknown): unknown {
   return validateToolArgs('manage_behaviors', ManageBehaviorsSchema, {
     action: 'update',
-    watcher_id: '1',
+    behavior_id: '1',
     execution_config: executionConfig,
   });
 }

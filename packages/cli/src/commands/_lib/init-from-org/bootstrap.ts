@@ -879,8 +879,8 @@ async function fetchOrgState(
       .sort((a, b) => a.slug.localeCompare(b.slug))
       .map(async (watcher) => {
         let reactionScript: string | null = null;
-        if (watcher.watcher_id) {
-          const detail = await client.getBehaviorDetail(watcher.watcher_id);
+        if (watcher.behavior_id) {
+          const detail = await client.getBehaviorDetail(watcher.behavior_id);
           reactionScript = detail?.reaction_script ?? null;
           if (detail?.description && !watcher.description) {
             watcher.description = detail.description;

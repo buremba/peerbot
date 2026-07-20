@@ -557,8 +557,21 @@ export class GatewayClient {
         data.messageId
       );
       if (steered) {
+        // Telemetry: tag whether this steer came from a Behavior (active_run:
+        // "steer") vs an ordinary human follow-up, so usage of the steer policy
+        // can be measured downstream (decide keep/drop of the knob on data).
         logger.info(
-          { traceId, messageId: data.messageId, conversationId },
+          {
+            traceId,
+            messageId: data.messageId,
+            conversationId,
+            steerSource: data.platformMetadata?.behaviorId
+              ? "behavior"
+              : "human",
+            behaviorId: data.platformMetadata?.behaviorId ?? null,
+            behaviorActiveRunPolicy:
+              data.platformMetadata?.behaviorActiveRunPolicy ?? null,
+          },
           "Message steered into active agent turn"
         );
         return;

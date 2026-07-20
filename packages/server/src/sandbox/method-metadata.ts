@@ -449,7 +449,7 @@ export default async (ctx, client) => {
 			"Raw manage_behaviors action wrapper. Prefer named methods such as behaviors.trigger or behaviors.createVersion.",
 		access: "external",
 		example:
-			"await client.behaviors.manage({ action: 'trigger', watcher_id: '42' });",
+			"await client.behaviors.manage({ action: 'trigger', behavior_id: '42' });",
 	},
 	"behaviors.list": {
 		summary:
@@ -467,7 +467,7 @@ export default async (ctx, client) => {
 		access: "read",
 		throws: ["BehaviorNotFound"],
 		example:
-			"const behavior = await client.behaviors.get({ watcher_id: '42' });",
+			"const behavior = await client.behaviors.get({ behavior_id: '42' });",
 	},
 	"behaviors.create": {
 		summary:
@@ -508,15 +508,15 @@ export default async (_ctx, client) => {
 		summary:
 			"Trigger an immediate Behavior run and dispatch it to its assigned agent.",
 		access: "external",
-		example: "await client.behaviors.trigger({ watcher_id: '42' });",
+		example: "await client.behaviors.trigger({ behavior_id: '42' });",
 		usageExample: `export default async (_ctx, client) => {
-  return client.behaviors.trigger({ watcher_id: '42' });
+  return client.behaviors.trigger({ behavior_id: '42' });
 };`,
 	},
 	"behaviors.delete": {
 		summary: "Delete one or more Behaviors.",
 		access: "admin",
-		example: "await client.behaviors.delete({ watcher_ids: ['42'] });",
+		example: "await client.behaviors.delete({ behavior_ids: ['42'] });",
 	},
 	"behaviors.setReactionScript": {
 		summary:

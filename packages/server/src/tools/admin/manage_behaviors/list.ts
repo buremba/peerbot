@@ -42,7 +42,7 @@ export async function handleList(
 
 	let query = `
     SELECT
-      i.id as watcher_id,
+      i.id as behavior_id,
       i.name,
       i.slug,
       i.status,
@@ -120,9 +120,9 @@ export async function handleList(
 		paramCount++;
 	}
 
-	if (args.watcher_id) {
+	if (args.behavior_id) {
 		conditions.push(`i.id = $${paramCount}`);
-		params.push(args.watcher_id);
+		params.push(args.behavior_id);
 		paramCount++;
 	}
 
@@ -159,7 +159,7 @@ export async function handleList(
 	const result = await sql.unsafe(query, params);
 
 	const baseUrl = getPublicWebUrl(ctx.requestUrl, ctx.baseUrl);
-	const watcherIds = (result as any[]).map((i) => Number(i.watcher_id));
+	const watcherIds = (result as any[]).map((i) => Number(i.behavior_id));
 
 	let counts: Map<number, { pending: number; historical: number }>;
 	try {
@@ -184,7 +184,7 @@ export async function handleList(
 	}
 
 	const watchersWithPendingCount = (result as any[]).map((watcher) => {
-		const watcherId = Number(watcher.watcher_id);
+		const watcherId = Number(watcher.behavior_id);
 		const countData = counts.get(watcherId) || { pending: 0, historical: 0 };
 		const orgSlug = orgSlugMap.get(watcher.organization_id as string) ?? null;
 
@@ -201,17 +201,17 @@ export async function handleList(
 			delete (rest as Record<string, unknown>).description;
 		}
 
-		// Stringify `watcher_id` to match the rest of the manage_behaviors
+		// Stringify `behavior_id` to match the rest of the manage_behaviors
 		// contract: `handleCreate` returns `String(watcherId)`, the input schema
-		// declares `watcher_id` as a string, and downstream callers (CLI
+		// declares `behavior_id` as a string, and downstream callers (CLI
 		// `apply-cmd.ts` → `updateWatcher`, MCP tools) forward whatever they
 		// receive straight back. Without the cast the raw integer leaks through
 		// and a follow-up `update`/`upgrade` call fails the schema gate with
-		// `/watcher_id: Expected string`. Same bug pattern for `current_version_id`
+		// `/behavior_id: Expected string`. Same bug pattern for `current_version_id`
 		// (kept as-is — no consumer feeds it back into manage_behaviors today).
-		if ((rest as Record<string, unknown>).watcher_id != null) {
-			(rest as Record<string, unknown>).watcher_id = String(
-				(rest as Record<string, unknown>).watcher_id
+		if ((rest as Record<string, unknown>).behavior_id != null) {
+			(rest as Record<string, unknown>).behavior_id = String(
+				(rest as Record<string, unknown>).behavior_id
 			);
 		}
 

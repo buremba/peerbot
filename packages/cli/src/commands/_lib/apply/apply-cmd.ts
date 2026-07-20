@@ -859,13 +859,13 @@ export async function executePlan(
           keying_config: w.keyingConfig,
           classifiers: w.classifiers,
         });
-        watcherId = created.watcher_id;
+        watcherId = created.behavior_id;
       } else if (row.verb === "update") {
         const remote = remoteWatcherBySlug.get(w.slug);
-        watcherId = remote?.watcher_id;
+        watcherId = remote?.behavior_id;
         if (!watcherId) {
           throw new ApiError(
-            `update behavior "${w.slug}" failed: remote row is missing watcher_id (refetch may be stale)`
+            `update behavior "${w.slug}" failed: remote row is missing behavior_id (refetch may be stale)`
           );
         }
         const versionBound = new Set(row.versionBoundFields ?? []);
@@ -876,7 +876,7 @@ export async function executePlan(
         // a) Scalar fields → manage_behaviors update
         if (scalarChanges.length > 0) {
           await ctx.client.updateBehavior({
-            watcher_id: watcherId,
+            behavior_id: watcherId,
             ...(scalarChanges.includes("triggers")
               ? { triggers: w.triggers ?? [] }
               : {}),
@@ -914,7 +914,7 @@ export async function executePlan(
         //    send the desired-side values for the changed keys).
         if (row.versionBoundFields && row.versionBoundFields.length > 0) {
           await ctx.client.createBehaviorVersion({
-            watcher_id: watcherId,
+            behavior_id: watcherId,
             ...(versionBound.has("prompt") ? { prompt: w.prompt } : {}),
             ...(versionBound.has("sources") && w.sources !== undefined
               ? { sources: w.sources }
@@ -1129,7 +1129,7 @@ async function deleteRemovedDefinitions(ctx: ApplyContext): Promise<void> {
   const deletes = ctx.plan.rows.filter((r) => r.verb === "delete");
   if (deletes.length === 0) return;
   const watcherIdBySlug = new Map(
-    ctx.remote.watchers.map((w) => [w.slug, w.watcher_id])
+    ctx.remote.watchers.map((w) => [w.slug, w.behavior_id])
   );
   const steps: Array<[DiffRow["kind"], (id: string) => Promise<void>]> = [
     [
@@ -1138,7 +1138,7 @@ async function deleteRemovedDefinitions(ctx: ApplyContext): Promise<void> {
         const wid = watcherIdBySlug.get(id);
         if (!wid) {
           throw new ApiError(
-            `delete behavior "${id}": remote watcher_id missing`
+            `delete behavior "${id}": remote behavior_id missing`
           );
         }
         await ctx.client.deleteBehavior(wid);

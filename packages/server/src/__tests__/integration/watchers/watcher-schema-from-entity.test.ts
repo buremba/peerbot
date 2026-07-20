@@ -119,8 +119,8 @@ async function setupEntityTypedWatcher() {
     keying_config: KEYING_CONFIG,
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
-  })) as { watcher_id: string };
-  const watcherId = Number(watcher.watcher_id);
+  })) as { behavior_id: string };
+  const watcherId = Number(watcher.behavior_id);
 
   await sql`UPDATE watchers SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${watcherId}`;
 
@@ -202,7 +202,7 @@ describe('complete_window derives its schema from the entity type', () => {
     // 'name' is required by topic's metadata_schema but missing here.
     await expect(
       ctx.api.behaviors.completeWindow({
-        watcher_id: String(ctx.watcherId),
+        behavior_id: String(ctx.watcherId),
         window_token: token,
         extracted_data: { problems: [{ category: 'Stability' }] },
         run_metadata: { watcher_run_id: runId },
@@ -222,7 +222,7 @@ describe('complete_window derives its schema from the entity type', () => {
     const token = await readWindowToken(ctx);
 
     const completion = (await ctx.api.behaviors.completeWindow({
-      watcher_id: String(ctx.watcherId),
+      behavior_id: String(ctx.watcherId),
       window_token: token,
       extracted_data: {
         problems: [{ category: 'Stability', name: 'App Crashes' }],

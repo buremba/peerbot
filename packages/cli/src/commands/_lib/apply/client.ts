@@ -94,7 +94,7 @@ export interface RemoteInferenceProvider {
 export interface RemoteBehavior {
   slug: string;
   name?: string;
-  watcher_id?: string;
+  behavior_id?: string;
   agent_id?: string | null;
   triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
   device_worker_id?: string | null;
@@ -894,7 +894,7 @@ export class ApplyClient {
         };
       }>(
         "GET",
-        `/api/${this.orgSlug}/behaviors?watcher_id=${encodeURIComponent(watcherId)}`
+        `/api/${this.orgSlug}/behaviors?behavior_id=${encodeURIComponent(watcherId)}`
       );
       return body.behavior ?? null;
     } catch (err) {
@@ -936,8 +936,8 @@ export class ApplyClient {
     agent_kind?: string;
     keying_config?: Record<string, unknown>;
     classifiers?: unknown[];
-  }): Promise<{ watcher_id?: string }> {
-    const { body } = await this.request<{ watcher_id?: string }>(
+  }): Promise<{ behavior_id?: string }> {
+    const { body } = await this.request<{ behavior_id?: string }>(
       "POST",
       `/api/${this.orgSlug}/manage_behaviors`,
       {
@@ -981,7 +981,7 @@ export class ApplyClient {
           : {}),
       }
     );
-    return { ...(body.watcher_id ? { watcher_id: body.watcher_id } : {}) };
+    return { ...(body.behavior_id ? { behavior_id: body.behavior_id } : {}) };
   }
 
   /**
@@ -994,7 +994,7 @@ export class ApplyClient {
    * agent_kind) per the server contract.
    */
   async updateBehavior(payload: {
-    watcher_id: string;
+    behavior_id: string;
     triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
     agent_id?: string;
     device_worker_id?: string | null;
@@ -1007,7 +1007,7 @@ export class ApplyClient {
   }): Promise<void> {
     await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "update",
-      watcher_id: payload.watcher_id,
+      behavior_id: payload.behavior_id,
       ...(payload.triggers !== undefined ? { triggers: payload.triggers } : {}),
       ...(payload.agent_id !== undefined ? { agent_id: payload.agent_id } : {}),
       ...(payload.device_worker_id !== undefined
@@ -1038,7 +1038,7 @@ export class ApplyClient {
    * inherits unset fields from the previous version row.
    */
   async createBehaviorVersion(payload: {
-    watcher_id: string;
+    behavior_id: string;
     prompt?: string;
     sources?: BehaviorSource[];
     keying_config?: Record<string, unknown>;
@@ -1051,7 +1051,7 @@ export class ApplyClient {
       `/api/${this.orgSlug}/manage_behaviors`,
       {
         action: "create_version",
-        watcher_id: payload.watcher_id,
+        behavior_id: payload.behavior_id,
         set_as_current: true,
         ...(payload.prompt !== undefined ? { prompt: payload.prompt } : {}),
         ...(payload.sources !== undefined ? { sources: payload.sources } : {}),
@@ -1082,20 +1082,20 @@ export class ApplyClient {
   ): Promise<void> {
     await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "set_reaction_script",
-      watcher_id: watcherId,
+      behavior_id: watcherId,
       reaction_script: reactionScript,
     });
   }
 
   /**
-   * Delete a watcher by its numeric `watcher_id` (code-managed prune). The
-   * admin tool takes an array; we delete one slug's watcher at a time so a
+   * Delete a Behavior by its numeric `behavior_id` (code-managed prune). The
+   * admin tool takes an array; we delete one slug's Behavior at a time so a
    * failure is attributable.
    */
   async deleteBehavior(watcherId: string): Promise<void> {
     await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "delete",
-      watcher_ids: [watcherId],
+      behavior_ids: [watcherId],
     });
   }
 

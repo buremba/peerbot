@@ -67,7 +67,7 @@ import { withValidatedArgs } from './validate-args';
 // ============================================
 
 export const GetBehaviorSchema = Type.Object({
-  watcher_id: Type.String({ description: 'Behavior ID to query' }),
+  behavior_id: Type.String({ description: 'Behavior ID to query' }),
   entity_id: Type.Optional(
     Type.Number({
       description: 'Optional entity ID for access validation and URL context',
@@ -344,13 +344,13 @@ async function getBehaviorImpl(
   // Step 1: Validate inputs
   // ============================================
 
-  if (!args.watcher_id) {
+  if (!args.behavior_id) {
     throw new Error(
-      "watcher_id is required. Use manage_behaviors with action='list' to discover Behaviors."
+      "behavior_id is required. Use manage_behaviors with action='list' to discover Behaviors."
     );
   }
 
-  await requireWatcherReadAccess(pgSql, args.watcher_id, ctx);
+  await requireWatcherReadAccess(pgSql, args.behavior_id, ctx);
 
   // Entity resolution is deferred — for the typical case (only watcher_id
   // given), the watcher metadata query below already returns the watcher's
@@ -411,8 +411,8 @@ async function getBehaviorImpl(
     return `$${params.length}`;
   };
 
-  if (args.watcher_id) {
-    whereClauses.push(`iw.watcher_id = ${addParam(args.watcher_id)}`);
+  if (args.behavior_id) {
+    whereClauses.push(`iw.watcher_id = ${addParam(args.behavior_id)}`);
   } else if (args.entity_id) {
     whereClauses.push(`${addParam(args.entity_id)} = ANY(i.entity_ids)`);
     whereClauses.push(`i.status = 'active'`);
@@ -575,7 +575,7 @@ async function getBehaviorImpl(
   const requestedVersion = args.template_version ?? null;
   const requestedVersionId = args.template_version_id ?? null;
   const namespacesLiteral = STANDARD_IDENTITY_NAMESPACES.map((n) => `'${n}'`).join(',');
-  const watcherQueryPromise = args.watcher_id
+  const watcherQueryPromise = args.behavior_id
     ? sql.unsafe(
         `
       SELECT
@@ -650,7 +650,7 @@ async function getBehaviorImpl(
       ${buildLatestWatcherRunJoinSql('i', 'wr')}
       WHERE i.id = $1
     `,
-        [args.watcher_id, requestedVersion, requestedVersionId]
+        [args.behavior_id, requestedVersion, requestedVersionId]
       )
     : null;
 
@@ -744,7 +744,7 @@ async function getBehaviorImpl(
       : undefined;
     return {
       window_id: ensureNumber(w.window_id),
-      watcher_id: w.watcher_id,
+      behavior_id: String(w.watcher_id),
       watcher_name: w.watcher_name,
       granularity: w.granularity,
       // window_start/end and created_at come back from postgres.js as Date
@@ -773,7 +773,7 @@ async function getBehaviorImpl(
 
   let watcherMetadata: WatcherMetadata | undefined;
 
-  if (args.watcher_id && watcherRow) {
+  if (args.behavior_id && watcherRow) {
     const pinnedVersion = watcherRow.version;
 
     // The selected version row (prompt/schema/template) was folded into the
@@ -793,7 +793,7 @@ async function getBehaviorImpl(
             (wv.id = ${watcherRow.current_version_id}) as is_current
           FROM watcher_versions wv
           WHERE wv.watcher_id = (
-            SELECT watcher_group_id FROM watchers WHERE id = ${args.watcher_id}
+            SELECT watcher_group_id FROM watchers WHERE id = ${args.behavior_id}
           )
           ORDER BY wv.version DESC
         `
@@ -833,7 +833,7 @@ async function getBehaviorImpl(
     const watcherSources = parseWatcherSources(watcherRow.sources);
 
     watcherMetadata = {
-      watcher_id: watcherRow.watcher_id,
+      behavior_id: String(watcherRow.watcher_id),
       watcher_name: watcherRow.name || (version?.name as string) || 'Behavior',
       slug: watcherRow.slug || '',
       status: watcherRow.status as 'active' | 'archived',
@@ -884,7 +884,7 @@ async function getBehaviorImpl(
 
   let pendingAnalysis: PendingAnalysis | undefined;
 
-  if (args.watcher_id && watcherRow) {
+  if (args.behavior_id && watcherRow) {
     const watcherEntityIds = parseBigintArray(watcherRow.entity_ids);
     const watcherEntityId = watcherEntityIds[0] ?? 0;
     const timeGranularity = inferWatcherGranularityFromSchedule(watcherRow.schedule);
@@ -935,7 +935,7 @@ async function getBehaviorImpl(
       new Date(Date.now() - FRESH_WATCHER_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
     const occurredAtBound = `f.occurred_at >= $${2 + entityLinkParams.length}::timestamptz`;
     const occurredAtBoundNoWatcher = `f.occurred_at >= $${1 + entityLinkOnlyParams.length}::timestamptz`;
-    const watcherScopedParams = [args.watcher_id, ...entityLinkParams, effectiveBound];
+    const watcherScopedParams = [args.behavior_id, ...entityLinkParams, effectiveBound];
     const noWatcherParams = [...entityLinkOnlyParams, effectiveBound];
 
     const notInWindowClause = `NOT EXISTS (
@@ -1021,7 +1021,7 @@ async function getBehaviorImpl(
             FROM current_event_records f
             WHERE ${entityScopeCondition}
               AND ${notInWindowClause}`,
-          [args.watcher_id, ...entityLinkParams]
+          [args.behavior_id, ...entityLinkParams]
         );
         const earliest = earliestResult[0]?.earliest as string | null;
         windowStart = earliest ? new Date(earliest) : now;
@@ -1055,7 +1055,7 @@ async function getBehaviorImpl(
       ? {
           tool: 'read_knowledge',
           params: {
-            watcher_id: args.watcher_id,
+            watcher_id: args.behavior_id,
             since: nextWindow.start.split('T')[0],
             until: nextWindow.end.split('T')[0],
           },
@@ -1073,7 +1073,7 @@ async function getBehaviorImpl(
 
     if (unprocessedCount > 0) {
       logger.info(
-        `[get_behavior] Found ${unprocessedCount} unprocessed content items for Behavior ${args.watcher_id}`
+        `[get_behavior] Found ${unprocessedCount} unprocessed content items for Behavior ${args.behavior_id}`
       );
     }
   }
@@ -1092,9 +1092,9 @@ async function getBehaviorImpl(
 
   if (formattedWindows.length === 0 && watcherRow) {
     if (watcherRow.status === 'archived') {
-      warnings.push(`Behavior "${watcherRow.name ?? args.watcher_id}" is archived.`);
+      warnings.push(`Behavior "${watcherRow.name ?? args.behavior_id}" is archived.`);
     } else {
-      warnings.push(`Behavior "${watcherRow.name ?? args.watcher_id}" has no windows yet.`);
+      warnings.push(`Behavior "${watcherRow.name ?? args.behavior_id}" has no windows yet.`);
     }
   }
 
@@ -1110,7 +1110,7 @@ async function getBehaviorImpl(
 
   // Detect gaps between consecutive windows (single-watcher queries only)
   let windowGaps: WindowGap[] | undefined;
-  if (args.watcher_id && formattedWindows.length > 1) {
+  if (args.behavior_id && formattedWindows.length > 1) {
     const sorted = [...formattedWindows].sort(
       (a, b) => new Date(a.window_start).getTime() - new Date(b.window_start).getTime()
     );
@@ -1133,7 +1133,7 @@ async function getBehaviorImpl(
     : null;
   const viewUrl =
     organizationSlug && watcherRow?.agent_id
-      ? buildBehaviorUrl(organizationSlug, watcherRow.agent_id, args.watcher_id, baseUrl)
+      ? buildBehaviorUrl(organizationSlug, watcherRow.agent_id, args.behavior_id, baseUrl)
       : undefined;
 
   const result: GetBehaviorResult = {
@@ -1147,7 +1147,7 @@ async function getBehaviorImpl(
       total: totalCount,
     },
     metadata: {
-      query_type: args.watcher_id ? 'specific' : 'all_for_entity',
+      query_type: args.behavior_id ? 'specific' : 'all_for_entity',
       date_range: {
         content_since: parsedSince || null,
         content_until: parsedUntil || null,

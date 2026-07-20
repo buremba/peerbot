@@ -170,11 +170,11 @@ describe('prune (server gate)', () => {
         slug: 'prune-watcher',
         agent_id: agent.agentId,
         prompt: 'Watch for things.',
-      })) as { watcher_id?: string };
-      expect(created.watcher_id).toBeTruthy();
+      })) as { behavior_id?: string };
+      expect(created.behavior_id).toBeTruthy();
 
       await owner.behaviors.delete({
-        watcher_ids: [created.watcher_id as string],
+        behavior_ids: [created.behavior_id as string],
       });
       const list = (await owner.behaviors.list({})) as {
         behaviors?: Array<{ slug: string }>;

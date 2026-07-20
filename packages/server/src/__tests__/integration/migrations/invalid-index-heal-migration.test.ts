@@ -11,12 +11,20 @@ import { cleanupTestDatabase } from "../../setup/test-db";
 
 /**
  * Concurrent CREATE INDEX IF NOT EXISTS silently no-ops when an INVALID
- * leftover of the same name exists (failed prior concurrent build). These
- * migrations heal by dropping INVALID carcasses before CREATE CONCURRENTLY.
+ * leftover of the same name exists (failed prior concurrent build). The INVALID
+ * carcass is dropped by a companion heal migration (a `DO` block in the default
+ * transactional migration) that runs immediately before the `transaction:false`
+ * CONCURRENTLY build. The two are split across files because dbmate runs a
+ * multi-statement `transaction:false` body in one implicit transaction, which
+ * CREATE INDEX CONCURRENTLY rejects — so each CONCURRENTLY migration must be a
+ * single statement. `files` lists the heal + build pair, applied in order.
  */
 const HEAL_MIGRATIONS = [
 	{
-		file: "20260717121010_behavior_triggers_index.sql",
+		files: [
+			"20260717121009_behavior_triggers_index_heal.sql",
+			"20260717121010_behavior_triggers_index.sql",
+		],
 		index: "idx_watchers_triggers_gin",
 		/** Plain (non-unique) index definition used only to seed an INVALID carcass. */
 		seedSql: `
@@ -25,7 +33,10 @@ const HEAL_MIGRATIONS = [
     `,
 	},
 	{
-		file: "20260717121020_watcher_run_execution_index.sql",
+		files: [
+			"20260717121019_watcher_run_execution_index_heal.sql",
+			"20260717121020_watcher_run_execution_index.sql",
+		],
 		index: "idx_runs_executing_watcher_per_watcher",
 		seedSql: `
       CREATE INDEX IF NOT EXISTS idx_runs_executing_watcher_per_watcher
@@ -33,7 +44,10 @@ const HEAL_MIGRATIONS = [
     `,
 	},
 	{
-		file: "20260717121025_pending_non_event_watcher_run_index.sql",
+		files: [
+			"20260717121024_pending_non_event_watcher_run_index_heal.sql",
+			"20260717121025_pending_non_event_watcher_run_index.sql",
+		],
 		index: "idx_runs_pending_non_event_watcher_per_watcher",
 		seedSql: `
       CREATE INDEX IF NOT EXISTS idx_runs_pending_non_event_watcher_per_watcher
@@ -41,7 +55,10 @@ const HEAL_MIGRATIONS = [
     `,
 	},
 	{
-		file: "20260719120000_channel_messages_org_dedupe.sql",
+		files: [
+			"20260719115959_channel_messages_org_dedupe_heal.sql",
+			"20260719120000_channel_messages_org_dedupe.sql",
+		],
 		index: "channel_messages_org_dedup",
 		seedSql: `
       CREATE INDEX IF NOT EXISTS channel_messages_org_dedup
@@ -98,10 +115,9 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 	});
 
 	it.each(HEAL_MIGRATIONS)(
-		"replays $file over an INVALID $index and leaves a VALID index",
-		async ({ file, index, seedSql }) => {
+		"replays $files over an INVALID $index and leaves a VALID index",
+		async ({ files, index, seedSql }) => {
 			const migrationsDir = resolveMigrationsDir();
-			const up = loadMigrationUp(migrationsDir, file);
 			const sql = getDb();
 
 			// Drop any live index from prior suite setup, then seed a same-named
@@ -123,8 +139,16 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 			const before = await indexValidity(index);
 			expect(before).toEqual({ exists: true, valid: false });
 
-			// Statement-at-a-time: DO heal + CREATE INDEX CONCURRENTLY.
-			await executeMigrationSection((statement) => sql.unsafe(statement), up);
+			// Apply the pair in order: the companion heal migration drops the
+			// INVALID carcass, then the transaction:false migration rebuilds it
+			// CONCURRENTLY. Statement-at-a-time mirrors the runtime runner.
+			for (const file of files) {
+				const up = loadMigrationUp(migrationsDir, file);
+				await executeMigrationSection(
+					(statement) => sql.unsafe(statement),
+					up,
+				);
+			}
 
 			const after = await indexValidity(index);
 			expect(after).toEqual({ exists: true, valid: true });

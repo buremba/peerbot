@@ -1201,6 +1201,7 @@ async function handleListActivity(
 		includeRuns: args.include_runs,
 		aggregate: args.aggregate,
 		kinds: args.kinds,
+		agentId: args.agent_id,
 	});
 	return {
 		action: "list_activity",
